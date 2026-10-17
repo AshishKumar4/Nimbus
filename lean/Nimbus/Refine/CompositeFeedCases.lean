@@ -9,7 +9,9 @@
   path, shadowed ones included, or on a mount's backend) and table changes
   (`mount`, `unmount`). The staged namespace must equal `atCursor` after boot and
   `atAnswer` after one ACQUIRE; `poison` says whether that ACQUIRE must poison (the
-  table changed). Values: `"dir"`, or `"vN"` for a file's bytes.
+  table changed or a structural subtree entry requires it). Launch names choose
+  the bounded unfed walk; an ordinary answer retains it, a relist replaces it.
+  Values: `"dir"`, or `"vN"` for a file's bytes.
 -/
 
 import Nimbus.Vfs.CompositeFeed
@@ -121,9 +123,11 @@ def launchWalk (s : S) (named : List Path) (limit : Nat := 8192) : Launch := Id.
   return walkQueue all (all.length + 1) queue held
 
 def withWalk (s : S) (held : Launch) : World :=
-  { world s with walk := fun m => { tree := fun r =>
-      if r = [] || structural (table s).pts (m ++ r) then some .dir else toTree held.entries (m ++ r),
-      spent := held.entries.countP (fun x => m.isPrefixOf x.1 && !structural (table s).pts x.1), limit := 8192,
+  { world s with
+    walk := fun m => {
+      tree := fun r => if r = [] || structural (table s).pts (m ++ r) then some .dir else toTree held.entries (m ++ r)
+      spent := held.entries.countP (fun x => m.isPrefixOf x.1 && !structural (table s).pts x.1)
+      limit := 8192
       listed := held.listed.filterMap fun p => if m.isPrefixOf p then some (p.drop m.length) else none } }
 
 def staged (s : S) (held : Launch) : Json :=
@@ -281,8 +285,10 @@ def cachedReadJson : Nimbus.Vfs.CompositeCache.Read → Json
   | .eagain => .str "EAGAIN"
 
 def cacheTrace : Json :=
-  let S : Nimbus.Vfs.CompositeCache.Sys := { hist := fun _ _ t => if t = 0 then 1 else 2,
-    changes := fun _ => false, route := fun _ p => (1, p) }
+  let S : Nimbus.Vfs.CompositeCache.Sys := {
+    hist := fun _ _ t => if t = 0 then 1 else 2
+    changes := fun _ => false
+    route := fun _ p => (1, p) }
   let before := Nimbus.Vfs.CompositeCache.install ⟨[], fun _ => 0⟩ ⟨(1, ["kept", "data.txt"]), 1, 0, false⟩
   let reconciled := Nimbus.Vfs.CompositeCache.reconcile before {
     complete := true, comparable := true, revision := fun _ => 0, sameReadableContent := fun _ => false }
@@ -299,7 +305,9 @@ def launchDirected : List Json := Id.run do
   let write := Json.obj [("backend", .str "/m"), ("op", .str "write"), ("path", .str "/kept/data.txt"), ("bytes", .str "v2")]
   let partialTree := [(["a"], Kind.dir), (["a", "f"], .file 1), (["a", "sibling"], .file 2), (["b"], .dir), (["b", "hidden"], .file 3)]
   let partialS := { base with bt := [(["m"], partialTree)] }
-  let nested : S := { root := [], mounts := [(["m"], false), (["m", "nested"], false)],
+  let nested : S := {
+    root := []
+    mounts := [(["m"], false), (["m", "nested"], false)]
     bt := [(["m"], [(["nested"], .dir), (["nested", "shadowed"], .file 9)]),
       (["m", "nested"], [(["x"], .file 1)])] }
   let replaced := { nested with bt := setBt nested.bt ["m", "nested"] [(["x"], .file 2)] }

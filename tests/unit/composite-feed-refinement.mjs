@@ -3,9 +3,9 @@
 // (lean/fixtures/composite-feed.json). A reader stages the composite's
 // namespace through ProcessFiles' launch-named, bound listing, a window of
 // operations runs (writes straight into a backend, shadowed ones included;
-// mounts appearing and going), and one `since` must bring the staged
-// namespace to exactly what the composite shows: poison exactly when the
-// model says so, and otherwise a delta that, applied, is exact.
+// mounts appearing and going), and an answer applies the filtered feed while
+// retaining unfed observations. Boot/relist replaces that partial walk;
+// resident reconciliation refetches mounted bytes the listing cannot date.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';

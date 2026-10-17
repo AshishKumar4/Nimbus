@@ -100,8 +100,9 @@ theorem unfed_entries_undated (S : Sys) {C : Cache} (h : Reachable S C) :
     | stage e hd =>
       intro x hx hc
       rcases List.mem_cons.mp hx with rfl | hx
-      · by_contra hn
-        have := hd (Nat.pos_of_ne_zero hn); rw [hc] at this; cases this
+      · by_cases hz : x.rev = 0
+        · exact hz
+        · have := hd (Nat.pos_of_ne_zero hz); rw [hc] at this; cases this
       · exact ih x (List.mem_filter.mp hx).1 hc
     | evict k => intro e he; exact ih e (List.mem_filter.mp he).1
     | barrier H' _ => exact ih
@@ -131,11 +132,13 @@ theorem sync_read_installed (S : Sys) (C : Cache) (now : Nat) (p : Path) (e : En
 /-- This is a reachable cache, not a freshness promise: an external unfed write
     has no incremental record to invalidate the old observation. -/
 theorem undated_can_be_stale :
-    let S : Sys := { hist := fun _ _ t => if t = 0 then 1 else 2,
-      changes := fun _ => false, route := fun _ p => (1, p) }
+    let S : Sys := {
+      hist := fun _ _ t => if t = 0 then 1 else 2
+      changes := fun _ => false
+      route := fun _ p => (1, p) }
     let C := install ⟨[], fun _ => 0⟩ ⟨(1, ["x"]), 1, 0, false⟩
     Reachable S C ∧ syncRead S C 1 ["x"] = .value 1 0 ∧ S.hist 1 ["x"] 1 = 2 := by
-  exact ⟨Reachable.step .init (.stage _ _ (by intro h; omega)), by decide, rfl⟩
+  exact ⟨Reachable.step .init (.stage _ _ (by intro h; exact (Nat.not_lt_zero _ h).elim)), by decide, rfl⟩
 
 theorem a_path_keyed_cache_serves_the_old_backend :
     let S : Sys := {

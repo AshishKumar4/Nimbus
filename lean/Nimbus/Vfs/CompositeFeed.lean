@@ -94,8 +94,7 @@ inductive WalkStep (backend : Tree) (structuralName : Path → Bool) : Walk → 
   | observe (s : Walk) (p : Path) (k : Kind) (hp : p ≠ [])
       (hparent : s.tree p.dropLast = some .dir) (hfresh : s.tree p = none)
       (hvalue : backend p = some k) (hroom : s.spent + (if structuralName p then 0 else 1) ≤ s.limit) :
-      WalkStep backend structuralName s { s with tree := insertWalk s.tree p k,
-        spent := s.spent + (if structuralName p then 0 else 1) }
+      WalkStep backend structuralName s { s with tree := insertWalk s.tree p k, spent := s.spent + (if structuralName p then 0 else 1) }
   | complete (s : Walk) (dir : Path) (hdir : s.tree dir = some .dir)
       (hwhole : ∀ q, q.dropLast = dir → q ≠ [] → s.tree q = backend q) :
       WalkStep backend structuralName s { s with listed := dir :: s.listed }
@@ -219,6 +218,10 @@ theorem listed_absence {backend : Tree} {structuralName : Path → Bool} {s : Wa
 
 theorem installed_walks_closed {T : Table} {W : World} (h : WalkInstalled T W) : WalksClosed T W := by
   intro m hm hc; exact (walk_inv (h m hm hc)).1
+
+theorem walks_closed_of_retained {T : Table} {W0 W1 : World} (h : WalksClosed T W0)
+    (hr : ∀ m ∈ T.pts, T.ch m = false → W0.walk m = W1.walk m) : WalksClosed T W1 := by
+  intro m hm hc; rw [← hr m hm hc]; exact h m hm hc
 
 /-- The directory of a structural path is structural. -/
 theorem structural_dropLast {pts : List Path} {q : Path} (hq : q ≠ []) (hs : structural pts q = true)
@@ -652,7 +655,8 @@ theorem feedOps_exact (T : Table) (W0 W1 : World) (rlog : List LEnt) (mlog : Pat
     which is gone; the entry is not shown, so without the poison `/m/a` stays. -/
 theorem a_subtree_entry_at_a_composite_directory_must_poison :
     let T : Table := ⟨[["m", "pc"]], fun _ => true⟩
-    let W0 : World := { root := fun q => if q = ["m"] then some .dir else if q = ["m", "a"] then some (.file 1) else none,
+    let W0 : World := {
+      root := fun q => if q = ["m"] then some .dir else if q = ["m", "a"] then some (.file 1) else none
       bt := fun _ _ => none }
     let W1 : World := { root := fun _ => none, bt := fun _ _ => none }
     let rlog : List LEnt := [⟨["m"], true⟩]
@@ -746,7 +750,8 @@ theorem step_exact (T0 T1 : Table) (W0 W1 : World) (rlog : List Path) (mlog : Pa
 theorem a_mount_appearing_is_not_in_any_feed :
     let T0 : Table := ⟨[], fun _ => true⟩
     let T1 : Table := ⟨[["pc"]], fun _ => true⟩
-    let W : World := { root := fun q => if q = ["pc"] then some .dir else if q = ["pc", "a"] then some (.file 1) else none,
+    let W : World := {
+      root := fun q => if q = ["pc"] then some .dir else if q = ["pc", "a"] then some (.file 1) else none
       bt := fun _ _ => none }
     feed T1 [] (fun _ => []) W = [] ∧ view T0 W ["pc", "a"] = some (.file 1) ∧ view T1 W ["pc", "a"] = none := by
   decide
@@ -825,15 +830,13 @@ theorem fs_inv {s : Fs} (h : FsReach s) : BackendsClosed s.T s.W ∧ WalksClosed
     obtain ⟨hW0, hU0, hNS⟩ := ih
     cases hs with
     | answer W1 rlog mlog hW hc hp =>
-      have hU : WalksClosed _ W1 := by
-        intro m hm hch; rw [← hc.2.2 m hm hch]; exact hU0 m hm hch
+      have hU := walks_closed_of_retained hU0 hc.2.2
       refine ⟨hW, hU, ?_⟩
       simp only at hNS ⊢
       rw [hNS]; exact feedOps_exact _ _ _ _ _ hW hU hc hp
     | poison T1 W1 hW hi => exact ⟨hW, installed_walks_closed hi, rfl⟩
     | own W1 d hW hd hcov hretain =>
-      have hU : WalksClosed _ W1 := by
-        intro m hm hch; rw [← hretain m hm hch]; exact hU0 m hm hch
+      have hU := walks_closed_of_retained hU0 hretain
       refine ⟨hW, hU, ?_⟩
       simp only at hNS ⊢
       rw [hNS]
@@ -864,8 +867,9 @@ theorem a_walk_can_hold_an_old_unfed_value :
       s.NS ["m", "x"] = some (.file 1) ∧ feed s.T [] (fun _ => []) s.W = [] := by
   let T : Table := ⟨[["m"]], fun _ => false⟩
   let held : Walk := { tree := insertWalk rootOnly ["x"] (.file 1), spent := 1, limit := 1 }
-  let W0 : World := { root := fun _ => none,
-    bt := fun _ r => if r = [] then some .dir else if r = ["x"] then some (.file 1) else none,
+  let W0 : World := {
+    root := fun _ => none
+    bt := fun _ r => if r = [] then some .dir else if r = ["x"] then some (.file 1) else none
     walk := fun _ => held }
   let W1 : World := { W0 with bt := fun _ r => if r = [] then some .dir else if r = ["x"] then some (.file 2) else none }
   have hW0 : BackendsClosed T W0 := by

@@ -622,6 +622,7 @@ import Nimbus.Refine
 #print axioms Nimbus.Vfs.CompositeFeed.walk_entries_undated
 #print axioms Nimbus.Vfs.CompositeFeed.listed_absence
 #print axioms Nimbus.Vfs.CompositeFeed.installed_walks_closed
+#print axioms Nimbus.Vfs.CompositeFeed.walks_closed_of_retained
 #print axioms Nimbus.Vfs.CompositeFeed.structural_dropLast
 #print axioms Nimbus.Vfs.CompositeFeed.view_closed
 #print axioms Nimbus.Vfs.CompositeFeed.feed_values

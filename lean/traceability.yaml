@@ -816,6 +816,7 @@ requirements:
       - Nimbus.Vfs.CompositeFeed.walk_entries_undated
       - Nimbus.Vfs.CompositeFeed.listed_absence
       - Nimbus.Vfs.CompositeFeed.installed_walks_closed
+      - Nimbus.Vfs.CompositeFeed.walks_closed_of_retained
       - Nimbus.Vfs.CompositeFeed.staged_walk_bounded
       - Nimbus.Vfs.CompositeFeed.a_walk_can_hold_an_old_unfed_value
       - Nimbus.Vfs.CompositeFeed.revision_unique
@@ -858,7 +859,7 @@ requirements:
       - Closedness is discharged (view_closed, fs_inv); what remains assumed is that every backend is a POSIX tree and that its log covers every changed path (at the path, or under a sub entry above it)
       - An own mutation's delta is assumed to name every staged path it changed (FsStep.own); the lane's own-write overlay is not modeled here
       - One principal's table; per-principal source switches are table changes for that principal
-      - The walk model abstracts traversal order and concurrency to bounded parent-closed observations and whole-directory completion certificates, not a promise to discover every name; the fixture exercises the implemented 8192-name bound, unlisted directories and retention across listing pages
+      - The walk model abstracts traversal order to bounded parent-closed observations and whole-directory completion certificates, not a promise to discover every name; concurrent backend mutation during the walk is not modeled; the fixture exercises the implemented 8192-name bound, unlisted directories and retention across listing pages
       - Bound ProcessFiles listing is used for every fixture; root/unfed-only cases also use its acquire, while independent fed backends retain CompositeFeed's multi-feed cursor, which the SQLite-only process cursor does not encode
       - Unfed own-write overlays are not modeled by FsStep.own, which preserves the held walk; the cache model treats own bytes as separate reconciliation evidence
       - The CAS model identifies writes by (epoch, gen); the epoch is assumed fresh per incarnation
