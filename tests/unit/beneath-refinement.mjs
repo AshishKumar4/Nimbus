@@ -131,7 +131,9 @@ for (const face of ['synchronous', 'awaiting']) for (const [index, testCase] of 
   for (const [at, step] of testCase.steps.entries()) {
     steps++;
     const proc = bind({ pid: pid++, cred: creds.get(step.as) });
-    const got = await answer(proc, kernel, step);
+    let got;
+    try { got = await answer(proc, kernel, step); }
+    catch (error) { throw new Error(`${face} case ${index} step ${at}: ${JSON.stringify(step)}`, { cause: error }); }
     if (JSON.stringify(got) !== JSON.stringify(step.expect)) {
       failures.push(`${face} case ${index} step ${at}: uid ${step.as} beneath ${step.root} ${JSON.stringify(step.path)} follow=${step.follow}: got ${JSON.stringify(got)}, model ${JSON.stringify(step.expect)}`);
     }
