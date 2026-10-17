@@ -41,7 +41,7 @@ export declare const RPC_DISPOSE_PREAMBLE: string;
 export declare const NODE_ERROR_PREAMBLE: string;
 /**
  * Declares `__nimbusPrimordials`, the built-ins core _shared/primordials.ts
- * captures, as the node shims start; the preambles that read them are bound to it.
+ * captures: the launch's (__nimbusLaunchCaptures), else its own; the preambles that read them are bound to it.
  */
 export declare const PRIMORDIALS_PREAMBLE: string;
 /** Declares `function createPosixPath(cwd)`, node:path's posix half; the node shims call it. */

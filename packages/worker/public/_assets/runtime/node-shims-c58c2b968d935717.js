@@ -515,7 +515,7 @@ return { createProcessWarnings };
 // The built-ins the module loading calls, captured now, before any program
 // code (core _shared/primordials.ts), and node:path's posix half on them
 // (core _shared/posix-path.ts, Node's lib/path.js).
-const __nimbusPrimordials = (() => {
+const __nimbusPrimordials = typeof __nimbusLaunchCaptures !== "undefined" ? __nimbusLaunchCaptures : (() => {
 var reflectApply = Reflect.apply;
 var reflectConstruct = Reflect.construct;
 var reflectGet = Reflect.get;

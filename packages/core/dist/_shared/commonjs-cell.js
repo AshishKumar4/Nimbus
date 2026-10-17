@@ -496,10 +496,12 @@ function __nimbusReadBundleFile(path, encoding) {
 // The built-ins the interpreter calls, captured now, before any program code
 // runs (core interpreter/primordials.ts): the interpreter itself loads only
 // when the program first produces code, by when it may have replaced them.
+// The node shims' module loading reads them too (__nimbusLaunchCaptures).
+const __nimbusLaunchCaptures = __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_PRIMORDIALS_MODULE}");
 const {
   LAUNCH_PRIMORDIALS: __nimbusLaunchPrimordials,
   registerSource: __nimbusRegisterSource,
-} = __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_PRIMORDIALS_MODULE}");
+} = __nimbusLaunchCaptures;
 const __nimbusCodeCells = new Map(__NIMBUS_CODE_CELLS.map((__row) => [__row[0], __row]));
 // Where node:fs shows the map's modules: beside this main module, /bundle/.
 const __NIMBUS_BUNDLE_FILES = decodeURIComponent(new URL("./", import.meta.url).pathname);
