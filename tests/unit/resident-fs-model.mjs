@@ -505,6 +505,14 @@ async function runSteps(steps, met, grants) {
     control.opened = Promise.withResolvers();
     // A read that may wait takes the barrier the process owes first (it sent something since the last): it reads the session's file as it is now, and the view is the session's from then on.
     const caught = s.fs.stats().barriers > barriers;
+    // One the session has a description of reads through it: the session's file as it is now.
+    const via = anchorOf(opened);
+    if (via?.refHandle !== undefined) {
+      assert.equal(code, null, `${label}: an awaited read through the file's anchor: ${code}`);
+      assert.equal(dec.decode(got), dec.decode(new Uint8Array(await direct.read(via.refHandle, 0, 1 << 12))), `${label}: an awaited read is the session's, through its anchor`);
+      if (caught) await catchUp();
+      return;
+    }
     const name = [...now.names].find(([, reference]) => resolve(reference) === id)?.[0];
     // Caught up, the name the view had for it may have gone at the session: then no name leads to it.
     if (named && !(caught && (name === undefined || !ref.kernel.exists(`${DIR}/${name}`)))) {
@@ -515,13 +523,7 @@ async function runSteps(steps, met, grants) {
       if (caught) await catchUp();
       return;
     }
-    const via = anchorOf(opened);
-    if (via?.refHandle === undefined) {
-      assert.ok(code === null || code === 'ESTALE', `${label}: an awaited read of a file no name leads to: ${code}`);
-    } else {
-      assert.equal(code, null, `${label}: an awaited read through the file's anchor: ${code}`);
-      assert.equal(dec.decode(got), dec.decode(new Uint8Array(await direct.read(via.refHandle, 0, 1 << 12))), `${label}: an awaited read of a file no name leads to is the session's, through its anchor`);
-    }
+    assert.ok(code === null || code === 'ESTALE', `${label}: an awaited read of a file no name leads to: ${code}`);
     if (caught) await catchUp();
   };
 

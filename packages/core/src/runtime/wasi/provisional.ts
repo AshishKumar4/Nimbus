@@ -233,8 +233,13 @@ export interface Provisional {
   cells(): Inode[];
   /** `inode`'s cell goes (its name retired, nothing holds it): the Inode with it, but for what else holds it. */
   dropCell(inode: Inode): void;
-  /** A grant's file `inode` is reached by `key` from now on (a rename it decided): the name the view will have it at too. */
-  rekey(inode: Inode, key: string): void;
+  /**
+   * A rename a grant decided, `from` to `to`: every file reached beneath
+   * `from` (a grant's cell, or one these decisions hold, a descriptor's
+   * included) is reached at its name beneath `to` from now on, the name the
+   * view will have it at too. A cell that no name leads to stays where it is.
+   */
+  moved(from: string, to: string): void;
   /**
    * No grant decides `inode` any more: its cell's bytes are its content
    * from now on, known (Inode.heldAt: the session's once what was decided is
@@ -248,8 +253,6 @@ export interface Provisional {
   pending(dev: number, ino: number): boolean;
   /** The session descriptor of the open description `handleId`'s file is reached by (its own, else its file's anchor), once that open is answered. */
   sessionOf(handleId: number): number | undefined;
-  /** Whether no name the view has leads to `handleId`'s file, no grant deciding it: the session's is then what its descriptors read, through its anchor. */
-  unnamed(handleId: number): boolean;
   /** Open description `description` was answered: `handle` is the session's descriptor of it. */
   anchored(description: string, handle: number | undefined): void;
   owns(handleId: number): boolean;
@@ -1104,9 +1107,12 @@ export function provisional(host: ProvisionalHost): Provisional {
       release(inode);
     },
 
-    rekey: (inode, key) => {
-      inode.key = inode.origin = key;
-      fit(inode);
+    moved: (from, to) => {
+      for (const inode of everyInode()) {
+        if (inode.cell?.detached !== undefined || !within(inode.key, from)) continue;
+        inode.key = inode.origin = to + inode.key.slice(from.length);
+        fit(inode);
+      }
     },
 
     unhold: (inode, entry) => {
@@ -1138,12 +1144,6 @@ export function provisional(host: ProvisionalHost): Provisional {
       if (desc === undefined) return undefined;
       const description = desc.description ?? anchorOf(desc.inode);
       return description === undefined ? undefined : sessions.get(description);
-    },
-
-    unnamed: (handleId) => {
-      const inode = descs.get(handleId)?.inode;
-      // One made here and not yet the session's has no other name there to be found by.
-      return inode !== undefined && inode.cell === undefined && !inode.local && !named(inode);
     },
 
     anchored: (description, handle) => {

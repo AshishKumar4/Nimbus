@@ -1109,7 +1109,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
    * wait reads what is here, or is refused (not resident, or ESTALE).
    */
   const readOwn = (handleId: number, offset: number | null, length: number): Uint8Array | Promise<Uint8Array> => {
-    if (!now && holder!.provisional.sessionOf(handleId) !== undefined && holder!.provisional.unnamed(handleId)) return readByAnchor(handleId, offset, length);
+    // A caller that may wait reads a file the session has a description of through it, as the session has the file now (a peer's change included).
+    if (!now && holder!.provisional.sessionOf(handleId) !== undefined) return readByAnchor(handleId, offset, length);
     const read = (): Uint8Array | undefined => holder!.read(handleId, offset, length);
     let done: Uint8Array | undefined;
     try {
@@ -1208,8 +1209,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       return current ? statOf(current.entry) : DELEGATE;
     }, () => authority.fstat(handleId));
     if (holder?.owns(handleId)) return caughtUpFor(() => {
-      // A file no name the view has leads to: as its open description at the session has it (its names, its size), as its reads are.
-      if (!now && holder!.provisional.sessionOf(handleId) !== undefined && holder!.provisional.unnamed(handleId)) return statByAnchor(handleId);
+      // As its open description at the session has it (its names, its size), as its reads are.
+      if (!now && holder!.provisional.sessionOf(handleId) !== undefined) return statByAnchor(handleId);
       counts.local++;
       return statOf(holder!.fstat(handleId));
     });
