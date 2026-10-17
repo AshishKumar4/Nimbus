@@ -3,7 +3,7 @@
  * Nimbus's resolution, credential and upgrade policy, as source: the shim is a string
  * evaluated inside the facet and cannot import. scripts/bundle-facet-workers.mjs
  * compiles this entry once into NODE_SHIM_RESOLUTION_PREAMBLE (worker
- * loaders/generated-workers.ts), so the shim declares these functions from
+ * loaders/workers.generated.ts), so the shim declares these functions from
  * this code, as the same text whatever toolchain later evaluates the shim.
  */
 export { DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, packageJsonText, packageSelfReferenceSubpath, resolveExports, resolvePackageEntry, selectPackageMap, createNodePackageMapPolicy, 

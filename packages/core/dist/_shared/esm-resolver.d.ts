@@ -17,7 +17,7 @@
  *   - `file:`, `node:` and `data:` URLs; every other scheme is refused.
  *
  * The node shims embed it as source (scripts/bundle-facet-workers.mjs
- * compiles it into loaders/generated-workers.ts), so the resolver is one
+ * compiles it into loaders/workers.generated.ts), so the resolver is one
  * self-contained function: nothing inside may refer to this module. A
  * program may have replaced built-ins by the time it resolves, so it calls
  * only those the launch captured (primordials.ts), as Node's loader calls
