@@ -442,10 +442,11 @@ export function buildRuntimeHandler(spec, ctx0) {
             ctx.stderr.write(`${name}: cannot find module '${scriptPath}'\n`);
             return 1;
         }
-        // Shebang strip (primitive #1).
+        // Shebang strip (primitive #1): its line stays, empty, so every line and
+        // column is the file's own, as Node reports them.
         if (code.startsWith('#!')) {
             const nl = code.indexOf('\n');
-            code = nl >= 0 ? code.substring(nl + 1) : '';
+            code = nl >= 0 ? code.substring(nl) : '';
         }
         // ── Module format ──
         //
