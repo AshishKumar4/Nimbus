@@ -14,8 +14,8 @@
     suspends it (the scheduler runs nested above it).
   A local write appends when its pipe is empty, even if the write exceeds the budget
   `B`, or when the resulting queue fits `B`. Otherwise the writer is suspended: its
-  frame stays on the stack and the
-  scheduler runs nested above it, lowest slot first (sources first). Only the top of
+  frame stays on the stack and the scheduler runs nested above it, lowest slot first
+  (sources first). Only the top of
   the stack may resume. A read that would have to wait for writers that are all
   suspended beneath it fails the whole command (`abort`, a named error, non-zero
   status); so does a scheduler that finds nothing to run while something is suspended.
