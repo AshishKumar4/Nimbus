@@ -5,25 +5,13 @@ import {
 import { BASE_PATH_HEADER, TENANT_HEADER } from '../_shared/session-router.js';
 import { isValidSessionId } from '../_shared/session-id.js';
 import { z } from 'zod/v4';
-import { readNimbusCookie, serializeNimbusCookie, isNimbusCloudflareAccountId } from '@nimbus-sh/core/_shared/oauth.js';
-
-export interface NimbusAgentOAuthCookie {
-  mode: 'oauth';
-  accessToken: string;
-  refreshToken?: string;
-  tokenType: string;
-  expiresAt: number | null;
-  connectedAt: number;
-  accountId: string | null;
-  sessionId: string;
-  tenantSegment: string;
-}
+import { envString, readNimbusCookie, serializeNimbusCookie, isNimbusCloudflareAccountId } from '@nimbus-sh/core/_shared/oauth.js';
 
 export const NIMBUS_AGENT_AUTH_COOKIE = 'nimbus_agent_oauth';
 export const NIMBUS_AGENT_AUTH_COOKIE_TTL_SECONDS = 30 * 24 * 60 * 60;
 export const NIMBUS_AGENT_AUTH_COOKIE_PURPOSE = 'nimbus-agent-oauth-auth';
 
-const NimbusAgentOAuthCookieSchema: z.ZodType<NimbusAgentOAuthCookie> = z.object({
+const NimbusAgentOAuthCookieSchema = z.object({
   mode: z.literal('oauth'),
   accessToken: z.string().min(1),
   refreshToken: z.string().optional(),
@@ -34,6 +22,7 @@ const NimbusAgentOAuthCookieSchema: z.ZodType<NimbusAgentOAuthCookie> = z.object
   sessionId: z.string().refine(isValidSessionId),
   tenantSegment: z.string().refine(isNimbusTenantSegment),
 });
+export type NimbusAgentOAuthCookie = z.output<typeof NimbusAgentOAuthCookieSchema>;
 
 export async function createNimbusAgentOAuthCookie(
   auth: NimbusAgentOAuthCookie,
@@ -140,10 +129,4 @@ export function isNimbusTenantSegment(value: string): boolean {
 
 function isNimbusAgentOAuthCookie(value: unknown): value is NimbusAgentOAuthCookie {
   return NimbusAgentOAuthCookieSchema.safeParse(value).success;
-}
-
-/** A var of the Worker's env, trimmed; '' when it is unset or not a string. */
-export function envString(env: Record<string, unknown>, key: string): string {
-  const value = env?.[key];
-  return typeof value === 'string' ? value.trim() : '';
 }

@@ -1,3 +1,5 @@
+import { envString } from '@nimbus-sh/sdk/oauth';
+
 export const DEMO_OAUTH_CALLBACK_PATH = '/api/nimbus/oauth/callback';
 
 export function readDemoAuthConfig(env: any, origin: string) {
@@ -29,11 +31,6 @@ export function sanitizeReturnTo(value: string | null): string | null {
   } catch {
     return null;
   }
-}
-
-function envString(env: Record<string, unknown>, key: string): string {
-  const value = env?.[key];
-  return typeof value === 'string' ? value.trim() : '';
 }
 
 function envNumber(env: Record<string, unknown>, key: string, fallback: number): number {

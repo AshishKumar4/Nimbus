@@ -17,76 +17,7 @@
 import { z } from 'zod/v4';
 import { PYODIDE_PACKAGE_ABI } from './os-contracts.js';
 
-export interface ManifestFile {
-  /** VFS path relative to /usr/lib/nimbus/<name>/<version>/. */
-  path: string;
-  /** Publisher-side key for the content blob. */
-  content: string;
-  /** Hex sha256 of the content blob bytes. */
-  sha256: string;
-  /** Byte size. */
-  size: number;
-  /** Optional file mode hint ("exec" → registered as a shell bin). */
-  mode?: 'exec';
-}
-
-export interface ManifestEntrypoint {
-  /** Shell command name. */
-  binName: string;
-  /** Runner key (e.g. "clang-runner") — package manager dispatches to
-   *  the right runner factory by this. */
-  runner: string;
-  /** Default args prepended to user args at invocation. */
-  args: string[];
-  /** Optional secondary classification (e.g. "linker" for wasm-ld). */
-  kind?: string;
-}
-
-export interface RuntimeArtifactMetadata {
-  path: string;
-  kind: string;
-  id: string;
-  source_sha256?: string;
-  sha256: string;
-}
-
 export type RuntimePythonPackageAbi = typeof PYODIDE_PACKAGE_ABI;
-
-export interface RuntimePythonExtensionModuleMetadata {
-  /** Path inside Python site-packages, as stored in the wheel. */
-  path: string;
-  /** Path inside the installed Nimbus runtime root. */
-  runtimePath: string;
-  sha256: string;
-}
-
-export interface RuntimePythonPackageArtifactMetadata extends RuntimeArtifactMetadata {
-  kind: 'python-package';
-  language: 'python';
-  packageName: string;
-  version: string;
-  abi: RuntimePythonPackageAbi;
-  pyodideVersion: string;
-  pythonVersion: string;
-  wheelFileName: string;
-  wheelSha256: string;
-  loadMode: 'startup-module';
-  imports: string[];
-  dependencies: string[];
-  extensionModules: RuntimePythonExtensionModuleMetadata[];
-}
-
-export interface RuntimeManifest {
-  name: string;
-  version: string;
-  license: string;
-  /** Which WASI namespace the binaries import — `wasi_unstable` for
-   *  binji clang. `null` for non-WASI runtimes (e.g. Pyodide). */
-  wasi_namespace: string | null;
-  files: ManifestFile[];
-  entrypoints: ManifestEntrypoint[];
-  runtime_artifacts?: RuntimeArtifactMetadata[];
-}
 
 export const HexSha256Schema = z.string().regex(/^[a-f0-9]{64}$/);
 
@@ -103,59 +34,83 @@ const RelativePathSchema = z.string().refine(
   'must be a relative path of path names: no leading "/", empty name, "." or ".."',
 );
 
-const ManifestFileSchema: z.ZodType<ManifestFile> = z.object({
+const ManifestFileSchema = z.object({
+  /** VFS path relative to /usr/lib/nimbus/<name>/<version>/. */
   path: RelativePathSchema,
+  /** Publisher-side key for the content blob. */
   content: z.string().min(1),
+  /** Hex sha256 of the content blob bytes. */
   sha256: HexSha256Schema,
+  /** Byte size. */
   size: z.number().int().nonnegative(),
+  /** Optional file mode hint ("exec" → registered as a shell bin). */
   mode: z.literal('exec').optional(),
 });
+export type ManifestFile = z.output<typeof ManifestFileSchema>;
 
-const ManifestEntrypointSchema: z.ZodType<ManifestEntrypoint> = z.object({
+const ManifestEntrypointSchema = z.object({
+  /** Shell command name. */
   binName: z.string().min(1),
+  /** Runner key (e.g. "clang-runner") — package manager dispatches to
+   *  the right runner factory by this. */
   runner: z.string().min(1),
+  /** Default args prepended to user args at invocation. */
   args: z.array(z.string()),
+  /** Optional secondary classification (e.g. "linker" for wasm-ld). */
   kind: z.string().optional(),
 });
+export type ManifestEntrypoint = z.output<typeof ManifestEntrypointSchema>;
 
-const RuntimeArtifactMetadataSchema: z.ZodType<RuntimeArtifactMetadata> = z.object({
+/** The fields every runtime artifact names; an artifact parsed keeps any others it carries. */
+const RuntimeArtifactMetadataFields = z.object({
   path: z.string().min(1),
   kind: z.string().min(1),
   id: z.string().min(1),
   source_sha256: HexSha256Schema.optional(),
   sha256: HexSha256Schema,
-}).passthrough();
+});
+const RuntimeArtifactMetadataSchema = RuntimeArtifactMetadataFields.passthrough();
+export type RuntimeArtifactMetadata = z.output<typeof RuntimeArtifactMetadataFields>;
 
-export const RuntimePythonPackageArtifactMetadataSchema: z.ZodType<RuntimePythonPackageArtifactMetadata> =
-  RuntimeArtifactMetadataSchema.and(z.object({
-    kind: z.literal('python-package'),
-    language: z.literal('python'),
-    packageName: z.string().min(1),
-    version: z.string().min(1),
-    abi: z.literal(PYODIDE_PACKAGE_ABI),
-    pyodideVersion: z.string().min(1),
-    pythonVersion: z.string().min(1),
-    wheelFileName: z.string().min(1),
-    wheelSha256: HexSha256Schema,
-    loadMode: z.literal('startup-module'),
-    imports: z.array(z.string()),
-    dependencies: z.array(z.string()),
-    extensionModules: z.array(z.object({
-      path: z.string().min(1),
-      runtimePath: z.string().min(1),
-      sha256: HexSha256Schema,
-    })),
-  }));
+const RuntimePythonExtensionModuleMetadataSchema = z.object({
+  /** Path inside Python site-packages, as stored in the wheel. */
+  path: z.string().min(1),
+  /** Path inside the installed Nimbus runtime root. */
+  runtimePath: z.string().min(1),
+  sha256: HexSha256Schema,
+});
+export type RuntimePythonExtensionModuleMetadata = z.output<typeof RuntimePythonExtensionModuleMetadataSchema>;
 
-const RuntimeManifestSchema: z.ZodType<RuntimeManifest> = z.object({
+const RuntimePythonPackageArtifactFields = z.object({
+  kind: z.literal('python-package'),
+  language: z.literal('python'),
+  packageName: z.string().min(1),
+  version: z.string().min(1),
+  abi: z.literal(PYODIDE_PACKAGE_ABI),
+  pyodideVersion: z.string().min(1),
+  pythonVersion: z.string().min(1),
+  wheelFileName: z.string().min(1),
+  wheelSha256: HexSha256Schema,
+  loadMode: z.literal('startup-module'),
+  imports: z.array(z.string()),
+  dependencies: z.array(z.string()),
+  extensionModules: z.array(RuntimePythonExtensionModuleMetadataSchema),
+});
+export const RuntimePythonPackageArtifactMetadataSchema = RuntimeArtifactMetadataSchema.and(RuntimePythonPackageArtifactFields);
+export type RuntimePythonPackageArtifactMetadata = RuntimeArtifactMetadata & z.output<typeof RuntimePythonPackageArtifactFields>;
+
+const RuntimeManifestSchema = z.object({
   name: PathNameSchema,
   version: PathNameSchema,
   license: z.string(),
+  /** Which WASI namespace the binaries import — `wasi_unstable` for
+   *  binji clang. `null` for non-WASI runtimes (e.g. Pyodide). */
   wasi_namespace: z.string().nullable(),
   files: z.array(ManifestFileSchema),
   entrypoints: z.array(ManifestEntrypointSchema),
   runtime_artifacts: z.array(RuntimeArtifactMetadataSchema).optional(),
 });
+export type RuntimeManifest = z.output<typeof RuntimeManifestSchema>;
 
 export function parseRuntimeManifest(value: unknown): RuntimeManifest {
   return RuntimeManifestSchema.parse(value);
