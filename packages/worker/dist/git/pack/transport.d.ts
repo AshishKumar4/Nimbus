@@ -4,10 +4,10 @@
  * crossed it is tried, and how far apart.
  *
  * - An HTTP request to the git server: upload-pack.ts's for a clone, a
- *   fetch and a pull, and cf-git's (retryingGitHttp) for a push. Retried
- *   when it failed before an answer, answered with a transient edge status,
- *   or sent no headers within STALL_MS; only an idempotent one (a GET, an
- *   upload-pack POST: it changes nothing on the server).
+ *   fetch and a pull, receive-pack.ts's for a push. Retried when it failed
+ *   before an answer, answered with a transient edge status, or sent no
+ *   headers within STALL_MS; only an idempotent one (a GET, an upload-pack
+ *   POST: it changes nothing on the server).
  * - A clone piece (network-facet.ts invokeClonePhase): its request failed
  *   in transit (an UploadPackError), or it hung. Objects are addressed by
  *   content, so a piece run again writes what it would have; a hung one
@@ -23,7 +23,6 @@
  * each wait jittered by a quarter); every retry is logged by its caller
  * with its cause. Nothing else is retried.
  */
-import type { HttpClient } from '../../../vendor/git-http.generated.js';
 import { type RemoteFailure } from './remote-failure.js';
 export interface GitTransportAuth {
     username: string;
@@ -51,17 +50,16 @@ export declare const TRANSIENT_HTTP_STATUSES: ReadonlySet<number>;
 export declare const STALL_MS = 45000;
 /** What upload-pack.ts throws for a request to the git server that failed in transit. */
 export declare const UPLOAD_PACK_ERROR_PREFIX = "git upload-pack: ";
+/**
+ * The agent capability a request asks with: only of a server that
+ * advertised its own, as fetch-pack.c and send-pack.c send it
+ * (gitprotocol-capabilities "agent"); a server that did not may refuse it.
+ */
+export declare function agentCapability(advertised: ReadonlySet<string>): string[];
 /** Whether a failure's message names a lost transport to the git server (a hang is known by its timeout). */
 export declare function isLostTransport(message: string): boolean;
 /** The wait before try `attempt + 2` (0-based `attempt` of the one that failed). */
 export declare function retryDelay(attempt: number, schedule?: readonly number[]): Promise<void>;
-/**
- * cf-git's HTTP client under this policy (a push's: its fetch speaks
- * upload-pack.ts): a GET that fails before its answer, or is answered with a
- * transient status, is tried again; a receive-pack POST is not.
- * `schedule` is for tests.
- */
-export declare function retryingGitHttp(base: HttpClient, schedule?: readonly number[]): HttpClient;
 export declare class UploadPackError extends Error {
     readonly status?: number | undefined;
     readonly failure?: RemoteFailure | undefined;

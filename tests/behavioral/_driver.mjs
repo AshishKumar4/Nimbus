@@ -25,7 +25,31 @@ export const AUTH_COOKIE = process.env.NIMBUS_PROBE_COOKIE || process.env.NIMBUS
 export const AUTH_TOKEN = process.env.NIMBUS_PROBE_TOKEN || '';
 export const probeTarget = createProbeTarget({ base: BASE, token: AUTH_TOKEN, cookie: AUTH_COOKIE });
 
+/** The target each session was minted on: BASE's, unless a paired probe minted it on another (_paired.mjs). */
+const sessionTargets = new Map();
+const targetOf = (sid) => sessionTargets.get(sid) ?? probeTarget;
+
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Read `read(signal)` every 100 ms until `done(value)` holds or `timeoutMs`
+ * has passed; resolves to the last value read, which the caller checks.
+ * The bounded wait a probe uses in place of a fixed sleep. `signal` aborts
+ * at the deadline, and a read still pending then rejects the wait, so a
+ * stalled read cannot outlast it.
+ */
+export async function readUntil(read, done, timeoutMs = 10_000) {
+  const signal = AbortSignal.timeout(timeoutMs);
+  const expired = new Promise((_, reject) => signal.addEventListener('abort',
+    () => reject(new Error(`a read was still pending at the end of its ${timeoutMs} ms wait`)), { once: true }));
+  expired.catch(() => {});
+  for (;;) {
+    const value = await Promise.race([read(signal), expired]);
+    if (done(value) || signal.aborted) return value;
+    await Promise.race([sleep(100), expired]).catch(() => {});
+    if (signal.aborted) return value;
+  }
+}
 
 export function stripAnsi(s) {
   return s.replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g, '')
@@ -33,12 +57,12 @@ export function stripAnsi(s) {
 }
 
 export function requestHeaders(extra = {}, sid) {
-  return probeTarget.headers(extra, sid);
+  return targetOf(sid).headers(extra, sid);
 }
 
 /** Options for `new WebSocket(url, wsHeaders())` carrying probe auth. */
 export function wsHeaders(sid) {
-  const headers = probeTarget.headers({}, sid);
+  const headers = targetOf(sid).headers({}, sid);
   return Object.keys(headers).length > 0 ? { headers } : undefined;
 }
 
@@ -138,6 +162,15 @@ function ledger(event, sid, status, extra = {}) {
 }
 
 /**
+ * A socket of `sid` that ended with no close frame (1006): the session reset,
+ * or the connection dropped. remote-probes looks such a session up in the
+ * platform's record (scripts/ci/lib/reset-attribution.mjs).
+ */
+function noteAbnormalClose(sid, code) {
+  if (code === 1006) ledger('abnormal-close', sid, code);
+}
+
+/**
  * `reap: 'ttl'` marks a session the probe cannot delete: an anonymous demo
  * session, whose DELETE answers 401 by design and which the demo's TTL reaps.
  * run-all reports it as TTL-reaped rather than leaked (see _ledger.mjs).
@@ -158,7 +191,7 @@ function noteMinted(session) {
   // twice, the two could fall in different milliseconds.
   const at = new Date().toISOString();
   minted.push({ sid, at });
-  ledger('mint', sid, status, { at, ...(reap ? { reap } : {}) });
+  ledger('mint', sid, status, { at, base: session.base, ...(reap ? { reap } : {}) });
 }
 
 /**
@@ -170,7 +203,10 @@ function noteMinted(session) {
 function nameMintedOnFailure(code) {
   if (code === 0) return;
   console.error(`sessions this probe minted on ${BASE} (exit ${code}):`);
-  for (const { sid, at } of minted) console.error(`  ${sid}  minted ${at}${undeleted.has(sid) ? '' : '  (deleted by the probe)'}`);
+  for (const { sid, at } of minted) {
+    const { base } = targetOf(sid);
+    console.error(`  ${sid}  minted ${at}${base === BASE ? '' : `  on ${base}`}${undeleted.has(sid) ? '' : '  (deleted by the probe)'}`);
+  }
 }
 
 // 'exit' listeners must be synchronous, so a child of the same runtime runs
@@ -206,9 +242,10 @@ function deleteUndeletedSync() {
   });
 }
 
-/** POST /new → 302 → sid. The only session-creation surface. */
-export async function mintSession() {
-  const session = await probeTarget.create({ anonymous: true });
+/** POST /new → 302 → sid. The only session-creation surface. `target` is BASE's unless a paired probe names another. */
+export async function mintSession(target = probeTarget) {
+  const session = await target.create({ anonymous: true });
+  sessionTargets.set(session.sessionId, target);
   noteMinted(session);
   return session.sessionId;
 }
@@ -219,11 +256,11 @@ export async function mintSession() {
  * session cookie on first navigation; otherwise the clean session path.
  */
 export function attachPathFor(sid) {
-  return probeTarget.session(sid).attachPath;
+  return targetOf(sid).session(sid).attachPath;
 }
 
 export async function deleteSession(sid, reason = 'behavioral-probe-cleanup') {
-  const result = await probeTarget.delete(sid, { reason });
+  const result = await targetOf(sid).delete(sid, { reason });
   ledger('delete', sid, result.status, { confirmed: result.ok });
   if (result.ok) undeleted.delete(sid);
   return result;
@@ -231,7 +268,7 @@ export async function deleteSession(sid, reason = 'behavioral-probe-cleanup') {
 
 /** GET /s/<sid>/preview/ — returns {status, html}. */
 export async function fetchPreview(sid, opts = {}) {
-  const url = `${BASE}/s/${sid}/preview/${opts.path || ''}`;
+  const url = `${targetOf(sid).base}/s/${sid}/preview/${opts.path || ''}`;
   const t0 = Date.now();
   const r = await fetch(url, { redirect: 'manual', headers: requestHeaders({}, sid) });
   const text = await r.text().catch(() => '');
@@ -240,7 +277,7 @@ export async function fetchPreview(sid, opts = {}) {
 
 /** Fetch /s/<sid>/port/<n>/ — returns {status, body}. */
 export async function fetchPort(sid, port, path = '', init = {}) {
-  const url = `${BASE}/s/${sid}/port/${port}/${path}`;
+  const url = `${targetOf(sid).base}/s/${sid}/port/${port}/${path}`;
   const t0 = Date.now();
   const extraHeaders = init.headers ? Object.fromEntries(new Headers(init.headers).entries()) : {};
   const r = await fetch(url, { ...init, redirect: 'manual', headers: requestHeaders(extraHeaders, sid) });
@@ -264,8 +301,9 @@ export class Terminal {
     this.sid = sid;
     // Deploy readiness drives the freshly deployed target explicitly;
     // it must not inherit BASE from another suite in the caller's env.
-    this.wsBase = (options.base ?? BASE).replace(/^http/, 'ws');
-    this.wsOptions = options.wsOptions ?? ((options.base ?? BASE) === BASE ? wsHeaders(sid) : undefined);
+    const base = options.base ?? targetOf(sid).base;
+    this.wsBase = base.replace(/^http/, 'ws');
+    this.wsOptions = options.wsOptions ?? (base === targetOf(sid).base ? wsHeaders(sid) : undefined);
     this.keepaliveMs = options.keepaliveMs ?? SOCKET_KEEPALIVE_MS;
     this.ws = null;
     // reset() clears the caller's view, never the shell protocol stream.
@@ -301,6 +339,7 @@ export class Terminal {
       this.closed = true;
       this.closeCode = code;
       this.closeDetail = describeSocketClose(code, reason);
+      noteAbnormalClose(this.sid, code);
     });
     this.ws.on('message', (data) => {
       try {
@@ -369,7 +408,7 @@ export class Terminal {
               ? sessionRecord(this.sid, this.openedAt, this.wsBase.replace(/^ws/, 'http'), this.wsOptions?.headers ?? requestHeaders())
               : null;
             Promise.resolve(record).then((record) => reject(new Error(`Terminal closed while waiting for ${label} after ${elapsed}ms `
-              + `(${this.closeDetail ?? 'no close frame'}); tail: ${JSON.stringify(stripAnsi(this.buf).slice(-600))}${record ? `\n${record}` : ''}`)));
+              + `(session ${this.sid}; ${this.closeDetail ?? 'no close frame'}); tail: ${JSON.stringify(stripAnsi(this.buf).slice(-600))}${record ? `\n${record}` : ''}`)));
           }
         } catch (error) { cleanup(); reject(error); }
       };
@@ -430,8 +469,9 @@ export class Terminal {
 
 export async function connectProcessTerminal(sid, pid, options = {}) {
   const timeoutMs = options.timeoutMs ?? 15_000;
-  const wsBase = (options.base ?? BASE).replace(/^http/, 'ws');
-  const ws = new WebSocket(`${wsBase}/s/${sid}/api/logs/${pid}`, options.wsOptions ?? ((options.base ?? BASE) === BASE ? wsHeaders(sid) : undefined));
+  const base = options.base ?? targetOf(sid).base;
+  const wsBase = base.replace(/^http/, 'ws');
+  const ws = new WebSocket(`${wsBase}/s/${sid}/api/logs/${pid}`, options.wsOptions ?? (base === targetOf(sid).base ? wsHeaders(sid) : undefined));
   keepSocketAlive(ws, options.keepaliveMs);
   let closed = false;
   let closeDetail = null;
@@ -442,6 +482,7 @@ export async function connectProcessTerminal(sid, pid, options = {}) {
   ws.on('close', (code, reason) => {
     closed = true;
     closeDetail = describeSocketClose(code, reason);
+    noteAbnormalClose(sid, code);
   });
   ws.on('message', (data) => {
     let msg;
@@ -468,7 +509,7 @@ export async function connectProcessTerminal(sid, pid, options = {}) {
         if (closed) {
           throw new Error(
             `process terminal WebSocket closed while waiting for ${label} `
-            + `(${closeDetail ?? 'no close frame'}); `
+            + `(session ${sid}; ${closeDetail ?? 'no close frame'}); `
             + `tail=${JSON.stringify(stripAnsi(text).slice(-400))}`,
           );
         }
@@ -521,13 +562,19 @@ export function termBody(raw) {
 }
 
 /**
- * Whether some line of `output`, trimmed, is exactly `expected`. A bare
- * `\r` ends a line as `\n` does: a terminal redraws over it.
+ * The lines of terminal `output`, without ANSI and trimmed. A bare `\r`
+ * ends a line as `\n` and `\r\n` do: a terminal redraws over it.
  */
+export function outputLines(output) {
+  return stripAnsi(output).split(/\r\n|[\r\n]/).map((line) => line.trim());
+}
+
+/** The last `n` lines of terminal `output` (outputLines), as one string. */
+export function tailLines(output, n = 6) {
+  return outputLines(output).slice(-n).join('\n');
+}
+
+/** Whether some line of `output` (outputLines) is exactly `expected`. */
 export function hasOutputLine(output, expected) {
-  return stripAnsi(output)
-    .replace(/\r/g, '\n')
-    .split('\n')
-    .map((line) => line.trim())
-    .includes(expected);
+  return outputLines(output).includes(expected);
 }

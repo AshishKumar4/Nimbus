@@ -7,7 +7,8 @@
 //   - fd_pread 5 bytes @ offset 1 → should return "bcXYf".
 //   - Echo to stdout + '\n'. Expected: "bcXYf\n".
 
-import { openWasiProbe, tailLines } from '../wasi/_harness.mjs';
+import { tailLines } from '../_driver.mjs';
+import { openWasiProbe } from '../wasi/_harness.mjs';
 
 const probe = await openWasiProbe('wasi-files/pread-pwrite', { dir: '/home/user/w2', fixture: 'pread-pwrite', as: 'pp.wasm' });
 const { t } = probe;

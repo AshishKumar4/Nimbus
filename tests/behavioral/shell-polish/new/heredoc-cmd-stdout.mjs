@@ -15,7 +15,7 @@
 //
 // Category: R (runtime-behavioral)
 
-import { mintSession, Terminal, makeAsserter, stripAnsi, hasOutputLine } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, hasOutputLine, outputLines } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('shell-polish/heredoc-cmd-stdout');
@@ -49,7 +49,7 @@ await t.waitForPrompt(60_000);
   // Expect "user=user" (USER=user in our env). The exact value isn't
   // important; what matters is that the LINE "user=<something>"
   // appears as cat's stdout.
-  const lines = out.split(/\r?\n/).map((l) => l.trim());
+  const lines = outputLines(out);
   const userLine = lines.find((l) => /^user=\S/.test(l));
   a.check('cat << EOF (unquoted) expands $USER and emits the line', userLine !== undefined,
     userLine !== undefined ? `line="${userLine}"` : JSON.stringify(out.slice(-400)));

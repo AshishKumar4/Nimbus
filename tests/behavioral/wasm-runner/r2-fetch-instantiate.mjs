@@ -25,7 +25,7 @@
 // session id. Step 6 catches "we silently fall through to the wrong
 // module's exports".
 
-import { mintSession, Terminal, sleep, stripAnsi, BASE } from '../_driver.mjs';
+import { mintSession, Terminal, stripAnsi, BASE, tailLines } from '../_driver.mjs';
 import { ADD_WASM_B64, SUBTRACT_WASM_B64, runFor, writeWasm } from './_fixtures.mjs';
 
 const sid = await mintSession();
@@ -33,7 +33,6 @@ console.log(`[wasm-runner-r2] sid=${sid} BASE=${BASE}`);
 
 const t = new Terminal(sid);
 await t.connect();
-await sleep(2_000);
 await t.waitForPrompt(60_000);
 
 await t.run('mkdir -p /home/user/wr-r2', 10_000);
@@ -57,7 +56,7 @@ const t4Out = stripAnsi(t4Run.output);
 const t4ExportError = /export|not exported|not found|no function/i.test(t4Out);
 // Must NOT also accidentally produce 15 (which would mean we ran the
 // add.wasm cached from step 1 against the subtract.wasm path).
-const t4NoCrossContamination = !/^\s*15\s*$/m.test(t4Out.split(/\r?\n/).slice(-6).join('\n'));
+const t4NoCrossContamination = !/^\s*15\s*$/m.test(tailLines(t4Out, 6));
 
 await t.close();
 

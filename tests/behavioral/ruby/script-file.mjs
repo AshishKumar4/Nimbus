@@ -2,7 +2,7 @@
 // ruby/script-file — `ruby script.rb` runs a file from the VFS,
 // $PROGRAM_NAME (aka $0) should be the script path.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi } from '../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, hasOutputLine, outputLines } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('ruby/script-file');
@@ -23,8 +23,8 @@ EOF`, 30_000);
 {
   const { output, elapsed } = await t.run(`ruby t.rb`, 60_000);
   const stripped = stripAnsi(output);
-  const lines = stripped.split(/\r?\n/).map((l) => l.trim());
-  const hasFromScript = lines.some((l) => l === 'from-script');
+  const lines = outputLines(output);
+  const hasFromScript = hasOutputLine(output, 'from-script');
   a.check('ruby t.rb prints "from-script"', hasFromScript,
     hasFromScript ? `elapsed=${elapsed}ms` : JSON.stringify(stripped.slice(-300)));
   const argv0Line = lines.find((l) => l.startsWith('argv0='));

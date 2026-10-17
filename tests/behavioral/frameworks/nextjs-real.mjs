@@ -19,7 +19,7 @@
 // require closure (webpack bundle5.js) exceeds the facet snapshot bound.
 // Both are asserted, so a silent hang or a fake success would fail here.
 
-import { Terminal, mintSession, sleep, stripAnsi, makeAsserter, deleteSession, fetchPort, BASE } from '../_driver.mjs';
+import { Terminal, mintSession, stripAnsi, makeAsserter, deleteSession, fetchPort, BASE, outputLines } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('nextjs-real');
@@ -31,7 +31,6 @@ console.log(`[nextjs-real] sid=${sid} BASE=${BASE}`);
 const t = new Terminal(sid);
 try {
   await t.connect();
-  await sleep(2_000);
   await t.waitForPrompt(60_000);
 
   await t.run('mkdir -p /home/user/nextjs-probe && cd /home/user/nextjs-probe', 10_000);
@@ -69,9 +68,9 @@ try {
     `cd /home/user/nextjs-probe/mvp && node -e "const fs=require('fs');const d=JSON.parse(fs.readFileSync('package.json','utf8')).dependencies;for(const n of ['next','react','react-dom']){const p='node_modules/'+n+'/package.json';console.log('DEP '+n+' want='+d[n]+' have='+(fs.existsSync(p)?JSON.parse(fs.readFileSync(p,'utf8')).version:'missing'));}"`,
     30_000,
   );
-  const depLines = stripAnsi(deps.output).split(/\r?\n/).filter((l) => l.startsWith('DEP '));
+  const depLines = outputLines(deps.output).filter((l) => l.startsWith('DEP '));
   a.check('in-scaffold npm install installs the pinned next, react and react-dom',
-    depLines.length === 3 && depLines.every((l) => /want=(\S+) have=\1$/.test(l.trim())),
+    depLines.length === 3 && depLines.every((l) => /want=(\S+) have=\1$/.test(l)),
     JSON.stringify(depLines));
 
   // Boundary 1: `npm run dev` refuses loudly and starts nothing.

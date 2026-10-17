@@ -14,14 +14,15 @@
 // half-close vs full-close, (2) the readable side still functions
 // post-shutdown.
 
-import { openWasiProbe, tailLines, trimmedLines } from './_harness.mjs';
+import { outputLines, tailLines } from '../_driver.mjs';
+import { openWasiProbe } from './_harness.mjs';
 
 const probe = await openWasiProbe('wasi/sock-shutdown-write', { dir: '/home/user/sb', fixture: 'sock-shutdown-write', as: 'ss.wasm' });
 const { t } = probe;
 try {
   const r = await t.run('wasm-runner ss.wasm', 90_000);
   const tail = tailLines(r.output, 8);
-  const lines = trimmedLines(tail);
+  const lines = outputLines(tail);
   const ok = lines.some(s => s === '1');
 
   probe.report([['shutdown(WR) + recv-loop receives nonzero bytes', ok]], { tail, ok });

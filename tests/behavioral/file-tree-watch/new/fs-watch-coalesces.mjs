@@ -2,18 +2,19 @@
 // file-tree-watch/fs-watch-coalesces — 100 rapid writes produce far
 // fewer FRAMES than events.
 //
-// Server-side debounce is 50 ms (COALESCE_MS in fs-watch.ts). 100
-// rapid writes happen well within that window, so all 100 should be
-// packed into 1-3 frames (timing variance) — definitely ≤ 10 frames.
-// Total event COUNT should still reflect every write (100 events
-// across the frames).
+// The server debounces a subscription's events for COALESCE_MS
+// (fs-watch.ts). 100 rapid writes land in 1-3 frames (timing variance),
+// at most 10, and every written path gets its one add event.
 
-import { mintSession, sleep, makeAsserter, BASE, WS_BASE, wsHeaders } from '../../_driver.mjs';
+import { mintSession, sleep, readUntil, makeAsserter, BASE, WS_BASE, wsHeaders } from '../../_driver.mjs';
 import WebSocket from 'ws';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('file-tree-watch/fs-watch-coalesces');
 console.log(`file-tree-watch/fs-watch-coalesces — ${BASE}`);
+
+/** fs-watch.ts COALESCE_MS. */
+const COALESCE_MS = 50;
 
 const sid = await mintSession();
 
@@ -60,29 +61,37 @@ for (let i = 1; i <= 100; i++) {
   }));
 }
 { const t0 = Date.now(); while (driverResponses.size < 100 && Date.now() - t0 < 10_000) await sleep(25); }
-a.check('100 fs-write protocol calls completed',
-  driverResponses.size === 100,
-  `responses=${driverResponses.size}`);
+const failedWrites = [...driverResponses.values()].filter((response) => response.ok !== true);
+a.check('all 100 fs-writes succeeded',
+  driverResponses.size === 100 && failedWrites.length === 0,
+  `responses=${driverResponses.size} failed=${JSON.stringify(failedWrites.slice(0, 3))}`);
 
-// Wait up to 2 s for the trailing frame to land.
-await sleep(2000);
+// Each written path, and the 'add' events each got, in the frames since the burst began.
+const expected = new Set(Array.from({ length: 100 }, (_, i) => `home/user/${tag}-${i + 1}.txt`));
+const adds = () => {
+  const counts = new Map();
+  for (const frame of received.slice(before)) {
+    for (const event of frame.events ?? []) {
+      if (event?.type === 'add' && expected.has(event.path)) counts.set(event.path, (counts.get(event.path) ?? 0) + 1);
+    }
+  }
+  return counts;
+};
+const seen = await readUntil(adds, (counts) => counts.size === expected.size, 10_000);
+// Frames a burst's last writes produce trail its first: the frame budget
+// counts what arrives for ten debounce periods after every path was seen.
+await sleep(COALESCE_MS * 10);
+const frames = received.length - before;
+const repeated = [...adds()].filter(([, count]) => count > 1);
+console.log(`[fs-watch-coalesces] frames=${frames} paths with an add=${seen.size}`);
 
-const newFrames = received.slice(before);
-const allEvents = newFrames.flatMap((f) => Array.isArray(f.events) ? f.events : []);
-// Filter to events for our tagged files (the shell wrapper may emit
-// a few unrelated events for prompt-state etc.).
-const ourEvents = allEvents.filter((ev) =>
-  ev && typeof ev.path === 'string' && ev.path.includes(tag + '-'));
-
-console.log(`[fs-watch-coalesces] frames=${newFrames.length} totalEvents=${allEvents.length} ourEvents=${ourEvents.length}`);
-
+a.check('every written path gets its add event',
+  seen.size === expected.size,
+  `missing=${JSON.stringify([...expected].filter((path) => !seen.has(path)).slice(0, 5))}`);
+a.check('each path gets one add event', repeated.length === 0, JSON.stringify(repeated.slice(0, 5)));
 a.check('frames ≤ 10 (coalescing absorbed the burst)',
-  newFrames.length <= 10,
-  `frames=${newFrames.length} (allow up to 10 — typical 1-3)`);
-
-a.check('our 100 writes produced ≥ 100 events across the frames',
-  ourEvents.length >= 100,
-  `ourEvents=${ourEvents.length} (expected ≥ 100)`);
+  frames <= 10,
+  `frames=${frames} (allow up to 10 — typical 1-3)`);
 
 try { subWs.close(); } catch {}
 try { driverWs.close(); } catch {}

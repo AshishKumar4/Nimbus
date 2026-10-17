@@ -1,24 +1,18 @@
 #!/usr/bin/env bun
-// file-tree/panel/regression/ctrl-s-still-works — editor Ctrl+S save.
+// file-tree/panel/regression/ctrl-s-still-works — the fs-write the
+// editor's Ctrl+S saves with lands, and a fresh socket reads it back.
+// Ctrl+S itself is driven in a real Chrome by editor/monaco/new/
+// ctrl-s-saves-file and monaco-polish/regression/existing-monaco-probes-
+// preserved.
 
 import WebSocket from 'ws';
-import { mintSession, BASE, WS_BASE, makeAsserter, sleep, wsHeaders, requestHeaders } from '../../../_driver.mjs';
+import { mintSession, WS_BASE, makeAsserter, sleep, wsHeaders } from '../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('file-tree/panel/regression/ctrl-s-still-works');
 console.log(`file-tree/panel/regression/ctrl-s-still-works — ${process.env.BASE}`);
 
 const sid = await mintSession();
-const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders({}, sid) });
-const html = await r.text();
-
-a.check('Ctrl+S global keydown handler present',
-  /isCtrlS\s*=\s*\(e\.ctrlKey\s*\|\|\s*e\.metaKey\)\s*&&\s*e\.key\s*===\s*['"]s['"]/.test(html),
-  `wiring missing`);
-a.check('Monaco addCommand(Ctrl+S) wired to save()',
-  /addCommand\(window\.monaco\.KeyMod\.CtrlCmd\s*\|\s*window\.monaco\.KeyCode\.KeyS,\s*\(\)\s*=>\s*save\(\)\)/.test(html),
-  `Monaco binding missing`);
-
 // Round-trip: fs-write then fs-read in fresh WS.
 const path = '/home/user/wave-b-ctrl-s-' + Date.now() + '.txt';
 const PAYLOAD = 'wave-b-ctrl-s-' + Date.now();

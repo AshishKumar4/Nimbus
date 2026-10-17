@@ -1,31 +1,20 @@
 #!/usr/bin/env bun
-// file-tree/panel/new/file-tree-file-opens — clicking a file row in
-// the tree opens it in Monaco. We verify:
-//   1. HTML wiring: handleNodeClick on a file → Editor.openFile.
-//   2. Protocol round-trip: fs-read on a known file returns content.
-//   3. Selection sync: Editor.openFile updates FileTree.setSelected.
+// file-tree/panel/new/file-tree-file-opens — the fs-read a tree click
+// opens a file with, and, in a real Chrome, switching files with unsaved
+// changes: the shell asks, OK saves the edit and switches, Cancel discards
+// it and switches. Opening a clicked file and selecting its row are
+// monaco-polish/regression/existing-monaco-probes-preserved's.
 
 import WebSocket from 'ws';
-import { mintSession, BASE, WS_BASE, makeAsserter, sleep, wsHeaders, requestHeaders } from '../../../_driver.mjs';
+import { mintSession, deleteSession, BASE, WS_BASE, makeAsserter, sleep, wsHeaders, requestHeaders } from '../../../_driver.mjs';
+import { launchBrowser, openPage } from '../../../_runtime-behavioral-template.mjs';
+import { Nimbus } from '../../../../../packages/sdk/src/index.ts';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('file-tree/panel/new/file-tree-file-opens');
 console.log(`file-tree/panel/new/file-tree-file-opens — ${process.env.BASE}`);
 
 const sid = await mintSession();
-const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders({}, sid) });
-const html = await r.text();
-
-// HTML wiring.
-a.check('handleNodeClick for file type calls Editor.openFile',
-  /handleNodeClick[\s\S]{0,1200}Editor\.openFile/.test(html),
-  `wiring missing`);
-a.check('Editor.openFile calls FileTree.setSelected',
-  /FileTree\.setSelected\(path\)/.test(html),
-  `selection sync wiring missing`);
-a.check('Editor.openFile dirty-prompt before switching',
-  /Unsaved changes in[\s\S]{0,200}save and switch[\s\S]{0,200}discard/.test(html),
-  `dirty-prompt logic missing`);
 
 // Protocol-level — fs-read on a known starter file.
 const ws = new WebSocket(`${WS_BASE}/s/${sid}/ws`, wsHeaders(sid));
@@ -62,5 +51,51 @@ if (file) {
 }
 
 ws.close();
+
+const box = Nimbus.connect({ endpoint: BASE, headers: () => requestHeaders({}, sid) }).sandbox(sid);
+const first = '/home/user/switch-first.txt';
+const second = '/home/user/switch-second.txt';
+await box.files.write(first, 'first\n');
+await box.files.write(second, 'second\n');
+const browser = await launchBrowser();
+try {
+  const { page, pageErrors } = await openPage(browser, sid);
+  await page.goto(`${BASE}/s/${sid}/`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+  await page.waitForFunction(() => window.__nimbusMonacoEditor, { timeout: 60_000 });
+  const open = async (path, content) => {
+    await page.locator(`.tree-node[data-path="${path}"]`).click();
+    await page.waitForFunction((text) => window.__nimbusMonacoEditor.getValue() === text, { timeout: 30_000 }, content);
+  };
+  /** Type `text` at the start of the open file, then switch to `second`, answering the shell's question with `accept`. */
+  const editAndSwitch = async (text, accept) => {
+    await page.click('#editorPanel .monaco-editor .view-lines');
+    await page.keyboard.down('Control');
+    await page.keyboard.press('Home');
+    await page.keyboard.up('Control');
+    await page.keyboard.type(text);
+    const asked = new Promise((resolve) => page.once('dialog', async (dialog) => {
+      resolve(dialog.message());
+      await (accept ? dialog.accept() : dialog.dismiss());
+    }));
+    await page.locator(`.tree-node[data-path="${second}"]`).click();
+    const question = await Promise.race([asked, sleep(10_000).then(() => null)]);
+    await page.waitForFunction((content) => window.__nimbusMonacoEditor.getValue() === content, { timeout: 30_000 }, 'second\n');
+    return question;
+  };
+
+  await open(first, 'first\n');
+  const saveQuestion = await editAndSwitch('saved-', true);
+  a.check('switching away from unsaved changes asks about them', /Unsaved changes in \/home\/user\/switch-first\.txt/.test(saveQuestion ?? ''), JSON.stringify(saveQuestion));
+  a.check('OK saves the edit and switches', await box.files.read(first) === 'saved-first\n'
+    && await page.$eval(`.tree-node[data-path="${second}"]`, (row) => row.classList.contains('selected')), await box.files.read(first));
+
+  await open(first, 'saved-first\n');
+  const discardQuestion = await editAndSwitch('dropped-', false);
+  a.check('Cancel discards the edit and switches', discardQuestion !== null && await box.files.read(first) === 'saved-first\n', await box.files.read(first));
+  a.check('no page errors', pageErrors.length === 0, JSON.stringify(pageErrors));
+} finally {
+  await browser.close();
+  await deleteSession(sid);
+}
 const sum = a.summary();
 process.exit(sum.fail > 0 ? 1 : 0);

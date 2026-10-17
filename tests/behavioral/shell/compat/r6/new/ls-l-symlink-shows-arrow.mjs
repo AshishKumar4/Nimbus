@@ -7,7 +7,7 @@
 // Post-fix: our mkLs lists every entry of the dir, links included; long
 // format prints `lrwxrwxrwx ... link -> target`.
 
-import { mintSession, Terminal, makeAsserter, termBody } from '../../../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, termBody, outputLines } from '../../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('shell/compat/r6/new/ls-l-symlink-shows-arrow');
@@ -57,7 +57,7 @@ a.check('ls -l <symlink> — shows lrwxrwxrwx + arrow',
 const r4 = await t.run('ls -la /tmp/r6ls | grep l.txt', 5_000);
 const r4body = termBody(r4.output);
 a.check('ls -la <dir> | grep — symlink row keeps "l.txt -> t.txt"',
-  r4body.split('\n').some((line) => /^l.*l\.txt\s*->\s*t\.txt\s*$/.test(line.trim())),
+  outputLines(r4body).some((line) => /^l.*l\.txt\s*->\s*t\.txt\s*$/.test(line)),
   `body=${JSON.stringify(r4body)}`);
 
 await t.close();

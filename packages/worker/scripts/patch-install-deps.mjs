@@ -1,19 +1,14 @@
 /**
- * postinstall fix-ups for Nimbus' dependency graph.
- *
- * The cf-git fork currently publishes package export paths that point at
- * root-level files even though the tarball ships them under src/. Wrangler's
- * bundler follows the export map, so Nimbus patches installed copies in-place
- * and links the nested dependencies that cf-git expects.
+ * postinstall fix-ups for Nimbus' dependency graph: links the nested
+ * dependencies cf-git expects, and applies the tracked cf-git patch to every
+ * installed copy.
  */
 
 import {
   copyFileSync,
   existsSync,
-  readFileSync,
   symlinkSync,
   unlinkSync,
-  writeFileSync,
 } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, dirname, resolve, relative } from 'node:path';
@@ -40,36 +35,7 @@ for (const nm of nmDirs) {
   const igPkgPath = join(nm, 'isomorphic-git', 'package.json');
   if (!existsSync(igPkgPath)) continue;
   try {
-    const pkg = JSON.parse(readFileSync(igPkgPath, 'utf8'));
     const igDir = dirname(igPkgPath);
-    const needsPatch =
-      pkg.exports?.['.']?.worker === './index.js'
-      && !existsSync(join(igDir, 'index.js'))
-      && existsSync(join(igDir, 'src', 'index.js'));
-    if (needsPatch) {
-      pkg.exports['.'] = {
-        types: './src/index.d.ts',
-        worker: './src/index.js',
-        import: './src/index.js',
-        default: './src/index.js',
-      };
-      if (pkg.exports['./http/web']) {
-        pkg.exports['./http/web'] = {
-          import: { types: './src/http/web/index.d.ts', default: './src/http/web/index.js' },
-        };
-      }
-      if (pkg.exports['./http/node']) {
-        pkg.exports['./http/node'] = {
-          import: { types: './src/http/node/index.d.ts', default: './src/http/node/index.js' },
-        };
-      }
-      pkg.main = './src/index.js';
-      // bun hardlinks package.json from its cache: a new file, never a write through the link.
-      unlinkSync(igPkgPath);
-      writeFileSync(igPkgPath, JSON.stringify(pkg, null, 2) + '\n');
-      console.log(`[patch] cf-git exports patched: ${igPkgPath}`);
-    }
-
     // Symlink missing nested deps so wrangler's esbuild can resolve them.
     const igNm = join(igDir, 'node_modules');
     if (existsSync(igNm)) {
@@ -101,7 +67,7 @@ for (const nm of nmDirs) {
       }
     }
   } catch (e) {
-    console.warn(`[patch] cf-git patch skipped at ${igPkgPath}:`, e?.message);
+    console.warn(`[patch] cf-git dependency links skipped at ${igPkgPath}:`, e?.message);
   }
 }
 

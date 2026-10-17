@@ -23,15 +23,14 @@
 // where some indirection rebinds `process`. Probe asserts that EVERY
 // path correctly flushes and surfaces the code.
 
-import { mintSession, Terminal, sleep, BASE } from '../_driver.mjs';
+import { mintSession, Terminal, BASE, writeFileViaShell } from '../_driver.mjs';
 
 const sid = await mintSession();
 console.log(`[G1] sid=${sid} BASE=${BASE}`);
 
 const t = new Terminal(sid);
 await t.connect();
-await sleep(2_000);
-await t.waitForPrompt(15_000).catch(() => {});
+await t.waitForPrompt(15_000);
 
 await t.run('mkdir -p /home/user/g1-probe', 5_000);
 await t.run('cd /home/user/g1-probe', 5_000);
@@ -43,11 +42,7 @@ const t1Code = e1.exitCode === 7;
 
 // ── Test 2: node script.js + process.exit(13) ──
 const code = "console.log('b-marker'); process.exit(13);";
-const codeB64 = Buffer.from(code, 'utf8').toString('base64');
-await t.run(
-  `node -e "require('fs').writeFileSync('exit13.js', Buffer.from('${codeB64}','base64').toString('utf8'))"`,
-  10_000,
-);
+await writeFileViaShell((command) => t.run(command, 10_000), 'exit13.js', code);
 const e2 = await t.run('node exit13.js', 30_000);
 const t2Out = /b-marker/.test(e2.output);
 const t2Code = e2.exitCode === 13;
@@ -61,11 +56,7 @@ const t2Code = e2.exitCode === 13;
 // shim parsing layer. Asserts that THAT layer doesn't drop stdout.
 await t.run('mkdir -p node_modules/.bin', 5_000);
 const cliCode = '#!/usr/bin/env node\nconsole.log("c-marker"); process.exit(21);\n';
-const cliCodeB64 = Buffer.from(cliCode, 'utf8').toString('base64');
-await t.run(
-  `node -e "require('fs').writeFileSync('node_modules/.bin/exit21cli', Buffer.from('${cliCodeB64}','base64').toString('utf8'))"`,
-  10_000,
-);
+await writeFileViaShell((command) => t.run(command, 10_000), 'node_modules/.bin/exit21cli', cliCode);
 const e3 = await t.run('exit21cli', 30_000);
 const t3Out = /c-marker/.test(e3.output);
 const t3Code = e3.exitCode === 21;

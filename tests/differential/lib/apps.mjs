@@ -18,16 +18,30 @@ function sh(cwd, command) {
   if (r.status !== 0) throw new Error(`${command} failed in ${cwd}:\n${r.stdout.slice(-2000)}\n${r.stderr.slice(-2000)}`);
 }
 
-/** GET `path` until its body contains `marker` (a dev server compiles on the first request). */
-export async function page(port, path, marker) {
-  let last = '';
-  for (let i = 0; i < 120; i++) {
-    const r = await fetch(`http://127.0.0.1:${port}${path}`, { signal: AbortSignal.timeout(60000) }).then(async (res) => [res.status, await res.text()]).catch((e) => [0, e.message]);
-    last = `${r[0]} ${r[1].slice(0, 300)}`;
-    if (r[0] === 200 && r[1].includes(marker)) return r[1];
-    await sleep(500);
+/**
+ * GET `path` until it answers 200 with `marker` in its body (a dev server
+ * compiles on the first request), for at most `deadlineMs` in all. Resolves
+ * to the body, the latency of the request that answered (`latencyMs`), the
+ * time from the first request to that answer (`readyMs`) and how many
+ * requests it took; throws with the last answer when none did.
+ */
+export async function page(port, path, marker, deadlineMs = 120_000) {
+  const start = performance.now();
+  let answered = null;
+  for (let attempts = 1; ; attempts++) {
+    const remaining = deadlineMs - (performance.now() - start);
+    if (remaining <= 0) throw new Error(`no page with ${marker} at ${path} within ${deadlineMs} ms (${attempts - 1} requests): ${answered ?? 'no request was sent'}`);
+    const sent = performance.now();
+    // A request that fails, or whose body does, is a status-0 answer.
+    const [status, body] = await fetch(`http://127.0.0.1:${port}${path}`, { signal: AbortSignal.timeout(remaining) })
+      .then(async (response) => [response.status, await response.text()])
+      .catch((error) => [0, error.message]);
+    const latencyMs = performance.now() - sent;
+    if (status === 200 && body.includes(marker)) return { body, latencyMs, readyMs: performance.now() - start, attempts };
+    // What the server said outlives a request the deadline cut short.
+    if (status !== 0 || answered === null) answered = `${status} ${body.slice(0, 300)}`;
+    await sleep(Math.min(500, Math.max(0, deadlineMs - (performance.now() - start))));
   }
-  throw new Error(`no page with ${marker} at ${path}: ${last}`);
 }
 
 const VINEXT_FILES = {
@@ -53,12 +67,12 @@ export const APPS = {
     /** The first page render alone. */
     async first(dir, port) {
       writeFileSync(join(dir, 'src/pages/proof.md'), ASTRO_PROOF('differential'));
-      return { '/': await page(port, '/', 'differential') };
+      return { '/': (await page(port, '/', 'differential')).body };
     },
     async observe(dir, port) {
       const { '/': first } = await this.first(dir, port);
       writeFileSync(join(dir, 'src/pages/proof.md'), ASTRO_PROOF('differential-edited'));
-      const edited = await page(port, '/', 'differential-edited');
+      const { body: edited } = await page(port, '/', 'differential-edited');
       writeFileSync(join(dir, 'src/pages/proof.md'), ASTRO_PROOF('differential'));
       return { '/': first, '/ after an edit': edited };
     },
@@ -84,7 +98,7 @@ export const APPS = {
     },
     serve: (port) => ['node_modules/nuxt/bin/nuxt.mjs', 'dev', '--no-fork', '--port', String(port)],
     async observe(dir, port) {
-      return { '/': await page(port, '/', '__nuxt') };
+      return { '/': (await page(port, '/', '__nuxt')).body };
     },
     // nuxt.config.ts, as jiti transpiles it and evaluates it with vm.runInThisContext.
     vmConfig: /defineNuxtConfig\(/,
@@ -103,7 +117,7 @@ export const APPS = {
       // The inline scripts carry React's development flight data, whose row
       // numbering follows the call stacks it records (interpreter-frameworks.mjs
       // normalize()): the rendered document is compared without them.
-      const html = await page(port, '/', 'vinext-differential');
+      const { body: html } = await page(port, '/', 'vinext-differential');
       return { '/': html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, '<script></script>') };
     },
   },

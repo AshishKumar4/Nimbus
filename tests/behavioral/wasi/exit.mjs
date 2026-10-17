@@ -4,7 +4,8 @@
 // thrown sentinel into the supervisor's exit-code path; the shell
 // echoes `$?` if we run it after.
 
-import { openWasiProbe, tailLines } from './_harness.mjs';
+import { tailLines } from '../_driver.mjs';
+import { openWasiProbe } from './_harness.mjs';
 
 const probe = await openWasiProbe('wasi/exit', { dir: '/home/user/wasi', fixture: 'exit7', as: 'exit7.wasm' });
 const { t } = probe;
