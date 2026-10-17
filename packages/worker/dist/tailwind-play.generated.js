@@ -11,7 +11,7 @@
  * and is fetched lazily via the ASSETS binding rather than inlined into the
  * supervisor bundle. Use {@link getTailwindPlayBundle}.
  *
- * Source: https://cdn.tailwindcss.com/3.4.17 (downloaded at build time).
+ * Source: https://cdn.tailwindcss.com/3.4.17 (sourced by bundle-tailwind-play.mjs --fetch).
  * SHA-256: 176e894661aa9cdc9a5cba6c720044cbbf7b8bd80d1c9a142a7c24b1b6c50d15
  *
  * If you change this file by hand it WILL be overwritten by the next
