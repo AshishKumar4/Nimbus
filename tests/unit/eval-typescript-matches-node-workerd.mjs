@@ -69,6 +69,10 @@ const FLAGS = [
   { flags: '--experimental-transform-types --input-type=commonjs-typescript', sources: ['enum', 'invalid'] },
   { flags: '--experimental-transform-types --input-type=module-typescript', sources: ['enum', 'invalid'] },
   { flags: '--enable-source-maps', sources: ['ts', 'throws', 'frame', 'caught', 'esmThrows', 'invalid'], stdin: true },
+  // A transform with source maps off keeps the stripper's sourceURL.
+  { flags: '--experimental-transform-types --no-enable-source-maps', sources: ['frame', 'caught', 'throws', 'esmThrows'], stdin: true },
+  { flags: '--no-enable-source-maps --experimental-transform-types', sources: ['frame'], stdin: true },
+  { flags: '--no-enable-source-maps', env: '--experimental-transform-types', sources: ['frame', 'esmThrows'], stdin: true },
   { flags: '--input-type=typescript', sources: ['js'], stdin: true },
   { env: '--no-experimental-strip-types', sources: ['ts'], stdin: true },
   { env: '--input-type=commonjs-typescript', sources: ['ts', 'invalid'], stdin: true },
