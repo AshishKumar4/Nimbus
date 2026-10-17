@@ -23,11 +23,6 @@ export interface WeightedCreditPoolOptions {
      */
     readonly reserve?: number;
 }
-/** A wait for credit: its lease once granted, and whether it is still queued, known at once. */
-export interface CreditWait {
-    readonly lease: Promise<ResizableCreditLease>;
-    waiting(): boolean;
-}
 /**
  * FIFO byte-credit pool shared by concurrent allocation owners.
  * Capacity is measured in retained bytes, not operation count.
@@ -67,7 +62,9 @@ export declare class WeightedCreditPool {
      * it fits in the shared capacity, the credit running work and reclaims
      * free. It never waits on the reserve, which neither frees.
      */
-    acquireAhead(bytes: number, signal?: AbortSignal): CreditWait;
+    acquireAhead(bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease>;
+    /** Whether a running program's ask (acquireAhead) waits. */
+    get aheadQueued(): boolean;
     /** acquireAhead's credit now, or null. */
     tryAcquireAhead(bytes: number): ResizableCreditLease | null;
     acquire(bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease>;
