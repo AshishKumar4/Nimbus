@@ -56,12 +56,6 @@ const settled = (now) => running(now).map((message) => (message.id !== 'a1' ? me
   ],
 }));
 
-/** Seconds a duration label shows ('5.3s', '12s', '1m 3s'), or null. */
-const seconds = (label) => {
-  const m = /^(?:(\d+)m )?([\d.]+)s$/.exec(label || '');
-  return m ? Number(m[1] || 0) * 60 + Number(m[2]) : null;
-};
-
 try {
   page = await browser.newPage();
   await applyProbeCookies(page);
@@ -106,28 +100,37 @@ try {
     status: el.className.replace('agent-tool', '').trim(),
     duration: el.querySelector('.tool-duration')?.textContent || null,
   })));
-  /** The exec card's label and the browser clock, read together once the label reads at least `atLeast` seconds. */
+  /**
+   * The exec card's label and the browser clock, read together: the first
+   * reading, within 15 s, of at least `atLeast` seconds that is the clock
+   * less the start, to the label's precision (tenths below 10 s, whole
+   * seconds above) give or take one 100 ms repaint; else the last reading.
+   */
   const execTimer = async (atLeast) => {
-    await page.waitForFunction((min) => {
-      const label = [...document.querySelectorAll('#agentMessages .agent-tool')].find((el) => el.querySelector('.tool-name')?.textContent === 'exec')?.querySelector('.tool-duration')?.textContent;
-      const m = /^([\d.]+)s$/.exec(label || '');
-      return m !== null && Number(m[1]) >= min;
-    }, { timeout: 15_000, polling: 50 }, atLeast);
-    return page.evaluate(() => ({
-      now: Date.now(),
-      label: [...document.querySelectorAll('#agentMessages .agent-tool')].find((el) => el.querySelector('.tool-name')?.textContent === 'exec')?.querySelector('.tool-duration')?.textContent,
-    }));
+    const read = (min, startedAt, final) => {
+      const label = [...document.querySelectorAll('#agentMessages .agent-tool')]
+        .find((el) => el.querySelector('.tool-name')?.textContent === 'exec')?.querySelector('.tool-duration')?.textContent ?? null;
+      const m = /^(?:(\d+)m )?([\d.]+)s$/.exec(label || '');
+      const now = Date.now();
+      const shown = m ? Number(m[1] || 0) * 60 + Number(m[2]) : null;
+      const expected = (now - startedAt) / 1000;
+      const anchored = shown !== null && shown >= min && Math.abs(shown - expected) <= (m[2].includes('.') ? 0.05 : 0.5) + 0.15;
+      return anchored || final ? { now, label, shown, expected, anchored } : false;
+    };
+    try {
+      return await (await page.waitForFunction(read, { timeout: 15_000, polling: 50 }, atLeast, execStartedAt, false)).jsonValue();
+    } catch {
+      return page.evaluate(read, atLeast, execStartedAt, true);
+    }
   };
-  // A label is the clock less the start, repainted every 100 ms and shown to a tenth of a second.
-  const anchored = ({ now, label }) => Math.abs(seconds(label) - (now - execStartedAt) / 1000) <= 0.25;
   const first = await execTimer(0);
-  a.check('a running tool from a stored checkpoint counts from when it started', anchored(first) && seconds(first.label) >= STARTED_AGO_MS / 1000 - 0.25,
-    JSON.stringify({ ...first, expected: (first.now - execStartedAt) / 1000 }));
+  a.check('a running tool from a stored checkpoint counts from when it started',
+    first.anchored && first.shown >= STARTED_AGO_MS / 1000 - 0.2, JSON.stringify(first));
   const live = await cards();
   a.check('a running tool whose start is unknown shows no timer', live.find((card) => card.name === 'read_file')?.duration === null, JSON.stringify(live));
   a.check('a running tool whose start is ahead of the clock shows no timer', live.find((card) => card.name === 'fetch')?.duration === null, JSON.stringify(live));
-  const later = await execTimer(seconds(first.label) + 1);
-  a.check('its timer moves on with the clock while it runs', anchored(later), JSON.stringify({ ...later, expected: (later.now - execStartedAt) / 1000 }));
+  const later = await execTimer((first.shown ?? 0) + 1);
+  a.check('its timer moves on with the clock while it runs', later.anchored, JSON.stringify(later));
 
   history = () => settled(Date.now());
   await page.evaluate(() => window.NimbusAgent.ensureLoaded());
