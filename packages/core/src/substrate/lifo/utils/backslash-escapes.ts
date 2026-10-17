@@ -1,5 +1,4 @@
-import { enc } from '../../../_shared/bytes.js';
-import { concatBytes, decodeLossless, encodeLossless } from './bytes-io.js';
+import { decodeLossless, encodeLossless } from './bytes-io.js';
 
 /**
  * Backslash escapes as `echo -e` and `printf` expand them: one engine, in one
@@ -61,45 +60,48 @@ function numericEscape(text: string, at: number, dialect: EscapeDialect): RegExp
 
 /** `text` with its escapes expanded; `stopped` when a `\c` cut it short there. */
 export function expandBackslashEscapes(text: string, dialect: EscapeDialect): { text: string; stopped: boolean } {
-  const out: Uint8Array[] = [];
-  const add = (literal: string) => { if (literal !== '') out.push(encodeLossless(literal)); };
+  let out = '';
+  // Whether an escape wrote a byte past ASCII, held as U+DC00 + byte until the end.
+  let bytes = false;
   let stopped = false;
   let i = 0;
   while (i < text.length) {
     const slash = text.indexOf('\\', i);
-    if (slash === -1 || slash === text.length - 1) { add(text.slice(i)); break; }
-    add(text.slice(i, slash));
+    if (slash === -1 || slash === text.length - 1) { out += text.slice(i); break; }
+    out += text.slice(i, slash);
     const next = text[slash + 1];
     if (next === 'c') { stopped = true; break; }
     const numeric = numericEscape(text, slash + 1, dialect);
     const digits = numeric?.[1] ?? numeric?.[2] ?? '';
     const unicode = next === 'u' || next === 'U';
     if (numeric && !(unicode && Number.parseInt(digits, 16) > 0x10ffff)) {
-      // `\777` is 0xff, as putchar has it.
-      out.push(unicode ? enc.encode(String.fromCodePoint(Number.parseInt(digits, 16)))
-        : Uint8Array.of(next === 'x' ? Number.parseInt(digits, 16) : Number.parseInt(digits || '0', 8) & 0xff));
+      if (unicode) out += String.fromCodePoint(Number.parseInt(digits, 16));
+      else {
+        // `\777` is 0xff, as putchar has it.
+        const byte = next === 'x' ? Number.parseInt(digits, 16) : Number.parseInt(digits || '0', 8) & 0xff;
+        out += String.fromCharCode(byte < 0x80 ? byte : 0xdc00 + byte);
+        bytes ||= byte >= 0x80;
+      }
       i = slash + 1 + numeric[0].length;
       continue;
     }
-    if (SIMPLE[next] !== undefined) add(SIMPLE[next]);
-    else if (next === 'E' && dialect === 'echo') add('\x1b');
-    else if (next === '"' && dialect !== 'echo') add('"');
-    else add(`\\${next}`);
+    if (SIMPLE[next] !== undefined) out += SIMPLE[next];
+    else if (next === 'E' && dialect === 'echo') out += '\x1b';
+    else if (next === '"' && dialect !== 'echo') out += '"';
+    else out += `\\${next}`;
     i = slash + 2;
   }
-  return { text: decodeLossless(concatBytes(out)), stopped };
+  // Escaped bytes that spell a character together (`\303\251`) read as it.
+  return { text: bytes ? decodeLossless(encodeLossless(out)) : out, stopped };
 }
 
 /**
- * The bytes bash's `echo` prints for `args`: leading words of -n/-e/-E
- * letters are its options (`--` ends them), the rest joined by spaces; -e
- * expands escapes, and a `\c` among them ends the output with no newline.
+ * What bash's `echo` prints for `args`, as lossless text: leading words of
+ * -n/-e/-E letters are its options (`--` ends them), the rest joined by
+ * spaces; -e expands escapes, and a `\c` among them ends the output with no
+ * newline.
  */
-export function echoOutput(args: readonly string[]): Uint8Array {
-  return encodeLossless(echoText(args));
-}
-
-function echoText(args: readonly string[]): string {
+export function echoOutput(args: readonly string[]): string {
   let interpretEscapes = false;
   let suppressNewline = false;
   let i = 0;

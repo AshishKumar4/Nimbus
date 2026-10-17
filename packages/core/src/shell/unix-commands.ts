@@ -30,7 +30,7 @@ import sortCommand from '../substrate/lifo/commands/text/sort.js';
 import uniqCommand from '../substrate/lifo/commands/text/uniq.js';
 import catCommand from '../substrate/lifo/commands/fs/cat.js';
 import * as checksum from '../substrate/lifo/commands/system/checksum.js';
-import { decodeLossless, encodeLossless, isBrokenPipe, readAllInput, writeBytes } from '../substrate/lifo/utils/bytes-io.js';
+import { decodeLossless, encodeLossless, isBrokenPipe, readAllInput, writeBytes, writeLossless } from '../substrate/lifo/utils/bytes-io.js';
 import headCommand from '../substrate/lifo/commands/text/head.js';
 import tacCommand from '../substrate/lifo/commands/text/tac.js';
 import teeCommand from '../substrate/lifo/commands/io/tee.js';
@@ -1973,7 +1973,7 @@ function mkPwd(): Command {
  * `find -exec echo`): the builtin's own output, from the one echoOutput.
  */
 function mkEcho(): Command {
-  return async (ctx) => { await writeBytes(ctx.stdout, echoOutput(ctx.args)); return 0; };
+  return async (ctx) => { await writeLossless(ctx.stdout, echoOutput(ctx.args)); return 0; };
 }
 
 /**
@@ -3048,8 +3048,8 @@ function mkPrintf(): Command {
         if (!applyFormat()) break;
       }
     }
-    // The output is lossless text (an escape's byte, an argument's): written as its bytes.
-    await writeBytes(ctx.stdout, encodeLossless(out));
+    // Lossless text: an escape's byte, or an argument's, is written as that byte.
+    await writeLossless(ctx.stdout, out);
     return 0;
   };
 }
