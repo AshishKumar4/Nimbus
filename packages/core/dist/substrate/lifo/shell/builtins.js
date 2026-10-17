@@ -42,6 +42,7 @@ const BUILTINS = {
     history: builtinHistory,
     source: builtinSource,
     '.': builtinSource,
+    eval: builtinEval,
     alias: builtinAlias,
     unalias: builtinUnalias,
     test: ({ args, stderr, context }) => evaluateTest(args, context.vfs, stderr, context),
@@ -645,6 +646,14 @@ async function builtinSource({ args, stderr, state, host, context }) {
     }
     const sourceArgs = args.slice(1);
     return (await context.executeInline(content, sourceArgs.length > 0 ? { positionals: sourceArgs } : undefined));
+}
+/**
+ * eval: its arguments, joined by spaces, run in this shell, as `source` runs
+ * a file's (its `return`, `break` and `exit` are this shell's); its status
+ * the last command's, 0 where there is none.
+ */
+async function builtinEval({ args, context }) {
+    return (await context.executeInline(args.join(' ')));
 }
 async function builtinAlias({ args, stdout, state }) {
     if (args.length === 0) {
