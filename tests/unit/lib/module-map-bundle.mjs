@@ -95,10 +95,13 @@ export async function storedBootModules(world, fs) {
  * types a module by its `{ cjs }` member, not its name.
  */
 const registry = new Map();
+const wasmRegistry = new Map();
+const NativeWasmModule = WebAssembly.Module;
 const builtinRequire = nativeCreateRequire(import.meta.url);
 const createRequire = (base) => (specifier) => {
   if (isBuiltin(specifier)) return builtinRequire(specifier);
   const file = fileURLToPath(new URL(specifier, base));
+  if (!registry.has(file) && wasmRegistry.has(file)) registry.set(file, wasmRegistry.get(file)());
   if (!registry.has(file)) {
     const moduleObject = { exports: {} };
     new Function('module', 'exports', 'require', '__filename', '__dirname', readFileSync(file, 'utf8'))(
@@ -121,7 +124,7 @@ const REGISTRY_STAND_IN = 'const __nimbusCreateRequire = globalThis.__nimbusTest
  * members are written byte-for-byte: the runtime's offsets read their source
  * back, and staging already uses relative specifiers the host resolves.
  */
-export function writeModuleSet(dir, modules, entry, rewrite = (_name, source) => source) {
+export function writeModuleSet(dir, modules, entry, rewrite = (_name, source) => source, { onWasmEvaluate = () => {} } = {}) {
   mkdirSync(dir, { recursive: true });
   // The loader resolves a bare specifier to the module of that name; a file
   // import here needs it relative.
@@ -143,6 +146,13 @@ export function writeModuleSet(dir, modules, entry, rewrite = (_name, source) =>
       const file = join(dir, decodeURIComponent(name));
       mkdirSync(dirname(file), { recursive: true });
       writeFileSync(file, member.cjs);
+    } else if (member?.wasm !== undefined) {
+      // Staging may compile bytes; a guest can only evaluate the resulting member.
+      const compiled = new NativeWasmModule(member.wasm);
+      wasmRegistry.set(join(dir, decodeURIComponent(name)), () => {
+        onWasmEvaluate(name, compiled);
+        return compiled;
+      });
     }
   }
   return join(dir, entry);
