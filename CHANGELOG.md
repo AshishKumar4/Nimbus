@@ -5,6 +5,11 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a pre-bundle waiting for a compiler slot or worker, or for a slow
+  compiler RPC, no longer holds up other sessions' launch credit. Slices
+  are stat-sized, prepared only for a ready consumer and dropped at RPC
+  handoff; running work can reclaim a parked retry. Allocation diagnostics
+  now name the actual lease holders and queued owners.
 - Changed: a program whose launch waits 10 seconds at one stage (its
   preparation, its admission for a worker, or its load) logs one line to
   Workers Logs: `[facet-manager] launch stalled:` with its pid, command,

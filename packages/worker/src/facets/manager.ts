@@ -4457,8 +4457,8 @@ function admissionOf(admitted: SupervisorAllocationLease, queued: boolean): Pref
 }
 
 /** `work` under an admission of its own (admitPrefetch's `wait` and `bytes`), given back as it ends. */
-async function withPrefetchAllocation<T>(work: (admission: PrefetchAdmission) => Promise<T>, wait?: LaunchWait, bytes?: number): Promise<T> {
-  const admission = await admitPrefetch(wait, bytes);
+async function withPrefetchAllocation<T>(work: (admission: PrefetchAdmission) => Promise<T>, wait?: LaunchWait, bytes?: number, owner = PREFETCH_ALLOCATION_OWNER): Promise<T> {
+  const admission = await admitPrefetch(wait, bytes, false, owner);
   try {
     return await work(admission);
   } finally {
@@ -8368,7 +8368,7 @@ export class FacetManager {
       const serialized = _serializeBundleForFacet(gathered.bundle);
       assertStagedBundleFitsRpcPayload(serialized, gathered.bundle);
       return { vfsState: gathered, vfsBundle: serialized };
-    }, () => this._launchEnds(entry.pid));
+    }, () => this._launchEnds(entry.pid), undefined, this._allocationOwner(entry.pid));
 
     return {
       mode,

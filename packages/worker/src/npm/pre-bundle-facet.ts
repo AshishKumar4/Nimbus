@@ -21,7 +21,9 @@
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { getSharedRuntimeExternals } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import type { SliceEntry } from '@nimbus-sh/core/runtime/prebundle-slice.js';
+import { prebundleEntryBytes } from '@nimbus-sh/core/runtime/prebundle-slice.js';
 import { packageNameFromSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
+import { z } from 'zod';
 
 export type { PrebundleResult, PrebundleSpec, SlicedDir, SlicedFile, SliceEntry } from '@nimbus-sh/core/runtime/prebundle-slice.js';
 
@@ -42,12 +44,29 @@ function vanished(error: unknown): boolean {
 
 
 
-export function buildSliceForSpecifierWithCap(
+export interface SlicePlanEntry { path: string; isDir: boolean; size: number }
+export interface PrebundleSlicePlan {
+  entries: SlicePlanEntry[];
+  totalBytes: number;
+  allocationBytes: number;
+}
+export class PrebundlePlanChanged extends Error {
+  constructor() { super('the package changed while its prebundle was being prepared'); }
+}
+const DependencyManifest = z.object({ dependencies: z.record(z.string(), z.json()).optional().catch(undefined) });
+
+export function buildSliceForSpecifierWithCap(vfs: CredentialedVfs, specifier: string, nmDir: string, capBytes: number): { slice: SliceEntry[]; totalBytes: number } | null {
+  const plan = planSliceForSpecifierWithCap(vfs, specifier, nmDir, capBytes);
+  return plan === null ? null : { slice: materializePrebundleSlice(vfs, plan), totalBytes: plan.totalBytes };
+}
+
+/** Discover names and sizes without retaining a slice; metadata parsing owns only its current input. */
+export function planSliceForSpecifierWithCap(
   vfs: CredentialedVfs,
   specifier: string,
   nmDir: string,
   capBytes: number,
-): { slice: SliceEntry[]; totalBytes: number } | null {
+): PrebundleSlicePlan | null {
   const externals = new Set<string>();
   for (const e of getSharedRuntimeExternals(specifier)) {
     // strip glob suffix: "react/*" → "react"
@@ -55,21 +74,25 @@ export function buildSliceForSpecifierWithCap(
     else externals.add(e);
   }
 
-  const slice: SliceEntry[] = [];
+  const entries: SlicePlanEntry[] = [];
   let totalBytes = 0;
+  let allocationBytes = 0;
   const visitedPkgs = new Set<string>();
 
   const addFile = (path: string): boolean => {
     try {
-      if (vfs.isDirectory(path)) {
-        slice.push({ path: '/' + path.replace(/^\/+/, ''), isDir: true });
-        return true;
+      const stat = vfs.stat(path);
+      const slicePath = '/' + path.replace(/^\/+/, '');
+      if (stat.type === 'directory') {
+        entries.push({ path, isDir: true, size: 0 });
+        allocationBytes += prebundleEntryBytes(slicePath);
+        return allocationBytes <= capBytes;
       }
-      const bytes = vfs.readFile(path);
-      totalBytes += bytes.length + path.length;
+      totalBytes += stat.size + path.length;
       if (totalBytes > capBytes) return false; // caller bails
-      slice.push({ path: '/' + path.replace(/^\/+/, ''), bytes, isDir: false });
-      return true;
+      entries.push({ path, isDir: false, size: stat.size });
+      allocationBytes += prebundleEntryBytes(slicePath, stat.size);
+      return allocationBytes <= capBytes;
     } catch (error) {
       if (vanished(error)) return true;
       throw error;
@@ -137,7 +160,7 @@ export function buildSliceForSpecifierWithCap(
 
     // Read deps; recurse. Recursion is never `isRoot` — only the
     // outermost spec gets that exemption.
-    let pkgJson: any = null;
+    let deps: string[] = [];
     const pkgJsonPath = pkgDir + '/package.json';
     if (vfs.exists(pkgJsonPath)) {
       let text: string | null = null;
@@ -145,9 +168,11 @@ export function buildSliceForSpecifierWithCap(
         if (!vanished(error)) throw error;
       }
       // A manifest that is not JSON names no dependencies.
-      try { pkgJson = text === null ? null : JSON.parse(text); } catch {}
+      try {
+        const parsed = DependencyManifest.safeParse(text === null ? null : JSON.parse(text));
+        if (parsed.success) deps = Object.keys(parsed.data.dependencies ?? {});
+      } catch {}
     }
-    const deps = pkgJson?.dependencies ? Object.keys(pkgJson.dependencies) : [];
     for (const dep of deps) {
       if (!visitPkg(dep, false)) return false;
     }
@@ -161,5 +186,39 @@ export function buildSliceForSpecifierWithCap(
     return null;
   }
 
-  return { slice, totalBytes };
+  return { entries, totalBytes, allocationBytes };
+}
+
+/** A discovered scoped graph, including the same directories its old slice carried. */
+export function planSliceFromPaths(vfs: CredentialedVfs, paths: ReadonlyArray<{ path: string; isDir: boolean }>, capBytes: number): PrebundleSlicePlan | null {
+  const entries: SlicePlanEntry[] = [];
+  let totalBytes = 0;
+  let allocationBytes = 0;
+  for (const entry of paths) {
+    const size = entry.isDir ? 0 : vfs.stat(entry.path).size;
+    if (!entry.isDir) totalBytes += size + entry.path.length;
+    if (totalBytes > capBytes) return null;
+    entries.push({ ...entry, size });
+    allocationBytes += prebundleEntryBytes('/' + entry.path.replace(/^\/+/, ''), size);
+    if (allocationBytes > capBytes) return null;
+  }
+  return { entries, totalBytes, allocationBytes };
+}
+
+/** Synchronous and admitted by its caller: no parser/RPC wait can retain a partial slice. */
+export function materializePrebundleSlice(vfs: CredentialedVfs, plan: PrebundleSlicePlan): SliceEntry[] {
+  const slice: SliceEntry[] = [];
+  for (const entry of plan.entries) {
+    const path = '/' + entry.path.replace(/^\/+/, '');
+    if (entry.isDir) { slice.push({ path, isDir: true }); continue; }
+    try {
+      if (vfs.stat(entry.path).size > entry.size) throw new PrebundlePlanChanged();
+      const bytes = vfs.readFile(entry.path);
+      if (bytes.byteLength > entry.size) throw new PrebundlePlanChanged();
+      slice.push({ path, isDir: false, bytes });
+    } catch (error) {
+      if (!vanished(error)) throw error;
+    }
+  }
+  return slice;
 }

@@ -1370,6 +1370,7 @@ export class ViteDevServer {
   private readonly bundlePool: BundlePoolProvider | null;
   /** What this server's pre-bundles are built and served as (npm/browser-prebundle.ts). */
   private readonly prebundle: PrebundleContext;
+  private prebundleAbort = new AbortController();
   /**
    * In-flight on-demand-bundle coalescing map. When the browser fires
    * multiple parallel requests for the same /preview/@modules/<spec>
@@ -1442,6 +1443,8 @@ export class ViteDevServer {
     this.prebundle = {
       vfs: this.vfs, root: this.root, cache: this.npmCache, pool: this.bundlePool,
       parse: transformParser(this.esbuild), esbuild: this.esbuild, serviceFallback: true,
+      signal: this.prebundleAbort.signal, running: true,
+      owner: { pid: opts.pid ?? undefined, session: this.ctx?.id.toString() },
     };
     // Merge user defines with standard Vite defines.
     // process.env.NODE_ENV is set explicitly so bundled CJS packages (like React's
@@ -1542,6 +1545,10 @@ export class ViteDevServer {
   /** Start the dev server (subscribe to VFS events for HMR). */
   start(): void {
     if (this.running) return;
+    if (this.prebundleAbort.signal.aborted) {
+      this.prebundleAbort = new AbortController();
+      this.prebundle.signal = this.prebundleAbort.signal;
+    }
     this.running = true;
     this.moduleCache.clear();
     for (const message of this.viteEsbuild.unread) this.warnOnce(message);
@@ -1554,6 +1561,8 @@ export class ViteDevServer {
 
   /** Stop the dev server. */
   stop(): void {
+    this.prebundleAbort.abort(new Error('the dev server stopped'));
+    this.pendingBundles.clear();
     this.running = false;
     if (this.unsubVfs) { this.unsubVfs(); this.unsubVfs = null; }
     this.moduleCache.clear();

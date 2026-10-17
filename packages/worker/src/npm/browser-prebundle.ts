@@ -17,20 +17,19 @@
 
 import { getSharedRuntimeExternals, vfsBuildInputs, type EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier, splitBareSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
-import { PREBUNDLE_DEFINE, sliceSources, type PrebundleResult } from '@nimbus-sh/core/runtime/prebundle-slice.js';
+import { PREBUNDLE_DEFINE, type PrebundleResult } from '@nimbus-sh/core/runtime/prebundle-slice.js';
 import { R_OK } from '@nimbus-sh/core/runtime/process-files.js';
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { recallOf } from '@nimbus-sh/core/vfs/recall.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { parseResolvablePackageJson, resolvePackageEntry, type ResolvablePackageJson } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { PRE_BUNDLE_SLICE_CAP_BYTES } from '@nimbus-sh/platform/limits.js';
-import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
-import { attributeAllocation } from '@nimbus-sh/platform/diag-counters.js';
-import type { ResizableCreditLease } from '@nimbus-sh/platform/weighted-credit-pool.js';
+import type { SupervisorAllocationOwner } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { describeError } from '@nimbus-sh/platform/oom-classify.js';
 import type { BundlePool, BundlePoolProvider } from '../facets/prebundle-pool.js';
+import { BuildFacetResetError } from '../facets/build-facet.js';
 import {
-  buildScopedSliceForSynthetic,
+  discoverScopedSliceForSynthetic,
   buildSyntheticEntry,
   namedImportSignature,
   scanProjectImports,
@@ -45,11 +44,10 @@ import {
   prebundleRequest,
   recordingManifests,
   serviceBuildCacheKey,
-  sliceManifests,
   stillCurrent,
 } from './cache-keys.js';
 import type { NpmCache } from './cache.js';
-import { buildSliceForSpecifierWithCap, type SliceEntry } from './pre-bundle-facet.js';
+import { planSliceForSpecifierWithCap, planSliceFromPaths, materializePrebundleSlice, PrebundlePlanChanged, type PrebundleSlicePlan } from './pre-bundle-facet.js';
 
 /** Who builds, where, and what it may read. */
 export interface PrebundleContext {
@@ -67,6 +65,10 @@ export interface PrebundleContext {
    * builds only in the facet.
    */
   serviceFallback: boolean;
+  signal?: AbortSignal;
+  owner?: Omit<SupervisorAllocationOwner, 'owner' | 'attribution'>;
+  /** On-demand requests of an already running server use running-work credit. */
+  running?: boolean;
 }
 
 /**
@@ -202,7 +204,7 @@ interface Built {
   esmCode: string;
   sources: string[];
   key: string;
-  manifests: ReadonlyArray<readonly [string, string | null]>;
+  current(): boolean | Promise<boolean>;
   /** Whether a manifest read as other than recorded while it was built (recordingManifests). */
   moved: boolean;
   warnings: readonly string[];
@@ -211,8 +213,7 @@ interface Built {
 /**
  * Build `specifier`'s bundle for a request with `barrel`, store it when the
  * manifests it was built from are still current, and give it to `serve`
- * while the slice's allocation is still held (the response is made beside
- * nothing else that claimed the same headroom).
+ * after its input slice has been handed to the facet and dropped here.
  */
 export async function buildPrebundle<T>(
   ctx: PrebundleContext,
@@ -220,6 +221,7 @@ export async function buildPrebundle<T>(
   barrel: BarrelInput | null,
   serve: (esmCode: string) => T,
 ): Promise<PrebundleOutcome<T>> {
+  ctx.signal?.throwIfAborted();
   const resolved = resolvePrebundleEntry(ctx.vfs, ctx.root, specifier);
   if (!resolved) return { kind: 'unresolved' };
   // A module its principal may not read is refused (its EACCES), not bundled from what of its package it can see.
@@ -234,13 +236,10 @@ export async function buildPrebundle<T>(
   const pool = await acquirePool(ctx);
   if (pool === null && !ctx.serviceFallback) return { kind: 'unavailable', message: 'the session has no build facet pool' };
   if (typeof pool === 'string' && !ctx.serviceFallback) return { kind: 'unavailable', message: pool };
-  let lease: ResizableCreditLease | null = null;
-  try {
+  {
     let built: Built | string;
     if (pool !== null && typeof pool !== 'string') {
-      // The slice's worst case is leased before it is walked, then shrunk to its size.
-      lease = attributeAllocation('preBundleSliceBytes', await acquireSupervisorAllocation(PRE_BUNDLE_SLICE_CAP_BYTES));
-      built = await buildInFacet(ctx, pool, specifier, entry, lease);
+      built = await buildInFacet(ctx, pool, specifier, entry);
     } else {
       built = await buildInService(ctx, specifier, entry.entryPath);
     }
@@ -249,7 +248,8 @@ export async function buildPrebundle<T>(
     // A row whose sources are unknown would never be served; one whose
     // manifests moved under the build (a reinstall while it ran) is served
     // to this request, not stored under them.
-    const changed = built.moved || !stillCurrent(built.manifests, (path) => readText(ctx, path));
+    ctx.signal?.throwIfAborted();
+    const changed = built.moved || !await built.current();
     let storeFailure: string | null = null;
     if (ctx.cache && built.sources.length > 0 && !changed) {
       try {
@@ -259,8 +259,6 @@ export async function buildPrebundle<T>(
       }
     }
     return { kind: 'built', served: serve(built.esmCode), inputHash, changed, storeFailure, warnings: built.warnings };
-  } finally {
-    lease?.release();
   }
 }
 
@@ -268,8 +266,9 @@ export async function buildPrebundle<T>(
 async function acquirePool(ctx: PrebundleContext): Promise<BundlePool | null | string> {
   if (!ctx.pool) return null;
   try {
-    return await ctx.pool.acquire();
+    return await ctx.pool.acquire(ctx.signal);
   } catch (error) {
+    ctx.signal?.throwIfAborted();
     return `the build facet pool could not be acquired: ${describeError(error)}`;
   }
 }
@@ -318,66 +317,72 @@ function synthesizeEntry(
 /** The bundle built in the facet from a slice walked here, or why not. */
 async function buildInFacet(
   ctx: PrebundleContext,
-  pool: BundlePool,
+  initialPool: BundlePool,
   specifier: string,
   entry: { entryPath: string; referencedFiles: string[] | null },
-  lease: ResizableCreditLease,
 ): Promise<Built | string> {
-  let slice: { slice: SliceEntry[]; totalBytes: number } | null;
-  try {
-    slice = await gatherSlice(ctx, specifier, entry);
-  } catch (error) {
-    // Refused (the principal may not read a file of it) or met a recall:
-    // the request's to answer. Anything else (bytes still being imported)
-    // is this bundle's failure, said.
-    if (recallOf(error) !== null || ['EACCES', 'EPERM'].includes(Reflect.get(Object(error), 'code'))) throw error;
-    return `its files could not be gathered: ${describeError(error)}`;
+  let pool = initialPool;
+  let resets = 0;
+  let changedPlans = 0;
+  for (;;) {
+    ctx.signal?.throwIfAborted();
+    try {
+      const prepared = await discoverSlice(ctx, specifier, entry);
+      if (!prepared) return `its files exceed the ${(PRE_BUNDLE_SLICE_CAP_BYTES / (1024 * 1024)).toFixed(0)} MiB a bundle may be built from`;
+      const { plan, revision, sources, key, externals } = prepared;
+      const result = await pool.prebundle({
+        specifier, signal: ctx.signal, bytes: plan.allocationBytes, running: ctx.running,
+        owner: { owner: `prebundle '${specifier}'`, ...ctx.owner },
+        prepare: () => {
+          ctx.signal?.throwIfAborted();
+          if (ctx.vfs.revision() !== revision) throw new PrebundlePlanChanged();
+          const slice = materializePrebundleSlice(ctx.vfs, plan);
+          if (ctx.vfs.revision() !== revision) throw new PrebundlePlanChanged();
+          return { specifier, entryPath: entry.entryPath, externals, slice, bundlerVersion: key, define: PREBUNDLE_DEFINE };
+        },
+      });
+      if (!result.ok || !result.esmCode) return `its bundle failed: ${result.errorText ?? 'no output'}`;
+      return {
+        esmCode: result.esmCode, sources, key, moved: false, warnings: result.warnings ?? [],
+        current: () => ctx.vfs.revision() === revision || prebundleCacheKey(prebundleRequest(specifier,
+          manifestsOf(sources, (path) => readText(ctx, path)))).then((current) => current === key),
+      };
+    } catch (error) {
+      ctx.signal?.throwIfAborted();
+      if (recallOf(error) !== null || ['EACCES', 'EPERM'].includes(Reflect.get(Object(error), 'code'))) throw error;
+      if (error instanceof PrebundlePlanChanged && changedPlans++ === 0) continue;
+      if (error instanceof BuildFacetResetError && resets++ === 0) {
+        const next = await acquirePool(ctx);
+        if (next === null || typeof next === 'string') return next ?? 'the build facet pool is unavailable';
+        pool = next;
+        continue;
+      }
+      return describeError(error);
+    }
   }
-  if (!slice) return `its files exceed the ${(PRE_BUNDLE_SLICE_CAP_BYTES / (1024 * 1024)).toFixed(0)} MiB a bundle may be built from`;
-  // The rest of the worst case goes back to the pool for smaller owners.
-  if (slice.totalBytes > 0 && slice.totalBytes < lease.bytes) lease.shrinkTo(slice.totalBytes);
-  const sources = sliceSources(slice.slice);
-  const request = prebundleRequest(specifier, sliceManifests(slice.slice, (path) => readText(ctx, path)));
-  const key = await prebundleCacheKey(request);
-  let result: PrebundleResult;
-  try {
-    // The spec owns the slice from here: no other handle keeps it past the call.
-    result = await pool.prebundle({
-      specifier,
-      entryPath: entry.entryPath,
-      externals: [...request.externals],
-      slice: slice.slice,
-      bundlerVersion: key,
-      define: PREBUNDLE_DEFINE,
-    });
-  } catch (error) {
-    return describeError(error);
-  } finally {
-    slice = null;
-  }
-  if (!result.ok || !result.esmCode) return `its bundle failed: ${result.errorText ?? 'no output'}`;
-  return { esmCode: result.esmCode, sources, key, manifests: request.manifests, moved: false, warnings: result.warnings ?? [] };
 }
 
-/** The files a bundle of `specifier` is built from, walked here, or null past the cap. */
-async function gatherSlice(
+/** Resolve and parse first. Parser input is its own transient, not a retained slice. */
+async function discoverSlice(
   ctx: PrebundleContext,
   specifier: string,
   entry: { entryPath: string; referencedFiles: string[] | null },
-): Promise<{ slice: SliceEntry[]; totalBytes: number } | null> {
+) {
+  const revision = ctx.vfs.revision();
   const nmDir = ctx.root + '/node_modules';
+  let plan: PrebundleSlicePlan | null;
   if (entry.referencedFiles !== null) {
-    // A synthetic entry's slice: the files it references and their relative
-    // imports, and the entry itself (outside the package), not the whole
-    // package, so a package of thousands of files fits the cap.
-    const scoped = await buildScopedSliceForSynthetic(ctx.vfs, nmDir, packageNameFromSpecifier(specifier), entry.referencedFiles, ctx.parse);
-    const bytes = ctx.vfs.readFile(entry.entryPath);
-    const parentDir = entry.entryPath.substring(0, entry.entryPath.lastIndexOf('/'));
-    scoped.entries.push({ path: '/' + parentDir.replace(/^\/+/, ''), isDir: true });
-    scoped.entries.push({ path: '/' + entry.entryPath.replace(/^\/+/, ''), bytes, isDir: false });
-    return { slice: scoped.entries, totalBytes: scoped.totalBytes + bytes.length + entry.entryPath.length };
-  }
-  return buildSliceForSpecifierWithCap(ctx.vfs, specifier, nmDir, PRE_BUNDLE_SLICE_CAP_BYTES);
+    const paths = await discoverScopedSliceForSynthetic(ctx.vfs, nmDir, packageNameFromSpecifier(specifier), entry.referencedFiles, ctx.parse);
+    paths.push({ path: entry.entryPath.substring(0, entry.entryPath.lastIndexOf('/')), isDir: true });
+    paths.push({ path: entry.entryPath, isDir: false });
+    plan = planSliceFromPaths(ctx.vfs, paths, PRE_BUNDLE_SLICE_CAP_BYTES);
+  } else plan = planSliceForSpecifierWithCap(ctx.vfs, specifier, nmDir, PRE_BUNDLE_SLICE_CAP_BYTES);
+  if (plan === null) return null;
+  const sources = plan.entries.filter((item) => !item.isDir).map((item) => '/' + item.path.replace(/^\/+/, ''));
+  const request = prebundleRequest(specifier, manifestsOf(sources, (path) => readText(ctx, path)));
+  const key = await prebundleCacheKey(request);
+  if (ctx.vfs.revision() !== revision) throw new PrebundlePlanChanged();
+  return { plan, revision, sources, key, externals: [...request.externals] };
 }
 
 /** The bundle built by the EsbuildService's build (no pool), reading through a view that records each manifest as it reads it. */
@@ -410,7 +415,7 @@ async function buildInService(ctx: PrebundleContext, specifier: string, entryPat
     const sources = vfsBuildInputs(result.metafile);
     const manifests = recording.manifests(sources);
     const key = await serviceBuildCacheKey(ctx.esbuild.transformHostId, { ...prebundleRequest(specifier, manifests), options: SERVICE_PREBUNDLE_OPTIONS });
-    return { esmCode: result.outputFiles[0].contents, sources, key, manifests, moved: recording.moved(), warnings: [] };
+    return { esmCode: result.outputFiles[0].contents, sources, key, current: () => stillCurrent(manifests, (path) => readText(ctx, path)), moved: recording.moved(), warnings: [] };
   } catch (error) {
     return describeError(error);
   }

@@ -300,7 +300,9 @@ function lexedImportView(source: string, path: string): string | null {
  */
 async function parsedImportView(source: string, path: string, parse: SourceParser): Promise<string> {
   // The transform's output holds no JSX: read it as a `.ts` file is read.
-  return maskSourceForImports(await parse(path, source), path.replace(/\.[^./]*$/, '') + '.ts');
+  const parsed = parse(path, source);
+  source = '';
+  return maskSourceForImports(await parsed, path.replace(/\.[^./]*$/, '') + '.ts');
 }
 
 /**
@@ -574,8 +576,31 @@ export async function buildScopedSliceForSynthetic(
   parse: SourceParser,
   transitiveCap = 800,
 ): Promise<{ entries: SliceEntry[]; totalBytes: number }> {
+  const paths = await discoverScopedSliceForSynthetic(vfs, nmDir, pkgName, referencedFiles, parse, transitiveCap);
   const entries: SliceEntry[] = [];
   let totalBytes = 0;
+  for (const entry of paths) {
+    const path = '/' + entry.path.replace(/^\/+/, '');
+    if (entry.isDir) entries.push({ path, isDir: true });
+    else {
+      const bytes = vfs.readFile(entry.path);
+      entries.push({ path, isDir: false, bytes });
+      totalBytes += bytes.byteLength + entry.path.length;
+    }
+  }
+  return { entries, totalBytes };
+}
+
+/** Discovery retains paths, not a partial slice, while the parser owns its current source. */
+export async function discoverScopedSliceForSynthetic(
+  vfs: CredentialedVfs,
+  nmDir: string,
+  pkgName: string,
+  referencedFiles: string[],
+  parse: SourceParser,
+  transitiveCap = 800,
+): Promise<Array<{ path: string; isDir: boolean }>> {
+  const entries: Array<{ path: string; isDir: boolean }> = [];
   const visited = new Set<string>();
   const dirSet = new Set<string>();
   const pkgRoot = nmDir + '/' + pkgName;
@@ -583,7 +608,7 @@ export async function buildScopedSliceForSynthetic(
   const addDir = (d: string) => {
     if (dirSet.has(d) || !d) return;
     dirSet.add(d);
-    entries.push({ path: '/' + d.replace(/^\/+/, ''), isDir: true });
+    entries.push({ path: d, isDir: true });
   };
 
   // Always include the package root + its package.json. esbuild's
@@ -592,9 +617,8 @@ export async function buildScopedSliceForSynthetic(
   const pkgJsonPath = pkgRoot + '/package.json';
   if (vfs.exists(pkgJsonPath) && !vfs.isDirectory(pkgJsonPath)) {
     try {
-      const bytes = vfs.readFile(pkgJsonPath);
-      entries.push({ path: '/' + pkgJsonPath.replace(/^\/+/, ''), bytes, isDir: false });
-      totalBytes += bytes.length + pkgJsonPath.length;
+      vfs.access(pkgJsonPath, 4);
+      entries.push({ path: pkgJsonPath, isDir: false });
       visited.add(pkgJsonPath);
     } catch {}
   }
@@ -606,16 +630,20 @@ export async function buildScopedSliceForSynthetic(
     if (visited.has(filePath)) continue;
     visited.add(filePath);
     if (!vfs.exists(filePath) || vfs.isDirectory(filePath)) continue;
-    let bytes: Uint8Array;
-    try { bytes = vfs.readFile(filePath); } catch { continue; }
+    let source: string;
+    try { source = vfs.readFileString(filePath); } catch { continue; }
     // Track parent dirs so esbuild's plugin's dirSet has them.
     const slash = filePath.lastIndexOf('/');
     if (slash > 0) addDir(filePath.substring(0, slash));
-    entries.push({ path: '/' + filePath.replace(/^\/+/, ''), bytes, isDir: false });
-    totalBytes += bytes.length + filePath.length;
+    entries.push({ path: filePath, isDir: false });
     // Queue the relative imports, read by the project scan's grammar.
-    const source = new TextDecoder().decode(bytes);
-    const view = lexedImportView(source, filePath) ?? await parsedImportView(source, filePath, parse);
+    let view = lexedImportView(source, filePath);
+    if (view === null) {
+      const parsed = parsedImportView(source, filePath, parse);
+      source = '';
+      view = await parsed;
+    }
+    source = '';
     for (const rel of importedSpecifiers(view)) {
       if (!rel.startsWith('./') && !rel.startsWith('../')) continue;
       const dir = filePath.substring(0, slash > 0 ? slash : 0);
@@ -635,7 +663,7 @@ export async function buildScopedSliceForSynthetic(
       }
     }
   }
-  return { entries, totalBytes };
+  return entries;
 }
 
 /**

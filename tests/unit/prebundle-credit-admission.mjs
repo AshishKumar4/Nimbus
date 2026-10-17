@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { beginLoaderFetch, DO_DYNAMIC_WORKER_LIMIT, loaderLedgerStats } from '../../packages/fabric/src/budgets.ts';
+import { beginLoaderFetch, claimAdmission, DO_DYNAMIC_WORKER_LIMIT, loaderLedgerStats, withLaunchAdmission } from '../../packages/fabric/src/budgets.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { acquireSupervisorAllocation, acquireSupervisorRunningAllocation, readSupervisorAllocationBudget } from '../../packages/platform/src/heavy-alloc-coord.ts';
 import { buildPrebundle } from '../../packages/worker/src/npm/browser-prebundle.ts';
@@ -12,12 +12,12 @@ import { launchManager } from './lib/facet-launch-harness.mjs';
 import { namedFacetPlatform } from './lib/named-facet-platform.mjs';
 import { createAuthority, runScenarios, until } from './lib/resident-body.mjs';
 
-function bundleFixture(name) {
+function bundleFixture(name, bytes = 128 * 1024) {
   const authority = createAuthority();
   const root = 'home/user/app';
   authority.kfs.mkdir(`${root}/node_modules/pkg`, { recursive: true });
   authority.kfs.writeFile(`${root}/node_modules/pkg/package.json`, '{"name":"pkg","main":"index.js","type":"module"}');
-  authority.kfs.writeFile(`${root}/node_modules/pkg/index.js`, `export const x=1;\n// ${'x'.repeat(128 * 1024)}\n`);
+  authority.kfs.writeFile(`${root}/node_modules/pkg/index.js`, `export const x=1;\n// ${'x'.repeat(bytes)}\n`);
   const entered = Promise.withResolvers();
   const finish = Promise.withResolvers();
   class Bundler {
@@ -37,7 +37,7 @@ function bundleFixture(name) {
   const provider = new PrebundlePool(platform.env, platform.ctx);
   const context = { vfs: authority.kfs, root, cache: null, pool: provider,
     parse: async (_path, source) => source, esbuild: new EsbuildService(undefined, {}), serviceFallback: false };
-  return { ...platform, provider, context, entered: entered.promise, finish: () => finish.resolve(),
+  return { ...platform, provider, context, authority, entered: entered.promise, finish: () => finish.resolve(),
     build: () => buildPrebundle(context, 'pkg', null, (code) => code) };
 }
 
@@ -105,5 +105,89 @@ await runScenarios(fileURLToPath(import.meta.url), {
       assert.equal((await building).kind, 'built');
     }
     assert.equal(readSupervisorAllocationBudget().current, 0);
+  },
+  async runningCallerOvertakesOrdinaryAsks() {
+    const parked = bundleFixture('parked-prebundle', 20 * 1024 * 1024);
+    const caller = bundleFixture('running-prebundle', 20 * 1024 * 1024);
+    await parked.provider.acquire();
+    await caller.provider.acquire();
+    const capacity = readSupervisorAllocationBudget().capacity;
+    const held = await acquireSupervisorAllocation(capacity);
+    const first = parked.build();
+    await until(() => readSupervisorAllocationBudget().queued > 0, 'the first prebundle falls back to a credit-first retry');
+    const holds = Array.from({ length: DO_DYNAMIC_WORKER_LIMIT }, (_, i) => beginLoaderFetch(parked.ctx, `busy-${i}`));
+    held.release();
+    await until(() => loaderLedgerStats(parked.ctx).waiting > 0 && readSupervisorAllocationBudget().current > 0,
+      'the fallback payload parks for its worker');
+    const ordinary = acquireSupervisorAllocation(capacity, undefined, { owner: 'ordinary full-budget build' });
+    const second = withLaunchAdmission(caller.ctx, { pid: 71 }, undefined, async () => {
+      const end = claimAdmission(caller.ctx, 71);
+      try { return await caller.build(); } finally { end(); }
+    });
+    let timer;
+    try {
+      await Promise.race([caller.entered, new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('running prebundle did not overtake the ordinary ask and reclaim the parked payload')), 15_000);
+      })]).finally(() => clearTimeout(timer));
+      const released = await ordinary;
+      released.release();
+      caller.finish();
+      assert.equal((await second).kind, 'built');
+    } finally {
+      for (const release of holds) release();
+      caller.finish(); parked.finish();
+      await first;
+    }
+    assert.equal(readSupervisorAllocationBudget().current, 0);
+  },
+  async delegatedDiscoveryHoldsNoSlice() {
+    const h = bundleFixture('delegated-prebundle');
+    const root = h.context.root + '/node_modules/pkg';
+    h.authority.kfs.writeFile(`${root}/index.js`, 'export { X } from "./component.jsx";');
+    h.authority.kfs.writeFile(`${root}/component.jsx`, 'export const X = () => <div/>;');
+    const entered = Promise.withResolvers();
+    const finish = Promise.withResolvers();
+    h.context.parse = async () => { entered.resolve(); await finish.promise; return 'export const X = () => null;'; };
+    const building = buildPrebundle(h.context, 'pkg', { pkgName: 'pkg', fileCount: 1000, names: new Set(['X']), inputHash: 'x' }, (code) => code);
+    try {
+      await entered.promise;
+      assert.equal(readSupervisorAllocationBudget().current, 0, 'delegated discovery holds no retained slice credit');
+    } finally { finish.resolve(); h.finish(); await building; }
+  },
+  async abortWorkerWait() {
+    const h = bundleFixture('abort-prebundle-worker');
+    await h.provider.acquire();
+    const holds = Array.from({ length: DO_DYNAMIC_WORKER_LIMIT }, (_, i) => beginLoaderFetch(h.ctx, `busy-${i}`));
+    const abort = new AbortController();
+    h.context.signal = abort.signal;
+    const building = h.build();
+    try {
+      await until(() => loaderLedgerStats(h.ctx).waiting === 1, 'the prebundle waits for a helper worker');
+      const reason = new Error('cancel prebundle');
+      abort.abort(reason);
+      await assert.rejects(building, (error) => error === reason);
+      assert.equal(loaderLedgerStats(h.ctx).waiting, 0);
+      assert.equal(readSupervisorAllocationBudget().current, 0);
+    } finally { for (const release of holds) release(); h.finish(); }
+  },
+  async abortPoolSlot() {
+    const h = bundleFixture('abort-prebundle-slot');
+    const first = h.build();
+    await h.entered;
+    const abort = new AbortController();
+    const queued = Promise.withResolvers();
+    const context = { ...h.context, signal: abort.signal, pool: { acquire: async (signal) => {
+      const pool = await h.provider.acquire(signal);
+      return { prebundle: (task) => { const call = pool.prebundle(task); queued.resolve(); return call; } };
+    } } };
+    const second = buildPrebundle(context, 'pkg', null, (code) => code);
+    try {
+      await queued.promise;
+      const reason = new Error('cancel queued prebundle');
+      abort.abort(reason);
+      await assert.rejects(second, (error) => error === reason);
+      assert.equal(readSupervisorAllocationBudget().current, 0);
+    } finally { h.finish(); await first; }
+    assert.equal((await h.build()).kind, 'built', 'cancelling a queued slot leaves the next submission runnable');
   },
 });

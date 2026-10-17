@@ -252,6 +252,8 @@ export class SupervisorAllocationBudget {
   }
 
   private wrap(credit: ResizableCreditLease, drivesLifecycle: boolean, owner: SupervisorAllocationOwner): SupervisorAllocationLease {
+    const holder = { owner: { ...owner }, credit, since: Date.now() };
+    this.holders.add(holder);
     if (drivesLifecycle) {
       this.lifecycleHolders++;
       if (!this.active) {
@@ -261,8 +263,6 @@ export class SupervisorAllocationBudget {
     }
 
     let released = false;
-    const holder = { owner: { ...owner }, credit, since: Date.now() };
-    this.holders.add(holder);
     return {
       get bytes() {
         return credit.bytes;
