@@ -18,12 +18,16 @@ const require = createRequire(import.meta.url);
 export const WORKERD = createRequire(require.resolve('wrangler/package.json'))('workerd').default;
 
 /** A TCP port free on 127.0.0.1 now. */
-async function freePort() {
+export async function freePort() {
   const server = net.createServer();
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const { port } = server.address();
-  await new Promise((resolve) => server.close(resolve));
-  return port;
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => resolve(undefined));
+  });
+  const address = server.address();
+  await new Promise((resolve) => server.close(() => resolve(undefined)));
+  if (address === null || typeof address === 'string') throw new Error(`127.0.0.1:0 is bound as ${address}`);
+  return address.port;
 }
 
 /** Whether something accepts a TCP connection on `port` within `ms`. */
