@@ -7,6 +7,8 @@
 
 import assert from 'node:assert/strict';
 import { gradePaired } from '../behavioral/_paired.mjs';
+import { pairedCpuVerdicts } from '../../scripts/ci/lib/paired-cpu.mjs';
+import { median } from '../../scripts/lib/statistics.mjs';
 
 /** A seeded normal source (Box-Muller over mulberry32), so every run draws the same samples. */
 function normals(seed) {
@@ -80,6 +82,47 @@ assert.equal(gradePaired(rounds({ count: 15, factor: 0.6, sigma: 0.1, seed: 12 }
   const slowRed = red(1.5, 5000);
   assert.ok(nullRed <= 6, `${nullRed} of ${trials} A/A/A runs graded slower`);
   assert.ok(slowRed >= 85, `${slowRed} of ${trials} 1.5x runs graded slower`);
+}
+
+function cpuRuns(samples) {
+  const result = {
+    kind: 'copy-cpu', samples,
+    medianA: median(samples.map(({ A1, A2 }) => (A1 + A2) / 2)),
+    medianB: median(samples.map(({ real }) => real)),
+    medianDelta: median(samples.map(({ real, A1, A2 }) => real - (A1 + A2) / 2)),
+    medianNullDelta: median(samples.map(({ null: copy, A1, A2 }) => copy - (A1 + A2) / 2)),
+  };
+  return Array.from({ length: 8 }, () => [{ ...result, samples: samples.map((sample) => ({ ...sample })) }]);
+}
+
+// Median subtraction is not paired subtraction. A baseline's changing cost
+// and one noisy copy sample cannot make the copies' median difference 10.
+{
+  const samples = [
+    { A1: 100, A2: 100, null: 100, real: 100 },
+    { A1: 200, A2: 200, null: 210, real: 210 },
+    { A1: 300, A2: 300, null: 300, real: 310 },
+  ];
+  const runs = cpuRuns(samples);
+  assert.equal(runs[0][0].medianDelta - runs[0][0].medianNullDelta, 10,
+    'the old difference-of-medians estimator falsely calls a copy slower');
+  assert.equal(median(samples.map((sample) => sample.real - sample.null)), 0);
+  const [verdict] = pairedCpuVerdicts(runs);
+  assert.equal(verdict.medianDelta, 0, JSON.stringify(verdict));
+  assert.deepEqual(verdict.ci95, [0, 0]);
+  assert.deepEqual(verdict.failures, []);
+  const drifted = cpuRuns(samples.map((sample, i) => ({ ...sample, A1: i * 1000, A2: i * 1000 })));
+  assert.equal(pairedCpuVerdicts(drifted)[0].medianDelta, verdict.medianDelta,
+    'the common A cancels inside every pair, before any median');
+}
+
+// Keeping the pairing cannot hide a genuine cost on every candidate sample.
+for (const shift of [-10, 0, 10]) {
+  const samples = [100, 200, 300].map((ms) => ({ A1: ms, A2: ms, null: ms + 5, real: ms + 5 + shift }));
+  const [verdict] = pairedCpuVerdicts(cpuRuns(samples));
+  assert.equal(verdict.medianDelta, shift);
+  assert.deepEqual(verdict.ci95, [shift, shift]);
+  assert.equal(verdict.failures.length > 0, shift > 0);
 }
 
 console.log('paired-grading: ok');
