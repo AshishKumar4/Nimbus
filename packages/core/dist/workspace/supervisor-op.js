@@ -265,7 +265,7 @@ const NATIVE_OPS = {
         report: z.boolean().optional(),
         keepVanishedAncestors: z.boolean().optional(),
     }).optional().parse(e.args?.[1]))),
-    fsCopyFile: (e, t) => fsFor(e, t).copyFile(FsPath.parse(e.args?.[0]), FsPath.parse(e.args?.[1]), z.object({ keepMode: z.boolean().optional() }).optional().parse(e.args?.[2])),
+    fsCopyFile: (e, t) => fsFor(e, t).copyFile(FsPath.parse(e.args?.[0]), FsPath.parse(e.args?.[1]), z.object({ keepMode: z.boolean().optional(), preserve: z.boolean().optional() }).optional().parse(e.args?.[2])),
     fsCopyTree: (e, t) => fsFor(e, t).copyTree(FsPath.parse(e.args?.[0]), FsPath.parse(e.args?.[1]), z.object({ preserve: z.boolean().optional(), follow: z.boolean().optional() }).optional().parse(e.args?.[2])),
     fsAcquireExclusiveMutation: (e, t) => fsFor(e, t).acquireExclusiveMutation(FsPath.parse(e.args?.[0]), z.object({
         includeMissingAncestors: z.boolean().optional(),

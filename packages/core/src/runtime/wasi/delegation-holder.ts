@@ -309,7 +309,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       const creating = made !== undefined && at === 0;
       const making = creating ? { create: true as const, exclusive: true as const, ino: made, ...(cell.umask === undefined ? {} : { umask: cell.umask }) } : {};
       const read = desc.read;
-      void acknowledged({ type: 'call', call: { call: 'open', path: inode.key, mode: cell.mode, ...making, ...(desc.read ? { read: true as const } : {}), description } })
+      void acknowledged({ type: 'call', call: { call: 'open', path: inode.key, mode: cell.mode, ...making, access: read ? 'readwrite' : 'write', description } })
         .then((answered) => prov.anchored(description, answered.receipt?.handle, read), () => {});
       if (creating && cell.length > 0) {
         acknowledged({ type: 'call', call: { call: 'write', path: inode.key, ino: made, description, offset: 0, data: owned(cell.bytes, cell.length) } });
@@ -645,7 +645,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       inode.cell = file;
       const description = descriptionId();
       changes++;
-      acknowledged({ type: 'call', call: { call: 'open', path: to, mode: asked, ...(made === undefined ? {} : { ino: made, umask }), create: true, truncate: true, ...(keepMode ? { fchmod: mode } : {}), description } });
+      acknowledged({ type: 'call', call: { call: 'open', path: to, mode: asked, access: 'write', ...(made === undefined ? {} : { ino: made, umask }), create: true, truncate: true, ...(keepMode ? { fchmod: mode } : {}), description } });
       acknowledged({ type: 'call', call: { call: 'write', path: to, ...(made === undefined ? {} : { ino: made }), description, offset: 0, data: bytes.slice() } });
       acknowledged({ type: 'call', call: { call: 'close', path: to, description } });
       return true;

@@ -69,6 +69,7 @@ const outputs = [
       ].join('\n')],
       ['NPM_ABI_POLICY_SOURCE', '../facets/wasm-swap-registry.js', ['policyLookupSwap', 'policyLookupReject', 'policyNativePlatformReject', 'policyNativeBinAdvisory', 'policyLookupStagedArtifact', 'policyApplyStagedArtifact', 'policyIsOptionalNativeBinding']],
       ['RESIDENCY_MISS_REPORT_SOURCE', '../runtime/residency-miss-report.js', ['residencyMissReport']],
+      ['BUN_FILE_API_SOURCE', '../runtime/bun-file.js', ['bunFileApi']],
     ],
   },
 ];

@@ -24,7 +24,7 @@ import { useNimbusSession } from ${JSON.stringify(hook)};
 const endpoint = ${JSON.stringify(BASE)}, token = ${JSON.stringify(AUTH_TOKEN)};
 function Headless() {
   const iframeRef = useRef(null);
-  const state = useNimbusSession({ endpoint, token, tenant: 'probe', iframeRef });
+  const state = useNimbusSession({ endpoint, token, iframeRef });
   return <section id="headless" data-ready={String(state.ready)} data-session-id={state.sessionId} data-error={state.error?.code ?? ''}>
     <iframe ref={iframeRef} src={state.attachUrl} />
   </section>;

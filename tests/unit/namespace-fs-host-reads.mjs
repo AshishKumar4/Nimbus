@@ -31,7 +31,8 @@ assert.match(above.stdout, /\btools\b/);
 // A SQLite row a mount covers is never followed, even a link.
 box.root.mkdir('mnt/tools', { recursive: true });
 box.root.symlink('/etc', 'mnt/tools/escape');
-assert.equal((await box.commands.run('ls /mnt/tools/escape')).exitCode, 1, 'the covered link is not there');
+// ls exits 2 for an operand it cannot reach, as GNU's does.
+assert.equal((await box.commands.run('ls /mnt/tools/escape')).exitCode, 2, 'the covered link is not there');
 
 // The synchronous namespace view host code gets: SQLite and mounts alike.
 const ns = box.files.namespaceFs(CRED_KERNEL);

@@ -209,12 +209,16 @@ export function parseNodeCommandLine(args, nodeOptions = '') {
     const fromEnv = readOptions(envTokens, true);
     if ('error' in fromEnv)
         return fromEnv;
+    // NODE_OPTIONS' own are checked as Node parses them, before the command line can override them.
+    const envRefused = refusedOptions(fromEnv.inputType, fromEnv.defaultType, false);
+    if (envRefused !== null)
+        return envRefused;
     const fromArgs = readOptions(args, false);
     if ('error' in fromArgs)
         return fromArgs;
     // The options before the program, but the `--` that ended them.
     const options = args.slice(0, fromArgs.end);
-    return {
+    const line = {
         execArgv: options.at(-1) === '--' ? options.slice(0, -1) : options,
         programIndex: fromArgs.end,
         conditions: [...fromEnv.conditions, ...fromArgs.conditions],
@@ -232,4 +236,20 @@ export function parseNodeCommandLine(args, nodeOptions = '') {
         version: fromArgs.version,
         help: fromArgs.help,
     };
+    return refusedOptions(line.inputType, line.defaultType, line.check && line.eval !== undefined) ?? line;
+}
+/** The values `--input-type` takes (src/node_options.cc EnvironmentOptions::CheckOptions). */
+const INPUT_TYPES = new Set(['commonjs', 'module', 'commonjs-typescript', 'module-typescript']);
+/** What Node refuses of options once it has read them (EnvironmentOptions::CheckOptions), each on its line, in its order; null for nothing. */
+function refusedOptions(inputType, defaultType, checksEval) {
+    const refused = [];
+    if (inputType !== undefined && !INPUT_TYPES.has(inputType)) {
+        refused.push('--input-type must be "module","commonjs", "module-typescript" or "commonjs-typescript"');
+    }
+    if (defaultType !== undefined && defaultType !== 'module' && defaultType !== 'commonjs') {
+        refused.push('--experimental-default-type must be "module" or "commonjs"');
+    }
+    if (checksEval)
+        refused.push('either --check or --eval can be used, not both');
+    return refused.length === 0 ? null : { error: refused.map((message) => `node: ${message}\n`).join(''), exitCode: 9 };
 }

@@ -18,7 +18,7 @@
  *      live SQLite VFS via the supervisor bridge instead of hitting workerd's
  *      empty, read-only nodejs_compat filesystem (EPERM on mkdir).
  *   2. Installs the Bun-global polyfill (Bun.stdin.text, Bun.stringWidth,
- *      Bun.file, Bun.hash) — opencode references `Bun.*` even on node target.
+ *      Bun.file, Bun.write, Bun.hash) — opencode references `Bun.*` even on node target.
  *   3. Seeds process.argv / env / cwd from the per-invocation constants.
  *   4. Captures stdout/stderr and process.exit.
  *   5. Imports the opencode bundle and invokes its exported nimbusMain()
@@ -44,6 +44,7 @@ import { NODE_SHIMS_IMPORTS } from './node-shims-imports.js';
 import { PENDING_IO_SOURCE } from './pending-io.js';
 import { moduleSource, type ModuleSource, type ImmutableModuleSource } from '@nimbus-sh/platform/module-source.js';
 import { ONE_SHOT_STORE_MEMORY_BYTES } from '../vfs/facet-resident-limits.js';
+import { BUN_FILE_API_SOURCE } from '../loaders/compiled-bodies.generated.js';
 import {
   OPENTUI_BACKEND_FACET_SRC,
   OPENTUI_BACKEND_GLOBAL,
@@ -235,6 +236,7 @@ const BUN_GLOBAL_POLYFILL: string = `
 if (typeof globalThis.Bun === "undefined") {
   const __ocFs = globalThis.${BUILTINS_GLOBAL}.fs;
   const __ocCrypto = globalThis.${BUILTINS_GLOBAL}.crypto;
+  const __ocBunFile = ${BUN_FILE_API_SOURCE}.bunFileApi(__ocFs);
   globalThis.Bun = {
     stdin: { text: () => new Promise((resolve) => {
       let data = "";
@@ -249,11 +251,8 @@ if (typeof globalThis.Bun === "undefined") {
       const clean = String(s).replace(/\\x1b\\[[0-9;]*m/g, "");
       return [...clean].length;
     },
-    file: (p) => ({
-      text: () => __ocFs.promises.readFile(p, "utf8"),
-      arrayBuffer: async () => (await __ocFs.promises.readFile(p)).buffer,
-      exists: async () => __ocFs.existsSync(p),
-    }),
+    file: __ocBunFile.file,
+    write: __ocBunFile.write,
     hash: (s) => {
       const h = __ocCrypto.createHash("sha256").update(String(s)).digest();
       return h.readBigUInt64BE(0);

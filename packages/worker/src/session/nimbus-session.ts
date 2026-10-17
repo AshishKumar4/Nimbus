@@ -150,6 +150,7 @@ import { encodeExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 import * as _diag from './diag.js';
 import { ServedReads } from '../facets/read-profile.js';
 import { CloneRecovery, bridgeCleanupFs } from '../git/clone-job.js';
+import { nimbusDebugEnabled } from '../_shared/nimbus-debug.js';
 
 /** The ops whose non-null answer is a file's content served to a process. */
 const SERVED_READ_OPS: ReadonlySet<string> = new Set(['readFile', 'readFileBytes', 'fsReadRange', 'fsReadRangeUncached']);
@@ -489,19 +490,14 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
   _diagSampleCount: number = 0;
 
   /**
-   * Fix 5: toggled by env NIMBUS_DEBUG=1 (checked each call; cheap enough).
+   * Fix 5: toggled by env NIMBUS_DEBUG ('1' or 'true'; checked each call, cheap enough).
    * When true: spawn banners and exit traces are unconditional (not just
    * long-running facets), RPC envelope errors are surfaced to the terminal
    * with a [rpc-error] prefix, and the exit trace includes duration_ms.
-   *
-   * The flag is derived from `this.env.NIMBUS_DEBUG` — the binding comes
-   * from wrangler's var declaration or a test harness.
+   * Read as the hosted runtime and the facet manager read it (nimbusDebugEnabled).
    */
   get nimbusDebug(): boolean {
-    try {
-      const e = this.env as any;
-      return e?.NIMBUS_DEBUG === '1' || e?.NIMBUS_DEBUG === 'true';
-    } catch { return false; }
+    return nimbusDebugEnabled(this.env);
   }
 
   // ── W12 — DO read replicas state ────────────────────────────────────

@@ -278,6 +278,7 @@ for (const [owner, wasi, artifact] of [
   ['rolldown', '@rolldown/binding-wasm32-wasi', 'rolldown'],
   ['satteri', '@bruits/satteri-wasm32-wasi', 'satteri'],
   ['@astrojs/compiler-binding', '@astrojs/compiler-binding-wasm32-wasi', 'astro-compiler'],
+  ['@tailwindcss/oxide', '@tailwindcss/oxide-wasm32-wasi', 'oxide'],
 ]) {
   for (const name of [owner, wasi]) {
     const staged = lookupStagedArtifact(name);

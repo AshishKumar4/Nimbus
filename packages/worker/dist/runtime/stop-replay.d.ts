@@ -1,4 +1,12 @@
 /**
+ * The clock as it is, as an expression of the runner's source (a function):
+ * for Nimbus's own reads of it, which a run and its run again make
+ * differently as their state differs, so they cannot be the program's
+ * (whose readings a run again is handed back). The runner's stop-replay's
+ * realNow where it has one; the clock itself in a runner or a test without.
+ */
+export declare const REAL_NOW_SOURCE = "(typeof __nimbusStopReplay !== \"undefined\" ? __nimbusStopReplay.realNow : Date.now)";
+/**
  * The guest half, spliced at module level into a facet runner before the
  * node shims: `const __nimbusStopReplay`, private to the runner module.
  *

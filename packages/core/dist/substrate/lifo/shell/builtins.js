@@ -1,6 +1,7 @@
 import { resolveContext } from '../commands/registry.js';
 import { resolve } from '../utils/path.js';
 import { echoOutput } from '../utils/backslash-escapes.js';
+import { writeLossless } from '../utils/bytes-io.js';
 import { singleQuote } from '../../../_shared/shell-quote.js';
 import { isDecimalInteger, isShellIdentifier } from './names.js';
 import { assignArray, assignVariable } from './variables.js';
@@ -90,7 +91,7 @@ async function builtinPwd({ stdout, state }) {
     return 0;
 }
 async function builtinEcho({ args, stdout }) {
-    (await stdout.write(echoOutput(args)));
+    await writeLossless(stdout, echoOutput(args));
     return 0;
 }
 async function builtinClear({ host }) {

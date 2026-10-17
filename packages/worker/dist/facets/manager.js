@@ -20,7 +20,7 @@ import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { residencyMissReport } from '../runtime/residency-miss-report.js';
 import { buildOpenCodeTransportPlan } from '../runtime/opencode-invocation.js';
 import { RESIDENCY_MISS_REPORT_SOURCE } from '../loaders/compiled-bodies.generated.js';
-import { commonJsCellModuleName, commonJsCellReadsBack, columnMapModuleName, commonJsEntryModuleName, declaresWrapperBinding, runtimeCodeModuleName, runtimeExpressionModule, runtimeFunctionModule, wrapCommonJsCell, } from '@nimbus-sh/core/_shared/commonjs-cell.js';
+import { commonJsCellModuleName, commonJsCellReadsBack, columnMapModuleName, commonJsEntryModuleName, declaresWrapperBinding, ENTRY_CHECKED, runtimeCodeModuleName, runtimeExpressionModule, runtimeFunctionModule, wrapCommonJsCell, } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { moduleImporterUrl } from '@nimbus-sh/core/_shared/module-importer.js';
 import { isTypescriptDeclarationFile } from '@nimbus-sh/core/_shared/typescript-specifiers.js';
 import { ReadAheadBudget, STDIN_SYNC_READ_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
@@ -76,7 +76,7 @@ import { LAUNCH_PROFILE_MAX_PATHS, LaunchLearningStore } from './launch-learning
 import { LearnedServers } from './server-hints.js';
 import { disposeRpcResources } from '@nimbus-sh/platform/rpc-dispose.js';
 import { SUPERVISOR_ANSWERING_SRC } from '@nimbus-sh/core/runtime/supervisor-answering.generated.js';
-import { STOP_REPLAY_SOURCE } from '../runtime/stop-replay.js';
+import { REAL_NOW_SOURCE, STOP_REPLAY_SOURCE } from '../runtime/stop-replay.js';
 import { PENDING_IO_SOURCE } from '../runtime/pending-io.js';
 import { OwnedPieces, ReplayOutputGate, StdinTaken, stopRecordOf } from '../runtime/stop-replay-host.js';
 import { answerDigest } from '../runtime/stop-replay-journal.js';
@@ -106,6 +106,7 @@ import { CRED_KERNEL, isNativeBinPath, launchNamedPaths, requireVfsCred } from '
 import { acquireSupervisorAllocation, acquireSupervisorCopyAllocation, readSupervisorAllocationBudget, tryAcquireSupervisorAllocation, tryAcquireSupervisorCopyAllocation, reclaimableSupervisorAllocation, } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { streamedWasmImageDigest } from './wasm-image-digest.js';
 import { wasmImageDigest } from './wasm-image-key.js';
+import { nimbusDebugEnabled } from '../_shared/nimbus-debug.js';
 import { attributeAllocation, setPrefetchCacheBytes } from '@nimbus-sh/platform/diag-counters.js';
 const launchAdapters = new WeakMap();
 class PrefetchCreditGate {
@@ -293,6 +294,8 @@ export const RESIDENT_BOOT_SETTLE_MS = 1000;
  * it watches.
  */
 export const ENTRYPOINT_EVENT_LOOP = `
+// Its deadlines are Nimbus's own reads of the clock (REAL_NOW_SOURCE).
+const __nimbusLoopNow = ${REAL_NOW_SOURCE};
 function __nimbusHandleCount(__name) {
   const __value = globalThis[__name];
   return typeof __value === "number" ? __value : 0;
@@ -395,9 +398,9 @@ async function __nimbusRunEntrypointToExit(__entryResult, __deadlineMs, __before
   };
   if (!__beforeExit) return await __nimbusRunEventLoop(__count, __nimbusProcessExitPromise, __deadlineMs, 4, __nimbusReportBlockedState);
   const __limited = Number.isFinite(__deadlineMs);
-  const __startedAt = __limited ? Date.now() : 0;
+  const __startedAt = __limited ? __nimbusLoopNow() : 0;
   for (;;) {
-    const __remaining = __limited ? Math.max(0, __deadlineMs - (Date.now() - __startedAt)) : __deadlineMs;
+    const __remaining = __limited ? Math.max(0, __deadlineMs - (__nimbusLoopNow() - __startedAt)) : __deadlineMs;
     const __drained = await __nimbusRunEventLoop(__count, __nimbusProcessExitPromise, __remaining, 4, __nimbusReportBlockedState);
     if (__drained.pending || !await __beforeExit()) return __drained;
   }
@@ -476,7 +479,7 @@ function __nimbusNaturalExit(__beforeExit) {
 // and every request routed to the facet, which waits for boot — hung
 // forever. A rejection after the budget fails the process as Node's does.
 async function __nimbusSettleEntrypointStartup(__entryResult, __deadlineMs) {
-  const __startedAt = Date.now();
+  const __startedAt = __nimbusLoopNow();
   if (__entryResult && typeof __entryResult.then === "function") {
     const __rawSetTimeout = (typeof globalThis.__nimbusRawSetTimeout === "function")
       ? globalThis.__nimbusRawSetTimeout
@@ -501,7 +504,7 @@ async function __nimbusSettleEntrypointStartup(__entryResult, __deadlineMs) {
   }
   return await __nimbusRunEventLoop(
     __nimbusPendingStartupWork, __nimbusProcessExitPromise,
-    Math.max(0, __deadlineMs - (Date.now() - __startedAt)), 4,
+    Math.max(0, __deadlineMs - (__nimbusLoopNow() - __startedAt)), 4,
   );
 }
 `;
@@ -777,8 +780,8 @@ export function entryEsModuleKey(filename, cwd) {
  * is `[eval]`), its scope read off the code itself (declaresWrapperBinding),
  * its `Function` carrying `importer` (entryImporterUrl).
  */
-function entryModule(userCode, filename, cwd, esModule, bundleSource, preamble) {
-    const entry = programEntry(userCode, filename, cwd, esModule, bundleSource);
+function entryModule(userCode, filename, cwd, esModule, bundleSource, preamble, check = false) {
+    const entry = programEntry(userCode, filename, cwd, esModule, bundleSource, check);
     if (preamble === undefined)
         return entry;
     // The preamble, a module of its own, then the entry: `(preamble, entry)`.
@@ -790,7 +793,9 @@ function entryModule(userCode, filename, cwd, esModule, bundleSource, preamble) 
         evaluate: `(__nimbusEntryWrapper(${JSON.stringify(name)}, ${JSON.stringify(importer)})({}, __nimbusMakeRequire(mod), mod, filename || "/home/user/script.js", dirname || "/home/user"), ${entry.evaluate})`,
     };
 }
-function programEntry(userCode, filename, cwd, esModule, bundleSource) {
+/** `node -c`'s entry cell begins with this, on the wrapper's line: its compile succeeds, and nothing of it runs. */
+const CHECKED_HEAD = `throw ${JSON.stringify(ENTRY_CHECKED)};`;
+function programEntry(userCode, filename, cwd, esModule, bundleSource, check) {
     const key = entryEsModuleKey(filename, cwd);
     const cell = commonJsCellModuleName(key);
     const importer = entryImporterUrl(filename, cwd);
@@ -809,7 +814,11 @@ function programEntry(userCode, filename, cwd, esModule, bundleSource) {
     const code = rewriteProvidedCommonJsModules(userCode);
     const name = commonJsEntryModuleName(filename || '[eval]');
     const path = 'filename || "/home/user/script.js"';
-    const wrapped = wrapCommonJsCell(code, declaresWrapperBinding(code) ? 'block' : 'function');
+    // -c compiles a function body, as Node's wrapSafe does, whatever it declares.
+    const body = wrapCommonJsCell(code, !check && declaresWrapperBinding(code) ? 'block' : 'function');
+    // -c: the cell stops at its first statement, so not even text of the
+    // program's that closes the wrapper runs (node-shims __nimbusEvaluateEntry).
+    const wrapped = check ? { ...body, text: CHECKED_HEAD + body.text, head: CHECKED_HEAD.length + body.head } : body;
     return {
         name,
         esModule: false,
@@ -1010,9 +1019,9 @@ ${RESIDENCY_MISS_REPORT}
  * names the entry's module, and so its stack frames; with `cwd` it is the
  * entry's importer (entryImporterUrl).
  */
-export async function generateEntrypointCode(userCode, vfsState, usesSqlite, sources, wasmImports = [], filename, cwd = DEFAULT_HOME, esModule, preamble) {
+export async function generateEntrypointCode(userCode, vfsState, usesSqlite, sources, wasmImports = [], filename, cwd = DEFAULT_HOME, esModule, preamble, check = false) {
     const bundleSource = await facetVfsBundleSourceFor(vfsState);
-    const entry = entryModule(userCode, filename, cwd, esModule, bundleSource, preamble);
+    const entry = entryModule(userCode, filename, cwd, esModule, bundleSource, preamble, check);
     const runtime = createNodeFacetRuntime(sources, { ...bundleSource, stackEntry: entry.stackEntry });
     const source = moduleSource `
 ${nodeProgramModule(bundleSource, runtime, usesSqlite, vfsState.stagedBindings, wasmImports)}
@@ -1337,7 +1346,7 @@ export function facetWasmImportsSource(wasmImports) {
 }
 export async function generateLongRunningNodeCode(userCode, vfsState, opts, usesSqlite, sources, pacer) {
     const bundleSource = await facetVfsBundleSourceFor(vfsState, pacer);
-    const entry = entryModule(userCode, opts.filename, opts.cwd || DEFAULT_HOME, opts.esModule, bundleSource, opts.preamble);
+    const entry = entryModule(userCode, opts.filename, opts.cwd || DEFAULT_HOME, opts.esModule, bundleSource, opts.preamble, opts.node?.check === true);
     const args = {
         argv: opts.argv || [],
         nodeCommandLine: opts.node ?? null,
@@ -1506,7 +1515,7 @@ ${VFS_CURSOR_SEED_SOURCE}
     // The thunk hands the parsed bundle over and drops this scope's reference,
     // so a cold boot frees it the moment it is adopted rather than holding it
     // through the fill. A kept store that reconciles never takes it.
-    const __residentBootStarted = Date.now();
+    const __residentBootStarted = ${REAL_NOW_SOURCE}();
     const __residentBooted = await __resident.sync.boot(
       () => { const __bundle = __MODULE_VFS_BUNDLE; __MODULE_VFS_BUNDLE = null; return __bundle; },
       __MODULE_VFS_CURSOR,
@@ -1518,7 +1527,7 @@ ${VFS_CURSOR_SEED_SOURCE}
       try {
         const __stats = __resident.cells.stats();
         await __supervisor.stderr(new TextEncoder().encode("[nimbus-debug] resident boot " + JSON.stringify({
-          ms: Date.now() - __residentBootStarted, ...__stats, failure: __residentBooted.failure || null,
+          ms: ${REAL_NOW_SOURCE}() - __residentBootStarted, ...__stats, failure: __residentBooted.failure || null,
         }) + "\\n"));
       } catch {}
     }
@@ -4620,10 +4629,7 @@ export class FacetManager {
                 },
             }),
         });
-        const debugVar = ((typeof env === 'object' || typeof env === 'function') && env !== null)
-            ? Reflect.get(env, 'NIMBUS_DEBUG')
-            : undefined;
-        this.debugEnabled = debugVar === '1' || debugVar === 'true';
+        this.debugEnabled = nimbusDebugEnabled(env);
         const profiles = ((typeof env === 'object' || typeof env === 'function') && env !== null)
             ? Reflect.get(env, 'NPM_TARBALL_CACHE')
             : undefined;
@@ -7053,7 +7059,7 @@ export class FacetManager {
             fetchNodeFacetSources(this.env),
         ]);
         const entryCode = await this._entryDynamicImports(code, opts.filename, opts.cwd || '/home/user', pacer);
-        const generated = await this._generateUnderCeiling(entry.pid, vfsState, moduleMemberBytes(sqliteModules) + memberBytes.wire + ONE_SHOT_HOST_ENTRY_BYTES, (state) => generateEntrypointCode(entryCode, state, usesSqlite, sources, wasmImports, opts.filename, opts.cwd || DEFAULT_HOME, opts.esModule, opts.preamble), true);
+        const generated = await this._generateUnderCeiling(entry.pid, vfsState, moduleMemberBytes(sqliteModules) + memberBytes.wire + ONE_SHOT_HOST_ENTRY_BYTES, (state) => generateEntrypointCode(entryCode, state, usesSqlite, sources, wasmImports, opts.filename, opts.cwd || DEFAULT_HOME, opts.esModule, opts.preamble, opts.node?.check === true), true);
         const textBytes = generatedMapRetainedBytes(generated, {});
         this._ensureOneShotShare(entry.pid, Math.max(prefetchNeed(vfsState.rawBytes ?? 0), textBytes) + memberBytes.owned);
         const wasmModules = await this._wasmModulesByValue(entry, wasmImports);

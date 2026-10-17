@@ -43,6 +43,8 @@ export interface NodeLaunch {
   eval?: string;
   /** `-p`/`--print`: the eval's completion value is printed when the process exits. */
   print: boolean;
+  /** `-c`/`--check`: the program's syntax is checked, and it does not run (check_syntax.js). */
+  check: boolean;
   /** `--experimental-eventsource`: the EventSource global exists (NODE_OPTIONS' or the command line's, the latter's last). */
   experimentalEventSource?: boolean;
   /** `--no-experimental-strip-types`: TypeScript is JavaScript to the loaders, unless transformTypes. */
@@ -51,16 +53,24 @@ export interface NodeLaunch {
   transformTypes?: boolean;
   /** `--enable-source-maps`, which `--experimental-transform-types` sets where it is read. */
   enableSourceMaps?: boolean;
+  /**
+   * `-e` code or stdin as Node's eval took its TypeScript (node-eval.ts
+   * nodeEvalInput): `sourceUrl`, its types stripped with no source map, its
+   * frames named by the stripper's sourceURL, `[eval]` (a transform where
+   * source maps are on carries a map instead); `hint`, amaro's message for code that compiles neither as
+   * JavaScript nor as TypeScript, which Node's report of the SyntaxError
+   * adds; `transformWarning`, a transform was attempted where Node's warning
+   * of it prints (not before a CommonJS eval's synchronous refusal).
+   */
+  evalTypeScript?: { sourceUrl: boolean; hint?: string; transformWarning: boolean };
 }
 
 /** What node's command line says, for the program it runs. */
 export interface NodeCommandLine extends NodeLaunch {
   /** Where the program's own arguments start: its script (or `-`), or, for `-e`, its arguments; their end when there are none. */
   programIndex: number;
-  /** `--input-type`: what `-e` code and stdin are (`module`, `commonjs`), the command line's over NODE_OPTIONS'. */
+  /** `--input-type`: what `-e` code and stdin are (`module`, `commonjs`, `module-typescript`, `commonjs-typescript`), the command line's over NODE_OPTIONS'. */
   inputType?: string;
-  /** `-c`/`--check`: the script's syntax is checked, and it does not run. */
-  check: boolean;
   /** `--experimental-default-type`: the format of a file with no other, the command line's over NODE_OPTIONS'. */
   defaultType?: string;
   version: boolean;
@@ -238,11 +248,14 @@ export function parseNodeCommandLine(args: readonly string[], nodeOptions = ''):
   if ('error' in envTokens) return envTokens;
   const fromEnv = readOptions(envTokens, true);
   if ('error' in fromEnv) return fromEnv;
+  // NODE_OPTIONS' own are checked as Node parses them, before the command line can override them.
+  const envRefused = refusedOptions(fromEnv.inputType, fromEnv.defaultType, false);
+  if (envRefused !== null) return envRefused;
   const fromArgs = readOptions(args, false);
   if ('error' in fromArgs) return fromArgs;
   // The options before the program, but the `--` that ended them.
   const options = args.slice(0, fromArgs.end);
-  return {
+  const line: NodeCommandLine = {
     execArgv: options.at(-1) === '--' ? options.slice(0, -1) : options,
     programIndex: fromArgs.end,
     conditions: [...fromEnv.conditions, ...fromArgs.conditions],
@@ -260,4 +273,21 @@ export function parseNodeCommandLine(args: readonly string[], nodeOptions = ''):
     version: fromArgs.version,
     help: fromArgs.help,
   };
+  return refusedOptions(line.inputType, line.defaultType, line.check && line.eval !== undefined) ?? line;
+}
+
+/** The values `--input-type` takes (src/node_options.cc EnvironmentOptions::CheckOptions). */
+const INPUT_TYPES: ReadonlySet<string> = new Set(['commonjs', 'module', 'commonjs-typescript', 'module-typescript']);
+
+/** What Node refuses of options once it has read them (EnvironmentOptions::CheckOptions), each on its line, in its order; null for nothing. */
+function refusedOptions(inputType: string | undefined, defaultType: string | undefined, checksEval: boolean): NodeCommandLineError | null {
+  const refused: string[] = [];
+  if (inputType !== undefined && !INPUT_TYPES.has(inputType)) {
+    refused.push('--input-type must be "module","commonjs", "module-typescript" or "commonjs-typescript"');
+  }
+  if (defaultType !== undefined && defaultType !== 'module' && defaultType !== 'commonjs') {
+    refused.push('--experimental-default-type must be "module" or "commonjs"');
+  }
+  if (checksEval) refused.push('either --check or --eval can be used, not both');
+  return refused.length === 0 ? null : { error: refused.map((message) => `node: ${message}\n`).join(''), exitCode: 9 };
 }

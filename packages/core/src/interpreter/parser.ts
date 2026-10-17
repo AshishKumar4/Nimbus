@@ -9,7 +9,7 @@
  */
 import { Parser, parse, tokTypes, type Options, type Program, type Token } from 'acorn';
 import { own } from './parser-realm.js';
-import { objectCreate, objectKeys, reflectGet, reflectSet } from './intrinsics.js';
+import { append, newSafeList, objectCreate, objectKeys, reflectGet, reflectSet, stringSlice } from './intrinsics.js';
 import type { AcornParser } from '../runtime/javascript-ast.js';
 
 // The interpreter's acorn (worker scripts/interpreter-bundle.mjs checks it imports nothing else).
@@ -17,9 +17,14 @@ export { parse };
 
 const MODULE_OPTIONS: Options = own({ ecmaVersion: 'latest', allowHashBang: true, sourceType: 'module' });
 const COMMONJS_OPTIONS: Options = own({ ecmaVersion: 'latest', allowHashBang: true, sourceType: 'script', allowReturnOutsideFunction: true });
+const SCRIPT_OPTIONS: Options = own({ ecmaVersion: 'latest', sourceType: 'script' });
+// The end of acorn's message (and V8's) for a name declared twice.
+const REDECLARED = ' has already been declared';
+const NESTED_DECLARATION = "'import' and 'export' may only appear at the top level";
 
 interface BlockParser extends AcornParser {
   strict: boolean;
+  input: string;
   start: number;
   end: number;
   lastTokStart: number;
@@ -61,7 +66,13 @@ class ThrowFinder extends AcornParserClass {
     const declared = this.declared;
     const missingInitializer = declared !== null && declared.required && declared.end === this.lastTokEnd
       && this.type !== tokTypes.eq && (pos === this.start || pos === this.lastTokEnd);
+    // V8 marks a redeclared name by its first character.
+    const redeclared = stringSlice(message, -REDECLARED.length) === REDECLARED;
+    // A module's `import` nested in a statement is an import expression to V8, which fails at the token after it.
+    const nestedImport = this.inModule && message === NESTED_DECLARATION && this.type === tokTypes._import && pos === this.start;
     this.raisedToken = missingInitializer ? [declared.start, declared.end]
+      : redeclared ? [pos, pos + 1]
+      : nestedImport ? tokenAfter(this.input, this.end)
       : pos === this.start ? [pos, this.end] : pos === this.lastTokStart ? [pos, this.lastTokEnd] : null;
     return super.raise(pos, message);
   }
@@ -113,6 +124,40 @@ class ThrowFinder extends AcornParserClass {
 }
 
 /**
+ * A ThrowFinder that notes where the braces it reads first close all they
+ * opened: as the parser moves past that `}`, before the lexer reads on (what
+ * follows may not lex in a declaration's place).
+ */
+class ClosingBrace extends ThrowFinder {
+  depth = 0;
+  closedAt = -1;
+
+  next(): void {
+    if (this.type === tokTypes.braceL || this.type === tokTypes.dollarBraceL) this.depth++;
+    else if (this.type === tokTypes.braceR && --this.depth === 0 && this.closedAt === -1) this.closedAt = this.start;
+    super.next();
+  }
+}
+
+// A CommonJS module's body as Node compiles it (wrapSafe): in a function of the wrapper's names.
+const BODY_HEAD = 'function f(exports, require, module, __filename, __dirname) {';
+
+/**
+ * The brace in `body`, a CommonJS module's, that closes the function it is
+ * the body of before its end (text after it goes on outside), as
+ * [start, end]: null when it is one function body, or stops parsing before
+ * the function closes (V8, which compiled it, is its judge).
+ */
+export function strayClosingBrace(body: string): [number, number] | null {
+  const text = BODY_HEAD + body + '\n}';
+  const finder = new ClosingBrace(SCRIPT_OPTIONS, text);
+  try { finder.parse(); } catch { /* where the function closed is known, or V8 is the judge */ }
+  if (finder.closedAt === -1 || finder.closedAt === text.length - 1) return null;
+  const at = finder.closedAt - BODY_HEAD.length;
+  return [at, at + 1];
+}
+
+/**
  * Where module `text` imports `name` from the specifier `requested` (an
  * import's imported name, a default import's binding, an export-from's local
  * name), and that specifier's string literal, as [nameStart, nameEnd,
@@ -153,6 +198,56 @@ export type Tokens = Iterable<Token> & { getToken(): Token };
 /** acorn's tokenizer, which Node's error_source.js reads an assert.ok() call's expression with. */
 export function tokenizer(code: string, options: Options): Tokens {
   return Parser.tokenizer(code, options);
+}
+
+/** The first token of module `text` that starts at or after `offset`, as [start, end]; null for none. */
+function tokenAfter(text: string, offset: number): [number, number] | null {
+  const tokens = Parser.tokenizer(text, MODULE_OPTIONS);
+  try {
+    for (let token = tokens.getToken(); token.type !== tokTypes.eof; token = tokens.getToken()) if (token.start >= offset) return [token.start, token.end];
+  } catch {
+    // A token that does not end is no place to mark.
+  }
+  return null;
+}
+
+/**
+ * The last token of `text` (as CommonJS reads it) that ends at or before
+ * `offset`, as [start, end]: where V8 places an argument list's missing `)`
+ * at the end of the input. Null for none.
+ */
+export function lastTokenBefore(text: string, offset: number): [number, number] | null {
+  let last: [number, number] | null = null;
+  const tokens = Parser.tokenizer(text, COMMONJS_OPTIONS);
+  try {
+    for (let token = tokens.getToken(); token.type !== tokTypes.eof && token.end <= offset; token = tokens.getToken()) last = [token.start, token.end];
+  } catch {
+    // A token that does not end (an unterminated string) is past the last one.
+  }
+  return last;
+}
+
+/**
+ * The rest element (`...`) directly inside the innermost parenthesis still
+ * open at `offset` in `text` (as CommonJS reads it), as [start, end]: where
+ * V8 reports a parenthesized rest no arrow follows
+ * (ParseArrowParametersWithRest) at the end of the input. Null for none.
+ */
+export function openParenRest(text: string, offset: number): [number, number] | null {
+  const open = newSafeList<{ readonly paren: boolean; rest: [number, number] | null }>();
+  const tokens = Parser.tokenizer(text, COMMONJS_OPTIONS);
+  try {
+    for (let token = tokens.getToken(); token.type !== tokTypes.eof && token.end <= offset; token = tokens.getToken()) {
+      const label = token.type.label;
+      if (label === '(' || label === '[' || label === '{' || label === '${') append(open, { paren: label === '(', rest: null });
+      else if (label === ')' || label === ']' || label === '}') open.length = open.length > 0 ? open.length - 1 : 0;
+      else if (label === '...' && open.length > 0) open[open.length - 1].rest ??= [token.start, token.end];
+    }
+  } catch {
+    // A token that does not end (an unterminated string) is past the last one.
+  }
+  for (let i = open.length - 1; i >= 0; i--) if (open[i].paren) return open[i].rest;
+  return null;
 }
 
 /**

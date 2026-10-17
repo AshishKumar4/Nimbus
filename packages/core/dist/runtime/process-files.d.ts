@@ -19,7 +19,7 @@ import { WaveIngest } from './wave-ingest.js';
 import { Hydrator, type HydratorOptions } from './hydration.js';
 import { Delegations, type DelegationRevoked } from './delegations.js';
 import type { OutputGate } from './output-gate.js';
-import type { FacetImage, ImageDigest } from './facet-host.js';
+import type { FacetImage } from './facet-host.js';
 import { CompositeVFS } from '../vfs/composite.js';
 import { ProcVFS } from '../vfs/proc-vfs.js';
 import type { VFS, VfsCopyOptions, VfsDirent, VfsRemoval, VfsStat } from '../vfs/vfs.js';
@@ -219,7 +219,7 @@ export declare const R_OK = 4;
  */
 /** A bridge's calls as a view that can wait makes them (ProcessView): each a promise, made again after a recall. */
 type RecallingBridge = {
-    [K in keyof RuntimeFsBridge]: RuntimeFsBridge[K] extends (...args: infer A) => infer R ? (...args: A) => Promise<Awaited<R>> : never;
+    [K in keyof RuntimeFsBridge]: NonNullable<RuntimeFsBridge[K]> extends (...args: infer A) => infer R ? (...args: A) => Promise<Awaited<R>> : never;
 };
 export declare class ProcessView implements VFS {
     /** The bridge itself: what a runtime hands a guest as its syscall surface. */
@@ -302,9 +302,12 @@ export declare class ProcessView implements VFS {
      */
     readFileUncached(path: string, options?: {
         maxBytes?: number;
+        contentKey?: string;
     }): Promise<Uint8Array>;
-    /** `path` as the wasm image `expected` names, read through this view when the host builds the facet (openFacetImage). */
-    image(path: string, expected: ImageDigest): Promise<FacetImage>;
+    /** The file's content key (RuntimeFsBridge.contentKey): equal keys, equal bytes; ENOTSUP where the filesystem keeps none. */
+    contentKey(path: string): Promise<string>;
+    /** `path` as a wasm image a facet loads, read through this view when the host builds the facet (openFacetImage). */
+    image(path: string): Promise<FacetImage>;
     /**
      * rm: a file, or with `recursive` a tree, whole or not at all; `force`
      * makes a missing path no error.
@@ -377,11 +380,11 @@ export type OpenFile = (path: string, flags: RuntimeOpenFlags) => Promise<Proces
  */
 export declare function withOpenFiles<T>(view: ProcessView, use: (open: OpenFile) => Promise<T>, failed: (file: ProcessFile, error: unknown) => Promise<void>): Promise<T>;
 /**
- * `path` as the wasm image `expected` names, read as `cred` through a host
- * view of its own at every load: for a facet that outlives the view it was
- * opened from (a shell's bash, a git that leaves its facet warm, a REPL).
+ * `path` as a wasm image a facet loads, read as `cred` through a host view
+ * of its own at every load: for a facet that outlives the view it was opened
+ * from (a shell's bash, a git that leaves its facet warm, a REPL).
  */
-export declare function hostImage(authority: NimbusFilesystemAuthority, cred: Readonly<VfsCred>, path: string, expected: ImageDigest): Promise<FacetImage>;
+export declare function hostImage(authority: NimbusFilesystemAuthority, cred: Readonly<VfsCred>, path: string): Promise<FacetImage>;
 /** A process's stat: everything stat(2) answers, which the bridge always has. */
 export interface ProcessStat extends VfsStat {
     mode: number;

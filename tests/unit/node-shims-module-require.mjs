@@ -68,7 +68,6 @@ function loadError(path) {
 for (const [path, pkg] of [
   ['/home/user/app/main.js', 'sharp'],
   ['/home/user/app/node_modules/sharp/lib/sharp.js', 'sharp'],
-  ['/home/user/app/node_modules/@tailwindcss/oxide/index.js', '@tailwindcss/oxide'],
 ]) {
   const e = loadError(path);
   const note = `Nimbus: ${pkg} has no Workers-compatible build: ${lookupReject(pkg).reason}`;
@@ -78,5 +77,7 @@ for (const [path, pkg] of [
 }
 assert.ok(!loadError('/home/user/app/node_modules/left-pad/index.js').message.includes('Nimbus: '),
   'a package the policy does not list gets no advisory');
+assert.ok(!loadError('/home/user/app/node_modules/@tailwindcss/oxide/index.js').message.includes('has no Workers-compatible build'),
+  'a package with a staged binding is not advised as unsupported');
 
 console.log('node-shims-module-require: ok');

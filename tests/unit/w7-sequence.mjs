@@ -283,7 +283,7 @@ for (const reported of ['ENOSPC', 'EIO', undefined]) {
   );
   const kept = () => [...s.sql.exec('SELECT id FROM vfs_wave_descriptions WHERE pid = ?', 9)].length;
   const label = reported ?? 'no errno';
-  const open = call({ call: 'open', path: 'home/user/c.txt', mode: 0o644, description: 'c1' });
+  const open = call({ call: 'open', path: 'home/user/c.txt', mode: 0o644, access: 'write', description: 'c1' });
   let answer = await wave(1, [open], 0);
   assert.equal(answer.ok, true);
   assert.equal(kept(), 1);

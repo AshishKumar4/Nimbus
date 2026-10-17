@@ -387,6 +387,17 @@ export declare function copiedPermissions(mode: number, directory: boolean): num
  * chmod's question, asked where the copy lands.
  */
 export declare function copyfileMode(mode: number, size: number, uid: number): number;
+/**
+ * The mode a copy sets once its content is in, from the source's: cp -p's
+ * (`preserve`), the source's permission bits, before copyfile's
+ * (`keepMode`); null for neither, the mode a creation there makes. One
+ * rule for the engine's copy (SqliteVFS copyFile) and the copy between
+ * backends (CompositeVFS copyBytes).
+ */
+export declare function copySetsMode(mode: number, size: number, uid: number, options: {
+    preserve?: boolean;
+    keepMode?: boolean;
+}): number | null;
 /** True for a character device such as `/dev/zero`, which streams rather than stores. */
 export declare function isCharacterDevice(mode: number | undefined): boolean;
 /** The `ls -l` type character for a mode, falling back to the entry's type. */

@@ -225,8 +225,13 @@ export interface CredentialedVfs {
     readFileString(path: string): string;
     stat(path: string): VfsStat;
     lstat(path: string): VfsStat;
-    /** stat (lstat when `followLeaf` is false), or null when the name is not there: no error made for an absence. */
-    statIfPresent(path: string, followLeaf?: boolean): VfsStat | null;
+    /**
+     * stat (lstat when `followLeaf` is false), or null when the name is not
+     * there: no error made for an absence. A name below a regular file is
+     * absent too ("is it there?"), unless `belowFile` is 'ENOTDIR', which says
+     * so as stat(2) does.
+     */
+    statIfPresent(path: string, followLeaf?: boolean, belowFile?: 'absent' | 'ENOTDIR'): VfsStat | null;
     /** Whether something is at `path` (a link not followed) as published: no append stored, no holder recalled (VFS.landedAt). */
     landedAt(path: string): boolean;
     /** utimensat(2), each time an FsTime, resolved and judged as it commits. `followSymlinks: false` sets a link's own. */
@@ -271,6 +276,7 @@ export interface CredentialedVfs {
     rename(oldPath: string, newPath: string): void;
     copyFile(src: string, dest: string, options?: {
         keepMode?: boolean;
+        preserve?: boolean;
     }): VfsStat & {
         from: {
             path: string;
@@ -1493,8 +1499,9 @@ export declare class SqliteVFS {
     /**
      * The content key of an inode's bytes: sha256 of them up to CHUNK_SIZE,
      * else the digest of the manifest's ordered chunk hashes. An in-place edit
-     * clears a manifest's digest; it is recomputed here and stored unless
-     * another content already holds it.
+     * clears a manifest's digest; it is recomputed here once per edit and
+     * remembered (contentKeyMemo, dropped by the next edit), never written: a
+     * lookup is a read, and the store may be open read-only.
      */
     private contentKeyOf;
     private manifestDigest;
@@ -1572,7 +1579,11 @@ export declare class SqliteVFS {
     private abandonStaging;
     private readFileString;
     private stat;
-    /** stat, with a name that is not there (or a directory on its way that is not) answered null: an answer, not an error. */
+    /**
+     * stat, with a name that is not there answered null: an answer, not an
+     * error. A file on its way (ENOTDIR) is not there either, unless
+     * `belowFile` is 'ENOTDIR' (stat(2)'s answer).
+     */
     private statIfPresent;
     /** A linked inode's stat, for `stat` and for the entries `list` reports. */
     private statOf;
@@ -1742,10 +1753,13 @@ export declare class SqliteVFS {
      * source's permission bits less the copier's umask, as cp(1) makes it; a
      * file there keeps its own mode. With \`keepMode\` (copyfile), the copy has
      * copyfileMode's bits, a file there too, set in this one write as chmod
-     * judges it (modeChange). Answers the copy's stat, the key it wrote
-     * (\`landed\`, the destination's links followed), and the file copied: its
-     * key and the revision of the version this write read (its row's
-     * generation then), which nothing after the read moves.
+     * judges it (modeChange). With \`preserve\` (cp -p), as a tree copy's
+     * entries (planCopyTree): the source's permission bits, a file there too,
+     * set as chmod judges it, its times, and its owner when root copies.
+     * Answers the copy's stat, the key it wrote (\`landed\`, the destination's
+     * links followed), and the file copied: its key and the revision of the
+     * version this write read (its row's generation then), which nothing
+     * after the read moves.
      */
     private copyFile;
     /**
@@ -2238,7 +2252,7 @@ export declare class SqliteVFS {
      * (SqliteRuntimeFsBridge.open): EEXIST for an exclusive create of a name
      * there (a link included, followed or not), ENOENT without `create`,
      * ELOOP for a link when `nofollow`, EISDIR for a directory, EACCES without
-     * write permission; a name made empty with `mode` less the call's umask, or
+     * the access asked (openAccessMask); a name made empty with `mode` less the call's umask, or
      * an existing file emptied when `truncate`; then, with `fchmod`, that file
      * given the mode (chmod's rule, EPERM for another's), all of it refused
      * together. Its answer is the file's stat.

@@ -28,8 +28,7 @@ import { ReplSession } from './repl-session.js';
 import { buildRubyPreamble } from '@nimbus-sh/core/runtime/ruby-runner.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { hostImage } from '@nimbus-sh/core/runtime/process-files.js';
-import { isVfsError, syscallError } from '@nimbus-sh/core/vfs/vfs-error.js';
-import { installedFile } from '@nimbus-sh/core/runtime/runtime-manifest.js';
+import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
 import { RUBY_REPL_TASK } from '../loaders/compiled-bodies.generated.js';
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
@@ -153,17 +152,14 @@ class RubyReplAdapter {
         if (this.pool)
             return;
         const { installRoot, facetMgr } = this.deps;
-        const rel = 'share/ruby/ruby+stdlib.wasm';
-        const wasm = installedFile(this.deps.manifest, installRoot, rel);
+        const wasmPath = `${installRoot}/share/ruby/ruby+stdlib.wasm`;
         try {
-            if (!wasm)
-                throw syscallError('ENOENT', 'open', `${installRoot}/${rel}`);
-            this.image = await hostImage(this.deps.authority, CRED_KERNEL, wasm.path, wasm);
+            this.image = await hostImage(this.deps.authority, CRED_KERNEL, wasmPath);
         }
         catch (error) {
             if (!isVfsError(error, 'ENOENT'))
                 throw error;
-            throw new Error(`ruby+stdlib.wasm missing at ${installRoot}/${rel} (run 'nimbus install ruby')`);
+            throw new Error(`ruby+stdlib.wasm missing at ${wasmPath} (run 'nimbus install ruby')`);
         }
         // The one canonical Ruby facet preamble. A hand-rolled copy here once
         // drifted (it lacked the language-prelude const __rubyRun requires, so
