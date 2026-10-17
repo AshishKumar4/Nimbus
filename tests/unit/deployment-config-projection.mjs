@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { nimbusAppConfigs } from '../../scripts/generate-wrangler-configs.mjs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { DEPLOYMENT_SPEC, nimbusAppConfigs, writeNimbusAppConfigs } from '../../scripts/generate-wrangler-configs.mjs';
+import { hostedWorkerName } from '../../scripts/deploy-isolation.mjs';
 import { buildNimbusWranglerConfig } from '../../packages/config/src/index.ts';
 import { checkAll, loadConfig } from '../../scripts/deploy-isolation.mjs';
 
@@ -25,4 +28,24 @@ for (const tier of [changed[0], ...Object.values(changed[0].env), changed[1], ch
   assert.equal(tier.vars.NIMBUS_RUNTIME_CATALOG_SHA256, 'a'.repeat(64));
 }
 assert.deepEqual(probe.limits, buildNimbusWranglerConfig({ name: 'fixture' }).limits, 'hosting limits come from the canonical builder');
+
+// The staging target, the release and promotion find the hosted Workers by
+// the names the policy gives them: renamed there and regenerated, they are
+// the new names.
+const repoRoot = new URL('../..', import.meta.url).pathname;
+assert.equal(hostedWorkerName(repoRoot, 'staging'), spec.hostedDemo.staging.name);
+assert.equal(hostedWorkerName(repoRoot, 'production'), spec.hostedDemo.production.name);
+{
+  const root = mkdtempSync(join(tmpdir(), 'deployment-rename-'));
+  try {
+    for (const dir of ['apps', 'apps/hosted-demo', 'apps/probe']) mkdirSync(join(root, dir), { recursive: true });
+    const renamed = { ...spec, hostedDemo: { ...spec.hostedDemo, staging: { ...spec.hostedDemo.staging, name: 'nimbus-staging-renamed' }, production: { ...spec.hostedDemo.production, name: 'nimbus-renamed' } } };
+    writeFileSync(join(root, DEPLOYMENT_SPEC), JSON.stringify(renamed));
+    writeNimbusAppConfigs({ root });
+    assert.equal(hostedWorkerName(root, 'staging'), 'nimbus-staging-renamed');
+    assert.equal(hostedWorkerName(root, 'production'), 'nimbus-renamed');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
 console.log('deployment-config-projection: ok');

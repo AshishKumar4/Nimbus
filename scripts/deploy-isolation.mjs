@@ -347,6 +347,16 @@ export function resolveWorkerName(config, envName = null, override = null) {
   return envName ? `${config.name}-${envName}` : config.name;
 }
 
+/**
+ * The Worker hosted-demo's environment `envName` deploys as, as the checkout
+ * at `root` configures it (generated from apps/nimbus-deployments.json): the
+ * one name the staging target, the release and promotion deploy, check and
+ * record.
+ */
+export function hostedWorkerName(root, envName) {
+  return resolveWorkerName(loadConfig('apps/hosted-demo/wrangler.jsonc', root), envName);
+}
+
 /** Every string value under `node`, except binding-local names. */
 function collectStrings(node, out) {
   if (typeof node === 'string') { out.add(node); return out; }
