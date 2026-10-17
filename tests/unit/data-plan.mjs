@@ -3,7 +3,7 @@
 // rule, over a namespace — and what it leaves out.
 
 import assert from 'node:assert/strict';
-import { linkTargetOf, planFacetData, PACKAGE_DATA_MAX_BYTES } from '../../packages/worker/src/facets/data-plan.ts';
+import { linkTargetOf, planFacetData, planStylesheetSources, PACKAGE_DATA_MAX_BYTES } from '../../packages/worker/src/facets/data-plan.ts';
 import { findStaticFsReferences } from '../../packages/core/src/runtime/static-fs-refs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles, ProcessView } from '../../packages/core/src/runtime/process-files.ts';
@@ -33,6 +33,12 @@ function namespace(files) {
       : { entries: entries.slice(40), next: null },
     readText: async (p) => all.get(p.replace(/^\/+/, ''))?.text ?? null,
     stat: async (p) => { const e = all.get(p.replace(/^\/+/, '')); return e ? { kind: e.kind, size: e.size } : null; },
+    readdir: async (p) => {
+      const dir = p.replace(/^\/+/, '');
+      if (dir !== '' && all.get(dir)?.kind !== 'directory') return null;
+      const prefix = dir === '' ? '' : dir + '/';
+      return entries.filter((e) => e.path.startsWith(prefix) && e.path !== dir && !e.path.slice(prefix.length).includes('/'));
+    },
     linkLookups: 0,
     async linkTarget(p) {
       this.linkLookups++;
@@ -440,6 +446,10 @@ assert.equal(noTs.rules.typescript.files, 0);
   assert.ok(withOxide.sourceRoots.includes("/home/user/quoted's") && withOxide.sourceRoots.includes('/home/user/range/1001.tsx') && withOxide.sourceRoots.includes('/home/user/deep'));
   assert.equal(withOxide.rules['stylesheet-source'].files, 7);
   assert.equal(withOxide.names, listed, 'the namespace is counted once, however many walks');
+  // A one-shot, which lists no namespace, applies the same rule from the sheets its bundle holds.
+  const direct = await planStylesheetSources(ns, { cwd: '/home/user/app', home: '/home/user', sheets: ['home/user/app/src/index.css'] });
+  assert.deepEqual(direct.files.map((f) => f.path).sort(), withOxide.paths.filter((p) => !p.startsWith('home/user/app/') && !p.startsWith('home/user/theme/')).sort(), 'a one-shot holds the same files, from its stylesheets alone');
+  assert.deepEqual(direct.roots, withOxide.sourceRoots);
   const without = await planFacetData(ns, { cwd: '/home/user/app', home: '/home/user', closure: [], refs: [] });
   assert.ok(!new Set(without.paths).has('home/user/shared/Card.tsx'), 'without oxide, the source is not held');
   assert.deepEqual(without.sourceRoots, []);
