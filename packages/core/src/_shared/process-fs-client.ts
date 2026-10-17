@@ -621,6 +621,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   const queue: Entry[] = [];
   /** Spare capacity for the unsent tail's next bytes; doubled when full. */
   let tailBuffer: Uint8Array | null = null;
+  let bufferedTail: Entry | null = null;
   let inFlight: Entry[] | null = null;
   let scheduled = false;
   let pendingBytes = 0;
@@ -789,7 +790,10 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       bytes += next.bytes;
       taken.push(queue.shift()!);
     }
-    if (queue.length === 0) tailBuffer = null;
+    if (queue.length === 0 || (bufferedTail !== null && taken.includes(bufferedTail))) {
+      tailBuffer = null;
+      bufferedTail = null;
+    }
     return taken;
   };
 
@@ -953,6 +957,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     processGone ??= refusal;
     const ended = [...entries, ...queue.splice(0)];
     tailBuffer = null;
+    bufferedTail = null;
     for (const entry of ended) {
       if (entry.op !== null) { heapBytes -= entry.bytes; entry.op = null; }
       fail(entry, 'ESRCH', processGone.message);
@@ -967,6 +972,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     processGone ??= fsError('EIO', refusal.message, '');
     const stopped = [...entries, ...queue.splice(0)];
     tailBuffer = null;
+    bufferedTail = null;
     for (const entry of stopped) {
       if (entry.op !== null) { heapBytes -= entry.bytes; entry.op = null; }
       fail(entry, 'EIO', refusal.message);
@@ -1341,13 +1347,14 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
         const before = (tail.op as { call: DataCall }).call;
         const after = (parts[0] as { call: DataCall }).call;
         const merged: { op: ProcessFsOp; buffer: Uint8Array | null; append?: Uint8Array } = fold === 'append'
-          ? extended(before, after.data, tailBuffer)
+          ? extended(before, after.data, bufferedTail === tail ? tailBuffer : null)
           : { op: { type: 'call', call: { ...before, call: 'writeFile', data: after.data } as W7Call }, buffer: null };
         const mergedBytes = merged.op.type === 'call' && 'data' in merged.op.call ? merged.op.call.data.byteLength : 0;
         journal.replace(tail.jid, merged.op, merged.append);
         const grown = mergedBytes - tail.bytes;
         tail.op = merged.op;
         tailBuffer = merged.buffer;
+        bufferedTail = merged.buffer === null ? null : tail;
         tail.bytes = mergedBytes;
         // Someone waits on the fold now: what lingered goes.
         if (tail.lingers && !lingers) {
@@ -1383,7 +1390,6 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
         }
         counters.ops++;
       }));
-      if (queue[queue.length - 1] !== tail) tailBuffer = null;
       schedule();
       // A piece refused rejects the call; its last piece's receipt answers it,
       // and its mutation spans them all.

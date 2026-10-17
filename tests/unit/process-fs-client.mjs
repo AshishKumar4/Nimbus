@@ -812,6 +812,23 @@ for (const call of ['appendFile', 'append', 'write']) {
   assert.equal(answers, count, `${call}: a folded write was not answered`);
 }
 
+// ── A new tail and a later wave never borrow another entry's spare capacity ──
+for (const durable of [false, true]) {
+  const s = session();
+  const c = client(s, durable ? { journal: sqlJournal(createSqliteVfsTestHarness().sql) } : {});
+  c.submit(writeFile('home/user/capacity-a', 'a'), { acknowledged: true });
+  c.submit(appendFile('home/user/capacity-a', 'x'.repeat(100)), { acknowledged: true });
+  c.submit(writeFile('home/user/capacity-b', 'b'), { acknowledged: true });
+  c.submit(appendFile('home/user/capacity-b', 'y'), { acknowledged: true });
+  await c.flush();
+  assert.equal(s.text('home/user/capacity-a'), 'a' + 'x'.repeat(100));
+  assert.equal(s.text('home/user/capacity-b'), 'by');
+  c.submit(writeFile('home/user/capacity-c', 'c'), { acknowledged: true });
+  c.submit(appendFile('home/user/capacity-c', 'z'), { acknowledged: true });
+  await c.settle();
+  assert.equal(s.text('home/user/capacity-c'), 'cz');
+}
+
 // ── What the process answered in a held subtree lingers: it goes with the
 //    next op someone awaits, when hurried or flushed, or after lingerMs; what
 //    it answered elsewhere goes at once ──
