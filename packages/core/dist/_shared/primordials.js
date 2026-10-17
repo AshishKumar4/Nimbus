@@ -95,8 +95,20 @@ export const numberIsInteger = Number.isInteger;
 export const objectIs = Object.is;
 export const objectIsExtensible = Object.isExtensible;
 export const mathAbs = Math.abs;
-/** V8's Error.captureStackTrace, where the engine has one (the language's types have none). */
-export const ErrorCaptureStackTrace = Reflect.get(Error, 'captureStackTrace');
+/**
+ * Error.captureStackTrace as the runtime has it before any program code:
+ * V8's (none where the engine has none), or the one the launch's cell
+ * runtime installs over it, which places interpreted frames
+ * (useCaptureStackTrace). Node's errors capture their stacks through it.
+ */
+let runtimeCaptureStackTrace = Reflect.get(Error, 'captureStackTrace');
+export function captureStackTraceOf() {
+    return runtimeCaptureStackTrace;
+}
+/** The runtime's own Error.captureStackTrace, installed before any program code (commonjs-cell). */
+export function useCaptureStackTrace(capture) {
+    runtimeCaptureStackTrace = capture;
+}
 const BigIntOf = BigInt;
 const ErrorConstructor = Error;
 const RangeErrorConstructor = RangeError;
@@ -105,7 +117,8 @@ const RegExpConstructor = RegExp;
 const SyntaxErrorConstructor = SyntaxError;
 const TypeErrorConstructor = TypeError;
 const URIErrorConstructor = URIError;
-const URLConstructor = URL;
+// None in a realm with no URL (a test262 realm's), where nothing resolves a module.
+const URLConstructor = typeof URL === 'function' ? URL : undefined;
 // The interpreter's modules import these under the globals' names, so their
 // `new TypeError(...)` constructs the realm's own.
 export { BigIntOf as BigInt, ErrorConstructor as Error, RangeErrorConstructor as RangeError, ReferenceErrorConstructor as ReferenceError, RegExpConstructor as RegExp, SyntaxErrorConstructor as SyntaxError, TypeErrorConstructor as TypeError, URIErrorConstructor as URIError, URLConstructor as URL, };
@@ -226,6 +239,8 @@ export const generatorNext = uncurryThis(reflectGet(generatorPrototype ?? {}, 'n
 export const generatorThrow = uncurryThis(reflectGet(generatorPrototype ?? {}, 'throw'));
 /** `new URL(input, base)` with the realm's URL. */
 export function newURL(input, base) {
+    if (URLConstructor === undefined)
+        throw new TypeErrorConstructor('URL is not defined');
     return base === undefined ? new URLConstructor(input) : new URLConstructor(input, base);
 }
 /**

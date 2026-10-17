@@ -113,8 +113,9 @@ export declare const numberIsInteger: (number: unknown) => boolean;
 export declare const objectIs: (value1: any, value2: any) => boolean;
 export declare const objectIsExtensible: (o: any) => boolean;
 export declare const mathAbs: (x: number) => number;
-/** V8's Error.captureStackTrace, where the engine has one (the language's types have none). */
-export declare const ErrorCaptureStackTrace: unknown;
+export declare function captureStackTraceOf(): unknown;
+/** The runtime's own Error.captureStackTrace, installed before any program code (commonjs-cell). */
+export declare function useCaptureStackTrace(capture: Function): void;
 declare const BigIntOf: BigIntConstructor;
 declare const ErrorConstructor: ErrorConstructor;
 declare const RangeErrorConstructor: RangeErrorConstructor;
@@ -123,7 +124,7 @@ declare const RegExpConstructor: RegExpConstructor;
 declare const SyntaxErrorConstructor: SyntaxErrorConstructor;
 declare const TypeErrorConstructor: TypeErrorConstructor;
 declare const URIErrorConstructor: URIErrorConstructor;
-declare const URLConstructor: typeof URL;
+declare const URLConstructor: typeof URL | undefined;
 export { BigIntOf as BigInt, ErrorConstructor as Error, RangeErrorConstructor as RangeError, ReferenceErrorConstructor as ReferenceError, RegExpConstructor as RegExp, SyntaxErrorConstructor as SyntaxError, TypeErrorConstructor as TypeError, URIErrorConstructor as URIError, URLConstructor as URL, };
 /**
  * A data property descriptor that inherits nothing: ToPropertyDescriptor

@@ -87,7 +87,7 @@ export interface SystemErrorContext {
  * inspects one with its getters' values.
  */
 export declare function nodeSystemError(code: string, prefix: string, context: SystemErrorContext): Error;
-/** V8's Error.captureStackTrace, as the launch captured it (core's types are the language's, which have none). */
+/** Error.captureStackTrace as the runtime has it (primordials captureStackTraceOf; core's types are the language's, which have none). */
 export declare function captureStack(error: object, above: Function): void;
 export {};
 //# sourceMappingURL=node-error.d.ts.map

@@ -10168,7 +10168,7 @@ error: the Oxc transform crashed (${reason})`);
   var ObjectPrototype = Object.prototype;
   var SymbolPrototypeDescription = Reflect.getOwnPropertyDescriptor(Symbol.prototype, "description")?.get;
   var numberIsInteger = Number.isInteger;
-  var ErrorCaptureStackTrace = Reflect.get(Error, "captureStackTrace");
+  var runtimeCaptureStackTrace = Reflect.get(Error, "captureStackTrace");
   function copyMethods(to, from, methods) {
     for (let i = 0; i < methods.length; i++) {
       const descriptor = reflectGetOwnPropertyDescriptor(from, methods[i]);

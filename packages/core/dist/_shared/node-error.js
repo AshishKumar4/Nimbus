@@ -15,7 +15,7 @@
  * and `__nimbusNodeSystemError`, and the module resolver throws its errors
  * after a program may have replaced built-ins.
  */
-import { arrayIncludes, arrayJoin, dataDescriptor, Error, ErrorCaptureStackTrace, JSONStringify, mathAbs, numberIsInteger, objectAssign, objectCreate, objectHasOwn, objectIs, objectIsExtensible, objectKeys, ownField, RangeError, reflectApply, reflectDefineProperty, reflectDeleteProperty, reflectGet, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectHas, reflectSet, reflectSetPrototypeOf, regExpExec, SafeList, SafeMap, SafeWeakMap, stringIncludes, stringIndexOf, stringOf, stringSlice, stringEndsWith, stringToLowerCase, symbolFor, TypeError, URIError, } from './primordials.js';
+import { arrayIncludes, arrayJoin, captureStackTraceOf, dataDescriptor, Error, JSONStringify, mathAbs, numberIsInteger, objectAssign, objectCreate, objectHasOwn, objectIs, objectIsExtensible, objectKeys, ownField, RangeError, reflectApply, reflectDefineProperty, reflectDeleteProperty, reflectGet, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectHas, reflectSet, reflectSetPrototypeOf, regExpExec, SafeList, SafeMap, SafeWeakMap, stringIncludes, stringIndexOf, stringOf, stringSlice, stringEndsWith, stringToLowerCase, symbolFor, TypeError, URIError, } from './primordials.js';
 /** One class per base and code, as Node makes one per code. */
 const nodeErrorClasses = new SafeMap();
 /** Each class's code, by its prototype. */
@@ -477,8 +477,9 @@ function headStack(error, name, above) {
     else
         reflectDefineProperty(error, 'name', own);
 }
-/** V8's Error.captureStackTrace, as the launch captured it (core's types are the language's, which have none). */
+/** Error.captureStackTrace as the runtime has it (primordials captureStackTraceOf; core's types are the language's, which have none). */
 export function captureStack(error, above) {
-    if (typeof ErrorCaptureStackTrace === 'function')
-        reflectApply(ErrorCaptureStackTrace, Error, [error, above]);
+    const capture = captureStackTraceOf();
+    if (typeof capture === 'function')
+        reflectApply(capture, Error, [error, above]);
 }

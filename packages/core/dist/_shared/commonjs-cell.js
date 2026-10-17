@@ -863,6 +863,8 @@ Object.defineProperty(Error, "captureStackTrace", {
     if (__nimbusInterpreter !== null) __nimbusInterpreter.captureStack(holder, above);
   }, writable: true, configurable: true,
 });
+// Node's errors capture their stacks through it, whatever a program puts on Error since.
+__nimbusLaunchCaptures.useCaptureStackTrace(Error.captureStackTrace);
 function __nimbusStackSites(holder, count, above) {
   const set = (name, value) => {
     const descriptor = Object.getOwnPropertyDescriptor(Error, name);

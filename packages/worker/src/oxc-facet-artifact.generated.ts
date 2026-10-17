@@ -13,6 +13,6 @@
  * Size: 383.49 KiB
  */
 
-export const OXC_FACET_ASSET_PATH: string = "/_assets/runtime/oxc-facet-52e1638447007f61.js";
-export const OXC_FACET_BUILD_ID: string = "52e1638447007f61";
-export const OXC_FACET_SHA256: string = "52e1638447007f610c482004043b7a6a934adda632d7091e414076ccf08acc0d";
+export const OXC_FACET_ASSET_PATH: string = "/_assets/runtime/oxc-facet-db0d34f3be4f6b67.js";
+export const OXC_FACET_BUILD_ID: string = "db0d34f3be4f6b67";
+export const OXC_FACET_SHA256: string = "db0d34f3be4f6b679d16f51f10bab2d0889b315876defc30ee6602b4eb5df261";

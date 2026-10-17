@@ -15971,12 +15971,15 @@ var NumberOf = Number;
 var numberIsInteger = Number.isInteger;
 var objectIs = Object.is;
 var mathAbs = Math.abs;
-var ErrorCaptureStackTrace = Reflect.get(Error, "captureStackTrace");
+var runtimeCaptureStackTrace = Reflect.get(Error, "captureStackTrace");
+function captureStackTraceOf() {
+  return runtimeCaptureStackTrace;
+}
 var ErrorConstructor = Error;
 var RangeErrorConstructor = RangeError;
 var TypeErrorConstructor = TypeError;
 var URIErrorConstructor = URIError;
-var URLConstructor = URL;
+var URLConstructor = typeof URL === "function" ? URL : void 0;
 function dataDescriptor(value, writable, enumerable, configurable) {
   const descriptor = objectCreate(null);
   descriptor.value = value;
@@ -16055,6 +16058,7 @@ var generatorPrototype = reflectGetPrototypeOf(function* () {
 var generatorNext = uncurryThis(reflectGet(generatorPrototype ?? {}, "next"));
 var generatorThrow = uncurryThis(reflectGet(generatorPrototype ?? {}, "throw"));
 function newURL(input, base) {
+  if (URLConstructor === void 0) throw new TypeErrorConstructor("URL is not defined");
   return base === void 0 ? new URLConstructor(input) : new URLConstructor(input, base);
 }
 function safeGenerator(fn) {
@@ -16370,7 +16374,8 @@ function headStack(error2, name50, above) {
   else reflectDefineProperty(error2, "name", own);
 }
 function captureStack(error2, above) {
-  if (typeof ErrorCaptureStackTrace === "function") reflectApply(ErrorCaptureStackTrace, ErrorConstructor, [error2, above]);
+  const capture = captureStackTraceOf();
+  if (typeof capture === "function") reflectApply(capture, ErrorConstructor, [error2, above]);
 }
 
 // ../core/src/_shared/package-map.ts
