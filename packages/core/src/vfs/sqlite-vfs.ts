@@ -1167,6 +1167,44 @@ function groupedSqlExecs(rows: number, rowsPerExec: number): number {
   return rows === 0 ? 0 : Math.ceil(rows / rowsPerExec);
 }
 
+/** A drop transaction's cost: its history deletes, the references it queues, and its job row. */
+function dropMetrics(deletes: number, queued: number): TransactionPlanMetrics {
+  return {
+    blobBytes: 0,
+    logicalRows: deletes + queued + 1,
+    sqlExecs: Math.ceil(deletes / (KEYS_PER_SQL_EXEC / 2)) + Math.ceil(queued / Math.floor(SQL_MAX_BOUND_PARAMETERS / GC_ROW_COLUMNS)) + 1,
+    affectedPaths: 0,
+  };
+}
+
+/** The references `rows` (history rows) queue for collection, at most: a chunk's and a manifest's each. */
+function queuedFor(rows: readonly SqlRow[]): number {
+  let queued = 0;
+  for (const row of rows) queued += (row.chunk_id !== null ? 1 : 0) + (row.content_id !== null ? 1 : 0);
+  return queued;
+}
+
+/**
+ * `dead` (one drop page's history rows) as transactions the shared budget
+ * admits (dropMetrics), in order; one empty slice for none, which still
+ * moves the job's cursor.
+ */
+function dropSlices(dead: readonly SqlRow[]): SqlRow[][] {
+  const slices: SqlRow[][] = [[]];
+  let queued = 0;
+  for (const row of dead) {
+    let slice = slices[slices.length - 1]!;
+    const adds = queuedFor([row]);
+    if (slice.length > 0 && exceededTransactionLimit(dropMetrics(slice.length + 1, queued + adds)) !== null) {
+      slices.push(slice = []);
+      queued = 0;
+    }
+    slice.push(row);
+    queued += adds;
+  }
+  return slices;
+}
+
 function exceededTransactionLimit(metrics: TransactionPlanMetrics): TransactionLimit | null {
   if (metrics.blobBytes > MAX_TX_BLOB_BYTES) return 'blobBytes';
   if (metrics.logicalRows > MAX_TX_LOGICAL_ROWS) return 'logicalRows';
@@ -7424,8 +7462,9 @@ export class SqliteVFS {
   }
 
   /**
-   * Restore the live tree (or `subtree`) to snapshot `name`, in bounded
-   * transactions of RESTORE_PAGE_ROWS paths. Every path changed since the
+   * Restore the live tree (or `subtree`) to snapshot `name`, in pages of
+   * RESTORE_PAGE_ROWS paths read, each written in the transactions the shared
+   * budget admits. Every path changed since the
    * snapshot is replaced by the row the snapshot saw, or removed if the
    * snapshot did not have it; every path the snapshot had and the live tree
    * lost comes back. It is an ordinary write: new generations, revisions,
@@ -7571,17 +7610,32 @@ export class SqliteVFS {
         this.normalizeSharedEntry(entry, CRED_KERNEL);
         return entry;
       };
+      // As many as one transaction admits (the builder's measure, history and
+      // superseded references with the rows): a changed path not taken stays
+      // changed for the next page, and a revived one past the cursor.
+      let taken = 0;
       for (const live of changed) {
         const past = this.historyAt(live.path, job.g);
+        if (!builder.empty && (past === undefined ? builder.wouldExceedDeletion() : builder.wouldExceedInode()) !== null) break;
         if (past === undefined) {
           builder.addDeletedPath(live.path, live);
           deletedInodes.push(live);
         } else builder.addInode(restoredRow(past));
+        taken++;
       }
-      for (const past of revived) builder.addInode(restoredRow(past));
-      if (revived.length > 0) revivedAfter = revived[revived.length - 1]!.path;
-      this._writeBatchOnce({ plan: builder.build(), deletedInodes }, { source: 'content-publish' });
-      restored += changed.length + revived.length;
+      let revivedTaken = 0;
+      if (taken === changed.length) {
+        for (const past of revived) {
+          if (!builder.empty && builder.wouldExceedInode() !== null) break;
+          builder.addInode(restoredRow(past));
+          revivedTaken++;
+        }
+      }
+      if (revivedTaken > 0) revivedAfter = revived[revivedTaken - 1]!.path;
+      const plan = builder.build();
+      this.assertTransactionFits(plan.metrics);
+      this._writeBatchOnce({ plan, deletedInodes }, { source: 'content-publish' });
+      restored += taken + revivedTaken;
     }
   }
 
@@ -7669,32 +7723,36 @@ export class SqliteVFS {
         const to = Number(row.gen_to);
         return from <= g && !kept.some((s) => from <= s && s < to);
       });
-      if (page.length > 0) {
-        const last = page[page.length - 1]!;
-        afterGen = Number(last.gen_to);
-        afterPath = String(last.path);
-      }
-      this.executeMeasuredTransaction(
-        this.metricsOnlyPlan({ blobBytes: 0, logicalRows: dead.length * 2 + 1, sqlExecs: 8, affectedPaths: 0 }),
-        { source: 'content-gc' },
-        () => {
-          for (let i = 0; i < dead.length; i += KEYS_PER_SQL_EXEC / 2) {
-            const batch = dead.slice(i, i + KEYS_PER_SQL_EXEC / 2);
+      // The page's dead rows in transactions the shared budget admits, each
+      // ending at its last row's cursor, the page's last at the page's end.
+      const slices = dropSlices(dead);
+      for (const [index, slice] of slices.entries()) {
+        const final = index === slices.length - 1;
+        const last = final ? page[page.length - 1] : slice[slice.length - 1];
+        if (last !== undefined) {
+          afterGen = Number(last.gen_to);
+          afterPath = String(last.path);
+        }
+        const metrics = dropMetrics(slice.length, queuedFor(slice));
+        this.assertTransactionFits(metrics);
+        this.executeMeasuredTransaction(this.metricsOnlyPlan(metrics), { source: 'content-gc' }, () => {
+          for (let i = 0; i < slice.length; i += KEYS_PER_SQL_EXEC / 2) {
+            const batch = slice.slice(i, i + KEYS_PER_SQL_EXEC / 2);
             this.sql.exec(
               `DELETE FROM vfs_inode_history WHERE (path, gen_to) IN (VALUES ${batch.map(() => '(?, ?)').join(',')})`,
               ...batch.flatMap((row) => [row.path, row.gen_to]),
             );
           }
           const queue = new GcQueue();
-          for (const row of dead) {
+          for (const row of slice) {
             if (row.chunk_id !== null) queue.add(GC_CHUNK, Number(row.chunk_id));
             if (row.content_id !== null) queue.add(GC_CONTENT, Number(row.content_id));
           }
           this.insertRows('vfs_gc_queue (kind, id)', GC_ROW_COLUMNS, queue.rows(), 'INSERT OR IGNORE');
-          if (done) this.sql.exec('DELETE FROM vfs_jobs WHERE id = ?', id);
+          if (done && final) this.sql.exec('DELETE FROM vfs_jobs WHERE id = ?', id);
           else this.sql.exec('UPDATE vfs_jobs SET cursor = ? WHERE id = ?', JSON.stringify([afterGen, afterPath]), id);
-        },
-      );
+        });
+      }
       dropped += dead.length;
       if (dead.length > 0) this.maintenancePending = true;
       if (done) return { dropped, done: true };
