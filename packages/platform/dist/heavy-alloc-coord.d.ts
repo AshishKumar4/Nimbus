@@ -88,6 +88,8 @@ export declare class SupervisorAllocationBudget {
      * returned function unregisters it.
      */
     reclaimable(reclaim: () => void): () => void;
+    /** Running asks (acquireRunning) not yet settled. */
+    private readonly running;
     /**
      * Running work's credit, the lock order's one exception
      * (acquireSupervisorLoad): granted at once where it fits, ahead of every
@@ -96,6 +98,9 @@ export declare class SupervisorAllocationBudget {
      * only for credit other running work holds.
      */
     acquireRunning(bytes: number, signal?: AbortSignal, drivesLifecycle?: boolean): Promise<ResizableCreditLease>;
+    /** Reclaim parked launches' credit, the oldest parked first, while a running ask waits: what a reclaim frees goes to running asks first. */
+    private reclaimForRunning;
+    private runningWaits;
     /** acquireRunning's credit now, ahead of every queued ask, without reclaiming, or null. */
     tryAcquireRunning(bytes: number): ResizableCreditLease | null;
     /** Reserve bytes now or not at all, driving the lifecycle as acquire does (or not, `drivesLifecycle` false). */
