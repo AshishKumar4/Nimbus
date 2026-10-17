@@ -139,13 +139,12 @@ const outcomes = {
     } catch (error) {
       return refusal(error);
     }
-    const comments = [];
-    const tokens = [...tokenizer(code, { ecmaVersion: 'latest', allowHashBang: true, locations: true, onComment: comments })];
-    const mapUrl = comments.flatMap(({ value }) => [...value.matchAll(/[#@]\s*sourceMappingURL\s*=\s*(\S+)/g)]).at(-1)?.[1];
+    const mapUrl = [...code.matchAll(/\/[/*][#@]\s*sourceMappingURL\s*=\s*([^\s*]+)/g)].at(-1)?.[1];
     assert.equal(new URL(mapUrl).protocol, 'data:', `${name}: the browser map is inline`);
     const map = await (await fetch(mapUrl)).json();
     assert.equal(map.version, 3);
     if (name === 'destructure.mjs') {
+      const tokens = [...tokenizer(code, { ecmaVersion: 'latest', locations: true })];
       const token = tokens.find(({ type, value }) => type.label === 'name' && value === 'obj');
       assert.ok(token, 'the transformed module retains the source binding');
       assert.deepEqual(originalPosition(map, token.loc.start.line, token.loc.start.column), [1, source.indexOf('obj')],
