@@ -62,6 +62,7 @@ import { DEFAULT_HOME } from '@nimbus-sh/core/constants.js';
 import { normalizeRemoteBasePath } from '@nimbus-sh/core/runtime/remote-http-contract.js';
 import { isNimbusIdComponent } from '@nimbus-sh/core/_shared/id-component.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
+import { rootClampedSegments } from '@nimbus-sh/platform/lexical-path.js';
 import {
   codeRuntimeRequirement,
   runtimePolicyError,

@@ -21,40 +21,15 @@
 //     so the share of TTI that is simply network from this machine is
 //     visible instead of buried.
 //
-// Workloads exist because `node -v` does not boot Node on Nimbus — it is
-// answered by an argv fast path in runtime-registry.ts. Upstream uses it
-// as proof that "the Node.js runtime is available and functional", which
-// on Nimbus it is not. So the same TTI is also measured with commands
-// that genuinely execute.
+// The same TTI is measured for each readiness workload (workloads.mjs),
+// `node -v` among them, which on Nimbus does not boot Node.
 //
 //   BASE=<url> NIMBUS_PROBE_TOKEN=<jwt> bun tti.mjs --trials 30 --workload node-version
 
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { nimbus } from '../src/index.ts';
-
-const WORKLOADS = {
-  // Upstream's readiness command, verbatim. On Nimbus this is a constant
-  // written by an argv fast path — it does NOT prove Node started.
-  'node-version': {
-    command: 'node -v',
-    proves: 'sandbox reachable and dispatching commands (NOT that Node booted)',
-    verify: (r) => /^v\d+\.\d+\.\d+/.test(r.stdout),
-  },
-  // A real process whose output cannot be predicted by the caller, so a
-  // pass proves the sandbox actually ran something.
-  shell: {
-    command: 'echo $((6*7))-$$',
-    proves: 'a real process ran in the sandbox and returned computed output',
-    verify: (r) => /^42-\d+/.test(r.stdout.trim()),
-  },
-  // Proof the Node runtime itself booted and executed JavaScript.
-  'node-exec': {
-    command: 'node -e "console.log(6*7)"',
-    proves: 'the Node.js runtime booted and executed JavaScript',
-    verify: (r) => r.stdout.trim() === '42',
-  },
-};
+import { WORKLOADS } from './workloads.mjs';
 
 function parseArgs(argv) {
   const args = {
@@ -174,16 +149,27 @@ async function runSequential(trials) {
   return out;
 }
 
-async function runConcurrent(trials, staggerDelayMs) {
+/**
+ * `trials` trials, at most `concurrency` at once, each started at least
+ * `staggerDelayMs` after the one before it started.
+ */
+async function runConcurrent(trials, concurrency, staggerDelayMs) {
   const started = performance.now();
-  const pending = [];
+  const out = [];
+  const running = new Set();
+  let lastStart = null;
   for (let i = 0; i < trials; i += 1) {
-    if (staggerDelayMs > 0 && i > 0) {
-      await new Promise((r) => setTimeout(r, staggerDelayMs));
-    }
-    pending.push(runTrial(i));
+    while (running.size >= concurrency) await Promise.race(running);
+    const wait = lastStart === null ? 0 : lastStart + staggerDelayMs - performance.now();
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    lastStart = performance.now();
+    const trial = runTrial(i).then((result) => {
+      out[i] = result;
+      running.delete(trial);
+    });
+    running.add(trial);
   }
-  const out = await Promise.all(pending);
+  await Promise.all(running);
   return { out, wallClockMs: performance.now() - started };
 }
 
@@ -207,7 +193,7 @@ let wallClockMs = null;
 if (args.shape === 'sequential') {
   trials = await runSequential(args.trials);
 } else {
-  const result = await runConcurrent(args.trials, args.staggerDelayMs);
+  const result = await runConcurrent(args.trials, args.concurrency, args.staggerDelayMs);
   trials = result.out;
   wallClockMs = result.wallClockMs;
   for (const t of trials) {

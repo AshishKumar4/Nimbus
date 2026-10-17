@@ -7,6 +7,7 @@ import { CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { sqlJournal } from '@nimbus-sh/core/_shared/process-fs-journal.js';
 import { WASI_RESIDENT_STORE_BYTES } from '@nimbus-sh/platform/limits.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
+import { rootClampedSegments } from '@nimbus-sh/platform/lexical-path.js';
 import { processHost } from '@nimbus-sh/core/runtime/wasi/processes.js';
 import { wasiOutputRelay } from '@nimbus-sh/core/runtime/wasi/stdio.js';
 import { outputControlReader } from '@nimbus-sh/core/runtime/wasi/output-control.js';
@@ -350,21 +351,7 @@ export function __wasiAdoptSupervisor(sup) {
 // A guest-visible path in canonical form: no leading '/', no '..', no double
 // slashes. The socket path prefixes are matched against it.
 function __wasiCanonicalize(p) {
-    if (!p)
-        return '';
-    const parts = p.split('/');
-    const out = [];
-    for (const seg of parts) {
-        if (seg === '' || seg === '.')
-            continue;
-        if (seg === '..') {
-            if (out.length > 0)
-                out.pop();
-            continue;
-        }
-        out.push(seg);
-    }
-    return out.join('/');
+    return p ? rootClampedSegments(p).join('/') : '';
 }
 export function __wasiInitFS(opts) {
     // A fresh init is a fresh process: no supervisor adopted yet. Pools reuse an

@@ -33,8 +33,7 @@ import { buildRubyPreamble } from '@nimbus-sh/core/runtime/ruby-runner.js';
 import { CRED_KERNEL, type NimbusFilesystemAuthority, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { hostImage } from '@nimbus-sh/core/runtime/process-files.js';
 import type { FacetImage } from '@nimbus-sh/core/runtime/facet-host.js';
-import { isVfsError, syscallError } from '@nimbus-sh/core/vfs/vfs-error.js';
-import { installedFile, type RuntimeManifest } from '@nimbus-sh/core/runtime/runtime-manifest.js';
+import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { exists } from '@nimbus-sh/core/vfs/vfs.js';
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
 import { RUBY_REPL_TASK } from '../loaders/compiled-bodies.generated.js';
@@ -49,8 +48,6 @@ export interface RubyReplDeps {
   terminal: WebSocketTerminal;
   /** Per-user-VFS install dir for the ruby blob. */
   installRoot: string;
-  /** What is installed there: the interpreter's digest is its image's (installedFile). */
-  manifest: RuntimeManifest;
   /**
    * The invoking process's pid. The supervisor derives the prompt's
    * credential from it: the session filesystem the prompt reads and writes is
@@ -193,14 +190,12 @@ class RubyReplAdapter implements ReplAdapter {
   private async ensurePool(): Promise<void> {
     if (this.pool) return;
     const { installRoot, facetMgr } = this.deps;
-    const rel = 'share/ruby/ruby+stdlib.wasm';
-    const wasm = installedFile(this.deps.manifest, installRoot, rel);
+    const wasmPath = `${installRoot}/share/ruby/ruby+stdlib.wasm`;
     try {
-      if (!wasm) throw syscallError('ENOENT', 'open', `${installRoot}/${rel}`);
-      this.image = await hostImage(this.deps.authority, CRED_KERNEL, wasm.path, wasm);
+      this.image = await hostImage(this.deps.authority, CRED_KERNEL, wasmPath);
     } catch (error) {
       if (!isVfsError(error, 'ENOENT')) throw error;
-      throw new Error(`ruby+stdlib.wasm missing at ${installRoot}/${rel} (run 'nimbus install ruby')`);
+      throw new Error(`ruby+stdlib.wasm missing at ${wasmPath} (run 'nimbus install ruby')`);
     }
 
     // The one canonical Ruby facet preamble. A hand-rolled copy here once

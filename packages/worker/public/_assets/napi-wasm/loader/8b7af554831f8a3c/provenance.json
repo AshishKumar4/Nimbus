@@ -7,10 +7,16 @@
       "packages/core/src/vfs/vfs-error.ts": "0470e3d0a43c1b5c6f8b5daebeea895f6858307203a72f984fde4d6e01041008",
       "packages/core/src/vfs/vfs.ts": "0b175801c0381098ecee652a18c0422b3f67e39fd77a6958f2ad582d1ff2a066",
       "packages/core/tsconfig.json": "6dc680d90729597ee71dcaf78368fceb9f44638d4e301811dd4cff58bdb9b62f",
+      "packages/platform/src/lexical-path.ts": "cf6c5834a0e850007f9289347c79c67a2902bc7daad5711337f1565da3000b2e",
+      "packages/platform/tsconfig.json": "6dc680d90729597ee71dcaf78368fceb9f44638d4e301811dd4cff58bdb9b62f",
       "packages/worker/scripts/artifact-inputs.mjs": "b0c9307e6f6f13bae05ccf99ab22cf7a715553b8c6f46dbbddfef0181a2f7115",
       "packages/worker/scripts/napi-wasm/build.mjs": "5f1d124e26a906bfef4ba0faccf0a0d9e36164f1ae370b6c4f2d40f873c0b645",
       "packages/worker/scripts/napi-wasm/inputs.mjs": "a06c519ffee5e2637688e25ca527bf885f99d2f2fa4b5fe34a81ba5afda94dc4",
+<<<<<<<< HEAD:packages/worker/public/_assets/napi-wasm/loader/8b7af554831f8a3c/provenance.json
       "packages/worker/scripts/napi-wasm/loader/napi-wasm-loader.ts": "ecc01118f58a0f13523b9bfb0219adabbe687f281af275f3b6ed736314dc67ed",
+========
+      "packages/worker/scripts/napi-wasm/loader/napi-wasm-loader.ts": "fab2d0be04a9525221ca9e3cc755e69f62d10e0ad91f429c7070011b111b21e6",
+>>>>>>>> origin/work/dpt-merge:packages/worker/public/_assets/napi-wasm/loader/f9666a767694c071/provenance.json
       "packages/worker/scripts/napi-wasm/loader/wasi-trampoline.mjs": "cb857b5989626e502f2a1d86198ba32cec763f360e09bab108bacde3746bbd62",
       "packages/worker/scripts/napi-wasm/specs.mjs": "c12128ac7b54509bbb359380572208302d0e72d16a54f6341de8542ee36c9613",
       "packages/worker/scripts/stage-asset.mjs": "2187cb40e0491884adea0ae5deb543205f431e995a4e1e3a726d93d4e1173929",
@@ -46,13 +52,15 @@
       "bun.lock#esbuild": "add5ecc823d2dd6f81362b09025f25d76ab708b382ff33103bd0314cb655dee7",
       "package.json": "a0d482519e26833358f20cc67a3d24067c15c173e0c0c753423d415a62aa483a",
       "packages/core/package.json": "cc7e2c99ece7864577d557606ce7ac2de7302bd2006a100d795daf666b807075",
-      "packages/worker/package.json": "2e4200a6b9eb6626f5d85412d303790c3b55d3b5034db12e4920623754a60b06"
+      "packages/platform/package.json": "a747888a19282e5bcd5b014c8bbcba11b6ccf1570f52d4a80e6cd2b2d964f38f",
+      "packages/worker/package.json": "b7ac8ade2fceac0633f57d65e14010f83ba418a618134b85f960f5080a4ebf8e"
     },
     "graph": [
       "packages/core/src/runtime/wasi/filesystem.ts",
       "packages/core/src/vfs/dirent-type.ts",
       "packages/core/src/vfs/vfs-error.ts",
       "packages/core/src/vfs/vfs.ts",
+      "packages/platform/src/lexical-path.ts",
       "packages/worker/scripts/napi-wasm/loader/napi-wasm-loader.ts"
     ],
     "npmInputs": {
@@ -164,8 +172,13 @@
   ],
   "outputs": {
     "napi-wasm-loader.mjs": {
+<<<<<<<< HEAD:packages/worker/public/_assets/napi-wasm/loader/8b7af554831f8a3c/provenance.json
       "bytes": 212769,
       "sha256": "bc2d40aa0943930e5d57651788e94755c7540991d7f3787eeb1633b72d37518c"
+========
+      "bytes": 212711,
+      "sha256": "776d83f7fb9b79a27ed9075609c1004fb0a261a3d966ba8fcf11d02c5f89e12b"
+>>>>>>>> origin/work/dpt-merge:packages/worker/public/_assets/napi-wasm/loader/f9666a767694c071/provenance.json
     },
     "wasi-trampoline.wasm": {
       "bytes": 1961,

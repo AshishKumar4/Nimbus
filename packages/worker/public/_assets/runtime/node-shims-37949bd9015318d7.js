@@ -3182,11 +3182,20 @@ function wasmImageDigest(bytes) {
 return { WASM_IMAGE_HASH_SEED, wasmImageDigest, wasmImageHash, wasmImageKey };
 })();
 
-/** The key of the bytes a compile was handed; null for anything but a Uint8Array or an ArrayBuffer. */
+/**
+ * The key of the bytes a compile was handed: an ArrayBuffer's, or the range
+ * a view spans, whatever its kind (DataView, any typed array) and whatever
+ * buffer it views, as WebAssembly reads a BufferSource; null for anything
+ * else, a detached buffer's included, which the real compile then refuses
+ * as it would.
+ */
 function __nimbusWasmDigest(bytes) {
-  const view = bytes instanceof Uint8Array
-    ? bytes
-    : (bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : null);
+  let view = null;
+  try {
+    view = ArrayBuffer.isView(bytes)
+      ? new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+      : (bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : null);
+  } catch {}
   return view === null ? null : wasmImageDigest(view);
 }
 (() => {
@@ -18873,6 +18882,17 @@ function packageSelfReferenceSubpath(pkg, specifier) {
   return `.${specifier.slice(pkg.name.length)}`;
 }
 
+function rootClampedSegments(path, base = []) {
+  const out = [...base];
+  for (const segment of path.split("/")) {
+    if (segment === "..")
+      out.pop();
+    else if (segment !== "" && segment !== ".")
+      out.push(segment);
+  }
+  return out;
+}
+
 var NOT_NORMAL = /\/$|\/\/|(?:^|\/)\.\.?(?:\/|$)/;
 function plainVfsPath(path) {
   return NOT_NORMAL.test(path) ? null : path.charCodeAt(0) === 47 ? path.slice(1) : path;
@@ -18881,20 +18901,7 @@ function normalizeVfsPath(p) {
   const text = String(p ?? "");
   const plain = plainVfsPath(text);
   if (plain !== null) return plain;
-  return normalizedSegments(text, false);
-}
-function normalizedSegments(path, lookup) {
-  const segments = path.split("/");
-  const leaf = segments[segments.length - 1];
-  if (lookup && (leaf === "" || leaf === ".")) return null;
-  const out = [];
-  for (const seg of segments) {
-    if (seg === "..") {
-      if (lookup) return null;
-      out.pop();
-    } else if (seg !== "." && seg !== "") out.push(seg);
-  }
-  return out.join("/");
+  return rootClampedSegments(text).join("/");
 }
 function stripLeadingSlashes(p) {
   return p.replace(/^\/+/, "");
@@ -21149,18 +21156,22 @@ function __nimbusRequestTarget(kind, specifier, importer) {
 // core/_shared/relative-wasm-paths.ts, compiled once by the build (a
 // function's own text differs between compilers, so it is never spliced).
 var { relativeWasmPaths } = (() => {
+function rootClampedSegments(path, base = []) {
+  const out = [...base];
+  for (const segment of path.split("/")) {
+    if (segment === "..")
+      out.pop();
+    else if (segment !== "" && segment !== ".")
+      out.push(segment);
+  }
+  return out;
+}
+
 function relativeWasmPaths(source, filename) {
   const literals = /["'`]((?:\.{1,2}\/)*[\w@.-]+(?:\/[\w@.-]+)*\.wasm)["'`]/g;
   const dir = filename.replace(/^\/+/, "").split("/").slice(0, -1);
   const paths =   new Set();
-  for (const match of source.matchAll(literals)) {
-    const segments = [...dir];
-    for (const segment of match[1].split("/")) {
-      if (segment === "..") segments.pop();
-      else if (segment !== ".") segments.push(segment);
-    }
-    paths.add(segments.join("/"));
-  }
+  for (const match of source.matchAll(literals)) paths.add(rootClampedSegments(match[1], dir).join("/"));
   return [...paths];
 }
 return { relativeWasmPaths };

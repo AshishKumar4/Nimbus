@@ -36,6 +36,7 @@
 import { instantiateNapiModuleSync } from '@emnapi/core';
 import { asyncWork, tsfn } from '@emnapi/core/plugins';
 import { createContext } from '@emnapi/runtime';
+import { rootClampedSegments } from '../../../../platform/src/lexical-path.js';
 import type * as NodeFsModule from 'node:fs';
 import type { Dirent, Stats } from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
@@ -280,13 +281,7 @@ function errorCode(error: unknown): string | undefined {
 
 /** POSIX-normalize an absolute path; `..` stops at the root. */
 function normalize(path: string): string {
-  const out: string[] = [];
-  for (const segment of path.split('/')) {
-    if (segment === '' || segment === '.') continue;
-    if (segment === '..') out.pop();
-    else out.push(segment);
-  }
-  return '/' + out.join('/');
+  return '/' + rootClampedSegments(path).join('/');
 }
 
 interface BridgeHandle extends RuntimeFileHandle {

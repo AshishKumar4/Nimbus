@@ -106,6 +106,7 @@ import { CRED_KERNEL, isNativeBinPath, launchNamedPaths, requireVfsCred } from '
 import { acquireSupervisorAllocation, acquireSupervisorCopyAllocation, readSupervisorAllocationBudget, tryAcquireSupervisorAllocation, tryAcquireSupervisorCopyAllocation, reclaimableSupervisorAllocation, } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { streamedWasmImageDigest } from './wasm-image-digest.js';
 import { wasmImageDigest } from './wasm-image-key.js';
+import { nimbusDebugEnabled } from '../_shared/nimbus-debug.js';
 import { attributeAllocation, setPrefetchCacheBytes } from '@nimbus-sh/platform/diag-counters.js';
 const launchAdapters = new WeakMap();
 class PrefetchCreditGate {
@@ -4622,10 +4623,7 @@ export class FacetManager {
                 },
             }),
         });
-        const debugVar = ((typeof env === 'object' || typeof env === 'function') && env !== null)
-            ? Reflect.get(env, 'NIMBUS_DEBUG')
-            : undefined;
-        this.debugEnabled = debugVar === '1' || debugVar === 'true';
+        this.debugEnabled = nimbusDebugEnabled(env);
         const profiles = ((typeof env === 'object' || typeof env === 'function') && env !== null)
             ? Reflect.get(env, 'NPM_TARBALL_CACHE')
             : undefined;

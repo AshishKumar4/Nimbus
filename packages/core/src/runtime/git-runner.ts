@@ -29,7 +29,7 @@
  * another runs (its child, or one beside it) takes another.
  */
 
-import { installedFile, type RuntimeManifest } from './runtime-manifest.js';
+import { installedPath, type RuntimeManifest } from './runtime-manifest.js';
 import { hostImage } from './process-files.js';
 import { nameDec } from '../_shared/bytes.js';
 import type { Command, CommandContext, CommandOutputStream } from '../substrate/lifo/commands/types.js';
@@ -90,8 +90,8 @@ export function makeGitRunnerFactory(deps: {
         return 1;
       }
     };
-    const wasm = installedFile(manifest, installRoot, GIT_WASM);
-    const systemConfig = installedFile(manifest, installRoot, GIT_SYSTEM_CONFIG)?.path ?? null;
+    const wasmPath = installedPath(manifest, installRoot, GIT_WASM);
+    const systemConfig = installedPath(manifest, installRoot, GIT_SYSTEM_CONFIG);
 
     return async function gitBinHandler(ctx: CommandContext): Promise<number> {
       const started = Date.now();
@@ -99,7 +99,7 @@ export function makeGitRunnerFactory(deps: {
       const cwd: string = ctx.cwd || '/home/user';
       const notHydrated = await gateSyncLaunch(ctx.vfs.process, cwd, null, argv);
       if (notHydrated !== null) { ctx.stderr.write(`${binName}: ${notHydrated}\n`); return 1; }
-      if (wasm === null || systemConfig === null) {
+      if (wasmPath === null || systemConfig === null) {
         ctx.stderr.write(`${binName}: ${GIT_WASM} or ${GIT_SYSTEM_CONFIG} missing from the install\n`);
         return 127;
       }
@@ -107,9 +107,9 @@ export function makeGitRunnerFactory(deps: {
 
       let image: FacetImage;
       try {
-        image = await hostImage(deps.filesystem, CRED_KERNEL, wasm.path, wasm);
+        image = await hostImage(deps.filesystem, CRED_KERNEL, wasmPath);
       } catch (error) {
-        ctx.stderr.write(`${binName}: opening ${wasm.path}: ${errorMessage(error)}\n`);
+        ctx.stderr.write(`${binName}: opening ${wasmPath}: ${errorMessage(error)}\n`);
         return 1;
       }
 

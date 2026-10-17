@@ -1,4 +1,5 @@
 import type { VfsEvent } from '../vfs/events.js';
+import { rootClampedSegments } from '@nimbus-sh/platform/lexical-path.js';
 import type { VfsRemoval } from '../vfs/vfs.js';
 
 /**
@@ -220,6 +221,12 @@ export interface RuntimeReadFileOptions {
    * its reader to open instead.
    */
   maxBytes?: number;
+  /**
+   * Read only the bytes this content key names ({@link RuntimeFsBridge.contentKey}),
+   * checked in the same turn as the read: other bytes there are ESTALE, unread.
+   * SQLite's alone, as maxBytes is; a mount answers ENOTSUP.
+   */
+  contentKey?: string;
 }
 
 export interface RuntimeReadOptions {
@@ -352,15 +359,7 @@ export async function gateSyncLaunch(
 
 /** The paths a synchronous-reading launch names (see {@link gateSyncLaunch}). */
 export function launchNamedPaths(cwd: string, program: string | null, argv: readonly string[]): string[] {
-  const anchor = (path: string) => {
-    const joined = path.startsWith('/') ? path : `${cwd.replace(/\/+$/, '')}/${path}`;
-    const out: string[] = [];
-    for (const part of joined.split('/')) {
-      if (part === '' || part === '.') continue;
-      if (part === '..') out.pop(); else out.push(part);
-    }
-    return `/${out.join('/')}`;
-  };
+  const anchor = (path: string) => `/${rootClampedSegments(path.startsWith('/') ? path : `${cwd}/${path}`).join('/')}`;
   const named = program === null ? [] : [anchor(program)];
   for (const arg of argv) if (arg !== '' && !arg.startsWith('-')) named.push(anchor(arg));
   return named;
@@ -372,7 +371,7 @@ export type RuntimeSynchronousFs = {
   // writeBatch, whose records may land on a mount only an awaited call
   // reaches; awaitRecall is a long poll, waited for by the holder's own loop.
   [K in Exclude<keyof RuntimeFsBridge, 'synchronous' | 'subscribe' | 'writeStream' | 'writeBatch' | 'writeFileFrom' | 'acquire' | 'copyTree' | 'gateLaunch' | 'awaitRecall'>]:
-    RuntimeFsBridge[K] extends (...args: infer A) => infer R
+    NonNullable<RuntimeFsBridge[K]> extends (...args: infer A) => infer R
       ? (...args: A) => Awaited<R> : never;
 };
 
@@ -486,6 +485,14 @@ export interface RuntimeFsBridge {
    * under it mutated, so consumers can cache without global invalidation.
    */
   revision(path?: RuntimeFsPath): Awaitable<number>;
+  /**
+   * The file's content key (SqliteVFS.contentKey): equal keys mean equal
+   * bytes, in any store, and it is the store's own record, read without
+   * hashing the bytes. Only a filesystem that keeps one answers it (the
+   * session's SQLite store, through a host view): a mount answers ENOTSUP,
+   * and a guest's bridge, which does not carry it across the hop, lacks it.
+   */
+  contentKey?(path: RuntimeFsPath): Awaitable<string>;
   /**
    * The cache-coherence barrier. A caller holding a resident cache stamped
    * at `(epoch, cursor)` gets back every path mutated since, and re-stamps.

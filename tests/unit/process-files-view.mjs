@@ -5,12 +5,12 @@
 // the syscall's code, and a mount answers through the same view.
 
 import assert from 'node:assert/strict';
-import { sha256Hex } from '../../packages/core/src/_shared/crypto.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { isVfsError } from '../../packages/core/src/vfs/vfs-error.ts';
 import { exists, isDirectory, readText, statOrThrow } from '../../packages/core/src/vfs/vfs.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
+import { chunkHash, cutContent } from '../../packages/core/src/vfs/content-chunking.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
@@ -133,17 +133,16 @@ assert.deepEqual((await vfs.readdir('/mnt/s')).map((e) => e.name), ['f']);
 }
 
 // A wasm image a facet loads (ProcessView.image): opened without being read,
-// named by the digest its opener expects (a runtime manifest's), read later
-// as one bounded whole-file read (the read's own bytes, never a copy), and
-// only ever the bytes its digest names: a file that no longer holds them is
-// refused, whatever happened to it, as is one on a backend that cannot bound
-// the read.
+// named by the store's content key (the record of its bytes, read without
+// hashing them), read later as one whole-file read (the read's own bytes,
+// never a copy), and only ever the bytes its key names: a file that no
+// longer holds them is refused, whatever happened to it, as is one on a
+// filesystem that keeps no content keys.
 {
   const image = Uint8Array.from({ length: 200_000 }, (_, i) => (i * 13) & 0xff);
-  const digest = { sha256: await sha256Hex(image), size: image.byteLength };
   await vfs.writeFile('/home/user/image.wasm', image);
-  const opened = await vfs.image('/home/user/image.wasm', digest);
-  assert.equal(opened.identity, `sha256:${digest.sha256}`, 'an image is named by its digest');
+  const opened = await vfs.image('/home/user/image.wasm');
+  assert.match(opened.identity, /^content:[0-9a-f]{64}:200000$/, 'an image is named by its content key and size');
   assert.equal(opened.size, image.byteLength, 'and admitted at its size');
   const seen = await opened.read();
   assert.deepEqual(seen, image, 'its bytes read whole');
@@ -152,19 +151,43 @@ assert.deepEqual((await vfs.readdir('/mnt/s')).map((e) => e.name), ['f']);
   assert.deepEqual(await vfs.readFile('/home/user/image.wasm'), image, 'mutating it disturbs no later read');
 
   await vfs.writeFile('/home/user/image.wasm', image);
-  assert.deepEqual(await opened.read(), image, 'a file rewritten with the same bytes is still the image');
+  assert.equal((await vfs.image('/home/user/image.wasm')).identity, opened.identity, 'the same bytes rewritten are the same image');
+  assert.deepEqual(await opened.read(), image, 'and still read as it');
+  await vfs.writeFile('/home/user/copy.wasm', image);
+  assert.equal((await vfs.image('/home/user/copy.wasm')).identity, opened.identity, 'so are the same bytes at another path');
   const other = image.slice();
   other[651] ^= 1;
   await vfs.writeFile('/home/user/image.wasm', other);
-  assert.equal(await code(() => opened.read()), 'ESTALE', 'a file holding other bytes of the same length is refused');
+  assert.notEqual((await vfs.image('/home/user/image.wasm')).identity, opened.identity, 'other bytes of the same length are another image');
+  assert.equal(await code(() => opened.read()), 'ESTALE', 'and the image opened before them is refused, unread');
   await vfs.writeFile('/home/user/image.wasm', new Uint8Array(image.byteLength + 1));
-  assert.equal(await code(() => opened.read()), 'EFBIG', 'a file grown past the image is refused unread');
-  await vfs.symlink('/home/user/image.wasm', '/home/user/link.wasm');
-  assert.equal(await code(() => (vfs.image('/home/user/link.wasm', digest)).then((linked) => linked.read())), 'EFBIG', 'through a link, the file it leads to is what is read');
-  assert.equal(await code(() => vfs.image('/home/user/none.wasm', digest)), 'ENOENT');
-  assert.equal(await code(() => vfs.image('/home/user', digest)), 'EISDIR');
+  assert.equal(await code(() => opened.read()), 'ESTALE', 'as it is once the file has grown');
+  assert.equal(await code(() => vfs.image('/home/user/none.wasm')), 'ENOENT');
+  assert.equal(await code(() => vfs.image('/home/user')), 'EISDIR');
 
-  // A backend that cannot bound a whole read (a mount) is refused, unread.
+  // A large file's key hashes its chunk list, a small one's its bytes: a small
+  // file holding exactly that list has the large one's key. The size tells
+  // them apart, in the identity and at the read.
+  const large = Uint8Array.from({ length: 70 * 1024 }, (_, i) => (i * 7 + (i >> 9)) & 0xff);
+  const pieces = [new TextEncoder().encode('nimbus-manifest-v1')];
+  let from = 0;
+  for (const cut of cutContent(large)) { pieces.push(chunkHash(large.subarray(from, cut))); from = cut; }
+  const trailer = new Uint8Array(8);
+  new DataView(trailer.buffer).setBigUint64(0, BigInt(large.byteLength));
+  pieces.push(trailer);
+  const manifestBytes = new Uint8Array(pieces.reduce((n, p) => n + p.byteLength, 0));
+  let at = 0;
+  for (const p of pieces) { manifestBytes.set(p, at); at += p.byteLength; }
+  await vfs.writeFile('/home/user/large.wasm', large);
+  await vfs.writeFile('/home/user/list.wasm', manifestBytes);
+  const largeImage = await vfs.image('/home/user/large.wasm');
+  const listImage = await vfs.image('/home/user/list.wasm');
+  assert.equal(largeImage.identity.split(':')[1], listImage.identity.split(':')[1], 'the store gives the two one key');
+  assert.notEqual(largeImage.identity, listImage.identity, 'they are two images');
+  await vfs.writeFile('/home/user/large.wasm', manifestBytes);
+  assert.equal(await code(() => largeImage.read()), 'ESTALE', 'and the small one read in the large one\'s place is refused');
+
+  // A mount keeps no content keys: an image there is refused, unread.
   const held = new Map([['/big.wasm', image]]);
   let wholeReads = 0;
   const flat = {
@@ -175,8 +198,7 @@ assert.deepEqual((await vfs.readdir('/mnt/s')).map((e) => e.name), ['f']);
   };
   flat.sync = flat;
   files.vfs.mount('/mnt/flat', flat);
-  const flatImage = await files.view({ pid: 61, cred: USER }).image('/mnt/flat/big.wasm', digest);
-  assert.equal(await code(() => flatImage.read()), 'EFBIG', 'a mounted image is refused');
+  assert.equal(await code(() => files.view({ pid: 61, cred: USER }).image('/mnt/flat/big.wasm')), 'ENOTSUP', 'a mounted image is refused');
   assert.equal(wholeReads, 0, 'without being read');
   files.vfs.unmount('/mnt/flat');
 }
