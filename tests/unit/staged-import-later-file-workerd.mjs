@@ -22,7 +22,11 @@
 //   - outer8, written later, imports bin, whose require() of app (which
 //     imports ./late8.mjs) staging hoisted: once ./late8.mjs is written,
 //     app imported alone loads (a require()'s failure is not kept), outer8
-//     and bin fail still.
+//     and bin fail still;
+//   - outer9 imports bin9 (a hoisted require() of app9), then app9 itself,
+//     which imports ./late9.mjs: app9's static import is linked first, its
+//     failure kept, so app9, outer9 and bin9 fail once ./late9.mjs is
+//     written.
 // Host Node running the same files is the oracle.
 //
 // Red before: staging recorded the missing file as a refusal, so m0's
@@ -43,12 +47,14 @@ const files = {
   'b5.mjs': "import { v as w } from './late5.mjs';\nexport const v = w;\n",
   'bin.mjs': "import { createRequire } from 'node:module';\ncreateRequire(import.meta.url)('./app.mjs');\nexport const b = 'bin';\n",
   'app.mjs': "import { v } from './late8.mjs';\nexport const a = v;\n",
+  'bin9.mjs': "import { createRequire } from 'node:module';\ncreateRequire(import.meta.url)('./app9.mjs');\nexport const b = 'bin9';\n",
+  'app9.mjs': "import { v } from './late9.mjs';\nexport const a = v;\n",
   // Each names its staged module in a branch never taken, so the launch stages it.
   'main.mjs': [
     "import { writeFileSync } from 'node:fs';",
     "import { createRequire } from 'node:module';",
     'const require = createRequire(import.meta.url);',
-    "if (globalThis.never) { await import('./m0.mjs'); await import('./m2.mjs'); await import('./m3.mjs'); await import('./parent.mjs'); await import('./m5.mjs'); await import('./qparent.mjs'); await import('./b5.mjs'); await import('./bin.mjs'); }",
+    "if (globalThis.never) { await import('./m0.mjs'); await import('./m2.mjs'); await import('./m3.mjs'); await import('./parent.mjs'); await import('./m5.mjs'); await import('./qparent.mjs'); await import('./b5.mjs'); await import('./bin.mjs'); await import('./bin9.mjs'); }",
     write('./m1.mjs', "export const v = 'm1';\n"),
     write('./m4.mjs', "export const v = 'm4';\n"),
     "console.log((await import('./m0.mjs')).v);",
@@ -84,6 +90,12 @@ const files = {
     "try { console.log('app', (await import('./app.mjs')).a); } catch (error) { console.log('app', error.code); }",
     "try { console.log('outer8 second', (await import('./outer8.mjs')).o); } catch (error) { console.log('outer8 second', error.code); }",
     "try { console.log('bin', (await import('./bin.mjs')).b); } catch (error) { console.log('bin', error.code); }",
+    write('./outer9.mjs', "import { b } from './bin9.mjs';\nimport { a } from './app9.mjs';\nexport const o = b + a;\n"),
+    "try { await import('./outer9.mjs'); } catch (error) { console.log('outer9 first', error.code); }",
+    write('./late9.mjs', 'export const v = 9;\n'),
+    "try { console.log('app9', (await import('./app9.mjs')).a); } catch (error) { console.log('app9', error.code); }",
+    "try { console.log('outer9 second', (await import('./outer9.mjs')).o); } catch (error) { console.log('outer9 second', error.code); }",
+    "try { console.log('bin9', (await import('./bin9.mjs')).b); } catch (error) { console.log('bin9', error.code); }",
     '',
   ].join('\n'),
 };

@@ -115,6 +115,8 @@ interface LateNode extends ModuleFacts {
 interface LateGraph {
   readonly modules: Map<string, LateNode>;
   readonly rows: number[];
+  /** The require()s staging hoisted that the link reached, by row and target: linked after the static graph (linkRequired). */
+  readonly required: { readonly row: number; readonly index: number; readonly kept: boolean }[];
   /** An import()'s link: a module it fails in keeps the failure (linkFailures); a require()'s retries, as Node's does. */
   readonly kept: boolean;
 }
@@ -239,9 +241,15 @@ export function commonJsNames(host: LateLinkHost, key: string): readonly string[
  */
 export function linkLateGraph(host: LateLinkHost, key: string, url: string, kept: boolean): number[] {
   const order: number[] = [];
-  const late: LateGraph = { modules: new Map(), rows: [], kept };
-  plan(host, key, url, new Set(), order, new Set(), late);
+  const late: LateGraph = { modules: new Map(), rows: [], required: [], kept };
+  const seen = new Set<string>();
+  const checked = new Set<number>();
+  plan(host, key, url, seen, order, checked, late);
   checkBindings(host, late, url);
+  if (late.required.length > 0) {
+    linkRequired(host, seen, checked, late);
+    checkBindings(host, late, url);
+  }
   for (const row of late.rows) checkedRows.add(row);
   return order;
 }
@@ -263,7 +271,7 @@ export function linkAdopted(host: LateLinkHost, id: number, key: string, url: st
 
 /** The names the `export *`s of the interpreted module at `url` reach two different bindings of, which its namespace omits. */
 export function starConflicts(host: LateLinkHost, url: string): string[] {
-  const late: LateGraph = { modules: lateModules, rows: [], kept: false };
+  const late: LateGraph = { modules: lateModules, rows: [], required: [], kept: false };
   // A staged module the interpreter evaluates, by its file; not a query's or a fragment's instance.
   const { protocol, search, hash, pathname } = new URL(url);
   const row = protocol === 'file:' && search === '' && hash === '' ? host.row('module', decodeURIComponent(pathname).replace(/^\/+/, '')) : -1;
@@ -281,7 +289,7 @@ export function starConflicts(host: LateLinkHost, url: string): string[] {
  * namespace taken in a cycle has them all.
  */
 export function namespaceNames(host: LateLinkHost, url: string): string[] | null {
-  const late: LateGraph = { modules: lateModules, rows: [], kept: false };
+  const late: LateGraph = { modules: lateModules, rows: [], required: [], kept: false };
   if (!lateModules.has(url)) return null;
   const target: LateTarget = { url };
   const names = exportedNames(host, late, target, new Set());
@@ -425,53 +433,74 @@ function lateTarget(host: LateLinkHost, resolution: LateResolution): LateTarget 
  * makes that staging refused for good. A staging handed on (a query's or a
  * fragment's instance, which the interpreter evaluates where it is
  * imported) is planned as the late graph's own. The graph's unevaluated
- * rows go to `late`.
+ * rows go to `late`; the require()s staging hoisted (a row's targets past
+ * its static imports), which run when the row evaluates, to
+ * `late.required`, linked after the static graph (linkRequired).
  */
 function checkLinks(host: LateLinkHost, id: number, seen: Set<string>, checked: Set<number>, late: LateGraph): void {
-  // A require() staging hoisted (a target past the row's static imports) is
-  // linked as require(esm) links: a failure in its graph is not kept.
-  const required: LateGraph = { modules: late.modules, rows: late.rows, kept: false };
-  const visit = (at: number, graph: LateGraph): void => {
-    if (checked.has(at)) return;
-    checked.add(at);
-    if (host.rowKind(at) !== 'module' || host.rowSettled(at)) return;
-    const failure = linkFailures.get(host.rowKey(at));
-    if (failure !== undefined) throw failure;
+  if (checked.has(id)) return;
+  checked.add(id);
+  if (host.rowKind(id) !== 'module' || host.rowSettled(id)) return;
+  const failure = linkFailures.get(host.rowKey(id));
+  if (failure !== undefined) throw failure;
+  try {
+    late.rows.push(id);
+    const statics = rowRead(host, id).specifiers.length;
+    const targets = host.rowTargets(id);
+    for (let index = 0; index < targets.length; index++) {
+      if (index < statics) checkTarget(host, id, index, seen, checked, late);
+      else late.required.push({ row: id, index, kept: late.kept });
+    }
+  } catch (e) {
+    if (late.kept && e instanceof Error) linkFailures.set(host.rowKey(id), e);
+    throw e;
+  }
+}
+
+/** Throws the refusal of staged row `row`'s target `index`, as checkLinks does; what it loads goes to `late`. */
+function checkTarget(host: LateLinkHost, row: number, index: number, seen: Set<string>, checked: Set<number>, late: LateGraph): void {
+  const target = host.rowTargets(row)[index];
+  if (target >= 0) {
+    checkLinks(host, target, seen, checked, late);
+    return;
+  }
+  const missing = host.missing(-2 - target);
+  if (missing === null) return;
+  if ('refusal' in missing) throw missing.refusal;
+  // A file handed on is resolved now, as the loader resolves it when the
+  // module is imported (Node's error if it is missing still), and planned
+  // as an unstaged module is: a JSON or CommonJS file has no links.
+  const { analysis, specifiers } = rowRead(host, row);
+  const specifier = specifiers[index];
+  const file = specifier === undefined ? null : handedOnFile(host, host.rowKey(row), missing.handedOn, specifier, analysis?.bindings?.types[index]);
+  if (file !== null) {
+    if (file.path !== undefined && (file.format === 'module' || file.format === 'detect')) plan(host, file.path.replace(/^\/+/, ''), file.url, seen, [], checked, late);
+    return;
+  }
+  // A query's or a fragment's file by its path; a data: module by its URL.
+  const handed = new URL(missing.handedOn);
+  const key = handed.protocol === 'data:' ? missing.handedOn : decodeURIComponent(handed.pathname).replace(/^\/+/, '');
+  plan(host, key, missing.handedOn, seen, [], checked, late);
+}
+
+/**
+ * Links the require()s staging hoisted that the late graph reached, once
+ * its static graph is linked, as Node's require() links each when its row
+ * evaluates (require(esm)): a failure in a required graph is not kept; its
+ * requiring row's is, where an import()'s link reached the row, as the
+ * row's evaluation fails in Node.
+ */
+function linkRequired(host: LateLinkHost, seen: Set<string>, checked: Set<number>, late: LateGraph): void {
+  const required: LateGraph = { modules: late.modules, rows: late.rows, required: late.required, kept: false };
+  for (let i = 0; i < late.required.length; i++) {
+    const { row, index, kept } = late.required[i];
     try {
-      visitRow(at, graph);
+      checkTarget(host, row, index, seen, checked, required);
     } catch (e) {
-      if (graph.kept && e instanceof Error) linkFailures.set(host.rowKey(at), e);
+      if (kept && e instanceof Error) linkFailures.set(host.rowKey(row), e);
       throw e;
     }
-  };
-  const visitRow = (at: number, graph: LateGraph): void => {
-    graph.rows.push(at);
-    const { analysis, specifiers } = rowRead(host, at);
-    for (const [index, target] of host.rowTargets(at).entries()) {
-      const edge = index < specifiers.length ? graph : required;
-      if (target >= 0) {
-        visit(target, edge);
-        continue;
-      }
-      const missing = host.missing(-2 - target);
-      if (missing === null) continue;
-      if ('refusal' in missing) throw missing.refusal;
-      // A file handed on is resolved now, as the loader resolves it when the
-      // module is imported (Node's error if it is missing still), and planned
-      // as an unstaged module is: a JSON or CommonJS file has no links.
-      const specifier = specifiers[index];
-      const file = specifier === undefined ? null : handedOnFile(host, host.rowKey(at), missing.handedOn, specifier, analysis?.bindings?.types[index]);
-      if (file !== null) {
-        if (file.path !== undefined && (file.format === 'module' || file.format === 'detect')) plan(host, file.path.replace(/^\/+/, ''), file.url, seen, [], checked, edge);
-        continue;
-      }
-      // A query's or a fragment's file by its path; a data: module by its URL.
-      const handed = new URL(missing.handedOn);
-      const key = handed.protocol === 'data:' ? missing.handedOn : decodeURIComponent(handed.pathname).replace(/^\/+/, '');
-      plan(host, key, missing.handedOn, seen, [], checked, edge);
-    }
-  };
-  visit(id, late);
+  }
 }
 
 /**
