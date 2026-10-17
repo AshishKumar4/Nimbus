@@ -33,7 +33,7 @@ import { modeAllows } from './posix-access.js';
 import { recallOf, withRecall } from './recall.js';
 import { DIRENT_TYPES } from './dirent-type.js';
 import { walkRemoval, type RemovalSteps } from './removal-walk.js';
-import { S_IFMT, abandon, andThen, copiedPermissions, copyfileMode, isCharacterDevice, isPromise, readRangeOrWhole, syncValue } from './vfs.js';
+import { S_IFMT, abandon, andThen, copiedPermissions, copySetsMode, isCharacterDevice, isPromise, readRangeOrWhole, syncValue } from './vfs.js';
 
 /**
  * Where a reader of a namespace's feed stands: the mount table as its
@@ -3209,8 +3209,7 @@ export class CompositeVFS implements VFS {
     made: { readonly ops: SyncVFS; readonly rel: string; readonly mount: Mount; readonly told: VfsEventType; readonly preserve: boolean; readonly keepMode: boolean; readonly made: boolean; readonly there?: VfsStat | null },
   ): Awaitable<number> {
     const mode = stat.mode === undefined ? undefined
-      : made.keepMode ? copyfileMode(stat.mode, stat.size ?? 1, this.viewer.cred?.uid ?? 0)
-        : made.preserve ? stat.mode & 0o7777 : copiedPermissions(stat.mode, stat.type === 'directory');
+      : copySetsMode(stat.mode, stat.size ?? 1, this.viewer.cred?.uid ?? 0, made) ?? copiedPermissions(stat.mode, stat.type === 'directory');
     const told = toRel === made.rel ? made.told : stat.type === 'directory' ? 'addDir' : 'add';
     const landed = <R>(result: Awaitable<R>): Awaitable<R> => {
       if (isPromise(result)) result.then(() => this.tellLanded(made.mount, storeBehind(this.table, to), told, [toAt]), () => {});
@@ -3244,7 +3243,7 @@ export class CompositeVFS implements VFS {
         const write = () => landed(to.writeFile(toRel, bytes, mode === undefined ? undefined : { mode }));
         const there = made.there;
         const preserved = (copied: Awaitable<unknown>): Awaitable<number> =>
-          andThen(copied, () => (made.preserve ? andThen(this.preserveMetadata(to, toRel, stat, mode), () => 1) : 1));
+          andThen(copied, () => (made.preserve ? andThen(this.preserveMetadata(to, toRel, toAt, made.mount, stat, mode), () => 1) : 1));
         if (!exact || made.made || there === null || there === undefined || there.mode === undefined) {
           return preserved(andThen(write(), () => (exact ? to.chmod!(toRel, mode!) : undefined)));
         }
@@ -3255,8 +3254,9 @@ export class CompositeVFS implements VFS {
       });
     }
     this.guardMutation([toAt]);
-    // Preserved, its owner may write its entries in until its own mode is set after them (cp -p's).
-    const makeMode = mode === undefined ? undefined : made.preserve ? mode | 0o700 : mode;
+    // Preserved, its owner may write its entries in until its own mode is set
+    // after them (cp -p's), where the backend can set it then.
+    const makeMode = mode !== undefined && made.preserve && typeof to.chmod === 'function' ? mode | 0o700 : mode;
     return andThen(landed(to.mkdir(toRel, makeMode === undefined ? undefined : { mode: makeMode })), () => andThen((this.check?.(), from.readdir(fromRel)), (entries) =>
       andThen(entries.reduce<Awaitable<number>>((count, entry) => andThen(count, (n) => {
         const child = fromRel === '/' ? `/${entry.name}` : `${fromRel}/${entry.name}`;
@@ -3265,24 +3265,33 @@ export class CompositeVFS implements VFS {
         return andThen(entry.stat ?? (this.check?.(), from.stat(child, { follow: false })), (childStat) => (childStat === null
           ? n
           : andThen(this.copyBytes(from, child, childStat, to, dest, `${toAt}/${entry.name}`, made), (m) => n + m)));
-      }), 1), (n) => (made.preserve ? andThen(this.preserveMetadata(to, toRel, stat, mode), () => n) : n))));
+      }), 1), (n) => (made.preserve ? andThen(this.preserveMetadata(to, toRel, toAt, made.mount, stat, mode), () => n) : n))));
   }
 
   /**
    * cp -p's metadata for an entry a copy between backends made at `toRel`
-   * (a file or a directory; a link's own is not set, as no backend sets a
-   * link's own times or owner, and through it they would land on another
-   * file): the source's owner when root copies, then its mode (a chown may
-   * clear set-id bits), then its times, as the backend allows each. As a
-   * native copy preserves them (SqliteVFS copyFile, planCopyTree).
+   * (`toAt` in the namespace; a file or a directory; a link's own is not
+   * set, as no backend sets a link's own times or owner, and through it
+   * they would land on another file): the source's owner when root copies,
+   * then its mode (a chown may clear set-id bits), then its times, as the
+   * backend allows each. Each is guarded right before it is made, after the
+   * write it waited on, and told as a change once it lands. As a native
+   * copy preserves them (SqliteVFS copyFile, planCopyTree).
    */
-  private preserveMetadata(to: SyncVFS, toRel: string, stat: VfsStat, mode: number | undefined): Awaitable<void> {
-    const owner = (this.viewer.cred?.uid ?? 0) === 0 && typeof to.chown === 'function' && (stat.uid !== undefined || stat.gid !== undefined)
-      ? to.chown(toRel, stat.uid ?? null, stat.gid ?? null) : undefined;
-    return andThen(owner, () => andThen(
-      mode !== undefined && typeof to.chmod === 'function' ? to.chmod(toRel, mode) : undefined,
-      () => (typeof to.utimes === 'function' ? to.utimes(toRel, stat.atimeMs ?? stat.mtimeMs, stat.mtimeMs) : undefined),
-    ));
+  private preserveMetadata(to: SyncVFS, toRel: string, toAt: string, mount: Mount, stat: VfsStat, mode: number | undefined): Awaitable<void> {
+    const step = (allowed: boolean, change: () => Awaitable<void>): Awaitable<void> => {
+      if (!allowed) return undefined;
+      this.guardMutation([toAt]);
+      const result = change();
+      const told = () => this.tellLanded(mount, storeBehind(this.table, to), 'change', [toAt]);
+      if (isPromise(result)) return result.then(told);
+      if (this.table.changes !== undefined) told();
+      return result;
+    };
+    const owned = (this.viewer.cred?.uid ?? 0) === 0 && typeof to.chown === 'function' && (stat.uid !== undefined || stat.gid !== undefined);
+    return andThen(step(owned, () => to.chown!(toRel, stat.uid ?? null, stat.gid ?? null)), () =>
+      andThen(step(mode !== undefined && typeof to.chmod === 'function', () => to.chmod!(toRel, mode!)), () =>
+        step(typeof to.utimes === 'function', () => to.utimes!(toRel, stat.atimeMs ?? stat.mtimeMs, stat.mtimeMs))));
   }
 
   /** rmdir, or on a backend without it, an emptiness check and unlink. */

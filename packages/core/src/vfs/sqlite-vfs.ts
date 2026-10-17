@@ -76,7 +76,7 @@ export { RecallRequired, recallOf, withRecall } from './recall.js';
 interface LexicalVfsKey { readonly kind: 'lexical'; readonly value: string; readonly spelling: string }
 interface PhysicalVfsKey { readonly kind: 'physical'; readonly value: string }
 interface DeletionVfsKey { readonly key: PhysicalVfsKey; readonly literal: INode | undefined }
-import { copiedPermissions, copyfileMode, readDeclaredSource, syncValue, type Principal, type VfsContentRef, type VfsDirentType, type VfsRemoval, type VfsWriteEvent } from './vfs.js';
+import { copiedPermissions, copySetsMode, readDeclaredSource, syncValue, type Principal, type VfsContentRef, type VfsDirentType, type VfsRemoval, type VfsWriteEvent } from './vfs.js';
 import { errnoCodeOf, toVfsError, vfsError } from './vfs-error.js';
 import { walkRemoval, type RemovalSteps } from './removal-walk.js';
 import {
@@ -6659,10 +6659,10 @@ export class SqliteVFS {
     let mode = prior ? prior.mode : made!.mode;
     let gid = prior?.gid ?? made!.gid;
     let uid = prior?.uid ?? cred.uid;
-    if (options?.keepMode || options?.preserve) {
+    const wanted = copySetsMode(inode.mode, inode.size, cred.uid, options ?? {});
+    if (wanted !== null) {
       // libuv's fchmod (cp -p's) of what open left: the file there, or the one made.
       const opened = prior ?? { mode, uid: cred.uid, gid, isDir: false, kind: 'file' as const };
-      const wanted = options.preserve ? inode.mode & 0o7777 : copyfileMode(inode.mode, inode.size, cred.uid);
       ({ mode, gid } = this.modeChange(opened, wanted, cred, target.path));
     }
     // cp -p's owner, which only root may give; a shared directory's group stands.

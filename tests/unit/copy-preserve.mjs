@@ -9,7 +9,13 @@
 //     awaiting mount takes it), SQLite to a mounted MemoryVFS and back: each
 //     entry's mode and time, a directory's set after its entries (a
 //     read-only one is still filled), and a link's target left as it was;
-//   - as root, the source's owner, natively and between backends.
+//   - as root, the source's owner, natively and between backends;
+//   - through the supervisor's call (fsCopyFile), the same;
+//   - with keepMode too, cp -p's mode (set-id bits kept), both ways;
+//   - each metadata change between backends told to a watcher, and refused
+//     once the copying process is gone (an awaited write it outlived);
+//   - onto a backend that cannot chmod, a read-only directory is made as
+//     it is, never left writable.
 //
 // Red before: the native file copy dropped `preserve` (the time now, the
 // mode less the umask, a file there keeping its own), and the fallback
@@ -22,6 +28,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { createSupervisorOpHandler } from '../../packages/core/src/workspace/supervisor-op.ts';
 import { testBox } from './lib/test-box.mjs';
 import { asyncOnly } from './lib/async-memory-vfs.mjs';
 
@@ -80,6 +87,18 @@ const ours = (stat) => ({ mode: perms(stat.mode), mtime: Math.round(stat.mtimeMs
     assert.deepEqual([ours(await fs.stat('/home/user/plain')).mode, ours(await fs.stat('/home/user/fresh')).mode], [want.plain.mode, want.fresh.mode]);
     assert.ok((await fs.stat('/home/user/fresh')).mtimeMs > OLD, 'the time now');
   });
+  await check('through the supervisor\'s call, the same', async () => {
+    const op = createSupervisorOpHandler({ vfs: box.workspace.vfs, filesystem: box.files });
+    box.files.bind({ pid: 77, cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 } });
+    await op({ op: 'fsCopyFile', args: ['/home/user/src', '/home/user/viaop', { preserve: true }], pid: 77 });
+    assert.deepEqual(ours(await fs.stat('/home/user/viaop')), want.new);
+  });
+  await check('with keepMode too, cp -p\'s mode, set-id bits kept', async () => {
+    await fs.writeFile('/home/user/setid', 'setid');
+    await fs.chmod('/home/user/setid', 0o6755);
+    await fs.copy('/home/user/setid', '/home/user/setid-both', { preserve: true, keepMode: true });
+    assert.equal(perms((await fs.stat('/home/user/setid-both')).mode), '6755');
+  });
   await check('as root, the source\'s owner', async () => {
     box.root.writeFile('home/user/owned', 'owned');
     box.root.chown('home/user/owned', 1000, 1000);
@@ -132,11 +151,82 @@ const ours = (stat) => ({ mode: perms(stat.mode), mtime: Math.round(stat.mtimeMs
     };
     assert.deepEqual(got, expected);
   });
+  await check('with keepMode too, between backends, cp -p\'s mode', async () => {
+    await fs.writeFile('/home/user/setid', 'setid');
+    await fs.chmod('/home/user/setid', 0o6755);
+    await fs.copy('/home/user/setid', '/m/setid', { preserve: true, keepMode: true });
+    assert.equal(perms((await fs.stat('/m/setid')).mode), '6755');
+  });
+  await check('each metadata change between backends is told to a watcher', async () => {
+    const events = [];
+    const stop = box.files.vfs.watchChanges('/m', (batch) => events.push(...batch));
+    await fs.copy('/home/user/tree/a', '/m/watched', { preserve: true });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    stop();
+    const told = events.filter((event) => event.path === 'watched' || event.path === '/m/watched' || String(event.path).endsWith('watched')).map((event) => event.type);
+    assert.ok(told.length >= 3 && told.slice(1).every((type) => type === 'change'), `the write, then each change: ${JSON.stringify(events)}`);
+  });
   await check('as root, between backends, the source\'s owner', async () => {
     const root = box.workspace.filesystem.bind({ pid: 90, cred: { uid: 0, gid: 0, groups: [0], umask: 0o022 } });
     await root.copyFile('/m/copied/a', '/home/user/rootcopy', { preserve: true });
     const stat = box.root.stat('home/user/rootcopy');
     assert.deepEqual([stat.uid, stat.gid, perms(stat.mode)], [1000, 1000, '777']);
+  });
+  box.destroy();
+}
+
+// ── A copying process gone while an awaited write lands: nothing more is set ──
+{
+  const mounted = new MemoryVFS({ uid: 1000, gid: 1000 });
+  let entered = null;
+  const gate = Promise.withResolvers();
+  const slow = new Proxy(asyncOnly(mounted, { deep: true }), {
+    get(target, key) {
+      const value = target[key];
+      if (key !== 'writeFile' || typeof value !== 'function') return value;
+      return async (...args) => {
+        if (args[0] === '/slow') { entered?.(); await gate.promise; }
+        return value.apply(target, args);
+      };
+    },
+  });
+  const box = await testBox({ mounts: { '/m': slow } });
+  box.root.mkdir('home/user', { recursive: true });
+  box.root.chown('home/user', 1000, 1000);
+  box.root.writeFile('home/user/src', 'src');
+  box.root.chown('home/user/src', 1000, 1000);
+  box.root.chmod('home/user/src', 0o751);
+  box.root.utimes('home/user/src', OLD, OLD);
+  const proc = box.files.bind({ pid: 88, cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 } });
+  await check('a copying process gone while its write lands sets nothing after it', async () => {
+    const writing = new Promise((resolve) => { entered = resolve; });
+    const copying = proc.copyFile('/home/user/src', '/m/slow', { preserve: true });
+    await writing;
+    await box.files.releaseProcess(88);
+    gate.resolve();
+    await assert.rejects(Promise.resolve(copying));
+    const landed = mounted.stat('/slow');
+    assert.ok(landed === null || landed.mtimeMs !== OLD, `no time was set after the process went: ${JSON.stringify(landed)}`);
+  });
+  box.destroy();
+}
+
+// ── Onto a backend that cannot chmod: a read-only directory as it is ──────
+{
+  const mounted = new MemoryVFS({ uid: 1000, gid: 1000 });
+  const noChmod = new Proxy(asyncOnly(mounted, { deep: true }), {
+    get(target, key) { return key === 'chmod' ? undefined : target[key]; },
+    has(target, key) { return key !== 'chmod' && key in target; },
+  });
+  const box = await testBox({ mounts: { '/m': noChmod } });
+  const fs = box.fs;
+  box.root.mkdir('home/user/ro', { recursive: true });
+  box.root.chown('home/user', 1000, 1000);
+  box.root.chown('home/user/ro', 1000, 1000);
+  box.root.chmod('home/user/ro', 0o555);
+  await check('onto a backend that cannot chmod, a read-only directory is made as it is', async () => {
+    await fs.copy('/home/user/ro', '/m/ro', { recursive: true, preserve: true });
+    assert.equal(perms(mounted.stat('/ro').mode), '555');
   });
   box.destroy();
 }
