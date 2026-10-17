@@ -5,6 +5,12 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a Node program that hands `new WebAssembly.Module`,
+  `WebAssembly.compile` or `WebAssembly.instantiate` a DataView or any
+  typed array over a staged image's bytes gets the staged module, as it
+  already did for a Uint8Array or an ArrayBuffer. Before, those views
+  were refused as bytes the launch did not carry. A view that spans other
+  bytes is still another image.
 - Fixed: output that begins with U+FEFF (the UTF-8 BOM) keeps it, as a
   Linux terminal receives every byte a program writes. This covers a
   program's output in the terminal, process logs and `exec` results, a
