@@ -15258,14 +15258,11 @@ function __nimbusFatalReport(error, fromPromise, enhance) {
   return report + "\nNode.js " + __processMod.version + "\n";
 }
 // The entry's typeless warning, where its graph did not link
-// (__nimbusEsmImport): Node's next tick prints it if a listener takes the
-// failure and the process goes on, and never if the failure ends it.
+// (__nimbusEsmImport), issued as the failure is taken: Node issued it while
+// loading, and its next tick delivers it after a listener that takes the
+// failure, before what that listener warns, and never once the failure has
+// ended the process (the program stopped, nothing more it writes is shown).
 let __nimbusHeldEntryWarning = null;
-function __nimbusReleaseEntryWarning(emit) {
-  const warning = __nimbusHeldEntryWarning;
-  __nimbusHeldEntryWarning = null;
-  if (emit && warning !== null) warning();
-}
 // An exception nothing caught (`fromPromise`: a rejection, or an ES
 // module's evaluation): whether a listener took it.
 function __nimbusUncaughtException(error, fromPromise = false) {
@@ -15273,30 +15270,27 @@ function __nimbusUncaughtException(error, fromPromise = false) {
     __nimbusReportProcessExit(error.code, "");
     return true;
   }
+  const held = __nimbusHeldEntryWarning;
+  __nimbusHeldEntryWarning = null;
+  if (held !== null) held();
   const type = fromPromise ? "unhandledRejection" : "uncaughtException";
   try {
     __processMod.emit("uncaughtExceptionMonitor", error, type);
     if (__nimbusExceptionCapture !== null) {
       __nimbusExceptionCapture(error);
-      __nimbusReleaseEntryWarning(true);
       return true;
     }
-    if (__processMod.emit("uncaughtException", error, type)) {
-      __nimbusReleaseEntryWarning(true);
-      return true;
-    }
+    if (__processMod.emit("uncaughtException", error, type)) return true;
   } catch (thrown) {
     if (thrown instanceof __ProcessExit) {
       __nimbusReportProcessExit(thrown.code, "");
       return true;
     }
-    __nimbusReleaseEntryWarning(false);
     const report = __nimbusFatalReport(thrown, false, false);
     __nimbusWriteFatal(report);
     __nimbusReportProcessExit(7, report);
     return false;
   }
-  __nimbusReleaseEntryWarning(false);
   try {
     if (!__processMod._exiting) {
       __processMod._exiting = true;
