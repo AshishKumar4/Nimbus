@@ -24,7 +24,7 @@ import {
   createCtxExports,
   createFacetCtx,
   createFacetWorld,
-} from './facet-host-harness.mjs';
+} from './lib/facet-host-harness.mjs';
 import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 
 const MIB = 1024 * 1024;

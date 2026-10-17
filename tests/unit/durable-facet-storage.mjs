@@ -27,7 +27,7 @@ import {
   createFacetCtx,
   resetProcessFacetStorage,
   createProcessFacetCtx,
-} from './facet-host-harness.mjs';
+} from './lib/facet-host-harness.mjs';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import {

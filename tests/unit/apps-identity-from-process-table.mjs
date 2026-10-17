@@ -36,7 +36,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { deriveResidentOwner } from '../../packages/worker/src/facets/resident-identity.ts';
 import { readPortReservation } from '../../packages/worker/src/session/port-capability.ts';
-import { createFacetWorld, createFacetCtx } from './facet-host-harness.mjs';
+import { createFacetWorld, createFacetCtx } from './lib/facet-host-harness.mjs';
 import { buildPublicPreviewHost } from '../../packages/worker/src/_shared/preview-host.ts';
 import { PUBLIC_BEARER_HEADER, PREVIEW_CAPABILITY_HEADER } from '../../packages/worker/src/_shared/session-router.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';

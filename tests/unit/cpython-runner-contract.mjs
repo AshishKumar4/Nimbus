@@ -28,7 +28,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { localFacetHost } from '../../packages/core/src/runtime/local-facet-host.ts';
 import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
+import { createFacetCtx, createFacetWorld } from './lib/facet-host-harness.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
 import { importWorkerBundle } from './lib/worker-bundle.mjs';
 import { hostedLifecycle } from './lib/hosted-lifecycle.mjs';

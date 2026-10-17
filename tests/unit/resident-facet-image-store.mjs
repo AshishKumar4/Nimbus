@@ -27,7 +27,7 @@ import {
   decodeCodePackBytes,
   residentLoaderConfig,
 } from '../../packages/fabric/src/process-fabric.ts';
-import { createFacetWorld, createFacetCtx, captureProcessBoots } from './facet-host-harness.mjs';
+import { createFacetWorld, createFacetCtx, captureProcessBoots } from './lib/facet-host-harness.mjs';
 import { storedBootModules, processImageModules } from './lib/module-map-bundle.mjs';
 import { processFiles } from './lib/process-bridge.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';

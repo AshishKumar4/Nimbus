@@ -14,9 +14,10 @@
 // One EVALUATION of a program is one boot: `world.boots` is the ledger a ghost
 // process would show up in, because a second boot means the user's module
 // scope ran twice.
-import { hostActivity, observeResidentConfig, HOST_WATCH_HEADER, HOST_INCARNATION_HEADER, HOST_REQUEST_HEADER } from '../../packages/fabric/src/host-activity.ts';
-import { importModuleSet } from './lib/module-map-bundle.mjs';
-import { installHostWatchSocket } from './lib/host-watch-socket.mjs';
+import { hostActivity, observeResidentConfig, HOST_WATCH_HEADER, HOST_INCARNATION_HEADER, HOST_REQUEST_HEADER } from '../../../packages/fabric/src/host-activity.ts';
+import { memoryStorage } from './do-storage.mjs';
+import { importModuleSet } from './module-map-bundle.mjs';
+import { installHostWatchSocket } from './host-watch-socket.mjs';
 import { resolve as resolvePath } from 'node:path';
 import { pathToFileURL } from 'node:url';
 installHostWatchSocket();
@@ -261,83 +262,17 @@ export function createFacetWorld(evaluate, { resolveConfig = true, evaluatesAdap
  * instance a test resets must be crashable, or the test is asserting against
  * storage guarantees the platform does not give.
  *
- * Reads see pending writes in either mode — an instance always reads its own.
+ * Reads see pending writes in either mode — an instance always reads its own
+ * (do-storage.mjs).
  */
 export function createFacetCtx(world, doId = 'do-test', storage = new Map(), { crashable = false } = {}) {
   const waited = [];
-  /** key → { deleted: boolean, value? } — writes awaiting durability. */
-  const pending = new Map();
-  let txnQueue = Promise.resolve();
-  const flush = () => {
-    for (const [key, w] of pending) {
-      if (w.deleted) storage.delete(key);
-      else storage.set(key, w.value);
-    }
-    pending.clear();
-  };
-  const view = () => {
-    const merged = new Map(storage);
-    for (const [key, w] of pending) {
-      if (w.deleted) merged.delete(key);
-      else merged.set(key, w.value);
-    }
-    return merged;
-  };
   return {
     id: { toString: () => doId },
     facets: world.facets,
     waitUntil(p) { waited.push(Promise.resolve(p).catch(() => {})); },
     waited,
-    storage: {
-      rows: storage,
-      async get(key) { return view().get(key); },
-      // Both of DO storage's forms; a multi-key put lands whole.
-      async put(keyOrEntries, value) {
-        const entries = typeof keyOrEntries === 'string' ? { [keyOrEntries]: value } : keyOrEntries;
-        for (const [key, entry] of Object.entries(entries)) pending.set(key, { deleted: false, value: entry });
-        if (!crashable) flush();
-      },
-      async delete(key) {
-        const had = view().has(key);
-        pending.set(key, { deleted: true });
-        if (!crashable) flush();
-        return had;
-      },
-      async list({ prefix = '' } = {}) {
-        return new Map(
-          [...view()].filter(([key]) => key.startsWith(prefix)).sort(([a], [b]) => (a < b ? -1 : 1)),
-        );
-      },
-      /** The durability barrier: promote every pending write to the map. */
-      async sync() { flush(); },
-      /** The reset: everything sync has not flushed dies with the instance. */
-      crash() { pending.clear(); },
-      /** One serialized read/write unit: a queue lets only one body run at a
-       *  time on a private snapshot, and on success only the keys that body
-       *  touched join the pending layer — an unrelated put's pending write or
-       *  another transaction's copy is never committed or cleared. A rejection
-       *  frees the queue and commits nothing. */
-      transaction(body) {
-        const run = txnQueue.then(() => {
-          const copy = view();
-          const touched = new Map();
-          const txn = {
-            get: async (k) => copy.get(k),
-            put: async (k, v) => { copy.set(k, v); touched.set(k, { deleted: false, value: v }); },
-            delete: async (k) => { copy.delete(k); touched.set(k, { deleted: true }); },
-            list: async ({ prefix = '' } = {}) =>
-              new Map([...copy].filter(([k]) => k.startsWith(prefix)).sort(([a], [b]) => (a < b ? -1 : 1))),
-          };
-          return Promise.resolve(body(txn)).then((out) => {
-            for (const [k, w] of touched) pending.set(k, w);
-            if (!crashable) flush();
-            return out;
-          });
-        });
-        txnQueue = run.then(() => undefined, () => undefined);
-        return run;
-      },
-    },
+    storage: memoryStorage({ rows: storage, crashable }),
   };
 }
 
@@ -358,13 +293,13 @@ import {
   _rpcHostProcess,
   _rpcRouteHostedHttp,
   peerHostFor,
-} from '../../packages/worker/src/session/rpc.ts';
-import { isolateToken, isHostedWatch, isHostedResidency } from '../../packages/fabric/src/peer-host.ts';
-import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
-import { composeFabric } from '../../packages/fabric/src/composition.ts';
-import { openSupervisorDeliveries } from '../../packages/core/src/workspace/supervisor-delivery.ts';
-import { sqlJournal } from '../../packages/core/src/_shared/process-fs-journal.ts';
-import { missingAssets } from './lib/staged-assets.mjs';
+} from '../../../packages/worker/src/session/rpc.ts';
+import { isolateToken, isHostedWatch, isHostedResidency } from '../../../packages/fabric/src/peer-host.ts';
+import { processHostFor } from '../../../packages/worker/src/loaders/process-host.ts';
+import { composeFabric } from '../../../packages/fabric/src/composition.ts';
+import { openSupervisorDeliveries } from '../../../packages/core/src/workspace/supervisor-delivery.ts';
+import { sqlJournal } from '../../../packages/core/src/_shared/process-fs-journal.ts';
+import { missingAssets } from './staged-assets.mjs';
 
 // The harness plays the embedder: its ctx.exports (createCtxExports below)
 // answer to the name the real worker registers for its supervisor class.

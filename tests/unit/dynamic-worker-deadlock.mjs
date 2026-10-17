@@ -69,7 +69,7 @@ import {
 } from '../../packages/fabric/src/budgets.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
-import { createCtxExports, createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
+import { createCtxExports, createFacetCtx, createFacetWorld } from './lib/facet-host-harness.mjs';
 
 assert.equal(DO_DYNAMIC_WORKER_LIMIT, 10, 'the scenarios below fill a limit of 10');
 let ctxCount = 0;

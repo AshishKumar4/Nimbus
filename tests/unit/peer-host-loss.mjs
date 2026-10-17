@@ -24,7 +24,7 @@ import { peerHostFor } from '../../packages/worker/src/session/rpc.ts';
 import { hostActivity } from '../../packages/fabric/src/host-activity.ts';
 import { runColdStart } from '../../packages/fabric/src/generation.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { createFacetCtx, createFacetWorld, createPeerNamespace } from './facet-host-harness.mjs';
+import { createFacetCtx, createFacetWorld, createPeerNamespace } from './lib/facet-host-harness.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
 
 adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });

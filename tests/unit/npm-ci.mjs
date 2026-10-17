@@ -17,7 +17,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { createNpmCommand } from '../../packages/core/src/substrate/lifo/commands/system/npm.ts';
-import { kernelInstaller, makeFanoutEnv } from './npm-fanout-test-env.mjs';
+import { kernelInstaller, makeFanoutEnv } from './lib/npm-fanout-test-env.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const PROJ = 'app';

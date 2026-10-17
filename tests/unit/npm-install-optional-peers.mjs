@@ -20,7 +20,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { resolveOnePackumentInFacet } from '../../packages/worker/src/npm/resolve-one-facet.ts';
 import './lib/resolve-facet-scope.mjs';
-import { kernelInstaller, makeFanoutEnv } from './npm-fanout-test-env.mjs';
+import { kernelInstaller, makeFanoutEnv } from './lib/npm-fanout-test-env.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 

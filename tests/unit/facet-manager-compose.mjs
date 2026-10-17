@@ -26,7 +26,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { processFiles } from './lib/process-bridge.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
+import { createFacetCtx, createFacetWorld } from './lib/facet-host-harness.mjs';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 
 import { composeFacetManager } from '../../packages/worker/src/facets/compose.ts';

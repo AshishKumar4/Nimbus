@@ -18,7 +18,7 @@ import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CommandRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
 import { NpmInstaller } from '../../packages/worker/src/npm/installer.ts';
-import { makeFanoutEnv } from './npm-fanout-test-env.mjs';
+import { makeFanoutEnv } from './lib/npm-fanout-test-env.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { esbuildEngine, stopEsbuildEngine } from './lib/esbuild-engine.mjs';
 import { importWorkerBundle } from './lib/worker-bundle.mjs';

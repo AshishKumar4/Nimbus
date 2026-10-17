@@ -23,7 +23,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { readSupervisorAllocationBudget, tryAcquireSupervisorAllocation } from '../../packages/platform/src/heavy-alloc-coord.ts';
 import { rpcDestroy } from '../../packages/worker/src/session/programmatic.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
+import { createFacetCtx, createFacetWorld } from './lib/facet-host-harness.mjs';
 import { processFiles } from './lib/process-bridge.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
 

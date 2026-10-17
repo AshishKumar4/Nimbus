@@ -19,7 +19,7 @@ import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { VFS_BUNDLE_MAX_BYTES } from '../../packages/core/src/constants.ts';
 import { RESIDENT_STORE_GLOBAL } from '../../packages/worker/scripts/resident-store-bundle.mjs';
-import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
+import { createFacetCtx, createFacetWorld } from './lib/facet-host-harness.mjs';
 import { processFiles } from './lib/process-bridge.mjs';
 import { createAuthority } from './lib/resident-body.mjs';
 import { adoptSessionSupervisor, oneShotManager, runnerLoader } from './lib/one-shot-runner.mjs';

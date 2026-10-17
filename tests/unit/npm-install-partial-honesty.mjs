@@ -28,7 +28,7 @@ import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { kernelInstaller } from './npm-fanout-test-env.mjs';
+import { kernelInstaller } from './lib/npm-fanout-test-env.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const PROJ = 'app';

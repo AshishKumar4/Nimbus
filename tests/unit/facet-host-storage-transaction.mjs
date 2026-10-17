@@ -5,7 +5,7 @@
 // left alone), and a rejected body frees the queue without committing.
 
 import assert from 'node:assert/strict';
-import { createFacetWorld, createFacetCtx } from './facet-host-harness.mjs';
+import { createFacetWorld, createFacetCtx } from './lib/facet-host-harness.mjs';
 
 const world = createFacetWorld(() => ({}));
 const rows = new Map();
