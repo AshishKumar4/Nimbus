@@ -769,7 +769,10 @@ async function expandParameterWord(word: string, ctx: ExpandContext): Promise<st
   return joinPieces(await expandParts(parameterWordParts(word, ctx.hereDocument === true), ctx));
 }
 
-/** The operand word's parts; in a here-document's body, `'` and `$'...'` are literal there, as bash reads them. */
+/**
+ * The operand word's parts. In a here-document's body, `'` and `$'...'` are
+ * literal there, and a backslash quotes only what it quotes in the body.
+ */
 function parameterWordParts(word: string, hereDocument: boolean): WordPart[] {
   const parts: WordPart[] = [];
   let text = '';
@@ -782,7 +785,8 @@ function parameterWordParts(word: string, hereDocument: boolean): WordPart[] {
   let i = 0;
   while (i < word.length) {
     const ch = word[i];
-    if (ch === '\\' && i + 1 < word.length) {
+    // In a here-document a backslash quotes only $, `, \\ and a newline; before anything else it is text.
+    if (ch === '\\' && i + 1 < word.length && (!hereDocument || '$`\\\n'.includes(word[i + 1]))) {
       flush();
       parts.push({ text: word[i + 1], quoted: 'single' });
       i += 2;
