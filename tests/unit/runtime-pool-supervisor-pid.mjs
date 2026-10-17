@@ -66,6 +66,7 @@ function world() {
   };
   const ops = buildSessionSupervisorOps(host, createSupervisorBridgeStore({ vfs, processes, filesystem }));
   attachSupervisorOps(host, ops);
+  root.mkdir('/home', { mode: 0o755 });
   const users = [1101, 2202].map((uid) => {
     const home = `/home/u${uid}`;
     root.mkdir(home, { recursive: true, mode: 0o700 });
@@ -167,6 +168,8 @@ for (const kind of ['python', 'ruby', 'loader', 'loader-per-call']) {
       const forbidden = `${other.home}/${kind}-foreign-${round}`;
       const before = w.calls;
       const exercised = Promise.withResolvers();
+      const old = previous.get(user.pid);
+      let active;
       w.scenario = async (supervisor) => {
         try {
           assert.ok(supervisor, 'the runtime worker has no supervisor');
@@ -176,11 +179,10 @@ for (const kind of ['python', 'ruby', 'loader', 'loader-per-call']) {
           await assert.rejects(supervisor.writeFile(forbidden, 'foreign'), (error) => error.code === 'EACCES');
           assert.equal(w.root.exists(forbidden), false);
           assert.equal(w.root.stat(path).uid, user.cred.uid);
-          const old = previous.get(user.pid);
-          if (old && old !== supervisor) {
+          if (old) {
             await assert.rejects(old.readFile(path), (error) => error.code === 'ESTALE', 'the previous run still reads through its old pool');
           }
-          previous.set(user.pid, supervisor);
+          active = supervisor;
           exercised.resolve();
         } catch (error) { exercised.reject(error); throw error; }
       };
@@ -195,8 +197,9 @@ for (const kind of ['python', 'ruby', 'loader', 'loader-per-call']) {
         try { await facet.submit(task, {}); } finally { facet.dispose(); }
       } else await prompt(w, kind, user);
       await settles(exercised.promise);
+      previous.set(user.pid, active);
       assert.ok(w.calls > before, `${kind} never reached a loaded worker`);
-      assert.equal(w.root.readFile(path), `${user.cred.uid}`);
+      assert.equal(new TextDecoder().decode(w.root.readFile(path)), `${user.cred.uid}`);
     }
     assert.equal(previous.size, 2);
     console.log(`ok ${kind}: two credentials, cross-directory EACCES, fresh runs`);
