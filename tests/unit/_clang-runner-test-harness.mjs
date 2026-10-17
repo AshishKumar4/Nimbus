@@ -5,15 +5,19 @@
 // facet does what the toolchain does through its supervisor — read every
 // input and write the -o path AS THE CALLER — so a test can drive the real
 // `clangBinHandler` end to end without a wasm boot.
+//
+// A helper (the leading _), not a test, and not under lib/: its facet host
+// answers a typed generic facet call with a canned result, which checked
+// JavaScript accepts only through a cast.
 
-import { makeClangRunnerFactory } from '../../../packages/core/src/runtime/clang-runner.ts';
-import { SessionProcessSupervisor } from '../../../packages/core/src/runtime/session-process-supervisor.ts';
-import { CRED_KERNEL } from '../../../packages/core/src/runtime/os-contracts.ts';
-import { SqliteVFS } from '../../../packages/core/src/vfs/sqlite-vfs.ts';
-import { ProcessFiles } from '../../../packages/core/src/runtime/process-files.ts';
-import { ProcessView } from '../../../packages/core/src/runtime/process-files.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { ustarArchive, ustarPath } from './ustar.mjs';
+import { makeClangRunnerFactory } from '../../packages/core/src/runtime/clang-runner.ts';
+import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
+import { ProcessView } from '../../packages/core/src/runtime/process-files.ts';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+import { ustarArchive, ustarPath } from './lib/ustar.mjs';
 
 export const USER = Object.freeze({
   uid: 1000,
