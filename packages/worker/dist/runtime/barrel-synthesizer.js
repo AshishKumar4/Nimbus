@@ -412,43 +412,6 @@ export function buildSyntheticEntry(vfs, nmDir, pkgName, names) {
         referencedFiles,
     };
 }
-/**
- * Build a SCOPED slice for a synthetic-entry bundle: include only
- * the files the synthetic entry directly references (+ their
- * transitive imports walked via static analysis), plus the package
- * root's `package.json` (esbuild's resolver reads it for exports/main
- * fields). This bypasses the standard `walkDir` over the whole
- * package, which for icon-libraries with thousands of files can
- * exceed the 28 MiB slice cap.
- *
- * Caller still appends the synthetic entry file itself to the slice
- * (we don't include it here because it lives in a synthetic
- * directory the caller already manages).
- *
- * Returns the list of `SliceEntry`-shaped objects to push into the
- * existing slice, plus the total bytes added (for cap-tracking).
- *
- * `transitiveCap`: how many files we'll walk in total. Bounded so a
- * pathological barrel-of-barrels can't blow the cap. Default 800,
- * which empirically covers icon-libraries with up to ~400 imported
- * icons (each pulling 1-2 transitive shared utility files).
- */
-export async function buildScopedSliceForSynthetic(vfs, nmDir, pkgName, referencedFiles, parse, transitiveCap = 800) {
-    const paths = await discoverScopedSliceForSynthetic(vfs, nmDir, pkgName, referencedFiles, parse, transitiveCap);
-    const entries = [];
-    let totalBytes = 0;
-    for (const entry of paths) {
-        const path = '/' + entry.path.replace(/^\/+/, '');
-        if (entry.isDir)
-            entries.push({ path, isDir: true });
-        else {
-            const bytes = vfs.readFile(entry.path);
-            entries.push({ path, isDir: false, bytes });
-            totalBytes += bytes.byteLength + entry.path.length;
-        }
-    }
-    return { entries, totalBytes };
-}
 /** Discovery retains paths, not a partial slice, while the parser owns its current source. */
 export async function discoverScopedSliceForSynthetic(vfs, nmDir, pkgName, referencedFiles, parse, transitiveCap = 800) {
     const entries = [];

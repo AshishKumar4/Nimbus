@@ -20,6 +20,7 @@ import type { SupervisorAllocationOwner } from '@nimbus-sh/platform/heavy-alloc-
 import type { BundlePoolProvider } from '../facets/prebundle-pool.js';
 import { type ProjectImports, type SourceParser } from '../runtime/barrel-synthesizer.js';
 import type { NpmCache } from './cache.js';
+import { type PrebundleReadFs } from './pre-bundle-facet.js';
 /** Who builds, where, and what it may read. */
 export interface PrebundleContext {
     /** The principal's view: what it may read is what a bundle may be built from and served to it. */
@@ -137,5 +138,5 @@ export declare function isServerToolPackage(pkgName: string): boolean;
  *   4. the package's index.
  * Paths are normalized: a nested package.json may point out of its directory.
  */
-export declare function resolvePrebundleEntry(vfs: CredentialedVfs, root: string, specifier: string): string | null;
+export declare function resolvePrebundleEntry(vfs: PrebundleReadFs, root: string, specifier: string): string | null;
 //# sourceMappingURL=browser-prebundle.d.ts.map

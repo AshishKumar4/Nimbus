@@ -52,8 +52,7 @@
  * sees a clear remediation: "add a static import for the
  * dynamically-referenced icon."
  */
-import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import type { SliceEntry } from '../npm/pre-bundle-facet.js';
+import type { PrebundleReadFs } from '../npm/pre-bundle-facet.js';
 /**
  * Map of package name → set of named imports observed across the
  * project's source files. Top-level package only — subpath imports
@@ -122,7 +121,7 @@ export interface ProjectImports {
  * `files`. What it left unread is reported (`unread`), never dropped
  * silently.
  */
-export declare function scanProjectImports(vfs: CredentialedVfs, projDir: string, parse: SourceParser, budget?: ScanBudget): Promise<ProjectImports>;
+export declare function scanProjectImports(vfs: PrebundleReadFs, projDir: string, parse: SourceParser, budget?: ScanBudget): Promise<ProjectImports>;
 /**
  * What every scan of a project for a barrel's names reads, at most: the
  * installer's (pre-bundling a barrel from a synthesized entry) and the Vite
@@ -211,34 +210,9 @@ export interface SyntheticEntryResult {
     code: string;
     referencedFiles: string[];
 }
-export declare function buildSyntheticEntry(vfs: CredentialedVfs, nmDir: string, pkgName: string, names: ReadonlySet<string>): SyntheticEntryResult | null;
-/**
- * Build a SCOPED slice for a synthetic-entry bundle: include only
- * the files the synthetic entry directly references (+ their
- * transitive imports walked via static analysis), plus the package
- * root's `package.json` (esbuild's resolver reads it for exports/main
- * fields). This bypasses the standard `walkDir` over the whole
- * package, which for icon-libraries with thousands of files can
- * exceed the 28 MiB slice cap.
- *
- * Caller still appends the synthetic entry file itself to the slice
- * (we don't include it here because it lives in a synthetic
- * directory the caller already manages).
- *
- * Returns the list of `SliceEntry`-shaped objects to push into the
- * existing slice, plus the total bytes added (for cap-tracking).
- *
- * `transitiveCap`: how many files we'll walk in total. Bounded so a
- * pathological barrel-of-barrels can't blow the cap. Default 800,
- * which empirically covers icon-libraries with up to ~400 imported
- * icons (each pulling 1-2 transitive shared utility files).
- */
-export declare function buildScopedSliceForSynthetic(vfs: CredentialedVfs, nmDir: string, pkgName: string, referencedFiles: string[], parse: SourceParser, transitiveCap?: number): Promise<{
-    entries: SliceEntry[];
-    totalBytes: number;
-}>;
+export declare function buildSyntheticEntry(vfs: PrebundleReadFs, nmDir: string, pkgName: string, names: ReadonlySet<string>): SyntheticEntryResult | null;
 /** Discovery retains paths, not a partial slice, while the parser owns its current source. */
-export declare function discoverScopedSliceForSynthetic(vfs: CredentialedVfs, nmDir: string, pkgName: string, referencedFiles: string[], parse: SourceParser, transitiveCap?: number): Promise<Array<{
+export declare function discoverScopedSliceForSynthetic(vfs: PrebundleReadFs, nmDir: string, pkgName: string, referencedFiles: string[], parse: SourceParser, transitiveCap?: number): Promise<Array<{
     path: string;
     isDir: boolean;
 }>>;
