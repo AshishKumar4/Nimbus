@@ -361,7 +361,7 @@ export type RuntimeSynchronousFs = {
   // writeBatch, whose records may land on a mount only an awaited call
   // reaches; awaitRecall is a long poll, waited for by the holder's own loop.
   [K in Exclude<keyof RuntimeFsBridge, 'synchronous' | 'subscribe' | 'writeStream' | 'writeBatch' | 'writeFileFrom' | 'acquire' | 'copyTree' | 'gateLaunch' | 'awaitRecall'>]:
-    RuntimeFsBridge[K] extends (...args: infer A) => infer R
+    NonNullable<RuntimeFsBridge[K]> extends (...args: infer A) => infer R
       ? (...args: A) => Awaited<R> : never;
 };
 
@@ -479,7 +479,8 @@ export interface RuntimeFsBridge {
    * The file's content key (SqliteVFS.contentKey): equal keys mean equal
    * bytes, in any store, and it is the store's own record, read without
    * hashing the bytes. Only a filesystem that keeps one answers it (the
-   * session's SQLite store, through a host view): a mount answers ENOTSUP.
+   * session's SQLite store, through a host view): a mount answers ENOTSUP,
+   * and a guest's bridge, which does not carry it across the hop, lacks it.
    */
   contentKey?(path: RuntimeFsPath): Awaitable<string>;
   /**

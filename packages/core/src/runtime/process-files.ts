@@ -1338,7 +1338,7 @@ export const R_OK = 4;
  */
 /** A bridge's calls as a view that can wait makes them (ProcessView): each a promise, made again after a recall. */
 type RecallingBridge = {
-  [K in keyof RuntimeFsBridge]: RuntimeFsBridge[K] extends (...args: infer A) => infer R ? (...args: A) => Promise<Awaited<R>> : never;
+  [K in keyof RuntimeFsBridge]: NonNullable<RuntimeFsBridge[K]> extends (...args: infer A) => infer R ? (...args: A) => Promise<Awaited<R>> : never;
 };
 
 /**
@@ -1522,7 +1522,7 @@ export class ProcessView implements VFS {
     const { fs } = this;
     const contentKey = fs.contentKey;
     if (contentKey === undefined) throw syscallError('ENOTSUP', 'open', path);
-    return await this.call('open', path, () => contentKey.call(fs, path));
+    return await this.call('open', path, () => contentKey(path));
   }
   /** `path` as a wasm image a facet loads, read through this view when the host builds the facet (openFacetImage). */
   async image(path: string): Promise<FacetImage> {

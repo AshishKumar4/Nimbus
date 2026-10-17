@@ -28,7 +28,7 @@ import type { VfsRemoval } from '../vfs/vfs.js';
 export type FilesystemAnswer = 'value' | 'bytes' | 'stream' | 'removal';
 
 /** The bridge methods a supervisor answers: every one but the capabilities that stay in their isolate. */
-type BridgeMethod = Exclude<keyof RuntimeFsBridge, 'synchronous' | 'subscribe' | 'gateLaunch' | 'writeFileFrom'>;
+type BridgeMethod = Exclude<keyof RuntimeFsBridge, 'synchronous' | 'subscribe' | 'gateLaunch' | 'writeFileFrom' | 'contentKey'>;
 
 export const FILESYSTEM_METHODS = {
   stat: { rpc: 'stat', answer: 'value' },
