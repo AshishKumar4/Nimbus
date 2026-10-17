@@ -40,6 +40,7 @@ async function wasmBash(script, compareStderr, runnerOptions) {
 /**
  * Each of `cases` under the host's bash and under the wasm bash: the same
  * stdout and status, or a failure that names every case that differs.
+ * `compareStderr` also compares stderr; other options go to the wasm runner.
  * Answers the reference's version.
  */
 export async function assertMatchesNativeBash(cases, { compareStderr = false, ...runnerOptions } = {}) {

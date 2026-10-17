@@ -16,7 +16,11 @@ const cases = [
   `trap '' PIPE; ${writer} | ${reader}; ` + 'echo "${PIPESTATUS[*]}"',
   `set -o pipefail; ${writer} | ${reader}`,
   `trap '' PIPE; trap - PIPE; set -o pipefail; ${writer} | ${reader}`,
-  `trap '' PIPE; set -o pipefail; yes | ${reader}`,
+  // BusyBox and GNU yes phrase their diagnostics differently; bash's own
+  // printf above compares the full stderr, while these compare exec status.
+  `trap '' PIPE; set -o pipefail; yes 2>/dev/null | ${reader}`,
+  `set -o pipefail; yes 2>/dev/null | ${reader}`,
+  `trap 'exit 7' PIPE; set -o pipefail; yes 2>/dev/null | ${reader}`,
 ];
 for (const remote of [false, true]) {
   await assertMatchesNativeBash(cases, { compareStderr: true, remote, preambleSource });
