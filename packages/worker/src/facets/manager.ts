@@ -2394,7 +2394,7 @@ export function generatedMapTextBytes(generated: GeneratedNodeFacetCode, room: n
 }
 
 /** What the map owns in V8; immutable runtime sources are shared by every launch. */
-function generatedMapRetainedBytes(generated: GeneratedNodeFacetCode, members: Readonly<Record<string, string | { wasm: ArrayBuffer }>>): number {
+function generatedMapRetainedBytes(generated: GeneratedNodeFacetCode, members: Readonly<Record<string, string | { wasm: ArrayBuffer }>>, held: number): number {
   let bytes = 0;
   const texts = [...generated.source.parts.filter((part) => typeof part === 'string'),
     ...Object.values(generated.modules), ...Object.values(generated.codeModules), ...Object.values(generated.esModules)];
@@ -2403,7 +2403,10 @@ function generatedMapRetainedBytes(generated: GeneratedNodeFacetCode, members: R
     else bytes += member.wasm.byteLength;
   }
   for (const text of texts) {
-    bytes += text.length * (/[^\u0000-\u00ff]/.test(text) ? 2 : 1);
+    bytes += text.length;
+    if (bytes >= held) return held;
+    if (/[^\u0000-\u00ff]/.test(text)) bytes += text.length;
+    if (bytes >= held) return held;
   }
   return bytes;
 }
@@ -7847,7 +7850,8 @@ export class FacetManager {
     const digest = opts.codeDigest ? answerDigest([generated.source.recipe(), generated.modules, generated.codeModules, generated.esModules,
       Object.fromEntries(Object.entries(generated.immutableModules).map(([name, source]) => [name, source.asset]))]) : undefined;
     if (!vfsState.cacheRetained) releaseGeneratedSources(vfsState);
-    this.buildAdmissions.get(entry.pid)?.retain(generatedMapRetainedBytes(generated, members));
+    const admission = this.buildAdmissions.get(entry.pid);
+    if (admission) admission.retain(generatedMapRetainedBytes(generated, members, admission.held()));
     let map: WorkerCode | undefined = {
       compatibilityDate: CF_COMPAT_DATE,
       compatibilityFlags: [...GUEST_COMPAT_FLAGS],
