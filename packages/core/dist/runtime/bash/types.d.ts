@@ -219,7 +219,7 @@ export interface BashProc {
     ppid: number;
     /** Default-action signal delivered by the virtual kill syscall. */
     killedBy?: number;
-    /** After exec, caught handlers reset; only inherited SIG_IGN survives. */
+    /** While an exec'd coreutil runs, its inherited SIG_IGN; cleared at exit. */
     execIgnoredSignals?: bigint;
     /** Wake a JSPI child parked on input/output when it is terminated. */
     cancelWaits?: Set<() => void>;
