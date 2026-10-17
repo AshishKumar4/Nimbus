@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "38c618b93b91dd78130889b55fc94d564e3358e27b3581693f0ecc38bc558dfe",
+  "fingerprint": "0f97b6f1a5a6ced0b8b606a282312836792175085362bbdd0d9aa66de9ecb7b4",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2652,8 +2652,8 @@
     "packages/worker/dist/runtime/bash-repl.d.ts.map": "823b2ed64fcfc516f928f8444f934a394518225dd84d412971ae78c9b46023e4",
     "packages/worker/dist/runtime/bash-repl.js": "b15aaea7a268fed27ab35740c270a1e8a28ee99385e89e1f3fd8b11230573222",
     "packages/worker/dist/runtime/bun-runner.d.ts": "8607b6770a4f8cfbfb51178cb5112371dbd4b3f48738b8d0ce0ce68fc7cc734b",
-    "packages/worker/dist/runtime/bun-runner.d.ts.map": "cb411a3be054400456d71b3bf42cbf537a35b5f82d381b2ca21be0415dc9e48f",
-    "packages/worker/dist/runtime/bun-runner.js": "d02b63945eb72a54df69ce1772734fc29b4e6139d18a73d6b665e0c7943ead29",
+    "packages/worker/dist/runtime/bun-runner.d.ts.map": "28e90dc1096b932bba4d61c9027200aca63d32f622eacb208e096e3e0752c5b9",
+    "packages/worker/dist/runtime/bun-runner.js": "7e617640d07dd7ddfdd8e10ac3f70deadbe482ff489251bba27b1761bf79adc7",
     "packages/worker/dist/runtime/cpython-resident.d.ts": "aa77fce266d11e180a54bafc5cac5d64f2b92955c6e7635e651892614ce34f20",
     "packages/worker/dist/runtime/cpython-resident.d.ts.map": "2ba6ca8c1f6cacc1e872cd0300d47171790c5e616e73ab07a22beed48266a7af",
     "packages/worker/dist/runtime/cpython-resident.js": "d07a223abf9bf703bd0650f9b9ae26dc0192a56d8be44ba449d264d36fe9cab5",
@@ -3298,7 +3298,7 @@
     "packages/worker/src/router/remote-api.ts": "be14757e9f57192117ebd10704784a2b287ed73c48c80f4331ad6139db2e8f99",
     "packages/worker/src/runtime/barrel-synthesizer.ts": "8bb8dd500a08090f461fda18efe92c135b5cc3ce4ee254c26fbb89b786f8058f",
     "packages/worker/src/runtime/bash-repl.ts": "669ace6d451fb018b87614849f6d1b0c6a19e81e82a1fdc52f173d3d24a0082e",
-    "packages/worker/src/runtime/bun-runner.ts": "b0e6d8eb2170fac6fe545ea8ab252382a36a20a5bcac01a63192e56a20f5d3b0",
+    "packages/worker/src/runtime/bun-runner.ts": "db1c0c8698111e7357f18d7b94367d905366d1a9446ecf10747562fc83e12320",
     "packages/worker/src/runtime/cpython-resident.ts": "9a2049bcd2e3af39264a72e6fc337758fc3fcf9d780dc06023f0c783a5656dfc",
     "packages/worker/src/runtime/egress-tls-client.ts": "31ad20f715be279e1de23c4957d67d977d9240775c0b79804bf90b156f13ce8c",
     "packages/worker/src/runtime/esbuild-wasm-bytes.ts": "8157f7b59cc7558695ff78f0bf0cedcfa2a9e4e6efda1367426f438860e2e3c5",
