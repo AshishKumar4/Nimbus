@@ -5,7 +5,7 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
-- Fixed: a hosted ES module that statically imports a file the program writes after it starts (a module staged with the launch, its import of `./generated.mjs` written at runtime) finds the file when it is imported, as Node does. Before, the import failed with "Cannot find module", because the file was missing when the launch began. One still missing fails with Node's `ERR_MODULE_NOT_FOUND`.
+- Fixed: a hosted ES module that statically imports a file the program writes after it starts (a module staged with the launch, its import of `./generated.mjs` written at runtime) finds the file when it is imported, as Node does. Before, the import failed with "Cannot find module", because the file was missing when the launch began. One still missing fails with Node's `ERR_MODULE_NOT_FOUND`, and, as in Node, so do later imports of the modules that failed to link, even once the file is written; a `require()` tries again. A query's or a fragment's import of such a file (`./generated.json?x`) loads as the file's format.
 - Fixed: one session's compiles no longer reset the other sessions that
   share its isolate. The platform runs several sessions in one isolate
   with one memory limit, and resets all of them when it is crossed. Each
