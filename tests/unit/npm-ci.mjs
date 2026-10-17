@@ -19,6 +19,7 @@ import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-worksp
 import { createNpmCommand } from '../../packages/core/src/substrate/lifo/commands/system/npm.ts';
 import { kernelInstaller, makeFanoutEnv } from './lib/npm-fanout-test-env.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+import { npmRegistry } from './lib/npm-registry.mjs';
 
 const PROJ = 'app';
 const NM = `${PROJ}/node_modules`;
@@ -101,19 +102,16 @@ const versionAt = (root, dir) => JSON.parse(root.readFileString(`${NM}/${dir}/pa
 // before anything changes where it is not the lock's tree, and otherwise
 // installs with its flags found again and what nothing reaches left out.
 {
-  const leaf = (name, version) => ({
-    pkg: { name, version, tarballUrl: tgz(name, version), integrity: `sha512-${name}${version}`, dependencies: {}, main: '', bin: {} },
-    cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
-  });
+  const { resultFor } = npmRegistry({ a: { '1.0.0': {}, '2.0.0': {} }, z: { '1.0.0': {} }, t: { '1.0.0': {} } });
 
   const bumped = { ...PACKAGE_JSON, dependencies: { a: '^2.0.0' } };
-  const stale = makeInstaller(bumped, LOCK, (name) => leaf(name, '2.0.0'));
+  const stale = makeInstaller(bumped, LOCK, resultFor);
   await assert.rejects(stale.installer.install(PROJ, { pid: 1, fromLockfile: true }), /in sync[\s\S]*Invalid: lock file's a@1\.0\.0 does not satisfy a@2\.0\.0/);
   assert.equal(stale.root.exists(`${NM}/a`), false, 'nothing installed from a stale lock');
   assert.equal(stale.root.exists(`${NM}/stale/index.js`), true, 'a rejected lock leaves the existing node_modules alone');
 
   const added = { ...PACKAGE_JSON, dependencies: { a: '^1.0.0', z: '^1.0.0' } };
-  const missing = makeInstaller(added, LOCK, (name) => leaf(name, '1.0.0'));
+  const missing = makeInstaller(added, LOCK, resultFor);
   await assert.rejects(missing.installer.install(PROJ, { pid: 1, fromLockfile: true }), /in sync[\s\S]*Missing: z@1\.0\.0 from lock file/);
   assert.equal(missing.root.exists(`${NM}/stale/index.js`), true);
 
@@ -151,16 +149,10 @@ const versionAt = (root, dir) => JSON.parse(root.readFileString(`${NM}/${dir}/pa
     },
   };
   const specs = [];
+  const { resultFor } = npmRegistry({ 'esbuild-wasm': { '0.21.5': { dist: { integrity: 'sha512-w' } } } });
   const { installer, root, log } = makeInstaller(pkgJson, lock, (name, spec) => {
     specs.push({ name, range: spec.range });
-    const pkg = {
-      name, version: '0.21.5', tarballUrl: tgz('esbuild-wasm', '0.21.5'), integrity: 'sha512-w',
-      dependencies: {}, main: 'index.js', bin: {},
-    };
-    return {
-      pkg,
-      cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
-    };
+    return resultFor(name, spec);
   });
   const result = await installer.install(PROJ, { pid: 1, fromLockfile: true });
   assert.deepEqual(result.failed, [], log.join('\n'));
@@ -183,17 +175,10 @@ const versionAt = (root, dir) => JSON.parse(root.readFileString(`${NM}/${dir}/pa
     },
   };
   const specs = [];
+  const { resultFor } = npmRegistry({ 'esbuild-wasm': { '0.21.5': {}, '0.19.12': {} } });
   const { installer, root, log } = makeInstaller(pkgJson, lock, (name, spec) => {
     specs.push({ name, range: spec.range });
-    const version = spec.range.replace(/^npm:[^@]+@/, '');
-    const pkg = {
-      name, version, tarballUrl: tgz('esbuild-wasm', version), integrity: `sha512-w${version}`,
-      dependencies: {}, main: 'index.js', bin: {},
-    };
-    return {
-      pkg,
-      cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
-    };
+    return resultFor(name, spec);
   });
   const result = await installer.install(PROJ, { pid: 1, fromLockfile: true });
   assert.deepEqual(result.failed, [], log.join('\n'));
@@ -297,10 +282,8 @@ const versionAt = (root, dir) => JSON.parse(root.readFileString(`${NM}/${dir}/pa
 // ── a stop after the plan publishes nothing ──────────────────────────────
 {
   const stop = new AbortController();
-  const { installer, root, log } = makeInstaller({ name: 'stop', version: '1.0.0', dependencies: { s: '1.0.0' } }, LOCK, (name) => ({
-    pkg: { name, version: '1.0.0', tarballUrl: tgz(name, '1.0.0'), integrity: 'sha512-s', dependencies: {}, main: '', bin: {} },
-    cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
-  }));
+  const { resultFor } = npmRegistry({ s: { '1.0.0': {} } });
+  const { installer, root, log } = makeInstaller({ name: 'stop', version: '1.0.0', dependencies: { s: '1.0.0' } }, LOCK, resultFor);
   const onProgress = (msg) => { log.push(msg); if (msg.startsWith('To fetch:')) stop.abort(new DOMException('stopped', 'AbortError')); };
   await assert.rejects(installer.install(PROJ, { pid: 1, signal: stop.signal, onProgress }), { name: 'AbortError' });
   assert.equal(root.exists(`${NM}/s`), false, 'nothing is published once the install is stopped');
@@ -446,10 +429,8 @@ for (const [label, entries, line] of [
       ...entries,
     },
   };
-  const { installer, root } = makeInstaller(pkgJson, lock, (name) => ({
-    pkg: { name, version: '1.2.0', tarballUrl: tgz(name, '1.2.0'), integrity: `sha512-${name}`, dependencies: {}, main: '', bin: {} },
-    cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
-  }));
+  const { resultFor } = npmRegistry({ b: { '1.2.0': {} } });
+  const { installer, root } = makeInstaller(pkgJson, lock, resultFor);
   await assert.rejects(installer.install(PROJ, { pid: 1, fromLockfile: true }), line, label);
   assert.ok(root.exists(`${NM}/stale/index.js`), `${label}: node_modules is left as it was`);
 }
