@@ -669,6 +669,101 @@ export function processFsClient(options) {
             pump();
         });
     };
+    /** submit's body: `op` logged (folded, or queued), its answer; with `foldOnly`, undefined and nothing logged where it does not fold. */
+    const entered = (given, submitOptions, foldOnly) => {
+        const acknowledged = submitOptions?.acknowledged === true;
+        if (processGone !== null && !(sealed && (acknowledged || submitOptions?.decided === true)))
+            throw processGone;
+        const op = withUmaskOf(given, options.umask);
+        const named = pathsOf(op);
+        const lingers = (acknowledged || submitOptions?.decided === true) && named.every((path) => heldGrant(path) !== undefined);
+        for (const path of named)
+            if (!canonical(path))
+                throw fsError('EINVAL', `EINVAL: not a filesystem path the session takes: '${path}'`, path);
+        // A link's target past PATH_MAX is refused here, as symlink(2) refuses it; no wave could carry it.
+        if (op.type === 'call' && op.call.call === 'symlink' && utf8Length(op.call.target) > SYMLINK_TARGET_MAX) {
+            throw fsError('ENAMETOOLONG', `ENAMETOOLONG: a link's target is at most ${SYMLINK_TARGET_MAX} bytes`, op.call.path);
+        }
+        const parts = pieces(op);
+        const bytes = parts.reduce((sum, part) => sum + (part.type === 'call' && 'data' in part.call ? part.call.data.byteLength : 0), 0);
+        if (acknowledged && !sealed && pendingSyncBytes + bytes > syncCap)
+            throw syncCapRefusal(bytes, pathsOf(op)[0] ?? '');
+        // The same file's next bytes, right after its last unsent change: folded into it.
+        const tail = foldTail(parts, named, acknowledged);
+        const merged = tail !== undefined ? folded(tail.op, parts[0], tail[FOLD_BUFFER] ?? null) : null;
+        if (merged !== null && tail !== undefined) {
+            const mergedBytes = merged.op.type === 'call' && 'data' in merged.op.call ? merged.op.call.data.byteLength : 0;
+            journal.replace(tail.jid, merged.op, merged.append);
+            const grown = mergedBytes - tail.bytes;
+            tail.op = merged.op;
+            if (merged.buffer !== null || tail[FOLD_BUFFER] !== undefined)
+                tail[FOLD_BUFFER] = merged.buffer ?? undefined;
+            tail.bytes = mergedBytes;
+            // Someone waits on the fold now: what lingered goes.
+            if (tail.lingers && !lingers) {
+                tail.lingers = false;
+                schedule();
+            }
+            heapBytes += grown;
+            pendingBytes += grown;
+            if (acknowledged)
+                pendingSyncBytes += grown;
+            counters.ops++;
+            counters.folded++;
+            return tail.answer;
+        }
+        if (foldOnly)
+            return undefined;
+        const answers = parts.map((part) => {
+            let entry;
+            const answer = new Promise((resolve, reject) => {
+                const partBytes = part.type === 'call' && 'data' in part.call ? part.call.data.byteLength : 0;
+                // Logged where the process's death does not reach, before it is told anything.
+                const jid = journal.append(part);
+                // The heap keeps a window of what is unsent; the rest is read back from the journal.
+                const kept = !journal.durable || heapBytes + partBytes <= PROCESS_FS_HEAP_WINDOW_BYTES;
+                if (kept)
+                    heapBytes += partBytes;
+                entry = { op: kept ? part : null, jid, name: nameOf(part), seq: 0, order: ++logged, bytes: partBytes, paths: pathsOf(part), acknowledged, lingers, resolve, reject, answer: null };
+                queue.push(entry);
+                pendingBytes += partBytes;
+                if (acknowledged) {
+                    pendingSyncBytes += partBytes;
+                    pendingSyncOps++;
+                }
+                counters.ops++;
+            });
+            // Undefined where the journal refused it: nothing was queued, and the answer is that refusal.
+            if (entry !== undefined)
+                entry.answer = answer;
+            return { entry, answer };
+        });
+        schedule();
+        // A piece failed fails the call; its last piece's receipt answers it,
+        // and its mutation spans them all.
+        const answer = Promise.all(answers.map((piece) => piece.answer)).then((all) => {
+            const first = all[0]?.mutation;
+            const last = all[all.length - 1];
+            if (last === undefined)
+                return {};
+            // An acknowledged piece failed: the call's failure (reported once, by the client). Refused,
+            // never applied, only where every piece was: one applied or of unknown fate leaves the call's unknown.
+            const failures = all.filter((piece) => piece.failed !== undefined);
+            if (failures.length > 0) {
+                const { errno, message } = failures[0].failed;
+                return { failed: failures.length === all.length && failures.every((piece) => piece.failed.refused === true) ? { errno, message, refused: true } : { errno, message } };
+            }
+            const { mutation: _mutation, ...rest } = last;
+            return first !== undefined && last.mutation !== undefined ? { ...rest, mutation: { before: first.before, after: last.mutation.after } } : rest;
+        });
+        if (acknowledged)
+            answer.catch(() => { });
+        // A one-piece call's entry gives an op folded into it the call's own answer: the same, at the same turn.
+        const only = answers.length === 1 ? answers[0].entry : undefined;
+        if (only !== undefined)
+            only.answer = answer;
+        return answer;
+    };
     /** The last unsent change `parts` (one op's) may fold into: one piece, its file's, sent never (one back for a re-send is numbered), logged alike. */
     const foldTail = (parts, named, acknowledged) => {
         const tail = queue[queue.length - 1];
@@ -1020,107 +1115,15 @@ export function processFsClient(options) {
         pending() {
             return queue.length > 0 || inFlight !== null;
         },
-        continues(op, submitOptions) {
-            const given = withUmaskOf(op, options.umask);
-            const parts = pieces(given);
-            const tail = foldTail(parts, pathsOf(given), submitOptions?.acknowledged === true);
-            return tail !== undefined && foldOf(tail.op, parts[0]) !== null;
-        },
         fitsSync(bytes, path) {
             if (!sealed && pendingSyncBytes + bytes > syncCap)
                 throw syncCapRefusal(bytes, path);
         },
         submit(given, submitOptions) {
-            const acknowledged = submitOptions?.acknowledged === true;
-            if (processGone !== null && !(sealed && (acknowledged || submitOptions?.decided === true)))
-                throw processGone;
-            const op = withUmaskOf(given, options.umask);
-            const named = pathsOf(op);
-            const lingers = (acknowledged || submitOptions?.decided === true) && named.every((path) => heldGrant(path) !== undefined);
-            for (const path of named)
-                if (!canonical(path))
-                    throw fsError('EINVAL', `EINVAL: not a filesystem path the session takes: '${path}'`, path);
-            // A link's target past PATH_MAX is refused here, as symlink(2) refuses it; no wave could carry it.
-            if (op.type === 'call' && op.call.call === 'symlink' && utf8Length(op.call.target) > SYMLINK_TARGET_MAX) {
-                throw fsError('ENAMETOOLONG', `ENAMETOOLONG: a link's target is at most ${SYMLINK_TARGET_MAX} bytes`, op.call.path);
-            }
-            const parts = pieces(op);
-            const bytes = parts.reduce((sum, part) => sum + (part.type === 'call' && 'data' in part.call ? part.call.data.byteLength : 0), 0);
-            if (acknowledged && !sealed && pendingSyncBytes + bytes > syncCap)
-                throw syncCapRefusal(bytes, pathsOf(op)[0] ?? '');
-            // The same file's next bytes, right after its last unsent change: folded into it.
-            const tail = foldTail(parts, named, acknowledged);
-            const merged = tail !== undefined ? folded(tail.op, parts[0], tail[FOLD_BUFFER] ?? null) : null;
-            if (merged !== null && tail !== undefined) {
-                const mergedBytes = merged.op.type === 'call' && 'data' in merged.op.call ? merged.op.call.data.byteLength : 0;
-                journal.replace(tail.jid, merged.op, merged.append);
-                const grown = mergedBytes - tail.bytes;
-                tail.op = merged.op;
-                if (merged.buffer !== null || tail[FOLD_BUFFER] !== undefined)
-                    tail[FOLD_BUFFER] = merged.buffer ?? undefined;
-                tail.bytes = mergedBytes;
-                // Someone waits on the fold now: what lingered goes.
-                if (tail.lingers && !lingers) {
-                    tail.lingers = false;
-                    schedule();
-                }
-                heapBytes += grown;
-                pendingBytes += grown;
-                if (acknowledged)
-                    pendingSyncBytes += grown;
-                counters.ops++;
-                counters.folded++;
-                return tail.answer;
-            }
-            const answers = parts.map((part) => {
-                let entry;
-                const answer = new Promise((resolve, reject) => {
-                    const partBytes = part.type === 'call' && 'data' in part.call ? part.call.data.byteLength : 0;
-                    // Logged where the process's death does not reach, before it is told anything.
-                    const jid = journal.append(part);
-                    // The heap keeps a window of what is unsent; the rest is read back from the journal.
-                    const kept = !journal.durable || heapBytes + partBytes <= PROCESS_FS_HEAP_WINDOW_BYTES;
-                    if (kept)
-                        heapBytes += partBytes;
-                    entry = { op: kept ? part : null, jid, name: nameOf(part), seq: 0, order: ++logged, bytes: partBytes, paths: pathsOf(part), acknowledged, lingers, resolve, reject, answer: null };
-                    queue.push(entry);
-                    pendingBytes += partBytes;
-                    if (acknowledged) {
-                        pendingSyncBytes += partBytes;
-                        pendingSyncOps++;
-                    }
-                    counters.ops++;
-                });
-                // Undefined where the journal refused it: nothing was queued, and the answer is that refusal.
-                if (entry !== undefined)
-                    entry.answer = answer;
-                return { entry, answer };
-            });
-            schedule();
-            // A piece failed fails the call; its last piece's receipt answers it,
-            // and its mutation spans them all.
-            const answer = Promise.all(answers.map((piece) => piece.answer)).then((all) => {
-                const first = all[0]?.mutation;
-                const last = all[all.length - 1];
-                if (last === undefined)
-                    return {};
-                // An acknowledged piece failed: the call's failure (reported once, by the client). Refused,
-                // never applied, only where every piece was: one applied or of unknown fate leaves the call's unknown.
-                const failures = all.filter((piece) => piece.failed !== undefined);
-                if (failures.length > 0) {
-                    const { errno, message } = failures[0].failed;
-                    return { failed: failures.length === all.length && failures.every((piece) => piece.failed.refused === true) ? { errno, message, refused: true } : { errno, message } };
-                }
-                const { mutation: _mutation, ...rest } = last;
-                return first !== undefined && last.mutation !== undefined ? { ...rest, mutation: { before: first.before, after: last.mutation.after } } : rest;
-            });
-            if (acknowledged)
-                answer.catch(() => { });
-            // A one-piece call's entry gives an op folded into it the call's own answer: the same, at the same turn.
-            const only = answers.length === 1 ? answers[0].entry : undefined;
-            if (only !== undefined)
-                only.answer = answer;
-            return answer;
+            return entered(given, submitOptions, false);
+        },
+        fold(given, submitOptions) {
+            return entered(given, submitOptions, true);
         },
         hurry() {
             for (const entry of queue)

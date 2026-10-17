@@ -218,8 +218,8 @@ export function provisional(host) {
             + (inode.pin?.bytes.byteLength ?? 0) + inode.credit + inode.recordsCost;
         return total;
     };
-    /** What a record keeps of the budget: itself and what its op carries. */
-    const recordCost = (record) => RECORD_COST + payloadOf(record.op);
+    /** What a record keeps of the budget: itself and what its op carries (an extended one's room, as the state's bytes count theirs). */
+    const recordCost = (record) => RECORD_COST + (record.room?.byteLength ?? payloadOf(record.op));
     /** `inode`'s records less `leaving` (a set of them), each gone. */
     const dropRecords = (inode, leaving) => {
         if (leaving.size === 0)
@@ -435,6 +435,7 @@ export function provisional(host) {
             return false;
         const before = was.data.byteLength;
         const length = before + op.data.byteLength;
+        const counted = recordCost(record);
         let room = record.room;
         if (room === undefined || room.byteLength < length) {
             const grown = new Uint8Array(Math.max(length, before * 2));
@@ -446,7 +447,7 @@ export function provisional(host) {
         const own = was;
         own.data = room.subarray(0, length);
         own.at = op.at;
-        record.owner.recordsCost += op.data.byteLength;
+        record.owner.recordsCost += recordCost(record) - counted;
         return true;
     };
     /** The overlay rebuilt: every name record still pending replayed over the view, in log order. */
@@ -845,26 +846,33 @@ export function provisional(host) {
         const was = last.op;
         if (start === undefined ? was.kind !== 'append' : was.kind !== 'write' || start !== was.offset + was.data.byteLength)
             return false;
+        // What it adds is what grows: its record's room and its state's, each by doubling; most writes add nothing to admit.
+        const state = inode.state;
+        const before = was.data.byteLength;
+        const length = before + bytes.byteLength;
+        const recordRoom = last.room !== undefined && last.room.byteLength >= length ? last.room.byteLength : Math.max(length, before * 2);
+        const capacity = state.bytes?.byteLength ?? 0;
+        const end = start === undefined ? state.size + bytes.byteLength : start + bytes.byteLength;
+        const growth = recordRoom - (last.room?.byteLength ?? before) + (state.bytes !== null && end > capacity ? Math.max(end, capacity * 2, 4096) - capacity : 0);
         host.drain();
+        host.client.fitsSync(bytes.byteLength, desc.path);
+        if (growth > 0) {
+            const need = cost(inode) + growth - inode.reserved;
+            admit(need, 'write', desc.path);
+            if (need > 0)
+                inode.reserved += need;
+        }
         const call = { type: 'call', call: start === undefined
                 ? { call: 'append', path: inode.key, ...by(desc), data: bytes }
                 : { call: 'write', path: inode.key, ...by(desc), offset: start, data: bytes } };
-        if (!host.client.continues(call, { acknowledged: true }))
+        // Not the change it continues (another came after it): any room taken is the general path's to count.
+        if (host.client.fold(call, { acknowledged: true }) === undefined)
             return false;
-        host.client.fitsSync(bytes.byteLength, desc.path);
         const op = start === undefined ? { kind: 'append', data: bytes, at } : { kind: 'write', offset: start, data: bytes, at };
-        const state = inode.state;
-        const capacity = state.bytes?.byteLength ?? 0;
-        const end = start === undefined ? state.size + bytes.byteLength : start + bytes.byteLength;
-        const room = state.bytes !== null && end > capacity ? Math.max(end, capacity * 2, 4096) - capacity : 0;
-        const need = cost(inode) + bytes.byteLength + room - inode.reserved;
-        admit(need, 'write', desc.path);
-        if (need > 0)
-            inode.reserved += need;
-        void host.client.submit(call, { acknowledged: true });
         extended(last, op);
         inode.state = applyOp(state, op);
-        fit(inode);
+        if (growth > 0)
+            fit(inode);
         return true;
     };
     const judgeAttrs = (row, attrs, syscall, path) => {

@@ -1795,6 +1795,78 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         pump();
       });
     };
+    const entered = (given, submitOptions, foldOnly) => {
+      const acknowledged = submitOptions?.acknowledged === true;
+      if (processGone !== null && !(sealed && (acknowledged || submitOptions?.decided === true))) throw processGone;
+      const op = withUmaskOf(given, options.umask);
+      const named = pathsOf(op);
+      const lingers = (acknowledged || submitOptions?.decided === true) && named.every((path) => heldGrant(path) !== void 0);
+      for (const path of named) if (!canonical(path)) throw fsError("EINVAL", `EINVAL: not a filesystem path the session takes: '${path}'`, path);
+      if (op.type === "call" && op.call.call === "symlink" && utf8Length(op.call.target) > SYMLINK_TARGET_MAX) {
+        throw fsError("ENAMETOOLONG", `ENAMETOOLONG: a link's target is at most ${SYMLINK_TARGET_MAX} bytes`, op.call.path);
+      }
+      const parts = pieces(op);
+      const bytes = parts.reduce((sum, part) => sum + (part.type === "call" && "data" in part.call ? part.call.data.byteLength : 0), 0);
+      if (acknowledged && !sealed && pendingSyncBytes + bytes > syncCap) throw syncCapRefusal(bytes, pathsOf(op)[0] ?? "");
+      const tail = foldTail(parts, named, acknowledged);
+      const merged = tail !== void 0 ? folded(tail.op, parts[0], tail[FOLD_BUFFER] ?? null) : null;
+      if (merged !== null && tail !== void 0) {
+        const mergedBytes = merged.op.type === "call" && "data" in merged.op.call ? merged.op.call.data.byteLength : 0;
+        journal.replace(tail.jid, merged.op, merged.append);
+        const grown = mergedBytes - tail.bytes;
+        tail.op = merged.op;
+        if (merged.buffer !== null || tail[FOLD_BUFFER] !== void 0) tail[FOLD_BUFFER] = merged.buffer ?? void 0;
+        tail.bytes = mergedBytes;
+        if (tail.lingers && !lingers) {
+          tail.lingers = false;
+          schedule();
+        }
+        heapBytes += grown;
+        pendingBytes += grown;
+        if (acknowledged) pendingSyncBytes += grown;
+        counters.ops++;
+        counters.folded++;
+        return tail.answer;
+      }
+      if (foldOnly) return void 0;
+      const answers = parts.map((part) => {
+        let entry;
+        const answer2 = new Promise((resolve, reject) => {
+          const partBytes = part.type === "call" && "data" in part.call ? part.call.data.byteLength : 0;
+          const jid = journal.append(part);
+          const kept = !journal.durable || heapBytes + partBytes <= PROCESS_FS_HEAP_WINDOW_BYTES;
+          if (kept) heapBytes += partBytes;
+          entry = { op: kept ? part : null, jid, name: nameOf(part), seq: 0, order: ++logged, bytes: partBytes, paths: pathsOf(part), acknowledged, lingers, resolve, reject, answer: null };
+          queue.push(entry);
+          pendingBytes += partBytes;
+          if (acknowledged) {
+            pendingSyncBytes += partBytes;
+            pendingSyncOps++;
+          }
+          counters.ops++;
+        });
+        if (entry !== void 0) entry.answer = answer2;
+        return { entry, answer: answer2 };
+      });
+      schedule();
+      const answer = Promise.all(answers.map((piece) => piece.answer)).then((all) => {
+        const first = all[0]?.mutation;
+        const last = all[all.length - 1];
+        if (last === void 0) return {};
+        const failures2 = all.filter((piece) => piece.failed !== void 0);
+        if (failures2.length > 0) {
+          const { errno, message } = failures2[0].failed;
+          return { failed: failures2.length === all.length && failures2.every((piece) => piece.failed.refused === true) ? { errno, message, refused: true } : { errno, message } };
+        }
+        const { mutation: _mutation, ...rest } = last;
+        return first !== void 0 && last.mutation !== void 0 ? { ...rest, mutation: { before: first.before, after: last.mutation.after } } : rest;
+      });
+      if (acknowledged) answer.catch(() => {
+      });
+      const only = answers.length === 1 ? answers[0].entry : void 0;
+      if (only !== void 0) only.answer = answer;
+      return answer;
+    };
     const foldTail = (parts, named, acknowledged) => {
       const tail = queue[queue.length - 1];
       return parts.length === 1 && tail !== void 0 && tail.paths[0] === named[0] && tail.seq === 0 && tail.op !== null && tail.acknowledged === acknowledged ? tail : void 0;
@@ -2042,85 +2114,14 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       pending() {
         return queue.length > 0 || inFlight !== null;
       },
-      continues(op, submitOptions) {
-        const given = withUmaskOf(op, options.umask);
-        const parts = pieces(given);
-        const tail = foldTail(parts, pathsOf(given), submitOptions?.acknowledged === true);
-        return tail !== void 0 && foldOf(tail.op, parts[0]) !== null;
-      },
       fitsSync(bytes, path) {
         if (!sealed && pendingSyncBytes + bytes > syncCap) throw syncCapRefusal(bytes, path);
       },
       submit(given, submitOptions) {
-        const acknowledged = submitOptions?.acknowledged === true;
-        if (processGone !== null && !(sealed && (acknowledged || submitOptions?.decided === true))) throw processGone;
-        const op = withUmaskOf(given, options.umask);
-        const named = pathsOf(op);
-        const lingers = (acknowledged || submitOptions?.decided === true) && named.every((path) => heldGrant(path) !== void 0);
-        for (const path of named) if (!canonical(path)) throw fsError("EINVAL", `EINVAL: not a filesystem path the session takes: '${path}'`, path);
-        if (op.type === "call" && op.call.call === "symlink" && utf8Length(op.call.target) > SYMLINK_TARGET_MAX) {
-          throw fsError("ENAMETOOLONG", `ENAMETOOLONG: a link's target is at most ${SYMLINK_TARGET_MAX} bytes`, op.call.path);
-        }
-        const parts = pieces(op);
-        const bytes = parts.reduce((sum, part) => sum + (part.type === "call" && "data" in part.call ? part.call.data.byteLength : 0), 0);
-        if (acknowledged && !sealed && pendingSyncBytes + bytes > syncCap) throw syncCapRefusal(bytes, pathsOf(op)[0] ?? "");
-        const tail = foldTail(parts, named, acknowledged);
-        const merged = tail !== void 0 ? folded(tail.op, parts[0], tail[FOLD_BUFFER] ?? null) : null;
-        if (merged !== null && tail !== void 0) {
-          const mergedBytes = merged.op.type === "call" && "data" in merged.op.call ? merged.op.call.data.byteLength : 0;
-          journal.replace(tail.jid, merged.op, merged.append);
-          const grown = mergedBytes - tail.bytes;
-          tail.op = merged.op;
-          if (merged.buffer !== null || tail[FOLD_BUFFER] !== void 0) tail[FOLD_BUFFER] = merged.buffer ?? void 0;
-          tail.bytes = mergedBytes;
-          if (tail.lingers && !lingers) {
-            tail.lingers = false;
-            schedule();
-          }
-          heapBytes += grown;
-          pendingBytes += grown;
-          if (acknowledged) pendingSyncBytes += grown;
-          counters.ops++;
-          counters.folded++;
-          return tail.answer;
-        }
-        const answers = parts.map((part) => {
-          let entry;
-          const answer2 = new Promise((resolve, reject) => {
-            const partBytes = part.type === "call" && "data" in part.call ? part.call.data.byteLength : 0;
-            const jid = journal.append(part);
-            const kept = !journal.durable || heapBytes + partBytes <= PROCESS_FS_HEAP_WINDOW_BYTES;
-            if (kept) heapBytes += partBytes;
-            entry = { op: kept ? part : null, jid, name: nameOf(part), seq: 0, order: ++logged, bytes: partBytes, paths: pathsOf(part), acknowledged, lingers, resolve, reject, answer: null };
-            queue.push(entry);
-            pendingBytes += partBytes;
-            if (acknowledged) {
-              pendingSyncBytes += partBytes;
-              pendingSyncOps++;
-            }
-            counters.ops++;
-          });
-          if (entry !== void 0) entry.answer = answer2;
-          return { entry, answer: answer2 };
-        });
-        schedule();
-        const answer = Promise.all(answers.map((piece) => piece.answer)).then((all) => {
-          const first = all[0]?.mutation;
-          const last = all[all.length - 1];
-          if (last === void 0) return {};
-          const failures2 = all.filter((piece) => piece.failed !== void 0);
-          if (failures2.length > 0) {
-            const { errno, message } = failures2[0].failed;
-            return { failed: failures2.length === all.length && failures2.every((piece) => piece.failed.refused === true) ? { errno, message, refused: true } : { errno, message } };
-          }
-          const { mutation: _mutation, ...rest } = last;
-          return first !== void 0 && last.mutation !== void 0 ? { ...rest, mutation: { before: first.before, after: last.mutation.after } } : rest;
-        });
-        if (acknowledged) answer.catch(() => {
-        });
-        const only = answers.length === 1 ? answers[0].entry : void 0;
-        if (only !== void 0) only.answer = answer;
-        return answer;
+        return entered(given, submitOptions, false);
+      },
+      fold(given, submitOptions) {
+        return entered(given, submitOptions, true);
       },
       hurry() {
         for (const entry of queue) entry.lingers = false;
