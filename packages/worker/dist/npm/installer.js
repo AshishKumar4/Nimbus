@@ -1740,7 +1740,7 @@ export class NpmInstaller {
             return;
         const ctx = {
             vfs: fs, root: projDir, cache: this.cache, pool: this.bundlePool, parse: transformParser(this.esbuild), esbuild: this.esbuild, serviceFallback: false,
-            signal, owner: { pid, session: this.ctx?.id.toString() },
+            signal, owner: { pid, session: this.ctx?.id?.toString() },
         };
         const scan = await scanProject(ctx);
         if (scan.unread !== null) {

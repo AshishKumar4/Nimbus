@@ -45,8 +45,11 @@ export class PrebundlePool {
                         return await this.dispatch(task, prebundle);
                     }
                     catch (error) {
-                        if (!(error instanceof BuildFacetResetError) || attempt > 0)
+                        if (!(error instanceof BuildFacetResetError))
                             throw error;
+                        if (attempt > 0)
+                            throw new BuildFacetResetError(task.specifier, error.reason);
+                        console.warn(`[build-facet] the build facet was reset pre-bundling ${task.specifier} (${error.reason}); preparing it once more on a fresh facet`);
                         prebundle = await buildFacetPrebundler(this.ctx, this.env, task.signal);
                     }
                 }

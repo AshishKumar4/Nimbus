@@ -705,7 +705,7 @@ export async function _rpcFsReadBatch(self, requests, pid) {
             }
         }
         return entries;
-    }, pid, self.ctx?.id.toString());
+    }, pid, self.ctx?.id?.toString());
 }
 export async function _rpcFsWriteRange(self, path, offset, bytes, pid) {
     const args = FsWriteRangeArgsSchema.parse({ path, offset });

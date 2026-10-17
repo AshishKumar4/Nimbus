@@ -39,7 +39,8 @@ export declare function rolldownBuildHost(ctx: DurableObjectState, env: unknown,
 export declare class BuildFacetResetError extends Error {
     readonly specifier: string;
     readonly reason: string;
-    constructor(specifier: string, reason: string);
+    readonly attempts: number;
+    constructor(specifier: string, reason: string, attempts?: number);
 }
 /**
  * Pre-bundles one npm specifier from its slice in the Durable Object's build

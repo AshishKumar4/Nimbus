@@ -7578,7 +7578,7 @@ export class FacetManager {
         return readSupervisorAllocationBudget().current > own ? null : [...this.buildAdmissions.keys()];
     }
     _allocationOwner(pid) {
-        return { owner: 'launch bundle/map', pid, session: this.ctx.id.toString(), attribution: 'prefetchBundleBytes' };
+        return { owner: 'launch bundle/map', pid, session: this.ctx?.id?.toString(), attribution: 'prefetchBundleBytes' };
     }
     /**
      * A launch's share of the credit for the module map it makes from `state`

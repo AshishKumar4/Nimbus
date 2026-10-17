@@ -331,10 +331,12 @@ function retireGeneration(ctx, facet) {
 export class BuildFacetResetError extends Error {
     specifier;
     reason;
-    constructor(specifier, reason) {
-        super(`Nimbus's build facet was reset while pre-bundling ${specifier} (${reason})`);
+    attempts;
+    constructor(specifier, reason, attempts = 2) {
+        super(`Nimbus's build facet was reset${attempts === 1 ? '' : ' twice'} while pre-bundling ${specifier} (${reason})`);
         this.specifier = specifier;
         this.reason = reason;
+        this.attempts = attempts;
         this.name = 'BuildFacetResetError';
     }
 }
@@ -361,7 +363,7 @@ export async function buildFacetPrebundler(ctx, env, signal) {
     const stub = await untilAborted(facet.stub, signal);
     return async (task) => {
         if (facet.retired || facet.generation !== generation)
-            throw new BuildFacetResetError(task.specifier, 'the warmed generation was retired');
+            throw new BuildFacetResetError(task.specifier, 'the warmed generation was retired', 1);
         const endCall = await beginCall(ctx, facet, task.signal);
         let result;
         try {
@@ -383,7 +385,7 @@ export async function buildFacetPrebundler(ctx, env, signal) {
                 if (error instanceof FacetCallDeadlineError)
                     throw error;
                 if (!facet.crashed)
-                    throw new BuildFacetResetError(task.specifier, messageOf(error));
+                    throw new BuildFacetResetError(task.specifier, messageOf(error), 1);
                 const message = messageOf(error);
                 result = { specifier: task.specifier, ok: false, esmCode: '', errorText: `Nimbus's bundler crashed: ${message}`, elapsed: 0, warnings: [], crashed: { stackExhausted: false, message } };
             }
