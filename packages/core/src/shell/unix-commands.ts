@@ -30,7 +30,7 @@ import sortCommand from '../substrate/lifo/commands/text/sort.js';
 import uniqCommand from '../substrate/lifo/commands/text/uniq.js';
 import catCommand from '../substrate/lifo/commands/fs/cat.js';
 import * as checksum from '../substrate/lifo/commands/system/checksum.js';
-import { decodeLossless, encodeLossless, isBrokenPipe, readAllInput, writeBytes, writeLossless } from '../substrate/lifo/utils/bytes-io.js';
+import { decodeLossless, encodeLossless, isBrokenPipe, joinLossless, readAllInput, writeBytes, writeLossless } from '../substrate/lifo/utils/bytes-io.js';
 import headCommand from '../substrate/lifo/commands/text/head.js';
 import tacCommand from '../substrate/lifo/commands/text/tac.js';
 import teeCommand from '../substrate/lifo/commands/io/tee.js';
@@ -3012,8 +3012,14 @@ function mkPrintf(): Command {
       let i = 0;
       const startArg = argIdx;
       while (i < fmt.length && !stopped) {
-        const ch = fmt[i];
-        if (ch !== '%') { out += ch; i++; continue; }
+        if (fmt[i] !== '%') {
+          // The literal run to the next %, whole, so a character's two halves stay together.
+          const next = fmt.indexOf('%', i);
+          const run = fmt.slice(i, next === -1 ? fmt.length : next);
+          out = joinLossless(out, run);
+          i += run.length;
+          continue;
+        }
         if (fmt[i + 1] === '%') { out += '%'; i += 2; continue; }
         // Parse format spec: %[flags][width][.prec]conversion
         let spec = '%';
@@ -3030,10 +3036,10 @@ function mkPrintf(): Command {
         if (conv === 'b') {
           // %b: the argument's escapes expanded, then laid out as %s would be.
           const expanded = expandBackslashEscapes(arg ?? '', 'printf-b');
-          out += formatOneArg(`${spec}s`, expanded.text);
+          out = joinLossless(out, formatOneArg(`${spec}s`, expanded.text));
           stopped = expanded.stopped;
         } else {
-          out += formatOneArg(spec + conv, arg);
+          out = joinLossless(out, formatOneArg(spec + conv, arg));
         }
       }
       return argIdx > startArg;
