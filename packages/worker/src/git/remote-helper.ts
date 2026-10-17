@@ -19,6 +19,7 @@
  * itself, and git.wasm cannot demultiplex a sideband (start_async forks).
  */
 
+import { nameDec } from '@nimbus-sh/core/_shared/bytes.js';
 import { RemoteEngineError, type RemoteAuth, type ListRefsResult, type FetchPackResult, type PushCommand, type PushPackResult, type RemoteEngine } from './engine.js';
 import { resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { base64Utf8 } from '@nimbus-sh/core/_shared/crypto.js';
@@ -81,7 +82,7 @@ export function unquoteC(value: string): string | null {
   const enc = new TextEncoder();
   for (let i = 1; i < value.length; i++) {
     const c = value[i];
-    if (c === '"') return i === value.length - 1 ? new TextDecoder().decode(new Uint8Array(bytes)) : null;
+    if (c === '"') return i === value.length - 1 ? nameDec.decode(new Uint8Array(bytes)) : null;
     if (c !== '\\') { bytes.push(...enc.encode(c)); continue; }
     const next = value[++i];
     const simple: Record<string, number> = { a: 7, b: 8, f: 12, n: 10, r: 13, t: 9, v: 11, '\\': 92, '"': 34 };
@@ -162,7 +163,8 @@ async function storageOf(io: HelperIo, gitDir: string): Promise<{ commonDir?: st
   let commonDir = io.env.GIT_COMMON_DIR ? '/' + resolveVfsPath(io.env.GIT_COMMON_DIR, io.cwd) : gitDir;
   if (!io.env.GIT_COMMON_DIR) {
     const common = await io.readFile(gitDir + '/commondir');
-    if (common !== null) commonDir = '/' + resolveVfsPath(new TextDecoder().decode(common).trimEnd(), gitDir);
+    // Its line's end dropped, and nothing else (setup.c get_common_dir_noenv).
+    if (common !== null) commonDir = '/' + resolveVfsPath(nameDec.decode(common).replace(/[\r\n]+$/, ''), gitDir);
   }
   return {
     ...(commonDir !== gitDir ? { commonDir } : {}),

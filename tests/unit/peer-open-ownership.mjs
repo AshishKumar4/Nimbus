@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { settledScope } from './lib/response-scope.mjs';
-import { createFacetCtx, createFacetWorld, createPeerNamespace } from './facet-host-harness.mjs';
+import { createFacetCtx, createFacetWorld, createPeerNamespace } from './lib/facet-host-harness.mjs';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { runColdStart } from '../../packages/fabric/src/generation.ts';

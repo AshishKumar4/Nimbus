@@ -34,7 +34,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { NpmCache } from '../../packages/worker/src/npm/cache.ts';
 import { npmBinManifestPath } from '../../packages/worker/src/npm/bin-links.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { kernelInstaller, makeFanoutEnv } from './npm-fanout-test-env.mjs';
+import { kernelInstaller, makeFanoutEnv } from './lib/npm-fanout-test-env.mjs';
 
 const PROJ = 'app';
 const NM = `${PROJ}/node_modules`;

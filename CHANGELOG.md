@@ -16,6 +16,40 @@ published independently in the `@nimbus-sh` npm scope.
   unsupported, as the portable node does. Before, it was ignored: `-e`
   code under `=module` ran as CommonJS. A value other than `module` or
   `commonjs` is Node's own refusal.
+- Fixed: output that begins with U+FEFF (the UTF-8 BOM) keeps it, as a
+  Linux terminal receives every byte a program writes. This covers a
+  program's output in the terminal, process logs and `exec` results, a
+  program's stdin read as text (`process.stdin.setEncoding`, `readline`),
+  `curl`'s body, and the text-only output of `cut`, `find` and git. `grep`
+  matches a line's bytes, BOM included, as GNU grep does. Before, each
+  decoded with a TextDecoder that drops a leading BOM, per process or per
+  chunk; `setEncoding` and `readline` also split a character whose bytes
+  arrived in two chunks.
+- Fixed: `child_process.spawn(' node')` (a command with spaces or a BOM
+  around its name) finds no program (ENOENT), as in Node. Before, the name
+  was trimmed and `node` ran.
+- Breaking (worker): `vendor/git.generated.mjs` no longer exports
+  `gitHttp`, cf-git's own HTTP client (isomorphic-git/http/web), nor
+  declares it (`vendor/git-http.generated.d.ts` is gone). Nimbus's git
+  speaks smart HTTP through its own clients (`git/pack/upload-pack.ts`,
+  `receive-pack.ts`), and nothing used it. The vendor module was never a
+  package export.
+- Changed: the built-in `git push` over HTTP speaks receive-pack through
+  Nimbus's own client (`git/pack/receive-pack.ts`), the one `git fetch`,
+  `git clone` and the git remote helpers already use. It streams its pack
+  as git does past `http.postBuffer`; before, cf-git collected the whole
+  request and sent it with a Content-Length. Push no longer reads the
+  isomorphic-git-only `http.corsProxy` setting, which fetch already
+  ignored and git never had.
+- Fixed: a name that begins with U+FEFF (the UTF-8 BOM, bytes EF BB BF)
+  keeps it, as git, tar and Linux keep it. This covers file and directory
+  names in git's index, trees and checkouts, symlink targets, ZIP member
+  names, paths in the wasm bash and its programs, and the text `$( )`
+  captures. Before, each was decoded with a TextDecoder that drops a
+  leading BOM: a clone of a repository with a directory named by a BOM alone
+  failed with "invalid path", a file `\uFEFFf` was created as `f`, and
+  `readlink` lost the BOM from its link's target. A `.git/commondir` loses
+  only its line's end, as git reads it.
 - Fixed: a hosted ES module, staged or interpreted, can statically import
   a `data:` module (`import x from 'data:text/javascript,…'`). Its imported
   names are checked before any module body runs. It runs once, in a cycle
@@ -98,6 +132,11 @@ published independently in the `@nimbus-sh` npm scope.
   hosted terminal's `node_modules` check and Next.js refusal use it, so
   they also check pre and post scripts. `npmInstallGlobal` no longer takes
   a command registry, and `createNpmCommand` no longer reads its own.
+- Changed: the perf probe `perf-regression/clone-fast` is graded like
+  `cold-start`: against the baseline measured in the same run, one clone on
+  each of the three throwaways per round, 40 rounds. Its fixed 5600 ms
+  bound failed 5 of 591 full runs of unchanged main code, and passed a
+  clone 600 ms slower than main's.
 - Changed: the perf probes `perf-regression/cold-start`, `first-paint` and
   `install-warm` grade the candidate against a baseline measured in the
   same run, not against a fixed bound. `remote-probes` stands up three

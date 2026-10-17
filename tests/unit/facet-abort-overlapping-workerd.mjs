@@ -15,12 +15,7 @@
 // call answered as if nothing happened.
 
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
-import net from 'node:net';
-import { createRequire } from 'node:module';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { servePlainWorkerd } from './lib/plain-workerd.mjs';
 
 const MAIN = `
 import { DurableObject, RpcTarget } from 'cloudflare:workers';
@@ -72,20 +67,11 @@ export default {
 };
 `;
 
-async function freePort() {
-  const free = net.createServer();
-  await new Promise((r) => free.listen(0, '127.0.0.1', r));
-  const port = free.address().port;
-  await new Promise((r) => free.close(r));
-  return port;
-}
-
-const require = createRequire(import.meta.url);
-const workerd = createRequire(require.resolve('wrangler/package.json'))('workerd').default;
-const dir = mkdtempSync(join(tmpdir(), 'facet-abort-'));
-writeFileSync(join(dir, 'main.js'), MAIN);
-const port = await freePort();
-writeFileSync(join(dir, 'config.capnp'), `using Workerd = import "/workerd/workerd.capnp";
+const served = await servePlainWorkerd({
+  name: 'facet-abort',
+  files: { 'main.js': MAIN },
+  readyPath: '/ready',
+  config: ({ port }) => `using Workerd = import "/workerd/workerd.capnp";
 const config :Workerd.Config = (
   services = [
     (name = "main", worker = (
@@ -100,18 +86,10 @@ const config :Workerd.Config = (
     )),
   ],
   sockets = [(name = "http", address = "127.0.0.1:${port}", http = (), service = "main")],
-);`);
-const child = spawn(workerd, ['serve', 'config.capnp', '--experimental'], { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'] });
-let logs = '';
-child.stdout.on('data', (d) => { logs += d; });
-child.stderr.on('data', (d) => { logs += d; });
+);`,
+});
 try {
-  for (const until = Date.now() + 30_000; ;) {
-    try { await fetch(`http://127.0.0.1:${port}/ready`); break; } catch {}
-    if (child.exitCode !== null || Date.now() > until) throw new Error(`workerd did not start:\n${logs}`);
-    await new Promise((r) => setTimeout(r, 50));
-  }
-  const result = await (await fetch(`http://127.0.0.1:${port}/run`)).json();
+  const result = await (await fetch(`${served.base}/run`, { signal: AbortSignal.timeout(60_000) })).json();
   assert.notEqual(result.aborted, 'hung', 'the aborted facet\'s calls end, not hang');
   for (const call of result.aborted) {
     assert.ok(call.error, `an overlapping call on the aborted facet fails loudly: ${JSON.stringify(call)}`);
@@ -121,6 +99,5 @@ try {
   assert.deepEqual(result.commandResumed, ['resumed:cli']);
   console.log(`facet-abort-overlapping-workerd: ok (${JSON.stringify(result.aborted.map((c) => c.error))})`);
 } finally {
-  child.kill('SIGKILL');
-  rmSync(dir, { recursive: true, force: true });
+  await served.stop();
 }

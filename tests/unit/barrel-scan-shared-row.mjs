@@ -26,7 +26,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ViteDevServer } from '../../packages/worker/src/facets/vite-dev-server.ts';
 import { NpmCache } from '../../packages/worker/src/npm/cache.ts';
-import { kernelInstaller } from './npm-fanout-test-env.mjs';
+import { kernelInstaller } from './lib/npm-fanout-test-env.mjs';
 import { freshFacetClass, releaseBuildFacetHarness } from './lib/build-facet-harness.mjs';
 import { esbuildEngine, stopEsbuildEngine } from './lib/esbuild-engine.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';

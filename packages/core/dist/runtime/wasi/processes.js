@@ -32,6 +32,7 @@
  * (git-wasi-compat.c) turns that into errno.
  */
 import { refusalErrno as filesystemErrno } from './filesystem.js';
+import { nameDec } from '../../_shared/bytes.js';
 import { PIPE_CAPACITY, decideWrite } from '../bash/pipe-rules.js';
 import { NIMBUS_ESIGNAL, NIMBUS_SIGNAL_ERRNOS } from './types.js';
 /** WASI errno values these imports answer with. */
@@ -72,7 +73,6 @@ export function processHost(opts) {
     const children = new Map();
     const view = () => new DataView(opts.memory().buffer);
     const bytesAt = () => new Uint8Array(opts.memory().buffer);
-    const decoder = new TextDecoder();
     /**
      * The guest's waits on its children and their pipes in progress. While
      * there are any, all it does is wait on its children (it is one thread), and
@@ -235,7 +235,7 @@ export function processHost(opts) {
     const strings = (ptr, len) => {
         if (len === 0)
             return [];
-        const text = decoder.decode(bytesAt().slice(ptr, ptr + len));
+        const text = nameDec.decode(bytesAt().slice(ptr, ptr + len));
         return text.split('\0').slice(0, -1);
     };
     const gather = (iovs, iovsLen, maximum = Infinity) => {
@@ -397,7 +397,7 @@ export function processHost(opts) {
                 if (at > 0)
                     env[entry.slice(0, at)] = entry.slice(at + 1);
             }
-            const cwd = decoder.decode(bytesAt().slice(dirPtr, dirPtr + dirLen)) || '/';
+            const cwd = nameDec.decode(bytesAt().slice(dirPtr, dirPtr + dirLen)) || '/';
             // What each of the child's streams connects to, taken now: the guest
             // closes its copies as soon as this returns.
             const stdin = pipeEntry(fdin);

@@ -2,7 +2,8 @@
 // behind Bun.serve, serving the bare repositories under one root, with
 // filter and wants-by-id enabled as GitHub has them (`plain: true` keeps
 // http-backend's defaults, neither; a repository's own config can still
-// enable one). Records each request's method, path and Authorization. `refuse(path, body, request)`: a
+// enable one). Records each request's method, path, Authorization and
+// Content-Length (null for a chunked body). `refuse(path, body, request)`: a
 // request it says so of is answered 403, as a server that stops serving answers, or with the
 // Response it returns.
 
@@ -16,7 +17,7 @@ export function startGitHttpServer(projectRoot, { plain = false, refuse = null }
     hostname: '127.0.0.1',
     async fetch(request) {
       const url = new URL(request.url);
-      requests.push({ method: request.method, path: url.pathname, authorization: request.headers.get('authorization') });
+      requests.push({ method: request.method, path: url.pathname, authorization: request.headers.get('authorization'), length: request.headers.get('content-length') });
       const body = request.method === 'POST' ? new Uint8Array(await request.arrayBuffer()) : new Uint8Array(0);
       const refusal = refuse === null ? false : refuse(url.pathname, body, request);
       if (refusal instanceof Response) return refusal;

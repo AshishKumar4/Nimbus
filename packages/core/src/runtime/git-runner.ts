@@ -30,6 +30,7 @@
 
 import type { RuntimeManifest } from './runtime-manifest.js';
 import { withHostView } from './process-files.js';
+import { nameDec } from '../_shared/bytes.js';
 import type { Command, CommandContext, CommandOutputStream } from '../substrate/lifo/commands/types.js';
 import type { FacetHost } from './facet-host.js';
 import { GIT_CALL_TASK } from './compiled-bodies.generated.js';
@@ -189,7 +190,7 @@ const GIT_TIMEOUT_MS = 300_000;
 async function writeOut(sink: CommandOutputStream, bytes: Uint8Array): Promise<void> {
   if (bytes.byteLength === 0) return;
   if (sink.writeBytes) await sink.writeBytes(bytes);
-  else await sink.write(new TextDecoder().decode(bytes));
+  else await sink.write(nameDec.decode(bytes));
 }
 
 function errorMessage(error: unknown): string {

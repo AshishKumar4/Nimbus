@@ -107,6 +107,7 @@ assertInstalled(repo, 'release');
 
 // Imported once the install is known to be here: the upload path parses wrangler configs through it.
 const { fetchRelease, productionCommit, releaseDigest } = await import('./lib/release.mjs');
+const { hostedWorkerName } = await import('../deploy-isolation.mjs');
 const { holdLease } = await import('./lib/lease.mjs');
 
 // The paired perf probes grade this release against what production serves (remote-probes --baseline).
@@ -175,7 +176,7 @@ let exit = 0;
 if (!flags['no-matrix']) {
   const repeat = flags.repeat ?? REPEATED.join(',');
   const suite = probes([...matrixProbeArgs(DEFERRED, { repeat, times: flags.times ?? '5' }), '--baseline', production]);
-  const demo = staged.versions['nimbus-staging']?.base;
+  const demo = staged.versions[hostedWorkerName(repo, 'staging')]?.base;
   const hosted = demo ? probes(['--target', `hosted:${new URL(demo).origin}`, '--only', HOSTED_DEMO_CHECKS.join(','), '--parts', '1', '--jobs', String(HOSTED_DEMO_CHECKS.length)])
     : { exitCode: 2, verdict: null };
   // Graded row by row against the user's deferrals (lib/matrix.mjs): green

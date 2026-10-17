@@ -1,4 +1,5 @@
 // @serial
+// @tier slow — drives a local workerd
 // A node program in a session runs under its command line's conditions, as
 // Node runs it (host Node the oracle, on the same files): `--conditions`,
 // `-C` and NODE_OPTIONS' choose its `#imports` and its packages' `exports`,

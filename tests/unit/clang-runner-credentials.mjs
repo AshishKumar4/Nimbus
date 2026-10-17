@@ -2,7 +2,7 @@
 
 import assert from 'node:assert/strict';
 
-import { commandContext, makeInvocationVfs } from './clang-runner-test-harness.mjs';
+import { commandContext, makeInvocationVfs } from './lib/clang-runner-test-harness.mjs';
 
 async function expectEacces(run, args) {
   const invocation = commandContext(args);

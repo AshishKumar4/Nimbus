@@ -27,7 +27,6 @@ try {
   // A fetch that writes FILES files across a few hundred directories, and
   // counts each write as it completes.
   writeFileSync(join(tempDir, 'git-bundle.js'), `
-export const gitHttp = {};
 export const git = {
   async fetch({ fs, dir }) {
     const root = dir.replace(/^\\/+/, '');

@@ -9,9 +9,9 @@
  * bytes after a rebuild; <NAME>_SHA256 is the full digest verified at fetch time.
  */
 /** dist/runtime/node-shims.js generateShimsCode() */
-export const NODE_SHIMS_ENTRY = "/_assets/runtime/node-shims-28a4c7b7f5b676c6.js";
-export const NODE_SHIMS_BUILD_ID = "28a4c7b7f5b676c6";
-export const NODE_SHIMS_SHA256 = "28a4c7b7f5b676c6e7400b84eec33df3521bc88064533e8144bc02a527d77f0c";
+export const NODE_SHIMS_ENTRY = "/_assets/runtime/node-shims-e25ea8da9f3f7da1.js";
+export const NODE_SHIMS_BUILD_ID = "e25ea8da9f3f7da1";
+export const NODE_SHIMS_SHA256 = "e25ea8da9f3f7da1d815f146725f1df1470f00828680f71ab2bdceca4d8ef720";
 /** @nimbus-sh/core dist/_shared/vfs-write-ledger.js VFS_WRITE_LEDGER_SOURCE */
 export const VFS_WRITE_LEDGER_ENTRY = "/_assets/runtime/vfs-write-ledger-a116c3562b00e745.js";
 export const VFS_WRITE_LEDGER_BUILD_ID = "a116c3562b00e745";
@@ -33,13 +33,13 @@ export const JS_INTERPRETER_OPS_ENTRY = "/_assets/runtime/js-interpreter-ops-32c
 export const JS_INTERPRETER_OPS_BUILD_ID = "32cc78b8a580ed69";
 export const JS_INTERPRETER_OPS_SHA256 = "32cc78b8a580ed69cd7a2a738d584eb7805c1fcb4b43d1298ca60e5551a4c3f3";
 /** @nimbus-sh/core src/interpreter/parser.ts, bundled by scripts/interpreter-bundle.mjs */
-export const JS_PARSER_ENTRY = "/_assets/runtime/js-parser-4b91953fcffff8b8.js";
-export const JS_PARSER_BUILD_ID = "4b91953fcffff8b8";
-export const JS_PARSER_SHA256 = "4b91953fcffff8b8fd8f71eb399fbcf05ddb60075f0afa4f50a59e3ccd56bcae";
+export const JS_PARSER_ENTRY = "/_assets/runtime/js-parser-c8d022179f0f679e.js";
+export const JS_PARSER_BUILD_ID = "c8d022179f0f679e";
+export const JS_PARSER_SHA256 = "c8d022179f0f679e691a2a5e721f967bf9b9711f8bbf82c2d2371cde49258907";
 /** dist/runtime/node-lib-module.js generateNodeLibModule() */
-export const NODE_LIB_ENTRY = "/_assets/runtime/node-lib-7198ee6fa1559b36.js";
-export const NODE_LIB_BUILD_ID = "7198ee6fa1559b36";
-export const NODE_LIB_SHA256 = "7198ee6fa1559b36b665b3497cf837eabe32f02482986ac6d4b642a2d96a2167";
+export const NODE_LIB_ENTRY = "/_assets/runtime/node-lib-87b52afb47082f0b.js";
+export const NODE_LIB_BUILD_ID = "87b52afb47082f0b";
+export const NODE_LIB_SHA256 = "87b52afb47082f0bd69fe63cf8f1fcff68b37d97caf11c6fbce973fd5edd4633";
 /** dist/runtime/node-lib-module.js generateNodeLibRestModule() */
 export const NODE_LIB_REST_ENTRY = "/_assets/runtime/node-lib-rest-f11f64906eddd5c3.js";
 export const NODE_LIB_REST_BUILD_ID = "f11f64906eddd5c3";

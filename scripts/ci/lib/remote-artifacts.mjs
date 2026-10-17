@@ -61,24 +61,26 @@ export function extract(repo, path, files) {
 }
 
 /**
- * The paths where `files` of the archive at `path` differ from commit `sha`
- * of `repo`: a file whose bytes differ or that the commit lacks, and a file
- * the commit has under one of the `replaced` directories (which the archive's
- * files replace whole) that the archive lacks. Empty: the build reproduces
- * the commit's artifacts byte for byte.
+ * `files` of the archive at `path` beside commit `sha` of `repo`. Each one's
+ * sha256 as built and as committed (null when the commit lacks it), in
+ * `artifacts`. Those that differ, and the files the commit has under one of
+ * the `replaced` directories (which the archive's files replace whole) that
+ * the archive lacks, in `differing`. An empty `differing` means the build
+ * reproduces the commit's artifacts byte for byte.
  */
-export function differences(repo, sha, path, files, replaced = []) {
+export function compareArtifacts(repo, sha, path, files, replaced = []) {
   const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
   const unpacked = mkdtempSync(join(tmpdir(), 'remote-artifacts-'));
   try {
     extract(unpacked, path, files);
-    const differing = files.filter((file) => {
+    const artifacts = Object.fromEntries(files.map((file) => {
       const shown = spawnSync('git', ['-C', repo, 'show', `${sha}:${file}`], { maxBuffer: 512 * 1024 * 1024 });
-      return shown.status !== 0 || digest(shown.stdout) !== digest(readFileSync(join(unpacked, file)));
-    });
+      return [file, { built: digest(readFileSync(join(unpacked, file))), committed: shown.status === 0 ? digest(shown.stdout) : null }];
+    }));
     const returned = new Set(files);
     const committed = replaced.length === 0 ? [] : git(repo, ['ls-tree', '-r', '--name-only', sha, '--', ...replaced]).split('\n').filter(Boolean);
-    return [...differing, ...committed.filter((file) => !returned.has(file))].sort();
+    const differing = [...files.filter((file) => artifacts[file].built !== artifacts[file].committed), ...committed.filter((file) => !returned.has(file))].sort();
+    return { artifacts, differing };
   } finally {
     rmSync(unpacked, { recursive: true, force: true });
   }

@@ -43,7 +43,8 @@ export function staticStdinReader(text) {
  */
 export function pulledStdinReader(pull) {
     const pushedBack = [];
-    const decoder = new TextDecoder('utf-8');
+    // stdin's text keeps a leading U+FEFF, as its bytes do.
+    const decoder = new TextDecoder('utf-8', { ignoreBOM: true });
     let ended = false;
     const next = async () => {
         const held = pushedBack.shift();

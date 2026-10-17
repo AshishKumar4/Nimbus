@@ -109,7 +109,6 @@ try {
 function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
-export const gitHttp = {};
 export const git = {
   async fetch({ fs, dir }) {
     if (dir.replace(/^\\/+/, '') === 'mode') {

@@ -28,7 +28,7 @@ import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { runColdStart } from '../../packages/fabric/src/generation.ts';
 import { residentLoaderConfig } from '../../packages/fabric/src/process-fabric.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
+import { createFacetCtx, createFacetWorld } from './lib/facet-host-harness.mjs';
 
 adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
 

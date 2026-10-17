@@ -19,9 +19,9 @@
 // settles on its own, as the peer shard settles each. A receipt goes where
 // `writeReceipt` puts it (as the namespace routes the writer's waves), else
 // into `root`.
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
-import { NpmInstaller } from '../../packages/worker/src/npm/installer.ts';
+import { CRED_KERNEL } from '../../../packages/core/src/runtime/os-contracts.ts';
+import { ProcessFiles } from '../../../packages/core/src/runtime/process-files.ts';
+import { NpmInstaller } from '../../../packages/worker/src/npm/installer.ts';
 
 // The installer over `vfs`, installing as pid 1 with the kernel's credential:
 // these fixtures' trees are root's, so an install reads and writes them as root.
@@ -32,7 +32,25 @@ export function kernelInstaller(vfs, sql, opts) {
   return installer;
 }
 
-export function makeFanoutEnv({ root, NM, resultFor, shardsSeen = [], log = [], failFor = () => null, crashFor = () => null, manifestFor = (p) => ({ name: p.name, version: p.version }), filesFor = () => ({}), writeReceipt = null }) {
+/**
+ * A package the write shard is asked to install: the supervisor's payload.
+ * @typedef {import('../../../packages/worker/src/npm/install-facet.ts').FacetPackageSpec} ShardPackage
+ */
+
+/**
+ * @param {{
+ *   root: { mkdir(path: string, options?: { recursive?: boolean }): void, writeFile(path: string, content: string): void, utimes(path: string, atime: number, mtime: number): void },
+ *   NM: string,
+ *   resultFor: (name: string, spec: { name: string, range?: string }) => object,
+ *   shardsSeen?: string[],
+ *   failFor?: (p: ShardPackage) => string | null,
+ *   crashFor?: (p: ShardPackage) => 'before' | 'partial' | 'after' | null,
+ *   manifestFor?: (p: ShardPackage) => object,
+ *   filesFor?: (p: ShardPackage) => Record<string, string>,
+ *   writeReceipt?: ((path: string) => void) | null,
+ * }} options
+ */
+export function makeFanoutEnv({ root, NM, resultFor, shardsSeen = [], failFor = () => null, crashFor = () => null, manifestFor = (p) => ({ name: p.name, version: p.version }), filesFor = () => ({}), writeReceipt = null }) {
   const fanoutReply = (args) => {
     if (args[0] && Array.isArray(args[0].packages)) {
       // The install shard: write each package's package.json so the

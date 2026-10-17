@@ -1,5 +1,5 @@
 import { concatBytes, inputChunks } from '../../utils/bytes-io.js';
-import { dec, enc } from '../../../../_shared/bytes.js';
+import { enc, nameDec } from '../../../../_shared/bytes.js';
 import { getopt } from '../../utils/args.js';
 class CutUsage extends Error {
 }
@@ -192,7 +192,7 @@ const command = async (ctx) => {
         if (ctx.stdout.writeBytes)
             await ctx.stdout.writeBytes(out);
         else
-            await ctx.stdout.write(dec.decode(out));
+            await ctx.stdout.write(nameDec.decode(out));
     };
     let status = 0;
     for (const file of files.length > 0 ? files : [undefined]) {

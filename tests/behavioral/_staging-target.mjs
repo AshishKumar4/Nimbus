@@ -94,7 +94,7 @@ const {
   workersDevSubdomain,
   writeState,
 } = await import('./_deploy-target.mjs');
-const { assertDeployIsolated, describeTarget } = await import('../../scripts/deploy-isolation.mjs');
+const { assertDeployIsolated, describeTarget, hostedWorkerName } = await import('../../scripts/deploy-isolation.mjs');
 const { uploadConfig } = await import('../../scripts/ci/lib/release.mjs');
 const { holdLease } = await import('../../scripts/ci/lib/lease.mjs');
 
@@ -108,7 +108,7 @@ const STATE_PATH = join(MACHINE_STATE_DIR, 'staging-target.json');
 const TARGETS = {
   demo: {
     label: 'hosted-demo',
-    name: 'nimbus-staging',
+    name: hostedWorkerName(ROOT, 'staging'),
     dir: join(ROOT, 'apps', 'hosted-demo'),
     configPath: 'apps/hosted-demo/wrangler.jsonc',
     envName: 'staging',
@@ -184,7 +184,7 @@ async function up() {
     assertCredentialHeld({
       name: target.name,
       statePath: STATE_PATH,
-      hasSecret: Boolean(state[keyOf(target)]?.secret),
+      hasSecret: Boolean(savedFor(state, target)?.secret),
       provisioned: Boolean(activeVersionId(target.name, { cwd: target.dir, account })),
       rotate: Boolean(flags['rotate-secrets']),
     });
@@ -232,7 +232,7 @@ function status() {
   const state = readState(STATE_PATH);
   const rows = Object.fromEntries(Object.values(TARGETS).map((target) => [target.name, {
     live: activeVersionId(target.name, { cwd: target.dir, account }),
-    base: state?.[keyOf(target)]?.base ?? null,
+    base: savedFor(state, target)?.base ?? null,
   }]));
   if (flags.json) {
     process.stdout.write(`${JSON.stringify(rows)}\n`);
@@ -263,8 +263,8 @@ async function session() {
  */
 async function deployTarget(target, { account, state, config, leaseFd }) {
   const key = keyOf(target);
-  const secret = state[key]?.secret ?? randomSecret();
-  const isNewSecret = !state[key]?.secret;
+  const secret = savedFor(state, target)?.secret ?? randomSecret();
+  const isNewSecret = !savedFor(state, target)?.secret;
 
   log(`deploying ${target.configPath}${target.envName ? ` (env.${target.envName})` : ''} as ${target.name}${isNewSecret ? ', with a new JWT_SECRET' : ''}`);
   // A new secret travels with the upload, so the upload is one version and
@@ -291,6 +291,16 @@ async function deployTarget(target, { account, state, config, leaseFd }) {
 
 function keyOf(target) {
   return Object.keys(TARGETS).find((k) => TARGETS[k] === target);
+}
+
+/**
+ * What this machine saved for `target` when it last deployed it: its base
+ * and signing secret, only while it is the same Worker. A renamed Worker is
+ * a new one, with no secret yet.
+ */
+function savedFor(state, target) {
+  const saved = state?.[keyOf(target)];
+  return saved?.name === target.name ? saved : undefined;
 }
 
 function requireState() {

@@ -8,6 +8,7 @@ import { clockNs, clockResolutionNs, realtimeNs } from '../wasi/clock.js';
 import { unixGroups, unixUsers } from '../../shell/unix-accounts.js';
 import { ARENA_SIZE, CaptureStore } from './capture-store.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
+import { nameDec } from '../../_shared/bytes.js';
 const PAGE = 65536, te = new TextEncoder(), td = new TextDecoder();
 const E = { ACCES: 2, BADF: 8, EXIST: 20, INVAL: 28, ISDIR: 31, LOOP: 32, NOENT: 44, NOSYS: 52, NOTDIR: 54, NOTEMPTY: 55, PERM: 63, RANGE: 68, SPIPE: 70, SRCH: 71 };
 class Exit {
@@ -799,7 +800,7 @@ function makeProc(s, pid, ppid, fds) {
             U8()[ptr + bytes.length] = 0;
             return bytes.length;
         },
-        capture_cwd: (ptr, length) => { proc.cwd = td.decode(U8().subarray(ptr, ptr + length)); return 0; },
+        capture_cwd: (ptr, length) => { proc.cwd = nameDec.decode(U8().subarray(ptr, ptr + length)); return 0; },
         stat_metadata: suspend('stat_metadata', procFs.stat_metadata),
         account: suspend('account', procFs.account),
         // A landing (the capture's own rewind, or a longjmp's) stops the rewind and runs no hook.
@@ -864,11 +865,11 @@ function makeProc(s, pid, ppid, fds) {
             while (u8[e])
                 e++;
             c.reason = 'exec';
-            c.execPath = td.decode(u8.subarray(pathPtr, e));
-            c.execArgv = td.decode(u8.subarray(argvFlatPtr, argvFlatPtr + argvLen)).split('\0').filter((x) => x.length);
+            c.execPath = nameDec.decode(u8.subarray(pathPtr, e));
+            c.execArgv = nameDec.decode(u8.subarray(argvFlatPtr, argvFlatPtr + argvLen)).split('\0').filter((x) => x.length);
             // The child's REAL environment (bash's export set at exec time —
             // PWD tracks the shell's cd, unlike the boot-time s.environ).
-            c.execEnv = td.decode(u8.subarray(envFlatPtr, envFlatPtr + envLen)).split('\0').filter((x) => x.length);
+            c.execEnv = nameDec.decode(u8.subarray(envFlatPtr, envFlatPtr + envLen)).split('\0').filter((x) => x.length);
             startUnwind();
             return 0;
         },
@@ -1275,7 +1276,7 @@ function ownerSide(bits) {
     return id === 0xffffffff ? null : id;
 }
 function metadataImports(s, proc, DV, U8, fs) {
-    const readPath = (ptr, length) => td.decode(U8().subarray(ptr, ptr + length));
+    const readPath = (ptr, length) => nameDec.decode(U8().subarray(ptr, ptr + length));
     const at = (fd, path) => {
         if (path.startsWith('/'))
             return path;
@@ -1359,7 +1360,7 @@ function metadataImports(s, proc, DV, U8, fs) {
             // A uid, gid or index is unsigned, and comes as i32: one above 0x7fffffff arrives negative.
             const id = idBits >>> 0, capacity = capacityBits >>> 0;
             const text = bytes === null ? '' : td.decode(bytes);
-            const name = by === 1 ? td.decode(U8().subarray(ptr, ptr + length)) : '';
+            const name = by === 1 ? nameDec.decode(U8().subarray(ptr, ptr + length)) : '';
             let ids;
             let strings;
             if (kind === 1) {

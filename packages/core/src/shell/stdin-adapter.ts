@@ -40,7 +40,8 @@ export function staticStdinReader(text: string): CommandInputStream {
  */
 export function pulledStdinReader(pull: () => Promise<Uint8Array | null>): CommandInputStream {
   const pushedBack: Uint8Array[] = [];
-  const decoder = new TextDecoder('utf-8');
+  // stdin's text keeps a leading U+FEFF, as its bytes do.
+  const decoder = new TextDecoder('utf-8', { ignoreBOM: true });
   let ended = false;
 
   const next = async (): Promise<Uint8Array | null> => {

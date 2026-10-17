@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// @tier slow — drives a local workerd with installed bash and cpython
 // Same user-visible failure as the shipped coherence probe, on local workerd.
 import assert from 'node:assert/strict';
 import { localTerminal, startLocalProbe } from './lib/workerd-probe.mjs';

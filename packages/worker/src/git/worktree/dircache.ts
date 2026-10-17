@@ -11,6 +11,7 @@
  * which are themselves held as bytes (NewEntries), straight into the file.
  */
 
+import { nameDec } from '@nimbus-sh/core/_shared/bytes.js';
 import { createHash } from 'node:crypto';
 
 import { objectHash, oidFromHex, oidToHex, type GitObjectType } from '../pack/format.js';
@@ -40,7 +41,6 @@ const SKIP_WORKTREE = 0x4000;
 const INTENT_TO_ADD = 0x2000;
 
 const encoder = new TextEncoder();
-const decoder = new TextDecoder();
 
 /** The stat an entry records: the session's lstat, times in ms. */
 export interface EntryStat {
@@ -96,7 +96,7 @@ export function compareBytes(a: Uint8Array, b: Uint8Array): number {
 /** A path's bytes as a string: ASCII without the decoder's cost. */
 export function decodePath(bytes: Uint8Array): string {
   for (let i = 0; i < bytes.length; i++) {
-    if (bytes[i] >= 0x80) return decoder.decode(bytes);
+    if (bytes[i] >= 0x80) return nameDec.decode(bytes);
   }
   return String.fromCharCode.apply(null, bytes as unknown as number[]);
 }

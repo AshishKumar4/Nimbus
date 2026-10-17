@@ -26,6 +26,7 @@ import { createHash } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { moduleBody } from '../../../scripts/lib/compiled-bodies.mjs';
 
 const coreRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const runtimeDir = join(coreRoot, 'src', 'runtime');
@@ -57,8 +58,8 @@ export async function bundleTransformPipeline({ plugins = [] } = {}) {
     legalComments: 'none',
   });
   const text = result.outputFiles?.[0]?.text ?? '';
-  const exported = text.match(/export\s*\{([^}]*)\}\s*;?\s*$/)?.[1] ?? '';
-  if (!/\btransformBundleCells\b/.test(exported) || !/\bEsbuildService\b/.test(exported)) {
+  const exported = moduleBody(text).exported.map(([name]) => name);
+  if (!exported.includes('transformBundleCells') || !exported.includes('EsbuildService')) {
     throw new Error('[pin-transform-pipeline] the pipeline bundle lost transformBundleCells or EsbuildService');
   }
   return text;

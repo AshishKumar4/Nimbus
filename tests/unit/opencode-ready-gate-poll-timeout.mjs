@@ -19,7 +19,7 @@ import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { residentFacetName } from '../../packages/fabric/src/workerd-facet-host.ts';
-import { createFacetWorld, createFacetCtx } from './facet-host-harness.mjs';
+import { createFacetWorld, createFacetCtx } from './lib/facet-host-harness.mjs';
 import { missingAssets } from './lib/staged-assets.mjs';
 
 adoptCtxExports({ SupervisorRPC: (_opts) => ({ __supervisor: true }) });

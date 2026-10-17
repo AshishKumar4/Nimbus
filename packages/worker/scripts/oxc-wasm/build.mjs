@@ -31,6 +31,8 @@ import { promises as fs, existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { changedInputs, oxcWasmInputs } from './inputs.mjs';
+import { rustBuildEnv } from '../rust-build-env.mjs';
+import { WASM_SECTION, WasmReader, wasmInterface, wasmSections } from '@nimbus-sh/core/runtime/wasm-binary.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const TARGET = 'wasm32-unknown-unknown';
@@ -90,7 +92,8 @@ function toolchain(crateDir, text) {
   // rustup, when present, owns the pinned toolchain; otherwise the rustc on PATH must be it.
   const which = spawnSync('rustup', ['which', '--toolchain', pinned, 'rustc'], { encoding: 'utf8', cwd: crateDir });
   const binDir = which.status === 0 ? path.dirname(which.stdout.trim()) : null;
-  const env = { ...process.env, PATH: binDir ? `${binDir}:${process.env.PATH}` : process.env.PATH, RUSTUP_TOOLCHAIN: pinned };
+  // Every rustc and cargo this build runs sees no ambient Cargo or rustc setting (rust-build-env.mjs).
+  const env = rustBuildEnv(process.env, { PATH: binDir ? `${binDir}:${process.env.PATH}` : process.env.PATH, RUSTUP_TOOLCHAIN: pinned });
   const rustc = run('rustc', ['-vV'], { capture: true, env });
   const release = rustc.match(/^release: (.+)$/m)?.[1];
   if (release !== pinned) {
@@ -127,42 +130,13 @@ async function wasmOpt() {
   return { bin, version };
 }
 
-/** The import, export and memory sections of a wasm binary. */
-function wasmFacts(bytes) {
-  let at = 8;
-  const u = () => {
-    let result = 0, shift = 0, byte;
-    do { byte = bytes[at++]; result |= (byte & 0x7f) << shift; shift += 7; } while (byte & 0x80);
-    return result >>> 0;
-  };
-  const str = () => { const n = u(); const s = new TextDecoder().decode(bytes.subarray(at, at + n)); at += n; return s; };
-  const facts = { imports: [], exports: [], memories: [] };
-  while (at < bytes.length) {
-    const id = bytes[at++];
-    const size = u();
-    const end = at + size;
-    if (id === 2) {
-      for (let i = u(); i > 0; i--) {
-        facts.imports.push(`${str()}.${str()}`);
-        const kind = bytes[at++];
-        if (kind === 0) u();
-        else if (kind === 1) { at++; const f = bytes[at++]; u(); if (f & 1) u(); }
-        else if (kind === 2) { const f = bytes[at++]; u(); if (f & 1) u(); }
-        else if (kind === 3) at += 2;
-      }
-    } else if (id === 5) {
-      for (let i = u(); i > 0; i--) {
-        const flags = bytes[at++];
-        const memory = { shared: (flags & 2) !== 0, initial: u() };
-        if (flags & 1) memory.maximum = u();
-        facts.memories.push(memory);
-      }
-    } else if (id === 7) {
-      for (let i = u(); i > 0; i--) { facts.exports.push(str()); at++; u(); }
-    }
-    at = end;
-  }
-  return facts;
+/** The memories a wasm binary defines (its memory section), as their limits. */
+function definedMemories(bytes) {
+  return [...wasmSections(bytes)].filter((section) => section.id === WASM_SECTION.memory).flatMap((section) => {
+    const reader = new WasmReader(bytes.subarray(0, section.payload + section.size), section.payload);
+    const count = reader.varuint();
+    return Array.from({ length: count }, () => reader.limits());
+  });
 }
 
 // ── Main ────────────────────────────────────────────────────────────────
@@ -176,18 +150,9 @@ const rust = toolchain(crateDir, toolchainText);
 const optimizer = await wasmOpt();
 
 const cargoHome = process.env.CARGO_HOME ?? path.join(process.env.HOME ?? '/', '.cargo');
-// Cargo and rustc read settings from the environment that Cargo.toml and the
-// flags below pin (RUSTC, RUSTDOC, CARGO_PROFILE_RELEASE_*, CARGO_BUILD_*,
-// RUSTFLAGS, RUSTC_WRAPPER, …): the build sees none of them but where its
-// caches live, and the compiler is the one toolchain() checked.
-const KEPT = new Set(['CARGO_HOME', 'RUSTUP_HOME', 'RUSTUP_TOOLCHAIN']);
-const OVERRIDES = /^(CARGO|RUST|RUSTC|RUSTDOC)(_|$)|^RUSTFLAGS$|^RUSTDOCFLAGS$/;
-const ambient = Object.fromEntries(Object.entries(rust.env).filter(([name]) => KEPT.has(name) || !OVERRIDES.test(name)));
-for (const name of ['RUSTC', 'RUSTDOC', 'RUSTFLAGS', 'RUSTC_WRAPPER', 'CARGO_PROFILE_RELEASE_OPT_LEVEL', 'CARGO_BUILD_TARGET']) {
-  if (name in ambient) throw new Error(`oxc-wasm: ${name} survived the environment filter`);
-}
+// The compiler is the one toolchain() checked.
 const env = {
-  ...ambient,
+  ...rust.env,
   RUSTC: rust.compiler,
   CARGO_TARGET_DIR: path.join(WORK, 'target'),
   CARGO_ENCODED_RUSTFLAGS: RUSTFLAGS.join('\x1f'),
@@ -209,15 +174,18 @@ const linked = path.join(WORK, 'target', TARGET, 'release', 'nimbus_oxc.wasm');
 const output = path.join(OUT, 'nimbus-oxc.wasm');
 run(optimizer.bin, [linked, ...WASM_OPT_ARGS, '-o', output]);
 const wasm = new Uint8Array(await fs.readFile(output));
-const facts = wasmFacts(wasm);
-if (facts.imports.length !== 0) throw new Error(`oxc-wasm: the module imports ${facts.imports.join(', ')}; it must import nothing`);
-if (JSON.stringify([...facts.exports].sort()) !== JSON.stringify(EXPORTS)) {
-  throw new Error(`oxc-wasm: the module exports ${facts.exports.join(', ')}; the ABI is ${EXPORTS.join(', ')}`);
+if (!WebAssembly.validate(wasm)) throw new Error('oxc-wasm: the module is not a valid wasm module');
+const { imports, exports } = wasmInterface(wasm);
+const exported = exports.map((entry) => entry.name);
+if (imports.length !== 0) throw new Error(`oxc-wasm: the module imports ${imports.map((entry) => `${entry.module}.${entry.name}`).join(', ')}; it must import nothing`);
+if (JSON.stringify([...exported].sort()) !== JSON.stringify(EXPORTS)) {
+  throw new Error(`oxc-wasm: the module exports ${exported.join(', ')}; the ABI is ${EXPORTS.join(', ')}`);
 }
-const [memory] = facts.memories;
-if (facts.memories.length !== 1 || memory.shared) throw new Error('oxc-wasm: the module must define one unshared memory');
-if (memory.initial > OXC_MAX_INITIAL_PAGES) {
-  throw new Error(`oxc-wasm: the module's memory starts at ${memory.initial} pages, over OXC_MAX_INITIAL_PAGES (${OXC_MAX_INITIAL_PAGES})`);
+const memories = definedMemories(wasm);
+const [memory] = memories;
+if (memories.length !== 1 || (memory.flags & 2) !== 0) throw new Error('oxc-wasm: the module must define one unshared memory');
+if (memory.min > OXC_MAX_INITIAL_PAGES) {
+  throw new Error(`oxc-wasm: the module's memory starts at ${memory.min} pages, over OXC_MAX_INITIAL_PAGES (${OXC_MAX_INITIAL_PAGES})`);
 }
 
 const drifted = changedInputs(inputs, await oxcWasmInputs());
@@ -242,7 +210,7 @@ const provenance = {
     rustcWrapper: 'napi-wasm/rustc-remap.sh (--remap-path-prefix <work>=/build <CARGO_HOME>=/cargo)',
   },
   wasmOpt: { binaryen: BINARYEN, version: optimizer.version, args: WASM_OPT_ARGS },
-  wasm: { imports: [], exports: EXPORTS, memoryInitialPages: memory.initial, stackBytes: WASM_STACK_BYTES },
+  wasm: { imports: [], exports: EXPORTS, memoryInitialPages: memory.min, stackBytes: WASM_STACK_BYTES },
   outputs: { 'nimbus-oxc.wasm': { bytes: wasm.length, sha256: sha256(wasm) } },
 };
 await fs.writeFile(path.join(OUT, 'provenance.json'), JSON.stringify(provenance, null, 2) + '\n');

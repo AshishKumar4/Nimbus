@@ -18,7 +18,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { resolveNpxBinary } from '../../packages/worker/src/npm/npx-install.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { kernelInstaller, makeFanoutEnv } from './npm-fanout-test-env.mjs';
+import { kernelInstaller, makeFanoutEnv } from './lib/npm-fanout-test-env.mjs';
 
 const VERSIONS = { p: ['1.0.0', '2.0.0'], tool: ['3.1.0'] };
 
