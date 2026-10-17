@@ -117,6 +117,8 @@ try {
     ['encoded', './r%65l.js'],
     ['space', './r%20e%20l.js'],
     ['encoded slash', './a%2Fb.js'],
+    // A relative specifier that is no URL against its parent: Node's ERR_UNSUPPORTED_RESOLVE_REQUEST.
+    ['unparseable relative', '//['],
     ['file url', pathToFileURL(join(app, 'esm.mjs')).href + '?t=1#h'],
     ['file url dir', pathToFileURL(join(app, 'dir')).href],
     ['file url missing', pathToFileURL(join(app, 'gone.mjs')).href],

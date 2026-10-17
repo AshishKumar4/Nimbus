@@ -49,7 +49,7 @@
  *   source file) instead of a .generated.ts means editor + typecheck
  *   can read it even though TypeScript doesn't compile it.
  */
-import { LEXICAL_PATH_PREAMBLE } from '../loaders/generated-workers.js';
+import { LEXICAL_PATH_PREAMBLE } from '../loaders/workers.generated.js';
 /**
  * Walk the VFS and produce a snapshot suitable for seeding the facet's
  * sync-fs Map.

@@ -8,10 +8,12 @@
  * SystemError (`fs.rm` of a directory, `fs.cp` onto a file) adds the
  * system call's context.
  *
- * Self-contained: scripts/bundle-facet-workers.mjs compiles it into the
- * guest's shims (NODE_ERROR_PREAMBLE), which call it by name and hand it to
- * the cell runtime and generated code as `__nimbusNodeError` and
- * `__nimbusNodeSystemError`.
+ * Self-contained but for the built-ins it calls, captured before any
+ * program code (primordials.ts): scripts/bundle-facet-workers.mjs compiles
+ * it into the guest's shims (NODE_ERROR_PREAMBLE), which call it by name
+ * and hand it to the cell runtime and generated code as `__nimbusNodeError`
+ * and `__nimbusNodeSystemError`, and the module resolver throws its errors
+ * after a program may have replaced built-ins.
  */
 type ErrorClass = new (message?: string) => Error;
 /**
@@ -85,7 +87,7 @@ export interface SystemErrorContext {
  * inspects one with its getters' values.
  */
 export declare function nodeSystemError(code: string, prefix: string, context: SystemErrorContext): Error;
-/** V8's Error.captureStackTrace (core's types are the language's, which have none). */
+/** Error.captureStackTrace as the runtime has it (primordials captureStackTraceOf; core's types are the language's, which have none). */
 export declare function captureStack(error: object, above: Function): void;
 export {};
 //# sourceMappingURL=node-error.d.ts.map
