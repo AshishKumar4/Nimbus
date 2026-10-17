@@ -1,4 +1,4 @@
-import { decodeLossless, encodeLossless } from './bytes-io.js';
+import { decodeLossless, encodeLossless, joinLossless } from './bytes-io.js';
 const SIMPLE = {
     '\\': '\\',
     a: '\x07',
@@ -49,13 +49,20 @@ export function expandBackslashEscapes(text, dialect) {
         const numeric = numericEscape(text, slash + 1, dialect);
         const digits = numeric?.[1] ?? numeric?.[2] ?? '';
         const unicode = next === 'u' || next === 'U';
-        if (numeric && !(unicode && Number.parseInt(digits, 16) > 0x10ffff)) {
-            if (unicode)
-                out += String.fromCodePoint(Number.parseInt(digits, 16));
+        const cp = unicode ? Number.parseInt(digits, 16) : 0;
+        if (numeric && !(unicode && cp > 0x10ffff)) {
+            if (unicode && cp >= 0xd800 && cp <= 0xdfff) {
+                // A surrogate is its own three bytes, as bash's UTF-8 conversion has
+                // it, never paired with the escape or byte after it.
+                out = joinLossless(out, String.fromCharCode(0xdc00 | 0xe0 | (cp >> 12), 0xdc00 | 0x80 | ((cp >> 6) & 0x3f), 0xdc00 | 0x80 | (cp & 0x3f)));
+                bytes = true;
+            }
+            else if (unicode)
+                out += String.fromCodePoint(cp);
             else {
                 // `\777` is 0xff, as putchar has it.
                 const byte = next === 'x' ? Number.parseInt(digits, 16) : Number.parseInt(digits || '0', 8) & 0xff;
-                out += String.fromCharCode(byte < 0x80 ? byte : 0xdc00 + byte);
+                out = joinLossless(out, String.fromCharCode(byte < 0x80 ? byte : 0xdc00 + byte));
                 bytes ||= byte >= 0x80;
             }
             i = slash + 1 + numeric[0].length;

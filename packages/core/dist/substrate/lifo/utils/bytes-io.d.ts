@@ -72,6 +72,13 @@ export declare function textCapture(append: (text: string) => void): {
 export declare function decodeLossless(bytes: Uint8Array): string;
 /** The length of the valid UTF-8 sequence at `i`, or 0. */
 export declare function utf8SequenceLength(bytes: Uint8Array, i: number): number;
+/**
+ * `head` then `tail`, lossless text joined as their bytes join. A high
+ * surrogate ending `head` is half a character (the shell can cut one), and
+ * a byte (U+DC80..U+DCFF) starting `tail` would read as its other half: that
+ * half goes as what it encodes to alone, U+FFFD, and the byte stays a byte.
+ */
+export declare function joinLossless(head: string, tail: string): string;
 /** The inverse of `decodeLossless`. */
 export declare function encodeLossless(text: string): Uint8Array;
 /** A write to a pipe whose reader has gone: the writer ends there, silently, as SIGPIPE ends it. */
