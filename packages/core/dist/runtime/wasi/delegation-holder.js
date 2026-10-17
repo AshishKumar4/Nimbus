@@ -500,17 +500,16 @@ export function delegationHolder(options) {
                 const parent = writableParent(key, path, 'open');
                 if (parent === undefined)
                     return undefined;
-                const asked = (flags.mode ?? 0o666) & 0o777;
-                const umask = flags.umask ?? grant.umask;
-                // Its mode was decided under this umask: the session applies the same one, and its number.
-                file = { key, bytes: new Uint8Array(0), length: 0, mode: asked, umask };
-                // Room for what it is opened to be written with, before anything is decided.
-                if (!room(file, initial))
-                    return undefined;
                 const ino = client.number(grant);
                 if (ino === undefined)
                     return undefined;
-                file.made = ino;
+                const asked = (flags.mode ?? 0o666) & 0o777;
+                const umask = flags.umask ?? grant.umask;
+                // Its mode was decided under this umask: the session applies the same one, and its number.
+                file = { key, bytes: new Uint8Array(0), length: 0, mode: asked, made: ino, umask };
+                // Room for what it is opened to be written with, before anything is decided (its number unused if not).
+                if (initial > 0 && !room(file, initial))
+                    return undefined;
                 const { uid, gid } = ownership(parent);
                 const stamp = now();
                 const entry = {
@@ -544,7 +543,7 @@ export function delegationHolder(options) {
                 // A description writing it through is the session's: decided here anew.
                 const known = files.get(current.ino);
                 file = known !== undefined && known.through === undefined ? known : { key, bytes: new Uint8Array(0), length: 0, mode: current.mode & 0o7777 };
-                if (!room(file, initial))
+                if (initial > 0 && !room(file, initial))
                     return undefined;
                 file.length = 0;
                 files.set(current.ino, file);

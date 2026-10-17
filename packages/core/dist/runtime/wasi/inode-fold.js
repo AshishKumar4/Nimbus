@@ -26,13 +26,17 @@ function grown(state, size) {
 /**
  * `op` applied to `state`, in place: O(op) but for a buffer that has to
  * grow. Bytes past the end a write starts at are zero, as a hole reads; an
- * append lands at the end; a truncate cuts or zero-extends. Content
- * operations stamp mtime and ctime; attribute operations ctime.
+ * append lands at the end; a truncate cuts or zero-extends, and to nothing
+ * makes the content known (nothing of the baseline is left). Content
+ * operations stamp mtime and ctime; attribute operations ctime. A write or
+ * append of no bytes changes nothing, as the authority's does.
  */
 export function applyOp(state, op) {
     switch (op.kind) {
         case 'write':
         case 'append': {
+            if (op.data.byteLength === 0)
+                return state;
             const offset = op.kind === 'append' ? state.size : op.offset;
             const end = offset + op.data.byteLength;
             if (state.bytes !== null) {
@@ -47,7 +51,9 @@ export function applyOp(state, op) {
             return state;
         }
         case 'truncate': {
-            if (state.bytes !== null && op.size > state.size) {
+            if (op.size === 0)
+                state.bytes = new Uint8Array(0);
+            else if (state.bytes !== null && op.size > state.size) {
                 const bytes = grown(state, op.size);
                 bytes.fill(0, state.size, op.size);
                 state.bytes = bytes;

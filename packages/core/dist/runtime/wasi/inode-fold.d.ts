@@ -60,8 +60,10 @@ export declare function copyState(state: InodeState): InodeState;
 /**
  * `op` applied to `state`, in place: O(op) but for a buffer that has to
  * grow. Bytes past the end a write starts at are zero, as a hole reads; an
- * append lands at the end; a truncate cuts or zero-extends. Content
- * operations stamp mtime and ctime; attribute operations ctime.
+ * append lands at the end; a truncate cuts or zero-extends, and to nothing
+ * makes the content known (nothing of the baseline is left). Content
+ * operations stamp mtime and ctime; attribute operations ctime. A write or
+ * append of no bytes changes nothing, as the authority's does.
  */
 export declare function applyOp(state: InodeState, op: InodeOp): InodeState;
 /** `ops` folded over a copy of `baseline`, in order: what the inode is with them pending. */
