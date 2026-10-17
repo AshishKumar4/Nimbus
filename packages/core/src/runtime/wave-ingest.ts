@@ -1164,6 +1164,21 @@ export class WaveIngest {
       case 'setattr': {
         // A mode changes who may search a directory: later names resolve again.
         if (record.type === 'setattr') at.routes.clear();
+        // Through a description it is that description's, never placed by its name: a mount's file
+        // wherever its name leads now; any other is this filesystem's (EBADF for one not open).
+        if (record.type === 'setattr' && record.description !== undefined) {
+          const described = at.descriptions?.mounted(record.description);
+          if (described === undefined) return false;
+          at.setPhase('publish');
+          await at.settleBefore();
+          reached();
+          const attrs = record.attrs;
+          await backend(Promise.resolve('mode' in attrs ? described.chmod(attrs.mode, at.guard)
+            : 'uid' in attrs ? described.chown(attrs.uid, attrs.gid, at.guard)
+            : described.utimes(attrs.atime, attrs.mtime, at.guard)));
+          at.committed(null, 0);
+          return true;
+        }
         const placed = await mountOf('file', record.path);
         if (placed === null) return false;
         at.setPhase('publish');

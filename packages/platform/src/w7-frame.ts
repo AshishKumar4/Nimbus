@@ -180,7 +180,8 @@ export type W7Op =
   | { type: 'file'; inode: BatchInodeEntry; source: AsyncIterable<Uint8Array> }
   | { type: 'rename'; from: string; to: string }
   | { type: 'truncate'; path: string; size: number }
-  | { type: 'setattr'; path: string; attrs: W7Attrs }
+  /** `description`: through the session's open description of that id (fchmod, fchown, futimens): its file, whatever names it now. */
+  | { type: 'setattr'; path: string; attrs: W7Attrs; description?: string }
   | { type: 'call'; call: W7Call };
 
 export const W7_MAGIC = new Uint8Array([0x4e, 0x57, 0x37, 0x04]);
@@ -333,7 +334,7 @@ export type W7DecodedRecord =
     }
   | { type: 'rename'; from: string; to: string }
   | { type: 'truncate'; path: string; size: number }
-  | { type: 'setattr'; path: string; attrs: W7Attrs }
+  | { type: 'setattr'; path: string; attrs: W7Attrs; description?: string }
   | { type: 'call'; call: W7PathCall }
   | { type: 'batch-end'; summary: W7BatchSummary };
 
@@ -350,7 +351,7 @@ type EncoderOp =
   | { kind: 'file'; file: EncoderFile }
   | { kind: 'rename'; from: string; to: string }
   | { kind: 'truncate'; path: string; size: number }
-  | { kind: 'setattr'; path: string; attrs: W7Attrs }
+  | { kind: 'setattr'; path: string; attrs: W7Attrs; description?: string }
   | { kind: 'call'; call: W7PathCall };
 
 interface EncoderFile {
@@ -712,10 +713,10 @@ async function* decodeRecords(
             const value = parseObject(payload, 'truncate', ['path', 'size']);
             yield { type: 'truncate', path: ownedPaths.claim(canonicalPath(value.path, 'truncate path')), size: safeInteger(value.size, 'truncate size') };
           } else {
-            const value = parseObject(payload, 'setattr', ['path'], ['mode', 'uid', 'gid', 'atime', 'mtime']);
+            const value = parseObject(payload, 'setattr', ['path'], ['mode', 'uid', 'gid', 'atime', 'mtime', 'description']);
             const path = ownedPaths.claim(canonicalPath(value.path, 'setattr path'));
-            const { path: _path, ...attrs } = value;
-            yield { type: 'setattr', path, attrs: parseAttrs(attrs, 'setattr') };
+            const { path: _path, description, ...attrs } = value;
+            yield { type: 'setattr', path, attrs: parseAttrs(attrs, 'setattr'), ...(description === undefined ? {} : { description: descriptionId(description, 'setattr description') }) };
           }
           break;
         }
@@ -794,7 +795,7 @@ async function* encodeRecords(batchId: string, ops: readonly EncoderOp[]): Async
       case 'setattr':
         state.summary.pathCount++;
         state.summary.opCount++;
-        yield encodeMetadataRecord(RecordTag.SetAttr, { path: op.path, ...op.attrs }, state);
+        yield encodeMetadataRecord(RecordTag.SetAttr, { path: op.path, ...op.attrs, ...(op.description === undefined ? {} : { description: op.description }) }, state);
         break;
       case 'call':
         state.summary.pathCount++;
@@ -1005,7 +1006,10 @@ function prepareOps(payload: BatchWritePayload, batchId: string): EncoderOp[] {
       case 'truncate':
         return { kind: 'truncate', path: ownedPaths.claim(canonicalPath(op.path, 'truncate path')), size: safeInteger(op.size, 'truncate size') };
       case 'setattr':
-        return { kind: 'setattr', path: ownedPaths.claim(canonicalPath(op.path, 'setattr path')), attrs: parseAttrs(op.attrs as Record<string, unknown>, 'setattr') };
+        return {
+          kind: 'setattr', path: ownedPaths.claim(canonicalPath(op.path, 'setattr path')), attrs: parseAttrs(op.attrs as Record<string, unknown>, 'setattr'),
+          ...(op.description === undefined ? {} : { description: descriptionId(op.description, 'setattr description') }),
+        };
       case 'call': {
         const call = op.call;
         if ('data' in call) {

@@ -314,7 +314,8 @@ async function run(steps) {
   const deliver = async () => {
     control.held = false;
     control.opened.resolve();
-    await errnoOf(() => s.fs.flush());
+    // A flush reports a refusal as soon as it has one: what the session takes after it, it waits for again.
+    for (let tries = 0; tries < 4 && (await errnoOf(() => s.fs.flush())) !== null; tries++);
     control.held = true;
     control.opened = Promise.withResolvers();
     for (const { record, records, logged } of undelivered) {

@@ -9485,7 +9485,13 @@ export class SqliteVFS {
     if (op.type === 'rename') this.rename(op.from, op.to, cred);
     else if (op.type === 'truncate') this.truncate(op.path, op.size, cred);
     else if (op.type === 'setattr') {
-      if ('mode' in op.attrs) this.chmod(op.path, op.attrs.mode, cred);
+      // Through its description when it names one: the file it opened, judged as fchmod, fchown and futimens are.
+      const through = op.description === undefined ? null : this.describedBy(described, op.description, op.path, cred);
+      if (through !== null) {
+        if ('mode' in op.attrs) through.chmod(op.attrs.mode);
+        else if ('uid' in op.attrs) through.chown(op.attrs.uid, op.attrs.gid);
+        else through.utimes(op.attrs.atime, op.attrs.mtime);
+      } else if ('mode' in op.attrs) this.chmod(op.path, op.attrs.mode, cred);
       else if ('uid' in op.attrs) this.chown(op.path, op.attrs.uid, op.attrs.gid, cred, true);
       else this.utimes(op.path, op.attrs.atime, op.attrs.mtime, cred, true);
     } else {

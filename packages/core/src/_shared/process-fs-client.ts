@@ -64,7 +64,8 @@ export type ProcessFsOp =
   | { type: 'call'; call: W7Call }
   | { type: 'rename'; from: string; to: string }
   | { type: 'truncate'; path: string; size: number }
-  | { type: 'setattr'; path: string; attrs: W7Attrs };
+  /** `description`: fchmod, fchown or futimens through the process's open description of that id. */
+  | { type: 'setattr'; path: string; attrs: W7Attrs; description?: string };
 
 /** What the client asks of the session. */
 export interface ProcessFsSession {
