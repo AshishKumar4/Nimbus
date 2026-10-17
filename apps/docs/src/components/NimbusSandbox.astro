@@ -250,29 +250,10 @@ const appUrl = Astro.site ? new URL(Astro.site).origin : 'https://nimbus-os.dev'
 	// stylesheet import referenced a chunk the build never wrote, which
 	// rejected the whole boot after the socket was already open.
 	import '@xterm/xterm/css/xterm.css';
-	import { cacheSession, clearCachedSession, createSession, readCachedSession, SandboxUnavailableError } from '../lib/anonymous-session';
+	import { adoptLegacyCachedSession, cacheSession, clearCachedSession, createSession, readCachedSession, sessionCacheKey, SandboxUnavailableError } from '../lib/anonymous-session';
 
-	// A stable per-browser id keys the cached session in localStorage, so a
-	// returning or refreshing visitor reattaches to the sandbox they already
-	// booted instead of cold-booting a new one.
-	const CLIENT_ID_KEY = 'nimbus:client-id';
-	const SESSION_KEY_PREFIX = 'nimbus:anon-session:';
 	const TERMINAL_FONT_SIZE = 13;
 	const TERMINAL_FONT_FAMILY = "'JetBrains Mono', 'Fira Code', Menlo, monospace";
-
-	function clientId(): string {
-		try {
-			let id = localStorage.getItem(CLIENT_ID_KEY);
-			if (!id) {
-				id = crypto.randomUUID();
-				localStorage.setItem(CLIENT_ID_KEY, id);
-			}
-			return id;
-		} catch {
-			return 'ephemeral';
-		}
-	}
-	const SESSION_KEY = SESSION_KEY_PREFIX + clientId();
 
 	async function openSocket(wsUrl: string): Promise<WebSocket> {
 		const ws = new WebSocket(wsUrl);
@@ -309,6 +290,10 @@ const appUrl = Astro.site ? new URL(Astro.site).origin : 'https://nimbus-os.dev'
 		const badge = el.querySelector<HTMLElement>('[data-role="badge"]')!;
 		// A path is the page's own origin's endpoint.
 		const attachUrl = new URL(el.dataset.attachUrl!, location.href).href;
+		// The session this browser booted from this endpoint, kept so a
+		// returning or refreshing visitor reattaches to it.
+		const SESSION_KEY = sessionCacheKey(attachUrl);
+		adoptLegacyCachedSession(SESSION_KEY);
 
 		function setState(state: 'connecting' | 'running' | 'live' | 'ended' | 'error', label: string) {
 			badge.hidden = false;

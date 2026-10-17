@@ -11,6 +11,33 @@ export class SandboxUnavailableError extends Error {
   }
 }
 
+const SESSION_KEY_PREFIX = 'nimbus:anon-session:';
+
+/**
+ * The key a browser keeps the session it booted from `attachUrl` under: one
+ * per attach endpoint, localStorage being per browser and origin already.
+ */
+export function sessionCacheKey(attachUrl: string): string {
+  return SESSION_KEY_PREFIX + attachUrl;
+}
+
+/**
+ * Once per browser that cached its session under the per-browser id the docs
+ * once made (nimbus:client-id): that session moves to `key`, unless one is
+ * there, and the old keys are removed, so later boots find none.
+ */
+export function adoptLegacyCachedSession(key: string): void {
+  try {
+    const id = localStorage.getItem('nimbus:client-id');
+    if (id === null) return;
+    const legacyKey = SESSION_KEY_PREFIX + id;
+    const legacy = localStorage.getItem(legacyKey);
+    if (legacy !== null && localStorage.getItem(key) === null) localStorage.setItem(key, legacy);
+    localStorage.removeItem(legacyKey);
+    localStorage.removeItem('nimbus:client-id');
+  } catch {}
+}
+
 export function readCachedSession(key: string): AnonymousSession | null {
   try {
     const raw = localStorage.getItem(key);
