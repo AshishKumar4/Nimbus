@@ -296,7 +296,6 @@ export class CompositeVFS {
     /** This principal's namespace feed. */
     get feed() {
         return {
-            signature: () => this.feedSignature(),
             position: () => this.feedPosition(this.feedSignature(), this.feedSources()),
             since: (position, options) => this.feedSince(position, options),
             list: (after, limit, walked) => this.feedList(after, limit, walked),
@@ -1373,10 +1372,10 @@ export class CompositeVFS {
         held.push(ref);
         return ref;
     }
-    /** Whether this principal has a mount at a point accepted by `wants`. */
-    someMount(wants) {
+    /** Whether the table declares an accepted mount point, even if its source is absent. */
+    someMountPoint(wants) {
         for (const mount of this.table.mounts.values()) {
-            if (wants(mount.point) && this.backend(mount) !== null)
+            if (wants(mount.point))
                 return true;
         }
         return false;
