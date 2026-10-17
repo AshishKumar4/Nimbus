@@ -75,10 +75,12 @@ function codePointAt(text, index) {
 /**
  * `a` against `b` (negative, 0, positive) as their UTF-8 bytes order them,
  * as SQLite's `ORDER BY` of a text column and git's index do: code point
- * order, a lone surrogate being the U+FFFD TextEncoder writes for it. Units
- * equal in both are passed as they are (a pair or a lone half is the same
- * code point in each); two that differ, neither a surrogate, are their own
- * code points. The rest, rare in a path, is surrogatesFrom's.
+ * order, a lone surrogate being the U+FFFD TextEncoder writes for it. Two
+ * different strings of one encoding (lone halves where the other has other
+ * lone halves) are still two: the first such pair of units orders them, so
+ * a listing's cursor passes neither. Units equal in both are passed as they
+ * are; two that differ, neither a surrogate, are their own code points. The
+ * rest, rare in a path, is surrogatesFrom's.
  */
 export function compareUtf8(a, b) {
     const n = Math.min(a.length, b.length);
@@ -95,15 +97,27 @@ export function compareUtf8(a, b) {
 }
 /** compareUtf8 of `a` and `b`, equal before `i`, where one of their units at `i` is a surrogate. */
 function surrogatesFrom(a, b, i) {
-    // A low half after a high one the two share: the code points begin at the high one.
-    const before = i > 0 ? a.charCodeAt(i - 1) : 0;
-    const x = a.charCodeAt(i);
-    const y = b.charCodeAt(i);
-    const at = before >= 0xd800 && before <= 0xdbff && ((x >= 0xdc00 && x <= 0xdfff) || (y >= 0xdc00 && y <= 0xdfff)) ? i - 1 : i;
-    const p = codePointAt(a, at);
-    const q = codePointAt(b, at);
-    if (p !== q)
-        return p - q;
-    // Two lone halves, each U+FFFD, one unit each: the rest compared from past them.
-    return compareUtf8(a.slice(i + 1), b.slice(i + 1));
+    // The first lone halves that encode alike but differ: the order if the encodings are one.
+    let tie = 0;
+    for (; i < a.length && i < b.length; i++) {
+        const x = a.charCodeAt(i);
+        const y = b.charCodeAt(i);
+        if (x === y)
+            continue;
+        if ((x < 0xd800 || x > 0xdfff) && (y < 0xd800 || y > 0xdfff))
+            return x - y;
+        // A low half after a high one the two share (passed as equal units): the
+        // code points begin at the high one. After lone halves that differ, here.
+        const before = i > 0 ? a.charCodeAt(i - 1) : 0;
+        const shared = i > 0 && before === b.charCodeAt(i - 1);
+        const at = shared && before >= 0xd800 && before <= 0xdbff && ((x >= 0xdc00 && x <= 0xdfff) || (y >= 0xdc00 && y <= 0xdfff)) ? i - 1 : i;
+        const p = codePointAt(a, at);
+        const q = codePointAt(b, at);
+        if (p !== q)
+            return p - q;
+        // Two lone halves, each U+FFFD, one unit each.
+        if (tie === 0)
+            tie = x - y;
+    }
+    return a.length !== b.length ? a.length - b.length : tie;
 }
