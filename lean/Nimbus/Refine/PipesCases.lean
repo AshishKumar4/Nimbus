@@ -3,8 +3,8 @@
   `tests/unit/pipes-refinement.mjs` (`Nimbus.Runtime.Pipes`, the approved rules with a
   per-pipe budget).
 
-  Each case: `C` (capacity) and `B` (per-pipe budget; on a JSPI host it never binds and is
-  set large), `pipes`, and `procs`, each `{pid, host: "jspi"|"local", kind: "bash"|"child",
+  Each case: `C` (capacity) and `B` (per-pipe local budget, unused by JSPI),
+  `pipes`, and `procs`, each `{pid, host: "jspi"|"local", kind: "bash"|"child",
   sigpipe: "default"|"ignore", exitsOnWriteError, reads: [pipe ids], writes: [pipe ids],
   started}` (pids are indices; a proc not started is started only by a fork). A jspi host
   maps both kinds to a process that parks; on a local host bash parks on reads only and a
@@ -24,8 +24,6 @@
   (141 if any released it by SIGPIPE, else the exit code).
   `final`: `status` per pid, settled (exit code, 128 + signal, 1 when stopped by the
   command's error; 0 for a pid never run; "held" if never settled), `pipes` (`inFlight`, `read`, `discarded`), `error`.
-  Cases with `"untestable"` state why the runtime cannot run them (SIGPIPE ignored:
-  bash.wasm cannot tell the host its disposition).
 -/
 
 import Nimbus.Runtime.PipesHeld
@@ -71,7 +69,7 @@ def slotJson (k : Nat) (sl : Slot) (bashOnJspi : Bool) : Json :=
     ("exitsOnWriteError", .bool sl.errExit), ("reads", .arr (sl.reads.map .ofNat)), ("writes", .arr (sl.writes.map .ofNat)),
     ("started", .bool sl.started)]
 
-def runJson (name : String) (c : Cmd) (bashPids : List Nat := []) (extra : List (String × Json) := []) : Json := Id.run do
+def runJson (name : String) (c : Cmd) (bashPids : List Nat := []) : Json := Id.run do
   let mut H : HSt := { core := c.init }
   let mut out : Array Json := #[]
   for _ in [0:400] do
@@ -101,10 +99,20 @@ def runJson (name : String) (c : Cmd) (bashPids : List Nat := []) (extra : List 
         | none => .str "held")),
       ("pipes", .arr ((List.range s.m).map fun p => .obj [("inFlight", .ofNat (s.pipes p).q),
         ("read", .ofNat (s.pipes p).rd), ("discarded", .ofNat (s.pipes p).drop)])),
-      ("error", match s.err with | some e => .str e | none => .null)])] ++ extra)
+      ("error", match s.err with | some e => .str e | none => .null)])])
 
 /-- The review's traces, and their JSPI-host twins. -/
-def jspiOf (c : Cmd) : Cmd := { c with B := 1000, slots := c.slots.map fun sl => { sl with mode := .jspi } }
+def jspiOf (c : Cmd) : Cmd := { c with slots := c.slots.map fun sl => { sl with mode := .jspi } }
+
+def oversize (md : Mode) : Cmd :=
+  { C := 4, B := 6, m := 1, slots := [
+      { mode := md, prog := [.write 0 7, .write 0 1, .exit 0], writes := [0] },
+      { mode := md, prog := [.read 0 20, .read 0 20, .exit 0], reads := [0] }] }
+
+def jspiCrossBudget : Cmd :=
+  { C := 4, B := 0, m := 1, slots := [
+      { mode := .jspi, prog := [.write 0 3, .write 0 4, .write 0 1, .exit 0], writes := [0] },
+      { mode := .jspi, prog := [.read 0 20, .read 0 20, .read 0 20, .exit 0], reads := [0] }] }
 
 def directed : List Json :=
   [ runJson "seq | uniq -c | wc -l (local host)" seqUniqWc,
@@ -115,8 +123,14 @@ def directed : List Json :=
     runJson "yes | head -c | wc -c past the budget (local host)" overBudget,
     runJson "yes | head -c | wc -c (jspi host)" (jspiOf overBudget),
     runJson "yes | while read | wc -c (local host)" bashMiddle,
-    runJson "trap \"\" PIPE; yes | head -1 (local host)" (yesHead true)
-      (extra := [("untestable", .str "bash.wasm has no sigaction import: the host cannot see an ignored SIGPIPE")]),
+    runJson "trap \"\" PIPE; yes | head -1 (local host)" (yesHead true),
+    runJson "trap \"\" PIPE; yes | head -1 (jspi host)" (jspiOf (yesHead true)),
+    runJson "a local bash accepts an oversize write to an empty pipe" (oversize .bash),
+    runJson "a local child accepts an oversize write to an empty pipe" (oversize .plain),
+    runJson "JSPI ignores B, accepts a whole write below C, then parks at C" jspiCrossBudget,
+    runJson "an ignored SIGPIPE returns EPIPE and lets the writer continue"
+      { C := 4, B := 6, m := 1, slots := [
+          { mode := .plain, ign := true, errExit := false, prog := [.write 0 1, .exit 7], writes := [0] }] },
     runJson "a JSPI writer parks at capacity and resumes as the reader drains (jspi host)" parkedFork,
     runJson "seq 1000000 | head -2 (local host): the held exit settles to 141" seqHead,
     runJson "seq 20000 | uniq -c | wc -l (local host): held exits settle to 0" seqUniqWcBig,
@@ -134,7 +148,7 @@ def genCase : Gen (Option Json) := do
   let st := (← below 3) + 2
   let C := 4
   let bk ← below 3
-  let B := if jspi then 1000 else bk * 4 + 6
+  let B := if jspi then bk else bk * 4 + 6
   let mut slots : List Slot := []
   for k in [0:st] do
     let mk ← below 3
@@ -157,13 +171,11 @@ def genCase : Gen (Option Json) := do
     let writes := if k + 1 == st then [] else [k]
     slots := slots ++ [{ mode := md, ign := ign, prog := prog, reads := reads, writes := writes }]
   let c : Cmd := { C := C, B := B, m := st - 1, slots := slots }
-  let ignored := slots.any (·.ign)
-  return some (runJson s!"random {if jspi then "jspi" else "local"} {st}-stage" c
-    (extra := if ignored then [("untestable", .str "bash.wasm has no sigaction import: the host cannot see an ignored SIGPIPE")] else []))
+  return some (runJson s!"random {if jspi then "jspi" else "local"} {st}-stage" c)
 
 def fixture : String :=
   fixtureText [("fixture", .str "pipes"), ("model", .str "Nimbus.Runtime.Pipes (Rules.ok, per-pipe budget)"),
-      ("note", .str "steps are in the model scheduler's order; a jspi host parks every writer at capacity and every reader of an empty pipe with a live writer; a local host parks bash on reads only, and a child never parks: a non-parking write appends while its pipe holds at most B, else the writer is suspended and the scheduler runs nested; a read that would wait on writers all suspended beneath it, or a scheduler with nothing to run while a frame is suspended, stops the command with a named error (match any {aborted}: the runtime has one message for both, with its B figure); the last read end's close discards what is in flight; a writer on a local host that exits with more than C unread in a pipe it writes, with a reader left, is held ({exited, held:true}); each such pipe releases it at the first step after which it holds at most C unread (a read drained it) or has no read end left (SIGPIPE if more than C was unread at that close); once every pipe has released it, it settles (that step's settled list) to 141 if any released it by SIGPIPE, else to its own status; final.status is the settled statuses; the scheduler order is lowest runnable pid first, without N24's deferral of children (one valid schedule: replay it in the given order)")]
+      ("note", .str "steps are in the model scheduler's order; a jspi host parks every writer at capacity, independently of B and the write size, and every reader of an empty pipe with a live writer; a local host parks bash on reads only, and a child never parks: a non-parking write appends when the pipe is empty (even for a write larger than B) or its resulting queue fits B, else the writer is suspended and the scheduler runs nested; a read that would wait on writers all suspended beneath it, or a scheduler with nothing to run while a frame is suspended, stops the command with a named error (match any {aborted}: the runtime has one message for both, with its B figure); the last read end's close discards what is in flight; a writer on a local host that exits with more than C unread in a pipe it writes, with a reader left, is held ({exited, held:true}); each such pipe releases it at the first step after which it holds at most C unread (a read drained it) or has no read end left (SIGPIPE if more than C was unread at that close); once every pipe has released it, it settles (that step's settled list) to 141 if any released it by SIGPIPE, else to its own status; final.status is the settled statuses; the scheduler order is lowest runnable pid first, without N24's deferral of children (one valid schedule: replay it in the given order)")]
     (directed ++ runGen 0x50495045 (casesOf 150 genCase))
 
 end Nimbus.Refine.PipesCases

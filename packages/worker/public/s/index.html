@@ -787,6 +787,10 @@
       const pending = new Map();
       const queued = new Map();
       const listeners = new Map();
+      // Requests that read and change nothing: one a dropped socket took
+      // unanswered is sent again on the next. A write may have been done,
+      // and a watch belongs to the socket it was made on: those fail.
+      const READS = new Set(['fs-list', 'fs-read']);
       const isOpen = () => socket?.readyState === WebSocket.OPEN;
 
       function subscribe(type, listener) {
@@ -819,14 +823,17 @@
         const reqId = nextReqId++;
         return new Promise((resolve, reject) => {
           const timer = setTimeout(() => settle(reqId, new Error('fs request timed out')), 15000);
-          pending.set(reqId, { resolve, reject, timer });
-          queued.set(reqId, { ...frame, reqId });
+          const sent = { ...frame, reqId };
+          pending.set(reqId, { resolve, reject, timer, frame: sent });
+          queued.set(reqId, sent);
           drain();
         });
       }
       function disconnect() {
-        for (const reqId of pending.keys()) {
-          if (!queued.has(reqId)) settle(reqId, new Error('Session connection closed'));
+        for (const [reqId, slot] of pending) {
+          if (queued.has(reqId)) continue;
+          if (READS.has(slot.frame.type)) queued.set(reqId, slot.frame);
+          else settle(reqId, new Error('Session connection closed'));
         }
         emit('close');
       }
@@ -2379,13 +2386,20 @@
 
       // Drag wiring.
       let activeHandle = null;
+      // The pointer that holds it: one drag at a time, and only its pointer moves or ends it.
+      let activePointer = null;
       let dragStartXY = 0;
       let dragStartDim = 0;
       let dragStartTotal = 0;
 
       function startDrag(kind, e) {
+        if (activeHandle) return;
         activeHandle = kind;
+        activePointer = e.pointerId;
         e.preventDefault();
+        // The handle keeps the pointer's events while it is held, wherever
+        // the pointer goes: over the preview's frame they went to the frame.
+        e.currentTarget.setPointerCapture(e.pointerId);
         const rect = mainPanel.getBoundingClientRect();
         const stack = document.getElementById('leftStack');
         if (kind === 'tree') {
@@ -2394,9 +2408,13 @@
           dragStartTotal = rect.width;
           document.body.style.cursor = 'col-resize';
         } else if (kind === 'middle') {
+          // middlePct is a share of the pair it divides, not of the whole
+          // row: measured against the row, the handle fell behind the
+          // pointer and the pointer drifted onto the preview's frame.
+          const preview = document.getElementById('previewPanel');
           dragStartXY = e.clientX;
           dragStartDim = dims.middlePct;
-          dragStartTotal = rect.width;
+          dragStartTotal = stack && preview ? stack.getBoundingClientRect().width + preview.getBoundingClientRect().width : rect.width;
           document.body.style.cursor = 'col-resize';
         } else if (kind === 'editor-terminal') {
           dragStartXY = e.clientY;
@@ -2408,7 +2426,7 @@
       }
 
       function onMove(e) {
-        if (!activeHandle) return;
+        if (!activeHandle || e.pointerId !== activePointer) return;
         if (activeHandle === 'tree') {
           const dx = e.clientX - dragStartXY;
           dims.treeWidth = Math.max(160, Math.min(600, dragStartDim + dx));
@@ -2433,9 +2451,10 @@
         }
       }
 
-      function endDrag() {
-        if (!activeHandle) return;
+      function endDrag(e) {
+        if (!activeHandle || e.pointerId !== activePointer) return;
         activeHandle = null;
+        activePointer = null;
         document.body.style.cursor = '';
         saveDims();
         applyTerminalFit();
@@ -2447,11 +2466,12 @@
         const h1 = document.getElementById('treeResizeHandle');
         const h2 = document.getElementById('resizeHandle');
         const v1 = document.getElementById('editorTerminalResizeHandle');
-        if (h1) h1.addEventListener('mousedown', (e) => startDrag('tree', e));
-        if (h2) h2.addEventListener('mousedown', (e) => startDrag('middle', e));
-        if (v1) v1.addEventListener('mousedown', (e) => startDrag('editor-terminal', e));
-        document.addEventListener('mousemove', onMove);
-        document.addEventListener('mouseup', endDrag);
+        for (const [handle, kind] of [[h1, 'tree'], [h2, 'middle'], [v1, 'editor-terminal']]) {
+          if (!handle) continue;
+          handle.addEventListener('pointerdown', (e) => startDrag(kind, e));
+          handle.addEventListener('pointermove', onMove);
+          handle.addEventListener('lostpointercapture', endDrag);
+        }
       }
 
       function restoreDims() {

@@ -6,6 +6,121 @@ published independently in the `@nimbus-sh` npm scope.
 ## Unreleased
 
 - Fixed: a hosted node program that replaces a built-in its module resolution calls (`String.prototype.startsWith`, `Array.prototype.push`, `JSON.parse`, `Map.prototype.get`, `%GeneratorPrototype%.next` and the like) still resolves `import`, `import()`, `import.meta.resolve`, `require.resolve` and `require` specifiers, and gets Node's errors for them, as Node's loader does on its primordials. A package.json's fields are its own: an `Object.prototype.main` or `.exports` a program adds no longer changes how a package resolves. A URL's members are read as Node reads them, so a replaced `URL.prototype.pathname` breaks resolution as it breaks Node's. Loading itself is the remaining work (design-guest-loader-primordials, heads 3 and 4).
+- Changed: a program whose launch waits 10 seconds at one stage (its
+  preparation, its admission for a worker, or its load) logs one line to
+  Workers Logs: `[facet-manager] launch stalled:` with its pid, command,
+  stage, the wait, and the state of the worker ledger, the launch pacer
+  and the isolate's transient budget. A command that hangs before it runs
+  leaves this as its evidence. The line is logged once per launch.
+- Fixed: when sessions compete for an isolate's transient budget, a
+  program's launch no longer reads past the share it holds while it
+  stages its files. A read that would take it over is refused before it
+  happens, and the launch asks for the whole budget once, as it already
+  did when its files outgrew its share.
+- Fixed: when the workspace's connection to its session drops and comes
+  back, a file listing or a file read that was waiting for its answer is
+  sent again and completes. The file tree showed "fs-list failed:
+  Session connection closed" until it was refreshed by hand. A save that
+  was waiting still fails, since it may have been written.
+## 2026-10-17: platform 0.12.0, core 0.23.0, fabric 0.18.0, worker 0.21.0, sdk 0.17.0, cli 0.2.8, loom 0.3.1, react 0.3.3, create-nimbus-app 0.2.4, runtime-bash 5.2.37-7, runtime-cpython 3.13.14-3, runtime-git 2.53.0-1 (config 0.3.1 unchanged)
+
+The 2026-10-14 and 2026-10-15 versions reached production but were never published to npm; these carry their changes too. The runtimes need core 0.23.0: it is the first core that registers bash-runner@6, cpython-runner@3 and git-runner@2.
+
+- Fixed: a WASI process that makes a directory and then a file in it,
+  as `pip install` does for each package, no longer fails ENOENT about
+  once in a hundred runs. That happened when the process's hold on the
+  subtree was renewed or given back while the new file's name was being
+  looked up: the lookup carried on over a listing from before the
+  directory reached the session. Each step of a lookup now catches up
+  with the session first when the process has sent it anything.
+- Fixed: a process that wrote a file through a descriptor in a subtree it
+  held itself (a WASI process's delegation) could lose those bytes when
+  the file stayed open more than 100 ms after the write. The held write
+  was stored later as if another process had made it, the store refused
+  it, and the close failed with EBADF. It is now stored as the writer's.
+  A close whose held writes the store refuses now reports that refusal,
+  for example ENOSPC, and names the file, instead of EBADF.
+- Fixed: a running program no longer stalls waiting on launches that are not
+  running. A Durable Object runs at most ten Dynamic Workers. When every one
+  ran a program whose next write needed supervisor credit, and parked
+  launches or loads waiting for a worker held that credit, neither side could
+  go on. Credit is now taken before a worker, never while holding one, and a
+  running program's writes and session calls come first. When only parked
+  launches' module maps, or credit a load took and has not used, stand in
+  the way, that credit is reclaimed: the launch prepares again at its turn,
+  and the load takes its credit once it has a worker. A load refused its
+  credit fails at once with EAGAIN.
+- Fixed: launch-credit contention no longer changes which learned reads or
+  lazy imports are staged. A tight first try now retries with full credit
+  instead of trimming the program's snapshot.
+- Fixed: a command waiting for its session's busy workers no longer stalls
+  commands in other sessions sharing its isolate. One-shot commands prepare
+  their module maps before waiting and keep only their retained share of the
+  isolate budget; new builds use the remaining room within a checked bound.
+  Running programs can reclaim parked maps for their writes and reads; the
+  waiting commands prepare their maps again before taking a worker.
+- Changed: a process that can be stopped and replayed records its input
+  and output replies at almost no CPU cost. Each reply was hashed byte by
+  byte and the hash kept, though nothing read it: about 0.9 ms of CPU for
+  each 64 KiB of piped input. The replay keeps only their count, which is
+  all its limit needs.
+- Fixed: Bun's file-URL helpers preserve spaces, `#`, `%` and other escaped
+  filename characters, and resolve relative paths from the process's current
+  directory, including after `process.chdir`, as its `node:url` helpers do.
+- Fixed: bash and its commands receive a broken-pipe write error when
+  `trap '' PIPE` ignores SIGPIPE, including commands that inherit it across
+  exec. Before, a write after the pipe's reader closed killed the writer
+  with SIGPIPE even when the signal was ignored.
+- Fixed: a running process now notices an embedder filesystem mounted after
+  its first filesystem listing. Before, a process that started with SQLite
+  alone could keep a staged namespace that omitted the new mount.
+- Fixed: dragging the handle between the editor and the preview keeps the
+  handle under the pointer. It fell behind by a fifth of the drag, and a
+  fast drag to the right could end on the preview's frame and stop short.
+  The workspace's resize handles now keep the pointer while they are held.
+- Fixed: a write batch keeps the writes it committed before a refused
+  operation (an unlink answering ENOENT, say), including writes through an
+  open file another process has unlinked. Before, retrying those writes
+  after the refusal could fail with EIO and lose them, along with
+  everything else the batch committed before the refusal. Writes through
+  an open description the session kept across a restart are kept too
+  (they were refused EBADF), and a shared directory stays shared after a
+  refused rename of it.
+- Added (platform): `@nimbus-sh/platform/hex.js`, `bytesToHex(bytes)`
+  (unseparated lowercase hex, through the runtime's native
+  `Uint8Array.prototype.toHex` where it has one) and `HEX_BYTE` (each byte
+  value's two digits). Nimbus's content keys, digests, git object ids and
+  tokens spell through it; the strings are unchanged.
+- Fixed: two mounts made through different views of one namespace (the
+  root and a principal's `as` view, say) are two devices. Before, each view
+  numbered its mounts' `st_dev` from the same start, so files on the two
+  could share a (dev, ino), and a move of one over the other was refused
+  as "the same file".
+- Fixed: a snapshot view (`SqliteVFS.at(name)`) reads as the live tree
+  does. Its `readdir` of a link to a directory lists that directory (it
+  listed nothing), its `list` pages are bounded by their encoded bytes (a
+  page could exceed the RPC frame), and once the snapshot is dropped its
+  `acquire`, `invalidatedSince`, `revision` and `storageKey` throw ESTALE,
+  as its other calls do (they answered as if it were still pinned).
+- Fixed: `ProcessFiles.killProcess(pid)` closes the last description of
+  each file the killed process held open, as a process's exit does on
+  Linux, so an unlinked file it held is collected once no one else holds
+  it. Before, only a mount's files were closed, and an unlinked file's
+  content stayed pinned for the session's life.
+- Added (platform): `compareUtf8(a, b)` in `@nimbus-sh/platform/utf8.js`,
+  the order of two strings by their UTF-8 bytes (code point order) without
+  encoding them. A string with a lone surrogate, which UTF-8 cannot write,
+  orders by its WTF-8 bytes, so the order is total and a directory's
+  entries sort together after it. The engine's keyset cursors, a mounted
+  namespace's listings and git's index order through it. Before, the three
+  disagreed about lone surrogates, and the engine took two different ones
+  as the same name.
+- Fixed: `SqliteVFS.restore` and `dropSnapshot` (and their async forms)
+  write in transactions the storage envelope admits. Before, one page of
+  200 paths was one transaction of up to 600 rows (restore) or 401 (drop),
+  past the 256 a transaction may hold.
+- Fixed: a resident process fills a file it listed from a synchronously mounted backend (`/mnt/data`, an SDK embedder's mount). Before, the read named the engine's epoch, which a mounted path never matches, and was refused (ESTALE). A read of a mounted file now names the file as its listing's stat did (`RuntimeReadOptions.expectedFile`: device, inode, size, mtime, ctime) and is refused only if it is no longer that file. A mounted read that names the engine's epoch is refused by the asynchronous path too, as by the synchronous one. A filled mounted file is still undated in the store: it vouches for nothing on a relaunch.
+- Fixed: a hosted ES module that statically imports a file the program writes after it starts (a module staged with the launch, its import of `./generated.mjs` written at runtime) finds the file when it is imported, as Node does. Before, the import failed with "Cannot find module", because the file was missing when the launch began. One still missing fails with Node's `ERR_MODULE_NOT_FOUND`, and, as in Node, so do later imports of the modules that failed to link, even once the file is written; a `require()` tries again. A query's or a fragment's import of such a file (`./generated.json?x`) loads as the file's format.
 - Changed: the hosted node's `node:path` posix half is now Node v22.22.3's own `lib/path.js`, ported onto built-ins the launch captures before any program code runs. A program that replaces `String.prototype.charCodeAt`, `slice` and the like gets from `path` what Node's `path` gives, where workerd's `path` used to fail. Its key order, function names and argument errors are Node's, including `path.join` failing, as Node's does, when `Array.prototype.push` is replaced. `win32` and `matchesGlob` remain the platform's.
 - Fixed: one session's compiles no longer reset the other sessions that
   share its isolate. The platform runs several sessions in one isolate

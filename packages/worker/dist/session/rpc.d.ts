@@ -152,6 +152,14 @@ declare const FsReadBatchArgsSchema: z.ZodArray<z.ZodUnion<readonly [z.ZodObject
     length: z.ZodNumber;
     expectedEpoch: z.ZodOptional<z.ZodString>;
     expectedRevision: z.ZodOptional<z.ZodNumber>;
+    expectedFile: z.ZodOptional<z.ZodObject<{
+        dev: z.ZodNumber;
+        ino: z.ZodNumber;
+        size: z.ZodNumber;
+        mtime: z.ZodNumber;
+        ctime: z.ZodNumber;
+        revision: z.ZodNumber;
+    }, z.core.$strip>>;
 }, z.core.$strip>]>>;
 /**
  * One request in a batch read: a range, whose `length` bounds what it may

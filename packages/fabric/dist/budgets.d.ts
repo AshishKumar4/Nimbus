@@ -282,6 +282,12 @@ export declare function beginAdmittedFetch(ctx: object): EndLoaderFetch | undefi
  * ledger. The hold counts for `pid` too, the process whose state says
  * whether the worker can be given back (see setProcessBlocked).
  */
+/**
+ * suspendLaunchAdmission where the current launch's admission holds its worker
+ * unclaimed, so a wait for credit inside it holds no worker (the lock order:
+ * credit, then a worker); undefined where it holds none to give back.
+ */
+export declare function suspendHeldAdmission(ctx: object): ((signal?: AbortSignal) => Promise<void>) | undefined;
 export declare function claimAdmission(ctx: object, pid?: number): EndLoaderFetch | undefined;
 /**
  * The Dynamic Worker `workerKey` in flight for a helper's call (the

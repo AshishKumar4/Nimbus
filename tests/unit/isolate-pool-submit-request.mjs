@@ -14,6 +14,7 @@ import { facetTaskSource } from '../../packages/core/src/runtime/facet-task.ts';
 import assert from 'node:assert/strict';
 import { IsolatePool } from '../../packages/fabric/src/isolate-pool.ts';
 import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
+import { importModuleSet } from './lib/module-map-bundle.mjs';
 
 const ctx = {
   id: { toString: () => 'submit-request-test-do' },
@@ -147,34 +148,73 @@ const echoFn = async (request) => Response.json(await request.json());
   assert.equal(seen.requests.length, 0, 'nothing was dispatched');
 }
 
-// ── 5. A guest failure surfaces as a 500 response, not a transport abort ────
-{
-  const seen = makeLoader();
-  const pool = new IsolatePool(seen.env, ctx, { network: ISOLATE_NETWORK, omitSupervisor: true, timeoutMs: 0 });
-  // The generated entrypoint wraps fn failures into a 500 — simulate it here
-  // to pin the caller-side contract: 500s flow back as Responses, and the
-  // adapter unwraps __nimbusFacetError.
-  seen.fetchImpl = async () =>
-    Response.json({ __nimbusFacetError: 'boom' }, { status: 500 });
-  const response = await pool.submitRequest(
-    facetTaskSource("async (request) => Response.json(await request.json())"),
-    new Request('https://facet.internal/step', { method: 'POST', body: 'x' }),
-  );
-  assert.equal(response.status, 500);
-  const payload = await response.json();
-  assert.equal(payload.__nimbusFacetError, 'boom');
+// ── 5. The generated entrypoint converts what the task did ──────────────────
+// The loader runs the module the pool generated: it builds the config the
+// pool hands it, imports that module and calls its default class.
+function runningLoader() {
+  const state = { ids: [], dispatches: 0 };
+  state.env = {
+    LOADER: {
+      get(id, config) {
+        state.ids.push(id);
+        const entry = (async () => {
+          const { mainModule, modules, env } = await config();
+          const { default: Entry } = await importModuleSet(modules, mainModule);
+          return new Entry({}, env);
+        })();
+        return {
+          getEntrypoint() {
+            return {
+              async fetch(request) { state.dispatches++; return (await entry).fetch(request); },
+              async execute(...args) { state.dispatches++; return (await entry).execute(...args); },
+            };
+          },
+        };
+      },
+    },
+  };
+  return state;
 }
-
-// ── 6. The generated entrypoint class exposes fetch alongside execute ───────
 {
-  const { assembleLoaderWorkerModuleSource } = await import('../../packages/fabric/src/isolate-pool.ts');
-  const source = assembleLoaderWorkerModuleSource({
-    fnSource: 'async () => 1',
-    hasBindings: false,
-  });
-  assert.match(source, /async fetch\(request\)/, 'the fetch entrypoint is generated');
-  assert.match(source, /execute\(\.\.\.args\)/, 'the RPC entrypoint is unchanged');
-  assert.match(source, /__nimbusFacetError/, 'fn failures wrap into a 500 payload');
+  const loader = runningLoader();
+  const pool = new IsolatePool(loader.env, ctx, { network: ISOLATE_NETWORK, omitSupervisor: true, timeoutMs: 0, retries: 1 });
+  const post = () => new Request('https://facet.internal/step', { method: 'POST', body: '{"n":2}' });
+
+  // A task that throws answers 500 with its message, once: a guest failure is not retried.
+  const thrown = await pool.submitRequest(facetTaskSource("async () => { throw new Error('guest-thrown-token'); }"), post());
+  assert.equal(thrown.status, 500);
+  assert.deepEqual(await thrown.json(), { __nimbusFacetError: 'guest-thrown-token' });
+  assert.equal(loader.dispatches, 1, 'a guest failure is an answer, not a transport fault to retry');
+  const raw = await pool.submitRequest(facetTaskSource("async () => { throw 'guest-raw-token'; }"), post());
+  assert.equal(raw.status, 500);
+  assert.deepEqual(await raw.json(), { __nimbusFacetError: 'guest-raw-token' });
+
+  // A Response passes through as the task made it; any other value is its JSON, undefined as null.
+  const made = await pool.submitRequest(facetTaskSource("async (request) => new Response(`made ${(await request.json()).n}`, { status: 201, headers: { 'x-made': 'yes' } })"), post());
+  assert.equal(made.status, 201);
+  assert.equal(made.headers.get('x-made'), 'yes');
+  assert.equal(await made.text(), 'made 2');
+  const value = await pool.submitRequest(facetTaskSource("async (request) => ({ doubled: (await request.json()).n * 2 })"), post());
+  assert.equal(value.status, 200);
+  assert.deepEqual(await value.json(), { doubled: 4 });
+  const nothing = await pool.submitRequest(facetTaskSource('async () => undefined'), post());
+  assert.equal(nothing.status, 200);
+  assert.equal(await nothing.json(), null);
+
+  // The RPC path returns the task's own value, and its failure rejects.
+  assert.deepEqual(await pool.submit(facetTaskSource('async (arg) => ({ got: arg })'), 7), { got: 7 });
+  await assert.rejects(pool.submit(facetTaskSource("async () => { throw new Error('rpc-thrown-token'); }"), null), /rpc-thrown-token/);
+  await pool.dispose();
+}
+{
+  // A pool with bindings hands its env to the task, after the request or the argument.
+  const loader = runningLoader();
+  const pool = new IsolatePool(loader.env, ctx, { network: ISOLATE_NETWORK, omitSupervisor: true, timeoutMs: 0, extraBindings: { MARK: 'bound-mark' } });
+  const fetched = await pool.submitRequest(facetTaskSource('async (request, env) => ({ mark: env.MARK, body: await request.json() })'),
+    new Request('https://facet.internal/step', { method: 'POST', body: '{"n":2}' }));
+  assert.deepEqual(await fetched.json(), { mark: 'bound-mark', body: { n: 2 } });
+  assert.deepEqual(await pool.submit(facetTaskSource('async (arg, env) => ({ arg, mark: env.MARK })'), 5), { arg: 5, mark: 'bound-mark' });
+  await pool.dispose();
 }
 
 // ── A failed run of a process that writes says what it may have lost ──

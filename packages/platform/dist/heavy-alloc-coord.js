@@ -109,6 +109,50 @@ export class SupervisorAllocationBudget {
             clearTimeout(timer);
         }
     }
+    /** Reclaimers of parked launches' retained credit, oldest registered first (reclaimable). */
+    reclaimers = new Set();
+    /**
+     * Register `reclaim`, which gives a parked launch's retained credit back
+     * before it returns (its map dropped, its lease released, the launch sent
+     * back to prepare), for running work to call when nothing else frees what
+     * it needs (acquireRunning). Unregistered just before it is called; the
+     * returned function unregisters it.
+     */
+    reclaimable(reclaim) {
+        this.reclaimers.add(reclaim);
+        // A running ask queued before this launch parked is owed it, once the registration has returned.
+        if (this.credits.aheadQueued)
+            queueMicrotask(() => this.reclaimForRunning());
+        return () => {
+            this.reclaimers.delete(reclaim);
+        };
+    }
+    /**
+     * Running work's credit, the lock order's one exception
+     * (acquireSupervisorLoad): granted at once where it fits, ahead of every
+     * queued ask; else, queued ahead of them all, it reclaims parked launches'
+     * retained credit, the oldest first, until it is granted; else it waits
+     * only for credit other running work holds.
+     */
+    async acquireRunning(bytes, signal, drivesLifecycle = true) {
+        const lease = this.credits.acquireAhead(Math.min(bytes, this.capacity), signal);
+        this.reclaimForRunning();
+        return this.wrap(await lease, drivesLifecycle);
+    }
+    /** Reclaim parked launches' credit, the oldest parked first, while a running ask waits: what a reclaim frees goes to running asks first. */
+    reclaimForRunning() {
+        for (const reclaim of this.reclaimers) {
+            if (!this.credits.aheadQueued)
+                return;
+            this.reclaimers.delete(reclaim);
+            reclaim();
+        }
+    }
+    /** acquireRunning's credit now, ahead of every queued ask, without reclaiming, or null. */
+    tryAcquireRunning(bytes) {
+        const credit = this.credits.tryAcquireAhead(Math.min(bytes, this.capacity));
+        return credit ? this.wrap(credit, true) : null;
+    }
     /** Reserve bytes now or not at all, driving the lifecycle as acquire does (or not, `drivesLifecycle` false). */
     tryAcquire(bytes, drivesLifecycle = true) {
         const credit = this.credits.tryAcquire(bytes);
@@ -226,12 +270,12 @@ export function tryAcquireSupervisorAllocation(bytes) {
     return supervisorAllocationBudget.tryAcquire(bytes);
 }
 /**
- * Reserve bytes for a filesystem READ. Takes the same byte credit as any
- * other owner but does not shrink the disposable VFS cache, which reads are
- * there to fill.
+ * Reserve bytes for a running process's filesystem READ (its read RPCs):
+ * running work (acquireRunning), which does not shrink the disposable VFS
+ * cache, which reads are there to fill.
  */
 export function acquireSupervisorReadAllocation(bytes, signal) {
-    return supervisorAllocationBudget.acquireWithoutLifecycle(bytes, signal);
+    return supervisorAllocationBudget.acquireRunning(bytes, signal, false);
 }
 /**
  * Reserve bytes for a short-lived copy of what the session already holds
@@ -249,17 +293,53 @@ export function acquireSupervisorCopyAllocation(bytes, signal) {
     return supervisorAllocationBudget.acquireWithoutLifecycle(bytes, signal);
 }
 /**
- * Run `load`, a facet's load holding `bytes` of this isolate while the loader
- * takes its module map (the wasm images read for it; `name` says whose),
- * admitted on the supervisor budget for as long as it runs
+ * `bytes` of this isolate for a facet's load (the wasm images read for it;
+ * `name` says whose), admitted on the supervisor budget
  * (SupervisorAllocationBudget.acquireLoad): FIFO, the whole budget for one
  * larger than it, refused by name after SUPERVISOR_LOAD_WAIT_MS. `signal`
  * ends the wait.
+ *
+ * Lock order: supervisor credit, then a Dynamic Worker. Nothing waits for
+ * credit (SupervisorAllocationBudget acquire or acquireLoad, or growing a
+ * lease) while it holds a worker's fetch hold (beginLoaderFetch,
+ * claimAdmission, readmitRefused). While it holds one, it may give credit
+ * back, shrink it, or take credit without waiting (tryAcquire). Running work
+ * is the one exception, and comes first. Credit a running process needs (its
+ * write waves and the session RPCs it makes, through acquireRunning)
+ * overtakes every queued ask. When nothing else frees it, it reclaims parked
+ * launches' retained maps, oldest parked first: each is dropped, its launch
+ * is sent back to prepare, and the map is rebuilt at that launch's turn.
+ * Otherwise it waits only for credit other running work holds. A facet's load
+ * is not running work.
  */
+export function acquireSupervisorLoad(name, bytes, signal) {
+    return supervisorAllocationBudget.acquireLoad(name, bytes, { waitMs: SUPERVISOR_LOAD_WAIT_MS, signal });
+}
+/** acquireSupervisorLoad's credit now, without waiting, or null: all a load may take while it holds a worker. */
+export function tryAcquireSupervisorLoad(bytes) {
+    return supervisorAllocationBudget.tryAcquire(Math.min(bytes, supervisorAllocationBudget.capacity), false);
+}
+/**
+ * Running work's credit (SupervisorAllocationBudget.acquireRunning): what a
+ * running process needs to go on (its write waves, the session RPCs it
+ * makes), never held up by a launch that is not running.
+ */
+export function acquireSupervisorRunningAllocation(bytes, signal) {
+    return supervisorAllocationBudget.acquireRunning(bytes, signal);
+}
+/** acquireSupervisorRunningAllocation's credit now, ahead of every queued ask, without reclaiming, or null. */
+export function tryAcquireSupervisorRunningAllocation(bytes) {
+    return supervisorAllocationBudget.tryAcquireRunning(bytes);
+}
+/** Register a parked launch's reclaimer on the isolate's budget (SupervisorAllocationBudget.reclaimable). */
+export function reclaimableSupervisorAllocation(reclaim) {
+    return supervisorAllocationBudget.reclaimable(reclaim);
+}
+/** Run `load` holding acquireSupervisorLoad's credit for `bytes`, given back as it settles; for a load no worker hold waits on. */
 export async function withSupervisorLoadAllocation(name, bytes, signal, load) {
     if (bytes === 0)
         return load();
-    const lease = await supervisorAllocationBudget.acquireLoad(name, bytes, { waitMs: SUPERVISOR_LOAD_WAIT_MS, signal });
+    const lease = await acquireSupervisorLoad(name, bytes, signal);
     try {
         return await load();
     }

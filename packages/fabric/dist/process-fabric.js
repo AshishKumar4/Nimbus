@@ -77,6 +77,7 @@ import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { isHostReset } from '@nimbus-sh/platform/oom-classify.js';
 import { memberBuffer } from '@nimbus-sh/platform/worker-code.js';
 import { z } from 'zod/v4';
+import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
 /**
  * The class every generated resident runner exports. One name for every
  * runtime: the fabric names it unconditionally, so nothing about which program
@@ -214,9 +215,7 @@ export const FACET_IMAGE_DIR = '.nimbus/facet-images';
  */
 export async function facetImageDigest(image) {
     // An image is its UTF-8 bytes; a caller holding them is not made to encode a second copy.
-    const bytes = typeof image === 'string' ? new TextEncoder().encode(image) : image;
-    const digest = await crypto.subtle.digest('SHA-256', bytes);
-    return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
+    return sha256Hex(image);
 }
 export function facetImagePath(digest) {
     return `/${FACET_IMAGE_DIR}/${digest}.js`;

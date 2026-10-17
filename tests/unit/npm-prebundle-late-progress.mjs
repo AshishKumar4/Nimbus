@@ -13,8 +13,9 @@ import { Database } from 'bun:sqlite';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { kernelInstaller } from './lib/npm-fanout-test-env.mjs';
+import { kernelInstaller, makeFanoutEnv } from './lib/npm-fanout-test-env.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+import { npmRegistry } from './lib/npm-registry.mjs';
 
 const harness = createSqliteVfsTestHarness(new Database(':memory:'));
 const vfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -26,22 +27,8 @@ root.writeFile('app/node_modules/pkg/package.json', JSON.stringify({ name: 'pkg'
 root.writeFile('app/node_modules/pkg/index.js', 'export const x = 1;\n');
 root.writeFile('app/src/main.js', "import { x } from 'pkg';\nconsole.log(x);\n");
 
-const resolved = {
-  pkg: {
-    name: 'pkg', version: '1.0.0', tarballUrl: 'https://registry.invalid/pkg-1.0.0.tgz', integrity: 'sha512-fixture',
-    dependencies: {}, main: 'index.js', bin: {},
-  },
-  cacheWrites: [], messages: [], events: [],
-  packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
-};
-const env = {
-  LOADER: { get() { return { getEntrypoint: () => ({ execute: async () => resolved }) }; } },
-  NIMBUS_SESSION: {
-    idFromName: (name) => ({ toString: () => name, name }),
-    idFromString: (id) => ({ toString: () => id, name: id }),
-    get: () => ({ supervisorOp: async (envelope) => ({ results: envelope.args[1].map(() => ({ ok: true, value: resolved })) }) }),
-  },
-};
+const { resultFor } = npmRegistry({ 'pkg': { '1.0.0': {} } });
+const env = makeFanoutEnv({ root, NM: 'app/node_modules', resultFor });
 
 // The bundle pool holds every pre-bundle until the test lets it finish.
 let release;

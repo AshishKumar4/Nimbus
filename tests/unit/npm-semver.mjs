@@ -31,9 +31,7 @@ import { FACET_GLOBALS, freeNames } from '../../packages/worker/scripts/free-nam
 import { importResolvePreamble } from './lib/npm-resolve-preamble-module.mjs';
 import { assembleLoaderWorkerModuleSource } from '../../packages/fabric/src/isolate-pool.ts';
 import { build } from 'esbuild';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { pathToFileURL } from 'node:url';
+import { importModuleSet } from './lib/module-map-bundle.mjs';
 
 const embedded = await importResolvePreamble(['PARSE_SEMVER', 'COMPARE_SEMVER', 'SATISFIES_RANGE', 'EXACT_VERSION', 'IS_SEMVER_RANGE', 'PICK_INSTALLED_VERSION', 'STAGED_BINDING_VERSION', 'PARSE_REGISTRY_REQUEST']);
 
@@ -126,19 +124,47 @@ const embedded = await importResolvePreamble(['PARSE_SEMVER', 'COMPARE_SEMVER', 
     entryPoints: [new URL('../../packages/worker/src/loaders/compiled-bodies.generated.ts', import.meta.url).pathname],
     bundle: true, minify: true, format: 'esm', platform: 'neutral', target: 'esnext', write: false, logLevel: 'silent',
   });
-  const dir = mkdtempSync(join(tmpdir(), 'resolve-facet-'));
-  let fnSource;
-  try {
-    const file = join(dir, 'facet.mjs');
-    writeFileSync(file, bundled.outputFiles[0].text);
-    fnSource = (await import(pathToFileURL(file).href)).NPM_RESOLVE_ONE_TASK.source;
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+  const { NPM_RESOLVE_ONE_TASK } = await importModuleSet({ 'task.js': bundled.outputFiles[0].text }, 'task.js');
+  const fnSource = NPM_RESOLVE_ONE_TASK.source;
   const module = assembleLoaderWorkerModuleSource({ fnSource, preamble: NPM_RESOLVE_PREAMBLE, hasBindings: true });
   const stray = [...freeNames(module, { sourceType: 'module' })].filter((name) => !FACET_GLOBALS.has(name));
   assert.deepEqual(stray, [], 'the assembled resolver module reads nothing a facet lacks');
-  console.log('  the assembled, bundled resolver module reads only what it declares and a facet\'s globals');
+  const { default: Resolver } = await importModuleSet({ 'worker.js': module }, 'worker.js');
+  const requests = [];
+  const versions = Object.fromEntries(['1.2.0', '2.0.0', '1.9.0', '1.5.0'].map((version) => [version, {
+    name: '@scope/pkg', version,
+    dist: { tarball: `https://registry.example.test/pkg-${version}.tgz`, integrity: `integrity-${version}` },
+    dependencies: { child: version },
+  }]));
+  const resolver = new Resolver({}, { SUPERVISOR: {
+    async getPackument(name) {
+      requests.push(name);
+      return { json: JSON.stringify({ versions, 'dist-tags': { latest: '2.0.0' } }), source: 'network', events: [] };
+    },
+  } });
+  const resolved = await resolver.execute({ name: 'slot', range: 'npm:@scope/pkg@^1.2.0' });
+  assert.deepEqual(requests, ['@scope/pkg'], 'an alias reads its scoped registry target, not its install slot');
+  assert.equal(resolved.error, undefined);
+  assert.deepEqual({
+    name: resolved.pkg.name, registryName: resolved.pkg.registryName, version: resolved.pkg.version,
+    tarballUrl: resolved.pkg.tarballUrl, integrity: resolved.pkg.integrity, dependencies: resolved.pkg.dependencies,
+  }, {
+    name: 'slot', registryName: '@scope/pkg', version: '1.9.0',
+    tarballUrl: versions['1.9.0'].dist.tarball, integrity: 'integrity-1.9.0', dependencies: { child: '1.9.0' },
+  }, 'the emitted consumer selects the highest admissible version and its payload, not latest or list order');
+  assert.deepEqual(resolved.cacheWrites.map(({ name, version }) => ({ name, version })), [{ name: '@scope/pkg', version: '1.9.0' }]);
+  requests.length = 0;
+  const cached = await resolver.execute({ name: 'slot', range: 'npm:@scope/pkg@1.9.0', cachedEntries: resolved.cacheWrites });
+  assert.equal(cached.error, undefined);
+  assert.equal(cached.packumentSource, 'cache-hit');
+  assert.deepEqual(cached.pkg, resolved.pkg, 'the registry-keyed cache preserves alias placement and the selected payload');
+  assert.deepEqual(requests, [], 'an exact alias pin uses the emitted cache record without another registry read');
+  const missing = await resolver.execute({ name: 'slot', range: 'npm:@scope/pkg@^3.0.0' });
+  assert.deepEqual(requests, ['@scope/pkg']);
+  assert.equal(missing.pkg, null, 'an unsatisfied range never installs latest');
+  assert.equal(missing.error.type, 'unresolved');
+  assert.deepEqual(missing.cacheWrites, []);
+  console.log('  the assembled resolver module has no free names and resolves scoped aliases through registry and cache');
 }
 
 // ── the preamble's version pick is the module's ─────────────────────────────

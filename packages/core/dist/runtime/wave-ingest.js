@@ -8,7 +8,7 @@
  * (staging, authorisation, transactions, publication). ProcessFiles ingests
  * with its namespace as the router; a filesystem without one ingests with none.
  */
-import { acquireSupervisorAllocation, tryAcquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
+import { acquireSupervisorRunningAllocation, tryAcquireSupervisorRunningAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { decodeWriteBatchStream, encodeWriteBatchStream } from '@nimbus-sh/platform/w7-frame.js';
 import { concatBytes, nameDec } from '../_shared/bytes.js';
 import { SYSCALL_VERDICTS, errnoCodeOf, vfsError } from '../vfs/vfs-error.js';
@@ -460,7 +460,8 @@ export class WaveIngest {
             const writeLease = await awaitCredit(() => scope.credit.tryAcquire(byteLength), () => scope.credit.acquire(byteLength, abort));
             let supervisorLease;
             try {
-                supervisorLease = await awaitCredit(() => tryAcquireSupervisorAllocation(byteLength), () => acquireSupervisorAllocation(byteLength, abort));
+                // A running facet's wave: running work, never held up by a launch that is not running (the lock order).
+                supervisorLease = await awaitCredit(() => tryAcquireSupervisorRunningAllocation(byteLength), () => acquireSupervisorRunningAllocation(byteLength, abort));
             }
             catch (error) {
                 writeLease.release();

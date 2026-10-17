@@ -68,13 +68,16 @@ function refusal(error) {
  * key), resolving under the program's `conditions`. `isCode(key)` is whether
  * the launch carries the cell at a key as code.
  */
-export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate, scope = 'node', stripsTypes = false, typeScript = true }) {
+export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate, emitted, scope = 'node', stripsTypes = false, typeScript = true }) {
     const started = Date.now();
     const table = [];
     const members = {
         [ESM_HOST_MODULE]: ESM_HOST_SOURCE,
         [ESM_META_MODULE]: metaModuleSource(gate),
     };
+    if (emitted)
+        for (const [path, text] of Object.entries(members))
+            emitted(path, text);
     const missing = [];
     // A cell's id is its place among `cells`: the table's first rows, its targets filled as it is staged.
     const targetIds = [];
@@ -97,7 +100,9 @@ export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate,
             const row = [kind, key];
             const name = esmRowName(row, id);
             table.push(row);
-            members[name] = source(id, name);
+            const text = source(id, name);
+            emitted?.(name, text);
+            members[name] = text;
             bindings[id] = ['default', ...exported];
             ids.set(`${kind}:${key}`, id);
         }
@@ -292,7 +297,12 @@ export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate,
             catch (error) {
                 rowTargets.push(-2 - missing.length);
                 targets.push(`${ESM_MISSING_DIR}${missing.length}.js`);
-                missing.push(refusal(error));
+                // A file the launch's files lack, the program may write before the
+                // import: its importer's graph is the interpreter's, which resolves it
+                // then, as Node's loader does, and fails as Node's if it is missing still.
+                const url = Reflect.get(Object(error), 'url');
+                const later = Reflect.get(Object(error), 'code') === 'ERR_MODULE_NOT_FOUND' && typeof url === 'string' && url.startsWith('file:');
+                missing.push(refusal(later ? notStaged(new URL(url).pathname, url) : error));
             }
         }
         targetNames.push(targets);
@@ -322,11 +332,13 @@ export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate,
     const modules = new Map();
     id = 0;
     for (const [key, { code, sites }] of cells) {
-        modules.set(key, stageEsModule(code, sites, {
+        const staged = stageEsModule(code, sites, {
             id, name: commonJsCellModuleName(key), targets: targetNames[id],
             ...(hoisted[id].length > 0 ? { hoisted: hoisted[id] } : {}),
             ...(sites.commonJsNames ? { commonJsNames: sites.commonJsNames } : {}),
-        }));
+        });
+        emitted?.(key, staged.text);
+        modules.set(key, staged);
         id++;
     }
     for (let row = 0; row < table.length; row++)

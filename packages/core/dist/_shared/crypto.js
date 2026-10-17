@@ -1,5 +1,6 @@
 import { dec, enc } from './bytes.js';
 import { realmBuiltin } from '@nimbus-sh/platform/realm-builtin.js';
+import { bytesToHex } from '@nimbus-sh/platform/hex.js';
 const SEALED_JSON_V2 = 'v2.';
 const SEALED_JSON_V1 = 'v1.';
 const HKDF_SALT = enc.encode('nimbus-sh sealed-json v2');
@@ -42,13 +43,7 @@ export function sha256Incremental() {
         async hex() { return hash.digest('hex'); },
     };
 }
-function hex(digest) {
-    const view = new Uint8Array(digest);
-    let out = '';
-    for (let i = 0; i < view.length; i++)
-        out += view[i].toString(16).padStart(2, '0');
-    return out;
-}
+const hex = (digest) => bytesToHex(new Uint8Array(digest));
 export async function sealJson(value, secret, options = {}) {
     const purpose = normalizePurpose(options.purpose);
     const key = await hkdfAesGcmKey(secret, purpose, options.minSecretLength);

@@ -30,45 +30,10 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { kernelInstaller } from './lib/npm-fanout-test-env.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+import { npmRegistry, resolvePackage } from './lib/npm-registry.mjs';
 
 const PROJ = 'app';
 const NM = `${PROJ}/node_modules`;
-
-/** A resolve-one result for a package that resolves cleanly, no deps. */
-function resolvedResult(name, version, overrides = {}) {
-  return {
-    pkg: {
-      name,
-      version,
-      tarballUrl: `https://registry.invalid/${name}-${version}.tgz`,
-      integrity: 'sha512-fixture',
-      dependencies: {},
-      main: 'index.js',
-      bin: {},
-      ...overrides,
-    },
-    cacheWrites: [],
-    messages: [],
-    events: [],
-    packumentBytesDecoded: 0,
-    packumentSource: 'network',
-    cacheStatEvents: [],
-  };
-}
-
-/** A resolve-one result for a package the resolver could not resolve. */
-function unresolvedResult(reason) {
-  return {
-    pkg: null,
-    cacheWrites: [],
-    messages: [],
-    events: [],
-    packumentBytesDecoded: 0,
-    packumentSource: 'network',
-    cacheStatEvents: [],
-    error: { type: 'unresolved', reason },
-  };
-}
 
 /**
  * Build a project whose package.json lists `deps` and whose node_modules
@@ -91,7 +56,7 @@ function makeInstaller(deps, preinstalled, resultFor, installShard) {
   // Both fanouts answer through here, on either topology; the argument shape
   // says which one. Resolve tasks are one package, install tasks are a shard
   // of packages.
-  const answer = (task) => (Array.isArray(task?.packages) ? installShard(task) : resultFor(task.name));
+  const answer = (task) => (Array.isArray(task?.packages) ? installShard(task) : resultFor(task.name, task));
   const env = {
     // In-DO: one entrypoint.execute per task.
     LOADER: { get() { return { getEntrypoint: () => ({ execute: async (task) => answer(task) }) }; } },
@@ -102,7 +67,7 @@ function makeInstaller(deps, preinstalled, resultFor, installShard) {
         return {
           async supervisorOp(envelope) {
             const [_fnSource, args] = envelope.args;
-            return { results: args.map((task) => ({ ok: true, value: answer(task) })) };
+            return { results: await Promise.all(args.map(async (task) => ({ ok: true, value: await answer(task) }))) };
           },
         };
       },
@@ -124,10 +89,10 @@ function makeInstaller(deps, preinstalled, resultFor, installShard) {
 {
   const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0', 'ok-e': '1.0.0' };
   const deps = { ...ok, 'ghost-dep': '^2.0.0' };
-  const { installer, log, root } = makeInstaller(deps, ok, (name) =>
+  const { installer, log, root } = makeInstaller(deps, ok, (name, spec) =>
     name === 'ghost-dep'
-      ? unresolvedResult('registry returned HTTP 404 for ghost-dep')
-      : resolvedResult(name, '1.0.0'));
+      ? npmRegistry({}).resultFor(name, spec)
+      : resolvePackage(name, '1.0.0', {}, spec));
 
   const result = await installer.install(PROJ);
   const output = log.join('\n');
@@ -162,10 +127,10 @@ function makeInstaller(deps, preinstalled, resultFor, installShard) {
 {
   const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0', 'ok-e': '1.0.0' };
   const deps = { ...ok, 'no-tarball': '^1.0.0' };
-  const { installer, log } = makeInstaller(deps, ok, (name) =>
+  const { installer, log } = makeInstaller(deps, ok, (name, spec) =>
     name === 'no-tarball'
-      ? resolvedResult(name, '1.0.0', { tarballUrl: '' })
-      : resolvedResult(name, '1.0.0'));
+      ? resolvePackage(name, '1.0.0', { dist: { tarball: '' } }, spec)
+      : resolvePackage(name, '1.0.0', {}, spec));
 
   const result = await installer.install(PROJ);
   const output = log.join('\n');
@@ -188,7 +153,7 @@ function makeInstaller(deps, preinstalled, resultFor, installShard) {
 // run turns red.
 {
   const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0', 'ok-e': '1.0.0', 'ok-f': '1.0.0' };
-  const { installer, log } = makeInstaller(ok, ok, (name) => resolvedResult(name, '1.0.0'));
+  const { installer, log } = makeInstaller(ok, ok, (name, spec) => resolvePackage(name, '1.0.0', {}, spec));
 
   const result = await installer.install(PROJ);
   const output = log.join('\n');
@@ -211,14 +176,14 @@ function makeInstaller(deps, preinstalled, resultFor, installShard) {
   const shards = Object.fromEntries(
     Array.from({ length: 5 }, (_, i) => [`native-shard-${i}`, '^1.0.0']),
   );
-  const { installer, log } = makeInstaller(ok, ok, (name) => {
+  const { installer, log } = makeInstaller(ok, ok, (name, spec) => {
     if (name === 'ok-a') {
-      return resolvedResult(name, '1.0.0', { optionalDependencies: shards });
+      return resolvePackage(name, '1.0.0', { optionalDependencies: shards }, spec);
     }
     if (name.startsWith('native-shard-')) {
-      return unresolvedResult(`registry returned HTTP 404 for ${name}`);
+      return npmRegistry({}).resultFor(name, spec);
     }
-    return resolvedResult(name, '1.0.0');
+    return resolvePackage(name, '1.0.0', {}, spec);
   });
 
   const result = await installer.install(PROJ);
@@ -237,15 +202,15 @@ function makeInstaller(deps, preinstalled, resultFor, installShard) {
 // the required edge from the optional package made its failure required.
 {
   const ok = { 'ok-a': '1.0.0', 'ok-b': '1.0.0', 'ok-c': '1.0.0', 'ok-d': '1.0.0', 'ok-e': '1.0.0' };
-  const { installer, log } = makeInstaller(ok, ok, (name) => {
+  const { installer, log } = makeInstaller(ok, ok, (name, spec) => {
     if (name === 'ok-a') {
-      return resolvedResult(name, '1.0.0', { optionalDependencies: { opt: '^1.0.0' } });
+      return resolvePackage(name, '1.0.0', { optionalDependencies: { opt: '^1.0.0' } }, spec);
     }
     if (name === 'opt') {
-      return resolvedResult(name, '1.0.0', { dependencies: { gone: '^1.0.0' } });
+      return resolvePackage(name, '1.0.0', { dependencies: { gone: '^1.0.0' } }, spec);
     }
-    if (name === 'gone') return unresolvedResult('registry returned HTTP 404 for gone');
-    return resolvedResult(name, '1.0.0');
+    if (name === 'gone') return npmRegistry({}).resultFor(name, spec);
+    return resolvePackage(name, '1.0.0', {}, spec);
   }, (shard) => ({
     perPackage: shard.packages.map((p) => ({ name: p.name, version: p.version, fileCount: 1, bytesWritten: 1, elapsed: 1, warnings: [] })),
     elapsed: 1,
@@ -273,7 +238,7 @@ function makeInstaller(deps, preinstalled, resultFor, installShard) {
   const { installer, log } = makeInstaller(
     deps,
     {}, // nothing pre-installed, so every package goes through the fetch fanout
-    (name) => resolvedResult(name, '1.0.0'),
+    (name, spec) => resolvePackage(name, '1.0.0', {}, spec),
     (shard) => ({
       // Drop `pkg-lost` from the shard's verdicts, keeping every other one.
       perPackage: shard.packages

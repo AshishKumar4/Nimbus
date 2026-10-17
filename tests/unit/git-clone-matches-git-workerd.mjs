@@ -21,10 +21,10 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, chmodSync, symlinkSync, mkdirSync } from 'node:fs';
-import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { localTerminal, startLocalProbe } from './lib/workerd-probe.mjs';
+import { startGitHttpServer } from './lib/git-http-server.mjs';
 
 const work = mkdtempSync(join(tmpdir(), 'git-clone-matches-'));
 const env = {
@@ -56,40 +56,8 @@ git(src, 'tag', '-a', 'v1', '-m', 'version one');
 git(work, 'clone', '-q', '--bare', src, join(work, 'served/fixture.git'));
 
 // ── host git's http-backend over HTTP ───────────────────────────────────────
-const backend = execFileSync('git', ['--exec-path'], { encoding: 'utf8' }).trim() + '/git-http-backend';
-const server = createServer((req, res) => {
-  const url = new URL(req.url, 'http://x');
-  console.log(`git-clone-matches-git-workerd: http-backend ${req.method} ${url.pathname}${url.search}`);
-  const cgi = spawn(backend, [], {
-    env: {
-      ...env, GIT_PROJECT_ROOT: join(work, 'served'), GIT_HTTP_EXPORT_ALL: '1',
-      REQUEST_METHOD: req.method, PATH_INFO: url.pathname, QUERY_STRING: url.search.slice(1),
-      CONTENT_TYPE: req.headers['content-type'] ?? '', CONTENT_LENGTH: req.headers['content-length'] ?? '',
-      HTTP_GIT_PROTOCOL: req.headers['git-protocol'] ?? '', HTTP_CONTENT_ENCODING: req.headers['content-encoding'] ?? '',
-      REMOTE_ADDR: '127.0.0.1',
-    },
-  });
-  req.pipe(cgi.stdin);
-  const chunks = [];
-  cgi.stdout.on('data', (c) => chunks.push(c));
-  cgi.on('close', () => {
-    const out = Buffer.concat(chunks);
-    const split = out.indexOf('\r\n\r\n');
-    const head = out.subarray(0, split).toString('latin1');
-    let status = 200;
-    for (const line of head.split('\r\n')) {
-      const at = line.indexOf(':');
-      const name = line.slice(0, at).trim();
-      const value = line.slice(at + 1).trim();
-      if (name.toLowerCase() === 'status') status = Number.parseInt(value, 10);
-      else res.setHeader(name, value);
-    }
-    res.writeHead(status);
-    res.end(out.subarray(split + 4));
-  });
-});
-await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-const url = `http://127.0.0.1:${server.address().port}/fixture.git`;
+const server = startGitHttpServer(join(work, 'served'), { plain: true, env, forward: ['git-protocol', 'content-encoding'] });
+const url = `${server.url}/fixture.git`;
 
 // ── host git's clone ───────────────────────────────────────────────────────
 const hostClone = join(work, 'host-clone');
@@ -188,7 +156,7 @@ try {
   }
 } finally {
   await probe.stop();
-  server.close();
+  server.stop();
   rmSync(work, { recursive: true, force: true });
 }
 

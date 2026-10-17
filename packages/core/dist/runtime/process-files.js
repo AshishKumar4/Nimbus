@@ -30,7 +30,7 @@ import { isVfsError, syscallError, toVfsError } from '../vfs/vfs-error.js';
 import { normalizeVfsPath } from '../vfs/path.js';
 import { abandon, andThen, readDeclaredSource, readRangeOrWhole, readText } from '../vfs/vfs.js';
 import { formatProcMounts } from '../shell/mount-commands.js';
-import { CRED_KERNEL, isVfsCred, requireVfsCred, } from './os-contracts.js';
+import { sameFileVersion, CRED_KERNEL, isVfsCred, requireVfsCred, } from './os-contracts.js';
 import { fsError, SqliteRuntimeFsBridge, walkBeneath } from './sqlite-runtime-fs-bridge.js';
 import { modeAllows } from '../vfs/posix-access.js';
 import { closeDescriptions, closeScopeSignal, createDescriptorScope, Descriptors, openFlags, processView, reportLost, scopeSignal, settleHeldAt } from './descriptors.js';
@@ -393,7 +393,7 @@ export class ProcessFiles {
     createListing(pid) {
         let listing = this.listings.get(pid);
         if (listing === undefined) {
-            listing = { named: new Set(), table: null, held: null };
+            listing = { named: new Set(), table: null, sqliteGeneration: null, held: null };
             this.listings.set(pid, listing);
         }
         return listing;
@@ -604,25 +604,34 @@ export class ProcessFiles {
         this.bound.delete(pid);
         const scope = this.processes.get(pid);
         this.processes.delete(pid);
-        this.retireWriter(pid);
-        if (!scope || scope.closed)
-            return { lost: [] };
         const lost = [];
-        for (const [id, opened] of scope.handles) {
-            if (opened.node.mounted && opened.node.pendingBytes() > 0)
-                lost.push(id);
-            // Dropped unflushed; a description another process still holds stays open, and a mount's
-            // file its backend holds open is closed with nothing written (MountedFileDescription.discard).
-            if (--opened.refs === 0 && opened.node.mounted) {
-                const { node } = opened;
-                abandon({ close: () => node.discard() });
+        try {
+            if (scope && !scope.closed) {
+                for (const [id, opened] of scope.handles) {
+                    if (opened.node.mounted && opened.node.pendingBytes() > 0)
+                        lost.push(id);
+                    // Dropped unflushed; a description another process still holds stays open.
+                    if (--opened.refs > 0)
+                        continue;
+                    const { node } = opened;
+                    // A mount's file its backend holds open is closed with nothing written
+                    // (MountedFileDescription.discard); the engine's is closed, so it pins
+                    // nothing (an unlinked file's content): what was written through it,
+                    // held appends included, is the file's already.
+                    abandon(node.mounted ? { close: () => node.discard() } : node);
+                }
+                scope.handles.clear();
+                scope.held.clear();
+                scope.waveDescriptions.clear();
+                closeScopeSignal(scope);
+                this.stopSubscriptions(scope);
             }
         }
-        scope.handles.clear();
-        scope.held.clear();
-        scope.waveDescriptions.clear();
-        closeScopeSignal(scope);
-        this.stopSubscriptions(scope);
+        finally {
+            // Its delegations end once its descriptions are closed, as closeProcess
+            // orders it: a held append is written under them, not recalled from it.
+            this.retireWriter(pid);
+        }
         return { lost };
     }
     /** The mounts `cred` sees, root first: what df, mount and `/proc/mounts` list. */
@@ -729,9 +738,9 @@ function underKernelMount(path) {
     const end = path.indexOf('/', 1);
     return KERNEL_MOUNT_POINTS[end === -1 ? path : path.slice(0, end)] === true;
 }
-/** Whether `view` shows a mount an embedder made: only then is a process's listing more than SQLite's. */
+/** Whether the table declares an embedder mount, including one whose source is absent. */
 function mountsBeyondSqlite(view) {
-    return view.mounts().some((mount) => isEmbedderMount(mount.point));
+    return view.someMountPoint(isEmbedderMount);
 }
 class AwaitingProcessBridge {
     parts;
@@ -810,10 +819,12 @@ class AwaitingProcessBridge {
      */
     list(after, limit) {
         if (!mountsBeyondSqlite(this.namespace)) {
-            // A listing of SQLite alone from the start begins at no mount table.
-            const listing = after === null || after === undefined ? this.listing(false) : undefined;
-            if (listing)
+            // A later mount must invalidate this SQLite-only listing too.
+            const listing = after === null || after === undefined ? this.listing(true) : undefined;
+            if (listing) {
                 listing.table = null;
+                listing.sqliteGeneration = this.namespace.mountGeneration();
+            }
             return this.bridge.list(after, limit);
         }
         this.authority();
@@ -831,8 +842,10 @@ class AwaitingProcessBridge {
         // Read before the page, as SqliteVFS.list reads its cursor (VfsListPage).
         const position = feed.position();
         const root = position.feeds['/'];
-        if (after === null && listing)
+        if (after === null && listing) {
             listing.table = position.table;
+            listing.sqliteGeneration = null;
+        }
         const page = feed.list(after === null ? null : `/${after}`, want, walk);
         // SQLite measured its own entries when it listed them; each is measured
         // here under the path the process sees, which only re-encodes that path.
@@ -862,6 +875,10 @@ class AwaitingProcessBridge {
      */
     acquire(epoch, cursor, options) {
         const listing = this.listing(false);
+        if (listing && listing.sqliteGeneration !== null) {
+            // Even a mount/unmount ABA relists once: a generation change is conservative.
+            return this.bridge.acquire(listing.sqliteGeneration === this.namespace.mountGeneration() ? epoch : null, cursor, options);
+        }
         if (!mountsBeyondSqlite(this.namespace) && (listing?.table ?? null) === null)
             return this.bridge.acquire(epoch, cursor, options);
         this.authority();
@@ -980,9 +997,19 @@ class AwaitingProcessBridge {
     }
     readRange(path, offset, length, options) {
         return this.either([path], () => this.bridge.readRange(path, offset, length, options), () => this.absent(async () => {
+            // A mounted file, as the synchronous bridge judges one: the engine's revisions name none, and
+            // a listing's stat is checked before the read and after it, which an await comes between.
+            if (options?.expectedEpoch !== undefined)
+                throw fsError('ESTALE', 'read', path);
+            const expected = options?.expectedFile;
+            if (expected !== undefined && !sameFileVersion(await this.stat(path), expected))
+                throw fsError('ESTALE', 'read', path);
             const name = await this.path(path);
             const view = await this.viewed(name, true);
-            return view ? view.slice(offset, offset + length) : readRangeOrWhole(this.namespace, name, offset, length);
+            const bytes = await (view ? view.slice(offset, offset + length) : readRangeOrWhole(this.namespace, name, offset, length));
+            if (expected !== undefined && !sameFileVersion(await this.stat(path), expected))
+                throw fsError('ESTALE', 'read', path);
+            return bytes;
         }));
     }
     /** A mounted file as this process sees it, its held writes applied (processView); undefined when it holds none for it. */

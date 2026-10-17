@@ -44,7 +44,10 @@ export function installedRuntime(files = {}) {
     root.mkdir(clean.replace(/\/[^/]+$/, ''), { recursive: true, mode: 0o755 });
     root.writeFile(clean, bytes, { mode: 0o644 });
   }
-  return { raw, root, filesystem: new ProcessFiles(raw), processes: new SessionProcessSupervisor() };
+  return {
+    raw, root, filesystem: new ProcessFiles(raw), processes: new SessionProcessSupervisor(),
+    close: () => harness.db.close(),
+  };
 }
 
 /**
