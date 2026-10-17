@@ -479,8 +479,6 @@ export function buildSyntheticEntry(
   };
 }
 
-
-
 /** Discovery retains paths, not a partial slice, while the parser owns its current source. */
 export async function discoverScopedSliceForSynthetic(
   vfs: PrebundleReadFs,

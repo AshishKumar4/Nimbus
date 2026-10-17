@@ -19,6 +19,7 @@
  */
 
 import type { CredentialedVfs, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import { recallOf } from '@nimbus-sh/core/vfs/recall.js';
 import { getSharedRuntimeExternals } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import type { SliceEntry } from '@nimbus-sh/core/runtime/prebundle-slice.js';
 import { prebundleEntryBytes } from '@nimbus-sh/core/runtime/prebundle-slice.js';
@@ -39,6 +40,7 @@ function vanished(error: unknown): boolean {
   const code: unknown = Reflect.get(Object(error), 'code');
   return code === 'ENOENT' || code === 'ENOTDIR';
 }
+
 export type PrebundleReadFs = Pick<CredentialedVfs, 'exists' | 'isDirectory' | 'access' | 'stat' | 'readdir' | 'readFile' | 'readFileString' | 'revision'>;
 
 /** Only consulted answers guard a plan: sibling package/synthetic writes are not inputs. */
@@ -66,7 +68,7 @@ export class PrebundleInputs {
         try { vfs.access(path, mode); allowed = true; }
         finally {
           this.remember(`access:${mode}:${path}`, () => {
-            try { vfs.access(path, mode); return allowed; } catch { return !allowed; }
+            return unavailable(() => vfs.access(path, mode)) !== allowed;
           });
         }
       },
@@ -77,17 +79,20 @@ export class PrebundleInputs {
           this.remember(`stat:${path}`, () => statSignature(vfs.stat(path)) === signature);
           return stat;
         } catch (error) {
-          this.remember(`stat:${path}`, () => {
-            try { vfs.stat(path); return false; } catch { return true; }
-          });
+          this.remember(`stat:${path}`, () => unavailable(() => { vfs.stat(path); }));
           throw error;
         }
       },
       readdir: (path) => {
-        const entries = vfs.readdir(path);
-        const signature = directorySignature(entries);
-        this.remember(`readdir:${path}`, () => directorySignature(vfs.readdir(path)) === signature);
-        return entries;
+        try {
+          const entries = vfs.readdir(path);
+          const signature = directorySignature(entries);
+          this.remember(`readdir:${path}`, () => directorySignature(vfs.readdir(path)) === signature);
+          return entries;
+        } catch (error) {
+          this.remember(`readdir:${path}`, () => unavailable(() => { vfs.readdir(path); }));
+          throw error;
+        }
       },
       readFile: (path) => { this.file(path); return vfs.readFile(path); },
       readFileString: (path) => { this.file(path); return vfs.readFileString(path); },
@@ -111,8 +116,18 @@ export class PrebundleInputs {
     if (revision === this.checkedRevision) return true;
     try {
       for (const check of this.checks.values()) if (!check()) return false;
-    } catch { return false; }
+    } catch (error) {
+      if (recallOf(error) !== null) throw error;
+      return false;
+    }
     this.checkedRevision = revision;
+    return true;
+  }
+}
+
+function unavailable(read: () => void): boolean {
+  try { read(); return false; } catch (error) {
+    if (recallOf(error) !== null) throw error;
     return true;
   }
 }

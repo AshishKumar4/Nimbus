@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { RecallRequired } from '../../packages/core/src/vfs/recall.ts';
 import { PrebundlePool } from '../../packages/worker/src/facets/prebundle-pool.ts';
 import { buildPrebundle, storedPrebundle } from '../../packages/worker/src/npm/browser-prebundle.ts';
 import { NpmCache } from '../../packages/worker/src/npm/cache.ts';
+import { PrebundleInputs, PrebundlePlanChanged, materializePrebundleSlice, planSliceForSpecifierWithCap } from '../../packages/worker/src/npm/pre-bundle-facet.ts';
 import { launchSession } from './lib/facet-launch-harness.mjs';
 import { namedFacetPlatform } from './lib/named-facet-platform.mjs';
 import { runScenarios } from './lib/resident-body.mjs';
@@ -100,6 +102,14 @@ async function unrelatedWrites(synthetic) {
   assert.equal(h.submissions(), 1, 'unconsulted packages and sibling synthetic entries cannot invalidate a queued plan');
 }
 
+function inputFixture() {
+  const fs = launchSession().vfs.as(CRED_KERNEL);
+  const dir = 'home/user/app/node_modules/pkg';
+  fs.mkdir(dir, { recursive: true });
+  fs.writeFile(dir + '/index.js', 'export const x = 1;');
+  return { fs, dir };
+}
+
 await runScenarios(fileURLToPath(import.meta.url), {
   mainMoves: () => entryMoves('main', false),
   moduleMoves: () => entryMoves('module', false),
@@ -109,6 +119,12 @@ await runScenarios(fileURLToPath(import.meta.url), {
   syntheticExportsMove: () => entryMoves('exports', true),
   unrelatedOrdinaryWrites: () => unrelatedWrites(false),
   unrelatedSyntheticWrites: () => unrelatedWrites(true),
+  async entryDisappears() {
+    const h = fixture('queued-entry-disappears');
+    const result = await h.queued(() => h.fs.writeFile(h.pkg + '/package.json', '{"main":"missing.js"}'));
+    assert.equal(result.kind, 'unresolved', JSON.stringify(result));
+    assert.equal(h.specs.length, 0);
+  },
   async missingScopedInputAppears() {
     const h = fixture('missing-scoped-input', { synthetic: true });
     h.fs.writeFile(h.pkg + '/a.js', 'export { X } from "./late";');
@@ -116,5 +132,52 @@ await runScenarios(fileURLToPath(import.meta.url), {
     assert.equal(result.kind, 'built', JSON.stringify(result));
     assert.ok(h.specs[0].slice.some((item) => item.path.endsWith('/pkg/late.js')),
       'a previously absent resolution candidate is a consulted input');
+  },
+  sameSizeFileChanges() {
+    const { fs, dir } = inputFixture();
+    const plan = planSliceForSpecifierWithCap(fs, 'pkg', 'home/user/app/node_modules', 1024 * 1024);
+    fs.writeFile(dir + '/index.js', 'export const x = 2;');
+    assert.throws(() => materializePrebundleSlice(fs, plan), PrebundlePlanChanged);
+  },
+  missingDependencyAppears() {
+    const { fs, dir } = inputFixture();
+    fs.writeFile(dir + '/package.json', '{"dependencies":{"late":"*"}}');
+    const plan = planSliceForSpecifierWithCap(fs, 'pkg', 'home/user/app/node_modules', 1024 * 1024);
+    fs.mkdir('home/user/app/node_modules/late');
+    fs.writeFile('home/user/app/node_modules/late/index.js', 'export const late = 1;');
+    assert.throws(() => materializePrebundleSlice(fs, plan), PrebundlePlanChanged);
+  },
+  directoryShapeNotSubtreeClock() {
+    const { fs, dir } = inputFixture();
+    const inputs = new PrebundleInputs(fs);
+    inputs.fs.stat(dir);
+    inputs.fs.readdir(dir);
+    fs.writeFile(dir + '/index.js', 'export const x = 2;');
+    assert.equal(inputs.current(), true, 'unread descendant bytes are not directory metadata');
+    fs.writeFile(dir + '/new.js', 'export const y = 1;');
+    assert.equal(inputs.current(), false, 'a consulted directory listing changed');
+  },
+  unavailableDirectoryAppears() {
+    const { fs, dir } = inputFixture();
+    const inputs = new PrebundleInputs(fs);
+    assert.throws(() => inputs.fs.readdir(dir + '/absent'));
+    fs.mkdir(dir + '/absent');
+    assert.equal(inputs.current(), false);
+  },
+  recallsRemainWaitable() {
+    for (const operation of ['stat', 'access']) {
+      const { fs, dir } = inputFixture();
+      const recall = new RecallRequired(dir, 'share', dir + '/index.js', async () => {});
+      let blocked = false;
+      const observed = { ...fs, [operation]: (...args) => {
+        if (blocked) throw recall;
+        return fs[operation](...args);
+      } };
+      const inputs = new PrebundleInputs(observed);
+      inputs.fs[operation](dir + '/index.js', 4);
+      fs.writeFile('home/user/unrelated', 'change the global clock');
+      blocked = true;
+      assert.throws(() => inputs.current(), (error) => error === recall, 'recall is not downgraded to plan invalidation');
+    }
   },
 });
