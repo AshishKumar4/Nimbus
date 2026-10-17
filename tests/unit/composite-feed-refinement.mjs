@@ -12,9 +12,10 @@ import { readFileSync } from 'node:fs';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { sqliteFiles } from '../../packages/core/src/vfs/sqlite-files.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
-import { CompositeVFS } from '../../packages/core/src/vfs/composite.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { createResidentStore } from '../../packages/worker/src/vfs/resident/index.ts';
+import { createAuthority, facetSql, facetSupervisor } from './lib/resident-body.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const fixture = JSON.parse(readFileSync(new URL('../../lean/fixtures/composite-feed.json', import.meta.url), 'utf8'));
@@ -110,6 +111,57 @@ async function apply(vfs, staged, entry) {
 
 const sorted = (tree) => Object.fromEntries(Object.entries(tree).sort(([a], [b]) => (a < b ? -1 : 1)));
 
+async function cacheTrace(testCase) {
+  const authority = createAuthority();
+  const backends = new Map();
+  for (const mount of testCase.mounts) {
+    const mounted = backend(mount.changes, mount.entries);
+    authority.files.vfs.mount(mount.point, mounted);
+    backends.set(mount.point, mounted);
+  }
+  const store = createResidentStore();
+  store.bind({ storage: { sql: facetSql() } });
+  const path = testCase.cache.path.slice(1);
+  const held = () => {
+    const bytes = store.cells.get(path);
+    return bytes === null || bytes === undefined ? 'EAGAIN'
+      : { bytes: dec.decode(bytes), rev: store.coherence.tables('refinement').fileRev(path) };
+  };
+  let inspectDrop = false;
+  let sawDrop = false;
+  const handle = facetSupervisor(authority, {
+    fsReadBatch: (requests) => {
+      if (inspectDrop) {
+        assert.deepEqual(held(), testCase.cache.afterDrop, 'reconciliation removes unvouched mounted bytes before refetch');
+        inspectDrop = false;
+        sawDrop = true;
+      }
+      return handle.forward('fsReadBatch', [requests]);
+    },
+  });
+  const binding = { pid: handle.log.pid, cred: authority.host.processes.cred(handle.log.pid) };
+  authority.files.nameLaunch(binding, () => testCase.launchNames);
+  store.sync.setPlan([path]);
+  store.sync.adoptModuleBundle({}, authority.cursor());
+  try {
+    await store.sync.synchronize(handle.supervisor);
+    assert.deepEqual(held(), testCase.cache.before, 'the resident holds the walked, undated bytes');
+    for (const op of testCase.window) write(backends.get(op.backend), op.path, op.bytes);
+    const cursor = store.coherence.cursor();
+    const answer = await handle.supervisor.fsAcquire(cursor.epoch, cursor.rev, { namespace: true });
+    assert.equal(answer.poison, false);
+    assert.deepEqual(answer.paths, [], 'unfed external writes have no incremental record');
+    await store.sync.applyAcquire(handle.supervisor, answer);
+    assert.deepEqual(held(), testCase.cache.afterAcquire, 'an ordinary acquire retains the unfed observation');
+    inspectDrop = true;
+    await store.sync.synchronize(handle.supervisor);
+    assert.equal(sawDrop, true, 'the new listing did not vouch for revision 0');
+    assert.deepEqual(held(), testCase.cache.afterReconcile, 'reconciliation refetches the mounted bytes');
+  } finally {
+    await authority.files.releaseProcess(binding.pid);
+  }
+}
+
 let failures = 0;
 let poisons = 0;
 for (const [index, testCase] of fixture.cases.entries()) {
@@ -130,7 +182,10 @@ for (const [index, testCase] of fixture.cases.entries()) {
     files.nameLaunch(binding, () => testCase.launchNames ?? testCase.mounts.map((mount) => mount.point));
     const bridge = files.bind(binding);
     const position = vfs.feed.position();
-    const listed = await listAll(bridge, vfs);
+    const listed = await listAll(bridge, vfs, testCase.betweenPages && (() => {
+      for (const op of testCase.betweenPages) write(byPoint.get(op.backend), op.path, op.bytes);
+    }));
+    if (testCase.betweenPages) assert.ok(listed.pages > 1, 'the mutation occurred between continuing pages');
     const staged = listed.tree;
     assert.deepEqual(sorted(staged), sorted(testCase.atCursor), 'the staged namespace after boot');
     if (testCase.atCursorUndated) assert.deepEqual(listed.undated, testCase.atCursorUndated);
@@ -164,6 +219,7 @@ for (const [index, testCase] of fixture.cases.entries()) {
     }
     if (testCase.atRelist) assert.deepEqual(sorted((await listAll(bridge, vfs)).tree), sorted(testCase.atRelist), 'a new listing replaces the held walk');
     await files.releaseProcess(binding.pid);
+    if (testCase.cache) await cacheTrace(testCase);
   } catch (error) {
     failures++;
     if (failures <= 5) console.log(`FAIL case ${index}: ${error.message.split('\n')[0]}\n  ${JSON.stringify(error.actual)}\n  vs ${JSON.stringify(error.expected)}`);

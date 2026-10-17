@@ -13,6 +13,7 @@
 -/
 
 import Nimbus.Vfs.CompositeFeed
+import Nimbus.Vfs.CompositeCache
 import Nimbus.Refine.Json
 
 namespace Nimbus.Refine.CompositeFeedCases
@@ -72,16 +73,73 @@ structure S where
 
 def table (s : S) : Table := ⟨s.mounts.map (·.1), fun m => ((s.mounts.find? (·.1 == m)).map (·.2)).getD false⟩
 
-def world (s : S) : World := ⟨toTree s.root, fun m => toTree (((s.bt.find? (·.1 == m)).map (·.2)).getD [])⟩
+def world (s : S) : World := { root := toTree s.root, bt := fun m => toTree (((s.bt.find? (·.1 == m)).map (·.2)).getD []) }
 
-def staged (s : S) : Json :=
-  let T := table s
+def candidates (s : S) : List Path :=
+  let pts := (table s).pts
+  ((s.root.map (·.1)) ++ (pts.flatMap fun m => (((s.bt.find? (·.1 == m)).map (·.2)).getD []).map (m ++ ·.1)) ++
+    (pts.flatMap fun m => (List.range m.length).map fun i => m.take (i + 1))).eraseDups
+
+def fullTree (s : S) : LTree :=
+  let T := { table s with ch := fun _ => true }
   let W := world s
-  let pts := T.pts
-  let cands := (s.root.map (·.1)) ++ (pts.flatMap fun m => (((s.bt.find? (·.1 == m)).map (·.2)).getD []).map (m ++ ·.1)) ++
-    (pts.flatMap fun m => (List.range m.length).map fun i => m.take (i + 1))
-  let vis := cands.eraseDups.filterMap fun q => if q = [] then none else (view T W q).map fun k => (q, k)
+  (candidates s).filterMap fun q => (view T W q).map fun k => (q, k)
+
+structure Launch where
+  entries : LTree
+  listed : List Path := []
+  room : Nat
+
+def listDirectory (all : LTree) (dir : Path) (held : Launch) : Launch × List Path := Id.run do
+  if held.listed.contains dir || held.room = 0 || toTree held.entries dir != some .dir then return (held, [])
+  let children := all.filter fun x => x.1.dropLast == dir
+  let fresh := children.filter fun x => !held.entries.any (·.1 == x.1)
+  if fresh.length > held.room then return (held, [])
+  return ({ entries := held.entries ++ fresh, listed := held.listed ++ [dir], room := held.room - fresh.length },
+    children.filterMap fun x => if x.2 == .dir then some x.1 else none)
+
+def walkQueue (all : LTree) : Nat → List Path → Launch → Launch
+  | 0, _, held => held
+  | _ + 1, [], held => held
+  | n + 1, dir :: rest, held =>
+    let (next, dirs) := listDirectory all dir held
+    walkQueue all n (rest ++ dirs) next
+
+/-- Finite projection of the launch walk: ancestors first, then named trees,
+    adding a directory's children only when the whole fresh set fits. -/
+def launchWalk (s : S) (named : List Path) (limit : Nat := 8192) : Launch := Id.run do
+  let T := table s
+  let all := fullTree s
+  let points := T.pts.filter fun m => !T.ch m
+  let wanted := named.filter fun p => (ownerPt T.pts p).any fun m => !T.ch m
+  let levels := (wanted.flatMap fun p => (List.range p.length).map (p.take ·)).eraseDups.filter fun p =>
+    points.any (·.isPrefixOf p)
+  let ordered := levels.mergeSort fun a b => if a.length == b.length then decide (key a ≤ key b) else a.length ≤ b.length
+  let mut held : Launch := { entries := points.map fun m => (m, .dir), room := limit }
+  for dir in ordered do held := (listDirectory all dir held).1
+  let queue := (wanted.filter fun p => toTree held.entries p == some .dir).mergeSort fun a b => decide (key a ≤ key b)
+  return walkQueue all (all.length + 1) queue held
+
+def withWalk (s : S) (held : Launch) : World :=
+  { world s with walk := fun m => { tree := fun r => if r = [] then some .dir else toTree held.entries (m ++ r),
+      spent := held.entries.countP (fun x => m.isPrefixOf x.1 && x.1 != m), limit := 8192,
+      listed := held.listed.filterMap fun p => if m.isPrefixOf p then some (p.drop m.length) else none } }
+
+def staged (s : S) (held : Launch) : Json :=
+  let T := table s
+  let W := withWalk s held
+  let vis := ((candidates s) ++ held.entries.map (·.1)).eraseDups.filterMap fun q =>
+    if q = [] then none else (view T W q).map fun k => (q, k)
   entriesJson vis
+
+def unlisted (s : S) (held : Launch) : Json :=
+  let T := table s
+  let paths := ((candidates s).filter (structural T.pts) ++ held.entries.filterMap
+    (fun x => if x.2 == .dir then some x.1 else none)).eraseDups
+  .obj (paths.filterMap fun p => do
+    let m ← ownerPt T.pts p
+    if held.listed.contains p || (!held.entries.any (·.1 == p) && T.ch m) then none
+    else some (key p, Json.str (key m)))
 
 def setBt (bt : List (Path × LTree)) (m : Path) (t : LTree) : List (Path × LTree) :=
   (bt.filter (·.1 != m)) ++ [(m, t)]
@@ -160,8 +218,13 @@ def genCase : Gen (Option Json) := do
   let poison := sig s0 != sig s || subPoison T rlog mlog
   let mountsJson := s0.mounts.map fun (m, ch) => Json.obj [("point", .str (key m)), ("changes", .bool ch),
     ("entries", entriesJson (((s0.bt.find? (·.1 == m)).map (·.2)).getD []))]
+  let named := s0.mounts.map (·.1)
+  let held := launchWalk s0 named
+  let relisted := launchWalk s named
   return some (.obj [("root", entriesJson s0.root), ("mounts", .arr mountsJson), ("window", .arr out.toList),
-    ("atCursor", staged s0), ("poison", .bool poison), ("atAnswer", staged s)])
+    ("launchNames", .arr (named.map (Json.str ∘ key))), ("atCursor", staged s0 held),
+    ("atCursorUnlisted", unlisted s0 held), ("poison", .bool poison),
+    ("atAnswer", staged s (if poison then relisted else held)), ("atRelist", staged s relisted)])
 
 /-- The review's repro, and a mount appearing over a root directory. -/
 def directed : List Json :=
@@ -197,9 +260,66 @@ def directed : List Json :=
       ("atCursor", .obj [("/m", .str "dir"), ("/m/a", .str "v1"), ("/m/pc", .str "dir")]), ("poison", .bool true),
       ("atAnswer", .obj [("/m", .str "dir"), ("/m/pc", .str "dir")])] ]
 
+def launchCase (s0 s1 : S) (named : List Path) (window : List Json) (poison : Bool)
+    (extra : List (String × Json) := []) : Json :=
+  let held := launchWalk s0 named
+  let fresh := launchWalk s1 named
+  .obj ([("root", entriesJson s0.root), ("mounts", .arr (s0.mounts.map fun (m, ch) =>
+      .obj [("point", .str (key m)), ("changes", .bool ch),
+        ("entries", entriesJson (((s0.bt.find? (·.1 == m)).map (·.2)).getD []))])),
+    ("launchNames", .arr (named.map (Json.str ∘ key))), ("window", .arr window),
+    ("atCursor", staged s0 held), ("atCursorUnlisted", unlisted s0 held),
+    ("atCursorUndated", .arr (((candidates s0) ++ held.entries.map (·.1)).eraseDups.filter
+      (fun p => (view (table s0) (withWalk s0 held) p).isSome)
+        |>.mergeSort (fun a b => decide (key a ≤ key b)) |>.map (Json.str ∘ key))),
+    ("poison", .bool poison), ("atAnswer", staged s1 (if poison then fresh else held)),
+    ("atRelist", staged s1 fresh)] ++ extra)
+
+def cachedReadJson : Nimbus.Vfs.CompositeCache.Read → Json
+  | .value v rev => .obj [("bytes", .str s!"v{v}"), ("rev", .int rev)]
+  | .eagain => .str "EAGAIN"
+
+def cacheTrace : Json :=
+  let S : Nimbus.Vfs.CompositeCache.Sys := { hist := fun _ _ t => if t = 0 then 1 else 2,
+    changes := fun _ => false, route := fun _ p => (1, p) }
+  let before := Nimbus.Vfs.CompositeCache.install ⟨[], fun _ => 0⟩ ⟨(1, ["kept", "data.txt"]), 1, 0, false⟩
+  let reconciled := Nimbus.Vfs.CompositeCache.reconcile before {
+    complete := true, comparable := true, revision := fun _ => 0, sameReadableContent := fun _ => false }
+  let fetched := Nimbus.Vfs.CompositeCache.install reconciled ⟨(1, ["kept", "data.txt"]), S.hist 1 [] 1, 0, false⟩
+  .obj [("path", .str "/m/kept/data.txt"),
+    ("before", cachedReadJson (Nimbus.Vfs.CompositeCache.syncRead S before 0 ["kept", "data.txt"])),
+    ("afterAcquire", cachedReadJson (Nimbus.Vfs.CompositeCache.syncRead S before 1 ["kept", "data.txt"])),
+    ("afterDrop", cachedReadJson (Nimbus.Vfs.CompositeCache.syncRead S reconciled 1 ["kept", "data.txt"])),
+    ("afterReconcile", cachedReadJson (Nimbus.Vfs.CompositeCache.syncRead S fetched 1 ["kept", "data.txt"]))]
+
+def launchDirected : List Json := Id.run do
+  let base : S := { root := [], mounts := [(["m"], false)], bt := [(["m"], [(["kept"], .dir), (["kept", "data.txt"], .file 1)])] }
+  let changed := { base with bt := [(["m"], [(["kept"], .dir), (["kept", "data.txt"], .file 2)])] }
+  let write := Json.obj [("backend", .str "/m"), ("op", .str "write"), ("path", .str "/kept/data.txt"), ("bytes", .str "v2")]
+  let partialTree := [(["a"], Kind.dir), (["a", "f"], .file 1), (["a", "sibling"], .file 2), (["b"], .dir), (["b", "hidden"], .file 3)]
+  let partialS := { base with bt := [(["m"], partialTree)] }
+  let nested : S := { root := [], mounts := [(["m"], false), (["m", "nested"], false)],
+    bt := [(["m"], [(["nested"], .dir), (["nested", "shadowed"], .file 9)]),
+      (["m", "nested"], [(["x"], .file 1)])] }
+  let replaced := { nested with bt := setBt nested.bt ["m", "nested"] [(["x"], .file 2)] }
+  let big := { base with bt := [(["m"], (["big"], Kind.dir) ::
+    (List.range 8193).map (fun n => (["big", s!"f{n}"], Kind.file 1)))] }
+  let pageTree := ["a", "b", "c", "d", "e", "g"].map fun n => ([n], Kind.file 1)
+  let paged := { base with bt := [(["m"], pageTree)] }
+  let extended := { paged with bt := [(["m"], pageTree ++ [(["z"], .file 2)])] }
+  return [launchCase base changed [["m", "kept"]] [write] false [("cache", cacheTrace)],
+    launchCase base base [] [] false,
+    launchCase partialS partialS [["m", "a", "f"]] [] false,
+    launchCase nested replaced [["m"]] [
+      .obj [("op", .str "unmount"), ("point", .str "/m/nested")],
+      .obj [("op", .str "mount"), ("point", .str "/m/nested"), ("changes", .bool false), ("entries", entriesJson [(["x"], .file 2)])]] true,
+    launchCase big big [["m", "big"]] [] false,
+    launchCase paged extended [["m"]] [] false [("betweenPages", .arr [
+      .obj [("backend", .str "/m"), ("op", .str "write"), ("path", .str "/z"), ("bytes", .str "v2")]])]]
+
 def fixture : String :=
   fixtureText [("fixture", .str "composite-feed"), ("model", .str "Nimbus.Vfs.CompositeFeed"),
-      ("note", .str "root backend has changes; mounts are live for the reader; a live mount point and every directory above one is the composite's directory, whichever backend holds that path (structural first); a mount without changes stages nothing else under it; root rows under a live mount or at a structural path are shadowed; a mount's feed entry at a structural path is dropped; poison = the table (point, changes, source per mount) differs between the ends of the window, or a directory was removed (rm, or a file written over it) at a path that is one of the composite's own directories at answer time and routes to that backend (a sub entry there, subPoison)")]
-    (directed ++ runGen 0x46454544 (casesOf 150 genCase))
+      ("note", .str "ProcessFiles bound listings merge the feed view with a bounded launch-named walk of unfed mounts; walked entries have rev 0; unlisted directories certify no absence; continuing pages retain one walk; ordinary answers retain unfed observations, boot/relist replaces them; independent fed mounts use the composite's multi-feed cursor; structural paths shadow backend entries; table/source changes and structural subtree entries poison; cache observations bridge the resident store's undated held bytes and reconciliation")]
+    (directed ++ launchDirected ++ runGen 0x46454544 (casesOf 150 genCase))
 
 end Nimbus.Refine.CompositeFeedCases
