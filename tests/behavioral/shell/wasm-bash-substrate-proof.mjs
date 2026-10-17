@@ -12,7 +12,7 @@
 // then exercises the syscall paths that ride wasi-instance — fd_write, fd_read,
 // path_open, fd_readdir, path_filestat_get, fd_seek.
 
-import { deleteSession, makeAsserter, mintSession, stripAnsi, Terminal } from '../_driver.mjs';
+import { deleteSession, makeAsserter, mintSession, stripAnsi, Terminal, hasOutputLine } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const label = 'shell/wasm-bash-substrate-proof';
@@ -67,7 +67,7 @@ try {
       60_000,
     );
     a.check('path_open + fd_write + fd_read: file round-trips through the VFS',
-      /ROUNDTRIP_PAYLOAD/.test(stripAnsi(output)), tail(output));
+      hasOutputLine(output, 'ROUNDTRIP_PAYLOAD'), tail(output));
   }
 
   {
@@ -79,21 +79,21 @@ try {
 
   {
     // fd_readdir through a real directory listing.
-    const { output } = await t.run("bash -c 'mkdir -p /home/user/wasidir && touch /home/user/wasidir/alpha /home/user/wasidir/beta && ls /home/user/wasidir'", 60_000);
+    const { output } = await t.run("bash -c 'mkdir -p /home/user/wasidir && touch /home/user/wasidir/alpha /home/user/wasidir/beta && ls -1 /home/user/wasidir'", 60_000);
     const s = stripAnsi(output);
     a.check('fd_readdir: both entries enumerate',
-      /alpha/.test(s) && /beta/.test(s), tail(output));
+      hasOutputLine(s, 'alpha') && hasOutputLine(s, 'beta'), tail(output));
   }
 
   {
     // fd_seek / fd_read at an offset — the whence constants are ABI-specific,
     // and getting them wrong is silent rather than a trap.
     const { output } = await t.run(
-      "bash -c 'printf \"0123456789\" > /home/user/wasiseek.txt && tail -c 4 /home/user/wasiseek.txt'",
+      "bash -c 'printf \"0123456789\" > /home/user/wasiseek.txt && tail -c 4 /home/user/wasiseek.txt && echo'",
       60_000,
     );
     a.check('fd_seek: reading the last 4 bytes yields 6789',
-      /6789/.test(stripAnsi(output)), tail(output));
+      hasOutputLine(output, '6789'), tail(output));
   }
 
   {

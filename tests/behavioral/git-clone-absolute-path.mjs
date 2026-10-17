@@ -9,7 +9,7 @@
 // the user's later `cd /tmp/x` hit ENOENT, and the repo was orphaned.
 //
 
-import { mintSession, Terminal, makeAsserter, stripAnsi } from './_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, hasOutputLine, outputLines } from './_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('git-clone-absolute-path');
@@ -42,16 +42,16 @@ const ABS_TARGET = '/tmp/gcap-target';
 {
   const { output } = await t.run(`ls ${ABS_TARGET}/.git/HEAD 2>&1`, 10_000);
   const stripped = stripAnsi(output);
-  const ok = /\.git\/HEAD/.test(stripped) && !/No such|ENOENT|cannot access/i.test(stripped);
+  const ok = hasOutputLine(stripped, `${ABS_TARGET}/.git/HEAD`) && !/No such|ENOENT|cannot access/i.test(stripped);
   a.check('repo .git/HEAD exists at the absolute target', ok,
     ok ? '' : JSON.stringify(stripped.slice(-300)));
 }
 
 // 3. cd into the absolute path + git status MUST succeed.
 {
-  const { output } = await t.run(`cd ${ABS_TARGET} && git status 2>&1 | head -3`, 30_000);
+  const { output, exitCode } = await t.run(`cd ${ABS_TARGET} && git status 2>&1`, 30_000);
   const stripped = stripAnsi(output);
-  const ok = !/ENOENT/.test(stripped) && /branch|HEAD/i.test(stripped);
+  const ok = exitCode === 0 && !/ENOENT/.test(stripped) && outputLines(stripped).some((line) => line.startsWith('On branch '));
   a.check('cd <abs> && git status works (no ENOENT)', ok,
     ok ? '' : JSON.stringify(stripped.slice(-300)));
 }

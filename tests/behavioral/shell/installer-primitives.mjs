@@ -381,7 +381,7 @@ try {
     await t.run('exec </dev/tty', 20_000);
     t.reset();
     t.cmd('old_tty_state=$(stty -g < /dev/tty); stty -icanon -echo min 1 time 0 < /dev/tty; printf "EXEC?>" > /dev/tty; key=$(dd bs=1 count=1 status=none); stty "$old_tty_state" < /dev/tty; printf "\\nEXEC_KEY=%s\\n" "$key"');
-    await t.waitFor((body) => body.includes('EXEC?>'), 20_000, 'persistent exec /dev/tty prompt');
+    await t.waitFor((body) => hasOutputLine(body, 'EXEC?>'), 20_000, 'persistent exec /dev/tty prompt');
     t.send('e');
     await t.waitForPrompt(20_000);
     const body = normalized(t.buf);

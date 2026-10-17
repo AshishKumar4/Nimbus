@@ -55,7 +55,7 @@ try {
   for (const n of [1, 2]) {
     const out = stripAnsi((await t.run(`node -e 'console.log("TRIVIAL${n}")'`, 45_000)).output);
     a.check(`a trivial node run still answers with a 20 MiB file in the cwd (run ${n})`,
-      new RegExp(`TRIVIAL${n}`).test(out),
+      hasOutputLine(out, `TRIVIAL${n}`),
       JSON.stringify(out.slice(-300)));
   }
 

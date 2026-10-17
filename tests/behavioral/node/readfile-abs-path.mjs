@@ -13,7 +13,7 @@
 // literals of the entry code and bundled JS sources
 // (STATIC_ABSOLUTE_LITERALS) that name VFS files, within budget.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi, sleep, outputLines, hasOutputLine } from '../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, sleep, hasOutputLine } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('node/readfile-abs-path');
