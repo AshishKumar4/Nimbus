@@ -515,6 +515,7 @@ return { createProcessWarnings };
 Object.defineProperties(globalThis, {
   __nimbusNodeError: { value: __nimbusGeneratedNodeError, configurable: true },
   __nimbusNodeSystemError: { value: nodeSystemError, configurable: true },
+  __nimbusEvalIllegalReturn: { value: __nimbusEvalIllegalReturn, configurable: true },
 });
 // Generated code's: a `decoration` (null for none) marks the error as one whose
 // report has no arrow of the generated code, nor its frame (Node's comes from
