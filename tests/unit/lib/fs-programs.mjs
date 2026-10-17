@@ -14,8 +14,8 @@ function generator(seed) {
   };
 }
 
-/** A program of `length` steps from `seed`. */
-export function program(seed, length = 40) {
+/** A program of `length` steps from `seed`; `wasi` adds descriptor-path opens and positioned reads. */
+export function program(seed, length = 40, { wasi = false } = {}) {
   const random = generator(seed);
   const pick = (items) => items[Math.floor(random() * items.length)];
   const word = () => 'x'.repeat(1 + Math.floor(random() * 3)).replace(/x/g, () => pick(['p', 'q', 'r', 's']));
@@ -24,9 +24,12 @@ export function program(seed, length = 40) {
   const steps = [];
   for (let i = 0; i < length; i++) {
     const roll = random();
-    if (roll < 0.22) {
+    if (roll < 0.22 || (wasi && roll >= 0.82 && roll < 0.92)) {
       const access = pick(['r', 'w', 'rw']);
-      steps.push({ op: 'open', fd: Math.floor(random() * MAX_FDS), name: pick(NAMES), flags: {
+      const fd = Math.floor(random() * MAX_FDS);
+      const descriptor = wasi && roll >= 0.82;
+      const target = descriptor ? { via: Math.floor(random() * MAX_FDS) } : { name: pick(NAMES) };
+      steps.push({ op: descriptor ? 'reopen' : 'open', fd, ...target, flags: {
         read: access !== 'w', write: access !== 'r', append: access !== 'r' && random() < 0.25,
         create: random() < 0.6, exclusive: random() < 0.2, truncate: random() < 0.3,
       } });
@@ -40,7 +43,7 @@ export function program(seed, length = 40) {
     else if (roll < 0.685) steps.push({ op: 'fchmod', fd: Math.floor(random() * MAX_FDS), mode: pick([0o644, 0o444, 0o600]) });
     else if (roll < 0.70) steps.push({ op: 'futimes', fd: Math.floor(random() * MAX_FDS), atime: time(), mtime: time() });
     else if (roll < 0.73) steps.push({ op: 'writeFile', name: pick(NAMES), data: word() });
-    else if (roll < 0.75) steps.push({ op: 'readAsync', fd: Math.floor(random() * MAX_FDS) });
+    else if (roll < 0.75) steps.push({ op: wasi ? 'read' : 'readAsync', fd: Math.floor(random() * MAX_FDS) });
     else if (roll < 0.82) steps.push({ op: 'peer', kind: pick(['write', 'write', 'unlink', 'rename', 'chmod']), name: pick(NAMES), to: pick(NAMES), data: word(), mode: pick([0o644, 0o444]) });
     else if (roll < 0.92) steps.push({ op: 'deliver' });
     else steps.push({ op: 'catchUp' });

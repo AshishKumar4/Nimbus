@@ -73,26 +73,9 @@ async function run(steps) {
     // Attribute operations need live descriptions, not immutable read-only copies.
     const open = (name, flags) => guest.open(name, { ...flags, allocate: true });
 
-    const check = async (label, reopen = false, contents = false) => {
+    const check = async (label, contents = false) => {
       for (const [fd, opened] of fds) {
         await compareStat(`${label}: fd ${fd} fd_filestat_get`, () => guest.fstat(opened.guest), () => fstat(opened.direct));
-        if (reopen) {
-          const flags = { read: opened.flags.read, write: opened.flags.write, append: opened.flags.append };
-          let ours, theirs;
-          try {
-            await compare(`${label}: fd ${fd} /dev/fd open`, async () => { ours = await open(`dev/fd/${opened.guest}`, flags); }, async () => { theirs = (await direct.reopen({ handle: opened.direct }, flags)).id; });
-            if (ours !== undefined) {
-              await compareStat(`${label}: fd ${fd} /dev/fd fd_filestat_get`, () => guest.fstat(ours), () => fstat(theirs));
-              if (flags.read) {
-                await compare(`${label}: fd ${fd} /dev/fd fd_read`, () => guest.read(ours, 1 << 12), async () => dec.decode(await direct.read(theirs, null, 1 << 12)));
-                await compare(`${label}: fd ${fd} /dev/fd fd_read at end`, () => guest.read(ours, 1), async () => dec.decode(await direct.read(theirs, null, 1)));
-              }
-            }
-          } finally {
-            if (ours !== undefined) await ok(guest.close(ours));
-            if (theirs !== undefined) await direct.close(theirs);
-          }
-        }
         if (opened.flags.read) await compare(`${label}: fd ${fd} fd_pread`, () => guest.pread(opened.guest, 1 << 12), async () => dec.decode(await direct.read(opened.direct, 0, 1 << 12)));
       }
       for (const name of NAMES) {
@@ -112,18 +95,26 @@ async function run(steps) {
 
     const processStep = async (step, label) => {
       const opened = fds.get(step.fd);
-      if (step.op === 'open') {
+      if (step.op === 'open' || step.op === 'reopen') {
         if (opened !== undefined) return;
+        const via = fds.get(step.via);
+        if (step.op === 'reopen' && via === undefined) return;
         let ours, theirs;
-        await compare(`${label}: open`, async () => { ours = await open(path(step.name), step.flags); }, async () => { theirs = (await direct.open(refPath(step.name), { ...step.flags, mode: 0o666, umask: USER.umask })).id; });
+        await compare(`${label}: ${step.op === 'reopen' ? '/dev/fd open' : 'open'}`, async () => {
+          ours = await open(step.op === 'reopen' ? `dev/fd/${via.guest}` : path(step.name), step.flags);
+        }, async () => {
+          const flags = { ...step.flags, mode: 0o666, umask: USER.umask };
+          theirs = (await (step.op === 'reopen' ? direct.reopen({ handle: via.direct }, flags) : direct.open(refPath(step.name), flags))).id;
+        });
         if (ours !== undefined) fds.set(step.fd, { guest: ours, direct: theirs, flags: step.flags });
-      } else if (['write', 'ftruncate', 'close', 'readAsync', 'fchmod', 'futimes'].includes(step.op)) {
+      } else if (['write', 'ftruncate', 'close', 'read', 'readAsync', 'fchmod', 'futimes'].includes(step.op)) {
         if (opened === undefined) return;
         if (step.op === 'write') await compare(`${label}: fd_write`, () => guest.writeAt(opened.guest, step.data, step.offset), () => direct.write(opened.direct, step.offset, enc.encode(step.data)), opened.flags.write ? undefined : 'EBADF');
         else if (step.op === 'ftruncate') await compare(`${label}: fd_filestat_set_size`, () => ok(guest.ftruncate(opened.guest, step.size)), async () => { await direct.ftruncate(opened.direct, step.size); }, opened.flags.write ? undefined : 'EINVAL');
         else if (step.op === 'fchmod') await compare(`${label}: fd_chmod`, () => ok(guest.fchmod(opened.guest, step.mode)), async () => { await direct.fchmod(opened.direct, step.mode); });
         else if (step.op === 'futimes') await compare(`${label}: fd_filestat_set_times`, () => ok(guest.futimes(opened.guest, step.atime, step.mtime)), async () => { await direct.futimes(opened.direct, step.atime, step.mtime); });
         else if (step.op === 'readAsync') await compare(`${label}: fd_pread`, () => guest.pread(opened.guest, 1 << 12), async () => dec.decode(await direct.read(opened.direct, 0, 1 << 12)), opened.flags.read ? undefined : 'EBADF');
+        else if (step.op === 'read') await compare(`${label}: fd_read`, () => guest.read(opened.guest, 1 << 12), async () => dec.decode(await direct.read(opened.direct, null, 1 << 12)), opened.flags.read ? undefined : 'EBADF');
         else {
           await compare(`${label}: fd_close`, () => ok(guest.close(opened.guest)), async () => { await direct.close(opened.direct); });
           fds.delete(step.fd);
@@ -164,12 +155,12 @@ async function run(steps) {
         if (step.op === 'catchUp') guest.inbound();
       } else if (step.op === 'peer') await peerStep(step, label);
       else await processStep(step, label);
-      await check(label, ['rename', 'unlink', 'deliver', 'catchUp'].includes(step.op));
+      await check(label);
     }
     for (const fd of [...fds.keys()]) await processStep({ op: 'close', fd }, 'the end');
     assert.equal(await guest.settle(), null, 'the end: unsettled writes');
     guest.inbound();
-    await check('the end', false, true);
+    await check('the end', true);
   } catch (error) {
     failed = true;
     throw error;
@@ -212,6 +203,7 @@ const FOUND = [
     { op: 'unlink', name: 'c' },
     { op: 'open', fd: 0, name: 'a', flags: WRITER },
     { op: 'rename', from: 'a', to: 'b' },
+    { op: 'reopen', fd: 1, via: 0, flags: { ...WRITER, create: false } },
   ] },
   { name: 'fd_filestat_get after a peer unlinks the written file', steps: [
     { op: 'open', fd: 0, name: 'a', flags: WRITER },
@@ -228,7 +220,7 @@ for (const found of FOUND) {
   failures.set(`found: ${found.name} (${kind})`, { seeds: [0], reason, minimal });
 }
 for (const seed of seeds) {
-  const steps = program(seed);
+  const steps = program(seed, 40, { wasi: true });
   const failure = await run(steps).then(() => null, (error) => error);
   if (failure === null) continue;
   const kind = kindOf(failure);
