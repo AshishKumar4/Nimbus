@@ -836,30 +836,31 @@ for (const call of ['appendFile', 'append', 'write']) {
   assert.equal(answers, count, `${call}: a folded write was not answered`);
 }
 
-// ── continues says whether submit folds; a folded op shares its entry's answer and keeps no caller's buffer ──
+// ── fold folds as submit does, or logs nothing; a folded op shares its entry's answer and keeps no caller's buffer ──
 {
   const s = session();
-  const path = 'home/user/continues';
+  const path = 'home/user/fold';
   s.kernel.writeFile(path, new Uint8Array());
   s.kernel.chown(path, CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
   const ino = s.kernel.stat(path).ino;
   const c = client(s);
   const write = (offset, text) => ({ type: 'call', call: { call: 'write', path, ino, offset, data: enc.encode(text) } });
-  assert.equal(c.continues(write(0, 'ab'), { acknowledged: true }), false, 'nothing unsent to continue');
+  assert.equal(c.fold(write(0, 'ab'), { acknowledged: true }), undefined, 'nothing unsent to fold into');
+  assert.equal(c.stats().ops, 0, 'an op fold declined was logged');
   const first = c.submit(write(0, 'ab'), { acknowledged: true });
-  assert.equal(c.continues(write(2, 'cd'), { acknowledged: true }), true, 'the next bytes of the unsent write');
-  assert.equal(c.continues(write(5, 'cd'), { acknowledged: true }), false, 'a gap does not continue it');
-  assert.equal(c.continues(write(2, 'cd')), false, 'one awaited does not continue one acknowledged');
-  assert.equal(c.continues({ type: 'call', call: { call: 'write', path, ino: ino + 1, offset: 2, data: enc.encode('cd') } }, { acknowledged: true }), false, 'another file\'s write does not');
+  assert.equal(c.fold(write(5, 'cd'), { acknowledged: true }), undefined, 'a gap does not continue it');
+  assert.equal(c.fold(write(2, 'cd')), undefined, 'one awaited does not continue one acknowledged');
+  assert.equal(c.fold({ type: 'call', call: { call: 'write', path, ino: ino + 1, offset: 2, data: enc.encode('cd') } }, { acknowledged: true }), undefined, 'another file\'s write does not');
+  assert.equal(c.stats().ops, 1, 'an op fold declined was logged');
   const reused = enc.encode('cd');
-  const folds = c.stats().folded;
-  const second = c.submit({ type: 'call', call: { call: 'write', path, ino, offset: 2, data: reused } }, { acknowledged: true });
-  assert.equal(c.stats().folded, folds + 1, 'continues said it folds');
+  const second = c.fold({ type: 'call', call: { call: 'write', path, ino, offset: 2, data: reused } }, { acknowledged: true });
+  assert.equal(c.stats().folded, 1, 'the next bytes of the unsent write did not fold');
   assert.equal(second, first, 'a folded op is given its entry\'s answer');
+  assert.equal(c.submit(write(4, 'e'), { acknowledged: true }), first, 'submit folds as fold does');
   reused.set(enc.encode('XX'));
   await c.flush();
-  assert.equal(s.text(path), 'abcd', 'a folded op\'s buffer was kept');
-  assert.equal(c.continues(write(4, 'ef'), { acknowledged: true }), false, 'a sent write is not continued');
+  assert.equal(s.text(path), 'abcde', 'a folded op\'s buffer was kept');
+  assert.equal(c.fold(write(5, 'f'), { acknowledged: true }), undefined, 'a sent write is not continued');
   await c.settle();
 }
 
