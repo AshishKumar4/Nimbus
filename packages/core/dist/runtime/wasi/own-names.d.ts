@@ -19,6 +19,8 @@ export interface OwnNames {
     entry(key: string): ResidentEntry | null | undefined;
     /** What it decided, by name (null: removed): read and changed as the holder decides; a name decided again is the deciding grant's. */
     readonly decided: Map<string, ResidentEntry | null>;
+    /** Its decision at `key` was changed in place (a held write): decided again, not what was given back. */
+    rewritten(key: string): void;
     /** Its decision at `key` is no longer its own: the session's answer replaced it. */
     undecide(key: string): void;
     /** Directory `dir` gained `name` (`type`), or lost it (null). */
