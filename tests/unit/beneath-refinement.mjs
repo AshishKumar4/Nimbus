@@ -62,7 +62,7 @@ function backend(spec) {
 // leaf is distinguished by briefly creating it through the kernel, then
 // repeating the original principal's lookup before removing the marker.
 const identity = (stat) => (stat === null ? null : `${stat.dev}:${stat.ino}:${stat.type}`);
-async function answer(proc, kernel, step) {
+async function answer(proc, kernel, step, namespace, face) {
   const beneath = { root: step.root, path: step.path, beneath: true };
   let reached;
   try {
@@ -82,13 +82,33 @@ async function answer(proc, kernel, step) {
   if (identity(reached) !== identity(expected)) return { reached: identity(reached), model: identity(expected) };
   if (reached === null) {
     assert.equal(await kernel.stat(step.expect.path, { followSymlinks: false }), null, 'the marker must not replace a leaf');
-    const marker = await kernel.open(step.expect.path, { write: true, create: true, exclusive: true });
+    let marker;
+    let overlay;
     try {
+      try { marker = await kernel.open(step.expect.path, { write: true, create: true, exclusive: true }); }
+      catch (error) {
+        if (error?.code !== 'ENOENT') throw error;
+        const parent = step.expect.path.slice(0, step.expect.path.lastIndexOf('/')) || '/';
+        if (!namespace.isAboveMount(parent)) throw error;
+        const directory = await kernel.stat(parent);
+        assert.equal(directory?.type, 'directory');
+        // This directory exists only to hold descendant mounts. Give its
+        // marker a temporary backend with the same search permissions.
+        const memory = new MemoryVFS({ uid: directory.uid, gid: directory.gid });
+        memory.chmod('/', directory.mode);
+        namespace.mount(parent, face === 'awaiting' ? asyncOnly(memory, { deep: true }) : memory);
+        overlay = parent;
+        marker = await kernel.open(step.expect.path, { write: true, create: true, exclusive: true });
+      }
       const observed = await proc.stat(beneath, { followSymlinks: step.follow });
       if (identity(observed) !== identity(marker.stat)) return { reached: identity(observed), marker: identity(marker.stat) };
     } finally {
-      try { await kernel.close(marker.id); }
-      finally { await kernel.unlink(step.expect.path); }
+      try {
+        if (marker) {
+          try { await kernel.close(marker.id); }
+          finally { await kernel.unlink(step.expect.path); }
+        }
+      } finally { if (overlay) namespace.unmount(overlay); }
     }
   }
   if (reached !== null && step.follow && reached.type !== 'symlink') {
@@ -121,7 +141,7 @@ for (const face of ['synchronous', 'awaiting']) for (const [index, testCase] of 
     assert.equal(await proc.stat(beneath), null, `${face}: the dangling link starts absent`);
     for (const probe of [step, wrong]) {
       assert.equal(await kernel.stat(probe.expect.path, { followSymlinks: false }), null);
-      const got = await answer(proc, kernel, probe);
+      const got = await answer(proc, kernel, probe, files.vfs, face);
       if (probe === step) assert.deepEqual(got, probe.expect, `${face}: the correct absent leaf agrees`);
       else assert.notDeepEqual(got, probe.expect, `${face}: a wrong absent leaf must be rejected`);
       assert.equal(await kernel.stat(probe.expect.path, { followSymlinks: false }), null, `${face}: the marker is removed`);
@@ -132,7 +152,7 @@ for (const face of ['synchronous', 'awaiting']) for (const [index, testCase] of 
     steps++;
     const proc = bind({ pid: pid++, cred: creds.get(step.as) });
     let got;
-    try { got = await answer(proc, kernel, step); }
+    try { got = await answer(proc, kernel, step, files.vfs, face); }
     catch (error) { throw new Error(`${face} case ${index} step ${at}: ${JSON.stringify(step)}`, { cause: error }); }
     if (JSON.stringify(got) !== JSON.stringify(step.expect)) {
       failures.push(`${face} case ${index} step ${at}: uid ${step.as} beneath ${step.root} ${JSON.stringify(step.path)} follow=${step.follow}: got ${JSON.stringify(got)}, model ${JSON.stringify(step.expect)}`);
