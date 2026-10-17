@@ -20,12 +20,14 @@
 // Previews against both baseline ones.
 //
 // On a log scale, for each pair of a candidate arm bi and a baseline arm aj,
-// a round's d_ij = ln bi - ln aj. The A/A null is ln a1 - ln a2 and the B/B
-// null ln b1 - ln b2; their spread is the larger magnitude either median's
-// interval reaches. The candidate is slower when every d_ij's 95% bootstrap
-// interval lies above 0 and its median above that spread. The reported
-// shift is the candidates' mean over the baselines' mean. The bootstrap is
-// seeded, so the same samples always grade the same.
+// a round's d_ij = ln bi - ln aj. The candidate is slower when every d_ij's
+// 95% bootstrap interval lies above 0: each of its Previews slower than each
+// of the baseline's. One Preview slow for where it landed leaves two of the
+// four pairs at 0, whichever side it is on; a Preview slow beside a slower
+// candidate leaves all four above it. The reported shift is the candidates'
+// mean over the baselines' mean, beside the weakest pair's interval and the
+// A/A and B/B intervals (a1 over a2, b1 over b2) that show a slow Preview.
+// The bootstrap is seeded, so the same samples always grade the same.
 import { median, medianInterval } from '../../scripts/lib/statistics.mjs';
 import { createProbeTarget } from './_session-transport.mjs';
 
@@ -85,8 +87,9 @@ export async function measurePaired(arms, rounds, measure) {
 /**
  * Grade one metric over measured rounds ({ a1, a2, b1, b2 } of positive ms).
  * `ratio` is the candidates over the baselines at the median round, with its
- * interval; `aa` and `bb` are a1 over a2's and b1 over b2's intervals;
- * `slower` is the verdict.
+ * interval; `weakest` is the candidate/baseline pair whose interval reaches
+ * lowest, with that interval; `aa` and `bb` are a1 over a2's and b1 over
+ * b2's intervals; `slower` is the verdict.
  */
 export function gradePaired(rounds) {
   const ln = (round, arm) => Math.log(round[arm]);
@@ -95,19 +98,19 @@ export function gradePaired(rounds) {
   const [low, high] = medianInterval(shift);
   const aa = medianInterval(rounds.map((round) => ln(round, 'a1') - ln(round, 'a2')));
   const bb = medianInterval(rounds.map((round) => ln(round, 'b1') - ln(round, 'b2')));
-  const spread = Math.max(...[...aa, ...bb].map(Math.abs));
-  const slower = CANDIDATE_ARMS.every((b) => BASELINE_ARMS.every((a) => {
-    const d = rounds.map((round) => ln(round, b) - ln(round, a));
-    return medianInterval(d)[0] > 0 && median(d) > spread;
-  }));
+  const pairs = CANDIDATE_ARMS.flatMap((b) => BASELINE_ARMS.map((a) => ({
+    pair: `${b}/${a}`, interval: medianInterval(rounds.map((round) => ln(round, b) - ln(round, a))),
+  })));
+  const weakest = pairs.reduce((low, pair) => (pair.interval[0] < low.interval[0] ? pair : low));
   return {
     rounds: rounds.length,
     medians: Object.fromEntries(ARMS.map((arm) => [arm, median(rounds.map((round) => round[arm]))])),
     ratio: Math.exp(median(shift)),
     interval: [Math.exp(low), Math.exp(high)],
+    weakest: { pair: weakest.pair, interval: weakest.interval.map(Math.exp) },
     aa: aa.map(Math.exp),
     bb: bb.map(Math.exp),
-    slower,
+    slower: weakest.interval[0] > 0,
   };
 }
 
@@ -134,9 +137,9 @@ export function assertPaired(a, metric, result) {
   }
   const grade = gradePaired(result.measured.map((round) => Object.fromEntries(ARMS.map((arm) => [arm, round[arm][metric]]))));
   const range = ([low, high]) => `${low.toFixed(3)}-${high.toFixed(3)}`;
-  const detail = `candidate/baseline ${grade.ratio.toFixed(3)} (95% CI ${range(grade.interval)}); A/A ${range(grade.aa)}; B/B ${range(grade.bb)}; `
-    + `medians ${ARMS.map((arm) => `${arm} ${grade.medians[arm].toFixed(0)}`).join(' ')} ms over ${grade.rounds} rounds`;
+  const detail = `candidate/baseline ${grade.ratio.toFixed(3)} (95% CI ${range(grade.interval)}); weakest pair ${grade.weakest.pair} ${range(grade.weakest.interval)}; `
+    + `A/A ${range(grade.aa)}; B/B ${range(grade.bb)}; medians ${ARMS.map((arm) => `${arm} ${grade.medians[arm].toFixed(0)}`).join(' ')} ms over ${grade.rounds} rounds`;
   console.log(`  ${metric}: ${detail}`);
-  a.check(`${metric}: the candidate is not slower than the baseline on both of its arms beyond the A/A and B/B spread`, !grade.slower, detail);
+  a.check(`${metric}: the candidate is not slower than the baseline on each of its Previews against each of the baseline's`, !grade.slower, detail);
   return true;
 }

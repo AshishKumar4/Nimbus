@@ -164,6 +164,10 @@ try {
   // Minting and deploying run the target scripts, which parse wrangler configs.
   if (!hosted) assertInstalled(repo, 'remote-probes');
   if (flags.deploy && git(repo, ['rev-parse', 'HEAD']) !== sha) throw new Error(`--deploy deploys this worktree's HEAD, and ${sha.slice(0, 12)} is not it`);
+  // The arms this run stands up are this checkout's (_paired.mjs); the probes that measure them run at the commit.
+  if (paired.length > 0 && spawnSync('git', ['diff', '--quiet', sha, 'HEAD', '--', 'tests/behavioral/_paired.mjs'], { cwd: repo }).status !== 0) {
+    throw new Error(`the paired probes at ${sha.slice(0, 12)} take other arms than this checkout stands up (tests/behavioral/_paired.mjs differs): probe it from a checkout of ${sha.slice(0, 12)}, or --skip ${paired.join(',')}`);
+  }
   const baseline = paired.length === 0 ? null
     : flags.baseline ? git(repo, ['rev-parse', '--verify', `${flags.baseline}^{commit}`]) : defaultBaseline(repo, sha);
   // Every release this run uploads, built at once and settled together: the

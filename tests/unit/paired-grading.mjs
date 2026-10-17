@@ -56,7 +56,7 @@ function rounds({ count, factor, sigma = 0.25, seed, offset = {} }) {
 assert.equal(gradePaired(rounds({ count: 15, factor: 0.6, sigma: 0.1, seed: 12 })).slower, false);
 
 // The baseline disagreeing with itself (a1 twice a2 in every round) as much
-// as the candidate exceeds it: the shift is inside the A/A spread.
+// as the candidate exceeds it: the candidate is faster than a1, so not slower.
 {
   const spread = [600, 640, 580, 700, 620, 660, 610, 590, 650, 630].map((ms) => ({ a1: ms * 2, a2: ms, b1: ms * 1.8, b2: ms * 1.8 }));
   const grade = gradePaired(spread);
@@ -72,10 +72,20 @@ for (const arm of ['a1', 'a2', 'b1', 'b2']) {
   assert.equal(grade.slower, false, `${arm} 1.5x behind: ${JSON.stringify(grade)}`);
 }
 
-// Both candidate Previews 1.3x slower: slower, and still when one baseline
-// Preview is the slow one of its pair by less than the shift.
+// Both candidate Previews 1.3x slower: slower, and still when one Preview,
+// on either side, is also slow for where it landed. A slow candidate
+// Preview does not hide the shift its other Preview shows, and a slow
+// baseline Preview counts once.
 assert.equal(gradePaired(rounds({ count: 20, factor: 1.3, sigma: 0.1, seed: 22 })).slower, true);
-assert.equal(gradePaired(rounds({ count: 20, factor: 1.5, sigma: 0.1, seed: 23, offset: { a1: 1.15 } })).slower, true);
+for (const [arm, by] of [['a1', 1.15], ['a2', 1.2], ['b1', 1.5], ['b2', 1.5]]) {
+  const grade = gradePaired(rounds({ count: 20, factor: 1.3, sigma: 0.1, seed: 23, offset: { [arm]: by } }));
+  assert.equal(grade.slower, true, `1.3x slower with ${arm} ${by}x behind: ${JSON.stringify(grade)}`);
+}
+{
+  const fixed = (a1, a2, b1, b2) => Array.from({ length: 15 }, (_, i) => ({ a1: a1 + (i % 5), a2: a2 + (i % 3), b1: b1 + (i % 4), b2: b2 + (i % 2) }));
+  assert.equal(gradePaired(fixed(600, 600, 1170, 780)).slower, true, 'a 1.3x code shift beside a 1.5x slow candidate Preview');
+  assert.equal(gradePaired(fixed(600, 720, 780, 780)).slower, true, 'a 1.3x code shift over a 1.2x slow baseline Preview');
+}
 
 // A verdict is a function of its samples: the same samples grade the same.
 {
@@ -94,9 +104,14 @@ assert.equal(gradePaired(rounds({ count: 20, factor: 1.5, sigma: 0.1, seed: 23, 
   const nullRed = red(1, 1000, false);
   const slowArmRed = red(1, 3000, true);
   const slowRed = red(1.5, 5000, false);
+  const shiftRed = red(1.3, 7000, false);
+  const shiftSlowArmRed = red(1.3, 9000, true);
+  console.log(`  rates over ${trials}: A/A/B/B ${nullRed}, one slow Preview ${slowArmRed}, 1.5x ${slowRed}, 1.3x ${shiftRed}, 1.3x with one slow Preview ${shiftSlowArmRed}`);
   assert.ok(nullRed <= 6, `${nullRed} of ${trials} A/A/B/B runs graded slower`);
   assert.ok(slowArmRed <= 6, `${slowArmRed} of ${trials} runs with one slow Preview graded slower`);
   assert.ok(slowRed >= 80, `${slowRed} of ${trials} 1.5x runs graded slower`);
+  assert.ok(shiftRed >= 50, `${shiftRed} of ${trials} 1.3x runs graded slower`);
+  assert.ok(shiftSlowArmRed >= 40, `${shiftSlowArmRed} of ${trials} 1.3x runs with one slow Preview graded slower`);
 }
 
 console.log('paired-grading: ok');
