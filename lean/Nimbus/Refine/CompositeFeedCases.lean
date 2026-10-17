@@ -114,8 +114,10 @@ def launchWalk (s : S) (named : List Path) (limit : Nat := 8192) : Launch := Id.
   let all := fullTree s
   let points := T.pts.filter fun m => !T.ch m
   let wanted := named.filter fun p => (ownerPt T.pts p).any fun m => !T.ch m
-  let levels := (wanted.flatMap fun p => (List.range p.length).map (p.take ·)).eraseDups.filter fun p =>
-    points.any (·.isPrefixOf p)
+  let levels := (wanted.flatMap fun p =>
+    match ownerPt T.pts p with
+    | none => []
+    | some m => (List.range p.length).filterMap fun i => if m.length ≤ i then some (p.take i) else none).eraseDups
   let ordered := levels.mergeSort fun a b => if a.length == b.length then decide (key a ≤ key b) else a.length ≤ b.length
   let mut held : Launch := { entries := points.map fun m => (m, .dir), room := limit }
   for dir in ordered do held := (listDirectory all dir held).1

@@ -861,6 +861,7 @@ requirements:
       - One principal's table; per-principal source switches are table changes for that principal
       - The walk model abstracts traversal order to bounded parent-closed observations and whole-directory completion certificates, not a promise to discover every name; concurrent backend mutation during the walk is not modeled; the fixture exercises the implemented 8192-name bound, unlisted directories and retention across listing pages
       - Bound ProcessFiles listing is used for every fixture; root/unfed-only cases also use its acquire, while independent fed backends retain CompositeFeed's multi-feed cursor, which the SQLite-only process cursor does not encode
+      - Resident mounted-byte refinement covers async-only unfed mounts; a synchronous unfed mount currently refuses the resident fill with ESTALE when fsReadBatch carries the SQLite expectedEpoch, so that runtime path is not claimed here
       - Unfed own-write overlays are not modeled by FsStep.own, which preserves the held walk; the cache model treats own bytes as separate reconciliation evidence
       - The CAS model identifies writes by (epoch, gen); the epoch is assumed fresh per incarnation
   VFS-COMP-005:

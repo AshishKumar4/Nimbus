@@ -111,12 +111,23 @@ async function apply(vfs, staged, entry) {
 
 const sorted = (tree) => Object.fromEntries(Object.entries(tree).sort(([a], [b]) => (a < b ? -1 : 1)));
 
+function asynchronous(files) {
+  return new Proxy(files, {
+    get(target, key) {
+      if (key === 'sync') return undefined;
+      const value = Reflect.get(target, key, target);
+      return typeof value === 'function' ? async (...args) => Reflect.apply(value, target, args) : value;
+    },
+    has(target, key) { return key !== 'sync' && Reflect.has(target, key); },
+  });
+}
+
 async function cacheTrace(testCase) {
   const authority = createAuthority();
   const backends = new Map();
   for (const mount of testCase.mounts) {
     const mounted = backend(mount.changes, mount.entries);
-    authority.files.vfs.mount(mount.point, mounted);
+    authority.files.vfs.mount(mount.point, asynchronous(mounted));
     backends.set(mount.point, mounted);
   }
   const store = createResidentStore();
@@ -144,7 +155,8 @@ async function cacheTrace(testCase) {
   store.sync.setPlan([path]);
   store.sync.adoptModuleBundle({}, authority.cursor());
   try {
-    await store.sync.synchronize(handle.supervisor);
+    const boot = await store.sync.synchronize(handle.supervisor);
+    assert.equal(boot.filled, 1, 'the asynchronous mount fills the wanted file');
     assert.deepEqual(held(), testCase.cache.before, 'the resident holds the walked, undated bytes');
     for (const op of testCase.window) write(backends.get(op.backend), op.path, op.bytes);
     const cursor = store.coherence.cursor();

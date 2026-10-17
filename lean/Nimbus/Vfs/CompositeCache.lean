@@ -8,6 +8,8 @@
   content, and rows a short listing cannot judge. Those are separate evidence,
   not a comparison with revision 0. Backend/path keys abstract routing identity;
   the runtime's composite-path rows reconcile when that identity changes.
+  The resident refinement uses async-only mounts; synchronous mounted fills
+  currently reject the SQLite-clock expectations that read batches carry.
 -/
 
 namespace Nimbus.Vfs.CompositeCache
