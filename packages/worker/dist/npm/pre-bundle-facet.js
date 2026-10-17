@@ -44,7 +44,7 @@ export class PrebundleInputs {
         this.vfs = vfs;
         this.checkedRevision = vfs.revision();
         this.fs = {
-            revision: (path) => vfs.revision(path),
+            revision: () => vfs.revision(),
             exists: (path) => {
                 const exists = vfs.exists(path);
                 this.remember(`exists:${path}`, () => vfs.exists(path) === exists);
@@ -68,14 +68,20 @@ export class PrebundleInputs {
                 }
             },
             stat: (path) => {
+                const name = inputName(path);
                 try {
                     const stat = vfs.stat(path);
-                    if (!this.stats.has(path))
-                        this.stats.set(path, stat);
+                    if (!this.stats.has(name))
+                        this.stats.set(name, stat);
                     return stat;
                 }
                 catch (error) {
-                    this.remember(`stat:${path}`, () => unavailable(() => { vfs.stat(path); }));
+                    if (vanished(error)) {
+                        if (!this.stats.has(name))
+                            this.stats.set(name, null);
+                    }
+                    else
+                        this.remember(`stat:${name}`, () => unavailable(() => { vfs.stat(path); }));
                     throw error;
                 }
             },
@@ -101,20 +107,28 @@ export class PrebundleInputs {
             this.checks.set(key, check);
     }
     file(path) {
-        const key = `file:${path.startsWith('/') ? path.slice(1) : path}`;
-        if (this.checks.has(key))
+        const name = inputName(path);
+        if (this.stats.has(name) || this.checks.has(`stat:${name}`))
             return;
-        const revision = this.vfs.revision(path);
-        this.remember(key, () => this.vfs.revision(path) === revision);
+        // Missing names and directories have floor-based revisions, not identities.
+        // Keep their own metadata answer; let the read itself report its failure.
+        try {
+            this.fs.stat(path);
+        }
+        catch (error) {
+            if (recallOf(error) !== null)
+                throw error;
+        }
     }
     current() {
         const revision = this.vfs.revision();
         if (revision === this.checkedRevision)
             return true;
         try {
-            for (const [path, stat] of this.stats)
-                if (!sameStat(this.vfs.stat(path), stat))
+            for (const [path, stat] of this.stats) {
+                if (stat === null ? this.vfs.exists(path) : !sameStat(this.vfs.stat(path), stat))
                     return false;
+            }
             for (const check of this.checks.values())
                 if (!check())
                     return false;
@@ -127,6 +141,9 @@ export class PrebundleInputs {
         this.checkedRevision = revision;
         return true;
     }
+}
+function inputName(path) {
+    return path.startsWith('/') ? path.slice(1) : path;
 }
 function unavailable(read) {
     try {

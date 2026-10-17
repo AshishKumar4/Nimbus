@@ -20,8 +20,9 @@
 import type { CredentialedVfs, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { SliceEntry } from '@nimbus-sh/core/runtime/prebundle-slice.js';
 export type { PrebundleResult, PrebundleSpec, SlicedDir, SlicedFile, SliceEntry } from '@nimbus-sh/core/runtime/prebundle-slice.js';
-export type PrebundleReadFs = Pick<CredentialedVfs, 'exists' | 'isDirectory' | 'access' | 'readdir' | 'readFile' | 'readFileString' | 'revision'> & {
+export type PrebundleReadFs = Pick<CredentialedVfs, 'exists' | 'isDirectory' | 'access' | 'readdir' | 'readFile' | 'readFileString'> & {
     stat(path: string): Readonly<VfsStat>;
+    revision(): number;
 };
 /** Only consulted answers guard a plan: sibling package/synthetic writes are not inputs. */
 export declare class PrebundleInputs {
