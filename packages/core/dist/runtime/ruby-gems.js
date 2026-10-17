@@ -9,15 +9,36 @@ export function gemHomeFor(home) {
     return `${normalizeVfsPath(home)}/.gem`;
 }
 /**
- * Every installed gem's lib directory, each version the specifications name
- * (`gems/<name>-<version>/lib`, where that is a directory), sorted: what
- * Ruby's load path is given (NIMBUS_GEM_LIBS). From the specifications'
- * names, the one inventory: a gem whose install was interrupted has none.
+ * The installed gems' lib directories Ruby's load path is given ahead of
+ * RubyGems (NIMBUS_GEM_LIBS), sorted: each version the specifications name
+ * (`gems/<name>-<version>/lib`, where that is a directory), the one
+ * inventory, so a gem whose install was interrupted has none. A gem whose
+ * version RubyGems must choose is left out, for `require` to activate it as
+ * RubyGems does: one with two versions installed, and one whose runtime
+ * dependencies reach such a gem at any depth (its requirements choose the
+ * version). Every other require costs no activation.
  */
 export async function installedGemLibRoots(vfs, gemHome) {
     const home = normalizeVfsPath(gemHome);
+    const installed = await Promise.all((await gemSpecFiles(vfs, home)).map(async (path) => ({ path, spec: await readGemSpec(vfs, path) })));
+    const specs = installed.flatMap(({ spec }) => (spec === null ? [] : [spec]));
+    const versions = new Map();
+    for (const spec of specs)
+        versions.set(spec.name, (versions.get(spec.name) ?? 0) + 1);
+    const chosen = new Set([...versions].filter(([, count]) => count > 1).map(([name]) => name));
+    for (let grew = chosen.size > 0; grew;) {
+        grew = false;
+        for (const spec of specs) {
+            if (!chosen.has(spec.name) && spec.dependencies.some((dep) => chosen.has(dep.name))) {
+                chosen.add(spec.name);
+                grew = true;
+            }
+        }
+    }
     const out = [];
-    for (const path of await gemSpecFiles(vfs, home)) {
+    for (const { path, spec } of installed) {
+        if (spec !== null && chosen.has(spec.name))
+            continue;
         const lib = `${home}/gems/${path.slice(path.lastIndexOf('/') + 1, -'.gemspec'.length)}/lib`;
         if ((await vfs.exists(lib)) && (await vfs.isDirectory(lib)))
             out.push('/' + lib);
