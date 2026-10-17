@@ -26,76 +26,272 @@ const __nativeBuiltin = ((host) => typeof __nimbusNativeBuiltins === "undefined"
 class __ProcessExit extends Error {
   constructor(code) { super("process.exit(" + code + ")"); this.code = code & 255; }
 }
-// Node's internal errors (core _shared/node-error.ts), first: the shims, the
-// preambles below and the code they load make them by name, and the cell
-// runtime and generated code reach them as __nimbusNodeError and
+// The built-ins the module loading calls, captured before any program code
+// (core _shared/primordials.ts), which Node's errors, node:path's posix half
+// (core _shared/posix-path.ts, Node's lib/path.js) and the module resolvers
+// below call. Then Node's internal errors (core _shared/node-error.ts): the
+// shims, the preambles below and the code they load make them by name, and
+// the cell runtime and generated code reach them as __nimbusNodeError and
 // __nimbusNodeSystemError.
+const __nimbusPrimordials = typeof __nimbusLaunchCaptures !== "undefined" ? __nimbusLaunchCaptures : (() => {
+var reflectApply = Reflect.apply;
+var reflectConstruct = Reflect.construct;
+var reflectGet = Reflect.get;
+var reflectSet = Reflect.set;
+var reflectHas = Reflect.has;
+var reflectOwnKeys = Reflect.ownKeys;
+var reflectDefineProperty = Reflect.defineProperty;
+var reflectDeleteProperty = Reflect.deleteProperty;
+var reflectGetOwnPropertyDescriptor = Reflect.getOwnPropertyDescriptor;
+var reflectGetPrototypeOf = Reflect.getPrototypeOf;
+var reflectSetPrototypeOf = Reflect.setPrototypeOf;
+var objectCreate = Object.create;
+var objectKeys = Object.keys;
+var objectFreeze = Object.freeze;
+var objectAssign = Object.assign;
+var objectHasOwn = Object.hasOwn;
+var objectGetOwnPropertyNames = Object.getOwnPropertyNames;
+var arrayIsArray = Array.isArray;
+var symbolFor = Symbol.for;
+var symbolIterator = Symbol.iterator;
+var symbolAsyncIterator = Symbol.asyncIterator;
+var symbolUnscopables = Symbol.unscopables;
+var stringOf = String;
+var ObjectOf = Object;
+var PromiseConstructor = Promise;
+var PromiseResolve = Promise.resolve;
+var PromiseReject = Promise.reject;
+var PromisePrototypeThen = Promise.prototype.then;
+var ObjectPrototypePropertyIsEnumerable = Object.prototype.propertyIsEnumerable;
+var ArrayConstructor = Array;
+var ArrayFrom = Array.from;
+var ArrayValues = Array.prototype[Symbol.iterator];
+var ArrayIteratorPrototype = Reflect.getPrototypeOf([][Symbol.iterator]()) ?? {};
+var ArrayIteratorNext = Reflect.get(ArrayIteratorPrototype, "next");
+var ArrayPrototypeWith = Reflect.get(Array.prototype, "with");
+var ArrayPrototypeToSpliced = Reflect.get(Array.prototype, "toSpliced");
+var StringPrototypeSlice = String.prototype.slice;
+var StringPrototypeLastIndexOf = String.prototype.lastIndexOf;
+var StringPrototypeCharCodeAt = String.prototype.charCodeAt;
+var SymbolPrototypeToString = Symbol.prototype.toString;
+var StringPrototypeCharAt = String.prototype.charAt;
+var StringPrototypeIndexOf = String.prototype.indexOf;
+var StringPrototypeSubstr = String.prototype.substr;
+var StringFromCharCode = String.fromCharCode;
+var ArrayPrototypePop = Array.prototype.pop;
+var ArrayPrototypeIndexOf = Array.prototype.indexOf;
+var ArrayPrototypeLastIndexOf = Array.prototype.lastIndexOf;
+var RegExpPrototypeExec = RegExp.prototype.exec;
+var RegExpPrototypeAccessors = (() => {
+  const accessors = objectCreate(null);
+  const names = Object.getOwnPropertyNames(RegExp.prototype);
+  for (let i = 0; i < names.length; i++) {
+    const getter = Reflect.getOwnPropertyDescriptor(RegExp.prototype, names[i])?.get;
+    if (getter !== void 0) accessors[names[i]] = getter;
+  }
+  return accessors;
+})();
+var NumberPrototypeToString = Number.prototype.toString;
+var BigIntPrototypeToString = BigInt.prototype.toString;
+var ObjectPrototype = Object.prototype;
+var ObjectPrototypeHasOwnProperty = Object.prototype.hasOwnProperty;
+var ObjectPrototypeToString = Object.prototype.toString;
+var objectDefineProperties = Object.defineProperties;
+var parseIntOf = parseInt;
+var parseFloatOf = parseFloat;
+var SymbolConstructor = Symbol;
+var SymbolPrototypeDescription = Reflect.getOwnPropertyDescriptor(Symbol.prototype, "description")?.get;
+var globalObject = globalThis;
+var JSONParse = JSON.parse;
+var JSONStringify = JSON.stringify;
+var decodeURIComponentOf = decodeURIComponent;
+var encodeURIComponentOf = encodeURIComponent;
+var NumberOf = Number;
+var numberIsInteger = Number.isInteger;
+var objectIs = Object.is;
+var objectIsExtensible = Object.isExtensible;
+var mathAbs = Math.abs;
+var ErrorCaptureStackTrace = Reflect.get(Error, "captureStackTrace");
+var BigIntOf = BigInt;
+var ErrorConstructor = Error;
+var RangeErrorConstructor = RangeError;
+var ReferenceErrorConstructor = ReferenceError;
+var RegExpConstructor = RegExp;
+var SyntaxErrorConstructor = SyntaxError;
+var TypeErrorConstructor = TypeError;
+var URIErrorConstructor = URIError;
+var URLConstructor = URL;
+function dataDescriptor(value, writable, enumerable, configurable) {
+  const descriptor = objectCreate(null);
+  descriptor.value = value;
+  descriptor.writable = writable;
+  descriptor.enumerable = enumerable;
+  descriptor.configurable = configurable;
+  return descriptor;
+}
+function copyMethods(to, from, methods) {
+  for (let i = 0; i < methods.length; i++) {
+    const descriptor = reflectGetOwnPropertyDescriptor(from, methods[i]);
+    if (descriptor) reflectDefineProperty(to, methods[i], descriptor);
+  }
+}
+var SafeMap = class extends Map {
+};
+copyMethods(SafeMap.prototype, Map.prototype, ["get", "set", "has", "delete", "clear", "forEach", "size"]);
+var SafeSet = class extends Set {
+};
+copyMethods(SafeSet.prototype, Set.prototype, ["add", "has", "delete", "clear", "forEach", "size"]);
+var SafeWeakMap = class extends WeakMap {
+};
+copyMethods(SafeWeakMap.prototype, WeakMap.prototype, ["get", "set", "has", "delete"]);
+var SafeWeakSet = class extends WeakSet {
+};
+copyMethods(SafeWeakSet.prototype, WeakSet.prototype, ["add", "has", "delete"]);
+var SafeList = class extends Array {
+};
+reflectSetPrototypeOf(SafeList.prototype, null);
+var SafeGeneratorPrototype = objectCreate(null);
+var SafeAsyncGeneratorPrototype = objectCreate(null);
+{
+  const generatorPrototype2 = reflectGetPrototypeOf(function* () {
+  }.prototype) ?? {};
+  const asyncGeneratorPrototype = reflectGetPrototypeOf(async function* () {
+  }.prototype) ?? {};
+  copyMethods(SafeGeneratorPrototype, generatorPrototype2, ["next", "return", "throw"]);
+  copyMethods(SafeGeneratorPrototype, reflectGetPrototypeOf(generatorPrototype2) ?? {}, [Symbol.iterator]);
+  copyMethods(SafeAsyncGeneratorPrototype, asyncGeneratorPrototype, ["next", "return", "throw"]);
+  copyMethods(SafeAsyncGeneratorPrototype, reflectGetPrototypeOf(asyncGeneratorPrototype) ?? {}, [Symbol.asyncIterator]);
+}
+var SafeRegExpPrototype = objectCreate(null);
+{
+  const keys = Reflect.ownKeys(RegExp.prototype);
+  const members = [];
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    if (key !== "constructor" && key !== Symbol.split && key !== Symbol.matchAll) members[members.length] = key;
+  }
+  copyMethods(SafeRegExpPrototype, RegExp.prototype, members);
+}
+var GeneratorPrototypeNext = reflectGet(SafeGeneratorPrototype, "next");
+var GeneratorPrototypeReturn = reflectGet(SafeGeneratorPrototype, "return");
+var GeneratorPrototypeThrow = reflectGet(SafeGeneratorPrototype, "throw");
+var FunctionPrototypeCall = Function.prototype.call;
+var FunctionPrototypeBind = Function.prototype.bind;
+function uncurryThis(fn) {
+  return reflectApply(FunctionPrototypeBind, FunctionPrototypeCall, [fn]);
+}
+var stringCharCodeAt = uncurryThis(String.prototype.charCodeAt);
+var stringSlice = uncurryThis(String.prototype.slice);
+var stringLastIndexOf = uncurryThis(String.prototype.lastIndexOf);
+var arrayJoin = uncurryThis(Array.prototype.join);
+var stringStartsWith = uncurryThis(String.prototype.startsWith);
+var stringEndsWith = uncurryThis(String.prototype.endsWith);
+var stringIncludes = uncurryThis(String.prototype.includes);
+var stringIndexOf = uncurryThis(String.prototype.indexOf);
+var stringToLowerCase = uncurryThis(String.prototype.toLowerCase);
+var arrayIncludes = uncurryThis(Array.prototype.includes);
+var arrayIndexOf = uncurryThis(Array.prototype.indexOf);
+var setForEach = uncurryThis(Set.prototype.forEach);
+var arraySort = uncurryThis(Array.prototype.sort);
+var regExpExec = uncurryThis(RegExp.prototype.exec);
+var generatorPrototype = reflectGetPrototypeOf(function* () {
+}.prototype);
+var generatorNext = uncurryThis(reflectGet(generatorPrototype ?? {}, "next"));
+var generatorThrow = uncurryThis(reflectGet(generatorPrototype ?? {}, "throw"));
+function newURL(input, base) {
+  return base === void 0 ? new URLConstructor(input) : new URLConstructor(input, base);
+}
+function safeGenerator(fn) {
+  if (!reflectDefineProperty(fn, "prototype", dataDescriptor(SafeGeneratorPrototype, true, false, false))) {
+    throw new TypeErrorConstructor("Cannot redefine property: prototype");
+  }
+  return fn;
+}
+function ownField(object, key) {
+  return objectHasOwn(object, key) ? reflectGet(object, key) : void 0;
+}
+return { ArrayConstructor, ArrayFrom, ArrayIteratorNext, ArrayIteratorPrototype, ArrayPrototypeIndexOf, ArrayPrototypeLastIndexOf, ArrayPrototypePop, ArrayPrototypeToSpliced, ArrayPrototypeWith, ArrayValues, BigInt: BigIntOf, BigIntPrototypeToString, Error: ErrorConstructor, ErrorCaptureStackTrace, FunctionPrototypeBind, GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, JSONParse, JSONStringify, NumberOf, NumberPrototypeToString, ObjectOf, ObjectPrototype, ObjectPrototypeHasOwnProperty, ObjectPrototypePropertyIsEnumerable, ObjectPrototypeToString, PromiseConstructor, PromisePrototypeThen, PromiseReject, PromiseResolve, RangeError: RangeErrorConstructor, ReferenceError: ReferenceErrorConstructor, RegExp: RegExpConstructor, RegExpPrototypeAccessors, RegExpPrototypeExec, SafeAsyncGeneratorPrototype, SafeGeneratorPrototype, SafeList, SafeMap, SafeRegExpPrototype, SafeSet, SafeWeakMap, SafeWeakSet, StringFromCharCode, StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeIndexOf, StringPrototypeLastIndexOf, StringPrototypeSlice, StringPrototypeSubstr, SymbolConstructor, SymbolPrototypeDescription, SymbolPrototypeToString, SyntaxError: SyntaxErrorConstructor, TypeError: TypeErrorConstructor, URIError: URIErrorConstructor, URL: URLConstructor, arrayIncludes, arrayIndexOf, arrayIsArray, arrayJoin, arraySort, dataDescriptor, decodeURIComponentOf, encodeURIComponentOf, generatorNext, generatorThrow, globalObject, mathAbs, newURL, numberIsInteger, objectAssign, objectCreate, objectDefineProperties, objectFreeze, objectGetOwnPropertyNames, objectHasOwn, objectIs, objectIsExtensible, objectKeys, ownField, parseFloatOf, parseIntOf, reflectApply, reflectConstruct, reflectDefineProperty, reflectDeleteProperty, reflectGet, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectHas, reflectOwnKeys, reflectSet, reflectSetPrototypeOf, regExpExec, safeGenerator, setForEach, stringCharCodeAt, stringEndsWith, stringIncludes, stringIndexOf, stringLastIndexOf, stringOf, stringSlice, stringStartsWith, stringToLowerCase, symbolAsyncIterator, symbolFor, symbolIterator, symbolUnscopables };
+})();
+
 var { captureStack, determineSpecificType, hideStackFrames, invalidArgType, invalidArgValue, isErrorStackTraceLimitWritable, nodeError, nodeErrorCodes, nodeSystemError, outOfRange, reshapeAsNodeError, useNodeErrorInspect } = (() => {
-var nodeErrorClasses =   new Map();
-var classCodes =   new WeakMap();
+const { arrayIncludes, arrayJoin, dataDescriptor, Error, ErrorCaptureStackTrace, JSONStringify, mathAbs, numberIsInteger, objectAssign, objectCreate, objectHasOwn, objectIs, objectIsExtensible, objectKeys, ownField, RangeError, reflectApply, reflectDefineProperty, reflectDeleteProperty, reflectGet, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectHas, reflectSet, reflectSetPrototypeOf, regExpExec, SafeList, SafeMap, SafeWeakMap, stringIncludes, stringIndexOf, stringOf, stringSlice, stringEndsWith, stringToLowerCase, symbolFor, TypeError, URIError } = __nimbusPrimordials;
+var nodeErrorClasses = new SafeMap();
+var classCodes = new SafeWeakMap();
+function accessorDescriptor(get, set, enumerable, configurable) {
+  const descriptor = objectCreate(null);
+  descriptor.get = get;
+  if (set !== void 0) descriptor.set = set;
+  descriptor.enumerable = enumerable;
+  descriptor.configurable = configurable;
+  return descriptor;
+}
 function nodeError(Base, code, message, props, above = nodeError) {
   return made(Base, code, message, props, above);
 }
 function made(Base, code, message, props, above) {
   const NodeError = nodeErrorClass(Base, code);
   const error = new NodeError(message);
-  headStack(error, `${error.name} [${code}]`, above);
-  if (props !== void 0) Object.assign(error, props);
+  headStack(error, `${reflectGet(error, "name")} [${code}]`, above);
+  if (props !== void 0) objectAssign(error, props);
   return error;
 }
 function nodeErrorClass(Base, code) {
   let classes = nodeErrorClasses.get(Base);
-  if (classes === void 0) nodeErrorClasses.set(Base, classes =   new Map());
+  if (classes === void 0) nodeErrorClasses.set(Base, classes = new SafeMap());
   let NodeError = classes.get(code);
   if (NodeError === void 0) {
     NodeError = class extends Base {
       constructor(text) {
         super(text);
-        Reflect.deleteProperty(this, "message");
-        Object.defineProperty(this, "code", { value: code, enumerable: true, writable: true, configurable: true });
-        Object.defineProperty(this, "message", { value: text, enumerable: false, writable: true, configurable: true });
+        reflectDeleteProperty(this, "message");
+        reflectDefineProperty(this, "code", dataDescriptor(code, true, true, true));
+        reflectDefineProperty(this, "message", dataDescriptor(text, true, false, true));
       }
       toString() {
-        return `${this.name} [${code}]: ${this.message}`;
+        return `${reflectGet(this, "name")} [${code}]: ${reflectGet(this, "message")}`;
       }
     };
-    Object.defineProperty(NodeError.prototype, "constructor", { get: () => Base, enumerable: false, configurable: true });
+    reflectDefineProperty(NodeError.prototype, "constructor", accessorDescriptor(() => Base, void 0, false, true));
     classCodes.set(NodeError.prototype, code);
     classes.set(code, NodeError);
   }
   return NodeError;
 }
 function reshapeAsNodeError(error, Base, code) {
-  const message = error.message;
+  const message = reflectGet(error, "message");
   let stack;
   try {
-    stack = error.stack;
+    stack = reflectGet(error, "stack");
   } catch {
     stack = void 0;
   }
   const NodeError = nodeErrorClass(Base, code);
-  const stackDescriptor = Object.getOwnPropertyDescriptor(error, "stack");
-  for (const key of ["stack", "code", "message", "name", "toString"]) Reflect.deleteProperty(error, key);
-  Object.setPrototypeOf(error, NodeError.prototype);
-  if (stackDescriptor !== void 0) Object.defineProperty(error, "stack", stackDescriptor);
-  Object.defineProperty(error, "code", { value: code, enumerable: true, writable: true, configurable: true });
-  Object.defineProperty(error, "message", { value: message, enumerable: false, writable: true, configurable: true });
+  const stackDescriptor = reflectGetOwnPropertyDescriptor(error, "stack");
+  const replaced = ["stack", "code", "message", "name", "toString"];
+  for (let i = 0; i < replaced.length; i++) reflectDeleteProperty(error, replaced[i]);
+  reflectSetPrototypeOf(error, NodeError.prototype);
+  if (stackDescriptor !== void 0) reflectDefineProperty(error, "stack", stackDescriptor);
+  reflectDefineProperty(error, "code", dataDescriptor(code, true, true, true));
+  reflectDefineProperty(error, "message", dataDescriptor(message, true, false, true));
   if (typeof stack === "string") {
-    const frames = stack.indexOf("\n    at ");
-    const header = message === "" ? `${Base.name} [${code}]` : `${Base.name} [${code}]: ${message}`;
-    Reflect.set(error, "stack", header + (frames === -1 ? "" : stack.slice(frames)));
+    const frames = stringIndexOf(stack, "\n    at ");
+    const name = reflectGet(Base, "name");
+    const header = message === "" ? `${name} [${code}]` : `${name} [${code}]: ${message}`;
+    reflectSet(error, "stack", header + (frames === -1 ? "" : stringSlice(stack, frames)));
   }
   return error;
 }
-var inspectValue = (value) => String(value);
+var inspectValue = (value) => stringOf(value);
 function useNodeErrorInspect(inspect) {
   inspectValue = inspect;
 }
 var ARG_TYPES = ["string", "function", "number", "object", "Function", "Object", "boolean", "bigint", "symbol"];
 var CLASS_NAME = /^[A-Z][a-zA-Z0-9]*$/;
 function formatList(items, type) {
-  if (items.length < 3) return items.join(` ${type} `);
-  return `${items.slice(0, -1).join(", ")}, ${type} ${items[items.length - 1]}`;
+  if (items.length < 3) return arrayJoin(items, ` ${type} `);
+  let head = "";
+  for (let i = 0; i < items.length - 1; i++) head += i === 0 ? items[i] : `, ${items[i]}`;
+  return `${head}, ${type} ${items[items.length - 1]}`;
 }
 function determineSpecificType(value) {
   if (value === null) return "null";
@@ -109,23 +305,23 @@ function determineSpecificType(value) {
     case "boolean":
       return `type boolean (${value})`;
     case "symbol":
-      return `type symbol (${String(value)})`;
+      return `type symbol (${stringOf(value)})`;
     case "function":
-      return `function ${value.name}`;
+      return `function ${reflectGet(value, "name")}`;
     case "object": {
-      const ctor = Reflect.get(value, "constructor");
-      if ((typeof ctor === "function" || typeof ctor === "object" && ctor !== null) && "name" in ctor) {
-        return `an instance of ${String(Reflect.get(ctor, "name"))}`;
+      const ctor = reflectGet(value, "constructor");
+      if ((typeof ctor === "function" || typeof ctor === "object" && ctor !== null) && reflectHas(ctor, "name")) {
+        return `an instance of ${stringOf(reflectGet(ctor, "name"))}`;
       }
       return inspectValue(value, { depth: -1 });
     }
     case "string": {
-      const shown = value.length > 28 ? `${value.slice(0, 25)}...` : value;
-      return shown.includes("'") ? `type string (${JSON.stringify(shown)})` : `type string ('${shown}')`;
+      const shown = value.length > 28 ? `${stringSlice(value, 0, 25)}...` : value;
+      return stringIncludes(shown, "'") ? `type string (${JSONStringify(shown)})` : `type string ('${shown}')`;
     }
     default: {
       let shown = inspectValue(value, { colors: false });
-      if (shown.length > 28) shown = `${shown.slice(0, 25)}...`;
+      if (shown.length > 28) shown = `${stringSlice(shown, 0, 25)}...`;
       return `type ${typeof value} (${shown})`;
     }
   }
@@ -138,18 +334,18 @@ function invalidArgValue(name, value, reason = "is invalid") {
 }
 function invalidArgValueMessage(name, value, reason = "is invalid") {
   let inspected = inspectValue(value, {});
-  if (inspected.length > 128) inspected = `${inspected.slice(0, 128)}...`;
-  return `The ${name.includes(".") ? "property" : "argument"} '${name}' ${reason}. Received ${inspected}`;
+  if (inspected.length > 128) inspected = `${stringSlice(inspected, 0, 128)}...`;
+  return `The ${stringIncludes(name, ".") ? "property" : "argument"} '${name}' ${reason}. Received ${inspected}`;
 }
 function outOfRange(name, range, input) {
   return made(RangeError, "ERR_OUT_OF_RANGE", outOfRangeMessage(name, range, input), void 0, outOfRange);
 }
 function outOfRangeMessage(str, range, input, replaceDefaultBoolean = false) {
   let received;
-  if (typeof input === "number" && Number.isInteger(input) && Math.abs(input) > 2 ** 32) {
-    received = addNumericalSeparator(String(input));
+  if (typeof input === "number" && numberIsInteger(input) && mathAbs(input) > 2 ** 32) {
+    received = addNumericalSeparator(stringOf(input));
   } else if (typeof input === "bigint") {
-    received = String(input);
+    received = stringOf(input);
     if (input > 2n ** 32n || input < -(2n ** 32n)) received = addNumericalSeparator(received);
     received += "n";
   } else {
@@ -158,19 +354,27 @@ function outOfRangeMessage(str, range, input, replaceDefaultBoolean = false) {
   return `${replaceDefaultBoolean ? str : `The value of "${str}" is out of range.`} It must be ${range}. Received ${received}`;
 }
 function invalidArgTypeMessage(name, expected, actual) {
-  const types = [];
-  const instances = [];
-  const other = [];
-  for (const value of typeof expected === "string" ? [expected] : expected) {
-    if (ARG_TYPES.includes(value)) types.push(value.toLowerCase());
-    else if (CLASS_NAME.test(value)) instances.push(value);
-    else other.push(value);
+  let types = new SafeList();
+  const instances = new SafeList();
+  const other = new SafeList();
+  const given = typeof expected === "string" ? [expected] : expected;
+  for (let i = 0; i < given.length; i++) {
+    const value = given[i];
+    if (arrayIncludes(ARG_TYPES, value)) types[types.length] = stringToLowerCase(value);
+    else if (regExpExec(CLASS_NAME, value) !== null) instances[instances.length] = value;
+    else other[other.length] = value;
   }
-  if (instances.length > 0 && types.includes("object")) {
-    types.splice(types.indexOf("object"), 1);
-    instances.push("Object");
+  if (instances.length > 0 && arrayIncludes(types, "object")) {
+    const kept = new SafeList();
+    let removed = false;
+    for (let i = 0; i < types.length; i++) {
+      if (!removed && types[i] === "object") removed = true;
+      else kept[kept.length] = types[i];
+    }
+    types = kept;
+    instances[instances.length] = "Object";
   }
-  let message = name.endsWith(" argument") ? `The ${name} must be ` : `The "${name}" ${name.includes(".") ? "property" : "argument"} must be `;
+  let message = stringEndsWith(name, " argument") ? `The ${name} must be ` : `The "${name}" ${stringIncludes(name, ".") ? "property" : "argument"} must be `;
   if (types.length > 0) {
     message += `${types.length > 1 ? "one of type" : "of type"} ${formatList(types, "or")}`;
     if (instances.length > 0 || other.length > 0) message += " or ";
@@ -180,65 +384,79 @@ function invalidArgTypeMessage(name, expected, actual) {
     if (other.length > 0) message += " or ";
   }
   if (other.length > 1) message += `one of ${formatList(other, "or")}`;
-  else if (other.length === 1) message += `${other[0].toLowerCase() !== other[0] ? "an " : ""}${other[0]}`;
+  else if (other.length === 1) message += `${stringToLowerCase(other[0]) !== other[0] ? "an " : ""}${other[0]}`;
   return `${message}. Received ${determineSpecificType(actual)}`;
 }
 function addNumericalSeparator(value) {
   let result = "";
   let i = value.length;
   const start = value[0] === "-" ? 1 : 0;
-  for (; i >= start + 4; i -= 3) result = `_${value.slice(i - 3, i)}${result}`;
-  return `${value.slice(0, i)}${result}`;
+  for (; i >= start + 4; i -= 3) result = `_${stringSlice(value, i - 3, i)}${result}`;
+  return `${stringSlice(value, 0, i)}${result}`;
 }
 function formatNodeMessage(template, args) {
+  let out = "";
+  let from = 0;
   let i = 0;
-  return template.replace(/%s/g, () => {
+  for (let at = stringIndexOf(template, "%s"); at !== -1; at = stringIndexOf(template, "%s", from)) {
     const value = args[i++];
-    return typeof value === "number" && Object.is(value, -0) ? "-0" : String(value);
-  });
+    out += stringSlice(template, from, at) + (typeof value === "number" && objectIs(value, -0) ? "-0" : stringOf(value));
+    from = at + 2;
+  }
+  return out + stringSlice(template, from);
 }
 var nodeErrorMessages = {
-  ERR_AMBIGUOUS_ARGUMENT: ['The "%s" argument is ambiguous. %s', TypeError],
-  ERR_ASSERTION: ["%s", Error],
-  ERR_FEATURE_UNAVAILABLE_ON_PLATFORM: ["The feature %s is unavailable on the current platform, which is being used to run Node.js", TypeError],
-  ERR_CONSTRUCT_CALL_REQUIRED: ["Class constructor %s cannot be invoked without `new`", TypeError],
-  ERR_CRYPTO_ENGINE_UNKNOWN: ['Engine "%s" was not found', Error],
-  ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE: ["Invalid key object type %s, expected %s.", TypeError],
-  ERR_CRYPTO_SIGN_KEY_REQUIRED: ["No key provided to sign", Error],
-  ERR_FALSY_VALUE_REJECTION: [function(reason) {
+  ERR_AMBIGUOUS_ARGUMENT: { message: 'The "%s" argument is ambiguous. %s', bases: [TypeError] },
+  ERR_ASSERTION: { message: "%s", bases: [Error] },
+  ERR_FEATURE_UNAVAILABLE_ON_PLATFORM: { message: "The feature %s is unavailable on the current platform, which is being used to run Node.js", bases: [TypeError] },
+  ERR_CONSTRUCT_CALL_REQUIRED: { message: "Class constructor %s cannot be invoked without `new`", bases: [TypeError] },
+  ERR_CRYPTO_ENGINE_UNKNOWN: { message: 'Engine "%s" was not found', bases: [Error] },
+  ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE: { message: "Invalid key object type %s, expected %s.", bases: [TypeError] },
+  ERR_CRYPTO_SIGN_KEY_REQUIRED: { message: "No key provided to sign", bases: [Error] },
+  ERR_FALSY_VALUE_REJECTION: { message: function(reason) {
     this.reason = reason;
     return "Promise was rejected with falsy value";
-  }, Error],
-  ERR_ILLEGAL_CONSTRUCTOR: ["Illegal constructor", TypeError],
-  ERR_INTERNAL_ASSERTION: [(message) => {
+  }, bases: [Error] },
+  ERR_ILLEGAL_CONSTRUCTOR: { message: "Illegal constructor", bases: [TypeError] },
+  ERR_INTERNAL_ASSERTION: { message: (message) => {
     const suffix = "This is caused by either a bug in Node.js or incorrect usage of Node.js internals.\nPlease open an issue with this stack trace at https://github.com/nodejs/node/issues\n";
     return message === void 0 ? suffix : `${message}
 ${suffix}`;
-  }, Error],
-  ERR_INCOMPATIBLE_OPTION_PAIR: ['Option "%s" cannot be used in combination with option "%s"', TypeError],
-  ERR_INVALID_IP_ADDRESS: ["Invalid IP address: %s", TypeError],
-  ERR_INVALID_ARG_TYPE: [invalidArgTypeMessage, TypeError],
-  ERR_DNS_SET_SERVERS_FAILED: [(error, servers) => `c-ares failed to set servers: "${error}" [${inspectValue(servers, {})}]`, Error],
-  ERR_INVALID_MIME_SYNTAX: [(production, str, invalidIndex) => `The MIME syntax for a ${production} in "${str}" is invalid${invalidIndex !== -1 ? ` at ${invalidIndex}` : ""}`, TypeError],
-  ERR_INVALID_ARG_VALUE: [invalidArgValueMessage, TypeError, RangeError],
-  ERR_INVALID_RETURN_VALUE: [(input, name, value) => `Expected ${input} to be returned from the "${name}" function but got ${determineSpecificType(value)}.`, TypeError, RangeError],
-  ERR_INVALID_THIS: ['Value of "this" must be of type %s', TypeError],
-  ERR_INVALID_URI: ["URI malformed", URIError],
-  ERR_METHOD_NOT_IMPLEMENTED: ["The %s method is not implemented", Error],
-  ERR_MISSING_ARGS: [(...names) => {
-    const wrapped = names.map((name) => Array.isArray(name) ? name.map((n) => `"${n}"`).join(" or ") : `"${name}"`);
+  }, bases: [Error] },
+  ERR_INCOMPATIBLE_OPTION_PAIR: { message: 'Option "%s" cannot be used in combination with option "%s"', bases: [TypeError] },
+  ERR_INVALID_IP_ADDRESS: { message: "Invalid IP address: %s", bases: [TypeError] },
+  ERR_INVALID_ARG_TYPE: { message: invalidArgTypeMessage, bases: [TypeError] },
+  ERR_DNS_SET_SERVERS_FAILED: { message: (error, servers) => `c-ares failed to set servers: "${error}" [${inspectValue(servers, {})}]`, bases: [Error] },
+  ERR_INVALID_MIME_SYNTAX: { message: (production, str, invalidIndex) => `The MIME syntax for a ${production} in "${str}" is invalid${invalidIndex !== -1 ? ` at ${invalidIndex}` : ""}`, bases: [TypeError] },
+  ERR_INVALID_ARG_VALUE: { message: invalidArgValueMessage, bases: [TypeError, RangeError] },
+  ERR_INVALID_RETURN_VALUE: { message: (input, name, value) => `Expected ${input} to be returned from the "${name}" function but got ${determineSpecificType(value)}.`, bases: [TypeError, RangeError] },
+  ERR_INVALID_THIS: { message: 'Value of "this" must be of type %s', bases: [TypeError] },
+  ERR_INVALID_URI: { message: "URI malformed", bases: [URIError] },
+  ERR_METHOD_NOT_IMPLEMENTED: { message: "The %s method is not implemented", bases: [Error] },
+  ERR_MISSING_ARGS: { message: (...names) => {
+    const wrapped = new SafeList();
+    for (let i = 0; i < names.length; i++) {
+      const name = names[i];
+      if (typeof name === "string") {
+        wrapped[wrapped.length] = `"${name}"`;
+        continue;
+      }
+      let either = "";
+      for (let j = 0; j < name.length; j++) either += j === 0 ? `"${name[j]}"` : ` or "${name[j]}"`;
+      wrapped[wrapped.length] = either;
+    }
     return `The ${formatList(wrapped, "and")} argument${names.length > 1 ? "s" : ""} must be specified`;
-  }, TypeError],
-  ERR_PARSE_ARGS_INVALID_OPTION_VALUE: ["%s", TypeError],
-  ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL: ["Unexpected argument '%s'. This command does not take positional arguments", TypeError],
-  ERR_PARSE_ARGS_UNKNOWN_OPTION: [(option, allowPositionals) => `Unknown option '${option}'${allowPositionals ? `. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- ${JSON.stringify(option)}` : ""}`, TypeError],
-  ERR_OPERATION_FAILED: ["Operation failed: %s", Error, TypeError],
-  ERR_OUT_OF_RANGE: [outOfRangeMessage, RangeError],
-  ERR_SOCKET_BAD_PORT: [(name, port, allowZero = true) => `${name} should be ${allowZero ? ">=" : ">"} 0 and < 65536. Received ${determineSpecificType(port)}.`, RangeError],
-  ERR_UNAVAILABLE_DURING_EXIT: ["Cannot call function in process exit handler", Error],
-  ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET: ["`process.setupUncaughtExceptionCapture()` was called while a capture callback was already active", Error],
-  ERR_UNKNOWN_SIGNAL: ["Unknown signal: %s", TypeError],
-  ERR_WORKER_UNSUPPORTED_OPERATION: ["%s is not supported in workers", TypeError]
+  }, bases: [TypeError] },
+  ERR_PARSE_ARGS_INVALID_OPTION_VALUE: { message: "%s", bases: [TypeError] },
+  ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL: { message: "Unexpected argument '%s'. This command does not take positional arguments", bases: [TypeError] },
+  ERR_PARSE_ARGS_UNKNOWN_OPTION: { message: (option, allowPositionals) => `Unknown option '${option}'${allowPositionals ? `. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- ${JSONStringify(option)}` : ""}`, bases: [TypeError] },
+  ERR_OPERATION_FAILED: { message: "Operation failed: %s", bases: [Error, TypeError] },
+  ERR_OUT_OF_RANGE: { message: outOfRangeMessage, bases: [RangeError] },
+  ERR_SOCKET_BAD_PORT: { message: (name, port, allowZero = true) => `${name} should be ${allowZero ? ">=" : ">"} 0 and < 65536. Received ${determineSpecificType(port)}.`, bases: [RangeError] },
+  ERR_UNAVAILABLE_DURING_EXIT: { message: "Cannot call function in process exit handler", bases: [Error] },
+  ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET: { message: "`process.setupUncaughtExceptionCapture()` was called while a capture callback was already active", bases: [Error] },
+  ERR_UNKNOWN_SIGNAL: { message: "Unknown signal: %s", bases: [TypeError] },
+  ERR_WORKER_UNSUPPORTED_OPERATION: { message: "%s is not supported in workers", bases: [TypeError] }
 };
 var nodeSystemErrorPrefixes = {
   ERR_FS_CP_DIR_TO_NON_DIR: "Cannot overwrite non-directory with directory",
@@ -256,39 +474,50 @@ function nodeErrorCodeConstructor(code, message, Base) {
   const make = function(...args) {
     if (typeof message === "string") return made(Base, code, formatNodeMessage(message, args), void 0, make);
     const fields = {};
-    const text = Reflect.apply(message, fields, args);
-    return made(Base, code, text, Object.keys(fields).length > 0 ? fields : void 0, make);
+    const text = reflectApply(message, fields, args);
+    return made(Base, code, text, objectKeys(fields).length > 0 ? fields : void 0, make);
   };
-  Object.defineProperty(make, "name", { value: "NodeError" });
+  reflectDefineProperty(make, "name", dataDescriptor("NodeError", false, false, true));
   return make;
 }
-var nodeErrorCodes = Object.fromEntries([
-  ...Object.entries(nodeErrorMessages).map(([code, [message, Base, ...others]]) => {
-    const constructor = nodeErrorCodeConstructor(code, message, Base);
+var nodeErrorCodes = makeNodeErrorCodes();
+function makeNodeErrorCodes() {
+  const codes = {};
+  const messageCodes = objectKeys(nodeErrorMessages);
+  for (let i = 0; i < messageCodes.length; i++) {
+    const code = messageCodes[i];
+    const { message, bases } = nodeErrorMessages[code];
+    const constructor = nodeErrorCodeConstructor(code, message, bases[0]);
     constructor.HideStackFramesError = constructor;
-    for (const Other of others) {
+    for (let j = 1; j < bases.length; j++) {
+      const Other = bases[j];
       const other = nodeErrorCodeConstructor(code, message, Other);
       other.HideStackFramesError = other;
-      constructor[Other.name] = other;
+      constructor[reflectGet(Other, "name")] = other;
     }
-    return [code, constructor];
-  }),
-  ...Object.entries(nodeSystemErrorPrefixes).map(([code, prefix]) => {
+    codes[code] = constructor;
+  }
+  const systemCodes = objectKeys(nodeSystemErrorPrefixes);
+  for (let i = 0; i < systemCodes.length; i++) {
+    const code = systemCodes[i];
+    const prefix = nodeSystemErrorPrefixes[code];
     const constructor = function(context) {
       return nodeSystemError(code, prefix, context);
     };
     constructor.HideStackFramesError = constructor;
-    return [code, constructor];
-  })
-]);
+    codes[code] = constructor;
+  }
+  return codes;
+}
 function hideStackFrames(fn) {
   const wrapped = function(...args) {
     try {
-      return Reflect.apply(fn, this, args);
+      return reflectApply(fn, this, args);
     } catch (error) {
-      if (Reflect.get(Error, "stackTraceLimit") && error !== null && typeof error === "object") {
-        const code = classCodes.get(Object.getPrototypeOf(error));
-        if (code !== void 0) headStack(error, `${error.name} [${code}]`, wrapped);
+      if (reflectGet(Error, "stackTraceLimit") && error !== null && typeof error === "object") {
+        const prototype = reflectGetPrototypeOf(error);
+        const code = prototype === null ? void 0 : classCodes.get(prototype);
+        if (code !== void 0) headStack(error, `${reflectGet(error, "name")} [${code}]`, wrapped);
         else captureStack(error, wrapped);
       }
       throw error;
@@ -298,42 +527,37 @@ function hideStackFrames(fn) {
   return wrapped;
 }
 function isErrorStackTraceLimitWritable() {
-  const descriptor = Object.getOwnPropertyDescriptor(Error, "stackTraceLimit");
-  if (descriptor === void 0) return Object.isExtensible(Error);
-  return Object.prototype.hasOwnProperty.call(descriptor, "writable") ? descriptor.writable === true : descriptor.set !== void 0;
+  const descriptor = reflectGetOwnPropertyDescriptor(Error, "stackTraceLimit");
+  if (descriptor === void 0) return objectIsExtensible(Error);
+  return objectHasOwn(descriptor, "writable") ? descriptor.writable === true : descriptor.set !== void 0;
 }
 var SystemErrorClass;
 function nodeSystemError(code, prefix, context) {
   let message = `${prefix}: ${context.syscall} returned ${context.code} (${context.message})`;
-  if (context.path !== void 0) message += ` ${context.path}`;
-  if (context.dest !== void 0) message += ` => ${context.dest}`;
+  const path = ownField(context, "path");
+  const dest = ownField(context, "dest");
+  if (path !== void 0) message += ` ${path}`;
+  if (dest !== void 0) message += ` => ${dest}`;
   SystemErrorClass ??= class SystemError extends Error {
     constructor(errorCode, text, info) {
       super(text);
-      Reflect.deleteProperty(this, "message");
+      reflectDeleteProperty(this, "message");
       this.code = errorCode;
-      const through = (key) => ({
-        get: () => info[key],
-        set: (value) => {
-          info[key] = value;
-        },
-        enumerable: true,
-        configurable: true
-      });
-      Object.defineProperties(this, {
-        name: { value: "SystemError", enumerable: false, writable: true, configurable: true },
-        message: { value: text, enumerable: false, writable: true, configurable: true },
-        info: { value: info, enumerable: true, writable: false, configurable: true },
-        errno: through("errno"),
-        syscall: through("syscall")
-      });
-      if (info.path !== void 0) Object.defineProperty(this, "path", through("path"));
-      if (info.dest !== void 0) Object.defineProperty(this, "dest", through("dest"));
+      const through = (key) => accessorDescriptor(() => info[key], (value) => {
+        info[key] = value;
+      }, true, true);
+      reflectDefineProperty(this, "name", dataDescriptor("SystemError", true, false, true));
+      reflectDefineProperty(this, "message", dataDescriptor(text, true, false, true));
+      reflectDefineProperty(this, "info", dataDescriptor(info, false, true, true));
+      reflectDefineProperty(this, "errno", through("errno"));
+      reflectDefineProperty(this, "syscall", through("syscall"));
+      if (ownField(info, "path") !== void 0) reflectDefineProperty(this, "path", through("path"));
+      if (ownField(info, "dest") !== void 0) reflectDefineProperty(this, "dest", through("dest"));
     }
     toString() {
-      return `${this.name} [${this.code}]: ${this.message}`;
+      return `${reflectGet(this, "name")} [${this.code}]: ${reflectGet(this, "message")}`;
     }
-    [  Symbol.for("nodejs.util.inspect.custom")](_depth, options, inspect) {
+    [symbolFor("nodejs.util.inspect.custom")](_depth, options, inspect) {
       return inspect(this, { ...options, getters: true, customInspect: false });
     }
   };
@@ -342,16 +566,15 @@ function nodeSystemError(code, prefix, context) {
   return error;
 }
 function headStack(error, name, above) {
-  const own = Object.getOwnPropertyDescriptor(error, "name");
+  const own = reflectGetOwnPropertyDescriptor(error, "name");
   captureStack(error, above);
-  Object.defineProperty(error, "name", { value: name, enumerable: false, writable: true, configurable: true });
-  void error.stack;
-  if (own === void 0) Reflect.deleteProperty(error, "name");
-  else Object.defineProperty(error, "name", own);
+  reflectDefineProperty(error, "name", dataDescriptor(name, true, false, true));
+  reflectGet(error, "stack");
+  if (own === void 0) reflectDeleteProperty(error, "name");
+  else reflectDefineProperty(error, "name", own);
 }
 function captureStack(error, above) {
-  const capture = Reflect.get(Error, "captureStackTrace");
-  if (typeof capture === "function") Reflect.apply(capture, Error, [error, above]);
+  if (typeof ErrorCaptureStackTrace === "function") reflectApply(ErrorCaptureStackTrace, Error, [error, above]);
 }
 return { captureStack, determineSpecificType, hideStackFrames, invalidArgType, invalidArgValue, isErrorStackTraceLimitWritable, nodeError, nodeErrorCodes, nodeSystemError, outOfRange, reshapeAsNodeError, useNodeErrorInspect };
 })();
@@ -510,151 +733,6 @@ ${warning.detail}`;
   };
 }
 return { createProcessWarnings };
-})();
-
-// The built-ins the module loading calls, captured now, before any program
-// code (core _shared/primordials.ts), and node:path's posix half on them
-// (core _shared/posix-path.ts, Node's lib/path.js).
-const __nimbusPrimordials = typeof __nimbusLaunchCaptures !== "undefined" ? __nimbusLaunchCaptures : (() => {
-var reflectApply = Reflect.apply;
-var reflectConstruct = Reflect.construct;
-var reflectGet = Reflect.get;
-var reflectSet = Reflect.set;
-var reflectHas = Reflect.has;
-var reflectOwnKeys = Reflect.ownKeys;
-var reflectDefineProperty = Reflect.defineProperty;
-var reflectDeleteProperty = Reflect.deleteProperty;
-var reflectGetOwnPropertyDescriptor = Reflect.getOwnPropertyDescriptor;
-var reflectGetPrototypeOf = Reflect.getPrototypeOf;
-var reflectSetPrototypeOf = Reflect.setPrototypeOf;
-var objectCreate = Object.create;
-var objectKeys = Object.keys;
-var objectFreeze = Object.freeze;
-var objectAssign = Object.assign;
-var objectHasOwn = Object.hasOwn;
-var objectGetOwnPropertyNames = Object.getOwnPropertyNames;
-var arrayIsArray = Array.isArray;
-var symbolFor = Symbol.for;
-var symbolIterator = Symbol.iterator;
-var symbolAsyncIterator = Symbol.asyncIterator;
-var symbolUnscopables = Symbol.unscopables;
-var stringOf = String;
-var ObjectOf = Object;
-var PromiseConstructor = Promise;
-var PromiseResolve = Promise.resolve;
-var PromiseReject = Promise.reject;
-var PromisePrototypeThen = Promise.prototype.then;
-var ObjectPrototypePropertyIsEnumerable = Object.prototype.propertyIsEnumerable;
-var ArrayConstructor = Array;
-var ArrayFrom = Array.from;
-var ArrayValues = Array.prototype[Symbol.iterator];
-var ArrayIteratorPrototype = Reflect.getPrototypeOf([][Symbol.iterator]()) ?? {};
-var ArrayIteratorNext = Reflect.get(ArrayIteratorPrototype, "next");
-var ArrayPrototypeWith = Reflect.get(Array.prototype, "with");
-var ArrayPrototypeToSpliced = Reflect.get(Array.prototype, "toSpliced");
-var StringPrototypeSlice = String.prototype.slice;
-var StringPrototypeLastIndexOf = String.prototype.lastIndexOf;
-var StringPrototypeCharCodeAt = String.prototype.charCodeAt;
-var SymbolPrototypeToString = Symbol.prototype.toString;
-var StringPrototypeCharAt = String.prototype.charAt;
-var StringPrototypeIndexOf = String.prototype.indexOf;
-var StringPrototypeSubstr = String.prototype.substr;
-var StringFromCharCode = String.fromCharCode;
-var ArrayPrototypePop = Array.prototype.pop;
-var ArrayPrototypeIndexOf = Array.prototype.indexOf;
-var ArrayPrototypeLastIndexOf = Array.prototype.lastIndexOf;
-var RegExpPrototypeExec = RegExp.prototype.exec;
-var RegExpPrototypeAccessors = (() => {
-  const accessors = objectCreate(null);
-  const names = Object.getOwnPropertyNames(RegExp.prototype);
-  for (let i = 0; i < names.length; i++) {
-    const getter = Reflect.getOwnPropertyDescriptor(RegExp.prototype, names[i])?.get;
-    if (getter !== void 0) accessors[names[i]] = getter;
-  }
-  return accessors;
-})();
-var NumberPrototypeToString = Number.prototype.toString;
-var BigIntPrototypeToString = BigInt.prototype.toString;
-var ObjectPrototype = Object.prototype;
-var ObjectPrototypeHasOwnProperty = Object.prototype.hasOwnProperty;
-var ObjectPrototypeToString = Object.prototype.toString;
-var objectDefineProperties = Object.defineProperties;
-var parseIntOf = parseInt;
-var parseFloatOf = parseFloat;
-var SymbolConstructor = Symbol;
-var SymbolPrototypeDescription = Reflect.getOwnPropertyDescriptor(Symbol.prototype, "description")?.get;
-var globalObject = globalThis;
-var BigIntOf = BigInt;
-var ErrorConstructor = Error;
-var RangeErrorConstructor = RangeError;
-var ReferenceErrorConstructor = ReferenceError;
-var RegExpConstructor = RegExp;
-var SyntaxErrorConstructor = SyntaxError;
-var TypeErrorConstructor = TypeError;
-function dataDescriptor(value, writable, enumerable, configurable) {
-  const descriptor = objectCreate(null);
-  descriptor.value = value;
-  descriptor.writable = writable;
-  descriptor.enumerable = enumerable;
-  descriptor.configurable = configurable;
-  return descriptor;
-}
-function copyMethods(to, from, methods) {
-  for (let i = 0; i < methods.length; i++) {
-    const descriptor = reflectGetOwnPropertyDescriptor(from, methods[i]);
-    if (descriptor) reflectDefineProperty(to, methods[i], descriptor);
-  }
-}
-var SafeMap = class extends Map {
-};
-copyMethods(SafeMap.prototype, Map.prototype, ["get", "set", "has", "delete", "clear", "forEach", "size"]);
-var SafeSet = class extends Set {
-};
-copyMethods(SafeSet.prototype, Set.prototype, ["add", "has", "delete", "clear", "forEach", "size"]);
-var SafeWeakMap = class extends WeakMap {
-};
-copyMethods(SafeWeakMap.prototype, WeakMap.prototype, ["get", "set", "has", "delete"]);
-var SafeWeakSet = class extends WeakSet {
-};
-copyMethods(SafeWeakSet.prototype, WeakSet.prototype, ["add", "has", "delete"]);
-var SafeList = class extends Array {
-};
-reflectSetPrototypeOf(SafeList.prototype, null);
-var SafeGeneratorPrototype = objectCreate(null);
-var SafeAsyncGeneratorPrototype = objectCreate(null);
-{
-  const generatorPrototype = reflectGetPrototypeOf(function* () {
-  }.prototype) ?? {};
-  const asyncGeneratorPrototype = reflectGetPrototypeOf(async function* () {
-  }.prototype) ?? {};
-  copyMethods(SafeGeneratorPrototype, generatorPrototype, ["next", "return", "throw"]);
-  copyMethods(SafeGeneratorPrototype, reflectGetPrototypeOf(generatorPrototype) ?? {}, [Symbol.iterator]);
-  copyMethods(SafeAsyncGeneratorPrototype, asyncGeneratorPrototype, ["next", "return", "throw"]);
-  copyMethods(SafeAsyncGeneratorPrototype, reflectGetPrototypeOf(asyncGeneratorPrototype) ?? {}, [Symbol.asyncIterator]);
-}
-var SafeRegExpPrototype = objectCreate(null);
-{
-  const keys = Reflect.ownKeys(RegExp.prototype);
-  const members = [];
-  for (let i = 0; i < keys.length; i++) {
-    const key = keys[i];
-    if (key !== "constructor" && key !== Symbol.split && key !== Symbol.matchAll) members[members.length] = key;
-  }
-  copyMethods(SafeRegExpPrototype, RegExp.prototype, members);
-}
-var GeneratorPrototypeNext = reflectGet(SafeGeneratorPrototype, "next");
-var GeneratorPrototypeReturn = reflectGet(SafeGeneratorPrototype, "return");
-var GeneratorPrototypeThrow = reflectGet(SafeGeneratorPrototype, "throw");
-var FunctionPrototypeCall = Function.prototype.call;
-var FunctionPrototypeBind = Function.prototype.bind;
-function uncurryThis(fn) {
-  return reflectApply(FunctionPrototypeBind, FunctionPrototypeCall, [fn]);
-}
-var stringCharCodeAt = uncurryThis(String.prototype.charCodeAt);
-var stringSlice = uncurryThis(String.prototype.slice);
-var stringLastIndexOf = uncurryThis(String.prototype.lastIndexOf);
-var arrayJoin = uncurryThis(Array.prototype.join);
-return { ArrayConstructor, ArrayFrom, ArrayIteratorNext, ArrayIteratorPrototype, ArrayPrototypeIndexOf, ArrayPrototypeLastIndexOf, ArrayPrototypePop, ArrayPrototypeToSpliced, ArrayPrototypeWith, ArrayValues, BigInt: BigIntOf, BigIntPrototypeToString, Error: ErrorConstructor, FunctionPrototypeBind, GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, NumberPrototypeToString, ObjectOf, ObjectPrototype, ObjectPrototypeHasOwnProperty, ObjectPrototypePropertyIsEnumerable, ObjectPrototypeToString, PromiseConstructor, PromisePrototypeThen, PromiseReject, PromiseResolve, RangeError: RangeErrorConstructor, ReferenceError: ReferenceErrorConstructor, RegExp: RegExpConstructor, RegExpPrototypeAccessors, RegExpPrototypeExec, SafeAsyncGeneratorPrototype, SafeGeneratorPrototype, SafeList, SafeMap, SafeRegExpPrototype, SafeSet, SafeWeakMap, SafeWeakSet, StringFromCharCode, StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeIndexOf, StringPrototypeLastIndexOf, StringPrototypeSlice, StringPrototypeSubstr, SymbolConstructor, SymbolPrototypeDescription, SymbolPrototypeToString, SyntaxError: SyntaxErrorConstructor, TypeError: TypeErrorConstructor, arrayIsArray, arrayJoin, dataDescriptor, globalObject, objectAssign, objectCreate, objectDefineProperties, objectFreeze, objectGetOwnPropertyNames, objectHasOwn, objectKeys, parseFloatOf, parseIntOf, reflectApply, reflectConstruct, reflectDefineProperty, reflectDeleteProperty, reflectGet, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectHas, reflectOwnKeys, reflectSet, reflectSetPrototypeOf, stringCharCodeAt, stringLastIndexOf, stringOf, stringSlice, symbolAsyncIterator, symbolFor, symbolIterator, symbolUnscopables };
 })();
 
 var { createPosixPath } = (() => {
@@ -18566,17 +18644,35 @@ function __fileExists(path) {
 }
 // Resolution is the compiled core generator, over the guest's resident fs.
 // Metadata/refusal handling stays here; selection and probing never do.
-var { DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, NIMBUS_TYPESCRIPT_REQUIRE_POLICY, TYPESCRIPT_INDEX_CANDIDATES, createNodePackageMapPolicy, createRequireResolver, isWebSocketUpgradeRequest, nativeResolutionError, packageJsonText, packageSelfReferenceSubpath, presentedCredential, requireNodeModulePaths, resolveExports, resolvePackageEntry, selectPackageMap, stripsTypeScript, typescriptFallbackCandidates } = (() => {
+var { DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, NIMBUS_TYPESCRIPT_REQUIRE_POLICY, TYPESCRIPT_INDEX_CANDIDATES, codeOf, createNodePackageMapPolicy, createRequireResolver, isWebSocketUpgradeRequest, nativeResolutionError, packageJsonText, packageSelfReferenceSubpath, presentedCredential, requireNodeModulePaths, resolveExports, resolvePackageEntry, selectPackageMap, stripsTypeScript, typescriptFallbackCandidates, urlHash, urlHref, urlPathname, urlProtocol, urlSearch, urlSetHash, urlSetPathname, urlSetSearch } = (() => {
+const { arrayIsArray, arraySort, dataDescriptor, decodeURIComponentOf, Error: Error2, JSONStringify, newURL, NumberOf, objectGetOwnPropertyNames, objectHasOwn, ownField, reflectDefineProperty, reflectGet, SafeList, SafeSet, safeGenerator, setForEach, stringCharCodeAt, stringEndsWith, stringIncludes, stringIndexOf, stringLastIndexOf, stringOf, stringSlice, stringStartsWith, stringToLowerCase, TypeError } = __nimbusPrimordials;
+const { arrayIsArray: arrayIsArray2, dataDescriptor: dataDescriptor2, decodeURIComponentOf: decodeURIComponentOf2, Error: Error3, generatorNext, generatorThrow, JSONParse, newURL: newURL2, objectHasOwn: objectHasOwn2, ownField: ownField2, PromiseConstructor, reflectApply, reflectDefineProperty: reflectDefineProperty2, regExpExec: regExpExec2, SafeList: SafeList2, SafeMap, SafeSet: SafeSet2, safeGenerator: safeGenerator2, stringEndsWith: stringEndsWith3, stringIncludes: stringIncludes2, stringIndexOf: stringIndexOf2, stringLastIndexOf: stringLastIndexOf3, stringSlice: stringSlice3, stringStartsWith: stringStartsWith2, TypeError: TypeError2 } = __nimbusPrimordials;
+const { regExpExec, stringEndsWith: stringEndsWith2, stringLastIndexOf: stringLastIndexOf2, stringSlice: stringSlice2 } = __nimbusPrimordials;
 var DEFAULT_ESM_CONDITIONS = ["import", "node", "node-addons", "module-sync"];
 var DEFAULT_CJS_CONDITIONS = ["require", "node", "node-addons", "module-sync"];
-var DEFAULT_BUILD_CONDITIONS = ["import", "module", "browser", "default"];
-function packageJsonText(text) {
-  return text.charCodeAt(0) === 65279 ? text.slice(1) : text;
+var urlHref = (url) => url.href;
+var urlProtocol = (url) => url.protocol;
+var urlPathname = (url) => url.pathname;
+var urlSearch = (url) => url.search;
+var urlHash = (url) => url.hash;
+var urlSetPathname = (url, pathname) => {
+  url.pathname = pathname;
+};
+var urlSetSearch = (url, search) => {
+  url.search = search;
+};
+var urlSetHash = (url, hash) => {
+  url.hash = hash;
+};
+function codeOf(error2) {
+  return error2 !== null && typeof error2 === "object" ? reflectGet(error2, "code") : void 0;
 }
-var codeOf = (error2) => error2 !== null && typeof error2 === "object" && "code" in error2 ? error2.code : void 0;
+function packageJsonText(text) {
+  return stringCharCodeAt(text, 0) === 65279 ? stringSlice(text, 1) : text;
+}
 function patternKeyCompare(a, b) {
-  const aStar = a.indexOf("*");
-  const bStar = b.indexOf("*");
+  const aStar = stringIndexOf(a, "*");
+  const bStar = stringIndexOf(b, "*");
   const baseA = aStar === -1 ? a.length : aStar + 1;
   const baseB = bStar === -1 ? b.length : bStar + 1;
   if (baseA > baseB) return -1;
@@ -18585,82 +18681,217 @@ function patternKeyCompare(a, b) {
   if (bStar === -1) return -1;
   return b.length - a.length;
 }
-function* selectPackageMap(field, name, conditions, policy) {
-  const active = conditions instanceof Set ? conditions : new Set(conditions);
-  function* target(value, match2) {
-    if (typeof value === "string") return yield* policy.target(value, match2);
-    if (Array.isArray(value)) {
-      if (value.length === 0) return null;
-      let last;
-      for (const item of value) {
-        let result;
-        try {
-          result = yield* target(item, match2);
-        } catch (error2) {
-          if (codeOf(error2) !== "ERR_INVALID_PACKAGE_TARGET") throw error2;
-          last = error2;
-          continue;
-        }
-        if (result === void 0 || policy.permissive && result === "") continue;
-        if (result === null) {
-          last = null;
-          continue;
-        }
-        return result;
-      }
-      if (last === void 0 || last === null) return last;
-      throw last;
-    }
-    if (value === null) return null;
-    if (typeof value === "object" && value !== null) {
-      const keys = Object.getOwnPropertyNames(value);
-      if (!policy.permissive && keys.some((key) => /^\d+$/.test(key) && String(Number(key)) === key && Number(key) < 4294967295)) {
-        throw policy.invalidConfig("numeric");
-      }
-      for (const key of keys) {
-        if (key !== "default" && !active.has(key)) continue;
-        const result = yield* target(Reflect.get(value, key), match2);
-        if (result === void 0 || policy.permissive && (result === null || result === "")) continue;
-        return result;
-      }
-      return void 0;
-    }
-    if (policy.permissive) return void 0;
-    throw policy.invalidTarget(value, match2);
+function isArrayIndexKey(key) {
+  if (key.length === 0) return false;
+  for (let i = 0; i < key.length; i++) {
+    const code = stringCharCodeAt(key, i);
+    if (code < 48 || code > 57) return false;
   }
+  return stringOf(NumberOf(key)) === key && NumberOf(key) < 4294967295;
+}
+function replaceStars(text, subpath) {
+  let out = "";
+  let from = 0;
+  for (let star = stringIndexOf(text, "*"); star !== -1; star = stringIndexOf(text, "*", from)) {
+    out += stringSlice(text, from, star) + subpath;
+    from = star + 1;
+  }
+  return out + stringSlice(text, from);
+}
+function isConditionList(conditions) {
+  return arrayIsArray(conditions);
+}
+function activeConditions(conditions) {
+  if (conditions instanceof SafeSet) return conditions;
+  const active = new SafeSet();
+  if (isConditionList(conditions)) {
+    for (let i = 0; i < conditions.length; i++) active.add(conditions[i]);
+  } else {
+    setForEach(conditions, (condition) => {
+      active.add(condition);
+    });
+  }
+  return active;
+}
+function selectPackageMap(field, name, conditions, policy) {
+  return selectSteps(field, name, activeConditions(conditions), policy);
+}
+var selectTarget = safeGenerator(function* (value, match, active, policy) {
+  if (typeof value === "string") return yield* policy.target(value, match);
+  if (arrayIsArray(value)) {
+    const items = value;
+    if (items.length === 0) return null;
+    let last;
+    for (let i = 0; i < items.length; i++) {
+      let result;
+      try {
+        result = yield* selectTarget(items[i], match, active, policy);
+      } catch (error2) {
+        if (codeOf(error2) !== "ERR_INVALID_PACKAGE_TARGET") throw error2;
+        last = error2;
+        continue;
+      }
+      if (result === void 0 || policy.permissive && result === "") continue;
+      if (result === null) {
+        last = null;
+        continue;
+      }
+      return result;
+    }
+    if (last === void 0 || last === null) return last;
+    throw last;
+  }
+  if (value === null) return null;
+  if (typeof value === "object") {
+    const keys = objectGetOwnPropertyNames(value);
+    if (!policy.permissive) {
+      for (let i = 0; i < keys.length; i++) if (isArrayIndexKey(keys[i])) throw policy.invalidConfig("numeric");
+    }
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i];
+      if (key !== "default" && !active.has(key)) continue;
+      const result = yield* selectTarget(reflectGet(value, key), match, active, policy);
+      if (result === void 0 || policy.permissive && (result === null || result === "")) continue;
+      return result;
+    }
+    return void 0;
+  }
+  if (policy.permissive) return void 0;
+  throw policy.invalidTarget(value, match);
+});
+var selectSteps = safeGenerator(function* (field, name, active, policy) {
+  const target = (value, match2) => selectTarget(value, match2, active, policy);
   if (field === void 0) return void 0;
   if (field === null) return null;
   let map;
   if (!policy.internal) {
-    let sugar = typeof field !== "object" || Array.isArray(field);
-    if (typeof field === "object" && !Array.isArray(field)) {
-      const keys = Object.getOwnPropertyNames(field);
-      sugar = keys.length > 0 && !keys[0].startsWith(".");
-      if (!policy.permissive && keys.some((key) => !key.startsWith(".") !== sugar)) throw policy.invalidConfig("mixed");
+    if (typeof field === "object" && !arrayIsArray(field)) {
+      const keys2 = objectGetOwnPropertyNames(field);
+      const sugar = keys2.length > 0 && !stringStartsWith(keys2[0], ".");
+      if (!policy.permissive) {
+        for (let i = 0; i < keys2.length; i++) if (!stringStartsWith(keys2[i], ".") !== sugar) throw policy.invalidConfig("mixed");
+      }
+      map = sugar ? { ".": field } : field;
+    } else {
+      map = { ".": field };
     }
-    map = sugar ? { ".": field } : field;
   } else {
-    if (typeof field !== "object" || Array.isArray(field)) return void 0;
+    if (typeof field !== "object" || arrayIsArray(field)) return void 0;
     map = field;
   }
-  const match = (key, subpath, pattern) => ({ key, subpath, pattern, internal: policy.internal, isPathMap: !policy.internal && name.endsWith("/") });
-  if (Object.prototype.hasOwnProperty.call(map, name) && (policy.permissive || !name.includes("*") && !name.endsWith("/"))) {
-    return yield* target(map[name], match(name, "", false));
+  const match = (key, subpath, pattern) => ({ key, subpath, pattern, internal: policy.internal, isPathMap: !policy.internal && stringEndsWith(name, "/") });
+  if (objectHasOwn(map, name) && (policy.permissive || !stringIncludes(name, "*") && !stringEndsWith(name, "/"))) {
+    return yield* target(reflectGet(map, name), match(name, "", false));
   }
-  const candidates = Object.getOwnPropertyNames(map).filter((key) => {
-    const star = key.indexOf("*");
-    if (star === -1 || !policy.permissive && key.lastIndexOf("*") !== star) return false;
-    const trailer = key.slice(star + 1);
-    return name.startsWith(key.slice(0, star)) && name.endsWith(trailer) && name.length >= (policy.permissive ? key.length - 1 : key.length);
-  }).sort(policy.permissive ? (a, b) => b.length - a.length : patternKeyCompare);
-  for (const key of candidates) {
-    const star = key.indexOf("*");
-    const subpath = name.slice(star, name.length - (key.length - star - 1));
-    const result = yield* target(map[key], match(key, subpath, true));
-    if (!policy.permissive || result != null && result !== "" || map[key] === null) return result;
+  const keys = objectGetOwnPropertyNames(map);
+  const candidates = new SafeList();
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    const star = stringIndexOf(key, "*");
+    if (star === -1 || !policy.permissive && stringLastIndexOf(key, "*") !== star) continue;
+    const trailer = stringSlice(key, star + 1);
+    if (stringStartsWith(name, stringSlice(key, 0, star)) && stringEndsWith(name, trailer) && name.length >= (policy.permissive ? key.length - 1 : key.length)) candidates[candidates.length] = key;
+  }
+  arraySort(candidates, policy.permissive ? (a, b) => b.length - a.length : patternKeyCompare);
+  for (let i = 0; i < candidates.length; i++) {
+    const key = candidates[i];
+    const star = stringIndexOf(key, "*");
+    const subpath = stringSlice(name, star, name.length - (key.length - star - 1));
+    const value = reflectGet(map, key);
+    const result = yield* target(value, match(key, subpath, true));
+    if (!policy.permissive || result != null && result !== "" || value === null) return result;
   }
   return void 0;
+});
+function packageSelfReferenceSubpath(pkg, specifier) {
+  if (!pkg) return null;
+  const name = ownField(pkg, "name");
+  const exportsField = ownField(pkg, "exports");
+  if (typeof name !== "string" || name.length === 0) return null;
+  if (exportsField === void 0 || exportsField === null) return null;
+  if (specifier === name) return ".";
+  if (!stringStartsWith(specifier, `${name}/`)) return null;
+  return `.${stringSlice(specifier, name.length)}`;
 }
+function resolutionError(code, message, Type = Error2) {
+  return nodeError(Type, code, message, void 0, resolutionError);
+}
+function nativeResolutionError(code, message) {
+  const error2 = new Error2(message);
+  reflectDefineProperty(error2, "code", dataDescriptor(code, true, true, true));
+  return error2;
+}
+function urlFilePath(url) {
+  return decodeURIComponentOf(urlPathname(url));
+}
+function invalidNodeTarget(state, value, match) {
+  const text = typeof value === "object" && value !== null ? JSONStringify(value) : stringOf(value);
+  const related = !state.internal && text.length > 0 && !stringStartsWith(text, "./");
+  const tail = `in the package config ${urlFilePath(state.root)}package.json imported from ${state.base}${related ? '; targets must start with "./"' : ""}`;
+  return resolutionError("ERR_INVALID_PACKAGE_TARGET", match.key === "." ? `Invalid "exports" main target ${JSONStringify(text)} defined ${tail}` : `Invalid "${state.internal ? "imports" : "exports"}" target ${JSONStringify(text)} defined for '${match.key}' ${tail}`);
+}
+function invalidSegments(text) {
+  let start = 0;
+  for (let i = 0; i <= text.length; i++) {
+    if (i < text.length && text[i] !== "/" && text[i] !== "\\") continue;
+    const segment = stringSlice(text, start, i);
+    start = i + 1;
+    let decoded;
+    try {
+      decoded = decodeURIComponentOf(segment);
+    } catch {
+      decoded = segment;
+    }
+    if (decoded === "." || decoded === ".." || stringToLowerCase(decoded) === "node_modules") return true;
+  }
+  return false;
+}
+var nodeMapTarget = safeGenerator(function* (state, value, match) {
+  if (!stringStartsWith(value, "./")) {
+    if (state.internal && !stringStartsWith(value, "../") && !stringStartsWith(value, "/")) {
+      let isUrl = false;
+      try {
+        newURL(value);
+        isUrl = true;
+      } catch {
+      }
+      if (!isUrl) return yield* state.resolveBare(match.pattern ? replaceStars(value, match.subpath) : value);
+    }
+    throw invalidNodeTarget(state, value, match);
+  }
+  if (invalidSegments(stringSlice(value, 2))) throw invalidNodeTarget(state, value, match);
+  const resolved = newURL(value, state.packageJsonUrl);
+  if (!stringStartsWith(urlPathname(resolved), urlPathname(state.root))) throw invalidNodeTarget(state, value, match);
+  if (!match.subpath) return resolved;
+  if (invalidSegments(match.subpath) && !match.isPathMap) {
+    const star = stringIndexOf(match.key, "*");
+    const request = !match.pattern ? match.key + match.subpath : star === -1 ? match.key : stringSlice(match.key, 0, star) + match.subpath + stringSlice(match.key, star + 1);
+    throw resolutionError(
+      "ERR_INVALID_MODULE_SPECIFIER",
+      `Invalid module "${request}" request is not a valid match in pattern "${match.key}" for the "${state.internal ? "imports" : "exports"}" resolution of ${state.pjsonPath} imported from ${state.base}`,
+      TypeError
+    );
+  }
+  return newURL(replaceStars(urlHref(resolved), match.subpath));
+});
+function createNodePackageMapPolicy(packageJsonUrl, base, internal, resolveBare) {
+  const state = { packageJsonUrl, pjsonPath: urlFilePath(packageJsonUrl), root: newURL(".", packageJsonUrl), base, internal, resolveBare };
+  return {
+    name: "node-package-map",
+    internal,
+    permissive: false,
+    invalidTarget: (value, match) => invalidNodeTarget(state, value, match),
+    invalidConfig(reason) {
+      const baseUrl = newURL("file://");
+      urlSetPathname(baseUrl, base);
+      const detail = reason === "numeric" ? '"exports" cannot contain numeric property keys.' : `"exports" cannot contain some keys starting with '.' and some not. The exports object must either be an object of package subpath keys or an object of main entry condition name keys only.`;
+      return resolutionError("ERR_INVALID_PACKAGE_CONFIG", `Invalid package config ${state.pjsonPath} while importing ${urlHref(baseUrl)}. ${detail}`);
+    },
+    target: (value, match) => nodeMapTarget(state, value, match)
+  };
+}
+
+var DEFAULT_BUILD_CONDITIONS = ["import", "module", "browser", "default"];
 var BUILD_BROWSER_PACKAGE_MAP_POLICY = {
   name: "build-browser-permissive",
   internal: false,
@@ -18680,71 +18911,6 @@ function resolveExports(exportsField, subpath = ".", conditions = DEFAULT_BUILD_
   if (!next.done) throw new Error("The build/browser package-map policy must be synchronous");
   return next.value ?? null;
 }
-function resolutionError(code, message, Type = Error) {
-  return nodeError(Type, code, message, void 0, resolutionError);
-}
-function nativeResolutionError(code, message) {
-  return Object.assign(new Error(message), { code });
-}
-function createNodePackageMapPolicy(packageJsonUrl, base, internal, resolveBare) {
-  const path = (url) => decodeURIComponent(url.pathname);
-  const pjsonPath = path(packageJsonUrl);
-  const root = new URL(".", packageJsonUrl);
-  const error2 = resolutionError;
-  function invalidTarget(value, match) {
-    const text = typeof value === "object" && value !== null ? JSON.stringify(value) : String(value);
-    const related = !internal && text.length > 0 && !text.startsWith("./");
-    const tail = `in the package config ${path(root)}package.json imported from ${base}${related ? '; targets must start with "./"' : ""}`;
-    return error2("ERR_INVALID_PACKAGE_TARGET", match.key === "." ? `Invalid "exports" main target ${JSON.stringify(text)} defined ${tail}` : `Invalid "${internal ? "imports" : "exports"}" target ${JSON.stringify(text)} defined for '${match.key}' ${tail}`);
-  }
-  const invalidSegments = (text) => text.split(/[\\/]/).some((segment) => {
-    let decoded;
-    try {
-      decoded = decodeURIComponent(segment);
-    } catch {
-      decoded = segment;
-    }
-    return decoded === "." || decoded === ".." || decoded.toLowerCase() === "node_modules";
-  });
-  return {
-    name: "node-package-map",
-    internal,
-    invalidTarget,
-    invalidConfig(reason) {
-      const baseUrl = new URL("file://");
-      baseUrl.pathname = base;
-      const detail = reason === "numeric" ? '"exports" cannot contain numeric property keys.' : `"exports" cannot contain some keys starting with '.' and some not. The exports object must either be an object of package subpath keys or an object of main entry condition name keys only.`;
-      return error2("ERR_INVALID_PACKAGE_CONFIG", `Invalid package config ${pjsonPath} while importing ${baseUrl.href}. ${detail}`);
-    },
-    *target(value, match) {
-      if (!value.startsWith("./")) {
-        if (internal && !value.startsWith("../") && !value.startsWith("/")) {
-          let isUrl = false;
-          try {
-            new URL(value);
-            isUrl = true;
-          } catch {
-          }
-          if (!isUrl) return yield* resolveBare(match.pattern ? value.replace(/\*/g, () => match.subpath) : value);
-        }
-        throw invalidTarget(value, match);
-      }
-      if (invalidSegments(value.slice(2))) throw invalidTarget(value, match);
-      const resolved = new URL(value, packageJsonUrl);
-      if (!resolved.pathname.startsWith(root.pathname)) throw invalidTarget(value, match);
-      if (!match.subpath) return resolved;
-      if (invalidSegments(match.subpath) && !match.isPathMap) {
-        const request = match.pattern ? match.key.replace("*", () => match.subpath) : match.key + match.subpath;
-        throw error2(
-          "ERR_INVALID_MODULE_SPECIFIER",
-          `Invalid module "${request}" request is not a valid match in pattern "${match.key}" for the "${internal ? "imports" : "exports"}" resolution of ${pjsonPath} imported from ${base}`,
-          TypeError
-        );
-      }
-      return new URL(resolved.href.replace(/\*/g, () => match.subpath));
-    }
-  };
-}
 function resolvePackageEntry(pkg, subpath = ".", conditions = DEFAULT_BUILD_CONDITIONS, policy = BUILD_BROWSER_PACKAGE_MAP_POLICY) {
   if (pkg.exports !== void 0 && pkg.exports !== null) {
     const entry = resolveExports(pkg.exports, subpath, conditions, policy);
@@ -18758,63 +18924,33 @@ function resolvePackageEntry(pkg, subpath = ".", conditions = DEFAULT_BUILD_COND
   }
   return subpath;
 }
-function packageSelfReferenceSubpath(pkg, specifier) {
-  if (!pkg || typeof pkg.name !== "string" || pkg.name.length === 0) return null;
-  if (pkg.exports === void 0 || pkg.exports === null) return null;
-  if (specifier === pkg.name) return ".";
-  if (!specifier.startsWith(`${pkg.name}/`)) return null;
-  return `.${specifier.slice(pkg.name.length)}`;
-}
 
-var NOT_NORMAL = /\/$|\/\/|(?:^|\/)\.\.?(?:\/|$)/;
-function plainVfsPath(path) {
-  return NOT_NORMAL.test(path) ? null : path.charCodeAt(0) === 47 ? path.slice(1) : path;
-}
-function normalizeVfsPath(p) {
-  const text = String(p ?? "");
-  const plain = plainVfsPath(text);
-  if (plain !== null) return plain;
-  return normalizedSegments(text, false);
-}
-function normalizedSegments(path, lookup) {
-  const segments = path.split("/");
-  const leaf = segments[segments.length - 1];
-  if (lookup && (leaf === "" || leaf === ".")) return null;
-  const out = [];
-  for (const seg of segments) {
-    if (seg === "..") {
-      if (lookup) return null;
-      out.pop();
-    } else if (seg !== "." && seg !== "") out.push(seg);
-  }
-  return out.join("/");
-}
-function stripLeadingSlashes(p) {
-  return p.replace(/^\/+/, "");
-}
-function vfsPathExtension(path) {
-  const base = path.slice(path.lastIndexOf("/") + 1);
-  const dot = base.lastIndexOf(".");
-  return dot > 0 ? base.slice(dot) : "";
-}
 
+
+
+function extensionOf(path) {
+  const base = stringSlice2(path, stringLastIndexOf2(path, "/") + 1);
+  const dot = stringLastIndexOf2(base, ".");
+  return dot > 0 ? stringSlice2(base, dot) : "";
+}
 function typescriptLoader(path) {
-  const ext = vfsPathExtension(path);
+  const ext = extensionOf(path);
   if (ext === ".tsx") return "tsx";
   return ext === ".ts" || ext === ".mts" || ext === ".cts" ? "ts" : null;
 }
+var DECLARATION_FILE = /\.d\.[mc]?ts$/;
 function isTypescriptDeclarationFile(path) {
-  return /\.d\.[mc]?ts$/.test(path.slice(path.lastIndexOf("/") + 1));
+  return regExpExec(DECLARATION_FILE, stringSlice2(path, stringLastIndexOf2(path, "/") + 1)) !== null;
 }
 function stripsTypeScript(path) {
   return typescriptLoader(path) === "ts" && !isTypescriptDeclarationFile(path);
 }
 var NON_MAPPING_EXTENSION = /\.(ts|tsx|mts|cts|json|node|cjs)$/;
 function typescriptFallbackCandidates(base) {
-  if (NON_MAPPING_EXTENSION.test(base)) return [];
-  if (base.endsWith(".mjs")) return [base.slice(0, -4) + ".mts"];
-  if (base.endsWith(".js")) {
-    const stem = base.slice(0, -3);
+  if (regExpExec(NON_MAPPING_EXTENSION, base) !== null) return [];
+  if (stringEndsWith2(base, ".mjs")) return [stringSlice2(base, 0, -4) + ".mts"];
+  if (stringEndsWith2(base, ".js")) {
+    const stem = stringSlice2(base, 0, -3);
     return [stem + ".ts", stem + ".tsx"];
   }
   return [base + ".ts", base + ".tsx"];
@@ -18827,57 +18963,103 @@ var NIMBUS_TYPESCRIPT_REQUIRE_POLICY = {
   name: "nimbus-typescript-source-fallback",
   typescriptFallback: true
 };
-var codeOf2 = (error2) => error2 !== null && typeof error2 === "object" && "code" in error2 ? error2.code : void 0;
-var absolute = (path) => "/" + stripLeadingSlashes(normalizeVfsPath(path));
-var parentDir = (path) => path.slice(0, path.lastIndexOf("/")) || "/";
-var relativeRequest = (id) => id === "." || id === ".." || id.startsWith("./") || id.startsWith("../");
+var NOT_NORMAL = /\/$|\/\/|(?:^|\/)\.\.?(?:\/|$)/;
+function absolute(path) {
+  if (regExpExec2(NOT_NORMAL, path) === null) return path[0] === "/" ? path : `/${path}`;
+  const out = new SafeList2();
+  let start = 0;
+  for (let i = 0; i <= path.length; i++) {
+    if (i < path.length && path[i] !== "/") continue;
+    const segment = stringSlice3(path, start, i);
+    start = i + 1;
+    if (segment === "..") {
+      if (out.length > 0) out.length = out.length - 1;
+    } else if (segment !== "." && segment !== "") out[out.length] = segment;
+  }
+  let joined = "";
+  for (let i = 0; i < out.length; i++) joined += `/${out[i]}`;
+  return joined === "" ? "/" : joined;
+}
+var parentDir = (path) => stringSlice3(path, 0, stringLastIndexOf3(path, "/")) || "/";
+var relativeRequest = (id) => id === "." || id === ".." || stringStartsWith2(id, "./") || stringStartsWith2(id, "../");
 var fileUrl = (path) => {
-  const url = new URL("file://");
-  url.pathname = path;
+  const url = newURL2("file://");
+  urlSetPathname(url, path);
   return url;
 };
 var error = resolutionError;
-var moduleNotFound = (message, props) => Object.assign(new Error(message), { code: "MODULE_NOT_FOUND" }, props);
+function moduleNotFound(message, path, requestPath) {
+  const made = new Error3(message);
+  reflectDefineProperty2(made, "code", dataDescriptor2("MODULE_NOT_FOUND", true, true, true));
+  reflectDefineProperty2(made, "path", dataDescriptor2(path, true, true, true));
+  if (requestPath !== void 0) reflectDefineProperty2(made, "requestPath", dataDescriptor2(requestPath, true, true, true));
+  return made;
+}
+var ENCODED_SEPARATOR = /%2f|%5c/i;
+var FILE_SUFFIXES = ["", ".js", ".json", ".node"];
+var INDEX_SUFFIXES = ["/index.js", "/index.json", "/index.node"];
+function invalidPackageName(name) {
+  if (name[0] === ".") return true;
+  for (let i = 0; i < name.length; i++) if (name[i] === "%" || name[i] === "\\") return true;
+  return false;
+}
 function requireNodeModulePaths(fromDir) {
   const paths = [];
   for (let dir = absolute(fromDir); ; dir = parentDir(dir)) {
-    if (dir.slice(dir.lastIndexOf("/") + 1) !== "node_modules") paths.push((dir === "/" ? "" : dir) + "/node_modules");
+    if (stringSlice3(dir, stringLastIndexOf3(dir, "/") + 1) !== "node_modules") paths[paths.length] = (dir === "/" ? "" : dir) + "/node_modules";
     if (dir === "/") return paths;
   }
 }
 function createRequireResolver(host, options = {}) {
-  const conditions =   new Set([...DEFAULT_CJS_CONDITIONS, ...options.conditions ?? []]);
-  const policy = options.policy ?? NODE_REQUIRE_POLICY;
+  const conditions = new SafeSet2();
+  for (let i = 0; i < DEFAULT_CJS_CONDITIONS.length; i++) conditions.add(DEFAULT_CJS_CONDITIONS[i]);
+  const given = ownField2(options, "conditions");
+  if (arrayIsArray2(given)) {
+    const extra = given;
+    for (let i = 0; i < extra.length; i++) {
+      const condition = extra[i];
+      if (typeof condition === "string") conditions.add(condition);
+    }
+  }
+  const policy = ownField2(options, "policy");
+  const policyObject = policy !== null && typeof policy === "object" ? policy : NODE_REQUIRE_POLICY;
+  const typescriptFallback = ownField2(policyObject, "typescriptFallback") === true;
+  const globalFolders = ownField2(policyObject, "globalFolders");
+  const progressOf = ownField2(options, "progress");
+  const progress = typeof progressOf === "function" ? (work) => reflectApply(progressOf, options, [work]) : null;
+  const collectPackageScope = ownField2(options, "collectPackageScope") !== false;
+  const isBuiltinOf = ownField2(host, "isBuiltin");
+  const isBuiltin = (specifier) => typeof isBuiltinOf === "function" && reflectApply(isBuiltinOf, host, [specifier]) === true;
   const ask = {
-    *kind(path) {
-      if (options.progress) yield options.progress(METADATA_CANDIDATE_WORK + path.length);
+    kind: safeGenerator2(function* (path) {
+      if (progress !== null) yield progress(METADATA_CANDIDATE_WORK + path.length);
       try {
         const kind = yield host.kind(path);
         return kind === "file" || kind === "directory" ? kind : null;
       } catch (err) {
-        if (codeOf2(err) === "ENOENT" || codeOf2(err) === "ENOTDIR") return null;
+        if (codeOf(err) === "ENOENT" || codeOf(err) === "ENOTDIR") return null;
         throw err;
       }
-    },
-    *text(path) {
+    }),
+    text: safeGenerator2(function* (path) {
       const text = yield host.readText(path);
       if (typeof text !== "string") return null;
-      if (options.progress) yield options.progress(text.length);
+      if (progress !== null) yield progress(text.length);
       return text;
-    },
-    *realpath(path) {
+    }),
+    realpath: safeGenerator2(function* (path) {
       const real = yield host.realpath(path);
-      if (typeof real !== "string") throw new Error("The CommonJS host must answer realpath with a path");
+      if (typeof real !== "string") throw new Error3("The CommonJS host must answer realpath with a path");
       return absolute(real);
-    }
+    })
   };
-  function* readPackage(path, state, scope = false) {
+  const readPackage = safeGenerator2(function* (path, state, scope) {
     if (state.configs.has(path)) return state.configs.get(path) ?? null;
     let kind;
     try {
       kind = yield* ask.kind(path);
     } catch (err) {
-      if (scope && codeOf2(err) === "EACCES") return null;
+      if (scope && codeOf(err) === "EACCES") return null;
       throw err;
     }
     if (kind !== "file") {
@@ -18891,17 +19073,26 @@ function createRequireResolver(host, options = {}) {
     }
     let pkg;
     try {
-      pkg = JSON.parse(packageJsonText(text));
+      pkg = JSONParse(packageJsonText(text));
     } catch {
       throw nativeResolutionError("ERR_INVALID_PACKAGE_CONFIG", "Invalid package config " + path + ".");
     }
-    const config = pkg !== null && typeof pkg === "object" ? pkg : {};
+    const object = pkg !== null && typeof pkg === "object" ? pkg : {};
+    const name = ownField2(object, "name");
+    const main = ownField2(object, "main");
+    const config = {
+      name: typeof name === "string" ? name : void 0,
+      main: typeof main === "string" ? main : void 0,
+      exports: ownField2(object, "exports"),
+      imports: ownField2(object, "imports"),
+      type: ownField2(object, "type")
+    };
     state.configs.set(path, config);
     return config;
-  }
-  function* nearestPackageScope(fromDir, state) {
+  });
+  const nearestPackageScope = safeGenerator2(function* (fromDir, state) {
     for (let dir = absolute(fromDir); ; dir = parentDir(dir)) {
-      if (dir.slice(dir.lastIndexOf("/") + 1) === "node_modules") return null;
+      if (stringSlice3(dir, stringLastIndexOf3(dir, "/") + 1) === "node_modules") return null;
       const packageJsonPath = (dir === "/" ? "" : dir) + "/package.json";
       const pkg = yield* readPackage(packageJsonPath, state, true);
       if (pkg) return {
@@ -18912,60 +19103,62 @@ function createRequireResolver(host, options = {}) {
       };
       if (dir === "/") return null;
     }
-  }
-  function* loadAsFile(path) {
-    for (const suffix of ["", ".js", ".json", ".node"]) {
-      const candidate = absolute(path + suffix);
+  });
+  const loadAsFile = safeGenerator2(function* (path) {
+    for (let i = 0; i < FILE_SUFFIXES.length; i++) {
+      const candidate = absolute(path + FILE_SUFFIXES[i]);
       if ((yield* ask.kind(candidate)) === "file") return candidate;
     }
     return null;
-  }
-  function* loadIndex(path) {
-    for (const suffix of ["/index.js", "/index.json", "/index.node"]) {
-      const candidate = absolute(path + suffix);
+  });
+  const loadIndex = safeGenerator2(function* (path) {
+    for (let i = 0; i < INDEX_SUFFIXES.length; i++) {
+      const candidate = absolute(path + INDEX_SUFFIXES[i]);
       if ((yield* ask.kind(candidate)) === "file") return candidate;
     }
     return null;
-  }
-  function* loadAsDirectory(path, state) {
+  });
+  const loadAsDirectory = safeGenerator2(function* (path, state) {
     if ((yield* ask.kind(path)) !== "directory") return null;
     const pkgPath = (path === "/" ? "" : path) + "/package.json";
-    const pkg = yield* readPackage(pkgPath, state);
-    if (typeof pkg?.main === "string" && pkg.main) {
-      const main = absolute(pkg.main.startsWith("/") ? pkg.main : path + "/" + pkg.main);
+    const pkg = yield* readPackage(pkgPath, state, false);
+    if (pkg !== null && pkg.main) {
+      const main = absolute(stringStartsWith2(pkg.main, "/") ? pkg.main : path + "/" + pkg.main);
       const found = (yield* loadAsFile(main)) ?? (yield* loadIndex(main)) ?? (yield* loadIndex(path));
       if (found) return found;
-      if (policy.typescriptFallback) {
+      if (typescriptFallback) {
         const source = (yield* typeScriptFallback(main)) ?? (yield* typeScriptFallback(path));
         if (source) return source;
       }
       throw moduleNotFound(
         "Cannot find module '" + main + `'. Please verify that the package.json has a valid "main" entry`,
-        { path: pkgPath, requestPath: path }
+        pkgPath,
+        path
       );
     }
     return yield* loadIndex(path);
-  }
-  function* resolveFile(path, state, trailingSlash = false) {
+  });
+  const resolveFile = safeGenerator2(function* (path, state, trailingSlash) {
     const normalized = absolute(path);
     const found = (!trailingSlash ? yield* loadAsFile(normalized) : null) ?? (yield* loadAsDirectory(normalized, state));
-    return found ?? (policy.typescriptFallback ? yield* typeScriptFallback(normalized) : null);
-  }
-  function* typeScriptFallback(path) {
-    for (const candidate of typescriptFallbackCandidates(path)) {
-      if ((yield* ask.kind(candidate)) === "file") return candidate;
+    return found ?? (typescriptFallback ? yield* typeScriptFallback(normalized) : null);
+  });
+  const typeScriptFallback = safeGenerator2(function* (path) {
+    const candidates = typescriptFallbackCandidates(path);
+    for (let i = 0; i < candidates.length; i++) {
+      if ((yield* ask.kind(candidates[i])) === "file") return candidates[i];
     }
     if ((yield* ask.kind(path)) === "directory") {
-      for (const suffix of TYPESCRIPT_INDEX_CANDIDATES) {
-        if ((yield* ask.kind(path + suffix)) === "file") return path + suffix;
+      for (let i = 0; i < TYPESCRIPT_INDEX_CANDIDATES.length; i++) {
+        if ((yield* ask.kind(path + TYPESCRIPT_INDEX_CANDIDATES[i])) === "file") return path + TYPESCRIPT_INDEX_CANDIDATES[i];
       }
     }
     return null;
-  }
+  });
   function exportsNotFound(subpath, pjsonPath) {
     return error("ERR_PACKAGE_PATH_NOT_EXPORTED", subpath === "." ? 'No "exports" main defined in ' + pjsonPath : "Package subpath '" + subpath + `' is not defined by "exports" in ` + pjsonPath);
   }
-  function* resolveMap(field, name, pjsonPath, fromDir, internal, state) {
+  const resolveMap = safeGenerator2(function* (field, name, pjsonPath, fromDir, internal, state) {
     const url = fileUrl(pjsonPath);
     const mapPolicy = createNodePackageMapPolicy(
       url,
@@ -18974,12 +19167,12 @@ function createRequireResolver(host, options = {}) {
       (target) => resolveBareTarget(target, parentDir(pjsonPath), state)
     );
     return yield* selectPackageMap(field, name, conditions, mapPolicy);
-  }
-  function* resolveBareTarget(name, fromDir, state) {
-    if (host.isBuiltin?.(name)) return new URL(name.startsWith("node:") ? name : "node:" + name);
+  });
+  const resolveBareTarget = safeGenerator2(function* (name, fromDir, state) {
+    if (isBuiltin(name)) return newURL2(stringStartsWith2(name, "node:") ? name : "node:" + name);
     const split = packageName(name);
-    if (!split || /^\.|%|\\/.test(split.name)) {
-      throw error("ERR_INVALID_MODULE_SPECIFIER", 'Invalid module "' + name + '" is not a valid package name imported from ' + fromDir, TypeError);
+    if (!split || invalidPackageName(split.name)) {
+      throw error("ERR_INVALID_MODULE_SPECIFIER", 'Invalid module "' + name + '" is not a valid package name imported from ' + fromDir, TypeError2);
     }
     const self = yield* nearestPackageScope(fromDir, state);
     const selfSubpath = packageSelfReferenceSubpath(self?.pkg, name);
@@ -18988,149 +19181,172 @@ function createRequireResolver(host, options = {}) {
       if (target == null) throw exportsNotFound(selfSubpath, self.packageJsonPath);
       return target;
     }
-    for (const folder of requireNodeModulePaths(fromDir)) {
-      const dir = folder + "/" + split.name;
+    const folders = requireNodeModulePaths(fromDir);
+    for (let i = 0; i < folders.length; i++) {
+      const dir = folders[i] + "/" + split.name;
       if ((yield* ask.kind(dir)) !== "directory") continue;
       const pjsonPath = dir + "/package.json";
-      const pkg = yield* readPackage(pjsonPath, state);
-      if (pkg?.exports != null) {
+      const pkg = yield* readPackage(pjsonPath, state, false);
+      if (pkg !== null && pkg.exports != null) {
         const target = yield* resolveMap(pkg.exports, split.subpath, pjsonPath, fromDir, false, state);
         if (target == null) throw exportsNotFound(split.subpath, pjsonPath);
         return target;
       }
-      if (split.subpath !== ".") return new URL(split.subpath, fileUrl(pjsonPath));
+      if (split.subpath !== ".") return newURL2(split.subpath, fileUrl(pjsonPath));
       const found = yield* loadAsDirectory(dir, state);
       if (found) return fileUrl(found);
       throw nativeResolutionError("ERR_MODULE_NOT_FOUND", "Cannot find package '" + dir + "/index.js' imported from " + fromDir);
     }
     throw error("ERR_MODULE_NOT_FOUND", "Cannot find package '" + split.name + "' imported from " + fromDir);
-  }
+  });
   function packageName(id) {
-    let slash = id.indexOf("/");
-    if (id.startsWith("@")) {
+    let slash = stringIndexOf2(id, "/");
+    if (stringStartsWith2(id, "@")) {
       if (slash === -1) return null;
-      slash = id.indexOf("/", slash + 1);
+      slash = stringIndexOf2(id, "/", slash + 1);
     }
-    return { name: slash === -1 ? id : id.slice(0, slash), subpath: slash === -1 ? "." : "." + id.slice(slash) };
+    return { name: slash === -1 ? id : stringSlice3(id, 0, slash), subpath: slash === -1 ? "." : "." + stringSlice3(id, slash) };
   }
-  function* finalizeTarget(target, pjsonPath) {
-    if (target.protocol !== "file:") throw error("ERR_INVALID_URL_SCHEME", "The URL must be of scheme file", TypeError);
-    if (/%2f|%5c/i.test(target.pathname)) {
-      throw error("ERR_INVALID_MODULE_SPECIFIER", 'Invalid module "' + target.pathname + '" must not include encoded "/" or "\\" characters', TypeError);
+  const finalizeTarget = safeGenerator2(function* (target, pjsonPath) {
+    if (urlProtocol(target) !== "file:") throw error("ERR_INVALID_URL_SCHEME", "The URL must be of scheme file", TypeError2);
+    const pathname = urlPathname(target);
+    if (regExpExec2(ENCODED_SEPARATOR, pathname) !== null) {
+      throw error("ERR_INVALID_MODULE_SPECIFIER", 'Invalid module "' + pathname + '" must not include encoded "/" or "\\" characters', TypeError2);
     }
-    const path = decodeURIComponent(target.pathname);
-    if ((yield* ask.kind(path)) !== "file") {
-      throw moduleNotFound("Cannot find module '" + path + "'", { path: pjsonPath });
-    }
+    const path = decodeURIComponentOf2(pathname);
+    if ((yield* ask.kind(path)) !== "file") throw moduleNotFound("Cannot find module '" + path + "'", pjsonPath, void 0);
     return absolute(path);
-  }
-  function* loadPackageSelf(name, fromDir, state) {
+  });
+  const loadPackageSelf = safeGenerator2(function* (name, fromDir, state) {
     const scope = yield* nearestPackageScope(fromDir, state);
     const subpath = packageSelfReferenceSubpath(scope?.pkg, name);
     if (!scope || subpath === null) return null;
     const target = yield* resolveMap(scope.pkg.exports, subpath, scope.packageJsonPath, fromDir, false, state);
     if (target == null) throw exportsNotFound(subpath, scope.packageJsonPath);
     return yield* finalizeTarget(target, scope.packageJsonPath);
-  }
-  function* loadNodeModules(name, folders, fromDir, state) {
+  });
+  const loadNodeModules = safeGenerator2(function* (name, folders, fromDir, state) {
     const split = packageName(name);
-    for (const folder of folders) {
-      if (split && split.name !== "" && !name.includes("\\")) {
+    for (let i = 0; i < folders.length; i++) {
+      const folder = folders[i];
+      if (split && split.name !== "" && !stringIncludes2(name, "\\")) {
         const pjsonPath = absolute(folder + "/" + split.name + "/package.json");
-        const pkg = yield* readPackage(pjsonPath, state);
-        if (pkg?.exports != null) {
+        const pkg = yield* readPackage(pjsonPath, state, false);
+        if (pkg !== null && pkg.exports != null) {
           const target = yield* resolveMap(pkg.exports, split.subpath, pjsonPath, fromDir, false, state);
           if (target == null) throw exportsNotFound(split.subpath, pjsonPath);
           return yield* finalizeTarget(target, pjsonPath);
         }
       }
-      const found = yield* resolveFile(folder + "/" + name, state, name.endsWith("/"));
+      const found = yield* resolveFile(folder + "/" + name, state, stringEndsWith3(name, "/"));
       if (found) return found;
     }
     return null;
-  }
-  function* resolvePath(id, fromDir, request, state) {
+  });
+  const originsOf = (request, dir) => {
+    const paths = ownField2(request, "paths");
+    return arrayIsArray2(paths) ? paths : [dir];
+  };
+  const resolvePath = safeGenerator2(function* (id, fromDir, request, state) {
     const dir = absolute(fromDir);
     if (id === "") return null;
-    if (host.isBuiltin?.(id)) return new URL(id.startsWith("node:") ? id : "node:" + id);
-    if (id.startsWith("/")) return yield* resolveFile(id, state, id.endsWith("/"));
+    if (isBuiltin(id)) return newURL2(stringStartsWith2(id, "node:") ? id : "node:" + id);
+    if (stringStartsWith2(id, "/")) return yield* resolveFile(id, state, stringEndsWith3(id, "/"));
+    const origins = originsOf(request, dir);
     if (relativeRequest(id)) {
-      for (const origin of request.paths ?? [dir]) {
-        const found = yield* resolveFile(origin + "/" + id, state, id.endsWith("/") || id === "." || id === ".." || id.endsWith("/.") || id.endsWith("/.."));
+      const trailing = stringEndsWith3(id, "/") || id === "." || id === ".." || stringEndsWith3(id, "/.") || stringEndsWith3(id, "/..");
+      for (let i = 0; i < origins.length; i++) {
+        const found = yield* resolveFile(origins[i] + "/" + id, state, trailing);
         if (found) return found;
       }
       return null;
     }
-    if (id.startsWith("#")) {
+    if (stringStartsWith2(id, "#")) {
       const scope = yield* nearestPackageScope(dir, state);
       if (scope && scope.pkg.imports != null) {
-        const from = request.parent ?? dir;
-        if (id === "#" || id.startsWith("#/") || id.endsWith("/")) {
-          throw error("ERR_INVALID_MODULE_SPECIFIER", 'Invalid module "' + id + '" is not a valid internal imports specifier name imported from ' + from, TypeError);
+        const parent = ownField2(request, "parent");
+        const from = typeof parent === "string" ? parent : dir;
+        if (id === "#" || stringStartsWith2(id, "#/") || stringEndsWith3(id, "/")) {
+          throw error("ERR_INVALID_MODULE_SPECIFIER", 'Invalid module "' + id + '" is not a valid internal imports specifier name imported from ' + from, TypeError2);
         }
         let target;
         try {
           target = yield* resolveMap(scope.pkg.imports, id, scope.packageJsonPath, from, true, state);
         } catch (err) {
-          if (codeOf2(err) === "ERR_MODULE_NOT_FOUND") return null;
+          if (codeOf(err) === "ERR_MODULE_NOT_FOUND") return null;
           throw err;
         }
         if (target != null) return yield* finalizeTarget(target, scope.packageJsonPath);
-        throw error("ERR_PACKAGE_IMPORT_NOT_DEFINED", 'Package import specifier "' + id + '" is not defined in package ' + scope.packageJsonPath + " imported from " + from, TypeError);
+        throw error("ERR_PACKAGE_IMPORT_NOT_DEFINED", 'Package import specifier "' + id + '" is not defined in package ' + scope.packageJsonPath + " imported from " + from, TypeError2);
       }
     }
     const self = yield* loadPackageSelf(id, dir, state);
     if (self) return self;
-    const folders = [...new Set((request.paths ?? [dir]).flatMap(requireNodeModulePaths))];
-    folders.push(...policy.globalFolders ?? []);
+    const folders = new SafeList2();
+    const seen = new SafeSet2();
+    for (let i = 0; i < origins.length; i++) {
+      if (!objectHasOwn2(origins, i)) continue;
+      const paths = requireNodeModulePaths(origins[i]);
+      for (let j = 0; j < paths.length; j++) {
+        if (seen.has(paths[j])) continue;
+        seen.add(paths[j]);
+        folders[folders.length] = paths[j];
+      }
+    }
+    if (arrayIsArray2(globalFolders)) {
+      const extra = globalFolders;
+      for (let i = 0; i < extra.length; i++) {
+        const folder = extra[i];
+        if (typeof folder === "string") folders[folders.length] = folder;
+      }
+    }
     return yield* loadNodeModules(id, folders, dir, state);
-  }
-  function* resolve(id, fromDir, request = {}) {
-    const state = { configs:   new Map() };
+  });
+  const resolve = safeGenerator2(function* (id, fromDir, request) {
+    const state = { configs: new SafeMap() };
     const found = yield* resolvePath(id, fromDir, request, state);
     if (found === null) return null;
-    if (found instanceof URL) return { builtin: found.pathname, scope: null, packageType: null };
+    if (typeof found !== "string") return { path: void 0, builtin: urlPathname(found), scope: null, packageType: null };
     const path = yield* ask.realpath(found);
-    const scope = options.collectPackageScope === false ? null : yield* nearestPackageScope(parentDir(path), state);
-    return { path, scope, packageType: scope?.type ?? null };
-  }
-  function* resolveFilePath(path) {
-    const found = yield* resolveFile(path, { configs:   new Map() }, path.endsWith("/"));
+    const scope = !collectPackageScope ? null : yield* nearestPackageScope(parentDir(path), state);
+    return { path, builtin: void 0, scope, packageType: scope?.type ?? null };
+  });
+  const resolveFilePath = safeGenerator2(function* (path) {
+    const found = yield* resolveFile(path, { configs: new SafeMap() }, stringEndsWith3(path, "/"));
     return found === null ? null : yield* ask.realpath(found);
-  }
+  });
   function runSync(steps) {
-    let next = steps.next();
+    let next = generatorNext(steps);
     while (!next.done) {
-      if (next.value instanceof Promise) throw new Error("resolveSync: the CommonJS host answered asynchronously");
-      next = steps.next(next.value);
+      if (next.value instanceof PromiseConstructor) throw new Error3("resolveSync: the CommonJS host answered asynchronously");
+      next = generatorNext(steps, next.value);
     }
     return next.value;
   }
   async function runAsync(steps) {
-    let next = steps.next();
+    let next = generatorNext(steps);
     while (!next.done) {
       let answer;
       try {
         answer = await next.value;
       } catch (err) {
-        next = steps.throw(err);
+        next = generatorThrow(steps, err);
         continue;
       }
-      next = steps.next(answer);
+      next = generatorNext(steps, answer);
     }
     return next.value;
   }
+  const noRequest = {};
   return {
-    resolve: (id, dir, request) => runAsync(resolve(id, dir, request)),
-    resolveSync: (id, dir, request) => runSync(resolve(id, dir, request)),
+    resolve: (id, dir, request) => runAsync(resolve(id, dir, request ?? noRequest)),
+    resolveSync: (id, dir, request) => runSync(resolve(id, dir, request ?? noRequest)),
     resolveFile: (path) => runAsync(resolveFilePath(path)),
     resolveFileSync: (path) => runSync(resolveFilePath(path)),
-    packageScope: (dir) => runAsync(nearestPackageScope(dir, { configs:   new Map() })),
-    packageScopeSync: (dir) => runSync(nearestPackageScope(dir, { configs:   new Map() }))
+    packageScope: (dir) => runAsync(nearestPackageScope(dir, { configs: new SafeMap() })),
+    packageScopeSync: (dir) => runSync(nearestPackageScope(dir, { configs: new SafeMap() }))
   };
 }
-var cellDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
-var textDecoder = new TextDecoder("utf-8", { ignoreBOM: true });
 
 function presentedCredential(value) {
   const trimmed = value.trim();
@@ -19140,7 +19356,7 @@ function presentedCredential(value) {
 function isWebSocketUpgradeRequest(headers) {
   return headers.get("upgrade")?.toLowerCase() === "websocket";
 }
-return { DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, NIMBUS_TYPESCRIPT_REQUIRE_POLICY, TYPESCRIPT_INDEX_CANDIDATES, createNodePackageMapPolicy, createRequireResolver, isWebSocketUpgradeRequest, nativeResolutionError, packageJsonText, packageSelfReferenceSubpath, presentedCredential, requireNodeModulePaths, resolveExports, resolvePackageEntry, selectPackageMap, stripsTypeScript, typescriptFallbackCandidates };
+return { DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, NIMBUS_TYPESCRIPT_REQUIRE_POLICY, TYPESCRIPT_INDEX_CANDIDATES, codeOf, createNodePackageMapPolicy, createRequireResolver, isWebSocketUpgradeRequest, nativeResolutionError, packageJsonText, packageSelfReferenceSubpath, presentedCredential, requireNodeModulePaths, resolveExports, resolvePackageEntry, selectPackageMap, stripsTypeScript, typescriptFallbackCandidates, urlHash, urlHref, urlPathname, urlProtocol, urlSearch, urlSetHash, urlSetPathname, urlSetSearch };
 })();
 
 const __requireResolver = createRequireResolver({
@@ -19413,38 +19629,80 @@ function __resolveFrom(id, fromDir, parentFile) {
 // module cache require uses, shaped as the namespace Node would give.
 // Node's ESM resolver (core/_shared/esm-resolver.ts, compiled once by
 // scripts/bundle-facet-workers.mjs): declares createEsmResolver.
-var { createEsmResolver, unknownFileExtensionMessage } = (() => {
+var { createEsmResolver, unknownFileExtensionMessage, unsupportedResolveRequest } = (() => {
+const { arrayIsArray, dataDescriptor, decodeURIComponentOf, encodeURIComponentOf, Error, generatorNext, generatorThrow, JSONParse, JSONStringify, newURL, objectHasOwn, objectKeys, ownField, PromiseConstructor, reflectApply, reflectDefineProperty, reflectGet, reflectSet, regExpExec, SafeList, SafeMap, SafeSet, safeGenerator, stringEndsWith, stringIndexOf, stringLastIndexOf, stringSlice, stringStartsWith, TypeError } = __nimbusPrimordials;
 function unknownFileExtensionMessage(path) {
-  const base = path.slice(path.lastIndexOf("/") + 1);
-  const dot = base.lastIndexOf(".");
-  return `Unknown file extension "${dot > 0 ? base.slice(dot) : ""}" for ${path}`;
+  const base = stringSlice(path, stringLastIndexOf(path, "/") + 1);
+  const dot = stringLastIndexOf(base, ".");
+  return `Unknown file extension "${dot > 0 ? stringSlice(base, dot) : ""}" for ${path}`;
+}
+var ENCODED_SEPARATOR = /%2f|%5c/i;
+var JSON_DATA_URL = /^data:application\/json(?:;[^,]*)?,/;
+function singleSlashes(text) {
+  let out = "";
+  for (let i = 0; i < text.length; i++) if (text[i] !== "/" || out[out.length - 1] !== "/") out += text[i];
+  return out;
+}
+function invalidPackageName(name) {
+  if (name[0] === ".") return true;
+  for (let i = 0; i < name.length; i++) if (name[i] === "%" || name[i] === "\\") return true;
+  return false;
+}
+function segments(path) {
+  const out = new SafeList();
+  let start = 0;
+  for (let i = 0; i <= path.length; i++) {
+    if (i < path.length && path[i] !== "/") continue;
+    if (i > start) out[out.length] = stringSlice(path, start, i);
+    start = i + 1;
+  }
+  return out;
 }
 function createEsmResolver(host, options = {}) {
-  const conditions =   new Set([...DEFAULT_ESM_CONDITIONS, ...options.conditions ?? []]);
+  const conditions = new SafeSet();
+  for (let i = 0; i < DEFAULT_ESM_CONDITIONS.length; i++) conditions.add(DEFAULT_ESM_CONDITIONS[i]);
+  const given = ownField(options, "conditions");
+  if (arrayIsArray(given)) {
+    const extra = given;
+    for (let i = 0; i < extra.length; i++) {
+      const condition = extra[i];
+      if (typeof condition === "string") conditions.add(condition);
+    }
+  }
+  const typeScript = ownField(options, "stripTypes") !== false;
+  const cwdOf = ownField(options, "cwd");
+  const cwd = () => {
+    if (typeof cwdOf !== "function") return void 0;
+    const dir = reflectApply(cwdOf, options, []);
+    return typeof dir === "string" ? dir : void 0;
+  };
   const ask = {
-    *kind(path) {
+    kind: safeGenerator(function* (path) {
       const kind = yield host.kind(path);
       return kind === "file" || kind === "directory" ? kind : null;
-    },
-    *readText(path) {
+    }),
+    readText: safeGenerator(function* (path) {
       const text = yield host.readText(path);
       return typeof text === "string" ? text : null;
-    },
-    *realpath(path) {
+    }),
+    realpath: safeGenerator(function* (path) {
       const real = yield host.realpath(path);
       return typeof real === "string" ? real : path;
-    },
-    *cjsResolve(specifier, parentPath) {
+    }),
+    cjsResolve: safeGenerator(function* (specifier, parentPath) {
       const found = yield host.cjsResolve(specifier, parentPath);
       return typeof found === "string" ? found : null;
-    }
+    })
   };
-  const codeOf = (error) => error !== null && typeof error === "object" && "code" in error ? error.code : void 0;
-  const filePath = (url) => decodeURIComponent((typeof url === "string" ? new URL(url) : url).pathname);
+  const filePath = (url) => decodeURIComponentOf(urlPathname(typeof url === "string" ? newURL(url) : url));
   const fileUrl = (path) => {
-    const url = new URL("file://");
-    url.pathname = path;
+    const url = newURL("file://");
+    urlSetPathname(url, path);
     return url;
+  };
+  const withUrl = (error, url) => {
+    reflectDefineProperty(error, "url", dataDescriptor(urlHref(url), true, true, true));
+    return error;
   };
   function isRelativeSpecifier(specifier) {
     if (specifier[0] !== ".") return false;
@@ -19452,129 +19710,138 @@ function createEsmResolver(host, options = {}) {
     return specifier[1] === "." && (specifier.length === 2 || specifier[2] === "/");
   }
   const isRelativeOrAbsolute = (specifier) => specifier !== "" && (specifier[0] === "/" || isRelativeSpecifier(specifier));
-  const packageConfigs =   new Map();
-  function* readPackageConfig(pjsonPath, specifier, base) {
+  const noConfig = (pjsonPath) => ({ exists: false, pjsonPath, name: void 0, main: void 0, exports: void 0, imports: void 0, type: "none" });
+  const packageConfigs = new SafeMap();
+  const readPackageConfig = safeGenerator(function* (pjsonPath, specifier, base) {
     const known = packageConfigs.get(pjsonPath);
     if (known !== void 0) return known;
     const text = (yield* ask.kind(pjsonPath)) === "file" ? yield* ask.readText(pjsonPath) : null;
-    if (text === null) return { exists: false, pjsonPath, type: "none" };
+    if (text === null) return noConfig(pjsonPath);
     let parsed;
     try {
-      parsed = JSON.parse(packageJsonText(text));
+      parsed = JSONParse(packageJsonText(text));
     } catch {
       throw nativeResolutionError(
         "ERR_INVALID_PACKAGE_CONFIG",
-        `Invalid package config ${pjsonPath}` + (base ? ` while importing ${JSON.stringify(specifier)} from ${base}` : "") + "."
+        `Invalid package config ${pjsonPath}` + (base ? ` while importing ${JSONStringify(specifier)} from ${base}` : "") + "."
       );
     }
-    const config = { exists: true, pjsonPath, type: "none" };
+    const config = { ...noConfig(pjsonPath), exists: true };
     packageConfigs.set(pjsonPath, config);
     if (parsed === null || typeof parsed !== "object") return config;
-    if (typeof parsed.name === "string") config.name = parsed.name;
-    if (typeof parsed.main === "string") config.main = parsed.main;
-    if ("exports" in parsed) config.exports = parsed.exports;
-    if (parsed.imports !== null && typeof parsed.imports === "object") config.imports = parsed.imports;
-    if (parsed.type === "module" || parsed.type === "commonjs") config.type = parsed.type;
+    const name = ownField(parsed, "name");
+    const main = ownField(parsed, "main");
+    const imports = ownField(parsed, "imports");
+    const type = ownField(parsed, "type");
+    if (typeof name === "string") config.name = name;
+    if (typeof main === "string") config.main = main;
+    if (objectHasOwn(parsed, "exports")) config.exports = reflectGet(parsed, "exports");
+    if (imports !== null && typeof imports === "object") config.imports = imports;
+    if (type === "module" || type === "commonjs") config.type = type;
     return config;
-  }
-  function* packageScopeConfig(resolved) {
-    let pjsonUrl = new URL("./package.json", resolved);
+  });
+  const packageScopeConfig = safeGenerator(function* (resolved) {
+    const specifier = urlHref(resolved);
+    let pjsonUrl = newURL("./package.json", resolved);
+    let pathname = urlPathname(pjsonUrl);
     while (true) {
-      if (pjsonUrl.pathname.endsWith("node_modules/package.json")) break;
-      const config = yield* readPackageConfig(filePath(pjsonUrl), resolved.href, void 0);
+      if (stringEndsWith(pathname, "node_modules/package.json")) break;
+      const config = yield* readPackageConfig(decodeURIComponentOf(pathname), specifier, void 0);
       if (config.exists) return config;
-      const last = pjsonUrl;
-      pjsonUrl = new URL("../package.json", pjsonUrl);
-      if (pjsonUrl.pathname === last.pathname) break;
+      const last = pathname;
+      pjsonUrl = newURL("../package.json", pjsonUrl);
+      pathname = urlPathname(pjsonUrl);
+      if (pathname === last) break;
     }
-    return { exists: false, pjsonPath: filePath(pjsonUrl), type: "none" };
-  }
+    return noConfig(decodeURIComponentOf(pathname));
+  });
   function exportsNotFound(subpath, pjsonUrl, base) {
-    const pkgPath = filePath(new URL(".", pjsonUrl));
+    const pkgPath = filePath(newURL(".", pjsonUrl));
     return nodeError(
       Error,
       "ERR_PACKAGE_PATH_NOT_EXPORTED",
       subpath === "." ? `No "exports" main defined in ${pkgPath}package.json imported from ${base}` : `Package subpath '${subpath}' is not defined by "exports" in ${pkgPath}package.json imported from ${base}`
     );
   }
-  function* packageExportsResolve(pjsonUrl, subpath, config, base) {
-    const policy = createNodePackageMapPolicy(pjsonUrl, base, false, (target) => packageResolve(target, pjsonUrl.href));
+  const packageExportsResolve = safeGenerator(function* (pjsonUrl, subpath, config, base) {
+    const policy = createNodePackageMapPolicy(pjsonUrl, base, false, (target) => packageResolve(target, urlHref(pjsonUrl)));
     const result = yield* selectPackageMap(config.exports, subpath, conditions, policy);
     if (result == null) throw exportsNotFound(subpath, pjsonUrl, base);
     return result;
-  }
-  function* packageImportsResolve(name, baseUrl) {
+  });
+  const packageImportsResolve = safeGenerator(function* (name, baseUrl) {
     const base = filePath(baseUrl);
-    if (name === "#" || name.startsWith("#/") || name.endsWith("/")) {
+    if (name === "#" || stringStartsWith(name, "#/") || stringEndsWith(name, "/")) {
       throw nodeError(TypeError, "ERR_INVALID_MODULE_SPECIFIER", `Invalid module "${name}" is not a valid internal imports specifier name imported from ${base}`);
     }
-    const config = yield* packageScopeConfig(new URL(baseUrl));
+    const config = yield* packageScopeConfig(newURL(baseUrl));
     if (config.exists && config.imports) {
       const pjsonUrl = fileUrl(config.pjsonPath);
-      const policy = createNodePackageMapPolicy(pjsonUrl, base, true, (target) => packageResolve(target, pjsonUrl.href));
+      const policy = createNodePackageMapPolicy(pjsonUrl, base, true, (target) => packageResolve(target, urlHref(pjsonUrl)));
       const result = yield* selectPackageMap(config.imports, name, conditions, policy);
       if (result != null) return result;
     }
-    const where = config.exists ? ` in package ${filePath(new URL(".", fileUrl(config.pjsonPath)))}package.json` : "";
+    const where = config.exists ? ` in package ${filePath(newURL(".", fileUrl(config.pjsonPath)))}package.json` : "";
     throw nodeError(TypeError, "ERR_PACKAGE_IMPORT_NOT_DEFINED", `Package import specifier "${name}" is not defined${where} imported from ${base}`);
-  }
-  function* legacyMainResolve(pjsonUrl, config, base) {
-    const tries = [];
+  });
+  const MAIN_SUFFIXES = ["", ".js", ".json", ".node", "/index.js", "/index.json", "/index.node"];
+  const INDEX_FILES = ["./index.js", "./index.json", "./index.node"];
+  const legacyMainResolve = safeGenerator(function* (pjsonUrl, config, base) {
+    const tries = new SafeList();
     if (config.main !== void 0) {
-      for (const suffix of ["", ".js", ".json", ".node", "/index.js", "/index.json", "/index.node"]) tries.push(`./${config.main}${suffix}`);
+      for (let i = 0; i < MAIN_SUFFIXES.length; i++) tries[tries.length] = `./${config.main}${MAIN_SUFFIXES[i]}`;
     }
-    tries.push("./index.js", "./index.json", "./index.node");
-    for (const candidate of tries) {
-      const url = new URL(candidate, pjsonUrl);
+    for (let i = 0; i < INDEX_FILES.length; i++) tries[tries.length] = INDEX_FILES[i];
+    for (let i = 0; i < tries.length; i++) {
+      const url = newURL(tries[i], pjsonUrl);
       if ((yield* ask.kind(filePath(url))) === "file") return url;
     }
-    const dir = fileUrl(filePath(new URL(".", pjsonUrl)).replace(/\/+/g, "/"));
-    const missing = filePath(new URL(config.main ?? "index.js", dir));
+    const dir = fileUrl(singleSlashes(filePath(newURL(".", pjsonUrl))));
+    const missing = filePath(newURL(config.main ?? "index.js", dir));
     throw nativeResolutionError("ERR_MODULE_NOT_FOUND", `Cannot find package '${missing}' imported from ${base}`);
-  }
-  function* packageResolve(specifier, baseUrl) {
-    if (host.isBuiltin(specifier)) return new URL("node:" + specifier);
+  });
+  const packageResolve = safeGenerator(function* (specifier, baseUrl) {
+    if (host.isBuiltin(specifier)) return newURL("node:" + specifier);
     const base = filePath(baseUrl);
-    let separator = specifier.indexOf("/");
+    let separator = stringIndexOf(specifier, "/");
     let valid = true;
     let scoped = false;
     if (specifier[0] === "@") {
       scoped = true;
       if (separator === -1 || specifier.length === 0) valid = false;
-      else separator = specifier.indexOf("/", separator + 1);
+      else separator = stringIndexOf(specifier, "/", separator + 1);
     }
-    const name = separator === -1 ? specifier : specifier.slice(0, separator);
-    if (/^\.|%|\\/.test(name)) valid = false;
+    const name = separator === -1 ? specifier : stringSlice(specifier, 0, separator);
+    if (invalidPackageName(name)) valid = false;
     if (!valid) {
       throw nodeError(TypeError, "ERR_INVALID_MODULE_SPECIFIER", `Invalid module "${specifier}" is not a valid package name imported from ${base}`);
     }
-    const subpath = "." + (separator === -1 ? "" : specifier.slice(separator));
-    const self = yield* packageScopeConfig(new URL(baseUrl));
+    const subpath = "." + (separator === -1 ? "" : stringSlice(specifier, separator));
+    const self = yield* packageScopeConfig(newURL(baseUrl));
     if (self.exists && self.exports != null && self.name === name) {
       return yield* packageExportsResolve(fileUrl(self.pjsonPath), subpath, self, base);
     }
-    let pjsonUrl = new URL("./node_modules/" + name + "/package.json", baseUrl);
+    let pjsonUrl = newURL("./node_modules/" + name + "/package.json", baseUrl);
     let pjsonPath = filePath(pjsonUrl);
     let lastPath;
     do {
-      if ((yield* ask.kind(pjsonPath.slice(0, pjsonPath.length - 13))) !== "directory") {
+      if ((yield* ask.kind(stringSlice(pjsonPath, 0, pjsonPath.length - 13))) !== "directory") {
         lastPath = pjsonPath;
-        pjsonUrl = new URL((scoped ? "../../../../node_modules/" : "../../../node_modules/") + name + "/package.json", pjsonUrl);
+        pjsonUrl = newURL((scoped ? "../../../../node_modules/" : "../../../node_modules/") + name + "/package.json", pjsonUrl);
         pjsonPath = filePath(pjsonUrl);
         continue;
       }
       const config = yield* readPackageConfig(pjsonPath, specifier, base);
       if (config.exports != null) return yield* packageExportsResolve(pjsonUrl, subpath, config, base);
       if (subpath === ".") return yield* legacyMainResolve(pjsonUrl, config, base);
-      return new URL(subpath, pjsonUrl);
+      return newURL(subpath, pjsonUrl);
     } while (pjsonPath.length !== lastPath.length);
     throw nodeError(Error, "ERR_MODULE_NOT_FOUND", `Cannot find package '${name}' imported from ${base}`);
-  }
-  function* formatOf(url, path) {
-    const base = path.slice(path.lastIndexOf("/") + 1);
-    const dot = base.lastIndexOf(".");
-    const ext = dot > 0 ? base.slice(dot) : "";
-    const typeScript = options.stripTypes !== false;
+  });
+  const formatOf = safeGenerator(function* (url, path) {
+    const base = stringSlice(path, stringLastIndexOf(path, "/") + 1);
+    const dot = stringLastIndexOf(base, ".");
+    const ext = dot > 0 ? stringSlice(base, dot) : "";
     if (ext === ".mjs" || ext === ".mts" && typeScript) return "module";
     if (ext === ".cjs" || ext === ".cts" && typeScript) return "commonjs";
     if (ext === ".json") return "json";
@@ -19585,134 +19852,151 @@ function createEsmResolver(host, options = {}) {
       return "detect";
     }
     return "unknown";
-  }
-  function* finalizeResolution(resolved, baseUrl) {
-    const base = filePath(baseUrl);
-    if (/%2f|%5c/i.test(resolved.pathname)) {
+  });
+  const finalizeResolution = safeGenerator(function* (resolved, baseUrl) {
+    const base = () => filePath(baseUrl);
+    const pathname = urlPathname(resolved);
+    if (regExpExec(ENCODED_SEPARATOR, pathname) !== null) {
       throw nodeError(
         TypeError,
         "ERR_INVALID_MODULE_SPECIFIER",
-        `Invalid module "${resolved.pathname}" must not include encoded "/" or "\\" characters imported from ${base}`
+        `Invalid module "${pathname}" must not include encoded "/" or "\\" characters imported from ${base()}`
       );
     }
-    const path = filePath(resolved);
-    const kind = path.endsWith("/") ? "directory" : yield* ask.kind(path);
+    const path = decodeURIComponentOf(pathname);
+    const kind = stringEndsWith(path, "/") ? "directory" : yield* ask.kind(path);
     if (kind === "directory") {
-      throw Object.assign(
-        nodeError(Error, "ERR_UNSUPPORTED_DIR_IMPORT", `Directory import '${path}' is not supported resolving ES modules imported from ${base}`),
-        { url: resolved.href }
-      );
+      throw withUrl(nodeError(Error, "ERR_UNSUPPORTED_DIR_IMPORT", `Directory import '${path}' is not supported resolving ES modules imported from ${base()}`), resolved);
     }
     if (kind !== "file") {
-      throw Object.assign(
-        nodeError(Error, "ERR_MODULE_NOT_FOUND", `Cannot find module '${path}' imported from ${base}`),
-        { url: resolved.href }
-      );
+      throw withUrl(nodeError(Error, "ERR_MODULE_NOT_FOUND", `Cannot find module '${path}' imported from ${base()}`), resolved);
     }
     const real = yield* ask.realpath(path);
     const url = fileUrl(real);
-    url.search = resolved.search;
-    url.hash = resolved.hash;
-    return { url: url.href, path: real };
-  }
-  function* moduleResolve(specifier, parentUrl) {
+    urlSetSearch(url, urlSearch(resolved));
+    urlSetHash(url, urlHash(resolved));
+    return { url: urlHref(url), location: url, path: real, builtin: void 0 };
+  });
+  const moduleResolve = safeGenerator(function* (specifier, parentUrl) {
     let resolved;
-    if (isRelativeOrAbsolute(specifier)) resolved = new URL(specifier, parentUrl);
-    else if (specifier[0] === "#") resolved = yield* packageImportsResolve(specifier, parentUrl);
+    if (isRelativeOrAbsolute(specifier)) {
+      try {
+        resolved = newURL(specifier, parentUrl);
+      } catch {
+        throw unsupportedResolveRequest(specifier, parentUrl);
+      }
+    } else if (specifier[0] === "#") resolved = yield* packageImportsResolve(specifier, parentUrl);
     else {
       try {
-        resolved = new URL(specifier);
+        resolved = newURL(specifier);
       } catch {
         resolved = yield* packageResolve(specifier, parentUrl);
       }
     }
-    if (resolved.protocol === "node:") return { url: "node:" + resolved.pathname, builtin: resolved.pathname };
-    if (resolved.protocol !== "file:") return { url: resolved.href };
+    const protocol = urlProtocol(resolved);
+    if (protocol === "node:") return { url: "node:" + urlPathname(resolved), location: void 0, path: void 0, builtin: urlPathname(resolved) };
+    if (protocol !== "file:") return { url: urlHref(resolved), location: void 0, path: void 0, builtin: void 0 };
     return yield* finalizeResolution(resolved, parentUrl);
-  }
-  function* loadable(resolved) {
+  });
+  const loadable = safeGenerator(function* (resolved) {
     if (resolved.builtin !== void 0) {
       if (!host.isBuiltin("node:" + resolved.builtin)) {
         throw nodeError(Error, "ERR_UNKNOWN_BUILTIN_MODULE", `No such built-in module: node:${resolved.builtin}`);
       }
-      return { url: resolved.url, builtin: resolved.builtin, format: "builtin" };
+      return { url: resolved.url, path: void 0, builtin: resolved.builtin, format: "builtin" };
     }
-    if (resolved.url.startsWith("data:")) return { url: resolved.url, format: "data" };
+    if (stringStartsWith(resolved.url, "data:")) return { url: resolved.url, path: void 0, builtin: void 0, format: "data" };
     if (resolved.path === void 0) {
       throw nodeError(
         Error,
         "ERR_UNSUPPORTED_ESM_URL_SCHEME",
-        `Only URLs with a scheme in: file and data are supported by the default ESM loader. Received protocol '${new URL(resolved.url).protocol}'`
+        `Only URLs with a scheme in: file and data are supported by the default ESM loader. Received protocol '${urlProtocol(newURL(resolved.url))}'`
       );
     }
-    return { url: resolved.url, path: resolved.path, format: yield* formatOf(new URL(resolved.url), resolved.path) };
-  }
-  function* commonJsHint(specifier, parentUrl) {
-    const cwd = options.cwd?.();
-    const from = isRelativeSpecifier(specifier) && cwd !== void 0 ? `${cwd.replace(/\/+$/, "")}/[cwd]` : filePath(parentUrl);
+    return { url: resolved.url, path: resolved.path, builtin: void 0, format: yield* formatOf(resolved.location ?? newURL(resolved.url), resolved.path) };
+  });
+  const commonJsHint = safeGenerator(function* (specifier, parentUrl) {
+    const dir = cwd();
+    let from = filePath(parentUrl);
+    if (isRelativeSpecifier(specifier) && dir !== void 0) {
+      let end = dir.length;
+      while (end > 0 && dir[end - 1] === "/") end--;
+      from = `${stringSlice(dir, 0, end)}/[cwd]`;
+    }
     let found = yield* ask.cjsResolve(specifier, from);
     if (found === null) return null;
     if (isRelativeSpecifier(specifier)) {
-      const from2 = parentUrl.slice("file://".length, parentUrl.lastIndexOf("/")).split("/").filter(Boolean);
-      const to = fileUrl(found).pathname.split("/").filter(Boolean);
+      const fromParts = segments(stringSlice(parentUrl, "file://".length, stringLastIndexOf(parentUrl, "/")));
+      const toParts = segments(urlPathname(fileUrl(found)));
       let common = 0;
-      while (common < from2.length && common < to.length && from2[common] === to[common]) common++;
-      found = [...from2.slice(common).map(() => ".."), ...to.slice(common)].join("/");
-      if (!found.startsWith("../")) found = `./${found}`;
+      while (common < fromParts.length && common < toParts.length && fromParts[common] === toParts[common]) common++;
+      let relative = "";
+      for (let i = common; i < fromParts.length; i++) relative += relative === "" ? ".." : "/..";
+      for (let i = common; i < toParts.length; i++) relative += relative === "" ? toParts[i] : `/${toParts[i]}`;
+      found = stringStartsWith(relative, "../") ? relative : `./${relative}`;
     } else if (specifier[0] && specifier[0] !== "/" && specifier[0] !== ".") {
-      const slash = specifier.indexOf("/");
-      const pkg = slash === -1 ? specifier : specifier.slice(0, slash);
+      const slash = stringIndexOf(specifier, "/");
+      const pkg = slash === -1 ? specifier : stringSlice(specifier, 0, slash);
       const needle = `/node_modules/${pkg}/`;
-      const at = found.lastIndexOf(needle);
-      found = at !== -1 ? pkg + "/" + found.slice(at + needle.length).split("/").map(encodeURIComponent).join("/") : fileUrl(found).href;
+      const at = stringLastIndexOf(found, needle);
+      if (at === -1) found = urlHref(fileUrl(found));
+      else {
+        const rest = segmentsAll(stringSlice(found, at + needle.length));
+        let encoded = pkg;
+        for (let i = 0; i < rest.length; i++) encoded += `/${encodeURIComponentOf(rest[i])}`;
+        found = encoded;
+      }
     }
     return found;
-  }
-  function* resolveWithHint(specifier, parentUrl) {
+  });
+  const resolveWithHint = safeGenerator(function* (specifier, parentUrl) {
     try {
       return yield* moduleResolve(specifier, parentUrl);
     } catch (error) {
       const code = codeOf(error);
       if (error instanceof Error && (code === "ERR_MODULE_NOT_FOUND" || code === "ERR_UNSUPPORTED_DIR_IMPORT")) {
-        const asGiven = specifier.startsWith("file://") ? filePath(specifier) : specifier;
+        const asGiven = stringStartsWith(specifier, "file://") ? filePath(specifier) : specifier;
         const found = yield* commonJsHint(asGiven, parentUrl);
-        if (found && found !== asGiven) error.message += `
-Did you mean to import ${JSON.stringify(found)}?`;
+        if (found && found !== asGiven) reflectSet(error, "message", `${reflectGet(error, "message")}
+Did you mean to import ${JSONStringify(found)}?`);
       }
       throw error;
     }
-  }
-  function* importTarget(specifier, parentUrl) {
+  });
+  const importTarget = safeGenerator(function* (specifier, parentUrl) {
     return yield* loadable(yield* resolveWithHint(specifier, parentUrl));
-  }
-  function* metaResolve(specifier, parentUrl) {
+  });
+  const metaResolve = safeGenerator(function* (specifier, parentUrl) {
     try {
       return (yield* moduleResolve(specifier, parentUrl)).url;
     } catch (error) {
       const code = codeOf(error);
-      if ((code === "ERR_MODULE_NOT_FOUND" || code === "ERR_UNSUPPORTED_DIR_IMPORT") && error !== null && typeof error === "object" && "url" in error && typeof error.url === "string") return error.url;
+      if ((code === "ERR_MODULE_NOT_FOUND" || code === "ERR_UNSUPPORTED_DIR_IMPORT") && error !== null && typeof error === "object") {
+        const url = reflectGet(error, "url");
+        if (typeof url === "string") return url;
+      }
       throw error;
     }
-  }
+  });
   function runSync(steps) {
-    let next = steps.next();
+    let next = generatorNext(steps);
     while (!next.done) {
-      if (next.value instanceof Promise) throw new Error("resolveSync: the host answered asynchronously");
-      next = steps.next(next.value);
+      if (next.value instanceof PromiseConstructor) throw new Error("resolveSync: the host answered asynchronously");
+      next = generatorNext(steps, next.value);
     }
     return next.value;
   }
   async function runAsync(steps) {
-    let next = steps.next();
+    let next = generatorNext(steps);
     while (!next.done) {
       let answer;
       try {
         answer = await next.value;
       } catch (error) {
-        next = steps.throw(error);
+        next = generatorThrow(steps, error);
         continue;
       }
-      next = steps.next(answer);
+      next = generatorNext(steps, answer);
     }
     return next.value;
   }
@@ -19721,27 +20005,28 @@ Did you mean to import ${JSON.stringify(found)}?`;
     resolveSync: (specifier, parentUrl) => runSync(importTarget(specifier, parentUrl)),
     metaResolveSync: (specifier, parentUrl) => runSync(metaResolve(specifier, parentUrl)),
     packageScopeSync(url) {
-      const { exists, pjsonPath, type } = runSync(packageScopeConfig(new URL(url)));
+      const { exists, pjsonPath, type } = runSync(packageScopeConfig(newURL(url)));
       return { exists, pjsonPath, type };
     },
     async packageScope(url) {
-      const { exists, pjsonPath, type } = await runAsync(packageScopeConfig(new URL(url)));
+      const { exists, pjsonPath, type } = await runAsync(packageScopeConfig(newURL(url)));
       return { exists, pjsonPath, type };
     },
-    assertLoadable({ format, path }) {
-      if (format !== "unknown" || path === void 0) return;
-      throw nodeError(TypeError, "ERR_UNKNOWN_FILE_EXTENSION", unknownFileExtensionMessage(path));
+    assertLoadable(resolution) {
+      if (resolution.format !== "unknown" || resolution.path === void 0) return;
+      throw nodeError(TypeError, "ERR_UNKNOWN_FILE_EXTENSION", unknownFileExtensionMessage(resolution.path));
     },
     validateAttributes(url, format, attributes) {
-      for (const key of Object.keys(attributes)) {
-        if (key !== "type") {
-          throw nodeError(TypeError, "ERR_IMPORT_ATTRIBUTE_UNSUPPORTED", `Import attribute "${key}" with value "${attributes[key]}" is not supported in ${url}`);
+      const keys = objectKeys(attributes);
+      for (let i = 0; i < keys.length; i++) {
+        if (keys[i] !== "type") {
+          throw nodeError(TypeError, "ERR_IMPORT_ATTRIBUTE_UNSUPPORTED", `Import attribute "${keys[i]}" with value "${reflectGet(attributes, keys[i])}" is not supported in ${url}`);
         }
       }
-      const type = attributes.type;
-      if (format === "json" || format === "data" && /^data:application\/json(?:;[^,]*)?,/.test(url)) {
+      const type = ownField(attributes, "type");
+      if (format === "json" || format === "data" && regExpExec(JSON_DATA_URL, url) !== null) {
         if (type === "json") return;
-        if (!("type" in attributes)) {
+        if (!objectHasOwn(attributes, "type")) {
           throw nodeError(TypeError, "ERR_IMPORT_ATTRIBUTE_MISSING", `Module "${url}" needs an import attribute of "type: json"`);
         }
       } else if (type == null) {
@@ -19757,7 +20042,27 @@ Did you mean to import ${JSON.stringify(found)}?`;
     }
   };
 }
-return { createEsmResolver, unknownFileExtensionMessage };
+function unsupportedResolveRequest(specifier, parentUrl) {
+  const error = nodeError(
+    TypeError,
+    "ERR_UNSUPPORTED_RESOLVE_REQUEST",
+    `Failed to resolve module specifier "${specifier}" from "${parentUrl}": Invalid relative URL or base scheme is not hierarchical.`
+  );
+  const cause = nodeError(TypeError, "ERR_INVALID_URL", "Invalid URL", { input: specifier, base: parentUrl });
+  reflectDefineProperty(error, "cause", dataDescriptor(cause, true, true, true));
+  return error;
+}
+function segmentsAll(path) {
+  const out = new SafeList();
+  let start = 0;
+  for (let i = 0; i <= path.length; i++) {
+    if (i < path.length && path[i] !== "/") continue;
+    out[out.length] = stringSlice(path, start, i);
+    start = i + 1;
+  }
+  return out;
+}
+return { createEsmResolver, unknownFileExtensionMessage, unsupportedResolveRequest };
 })();
 
 const __esmResolver = createEsmResolver({
@@ -20254,6 +20559,11 @@ async function __nimbusEsmInterpret(id, linked) {
 }
 // A refusal staging recorded (EsmStage.missing), as the error Node's loader throws.
 function __nimbusEsmRefusal(missing) {
+  // A specifier that is no URL against its importer's: the resolver's own
+  // error, its cause the URL parser's (the record's own field: one a program
+  // gave Object.prototype is none).
+  const invalidUrl = __nimbusPrimordials.ownField(missing, "invalidUrl");
+  if (invalidUrl !== undefined) return unsupportedResolveRequest(invalidUrl.input, invalidUrl.base);
   const Type = missing.name === "TypeError" ? TypeError : missing.name === "SyntaxError" ? SyntaxError : missing.name === "RangeError" ? RangeError : Error;
   const refused = missing.code ? nodeError(Type, missing.code, missing.message) : new Type(missing.message);
   if (missing.url !== undefined) refused.url = missing.url;

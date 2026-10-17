@@ -8326,7 +8326,7 @@ function SyntaxError2(message2, source, offset, line, column, baseLine = 1, base
 // ../../node_modules/.bun/css-tree@3.2.1/node_modules/css-tree/lib/tokenizer/types.js
 var EOF = 0;
 var Ident = 1;
-var Function = 2;
+var Function2 = 2;
 var AtKeyword = 3;
 var Hash = 4;
 var String2 = 5;
@@ -8713,12 +8713,12 @@ var TYPE_SHIFT = 24;
 var BLOCK_OPEN_TOKEN = 1;
 var BLOCK_CLOSE_TOKEN = 2;
 var balancePair = new Uint8Array(32);
-balancePair[Function] = RightParenthesis;
+balancePair[Function2] = RightParenthesis;
 balancePair[LeftParenthesis] = RightParenthesis;
 balancePair[LeftSquareBracket] = RightSquareBracket;
 balancePair[LeftCurlyBracket] = RightCurlyBracket;
 var blockTokens = new Uint8Array(32);
-blockTokens[Function] = BLOCK_OPEN_TOKEN;
+blockTokens[Function2] = BLOCK_OPEN_TOKEN;
 blockTokens[LeftParenthesis] = BLOCK_OPEN_TOKEN;
 blockTokens[LeftSquareBracket] = BLOCK_OPEN_TOKEN;
 blockTokens[LeftCurlyBracket] = BLOCK_OPEN_TOKEN;
@@ -8997,7 +8997,7 @@ function tokenize(source, onToken) {
     if (cmpStr(source, nameStartOffset, offset, "url") && getCharCode2(offset) === 40) {
       offset = findWhiteSpaceEnd(source, offset + 1);
       if (getCharCode2(offset) === 34 || getCharCode2(offset) === 39) {
-        type = Function;
+        type = Function2;
         offset = nameStartOffset + 4;
         return;
       }
@@ -9005,7 +9005,7 @@ function tokenize(source, onToken) {
       return;
     }
     if (getCharCode2(offset) === 40) {
-      type = Function;
+      type = Function2;
       offset++;
       return;
     }
@@ -9462,7 +9462,7 @@ function createParser(config) {
     },
     consumeFunctionName() {
       const name50 = source.substring(this.tokenStart, this.tokenEnd - 1);
-      this.eat(Function);
+      this.eat(Function2);
       return name50;
     },
     consumeNumber(type) {
@@ -9477,7 +9477,7 @@ function createParser(config) {
         let offset = this.tokenStart;
         switch (tokenType) {
           case Ident:
-            if (this.tokenType === Function || this.tokenType === Url) {
+            if (this.tokenType === Function2 || this.tokenType === Url) {
               offset = this.tokenEnd - 1;
               message2 = "Identifier is expected but function found";
             } else {
@@ -9650,7 +9650,7 @@ function defaultRecognizer(context) {
       return this.Percentage();
     case Number2:
       return this.Number();
-    case Function:
+    case Function2:
       return this.cmpStr(this.tokenStart, this.tokenEnd, "url(") ? this.Url() : this.Function(this.readSequence, context.recognizer);
     case Url:
       return this.Url();
@@ -9879,7 +9879,7 @@ var import_default3 = {
           children.push(this.String());
           break;
         case Url:
-        case Function:
+        case Function2:
           children.push(this.Url());
           break;
         default:
@@ -9888,11 +9888,11 @@ var import_default3 = {
       this.skipSC();
       if (this.tokenType === Ident && this.cmpStr(this.tokenStart, this.tokenEnd, "layer")) {
         children.push(this.Identifier());
-      } else if (this.tokenType === Function && this.cmpStr(this.tokenStart, this.tokenEnd, "layer(")) {
+      } else if (this.tokenType === Function2 && this.cmpStr(this.tokenStart, this.tokenEnd, "layer(")) {
         children.push(this.Function(null, parseFunctions));
       }
       this.skipSC();
-      if (this.tokenType === Function && this.cmpStr(this.tokenStart, this.tokenEnd, "supports(")) {
+      if (this.tokenType === Function2 && this.cmpStr(this.tokenStart, this.tokenEnd, "supports(")) {
         children.push(this.Function(null, parseFunctions));
       }
       if (this.lookupNonWSType(0) === Ident || this.lookupNonWSType(0) === LeftParenthesis) {
@@ -10913,7 +10913,7 @@ function parse13(kind = "media") {
         children.push(term);
         break;
       }
-      case Function: {
+      case Function2: {
         let term = this.parseWithFallback(
           () => this.FeatureFunction(kind),
           () => null
@@ -11208,7 +11208,7 @@ function parse17(kind) {
       case Ident:
         value = this.Identifier();
         break;
-      case Function:
+      case Function2:
         value = this.parseWithFallback(
           () => {
             const res = this.Function(this.readSequence, this.scope.Value);
@@ -11299,7 +11299,7 @@ function parse18(kind = "unknown") {
   };
 }
 function generate17(node) {
-  this.token(Function, node.feature + "(");
+  this.token(Function2, node.feature + "(");
   this.node(node.value);
   this.token(RightParenthesis, ")");
 }
@@ -11338,7 +11338,7 @@ function readTerm() {
       return this.Dimension();
     case Ident:
       return this.Identifier();
-    case Function:
+    case Function2:
       return this.parseWithFallback(
         () => {
           const res = this.Function(this.readSequence, this.scope.Value);
@@ -11442,7 +11442,7 @@ function parse20(readSequence2, recognizer) {
   };
 }
 function generate19(node) {
-  this.token(Function, node.name + "(");
+  this.token(Function2, node.name + "(");
   this.children(node);
   this.token(RightParenthesis, ")");
 }
@@ -11464,7 +11464,7 @@ var structure20 = {
 function parse21(kind) {
   const start = this.tokenStart;
   let functionName = null;
-  if (this.tokenType === Function) {
+  if (this.tokenType === Function2) {
     functionName = this.consumeFunctionName();
   } else {
     this.eat(LeftParenthesis);
@@ -11495,7 +11495,7 @@ function parse21(kind) {
 }
 function generate20(node) {
   if (node.function) {
-    this.token(Function, node.function + "(");
+    this.token(Function2, node.function + "(");
   } else {
     this.token(LeftParenthesis, "(");
   }
@@ -11693,7 +11693,7 @@ function parse27() {
     switch (this.tokenType) {
       case Ident:
       case LeftParenthesis:
-      case Function: {
+      case Function2: {
         condition = this.Condition("media");
         break;
       }
@@ -11955,7 +11955,7 @@ function parse35() {
   let name50;
   let nameLowerCase;
   this.eat(Colon);
-  if (this.tokenType === Function) {
+  if (this.tokenType === Function2) {
     name50 = this.consumeFunctionName();
     nameLowerCase = name50.toLowerCase();
     if (this.lookupNonWSType(0) == RightParenthesis) {
@@ -11986,7 +11986,7 @@ function generate34(node) {
   if (node.children === null) {
     this.token(Ident, node.name);
   } else {
-    this.token(Function, node.name + "(");
+    this.token(Function2, node.name + "(");
     this.children(node);
     this.token(RightParenthesis, ")");
   }
@@ -12014,7 +12014,7 @@ function parse36() {
   let nameLowerCase;
   this.eat(Colon);
   this.eat(Colon);
-  if (this.tokenType === Function) {
+  if (this.tokenType === Function2) {
     name50 = this.consumeFunctionName();
     nameLowerCase = name50.toLowerCase();
     if (this.lookupNonWSType(0) == RightParenthesis) {
@@ -12046,7 +12046,7 @@ function generate35(node) {
   if (node.children === null) {
     this.token(Ident, node.name);
   } else {
-    this.token(Function, node.name + "(");
+    this.token(Function2, node.name + "(");
     this.children(node);
     this.token(RightParenthesis, ")");
   }
@@ -12066,7 +12066,7 @@ function consumeTerm() {
   switch (this.tokenType) {
     case Number2:
       return this.Number();
-    case Function:
+    case Function2:
       return this.Function(this.readSequence, this.scope.Value);
     default:
       this.error("Number of function is expected");
@@ -12765,11 +12765,11 @@ function parse48() {
     case Url:
       value = decode2(this.consume(Url));
       break;
-    case Function:
+    case Function2:
       if (!this.cmpStr(this.tokenStart, this.tokenEnd, "url(")) {
         this.error("Function name must be `url`");
       }
-      this.eat(Function);
+      this.eat(Function2);
       this.skipSC();
       value = decode(this.consume(String2));
       this.skipSC();
@@ -12983,7 +12983,7 @@ var code2 = (type, value) => {
 };
 var specPairs = [
   [Ident, Ident],
-  [Ident, Function],
+  [Ident, Function2],
   [Ident, Url],
   [Ident, BadUrl],
   [Ident, "-"],
@@ -12993,7 +12993,7 @@ var specPairs = [
   [Ident, CDC],
   [Ident, LeftParenthesis],
   [AtKeyword, Ident],
-  [AtKeyword, Function],
+  [AtKeyword, Function2],
   [AtKeyword, Url],
   [AtKeyword, BadUrl],
   [AtKeyword, "-"],
@@ -13002,7 +13002,7 @@ var specPairs = [
   [AtKeyword, Dimension],
   [AtKeyword, CDC],
   [Hash, Ident],
-  [Hash, Function],
+  [Hash, Function2],
   [Hash, Url],
   [Hash, BadUrl],
   [Hash, "-"],
@@ -13011,7 +13011,7 @@ var specPairs = [
   [Hash, Dimension],
   [Hash, CDC],
   [Dimension, Ident],
-  [Dimension, Function],
+  [Dimension, Function2],
   [Dimension, Url],
   [Dimension, BadUrl],
   [Dimension, "-"],
@@ -13020,7 +13020,7 @@ var specPairs = [
   [Dimension, Dimension],
   [Dimension, CDC],
   ["#", Ident],
-  ["#", Function],
+  ["#", Function2],
   ["#", Url],
   ["#", BadUrl],
   ["#", "-"],
@@ -13030,7 +13030,7 @@ var specPairs = [
   ["#", CDC],
   // https://github.com/w3c/csswg-drafts/pull/6874
   ["-", Ident],
-  ["-", Function],
+  ["-", Function2],
   ["-", Url],
   ["-", BadUrl],
   ["-", "-"],
@@ -13040,7 +13040,7 @@ var specPairs = [
   ["-", CDC],
   // https://github.com/w3c/csswg-drafts/pull/6874
   [Number2, Ident],
-  [Number2, Function],
+  [Number2, Function2],
   [Number2, Url],
   [Number2, BadUrl],
   [Number2, Number2],
@@ -13050,7 +13050,7 @@ var specPairs = [
   [Number2, CDC],
   // https://github.com/w3c/csswg-drafts/pull/6874
   ["@", Ident],
-  ["@", Function],
+  ["@", Function2],
   ["@", Url],
   ["@", BadUrl],
   ["@", "-"],
@@ -13073,10 +13073,10 @@ var safePairs = specPairs.concat([
   [AtKeyword, Colon],
   [Percentage, Percentage],
   [Percentage, Dimension],
-  [Percentage, Function],
+  [Percentage, Function2],
   [Percentage, "-"],
   [RightParenthesis, Ident],
-  [RightParenthesis, Function],
+  [RightParenthesis, Function2],
   [RightParenthesis, Percentage],
   [RightParenthesis, Dimension],
   [RightParenthesis, Hash],
@@ -13089,7 +13089,7 @@ function createMap(pairs) {
   return function(prevCode, type, value) {
     const nextCode = code2(type, value);
     const nextCharCode = value.charCodeAt(0);
-    const emitWs = nextCharCode === HYPHENMINUS5 && type !== Ident && type !== Function && type !== CDC || nextCharCode === PLUSSIGN7 ? isWhiteSpaceRequired.has((prevCode & 65534) << 16 | nextCharCode << 7) : isWhiteSpaceRequired.has((prevCode & 65534) << 16 | nextCode);
+    const emitWs = nextCharCode === HYPHENMINUS5 && type !== Ident && type !== Function2 && type !== CDC || nextCharCode === PLUSSIGN7 ? isWhiteSpaceRequired.has((prevCode & 65534) << 16 | nextCharCode << 7) : isWhiteSpaceRequired.has((prevCode & 65534) << 16 | nextCode);
     return nextCode | emitWs;
   };
 }
@@ -13602,7 +13602,7 @@ function encode3(str) {
 
 // ../core/src/runtime/css-syntax.ts
 var OPEN = {
-  [Function]: RightParenthesis,
+  [Function2]: RightParenthesis,
   [LeftParenthesis]: RightParenthesis,
   [LeftSquareBracket]: RightSquareBracket,
   [LeftCurlyBracket]: RightCurlyBracket
@@ -13636,7 +13636,7 @@ function valueOf(c3) {
   switch (c3.type) {
     case Ident:
       return ident_exports.decode(c3.text);
-    case Function:
+    case Function2:
       return ident_exports.decode(c3.text.slice(0, -1)).toLowerCase();
     case AtKeyword:
       return ident_exports.decode(c3.text.slice(1));
@@ -13710,7 +13710,7 @@ function printComponents(components, minify2) {
     if (out && pendingSpace && c3.type !== Comma && !(afterComma && minify2)) out += " ";
     pendingSpace = false;
     afterComma = c3.type === Comma;
-    const urlArgument = c3.type === Function && valueOf(c3) === "url" ? trim(c3.children ?? []) : [];
+    const urlArgument = c3.type === Function2 && valueOf(c3) === "url" ? trim(c3.children ?? []) : [];
     if (c3.type === String2) out += quoteString(valueOf(c3));
     else if (c3.type === Url) out += printUrl(valueOf(c3), false);
     else if (urlArgument.length === 1 && urlArgument[0].type === String2) out += printUrl(valueOf(urlArgument[0]), false);
@@ -13729,7 +13729,7 @@ var trim = (components) => {
   while (end > start && insignificant(components[end - 1])) end--;
   return components.slice(start, end);
 };
-var isNamed = (c3, name50, types) => c3 !== void 0 && types.includes(c3.type) && (c3.type === Function ? valueOf(c3) : valueOf(c3).toLowerCase()) === name50;
+var isNamed = (c3, name50, types) => c3 !== void 0 && types.includes(c3.type) && (c3.type === Function2 ? valueOf(c3) : valueOf(c3).toLowerCase()) === name50;
 function importOf(prelude) {
   const parts = trim(prelude);
   const first = parts[0];
@@ -13744,7 +13744,7 @@ function importOf(prelude) {
     path3 = valueOf(first);
     at = first.at;
     length = first.text.length;
-  } else if (first && isNamed(first, "url", [Function])) {
+  } else if (first && isNamed(first, "url", [Function2])) {
     const args2 = trim(first.children ?? []);
     if (args2.length === 1 && args2[0].type === String2) {
       path3 = valueOf(args2[0]);
@@ -13755,11 +13755,11 @@ function importOf(prelude) {
   if (path3 === null) return null;
   let rest = trim(parts.slice(1));
   const conditions = { layers: [], supports: [], media: [] };
-  if (isNamed(rest[0], "layer", [Ident, Function])) {
+  if (isNamed(rest[0], "layer", [Ident, Function2])) {
     conditions.layers = [rest[0]];
     rest = trim(rest.slice(1));
   }
-  if (isNamed(rest[0], "supports", [Function])) {
+  if (isNamed(rest[0], "supports", [Function2])) {
     conditions.supports = [rest[0]];
     rest = trim(rest.slice(1));
   }
@@ -13896,7 +13896,7 @@ function urlSites(source, node) {
       const replacements = [];
       const visit = (components) => {
         for (const c3 of components) {
-          const args2 = c3.type === Function && valueOf(c3) === "url" ? trim(c3.children ?? []) : [];
+          const args2 = c3.type === Function2 && valueOf(c3) === "url" ? trim(c3.children ?? []) : [];
           const value = c3.type === Url ? c3 : args2.length === 1 && args2[0].type === String2 ? args2[0] : null;
           if (value) {
             sites.push({
@@ -13938,7 +13938,7 @@ function printUnknownAtRule(source, node) {
   const prelude = printComponents(trim(rest.filter((c3) => c3 !== block && c3.type !== Semicolon)), true);
   return `${keyword.text}${prelude ? " " + prelude : ""}${block ? `{${printComponents(trim(block.children ?? []), true)}}` : ";"}`;
 }
-var AFTER_URL_SPACED = /* @__PURE__ */ new Set([Ident, Function, Url, String2, Number2, Dimension, Percentage, Hash]);
+var AFTER_URL_SPACED = /* @__PURE__ */ new Set([Ident, Function2, Url, String2, Number2, Dimension, Percentage, Hash]);
 function spaceAfterUrl(handlers) {
   const tokenBefore = handlers.tokenBefore;
   handlers.tokenBefore = (prevCode, type, value) => {
@@ -15200,18 +15200,18 @@ function shadowedLowering(module, source, output) {
   const sourceNames = new Set(boundNames(source));
   if (!LOWERING_GLOBALS.some((name50) => sourceNames.has(name50))) return;
   const outputNames = new Set(boundNames(output));
-  const made = /* @__PURE__ */ new Map();
+  const made2 = /* @__PURE__ */ new Map();
   for (const [node, scope] of scoped(output, { names: /* @__PURE__ */ new Set(), parent: null }, isSloppy(output))) {
     const name50 = loweringStore(node, sourceNames, outputNames);
     if (name50 === null) continue;
-    made.set(name50, (made.get(name50) ?? 0) + 1);
+    made2.set(name50, (made2.get(name50) ?? 0) + 1);
     if (bindingScope(scope, name50) !== null) {
       throw new Error(`Nimbus's bundler does not support a TypeScript module that declares its own ${name50} where a class with private members sees it and useDefineForClassFields is false (${module.path}): lowering them reads the global ${name50}, which the module's binding shadows there`);
     }
   }
   const created = (program, name50) => [...nodes(program)].filter((node) => node.type === "NewExpression" && stringOf(child(node, "callee"), "name") === name50).length;
   for (const name50 of LOWERING_GLOBALS) {
-    if (created(output, name50) - created(source, name50) > (made.get(name50) ?? 0)) {
+    if (created(output, name50) - created(source, name50) > (made2.get(name50) ?? 0)) {
       throw new Error(`Nimbus's bundler cannot tell the ${name50} the lowering of private members creates from the module's own (${module.path}), which declares its own ${name50}, with useDefineForClassFields false`);
     }
   }
@@ -15915,12 +15915,473 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
   }
 }
 
-// ../core/src/_shared/exports-resolver.ts
-var DEFAULT_BUILD_CONDITIONS = ["import", "module", "browser", "default"];
-var codeOf = (error2) => error2 !== null && typeof error2 === "object" && "code" in error2 ? error2.code : void 0;
+// ../core/src/_shared/primordials.ts
+var reflectApply = Reflect.apply;
+var reflectGet = Reflect.get;
+var reflectHas = Reflect.has;
+var reflectDefineProperty = Reflect.defineProperty;
+var reflectDeleteProperty = Reflect.deleteProperty;
+var reflectGetOwnPropertyDescriptor = Reflect.getOwnPropertyDescriptor;
+var reflectGetPrototypeOf = Reflect.getPrototypeOf;
+var reflectSetPrototypeOf = Reflect.setPrototypeOf;
+var objectCreate = Object.create;
+var objectKeys = Object.keys;
+var objectAssign = Object.assign;
+var objectHasOwn = Object.hasOwn;
+var objectGetOwnPropertyNames = Object.getOwnPropertyNames;
+var arrayIsArray = Array.isArray;
+var symbolFor = Symbol.for;
+var stringOf2 = String;
+var PromiseResolve = Promise.resolve;
+var PromiseReject = Promise.reject;
+var PromisePrototypeThen = Promise.prototype.then;
+var ArrayValues = Array.prototype[Symbol.iterator];
+var ArrayIteratorPrototype = Reflect.getPrototypeOf([][Symbol.iterator]()) ?? {};
+var ArrayIteratorNext = Reflect.get(ArrayIteratorPrototype, "next");
+var ArrayPrototypeWith = Reflect.get(Array.prototype, "with");
+var ArrayPrototypeToSpliced = Reflect.get(Array.prototype, "toSpliced");
+var StringPrototypeSlice = String.prototype.slice;
+var StringPrototypeLastIndexOf = String.prototype.lastIndexOf;
+var StringPrototypeCharCodeAt = String.prototype.charCodeAt;
+var SymbolPrototypeToString = Symbol.prototype.toString;
+var StringPrototypeCharAt = String.prototype.charAt;
+var StringPrototypeIndexOf = String.prototype.indexOf;
+var StringPrototypeSubstr = String.prototype.substr;
+var StringFromCharCode = String.fromCharCode;
+var ArrayPrototypePop = Array.prototype.pop;
+var ArrayPrototypeIndexOf = Array.prototype.indexOf;
+var ArrayPrototypeLastIndexOf = Array.prototype.lastIndexOf;
+var RegExpPrototypeExec = RegExp.prototype.exec;
+var RegExpPrototypeAccessors = (() => {
+  const accessors = objectCreate(null);
+  const names = Object.getOwnPropertyNames(RegExp.prototype);
+  for (let i2 = 0; i2 < names.length; i2++) {
+    const getter = Reflect.getOwnPropertyDescriptor(RegExp.prototype, names[i2])?.get;
+    if (getter !== void 0) accessors[names[i2]] = getter;
+  }
+  return accessors;
+})();
+var NumberPrototypeToString = Number.prototype.toString;
+var BigIntPrototypeToString = BigInt.prototype.toString;
+var ObjectPrototype = Object.prototype;
+var SymbolPrototypeDescription = Reflect.getOwnPropertyDescriptor(Symbol.prototype, "description")?.get;
+var JSONStringify = JSON.stringify;
+var decodeURIComponentOf = decodeURIComponent;
+var NumberOf = Number;
+var numberIsInteger = Number.isInteger;
+var objectIs = Object.is;
+var mathAbs = Math.abs;
+var ErrorCaptureStackTrace = Reflect.get(Error, "captureStackTrace");
+var ErrorConstructor = Error;
+var RangeErrorConstructor = RangeError;
+var TypeErrorConstructor = TypeError;
+var URIErrorConstructor = URIError;
+var URLConstructor = URL;
+function dataDescriptor(value, writable, enumerable, configurable) {
+  const descriptor = objectCreate(null);
+  descriptor.value = value;
+  descriptor.writable = writable;
+  descriptor.enumerable = enumerable;
+  descriptor.configurable = configurable;
+  return descriptor;
+}
+function copyMethods(to, from, methods) {
+  for (let i2 = 0; i2 < methods.length; i2++) {
+    const descriptor = reflectGetOwnPropertyDescriptor(from, methods[i2]);
+    if (descriptor) reflectDefineProperty(to, methods[i2], descriptor);
+  }
+}
+var SafeMap = class extends Map {
+};
+copyMethods(SafeMap.prototype, Map.prototype, ["get", "set", "has", "delete", "clear", "forEach", "size"]);
+var SafeSet = class extends Set {
+};
+copyMethods(SafeSet.prototype, Set.prototype, ["add", "has", "delete", "clear", "forEach", "size"]);
+var SafeWeakMap = class extends WeakMap {
+};
+copyMethods(SafeWeakMap.prototype, WeakMap.prototype, ["get", "set", "has", "delete"]);
+var SafeWeakSet = class extends WeakSet {
+};
+copyMethods(SafeWeakSet.prototype, WeakSet.prototype, ["add", "has", "delete"]);
+var SafeList = class extends Array {
+};
+reflectSetPrototypeOf(SafeList.prototype, null);
+var SafeGeneratorPrototype = objectCreate(null);
+var SafeAsyncGeneratorPrototype = objectCreate(null);
+{
+  const generatorPrototype2 = reflectGetPrototypeOf(function* () {
+  }.prototype) ?? {};
+  const asyncGeneratorPrototype = reflectGetPrototypeOf(async function* () {
+  }.prototype) ?? {};
+  copyMethods(SafeGeneratorPrototype, generatorPrototype2, ["next", "return", "throw"]);
+  copyMethods(SafeGeneratorPrototype, reflectGetPrototypeOf(generatorPrototype2) ?? {}, [Symbol.iterator]);
+  copyMethods(SafeAsyncGeneratorPrototype, asyncGeneratorPrototype, ["next", "return", "throw"]);
+  copyMethods(SafeAsyncGeneratorPrototype, reflectGetPrototypeOf(asyncGeneratorPrototype) ?? {}, [Symbol.asyncIterator]);
+}
+var SafeRegExpPrototype = objectCreate(null);
+{
+  const keys = Reflect.ownKeys(RegExp.prototype);
+  const members = [];
+  for (let i2 = 0; i2 < keys.length; i2++) {
+    const key = keys[i2];
+    if (key !== "constructor" && key !== Symbol.split && key !== Symbol.matchAll) members[members.length] = key;
+  }
+  copyMethods(SafeRegExpPrototype, RegExp.prototype, members);
+}
+var GeneratorPrototypeNext = reflectGet(SafeGeneratorPrototype, "next");
+var GeneratorPrototypeReturn = reflectGet(SafeGeneratorPrototype, "return");
+var GeneratorPrototypeThrow = reflectGet(SafeGeneratorPrototype, "throw");
+var FunctionPrototypeCall = Function.prototype.call;
+var FunctionPrototypeBind = Function.prototype.bind;
+function uncurryThis(fn) {
+  return reflectApply(FunctionPrototypeBind, FunctionPrototypeCall, [fn]);
+}
+var stringCharCodeAt = uncurryThis(String.prototype.charCodeAt);
+var stringSlice = uncurryThis(String.prototype.slice);
+var stringLastIndexOf = uncurryThis(String.prototype.lastIndexOf);
+var arrayJoin = uncurryThis(Array.prototype.join);
+var stringStartsWith = uncurryThis(String.prototype.startsWith);
+var stringEndsWith = uncurryThis(String.prototype.endsWith);
+var stringIncludes = uncurryThis(String.prototype.includes);
+var stringIndexOf = uncurryThis(String.prototype.indexOf);
+var stringToLowerCase = uncurryThis(String.prototype.toLowerCase);
+var arrayIncludes = uncurryThis(Array.prototype.includes);
+var arrayIndexOf = uncurryThis(Array.prototype.indexOf);
+var setForEach = uncurryThis(Set.prototype.forEach);
+var arraySort = uncurryThis(Array.prototype.sort);
+var regExpExec = uncurryThis(RegExp.prototype.exec);
+var generatorPrototype = reflectGetPrototypeOf(function* () {
+}.prototype);
+var generatorNext = uncurryThis(reflectGet(generatorPrototype ?? {}, "next"));
+var generatorThrow = uncurryThis(reflectGet(generatorPrototype ?? {}, "throw"));
+function newURL(input, base) {
+  return base === void 0 ? new URLConstructor(input) : new URLConstructor(input, base);
+}
+function safeGenerator(fn) {
+  if (!reflectDefineProperty(fn, "prototype", dataDescriptor(SafeGeneratorPrototype, true, false, false))) {
+    throw new TypeErrorConstructor("Cannot redefine property: prototype");
+  }
+  return fn;
+}
+function ownField(object2, key) {
+  return objectHasOwn(object2, key) ? reflectGet(object2, key) : void 0;
+}
+
+// ../core/src/_shared/node-error.ts
+var nodeErrorClasses = new SafeMap();
+var classCodes = new SafeWeakMap();
+function accessorDescriptor(get, set, enumerable, configurable) {
+  const descriptor = objectCreate(null);
+  descriptor.get = get;
+  if (set !== void 0) descriptor.set = set;
+  descriptor.enumerable = enumerable;
+  descriptor.configurable = configurable;
+  return descriptor;
+}
+function nodeError(Base, code3, message2, props, above = nodeError) {
+  return made(Base, code3, message2, props, above);
+}
+function made(Base, code3, message2, props, above) {
+  const NodeError = nodeErrorClass(Base, code3);
+  const error2 = new NodeError(message2);
+  headStack(error2, `${reflectGet(error2, "name")} [${code3}]`, above);
+  if (props !== void 0) objectAssign(error2, props);
+  return error2;
+}
+function nodeErrorClass(Base, code3) {
+  let classes = nodeErrorClasses.get(Base);
+  if (classes === void 0) nodeErrorClasses.set(Base, classes = new SafeMap());
+  let NodeError = classes.get(code3);
+  if (NodeError === void 0) {
+    NodeError = class extends Base {
+      constructor(text) {
+        super(text);
+        reflectDeleteProperty(this, "message");
+        reflectDefineProperty(this, "code", dataDescriptor(code3, true, true, true));
+        reflectDefineProperty(this, "message", dataDescriptor(text, true, false, true));
+      }
+      toString() {
+        return `${reflectGet(this, "name")} [${code3}]: ${reflectGet(this, "message")}`;
+      }
+    };
+    reflectDefineProperty(NodeError.prototype, "constructor", accessorDescriptor(() => Base, void 0, false, true));
+    classCodes.set(NodeError.prototype, code3);
+    classes.set(code3, NodeError);
+  }
+  return NodeError;
+}
+var inspectValue = (value) => stringOf2(value);
+var ARG_TYPES = ["string", "function", "number", "object", "Function", "Object", "boolean", "bigint", "symbol"];
+var CLASS_NAME = /^[A-Z][a-zA-Z0-9]*$/;
+function formatList(items, type) {
+  if (items.length < 3) return arrayJoin(items, ` ${type} `);
+  let head = "";
+  for (let i2 = 0; i2 < items.length - 1; i2++) head += i2 === 0 ? items[i2] : `, ${items[i2]}`;
+  return `${head}, ${type} ${items[items.length - 1]}`;
+}
+function determineSpecificType(value) {
+  if (value === null) return "null";
+  if (value === void 0) return "undefined";
+  switch (typeof value) {
+    case "bigint":
+      return `type bigint (${value}n)`;
+    case "number":
+      if (value === 0) return 1 / value === -Infinity ? "type number (-0)" : "type number (0)";
+      return `type number (${value})`;
+    case "boolean":
+      return `type boolean (${value})`;
+    case "symbol":
+      return `type symbol (${stringOf2(value)})`;
+    case "function":
+      return `function ${reflectGet(value, "name")}`;
+    case "object": {
+      const ctor = reflectGet(value, "constructor");
+      if ((typeof ctor === "function" || typeof ctor === "object" && ctor !== null) && reflectHas(ctor, "name")) {
+        return `an instance of ${stringOf2(reflectGet(ctor, "name"))}`;
+      }
+      return inspectValue(value, { depth: -1 });
+    }
+    case "string": {
+      const shown = value.length > 28 ? `${stringSlice(value, 0, 25)}...` : value;
+      return stringIncludes(shown, "'") ? `type string (${JSONStringify(shown)})` : `type string ('${shown}')`;
+    }
+    default: {
+      let shown = inspectValue(value, { colors: false });
+      if (shown.length > 28) shown = `${stringSlice(shown, 0, 25)}...`;
+      return `type ${typeof value} (${shown})`;
+    }
+  }
+}
+function invalidArgValueMessage(name50, value, reason = "is invalid") {
+  let inspected = inspectValue(value, {});
+  if (inspected.length > 128) inspected = `${stringSlice(inspected, 0, 128)}...`;
+  return `The ${stringIncludes(name50, ".") ? "property" : "argument"} '${name50}' ${reason}. Received ${inspected}`;
+}
+function outOfRangeMessage(str, range, input, replaceDefaultBoolean = false) {
+  let received;
+  if (typeof input === "number" && numberIsInteger(input) && mathAbs(input) > 2 ** 32) {
+    received = addNumericalSeparator(stringOf2(input));
+  } else if (typeof input === "bigint") {
+    received = stringOf2(input);
+    if (input > 2n ** 32n || input < -(2n ** 32n)) received = addNumericalSeparator(received);
+    received += "n";
+  } else {
+    received = inspectValue(input, {});
+  }
+  return `${replaceDefaultBoolean ? str : `The value of "${str}" is out of range.`} It must be ${range}. Received ${received}`;
+}
+function invalidArgTypeMessage(name50, expected, actual) {
+  let types = new SafeList();
+  const instances = new SafeList();
+  const other = new SafeList();
+  const given = typeof expected === "string" ? [expected] : expected;
+  for (let i2 = 0; i2 < given.length; i2++) {
+    const value = given[i2];
+    if (arrayIncludes(ARG_TYPES, value)) types[types.length] = stringToLowerCase(value);
+    else if (regExpExec(CLASS_NAME, value) !== null) instances[instances.length] = value;
+    else other[other.length] = value;
+  }
+  if (instances.length > 0 && arrayIncludes(types, "object")) {
+    const kept = new SafeList();
+    let removed = false;
+    for (let i2 = 0; i2 < types.length; i2++) {
+      if (!removed && types[i2] === "object") removed = true;
+      else kept[kept.length] = types[i2];
+    }
+    types = kept;
+    instances[instances.length] = "Object";
+  }
+  let message2 = stringEndsWith(name50, " argument") ? `The ${name50} must be ` : `The "${name50}" ${stringIncludes(name50, ".") ? "property" : "argument"} must be `;
+  if (types.length > 0) {
+    message2 += `${types.length > 1 ? "one of type" : "of type"} ${formatList(types, "or")}`;
+    if (instances.length > 0 || other.length > 0) message2 += " or ";
+  }
+  if (instances.length > 0) {
+    message2 += `an instance of ${formatList(instances, "or")}`;
+    if (other.length > 0) message2 += " or ";
+  }
+  if (other.length > 1) message2 += `one of ${formatList(other, "or")}`;
+  else if (other.length === 1) message2 += `${stringToLowerCase(other[0]) !== other[0] ? "an " : ""}${other[0]}`;
+  return `${message2}. Received ${determineSpecificType(actual)}`;
+}
+function addNumericalSeparator(value) {
+  let result = "";
+  let i2 = value.length;
+  const start = value[0] === "-" ? 1 : 0;
+  for (; i2 >= start + 4; i2 -= 3) result = `_${stringSlice(value, i2 - 3, i2)}${result}`;
+  return `${stringSlice(value, 0, i2)}${result}`;
+}
+function formatNodeMessage(template, args2) {
+  let out = "";
+  let from = 0;
+  let i2 = 0;
+  for (let at = stringIndexOf(template, "%s"); at !== -1; at = stringIndexOf(template, "%s", from)) {
+    const value = args2[i2++];
+    out += stringSlice(template, from, at) + (typeof value === "number" && objectIs(value, -0) ? "-0" : stringOf2(value));
+    from = at + 2;
+  }
+  return out + stringSlice(template, from);
+}
+var nodeErrorMessages = {
+  ERR_AMBIGUOUS_ARGUMENT: { message: 'The "%s" argument is ambiguous. %s', bases: [TypeErrorConstructor] },
+  ERR_ASSERTION: { message: "%s", bases: [ErrorConstructor] },
+  ERR_FEATURE_UNAVAILABLE_ON_PLATFORM: { message: "The feature %s is unavailable on the current platform, which is being used to run Node.js", bases: [TypeErrorConstructor] },
+  ERR_CONSTRUCT_CALL_REQUIRED: { message: "Class constructor %s cannot be invoked without `new`", bases: [TypeErrorConstructor] },
+  ERR_CRYPTO_ENGINE_UNKNOWN: { message: 'Engine "%s" was not found', bases: [ErrorConstructor] },
+  ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE: { message: "Invalid key object type %s, expected %s.", bases: [TypeErrorConstructor] },
+  ERR_CRYPTO_SIGN_KEY_REQUIRED: { message: "No key provided to sign", bases: [ErrorConstructor] },
+  ERR_FALSY_VALUE_REJECTION: { message: function(reason) {
+    this.reason = reason;
+    return "Promise was rejected with falsy value";
+  }, bases: [ErrorConstructor] },
+  ERR_ILLEGAL_CONSTRUCTOR: { message: "Illegal constructor", bases: [TypeErrorConstructor] },
+  ERR_INTERNAL_ASSERTION: { message: (message2) => {
+    const suffix = "This is caused by either a bug in Node.js or incorrect usage of Node.js internals.\nPlease open an issue with this stack trace at https://github.com/nodejs/node/issues\n";
+    return message2 === void 0 ? suffix : `${message2}
+${suffix}`;
+  }, bases: [ErrorConstructor] },
+  ERR_INCOMPATIBLE_OPTION_PAIR: { message: 'Option "%s" cannot be used in combination with option "%s"', bases: [TypeErrorConstructor] },
+  ERR_INVALID_IP_ADDRESS: { message: "Invalid IP address: %s", bases: [TypeErrorConstructor] },
+  ERR_INVALID_ARG_TYPE: { message: invalidArgTypeMessage, bases: [TypeErrorConstructor] },
+  ERR_DNS_SET_SERVERS_FAILED: { message: (error2, servers) => `c-ares failed to set servers: "${error2}" [${inspectValue(servers, {})}]`, bases: [ErrorConstructor] },
+  ERR_INVALID_MIME_SYNTAX: { message: (production, str, invalidIndex) => `The MIME syntax for a ${production} in "${str}" is invalid${invalidIndex !== -1 ? ` at ${invalidIndex}` : ""}`, bases: [TypeErrorConstructor] },
+  ERR_INVALID_ARG_VALUE: { message: invalidArgValueMessage, bases: [TypeErrorConstructor, RangeErrorConstructor] },
+  ERR_INVALID_RETURN_VALUE: { message: (input, name50, value) => `Expected ${input} to be returned from the "${name50}" function but got ${determineSpecificType(value)}.`, bases: [TypeErrorConstructor, RangeErrorConstructor] },
+  ERR_INVALID_THIS: { message: 'Value of "this" must be of type %s', bases: [TypeErrorConstructor] },
+  ERR_INVALID_URI: { message: "URI malformed", bases: [URIErrorConstructor] },
+  ERR_METHOD_NOT_IMPLEMENTED: { message: "The %s method is not implemented", bases: [ErrorConstructor] },
+  ERR_MISSING_ARGS: { message: (...names) => {
+    const wrapped = new SafeList();
+    for (let i2 = 0; i2 < names.length; i2++) {
+      const name50 = names[i2];
+      if (typeof name50 === "string") {
+        wrapped[wrapped.length] = `"${name50}"`;
+        continue;
+      }
+      let either = "";
+      for (let j = 0; j < name50.length; j++) either += j === 0 ? `"${name50[j]}"` : ` or "${name50[j]}"`;
+      wrapped[wrapped.length] = either;
+    }
+    return `The ${formatList(wrapped, "and")} argument${names.length > 1 ? "s" : ""} must be specified`;
+  }, bases: [TypeErrorConstructor] },
+  ERR_PARSE_ARGS_INVALID_OPTION_VALUE: { message: "%s", bases: [TypeErrorConstructor] },
+  ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL: { message: "Unexpected argument '%s'. This command does not take positional arguments", bases: [TypeErrorConstructor] },
+  ERR_PARSE_ARGS_UNKNOWN_OPTION: { message: (option, allowPositionals) => `Unknown option '${option}'${allowPositionals ? `. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- ${JSONStringify(option)}` : ""}`, bases: [TypeErrorConstructor] },
+  ERR_OPERATION_FAILED: { message: "Operation failed: %s", bases: [ErrorConstructor, TypeErrorConstructor] },
+  ERR_OUT_OF_RANGE: { message: outOfRangeMessage, bases: [RangeErrorConstructor] },
+  ERR_SOCKET_BAD_PORT: { message: (name50, port, allowZero = true) => `${name50} should be ${allowZero ? ">=" : ">"} 0 and < 65536. Received ${determineSpecificType(port)}.`, bases: [RangeErrorConstructor] },
+  ERR_UNAVAILABLE_DURING_EXIT: { message: "Cannot call function in process exit handler", bases: [ErrorConstructor] },
+  ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET: { message: "`process.setupUncaughtExceptionCapture()` was called while a capture callback was already active", bases: [ErrorConstructor] },
+  ERR_UNKNOWN_SIGNAL: { message: "Unknown signal: %s", bases: [TypeErrorConstructor] },
+  ERR_WORKER_UNSUPPORTED_OPERATION: { message: "%s is not supported in workers", bases: [TypeErrorConstructor] }
+};
+var nodeSystemErrorPrefixes = {
+  ERR_FS_CP_DIR_TO_NON_DIR: "Cannot overwrite non-directory with directory",
+  ERR_FS_CP_EEXIST: "Target already exists",
+  ERR_FS_CP_EINVAL: "Invalid src or dest",
+  ERR_FS_CP_FIFO_PIPE: "Cannot copy a FIFO pipe",
+  ERR_FS_CP_NON_DIR_TO_DIR: "Cannot overwrite directory with non-directory",
+  ERR_FS_CP_SOCKET: "Cannot copy a socket file",
+  ERR_FS_CP_SYMLINK_TO_SUBDIRECTORY: "Cannot overwrite symlink in subdirectory of self",
+  ERR_FS_CP_UNKNOWN: "Cannot copy an unknown file type",
+  ERR_FS_EISDIR: "Path is a directory",
+  ERR_SYSTEM_ERROR: "A system error occurred"
+};
+function nodeErrorCodeConstructor(code3, message2, Base) {
+  const make = function(...args2) {
+    if (typeof message2 === "string") return made(Base, code3, formatNodeMessage(message2, args2), void 0, make);
+    const fields = {};
+    const text = reflectApply(message2, fields, args2);
+    return made(Base, code3, text, objectKeys(fields).length > 0 ? fields : void 0, make);
+  };
+  reflectDefineProperty(make, "name", dataDescriptor("NodeError", false, false, true));
+  return make;
+}
+var nodeErrorCodes = makeNodeErrorCodes();
+function makeNodeErrorCodes() {
+  const codes = {};
+  const messageCodes = objectKeys(nodeErrorMessages);
+  for (let i2 = 0; i2 < messageCodes.length; i2++) {
+    const code3 = messageCodes[i2];
+    const { message: message2, bases } = nodeErrorMessages[code3];
+    const constructor = nodeErrorCodeConstructor(code3, message2, bases[0]);
+    constructor.HideStackFramesError = constructor;
+    for (let j = 1; j < bases.length; j++) {
+      const Other = bases[j];
+      const other = nodeErrorCodeConstructor(code3, message2, Other);
+      other.HideStackFramesError = other;
+      constructor[reflectGet(Other, "name")] = other;
+    }
+    codes[code3] = constructor;
+  }
+  const systemCodes = objectKeys(nodeSystemErrorPrefixes);
+  for (let i2 = 0; i2 < systemCodes.length; i2++) {
+    const code3 = systemCodes[i2];
+    const prefix = nodeSystemErrorPrefixes[code3];
+    const constructor = function(context) {
+      return nodeSystemError(code3, prefix, context);
+    };
+    constructor.HideStackFramesError = constructor;
+    codes[code3] = constructor;
+  }
+  return codes;
+}
+var SystemErrorClass;
+function nodeSystemError(code3, prefix, context) {
+  let message2 = `${prefix}: ${context.syscall} returned ${context.code} (${context.message})`;
+  const path3 = ownField(context, "path");
+  const dest = ownField(context, "dest");
+  if (path3 !== void 0) message2 += ` ${path3}`;
+  if (dest !== void 0) message2 += ` => ${dest}`;
+  SystemErrorClass ??= class SystemError extends ErrorConstructor {
+    constructor(errorCode, text, info) {
+      super(text);
+      reflectDeleteProperty(this, "message");
+      this.code = errorCode;
+      const through = (key) => accessorDescriptor(() => info[key], (value) => {
+        info[key] = value;
+      }, true, true);
+      reflectDefineProperty(this, "name", dataDescriptor("SystemError", true, false, true));
+      reflectDefineProperty(this, "message", dataDescriptor(text, true, false, true));
+      reflectDefineProperty(this, "info", dataDescriptor(info, false, true, true));
+      reflectDefineProperty(this, "errno", through("errno"));
+      reflectDefineProperty(this, "syscall", through("syscall"));
+      if (ownField(info, "path") !== void 0) reflectDefineProperty(this, "path", through("path"));
+      if (ownField(info, "dest") !== void 0) reflectDefineProperty(this, "dest", through("dest"));
+    }
+    toString() {
+      return `${reflectGet(this, "name")} [${this.code}]: ${reflectGet(this, "message")}`;
+    }
+    // util.inspect's third argument is inspect itself.
+    [symbolFor("nodejs.util.inspect.custom")](_depth, options, inspect2) {
+      return inspect2(this, { ...options, getters: true, customInspect: false });
+    }
+  };
+  const error2 = new SystemErrorClass(code3, message2, context);
+  headStack(error2, `SystemError [${code3}]`, nodeSystemError);
+  return error2;
+}
+function headStack(error2, name50, above) {
+  const own = reflectGetOwnPropertyDescriptor(error2, "name");
+  captureStack(error2, above);
+  reflectDefineProperty(error2, "name", dataDescriptor(name50, true, false, true));
+  reflectGet(error2, "stack");
+  if (own === void 0) reflectDeleteProperty(error2, "name");
+  else reflectDefineProperty(error2, "name", own);
+}
+function captureStack(error2, above) {
+  if (typeof ErrorCaptureStackTrace === "function") reflectApply(ErrorCaptureStackTrace, ErrorConstructor, [error2, above]);
+}
+
+// ../core/src/_shared/package-map.ts
+var urlHref = (url) => url.href;
+var urlPathname = (url) => url.pathname;
+function codeOf(error2) {
+  return error2 !== null && typeof error2 === "object" ? reflectGet(error2, "code") : void 0;
+}
 function patternKeyCompare(a2, b2) {
-  const aStar = a2.indexOf("*");
-  const bStar = b2.indexOf("*");
+  const aStar = stringIndexOf(a2, "*");
+  const bStar = stringIndexOf(b2, "*");
   const baseA = aStar === -1 ? a2.length : aStar + 1;
   const baseB = bStar === -1 ? b2.length : bStar + 1;
   if (baseA > baseB) return -1;
@@ -15929,82 +16390,187 @@ function patternKeyCompare(a2, b2) {
   if (bStar === -1) return -1;
   return b2.length - a2.length;
 }
-function* selectPackageMap(field, name50, conditions, policy) {
-  const active = conditions instanceof Set ? conditions : new Set(conditions);
-  function* target(value, match2) {
-    if (typeof value === "string") return yield* policy.target(value, match2);
-    if (Array.isArray(value)) {
-      if (value.length === 0) return null;
-      let last;
-      for (const item of value) {
-        let result;
-        try {
-          result = yield* target(item, match2);
-        } catch (error2) {
-          if (codeOf(error2) !== "ERR_INVALID_PACKAGE_TARGET") throw error2;
-          last = error2;
-          continue;
-        }
-        if (result === void 0 || policy.permissive && result === "") continue;
-        if (result === null) {
-          last = null;
-          continue;
-        }
-        return result;
-      }
-      if (last === void 0 || last === null) return last;
-      throw last;
-    }
-    if (value === null) return null;
-    if (typeof value === "object" && value !== null) {
-      const keys = Object.getOwnPropertyNames(value);
-      if (!policy.permissive && keys.some((key) => /^\d+$/.test(key) && String(Number(key)) === key && Number(key) < 4294967295)) {
-        throw policy.invalidConfig("numeric");
-      }
-      for (const key of keys) {
-        if (key !== "default" && !active.has(key)) continue;
-        const result = yield* target(Reflect.get(value, key), match2);
-        if (result === void 0 || policy.permissive && (result === null || result === "")) continue;
-        return result;
-      }
-      return void 0;
-    }
-    if (policy.permissive) return void 0;
-    throw policy.invalidTarget(value, match2);
+function isArrayIndexKey(key) {
+  if (key.length === 0) return false;
+  for (let i2 = 0; i2 < key.length; i2++) {
+    const code3 = stringCharCodeAt(key, i2);
+    if (code3 < 48 || code3 > 57) return false;
   }
+  return stringOf2(NumberOf(key)) === key && NumberOf(key) < 4294967295;
+}
+function replaceStars(text, subpath) {
+  let out = "";
+  let from = 0;
+  for (let star = stringIndexOf(text, "*"); star !== -1; star = stringIndexOf(text, "*", from)) {
+    out += stringSlice(text, from, star) + subpath;
+    from = star + 1;
+  }
+  return out + stringSlice(text, from);
+}
+function isConditionList(conditions) {
+  return arrayIsArray(conditions);
+}
+function activeConditions(conditions) {
+  if (conditions instanceof SafeSet) return conditions;
+  const active = new SafeSet();
+  if (isConditionList(conditions)) {
+    for (let i2 = 0; i2 < conditions.length; i2++) active.add(conditions[i2]);
+  } else {
+    setForEach(conditions, (condition) => {
+      active.add(condition);
+    });
+  }
+  return active;
+}
+function selectPackageMap(field, name50, conditions, policy) {
+  return selectSteps(field, name50, activeConditions(conditions), policy);
+}
+var selectTarget = safeGenerator(function* (value, match, active, policy) {
+  if (typeof value === "string") return yield* policy.target(value, match);
+  if (arrayIsArray(value)) {
+    const items = value;
+    if (items.length === 0) return null;
+    let last;
+    for (let i2 = 0; i2 < items.length; i2++) {
+      let result;
+      try {
+        result = yield* selectTarget(items[i2], match, active, policy);
+      } catch (error2) {
+        if (codeOf(error2) !== "ERR_INVALID_PACKAGE_TARGET") throw error2;
+        last = error2;
+        continue;
+      }
+      if (result === void 0 || policy.permissive && result === "") continue;
+      if (result === null) {
+        last = null;
+        continue;
+      }
+      return result;
+    }
+    if (last === void 0 || last === null) return last;
+    throw last;
+  }
+  if (value === null) return null;
+  if (typeof value === "object") {
+    const keys = objectGetOwnPropertyNames(value);
+    if (!policy.permissive) {
+      for (let i2 = 0; i2 < keys.length; i2++) if (isArrayIndexKey(keys[i2])) throw policy.invalidConfig("numeric");
+    }
+    for (let i2 = 0; i2 < keys.length; i2++) {
+      const key = keys[i2];
+      if (key !== "default" && !active.has(key)) continue;
+      const result = yield* selectTarget(reflectGet(value, key), match, active, policy);
+      if (result === void 0 || policy.permissive && (result === null || result === "")) continue;
+      return result;
+    }
+    return void 0;
+  }
+  if (policy.permissive) return void 0;
+  throw policy.invalidTarget(value, match);
+});
+var selectSteps = safeGenerator(function* (field, name50, active, policy) {
+  const target = (value, match2) => selectTarget(value, match2, active, policy);
   if (field === void 0) return void 0;
   if (field === null) return null;
   let map;
   if (!policy.internal) {
-    let sugar = typeof field !== "object" || Array.isArray(field);
-    if (typeof field === "object" && !Array.isArray(field)) {
-      const keys = Object.getOwnPropertyNames(field);
-      sugar = keys.length > 0 && !keys[0].startsWith(".");
-      if (!policy.permissive && keys.some((key) => !key.startsWith(".") !== sugar)) throw policy.invalidConfig("mixed");
+    if (typeof field === "object" && !arrayIsArray(field)) {
+      const keys2 = objectGetOwnPropertyNames(field);
+      const sugar = keys2.length > 0 && !stringStartsWith(keys2[0], ".");
+      if (!policy.permissive) {
+        for (let i2 = 0; i2 < keys2.length; i2++) if (!stringStartsWith(keys2[i2], ".") !== sugar) throw policy.invalidConfig("mixed");
+      }
+      map = sugar ? { ".": field } : field;
+    } else {
+      map = { ".": field };
     }
-    map = sugar ? { ".": field } : field;
   } else {
-    if (typeof field !== "object" || Array.isArray(field)) return void 0;
+    if (typeof field !== "object" || arrayIsArray(field)) return void 0;
     map = field;
   }
-  const match = (key, subpath, pattern) => ({ key, subpath, pattern, internal: policy.internal, isPathMap: !policy.internal && name50.endsWith("/") });
-  if (Object.prototype.hasOwnProperty.call(map, name50) && (policy.permissive || !name50.includes("*") && !name50.endsWith("/"))) {
-    return yield* target(map[name50], match(name50, "", false));
+  const match = (key, subpath, pattern) => ({ key, subpath, pattern, internal: policy.internal, isPathMap: !policy.internal && stringEndsWith(name50, "/") });
+  if (objectHasOwn(map, name50) && (policy.permissive || !stringIncludes(name50, "*") && !stringEndsWith(name50, "/"))) {
+    return yield* target(reflectGet(map, name50), match(name50, "", false));
   }
-  const candidates = Object.getOwnPropertyNames(map).filter((key) => {
-    const star = key.indexOf("*");
-    if (star === -1 || !policy.permissive && key.lastIndexOf("*") !== star) return false;
-    const trailer = key.slice(star + 1);
-    return name50.startsWith(key.slice(0, star)) && name50.endsWith(trailer) && name50.length >= (policy.permissive ? key.length - 1 : key.length);
-  }).sort(policy.permissive ? (a2, b2) => b2.length - a2.length : patternKeyCompare);
-  for (const key of candidates) {
-    const star = key.indexOf("*");
-    const subpath = name50.slice(star, name50.length - (key.length - star - 1));
-    const result = yield* target(map[key], match(key, subpath, true));
-    if (!policy.permissive || result != null && result !== "" || map[key] === null) return result;
+  const keys = objectGetOwnPropertyNames(map);
+  const candidates = new SafeList();
+  for (let i2 = 0; i2 < keys.length; i2++) {
+    const key = keys[i2];
+    const star = stringIndexOf(key, "*");
+    if (star === -1 || !policy.permissive && stringLastIndexOf(key, "*") !== star) continue;
+    const trailer = stringSlice(key, star + 1);
+    if (stringStartsWith(name50, stringSlice(key, 0, star)) && stringEndsWith(name50, trailer) && name50.length >= (policy.permissive ? key.length - 1 : key.length)) candidates[candidates.length] = key;
+  }
+  arraySort(candidates, policy.permissive ? (a2, b2) => b2.length - a2.length : patternKeyCompare);
+  for (let i2 = 0; i2 < candidates.length; i2++) {
+    const key = candidates[i2];
+    const star = stringIndexOf(key, "*");
+    const subpath = stringSlice(name50, star, name50.length - (key.length - star - 1));
+    const value = reflectGet(map, key);
+    const result = yield* target(value, match(key, subpath, true));
+    if (!policy.permissive || result != null && result !== "" || value === null) return result;
   }
   return void 0;
+});
+function resolutionError(code3, message2, Type = ErrorConstructor) {
+  return nodeError(Type, code3, message2, void 0, resolutionError);
 }
+function urlFilePath(url) {
+  return decodeURIComponentOf(urlPathname(url));
+}
+function invalidNodeTarget(state, value, match) {
+  const text = typeof value === "object" && value !== null ? JSONStringify(value) : stringOf2(value);
+  const related = !state.internal && text.length > 0 && !stringStartsWith(text, "./");
+  const tail = `in the package config ${urlFilePath(state.root)}package.json imported from ${state.base}${related ? '; targets must start with "./"' : ""}`;
+  return resolutionError("ERR_INVALID_PACKAGE_TARGET", match.key === "." ? `Invalid "exports" main target ${JSONStringify(text)} defined ${tail}` : `Invalid "${state.internal ? "imports" : "exports"}" target ${JSONStringify(text)} defined for '${match.key}' ${tail}`);
+}
+function invalidSegments(text) {
+  let start = 0;
+  for (let i2 = 0; i2 <= text.length; i2++) {
+    if (i2 < text.length && text[i2] !== "/" && text[i2] !== "\\") continue;
+    const segment = stringSlice(text, start, i2);
+    start = i2 + 1;
+    let decoded;
+    try {
+      decoded = decodeURIComponentOf(segment);
+    } catch {
+      decoded = segment;
+    }
+    if (decoded === "." || decoded === ".." || stringToLowerCase(decoded) === "node_modules") return true;
+  }
+  return false;
+}
+var nodeMapTarget = safeGenerator(function* (state, value, match) {
+  if (!stringStartsWith(value, "./")) {
+    if (state.internal && !stringStartsWith(value, "../") && !stringStartsWith(value, "/")) {
+      let isUrl = false;
+      try {
+        newURL(value);
+        isUrl = true;
+      } catch {
+      }
+      if (!isUrl) return yield* state.resolveBare(match.pattern ? replaceStars(value, match.subpath) : value);
+    }
+    throw invalidNodeTarget(state, value, match);
+  }
+  if (invalidSegments(stringSlice(value, 2))) throw invalidNodeTarget(state, value, match);
+  const resolved = newURL(value, state.packageJsonUrl);
+  if (!stringStartsWith(urlPathname(resolved), urlPathname(state.root))) throw invalidNodeTarget(state, value, match);
+  if (!match.subpath) return resolved;
+  if (invalidSegments(match.subpath) && !match.isPathMap) {
+    const star = stringIndexOf(match.key, "*");
+    const request = !match.pattern ? match.key + match.subpath : star === -1 ? match.key : stringSlice(match.key, 0, star) + match.subpath + stringSlice(match.key, star + 1);
+    throw resolutionError(
+      "ERR_INVALID_MODULE_SPECIFIER",
+      `Invalid module "${request}" request is not a valid match in pattern "${match.key}" for the "${state.internal ? "imports" : "exports"}" resolution of ${state.pjsonPath} imported from ${state.base}`,
+      TypeErrorConstructor
+    );
+  }
+  return newURL(replaceStars(urlHref(resolved), match.subpath));
+});
+
+// ../core/src/_shared/exports-resolver.ts
+var DEFAULT_BUILD_CONDITIONS = ["import", "module", "browser", "default"];
 var BUILD_BROWSER_PACKAGE_MAP_POLICY = {
   name: "build-browser-permissive",
   internal: false,

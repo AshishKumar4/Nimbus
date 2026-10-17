@@ -13,7 +13,7 @@ import { ENTRYPOINT_EVENT_LOOP } from '../../packages/worker/src/facets/manager.
 import { clientLifetime, pendingListenLifetime, pendingCloseLifetime, exchangeLifetime } from './lib/native-http-lifetimes.mjs';
 import { httpFetchCases } from './lib/http-fetch-cases.mjs';
 import { httpFetchReviewCases } from './lib/http-fetch-review-cases.mjs';
-import { NODE_ERROR_PREAMBLE } from '../../packages/worker/src/loaders/generated-workers.ts';
+import { NODE_ERROR_PREAMBLE, PRIMORDIALS_PREAMBLE } from '../../packages/worker/src/loaders/generated-workers.ts';
 import { generateNodeLibModule, generateNodeLibRestModule, generateNodeDnsModule } from '../../packages/worker/src/runtime/node-lib-module.ts';
 import { opencodeBuiltinBridgeModules } from '../../packages/worker/src/runtime/opencode-facet-runner.ts';
 
@@ -218,6 +218,7 @@ globalThis.__nimbusRawSetTimeout = setTimeout;
 const previousHttp = { ...__real_http, request: __real_http.request };
 const previousAddress = __real_http.Server.prototype.address;
 const previousListen = __real_http.Server.prototype.listen;
+${PRIMORDIALS_PREAMBLE}
 ${NODE_ERROR_PREAMBLE}
 const primordials = {};
 lib.primordialsOf(primordials, globalThis);

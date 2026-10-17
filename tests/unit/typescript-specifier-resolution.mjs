@@ -29,7 +29,7 @@
 import assert from 'node:assert/strict';
 import { prefetchForRequire } from '../../packages/core/src/runtime/require-resolver.ts';
 import { typescriptFallbackCandidates } from '../../packages/core/src/_shared/typescript-specifiers.ts';
-import { NODE_SHIM_RESOLUTION_PREAMBLE } from '../../packages/worker/src/loaders/generated-workers.ts';
+import { NODE_SHIM_RESOLUTION_PREAMBLE, PRIMORDIALS_PREAMBLE } from '../../packages/worker/src/loaders/generated-workers.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import {
   bundleCompiledLoader,
@@ -148,7 +148,8 @@ for (const [base, expected] of TABLE) {
   const shim = generateShimsCode();
   assert.ok(shim.includes(NODE_SHIM_RESOLUTION_PREAMBLE), 'the emitted shim carries the compiled resolution preamble');
   // eslint-disable-next-line no-new-func
-  const emitted = new Function(`${NODE_SHIM_RESOLUTION_PREAMBLE}\nreturn typescriptFallbackCandidates;`)();
+  // After the captures it is bound to, as the shim declares them.
+  const emitted = new Function(`${PRIMORDIALS_PREAMBLE}\n${NODE_SHIM_RESOLUTION_PREAMBLE}\nreturn typescriptFallbackCandidates;`)();
   for (const [base, expected] of TABLE) {
     assert.deepEqual(emitted(base), expected, `the emitted mapping agrees for ${base}`);
   }

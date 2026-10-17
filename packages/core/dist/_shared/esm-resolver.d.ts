@@ -18,7 +18,12 @@
  *
  * The node shims embed it as source (scripts/bundle-facet-workers.mjs
  * compiles it into loaders/generated-workers.ts), so the resolver is one
- * self-contained function: nothing inside may refer to this module.
+ * self-contained function: nothing inside may refer to this module. A
+ * program may have replaced built-ins by the time it resolves, so it calls
+ * only those the launch captured (primordials.ts), as Node's loader calls
+ * its primordials, and reads a parsed package.json's own fields alone, as
+ * Node's reader does (tests/unit/primordials-audit.mjs); a URL's members
+ * it reads live, as Node's does (package-map.ts urlPathname).
  */
 type MaybePromise<T> = T | Promise<T>;
 /**
@@ -46,9 +51,9 @@ export type EsmFormat = 'builtin' | 'module' | 'commonjs' | 'json' | 'detect' | 
 export interface EsmResolution {
     url: string;
     /** The file, for a `file:` URL. */
-    path?: string;
+    path: string | undefined;
     /** The builtin's name, for a `node:` URL. */
-    builtin?: string;
+    builtin: string | undefined;
     format: EsmFormat;
 }
 export interface EsmResolver {
@@ -88,5 +93,12 @@ export interface EsmResolverOptions {
     cwd?: () => string;
 }
 export declare function createEsmResolver(host: EsmResolverHost, options?: EsmResolverOptions): EsmResolver;
+/**
+ * Node's refusal of a relative or absolute specifier that is no URL against
+ * its importer's (resolve.js moduleResolve): ERR_UNSUPPORTED_RESOLVE_REQUEST,
+ * its own `cause` the URL parser's ERR_INVALID_URL, with the input and the
+ * base (lib/internal/url.js), whatever the realm's parser said.
+ */
+export declare function unsupportedResolveRequest(specifier: string, parentUrl: string): Error;
 export {};
 //# sourceMappingURL=esm-resolver.d.ts.map

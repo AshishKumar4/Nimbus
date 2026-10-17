@@ -11,9 +11,10 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 
-import { NODE_ERROR_PREAMBLE } from '../../packages/worker/src/loaders/generated-workers.ts';
+import { NODE_ERROR_PREAMBLE, PRIMORDIALS_PREAMBLE } from '../../packages/worker/src/loaders/generated-workers.ts';
 
 const PROGRAM = `
+${PRIMORDIALS_PREAMBLE}
 ${NODE_ERROR_PREAMBLE}
 const util = require('node:util');
 useNodeErrorInspect(util.inspect);

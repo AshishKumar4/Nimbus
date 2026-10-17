@@ -59,8 +59,9 @@ const DIR = join(CORE, 'src/interpreter');
 const UNCHECKED = new Set(['primordials.ts', 'host-ops.ts']);
 /** The mark of a line that reaches the program's realm because Node's own code does (posix-path.ts: lib/path.js join's push). */
 const LIVE_AS_NODE = /\/\/ as Node's, live:/;
-/** The guest's module loading, as it is converted: node:path's posix half. */
-const GUEST_LOADING = [join(CORE, 'src/_shared/posix-path.ts')];
+/** The guest's module loading, as it is converted: node:path's posix half, the module resolvers, their package maps and TypeScript rules, Node's errors. */
+const GUEST_LOADING = ['posix-path.ts', 'esm-resolver.ts', 'package-map.ts', 'node-error.ts', 'commonjs-resolver.ts', 'typescript-specifiers.ts']
+  .map((file) => join(CORE, 'src/_shared', file));
 const FILES = [
   ...readdirSync(DIR).filter((f) => f.endsWith('.ts') && !UNCHECKED.has(f)).map((f) => join(DIR, f)),
   join(CORE, 'src/_shared/runtime-function-source.ts'),

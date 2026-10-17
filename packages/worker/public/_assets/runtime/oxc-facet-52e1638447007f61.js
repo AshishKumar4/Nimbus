@@ -10125,13 +10125,133 @@ error: the Oxc transform crashed (${reason})`);
     return dot > 0 ? base.slice(dot) : "";
   }
 
+  var reflectApply = Reflect.apply;
+  var reflectGet = Reflect.get;
+  var reflectDefineProperty = Reflect.defineProperty;
+  var reflectGetOwnPropertyDescriptor = Reflect.getOwnPropertyDescriptor;
+  var reflectGetPrototypeOf = Reflect.getPrototypeOf;
+  var reflectSetPrototypeOf = Reflect.setPrototypeOf;
+  var objectCreate = Object.create;
+  var objectHasOwn = Object.hasOwn;
+  var symbolFor = Symbol.for;
+  var PromiseResolve = Promise.resolve;
+  var PromiseReject = Promise.reject;
+  var PromisePrototypeThen = Promise.prototype.then;
+  var ArrayValues = Array.prototype[Symbol.iterator];
+  var ArrayIteratorPrototype = Reflect.getPrototypeOf([][Symbol.iterator]()) ?? {};
+  var ArrayIteratorNext = Reflect.get(ArrayIteratorPrototype, "next");
+  var ArrayPrototypeWith = Reflect.get(Array.prototype, "with");
+  var ArrayPrototypeToSpliced = Reflect.get(Array.prototype, "toSpliced");
+  var StringPrototypeSlice = String.prototype.slice;
+  var StringPrototypeLastIndexOf = String.prototype.lastIndexOf;
+  var StringPrototypeCharCodeAt = String.prototype.charCodeAt;
+  var SymbolPrototypeToString = Symbol.prototype.toString;
+  var StringPrototypeCharAt = String.prototype.charAt;
+  var StringPrototypeIndexOf = String.prototype.indexOf;
+  var StringPrototypeSubstr = String.prototype.substr;
+  var StringFromCharCode = String.fromCharCode;
+  var ArrayPrototypePop = Array.prototype.pop;
+  var ArrayPrototypeIndexOf = Array.prototype.indexOf;
+  var ArrayPrototypeLastIndexOf = Array.prototype.lastIndexOf;
+  var RegExpPrototypeExec = RegExp.prototype.exec;
+  var RegExpPrototypeAccessors = (() => {
+    const accessors = objectCreate(null);
+    const names = Object.getOwnPropertyNames(RegExp.prototype);
+    for (let i = 0; i < names.length; i++) {
+      const getter = Reflect.getOwnPropertyDescriptor(RegExp.prototype, names[i])?.get;
+      if (getter !== void 0) accessors[names[i]] = getter;
+    }
+    return accessors;
+  })();
+  var NumberPrototypeToString = Number.prototype.toString;
+  var BigIntPrototypeToString = BigInt.prototype.toString;
+  var ObjectPrototype = Object.prototype;
+  var SymbolPrototypeDescription = Reflect.getOwnPropertyDescriptor(Symbol.prototype, "description")?.get;
+  var numberIsInteger = Number.isInteger;
+  var ErrorCaptureStackTrace = Reflect.get(Error, "captureStackTrace");
+  function copyMethods(to, from, methods) {
+    for (let i = 0; i < methods.length; i++) {
+      const descriptor = reflectGetOwnPropertyDescriptor(from, methods[i]);
+      if (descriptor) reflectDefineProperty(to, methods[i], descriptor);
+    }
+  }
+  var SafeMap = class extends Map {
+  };
+  copyMethods(SafeMap.prototype, Map.prototype, ["get", "set", "has", "delete", "clear", "forEach", "size"]);
+  var SafeSet = class extends Set {
+  };
+  copyMethods(SafeSet.prototype, Set.prototype, ["add", "has", "delete", "clear", "forEach", "size"]);
+  var SafeWeakMap = class extends WeakMap {
+  };
+  copyMethods(SafeWeakMap.prototype, WeakMap.prototype, ["get", "set", "has", "delete"]);
+  var SafeWeakSet = class extends WeakSet {
+  };
+  copyMethods(SafeWeakSet.prototype, WeakSet.prototype, ["add", "has", "delete"]);
+  var SafeList = class extends Array {
+  };
+  reflectSetPrototypeOf(SafeList.prototype, null);
+  var SafeGeneratorPrototype = objectCreate(null);
+  var SafeAsyncGeneratorPrototype = objectCreate(null);
+  {
+    const generatorPrototype2 = reflectGetPrototypeOf(function* () {
+    }.prototype) ?? {};
+    const asyncGeneratorPrototype = reflectGetPrototypeOf(async function* () {
+    }.prototype) ?? {};
+    copyMethods(SafeGeneratorPrototype, generatorPrototype2, ["next", "return", "throw"]);
+    copyMethods(SafeGeneratorPrototype, reflectGetPrototypeOf(generatorPrototype2) ?? {}, [Symbol.iterator]);
+    copyMethods(SafeAsyncGeneratorPrototype, asyncGeneratorPrototype, ["next", "return", "throw"]);
+    copyMethods(SafeAsyncGeneratorPrototype, reflectGetPrototypeOf(asyncGeneratorPrototype) ?? {}, [Symbol.asyncIterator]);
+  }
+  var SafeRegExpPrototype = objectCreate(null);
+  {
+    const keys = Reflect.ownKeys(RegExp.prototype);
+    const members = [];
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i];
+      if (key !== "constructor" && key !== Symbol.split && key !== Symbol.matchAll) members[members.length] = key;
+    }
+    copyMethods(SafeRegExpPrototype, RegExp.prototype, members);
+  }
+  var GeneratorPrototypeNext = reflectGet(SafeGeneratorPrototype, "next");
+  var GeneratorPrototypeReturn = reflectGet(SafeGeneratorPrototype, "return");
+  var GeneratorPrototypeThrow = reflectGet(SafeGeneratorPrototype, "throw");
+  var FunctionPrototypeCall = Function.prototype.call;
+  var FunctionPrototypeBind = Function.prototype.bind;
+  function uncurryThis(fn) {
+    return reflectApply(FunctionPrototypeBind, FunctionPrototypeCall, [fn]);
+  }
+  var stringCharCodeAt = uncurryThis(String.prototype.charCodeAt);
+  var stringSlice = uncurryThis(String.prototype.slice);
+  var stringLastIndexOf = uncurryThis(String.prototype.lastIndexOf);
+  var arrayJoin = uncurryThis(Array.prototype.join);
+  var stringStartsWith = uncurryThis(String.prototype.startsWith);
+  var stringEndsWith = uncurryThis(String.prototype.endsWith);
+  var stringIncludes = uncurryThis(String.prototype.includes);
+  var stringIndexOf = uncurryThis(String.prototype.indexOf);
+  var stringToLowerCase = uncurryThis(String.prototype.toLowerCase);
+  var arrayIncludes = uncurryThis(Array.prototype.includes);
+  var arrayIndexOf = uncurryThis(Array.prototype.indexOf);
+  var setForEach = uncurryThis(Set.prototype.forEach);
+  var arraySort = uncurryThis(Array.prototype.sort);
+  var regExpExec = uncurryThis(RegExp.prototype.exec);
+  var generatorPrototype = reflectGetPrototypeOf(function* () {
+  }.prototype);
+  var generatorNext = uncurryThis(reflectGet(generatorPrototype ?? {}, "next"));
+  var generatorThrow = uncurryThis(reflectGet(generatorPrototype ?? {}, "throw"));
+
+  function extensionOf(path) {
+    const base = stringSlice(path, stringLastIndexOf(path, "/") + 1);
+    const dot = stringLastIndexOf(base, ".");
+    return dot > 0 ? stringSlice(base, dot) : "";
+  }
   function typescriptLoader(path) {
-    const ext = vfsPathExtension(path);
+    const ext = extensionOf(path);
     if (ext === ".tsx") return "tsx";
     return ext === ".ts" || ext === ".mts" || ext === ".cts" ? "ts" : null;
   }
+  var DECLARATION_FILE = /\.d\.[mc]?ts$/;
   function isTypescriptDeclarationFile(path) {
-    return /\.d\.[mc]?ts$/.test(path.slice(path.lastIndexOf("/") + 1));
+    return regExpExec(DECLARATION_FILE, stringSlice(path, stringLastIndexOf(path, "/") + 1)) !== null;
   }
   function stripsTypeScript(path) {
     return typescriptLoader(path) === "ts" && !isTypescriptDeclarationFile(path);

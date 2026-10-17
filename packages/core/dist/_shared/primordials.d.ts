@@ -3,10 +3,13 @@
  * code that shares a realm with a program and must not reach what the
  * program replaced: the interpreter (interpreter/primordials.ts, loaded at a
  * launch's start), and the guest's module loading (node:path's posix half,
- * posix-path.ts), which the node shims evaluate before the program's first
- * statement. Only captures, and the collections and lists built on them:
- * every process of a launch evaluates it (tests/unit/primordials-audit.mjs
- * checks that its readers call nothing else).
+ * posix-path.ts; the ES module resolver, esm-resolver.ts, its package maps,
+ * package-map.ts, and Node's errors, node-error.ts), which the node shims
+ * evaluate before the program's first statement. Only captures, the
+ * collections and lists built on them, and what makes the runtime's own
+ * generators drive through them (safeGenerator): every process of a launch
+ * evaluates it (tests/unit/primordials-audit.mjs checks that its readers
+ * call nothing else).
  */
 export declare const reflectApply: typeof Reflect.apply;
 export declare const reflectConstruct: typeof Reflect.construct;
@@ -98,6 +101,20 @@ export declare const parseFloatOf: typeof parseFloat;
 export declare const SymbolConstructor: SymbolConstructor;
 export declare const SymbolPrototypeDescription: unknown;
 export declare const globalObject: typeof globalThis;
+export declare const JSONParse: (text: string, reviver?: (this: any, key: string, value: any) => any) => any;
+export declare const JSONStringify: {
+    (value: any, replacer?: (this: any, key: string, value: any) => any, space?: string | number): string;
+    (value: any, replacer?: (number | string)[] | null, space?: string | number): string;
+};
+export declare const decodeURIComponentOf: typeof decodeURIComponent;
+export declare const encodeURIComponentOf: typeof encodeURIComponent;
+export declare const NumberOf: NumberConstructor;
+export declare const numberIsInteger: (number: unknown) => boolean;
+export declare const objectIs: (value1: any, value2: any) => boolean;
+export declare const objectIsExtensible: (o: any) => boolean;
+export declare const mathAbs: (x: number) => number;
+/** V8's Error.captureStackTrace, where the engine has one (the language's types have none). */
+export declare const ErrorCaptureStackTrace: unknown;
 declare const BigIntOf: BigIntConstructor;
 declare const ErrorConstructor: ErrorConstructor;
 declare const RangeErrorConstructor: RangeErrorConstructor;
@@ -105,7 +122,9 @@ declare const ReferenceErrorConstructor: ReferenceErrorConstructor;
 declare const RegExpConstructor: RegExpConstructor;
 declare const SyntaxErrorConstructor: SyntaxErrorConstructor;
 declare const TypeErrorConstructor: TypeErrorConstructor;
-export { BigIntOf as BigInt, ErrorConstructor as Error, RangeErrorConstructor as RangeError, ReferenceErrorConstructor as ReferenceError, RegExpConstructor as RegExp, SyntaxErrorConstructor as SyntaxError, TypeErrorConstructor as TypeError, };
+declare const URIErrorConstructor: URIErrorConstructor;
+declare const URLConstructor: typeof URL;
+export { BigIntOf as BigInt, ErrorConstructor as Error, RangeErrorConstructor as RangeError, ReferenceErrorConstructor as ReferenceError, RegExpConstructor as RegExp, SyntaxErrorConstructor as SyntaxError, TypeErrorConstructor as TypeError, URIErrorConstructor as URIError, URLConstructor as URL, };
 /**
  * A data property descriptor that inherits nothing: ToPropertyDescriptor
  * looks up `get` and `set` on the descriptor, prototype chain included.
@@ -155,4 +174,29 @@ export declare const stringCharCodeAt: (text: string, index: number) => number;
 export declare const stringSlice: (text: string, start?: number, end?: number) => string;
 export declare const stringLastIndexOf: (text: string, search: string, position?: number) => number;
 export declare const arrayJoin: (list: readonly string[], separator: string) => string;
+export declare const stringStartsWith: (text: string, search: string, position?: number) => boolean;
+export declare const stringEndsWith: (text: string, search: string) => boolean;
+export declare const stringIncludes: (text: string, search: string) => boolean;
+export declare const stringIndexOf: (text: string, search: string, position?: number) => number;
+export declare const stringToLowerCase: (text: string) => string;
+export declare const arrayIncludes: <T>(list: readonly T[], value: T) => boolean;
+export declare const arrayIndexOf: <T>(list: readonly T[], value: T) => number;
+export declare const setForEach: <T>(set: ReadonlySet<T>, each: (value: T) => void) => void;
+/** Array.prototype.sort of a SafeList, which inherits nothing it could read or write past its end. */
+export declare const arraySort: <T>(list: SafeList<T>, compare: (a: T, b: T) => number) => SafeList<T>;
+/** RegExp.prototype.exec: RegExpBuiltinExec, which reads the regexp's own lastIndex and its flags' internal slots. */
+export declare const regExpExec: (pattern: RegExp, text: string) => RegExpExecArray | null;
+export declare const generatorNext: <R>(it: Generator<unknown, R, unknown>, value?: unknown) => IteratorResult<unknown, R>;
+export declare const generatorThrow: <R>(it: Generator<unknown, R, unknown>, error: unknown) => IteratorResult<unknown, R>;
+/** `new URL(input, base)` with the realm's URL. */
+export declare function newURL(input: string, base?: string | URL): URL;
+/**
+ * `fn`, a generator function of the runtime's own, made to create
+ * generators that inherit SafeGeneratorPrototype: next(), and yield*,
+ * which looks up the inner generator's [Symbol.iterator] and next, reach
+ * no method a program replaced on %GeneratorPrototype%.
+ */
+export declare function safeGenerator<A extends unknown[], R>(fn: (...args: A) => Generator<unknown, R, unknown>): (...args: A) => Generator<unknown, R, unknown>;
+/** `object`'s own `key`, or undefined: a parsed package.json's field, which Node's reader takes only as the file has it (no inherited one). */
+export declare function ownField(object: object, key: string): unknown;
 //# sourceMappingURL=primordials.d.ts.map

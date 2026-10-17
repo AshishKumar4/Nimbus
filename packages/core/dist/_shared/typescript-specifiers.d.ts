@@ -37,7 +37,9 @@
  *
  * The facet shim embeds this code itself (node-shim-resolution.ts, compiled
  * once into the shim's preamble); tests/unit/typescript-specifier-resolution.mjs
- * evaluates the embedded copy over the whole table.
+ * evaluates the embedded copy over the whole table. The guest's require()
+ * calls it after a program may have replaced built-ins, so it calls only
+ * those the launch captured (primordials.ts).
  */
 /**
  * The esbuild loader a TypeScript source takes, by its extension: `.ts`,

@@ -5,6 +5,7 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a hosted node program that replaces a built-in its module resolution calls (`String.prototype.startsWith`, `Array.prototype.push`, `JSON.parse`, `Map.prototype.get`, `%GeneratorPrototype%.next` and the like) still resolves `import`, `import()`, `import.meta.resolve`, `require.resolve` and `require` specifiers, and gets Node's errors for them, as Node's loader does on its primordials. A package.json's fields are its own: an `Object.prototype.main` or `.exports` a program adds no longer changes how a package resolves. A URL's members are read as Node reads them, so a replaced `URL.prototype.pathname` breaks resolution as it breaks Node's. Loading itself is the remaining work (design-guest-loader-primordials, heads 3 and 4).
 - Changed: the hosted node's `node:path` posix half is now Node v22.22.3's own `lib/path.js`, ported onto built-ins the launch captures before any program code runs. A program that replaces `String.prototype.charCodeAt`, `slice` and the like gets from `path` what Node's `path` gives, where workerd's `path` used to fail. Its key order, function names and argument errors are Node's, including `path.join` failing, as Node's does, when `Array.prototype.push` is replaced. `win32` and `matchesGlob` remain the platform's.
 - Fixed: one session's compiles no longer reset the other sessions that
   share its isolate. The platform runs several sessions in one isolate

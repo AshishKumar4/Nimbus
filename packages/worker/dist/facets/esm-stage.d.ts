@@ -42,6 +42,11 @@ export interface EsmMissing {
     readonly message: string;
     /** The URL Node's resolution error carries (a module or directory not found). */
     readonly url?: string;
+    /** Its cause, a URL parser's ERR_INVALID_URL (ERR_UNSUPPORTED_RESOLVE_REQUEST's): the specifier and the base it would not parse against. */
+    readonly invalidUrl?: {
+        readonly input: string;
+        readonly base: string;
+    };
 }
 /** What a launch stages for its ES modules. */
 export interface EsmStage {

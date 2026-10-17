@@ -54,7 +54,14 @@ function refusal(error) {
     const failure = error instanceof Error ? error : new Error(String(error));
     const code = Reflect.get(failure, 'code');
     const url = Reflect.get(failure, 'url');
-    return { name: failure.name, code: typeof code === 'string' ? code : '', message: failure.message, ...(typeof url === 'string' ? { url } : {}) };
+    const cause = Reflect.get(failure, 'cause');
+    const input = cause instanceof Error && Reflect.get(cause, 'code') === 'ERR_INVALID_URL' ? Reflect.get(cause, 'input') : undefined;
+    const base = cause instanceof Error ? Reflect.get(cause, 'base') : undefined;
+    return {
+        name: failure.name, code: typeof code === 'string' ? code : '', message: failure.message,
+        ...(typeof url === 'string' ? { url } : {}),
+        ...(typeof input === 'string' && typeof base === 'string' ? { invalidUrl: { input, base } } : {}),
+    };
 }
 /**
  * Stage `cells`, the launch's ES modules (their code and import sites, by VFS
@@ -268,7 +275,7 @@ export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate,
             try {
                 // A provided package by its bare name is the process's own, never an installed copy.
                 const resolution = FACET_PROVIDED_PACKAGES.includes(site.specifier)
-                    ? { url: site.specifier, format: 'builtin', builtin: site.specifier }
+                    ? { url: site.specifier, path: undefined, format: 'builtin', builtin: site.specifier }
                     : await resolver.resolve(site.specifier, parentUrl.href).catch(async (error) => {
                         // Bun's resolution probes what Node's refuses (a `.js` naming its `.ts`, an extensionless path).
                         const probed = scope === 'bun' ? await requireResolve(site.specifier, parentUrl.pathname) : null;
@@ -276,7 +283,7 @@ export async function stageEsModules(fs, cells, { conditions, cwd, isCode, gate,
                             throw error;
                         const url = new URL('file://');
                         url.pathname = probed;
-                        return { url: url.href, path: probed, format: cells.has(stripLeadingSlashes(probed)) ? 'module' : 'commonjs' };
+                        return { url: url.href, path: probed, builtin: undefined, format: cells.has(stripLeadingSlashes(probed)) ? 'module' : 'commonjs' };
                     });
                 const row = await target(resolution, site.attributes);
                 rowTargets.push(row);

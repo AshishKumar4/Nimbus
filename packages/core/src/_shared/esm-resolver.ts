@@ -18,11 +18,24 @@
  *
  * The node shims embed it as source (scripts/bundle-facet-workers.mjs
  * compiles it into loaders/generated-workers.ts), so the resolver is one
- * self-contained function: nothing inside may refer to this module.
+ * self-contained function: nothing inside may refer to this module. A
+ * program may have replaced built-ins by the time it resolves, so it calls
+ * only those the launch captured (primordials.ts), as Node's loader calls
+ * its primordials, and reads a parsed package.json's own fields alone, as
+ * Node's reader does (tests/unit/primordials-audit.mjs); a URL's members
+ * it reads live, as Node's does (package-map.ts urlPathname).
  */
 
 import { invalidArgType, nodeError } from './node-error.js';
-import { createNodePackageMapPolicy, DEFAULT_ESM_CONDITIONS, nativeResolutionError, packageJsonText, selectPackageMap } from './exports-resolver.js';
+import {
+  codeOf, createNodePackageMapPolicy, DEFAULT_ESM_CONDITIONS, nativeResolutionError, packageJsonText, selectPackageMap,
+  urlHash, urlHref, urlPathname, urlProtocol, urlSearch, urlSetHash, urlSetPathname, urlSetSearch,
+} from './package-map.js';
+import {
+  arrayIsArray, dataDescriptor, decodeURIComponentOf, encodeURIComponentOf, Error, generatorNext, generatorThrow, JSONParse, JSONStringify,
+  newURL, objectHasOwn, objectKeys, ownField, PromiseConstructor, reflectApply, reflectDefineProperty, reflectGet, reflectSet, regExpExec,
+  SafeList, SafeMap, SafeSet, safeGenerator, stringEndsWith, stringIndexOf, stringLastIndexOf, stringSlice, stringStartsWith, TypeError,
+} from './primordials.js';
 
 type MaybePromise<T> = T | Promise<T>;
 /**
@@ -61,9 +74,9 @@ export type EsmFormat = 'builtin' | 'module' | 'commonjs' | 'json' | 'detect' | 
 export interface EsmResolution {
   url: string;
   /** The file, for a `file:` URL. */
-  path?: string;
+  path: string | undefined;
   /** The builtin's name, for a `node:` URL. */
-  builtin?: string;
+  builtin: string | undefined;
   format: EsmFormat;
 }
 
@@ -96,9 +109,9 @@ export interface PackageScope {
 
 /** Node's ERR_UNKNOWN_FILE_EXTENSION message for the file at `path`. */
 export function unknownFileExtensionMessage(path: string): string {
-  const base = path.slice(path.lastIndexOf('/') + 1);
-  const dot = base.lastIndexOf('.');
-  return `Unknown file extension "${dot > 0 ? base.slice(dot) : ''}" for ${path}`;
+  const base = stringSlice(path, stringLastIndexOf(path, '/') + 1);
+  const dot = stringLastIndexOf(base, '.');
+  return `Unknown file extension "${dot > 0 ? stringSlice(base, dot) : ''}" for ${path}`;
 }
 
 /** What a resolver is created with beyond its host. */
@@ -111,36 +124,85 @@ export interface EsmResolverOptions {
   cwd?: () => string;
 }
 
+const ENCODED_SEPARATOR = /%2f|%5c/i;
+const JSON_DATA_URL = /^data:application\/json(?:;[^,]*)?,/;
+
+/** `text` with each run of slashes made one. */
+function singleSlashes(text: string): string {
+  let out = '';
+  for (let i = 0; i < text.length; i++) if (text[i] !== '/' || out[out.length - 1] !== '/') out += text[i];
+  return out;
+}
+
+/** A specifier Node's package name check refuses: one starting with `.`, or holding `%` or `\`. */
+function invalidPackageName(name: string): boolean {
+  if (name[0] === '.') return true;
+  for (let i = 0; i < name.length; i++) if (name[i] === '%' || name[i] === '\\') return true;
+  return false;
+}
+
+/** `path`'s non-empty segments. */
+function segments(path: string): SafeList<string> {
+  const out = new SafeList<string>();
+  let start = 0;
+  for (let i = 0; i <= path.length; i++) {
+    if (i < path.length && path[i] !== '/') continue;
+    if (i > start) out[out.length] = stringSlice(path, start, i);
+    start = i + 1;
+  }
+  return out;
+}
+
 export function createEsmResolver(host: EsmResolverHost, options: EsmResolverOptions = {}): EsmResolver {
-  const conditions = new Set([...DEFAULT_ESM_CONDITIONS, ...(options.conditions ?? [])]);
+  // The options read as the caller gave them, not as an object they inherit from has them.
+  const conditions = new SafeSet<string>();
+  for (let i = 0; i < DEFAULT_ESM_CONDITIONS.length; i++) conditions.add(DEFAULT_ESM_CONDITIONS[i]);
+  const given = ownField(options, 'conditions');
+  if (arrayIsArray(given)) {
+    const extra: readonly unknown[] = given;
+    for (let i = 0; i < extra.length; i++) {
+      const condition = extra[i];
+      if (typeof condition === 'string') conditions.add(condition);
+    }
+  }
+  const typeScript = ownField(options, 'stripTypes') !== false;
+  const cwdOf = ownField(options, 'cwd');
+  const cwd = (): string | undefined => {
+    if (typeof cwdOf !== 'function') return undefined;
+    const dir: unknown = reflectApply(cwdOf, options, []);
+    return typeof dir === 'string' ? dir : undefined;
+  };
 
   // The host's questions, each yielded as-is and typed by what it answers.
   const ask = {
-    *kind(path: string): Step<'file' | 'directory' | null> {
+    kind: safeGenerator(function* (path: string): Step<'file' | 'directory' | null> {
       const kind = yield host.kind(path);
       return kind === 'file' || kind === 'directory' ? kind : null;
-    },
-    *readText(path: string): Step<string | null> {
+    }),
+    readText: safeGenerator(function* (path: string): Step<string | null> {
       const text = yield host.readText(path);
       return typeof text === 'string' ? text : null;
-    },
-    *realpath(path: string): Step<string> {
+    }),
+    realpath: safeGenerator(function* (path: string): Step<string> {
       const real = yield host.realpath(path);
       return typeof real === 'string' ? real : path;
-    },
-    *cjsResolve(specifier: string, parentPath: string): Step<string | null> {
+    }),
+    cjsResolve: safeGenerator(function* (specifier: string, parentPath: string): Step<string | null> {
       const found = yield host.cjsResolve(specifier, parentPath);
       return typeof found === 'string' ? found : null;
-    },
+    }),
   };
 
-  const codeOf = (error: unknown): unknown =>
-    error !== null && typeof error === 'object' && 'code' in error ? error.code : undefined;
-  const filePath = (url: URL | string): string => decodeURIComponent((typeof url === 'string' ? new URL(url) : url).pathname);
+  const filePath = (url: URL | string): string => decodeURIComponentOf(urlPathname(typeof url === 'string' ? newURL(url) : url));
   const fileUrl = (path: string): URL => {
-    const url = new URL('file://');
-    url.pathname = path;
+    const url = newURL('file://');
+    urlSetPathname(url, path);
     return url;
+  };
+  /** An error that carries the URL it was resolving: import.meta.resolve answers with it, where import() rejects. */
+  const withUrl = (error: Error, url: URL): Error => {
+    reflectDefineProperty(error, 'url', dataDescriptor(urlHref(url), true, true, true));
+    return error;
   };
 
   function isRelativeSpecifier(specifier: string): boolean {
@@ -154,62 +216,72 @@ export function createEsmResolver(host: EsmResolverHost, options: EsmResolverOpt
   interface PackageConfig {
     exists: boolean;
     pjsonPath: string;
-    name?: string;
-    main?: string;
-    exports?: unknown;
-    imports?: unknown;
+    name: string | undefined;
+    main: string | undefined;
+    exports: unknown;
+    imports: unknown;
     type: 'module' | 'commonjs' | 'none';
   }
+  const noConfig = (pjsonPath: string): PackageConfig =>
+    ({ exists: false, pjsonPath, name: undefined, main: undefined, exports: undefined, imports: undefined, type: 'none' });
 
   // Each package.json read once, as Node's reader holds the ones it read for
   // the process (src/node_modules.cc GetPackageJSON): a graph's modules share
   // their scopes, and asked them again per import (a launch over pi's 1074
   // modules). Like Node's, it holds no absence (a package.json written later
   // is read), and one that does not parse is read again, its refusal naming
-  // each import.
-  const packageConfigs = new Map<string, PackageConfig>();
-  function* readPackageConfig(pjsonPath: string, specifier: string, base: string | undefined): Step<PackageConfig> {
+  // each import. Its fields are its own (Node's reader is C++): none an
+  // object the program changed lends it.
+  const packageConfigs = new SafeMap<string, PackageConfig>();
+  const readPackageConfig = safeGenerator(function* (pjsonPath: string, specifier: string, base: string | undefined): Step<PackageConfig> {
     const known = packageConfigs.get(pjsonPath);
     if (known !== undefined) return known;
     const text = (yield* ask.kind(pjsonPath)) === 'file' ? yield* ask.readText(pjsonPath) : null;
-    if (text === null) return { exists: false, pjsonPath, type: 'none' };
-    let parsed: Record<string, unknown>;
+    if (text === null) return noConfig(pjsonPath);
+    let parsed: unknown;
     try {
-      parsed = JSON.parse(packageJsonText(text));
+      parsed = JSONParse(packageJsonText(text));
     } catch {
       // Node's message names the file and the import, not the parse error; its C++ throws it.
       throw nativeResolutionError(
         'ERR_INVALID_PACKAGE_CONFIG',
         `Invalid package config ${pjsonPath}` +
-          (base ? ` while importing ${JSON.stringify(specifier)} from ${base}` : '') + '.',
+          (base ? ` while importing ${JSONStringify(specifier)} from ${base}` : '') + '.',
       );
     }
-    const config: PackageConfig = { exists: true, pjsonPath, type: 'none' };
+    const config: PackageConfig = { ...noConfig(pjsonPath), exists: true };
     packageConfigs.set(pjsonPath, config);
     if (parsed === null || typeof parsed !== 'object') return config;
-    if (typeof parsed.name === 'string') config.name = parsed.name;
-    if (typeof parsed.main === 'string') config.main = parsed.main;
-    if ('exports' in parsed) config.exports = parsed.exports;
-    if (parsed.imports !== null && typeof parsed.imports === 'object') config.imports = parsed.imports;
-    if (parsed.type === 'module' || parsed.type === 'commonjs') config.type = parsed.type;
+    const name = ownField(parsed, 'name');
+    const main = ownField(parsed, 'main');
+    const imports = ownField(parsed, 'imports');
+    const type = ownField(parsed, 'type');
+    if (typeof name === 'string') config.name = name;
+    if (typeof main === 'string') config.main = main;
+    if (objectHasOwn(parsed, 'exports')) config.exports = reflectGet(parsed, 'exports');
+    if (imports !== null && typeof imports === 'object') config.imports = imports;
+    if (type === 'module' || type === 'commonjs') config.type = type;
     return config;
-  }
+  });
 
-  function* packageScopeConfig(resolved: URL): Step<PackageConfig> {
-    let pjsonUrl = new URL('./package.json', resolved);
+  const packageScopeConfig = safeGenerator(function* (resolved: URL): Step<PackageConfig> {
+    const specifier = urlHref(resolved);
+    let pjsonUrl = newURL('./package.json', resolved);
+    let pathname = urlPathname(pjsonUrl);
     while (true) {
-      if (pjsonUrl.pathname.endsWith('node_modules/package.json')) break;
-      const config = yield* readPackageConfig(filePath(pjsonUrl), resolved.href, undefined);
+      if (stringEndsWith(pathname, 'node_modules/package.json')) break;
+      const config = yield* readPackageConfig(decodeURIComponentOf(pathname), specifier, undefined);
       if (config.exists) return config;
-      const last = pjsonUrl;
-      pjsonUrl = new URL('../package.json', pjsonUrl);
-      if (pjsonUrl.pathname === last.pathname) break;
+      const last = pathname;
+      pjsonUrl = newURL('../package.json', pjsonUrl);
+      pathname = urlPathname(pjsonUrl);
+      if (pathname === last) break;
     }
-    return { exists: false, pjsonPath: filePath(pjsonUrl), type: 'none' };
-  }
+    return noConfig(decodeURIComponentOf(pathname));
+  });
 
   function exportsNotFound(subpath: string, pjsonUrl: URL, base: string): Error {
-    const pkgPath = filePath(new URL('.', pjsonUrl));
+    const pkgPath = filePath(newURL('.', pjsonUrl));
     return nodeError(
       Error,
       'ERR_PACKAGE_PATH_NOT_EXPORTED',
@@ -219,92 +291,93 @@ export function createEsmResolver(host: EsmResolverHost, options: EsmResolverOpt
     );
   }
 
-  function* packageExportsResolve(pjsonUrl: URL, subpath: string, config: PackageConfig, base: string): Step<URL> {
-    const policy = createNodePackageMapPolicy(pjsonUrl, base, false, (target) => packageResolve(target, pjsonUrl.href));
+  const packageExportsResolve = safeGenerator(function* (pjsonUrl: URL, subpath: string, config: PackageConfig, base: string): Step<URL> {
+    const policy = createNodePackageMapPolicy(pjsonUrl, base, false, (target) => packageResolve(target, urlHref(pjsonUrl)));
     const result = yield* selectPackageMap(config.exports, subpath, conditions, policy);
     if (result == null) throw exportsNotFound(subpath, pjsonUrl, base);
     return result;
-  }
+  });
 
-  function* packageImportsResolve(name: string, baseUrl: string): Step<URL> {
+  const packageImportsResolve = safeGenerator(function* (name: string, baseUrl: string): Step<URL> {
     const base = filePath(baseUrl);
-    if (name === '#' || name.startsWith('#/') || name.endsWith('/')) {
+    if (name === '#' || stringStartsWith(name, '#/') || stringEndsWith(name, '/')) {
       throw nodeError(TypeError, 'ERR_INVALID_MODULE_SPECIFIER', `Invalid module "${name}" is not a valid internal imports specifier name imported from ${base}`);
     }
-    const config = yield* packageScopeConfig(new URL(baseUrl));
+    const config = yield* packageScopeConfig(newURL(baseUrl));
     if (config.exists && config.imports) {
       const pjsonUrl = fileUrl(config.pjsonPath);
-      const policy = createNodePackageMapPolicy(pjsonUrl, base, true, (target) => packageResolve(target, pjsonUrl.href));
+      const policy = createNodePackageMapPolicy(pjsonUrl, base, true, (target) => packageResolve(target, urlHref(pjsonUrl)));
       const result = yield* selectPackageMap(config.imports, name, conditions, policy);
       if (result != null) return result;
     }
-    const where = config.exists ? ` in package ${filePath(new URL('.', fileUrl(config.pjsonPath)))}package.json` : '';
+    const where = config.exists ? ` in package ${filePath(newURL('.', fileUrl(config.pjsonPath)))}package.json` : '';
     throw nodeError(TypeError, 'ERR_PACKAGE_IMPORT_NOT_DEFINED', `Package import specifier "${name}" is not defined${where} imported from ${base}`);
-  }
+  });
 
-  function* legacyMainResolve(pjsonUrl: URL, config: PackageConfig, base: string): Step<URL> {
-    const tries: string[] = [];
+  const MAIN_SUFFIXES = ['', '.js', '.json', '.node', '/index.js', '/index.json', '/index.node'];
+  const INDEX_FILES = ['./index.js', './index.json', './index.node'];
+  const legacyMainResolve = safeGenerator(function* (pjsonUrl: URL, config: PackageConfig, base: string): Step<URL> {
+    const tries = new SafeList<string>();
     if (config.main !== undefined) {
-      for (const suffix of ['', '.js', '.json', '.node', '/index.js', '/index.json', '/index.node']) tries.push(`./${config.main}${suffix}`);
+      for (let i = 0; i < MAIN_SUFFIXES.length; i++) tries[tries.length] = `./${config.main}${MAIN_SUFFIXES[i]}`;
     }
-    tries.push('./index.js', './index.json', './index.node');
-    for (const candidate of tries) {
-      const url = new URL(candidate, pjsonUrl);
+    for (let i = 0; i < INDEX_FILES.length; i++) tries[tries.length] = INDEX_FILES[i];
+    for (let i = 0; i < tries.length; i++) {
+      const url = newURL(tries[i], pjsonUrl);
       if ((yield* ask.kind(filePath(url))) === 'file') return url;
     }
     // Named by its main, or index.js, in the package's directory (a path, so
     // an empty package name's `node_modules//` is `node_modules/`).
-    const dir = fileUrl(filePath(new URL('.', pjsonUrl)).replace(/\/+/g, '/'));
-    const missing = filePath(new URL(config.main ?? 'index.js', dir));
+    const dir = fileUrl(singleSlashes(filePath(newURL('.', pjsonUrl))));
+    const missing = filePath(newURL(config.main ?? 'index.js', dir));
     throw nativeResolutionError('ERR_MODULE_NOT_FOUND', `Cannot find package '${missing}' imported from ${base}`);
-  }
+  });
 
-  function* packageResolve(specifier: string, baseUrl: string): Step<URL> {
-    if (host.isBuiltin(specifier)) return new URL('node:' + specifier);
+  const packageResolve = safeGenerator(function* (specifier: string, baseUrl: string): Step<URL> {
+    if (host.isBuiltin(specifier)) return newURL('node:' + specifier);
     const base = filePath(baseUrl);
-    let separator = specifier.indexOf('/');
+    let separator = stringIndexOf(specifier, '/');
     let valid = true;
     let scoped = false;
     if (specifier[0] === '@') {
       scoped = true;
       if (separator === -1 || specifier.length === 0) valid = false;
-      else separator = specifier.indexOf('/', separator + 1);
+      else separator = stringIndexOf(specifier, '/', separator + 1);
     }
-    const name = separator === -1 ? specifier : specifier.slice(0, separator);
-    if (/^\.|%|\\/.test(name)) valid = false;
+    const name = separator === -1 ? specifier : stringSlice(specifier, 0, separator);
+    if (invalidPackageName(name)) valid = false;
     if (!valid) {
       throw nodeError(TypeError, 'ERR_INVALID_MODULE_SPECIFIER', `Invalid module "${specifier}" is not a valid package name imported from ${base}`);
     }
-    const subpath = '.' + (separator === -1 ? '' : specifier.slice(separator));
+    const subpath = '.' + (separator === -1 ? '' : stringSlice(specifier, separator));
 
-    const self = yield* packageScopeConfig(new URL(baseUrl));
+    const self = yield* packageScopeConfig(newURL(baseUrl));
     if (self.exists && self.exports != null && self.name === name) {
       return yield* packageExportsResolve(fileUrl(self.pjsonPath), subpath, self, base);
     }
 
-    let pjsonUrl = new URL('./node_modules/' + name + '/package.json', baseUrl);
+    let pjsonUrl = newURL('./node_modules/' + name + '/package.json', baseUrl);
     let pjsonPath = filePath(pjsonUrl);
     let lastPath: string;
     do {
-      if ((yield* ask.kind(pjsonPath.slice(0, pjsonPath.length - 13))) !== 'directory') {
+      if ((yield* ask.kind(stringSlice(pjsonPath, 0, pjsonPath.length - 13))) !== 'directory') {
         lastPath = pjsonPath;
-        pjsonUrl = new URL((scoped ? '../../../../node_modules/' : '../../../node_modules/') + name + '/package.json', pjsonUrl);
+        pjsonUrl = newURL((scoped ? '../../../../node_modules/' : '../../../node_modules/') + name + '/package.json', pjsonUrl);
         pjsonPath = filePath(pjsonUrl);
         continue;
       }
       const config = yield* readPackageConfig(pjsonPath, specifier, base);
       if (config.exports != null) return yield* packageExportsResolve(pjsonUrl, subpath, config, base);
       if (subpath === '.') return yield* legacyMainResolve(pjsonUrl, config, base);
-      return new URL(subpath, pjsonUrl);
+      return newURL(subpath, pjsonUrl);
     } while (pjsonPath.length !== lastPath.length);
     throw nodeError(Error, 'ERR_MODULE_NOT_FOUND', `Cannot find package '${name}' imported from ${base}`);
-  }
+  });
 
-  function* formatOf(url: URL, path: string): Step<EsmFormat> {
-    const base = path.slice(path.lastIndexOf('/') + 1);
-    const dot = base.lastIndexOf('.');
-    const ext = dot > 0 ? base.slice(dot) : '';
-    const typeScript = options.stripTypes !== false;
+  const formatOf = safeGenerator(function* (url: URL, path: string): Step<EsmFormat> {
+    const base = stringSlice(path, stringLastIndexOf(path, '/') + 1);
+    const dot = stringLastIndexOf(base, '.');
+    const ext = dot > 0 ? stringSlice(base, dot) : '';
     if (ext === '.mjs' || (ext === '.mts' && typeScript)) return 'module';
     if (ext === '.cjs' || (ext === '.cts' && typeScript)) return 'commonjs';
     if (ext === '.json') return 'json';
@@ -315,77 +388,77 @@ export function createEsmResolver(host: EsmResolverHost, options: EsmResolverOpt
       return 'detect';
     }
     return 'unknown';
-  }
+  });
 
-  /** A resolution before loading: its URL, and the file or builtin it names. */
-  interface Resolved { url: string; path?: string; builtin?: string }
+  /** A resolution before loading: its URL (`location`, the file's, as made), and the file or builtin it names. */
+  interface Resolved { url: string; location: URL | undefined; path: string | undefined; builtin: string | undefined }
 
-  function* finalizeResolution(resolved: URL, baseUrl: string): Step<Resolved> {
-    const base = filePath(baseUrl);
-    if (/%2f|%5c/i.test(resolved.pathname)) {
+  const finalizeResolution = safeGenerator(function* (resolved: URL, baseUrl: string): Step<Resolved> {
+    // The importer's path, which only a refusal names.
+    const base = (): string => filePath(baseUrl);
+    const pathname = urlPathname(resolved);
+    if (regExpExec(ENCODED_SEPARATOR, pathname) !== null) {
       throw nodeError(
         TypeError,
         'ERR_INVALID_MODULE_SPECIFIER',
-        `Invalid module "${resolved.pathname}" must not include encoded "/" or "\\" characters imported from ${base}`,
+        `Invalid module "${pathname}" must not include encoded "/" or "\\" characters imported from ${base()}`,
       );
     }
-    const path = filePath(resolved);
+    const path = decodeURIComponentOf(pathname);
     // Node stats the path's last character when it ends in "/", which is
     // always a directory: a trailing slash is a directory import.
-    const kind = path.endsWith('/') ? 'directory' : yield* ask.kind(path);
-    // These two carry the URL they were resolving: import.meta.resolve
-    // answers with it, where import() rejects.
+    const kind = stringEndsWith(path, '/') ? 'directory' : yield* ask.kind(path);
     if (kind === 'directory') {
-      throw Object.assign(
-        nodeError(Error, 'ERR_UNSUPPORTED_DIR_IMPORT', `Directory import '${path}' is not supported resolving ES modules imported from ${base}`),
-        { url: resolved.href },
-      );
+      throw withUrl(nodeError(Error, 'ERR_UNSUPPORTED_DIR_IMPORT', `Directory import '${path}' is not supported resolving ES modules imported from ${base()}`), resolved);
     }
     if (kind !== 'file') {
-      throw Object.assign(
-        nodeError(Error, 'ERR_MODULE_NOT_FOUND', `Cannot find module '${path}' imported from ${base}`),
-        { url: resolved.href },
-      );
+      throw withUrl(nodeError(Error, 'ERR_MODULE_NOT_FOUND', `Cannot find module '${path}' imported from ${base()}`), resolved);
     }
     // The module is its real file, as node's loader names it; the query and
     // fragment stay the specifier's.
     const real = yield* ask.realpath(path);
     const url = fileUrl(real);
-    url.search = resolved.search;
-    url.hash = resolved.hash;
-    return { url: url.href, path: real };
-  }
+    urlSetSearch(url, urlSearch(resolved));
+    urlSetHash(url, urlHash(resolved));
+    return { url: urlHref(url), location: url, path: real, builtin: undefined };
+  });
 
-  function* moduleResolve(specifier: string, parentUrl: string): Step<Resolved> {
+  const moduleResolve = safeGenerator(function* (specifier: string, parentUrl: string): Step<Resolved> {
     let resolved: URL;
-    if (isRelativeOrAbsolute(specifier)) resolved = new URL(specifier, parentUrl);
-    else if (specifier[0] === '#') resolved = yield* packageImportsResolve(specifier, parentUrl);
+    if (isRelativeOrAbsolute(specifier)) {
+      try {
+        resolved = newURL(specifier, parentUrl);
+      } catch {
+        throw unsupportedResolveRequest(specifier, parentUrl);
+      }
+    } else if (specifier[0] === '#') resolved = yield* packageImportsResolve(specifier, parentUrl);
     else {
-      try { resolved = new URL(specifier); } catch { resolved = yield* packageResolve(specifier, parentUrl); }
+      try { resolved = newURL(specifier); } catch { resolved = yield* packageResolve(specifier, parentUrl); }
     }
-    if (resolved.protocol === 'node:') return { url: 'node:' + resolved.pathname, builtin: resolved.pathname };
-    if (resolved.protocol !== 'file:') return { url: resolved.href };
+    const protocol = urlProtocol(resolved);
+    if (protocol === 'node:') return { url: 'node:' + urlPathname(resolved), location: undefined, path: undefined, builtin: urlPathname(resolved) };
+    if (protocol !== 'file:') return { url: urlHref(resolved), location: undefined, path: undefined, builtin: undefined };
     return yield* finalizeResolution(resolved, parentUrl);
-  }
+  });
 
   /** What loading a resolution checks first: its scheme, builtin and format. */
-  function* loadable(resolved: Resolved): Step<EsmResolution> {
+  const loadable = safeGenerator(function* (resolved: Resolved): Step<EsmResolution> {
     if (resolved.builtin !== undefined) {
       if (!host.isBuiltin('node:' + resolved.builtin)) {
         throw nodeError(Error, 'ERR_UNKNOWN_BUILTIN_MODULE', `No such built-in module: node:${resolved.builtin}`);
       }
-      return { url: resolved.url, builtin: resolved.builtin, format: 'builtin' };
+      return { url: resolved.url, path: undefined, builtin: resolved.builtin, format: 'builtin' };
     }
-    if (resolved.url.startsWith('data:')) return { url: resolved.url, format: 'data' };
+    if (stringStartsWith(resolved.url, 'data:')) return { url: resolved.url, path: undefined, builtin: undefined, format: 'data' };
     if (resolved.path === undefined) {
       throw nodeError(
         Error,
         'ERR_UNSUPPORTED_ESM_URL_SCHEME',
-        `Only URLs with a scheme in: file and data are supported by the default ESM loader. Received protocol '${new URL(resolved.url).protocol}'`,
+        `Only URLs with a scheme in: file and data are supported by the default ESM loader. Received protocol '${urlProtocol(newURL(resolved.url))}'`,
       );
     }
-    return { url: resolved.url, path: resolved.path, format: yield* formatOf(new URL(resolved.url), resolved.path) };
-  }
+    return { url: resolved.url, path: resolved.path, builtin: undefined, format: yield* formatOf(resolved.location ?? newURL(resolved.url), resolved.path) };
+  });
 
   /**
    * Node's resolveAsCommonJS: the hint an ESM miss carries. Its CommonJS
@@ -393,80 +466,93 @@ export function createEsmResolver(host: EsmResolverHost, options: EsmResolverOpt
    * specifier from the working directory (Module._resolveLookupPaths' ['.'])
    * and the hint is that file relative to the importer.
    */
-  function* commonJsHint(specifier: string, parentUrl: string): Step<string | null> {
-    const cwd = options.cwd?.();
-    const from = isRelativeSpecifier(specifier) && cwd !== undefined ? `${cwd.replace(/\/+$/, '')}/[cwd]` : filePath(parentUrl);
+  const commonJsHint = safeGenerator(function* (specifier: string, parentUrl: string): Step<string | null> {
+    const dir = cwd();
+    let from = filePath(parentUrl);
+    if (isRelativeSpecifier(specifier) && dir !== undefined) {
+      let end = dir.length;
+      while (end > 0 && dir[end - 1] === '/') end--;
+      from = `${stringSlice(dir, 0, end)}/[cwd]`;
+    }
     let found = yield* ask.cjsResolve(specifier, from);
     if (found === null) return null;
     if (isRelativeSpecifier(specifier)) {
-      const from = parentUrl.slice('file://'.length, parentUrl.lastIndexOf('/')).split('/').filter(Boolean);
-      const to = fileUrl(found).pathname.split('/').filter(Boolean);
+      const fromParts = segments(stringSlice(parentUrl, 'file://'.length, stringLastIndexOf(parentUrl, '/')));
+      const toParts = segments(urlPathname(fileUrl(found)));
       let common = 0;
-      while (common < from.length && common < to.length && from[common] === to[common]) common++;
-      found = [...from.slice(common).map(() => '..'), ...to.slice(common)].join('/');
-      if (!found.startsWith('../')) found = `./${found}`;
+      while (common < fromParts.length && common < toParts.length && fromParts[common] === toParts[common]) common++;
+      let relative = '';
+      for (let i = common; i < fromParts.length; i++) relative += relative === '' ? '..' : '/..';
+      for (let i = common; i < toParts.length; i++) relative += relative === '' ? toParts[i] : `/${toParts[i]}`;
+      found = stringStartsWith(relative, '../') ? relative : `./${relative}`;
     } else if (specifier[0] && specifier[0] !== '/' && specifier[0] !== '.') {
-      const slash = specifier.indexOf('/');
-      const pkg = slash === -1 ? specifier : specifier.slice(0, slash);
+      const slash = stringIndexOf(specifier, '/');
+      const pkg = slash === -1 ? specifier : stringSlice(specifier, 0, slash);
       const needle = `/node_modules/${pkg}/`;
-      const at = found.lastIndexOf(needle);
-      found = at !== -1
-        ? pkg + '/' + found.slice(at + needle.length).split('/').map(encodeURIComponent).join('/')
-        : fileUrl(found).href;
+      const at = stringLastIndexOf(found, needle);
+      if (at === -1) found = urlHref(fileUrl(found));
+      else {
+        const rest = segmentsAll(stringSlice(found, at + needle.length));
+        let encoded = pkg;
+        for (let i = 0; i < rest.length; i++) encoded += `/${encodeURIComponentOf(rest[i])}`;
+        found = encoded;
+      }
     }
     return found;
-  }
+  });
 
-  function* resolveWithHint(specifier: string, parentUrl: string): Step<Resolved> {
-      try {
-        return yield* moduleResolve(specifier, parentUrl);
-      } catch (error) {
-        const code = codeOf(error);
-        if (error instanceof Error && (code === 'ERR_MODULE_NOT_FOUND' || code === 'ERR_UNSUPPORTED_DIR_IMPORT')) {
-          const asGiven = specifier.startsWith('file://') ? filePath(specifier) : specifier;
-          const found = yield* commonJsHint(asGiven, parentUrl);
-          if (found && found !== asGiven) error.message += `\nDid you mean to import ${JSON.stringify(found)}?`;
-        }
-        throw error;
+  const resolveWithHint = safeGenerator(function* (specifier: string, parentUrl: string): Step<Resolved> {
+    try {
+      return yield* moduleResolve(specifier, parentUrl);
+    } catch (error) {
+      const code = codeOf(error);
+      if (error instanceof Error && (code === 'ERR_MODULE_NOT_FOUND' || code === 'ERR_UNSUPPORTED_DIR_IMPORT')) {
+        const asGiven = stringStartsWith(specifier, 'file://') ? filePath(specifier) : specifier;
+        const found = yield* commonJsHint(asGiven, parentUrl);
+        if (found && found !== asGiven) reflectSet(error, 'message', `${reflectGet(error, 'message')}\nDid you mean to import ${JSONStringify(found)}?`);
       }
-  }
+      throw error;
+    }
+  });
 
-  function* importTarget(specifier: string, parentUrl: string): Step<EsmResolution> {
+  const importTarget = safeGenerator(function* (specifier: string, parentUrl: string): Step<EsmResolution> {
     return yield* loadable(yield* resolveWithHint(specifier, parentUrl));
-  }
+  });
 
   /** Node's import.meta.resolve: the URL, even of a file or directory that will not load. */
-  function* metaResolve(specifier: string, parentUrl: string): Step<string> {
+  const metaResolve = safeGenerator(function* (specifier: string, parentUrl: string): Step<string> {
     try {
       return (yield* moduleResolve(specifier, parentUrl)).url;
     } catch (error) {
       const code = codeOf(error);
-      if ((code === 'ERR_MODULE_NOT_FOUND' || code === 'ERR_UNSUPPORTED_DIR_IMPORT')
-        && error !== null && typeof error === 'object' && 'url' in error && typeof error.url === 'string') return error.url;
+      if ((code === 'ERR_MODULE_NOT_FOUND' || code === 'ERR_UNSUPPORTED_DIR_IMPORT') && error !== null && typeof error === 'object') {
+        const url: unknown = reflectGet(error, 'url');
+        if (typeof url === 'string') return url;
+      }
       throw error;
     }
-  }
+  });
 
   function runSync<T>(steps: Step<T>): T {
-    let next = steps.next();
+    let next = generatorNext(steps);
     while (!next.done) {
-      if (next.value instanceof Promise) throw new Error('resolveSync: the host answered asynchronously');
-      next = steps.next(next.value);
+      if (next.value instanceof PromiseConstructor) throw new Error('resolveSync: the host answered asynchronously');
+      next = generatorNext(steps, next.value);
     }
     return next.value;
   }
 
   async function runAsync<T>(steps: Step<T>): Promise<T> {
-    let next = steps.next();
+    let next = generatorNext(steps);
     while (!next.done) {
       let answer: unknown;
       try {
         answer = await next.value;
       } catch (error) {
-        next = steps.throw(error);
+        next = generatorThrow(steps, error);
         continue;
       }
-      next = steps.next(answer);
+      next = generatorNext(steps, answer);
     }
     return next.value;
   }
@@ -476,29 +562,31 @@ export function createEsmResolver(host: EsmResolverHost, options: EsmResolverOpt
     resolveSync: (specifier, parentUrl) => runSync(importTarget(specifier, parentUrl)),
     metaResolveSync: (specifier, parentUrl) => runSync(metaResolve(specifier, parentUrl)),
     packageScopeSync(url) {
-      const { exists, pjsonPath, type } = runSync(packageScopeConfig(new URL(url)));
+      const { exists, pjsonPath, type } = runSync(packageScopeConfig(newURL(url)));
       return { exists, pjsonPath, type };
     },
     async packageScope(url) {
-      const { exists, pjsonPath, type } = await runAsync(packageScopeConfig(new URL(url)));
+      const { exists, pjsonPath, type } = await runAsync(packageScopeConfig(newURL(url)));
       return { exists, pjsonPath, type };
     },
-    assertLoadable({ format, path }) {
-      if (format !== 'unknown' || path === undefined) return;
-      throw nodeError(TypeError, 'ERR_UNKNOWN_FILE_EXTENSION', unknownFileExtensionMessage(path));
+    assertLoadable(resolution) {
+      if (resolution.format !== 'unknown' || resolution.path === undefined) return;
+      throw nodeError(TypeError, 'ERR_UNKNOWN_FILE_EXTENSION', unknownFileExtensionMessage(resolution.path));
     },
     validateAttributes(url, format, attributes) {
-      for (const key of Object.keys(attributes)) {
-        if (key !== 'type') {
-          throw nodeError(TypeError, 'ERR_IMPORT_ATTRIBUTE_UNSUPPORTED', `Import attribute "${key}" with value "${attributes[key]}" is not supported in ${url}`);
+      const keys = objectKeys(attributes);
+      for (let i = 0; i < keys.length; i++) {
+        if (keys[i] !== 'type') {
+          throw nodeError(TypeError, 'ERR_IMPORT_ATTRIBUTE_UNSUPPORTED', `Import attribute "${keys[i]}" with value "${reflectGet(attributes, keys[i])}" is not supported in ${url}`);
         }
       }
-      const type = attributes.type;
+      // The import's own attributes (V8's object for them inherits nothing).
+      const type = ownField(attributes, 'type');
       // Keep the data-URL loading route, but validate its media type like
       // the equivalent file format. application/json still requires type.
-      if (format === 'json' || (format === 'data' && /^data:application\/json(?:;[^,]*)?,/.test(url))) {
+      if (format === 'json' || (format === 'data' && regExpExec(JSON_DATA_URL, url) !== null)) {
         if (type === 'json') return;
-        if (!('type' in attributes)) {
+        if (!objectHasOwn(attributes, 'type')) {
           throw nodeError(TypeError, 'ERR_IMPORT_ATTRIBUTE_MISSING', `Module "${url}" needs an import attribute of "type: json"`);
         }
       } else if (type == null) {
@@ -513,4 +601,30 @@ export function createEsmResolver(host: EsmResolverHost, options: EsmResolverOpt
       throw nodeError(TypeError, 'ERR_IMPORT_ATTRIBUTE_TYPE_INCOMPATIBLE', `Module "${url}" is not of type "json"`);
     },
   };
+}
+
+/**
+ * Node's refusal of a relative or absolute specifier that is no URL against
+ * its importer's (resolve.js moduleResolve): ERR_UNSUPPORTED_RESOLVE_REQUEST,
+ * its own `cause` the URL parser's ERR_INVALID_URL, with the input and the
+ * base (lib/internal/url.js), whatever the realm's parser said.
+ */
+export function unsupportedResolveRequest(specifier: string, parentUrl: string): Error {
+  const error = nodeError(TypeError, 'ERR_UNSUPPORTED_RESOLVE_REQUEST',
+    `Failed to resolve module specifier "${specifier}" from "${parentUrl}": Invalid relative URL or base scheme is not hierarchical.`);
+  const cause = nodeError(TypeError, 'ERR_INVALID_URL', 'Invalid URL', { input: specifier, base: parentUrl });
+  reflectDefineProperty(error, 'cause', dataDescriptor(cause, true, true, true));
+  return error;
+}
+
+/** `path`'s segments, empty ones included (Node's StringPrototypeSplit(path, '/')). */
+function segmentsAll(path: string): SafeList<string> {
+  const out = new SafeList<string>();
+  let start = 0;
+  for (let i = 0; i <= path.length; i++) {
+    if (i < path.length && path[i] !== '/') continue;
+    out[out.length] = stringSlice(path, start, i);
+    start = i + 1;
+  }
+  return out;
 }

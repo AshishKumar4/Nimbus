@@ -8,15 +8,28 @@
  * SystemError (`fs.rm` of a directory, `fs.cp` onto a file) adds the
  * system call's context.
  *
- * Self-contained: scripts/bundle-facet-workers.mjs compiles it into the
- * guest's shims (NODE_ERROR_PREAMBLE), which call it by name and hand it to
- * the cell runtime and generated code as `__nimbusNodeError` and
- * `__nimbusNodeSystemError`.
+ * Self-contained but for the built-ins it calls, captured before any
+ * program code (primordials.ts): scripts/bundle-facet-workers.mjs compiles
+ * it into the guest's shims (NODE_ERROR_PREAMBLE), which call it by name
+ * and hand it to the cell runtime and generated code as `__nimbusNodeError`
+ * and `__nimbusNodeSystemError`, and the module resolver throws its errors
+ * after a program may have replaced built-ins.
  */
+import { arrayIncludes, arrayJoin, dataDescriptor, Error, ErrorCaptureStackTrace, JSONStringify, mathAbs, numberIsInteger, objectAssign, objectCreate, objectHasOwn, objectIs, objectIsExtensible, objectKeys, ownField, RangeError, reflectApply, reflectDefineProperty, reflectDeleteProperty, reflectGet, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectHas, reflectSet, reflectSetPrototypeOf, regExpExec, SafeList, SafeMap, SafeWeakMap, stringIncludes, stringIndexOf, stringOf, stringSlice, stringEndsWith, stringToLowerCase, symbolFor, TypeError, URIError, } from './primordials.js';
 /** One class per base and code, as Node makes one per code. */
-const nodeErrorClasses = new Map();
+const nodeErrorClasses = new SafeMap();
 /** Each class's code, by its prototype. */
-const classCodes = new WeakMap();
+const classCodes = new SafeWeakMap();
+/** An accessor property descriptor that inherits nothing (dataDescriptor's, for a getter and a setter). */
+function accessorDescriptor(get, set, enumerable, configurable) {
+    const descriptor = objectCreate(null);
+    descriptor.get = get;
+    if (set !== undefined)
+        descriptor.set = set;
+    descriptor.enumerable = enumerable;
+    descriptor.configurable = configurable;
+    return descriptor;
+}
 /**
  * Node's error `code` on a `Base` (Error, TypeError, RangeError, …) with
  * `message`, and `props` set on it after (an `info`, a `cmd`). Its stack
@@ -29,16 +42,16 @@ export function nodeError(Base, code, message, props, above = nodeError) {
 function made(Base, code, message, props, above) {
     const NodeError = nodeErrorClass(Base, code);
     const error = new NodeError(message);
-    headStack(error, `${error.name} [${code}]`, above);
+    headStack(error, `${reflectGet(error, 'name')} [${code}]`, above);
     if (props !== undefined)
-        Object.assign(error, props);
+        objectAssign(error, props);
     return error;
 }
 /** Node's class for a code on a base (Error, TypeError, …), made once. */
 function nodeErrorClass(Base, code) {
     let classes = nodeErrorClasses.get(Base);
     if (classes === undefined)
-        nodeErrorClasses.set(Base, (classes = new Map()));
+        nodeErrorClasses.set(Base, (classes = new SafeMap()));
     let NodeError = classes.get(code);
     if (NodeError === undefined) {
         NodeError = class extends Base {
@@ -46,17 +59,17 @@ function nodeErrorClass(Base, code) {
                 // The message reaches the constructor: workerd's V8 heads a stack
                 // with the message an error was built with, not its property.
                 super(text);
-                Reflect.deleteProperty(this, 'message');
+                reflectDeleteProperty(this, 'message');
                 // Own and enumerable, then the message, as Node's class field and constructor leave them.
-                Object.defineProperty(this, 'code', { value: code, enumerable: true, writable: true, configurable: true });
-                Object.defineProperty(this, 'message', { value: text, enumerable: false, writable: true, configurable: true });
+                reflectDefineProperty(this, 'code', dataDescriptor(code, true, true, true));
+                reflectDefineProperty(this, 'message', dataDescriptor(text, true, false, true));
             }
             toString() {
-                return `${this.name} [${code}]: ${this.message}`;
+                return `${reflectGet(this, 'name')} [${code}]: ${reflectGet(this, 'message')}`;
             }
         };
         // What Node's NodeError reports as its constructor: its base.
-        Object.defineProperty(NodeError.prototype, 'constructor', { get: () => Base, enumerable: false, configurable: true });
+        reflectDefineProperty(NodeError.prototype, 'constructor', accessorDescriptor(() => Base, undefined, false, true));
         classCodes.set(NodeError.prototype, code);
         classes.set(code, NodeError);
     }
@@ -71,32 +84,34 @@ function nodeErrorClass(Base, code) {
  * stay. Returns it.
  */
 export function reshapeAsNodeError(error, Base, code) {
-    const message = error.message;
+    const message = reflectGet(error, 'message');
     let stack;
     try {
-        stack = error.stack;
+        stack = reflectGet(error, 'stack');
     }
     catch {
         stack = undefined;
     }
     const NodeError = nodeErrorClass(Base, code);
-    const stackDescriptor = Object.getOwnPropertyDescriptor(error, 'stack');
-    for (const key of ['stack', 'code', 'message', 'name', 'toString'])
-        Reflect.deleteProperty(error, key);
-    Object.setPrototypeOf(error, NodeError.prototype);
+    const stackDescriptor = reflectGetOwnPropertyDescriptor(error, 'stack');
+    const replaced = ['stack', 'code', 'message', 'name', 'toString'];
+    for (let i = 0; i < replaced.length; i++)
+        reflectDeleteProperty(error, replaced[i]);
+    reflectSetPrototypeOf(error, NodeError.prototype);
     if (stackDescriptor !== undefined)
-        Object.defineProperty(error, 'stack', stackDescriptor);
-    Object.defineProperty(error, 'code', { value: code, enumerable: true, writable: true, configurable: true });
-    Object.defineProperty(error, 'message', { value: message, enumerable: false, writable: true, configurable: true });
+        reflectDefineProperty(error, 'stack', stackDescriptor);
+    reflectDefineProperty(error, 'code', dataDescriptor(code, true, true, true));
+    reflectDefineProperty(error, 'message', dataDescriptor(message, true, false, true));
     if (typeof stack === 'string') {
-        const frames = stack.indexOf('\n    at ');
-        const header = message === '' ? `${Base.name} [${code}]` : `${Base.name} [${code}]: ${message}`;
-        Reflect.set(error, 'stack', header + (frames === -1 ? '' : stack.slice(frames)));
+        const frames = stringIndexOf(stack, '\n    at ');
+        const name = reflectGet(Base, 'name');
+        const header = message === '' ? `${name} [${code}]` : `${name} [${code}]: ${message}`;
+        reflectSet(error, 'stack', header + (frames === -1 ? '' : stringSlice(stack, frames)));
     }
     return error;
 }
 /** How a message shows a value only util.inspect can describe: the runtime's inspect once it is handed one. */
-let inspectValue = (value) => String(value);
+let inspectValue = (value) => stringOf(value);
 /** Hands the messages below the runtime's util.inspect (Node's lazyInternalUtilInspect). */
 export function useNodeErrorInspect(inspect) {
     inspectValue = inspect;
@@ -107,8 +122,11 @@ const CLASS_NAME = /^[A-Z][a-zA-Z0-9]*$/;
 /** `A`, `A or B`, `A, B, or C` (lib/internal/errors.js formatList). */
 function formatList(items, type) {
     if (items.length < 3)
-        return items.join(` ${type} `);
-    return `${items.slice(0, -1).join(', ')}, ${type} ${items[items.length - 1]}`;
+        return arrayJoin(items, ` ${type} `);
+    let head = '';
+    for (let i = 0; i < items.length - 1; i++)
+        head += i === 0 ? items[i] : `, ${items[i]}`;
+    return `${head}, ${type} ${items[items.length - 1]}`;
 }
 /** How Node's messages describe a value they were given (lib/internal/errors.js determineSpecificType). */
 export function determineSpecificType(value) {
@@ -123,23 +141,23 @@ export function determineSpecificType(value) {
                 return 1 / value === -Infinity ? 'type number (-0)' : 'type number (0)';
             return `type number (${value})`;
         case 'boolean': return `type boolean (${value})`;
-        case 'symbol': return `type symbol (${String(value)})`;
-        case 'function': return `function ${value.name}`;
+        case 'symbol': return `type symbol (${stringOf(value)})`;
+        case 'function': return `function ${reflectGet(value, 'name')}`;
         case 'object': {
-            const ctor = Reflect.get(value, 'constructor');
-            if ((typeof ctor === 'function' || (typeof ctor === 'object' && ctor !== null)) && 'name' in ctor) {
-                return `an instance of ${String(Reflect.get(ctor, 'name'))}`;
+            const ctor = reflectGet(value, 'constructor');
+            if ((typeof ctor === 'function' || (typeof ctor === 'object' && ctor !== null)) && reflectHas(ctor, 'name')) {
+                return `an instance of ${stringOf(reflectGet(ctor, 'name'))}`;
             }
             return inspectValue(value, { depth: -1 });
         }
         case 'string': {
-            const shown = value.length > 28 ? `${value.slice(0, 25)}...` : value;
-            return shown.includes("'") ? `type string (${JSON.stringify(shown)})` : `type string ('${shown}')`;
+            const shown = value.length > 28 ? `${stringSlice(value, 0, 25)}...` : value;
+            return stringIncludes(shown, "'") ? `type string (${JSONStringify(shown)})` : `type string ('${shown}')`;
         }
         default: {
             let shown = inspectValue(value, { colors: false });
             if (shown.length > 28)
-                shown = `${shown.slice(0, 25)}...`;
+                shown = `${stringSlice(shown, 0, 25)}...`;
             return `type ${typeof value} (${shown})`;
         }
     }
@@ -159,8 +177,8 @@ export function invalidArgValue(name, value, reason = 'is invalid') {
 function invalidArgValueMessage(name, value, reason = 'is invalid') {
     let inspected = inspectValue(value, {});
     if (inspected.length > 128)
-        inspected = `${inspected.slice(0, 128)}...`;
-    return `The ${name.includes('.') ? 'property' : 'argument'} '${name}' ${reason}. Received ${inspected}`;
+        inspected = `${stringSlice(inspected, 0, 128)}...`;
+    return `The ${stringIncludes(name, '.') ? 'property' : 'argument'} '${name}' ${reason}. Received ${inspected}`;
 }
 /** Node's ERR_OUT_OF_RANGE: `name` must be `range` (`an integer`, `>= 0 && <= 4294967295`), and was `input`. */
 export function outOfRange(name, range, input) {
@@ -168,11 +186,11 @@ export function outOfRange(name, range, input) {
 }
 function outOfRangeMessage(str, range, input, replaceDefaultBoolean = false) {
     let received;
-    if (typeof input === 'number' && Number.isInteger(input) && Math.abs(input) > 2 ** 32) {
-        received = addNumericalSeparator(String(input));
+    if (typeof input === 'number' && numberIsInteger(input) && mathAbs(input) > 2 ** 32) {
+        received = addNumericalSeparator(stringOf(input));
     }
     else if (typeof input === 'bigint') {
-        received = String(input);
+        received = stringOf(input);
         if (input > 2n ** 32n || input < -(2n ** 32n))
             received = addNumericalSeparator(received);
         received += 'n';
@@ -183,23 +201,33 @@ function outOfRangeMessage(str, range, input, replaceDefaultBoolean = false) {
     return `${replaceDefaultBoolean ? str : `The value of "${str}" is out of range.`} It must be ${range}. Received ${received}`;
 }
 function invalidArgTypeMessage(name, expected, actual) {
-    const types = [];
-    const instances = [];
-    const other = [];
-    for (const value of typeof expected === 'string' ? [expected] : expected) {
-        if (ARG_TYPES.includes(value))
-            types.push(value.toLowerCase());
-        else if (CLASS_NAME.test(value))
-            instances.push(value);
+    let types = new SafeList();
+    const instances = new SafeList();
+    const other = new SafeList();
+    const given = typeof expected === 'string' ? [expected] : expected;
+    for (let i = 0; i < given.length; i++) {
+        const value = given[i];
+        if (arrayIncludes(ARG_TYPES, value))
+            types[types.length] = stringToLowerCase(value);
+        else if (regExpExec(CLASS_NAME, value) !== null)
+            instances[instances.length] = value;
         else
-            other.push(value);
+            other[other.length] = value;
     }
     // `object` beside classes is worded as one of them.
-    if (instances.length > 0 && types.includes('object')) {
-        types.splice(types.indexOf('object'), 1);
-        instances.push('Object');
+    if (instances.length > 0 && arrayIncludes(types, 'object')) {
+        const kept = new SafeList();
+        let removed = false;
+        for (let i = 0; i < types.length; i++) {
+            if (!removed && types[i] === 'object')
+                removed = true;
+            else
+                kept[kept.length] = types[i];
+        }
+        types = kept;
+        instances[instances.length] = 'Object';
     }
-    let message = name.endsWith(' argument') ? `The ${name} must be ` : `The "${name}" ${name.includes('.') ? 'property' : 'argument'} must be `;
+    let message = stringEndsWith(name, ' argument') ? `The ${name} must be ` : `The "${name}" ${stringIncludes(name, '.') ? 'property' : 'argument'} must be `;
     if (types.length > 0) {
         message += `${types.length > 1 ? 'one of type' : 'of type'} ${formatList(types, 'or')}`;
         if (instances.length > 0 || other.length > 0)
@@ -213,7 +241,7 @@ function invalidArgTypeMessage(name, expected, actual) {
     if (other.length > 1)
         message += `one of ${formatList(other, 'or')}`;
     else if (other.length === 1)
-        message += `${other[0].toLowerCase() !== other[0] ? 'an ' : ''}${other[0]}`;
+        message += `${stringToLowerCase(other[0]) !== other[0] ? 'an ' : ''}${other[0]}`;
     return `${message}. Received ${determineSpecificType(actual)}`;
 }
 /** `1_000_000` (lib/internal/errors.js addNumericalSeparator). */
@@ -222,66 +250,81 @@ function addNumericalSeparator(value) {
     let i = value.length;
     const start = value[0] === '-' ? 1 : 0;
     for (; i >= start + 4; i -= 3)
-        result = `_${value.slice(i - 3, i)}${result}`;
-    return `${value.slice(0, i)}${result}`;
+        result = `_${stringSlice(value, i - 3, i)}${result}`;
+    return `${stringSlice(value, 0, i)}${result}`;
 }
 /** util.format's `%s` of what Node's messages are handed. */
 function formatNodeMessage(template, args) {
+    let out = '';
+    let from = 0;
     let i = 0;
-    return template.replace(/%s/g, () => {
+    for (let at = stringIndexOf(template, '%s'); at !== -1; at = stringIndexOf(template, '%s', from)) {
         const value = args[i++];
-        return typeof value === 'number' && Object.is(value, -0) ? '-0' : String(value);
-    });
+        out += stringSlice(template, from, at) + (typeof value === 'number' && objectIs(value, -0) ? '-0' : stringOf(value));
+        from = at + 2;
+    }
+    return out + stringSlice(template, from);
 }
 /**
  * Node's message for each code lib/internal/errors.js defines (its E()) that
- * the runtime raises through `codes`, then the code's bases: its class's
+ * the runtime raises through `codes`, and the code's bases: its class's
  * first, the others named beside it (`codes.ERR_INVALID_ARG_VALUE.RangeError`).
  */
 const nodeErrorMessages = {
-    ERR_AMBIGUOUS_ARGUMENT: ['The "%s" argument is ambiguous. %s', TypeError],
-    ERR_ASSERTION: ['%s', Error],
-    ERR_FEATURE_UNAVAILABLE_ON_PLATFORM: ['The feature %s is unavailable on the current platform, which is being used to run Node.js', TypeError],
-    ERR_CONSTRUCT_CALL_REQUIRED: ['Class constructor %s cannot be invoked without `new`', TypeError],
-    ERR_CRYPTO_ENGINE_UNKNOWN: ['Engine "%s" was not found', Error],
-    ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE: ['Invalid key object type %s, expected %s.', TypeError],
-    ERR_CRYPTO_SIGN_KEY_REQUIRED: ['No key provided to sign', Error],
-    ERR_FALSY_VALUE_REJECTION: [function (reason) {
+    ERR_AMBIGUOUS_ARGUMENT: { message: 'The "%s" argument is ambiguous. %s', bases: [TypeError] },
+    ERR_ASSERTION: { message: '%s', bases: [Error] },
+    ERR_FEATURE_UNAVAILABLE_ON_PLATFORM: { message: 'The feature %s is unavailable on the current platform, which is being used to run Node.js', bases: [TypeError] },
+    ERR_CONSTRUCT_CALL_REQUIRED: { message: 'Class constructor %s cannot be invoked without `new`', bases: [TypeError] },
+    ERR_CRYPTO_ENGINE_UNKNOWN: { message: 'Engine "%s" was not found', bases: [Error] },
+    ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE: { message: 'Invalid key object type %s, expected %s.', bases: [TypeError] },
+    ERR_CRYPTO_SIGN_KEY_REQUIRED: { message: 'No key provided to sign', bases: [Error] },
+    ERR_FALSY_VALUE_REJECTION: { message: function (reason) {
             this.reason = reason;
             return 'Promise was rejected with falsy value';
-        }, Error],
-    ERR_ILLEGAL_CONSTRUCTOR: ['Illegal constructor', TypeError],
-    ERR_INTERNAL_ASSERTION: [(message) => {
+        }, bases: [Error] },
+    ERR_ILLEGAL_CONSTRUCTOR: { message: 'Illegal constructor', bases: [TypeError] },
+    ERR_INTERNAL_ASSERTION: { message: (message) => {
             const suffix = 'This is caused by either a bug in Node.js or incorrect usage of Node.js internals.\n'
                 + 'Please open an issue with this stack trace at https://github.com/nodejs/node/issues\n';
             return message === undefined ? suffix : `${message}\n${suffix}`;
-        }, Error],
-    ERR_INCOMPATIBLE_OPTION_PAIR: ['Option "%s" cannot be used in combination with option "%s"', TypeError],
-    ERR_INVALID_IP_ADDRESS: ['Invalid IP address: %s', TypeError],
-    ERR_INVALID_ARG_TYPE: [invalidArgTypeMessage, TypeError],
-    ERR_DNS_SET_SERVERS_FAILED: [(error, servers) => `c-ares failed to set servers: "${error}" [${inspectValue(servers, {})}]`, Error],
-    ERR_INVALID_MIME_SYNTAX: [(production, str, invalidIndex) => `The MIME syntax for a ${production} in "${str}" is invalid${invalidIndex !== -1 ? ` at ${invalidIndex}` : ''}`, TypeError],
-    ERR_INVALID_ARG_VALUE: [invalidArgValueMessage, TypeError, RangeError],
-    ERR_INVALID_RETURN_VALUE: [(input, name, value) => `Expected ${input} to be returned from the "${name}" function but got ${determineSpecificType(value)}.`, TypeError, RangeError],
-    ERR_INVALID_THIS: ['Value of "this" must be of type %s', TypeError],
-    ERR_INVALID_URI: ['URI malformed', URIError],
-    ERR_METHOD_NOT_IMPLEMENTED: ['The %s method is not implemented', Error],
-    ERR_MISSING_ARGS: [(...names) => {
-            const wrapped = names.map((name) => (Array.isArray(name) ? name.map((n) => `"${n}"`).join(' or ') : `"${name}"`));
+        }, bases: [Error] },
+    ERR_INCOMPATIBLE_OPTION_PAIR: { message: 'Option "%s" cannot be used in combination with option "%s"', bases: [TypeError] },
+    ERR_INVALID_IP_ADDRESS: { message: 'Invalid IP address: %s', bases: [TypeError] },
+    ERR_INVALID_ARG_TYPE: { message: invalidArgTypeMessage, bases: [TypeError] },
+    ERR_DNS_SET_SERVERS_FAILED: { message: (error, servers) => `c-ares failed to set servers: "${error}" [${inspectValue(servers, {})}]`, bases: [Error] },
+    ERR_INVALID_MIME_SYNTAX: { message: (production, str, invalidIndex) => `The MIME syntax for a ${production} in "${str}" is invalid${invalidIndex !== -1 ? ` at ${invalidIndex}` : ''}`, bases: [TypeError] },
+    ERR_INVALID_ARG_VALUE: { message: invalidArgValueMessage, bases: [TypeError, RangeError] },
+    ERR_INVALID_RETURN_VALUE: { message: (input, name, value) => `Expected ${input} to be returned from the "${name}" function but got ${determineSpecificType(value)}.`, bases: [TypeError, RangeError] },
+    ERR_INVALID_THIS: { message: 'Value of "this" must be of type %s', bases: [TypeError] },
+    ERR_INVALID_URI: { message: 'URI malformed', bases: [URIError] },
+    ERR_METHOD_NOT_IMPLEMENTED: { message: 'The %s method is not implemented', bases: [Error] },
+    ERR_MISSING_ARGS: { message: (...names) => {
+            const wrapped = new SafeList();
+            for (let i = 0; i < names.length; i++) {
+                const name = names[i];
+                if (typeof name === 'string') {
+                    wrapped[wrapped.length] = `"${name}"`;
+                    continue;
+                }
+                let either = '';
+                for (let j = 0; j < name.length; j++)
+                    either += j === 0 ? `"${name[j]}"` : ` or "${name[j]}"`;
+                wrapped[wrapped.length] = either;
+            }
             return `The ${formatList(wrapped, 'and')} argument${names.length > 1 ? 's' : ''} must be specified`;
-        }, TypeError],
-    ERR_PARSE_ARGS_INVALID_OPTION_VALUE: ['%s', TypeError],
-    ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL: ["Unexpected argument '%s'. This command does not take positional arguments", TypeError],
-    ERR_PARSE_ARGS_UNKNOWN_OPTION: [(option, allowPositionals) => `Unknown option '${option}'${allowPositionals
-            ? `. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- ${JSON.stringify(option)}`
-            : ''}`, TypeError],
-    ERR_OPERATION_FAILED: ['Operation failed: %s', Error, TypeError],
-    ERR_OUT_OF_RANGE: [outOfRangeMessage, RangeError],
-    ERR_SOCKET_BAD_PORT: [(name, port, allowZero = true) => `${name} should be ${allowZero ? '>=' : '>'} 0 and < 65536. Received ${determineSpecificType(port)}.`, RangeError],
-    ERR_UNAVAILABLE_DURING_EXIT: ['Cannot call function in process exit handler', Error],
-    ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET: ['`process.setupUncaughtExceptionCapture()` was called while a capture callback was already active', Error],
-    ERR_UNKNOWN_SIGNAL: ['Unknown signal: %s', TypeError],
-    ERR_WORKER_UNSUPPORTED_OPERATION: ['%s is not supported in workers', TypeError],
+        }, bases: [TypeError] },
+    ERR_PARSE_ARGS_INVALID_OPTION_VALUE: { message: '%s', bases: [TypeError] },
+    ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL: { message: "Unexpected argument '%s'. This command does not take positional arguments", bases: [TypeError] },
+    ERR_PARSE_ARGS_UNKNOWN_OPTION: { message: (option, allowPositionals) => `Unknown option '${option}'${allowPositionals
+            ? `. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- ${JSONStringify(option)}`
+            : ''}`, bases: [TypeError] },
+    ERR_OPERATION_FAILED: { message: 'Operation failed: %s', bases: [Error, TypeError] },
+    ERR_OUT_OF_RANGE: { message: outOfRangeMessage, bases: [RangeError] },
+    ERR_SOCKET_BAD_PORT: { message: (name, port, allowZero = true) => `${name} should be ${allowZero ? '>=' : '>'} 0 and < 65536. Received ${determineSpecificType(port)}.`, bases: [RangeError] },
+    ERR_UNAVAILABLE_DURING_EXIT: { message: 'Cannot call function in process exit handler', bases: [Error] },
+    ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET: { message: '`process.setupUncaughtExceptionCapture()` was called while a capture callback was already active', bases: [Error] },
+    ERR_UNKNOWN_SIGNAL: { message: 'Unknown signal: %s', bases: [TypeError] },
+    ERR_WORKER_UNSUPPORTED_OPERATION: { message: '%s is not supported in workers', bases: [TypeError] },
 };
 /** lib/internal/errors.js's SystemError codes, by the prefix each message starts with. */
 const nodeSystemErrorPrefixes = {
@@ -302,10 +345,10 @@ function nodeErrorCodeConstructor(code, message, Base) {
             return made(Base, code, formatNodeMessage(message, args), undefined, make);
         // A message that sets fields on its error (ERR_FALSY_VALUE_REJECTION's reason) sets them after its code.
         const fields = {};
-        const text = Reflect.apply(message, fields, args);
-        return made(Base, code, text, Object.keys(fields).length > 0 ? fields : undefined, make);
+        const text = reflectApply(message, fields, args);
+        return made(Base, code, text, objectKeys(fields).length > 0 ? fields : undefined, make);
     };
-    Object.defineProperty(make, 'name', { value: 'NodeError' });
+    reflectDefineProperty(make, 'name', dataDescriptor('NodeError', false, false, true));
     return make;
 }
 /**
@@ -314,24 +357,34 @@ function nodeErrorCodeConstructor(code, message, Base) {
  * HideStackFramesError Node's validators construct (the same error here;
  * hideStackFrames moves its stack).
  */
-export const nodeErrorCodes = Object.fromEntries([
-    ...Object.entries(nodeErrorMessages).map(([code, [message, Base, ...others]]) => {
-        const constructor = nodeErrorCodeConstructor(code, message, Base);
+export const nodeErrorCodes = makeNodeErrorCodes();
+function makeNodeErrorCodes() {
+    const codes = {};
+    const messageCodes = objectKeys(nodeErrorMessages);
+    for (let i = 0; i < messageCodes.length; i++) {
+        const code = messageCodes[i];
+        const { message, bases } = nodeErrorMessages[code];
+        const constructor = nodeErrorCodeConstructor(code, message, bases[0]);
         constructor.HideStackFramesError = constructor;
-        for (const Other of others) {
+        for (let j = 1; j < bases.length; j++) {
+            const Other = bases[j];
             const other = nodeErrorCodeConstructor(code, message, Other);
             other.HideStackFramesError = other;
-            constructor[Other.name] = other;
+            constructor[reflectGet(Other, 'name')] = other;
         }
-        return [code, constructor];
-    }),
+        codes[code] = constructor;
+    }
     // Node's SystemError codes: `new codes.ERR_X(context)`, as lib/internal/errors.js E(code, prefix, SystemError).
-    ...Object.entries(nodeSystemErrorPrefixes).map(([code, prefix]) => {
+    const systemCodes = objectKeys(nodeSystemErrorPrefixes);
+    for (let i = 0; i < systemCodes.length; i++) {
+        const code = systemCodes[i];
+        const prefix = nodeSystemErrorPrefixes[code];
         const constructor = function (context) { return nodeSystemError(code, prefix, context); };
         constructor.HideStackFramesError = constructor;
-        return [code, constructor];
-    }),
-]);
+        codes[code] = constructor;
+    }
+    return codes;
+}
 /**
  * lib/internal/errors.js hideStackFrames: `fn`, whose error's stack starts
  * where the wrapper was called; a Node error's stack keeps its code.
@@ -339,13 +392,14 @@ export const nodeErrorCodes = Object.fromEntries([
 export function hideStackFrames(fn) {
     const wrapped = function (...args) {
         try {
-            return Reflect.apply(fn, this, args);
+            return reflectApply(fn, this, args);
         }
         catch (error) {
-            if (Reflect.get(Error, 'stackTraceLimit') && error !== null && typeof error === 'object') {
-                const code = classCodes.get(Object.getPrototypeOf(error));
+            if (reflectGet(Error, 'stackTraceLimit') && error !== null && typeof error === 'object') {
+                const prototype = reflectGetPrototypeOf(error);
+                const code = prototype === null ? undefined : classCodes.get(prototype);
                 if (code !== undefined)
-                    headStack(error, `${error.name} [${code}]`, wrapped);
+                    headStack(error, `${reflectGet(error, 'name')} [${code}]`, wrapped);
                 else
                     captureStack(error, wrapped);
             }
@@ -357,10 +411,10 @@ export function hideStackFrames(fn) {
 }
 /** lib/internal/errors.js isErrorStackTraceLimitWritable. */
 export function isErrorStackTraceLimitWritable() {
-    const descriptor = Object.getOwnPropertyDescriptor(Error, 'stackTraceLimit');
+    const descriptor = reflectGetOwnPropertyDescriptor(Error, 'stackTraceLimit');
     if (descriptor === undefined)
-        return Object.isExtensible(Error);
-    return Object.prototype.hasOwnProperty.call(descriptor, 'writable') ? descriptor.writable === true : descriptor.set !== undefined;
+        return objectIsExtensible(Error);
+    return objectHasOwn(descriptor, 'writable') ? descriptor.writable === true : descriptor.set !== undefined;
 }
 /** Node's SystemError class, made once. */
 let SystemErrorClass;
@@ -373,39 +427,34 @@ let SystemErrorClass;
  */
 export function nodeSystemError(code, prefix, context) {
     let message = `${prefix}: ${context.syscall} returned ${context.code} (${context.message})`;
-    if (context.path !== undefined)
-        message += ` ${context.path}`;
-    if (context.dest !== undefined)
-        message += ` => ${context.dest}`;
+    const path = ownField(context, 'path');
+    const dest = ownField(context, 'dest');
+    if (path !== undefined)
+        message += ` ${path}`;
+    if (dest !== undefined)
+        message += ` => ${dest}`;
     SystemErrorClass ??= class SystemError extends Error {
         constructor(errorCode, text, info) {
             // Built with its message, which heads its stack (NodeError above).
             super(text);
-            Reflect.deleteProperty(this, 'message');
+            reflectDeleteProperty(this, 'message');
             this.code = errorCode;
-            const through = (key) => ({
-                get: () => info[key],
-                set: (value) => { info[key] = value; },
-                enumerable: true,
-                configurable: true,
-            });
-            Object.defineProperties(this, {
-                name: { value: 'SystemError', enumerable: false, writable: true, configurable: true },
-                message: { value: text, enumerable: false, writable: true, configurable: true },
-                info: { value: info, enumerable: true, writable: false, configurable: true },
-                errno: through('errno'),
-                syscall: through('syscall'),
-            });
-            if (info.path !== undefined)
-                Object.defineProperty(this, 'path', through('path'));
-            if (info.dest !== undefined)
-                Object.defineProperty(this, 'dest', through('dest'));
+            const through = (key) => accessorDescriptor(() => info[key], (value) => { info[key] = value; }, true, true);
+            reflectDefineProperty(this, 'name', dataDescriptor('SystemError', true, false, true));
+            reflectDefineProperty(this, 'message', dataDescriptor(text, true, false, true));
+            reflectDefineProperty(this, 'info', dataDescriptor(info, false, true, true));
+            reflectDefineProperty(this, 'errno', through('errno'));
+            reflectDefineProperty(this, 'syscall', through('syscall'));
+            if (ownField(info, 'path') !== undefined)
+                reflectDefineProperty(this, 'path', through('path'));
+            if (ownField(info, 'dest') !== undefined)
+                reflectDefineProperty(this, 'dest', through('dest'));
         }
         toString() {
-            return `${this.name} [${this.code}]: ${this.message}`;
+            return `${reflectGet(this, 'name')} [${this.code}]: ${reflectGet(this, 'message')}`;
         }
         // util.inspect's third argument is inspect itself.
-        [Symbol.for('nodejs.util.inspect.custom')](_depth, options, inspect) {
+        [symbolFor('nodejs.util.inspect.custom')](_depth, options, inspect) {
             return inspect(this, { ...options, getters: true, customInspect: false });
         }
     };
@@ -419,18 +468,17 @@ export function nodeSystemError(code, prefix, context) {
  * then restored. V8 formats a stack when it is first read.
  */
 function headStack(error, name, above) {
-    const own = Object.getOwnPropertyDescriptor(error, 'name');
+    const own = reflectGetOwnPropertyDescriptor(error, 'name');
     captureStack(error, above);
-    Object.defineProperty(error, 'name', { value: name, enumerable: false, writable: true, configurable: true });
-    void error.stack;
+    reflectDefineProperty(error, 'name', dataDescriptor(name, true, false, true));
+    reflectGet(error, 'stack');
     if (own === undefined)
-        Reflect.deleteProperty(error, 'name');
+        reflectDeleteProperty(error, 'name');
     else
-        Object.defineProperty(error, 'name', own);
+        reflectDefineProperty(error, 'name', own);
 }
-/** V8's Error.captureStackTrace (core's types are the language's, which have none). */
+/** V8's Error.captureStackTrace, as the launch captured it (core's types are the language's, which have none). */
 export function captureStack(error, above) {
-    const capture = Reflect.get(Error, 'captureStackTrace');
-    if (typeof capture === 'function')
-        Reflect.apply(capture, Error, [error, above]);
+    if (typeof ErrorCaptureStackTrace === 'function')
+        reflectApply(ErrorCaptureStackTrace, Error, [error, above]);
 }

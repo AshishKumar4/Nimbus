@@ -3,10 +3,13 @@
  * code that shares a realm with a program and must not reach what the
  * program replaced: the interpreter (interpreter/primordials.ts, loaded at a
  * launch's start), and the guest's module loading (node:path's posix half,
- * posix-path.ts), which the node shims evaluate before the program's first
- * statement. Only captures, and the collections and lists built on them:
- * every process of a launch evaluates it (tests/unit/primordials-audit.mjs
- * checks that its readers call nothing else).
+ * posix-path.ts; the ES module resolver, esm-resolver.ts, its package maps,
+ * package-map.ts, and Node's errors, node-error.ts), which the node shims
+ * evaluate before the program's first statement. Only captures, the
+ * collections and lists built on them, and what makes the runtime's own
+ * generators drive through them (safeGenerator): every process of a launch
+ * evaluates it (tests/unit/primordials-audit.mjs checks that its readers
+ * call nothing else).
  */
 export const reflectApply = Reflect.apply;
 export const reflectConstruct = Reflect.construct;
@@ -83,6 +86,17 @@ export const parseFloatOf = parseFloat;
 export const SymbolConstructor = Symbol;
 export const SymbolPrototypeDescription = Reflect.getOwnPropertyDescriptor(Symbol.prototype, 'description')?.get;
 export const globalObject = globalThis;
+export const JSONParse = JSON.parse;
+export const JSONStringify = JSON.stringify;
+export const decodeURIComponentOf = decodeURIComponent;
+export const encodeURIComponentOf = encodeURIComponent;
+export const NumberOf = Number;
+export const numberIsInteger = Number.isInteger;
+export const objectIs = Object.is;
+export const objectIsExtensible = Object.isExtensible;
+export const mathAbs = Math.abs;
+/** V8's Error.captureStackTrace, where the engine has one (the language's types have none). */
+export const ErrorCaptureStackTrace = Reflect.get(Error, 'captureStackTrace');
 const BigIntOf = BigInt;
 const ErrorConstructor = Error;
 const RangeErrorConstructor = RangeError;
@@ -90,9 +104,11 @@ const ReferenceErrorConstructor = ReferenceError;
 const RegExpConstructor = RegExp;
 const SyntaxErrorConstructor = SyntaxError;
 const TypeErrorConstructor = TypeError;
+const URIErrorConstructor = URIError;
+const URLConstructor = URL;
 // The interpreter's modules import these under the globals' names, so their
 // `new TypeError(...)` constructs the realm's own.
-export { BigIntOf as BigInt, ErrorConstructor as Error, RangeErrorConstructor as RangeError, ReferenceErrorConstructor as ReferenceError, RegExpConstructor as RegExp, SyntaxErrorConstructor as SyntaxError, TypeErrorConstructor as TypeError, };
+export { BigIntOf as BigInt, ErrorConstructor as Error, RangeErrorConstructor as RangeError, ReferenceErrorConstructor as ReferenceError, RegExpConstructor as RegExp, SyntaxErrorConstructor as SyntaxError, TypeErrorConstructor as TypeError, URIErrorConstructor as URIError, URLConstructor as URL, };
 /**
  * A data property descriptor that inherits nothing: ToPropertyDescriptor
  * looks up `get` and `set` on the descriptor, prototype chain included.
@@ -189,3 +205,42 @@ export const stringCharCodeAt = uncurryThis(String.prototype.charCodeAt);
 export const stringSlice = uncurryThis(String.prototype.slice);
 export const stringLastIndexOf = uncurryThis(String.prototype.lastIndexOf);
 export const arrayJoin = uncurryThis(Array.prototype.join);
+// Uncurried for the module resolver and Node's errors (esm-resolver.ts,
+// package-map.ts, node-error.ts). Not split or replace: a string separator
+// or pattern is asked its Symbol.split or Symbol.replace, which a program
+// can put on String.prototype.
+export const stringStartsWith = uncurryThis(String.prototype.startsWith);
+export const stringEndsWith = uncurryThis(String.prototype.endsWith);
+export const stringIncludes = uncurryThis(String.prototype.includes);
+export const stringIndexOf = uncurryThis(String.prototype.indexOf);
+export const stringToLowerCase = uncurryThis(String.prototype.toLowerCase);
+export const arrayIncludes = uncurryThis(Array.prototype.includes);
+export const arrayIndexOf = uncurryThis(Array.prototype.indexOf);
+export const setForEach = uncurryThis(Set.prototype.forEach);
+/** Array.prototype.sort of a SafeList, which inherits nothing it could read or write past its end. */
+export const arraySort = uncurryThis(Array.prototype.sort);
+/** RegExp.prototype.exec: RegExpBuiltinExec, which reads the regexp's own lastIndex and its flags' internal slots. */
+export const regExpExec = uncurryThis(RegExp.prototype.exec);
+const generatorPrototype = reflectGetPrototypeOf(function* () { }.prototype);
+export const generatorNext = uncurryThis(reflectGet(generatorPrototype ?? {}, 'next'));
+export const generatorThrow = uncurryThis(reflectGet(generatorPrototype ?? {}, 'throw'));
+/** `new URL(input, base)` with the realm's URL. */
+export function newURL(input, base) {
+    return base === undefined ? new URLConstructor(input) : new URLConstructor(input, base);
+}
+/**
+ * `fn`, a generator function of the runtime's own, made to create
+ * generators that inherit SafeGeneratorPrototype: next(), and yield*,
+ * which looks up the inner generator's [Symbol.iterator] and next, reach
+ * no method a program replaced on %GeneratorPrototype%.
+ */
+export function safeGenerator(fn) {
+    if (!reflectDefineProperty(fn, 'prototype', dataDescriptor(SafeGeneratorPrototype, true, false, false))) {
+        throw new TypeErrorConstructor('Cannot redefine property: prototype');
+    }
+    return fn;
+}
+/** `object`'s own `key`, or undefined: a parsed package.json's field, which Node's reader takes only as the file has it (no inherited one). */
+export function ownField(object, key) {
+    return objectHasOwn(object, key) ? reflectGet(object, key) : undefined;
+}
