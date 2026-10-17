@@ -2,7 +2,7 @@ import { sealJson, unsealJson, } from '@nimbus-sh/core/_shared/crypto.js';
 import { BASE_PATH_HEADER, TENANT_HEADER } from '../_shared/session-router.js';
 import { isValidSessionId } from '../_shared/session-id.js';
 import { z } from 'zod/v4';
-import { readNimbusCookie, serializeNimbusCookie, isNimbusCloudflareAccountId } from '@nimbus-sh/core/_shared/oauth.js';
+import { envString, readNimbusCookie, serializeNimbusCookie, isNimbusCloudflareAccountId } from '@nimbus-sh/core/_shared/oauth.js';
 export const NIMBUS_AGENT_AUTH_COOKIE = 'nimbus_agent_oauth';
 export const NIMBUS_AGENT_AUTH_COOKIE_TTL_SECONDS = 30 * 24 * 60 * 60;
 export const NIMBUS_AGENT_AUTH_COOKIE_PURPOSE = 'nimbus-agent-oauth-auth';
@@ -98,9 +98,4 @@ export function isNimbusTenantSegment(value) {
 }
 function isNimbusAgentOAuthCookie(value) {
     return NimbusAgentOAuthCookieSchema.safeParse(value).success;
-}
-/** A var of the Worker's env, trimmed; '' when it is unset or not a string. */
-export function envString(env, key) {
-    const value = env?.[key];
-    return typeof value === 'string' ? value.trim() : '';
 }

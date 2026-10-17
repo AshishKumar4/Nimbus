@@ -43,8 +43,8 @@ import { z } from 'zod/v4';
 import { NIMBUS_AI_GATEWAY_PORT } from '@nimbus-sh/core/constants.js';
 import { routeRuntimeLoopback } from './loopback.js';
 import { NIMBUS_AI_TOKEN_ENV, mintSessionAiToken } from '@nimbus-sh/core/_shared/ai-egress.js';
-import { normalizeNimbusOAuthToken, NIMBUS_CLOUDFLARE_API, fetchNimbusCloudflareAccounts, fetchNimbusCloudflareUserInfo, readNimbusCookie, requestNimbusCloudflareOAuthToken, } from '@nimbus-sh/core/_shared/oauth.js';
-import { NIMBUS_AGENT_AUTH_COOKIE, envString, loadNimbusAgentOAuthFromRequest, readNimbusAgentCookieSecret, readNimbusAgentOAuthConfig, } from './agent-oauth.js';
+import { normalizeNimbusOAuthToken, NIMBUS_CLOUDFLARE_API, fetchNimbusCloudflareAccounts, fetchNimbusCloudflareUserInfo, readNimbusCookie, requestNimbusCloudflareOAuthToken, envString, } from '@nimbus-sh/core/_shared/oauth.js';
+import { NIMBUS_AGENT_AUTH_COOKIE, loadNimbusAgentOAuthFromRequest, readNimbusAgentCookieSecret, readNimbusAgentOAuthConfig, } from './agent-oauth.js';
 export function routeSessionLoopback(host, port, request) {
     // A credential-backed gateway is private, not a shareable port entry.
     if (port === NIMBUS_AI_GATEWAY_PORT)

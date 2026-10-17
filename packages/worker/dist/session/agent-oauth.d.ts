@@ -1,17 +1,19 @@
-export interface NimbusAgentOAuthCookie {
-    mode: 'oauth';
-    accessToken: string;
-    refreshToken?: string;
-    tokenType: string;
-    expiresAt: number | null;
-    connectedAt: number;
-    accountId: string | null;
-    sessionId: string;
-    tenantSegment: string;
-}
+import { z } from 'zod/v4';
 export declare const NIMBUS_AGENT_AUTH_COOKIE = "nimbus_agent_oauth";
 export declare const NIMBUS_AGENT_AUTH_COOKIE_TTL_SECONDS: number;
 export declare const NIMBUS_AGENT_AUTH_COOKIE_PURPOSE = "nimbus-agent-oauth-auth";
+declare const NimbusAgentOAuthCookieSchema: z.ZodObject<{
+    mode: z.ZodLiteral<"oauth">;
+    accessToken: z.ZodString;
+    refreshToken: z.ZodOptional<z.ZodString>;
+    tokenType: z.ZodString;
+    expiresAt: z.ZodNullable<z.ZodNumber>;
+    connectedAt: z.ZodNumber;
+    accountId: z.ZodNullable<z.ZodString>;
+    sessionId: z.ZodString & z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
+    tenantSegment: z.ZodString;
+}, z.core.$strip>;
+export type NimbusAgentOAuthCookie = z.output<typeof NimbusAgentOAuthCookieSchema>;
 export declare function createNimbusAgentOAuthCookie(auth: NimbusAgentOAuthCookie, secret: string, basePathOrRequest: string | Request): Promise<string>;
 export declare function loadNimbusAgentOAuthFromRequest(request: Request, secret: string): Promise<NimbusAgentOAuthCookie | null>;
 export declare function clearNimbusAgentOAuthCookie(basePathOrRequest: string | Request): string;
@@ -34,6 +36,5 @@ export declare function nimbusAgentRouteContext(request: Request): {
     tenantSegment: string;
 };
 export declare function isNimbusTenantSegment(value: string): boolean;
-/** A var of the Worker's env, trimmed; '' when it is unset or not a string. */
-export declare function envString(env: Record<string, unknown>, key: string): string;
+export {};
 //# sourceMappingURL=agent-oauth.d.ts.map
