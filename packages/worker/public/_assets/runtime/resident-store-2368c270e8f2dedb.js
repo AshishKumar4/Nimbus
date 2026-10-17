@@ -1037,6 +1037,7 @@ var __nimbusResidentModule = (() => {
     return parts.join("/");
   }
   function createNamespace(coherence, admission) {
+    const realNow = Date.now;
     let links = /* @__PURE__ */ new Set();
     let unlisted = /* @__PURE__ */ new Map();
     let cred = null;
@@ -1340,7 +1341,7 @@ var __nimbusResidentModule = (() => {
         const t = coherence.require();
         const held = nsRowAt(t, k);
         if (held !== void 0 && held.rev >= rev) return;
-        const now = Date.now();
+        const now = realNow();
         const slash = k.lastIndexOf("/");
         const parent = held === void 0 ? nsRowAt(t, slash < 0 ? "" : k.slice(0, slash)) : void 0;
         tryPut(t, k, {

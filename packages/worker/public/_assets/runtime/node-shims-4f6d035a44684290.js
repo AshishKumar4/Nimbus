@@ -533,9 +533,9 @@ const __nimbusReflectApply = Reflect.apply;
 // The runner's stop and replay (runtime/stop-replay.ts), private to its
 // module: null in a runner without one.
 const __nimbusReplay = typeof __nimbusStopReplay !== "undefined" ? __nimbusStopReplay : null;
-// The clock for the shims' own reads (stop-replay's realNow): a program's
-// reads are its tape, and these are not the program's.
-const __nimbusOwnNow = __nimbusReplay ? __nimbusReplay.realNow : () => Date.now();
+// The clock for the shims' own reads (REAL_NOW_SOURCE): a program's reads
+// are its tape, and these are not the program's.
+const __nimbusOwnNow = (typeof __nimbusStopReplay !== "undefined" ? __nimbusStopReplay.realNow : Date.now);
 // A connection opened through workerd's own socket class, which a program
 // reaches past every export of node:net and node:tls (it is the prototype of
 // tls.TLSSocket), is something a second run would do again: counted where

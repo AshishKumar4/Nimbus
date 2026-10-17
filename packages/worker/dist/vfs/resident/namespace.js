@@ -100,6 +100,10 @@ function joinTarget(linkPath, target) {
     return parts.join('/');
 }
 export function createNamespace(coherence, admission) {
+    // The clock, taken as the store is made, before a run that can stop tapes
+    // Date (stop-replay.ts): an own file's time is stamped when its write is
+    // answered, which a run and its run again do at other moments.
+    const realNow = Date.now;
     /** Paths of every symlink in the table: resolution walks only past these. */
     let links = new Set();
     /**
@@ -476,7 +480,7 @@ export function createNamespace(coherence, admission) {
             const held = nsRowAt(t, k);
             if (held !== undefined && held.rev >= rev)
                 return;
-            const now = Date.now();
+            const now = realNow();
             // A file the process created: its umask's mode, on the device of the
             // directory it is in, with one link, until the delta reports the
             // authority's own stat for it. A file it rewrote keeps its identity.
