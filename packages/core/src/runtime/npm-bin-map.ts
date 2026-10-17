@@ -1,4 +1,5 @@
 import { normalizeVfsPath } from '../vfs/path.js';
+import { rootClampedSegments } from '@nimbus-sh/platform/lexical-path.js';
 
 /**
  * A package's `bin` field as npm installs it (npm-normalize-package-bin).
@@ -42,14 +43,13 @@ export function npmBinMap(packageName: string, bin: unknown): Map<string, string
 
 /** `path.posix.join('/', target)` without its leading slash, as npm takes a target; null for the package root itself. */
 function withinPackage(target: string): string | null {
-  const slashed = target.replace(/\\/g, '/');
-  const out: string[] = [];
-  for (const segment of slashed.split('/')) {
-    if (segment === '..') out.pop();
-    else if (segment !== '.' && segment !== '') out.push(segment);
-  }
-  if (out.length === 0) return null;
-  return out.join('/') + (slashed.endsWith('/') ? '/' : '');
+  return insidePackage(target.replace(/\\/g, '/')) || null;
+}
+
+/** `slashed` resolved inside the package root, a trailing slash kept; '' for the root. */
+function insidePackage(slashed: string): string {
+  const out = rootClampedSegments(slashed);
+  return out.length === 0 ? '' : out.join('/') + (slashed.endsWith('/') ? '/' : '');
 }
 
 /**
@@ -95,14 +95,7 @@ export function normalizePackageJsonBin(pkg: Record<string, unknown>): void {
 
 /** @npmcli/package-json secureAndUnixifyPath: `ref` inside the package, `\` and `:` as `/`; '' for its root. */
 function securedPath(ref: string): string {
-  const unixified = ref.replace(/[\\:]/g, '/');
-  const out: string[] = [];
-  for (const segment of unixified.split('/')) {
-    if (segment === '..') out.pop();
-    else if (segment !== '.' && segment !== '') out.push(segment);
-  }
-  if (out.length === 0) return '';
-  return out.join('/') + (unixified.endsWith('/') ? '/' : '');
+  return insidePackage(ref.replace(/[\\:]/g, '/'));
 }
 
 /** Node's path.posix.basename; a non-string throws as Node's does. */

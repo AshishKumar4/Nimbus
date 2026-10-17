@@ -19,6 +19,7 @@
  * `globalThis.__esbuildCliRun` is its entry point.
  */
 import { supervisorFilesystem } from '../vfs-supervisor.js';
+import { rootClampedSegments } from '@nimbus-sh/platform/lexical-path.js';
 import type { RuntimeFsBridge, RuntimeOpenFlags, RuntimeVfsStat } from '../os-contracts.js';
 import type { WasiSupervisorStub } from '../wasi/types.js';
 import type { EsbuildCliArgs, EsbuildCliOutput, GoProgram, GoRuntimeFactory } from './types.js';
@@ -73,13 +74,7 @@ function goError(error: unknown): Error {
 }
 
 function resolvePath(cwd: string, path: string): string {
-  const parts: string[] = [];
-  for (const part of (path.startsWith('/') ? path : `${cwd}/${path}`).split('/')) {
-    if (part === '' || part === '.') continue;
-    if (part === '..') parts.pop();
-    else parts.push(part);
-  }
-  return `/${parts.join('/')}`;
+  return `/${rootClampedSegments(path.startsWith('/') ? path : `${cwd}/${path}`).join('/')}`;
 }
 
 function goStats(stat: RuntimeVfsStat, size = stat.size): GoStats {

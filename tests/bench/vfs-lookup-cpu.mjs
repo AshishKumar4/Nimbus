@@ -46,11 +46,11 @@ try {
       }
     }
     const at = (path) => import(pathToFileURL(join(fixture, path)).href);
-    const [{ SqliteVFS }, { CompositeVFS }, { sqliteFiles, SqliteFiles }, { ProcessFiles }] = await Promise.all(
-      ['vfs/sqlite-vfs.ts', 'vfs/composite.ts', 'vfs/sqlite-files.ts', 'runtime/process-files.ts'].map(at));
-    return [SqliteVFS, CompositeVFS, sqliteFiles, SqliteFiles, ProcessFiles];
+    const [{ SqliteVFS }, { CompositeVFS }, { sqliteFiles, SqliteFiles }, { ProcessFiles }, { normalizeVfsPath }] = await Promise.all(
+      ['vfs/sqlite-vfs.ts', 'vfs/composite.ts', 'vfs/sqlite-files.ts', 'runtime/process-files.ts', 'vfs/path.ts'].map(at));
+    return [SqliteVFS, CompositeVFS, sqliteFiles, SqliteFiles, ProcessFiles, normalizeVfsPath];
   };
-  const make = async (Store, Namespace, files, FilesClass, Processes) => {
+  const make = async (Store, Namespace, files, FilesClass, Processes, normalize) => {
     const host = await hostSqlite();
     const engine = new Store(host.sql, host.transactions);
     const root = engine.as(CRED_KERNEL);
@@ -82,7 +82,7 @@ try {
       root.chown('home/user/tree', USER.uid, USER.gid);
       for (let at = 0; at < 2000; at += 64) root.writeBatch({ inodes: Array.from({ length: Math.min(64, 2000 - at) }, (_, i) => ({ path: `home/user/tree/f${at + i}`, parentPath: 'home/user/tree', isDir: false, size: 0, mtime: 1, mode: 0o644, chunkCount: 0, uid: USER.uid, gid: USER.gid })), chunks: [] });
     };
-    return { engine, root, store, namespace, process, paths, packagePaths, chainPaths, removal, seedRemoval };
+    return { engine, root, store, namespace, process, paths, packagePaths, chainPaths, removal, seedRemoval, normalize };
   };
   // A, the baseline; null, a second copy of the baseline, the A/A reference
   // the branch's delta is judged against; real, the branch. Made in a random
@@ -92,7 +92,9 @@ try {
   const sources = { A: baseline, null: baseline, real: source };
   const arms = {};
   for (const name of shuffled(Object.keys(sources))) arms[name] = await make(...await load(sources[name]));
-  const run = async ({ store, namespace, process, paths, packagePaths, chainPaths, removal }, kind) => {
+  // Spellings normalizeVfsPath reduces by its names, not by its plain-key fast path.
+  const SPELLED = ['/home/user/a/./b/../b/c/d/f1', 'home//user/a/b/c/d/', '/../home/user/a/b/c/d/../d/./f2', './home/user/node_modules/x/lib/../lib/f3'];
+  const run = async ({ store, namespace, process, paths, packagePaths, chainPaths, removal, normalize }, kind) => {
     if (kind === 'walked-removal') {
       const report = removal.removeRecursive('/home/user/tree');
       assert.equal(report.failures.length, 0);
@@ -101,7 +103,8 @@ try {
     }
     for (let i = 0; i < ITERATIONS; i++) {
       const path = paths[(i * 17) % paths.length];
-      if (kind === 'namespace') checksum += namespace.stat(path).size;
+      if (kind === 'normalize-spelled') checksum += normalize(SPELLED[i % SPELLED.length]).length;
+      else if (kind === 'namespace') checksum += namespace.stat(path).size;
       else if (kind === 'namespace-walk') checksum += namespace.stat(`/home/user/link/../d/f${(i * 17) % paths.length}`).size;
       else if (kind === 'process-view') checksum += (await process.stat(path)).size;
       else if (kind === 'process-linked') checksum += (await process.stat(chainPaths[(i * 17) % chainPaths.length])).size;
@@ -117,7 +120,7 @@ try {
     if (kind === 'walked-removal') arm.seedRemoval();
     return cpuMs(() => run(arm, kind));
   };
-  for (const kind of ['store', 'namespace', 'namespace-walk', 'store-linked', 'store-pnpm-chain', 'store-dot', 'store-link-parent', 'store-dot-lease', 'process-view', 'process-linked', 'walked-removal']) {
+  for (const kind of ['normalize-spelled', 'store', 'namespace', 'namespace-walk', 'store-linked', 'store-pnpm-chain', 'store-dot', 'store-link-parent', 'store-dot-lease', 'process-view', 'process-linked', 'walked-removal']) {
     const leases = kind === 'store-dot-lease' ? Object.values(arms).map((arm) => [arm, arm.engine.acquireExclusiveMutation('lease')]) : [];
     const walked = kind === 'walked-removal';
     const result = await pairedKind(kind, arms, cpu, { pairs: PAIRS, warm: walked ? 2 : 12, iterations: walked ? 2000 : ITERATIONS });

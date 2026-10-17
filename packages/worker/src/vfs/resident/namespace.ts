@@ -33,6 +33,7 @@ import type { Coherence } from './coherence.js';
 import { namespaceAllows, type ModeMeta, type ResidentCred } from './permissions.js';
 import type { RuntimeVfsStat, VfsInvalidatedPath, VfsListEntry } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { NS_DIR, NS_FILE, NS_LINK, type NsRow, type ResidentTables } from './tables.js';
+import { rootClampedSegments } from '@nimbus-sh/platform/lexical-path.js';
 
 /** What a row is made from: a stat the session reported, or one the process's own write stands in with until it does. */
 export type NsStat = Pick<RuntimeVfsStat, 'type' | 'size' | 'mode' | 'uid' | 'gid' | 'atime' | 'mtime' | 'ctime' | 'ino'>
@@ -182,12 +183,7 @@ export function nsRowAt(t: ResidentTables, k: string): NsRow | undefined {
 
 function joinTarget(linkPath: string, target: unknown): string {
   const text = String(target);
-  const parts = text.startsWith('/') ? [] : nsSplit(linkPath)[0].split('/').filter(Boolean);
-  for (const seg of text.split('/')) {
-    if (seg === '' || seg === '.') continue;
-    if (seg === '..') parts.pop(); else parts.push(seg);
-  }
-  return parts.join('/');
+  return rootClampedSegments(text.startsWith('/') ? text : `${nsSplit(linkPath)[0]}/${text}`).join('/');
 }
 
 export function createNamespace(coherence: Coherence, admission: Admission): Namespace {

@@ -61,6 +61,7 @@ import { DEFAULT_HOME } from '@nimbus-sh/core/constants.js';
 import { normalizeRemoteBasePath } from '@nimbus-sh/core/runtime/remote-http-contract.js';
 import { isNimbusIdComponent } from '@nimbus-sh/core/_shared/id-component.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
+import { rootClampedSegments } from '@nimbus-sh/platform/lexical-path.js';
 import {
   codeRuntimeRequirement,
   runtimePolicyError,
@@ -1006,16 +1007,7 @@ function trimTrailingSlashes(value: string): string {
  */
 function resolveSandboxCwd(root: string, cwd: string): string {
   if (cwd.startsWith('/')) return cwd;
-  const segments: string[] = [];
-  for (const seg of `${root}/${cwd}`.split('/')) {
-    if (seg === '..') {
-      // A '..' at the filesystem root stays at the root, POSIX-style.
-      if (segments.length > 0) segments.pop();
-    } else if (seg !== '' && seg !== '.') {
-      segments.push(seg);
-    }
-  }
-  return '/' + segments.join('/');
+  return '/' + rootClampedSegments(`${root}/${cwd}`).join('/');
 }
 
 async function resolveHeaders(input: NimbusHeaders | undefined): Promise<HeadersInit | undefined> {

@@ -884,6 +884,14 @@ async function main() {
     throw new Error('[bundle-facet-workers/wasm-image-key] the bundle no longer declares function wasmImageDigest');
   }
 
+  // 8. The root-clamped lexical path reduction, for guest code generated as
+  //    text (the real-vite synthetic module): the host's own, so the two
+  //    resolve '..' alike.
+  const lexicalPath = await bundleAsPreamble(join(platformRoot, 'src', 'lexical-path.ts'), 'lexical-path');
+  if (!/^function rootClampedSegments\(/m.test(lexicalPath)) {
+    throw new Error('[bundle-facet-workers/lexical-path] the bundle no longer declares function rootClampedSegments');
+  }
+
   const waveWriter = await bundleWaveWriter();
   const rpcDisposal = await bundleAsPreamble(join(platformRoot, 'src', 'rpc-dispose.ts'), 'rpc-dispose');
 
@@ -904,6 +912,7 @@ async function main() {
     ' *   - @nimbus-sh/core src/_shared/http2-module.ts (node:http2, for the node shims)',
     ' *   - @nimbus-sh/core src/_shared/node-shim-resolution.ts (resolution, credential and upgrade rules, for the node shims)',
     ' *   - src/facets/wasm-image-key.ts (the wasm image content key, for the node shims)',
+    ' *   - @nimbus-sh/platform src/lexical-path.ts (the root-clamped path reduction, for generated guest code)',
     ' *',
     ' * Consumed by fabric/isolate-pool.ts callers via the `preamble`',
     ' * option. The preamble is injected at the top of every generated',
@@ -967,6 +976,9 @@ async function main() {
     '',
     '/** Declares `function wasmImageDigest(bytes)`, the key a launch registers a wasm image under; the node shims call it. */',
     `export const WASM_IMAGE_KEY_PREAMBLE: string = ${JSON.stringify(wasmImageKey)};`,
+    '',
+    '/** Declares `function rootClampedSegments(path)`, the root-clamped lexical path reduction; generated guest code calls it. */',
+    `export const LEXICAL_PATH_PREAMBLE: string = ${JSON.stringify(lexicalPath)};`,
     '',
   ].join('\n');
 

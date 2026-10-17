@@ -11,6 +11,7 @@ import { syscallError, type VfsError, type VfsErrorCode } from './vfs-error.js';
 import { timeAt } from './posix-access.js';
 import type { FsTime } from '../runtime/os-contracts.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
+import { rootClampedSegments } from '@nimbus-sh/platform/lexical-path.js';
 
 type Entry = {
   /** Its number, its own for its life (a rename keeps it). */
@@ -33,16 +34,6 @@ interface Call {
 
 function fail(code: VfsErrorCode, call: Call): VfsError {
   return syscallError(code, call.syscall, call.path, { dest: call.dest });
-}
-
-function segments(path: string): string[] {
-  const out: string[] = [];
-  for (const segment of path.split('/')) {
-    if (segment === '' || segment === '.') continue;
-    if (segment === '..') out.pop();
-    else out.push(segment);
-  }
-  return out;
 }
 
 export class MemoryVFS implements VFS {
@@ -71,7 +62,7 @@ export class MemoryVFS implements VFS {
 
   /** The entry at `path`, following symlinks except a final one when `follow` is false; `call` names a failure. */
   private find(path: string, call: Call, follow = true, hops = 0): Entry | null {
-    const parts = segments(path);
+    const parts = rootClampedSegments(path);
     let at = this.root;
     for (let i = 0; i < parts.length; i++) {
       if (at.type !== 'directory') throw fail('ENOTDIR', call);
@@ -88,7 +79,7 @@ export class MemoryVFS implements VFS {
   }
 
   private parentOf(path: string, call: Call): { dir: Extract<Entry, { type: 'directory' }>; name: string } {
-    const parts = segments(path);
+    const parts = rootClampedSegments(path);
     const name = parts.pop();
     if (name === undefined) throw syscallError('EBUSY', call.syscall, call.path, { dest: call.dest, detail: 'the root cannot be replaced' });
     const dir = this.find(`/${parts.join('/')}`, call);
@@ -185,7 +176,7 @@ export class MemoryVFS implements VFS {
     if (options?.recursive) {
       const made: string[] = [];
       let at = '';
-      for (const part of segments(path)) {
+      for (const part of rootClampedSegments(path)) {
         at += `/${part}`;
         const existing = this.find(at, call);
         if (existing === null) {
@@ -203,7 +194,7 @@ export class MemoryVFS implements VFS {
 
   unlink(path: string): void {
     const call = { syscall: 'unlink', path };
-    if (segments(path).length === 0) throw fail('EISDIR', call);
+    if (rootClampedSegments(path).length === 0) throw fail('EISDIR', call);
     const { dir, name } = this.parentOf(path, call);
     const entry = dir.children!.get(name);
     if (entry === undefined) throw fail('ENOENT', call);
@@ -242,8 +233,8 @@ export class MemoryVFS implements VFS {
     const target = this.parentOf(to, call);
     const entry = source.dir.children!.get(source.name);
     if (entry === undefined) throw fail('ENOENT', call);
-    const fromKey = segments(from).join('/');
-    const toKey = segments(to).join('/');
+    const fromKey = rootClampedSegments(from).join('/');
+    const toKey = rootClampedSegments(to).join('/');
     if (fromKey === toKey) return;
     if (entry.type === 'directory' && `${toKey}/`.startsWith(`${fromKey}/`)) {
       throw syscallError('EINVAL', 'rename', from, { dest: to, detail: 'a directory cannot move beneath itself' });
