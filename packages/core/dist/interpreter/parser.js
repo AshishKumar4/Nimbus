@@ -17,6 +17,7 @@ const COMMONJS_OPTIONS = own({ ecmaVersion: 'latest', allowHashBang: true, sourc
 const SCRIPT_OPTIONS = own({ ecmaVersion: 'latest', sourceType: 'script' });
 // The end of acorn's message (and V8's) for a name declared twice.
 const REDECLARED = ' has already been declared';
+const NESTED_DECLARATION = "'import' and 'export' may only appear at the top level";
 const AcornParserClass = Parser;
 const FOUND = objectCreate(null);
 /**
@@ -45,9 +46,12 @@ class ThrowFinder extends AcornParserClass {
             && this.type !== tokTypes.eq && (pos === this.start || pos === this.lastTokEnd);
         // V8 marks a redeclared name by its first character.
         const redeclared = stringSlice(message, -REDECLARED.length) === REDECLARED;
+        // A module's `import` nested in a statement is an import expression to V8, which fails at the token after it.
+        const nestedImport = this.inModule && message === NESTED_DECLARATION && this.type === tokTypes._import && pos === this.start;
         this.raisedToken = missingInitializer ? [declared.start, declared.end]
             : redeclared ? [pos, pos + 1]
-                : pos === this.start ? [pos, this.end] : pos === this.lastTokStart ? [pos, this.lastTokEnd] : null;
+                : nestedImport ? tokenAfter(this.input, this.end)
+                    : pos === this.start ? [pos, this.end] : pos === this.lastTokStart ? [pos, this.lastTokEnd] : null;
         return super.raise(pos, message);
     }
     // acorn's is its raise, not a call of it.
@@ -179,6 +183,19 @@ export function importedName(text, requested, name) {
 /** acorn's tokenizer, which Node's error_source.js reads an assert.ok() call's expression with. */
 export function tokenizer(code, options) {
     return Parser.tokenizer(code, options);
+}
+/** The first token of module `text` that starts at or after `offset`, as [start, end]; null for none. */
+function tokenAfter(text, offset) {
+    const tokens = Parser.tokenizer(text, MODULE_OPTIONS);
+    try {
+        for (let token = tokens.getToken(); token.type !== tokTypes.eof; token = tokens.getToken())
+            if (token.start >= offset)
+                return [token.start, token.end];
+    }
+    catch {
+        // A token that does not end is no place to mark.
+    }
+    return null;
 }
 /**
  * The last token of `text` (as CommonJS reads it) that ends at or before

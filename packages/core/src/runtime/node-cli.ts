@@ -53,13 +53,20 @@ export interface NodeLaunch {
   transformTypes?: boolean;
   /** `--enable-source-maps`, which `--experimental-transform-types` sets where it is read. */
   enableSourceMaps?: boolean;
+  /**
+   * `-e` code or stdin as Node's eval took its TypeScript (node-eval.ts
+   * nodeEvalInput): `stripped`, its types stripped, its frames named
+   * `[eval]`; `hint`, amaro's message for code that compiles neither as
+   * JavaScript nor as TypeScript, which Node's report of the SyntaxError adds.
+   */
+  evalTypeScript?: { stripped: boolean; hint?: string };
 }
 
 /** What node's command line says, for the program it runs. */
 export interface NodeCommandLine extends NodeLaunch {
   /** Where the program's own arguments start: its script (or `-`), or, for `-e`, its arguments; their end when there are none. */
   programIndex: number;
-  /** `--input-type`: what `-e` code and stdin are (`module`, `commonjs`), the command line's over NODE_OPTIONS'. */
+  /** `--input-type`: what `-e` code and stdin are (`module`, `commonjs`, `module-typescript`, `commonjs-typescript`), the command line's over NODE_OPTIONS'. */
   inputType?: string;
   /** `--experimental-default-type`: the format of a file with no other, the command line's over NODE_OPTIONS'. */
   defaultType?: string;
@@ -239,7 +246,7 @@ export function parseNodeCommandLine(args: readonly string[], nodeOptions = ''):
   const fromEnv = readOptions(envTokens, true);
   if ('error' in fromEnv) return fromEnv;
   // NODE_OPTIONS' own are checked as Node parses them, before the command line can override them.
-  const envRefused = refusedOptions(fromEnv.defaultType, false);
+  const envRefused = refusedOptions(fromEnv.inputType, fromEnv.defaultType, false);
   if (envRefused !== null) return envRefused;
   const fromArgs = readOptions(args, false);
   if ('error' in fromArgs) return fromArgs;
@@ -263,12 +270,18 @@ export function parseNodeCommandLine(args: readonly string[], nodeOptions = ''):
     version: fromArgs.version,
     help: fromArgs.help,
   };
-  return refusedOptions(line.defaultType, line.check && line.eval !== undefined) ?? line;
+  return refusedOptions(line.inputType, line.defaultType, line.check && line.eval !== undefined) ?? line;
 }
 
-/** What Node refuses of options once it has read them (EnvironmentOptions::CheckOptions), each on its line; null for nothing. */
-function refusedOptions(defaultType: string | undefined, checksEval: boolean): NodeCommandLineError | null {
+/** The values `--input-type` takes (src/node_options.cc EnvironmentOptions::CheckOptions). */
+const INPUT_TYPES: ReadonlySet<string> = new Set(['commonjs', 'module', 'commonjs-typescript', 'module-typescript']);
+
+/** What Node refuses of options once it has read them (EnvironmentOptions::CheckOptions), each on its line, in its order; null for nothing. */
+function refusedOptions(inputType: string | undefined, defaultType: string | undefined, checksEval: boolean): NodeCommandLineError | null {
   const refused: string[] = [];
+  if (inputType !== undefined && !INPUT_TYPES.has(inputType)) {
+    refused.push('--input-type must be "module","commonjs", "module-typescript" or "commonjs-typescript"');
+  }
   if (defaultType !== undefined && defaultType !== 'module' && defaultType !== 'commonjs') {
     refused.push('--experimental-default-type must be "module" or "commonjs"');
   }

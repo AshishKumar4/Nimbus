@@ -55,7 +55,7 @@ import { exists, isDirectory } from '../vfs/vfs.js';
 import { programLaunchesServer, SERVER_LAUNCH_MODULE_BYTES, type ServerIdentity, type ServerLaunchHost } from './server-launch.js';
 import { parseNodeCommandLine, typeScriptStripOptions, type NodeCommandLine, type NodeLaunch } from './node-cli.js';
 import { resolveRuntimeScriptPath } from './script-path.js';
-import { nodeEvalProgram, nodeStdinPrintProgram, type NodeEvalMode } from './node-eval.js';
+import { evalProgram, evalScriptSource, nodeEvalInput, type EvalTypeScriptStrip } from './node-eval.js';
 
 /**
  * Result shape that runtime-registry expects from a runner. Mirrors
@@ -464,6 +464,8 @@ export function buildRuntimeHandler(
       /** The code is Node's refusal of the file, run as -c's answer: it holds none of the program. */
       runsRefusal?: boolean;
       esModule?: boolean;
+      /** The eval's TypeScript, as Node took it (NodeLaunch.evalTypeScript). */
+      evalTypeScript?: NodeLaunch['evalTypeScript'];
     }): Promise<number> => {
       let result: RuntimeRunResult;
       try {
@@ -479,7 +481,7 @@ export function buildRuntimeHandler(
           command: program.command,
           output: programStdin.output,
           ...(spec.nodeCommandLine
-            ? { node: { ...launch, print: program.print === true, ...(program.refusedBeforeImports ? { import: [] } : {}), ...(program.runsRefusal ? { check: false } : {}) } }
+            ? { node: { ...launch, print: program.print === true, ...(program.refusedBeforeImports ? { import: [] } : {}), ...(program.runsRefusal ? { check: false } : {}), ...(program.evalTypeScript ? { evalTypeScript: program.evalTypeScript } : {}) } }
             : {}),
           ...program.stdin,
           ...(program.reserved === false ? {} : reservedProcess),
@@ -522,20 +524,43 @@ export function buildRuntimeHandler(
     }
 
     /**
-     * `-e` code or a program read from stdin as the process runs it: an ES
-     * module (`--input-type=module`, or its syntax, module-format.ts), which
-     * the launch stages as it stages every ES module and `-p` refuses as Node
-     * does (node-eval.ts); else Node's eval code.
+     * `-e` code or a program read from stdin as the process runs it: what
+     * Node's eval runs, by `--input-type` and its TypeScript (node-eval.ts
+     * nodeEvalInput), an ES module the launch stages as it stages every ES
+     * module and `-p` refuses as Node does, else Node's eval code. Null when
+     * a strip failed otherwise, which it has reported.
      */
-    function inputProgram(
-      source: string, what: '[eval]' | '[stdin]',
-    ): { code: string; written: string; refusedBeforeImports: boolean; esModule: boolean } {
-      const esModule = isEsModuleInput(source, inputType);
-      if (esModule && !print) return { code: source, written: source, refusedBeforeImports: false, esModule: true };
-      if (!spec.nodeCommandLine) return { code: source, written: source, refusedBeforeImports: false, esModule: false };
-      const mode: NodeEvalMode = esModule ? 'module' : inputType === 'commonjs' ? 'commonjs' : 'default';
-      const prepared = what === '[eval]' ? nodeEvalProgram(source, print, mode) : print ? nodeStdinPrintProgram(source, mode) : { code: source, refusedBeforeImports: false };
-      return { ...prepared, written: prepared.code, esModule: false };
+    async function inputProgram(source: string, what: '[eval]' | '[stdin]'): Promise<{
+      code: string; written: string; refusedBeforeImports: boolean; esModule: boolean; evalTypeScript?: NonNullable<NodeLaunch['evalTypeScript']>;
+    } | null> {
+      if (!spec.nodeCommandLine) {
+        const esModule = isEsModuleInput(source, inputType) && !print;
+        return { code: source, written: source, refusedBeforeImports: false, esModule };
+      }
+      const stripTypes = typeScriptStripOptions(launch);
+      const strip: EvalTypeScriptStrip | null = stripTypes === 'javascript' ? null : async (code) => {
+        const [outcome] = await (await getEsbuild()).transformMany([{ code, options: { stripTypes, stripOnly: true, sourcefile: '[eval]' } }]);
+        if ('typescript' in outcome) return { refusal: outcome.typescript };
+        if ('error' in outcome) throw new Error(outcome.error);
+        return { code: outcome.code };
+      };
+      let input;
+      try {
+        input = await nodeEvalInput(source, what === '[eval]' ? evalScriptSource(source, print) : source, inputType, strip);
+      } catch (e) {
+        ctx.stderr.write(`${name}: transform error for ${what}: ${errorText(e)}\n`);
+        return null;
+      }
+      const evalTypeScript = input.stripped || input.hint !== undefined ? { stripped: input.stripped, ...(input.hint !== undefined ? { hint: input.hint } : {}) } : undefined;
+      const typeScript = evalTypeScript === undefined ? {} : { evalTypeScript };
+      if (input.refusal !== undefined) {
+        const code = typeScriptRefusalShim(input.refusal);
+        return { code, written: input.code, refusedBeforeImports: true, esModule: false };
+      }
+      if (input.esModule && !print) return { code: input.code, written: input.code, refusedBeforeImports: false, esModule: true, ...typeScript };
+      const prepared = evalProgram(input.code, print, input.mode);
+      const refusedBeforeImports = prepared.refusedBeforeImports || input.refusedBeforeImports === true;
+      return { ...prepared, refusedBeforeImports, written: prepared.code, esModule: false, ...typeScript };
     }
 
     // ── --version ──
@@ -568,12 +593,15 @@ export function buildRuntimeHandler(
     // Node's eval code as Node prepares it (node-eval.ts); `-p`'s returns
     // the value the process prints when it exits.
     if (line.eval !== undefined) {
-      const { code, written, refusedBeforeImports, esModule } = inputProgram(line.eval, '[eval]');
+      const input = await inputProgram(line.eval, '[eval]');
+      if (input === null) return 1;
+      const { code, written, refusedBeforeImports, esModule, evalTypeScript } = input;
       const programArgs = args.slice(flagSpan);
       return runProgram(code, {
         print,
         refusedBeforeImports,
         esModule,
+        evalTypeScript,
         argv: programArgs,
         filename: '<eval>',
         dirname: ctx.cwd || '/home/user',
@@ -633,11 +661,14 @@ export function buildRuntimeHandler(
         });
       }
       // `-p` prints the value of the code it read (eval_stdin.js).
-      const { code, written, refusedBeforeImports, esModule } = inputProgram(input, '[stdin]');
+      const program = await inputProgram(input, '[stdin]');
+      if (program === null) return 1;
+      const { code, written, refusedBeforeImports, esModule, evalTypeScript } = program;
       return runProgram(code, {
         print,
         refusedBeforeImports,
         esModule,
+        evalTypeScript,
         argv: [...leadingFlags, '-', ...args.slice(scriptIdx + 1)],
         filename: '[stdin]',
         dirname: ctx.cwd || '/home/user',

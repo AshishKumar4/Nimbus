@@ -58,7 +58,7 @@ export declare function parseStatements(source: string, options: Options, hooks:
 export declare function unwrapCallee(node: AnyNode): AnyNode;
 /** The name of the function a call reaches: `f`, `x.f`, `x['f']`, through {@link unwrapCallee}. */
 export declare function calleeName(callee: AnyNode): string | null;
-/** The module syntax a token opens: a top-level declaration, or `import.meta` anywhere. */
+/** The module syntax a token opens: a declaration (an `import` not `import(`, an `export`), or `import.meta`. */
 export type ModuleSyntaxToken = 'import' | 'export' | 'import.meta';
 /**
  * The names Node's CommonJS wrapper binds: what a CommonJS module's top level
@@ -83,19 +83,21 @@ export declare const COMMONJS_WRAPPER_NAMES: ReadonlySet<string>;
  * the tokens answers every other source CommonJS without a parse (a
  * multi-MiB bundle must fit a 48 MiB heap). One that finds a top-level
  * `import` or `export`, or `import.meta`, before either of the others
- * answers module. Where that differs from Node (a syntax error before it;
- * an `import` or `export` nested in a block) the source compiles under
- * neither, and fails either way. The rest are compiled, by acorn in V8's
- * place (commonJsCompileError).
+ * answers module. Where that differs from Node (a syntax error before it)
+ * the source compiles under neither, and fails either way. The rest are
+ * compiled, by acorn in V8's place (commonJsCompileError): an `import` or
+ * `export` nested in a block among them, which fails as CommonJS, and which
+ * V8's error there makes a module.
  */
 export declare function containsModuleSyntax(source: string, scope?: 'file' | 'eval'): boolean;
 /**
  * Walk `source`'s tokens tracking brace, paren and bracket depth, without
  * building an AST (a multi-MiB bundle chunk must fit a 48 MiB heap). `visit`
  * sees every token with whether it sits at top level and the module syntax
- * it opens: for a top-level `import` or `export` keyword, the declaration
- * (not `import(`), and for an `import` anywhere, `import.meta`; never for a
- * member named so (after `.` or `?.`). `visit` returns true to stop the walk.
+ * it opens: for an `import` or `export` keyword, the declaration (not
+ * `import(`), at top level or not, and `import.meta`; never for a member
+ * named so (after `.` or `?.`), nor, nested, a key or method (before `:`
+ * or `(`). `visit` returns true to stop the walk.
  *
  * Returns true when `visit` stopped it, false at the end of the source, and
  * null when the source does not tokenize (as `sourceType` does).

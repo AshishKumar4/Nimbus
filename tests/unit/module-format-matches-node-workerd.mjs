@@ -113,6 +113,11 @@ import('./typed/module-exports.js').catch((e) => { report.push(['import', e.name
   'seed.mjs': `import { readFileSync } from 'node:fs';\nimport config from './example-app/tailwind.config.js';\nconst pkg = JSON.parse(readFileSync(new URL('./example-app/package.json', import.meta.url), 'utf8'));\n${line("'seed'", 'pkg.type', 'config')}`,
   'commonjs/package.json': JSON.stringify({ name: 'commonjs', type: 'commonjs' }),
   'commonjs/import.js': "import { sep } from 'node:path';\nconsole.log(sep);\n",
+  // Keys and methods named import or export are no module syntax. (An
+  // import or export nested in a statement is, which eval-typescript-
+  // matches-node-workerd runs: a file's report here would carry a typeless
+  // warning Node's fatal error cuts off, ticket-typeless-warning-before-fatal.)
+  'nested-keys.js': "const c = { import: './a.mjs', export: 1 };\nclass A { export() {} static import() {} }\nconsole.log(typeof module, Object.keys(c).join());\n",
 };
 const EVAL_ESM = `import { sep } from 'node:path';\n${line("'eval'", 'sep')}`;
 const RUNS = [
@@ -156,6 +161,7 @@ const RUNS = [
   ['--input-type=module', '-e', "require('node:path');\n"],
   ['import-in.cjs'],
   ['commonjs/import.js'],
+  ['nested-keys.js'],
 ];
 // Each run as a command line, its stdin from a file of the tree.
 const stdins = {};

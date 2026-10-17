@@ -210,7 +210,7 @@ export function parseNodeCommandLine(args, nodeOptions = '') {
     if ('error' in fromEnv)
         return fromEnv;
     // NODE_OPTIONS' own are checked as Node parses them, before the command line can override them.
-    const envRefused = refusedOptions(fromEnv.defaultType, false);
+    const envRefused = refusedOptions(fromEnv.inputType, fromEnv.defaultType, false);
     if (envRefused !== null)
         return envRefused;
     const fromArgs = readOptions(args, false);
@@ -236,11 +236,16 @@ export function parseNodeCommandLine(args, nodeOptions = '') {
         version: fromArgs.version,
         help: fromArgs.help,
     };
-    return refusedOptions(line.defaultType, line.check && line.eval !== undefined) ?? line;
+    return refusedOptions(line.inputType, line.defaultType, line.check && line.eval !== undefined) ?? line;
 }
-/** What Node refuses of options once it has read them (EnvironmentOptions::CheckOptions), each on its line; null for nothing. */
-function refusedOptions(defaultType, checksEval) {
+/** The values `--input-type` takes (src/node_options.cc EnvironmentOptions::CheckOptions). */
+const INPUT_TYPES = new Set(['commonjs', 'module', 'commonjs-typescript', 'module-typescript']);
+/** What Node refuses of options once it has read them (EnvironmentOptions::CheckOptions), each on its line, in its order; null for nothing. */
+function refusedOptions(inputType, defaultType, checksEval) {
     const refused = [];
+    if (inputType !== undefined && !INPUT_TYPES.has(inputType)) {
+        refused.push('--input-type must be "module","commonjs", "module-typescript" or "commonjs-typescript"');
+    }
     if (defaultType !== undefined && defaultType !== 'module' && defaultType !== 'commonjs') {
         refused.push('--experimental-default-type must be "module" or "commonjs"');
     }

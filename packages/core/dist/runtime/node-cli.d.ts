@@ -50,12 +50,22 @@ export interface NodeLaunch {
     transformTypes?: boolean;
     /** `--enable-source-maps`, which `--experimental-transform-types` sets where it is read. */
     enableSourceMaps?: boolean;
+    /**
+     * `-e` code or stdin as Node's eval took its TypeScript (node-eval.ts
+     * nodeEvalInput): `stripped`, its types stripped, its frames named
+     * `[eval]`; `hint`, amaro's message for code that compiles neither as
+     * JavaScript nor as TypeScript, which Node's report of the SyntaxError adds.
+     */
+    evalTypeScript?: {
+        stripped: boolean;
+        hint?: string;
+    };
 }
 /** What node's command line says, for the program it runs. */
 export interface NodeCommandLine extends NodeLaunch {
     /** Where the program's own arguments start: its script (or `-`), or, for `-e`, its arguments; their end when there are none. */
     programIndex: number;
-    /** `--input-type`: what `-e` code and stdin are (`module`, `commonjs`), the command line's over NODE_OPTIONS'. */
+    /** `--input-type`: what `-e` code and stdin are (`module`, `commonjs`, `module-typescript`, `commonjs-typescript`), the command line's over NODE_OPTIONS'. */
     inputType?: string;
     /** `--experimental-default-type`: the format of a file with no other, the command line's over NODE_OPTIONS'. */
     defaultType?: string;

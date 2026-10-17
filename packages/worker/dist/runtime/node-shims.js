@@ -11065,8 +11065,13 @@ function __nimbusFatalArrow(error, fromPromise) {
   return offset < 0 ? null : __nimbusSourceMappedArrow(top, text, offset) ?? __nimbusArrowOf(top, text, offset, offset + 1);
 }
 // Where a module that does not compile stops, for its stack (commonjs-cell.ts
-// __nimbusDecorateSyntaxError), or null.
+// __nimbusDecorateSyntaxError), or null: -e code or stdin as Node reports it
+// (__nimbusEvalArrow).
 globalThis.__nimbusSyntaxErrorArrow = function __nimbusSyntaxErrorArrow(module, error) {
+  const arrow = __nimbusCompileArrow(module, error);
+  return arrow === null ? null : __nimbusEvalArrow(module, arrow);
+};
+function __nimbusCompileArrow(module, error) {
   const text = module === null ? null : __nimbusFrameModuleText(module);
   const place = text === null ? null : __nimbusFatalLocation(text, module.esModule ? "module" : "script", -1);
   if (place === null) return null;
@@ -11104,7 +11109,35 @@ globalThis.__nimbusSyntaxErrorArrow = function __nimbusSyntaxErrorArrow(module, 
     return __nimbusArrowOf(module, text, place[0], line === -1 ? end : place[0] + line);
   }
   return __nimbusArrowOf(module, text, place[0], place[1]);
-};
+}
+// -e code or stdin that Node's eval compiled as it was given or stripped
+// (NodeLaunch.evalTypeScript): a compile error names the script, not the
+// stripper's sourceURL its frames have (__nimbusEvalStripped); code that
+// compiles neither as JavaScript nor as TypeScript has amaro's message after
+// a script's arrow, a module's a line apart (execution.js evalTypeScript,
+// evalTypeScriptModuleEntryPoint).
+function __nimbusEvalArrow(module, arrow) {
+  const entry = module.path === null || (module.esModule && module.path === "/" + __nimbusEsmEntryKey);
+  if (!entry) return arrow;
+  const named = module.compileFile === undefined ? arrow : module.compileFile + arrow.slice(__nimbusFrameFile(module).length);
+  const hint = __nimbusNodeCommandLine?.evalTypeScript?.hint;
+  if (typeof hint !== "string") return named;
+  return module.esModule ? named + "\\n" + hint + "\\n" : named + hint + "\\n";
+}
+// -e code or stdin whose types Node's eval stripped: its frames are named
+// by the stripper's sourceURL, [eval], stdin's too (typescript.js
+// processTypeScriptCode), a compile error by the script (__nimbusEvalArrow);
+// the strip warned of Transform Types where it transforms.
+function __nimbusEvalStripped(module) {
+  if (__nimbusNodeCommandLine?.evalTypeScript?.stripped !== true || module === null) return;
+  module.compileFile = __nimbusFrameFile(module);
+  if (module.path === null) module.file = "[eval]";
+  else module.frameFile = "[eval]";
+  __nimbusModulesByFile?.set("[eval]", module);
+  if (__nimbusTransformTypesWarned) return;
+  __nimbusTransformTypesWarned = true;
+  __processMod.emitWarning("Transform Types is an experimental feature and might change at any time", "ExperimentalWarning");
+}
 // ReportFatalException: the text Node prints for \`error\`. \`enhance\`: the
 // error as inspect shows it (an 'uncaughtException' listener's error is its
 // stack).
@@ -13172,6 +13205,7 @@ function __nimbusEsmExportMessage(specifier, name, commonjs) {
 let __nimbusEsmEntryKey = null;
 function __nimbusEsmRunEntry(key) {
   __nimbusEsmEntryKey = key;
+  __nimbusEvalStripped(__nimbusModuleAtPath(key));
   const id = __nimbusEsmId("module", key);
   const url = __nimbusEsmUrl("/" + key);
   return __nimbusEsmImport(id).then(() => undefined, (e) => {
@@ -14171,6 +14205,7 @@ function __nimbusCheckedAlone() {
 // entryModule; an ES entry is the registry's, __nimbusEsmRunEntry).
 function __nimbusEvaluateEntry(load, mod, filename, dirname) {
   __nimbusLoadsTypeScript(filename);
+  __nimbusEvalStripped(__nimbusEntryModule());
   const source = () => __nimbusModuleSourceText(__nimbusEntryModule() ?? __nimbusModuleAtPath(String(filename).replace(/^\\/+/, "")));
   __nimbusCompiling(filename, source);
   // A file's \`this\` is its exports, as Node's wrapper is called; -e and

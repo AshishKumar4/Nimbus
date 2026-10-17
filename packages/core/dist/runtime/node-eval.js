@@ -24,32 +24,102 @@
  */
 import { parse } from 'acorn';
 import { full } from 'acorn-walk';
-import { applySourceEdits } from './javascript-ast.js';
+import { applySourceEdits, containsModuleSyntax } from './javascript-ast.js';
 /**
  * The entry code for `node -e <code>`, or `-p`: with `print`, a body that
- * returns the code's completion value. Node keeps the identifier `crypto`
- * its node:crypto module in eval code, for backward compatibility, by
- * wrapping code that names it (eval_string.js: the same test, the same
- * wrappers).
+ * returns the code's completion value, its `crypto` node:crypto's
+ * (evalScriptSource).
  */
 export function nodeEvalProgram(code, print, mode) {
-    const namesCrypto = /\bcrypto\b/.test(code);
-    if (!print)
-        return { code: namesCrypto ? `(crypto=>{{${code}}})(require('node:crypto'))` : code, refusedBeforeImports: false };
-    if (mode === 'module')
-        return ESM_CANNOT_PRINT;
-    return printedProgram(namesCrypto ? `let crypto=require("node:crypto");{${code}}` : code, mode);
+    return evalProgram(evalScriptSource(code, print), print, mode);
 }
 /** The entry code for `node -p` reading its code from stdin (eval_stdin.js: no `crypto` wrapper). */
 export function nodeStdinPrintProgram(source, mode) {
-    return mode === 'module' ? ESM_CANNOT_PRINT : printedProgram(source, mode);
+    return evalProgram(source, true, mode);
 }
-/** Thrown as the program's first act, after its -r preloads, as Node throws it; its stack leads with the code, as a Node error's does. */
+/**
+ * `-e` code as Node's CommonJS eval takes it (eval_string.js): Node keeps
+ * the identifier `crypto` its node:crypto module in eval code, for backward
+ * compatibility, by wrapping code that names it (the same test, the same
+ * wrappers). Its ES module branches (`--input-type=module` and
+ * `module-typescript`) take the code as it is.
+ */
+export function evalScriptSource(code, print) {
+    if (!/\bcrypto\b/.test(code))
+        return code;
+    return print ? `let crypto=require("node:crypto");{${code}}` : `(crypto=>{{${code}}})(require('node:crypto'))`;
+}
+/**
+ * The entry code for eval code as Node's eval has it (evalScriptSource's,
+ * or stdin's): with `print`, a body that returns its completion value.
+ * Code Node compiles first (`mode` 'default') and cannot is refused before
+ * `--import`'s modules load, where it fails to compile here too (a
+ * top-level `return` compiles in the entry's function).
+ */
+export function evalProgram(code, print, mode) {
+    if (!print)
+        return { code, refusedBeforeImports: mode === 'default' && parsed(code, { ...SCRIPT, allowReturnOutsideFunction: true }) === null };
+    return mode === 'module' ? ESM_CANNOT_PRINT : printedProgram(code, mode);
+}
+/** Thrown as the program's first act, after its -r preloads, as Node throws it, with no arrow of this code (Node's is its loader's). */
 const ESM_CANNOT_PRINT = {
-    code: 'throw __nimbusNodeError(Error, "ERR_EVAL_ESM_CANNOT_PRINT", "--print cannot be used with ESM input");',
+    code: 'throw __nimbusNodeError(Error, "ERR_EVAL_ESM_CANNOT_PRINT", "--print cannot be used with ESM input", undefined, null);',
     refusedBeforeImports: true,
 };
+/**
+ * What Node runs for `-e` code or stdin (eval_string.js, eval_stdin.js),
+ * `source` as given and `script` as its CommonJS branches take it
+ * (evalScriptSource), by `--input-type` and, where type stripping is on
+ * (`strip`), its TypeScript (execution.js):
+ *   - `module`: an ES module, as it is;
+ *   - `module-typescript` and `commonjs-typescript`: stripped first, then
+ *     an ES module or a script; amaro's refusal is Node's error;
+ *   - `commonjs`, or no input type with stripping off: a script, or an ES
+ *     module by its syntax where no input type is given (evalScript);
+ *   - no input type (evalTypeScript): an ES module by its syntax, compiled,
+ *     else stripped; else a script, compiled, else stripped and an ES
+ *     module by its stripped syntax, else a script; code amaro refuses too
+ *     fails with V8's error and amaro's message (`hint`).
+ * Without stripping, an input type of TypeScript names a script.
+ */
+export async function nodeEvalInput(source, script, inputType, strip) {
+    if (inputType === 'module')
+        return { code: source, esModule: true, mode: 'module', stripped: false };
+    if (strip !== null && (inputType === 'module-typescript' || inputType === 'commonjs-typescript')) {
+        const esModule = inputType === 'module-typescript';
+        const given = esModule ? source : script;
+        const stripped = await strip(given);
+        if ('refusal' in stripped)
+            return { code: given, esModule: false, mode: 'commonjs', stripped: false, refusal: stripped.refusal };
+        return { code: stripped.code, esModule, mode: esModule ? 'module' : 'commonjs', stripped: true };
+    }
+    if (strip === null || inputType !== undefined) {
+        const esModule = inputType === undefined && containsModuleSyntax(script, 'eval');
+        return { code: script, esModule, mode: esModule ? 'module' : 'commonjs', stripped: false };
+    }
+    if (containsModuleSyntax(script, 'eval'))
+        return evalTypeScriptModule(script, strip);
+    if (parsed(script, SCRIPT) !== null)
+        return { code: script, esModule: false, mode: 'default', stripped: false };
+    const stripped = await strip(script);
+    if ('refusal' in stripped)
+        return { code: script, esModule: false, mode: 'default', stripped: false, hint: stripped.refusal.message };
+    // An ES module by its syntax once stripped: compiled as one, the source again.
+    if (containsModuleSyntax(stripped.code, 'eval'))
+        return evalTypeScriptModule(script, strip);
+    return { code: stripped.code, esModule: false, mode: 'default', stripped: true };
+}
+/** evalTypeScriptModuleEntryPoint: an ES module, compiled, else stripped; one amaro refuses too fails with V8's error and its message. */
+async function evalTypeScriptModule(source, strip) {
+    if (parsed(source, MODULE) !== null)
+        return { code: source, esModule: true, mode: 'module', stripped: false };
+    const stripped = await strip(source);
+    if ('refusal' in stripped)
+        return { code: source, esModule: true, mode: 'module', stripped: false, hint: stripped.refusal.message };
+    return { code: stripped.code, esModule: true, mode: 'module', stripped: true };
+}
 const SCRIPT = { ecmaVersion: 'latest', sourceType: 'script', allowHashBang: true };
+const MODULE = { ecmaVersion: 'latest', sourceType: 'module', allowHashBang: true };
 function parsed(source, options) {
     try {
         return parse(source, options);

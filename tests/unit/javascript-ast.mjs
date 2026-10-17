@@ -19,6 +19,8 @@ export function strip(input) {
 );
 assert.equal(containsModuleSyntax('const text = "export function nope() {}";'), false);
 assert.equal(containsModuleSyntax('async function load() { return import("x"); }'), false);
+// Keys and methods named import or export: CommonJS (and no compile asked for: a bundle's conditions maps hold them).
+assert.equal(containsModuleSyntax('const c = { import: "./a.mjs", export: 1 }; class A { export() {} static import() {} }'), false);
 // Node's syntax detection (doc/api/packages.md "Syntax detection"): a
 // typeless .js file is an ES module when it holds syntax that throws as
 // CommonJS. Each source is asked of real node: its first statement reports at
@@ -73,6 +75,14 @@ assert.equal(containsModuleSyntax('async function load() { return import("x"); }
     // Code Node evaluates is compiled with no wrapper, so a wrapper name is no
     // redeclaration there. (Its CommonJS names are globals, which a module
     // sees too: `this` tells them apart.)
+    // An import or export nested in a block compiles neither way: V8's error as CommonJS makes it a module (its report a module's).
+    for (const source of ["{ import { sep } from 'node:path'; }", 'function f() { export const a = 1; }']) {
+      writeFileSync(join(dir, 'probe.js'), source + '\n');
+      const node = spawnSync('node', ['--no-warnings', 'probe.js'], { cwd: dir, encoding: 'utf8' });
+      const ran = node.stderr.includes('compileSourceTextModule') ? 'module' : node.stderr.includes('wrapSafe') ? 'commonjs' : null;
+      assert.ok(ran, `node compiled ${JSON.stringify(source)}: ${node.stderr.slice(-400)}`);
+      assert.equal(containsModuleSyntax(source), ran === 'module', `${JSON.stringify(source)} is ${ran} to node`);
+    }
     for (const source of ['const require = 1;', 'let { exports } = {};', 'const x = await Promise.resolve(1);']) {
       const node = spawnSync('node', ['--no-warnings', '-e', "process.on('exit', () => console.log(this === undefined ? 'module' : 'commonjs'));\n" + source], { cwd: dir, encoding: 'utf8' });
       const ran = /^(module|commonjs)$/m.exec(node.stdout)?.[1];
