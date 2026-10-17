@@ -131,7 +131,8 @@ async function run(steps) {
     const names = new Map();
     const files = new Map();
     for (const name of NAMES) {
-      const stat = await direct.stat(path(name)).catch(() => null);
+      let stat = null;
+      try { stat = await direct.stat(path(name)); } catch { /* absent */ }
       if (stat === null) continue;
       names.set(name, stat.ino);
       files.set(stat.ino, { bytes: new Uint8Array(await direct.readFile(path(name))), mode: stat.mode & 0o7777 });
