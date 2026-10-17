@@ -5,6 +5,17 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: Tailwind v4 generates the utilities its stylesheets' `@source`
+  directives name outside the working tree. Tailwind's scanner reads those
+  files synchronously, and they were not held for it, so their classes were
+  silently missing. A process carrying the scanner now holds the files under
+  each such source, found from the project's stylesheets (its own, those
+  behind its links, and the sheets they `@import`), each brace alternative's
+  directory taken whole, through links, with the project's exclusions
+  (`node_modules`, VCS and cache directories). Their changes reach the
+  dev server as the working tree's do, and a source on a mounted drive is
+  listed for the process.
+
 - Fixed: a program that writes files before it listens, as Vite's config
   load does, serves. When its listen makes it a server, Nimbus runs it again
   and checks that run against the first. That check failed for two reasons.
