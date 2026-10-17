@@ -146,6 +146,8 @@ export interface BuiltinExecutionContext {
   /** The state of the shell running the builtin: a child shell's own, after a fork. */
   shell: ShellState;
   getLastExitCode(): number;
+  /** The status a bare `exit` ends the shell with: the last command's, or in a trap's action the one before the trap (POSIX). */
+  exitStatus(): number;
   /** The process the builtin runs as: a kill's caller, a wait's waiter. */
   identity(): Pick<CommandIdentity, 'pid' | 'cred'>;
 }
@@ -383,6 +385,8 @@ export class Interpreter {
   private persistentInputHandles = new Map<number, OpenFile>();
   private errexitSuppressionDepth = 0;
   private exitTrapDepth = 0;
+  /** While the EXIT trap's action runs: the status the shell was ending with, a bare `exit`'s there. */
+  private trapEntryStatus: number | null = null;
   /** One frame per running function call, holding the bindings `local` shadowed. */
   private localFrames: Array<Map<string, SavedVariable>> = [];
   /** A child shell (fork): a discarded line ends it (finishChild). */
@@ -1124,6 +1128,7 @@ export class Interpreter {
             shell: this.config,
             interactive: io.interactive,
             getLastExitCode: () => this.lastExitCode,
+            exitStatus: () => this.trapEntryStatus ?? this.lastExitCode,
             identity: () => {
               if (!io.commandIdentity) throw new Error('shell command identity is unavailable');
               return io.commandIdentity;
@@ -1448,16 +1453,21 @@ export class Interpreter {
     if (action === undefined) return exitCode;
 
     const savedLastExitCode = this.lastExitCode;
+    const savedTrapEntryStatus = this.trapEntryStatus;
     this.lastExitCode = exitCode;
+    this.trapEntryStatus = exitCode;
     this.exitTrapDepth++;
     try {
-      await this.executeLineWithIo(action, io, { readsLines: true });
+      // Run as the shell's own text: an `exit` in it, or an end by `set -e`, is the shell's status.
+      await this.executeLineWithIo(action, io, { readsLines: true, inline: true });
     } catch (e) {
+      if (e instanceof ExitSignal || e instanceof ErrexitSignal) return e.exitCode;
       // A call past the nesting bound ends the action, a child shell's too; the status stays (bash 5.2).
       if (!(e instanceof FunctionNestingSignal)) throw e;
     } finally {
       this.exitTrapDepth--;
       this.lastExitCode = savedLastExitCode;
+      this.trapEntryStatus = savedTrapEntryStatus;
     }
     return exitCode;
   }
