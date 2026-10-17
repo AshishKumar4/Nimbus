@@ -33,14 +33,6 @@ interface CreditWaiter {
   readonly reject: (error: Error) => void;
   readonly signal?: AbortSignal;
   readonly onAbort?: () => void;
-  /** Set as the lane grants or drops it, before its promise settles. */
-  settled: boolean;
-}
-
-/** A wait for credit: its lease once granted, and whether it is still queued, known at once. */
-export interface CreditWait {
-  readonly lease: Promise<ResizableCreditLease>;
-  waiting(): boolean;
 }
 
 /**
@@ -59,6 +51,11 @@ class CreditLane {
     return { current: this.current, peak: this.peak, queued: this.waiters.length + this.ahead.length };
   }
 
+  /** Whether an ask ahead is queued. */
+  get aheadQueued(): boolean {
+    return this.ahead.length > 0;
+  }
+
   /** Granted now, or null: an ask ahead waits only for asks ahead of it, any other for every ask queued. */
   tryAcquire(bytes: number, ahead = false): ResizableCreditLease | null {
     if (this.ahead.length > 0 || (!ahead && this.waiters.length > 0) || this.current + bytes > this.capacity) return null;
@@ -66,46 +63,41 @@ class CreditLane {
   }
 
   acquire(bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease> {
-    return this.wait(bytes, signal, false).lease;
+    return this.wait(bytes, signal, false);
   }
 
   /** acquire, ahead of every ordinary ask: granted as soon as it fits, after only the asks ahead before it. */
-  acquireAhead(bytes: number, signal?: AbortSignal): CreditWait {
+  acquireAhead(bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease> {
     return this.wait(bytes, signal, true);
   }
 
-  private wait(bytes: number, signal: AbortSignal | undefined, ahead: boolean): CreditWait {
-    if (signal?.aborted) return { lease: Promise.reject(abortError(signal)), waiting: () => false };
+  private wait(bytes: number, signal: AbortSignal | undefined, ahead: boolean): Promise<ResizableCreditLease> {
+    if (signal?.aborted) return Promise.reject(abortError(signal));
     const immediate = this.tryAcquire(bytes, ahead);
-    if (immediate) return { lease: Promise.resolve(immediate), waiting: () => false };
+    if (immediate) return Promise.resolve(immediate);
     const queue = ahead ? this.ahead : this.waiters;
-    let waiter: CreditWaiter | undefined;
-    const lease = new Promise<ResizableCreditLease>((resolve, reject) => {
+    return new Promise<ResizableCreditLease>((resolve, reject) => {
       const queued: CreditWaiter = {
         bytes,
         resolve,
         reject,
         signal,
-        settled: false,
         onAbort: signal
           ? () => {
               const index = queue.indexOf(queued);
               if (index < 0) return;
               queue.splice(index, 1);
-              queued.settled = true;
               signal.removeEventListener('abort', queued.onAbort!);
               reject(abortError(signal));
               this.drain();
             }
           : undefined,
       };
-      waiter = queued;
       queue.push(queued);
       signal?.addEventListener('abort', queued.onAbort!, { once: true });
       if (signal?.aborted) queued.onAbort!();
       else this.drain();
     });
-    return { lease, waiting: () => waiter?.settled === false };
   }
 
   private grant(bytes: number): ResizableCreditLease {
@@ -152,7 +144,6 @@ class CreditLane {
       for (let waiter = queue[0]; waiter !== undefined; waiter = queue[0]) {
         if (waiter.signal?.aborted) {
           queue.shift();
-          waiter.settled = true;
           waiter.signal.removeEventListener('abort', waiter.onAbort!);
           waiter.reject(abortError(waiter.signal));
           continue;
@@ -160,7 +151,6 @@ class CreditLane {
         if (this.current + waiter.bytes > this.capacity) return;
         queue.shift();
         waiter.signal?.removeEventListener('abort', waiter.onAbort!);
-        waiter.settled = true;
         waiter.resolve(this.grant(waiter.bytes));
       }
     }
@@ -244,11 +234,15 @@ export class WeightedCreditPool {
    * it fits in the shared capacity, the credit running work and reclaims
    * free. It never waits on the reserve, which neither frees.
    */
-  acquireAhead(bytes: number, signal?: AbortSignal): CreditWait {
+  acquireAhead(bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease> {
     this.validateRequest(bytes);
     const now = signal?.aborted ? null : this.tryAcquireAhead(bytes);
-    if (now) return { lease: Promise.resolve(now), waiting: () => false };
-    return this.general.acquireAhead(bytes, signal);
+    return now ? Promise.resolve(now) : this.general.acquireAhead(bytes, signal);
+  }
+
+  /** Whether a running program's ask (acquireAhead) waits. */
+  get aheadQueued(): boolean {
+    return this.general.aheadQueued;
   }
 
   /** acquireAhead's credit now, or null. */
