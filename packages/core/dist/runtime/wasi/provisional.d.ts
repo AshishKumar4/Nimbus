@@ -200,6 +200,8 @@ export interface Provisional {
     pending(dev: number, ino: number): boolean;
     /** The session descriptor of the open description `handleId`'s file is reached by (its own, else its file's anchor), once that open is answered. */
     sessionOf(handleId: number): number | undefined;
+    /** Whether no name the view has leads to `handleId`'s file, no grant deciding it: the session's is then what its descriptors read, through its anchor. */
+    unnamed(handleId: number): boolean;
     /** Open description `description` was answered: `handle` is the session's descriptor of it. */
     anchored(description: string, handle: number | undefined): void;
     owns(handleId: number): boolean;

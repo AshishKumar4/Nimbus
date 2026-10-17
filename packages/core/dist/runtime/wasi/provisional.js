@@ -908,6 +908,10 @@ export function provisional(host) {
             const description = desc.description ?? anchorOf(desc.inode);
             return description === undefined ? undefined : sessions.get(description);
         },
+        unnamed: (handleId) => {
+            const inode = descs.get(handleId)?.inode;
+            return inode !== undefined && inode.cell === undefined && !named(inode);
+        },
         anchored: (description, handle) => {
             if (handle !== undefined)
                 sessions.set(description, handle);
