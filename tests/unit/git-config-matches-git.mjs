@@ -27,6 +27,7 @@ import { assembleGitNetworkFacetSource, execGitNetwork } from '../../packages/wo
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { stagedAssets } from './lib/staged-assets.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+import { startGitHttpServer } from './lib/git-http-server.mjs';
 
 // The facet's git module is the staged asset the Worker fetches (runtime/git-bundle-artifact.ts).
 const GIT_BUNDLE_CODE = readFileSync(new URL(`../../packages/worker/public${GIT_BUNDLE_ENTRY}`, import.meta.url), 'utf8');
@@ -139,45 +140,8 @@ try {
   realGit(work, 'tag', '-a', '-m', 'release', 'v2');
   realGit(work, 'push', '-q', 'origin', 'trunk', 'dev', 'v1', 'v2');
   realGit(served, 'init', '-q', '--bare', '-b', 'main', 'empty.git');
-  server = Bun.serve({
-    hostname: '127.0.0.1',
-    port: 0,
-    async fetch(request) {
-      const url = new URL(request.url);
-      const body = request.method === 'POST' ? new Uint8Array(await request.arrayBuffer()) : null;
-      const child = Bun.spawn(['git', 'http-backend'], {
-        env: {
-          ...GIT_ENV,
-          GIT_PROJECT_ROOT: served,
-          GIT_HTTP_EXPORT_ALL: '1',
-          PATH_INFO: url.pathname,
-          QUERY_STRING: url.search.slice(1),
-          REQUEST_METHOD: request.method,
-          CONTENT_TYPE: request.headers.get('content-type') ?? '',
-          CONTENT_LENGTH: body ? String(body.length) : '',
-          HTTP_CONTENT_ENCODING: request.headers.get('content-encoding') ?? '',
-          GIT_PROTOCOL: request.headers.get('git-protocol') ?? '',
-        },
-        stdin: body ? new Blob([body]) : 'ignore',
-        stdout: 'pipe',
-        stderr: 'ignore',
-      });
-      const out = new Uint8Array(await new Response(child.stdout).arrayBuffer());
-      await child.exited;
-      const split = Buffer.from(out).indexOf('\r\n\r\n');
-      const headers = new Headers();
-      let code = 200;
-      for (const line of new TextDecoder().decode(out.subarray(0, split)).split('\r\n')) {
-        const colon = line.indexOf(':');
-        const name = line.slice(0, colon).trim();
-        const value = line.slice(colon + 1).trim();
-        if (name.toLowerCase() === 'status') code = parseInt(value, 10);
-        else headers.set(name, value);
-      }
-      return new Response(out.subarray(split + 4), { status: code, headers });
-    },
-  });
-  const base = `http://127.0.0.1:${server.port}`;
+  server = startGitHttpServer(served, { plain: true, env: GIT_ENV, forward: ['git-protocol', 'content-encoding'] });
+  const base = server.url;
 
   const moduleDir = join(scratch, 'facet');
   mkdirSync(moduleDir);
@@ -298,6 +262,6 @@ try {
 
   console.log(`git-config-matches-git: init, git config and 5 clones byte-identical to ${realGit(scratch, '--version').trim()}; chmod agrees with it under both core.filemode values`);
 } finally {
-  server?.stop(true);
+  server?.stop();
   rmSync(scratch, { recursive: true, force: true });
 }

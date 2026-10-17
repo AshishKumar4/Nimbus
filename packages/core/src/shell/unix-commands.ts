@@ -51,6 +51,7 @@ import { humanReadable, parseSuffixedCount } from '../substrate/lifo/utils/size-
 import { formatUptime, uptimeSeconds } from '../substrate/lifo/utils/system-info.js';
 import { isCharacterDevice, isDirectory, fileTypeChar, lstatOrThrow, statOrThrow } from '../vfs/vfs.js';
 import { direntTypeIn } from '../vfs/dirent-type.js';
+import { bytesToHex } from '@nimbus-sh/platform/hex.js';
 
 /** stdin as text, read to its end; nothing when there was no stdin. Only a command that reads its stdin waits for its end. */
 async function stdinText(ctx: CommandContext): Promise<string | undefined> {
@@ -4486,11 +4487,7 @@ function mkXxd(): Command {
     };
 
     const renderWindow = (rowOffset: number, window: Uint8Array): string => {
-      if (plain) {
-        let line = '';
-        for (const byte of window) line += byte.toString(16).padStart(2, '0');
-        return `${line}\n`;
-      }
+      if (plain) return `${bytesToHex(window)}\n`;
       const pairs = Array.from(window, (b) => b.toString(16).padStart(2, '0')).join(' ');
       const ascii = Array.from(window, (b) => (b >= 32 && b < 127 ? String.fromCharCode(b) : '.')).join('');
       return `${rowOffset.toString(16).padStart(8, '0')}: ${pairs.padEnd(48)}  ${ascii}\n`;

@@ -7,22 +7,9 @@ import { recallOf, withRecall } from './recall.js';
 import { DIRENT_TYPES } from './dirent-type.js';
 import { walkRemoval } from './removal-walk.js';
 import { S_IFMT, abandon, andThen, copiedPermissions, copyfileMode, isCharacterDevice, isPromise, readRangeOrWhole, syncValue } from './vfs.js';
-/** Path order as SQLite's index keeps it: by UTF-8 bytes, which is code point order. */
-export function comparePaths(a, b) {
-    const n = Math.min(a.length, b.length);
-    for (let i = 0; i < n; i++) {
-        const x = a.charCodeAt(i), y = b.charCodeAt(i);
-        if (x === y)
-            continue;
-        // A surrogate half (a code point past U+FFFF) sorts after U+E000..U+FFFF.
-        if (x >= 0xd800 && x <= 0xdfff && y >= 0xe000)
-            return 1;
-        if (y >= 0xd800 && y <= 0xdfff && x >= 0xe000)
-            return -1;
-        return x - y;
-    }
-    return a.length - b.length;
-}
+import { compareUtf8 as comparePaths } from '@nimbus-sh/platform/utf8.js';
+/** Path order as SQLite's index keeps it: by UTF-8 bytes (platform utf8.ts compareUtf8). */
+export { comparePaths };
 /** `entries` in path order: as given when they already are (a backend's listing is), else sorted. */
 function inPathOrder(entries) {
     for (let i = 1; i < entries.length; i++) {
@@ -44,16 +31,18 @@ function mergeByPath(a, b, limit) {
 }
 /** Directories a walk (or a readdir's stats) reads at once. */
 const WALK_CONCURRENCY = 8;
-/** Identity of a mount's source object, for the table signature. */
-const sourceIds = new WeakMap();
-let nextSourceId = 1;
-function sourceId(found) {
-    if (found === null || typeof found !== 'object')
-        return 0;
-    let id = sourceIds.get(found);
+/** A number for each object asked of (a mount's source, a file store): the same each time, never another's. */
+const objectIds = new WeakMap();
+let lastObjectId = 0;
+function objectId(target) {
+    let id = objectIds.get(target);
     if (id === undefined)
-        sourceIds.set(found, id = nextSourceId++);
+        objectIds.set(target, id = ++lastObjectId);
     return id;
+}
+/** Identity of a mount's source object, for the table signature: 0 for none. */
+function sourceId(found) {
+    return found === null || typeof found !== 'object' ? 0 : objectId(found);
 }
 const SYNTH_RUNTIME_STAT = {
     dev: 0, ino: 0, nlink: 1, type: 'directory', size: 0, ctime: 0, atime: 0, mtime: 0, mode: 0o40755, uid: 0, gid: 0, revision: 0,
@@ -101,20 +90,11 @@ function lookupReport(trace, run) {
         return refused(error);
     }
 }
-const sourceKeys = new WeakMap();
-let sourcesKeyed = 0;
 /** `fn`, a backend's optional operation, or ENOTSUP for `path` where it has none. */
 function need(fn, path) {
     if (fn === undefined)
         throw new Refusal('ENOTSUP', path, 'this filesystem does not support it');
     return fn;
-}
-/** A file store's own number: a dynamic source that gives another store gives other files. */
-function sourceKey(source) {
-    let key = sourceKeys.get(source);
-    if (key === undefined)
-        sourceKeys.set(source, key = ++sourcesKeyed);
-    return key;
 }
 /**
  * Which file the number `ino` is, at `rel` on `target`: that number in its
@@ -123,7 +103,8 @@ function sourceKey(source) {
  * compare), else its name there.
  */
 function fileKey(target, ino) {
-    const store = sourceKey(storeOf(target.source));
+    // A file store's own number: a dynamic source that gives another store gives other files.
+    const store = objectId(storeOf(target.source));
     return ino === undefined ? `${store}:${target.rel}` : `${store}#${ino}`;
 }
 /** A directory this namespace makes (above a mount point, or a backend root with no stat). */
@@ -250,8 +231,6 @@ function principalKey(principal) {
 }
 export class CompositeVFS {
     table;
-    /** The last st_dev a mount was given. */
-    nextDev = 0;
     viewer;
     /** Backends seen as this view's principal (a backend's `as` view is made once per view). */
     viewed;
@@ -282,7 +261,7 @@ export class CompositeVFS {
             this.views = shared.views;
         }
         else {
-            this.table = { mounts: new Map([[ROOT_POINT, { point: ROOT_POINT, under: ROOT_POINT, source: root, options, dev: null, inos: new Map() }]]), generation: 0, synthesized: new Map(), behind: new WeakMap() };
+            this.table = { mounts: new Map([[ROOT_POINT, { point: ROOT_POINT, under: ROOT_POINT, source: root, options, dev: null, inos: new Map() }]]), generation: 0, lastDev: 0, synthesized: new Map(), behind: new WeakMap() };
             this.viewer = { cred: null };
             const refs = new Map();
             this.views = { refs, gone: new FinalizationRegistry((key) => {
@@ -583,7 +562,7 @@ export class CompositeVFS {
         if (this.table.mounts.has(at))
             throw syscallError('EBUSY', 'mount', point, { detail: 'something is already mounted there' });
         this.table.routing?.(at);
-        const mount = { point: at, under: `${at}/`, source, options, dev: ANONYMOUS_DEV + ++this.nextDev, inos: new Map() };
+        const mount = { point: at, under: `${at}/`, source, options, dev: ANONYMOUS_DEV + ++this.table.lastDev, inos: new Map() };
         this.table.mounts.set(at, mount);
         this.table.generation++;
         this.resynthesize();

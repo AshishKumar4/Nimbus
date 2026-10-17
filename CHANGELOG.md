@@ -32,7 +32,11 @@ published independently in the `@nimbus-sh` npm scope.
   stages its files. A read that would take it over is refused before it
   happens, and the launch asks for the whole budget once, as it already
   did when its files outgrew its share.
-
+- Fixed: when the workspace's connection to its session drops and comes
+  back, a file listing or a file read that was waiting for its answer is
+  sent again and completes. The file tree showed "fs-list failed:
+  Session connection closed" until it was refreshed by hand. A save that
+  was waiting still fails, since it may have been written.
 ## 2026-10-17: platform 0.12.0, core 0.23.0, fabric 0.18.0, worker 0.21.0, sdk 0.17.0, cli 0.2.8, loom 0.3.1, react 0.3.3, create-nimbus-app 0.2.4, runtime-bash 5.2.37-7, runtime-cpython 3.13.14-3, runtime-git 2.53.0-1 (config 0.3.1 unchanged)
 
 The 2026-10-14 and 2026-10-15 versions reached production but were never published to npm; these carry their changes too. The runtimes need core 0.23.0: it is the first core that registers bash-runner@6, cpython-runner@3 and git-runner@2.
@@ -89,6 +93,50 @@ The 2026-10-14 and 2026-10-15 versions reached production but were never publish
   handle under the pointer. It fell behind by a fifth of the drag, and a
   fast drag to the right could end on the preview's frame and stop short.
   The workspace's resize handles now keep the pointer while they are held.
+- Fixed: a write batch keeps the writes it committed before a refused
+  operation (an unlink answering ENOENT, say), including writes through an
+  open file another process has unlinked. Before, retrying those writes
+  after the refusal could fail with EIO and lose them, along with
+  everything else the batch committed before the refusal. Writes through
+  an open description the session kept across a restart are kept too
+  (they were refused EBADF), and a shared directory stays shared after a
+  refused rename of it.
+- Added (platform): `@nimbus-sh/platform/hex.js`, `bytesToHex(bytes)`
+  (unseparated lowercase hex, through the runtime's native
+  `Uint8Array.prototype.toHex` where it has one) and `HEX_BYTE` (each byte
+  value's two digits). Nimbus's content keys, digests, git object ids and
+  tokens spell through it; the strings are unchanged.
+- Fixed: two mounts made through different views of one namespace (the
+  root and a principal's `as` view, say) are two devices. Before, each view
+  numbered its mounts' `st_dev` from the same start, so files on the two
+  could share a (dev, ino), and a move of one over the other was refused
+  as "the same file".
+- Fixed: a snapshot view (`SqliteVFS.at(name)`) reads as the live tree
+  does. Its `readdir` of a link to a directory lists that directory (it
+  listed nothing), its `list` pages are bounded by their encoded bytes (a
+  page could exceed the RPC frame), and once the snapshot is dropped its
+  `acquire`, `invalidatedSince`, `revision` and `storageKey` throw ESTALE,
+  as its other calls do (they answered as if it were still pinned).
+- Fixed: `ProcessFiles.killProcess(pid)` closes the last description of
+  each file the killed process held open, as a process's exit does on
+  Linux, so an unlinked file it held is collected once no one else holds
+  it. Before, only a mount's files were closed, and an unlinked file's
+  content stayed pinned for the session's life.
+- Added (platform): `compareUtf8(a, b)` in `@nimbus-sh/platform/utf8.js`,
+  the order of two strings by their UTF-8 bytes (code point order) without
+  encoding them. A string with a lone surrogate, which UTF-8 cannot write,
+  orders by its WTF-8 bytes, so the order is total and a directory's
+  entries sort together after it. The engine's keyset cursors, a mounted
+  namespace's listings and git's index order through it. Before, the three
+  disagreed about lone surrogates, and the engine took two different ones
+  as the same name.
+- Fixed: `SqliteVFS.restore` and `dropSnapshot` (and their async forms)
+  write in transactions the storage envelope admits. Before, one page of
+  200 paths was one transaction of up to 600 rows (restore) or 401 (drop),
+  past the 256 a transaction may hold.
+- Fixed: a resident process fills a file it listed from a synchronously mounted backend (`/mnt/data`, an SDK embedder's mount). Before, the read named the engine's epoch, which a mounted path never matches, and was refused (ESTALE). A read of a mounted file now names the file as its listing's stat did (`RuntimeReadOptions.expectedFile`: device, inode, size, mtime, ctime) and is refused only if it is no longer that file. A mounted read that names the engine's epoch is refused by the asynchronous path too, as by the synchronous one. A filled mounted file is still undated in the store: it vouches for nothing on a relaunch.
+- Fixed: a hosted ES module that statically imports a file the program writes after it starts (a module staged with the launch, its import of `./generated.mjs` written at runtime) finds the file when it is imported, as Node does. Before, the import failed with "Cannot find module", because the file was missing when the launch began. One still missing fails with Node's `ERR_MODULE_NOT_FOUND`, and, as in Node, so do later imports of the modules that failed to link, even once the file is written; a `require()` tries again. A query's or a fragment's import of such a file (`./generated.json?x`) loads as the file's format.
+- Changed: the hosted node's `node:path` posix half is now Node v22.22.3's own `lib/path.js`, ported onto built-ins the launch captures before any program code runs. A program that replaces `String.prototype.charCodeAt`, `slice` and the like gets from `path` what Node's `path` gives, where workerd's `path` used to fail. Its key order, function names and argument errors are Node's, including `path.join` failing, as Node's does, when `Array.prototype.push` is replaced. `win32` and `matchesGlob` remain the platform's.
 - Fixed: one session's compiles no longer reset the other sessions that
   share its isolate. The platform runs several sessions in one isolate
   with one memory limit, and resets all of them when it is crossed. Each

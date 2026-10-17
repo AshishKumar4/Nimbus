@@ -31,6 +31,7 @@ import { isStagedArtifactTarget, npxPackageBin } from './bin-links.js';
 import { bundleProfileForNpmBin } from '@nimbus-sh/core/runtime/bundle-profile.js';
 import { splitPackageSpec } from '@nimbus-sh/core/_shared/npm-spec.js';
 import { satisfiesRange } from '@nimbus-sh/core/_shared/npm-semver.js';
+import { bytesToHex } from '@nimbus-sh/platform/hex.js';
 /** Where npx keeps what it installs: a directory for each request (npxCacheDir). */
 const NPX_CACHE_DIR = '/tmp/.npx-cache';
 /**
@@ -116,7 +117,7 @@ async function binAt(vfs, packageDir, command) {
 export async function npxCacheDir(specs) {
     const text = [...specs].sort((a, b) => a.localeCompare(b, 'en')).join('\n');
     const digest = await crypto.subtle.digest('SHA-512', new TextEncoder().encode(text));
-    return `${NPX_CACHE_DIR}/${Array.from(new Uint8Array(digest, 0, 8), (byte) => byte.toString(16).padStart(2, '0')).join('')}`;
+    return `${NPX_CACHE_DIR}/${bytesToHex(new Uint8Array(digest, 0, 8))}`;
 }
 /**
  * Whether an installed `version` answers `spec`, as libnpmexec's

@@ -34,6 +34,7 @@ import { recallOf, withRecall } from './recall.js';
 import { DIRENT_TYPES } from './dirent-type.js';
 import { walkRemoval, type RemovalSteps } from './removal-walk.js';
 import { S_IFMT, abandon, andThen, copiedPermissions, copyfileMode, isCharacterDevice, isPromise, readRangeOrWhole, syncValue } from './vfs.js';
+import { compareUtf8 as comparePaths } from '@nimbus-sh/platform/utf8.js';
 
 /**
  * Where a reader of a namespace's feed stands: the mount table as its
@@ -88,19 +89,8 @@ export interface CompositeFeed {
   walk(named: Iterable<string>, limit: number): Promise<MountWalk>;
 }
 
-/** Path order as SQLite's index keeps it: by UTF-8 bytes, which is code point order. */
-export function comparePaths(a: string, b: string): number {
-  const n = Math.min(a.length, b.length);
-  for (let i = 0; i < n; i++) {
-    const x = a.charCodeAt(i), y = b.charCodeAt(i);
-    if (x === y) continue;
-    // A surrogate half (a code point past U+FFFF) sorts after U+E000..U+FFFF.
-    if (x >= 0xd800 && x <= 0xdfff && y >= 0xe000) return 1;
-    if (y >= 0xd800 && y <= 0xdfff && x >= 0xe000) return -1;
-    return x - y;
-  }
-  return a.length - b.length;
-}
+/** Path order as SQLite's index keeps it: by UTF-8 bytes (platform utf8.ts compareUtf8). */
+export { comparePaths };
 
 /** `entries` in path order: as given when they already are (a backend's listing is), else sorted. */
 function inPathOrder(entries: readonly VfsListEntry[]): readonly VfsListEntry[] {
@@ -123,14 +113,18 @@ function mergeByPath(a: readonly VfsListEntry[], b: readonly VfsListEntry[], lim
 /** Directories a walk (or a readdir's stats) reads at once. */
 const WALK_CONCURRENCY = 8;
 
-/** Identity of a mount's source object, for the table signature. */
-const sourceIds = new WeakMap<object, number>();
-let nextSourceId = 1;
-function sourceId(found: unknown): number {
-  if (found === null || typeof found !== 'object') return 0;
-  let id = sourceIds.get(found);
-  if (id === undefined) sourceIds.set(found, id = nextSourceId++);
+/** A number for each object asked of (a mount's source, a file store): the same each time, never another's. */
+const objectIds = new WeakMap<object, number>();
+let lastObjectId = 0;
+function objectId(target: object): number {
+  let id = objectIds.get(target);
+  if (id === undefined) objectIds.set(target, id = ++lastObjectId);
   return id;
+}
+
+/** Identity of a mount's source object, for the table signature: 0 for none. */
+function sourceId(found: unknown): number {
+  return found === null || typeof found !== 'object' ? 0 : objectId(found);
 }
 
 const SYNTH_RUNTIME_STAT: RuntimeVfsStat = {
@@ -352,20 +346,10 @@ interface Placed {
   readonly rel: string;
 }
 
-const sourceKeys = new WeakMap<object, number>();
-let sourcesKeyed = 0;
-
 /** `fn`, a backend's optional operation, or ENOTSUP for `path` where it has none. */
 function need<F>(fn: F | undefined, path: string): F {
   if (fn === undefined) throw new Refusal('ENOTSUP', path, 'this filesystem does not support it');
   return fn;
-}
-
-/** A file store's own number: a dynamic source that gives another store gives other files. */
-function sourceKey(source: object): number {
-  let key = sourceKeys.get(source);
-  if (key === undefined) sourceKeys.set(source, key = ++sourcesKeyed);
-  return key;
 }
 
 /**
@@ -375,7 +359,8 @@ function sourceKey(source: object): number {
  * compare), else its name there.
  */
 function fileKey(target: PinTarget, ino: number | undefined): string {
-  const store = sourceKey(storeOf(target.source));
+  // A file store's own number: a dynamic source that gives another store gives other files.
+  const store = objectId(storeOf(target.source));
   return ino === undefined ? `${store}:${target.rel}` : `${store}#${ino}`;
 }
 
@@ -493,6 +478,8 @@ interface Table {
   mounts: Map<string, Mount>;
   /** Bumped by every mount and unmount: a placement made under an older table may be stale (mountGeneration). */
   generation: number;
+  /** The last st_dev a mount was given, through any view: two mounts are never one device. */
+  lastDev: number;
   /** observeWrites: who is told, and the mounts whose backends report their own writes, subscribed. */
   writes?: WriteWatches;
   /** watchChanges: who is told. */
@@ -692,8 +679,6 @@ function principalKey(principal: Principal): string {
 
 export class CompositeVFS implements VFS {
   private readonly table: Table;
-  /** The last st_dev a mount was given. */
-  private nextDev = 0;
   private readonly viewer: Principal;
   /** Backends seen as this view's principal (a backend's `as` view is made once per view). */
   private readonly viewed: WeakMap<VFS, VFS>;
@@ -727,7 +712,7 @@ export class CompositeVFS implements VFS {
       this.viewer = shared.principal;
       this.views = shared.views;
     } else {
-      this.table = { mounts: new Map([[ROOT_POINT, { point: ROOT_POINT, under: ROOT_POINT, source: root, options, dev: null, inos: new Map() }]]), generation: 0, synthesized: new Map(), behind: new WeakMap() };
+      this.table = { mounts: new Map([[ROOT_POINT, { point: ROOT_POINT, under: ROOT_POINT, source: root, options, dev: null, inos: new Map() }]]), generation: 0, lastDev: 0, synthesized: new Map(), behind: new WeakMap() };
       this.viewer = { cred: null };
       const refs = new Map<string, WeakRef<CompositeVFS>>();
       this.views = { refs, gone: new FinalizationRegistry((key: string) => {
@@ -998,7 +983,7 @@ export class CompositeVFS implements VFS {
     if (at === ROOT_POINT) throw syscallError('EBUSY', 'mount', point, { detail: 'the root is mounted at construction' });
     if (this.table.mounts.has(at)) throw syscallError('EBUSY', 'mount', point, { detail: 'something is already mounted there' });
     this.table.routing?.(at);
-    const mount: Mount = { point: at, under: `${at}/`, source, options, dev: ANONYMOUS_DEV + ++this.nextDev, inos: new Map() };
+    const mount: Mount = { point: at, under: `${at}/`, source, options, dev: ANONYMOUS_DEV + ++this.table.lastDev, inos: new Map() };
     this.table.mounts.set(at, mount);
     this.table.generation++;
     this.resynthesize();

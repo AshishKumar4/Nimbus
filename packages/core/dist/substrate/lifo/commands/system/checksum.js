@@ -4,6 +4,7 @@ import { getopt } from '../../utils/args.js';
 import { decodeLossless, encodeLossless, inputChunks, readAllInput, writeBytes } from '../../utils/bytes-io.js';
 import { strerror } from '../../../../vfs/vfs-error.js';
 import { shellEscape } from '../../../../_shared/shell-quote.js';
+import { bytesToHex } from '@nimbus-sh/platform/hex.js';
 function nodeHasher(name) {
     const h = createHash(name);
     return { update: (b) => { h.update(b); }, digest: () => new Uint8Array(h.digest()) };
@@ -254,7 +255,7 @@ function unescapeName(name) {
     return out;
 }
 const toBase64 = (bytes) => btoa(Array.from(bytes, (b) => String.fromCharCode(b)).join(''));
-const hex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+const hex = bytesToHex;
 async function hashFile(ctx, file, algorithm, bits) {
     if (algorithm.kind === 'digest') {
         const h = algorithm.make(bits);

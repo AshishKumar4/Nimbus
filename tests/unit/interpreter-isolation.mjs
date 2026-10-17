@@ -17,7 +17,7 @@
 // results must be equal (the interpreter goes through nothing native code
 // would not), and no replacement may receive anything that leads to the
 // program's secret, an object it keeps only in closure bindings and a private
-// field. tests/unit/interpreter-primordials.mjs checks the same property
+// field. tests/unit/primordials-audit.mjs checks the same property
 // statically; this checks it as a program would find it.
 //
 // The program runs twice, and both runs are logged, with what the

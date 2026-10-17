@@ -31,6 +31,7 @@ import { sanitizeUntrustedHeaders } from '../_shared/untrusted-request.js';
 import { isWebSocketUpgradeRequest } from '../_shared/websocket-upgrade.js';
 import { errorText } from '../_shared/error-text.js';
 import { documentPolicyOf } from './document-policy.js';
+import { bytesToHex } from '@nimbus-sh/platform/hex.js';
 /**
  * Content codings this hop can undo. `DecompressionStream` decodes exactly
  * these; brotli and zstd have no decoder in the runtime, so a body in one of
@@ -218,8 +219,7 @@ export function innerRequestUrl(outer, pathname) {
     return outer.slice(0, path) + pathname + (query < 0 || query > end || query + 1 === end ? '' : outer.slice(query, end));
 }
 export function createPortCapability() {
-    const bytes = crypto.getRandomValues(new Uint8Array(12));
-    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+    return bytesToHex(crypto.getRandomValues(new Uint8Array(12)));
 }
 /**
  * The header a forwarded request carries its process's ACQUIRE in. An

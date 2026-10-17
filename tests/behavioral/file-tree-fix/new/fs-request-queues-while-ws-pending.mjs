@@ -39,7 +39,8 @@ try {
     && document.querySelector('.tree-node[data-path="/home/user/queued-browser.txt"]'), { timeout: 30_000 });
   a.check('queued save and refresh complete after reconnect', await box.files.read(path) === content);
   a.check('no request failure or page error', pageErrors.length === 0
-    && await page.evaluate(() => !window.__probeHeld.treeTexts.some((text) => /failed|not connected/i.test(text))), JSON.stringify(pageErrors));
+    && await page.evaluate(() => !window.__probeHeld.treeTexts.some((text) => /failed|not connected/i.test(text))),
+    JSON.stringify({ pageErrors, failed: await page.evaluate(() => window.__probeHeld.treeTexts.filter((text) => /failed|not connected/i.test(text))) }));
 } finally {
   await browser.close();
   await deleteSession(sid);

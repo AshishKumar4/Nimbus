@@ -319,8 +319,7 @@ export const RUNTIME_CODE_MAX_ENTRIES = 1024;
 export const RUNTIME_WASM_MAX_BYTES = 1024 * 1024;
 /** The key of a piece of runtime code: SHA-256 of runtimeCodeKeySource, hex. */
 export function runtimeCodeKey(entry) {
-    const digest = createHash('sha256').update(new TextEncoder().encode(runtimeCodeKeySource(entry))).digest();
-    return Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
+    return createHash('sha256').update(new TextEncoder().encode(runtimeCodeKeySource(entry))).digest('hex');
 }
 /** What a piece of runtime code is charged against RUNTIME_CODE_MAX_BYTES (runtimeCodeSourceCharge). */
 export function runtimeCodeCharge(entry) {
@@ -340,12 +339,6 @@ export const RUNTIME_INTERPRETER_PRIMORDIALS_MODULE = 'nimbus/interpreter-primor
  * an assertion's source read without loading the interpreter.
  */
 export const RUNTIME_PARSER_MODULE = 'nimbus/parser.js';
-/**
- * What `node -c`'s entry cell throws as its first statement (worker
- * facets/manager.ts programEntry): the cell compiles whole before any of it
- * runs, so a cell that throws this compiled, and nothing of it ran.
- */
-export const ENTRY_CHECKED = 'nimbus: compiled, not run (-c)';
 /** Node's library in every node launch's map (worker runtime/node-lib-module.ts), compiled when a program first needs it. */
 export const RUNTIME_NODE_LIB_MODULE = 'nimbus/node-lib.js';
 export const RUNTIME_NODE_LIB_REST_MODULE = 'nimbus/node-lib-rest.js';
@@ -502,11 +495,12 @@ function __nimbusReadBundleFile(path, encoding) {
 // The built-ins the interpreter calls, captured now, before any program code
 // runs (core interpreter/primordials.ts): the interpreter itself loads only
 // when the program first produces code, by when it may have replaced them.
+// The node shims' module loading reads them too (__nimbusLaunchCaptures).
+const __nimbusLaunchCaptures = __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_PRIMORDIALS_MODULE}");
 const {
   LAUNCH_PRIMORDIALS: __nimbusLaunchPrimordials,
   registerSource: __nimbusRegisterSource,
-  SyntaxError: __nimbusSyntaxError,
-} = __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_PRIMORDIALS_MODULE}");
+} = __nimbusLaunchCaptures;
 const __nimbusCodeCells = new Map(__NIMBUS_CODE_CELLS.map((__row) => [__row[0], __row]));
 // Where node:fs shows the map's modules: beside this main module, /bundle/.
 const __NIMBUS_BUNDLE_FILES = decodeURIComponent(new URL("./", import.meta.url).pathname);
@@ -520,10 +514,7 @@ const {
 // The wrapper function of the cell at a VFS key, compiled by the registry the
 // first time it is asked for, with the module's own Function (THE WRAPPER);
 // null when the launch's map has no such cell. A cell that does not compile
-// throws a new SyntaxError of V8's message at each require(), its stack led
-// with where: the registry keeps the module's error and throws it again,
-// where Node compiles the module again (it left require.cache). The
-// registry's error stays the runtime's, the program's unable to change it.
+// leads its SyntaxError's stack with where.
 function __nimbusModuleCell(key) {
   const __row = __nimbusCodeCells.get(key);
   // A staged ES module is the registry's to evaluate (node-shims' __nimbusEsmImport).
@@ -531,9 +522,8 @@ function __nimbusModuleCell(key) {
   try {
     return __nimbusRegistryRequire("./" + __row[1])(globalThis.__nimbusCodeOrigin(__nimbusModuleImporterUrl(key)).Function);
   } catch (e) {
-    const error = e instanceof __nimbusSyntaxError ? new __nimbusSyntaxError(e.message) : e;
-    __nimbusDecorateSyntaxError(error, __row[1]);
-    throw error;
+    __nimbusDecorateSyntaxError(e, __row[1]);
+    throw e;
   }
 }
 // The entry's wrapper function, with the Function of the entry's own URL,
@@ -961,10 +951,9 @@ function __nimbusFatalLocation(text, goal, offset) {
 // once (node-shims.ts __nimbusFatalReport).
 const __nimbusDecorated = new WeakSet();
 function __nimbusDecorateSyntaxError(e, name) {
-  if (!(e instanceof __nimbusSyntaxError) || __nimbusDecorated.has(e)) return;
-  // The arrow first: it may give the error Node's message before its stack is formatted.
-  const arrow = typeof globalThis.__nimbusSyntaxErrorArrow === "function" ? globalThis.__nimbusSyntaxErrorArrow(__nimbusModuleNamed(name), e) : null;
-  if (arrow === null || typeof e.stack !== "string") return;
+  if (!(e instanceof SyntaxError) || typeof e.stack !== "string" || __nimbusDecorated.has(e)) return;
+  const arrow = typeof globalThis.__nimbusSyntaxErrorArrow === "function" ? globalThis.__nimbusSyntaxErrorArrow(__nimbusModuleNamed(name)) : null;
+  if (arrow === null) return;
   e.stack = arrow + "\\n" + e.stack;
   __nimbusDecorated.add(e);
 }

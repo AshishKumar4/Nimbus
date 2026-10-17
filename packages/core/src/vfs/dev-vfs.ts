@@ -55,7 +55,7 @@ function name(path: string): string {
 }
 
 export class DevVFS implements VFS {
-  readonly sync: SyncVFS = this as unknown as SyncVFS;
+  readonly sync: SyncVFS = this;
 
   /** The device at `path`; ENOENT for `syscall` when there is none. */
   private node(path: string, syscall: string): DevNode {

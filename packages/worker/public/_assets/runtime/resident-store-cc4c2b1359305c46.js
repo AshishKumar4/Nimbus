@@ -1339,7 +1339,7 @@ var __nimbusResidentModule = (() => {
           names.add(k);
           const held = nsRowAt(t, k);
           const s = entry.stat;
-          if (held !== void 0 && held.kind === nsKindCode(s.type) && held.size === Number(s.size) && held.mode === Number(s.mode) && held.uid === Number(s.uid) && held.gid === Number(s.gid) && held.mtime === Number(s.mtime) && held.ctime === Number(s.ctime) && held.ino === Number(s.ino) && held.rev === Number(entry.rev) && (held.target ?? null) === (entry.linkTarget ?? entry.unlisted ?? null)) continue;
+          if (held !== void 0 && held.kind === nsKindCode(s.type) && held.size === Number(s.size) && held.mode === Number(s.mode) && held.uid === Number(s.uid) && held.gid === Number(s.gid) && held.mtime === Number(s.mtime) && held.ctime === Number(s.ctime) && held.ino === Number(s.ino) && held.dev === (Number(s.dev) || 0) && held.rev === Number(entry.rev) && (held.target ?? null) === (entry.linkTarget ?? entry.unlisted ?? null)) continue;
           put(t, k, s, entry.rev, entry.linkTarget, entry.unlisted ?? null);
         }
       },
@@ -2048,7 +2048,7 @@ var __nimbusResidentModule = (() => {
           async fill(k, entry) {
             const cursor = coherence.cursor();
             if (cursor === null) return null;
-            await transport.fetchFiles(supervisor, [{ path: k, size: entry.size, rev: entry.revision, epoch: cursor.epoch, ckey: null }]);
+            await transport.fetchFiles(supervisor, [{ path: k, size: entry.size, rev: entry.revision, epoch: cursor.epoch, ckey: null, version: entry }]);
             const bytes = view.content(k, entry.revision);
             return bytes === void 0 ? null : bytes;
           },
@@ -2057,7 +2057,7 @@ var __nimbusResidentModule = (() => {
           async fillMany(files) {
             const cursor = coherence.cursor();
             if (cursor === null || files.length === 0) return;
-            await transport.fetchFiles(supervisor, files.map(([k, entry]) => ({ path: k, size: entry.size, rev: entry.revision, epoch: cursor.epoch, ckey: null })));
+            await transport.fetchFiles(supervisor, files.map(([k, entry]) => ({ path: k, size: entry.size, rev: entry.revision, epoch: cursor.epoch, ckey: null, version: entry })));
           },
           barrier: () => lazyBarrier(supervisor),
           cursor: () => coherence.cursor(),
@@ -2265,12 +2265,14 @@ var __nimbusResidentModule = (() => {
       const ranges = [];
       for (const file of files) {
         const parts = Math.max(1, Math.ceil(file.size / RESIDENT_CHUNK_BYTES));
+        const version = file.rev === 0 ? file.version ?? file.stat ?? null : null;
         for (let part = 0; part < parts; part++) {
           const offset = part * RESIDENT_CHUNK_BYTES;
           ranges.push({
             path: file.path,
             rev: file.rev,
             epoch: file.epoch,
+            version,
             part,
             parts,
             offset,
@@ -2299,7 +2301,8 @@ var __nimbusResidentModule = (() => {
         let results;
         try {
           results = await supervisor.fsReadBatch(
-            batch.map((r) => ({ path: r.path, offset: r.offset, length: r.length, expectedEpoch: r.epoch, expectedRevision: r.rev }))
+            // A dated file at its revision; an undated one as its listing's stat named it.
+            batch.map((r) => r.version === null ? { path: r.path, offset: r.offset, length: r.length, expectedEpoch: r.epoch, expectedRevision: r.rev } : { path: r.path, offset: r.offset, length: r.length, expectedFile: fileVersionOf(r.version) })
           );
         } catch {
           for (const r of batch) failedPaths.add(r.path);
@@ -2536,6 +2539,9 @@ var __nimbusResidentModule = (() => {
     };
     return { relist, fetchFiles, enumerate, lookupKeys, listDirectory, listSubtree };
   }
+  function fileVersionOf(stat) {
+    return { dev: stat.dev, ino: stat.ino, size: stat.size, mtime: stat.mtime, ctime: stat.ctime, revision: stat.revision };
+  }
 
   // src/vfs/resident/sync.ts
   var PUSH_EXCLUDE = ["node_modules", ".git"];
@@ -2578,7 +2584,7 @@ var __nimbusResidentModule = (() => {
       for (const path of applied.dropped) {
         const found = namespace.resolve(path, false);
         if (!found || found === "ELOOP" || found.row.kind !== NS_FILE) continue;
-        refetch.push({ path, size: found.row.size, rev: found.row.rev, epoch: applied.cursor.epoch });
+        refetch.push({ path, size: found.row.size, rev: found.row.rev, epoch: applied.cursor.epoch, version: versionOf(found.row) });
       }
       if (refetch.length > 0) await transport.fetchFiles(supervisor, refetch);
       return applied.cursor;
@@ -2840,7 +2846,7 @@ var __nimbusResidentModule = (() => {
           if (cells.has(path)) continue;
           const row = nsRowAt(t, path);
           if (row === void 0 || row.kind !== NS_FILE) continue;
-          fetch.push({ path, size: row.size, rev: row.rev, epoch: cursor.epoch, ckey: null });
+          fetch.push({ path, size: row.size, rev: row.rev, epoch: cursor.epoch, ckey: null, version: versionOf(row) });
         }
         return transport.fetchFiles(supervisor, fetch);
       },
@@ -2865,6 +2871,9 @@ var __nimbusResidentModule = (() => {
         return "node: the process was not started: its view of the filesystem could not be listed (" + (failure || namespace.notReadyCause()) + ")";
       }
     };
+  }
+  function versionOf(row) {
+    return { dev: row.dev, ino: row.ino, size: row.size, mtime: row.mtime, ctime: row.ctime, revision: row.rev };
   }
 
   // ../core/dist/vfs/composite.js

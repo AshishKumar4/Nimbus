@@ -35,6 +35,7 @@ import type { ProjectFs } from '../runtime/project-fs.js';
 import { bundleProfileForNpmBin, type FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
 import { splitPackageSpec, type NpaResult } from '@nimbus-sh/core/_shared/npm-spec.js';
 import { satisfiesRange } from '@nimbus-sh/core/_shared/npm-semver.js';
+import { bytesToHex } from '@nimbus-sh/platform/hex.js';
 
 /** Where npx keeps what it installs: a directory for each request (npxCacheDir). */
 const NPX_CACHE_DIR = '/tmp/.npx-cache';
@@ -161,7 +162,7 @@ async function binAt(
 export async function npxCacheDir(specs: readonly string[]): Promise<string> {
   const text = [...specs].sort((a, b) => a.localeCompare(b, 'en')).join('\n');
   const digest = await crypto.subtle.digest('SHA-512', new TextEncoder().encode(text));
-  return `${NPX_CACHE_DIR}/${Array.from(new Uint8Array(digest, 0, 8), (byte) => byte.toString(16).padStart(2, '0')).join('')}`;
+  return `${NPX_CACHE_DIR}/${bytesToHex(new Uint8Array(digest, 0, 8))}`;
 }
 
 /**
