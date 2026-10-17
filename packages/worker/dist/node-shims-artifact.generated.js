@@ -9,9 +9,9 @@
  * bytes after a rebuild; <NAME>_SHA256 is the full digest verified at fetch time.
  */
 /** dist/runtime/node-shims.js generateShimsCode() */
-export const NODE_SHIMS_ENTRY = "/_assets/runtime/node-shims-e25ea8da9f3f7da1.js";
-export const NODE_SHIMS_BUILD_ID = "e25ea8da9f3f7da1";
-export const NODE_SHIMS_SHA256 = "e25ea8da9f3f7da1d815f146725f1df1470f00828680f71ab2bdceca4d8ef720";
+export const NODE_SHIMS_ENTRY = "/_assets/runtime/node-shims-6d180b4a21885f27.js";
+export const NODE_SHIMS_BUILD_ID = "6d180b4a21885f27";
+export const NODE_SHIMS_SHA256 = "6d180b4a21885f27d1a9a68404c0715fbb4c85f25dba297deb3ed421a5bd73a2";
 /** @nimbus-sh/core dist/_shared/vfs-write-ledger.js VFS_WRITE_LEDGER_SOURCE */
 export const VFS_WRITE_LEDGER_ENTRY = "/_assets/runtime/vfs-write-ledger-a116c3562b00e745.js";
 export const VFS_WRITE_LEDGER_BUILD_ID = "a116c3562b00e745";
@@ -21,9 +21,9 @@ export const RESIDENT_STORE_ENTRY = "/_assets/runtime/resident-store-4588b73e536
 export const RESIDENT_STORE_BUILD_ID = "4588b73e536fc275";
 export const RESIDENT_STORE_SHA256 = "4588b73e536fc2750b474b3dbc9be00d66350a91bfc506814be974b52ded269d";
 /** @nimbus-sh/core src/interpreter/primordials.ts, bundled by scripts/interpreter-bundle.mjs */
-export const JS_INTERPRETER_PRIMORDIALS_ENTRY = "/_assets/runtime/js-interpreter-primordials-e620a61b7e9800fa.js";
-export const JS_INTERPRETER_PRIMORDIALS_BUILD_ID = "e620a61b7e9800fa";
-export const JS_INTERPRETER_PRIMORDIALS_SHA256 = "e620a61b7e9800fad31b82c28fe64bd149c0518dc8c614e512b88dc200096f48";
+export const JS_INTERPRETER_PRIMORDIALS_ENTRY = "/_assets/runtime/js-interpreter-primordials-6d8e62ca8f718d12.js";
+export const JS_INTERPRETER_PRIMORDIALS_BUILD_ID = "6d8e62ca8f718d12";
+export const JS_INTERPRETER_PRIMORDIALS_SHA256 = "6d8e62ca8f718d125d6f0b1289623c9cddc6fcf233ef71e7c664b6cceb789462";
 /** @nimbus-sh/core src/interpreter, bundled by scripts/interpreter-bundle.mjs */
 export const JS_INTERPRETER_ENTRY = "/_assets/runtime/js-interpreter-c8d3aa2918d2c00b.js";
 export const JS_INTERPRETER_BUILD_ID = "c8d3aa2918d2c00b";

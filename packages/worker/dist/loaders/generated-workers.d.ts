@@ -40,6 +40,13 @@ export declare const RPC_DISPOSE_PREAMBLE: string;
  */
 export declare const NODE_ERROR_PREAMBLE: string;
 /**
+ * Declares `__nimbusPrimordials`, the built-ins core _shared/primordials.ts
+ * captures, as the node shims start; the preambles that read them are bound to it.
+ */
+export declare const PRIMORDIALS_PREAMBLE: string;
+/** Declares `function createPosixPath(cwd)`, node:path's posix half; the node shims call it. */
+export declare const POSIX_PATH_PREAMBLE: string;
+/**
  * Declares Node's argument validators, `function parseFileMode(value, name, def)`,
  * `function stringToFlags(flags, name)`, `function validateInt32(value, name, min, max)`
  * and `function validateUint32(value, name, positive)`, and the open(2) bits

@@ -47,7 +47,7 @@ import { CHILD_NEWS_SOURCE } from '@nimbus-sh/core/runtime/child-news.js';
 import { generateUndiciShimCode } from '@nimbus-sh/core/runtime/undici-shim.js';
 import {
   ESM_RESOLVER_PREAMBLE, HTTP2_MODULE_PREAMBLE, NODE_ARGUMENTS_PREAMBLE, NODE_ERROR_PREAMBLE, NODE_SHIM_RESOLUTION_PREAMBLE,
-  NODE_WARNING_PREAMBLE, RELATIVE_WASM_PATHS_PREAMBLE, WASM_IMAGE_KEY_PREAMBLE,
+  NODE_WARNING_PREAMBLE, POSIX_PATH_PREAMBLE, PRIMORDIALS_PREAMBLE, RELATIVE_WASM_PATHS_PREAMBLE, WASM_IMAGE_KEY_PREAMBLE,
 } from '../loaders/generated-workers.js';
 import { NIMBUS_AI_CREDENTIAL_HEADERS, NIMBUS_AI_TOKEN_ENV } from '@nimbus-sh/core/_shared/ai-egress.js';
 import { EGRESS_TLS_REFUSAL } from '@nimbus-sh/core/_shared/workspace-network.js';
@@ -145,6 +145,11 @@ class __ProcessExit extends Error {
 ${NODE_ERROR_PREAMBLE}
 ${NODE_ARGUMENTS_PREAMBLE}
 ${NODE_WARNING_PREAMBLE}
+// The built-ins the module loading calls, captured now, before any program
+// code (core _shared/primordials.ts), and node:path's posix half on them
+// (core _shared/posix-path.ts, Node's lib/path.js).
+${PRIMORDIALS_PREAMBLE}
+${POSIX_PATH_PREAMBLE}
 Object.defineProperties(globalThis, {
   __nimbusNodeError: { value: __nimbusGeneratedNodeError, configurable: true },
   __nimbusNodeSystemError: { value: nodeSystemError, configurable: true },
@@ -855,17 +860,15 @@ function __vfsNormalizePath(p) {
 // \`join("", "hello.txt")\` was "/hello.txt" and sirv mapped every file under
 // "//name" and answered 404. Only resolution is the process's: resolve and
 // relative start from its cwd, not the Worker's.
+// Its posix half is Node's own (createPosixPath), on built-ins captured
+// before the program ran, as Node's path is: a program that replaces
+// String.prototype.charCodeAt has its own path, and the loader's, answer as
+// Node's do. matchesGlob is minimatch's, the platform's; win32 the platform's.
 const __pathMod = (() => {
   const native = __nativeBuiltin("path");
-  const posix = native.posix ?? native;
-  const resolve = (...p) => posix.resolve(cwd || "/home/user", ...p);
-  const mod = {
-    ...posix,
-    resolve,
-    relative: (from, to) => posix.relative(resolve(from), resolve(to)),
-    win32: native.win32,
-  };
-  mod.posix = mod;
+  const mod = createPosixPath(() => cwd || "/home/user");
+  mod.matchesGlob = (native.posix ?? native).matchesGlob;
+  mod.win32 = native.win32;
   return mod;
 })();
 
@@ -12193,7 +12196,9 @@ const __nimbusCallbackWork = {
 // Those whose functions throw workerd's NodeError (node-builtin-errors-match-node-workerd).
 for (const name of ["zlib", "crypto"]) builtins[name] = __nimbusNodeErrorsAt(builtins[name], { callbacks: true, prototypes: true, held: __nimbusCallbackWork[name] });
 builtins.string_decoder = __nimbusNodeErrorsAt(builtins.string_decoder, { prototypes: true });
-for (const name of ["url", "path", "vm"]) builtins[name] = __nimbusNodeErrorsAt(builtins[name]);
+for (const name of ["url", "vm"]) builtins[name] = __nimbusNodeErrorsAt(builtins[name]);
+// node:path's posix half throws Node's errors itself (core _shared/posix-path.ts); matchesGlob is workerd's.
+builtins.path.matchesGlob = __nimbusNodeErrorsOf(builtins.path.matchesGlob, false, null);
 __nimbusNodeErrorsAt(builtins.events, { inPlace: true });
 __nimbusNodeErrorsAt(__BufferMod, { inPlace: true });
 // Node's argument checks in front of them (node-builtin-fronts.ts).

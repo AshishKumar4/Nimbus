@@ -5,6 +5,7 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Changed: the hosted node's `node:path` posix half is now Node v22.22.3's own `lib/path.js`, ported onto built-ins the launch captures before any program code runs. A program that replaces `String.prototype.charCodeAt`, `slice` and the like gets from `path` what Node's `path` gives, where workerd's `path` used to fail. Its key order, function names and argument errors are Node's, including `path.join` failing, as Node's does, when `Array.prototype.push` is replaced. `win32` and `matchesGlob` remain the platform's.
 - Fixed: one session's compiles no longer reset the other sessions that
   share its isolate. The platform runs several sessions in one isolate
   with one memory limit, and resets all of them when it is crossed. Each
