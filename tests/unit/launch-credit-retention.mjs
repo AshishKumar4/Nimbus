@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { beginHelperFetch, beginLoaderFetch, DO_DYNAMIC_WORKER_LIMIT, loaderLedgerStats, withLaunchAdmission } from '../../packages/fabric/src/budgets.ts';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { ModuleSource } from '../../packages/platform/src/module-source.ts';
+import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { fetchNodeFacetSources } from '../../packages/worker/src/runtime/node-shims-artifact.ts';
 import { acquireSupervisorAllocation, acquireSupervisorRunningAllocation, readSupervisorAllocationBudget } from '../../packages/platform/src/heavy-alloc-coord.ts';
 import { createFacetCtx, createFacetWorld } from './lib/facet-host-harness.mjs';
@@ -103,6 +104,7 @@ async function runningWorkReclaims(brokered, race) {
 
 await runScenarios(fileURLToPath(import.meta.url), {
   async parkedMapOwnership() {
+    adoptCtxExports({ SupervisorRPC: ({ props }) => ({ props }) });
     const shared = await fetchNodeFacetSources({ ASSETS: stagedAssets });
     const sharedTexts = new Set(Object.values(shared.immutable).map((source) => source.text));
     const ownBytes = (text) => text.length * (/[^\u0000-\u00ff]/.test(text) ? 2 : 1);
@@ -158,8 +160,17 @@ await runScenarios(fileURLToPath(import.meta.url), {
     const { manager, ctx } = session(authority, 'owned-wasm-member');
     const cwd = '/home/user/owned-wasm';
     authority.kfs.mkdir(cwd);
-    const bytes = new Uint8Array(4 * 1024 * 1024);
+    const payloadBytes = 4 * 1024 * 1024;
+    const length = [];
+    for (let rest = payloadBytes; ;) {
+      const part = rest & 127;
+      rest >>>= 7;
+      length.push(part | (rest > 0 ? 128 : 0));
+      if (rest === 0) break;
+    }
+    const bytes = new Uint8Array(9 + length.length + payloadBytes);
     bytes.set([0, 97, 115, 109, 1, 0, 0, 0]);
+    bytes.set(length, 9);
     authority.kfs.writeFile(`${cwd}/image.wasm`, bytes);
     authority.kfs.writeFile(`${cwd}/cell.js`, 'require("fs").readFileSync(require("path").join(__dirname, "image.wasm")); module.exports = "wasm";');
     const holds = occupy(ctx);
@@ -267,23 +278,28 @@ await runScenarios(fileURLToPath(import.meta.url), {
     const holds = occupy(busy.ctx);
     const launches = [];
     const capacity = readSupervisorAllocationBudget().capacity;
+    let smallest = 0;
     try {
-      for (let i = 0; capacity - readSupervisorAllocationBudget().current >= 12_288; i++) {
+      for (let i = 0; smallest === 0 || capacity - readSupervisorAllocationBudget().current >= smallest * 2; i++) {
         assert.ok(i < 24, 'the retained maps fill the useful room');
         const free = capacity - readSupervisorAllocationBudget().current;
         const cwd = `/home/user/burst-${i}`;
         authority.kfs.mkdir(cwd);
-        authority.kfs.writeFile(`${cwd}/cell.js`, `module.exports = 7;\n// ${'x'.repeat(Math.max(4096, Math.floor(free / 4) - 1024))}\n`);
+        authority.kfs.writeFile(`${cwd}/cell.js`, `module.exports = 7;\n// ${'x'.repeat(i === 0 ? 4096 : Math.max(4096, Math.floor(free / 4) - 1024))}\n`);
         launches.push(busy.manager.exec('process.stdout.write(String(require("./cell.js")))', {
           cwd, filename: `${cwd}/run.js`, captureOutput: true,
         }));
         await until(() => busy.manager.launchState().launches.filter(({ stage }) => stage === 'admission').length === i + 1,
           `parked map ${i + 1}: ${JSON.stringify(readSupervisorAllocationBudget())}`, 20_000);
+        if (i === 0) smallest = readSupervisorAllocationBudget().current;
         assert.equal(readSupervisorAllocationBudget().queued, 0, 'the burst parks, rather than queueing builds');
       }
       assert.ok(launches.length >= 3, 'several maps, not one exclusive lease, fill the budget');
+      authority.kfs.mkdir('/home/user/other');
+      const remaining = capacity - readSupervisorAllocationBudget().current;
+      authority.kfs.writeFile('/home/user/other/cell.js', `module.exports = "other";\n// ${'y'.repeat(remaining + 4096)}\n`);
       let finished = false;
-      const waiting = other.manager.exec('process.stdout.write("other")', { cwd: '/home/user/other', captureOutput: true })
+      const waiting = other.manager.exec('process.stdout.write(require("./cell.js"))', { cwd: '/home/user/other', captureOutput: true })
         .then((result) => { finished = true; return result; });
       await until(() => readSupervisorAllocationBudget().queued === 1, 'a new unmeasured build queues behind retained maps');
       assert.equal(finished, false, 'a full isolate starts no new build');
