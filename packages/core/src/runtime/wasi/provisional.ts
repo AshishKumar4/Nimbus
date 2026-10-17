@@ -362,11 +362,11 @@ export function provisional(host: ProvisionalHost): Provisional {
       const inode = layer.get(key)!;
       return inode === null ? null : entryOf(inode);
     }
-    // A file whose content this process changed, at any name the view has it at; a grant's (its cell) is the grant's to say.
+    // A file whose content this process changed, at any name the view has it at.
     if (touched.size > 0) {
       const row = host.row(key);
       const changed = row ? inodeAtNumber(row.dev, row.ino) : undefined;
-      if (changed !== undefined && changed.state !== null && changed.cell === undefined) return entryOf(changed);
+      if (changed !== undefined && changed.state !== null) return entryOf(changed);
     }
     if (layer.size === 0) return undefined;
     // A directory made here has no names but the ones made in it.
