@@ -22,12 +22,11 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { isMainThread } from 'node:worker_threads';
 import { OPENCODE_ARTIFACT_VERSION, OPENCODE_TUI_PARSER_WORKER } from '../../packages/worker/src/opencode-artifact.generated.ts';
+import { until } from './lib/resident-body.mjs';
 
 const realProcess = globalThis.process;
 const realStdout = realProcess.stdout.write.bind(realProcess.stdout);
 const realStderr = realProcess.stderr.write.bind(realProcess.stderr);
-const rawSetTimeout = globalThis.setTimeout;
-const rawClearTimeout = globalThis.clearTimeout;
 const here = path.dirname(fileURLToPath(import.meta.url));
 const assetDir = path.resolve(here, '../../packages/worker/public/_assets/opencode', OPENCODE_ARTIFACT_VERSION);
 
@@ -56,18 +55,10 @@ try {
   const messageIds = [17, 3, 42];
   assert.equal(importCompleted, false, 'the burst arrives before the staged parser import completes');
   for (const messageId of messageIds) parser.postMessage({ type: 'GET_PERFORMANCE', messageId });
-  let loadTimer;
-  try {
-    assert.equal(await Promise.race([
-      loaded.promise,
-      new Promise((_, reject) => { loadTimer = rawSetTimeout(() => reject(new Error('the staged parser import timed out')), 5_000); }),
-    ]), null, 'the staged parser module loads through the polyfill');
-  } finally {
-    rawClearTimeout(loadTimer);
-  }
+  await until(() => importCompleted, 'staged parser import', 5_000);
+  assert.equal(await loaded.promise, null, 'the staged parser module loads through the polyfill');
   const waitForAnswers = async () => {
-    const deadline = Date.now() + 5_000;
-    while (answers.length < messageIds.length && Date.now() < deadline) await new Promise((resolve) => rawSetTimeout(resolve, 10));
+    await until(() => answers.length >= messageIds.length, 'parser responses', 5_000);
     assert.deepEqual(answers.map((answer) => {
       assert.equal(typeof answer, 'object');
       assert.notEqual(answer, null);
