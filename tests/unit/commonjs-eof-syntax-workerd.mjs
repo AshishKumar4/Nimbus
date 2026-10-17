@@ -3,9 +3,11 @@
 // A CommonJS program whose SyntaxError is at the end of its source (a call,
 // block, bracket or expression left open, a template, a comment) is reported
 // as Node reports it, compiling the source alone (wrapSafe): its line, its
-// arrow (an argument list's last token, or nothing underlined at the end)
-// and V8's message for the end of the input, run from a file, with a
-// trailing newline or a shebang, and from stdin. Host Node is the oracle.
+// arrow (an argument list's last token, a parenthesized rest's ellipsis, or
+// nothing underlined at the end) and V8's message for the end of the input,
+// run from a file, with a trailing newline or a shebang, and from stdin; and
+// required, with a stack formatter of the program's own (Node's message
+// reaches it; a formatter's own text is kept). Host Node is the oracle.
 //
 // Red before: the cell's wrapper followed the source, so V8 read its tail
 // where the source ends: the arrow showed the wrapper's `}; });`, a line
@@ -27,6 +29,18 @@ const sources = {
   'plus.js': 'x = 1 +',
   'second-line.js': 'a\nb(c',
   'shebang.js': '#!/usr/bin/env node\nconsole.log("ran"\n',
+  // V8 names a parenthesized rest's ellipsis, in the source, where no arrow follows it.
+  'rest.js': '(...args',
+  'rest-param.js': 'f = (a, ...b',
+  'rest-object.js': 'f(a, (...{b',
+  'rest-array.js': '(...[a, ...b]',
+  'formatter.js': [
+    'Error.prepareStackTrace = (error) => `formatted ${error.message}`;',
+    "try { require('./open-call.js'); } catch (error) { console.log(error.message); console.log(error.stack); }",
+    `Error.prepareStackTrace = () => "literal Unexpected token '}'";`,
+    "try { require('./open-call.js'); } catch (error) { console.log(error.message); console.log(error.stack); }",
+    '',
+  ].join('\n'),
 };
 const commands = [
   ...Object.keys(sources).map((name) => `node ${name}`),

@@ -974,9 +974,10 @@ function __nimbusFatalLocation(text, goal, offset) {
 // once (node-shims.ts __nimbusFatalReport).
 const __nimbusDecorated = new WeakSet();
 function __nimbusDecorateSyntaxError(e, name) {
-  if (!(e instanceof SyntaxError) || typeof e.stack !== "string" || __nimbusDecorated.has(e)) return;
+  if (!(e instanceof SyntaxError) || __nimbusDecorated.has(e)) return;
+  // The arrow first: it may give the error Node's message before its stack is formatted.
   const arrow = typeof globalThis.__nimbusSyntaxErrorArrow === "function" ? globalThis.__nimbusSyntaxErrorArrow(__nimbusModuleNamed(name), e) : null;
-  if (arrow === null) return;
+  if (arrow === null || typeof e.stack !== "string") return;
   e.stack = arrow + "\\n" + e.stack;
   __nimbusDecorated.add(e);
 }

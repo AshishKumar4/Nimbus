@@ -30,6 +30,7 @@ const files = {
   // At the end of the input, as Node compiles the source alone.
   'eof-call.js': 'console.log("ran"\n',
   'eof-block.js': '#!/usr/bin/env node\nfunction f() {\n',
+  'eof-rest.js': '(...args\n',
   'ok.ts': 'const a: number = 1;\nconsole.log("ran");\n',
   'pre.js': 'console.log("preloaded");\n',
   'throws.js': '#!/usr/bin/env node\n\nthrow new Error("on line three");\n',
@@ -65,6 +66,7 @@ await matchNodeInWorkerd('node-check-matches-node-workerd', ROOT, files, [
   "echo 'const x = ;' | node -c",
   'node -c eof-call.js',
   'node -c eof-block.js',
+  'node -c eof-rest.js',
   "echo 'syntax(' | node -c",
   "echo 'export const a = 1' | node -c",
   'node -c -e 1',

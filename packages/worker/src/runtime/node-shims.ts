@@ -11093,15 +11093,22 @@ globalThis.__nimbusSyntaxErrorArrow = function __nimbusSyntaxErrorArrow(module, 
   // V8's end of input is the source's end, nothing underlined.
   if (error?.message === "Unexpected end of input") return __nimbusArrowOf(module, text, end, end, true);
   if (place[0] >= end) {
+    const parser = __nimbusRegistryRequire("./${RUNTIME_PARSER_MODULE}");
+    const named = error instanceof SyntaxError ? /^Unexpected token '(.+)'$/.exec(error.message) : null;
     // An argument list left open is placed at its last token, as V8 places it whatever follows.
     if (error?.message === "missing ) after argument list") {
-      const last = __nimbusRegistryRequire("./${RUNTIME_PARSER_MODULE}").lastTokenBefore(text, end);
+      const last = parser.lastTokenBefore(text, end);
       if (last !== null) return __nimbusArrowOf(module, text, last[0], last[1]);
-    } else if (error instanceof SyntaxError && /^Unexpected token '/.test(error.message)) {
-      // The tail's token where the source alone ends.
-      const was = error.message;
+    } else if (named?.[1] === "...") {
+      // A parenthesized rest no arrow follows: V8 names its ellipsis.
+      const rest = parser.openParenRest(text, end);
+      if (rest !== null) return __nimbusArrowOf(module, text, rest[0], rest[1]);
+    } else if (named !== null && text.slice(end).includes(named[1])) {
+      // The tail's token, where the source alone ends: the header of a
+      // stack formatted before is renamed, a formatter's own text kept.
+      const header = "SyntaxError: " + error.message;
       error.message = "Unexpected end of input";
-      if (typeof error.stack === "string") error.stack = error.stack.replace(was, error.message);
+      if (typeof error.stack === "string" && error.stack.startsWith(header)) error.stack = "SyntaxError: " + error.message + error.stack.slice(header.length);
     }
     return __nimbusArrowOf(module, text, end, end, true);
   }
