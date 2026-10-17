@@ -5,19 +5,15 @@
 // facet does what the toolchain does through its supervisor — read every
 // input and write the -o path AS THE CALLER — so a test can drive the real
 // `clangBinHandler` end to end without a wasm boot.
-//
-// A helper (the leading _), not a test, and not under lib/: its facet host
-// answers a typed generic facet call with a canned result, which checked
-// JavaScript accepts only through a cast.
 
-import { makeClangRunnerFactory } from '../../packages/core/src/runtime/clang-runner.ts';
-import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
-import { ProcessView } from '../../packages/core/src/runtime/process-files.ts';
-import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { ustarArchive, ustarPath } from './lib/ustar.mjs';
+import { makeClangRunnerFactory } from '../../../packages/core/src/runtime/clang-runner.ts';
+import { SessionProcessSupervisor } from '../../../packages/core/src/runtime/session-process-supervisor.ts';
+import { CRED_KERNEL } from '../../../packages/core/src/runtime/os-contracts.ts';
+import { SqliteVFS } from '../../../packages/core/src/vfs/sqlite-vfs.ts';
+import { ProcessFiles } from '../../../packages/core/src/runtime/process-files.ts';
+import { ProcessView } from '../../../packages/core/src/runtime/process-files.ts';
+import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { ustarArchive, ustarPath } from './ustar.mjs';
 
 export const USER = Object.freeze({
   uid: 1000,
@@ -26,12 +22,15 @@ export const USER = Object.freeze({
   umask: 0o022,
 });
 
+/** The installed clang runtime, as its manifest names its files (the runner reads only their paths). */
+/** @type {import('../../../packages/core/src/runtime/runtime-manifest.ts').RuntimeManifest} */
 const MANIFEST = {
-  files: [
-    { path: 'bin/clang' },
-    { path: 'bin/wasm-ld' },
-    { path: 'share/clang/sysroot.tar' },
-  ],
+  name: 'clang',
+  version: 'fixture',
+  license: 'fixture',
+  wasi_namespace: 'wasi_unstable',
+  files: ['bin/clang', 'bin/wasm-ld', 'share/clang/sysroot.tar'].map((path) => ({ path, content: path, sha256: '0'.repeat(64), size: 0 })),
+  entrypoints: [],
 };
 
 /** What clang-runner insists the archive carries before it unpacks it. */
@@ -59,6 +58,11 @@ export function buildUstar(files) {
  * argv is read and the `-o` path is written, so a read the caller may not
  * make or a directory the caller may not write fails the "compile"; so does
  * a source that says `#error`, as the compiler would.
+ *
+ * @param {import('../../../packages/core/src/runtime/facet-host.ts').FacetSpec} spec
+ * @param {Array<{ tag: string, argv: string[] }>} calls
+ * @param {string[]} disposed
+ * @returns {import('../../../packages/core/src/runtime/clang-runner.ts').ClangFacet}
  */
 function toolchainFacet(spec, calls, disposed) {
   if (!spec.syscalls || typeof spec.syscalls.pid !== 'number') {
@@ -153,8 +157,8 @@ export function makeInvocationVfs(options = {}) {
   // The facets the runner opened and disposed, by tag (clang-runner-clang, clang-runner-wasm-ld).
   const opened = [];
   const disposed = [];
+  /** @type {Parameters<typeof makeClangRunnerFactory>[0]['facets']} */
   const facets = {
-    parking: 'none',
     open(spec) { opened.push(spec.tag); return toolchainFacet(spec, calls, disposed); },
   };
   const filesystem = detachingAuthority(new ProcessFiles(raw));

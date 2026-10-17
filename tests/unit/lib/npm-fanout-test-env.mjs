@@ -33,8 +33,8 @@ export function kernelInstaller(vfs, sql, opts) {
 }
 
 /**
- * A package the write shard is asked to install.
- * @typedef {{ name: string, version: string, pkgDir?: string, mtime?: number, receipt?: string }} ShardPackage
+ * A package the write shard is asked to install: the supervisor's payload.
+ * @typedef {import('../../../packages/worker/src/npm/install-facet.ts').FacetPackageSpec} ShardPackage
  */
 
 /**
