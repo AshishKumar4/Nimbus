@@ -209,6 +209,8 @@ async function until(ready, what) {
     await until(() => s.filesystem.delegations.size === 1, 'the grant');
     await new Promise((resolve) => setTimeout(resolve, 10));
   };
+  // Input arrives: the barrier the source's create takes first is the one the peer's write and the grant come after.
+  s.fs.inbound();
   await create(s.fs, '/home/user/proj/d7/src.txt', 'MINE');
   await assert.rejects(async () => s.fs.copyFile('/home/user/proj/d7/src.txt', '/home/user/proj/d7/dst.txt'), { code: 'EACCES' });
   await s.fs.settle().catch(() => {});
