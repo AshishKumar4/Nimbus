@@ -8,7 +8,10 @@
 //   - GET  /s/<sid>/port/<n>/     → user-bound HTTP servers
 //
 // Each helper is a thin wrapper over fetch + ws. No /api/_diag/*,
-// no /api/_test/*, no /api/processes — those are white-box surfaces
+// no /api/_test/*, no /api/processes — those are white-box surfaces.
+// The one exception is evidence on failure: a wait that timed out or a
+// socket that closed abnormally prints what the session recorded
+// (sessionRecord, launchRecord), and nothing asserts on it.
 
 import { execFileSync } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
@@ -90,6 +93,24 @@ async function sessionRecord(sid, openedAt, base, headers) {
   } catch (error) {
     return `the session's record: unavailable (${error.message})`;
   }
+}
+
+/**
+ * What the session `sid` was doing when a wait on it timed out: each launch
+ * not yet running and the stage it waits at (_diag/session's `launch`), and
+ * its process table. Evidence for the failure's message, never asserted.
+ */
+async function launchRecord(sid, base, headers) {
+  const read = async (path) => {
+    try {
+      const r = await fetch(`${base}/s/${encodeURIComponent(sid)}${path}`, { headers, signal: AbortSignal.timeout(10_000) });
+      return r.ok ? await r.json() : `${path} answered ${r.status}`;
+    } catch (error) {
+      return `${path} unavailable (${error.message})`;
+    }
+  };
+  const [session, processes] = await Promise.all([read('/api/_diag/session'), read('/api/processes')]);
+  return `the session's launches: ${JSON.stringify(typeof session === 'string' ? session : session.launch)}; its processes: ${JSON.stringify(processes)}`;
 }
 
 /** A close frame in one clause: `code 1006 (abnormal): <reason>`. */
@@ -414,7 +435,9 @@ export class Terminal {
       };
       const timer = setTimeout(() => {
         cleanup();
-        reject(new Error(`waitFor(${label}) timeout after ${timeoutMs}ms; tail: ${JSON.stringify(stripAnsi(this.buf).slice(-300))}; shell control: ${JSON.stringify(this.protocol.slice(-8))}`));
+        const message = `waitFor(${label}) timeout after ${timeoutMs}ms; tail: ${JSON.stringify(stripAnsi(this.buf).slice(-300))}; shell control: ${JSON.stringify(this.protocol.slice(-8))}`;
+        launchRecord(this.sid, this.wsBase.replace(/^ws/, 'http'), this.wsOptions?.headers ?? requestHeaders({}, this.sid))
+          .then((record) => reject(new Error(`${message}\n${record}`)));
       }, timeoutMs);
       this.ws?.on('message', check);
       this.ws?.on('close', check);

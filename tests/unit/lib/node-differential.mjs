@@ -55,9 +55,9 @@ export function nodeShown(text, { stream, side, from, root }) {
  * @param {string} root
  * @param {Record<string, string>} files
  * @param {string[]} commands
- * @param {{ shown?: (text: string, printed: Printed) => string, streams?: Array<'out' | 'err'> }} [options]
+ * @param {{ shown?: (text: string, printed: Printed) => string, streams?: Array<'out' | 'err'>, commandFor?: (command: string, side: 'node' | 'workerd') => string }} [options]
  */
-export async function matchNodeInWorkerd(label, root, files, commands, { shown = nodeShown, streams = ['out', 'err'] } = {}) {
+export async function matchNodeInWorkerd(label, root, files, commands, { shown = nodeShown, streams = ['out', 'err'], commandFor = (command) => command } = {}) {
   const host = realpathSync(mkdtempSync(join(tmpdir(), `${label}-`)));
   process.on('exit', () => rmSync(host, { recursive: true, force: true }));
   for (const [name, text] of Object.entries(files)) {
@@ -84,9 +84,9 @@ export async function matchNodeInWorkerd(label, root, files, commands, { shown =
       assert.equal(made.status, 0, `the fixture tree's directories: ${made.stdout}`);
       for (const [name, text] of Object.entries(files)) await session.writeFile(`${root}/${name}`, text);
       for (const command of commands) {
-        assert.equal(spawnSync('sh', ['-c', run(command)], { cwd: host, env: { PATH: process.env.PATH, HOME: host } }).status, 0);
+        assert.equal(spawnSync('sh', ['-c', run(commandFor(command, 'node'))], { cwd: host, env: { PATH: process.env.PATH, HOME: host } }).status, 0);
         const want = compared(command, 'node', host, (stream) => hostRead(`${stream}.txt`), hostRead('code.txt'));
-        await session.run(`cd ${root} && ${run(command)}`, 120_000);
+        await session.run(`cd ${root} && ${run(commandFor(command, 'workerd'))}`, 120_000);
         const r = await session.run(`cd ${root} && ${read}`, 60_000);
         const line = splitScenarioOutput(r.stdout).lines.find((l) => l.startsWith('{'));
         assert.ok(line, `${command}: read its output: ${r.stdout.slice(-1500)}`);

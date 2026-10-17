@@ -17,8 +17,8 @@
 //   bounded poll, and the boot nonce differs — the process was re-driven,
 //   not merely surviving.
 
-import { BASE, makeAsserter, mintSession, deleteSession, Terminal, heredocCommand, requestHeaders, fetchPort, sleep } from '../_driver.mjs';
-import { afterReset } from './_reset-window.mjs';
+import { BASE, makeAsserter, mintSession, deleteSession, Terminal, heredocCommand, fetchPort, sleep } from '../_driver.mjs';
+import { afterReset, resetInstance } from './_reset-window.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 
@@ -67,13 +67,12 @@ http.createServer((req, res) => {
   a.check('the server reports a boot nonce', bootBefore !== '', warm.last.body?.slice(0, 120));
 
   // The reset.
-  const abort = await fetch(`${BASE}/s/${sid}/api/_diag/abort`, { method: 'POST', headers: requestHeaders({}, sid) });
-  a.check('_diag/abort answers the reset', abort.status === 204, `status=${abort.status}`);
+  const reset = await resetInstance(sid);
+  a.check('the abort reset the instance: the session answers from a new incarnation', reset.ok, reset.detail);
 
-  // The same scoped URL answers again — re-driven on request, no reservation.
-  // The 204 leaves before the isolate unwinds, so the first polls may still
-  // reach the old instance: the proof is a DIFFERENT boot nonce on the same
-  // URL within the budget, not merely a 200.
+  // The same scoped URL answers again — re-driven on request, no reservation:
+  // the proof is a DIFFERENT boot nonce on the same URL within the budget,
+  // not merely a 200.
   let bootAfter = '';
   let last = { status: 0, body: '' };
   {

@@ -5,6 +5,18 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Changed: a program whose launch waits 10 seconds at one stage (its
+  preparation, its admission for a worker, or its load) logs one line to
+  Workers Logs: `[facet-manager] launch stalled:` with its pid, command,
+  stage, the wait, and the state of the worker ledger, the launch pacer
+  and the isolate's transient budget. A command that hangs before it runs
+  leaves this as its evidence. The line is logged once per launch.
+- Fixed: when sessions compete for an isolate's transient budget, a
+  program's launch no longer reads past the share it holds while it
+  stages its files. A read that would take it over is refused before it
+  happens, and the launch asks for the whole budget once, as it already
+  did when its files outgrew its share.
+
 ## 2026-10-17: platform 0.12.0, core 0.23.0, fabric 0.18.0, worker 0.21.0, sdk 0.17.0, cli 0.2.8, loom 0.3.1, react 0.3.3, create-nimbus-app 0.2.4, runtime-bash 5.2.37-7, runtime-cpython 3.13.14-3, runtime-git 2.53.0-1 (config 0.3.1 unchanged)
 
 The 2026-10-14 and 2026-10-15 versions reached production but were never published to npm; these carry their changes too. The runtimes need core 0.23.0: it is the first core that registers bash-runner@6, cpython-runner@3 and git-runner@2.
@@ -42,6 +54,25 @@ The 2026-10-14 and 2026-10-15 versions reached production but were never publish
   isolate budget; new builds use the remaining room within a checked bound.
   Running programs can reclaim parked maps for their writes and reads; the
   waiting commands prepare their maps again before taking a worker.
+- Changed: a process that can be stopped and replayed records its input
+  and output replies at almost no CPU cost. Each reply was hashed byte by
+  byte and the hash kept, though nothing read it: about 0.9 ms of CPU for
+  each 64 KiB of piped input. The replay keeps only their count, which is
+  all its limit needs.
+- Fixed: Bun's file-URL helpers preserve spaces, `#`, `%` and other escaped
+  filename characters, and resolve relative paths from the process's current
+  directory, including after `process.chdir`, as its `node:url` helpers do.
+- Fixed: bash and its commands receive a broken-pipe write error when
+  `trap '' PIPE` ignores SIGPIPE, including commands that inherit it across
+  exec. Before, a write after the pipe's reader closed killed the writer
+  with SIGPIPE even when the signal was ignored.
+- Fixed: a running process now notices an embedder filesystem mounted after
+  its first filesystem listing. Before, a process that started with SQLite
+  alone could keep a staged namespace that omitted the new mount.
+- Fixed: dragging the handle between the editor and the preview keeps the
+  handle under the pointer. It fell behind by a fifth of the drag, and a
+  fast drag to the right could end on the preview's frame and stop short.
+  The workspace's resize handles now keep the pointer while they are held.
 - Fixed: one session's compiles no longer reset the other sessions that
   share its isolate. The platform runs several sessions in one isolate
   with one memory limit, and resets all of them when it is crossed. Each

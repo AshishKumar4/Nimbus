@@ -15,6 +15,7 @@
  * Long-running processes use a dynamic Worker entrypoint that stays
  * registered in ProcessTable and PortRegistry until exit or kill.
  */
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { residencyMissReport } from '../runtime/residency-miss-report.js';
 import { buildOpenCodeTransportPlan } from '../runtime/opencode-invocation.js';
@@ -63,7 +64,7 @@ import { recordFailure, getLastRpcFrame, getLastFacetId } from '@nimbus-sh/platf
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { TurnBudget, PacedWork, turnChunkMaxBytes, withResolvers } from '@nimbus-sh/fabric/turn-budget.js';
 import { generation, onColdStart } from '@nimbus-sh/fabric/generation.js';
-import { DYNAMIC_WORKER_CODE_LIMIT_BYTES, isDynamicWorkerDeadlock, suspendLaunchAdmission, waitOutsideLedger, withLaunchAdmission, withLaunchPreparation } from '@nimbus-sh/fabric/budgets.js';
+import { DYNAMIC_WORKER_CODE_LIMIT_BYTES, isDynamicWorkerDeadlock, loaderLedgerStats, suspendLaunchAdmission, waitOutsideLedger, withLaunchAdmission, withLaunchPreparation } from '@nimbus-sh/fabric/budgets.js';
 import { FencedWork, FENCED_WORK_KEY_PREFIX, RESIDENT_PROVEN_MS, } from '@nimbus-sh/fabric/fenced-work.js';
 import { rewriteProvidedCommonJsModules } from '@nimbus-sh/core/runtime/provided-packages.js';
 import { bundleCompiledLoader, esbuildDiagnosticShim, isBundleModuleCandidate, looksLikeEsm, needsBundleCellTransform, transformBundleCells, transformEntryScript, } from '@nimbus-sh/core/runtime/bundle-cell-transform.js';
@@ -107,6 +108,36 @@ import { streamedWasmImageDigest } from './wasm-image-digest.js';
 import { wasmImageDigest } from './wasm-image-key.js';
 import { attributeAllocation, setPrefetchCacheBytes } from '@nimbus-sh/platform/diag-counters.js';
 const launchAdapters = new WeakMap();
+class PrefetchCreditGate {
+    limit;
+    entry;
+    used = 0;
+    charged = new Map();
+    refusal;
+    constructor(limit, entry) {
+        this.limit = limit;
+        this.entry = entry;
+    }
+    charge(path, bytes, kind = 'file') {
+        this.check();
+        const key = `${kind}\0${stripLeadingSlashes(path)}`;
+        const previous = this.charged.get(key) ?? 0;
+        const next = Math.max(previous, bytes);
+        if (this.used + next - previous > this.limit) {
+            this.refusal = new ClosureBoundExceededError({
+                kind: 'closure-exceeds-bound', entry: this.entry, bytesSeen: this.used, bound: this.limit, lastPath: path,
+            });
+            throw this.refusal;
+        }
+        this.used += next - previous;
+        this.charged.set(key, next);
+    }
+    // Optional-read catches may skip a failed file, but cannot clear a credit refusal.
+    check() { if (this.refusal)
+        throw this.refusal; }
+}
+/** A gather's own gate, never another reader's even when they share a bridge or adapter. */
+const prefetchReadCredit = new AsyncLocalStorage();
 /** The exact type of `entry` in `dir` on a launch's fs, lstat'ing it where its listing could not type it. */
 function launchEntryType(vfs, dir, entry) {
     return direntTypeOf(entry, () => vfs.stat(`${dir}/${entry.name}`, { followSymlinks: false }));
@@ -128,7 +159,31 @@ function declaredBindingFs(fs) {
 function filesOf(fs) {
     let files = launchAdapters.get(fs);
     if (files === undefined) {
-        files = requireFsOverBridge(fs);
+        const base = requireFsOverBridge(fs);
+        const readBytes = (path) => {
+            const credit = prefetchReadCredit.getStore();
+            if (credit === undefined)
+                return base.readBytes(path);
+            return (async () => {
+                credit.check();
+                const stat = await base.stat(path).catch(() => null);
+                if (stat !== null)
+                    credit.charge(path, stat.size);
+                const bytes = await base.readBytes(path);
+                if (bytes !== null)
+                    credit.charge(path, bytes.byteLength);
+                return bytes;
+            })();
+        };
+        files = { ...base, readBytes, readFileString: (path) => {
+                if (prefetchReadCredit.getStore() === undefined)
+                    return base.readFileString(path);
+                return readBytes(path).then((bytes) => {
+                    if (bytes === null)
+                        throw Object.assign(new Error(`ENOENT: ${path}`), { code: 'ENOENT' });
+                    return fileText(bytes);
+                });
+            } };
         launchAdapters.set(fs, files);
     }
     return files;
@@ -1892,6 +1947,14 @@ function moduleMemberBytes(members) {
 /** The entry the one-shot host adds to a map (fabric workerd-facet-host.ts oneShotEntry, about 600 bytes): at most this. */
 const ONE_SHOT_HOST_ENTRY_BYTES = 4096;
 /**
+ * How long a one-shot's launch may wait at one stage before it says so, once
+ * (FacetManager._launchStage). A user's command that hangs before it runs
+ * leaves only Workers Logs behind: no session to read _diag from.
+ */
+const LAUNCH_STALL_MS = 10_000;
+/** How much of a stalled launch's command its report carries: a command line can be any length, and a log line has a budget. */
+const LAUNCH_STALL_COMMAND_CHARS = 200;
+/**
  * The module-map source for a state, memoized form first.
  *
  * A released state has neither form left, and rebuilding from its emptied raw
@@ -2514,7 +2577,7 @@ export async function greedyAddMainEntries(vfs, cwd, bundle, budgetState, requir
                 return false;
             if (bundle[stripped] === undefined && !(await _bundleAdmits(vfs, stripped, budgetState, BIN_PACKAGE_SPECULATIVE_MAX_FILE_BYTES)))
                 return false;
-            const closure = await prefetchForRequire(requireFsOverBridge(vfs), '', stripped.slice(0, stripped.lastIndexOf('/')), '/' + stripped, bound, options.pacer?.spend.bind(options.pacer), {
+            const closure = await prefetchForRequire(filesOf(vfs), '', stripped.slice(0, stripped.lastIndexOf('/')), '/' + stripped, bound, options.pacer?.spend.bind(options.pacer), {
                 purpose: 'dependency-closure', held: bundle,
                 maxAdditionalBytes: Math.max(0, bound - rawBytes),
                 maxAdditionalFiles: Math.max(0, VFS_BUNDLE_MAX_FILES - budgetState.fileCount),
@@ -2736,7 +2799,7 @@ export async function greedyAddMainEntries(vfs, cwd, bundle, budgetState, requir
     for (let i = 0; i < deferred.length; i++) {
         if (rawBytes >= bound || budgetState.fileCount >= VFS_BUNDLE_MAX_FILES)
             break;
-        const target = await resolveDeferredImport(requireFsOverBridge(vfs), deferred[i], options.pacer?.spend.bind(options.pacer), options.conditions);
+        const target = await resolveDeferredImport(filesOf(vfs), deferred[i], options.pacer?.spend.bind(options.pacer), options.conditions);
         // Its own package: where the deferral lands, not how it is spelled.
         const own = packageRootOf(deferred[i].fromDir.replace(/^\/+/, '') + '/_');
         if (target === null || own === null || packageRootOf(target) !== own || followed.has(target))
@@ -3272,7 +3335,7 @@ export async function addObservedReads(vfs, observed, bundle, requiredPaths, bud
     for (const path of observed) {
         if (!/\.[cm]?js$/.test(path) || bundle[path] === undefined)
             continue;
-        const closure = await prefetchForRequire(requireFsOverBridge(vfs), '', '/' + path.slice(0, path.lastIndexOf('/')), '/' + path, undefined, pacer?.spend.bind(pacer), {
+        const closure = await prefetchForRequire(filesOf(vfs), '', '/' + path.slice(0, path.lastIndexOf('/')), '/' + path, undefined, pacer?.spend.bind(pacer), {
             purpose: 'dependency-closure', held: bundle,
             // UTF-8 bytes, which bound both the raw bytes `room` counts and the
             // cell lengths the bundle's own cap counts.
@@ -3753,10 +3816,19 @@ async function withPrefetchAllocation(work, wait, bytes) {
 }
 /** The launch's cells, gathered from `vfs` (callers hold withPrefetchAllocation's admission). */
 async function gatherPrefetchBundle(vfs, options, creditLimit) {
+    if (creditLimit === undefined && prefetchReadCredit.getStore() === undefined)
+        return gatherPrefetchWithin(vfs, options);
+    const gate = creditLimit === undefined ? undefined : new PrefetchCreditGate(creditLimit, options.scriptPath ?? 'entry code');
+    return prefetchReadCredit.run(gate, () => gatherPrefetchWithin(vfs, options, creditLimit));
+}
+async function gatherPrefetchWithin(vfs, options, creditLimit) {
     try {
-        return await _buildPrefetchBundle(vfs, options, creditLimit);
+        const state = await _buildPrefetchBundle(vfs, options);
+        prefetchReadCredit.getStore()?.check();
+        return state;
     }
     catch (error) {
+        prefetchReadCredit.getStore()?.check();
         // The modules earlier runs executed are what an earlier run got through
         // without; they must not stop this one starting. A launch they (or
         // their emits, which the walk does not count) take past the bound is
@@ -3769,10 +3841,12 @@ async function gatherPrefetchBundle(vfs, options, creditLimit) {
             throw error;
         console.warn(`[facet-manager] the modules earlier runs executed take ${options.scriptPath ?? 'the entry code'}'s map past `
             + `its ${options.maxBundleBytes ?? VFS_BUNDLE_MAX_BYTES}-byte bound (${error.outcome.lastPath}); they are staged as optional roots, as far as the bound allows`);
-        return await _buildPrefetchBundle(vfs, { ...options, executedModules: learned.map((root) => ({ ...root, optional: true })) }, creditLimit);
+        const state = await _buildPrefetchBundle(vfs, { ...options, executedModules: learned.map((root) => ({ ...root, optional: true })) });
+        prefetchReadCredit.getStore()?.check();
+        return state;
     }
 }
-async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE, moduleScope = 'node', observedReads, pacer, maxBundleBytes = VFS_BUNDLE_MAX_BYTES, learnedFor, executedModules, transformStore, conditions = [], stripTypes = null, preloads = [], entryEsModule, staticRefs, dataOnly = false, }, creditLimit) {
+async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, bundleProfile = DEFAULT_FACET_BUNDLE_PROFILE, moduleScope = 'node', observedReads, pacer, maxBundleBytes = VFS_BUNDLE_MAX_BYTES, learnedFor, executedModules, transformStore, conditions = [], stripTypes = null, preloads = [], entryEsModule, staticRefs, dataOnly = false, }) {
     // Read the cursor BEFORE the walk: a mutation that lands while the bundle
     // is being assembled must be reported as invalidated, not silently missed.
     const admitted = await vfs.acquire(null, 0);
@@ -3790,9 +3864,10 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
     // extension (Tailwind scans .js/.ts content files as text). The tool's
     // configs ride along, as optional roots (RequiredModuleRoot.config).
     const configRoots = [...preloads, ...await toolConfigRoots(vfs, cwd, scriptPath)];
-    const walkRoots = (roots) => prefetchForRequire(requireFsOverBridge(vfs), entryCode || '', cwd, scriptPath, maxBundleBytes, pacer?.spend.bind(pacer), undefined, roots.length > 0 ? roots : undefined, conditions, creditLimit);
+    const walkRoots = (roots) => prefetchForRequire(filesOf(vfs), entryCode || '', cwd, scriptPath, maxBundleBytes, pacer?.spend.bind(pacer), undefined, roots.length > 0 ? roots : undefined, conditions);
     // A launch they take past the bound is built again with them optional (buildPrefetchBundle).
     const prefetch = await walkRoots([...configRoots, ...executedModules ?? []]);
+    prefetchReadCredit.getStore()?.check();
     phase('walk');
     if ('kind' in prefetch) {
         // A required closure larger than the bound can never launch as a
@@ -3823,31 +3898,7 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
     // while a small one never reaches a chunk bound and runs exactly as it
     // always did, with no suspension at all.
     const paceAfterPass = () => {
-        // Credit only aborts a try; every content choice still uses maxBundleBytes.
-        if (creditLimit !== undefined) {
-            let bytes = 0;
-            let lastPath = scriptPath ?? 'entry code';
-            for (const [path, cell] of Object.entries(bundle)) {
-                if (!codeOnly.has(path))
-                    bytes += _bundleCellRawBytes(cell);
-                if (bytes > creditLimit) {
-                    lastPath = path;
-                    break;
-                }
-            }
-            if (bytes <= creditLimit)
-                for (const [path, emit] of emits) {
-                    bytes += utf8Length(emit);
-                    if (bytes > creditLimit) {
-                        lastPath = path;
-                        break;
-                    }
-                }
-            if (bytes > creditLimit)
-                throw new ClosureBoundExceededError({
-                    kind: 'closure-exceeds-bound', entry: scriptPath ?? 'entry code', bytesSeen: bytes, bound: creditLimit, lastPath,
-                });
-        }
+        prefetchReadCredit.getStore()?.check();
         return pacer ? pacer.spend(_bundleWeight(bundle)) : Promise.resolve();
     };
     // 1.5 Observed reads. Every pass below this line guesses what a program
@@ -3972,6 +4023,7 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
     // what reads the cells for their code (bundleUsesNodeSqlite, the wasm and
     // binding scans) reads the module, which is all the map carries.
     const placeEmit = (path, code) => {
+        prefetchReadCredit.getStore()?.charge(path, utf8Length(code), 'emit');
         emits.set(path, code);
         if (!runOnly(path))
             return;
@@ -4206,6 +4258,7 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
             }
         };
         phase('fit');
+        const credit = prefetchReadCredit.getStore();
         // With no module to stage, the map carries no ES module host at all.
         if (cells.size > 0)
             esm = await stageEsModules({ files: filesOf(vfs), realpath: async (path) => await vfs.realpath(path), entries, held }, cells, {
@@ -4216,6 +4269,7 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
                 typeScript: stripTypes !== 'javascript',
                 isCode: (key) => !dataModules.has(key) && (emits.has(key) || (typeof bundle[key] === 'string' && isCodeCellPath(key))),
                 gate: true,
+                emitted: credit === undefined ? undefined : (path, text) => credit.charge(path, utf8Length(text), 'emit'),
             });
         // Staging reads and rewrites its modules' text, which the map's
         // serialization spends as it carries each one (buildFacetVfsBundleSource),
@@ -4389,7 +4443,10 @@ export class FacetManager {
      * journal recovery rides the first pump.
      */
     launchPump;
-    /** One-shot launches not yet running, by pid: the stage each is at and since when (launchState). */
+    /**
+     * One-shot launches not yet running, by pid: the stage each is at and since
+     * when (launchState), and the check that reports one stalled at a stage.
+     */
     launching = new Map();
     launchTasks = new Set();
     launchesClosed = false;
@@ -6179,7 +6236,9 @@ export class FacetManager {
         // Kinu #29: follow AGENTS.md's supervisor-credit / Dynamic Worker lock order.
         let admitted = false;
         let prepareFailed = false;
-        this.launching.set(entry.pid, { stage: 'prepare', since: Date.now() });
+        this._launchStage(entry, 'prepare', abortController.signal);
+        // A kill ends the launch where it waits, whether or not that wait hears it.
+        abortController.signal.addEventListener('abort', () => this._launchEnded(entry.pid), { once: true });
         // Paced like a resident launch: a tree too large for one turn costs
         // turns, and the pacer's stillWanted check ends a build whose process was
         // killed while it was suspended. The invocation that granted the last
@@ -6269,7 +6328,7 @@ export class FacetManager {
                 }
             });
             const prepareAgain = async () => {
-                this.launching.set(entry.pid, { stage: 'prepare', since: Date.now() });
+                this._launchStage(entry, 'prepare', abortController.signal);
                 if (vfsState.generatedSourcesReleased)
                     vfsState = await this._buildProcessBundle(entry, bundleSpec, pacer);
                 else
@@ -6316,7 +6375,7 @@ export class FacetManager {
             }
             const admittedRun = async (run) => {
                 for (;;) {
-                    this.launching.set(entry.pid, { stage: 'admission', since: Date.now() });
+                    this._launchStage(entry, 'admission', abortController.signal);
                     const parked = this._parkOneShotMap(entry.pid, prepared, abortController.signal);
                     let brokeredGranted = false;
                     try {
@@ -6350,7 +6409,7 @@ export class FacetManager {
             };
             return await admittedRun(async () => {
                 admitted = true;
-                this.launching.set(entry.pid, { stage: 'load', since: Date.now() });
+                this._launchStage(entry, 'load', abortController.signal);
                 // What it reports missing as it runs is filed against this bundle.
                 if (vfsState.bundleKey)
                     this.launchBundles.set(entry.pid, { key: vfsState.bundleKey, refused: new Set() });
@@ -6447,7 +6506,7 @@ export class FacetManager {
                         for (;;) {
                             prepared = await prepareAgain();
                             dataPlan = await this._staticReadPlan(entry, vfsState, cwd, pacer);
-                            this.launching.set(entry.pid, { stage: 'admission', since: Date.now() });
+                            this._launchStage(entry, 'admission', abortController.signal);
                             const parked = this._parkOneShotMap(entry.pid, prepared, abortController.signal);
                             let granted = false;
                             try {
@@ -6547,10 +6606,46 @@ export class FacetManager {
             throw err;
         }
         finally {
-            this.launching.delete(entry.pid);
+            this._launchEnded(entry.pid);
             opts.signal?.removeEventListener('abort', onShellAbort);
             this._releaseBuildAdmission(entry.pid);
         }
+    }
+    /**
+     * `entry`'s launch is at `stage` from now, until its run is entered or it
+     * is killed (`signal`). One that waits LAUNCH_STALL_MS at a stage logs one
+     * line naming it, with the ledger's, the pacer's and the supervisor
+     * budget's state, and no more after that.
+     */
+    _launchStage(entry, stage, signal) {
+        if (signal.aborted)
+            return;
+        const prior = this.launching.get(entry.pid);
+        if (prior?.stall)
+            clearTimeout(prior.stall);
+        const reported = prior !== undefined && prior.stall === null;
+        const stall = reported ? null : setTimeout(() => {
+            const launch = this.launching.get(entry.pid);
+            if (!launch)
+                return;
+            launch.stall = null;
+            const { inFlightWorkers, waiting, pauseMs } = loaderLedgerStats(this.ctx);
+            console.warn(`[facet-manager] launch stalled: ${JSON.stringify({
+                pid: entry.pid,
+                command: launch.command.length > LAUNCH_STALL_COMMAND_CHARS ? `${launch.command.slice(0, LAUNCH_STALL_COMMAND_CHARS)}…` : launch.command,
+                stage: launch.stage, ms: Date.now() - launch.since,
+                ledger: { inFlight: inFlightWorkers.length, waiting, pauseMs }, pacer: this.launchPump.state(),
+                budget: readSupervisorAllocationBudget(),
+            })}`);
+        }, LAUNCH_STALL_MS);
+        this.launching.set(entry.pid, { stage, since: Date.now(), command: entry.command, stall });
+    }
+    /** `pid`'s launch is over: its run was entered, or it ended before it could be. */
+    _launchEnded(pid) {
+        const launch = this.launching.get(pid);
+        if (launch?.stall)
+            clearTimeout(launch.stall);
+        this.launching.delete(pid);
     }
     /** The one-shot launches not yet running (their stage and its age) and the launches waiting for a turn. */
     launchState(now = Date.now()) {
@@ -7081,9 +7176,9 @@ export class FacetManager {
                     this._activateProcessVfsWriter(entry.pid, id);
                     writerActivated = true;
                 },
+                onEntered: () => this._launchEnded(entry.pid),
                 onLoaded: () => {
                     pacer.settle();
-                    this.launching.delete(entry.pid);
                     if (!diagSink)
                         return;
                     diagSink.loadMs = Date.now() - __loadStart;

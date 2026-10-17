@@ -606,6 +606,8 @@ export declare class CompositeVFS implements VFS {
     private capture;
     /** Content the observers are told of, held in `held` until they are done. */
     private keep;
+    /** Whether the table declares an accepted mount point, even if its source is absent. */
+    someMountPoint(wants: (point: string) => boolean): boolean;
     /** The mounts this view's principal has now, root first, in mount order. */
     mounts(): readonly MountInfo[];
     /** The mount point `path` is on ('/' for the root), whether or not its source is present. */

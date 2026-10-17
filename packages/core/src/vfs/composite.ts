@@ -1737,6 +1737,14 @@ export class CompositeVFS implements VFS {
     return ref;
   }
 
+  /** Whether the table declares an accepted mount point, even if its source is absent. */
+  someMountPoint(wants: (point: string) => boolean): boolean {
+    for (const mount of this.table.mounts.values()) {
+      if (wants(mount.point)) return true;
+    }
+    return false;
+  }
+
   /** The mounts this view's principal has now, root first, in mount order. */
   mounts(): readonly MountInfo[] {
     const out: MountInfo[] = [];

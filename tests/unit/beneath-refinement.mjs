@@ -8,6 +8,7 @@
 // model's, through both faces: the synchronous bridge over the mounts as they
 // are, and a process's awaiting face with every mount asynchronous only.
 
+import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
@@ -57,13 +58,11 @@ function backend(spec) {
   return modelessBackend(memory);
 }
 
-// What the process observes of the resolution: the stat it reaches (a
-// missing last component reaches nothing, yet resolves), or the errno. A
-// model path must be the same entry, by identity, as the kernel's own stat of
-// that path; where it exists and the last link is followed, realpath beneath
-// must also name it.
+// A model path must reach the same identity as the kernel's stat. A missing
+// leaf is distinguished by briefly creating it through the kernel, then
+// repeating the original principal's lookup before removing the marker.
 const identity = (stat) => (stat === null ? null : `${stat.dev}:${stat.ino}:${stat.type}`);
-async function answer(proc, kernel, step) {
+async function answer(proc, kernel, step, namespace, face) {
   const beneath = { root: step.root, path: step.path, beneath: true };
   let reached;
   try {
@@ -81,6 +80,37 @@ async function answer(proc, kernel, step) {
   // backend follows; anywhere else a followed model path is no link.
   const expected = await kernel.stat(step.expect.path, { followSymlinks: step.follow });
   if (identity(reached) !== identity(expected)) return { reached: identity(reached), model: identity(expected) };
+  if (reached === null) {
+    assert.equal(await kernel.stat(step.expect.path, { followSymlinks: false }), null, 'the marker must not replace a leaf');
+    let marker;
+    let overlay;
+    try {
+      try { marker = await kernel.open(step.expect.path, { write: true, create: true, exclusive: true }); }
+      catch (error) {
+        if (error?.code !== 'ENOENT') throw error;
+        const parent = step.expect.path.slice(0, step.expect.path.lastIndexOf('/')) || '/';
+        if (!namespace.isAboveMount(parent)) throw error;
+        const directory = await kernel.stat(parent);
+        assert.equal(directory?.type, 'directory');
+        // This directory exists only to hold descendant mounts. Give its
+        // marker a temporary backend with the same search permissions.
+        const memory = new MemoryVFS({ uid: directory.uid, gid: directory.gid });
+        memory.chmod('/', directory.mode);
+        namespace.mount(parent, face === 'awaiting' ? asyncOnly(memory, { deep: true }) : memory);
+        overlay = parent;
+        marker = await kernel.open(step.expect.path, { write: true, create: true, exclusive: true });
+      }
+      const observed = await proc.stat(beneath, { followSymlinks: step.follow });
+      if (identity(observed) !== identity(marker.stat)) return { reached: identity(observed), marker: identity(marker.stat) };
+    } finally {
+      try {
+        if (marker) {
+          try { await kernel.close(marker.id); }
+          finally { await kernel.unlink(step.expect.path); }
+        }
+      } finally { if (overlay) namespace.unmount(overlay); }
+    }
+  }
   if (reached !== null && step.follow && reached.type !== 'symlink') {
     const path = await proc.realpath(beneath);
     if (path !== step.expect.path) return { realpath: path };
@@ -103,10 +133,39 @@ for (const face of ['synchronous', 'awaiting']) for (const [index, testCase] of 
   const bind = (binding) => (face === 'synchronous' ? files.bind(binding).synchronous : files.bind(binding));
   const kernel = bind({ pid: 1, cred: CRED_KERNEL });
   let pid = 2;
+  if (index === 0) {
+    const proc = bind({ pid: pid++, cred: creds.get(2) });
+    const child = new MemoryVFS();
+    files.vfs.mount('/marker-parent/m', face === 'awaiting' ? asyncOnly(child, { deep: true }) : child);
+    try {
+      const parent = await kernel.stat('/marker-parent');
+      const descendant = await kernel.stat('/marker-parent/m');
+      for (const step of [
+        { root: '/a', path: 'm/gone', follow: true, expect: { path: '/a/none' } },
+        { root: '/marker-parent', path: 'none', follow: false, expect: { path: '/marker-parent/none' } },
+      ]) {
+        const wrong = { ...step, expect: { path: `${step.root}/other-absent-leaf` } };
+        const beneath = { root: step.root, path: step.path, beneath: true };
+        assert.equal(await proc.stat(beneath), null, `${face}: the leaf starts absent`);
+        for (const probe of [step, wrong]) {
+          assert.equal(await kernel.stat(probe.expect.path, { followSymlinks: false }), null);
+          const got = await answer(proc, kernel, probe, files.vfs, face);
+          if (probe === step) assert.deepEqual(got, probe.expect, `${face}: the correct absent leaf agrees`);
+          else assert.notDeepEqual(got, probe.expect, `${face}: a wrong absent leaf must be rejected`);
+          assert.equal(await kernel.stat(probe.expect.path, { followSymlinks: false }), null, `${face}: the marker is removed`);
+          assert.equal(await proc.stat(beneath), null, `${face}: probing leaves the leaf absent`);
+          assert.deepEqual(await kernel.stat('/marker-parent'), parent, `${face}: the synthesized parent is restored`);
+          assert.deepEqual(await kernel.stat('/marker-parent/m'), descendant, `${face}: a descendant mount is unchanged`);
+        }
+      }
+    } finally { files.vfs.unmount('/marker-parent/m'); }
+  }
   for (const [at, step] of testCase.steps.entries()) {
     steps++;
     const proc = bind({ pid: pid++, cred: creds.get(step.as) });
-    const got = await answer(proc, kernel, step);
+    let got;
+    try { got = await answer(proc, kernel, step, files.vfs, face); }
+    catch (error) { throw new Error(`${face} case ${index} step ${at}: ${JSON.stringify(step)}`, { cause: error }); }
     if (JSON.stringify(got) !== JSON.stringify(step.expect)) {
       failures.push(`${face} case ${index} step ${at}: uid ${step.as} beneath ${step.root} ${JSON.stringify(step.path)} follow=${step.follow}: got ${JSON.stringify(got)}, model ${JSON.stringify(step.expect)}`);
     }

@@ -695,6 +695,13 @@ export interface OneShotParams {
    */
   onLoaded?(): void;
   /**
+   * Called once the program's run is entered: its first call back to its
+   * host (the run's `ended`). A staged run, started in its stateless hop,
+   * which tells its host nothing more, is entered as its fetch is sent.
+   * Between onLoaded and this, the platform is starting its worker.
+   */
+  onEntered?(): void;
+  /**
    * The program's network goes through its supervisor binding: the binding
    * is also its globalOutbound, so its fetch and connect reach the session,
    * which answers them (a program that can stop at a read of stdin, whose

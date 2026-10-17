@@ -32,8 +32,8 @@
 // Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
 // generated artifacts before testing a runner change.
 
-import { matchNodeInWorkerd, placed } from './lib/node-differential.mjs';
-import { withoutInternalArrow } from './lib/node-report.mjs';
+import assert from 'node:assert/strict';
+import { matchNodeInWorkerd, nodeShown } from './lib/node-differential.mjs';
 
 const W = '/home/user/typescript';
 const FILES = {
@@ -49,12 +49,13 @@ const FILES = {
   'arrow.cts': "type A = string;\nconst v: A = 's'; null.x;\n",
   'graph.mts': "console.log('graph ran');\nimport './enum.ts';\n",
   'enum.ts': "console.log('enum ran');\nenum E { A }\n",
+  'report-refusal.cjs': "process.once('uncaughtException', (error) => { console.log(JSON.stringify([error.constructor.name, error.code])); process.exitCode = 1; });\n",
   'require-enum.cjs': "console.log('before');\nrequire('./enum.cts');\n",
   'enum.cts': "console.log('enum.cts ran');\nenum E { A }\n",
   'invalid.ts': 'const bad: = 1;\n',
   'dep.mts': "import { x } from 'dep';\nconsole.log(x);\n",
   'node_modules/dep/package.json': '{"name":"dep","main":"index.ts"}',
-  'node_modules/dep/index.ts': 'export const x: number = 1;\n',
+  'node_modules/dep/index.ts': "console.log('dep ran');\nexport const x: number = 1;\n",
   'pkg/package.json': '{"type":"commonjs"}',
   'pkg/typed.ts': "const t: number = 4;\nconsole.log(t, typeof require);\n",
   "tt-enum.ts": "enum Color { Red, Green }\ninterface P { c: Color }\nfunction boom(p: P): never {\n  throw new Error('color ' + Color[p.c]);\n}\nboom({ c: Color.Green });\n",
@@ -110,6 +111,8 @@ const FRAMED = [
 const COMMANDS = [
   'node main.mts', 'node use-cjs.cjs', 'node detect-esm.ts', 'node detect-cjs.ts', 'node frames.mts', 'node frames.cts',
   'node arrow.cts', 'node graph.mts', 'node require-enum.cjs', 'node invalid.ts', 'node dep.mts', 'node pkg/typed.ts',
+  'node --require ./report-refusal.cjs enum.ts',
+  'node --require ./report-refusal.cjs node_modules/dep/index.ts',
   ...FRAMED,
   'node --no-experimental-strip-types off/plain.ts',
   'node --no-experimental-strip-types tt-enum.ts',
@@ -129,10 +132,16 @@ const COMMANDS = [
 ];
 
 // A command's frames are left out, or, when it is FRAMED, only the program's are kept.
-const shown = (text, { stream, side, from, root, command }) => {
-  const kept = placed(text, from, root).replace(/^\(node:\d+\)/gm, '(node:PID)')
-    .split('\n').filter((line) => !/^\s+at /.test(line) || (FRAMED.includes(command) && line.includes(`${root}/`))).join('\n');
-  return stream === 'err' && side === 'node' ? withoutInternalArrow(kept) : kept;
+const shown = (text, printed) => {
+  const { stream, side, command } = printed;
+  if (stream === 'out' && command.includes('--require ./report-refusal.cjs')) {
+    const expected = command.endsWith(' enum.ts')
+      ? ['SyntaxError', 'ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX']
+      : ['Error', 'ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING'];
+    assert.deepEqual(JSON.parse(text), expected, `${side}: the direct entry throws before its body runs`);
+  }
+  const kept = nodeShown(text, printed);
+  return FRAMED.includes(command) ? kept : kept.split('\n').filter((line) => !/^\s+at /.test(line)).join('\n');
 };
 await matchNodeInWorkerd('typescript-matches-node-workerd', W, FILES, COMMANDS, { shown });
 console.log(`typescript-matches-node-workerd: ${COMMANDS.length} programs as Node runs them`);

@@ -10,7 +10,7 @@ import { ARENA_SIZE, CaptureStore } from './capture-store.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { nameDec } from '../../_shared/bytes.js';
 const PAGE = 65536, te = new TextEncoder(), td = new TextDecoder();
-const E = { ACCES: 2, BADF: 8, EXIST: 20, INVAL: 28, ISDIR: 31, LOOP: 32, NOENT: 44, NOSYS: 52, NOTDIR: 54, NOTEMPTY: 55, PERM: 63, RANGE: 68, SPIPE: 70, SRCH: 71 };
+const E = { ACCES: 2, BADF: 8, EXIST: 20, INVAL: 28, ISDIR: 31, LOOP: 32, NOENT: 44, NOSYS: 52, NOTDIR: 54, NOTEMPTY: 55, PERM: 63, PIPE: 64, RANGE: 68, SPIPE: 70, SRCH: 71 };
 class Exit {
     constructor(c) { this.code = c; }
 }
@@ -383,12 +383,20 @@ function makeWasiFs(s, proc, DV, U8, io, memory, synchronous = false, resident) 
         fd_write(fd, p, n, out) {
             if (!proc.fds.has(fd))
                 return E.BADF;
-            const write = () => { let written = 0; for (const v of readIovs(DV(), p, n).list) {
-                const count = io.write(fd, U8().subarray(v.ptr, v.ptr + v.len));
-                if (count === null)
-                    return E.BADF;
-                written += count;
-            } DV().setUint32(out, written, true); return 0; };
+            const write = () => {
+                let written = 0;
+                for (const v of readIovs(DV(), p, n).list) {
+                    const result = io.write(fd, U8().subarray(v.ptr, v.ptr + v.len));
+                    if (typeof result !== 'number') {
+                        if (written === 0)
+                            return result.errno;
+                        break;
+                    }
+                    written += result;
+                }
+                DV().setUint32(out, written, true);
+                return 0;
+            };
             // A pipe at capacity makes the writer wait before any byte of this call
             // is written, so a call re-entered after the wait never writes twice.
             const gate = io.writeGate?.(fd);
@@ -423,7 +431,7 @@ function writeThroughFd(s, proc, fd, bytes) {
         // appearing from nowhere, attributed to the wrong writer, with no error
         // anywhere. POSIX makes the direction part of the descriptor: EBADF.
         if (e.end === 'r')
-            return null;
+            return { errno: E.BADF };
         const pp = s.pipes.get(e.pipeId);
         // Without JSPI nothing parks on a write: past the pipe's budget the
         // writer runs the pipe's readers nested until they bring it back under,
@@ -434,10 +442,11 @@ function writeThroughFd(s, proc, fd, bytes) {
         for (;;) {
             const decision = decideWrite(pp, bytes.length, pipeHost(s), PIPE_CAPACITY, s.pipeBudget);
             if (decision !== 'nest') {
-                // No one can read it, now or ever: SIGPIPE, whose default action ends
-                // the writer; bash reports it as 128 + 13 = 141. What stops `yes | head`.
-                if (decision === 'sigpipe')
+                if (decision === 'sigpipe') {
+                    if (signalDisposition(proc, SIGPIPE) === 1)
+                        return { errno: E.PIPE };
                     throw new Signalled(SIGPIPE);
+                }
                 break;
             }
             if (!pumpSuspended(s, proc))
@@ -449,7 +458,7 @@ function writeThroughFd(s, proc, fd, bytes) {
         return bytes.length;
     }
     if (!e || (e.kind !== 'stdout' && e.kind !== 'stderr'))
-        return null;
+        return { errno: E.BADF };
     const owned = bytes.slice();
     const delivered = e.kind === 'stderr' ? s.output.stderrBytes(owned) : s.output.stdoutBytes(owned);
     if (delivered && typeof delivered.then === 'function')
@@ -1708,6 +1717,15 @@ function waitChild(proc, register) {
         register(complete);
     });
 }
+function signalDisposition(proc, signal) {
+    if (signal === 9)
+        return 0;
+    // Bash uses its live export. An active exec'd coreutil exposes no disposition
+    // export, so only its inherited mask is known; guest-side changes are not visible.
+    return proc.execIgnoredSignals === undefined
+        ? proc.inst.exports.__nimbus_signal_disposition(signal)
+        : (proc.execIgnoredSignals & (1n << BigInt(signal))) !== 0n ? 1 : 0;
+}
 /** Default terminating signals for virtual children, never host OS pids. */
 function signalProc(s, caller, pid, signal) {
     if (!Number.isInteger(signal) || signal < 0 || signal >= 65)
@@ -1723,10 +1741,7 @@ function signalProc(s, caller, pid, signal) {
     // Every virtual Bash process owns its instance/memory. Query the VICTIM,
     // not the caller currently executing kill. An exec'd child has reset its
     // caught handlers; consulting its old shell image would be incorrect.
-    const disposition = signal === 9 ? 0
-        : victim.execIgnoredSignals === undefined
-            ? victim.inst.exports.__nimbus_signal_disposition(signal)
-            : (victim.execIgnoredSignals & (1n << BigInt(signal))) !== 0n ? 1 : 0;
+    const disposition = signalDisposition(victim, signal);
     if (disposition === 1)
         return 0;
     if (disposition !== 0)
@@ -1765,6 +1780,7 @@ function finishProc(s, proc, code, signal = 0) {
     // Never overwrite that status or wake a later wait with a second exit.
     if (!s.procs.has(proc.pid))
         return;
+    delete proc.execIgnoredSignals;
     // A wait status: the exit code in the second byte, or the killing signal in
     // the low seven bits (WIFSIGNALED), which bash reports as 128 + signal.
     const st = signal ? signal & 0x7f : (code & 0xff) << 8;
