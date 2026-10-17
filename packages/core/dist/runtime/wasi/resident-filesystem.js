@@ -1280,6 +1280,60 @@ export function residentFilesystem(session, resident, delegation) {
         return holder.client.submit(op).then(() => { owed = true; }, (error) => { owed = true; throw error; });
     };
     const pathOf = (path) => (typeof path === 'string' ? path : path.path);
+    /** Where the store places `path` (its directory resolved, the name itself not followed), current first; DELEGATE when it cannot say. */
+    const placedWalk = (path) => {
+        if (holder === null || !store.ready())
+            return DELEGATE;
+        if (!owed || now)
+            return walkFor(path, false);
+        counts.barriers++;
+        return store.barrier().then((ok) => {
+            if (!ok || !store.ready())
+                return DELEGATE;
+            owed = false;
+            return walkFor(path, false);
+        });
+    };
+    // Changes by name a held subtree holds are decided here; any other is the session's, through the client.
+    // A whole file written by name: made or emptied, written and closed here
+    // where the holder decides that open, as the three calls are.
+    const bySessionWriteFile = fs.writeFile;
+    fs.writeFile = (path, bytes, options) => {
+        if (holder === null || options?.createParents === true || options?.expectedRevision !== undefined)
+            return bySessionWriteFile(path, bytes, options);
+        const data = typeof bytes === 'string' ? new TextEncoder().encode(bytes) : bytes;
+        const flags = { write: true, create: true, truncate: true, mode: 0o666, ...(options?.umask === undefined ? {} : { umask: options.umask }) };
+        const local = decide('writeFile', () => after(walkFor(path, true), (walk) => {
+            if (walk === DELEGATE || !decidable(walk.key, walk))
+                return DELEGATE;
+            return holder.writeFile(walk.key, pathOf(path), data, flags) ?? DELEGATE;
+        }));
+        return after(local, (done) => (done !== DELEGATE ? done
+            : now ? provisionally(path, true, (key, row) => holder.provisional.writeFile(key, pathOf(path), data, row, options?.umask) && (holder.entry(key)?.revision ?? 0))
+                : bySessionWriteFile(path, bytes, options)));
+    };
+    const bySessionMkdir = fs.mkdir;
+    fs.mkdir = (path, options) => {
+        if (holder === null)
+            return bySessionMkdir(path, options);
+        // A caller that cannot wait makes each missing directory on the way, as
+        // mkdir -p does; any other asks the session to.
+        if (options?.recursive)
+            return now && typeof path === 'string' ? mkdirParents(path, options) : bySessionMkdir(path, options);
+        const mode = options?.mode ?? 0o777;
+        let named;
+        const local = decide('mkdir', () => after(walkFor(path, false), (walk) => {
+            if (walk === DELEGATE)
+                return DELEGATE;
+            named = walk.key;
+            if (!decidable(walk.key, walk))
+                return DELEGATE;
+            return after(holder.mkdir(walk.key, pathOf(path), mode, options?.umask), (done) => (done ? undefined : DELEGATE));
+        }));
+        return after(local, (done) => (done !== DELEGATE ? undefined
+            : now ? void provisionally(path, false, (key, row) => holder.provisional.mkdir(key, pathOf(path), mode, row, options?.umask))
+                : named !== undefined ? byClient('mkdir', { type: 'call', call: { call: 'mkdir', path: named, mode, ...(options?.umask === undefined ? {} : { umask: options.umask }) } }) : bySessionMkdir(path, options)));
+    };
     /**
      * mkdir -p for a caller that cannot wait: planned whole against the view
      * first (`..` after a directory it is to make is that directory's parent,
