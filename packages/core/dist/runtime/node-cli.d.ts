@@ -52,13 +52,17 @@ export interface NodeLaunch {
     enableSourceMaps?: boolean;
     /**
      * `-e` code or stdin as Node's eval took its TypeScript (node-eval.ts
-     * nodeEvalInput): `stripped`, its types stripped, its frames named
-     * `[eval]`; `hint`, amaro's message for code that compiles neither as
-     * JavaScript nor as TypeScript, which Node's report of the SyntaxError adds.
+     * nodeEvalInput): `sourceUrl`, its types stripped only, its frames named
+     * by the stripper's sourceURL, `[eval]` (a transform's carry a source map
+     * instead); `hint`, amaro's message for code that compiles neither as
+     * JavaScript nor as TypeScript, which Node's report of the SyntaxError
+     * adds; `transformWarning`, a transform was attempted where Node's warning
+     * of it prints (not before a CommonJS eval's synchronous refusal).
      */
     evalTypeScript?: {
-        stripped: boolean;
+        sourceUrl: boolean;
         hint?: string;
+        transformWarning: boolean;
     };
 }
 /** What node's command line says, for the program it runs. */

@@ -71,8 +71,10 @@ export interface NodeEvalInput {
     esModule: boolean;
     /** How Node evaluates it (NodeEvalMode): a script that Node compiles before `--import`'s modules load (evalTypeScript) is 'default'. */
     mode: NodeEvalMode;
-    /** Its types were stripped: its frames are the stripper's sourceURL's, `[eval]`, stdin's included. */
+    /** Its types were stripped. */
     stripped: boolean;
+    /** Its types were stripped, or amaro was asked to and refused (Node's parsing mode was read: --experimental-transform-types warns). */
+    stripAttempted: boolean;
     /** A script Node compiles before `--import`'s modules load (evalTypeScript) that compiles neither as JavaScript nor as TypeScript: refused before they load. */
     refusedBeforeImports?: boolean;
     /**

@@ -15186,19 +15186,21 @@ function __nimbusEvalArrow(module, arrow) {
   if (typeof hint !== "string") return named;
   return module.esModule ? named + "\n" + hint + "\n" : named + hint + "\n";
 }
-// -e code or stdin whose types Node's eval stripped: its frames are named
+// -e code or stdin as Node's eval stripped it: a strip's frames are named
 // by the stripper's sourceURL, [eval], stdin's too (typescript.js
 // processTypeScriptCode), a compile error by the script (__nimbusEvalArrow);
-// the strip warned of Transform Types where it transforms.
+// a transform warned of Transform Types, where Node's warning prints.
 function __nimbusEvalStripped(module) {
-  if (__nimbusNodeCommandLine?.evalTypeScript?.stripped !== true || module === null) return;
+  const typeScript = __nimbusNodeCommandLine?.evalTypeScript;
+  if (typeScript?.transformWarning === true && !__nimbusTransformTypesWarned) {
+    __nimbusTransformTypesWarned = true;
+    __processMod.emitWarning("Transform Types is an experimental feature and might change at any time", "ExperimentalWarning");
+  }
+  if (typeScript?.sourceUrl !== true || module === null) return;
   module.compileFile = __nimbusFrameFile(module);
   if (module.path === null) module.file = "[eval]";
   else module.frameFile = "[eval]";
   __nimbusModulesByFile?.set("[eval]", module);
-  if (__nimbusTransformTypesWarned) return;
-  __nimbusTransformTypesWarned = true;
-  __processMod.emitWarning("Transform Types is an experimental feature and might change at any time", "ExperimentalWarning");
 }
 // ReportFatalException: the text Node prints for `error`. `enhance`: the
 // error as inspect shows it (an 'uncaughtException' listener's error is its

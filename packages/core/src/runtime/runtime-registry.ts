@@ -551,8 +551,13 @@ export function buildRuntimeHandler(
         ctx.stderr.write(`${name}: transform error for ${what}: ${errorText(e)}\n`);
         return null;
       }
-      const evalTypeScript = input.stripped || input.hint !== undefined ? { stripped: input.stripped, ...(input.hint !== undefined ? { hint: input.hint } : {}) } : undefined;
-      const typeScript = evalTypeScript === undefined ? {} : { evalTypeScript };
+      const transforms = stripTypes !== 'javascript' && stripTypes.mode === 'transform';
+      const sourceUrl = input.stripped && !transforms;
+      // Node's warning is a next tick's, which a CommonJS eval's synchronous refusal ends the process before.
+      const transformWarning = transforms && input.stripAttempted && input.refusal === undefined && (input.hint === undefined || input.esModule);
+      const typeScript = sourceUrl || transformWarning || input.hint !== undefined
+        ? { evalTypeScript: { sourceUrl, transformWarning, ...(input.hint !== undefined ? { hint: input.hint } : {}) } }
+        : {};
       if (input.refusal !== undefined) {
         const code = typeScriptRefusalShim(input.refusal);
         return { code, written: input.code, refusedBeforeImports: true, esModule: false };

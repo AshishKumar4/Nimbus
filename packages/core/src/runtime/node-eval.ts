@@ -26,7 +26,7 @@
 import { parse, type ModuleDeclaration, type Node, type Options, type Program, type Statement } from 'acorn';
 import { full } from 'acorn-walk';
 
-import { applySourceEdits, containsModuleSyntax, type SourceEdit } from './javascript-ast.js';
+import { applySourceEdits, containsModuleSyntax, MODULE_PARSE_OPTIONS, parseStatements, type SourceEdit } from './javascript-ast.js';
 import type { TypeScriptRefusal } from './typescript-refusal.js';
 
 /**
@@ -99,8 +99,10 @@ export interface NodeEvalInput {
   esModule: boolean;
   /** How Node evaluates it (NodeEvalMode): a script that Node compiles before `--import`'s modules load (evalTypeScript) is 'default'. */
   mode: NodeEvalMode;
-  /** Its types were stripped: its frames are the stripper's sourceURL's, `[eval]`, stdin's included. */
+  /** Its types were stripped. */
   stripped: boolean;
+  /** Its types were stripped, or amaro was asked to and refused (Node's parsing mode was read: --experimental-transform-types warns). */
+  stripAttempted: boolean;
   /** A script Node compiles before `--import`'s modules load (evalTypeScript) that compiles neither as JavaScript nor as TypeScript: refused before they load. */
   refusedBeforeImports?: boolean;
   /**
@@ -133,37 +135,49 @@ export type EvalTypeScriptStrip = (code: string) => Promise<{ code: string } | {
  * Without stripping, an input type of TypeScript names a script.
  */
 export async function nodeEvalInput(source: string, script: string, inputType: string | undefined, strip: EvalTypeScriptStrip | null): Promise<NodeEvalInput> {
-  if (inputType === 'module') return { code: source, esModule: true, mode: 'module', stripped: false };
+  const given = { stripped: false, stripAttempted: false };
+  if (inputType === 'module') return { code: source, esModule: true, mode: 'module', ...given };
   if (strip !== null && (inputType === 'module-typescript' || inputType === 'commonjs-typescript')) {
     const esModule = inputType === 'module-typescript';
-    const given = esModule ? source : script;
-    const stripped = await strip(given);
-    if ('refusal' in stripped) return { code: given, esModule: false, mode: 'commonjs', stripped: false, refusal: stripped.refusal };
-    return { code: stripped.code, esModule, mode: esModule ? 'module' : 'commonjs', stripped: true };
+    const code = esModule ? source : script;
+    const stripped = await strip(code);
+    if ('refusal' in stripped) return { code, esModule: false, mode: 'commonjs', stripped: false, stripAttempted: true, refusal: stripped.refusal };
+    return { code: stripped.code, esModule, mode: esModule ? 'module' : 'commonjs', stripped: true, stripAttempted: true };
   }
   if (strip === null || inputType !== undefined) {
     const esModule = inputType === undefined && containsModuleSyntax(script, 'eval');
-    return { code: script, esModule, mode: esModule ? 'module' : 'commonjs', stripped: false };
+    return { code: script, esModule, mode: esModule ? 'module' : 'commonjs', ...given };
   }
   if (containsModuleSyntax(script, 'eval')) return evalTypeScriptModule(script, strip);
-  if (parsed(script, SCRIPT) !== null) return { code: script, esModule: false, mode: 'default', stripped: false };
+  if (compiles(script, SCRIPT)) return { code: script, esModule: false, mode: 'default', ...given };
   const stripped = await strip(script);
-  if ('refusal' in stripped) return { code: script, esModule: false, mode: 'default', stripped: false, hint: stripped.refusal.message, refusedBeforeImports: true };
+  if ('refusal' in stripped) {
+    return { code: script, esModule: false, mode: 'default', stripped: false, stripAttempted: true, hint: stripped.refusal.message, refusedBeforeImports: true };
+  }
   // An ES module by its syntax once stripped: compiled as one, the source again.
   if (containsModuleSyntax(stripped.code, 'eval')) return evalTypeScriptModule(script, strip);
-  return { code: stripped.code, esModule: false, mode: 'default', stripped: true };
+  return { code: stripped.code, esModule: false, mode: 'default', stripped: true, stripAttempted: true };
 }
 
 /** evalTypeScriptModuleEntryPoint: an ES module, compiled, else stripped; one amaro refuses too fails with V8's error and its message. */
 async function evalTypeScriptModule(source: string, strip: EvalTypeScriptStrip): Promise<NodeEvalInput> {
-  if (parsed(source, MODULE) !== null) return { code: source, esModule: true, mode: 'module', stripped: false };
+  if (compiles(source, MODULE_PARSE_OPTIONS)) return { code: source, esModule: true, mode: 'module', stripped: false, stripAttempted: false };
   const stripped = await strip(source);
-  if ('refusal' in stripped) return { code: source, esModule: true, mode: 'module', stripped: false, hint: stripped.refusal.message };
-  return { code: stripped.code, esModule: true, mode: 'module', stripped: true };
+  if ('refusal' in stripped) return { code: source, esModule: true, mode: 'module', stripped: false, stripAttempted: true, hint: stripped.refusal.message };
+  return { code: stripped.code, esModule: true, mode: 'module', stripped: true, stripAttempted: true };
 }
 
-const SCRIPT = { ecmaVersion: 'latest', sourceType: 'script', allowHashBang: true } as const;
-const MODULE = { ecmaVersion: 'latest', sourceType: 'module', allowHashBang: true } as const;
+/** Whether `source` compiles as `options` say, read in bounded memory (parseStatements): eval code may be a whole bundle on stdin. */
+function compiles(source: string, options: Options): boolean {
+  try {
+    parseStatements(source, options, {});
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const SCRIPT: Options = { ecmaVersion: 'latest', sourceType: 'script', allowHashBang: true };
 
 function parsed(source: string, options: Options): Program | null {
   try {
