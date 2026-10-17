@@ -12,12 +12,12 @@ export declare function utf8Length(text: string): number;
 /**
  * `a` against `b` (negative, 0, positive) as their UTF-8 bytes order them,
  * as SQLite's `ORDER BY` of a text column and git's index do: code point
- * order, a lone surrogate being the U+FFFD TextEncoder writes for it. Two
- * different strings of one encoding (lone halves where the other has other
- * lone halves) are still two: the first such pair of units orders them, so
- * a listing's cursor passes neither. Units equal in both are passed as they
- * are; two that differ, neither a surrogate, are their own code points. The
- * rest, rare in a path, is surrogatesFrom's.
+ * order. A string UTF-8 cannot write (a lone surrogate) is ordered as WTF-8
+ * writes it, its surrogate a code point of its own: the order is total, as a
+ * listing's cursor needs, and decided at the first code point that differs,
+ * so a directory's entries follow it together. Units equal in both are
+ * passed as they are; two that differ, neither a surrogate, are their own
+ * code points; the rest, rare in a path, is surrogatesAt's.
  */
 export declare function compareUtf8(a: string, b: string): number;
 //# sourceMappingURL=utf8.d.ts.map
