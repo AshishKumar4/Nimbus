@@ -5,6 +5,9 @@
 // Gemfile.lock is that bundle's resolution (its requests and their runtime
 // dependencies, at the versions it settled on), not every gem ever installed.
 //
+// A gem whose version RubyGems must choose (two installed, or a dependency
+// that has two) is left off the load path, for require to activate it.
+//
 // Red before: a gem counted as installed once its lib directory existed, so
 // an install interrupted after it was never finished, and its lib was on the
 // load path; and Gemfile.lock listed every gem a separate ledger had
@@ -33,8 +36,13 @@ const network = await rubyGemsRegistry({
   assert.ok(await vfs.exists('home/user/.gem/gems/rack-3.0.0/lib/rack/version.rb'), 'the interrupted gem\'s files were not written');
   const again = await installRubyGems(vfs, [{ name: 'rack', requirements: ['= 3.0.0'] }], { gemHome: HOME, network });
   assert.deepEqual(again.alreadyInstalled, ['rack-3.0.0']);
+  assert.deepEqual(await installedGemLibRoots(vfs, HOME), ['/home/user/.gem/gems/rack-3.0.0/lib'], 'an installed gem\'s lib is on the load path');
+  await installRubyGems(vfs, [{ name: 'unrelated', requirements: [] }, { name: 'rackup', requirements: [] }], { gemHome: HOME, network });
+  assert.deepEqual(await installedGemLibRoots(vfs, HOME), ['/home/user/.gem/gems/rack-3.0.0/lib', '/home/user/.gem/gems/rackup-2.1.0/lib', '/home/user/.gem/gems/unrelated-1.0.0/lib'], 'with one version of each, every lib is on the load path, sorted');
+  // A version RubyGems must choose is left to its activation: rack's, and
+  // rackup's, whose dependency on rack chooses one; unrelated stays.
   await installRubyGems(vfs, [{ name: 'rack', requirements: ['= 2.0.0'] }], { gemHome: HOME, network });
-  assert.deepEqual(await installedGemLibRoots(vfs, HOME), ['/home/user/.gem/gems/rack-2.0.0/lib', '/home/user/.gem/gems/rack-3.0.0/lib'], 'every installed version\'s lib is on the load path, sorted');
+  assert.deepEqual(await installedGemLibRoots(vfs, HOME), ['/home/user/.gem/gems/unrelated-1.0.0/lib'], 'a gem with two versions, and one depending on it, are left to RubyGems');
 }
 
 // ── Gemfile.lock is the bundle's resolution ──
