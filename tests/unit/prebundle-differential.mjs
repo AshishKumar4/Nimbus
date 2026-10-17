@@ -43,6 +43,13 @@ const vfs = (() => {
   const strip = (p) => p.replace(/^\/+|\/+$/g, '');
   const isDirectory = (p) => !files.has(strip(p)) && [...files.keys()].some((k) => k.startsWith(strip(p) + '/'));
   return {
+    revision: () => 0,
+    stat: (p) => {
+      if (isDirectory(p)) return { type: 'directory', size: 0 };
+      const bytes = files.get(strip(p));
+      if (!bytes) throw Object.assign(new Error(`ENOENT ${p}`), { code: 'ENOENT' });
+      return { type: 'file', size: bytes.byteLength };
+    },
     exists: (p) => files.has(strip(p)) || isDirectory(p),
     isDirectory,
     readFile: (p) => {

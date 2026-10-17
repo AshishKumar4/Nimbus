@@ -13,7 +13,10 @@
 import { DurableObject, RpcTarget } from 'cloudflare:workers';
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
 import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
-import { BUILD_FACET_WORKER_ID, buildFacetPrebundler, loadBuildFacet, rolldownBuildHost } from '../../../packages/worker/src/facets/build-facet.ts';
+import { BUILD_FACET_WORKER_ID, loadBuildFacet, rolldownBuildHost } from '../../../packages/worker/src/facets/build-facet.ts';
+import { PrebundlePool } from '../../../packages/worker/src/facets/prebundle-pool.ts';
+import { prebundleEntryBytes, type SliceEntry } from '@nimbus-sh/core/runtime/prebundle-slice.js';
+import { utf8Length } from '@nimbus-sh/platform/module-source.js';
 import { esbuildBuildFallbackHost, esbuildStackFallbackHost } from '../../../packages/worker/src/facets/esbuild-transform.ts';
 import { NAPI_WASM_LOADER, fetchStagedBindingAsset } from '../../../packages/worker/src/runtime/staged-bindings.ts';
 
@@ -86,6 +89,7 @@ function project(tag: string, modules: number, fanout: boolean): Map<string, Uin
 }
 
 export class Workspace extends DurableObject {
+  private prebundles: PrebundlePool | undefined;
   /** Reads a build asked for after it returned, by tag. */
   private late = new Map<string, number>();
 
@@ -137,18 +141,19 @@ export class Workspace extends DurableObject {
   async prebundle(tag: string, modules: number) {
     const started = Date.now();
     const root = `/home/user/${tag}/node_modules/pkg`;
-    const slice: Array<{ path: string; isDir: true } | { path: string; isDir: false; bytes: Uint8Array }> = [
-      { path: root, isDir: true },
-      { path: `${root}/package.json`, isDir: false, bytes: encoder.encode(JSON.stringify({ name: 'pkg', version: '1.0.0', type: 'module', exports: './m0.js' })) },
-    ];
+    const files = [{ path: `${root}/package.json`, source: JSON.stringify({ name: 'pkg', version: '1.0.0', type: 'module', exports: './m0.js' }) }];
     for (let i = 0; i < modules; i++) {
       const next = i + 1 < modules ? `import { v as w } from './m${i + 1}.js';\n` : 'const w = "";\n';
-      slice.push({ path: `${root}/m${i}.js`, isDir: false, bytes: encoder.encode(`${next}export const v = ${JSON.stringify(tag + i)} + w;\n`) });
+      files.push({ path: `${root}/m${i}.js`, source: `${next}export const v = ${JSON.stringify(tag + i)} + w;\n` });
     }
     try {
-      const result = await buildFacetPrebundler(this.ctx, this.env)({
-        specifier: 'pkg', entryPath: `${root}/m0.js`, externals: [], slice, bundlerVersion: 'build-facet-isolation-workerd',
-      });
+      const pool = await (this.prebundles ??= new PrebundlePool(this.env, this.ctx)).acquire();
+      const bytes = prebundleEntryBytes(root) + files.reduce((size, file) => size + prebundleEntryBytes(file.path, utf8Length(file.source)), 0);
+      const result = await pool.prebundle({ specifier: 'pkg', bytes, running: true, prepare: () => {
+        const slice: SliceEntry[] = [{ path: root, isDir: true }];
+        for (const file of files) slice.push({ path: file.path, isDir: false, bytes: encoder.encode(file.source) });
+        return { specifier: 'pkg', entryPath: `${root}/m0.js`, externals: [], slice, bundlerVersion: 'build-facet-isolation-workerd' };
+      } });
       const ok = result.ok && Array.from({ length: modules }, (_, i) => tag + i).every((value) => result.esmCode.includes(JSON.stringify(value)));
       return { ok, ms: Date.now() - started, ...(result.ok ? {} : { error: result.errorText }) };
     } catch (error) {
