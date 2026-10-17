@@ -13,7 +13,7 @@ const writer = `{ while :; do printf '%65536s' x || exit $?; done; }`;
 const reader = '{ read -r -n 1 byte; }';
 const cases = [
   `trap '' PIPE; set -o pipefail; ${writer} | ${reader}`,
-  `trap '' PIPE; ${writer} | ${reader}; echo "${PIPESTATUS[*]}"`,
+  `trap '' PIPE; ${writer} | ${reader}; ` + 'echo "${PIPESTATUS[*]}"',
   `set -o pipefail; ${writer} | ${reader}`,
   `trap '' PIPE; trap - PIPE; set -o pipefail; ${writer} | ${reader}`,
   `trap '' PIPE; set -o pipefail; yes | ${reader}`,
