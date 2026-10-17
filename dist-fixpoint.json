@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "6f98eae6ce26b30d909d88387b48d3defe9cd1aa0d336edb998e497f1e5f90b8",
+  "fingerprint": "1f50abd0b30eb2a0f8c8a3f8f49370494a96d640d4215545b3c7a79b617390e4",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -3026,7 +3026,7 @@
     "packages/worker/public/_assets/opencode/1.16.2/nope-03-2z8weyjw.mp3": "9832805f84dcdb4a8ccb46a98cc75def72b52509610837938ed8343b2537df0c",
     "packages/worker/public/_assets/opencode/1.16.2/parser.worker.js": "24e596e4183d72c977b1a6a83c8296146736ecc15d932e2465b26e459e10135d",
     "packages/worker/public/_assets/opencode/1.16.2/photon_rs_bg-bq08arze.wasm": "10468181565c56004c867f3a4af96f89a0ef5a63a72f2b5fb12c1f1992a3615c",
-    "packages/worker/public/_assets/opencode/1.16.2/provenance.json": "1e55e03b8d0fce84efd5852417370748a8b6895ef079038717687e6522ffe8b6",
+    "packages/worker/public/_assets/opencode/1.16.2/provenance.json": "87dd1546c46ef8267439ce2bd70349b61b10bd5da8bf39c8b0068531a729b1b6",
     "packages/worker/public/_assets/opencode/1.16.2/staplebops-06-rz29m246.mp3": "eb87d63312ac11b1ceb1a8b348057dfe4d1166d5a85dc79778fe69d458f4c097",
     "packages/worker/public/_assets/opencode/1.16.2/tree-sitter-3jzf13jk.wasm": "f38dcc4b43b818f9a0785bc1c6d5611a75ac4cdd428ff3f02757c34ca4e46d7f",
     "packages/worker/public/_assets/opencode/1.16.2/tree-sitter-bash-hq5s6fxb.wasm": "364f0a2cd385c792239423026ef442dbd073d34c396b7bc9e5932426b8e4aa5d",
@@ -3073,7 +3073,7 @@
     "packages/worker/scripts/acorn-primordials.mjs": "e52174db5792a3c5adee5c9d2de7275da6362f912611af8264e25279656c508a",
     "packages/worker/scripts/amaro-driver.mjs": "c9b12c8931d5277ae7496c19cc767dd327914f1b66a0121f12f4327e785e1f6b",
     "packages/worker/scripts/artifact-inputs.mjs": "b0c9307e6f6f13bae05ccf99ab22cf7a715553b8c6f46dbbddfef0181a2f7115",
-    "packages/worker/scripts/build-opencode-attach-entry.mjs": "d063f0d00c1bb9ee06d151aa8de9fe2d9a286b216aa7a127f0daf400ab8a12ed",
+    "packages/worker/scripts/build-opencode-attach-entry.mjs": "40507bc8479e281b215d4bd3d67000c4b9773ee1aae922f80dfa1fce0ae1fe3b",
     "packages/worker/scripts/bundle-agent-chat.mjs": "ad48e46d1bcbc1b970bbb576c683e2b1d96511faa5ecb2c2775c343349ae77d2",
     "packages/worker/scripts/bundle-amaro-wasm.mjs": "e738c933cbc04dda890f47033a490d6837f66f9f355047210c76a6c2db0ff9c2",
     "packages/worker/scripts/bundle-esbuild-wasm.mjs": "38e08271aa1824cb3df2d9d66a46268e299c4b301a23cd85c8caf96db9740f36",
@@ -3108,9 +3108,10 @@
     "packages/worker/scripts/napi-wasm/rustc-remap.sh": "c0ad0342c9fa9832c80a780f0828f49f759d9d50274aef1ded89216bfb3dd07b",
     "packages/worker/scripts/napi-wasm/specs.mjs": "620c3977a3fc18514806a5d438057c26993067f8ab61192adb0051e50d598260",
     "packages/worker/scripts/opencode/README.md": "d813bcaee00716dfc6c5ae740c300b6090c5f7dcd83a3e69a1647fad8108d247",
-    "packages/worker/scripts/opencode/build-node.ts": "2b3eec620758f457bf72b49269a0583c94cf9327365c9643b7df6099d88b1787",
+    "packages/worker/scripts/opencode/build-node.ts": "c2954c1f37c40cfbd06bf1b3f4f409513befc791b74c2212e96cddefbbb4d89d",
     "packages/worker/scripts/opencode/bundle-patches.ts": "091e620065cb87a938e238b5a52ebb672721e73434cfbbfc8d4ada8497649aca",
-    "packages/worker/scripts/opencode/inputs.mjs": "0dd15212e85188bd51b2970c1b0908b044aabfd4535970a4c8794fd7071db0cc",
+    "packages/worker/scripts/opencode/inputs.mjs": "665d2b30a66b0604109ce5235d593d622ce7b03520549f835e5891738c471930",
+    "packages/worker/scripts/opencode/models-catalog.mjs": "eb6652eb41c33c02a72422edf88cfd3ed69f9cddf08063becc56afe922996a95",
     "packages/worker/scripts/opencode/nimbus-defer-global-io.patch": "63caa2b2ae778a570b759fb7ec39d3c19ab8fbddbd8491aa34915eb3ae5523da",
     "packages/worker/scripts/opencode/nimbus-tree-sitter-exports.patch": "63a643a0827e88630e88614e354ddcc963937285ed7a256a8174416850841361",
     "packages/worker/scripts/opencode/stubs/bun-ffi-shim.ts": "51c25d480b4050b4291ddaf9a071224b19c1eec8a15a5b587020e4e4be062e55",
