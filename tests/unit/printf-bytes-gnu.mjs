@@ -78,4 +78,24 @@ try {
   await ws.close();
 }
 assert.deepEqual(failed, [], `as bash:\n${failed.join('\n')}`);
+
+// An escaped byte is written even after half a character. The shell's
+// ${x%?} still cuts a UTF-16 unit, not bash's whole character
+// (verify/handoffs/ticket-lifo-utf16-pattern-units.md), and leaves a lone
+// high surrogate. That half goes as what it encodes to alone; it does not
+// pair with the byte to make another character.
+{
+  const { sql: hs, transactions: ht } = await hostSqlite();
+  const half = await NimbusWorkspace.create({ sql: hs, transactions: ht, generation: 1 });
+  try {
+    const bytesOf = async (line) => (await half.exec(`${line} | od -An -tx1`, { cwd: '/home/user' })).stdout.trim().split(/\s+/);
+    for (const [line, byte] of [['x=😀; echo -ne "${x%?}\\0377"', 'ff'], ['x=😀; printf "%s\\377" "${x%?}"', 'ff'], ['x=😀; printf "%s%c" "${x%?}" é', 'c3'], ['x=😀; printf "%s%b" "${x%?}" "\\303"', 'c3']]) {
+      const got = await bytesOf(line);
+      // The byte last and its own; no four-byte character (f0 ..) made of it and the half before it.
+      assert.ok(got.at(-1) === byte && !got.includes('f0'), `${line}: ${got.join(' ')}`);
+    }
+  } finally {
+    await half.close();
+  }
+}
 console.log('printf-bytes-gnu: ok');
