@@ -24,7 +24,7 @@ export interface ExpandContext {
     lastSubstitutionExitCode?: number;
     /**
      * Expanding a here-document's body, where `'` and `$'...'` are literal
-     * text, inside a parameter's operand word too.
+     * text, inside a parameter's `-`, `+`, `=` and `?` words too.
      */
     hereDocument?: boolean;
 }

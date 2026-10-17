@@ -469,11 +469,11 @@ async function applyDefault(ref, operator, colon, word, ctx, quoted) {
         ? parameter.values.length > 0
         : parameter.value !== undefined && (!colon || parameter.value !== '');
     if (operator === '+') {
-        return [valuePiece(set ? await expandParameterWord(word, ctx) : '', quoted)];
+        return [valuePiece(set ? await expandParameterWord(word, ctx, true) : '', quoted)];
     }
     if (set)
         return parameterPieces(parameter, ctx, quoted);
-    const value = await expandParameterWord(word, ctx);
+    const value = await expandParameterWord(word, ctx, true);
     if (operator === '?') {
         throw new ExpansionError(`${ref.name}: ${value || 'parameter null or not set'}`);
     }
@@ -637,12 +637,14 @@ function scalarOf(parameter, ctx) {
 }
 /**
  * The word inside `${p:-word}`, `${p#pattern}` and friends is itself expanded,
- * with quote removal, before it is used.
+ * with quote removal, before it is used. `operand`: a `-`, `+`, `=` or `?`
+ * word, which a here-document's body quotes as it quotes itself.
  */
-async function expandParameterWord(word, ctx) {
+async function expandParameterWord(word, ctx, operand = false) {
     if (word === '')
         return '';
-    return joinPieces(await expandParts(parameterWordParts(word, ctx.hereDocument === true), ctx));
+    // A here-document's quoting reaches the -, +, = and ? words; its patterns read quotes as anywhere.
+    return joinPieces(await expandParts(parameterWordParts(word, operand && ctx.hereDocument === true), ctx));
 }
 /**
  * The operand word's parts. In a here-document's body, `'` and `$'...'` are

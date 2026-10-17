@@ -657,6 +657,13 @@ export function readBalancedCommand(input, pos, open, close) {
             i = stop;
             continue;
         }
+        // A parameter expansion or backquoted command is one span: a # in it is no comment.
+        if ((ch === '$' && input[i + 1] === '{') || ch === '`') {
+            const end = ch === '`' ? readBacktickSubstitution(input, i).end : readBracedExpansion(input, i).end;
+            body += input.slice(i, end);
+            i = end;
+            continue;
+        }
         // A comment, where a word may start in a command's span: its text to
         // the line's end, quotes and all, is no syntax.
         if (open === '(' && ch === '#' && (i === pos || COMMENT_AFTER.includes(input[i - 1]))) {
