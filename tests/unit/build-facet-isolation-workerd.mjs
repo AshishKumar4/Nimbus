@@ -39,11 +39,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { build } from 'esbuild';
-<<<<<<< HEAD
 import { servePlainWorkerd } from './lib/plain-workerd.mjs';
-=======
 import { wranglerNodeBuiltins } from './lib/wrangler-node-builtins.mjs';
->>>>>>> origin/work/oxide-sources
 
 const REPO = resolve(import.meta.dirname, '../..');
 const DEADLINE_MS = 120_000;
