@@ -18,7 +18,7 @@ import { PRE_BUNDLE_CONCURRENCY } from '@nimbus-sh/platform/limits.js';
 import { acquireSupervisorAllocation, acquireSupervisorRunningAllocation, tryAcquireSupervisorAllocation, tryAcquireSupervisorRunningAllocation, reclaimableSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { runningLaunchAdmission, suspendHeldAdmission } from '@nimbus-sh/fabric/budgets.js';
 import { prebundleSliceBytes } from '@nimbus-sh/core/runtime/prebundle-slice.js';
-import { buildFacetPrebundler } from './build-facet.js';
+import { BuildFacetResetError, buildFacetPrebundler } from './build-facet.js';
 class PrebundleCreditUnavailable extends Error {
     bytes;
     constructor(bytes) {
@@ -38,8 +38,19 @@ export class PrebundlePool {
     }
     get session() { return this.ctx.id.toString(); }
     async acquire(signal) {
-        const prebundle = await buildFacetPrebundler(this.ctx, this.env, signal);
-        return { prebundle: (task) => this.dispatch(task, prebundle) };
+        let prebundle = await buildFacetPrebundler(this.ctx, this.env, signal);
+        return { prebundle: async (task) => {
+                for (let attempt = 0;; attempt++) {
+                    try {
+                        return await this.dispatch(task, prebundle);
+                    }
+                    catch (error) {
+                        if (!(error instanceof BuildFacetResetError) || attempt > 0)
+                            throw error;
+                        prebundle = await buildFacetPrebundler(this.ctx, this.env, task.signal);
+                    }
+                }
+            } };
     }
     async dispatch(task, run) {
         const owner = { owner: `prebundle '${task.specifier}'`, ...task.owner,

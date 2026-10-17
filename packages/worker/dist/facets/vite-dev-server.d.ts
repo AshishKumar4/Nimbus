@@ -419,8 +419,7 @@ export declare class ViteDevServer {
     /**
      * Cold path of serveModule: the specifier's bundle built on demand
      * (npm/browser-prebundle.ts buildPrebundle: a synthetic entry for a
-     * barrel), its Response made while the build's slice allocation is still
-     * held; a module that says why when there is none. NO CDN fallback (100%
+     * barrel); a module that says why when there is none. NO CDN fallback (100%
      * edge contract).
      */
     private serveModuleCold;

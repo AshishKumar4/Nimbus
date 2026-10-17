@@ -1909,11 +1909,9 @@ export class ViteDevServer {
         // ── Cold path coalescing ──────────────────────────────────────
         // Multiple parallel browser requests for the same module are
         // common on first preview load; coalesce so exactly ONE bundle
-        // attempt runs per spec. Across DIFFERENT specs, the build leases
-        // its slice bytes from the shared supervisor allocation budget, so
-        // it queues behind every other heavy owner in this isolate (the
-        // installer's warming included) instead of stacking slices beside
-        // them. See `pendingBundles`.
+        // attempt runs per spec. Across DIFFERENT specs, a ready pool consumer
+        // leases the slice while it gathers and hands it off, never while it
+        // waits for a slot or the compiler's answer. See `pendingBundles`.
         //
         // The shared promise resolves to a Response nobody consumes
         // directly: a Response body is readable once, so every coalesced
@@ -1926,14 +1924,15 @@ export class ViteDevServer {
         // Drop the coalescing entry once settled. Subsequent requests
         // for the same spec will hit the moduleCache (set inside the
         // cold path) on the hot path, not re-enter the slow path.
-        coldPromise.then(() => this.pendingBundles.delete(cacheKey), () => this.pendingBundles.delete(cacheKey));
+        const finished = () => { if (this.pendingBundles.get(cacheKey) === coldPromise)
+            this.pendingBundles.delete(cacheKey); };
+        coldPromise.then(finished, finished);
         return coldPromise.then((response) => response.clone());
     }
     /**
      * Cold path of serveModule: the specifier's bundle built on demand
      * (npm/browser-prebundle.ts buildPrebundle: a synthetic entry for a
-     * barrel), its Response made while the build's slice allocation is still
-     * held; a module that says why when there is none. NO CDN fallback (100%
+     * barrel); a module that says why when there is none. NO CDN fallback (100%
      * edge contract).
      */
     async serveModuleCold(specifier, headers, base, barrel) {

@@ -52,6 +52,7 @@
  * sees a clear remediation: "add a static import for the
  * dynamically-referenced icon."
  */
+import { recallOf } from '@nimbus-sh/core/vfs/recall.js';
 import { packageNameFromSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
 import { importedSpecifiers, maskSourceForImports, UndecidableSourceError } from '@nimbus-sh/core/runtime/comment-strip.js';
 import { BUNDLER_IMPORT_CONDITIONS } from '@nimbus-sh/core/runtime/bundler-resolution.js';
@@ -527,7 +528,10 @@ export async function discoverScopedSliceForSynthetic(vfs, nmDir, pkgName, refer
             entries.push({ path: pkgJsonPath, isDir: false });
             visited.add(pkgJsonPath);
         }
-        catch { }
+        catch (error) {
+            if (recallOf(error) !== null)
+                throw error;
+        }
     }
     // Walker: BFS over referenced files + their relative imports.
     const queue = [...referencedFiles];
@@ -542,7 +546,9 @@ export async function discoverScopedSliceForSynthetic(vfs, nmDir, pkgName, refer
         try {
             source = vfs.readFileString(filePath);
         }
-        catch {
+        catch (error) {
+            if (recallOf(error) !== null)
+                throw error;
             continue;
         }
         // Track parent dirs so esbuild's plugin's dirSet has them.

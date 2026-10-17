@@ -23,7 +23,6 @@ import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { parseResolvablePackageJson, resolvePackageEntry } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { PRE_BUNDLE_SLICE_CAP_BYTES } from '@nimbus-sh/platform/limits.js';
 import { describeError } from '@nimbus-sh/platform/oom-classify.js';
-import { BuildFacetResetError } from '../facets/build-facet.js';
 import { discoverScopedSliceForSynthetic, buildSyntheticEntry, namedImportSignature, scanProjectImports, syntheticEntryPath, PROJECT_SCAN, } from '../runtime/barrel-synthesizer.js';
 import { manifestsOf, prebundleCacheKey, prebundleRequest, recordingManifests, serviceBuildCacheKey, stillCurrent, } from './cache-keys.js';
 import { planSliceForSpecifierWithCap, planSliceFromPaths, materializePrebundleSlice, PrebundlePlanChanged } from './pre-bundle-facet.js';
@@ -117,6 +116,7 @@ export function storedPrebundle(ctx, specifier, barrel) {
  * after its input slice has been handed to the facet and dropped here.
  */
 export async function buildPrebundle(ctx, specifier, barrel, serve) {
+    ctx = { ...ctx };
     ctx.signal?.throwIfAborted();
     const resolved = resolvePrebundleEntry(ctx.vfs, ctx.root, specifier);
     if (!resolved)
@@ -215,7 +215,6 @@ function synthesizeEntry(ctx, specifier, barrel) {
 /** The bundle built in the facet from a slice walked here, or why not. */
 async function buildInFacet(ctx, initialPool, specifier, entry) {
     let pool = initialPool;
-    let resets = 0;
     let changedPlans = 0;
     for (;;) {
         ctx.signal?.throwIfAborted();
@@ -248,9 +247,7 @@ async function buildInFacet(ctx, initialPool, specifier, entry) {
             ctx.signal?.throwIfAborted();
             if (recallOf(error) !== null || ['EACCES', 'EPERM'].includes(Reflect.get(Object(error), 'code')))
                 throw error;
-            if (error instanceof PrebundlePlanChanged && changedPlans++ === 0)
-                continue;
-            if (error instanceof BuildFacetResetError && resets++ === 0) {
+            if (error instanceof PrebundlePlanChanged && changedPlans++ === 0) {
                 const next = await acquirePool(ctx);
                 if (next === null || typeof next === 'string')
                     return next ?? 'the build facet pool is unavailable';
