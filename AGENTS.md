@@ -138,8 +138,15 @@ Lock order: supervisor credit, then a Dynamic Worker. Nothing waits for
 credit (SupervisorAllocationBudget acquire or acquireLoad, or growing a
 lease) while it holds a worker's fetch hold (beginLoaderFetch,
 claimAdmission, readmitRefused). While it holds one, it may give credit
-back, shrink it, or take credit without waiting (tryAcquire). The runtime
-spec's "Launch lock order" section says how each holder keeps it.
+back, shrink it, or take credit without waiting (tryAcquire). Running work
+is the one exception, and comes first. Credit a running process needs (its
+write waves and the session RPCs it makes, through acquireRunning) overtakes
+every queued ask. When nothing else frees it, it reclaims parked launches'
+retained maps, oldest parked first: each is dropped, its launch is sent back
+to prepare, and the map is rebuilt at that launch's turn. Otherwise it waits
+only for credit other running work holds. A facet's load is not running
+work.
+The runtime spec's "Launch lock order" section says how each holder keeps it.
 
 The Runtime OS target and honest support matrix are tracked in
 `docs/architecture/nimbus-os-runtime-spec.md`. Keep docs and UI claims within
