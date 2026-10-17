@@ -21,11 +21,6 @@
  */
 import type { WasiParking } from './wasi/types.js';
 import type { FacetTaskSource } from './facet-task.js';
-/** The bytes an image is: their SHA-256 (lowercase hex) and length, as a runtime manifest records each file's. */
-export interface ImageDigest {
-    readonly sha256: string;
-    readonly size: number;
-}
 /**
  * A wasm image a facet loads, by path. Its identity and size are known when
  * it is opened; its bytes only when the host builds the facet (on workerd,
@@ -35,7 +30,7 @@ export interface ImageDigest {
 export interface FacetImage {
     /** The file, as the opener named it: what a failure to read it names. */
     readonly path: string;
-    /** Equal only for equal bytes (their digest), in every session: the warm facets an image keys. */
+    /** Equal only for equal bytes (the store's content key), in every session: the warm facets an image keys. */
     readonly identity: string;
     /** The most bytes the module it reads is: what the facet's code ceiling counts. */
     readonly size: number;

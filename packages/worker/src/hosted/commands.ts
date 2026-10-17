@@ -261,7 +261,6 @@ workspace.runtimes.registerRunner(
         authority: workspace.filesystem,
         terminal: terminal,
         installRoot,
-        manifest,
         // The caller's filesystem and credential, from its working directory.
         pid: ctx.pid,
         cred: requireVfsCred(ctx.cred, 'Ruby REPL'),

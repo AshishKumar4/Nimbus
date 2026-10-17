@@ -215,13 +215,11 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
     _diagPeakAt: number;
     _diagSampleCount: number;
     /**
-     * Fix 5: toggled by env NIMBUS_DEBUG=1 (checked each call; cheap enough).
+     * Fix 5: toggled by env NIMBUS_DEBUG ('1' or 'true'; checked each call, cheap enough).
      * When true: spawn banners and exit traces are unconditional (not just
      * long-running facets), RPC envelope errors are surfaced to the terminal
      * with a [rpc-error] prefix, and the exit trace includes duration_ms.
-     *
-     * The flag is derived from `this.env.NIMBUS_DEBUG` — the binding comes
-     * from wrangler's var declaration or a test harness.
+     * Read as the hosted runtime and the facet manager read it (nimbusDebugEnabled).
      */
     get nimbusDebug(): boolean;
     /**

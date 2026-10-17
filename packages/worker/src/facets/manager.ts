@@ -229,6 +229,7 @@ import type { ResizableCreditLease } from '@nimbus-sh/platform/weighted-credit-p
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { streamedWasmImageDigest, type WasmImageRecord } from './wasm-image-digest.js';
 import { wasmImageDigest } from './wasm-image-key.js';
+import { nimbusDebugEnabled } from '../_shared/nimbus-debug.js';
 import { attributeAllocation, setPrefetchCacheBytes } from '@nimbus-sh/platform/diag-counters.js';
 
 /**
@@ -5647,10 +5648,7 @@ export class FacetManager {
         },
       }),
     });
-    const debugVar = ((typeof env === 'object' || typeof env === 'function') && env !== null)
-      ? Reflect.get(env, 'NIMBUS_DEBUG')
-      : undefined;
-    this.debugEnabled = debugVar === '1' || debugVar === 'true';
+    this.debugEnabled = nimbusDebugEnabled(env);
     const profiles = ((typeof env === 'object' || typeof env === 'function') && env !== null)
       ? Reflect.get(env, 'NPM_TARBALL_CACHE')
       : undefined;

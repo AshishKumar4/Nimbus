@@ -27,7 +27,6 @@
 import type { FacetManager } from '../facets/manager.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { type NimbusFilesystemAuthority, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { type RuntimeManifest } from '@nimbus-sh/core/runtime/runtime-manifest.js';
 export interface RubyReplDeps {
     facetMgr: FacetManager;
     /** Owns the installed interpreter blob the prompt is booted from. */
@@ -35,8 +34,6 @@ export interface RubyReplDeps {
     terminal: WebSocketTerminal;
     /** Per-user-VFS install dir for the ruby blob. */
     installRoot: string;
-    /** What is installed there: the interpreter's digest is its image's (installedFile). */
-    manifest: RuntimeManifest;
     /**
      * The invoking process's pid. The supervisor derives the prompt's
      * credential from it: the session filesystem the prompt reads and writes is

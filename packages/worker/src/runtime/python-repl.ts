@@ -29,7 +29,7 @@ import { z } from 'zod/v4';
 
 import type { FacetManager } from '../facets/manager.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
-import { installedFile, type RuntimeManifest } from '@nimbus-sh/core/runtime/runtime-manifest.js';
+import type { RuntimeManifest } from '@nimbus-sh/core/runtime/runtime-manifest.js';
 import type { ReplAdapter, ReplPushResult } from './repl-session.js';
 import { ReplSession } from './repl-session.js';
 import { sessionUsesSciVariant } from '@nimbus-sh/core/runtime/python-pip.js';
@@ -276,18 +276,17 @@ class PythonReplAdapter implements ReplAdapter {
     if (this.pool) return;
     this.poolUsesSci = wantsSci;
     const { installRoot, facetMgr } = this.deps;
-    const wasmRel = wantsSci ? CPYTHON_SCI_WASM_REL : CPYTHON_WASM_REL;
-    const wasm = installedFile(this.deps.manifest, installRoot, wasmRel);
+    const wasmPath = wantsSci ? sciPath : `${installRoot}/${CPYTHON_WASM_REL}`;
     const stdlibPath = `${installRoot}/${CPYTHON_STDLIB_REL}`;
-    if (!wasm || !(await vfs.exists(wasm.path))) {
-      throw new Error(`python.wasm missing at ${installRoot}/${wasmRel} (run 'nimbus install python')`);
+    if (!(await vfs.exists(wasmPath))) {
+      throw new Error(`python.wasm missing at ${wasmPath} (run 'nimbus install python')`);
     }
     if (!(await vfs.exists(stdlibPath))) {
       throw new Error(`python313.zip missing at ${stdlibPath} (run 'nimbus install python')`);
     }
     // Opened, not read: the host reads it for each load of the REPL's facet
     // alone (FacetImage), through a lease of its own, for the prompt outlives this one.
-    const image = await hostImage(this.deps.authority, CRED_KERNEL, wasm.path, wasm);
+    const image = await hostImage(this.deps.authority, CRED_KERNEL, wasmPath);
 
     this.pythonHome = `/${installRoot.replace(/^\/+/, '')}`;
 

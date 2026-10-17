@@ -117,6 +117,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
      * is not the shared tmp/x's. The global clock is everyone's.
      */
     revision(path?: RuntimeFsPath): number;
+    contentKey(path: RuntimeFsPath): string;
     acquire(epoch: string | null, cursor: number, options?: VfsAcquireOptions): VfsAcquireResult;
     list(after?: string | null, limit?: number): VfsListPage;
     realpath(path: RuntimeFsPath): string;
