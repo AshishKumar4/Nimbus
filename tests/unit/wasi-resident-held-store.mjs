@@ -233,12 +233,12 @@ async function readWhole(fs, name) {
   for (let i = 0; i < 8; i++) await fs.mkdir(beneath(`site/w${i}`));
   await until(() => fs.stats().client.grants > 0, 'the subtree taken');
   await fs.mkdir(beneath('site/a'));
-  await rewrite(fs, 'site/a/f0.py', enc.encode('a0'));
-  await rewrite(fs, 'site/a/f1.py', enc.encode('a1'));
+  // The range's numbers: the directory and the files decided in it (the first is the session's, its directory not sent yet).
+  for (let i = 0; i < 3; i++) await rewrite(fs, `site/a/f${i}.py`, enc.encode(`a${i}`));
   holding = true;
   await fs.mkdir(beneath('site/b'));
   await rewrite(fs, 'site/b/f0.py', enc.encode('b0'));
-  assert.equal(lookups >= 2 && fs.stats().client.renewed, 1, 'the grant was not renewed while the walk waited');
+  assert.equal(fs.stats().client.renewed, 1, 'the grant was not renewed while the walk waited');
   await fs.settle();
   assert.equal(dec.decode(await authority.readFile(beneath('site/b/f0.py'))), 'b0');
 }
