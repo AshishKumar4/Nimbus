@@ -8,7 +8,7 @@
  */
 export { DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, packageJsonText, packageSelfReferenceSubpath, resolveExports, resolvePackageEntry, selectPackageMap, createNodePackageMapPolicy, nativeResolutionError, } from './exports-resolver.js';
 export { createRequireResolver, requireNodeModulePaths, NIMBUS_TYPESCRIPT_REQUIRE_POLICY } from '../runtime/require-resolution.js';
-export { TYPESCRIPT_INDEX_CANDIDATES, stripsTypeScript, typescriptFallbackCandidates } from './typescript-specifiers.js';
+export { TYPESCRIPT_INDEX_CANDIDATES, stripsTypeScript, typescriptFallbackCandidates, typescriptLoader } from './typescript-specifiers.js';
 export { presentedCredential } from './ai-egress.js';
 export { isWebSocketUpgradeRequest } from './websocket-upgrade.js';
 //# sourceMappingURL=node-shim-resolution.d.ts.map

@@ -67,7 +67,7 @@ import { NODE_WS_UPGRADE_SOURCE } from './node-ws-upgrade.js';
 import { NODE_SOURCE_MAPS_SOURCE } from './node-source-maps.js';
 import { NODE_BUILTIN_FRONTS_SOURCE } from './node-builtin-fronts.js';
 import { NODE_MINIMATCH_SOURCE } from './node-minimatch-source.js';
-import { RUNTIME_ESM_LATE_MODULE, RUNTIME_INTERPRETER_MODULE, RUNTIME_NODE_LIB_MODULE, RUNTIME_PARSER_MODULE, RUNTIME_WASM_MAX_BYTES } from '@nimbus-sh/core/_shared/commonjs-cell.js';
+import { ENTRY_CHECKED, RUNTIME_ESM_LATE_MODULE, RUNTIME_INTERPRETER_MODULE, RUNTIME_NODE_LIB_MODULE, RUNTIME_PARSER_MODULE, RUNTIME_WASM_MAX_BYTES } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { STAGED_BINDING_ARTIFACTS } from '../napi-wasm-artifacts.generated.js';
 const SQLITE_SHIM_CODE = generateSqliteShimCode();
 const UNDICI_SHIM_CODE = generateUndiciShimCode();
@@ -137,13 +137,17 @@ ${POSIX_PATH_PREAMBLE}
 Object.defineProperties(globalThis, {
   __nimbusNodeError: { value: __nimbusGeneratedNodeError, configurable: true },
   __nimbusNodeSystemError: { value: nodeSystemError, configurable: true },
+  __nimbusEvalIllegalReturn: { value: __nimbusEvalIllegalReturn, configurable: true },
 });
 // Generated code's: a \`decoration\` (null for none) marks the error as one whose
-// report has no arrow of the generated code, the decoration before its stack
+// report has no arrow of the generated code, nor its frame (Node's comes from
+// its loader, with none of the file's), the decoration before its stack
 // where Node shows the source there (decorateErrorStack).
 function __nimbusGeneratedNodeError(Base, code, message, props, decoration) {
   const error = nodeError(Base, code, message, props, __nimbusGeneratedNodeError);
   if (decoration !== undefined) {
+    // A program's Error.prepareStackTrace may make the stack anything: only a string's frame is trimmed.
+    if (typeof error.stack === "string") error.stack = error.stack.replace(/\\n    at [^\\n]*/, "");
     if (decoration !== null) error.stack = decoration + "\\n" + error.stack;
     __nimbusDecorated.add(error);
   }
@@ -152,6 +156,10 @@ function __nimbusGeneratedNodeError(Base, code, message, props, decoration) {
 // What the shims call a program's functions with, captured before any
 // program runs: a program may replace Reflect's.
 const __nimbusReflectApply = Reflect.apply;
+// The realm's SyntaxError, which a program may replace as a global: the
+// launch's capture (a runner that shares one scope with the cell runtime has
+// its __nimbusSyntaxError too).
+const __nimbusRealmSyntaxError = __nimbusPrimordials.SyntaxError;
 // The runner's stop and replay (runtime/stop-replay.ts), private to its
 // module: null in a runner without one.
 const __nimbusReplay = typeof __nimbusStopReplay !== "undefined" ? __nimbusStopReplay : null;
@@ -11092,7 +11100,7 @@ function __nimbusEmittedColumn(module, line, column) {
 // GetErrorSource: \`file:line\`, the line, and under it the place, \`^\` from
 // start to end. As Node does, the columns, which are V8's (UTF-16), count
 // the line's UTF-8 bytes.
-function __nimbusArrowOf(module, text, start, end) {
+function __nimbusArrowOf(module, text, start, end, empty = false) {
   let lineStart = 0;
   let line = 1;
   for (;;) {
@@ -11115,7 +11123,8 @@ function __nimbusArrowOf(module, text, start, end) {
   // A staged ES module's line and places as its source has them.
   if (to > from) to = __nimbusSourceColumn(module, line, to);
   from = __nimbusSourceColumn(module, line, from + 1) - 1;
-  if (to <= from) to = from + 1;
+  // At the end of the input V8 underlines nothing (\`empty\`); anywhere else, a character at least.
+  if (to <= from) to = empty ? from : from + 1;
   source = __nimbusSourceLine(module, line, source);
   let arrow = __nimbusFrameFile(module) + ":" + line + "\\n" + source + "\\n";
   const bytes = new TextEncoder().encode(source);
@@ -11179,12 +11188,99 @@ function __nimbusFatalArrow(error, fromPromise) {
   return offset < 0 ? null : __nimbusSourceMappedArrow(top, text, offset) ?? __nimbusArrowOf(top, text, offset, offset + 1);
 }
 // Where a module that does not compile stops, for its stack (commonjs-cell.ts
-// __nimbusDecorateSyntaxError), or null.
-globalThis.__nimbusSyntaxErrorArrow = function __nimbusSyntaxErrorArrow(module) {
+// __nimbusDecorateSyntaxError), or null: -e code or stdin as Node reports it
+// (__nimbusEvalArrow).
+globalThis.__nimbusSyntaxErrorArrow = function __nimbusSyntaxErrorArrow(module, error) {
+  const arrow = __nimbusCompileArrow(module, error);
+  return arrow === null ? null : __nimbusEvalArrow(module, arrow);
+};
+function __nimbusCompileArrow(module, error) {
   const text = module === null ? null : __nimbusFrameModuleText(module);
   const place = text === null ? null : __nimbusFatalLocation(text, module.esModule ? "module" : "script", -1);
-  return place === null ? null : __nimbusArrowOf(module, text, place[0], place[1]);
-};
+  if (place === null) return null;
+  if (module.esModule) return __nimbusArrowOf(module, text, place[0], place[1]);
+  // A CommonJS cell's source is followed by its wrapper's tail, which V8
+  // reads where Node's compile (wrapSafe, the source alone) meets the end of
+  // the input: an error found there is the end of input's, as Node reports it.
+  const end = text.length - module.tail;
+  // V8's end of input is the source's end, nothing underlined.
+  if (error?.message === "Unexpected end of input") return __nimbusArrowOf(module, text, end, end, true);
+  if (place[0] >= end) {
+    const parser = __nimbusRegistryRequire("./${RUNTIME_PARSER_MODULE}");
+    const named = error instanceof __nimbusRealmSyntaxError ? /^Unexpected token '(.+)'$/.exec(error.message) : null;
+    // An argument list left open is placed at its last token, as V8 places it whatever follows.
+    if (error?.message === "missing ) after argument list") {
+      const last = parser.lastTokenBefore(text, end);
+      if (last !== null) return __nimbusArrowOf(module, text, last[0], last[1]);
+    } else if (named?.[1] === "...") {
+      // A parenthesized rest no arrow follows: V8 names its ellipsis.
+      const rest = parser.openParenRest(text, end);
+      if (rest !== null) return __nimbusArrowOf(module, text, rest[0], rest[1]);
+    } else if (named !== null && text.slice(end).includes(named[1])) {
+      // The tail's token, where the source alone ends: the header of a
+      // stack formatted before is renamed, a formatter's own text kept.
+      const header = "SyntaxError: " + error.message;
+      error.message = "Unexpected end of input";
+      if (typeof error.stack === "string" && error.stack.startsWith(header)) error.stack = "SyntaxError: " + error.message + error.stack.slice(header.length);
+    }
+    return __nimbusArrowOf(module, text, end, end, true);
+  }
+  // A comment left open runs to the end of the input: V8 underlines it from
+  // its start to the end of its line.
+  if (text.startsWith("/*", place[0]) && text.indexOf("*/", place[0] + 2) === -1) {
+    const line = text.slice(place[0], end).search(/[\\n\\r\\u2028\\u2029]/);
+    return __nimbusArrowOf(module, text, place[0], line === -1 ? end : place[0] + line);
+  }
+  return __nimbusArrowOf(module, text, place[0], place[1]);
+}
+// -e code or stdin that Node's eval compiled as it was given or stripped
+// (NodeLaunch.evalTypeScript): a compile error names the script, not the
+// stripper's sourceURL its frames have (__nimbusEvalStripped); code that
+// compiles neither as JavaScript nor as TypeScript has amaro's message after
+// a script's arrow, a module's a line apart (execution.js evalTypeScript,
+// evalTypeScriptModuleEntryPoint).
+function __nimbusEvalArrow(module, arrow) {
+  const entry = module.path === null || (module.esModule && module.path === "/" + __nimbusEsmEntryKey);
+  if (!entry) return arrow;
+  const named = module.compileFile === undefined ? arrow : module.compileFile + arrow.slice(__nimbusFrameFile(module).length);
+  const hint = __nimbusNodeCommandLine?.evalTypeScript?.hint;
+  if (typeof hint !== "string") return named;
+  return module.esModule ? named + "\\n" + hint + "\\n" : named + hint + "\\n";
+}
+// -e code or stdin that Node compiles as a script, with a \`return\` at its
+// top (\`at\`, in \`text\`): V8's SyntaxError, its arrow under the \`return\`
+// and the script's name, with amaro's message where Node's eval adds it
+// (__nimbusEvalArrow), and no frame of the code that throws it (node-eval.ts
+// illegalReturn; the entry runs the code as a function's body, where it
+// would compile).
+function __nimbusEvalIllegalReturn(text, at) {
+  const entry = __nimbusEntryModule();
+  const error = new __nimbusRealmSyntaxError("Illegal return statement");
+  if (entry === null) return error;
+  const source = { name: entry.name, path: null, file: __nimbusFrameFile(entry), head: 0, tail: 0, esModule: false, hashbang: false };
+  const arrow = __nimbusEvalArrow(entry, __nimbusArrowOf(source, text, at, at + "return".length));
+  // A program's Error.prepareStackTrace may make the stack anything: only a
+  // string's frames are trimmed, this function's and the code's that throws.
+  if (typeof error.stack === "string") error.stack = arrow + "\\n" + error.stack.replace(/(\\n    at [^\\n]*){1,2}/, "");
+  __nimbusDecorated.add(error);
+  return error;
+}
+// -e code or stdin as Node's eval stripped it: a strip's frames are named
+// by the stripper's sourceURL, [eval], stdin's too (typescript.js
+// processTypeScriptCode), a compile error by the script (__nimbusEvalArrow);
+// a transform warned of Transform Types, where Node's warning prints.
+function __nimbusEvalStripped(module) {
+  const typeScript = __nimbusNodeCommandLine?.evalTypeScript;
+  if (typeScript?.transformWarning === true && !__nimbusTransformTypesWarned) {
+    __nimbusTransformTypesWarned = true;
+    __processMod.emitWarning("Transform Types is an experimental feature and might change at any time", "ExperimentalWarning");
+  }
+  if (typeScript?.sourceUrl !== true || module === null) return;
+  module.compileFile = __nimbusFrameFile(module);
+  if (module.path === null) module.file = "[eval]";
+  else module.frameFile = "[eval]";
+  __nimbusModulesByFile?.set("[eval]", module);
+}
 // ReportFatalException: the text Node prints for \`error\`. \`enhance\`: the
 // error as inspect shows it (an 'uncaughtException' listener's error is its
 // stack).
@@ -11240,6 +11336,12 @@ function __nimbusFatalReport(error, fromPromise, enhance) {
   }
   return report + "\\nNode.js " + __processMod.version + "\\n";
 }
+// The entry's typeless warning, where its graph did not link
+// (__nimbusEsmImport), issued as the failure is taken: Node issued it while
+// loading, and its next tick delivers it after a listener that takes the
+// failure, before what that listener warns, and never once the failure has
+// ended the process (the program stopped, nothing more it writes is shown).
+let __nimbusHeldEntryWarning = null;
 // An exception nothing caught (\`fromPromise\`: a rejection, or an ES
 // module's evaluation): whether a listener took it.
 function __nimbusUncaughtException(error, fromPromise = false) {
@@ -11247,6 +11349,9 @@ function __nimbusUncaughtException(error, fromPromise = false) {
     __nimbusReportProcessExit(error.code, "");
     return true;
   }
+  const held = __nimbusHeldEntryWarning;
+  __nimbusHeldEntryWarning = null;
+  if (held !== null) held();
   const type = fromPromise ? "unhandledRejection" : "uncaughtException";
   try {
     __processMod.emit("uncaughtExceptionMonitor", error, type);
@@ -11260,11 +11365,14 @@ function __nimbusUncaughtException(error, fromPromise = false) {
       __nimbusReportProcessExit(thrown.code, "");
       return true;
     }
+    // The process ends: Node runs no more ticks, a warning's included.
+    __nimbusWarnings.dropQueued();
     const report = __nimbusFatalReport(thrown, false, false);
     __nimbusWriteFatal(report);
     __nimbusReportProcessExit(7, report);
     return false;
   }
+  __nimbusWarnings.dropQueued();
   try {
     if (!__processMod._exiting) {
       __processMod._exiting = true;
@@ -13064,12 +13172,21 @@ function __nimbusEsmWarnTypeless(id) {
 }
 // The namespace of the staged module (or facade) \`id\`, evaluated by the
 // registry where it can be; the one place Nimbus calls the registry's import().
-async function __nimbusEsmImport(id) {
+async function __nimbusEsmImport(id, entry = false) {
   const record = __nimbusEsmRecord(id);
   if (record.state === __ESM_DONE && record.namespace !== null) return record.namespace;
   const row = __nimbusEsm.table[id];
-  if (row[0] === "module" && record.state === 0) __nimbusEsmWarnTypeless(id);
-  if (row[0] === "module" && __nimbusEsmTainted(id)) return __nimbusEsmInterpret(id, false);
+  // The entry's typeless warning waits for its evaluation to begin: Node's,
+  // a next tick's, never prints where the entry's graph does not link and
+  // its failure ends the process first (__nimbusHeldEntryWarning). An
+  // import()'s failure, which the program may catch, does not wait.
+  let warns = row[0] === "module" && record.state === 0;
+  const tainted = row[0] === "module" && __nimbusEsmTainted(id);
+  if (warns && (!entry || tainted)) {
+    warns = false;
+    __nimbusEsmWarnTypeless(id);
+  }
+  if (tainted) return __nimbusEsmInterpret(id, false);
   let batch = null;
   let since = __nimbusEsmBatches;
   try {
@@ -13082,8 +13199,14 @@ async function __nimbusEsmImport(id) {
     __nimbusTrackOp(new Promise((settle) => { resolve = settle; }));
     // Settled once, by whichever comes first; never left waiting in the
     // list (a cached module's import() enters no meta instance to empty it).
-    const loaded = () => {
+    // \`linked\`: false where it settled without its evaluation beginning.
+    const loaded = (linked = true) => {
       __nimbusEsmLoading.delete(loaded);
+      if (warns) {
+        warns = false;
+        if (linked) __nimbusEsmWarnTypeless(id);
+        else __nimbusHeldEntryWarning = () => __nimbusEsmWarnTypeless(id);
+      }
       resolve();
     };
     __nimbusEsmLoading.add(loaded);
@@ -13091,7 +13214,7 @@ async function __nimbusEsmImport(id) {
     const evaluation = import(__NIMBUS_BUNDLE_URL + __nimbusEsmName(id));
     // The evaluation it began, when it began within the call (workerd's).
     batch = __nimbusEsmOpenBatch;
-    __nimbusReflectApply(__nimbusEsmThen, evaluation, [loaded, loaded]);
+    __nimbusReflectApply(__nimbusEsmThen, evaluation, [() => loaded(), () => loaded(false)]);
     return await evaluation;
   } catch (error) {
     // Its evaluation was cancelled or stopped short of a module (a require()
@@ -13264,9 +13387,10 @@ function __nimbusEsmExportMessage(specifier, name, commonjs) {
 let __nimbusEsmEntryKey = null;
 function __nimbusEsmRunEntry(key) {
   __nimbusEsmEntryKey = key;
+  __nimbusEvalStripped(__nimbusModuleAtPath(key));
   const id = __nimbusEsmId("module", key);
   const url = __nimbusEsmUrl("/" + key);
-  return __nimbusEsmImport(id).then(() => undefined, (e) => {
+  return __nimbusEsmImport(id, true).then(() => undefined, (e) => {
     __nimbusExplainCommonJSGlobalLike(e, url, __nimbusEsmSuspends(__nimbusEsmRecord(id)));
     throw e;
   });
@@ -14234,35 +14358,63 @@ const __NIMBUS_COMMONJS_ONLY_ERRORS = [
 // Node's enrichCJSError, for the main module (CJS loader wrapSafe): a
 // SyntaxError compiling it, whose source has module syntax, is preceded by a
 // warning, emitted at once, as the process is about to end.
+// Whether \`e\`, compiling \`source\` as CommonJS, is the error of module syntax, which Node's loader retries as an ES module.
+function __nimbusModuleSyntaxError(e, source) {
+  if (!(e instanceof SyntaxError)) return false;
+  if (__NIMBUS_ESM_SYNTAX_ERRORS.includes(e.message)) return true;
+  if (!__NIMBUS_COMMONJS_ONLY_ERRORS.includes(e.message)) return false;
+  const text = source();
+  return text !== null && __nimbusRegistryRequire("./${RUNTIME_PARSER_MODULE}").fatalLocation(text, "module", -1) === null;
+}
 function __nimbusEnrichCommonJsError(e, source, filename) {
-  if (!(e instanceof SyntaxError)) return;
-  let moduleSyntax = __NIMBUS_ESM_SYNTAX_ERRORS.includes(e.message);
-  if (!moduleSyntax && __NIMBUS_COMMONJS_ONLY_ERRORS.includes(e.message)) {
-    const text = source();
-    moduleSyntax = text !== null && __nimbusRegistryRequire("./${RUNTIME_PARSER_MODULE}").fatalLocation(text, "module", -1) === null;
-  }
-  if (!moduleSyntax) return;
+  if (!__nimbusModuleSyntaxError(e, source)) return;
   const warning = new Error("Failed to load the ES module: " + filename + ". Make sure to set \\"type\\": \\"module\\" in the nearest package.json file or use the .mjs extension.");
   warning.name = "Warning";
   Error.captureStackTrace(warning, __nimbusEnrichCommonJsError);
   __processMod.emit("warning", warning);
 }
+// -c of a cell that compiled: its body must be one function body, or it
+// compiled only by closing the wrapper's, and is the SyntaxError Node reports
+// at the brace that does, its arrow as a compile's (__nimbusDecorateSyntaxError).
+function __nimbusCheckedAlone() {
+  const module = __nimbusEntryModule();
+  const text = module === null ? null : __nimbusFrameModuleText(module);
+  if (text === null) return undefined;
+  const at = __nimbusRegistryRequire("./${RUNTIME_PARSER_MODULE}").strayClosingBrace(text.slice(module.head, text.length - module.tail));
+  if (at === null) return undefined;
+  const error = new SyntaxError("Unexpected token '}'");
+  error.stack = __nimbusArrowOf(module, text, module.head + at[0], module.head + at[1]) + "\\n" + error.stack;
+  __nimbusDecorated.add(error);
+  throw error;
+}
 // A CommonJS entry evaluated as Node's loader runs it (manager.ts
 // entryModule; an ES entry is the registry's, __nimbusEsmRunEntry).
 function __nimbusEvaluateEntry(load, mod, filename, dirname) {
   __nimbusLoadsTypeScript(filename);
+  __nimbusEvalStripped(__nimbusEntryModule());
   const source = () => __nimbusModuleSourceText(__nimbusEntryModule() ?? __nimbusModuleAtPath(String(filename).replace(/^\\/+/, "")));
   __nimbusCompiling(filename, source);
   // A file's \`this\` is its exports, as Node's wrapper is called; -e and
   // stdin code is a script, whose \`this\` is the global object.
   const evaluated = filename === "<eval>" || filename === "[stdin]";
+  // -c: compiled as Node's check compiles it (check_syntax.js wrapSafe, stdin's
+  // too). Its cell stops at its first statement (manager.ts programEntry), so
+  // a compile that succeeds runs nothing of it.
+  const check = __nimbusNodeCommandLine?.check === true;
   let wrapper;
   try {
     wrapper = load();
   } catch (e) {
-    if (!evaluated) __nimbusEnrichCommonJsError(e, source, filename);
+    if (check && e === ${JSON.stringify(ENTRY_CHECKED)}) return __nimbusCheckedAlone();
+    // TypeScript's module syntax Node retries as an ES module (wrapSafe), which cannot be checked here without running it.
+    if (check && typescriptLoader(filename) === "ts" && __nimbusModuleSyntaxError(e, source)) {
+      __processMod.stderr.write("node: -c cannot check an ES module entry in Nimbus without running it\\n");
+      __processMod.exit(9);
+    }
+    if (!evaluated || check) __nimbusEnrichCommonJsError(e, source, filename);
     throw e;
   }
+  if (check) return undefined;
   // A file entry is process.mainModule and require.main (Module._load's
   // isMain), after the preloads, whose are undefined; -e's and stdin's are too.
   if (!evaluated) {

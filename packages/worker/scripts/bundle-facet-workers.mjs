@@ -899,7 +899,7 @@ async function main() {
     'node-shim-resolution',
     { shared: ['node-error'] },
   );
-  for (const name of ['createRequireResolver', 'requireNodeModulePaths', 'createNodePackageMapPolicy', 'nativeResolutionError', 'resolveExports', 'resolvePackageEntry', 'packageSelfReferenceSubpath', 'typescriptFallbackCandidates', 'stripsTypeScript', 'presentedCredential', 'isWebSocketUpgradeRequest']) {
+  for (const name of ['createRequireResolver', 'requireNodeModulePaths', 'createNodePackageMapPolicy', 'nativeResolutionError', 'resolveExports', 'resolvePackageEntry', 'packageSelfReferenceSubpath', 'typescriptFallbackCandidates', 'stripsTypeScript', 'typescriptLoader', 'presentedCredential', 'isWebSocketUpgradeRequest']) {
     if (!new RegExp(`^function ${name}\\(`, 'm').test(shimResolution)) {
       throw new Error(`[bundle-facet-workers/node-shim-resolution] the bundle no longer declares function ${name}`);
     }
@@ -1020,7 +1020,7 @@ async function main() {
     '',
     '/**',
     ' * Declares resolveExports, resolvePackageEntry, packageSelfReferenceSubpath,',
-    ' * DEFAULT_ESM_CONDITIONS, DEFAULT_CJS_CONDITIONS, typescriptFallbackCandidates, stripsTypeScript,',
+    ' * DEFAULT_ESM_CONDITIONS, DEFAULT_CJS_CONDITIONS, typescriptFallbackCandidates, stripsTypeScript, typescriptLoader,',
     ' * TYPESCRIPT_INDEX_CANDIDATES, presentedCredential and isWebSocketUpgradeRequest; the node shims call them.',
     ' */',
     `export const NODE_SHIM_RESOLUTION_PREAMBLE: string = ${JSON.stringify(shimResolution)};`,

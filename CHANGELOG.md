@@ -22,7 +22,22 @@ published independently in the `@nimbus-sh` npm scope.
   including files edited or added while it runs, and `vite build` writes
   them too. Before, the install noted that oxide had no Workers-compatible
   build, and Tailwind v4 could not load.
-
+- Fixed: a hosted `node -e`, `node -p` or stdin program with a `return` at its top level fails as Node's does, with V8's `SyntaxError: Illegal return statement` under the `return`, plus amaro's message where Node adds one. Before, `node -e 'return 1'` ran and exited 0, and `-p` showed the error at generated code.
+- Fixed: a hosted typeless ES module entry whose graph does not compile as a module shows only its SyntaxError, as Node does. Before, the MODULE_TYPELESS_PACKAGE_JSON warning came first, a warning Node's failure cuts off.
+- Fixed: hosted `node -e`, `node -p` and a program read from stdin take TypeScript as Node 22 does, with type stripping on by default. Code that does not compile as JavaScript is stripped and run (as an ES module when its stripped syntax is one). Code that is neither JavaScript nor TypeScript fails with V8's error, adding amaro's message as Node does. `--input-type=commonjs-typescript` and `module-typescript` strip first. An unknown `--input-type` is refused with exit 9. An `import` or `export` nested in a block is module syntax to detection, as it is to Node, and a module's nested `import` is placed where V8 places it.
+- Fixed: a hosted `require()` of a CommonJS module that does not compile throws a new SyntaxError each time, as Node, which compiles the module again, does: before, every require after the first rethrew the first error, the same object with its stack as first formatted (a stack formatter installed since never saw it).
+- Fixed: a hosted CommonJS program whose SyntaxError is at the end of its source (an unclosed call, block, bracket, template or comment) is reported as Node reports it, by `node` and `node -c` alike: its line, its arrow (an argument list's last token, or nothing underlined at the end), and `Unexpected end of input` where Node says so. Before, the report showed the module wrapper's closing `}; });` a line past the source, and could say `Unexpected token '}'`.
+- Fixed: `node -c` (`--check`) in a hosted session checks a CommonJS
+  program's syntax and does not run it, as Node does: a script, stdin, or a
+  TypeScript file's own text. It exits 0, or prints Node's SyntaxError and
+  exits 1. Before, it ran the program. An ES module entry cannot be compiled
+  here without running it, so `-c` of one exits 9 with "-c cannot check an
+  ES module entry in Nimbus without running it". `-c` with `-e` or `-p`
+  is Node's refusal (exit 9).
+- Fixed: `node --experimental-default-type` in a hosted session exits 9 as
+  unsupported, as the portable node does. Before, it was ignored: `-e`
+  code under `=module` ran as CommonJS. A value other than `module` or
+  `commonjs` is Node's own refusal.
 - Changed: a program whose launch waits 10 seconds at one stage (its
   preparation, its admission for a worker, or its load) logs one line to
   Workers Logs: `[facet-manager] launch stalled:` with its pid, command,
