@@ -5,6 +5,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed (shell): when the Explorer's first listing fails (a lost connection,
+  a refused listing), selecting the Editor again lists the files. Before,
+  the tree counted itself loaded and kept the error until Refresh. A
+  folder's icon now opens and closes with the folder; it kept the state the
+  folder had when first shown. A Markdown preview renders once per open and
+  reload, not twice.
+
 - Fixed: one session's compiles no longer reset the other sessions that
   share its isolate. The platform runs several sessions in one isolate
   with one memory limit, and resets all of them when it is crossed. Each
