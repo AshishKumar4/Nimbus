@@ -7,7 +7,7 @@
 // (`printf '\\xff\\xfe\\xfd' > path`). Then fs-read.
 
 import WebSocket from 'ws';
-import { mintSession, WS_BASE, Terminal, makeAsserter, sleep, stripAnsi, wsHeaders } from '../../../_driver.mjs';
+import { mintSession, WS_BASE, Terminal, makeAsserter, sleep, stripAnsi, wsHeaders, outputLines } from '../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('editor/monaco/new/fs-read-binary-refused');
@@ -30,7 +30,7 @@ const sid = await mintSession();
   // Confirm it exists.
   const r = await t.run('wc -c /home/user/probe-binary.bin 2>&1', 10_000);
   a.check('binary file exists with non-UTF-8 content',
-    /probe-binary\.bin/.test(stripAnsi(r.output)),
+    outputLines(r.output).some((line) => /^[1-9]\d* \/home\/user\/probe-binary\.bin$/.test(line)),
     `output=${JSON.stringify(stripAnsi(r.output))}`);
   await t.close();
 }

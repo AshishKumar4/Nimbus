@@ -7,7 +7,7 @@
 // Regression check: synthetic preopen MUST NOT disrupt relative-path
 // resolution.
 
-import { mintSession, Terminal, makeAsserter, heredocCommand, stripAnsi } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, heredocCommand, stripAnsi, hasOutputLine } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('wasi-paths/regression/relative-path-still-works');
@@ -41,7 +41,7 @@ a.check('program exits 0 with PROGRAM_OK on stdout', runOK,
   JSON.stringify(stripAnsi(rr.output).slice(-200)));
 
 const rExists = await t.run(`node -e "console.log(require('fs').existsSync('/home/user/regression-rel.txt') ? 'EXISTS' : 'ABSENT')"`, 15_000);
-const exists = /EXISTS/.test(stripAnsi(rExists.output));
+const exists = hasOutputLine(rExists.output, 'EXISTS');
 a.check('file at /home/user/regression-rel.txt EXISTS (relative-to-cwd preserved)', exists,
   exists ? '' : JSON.stringify(stripAnsi(rExists.output).slice(-200)));
 

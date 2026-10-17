@@ -1,7 +1,7 @@
 // python/globals-isolated — separate python -c invocations do not share
 // top-level globals even though the Pyodide interpreter stays warm.
 
-import { mintSession, Terminal, stripAnsi, makeAsserter } from '../_driver.mjs';
+import { mintSession, Terminal, stripAnsi, makeAsserter, hasOutputLine } from '../_driver.mjs';
 
 const label = 'python/globals-isolated';
 console.log(`${label} — ${process.env.BASE || 'http://127.0.0.1:8792'}`);
@@ -17,12 +17,12 @@ await t.waitForPrompt(60_000);
 await t.run('nimbus install python', 180_000);
 
 const setOut = await t.run(`python -c 'x=999; print("set")'`, 120_000);
-a.check('first python -c sets x and exits normally', /\bset\b/.test(stripAnsi(setOut.output)),
+a.check('first python -c sets x and exits normally', hasOutputLine(setOut.output, 'set'),
   stripAnsi(setOut.output).slice(-300));
 
 const getOut = await t.run(`python -c 'print(globals().get("x", "missing"))'`, 120_000);
 const clean = stripAnsi(getOut.output);
-a.check('second python -c does not see previous globals', /\bmissing\b/.test(clean) && !/\b999\b/.test(clean),
+a.check('second python -c does not see previous globals', hasOutputLine(clean, 'missing') && !/\b999\b/.test(clean),
   clean.slice(-300));
 
 await t.close();

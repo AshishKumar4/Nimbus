@@ -8,7 +8,7 @@
 //   3. `/s/<sid>/port/<n>/...` routes through Nimbus preview plumbing and
 //      returns the Python server's response.
 
-import { fetchPort, heredocCommand, makeAsserter, mintSession, stripAnsi, Terminal } from '../_driver.mjs';
+import { fetchPort, heredocCommand, makeAsserter, mintSession, stripAnsi, Terminal, hasOutputLine } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 
@@ -61,7 +61,7 @@ a.check('port proxy returns Python HTTP response', r.status === 200 && r.body ==
 
 const plain = await t.run('cat > /home/user/py-plain.py << "PYEOF"\nprint("PYTHON_SCRIPT_OK")\nPYEOF\npython /home/user/py-plain.py', 120_000);
 a.check('ordinary Python scripts still exit and print output',
-  /PYTHON_SCRIPT_OK/.test(stripAnsi(plain.output)),
+  hasOutputLine(plain.output, 'PYTHON_SCRIPT_OK'),
   JSON.stringify(stripAnsi(plain.output).slice(-500)));
 
 await t.close();

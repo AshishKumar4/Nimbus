@@ -18,7 +18,7 @@
 //      app may still fail at a later step (other deps), but the F1
 //      regression signature must not surface.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, hasOutputLine } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('npm-create/new/create-nextjs-node-constants');
@@ -51,7 +51,7 @@ function tail(s, n = 600) { return s.length > n ? '…' + s.slice(-n) : s; }
     /SIGTERM=15/.test(out),
     `tail=${JSON.stringify(tail(out))}`);
   a.check('script reaches "OK" (no mid-script crash)',
-    /\bOK\b/.test(out),
+    hasOutputLine(out, 'OK'),
     `tail=${JSON.stringify(tail(out))}`);
 }
 

@@ -20,7 +20,7 @@
 //
 // Black-box only. NO _diag.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi, fetchPort, requestHeaders, writeFileViaShell } from './_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, fetchPort, requestHeaders, writeFileViaShell, termBody } from './_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('wrangler-dev-clone');
@@ -47,7 +47,8 @@ await t.waitForPrompt(60_000);
   await t.run('mkdir -p /home/user/hello-worker/src', 5_000);
   await write('/home/user/hello-worker/src/index.ts', indexTs);
   // package.json is optional for wrangler dev; skip to keep this fast.
-  const okWrangler = (await t.run('cat /home/user/hello-worker/wrangler.jsonc', 5_000)).output.includes('hello-worker');
+  const wranglerBody = termBody((await t.run('cat /home/user/hello-worker/wrangler.jsonc && echo', 5_000)).output);
+  const okWrangler = JSON.parse(wranglerBody).name === 'hello-worker';
   const okIndex = (await t.run('cat /home/user/hello-worker/src/index.ts', 5_000)).output.includes('hello-from-wrangler-dev-clone-probe');
   a.check('hello-worker scaffold (wrangler.jsonc + src/index.ts)',
     okWrangler && okIndex,

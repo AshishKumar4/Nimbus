@@ -2,7 +2,7 @@
 // python/pip-requirements-and-local-wheel — pip supports requirements files
 // and local VFS wheels, and rejects native Linux wheels before install.
 
-import { mintSession, Terminal, makeAsserter, heredocCommand, stripAnsi } from '../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, heredocCommand, stripAnsi, termBody } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const label = 'python/pip-requirements-and-local-wheel';
@@ -41,7 +41,7 @@ await t.run('python make_wheel.py', 60_000);
 
 {
   const { output } = await t.run('pip install ./nimbus_local_pkg-0.1.0-py3-none-any.whl', 180_000);
-  const stripped = stripAnsi(output);
+  const stripped = termBody(output);
   a.check('pip installs a local pure wheel from VFS',
     /Successfully installed/.test(stripped) && /nimbus_local_pkg/.test(stripped),
     JSON.stringify(stripped.slice(-1200)));

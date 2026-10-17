@@ -20,7 +20,7 @@
 //
 // Live handles keep the program running until it exits or the user cancels it.
 
-import { mintSession, deleteSession, Terminal, makeAsserter, stripAnsi } from '../_driver.mjs';
+import { mintSession, deleteSession, Terminal, makeAsserter, stripAnsi, hasOutputLine } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('node/entry-pending-work');
@@ -40,7 +40,7 @@ try {
   )).output);
   a.check(
     'a floating async IIFE runs past its awaited fetch',
-    /\bA\b/.test(fetched) && /\bB 200\b/.test(fetched),
+    hasOutputLine(fetched, 'A') && /\bB 200\b/.test(fetched),
     JSON.stringify(fetched.slice(-600)),
   );
   a.check(
@@ -56,7 +56,7 @@ try {
   )).output);
   a.check(
     'a floating IIFE that awaits a 1.5s timer still finishes',
-    /START/.test(timed) && /AFTER-SLEEP/.test(timed),
+    hasOutputLine(timed, 'START') && hasOutputLine(timed, 'AFTER-SLEEP'),
     JSON.stringify(timed.slice(-600)),
   );
 
@@ -109,7 +109,7 @@ try {
   const unsettledOut = stripAnsi(unsettled.output);
   a.check(
     'an unsettled promise does not keep the program alive',
-    /PENDING-OK/.test(unsettledOut) && unsettled.exitCode === 0
+    hasOutputLine(unsettledOut, 'PENDING-OK') && unsettled.exitCode === 0
       && !/facet lifetime limit/.test(unsettledOut),
     JSON.stringify(unsettledOut.slice(-600)),
   );
