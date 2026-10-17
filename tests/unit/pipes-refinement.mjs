@@ -12,9 +12,6 @@
 // suspended) is the model's, kept here. Every step's outcome must match, as
 // must each case's final exit statuses, per-pipe accounting and error.
 //
-// Cases that ignore SIGPIPE are skipped with the fixture's own reason:
-// bash.async.wasm exposes no signal disposition to the host.
-
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -95,7 +92,14 @@ function replay(c) {
     if (op.write) {
       const { pipe, n } = op.write;
       const decision = decideWrite(pipes[pipe], n, proc.host, c.C, c.B);
-      if (decision === 'sigpipe') { finish(proc, SIGPIPE_STATUS); return 'sigpipe'; }
+      if (decision === 'sigpipe') {
+        if (proc.sigpipe === 'ignore') {
+          if (proc.exitsOnWriteError) finish(proc, 1);
+          return 'epipe';
+        }
+        finish(proc, SIGPIPE_STATUS);
+        return 'sigpipe';
+      }
       if (decision === 'park') { proc.pending = op; return 'parked'; }
       if (decision === 'nest') { proc.pending = op; suspended.push(proc.pid); return 'suspended'; }
       pipes[pipe].queued += n;
@@ -173,10 +177,8 @@ function replay(c) {
 }
 
 let replayed = 0;
-let skipped = 0;
 for (const c of fixture.cases) {
-  if (c.untestable) { skipped++; continue; }
   replay(c);
   replayed++;
 }
-console.log(`pipes-refinement: ${replayed} traces replay step for step through pipe-rules (${skipped} skipped: ${fixture.cases.find((c) => c.untestable)?.untestable ?? 'none'})`);
+console.log(`pipes-refinement: ${replayed} traces replay step for step through pipe-rules`);

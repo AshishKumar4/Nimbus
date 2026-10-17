@@ -506,7 +506,9 @@ import Nimbus.Refine
 #print axioms Nimbus.Runtime.Pipes.step_B
 #print axioms Nimbus.Runtime.Pipes.books
 #print axioms Nimbus.Runtime.Pipes.accounting
-#print axioms Nimbus.Runtime.Pipes.budget
+#print axioms Nimbus.Runtime.Pipes.local_write_budget
+#print axioms Nimbus.Runtime.Pipes.local_empty_write
+#print axioms Nimbus.Runtime.Pipes.jspi_write_capacity
 #print axioms Nimbus.Runtime.Pipes.drop_only_readerless
 #print axioms Nimbus.Runtime.Pipes.abort_named
 #print axioms Nimbus.Runtime.Pipes.meas_setProc

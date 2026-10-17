@@ -7,13 +7,14 @@
   counted across the live processes that hold them (`rs`, `ws`: derived, never
   stored). Processes are slots, each with a script of actions; a fork starts an unborn
   slot with a copy of the forking process's ends. Three kinds of process:
-  - `jspi`: a child with JSPI. A write parks while the pipe holds its capacity (or the
-    budget is spent); a read of an empty pipe with a live writer parks.
+  - `jspi`: a child with JSPI. A write parks while the pipe holds its capacity;
+    the budget does not apply. A read of an empty pipe with a live writer parks.
   - `bash`: bash itself (asyncify). A read parks; a write never parks.
   - `plain`: a child without JSPI. It can wait for nothing: a read of an empty pipe
     suspends it (the scheduler runs nested above it).
-  A write that never parks appends while the bytes in flight over all pipes stay within
-  the budget `B`. Past it the writer is suspended: its frame stays on the stack and the
+  A local write appends when its pipe is empty, even if the write exceeds the budget
+  `B`, or when the resulting queue fits `B`. Otherwise the writer is suspended: its
+  frame stays on the stack and the
   scheduler runs nested above it, lowest slot first (sources first). Only the top of
   the stack may resume. A read that would have to wait for writers that are all
   suspended beneath it fails the whole command (`abort`, a named error, non-zero
@@ -34,7 +35,9 @@
       whenever one exists), `no_spin` (every such step lowers a measure: no spin, and
       every run of the scheduler ends), `stuck_is_linux` (when nothing can run and
       nothing is suspended, every live process waits exactly as it would on Linux).
-  (4) `budget`: the bytes in flight over all pipes never exceed `B`.
+  (4) `local_write_budget`: an accepted write to a nonempty local pipe fits `B`;
+      `local_empty_write`: an empty local pipe accepts any write;
+      `jspi_write_capacity`: JSPI acceptance depends only on the current queue and `C`.
   (5) `ignored_is_epipe`: with SIGPIPE ignored, a readerless write fails with EPIPE
       and the writer goes on.
   The review's findings are rule variants (`Rules`), each shown by a trace in
@@ -173,11 +176,12 @@ def writersNested (s : St) (p : Nat) : Bool :=
 
 variable (R : Rules)
 
-/-- A write fits: within the budget (per pipe, or in total under `globalBudget`), and for
-    a JSPI child also below the capacity. -/
+/-- JSPI checks the current queue against capacity, not the budget or write size.
+    A local pipe accepts a whole write when empty; otherwise it checks the budget. -/
 def accepts (s : St) (pr : Proc) (p n : Nat) : Bool :=
-  (if R.globalBudget then decide (tot s + n ≤ s.B) else decide ((s.pipes p).q + n ≤ s.B)) &&
-    (pr.mode != .jspi || decide ((s.pipes p).q < s.C))
+  if pr.mode = .jspi then decide ((s.pipes p).q < s.C)
+  else if R.globalBudget then decide (tot s + n ≤ s.B)
+  else decide ((s.pipes p).q = 0 ∨ (s.pipes p).q + n ≤ s.B)
 
 /-- Process `i` takes the CPU. A child without JSPI cannot yield: from its first step
     to its exit its frame is on the stack. Bash and JSPI children are there only while
