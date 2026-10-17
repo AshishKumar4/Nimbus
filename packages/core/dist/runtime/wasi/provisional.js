@@ -331,6 +331,7 @@ export function provisional(host) {
         if (type === 'file') {
             inode.base = { bytes: new Uint8Array(0), size: 0, mode, uid, gid, atime: at, mtime: at, ctime: at };
             inode.state = copyState(inode.base);
+            touched.set(key, inode);
         }
         inodes.set(identity(row.dev, row.ino), inode);
         return inode;
@@ -521,7 +522,7 @@ export function provisional(host) {
         return handle;
     };
     const provisional = {
-        owns: (handleId) => descs.has(handleId),
+        owns: (handleId) => descs.size > 0 && descs.has(handleId),
         touches: (key) => (layer.size > 0 || touched.size > 0) && (layer.has(key) || layer.has(parentKey(key)) || touched.has(key)),
         setStatus: (handleId, status) => {
             const desc = descOf(handleId);
@@ -530,6 +531,8 @@ export function provisional(host) {
         },
         entry: provisionalEntry,
         children: (key, base) => {
+            if (layer.size === 0)
+                return base;
             const made = added.get(key);
             const gone = removed.get(key);
             if (made === undefined && gone === undefined)
@@ -847,6 +850,8 @@ export function provisional(host) {
             return openToWrite(to, path, { write: true, create: true, truncate: true, mode: asked, umask }, target, data, true, keepMode ? mode : undefined) !== undefined;
         },
         content: (entry) => {
+            if (touched.size === 0)
+                return undefined;
             const inode = inodes.get(identity(entry.dev, entry.ino));
             if (inode === undefined || inode.state === null || inode.state.bytes === null)
                 return undefined;
