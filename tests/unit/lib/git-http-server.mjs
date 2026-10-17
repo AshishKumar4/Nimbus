@@ -6,10 +6,16 @@
 // Content-Length (null for a chunked body). `refuse(path, body, request)`: a
 // request it says so of is answered 403, as a server that stops serving answers, or with the
 // Response it returns.
+//
+// `env`: the environment http-backend runs in (the test's, by default), the
+// CGI's variables over it. `forward`: request headers passed on as a web
+// server passes them to a CGI (`Git-Protocol` as HTTP_GIT_PROTOCOL, for git's
+// protocol v2; `Content-Encoding` as HTTP_CONTENT_ENCODING, for a gzipped
+// request); none by default.
 
 import { spawn } from 'node:child_process';
 
-export function startGitHttpServer(projectRoot, { plain = false, refuse = null } = {}) {
+export function startGitHttpServer(projectRoot, { plain = false, refuse = null, env = process.env, forward = [] } = {}) {
   const config = plain ? [] : ['-c', 'uploadpack.allowFilter=true', '-c', 'uploadpack.allowAnySHA1InWant=true'];
   const requests = [];
   const server = Bun.serve({
@@ -22,9 +28,11 @@ export function startGitHttpServer(projectRoot, { plain = false, refuse = null }
       const refusal = refuse === null ? false : refuse(url.pathname, body, request);
       if (refusal instanceof Response) return refusal;
       if (refusal) return new Response('refused', { status: 403 });
+      const forwarded = Object.fromEntries(forward.map((name) => [`HTTP_${name.toUpperCase().replaceAll('-', '_')}`, request.headers.get(name) ?? '']));
       const child = spawn('git', [...config, 'http-backend'], {
         env: {
-          ...process.env,
+          ...env,
+          ...forwarded,
           GIT_PROJECT_ROOT: projectRoot,
           GIT_HTTP_EXPORT_ALL: '1',
           GIT_CONFIG_NOSYSTEM: '1',
