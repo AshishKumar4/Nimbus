@@ -699,7 +699,7 @@ const ops = (...list) => ({ inodes: [], chunks: [], ops: list });
   const result = await s.send(ops(
     { type: 'call', call: { call: 'writeFile', path: 'sq/w/private', mode: 0o666, umask: 0o077, data: enc.encode('p') } },
     { type: 'call', call: { call: 'mkdir', path: 'sq/w/secret', mode: 0o777, umask: 0o077 } },
-    { type: 'call', call: { call: 'open', path: 'sq/w/opened', mode: 0o666, umask: 0o077, create: true } },
+    { type: 'call', call: { call: 'open', path: 'sq/w/opened', mode: 0o666, access: 'write', umask: 0o077, create: true } },
     { type: 'call', call: { call: 'writeFile', path: 'sq/acl/file', mode: 0o666, umask: 0o077, data: enc.encode('a') } },
     { type: 'call', call: { call: 'mkdir', path: 'sq/acl/dir', mode: 0o777, umask: 0o077 } },
   ));

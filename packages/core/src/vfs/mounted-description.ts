@@ -143,8 +143,9 @@ export function openMounted(options: MountedDescriptionOptions): Awaitable<Mount
     const key = name.key();
     if (!isPromise(key)) settleHeld(options.scope, key);
   };
+  const rights = { read: options.flags.read, write: options.flags.write };
   return andThen(options.pin(options.name, openFollows(options.flags)), (name) => andThen(openOnMount(name, options, true, settle(name)), (stat) => (
-    andThen(name.hold({ read: options.flags.read, write: options.flags.write }, stat.ino ?? 0), (file) => describeMounted(options, file, stat.ino ?? 0)))));
+    andThen(name.hold(rights, stat.ino ?? 0), (file) => describeMounted(options, file, stat.ino ?? 0, rights)))));
 }
 
 /**
@@ -162,9 +163,15 @@ export function reopenMounted(description: MountedFileDescription, options: Omit
   });
 }
 
-/** The description of `file`, opened already (openOnMount), its number `ino`: what its descriptors share. */
-export function describeMounted(context: MountedDescriptionContext, file: HeldFile, ino: number): MountedFileDescription {
-  return new MountedDescription(context, file, ino);
+/**
+ * The description of `file`, opened already (openOnMount), its number `ino`:
+ * what its descriptors share, with the rights its open asked. A read or a
+ * write it was not opened for is EBADF, as through the engine's own
+ * description (SqliteVFS.describeInode), whoever asks: a descriptor, or a
+ * wave's call that names it.
+ */
+export function describeMounted(context: MountedDescriptionContext, file: HeldFile, ino: number, rights: { read: boolean; write: boolean }): MountedFileDescription {
+  return new MountedDescription(context, file, ino, rights);
 }
 
 type Held = { offset: number | null; bytes: Uint8Array };
@@ -193,7 +200,12 @@ class MountedDescription implements MountedFileDescription {
   /** What a settle of its writes it did not ask for failed with (settleHeld): its next fsync or close says so. */
   private failed: unknown = null;
 
-  constructor(private readonly options: MountedDescriptionContext, private readonly file: HeldFile, ino: number) {
+  constructor(
+    private readonly options: MountedDescriptionContext,
+    private readonly file: HeldFile,
+    ino: number,
+    private readonly rights: { read: boolean; write: boolean },
+  ) {
     this.ino = ino;
     this.awaits = file.awaits;
     this.immediate = options.sync || file.awaits;
@@ -211,12 +223,14 @@ class MountedDescription implements MountedFileDescription {
   }
 
   read(offset: number, length: number, admit?: () => void): Awaitable<Uint8Array> {
+    if (!this.rights.read) throw this.options.refuse('EBADF', 'read');
     const view = this.viewed(admit);
     if (view === undefined) return this.file.read(offset, length, this.admitted('read', admit));
     return andThen(view, (bytes) => (bytes ? bytes.slice(offset, offset + length) : this.file.read(offset, length, this.admitted('read', admit))));
   }
 
   write(offset: number, bytes: Uint8Array, admit?: () => void): Awaitable<number> {
+    if (!this.rights.write) throw this.options.refuse('EBADF', 'write');
     const written = this.inPlaceAt(offset, bytes, admit);
     if (written === undefined) return this.hold({ offset, bytes: bytes.slice() }, bytes.byteLength, admit);
     return isPromise(written) ? written.then((end) => (end === undefined ? this.hold({ offset, bytes: bytes.slice() }, bytes.byteLength, admit) : bytes.byteLength)) : bytes.byteLength;
@@ -224,6 +238,7 @@ class MountedDescription implements MountedFileDescription {
 
   /** At the end as it is then (answers that end); a held one goes at the end as it stands at the flush. */
   append(bytes: Uint8Array, admit?: () => void): Awaitable<number> {
+    if (!this.rights.write) throw this.options.refuse('EBADF', 'write');
     if (!this.inPlace) return this.heldAppend(bytes, admit);
     return andThen(this.file.stat(this.admitted('write', admit)), (there) => {
       const written = this.inPlaceAt(there.size, bytes, admit);
@@ -234,6 +249,7 @@ class MountedDescription implements MountedFileDescription {
 
   /** After the writes the process holds on its file, its own among them (settleHeld): none of them comes back after it. */
   truncate(size: number, admit?: () => void): Awaitable<void> {
+    if (!this.rights.write) throw this.options.refuse('EBADF', 'ftruncate');
     settleHeld(this.options.scope, this.file.key);
     return this.file.truncate(size, this.admitted('ftruncate', admit));
   }

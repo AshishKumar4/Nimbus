@@ -10,9 +10,9 @@
       "packages/worker/scripts/artifact-inputs.mjs": "b0c9307e6f6f13bae05ccf99ab22cf7a715553b8c6f46dbbddfef0181a2f7115",
       "packages/worker/scripts/napi-wasm/build.mjs": "45b17dfa68a17b6582d61eab755aff6b4d6c1e734d180e0aa8eff73ef1697387",
       "packages/worker/scripts/napi-wasm/inputs.mjs": "5bac3fae82b6bc1bf7f23fc75ff8cb81098d53cbd4325ae0ccb495362348dbd6",
-      "packages/worker/scripts/napi-wasm/loader/napi-wasm-loader.ts": "be1f648fadb9ad0fef6f0317d37dd616076a10e4ffc0e186609ee23361fe2918",
+      "packages/worker/scripts/napi-wasm/loader/napi-wasm-loader.ts": "ecc01118f58a0f13523b9bfb0219adabbe687f281af275f3b6ed736314dc67ed",
       "packages/worker/scripts/napi-wasm/loader/wasi-trampoline.mjs": "cb857b5989626e502f2a1d86198ba32cec763f360e09bab108bacde3746bbd62",
-      "packages/worker/scripts/napi-wasm/specs.mjs": "620c3977a3fc18514806a5d438057c26993067f8ab61192adb0051e50d598260",
+      "packages/worker/scripts/napi-wasm/specs.mjs": "c12128ac7b54509bbb359380572208302d0e72d16a54f6341de8542ee36c9613",
       "packages/worker/scripts/stage-asset.mjs": "2187cb40e0491884adea0ae5deb543205f431e995a4e1e3a726d93d4e1173929",
       "packages/worker/tsconfig.json": "fa6f4d05c31f08aebf48fc3a2373a2478cb3df3f937c5246a9c47a310ec08c0b",
       "tsconfig.base.json": "6003784c8e56ac1d084c3a15b9a48776154644c8534e5be3bbe212d9ebfc8038",
@@ -164,8 +164,8 @@
   ],
   "outputs": {
     "napi-wasm-loader.mjs": {
-      "bytes": 212663,
-      "sha256": "6ba68fa5253a1999fa74b9b06769dfefd9e1a5a0442c0badc84ae0b26cd777bb"
+      "bytes": 212756,
+      "sha256": "1b79bc3076eed6968ed7f11d08cc4b1c62579b560221cc4b33773bd531cb1b1a"
     },
     "wasi-trampoline.wasm": {
       "bytes": 1961,

@@ -54,6 +54,8 @@ import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { concatBytes, dec, enc } from '../_shared/bytes.js';
 import {
+  openAccessMask,
+  openAccessRights,
   w7ChunkCount,
   w7Chunks,
   type BatchChunkEntry,
@@ -466,8 +468,13 @@ export interface CredentialedVfs {
   readFileString(path: string): string;
   stat(path: string): VfsStat;
   lstat(path: string): VfsStat;
-  /** stat (lstat when `followLeaf` is false), or null when the name is not there: no error made for an absence. */
-  statIfPresent(path: string, followLeaf?: boolean): VfsStat | null;
+  /**
+   * stat (lstat when `followLeaf` is false), or null when the name is not
+   * there: no error made for an absence. A name below a regular file is
+   * absent too ("is it there?"), unless `belowFile` is 'ENOTDIR', which says
+   * so as stat(2) does.
+   */
+  statIfPresent(path: string, followLeaf?: boolean, belowFile?: 'absent' | 'ENOTDIR'): VfsStat | null;
   /** Whether something is at `path` (a link not followed) as published: no append stored, no holder recalled (VFS.landedAt). */
   landedAt(path: string): boolean;
   /** utimensat(2), each time an FsTime, resolved and judged as it commits. `followSymlinks: false` sets a link's own. */
@@ -3247,7 +3254,7 @@ export class SqliteVFS {
       readFileString: (path) => this.readFileString(path, bound),
       stat: (path) => this.stat(path, bound, true),
       lstat: (path) => this.stat(path, bound, false),
-      statIfPresent: (path, followLeaf = true) => this.statIfPresent(path, bound, followLeaf),
+      statIfPresent: (path, followLeaf = true, belowFile = 'absent') => this.statIfPresent(path, bound, followLeaf, this.inodes, belowFile),
       landedAt: (path) => this.landedAt(path, bound),
       utimes: (path, atimeMs, mtimeMs, options) => this.utimes(path, atimeMs, mtimeMs, bound, options?.followSymlinks !== false),
       chmod: (path, mode) => this.chmod(path, mode, bound),
@@ -5709,14 +5716,18 @@ export class SqliteVFS {
     return this.statOf(inode);
   }
 
-  /** stat, with a name that is not there (or a directory on its way that is not) answered null: an answer, not an error. */
-  private statIfPresent(path: string, cred: VfsCred, followLeaf: boolean, tree: InodeLookup = this.inodes): VfsStat | null {
+  /**
+   * stat, with a name that is not there answered null: an answer, not an
+   * error. A file on its way (ENOTDIR) is not there either, unless
+   * `belowFile` is 'ENOTDIR' (stat(2)'s answer).
+   */
+  private statIfPresent(path: string, cred: VfsCred, followLeaf: boolean, tree: InodeLookup = this.inodes, belowFile: 'absent' | 'ENOTDIR' = 'absent'): VfsStat | null {
     try {
       const inode = this.checkAccess(path, 0, cred, { followLeaf, allowMissingLeaf: true, tree }).inode;
       return inode === undefined ? null : this.statOf(inode);
     } catch (error) {
       const code = errnoCodeOf(error);
-      if (code === 'ENOENT' || code === 'ENOTDIR') return null;
+      if (code === 'ENOENT' || (code === 'ENOTDIR' && belowFile === 'absent')) return null;
       throw error;
     }
   }
@@ -7340,9 +7351,9 @@ export class SqliteVFS {
       readFileString: (path) => dec.decode(this.readWhole(file(path))),
       stat: (path) => this.statOf(resolve(path, 0).inode!),
       lstat: (path) => this.statOf(resolve(path, 0, false).inode!),
-      statIfPresent: (path, followLeaf = true) => {
+      statIfPresent: (path, followLeaf = true, belowFile = 'absent') => {
         pinned();
-        return this.statIfPresent(path, bound, followLeaf, tree);
+        return this.statIfPresent(path, bound, followLeaf, tree, belowFile);
       },
       landedAt: (path) => probe(path) !== undefined,
       utimes: readOnly,
@@ -9926,7 +9937,7 @@ export class SqliteVFS {
    * (SqliteRuntimeFsBridge.open): EEXIST for an exclusive create of a name
    * there (a link included, followed or not), ENOENT without `create`,
    * ELOOP for a link when `nofollow`, EISDIR for a directory, EACCES without
-   * write permission; a name made empty with `mode` less the call's umask, or
+   * the access asked (openAccessMask); a name made empty with `mode` less the call's umask, or
    * an existing file emptied when `truncate`; then, with `fchmod`, that file
    * given the mode (chmod's rule, EPERM for another's), all of it refused
    * together. Its answer is the file's stat.
@@ -9934,17 +9945,20 @@ export class SqliteVFS {
   private openToWrite(call: Extract<W7PathCall, { call: 'open' }>, caller: VfsCred, described: DescribedBy): VfsStat {
     const cred = withUmask(caller, call.umask);
     const follow = call.nofollow !== true;
-    const name = this.checkAccess(call.path, 0, cred, { followLeaf: false, allowMissingLeaf: true }).inode;
+    const named = this.checkAccess(call.path, 0, cred, { followLeaf: false, allowMissingLeaf: true });
+    const name = named.inode;
     if (name !== undefined && call.create === true && call.exclusive === true) throw vfsError('EEXIST', call.path);
     if (!follow && name?.kind === 'symlink') throw vfsError('ELOOP', call.path);
-    const there = follow ? this.checkAccess(call.path, 0, cred, { allowMissingLeaf: true }).inode : name;
+    // A name that is no link is what a followed open reaches: one walk answers both.
+    const reached = follow && name?.kind === 'symlink' ? this.checkAccess(call.path, 0, cred, { allowMissingLeaf: true }) : named;
+    const there = reached.inode;
     if (there === undefined && call.create !== true) throw vfsError('ENOENT', call.path);
     if (there?.kind === 'directory') throw vfsError('EISDIR', call.path);
     if (there === undefined) {
       this.writeFile(call.path, new Uint8Array(0), { mode: call.mode, ...(call.ino === undefined ? {} : { ino: call.ino }) }, cred);
     } else {
       // Every access asked, decided now: an O_RDWR of a write-only file is EACCES here, not at its first read.
-      this.checkAccess(call.path, (call.read === true ? 4 : 0) | 2, cred);
+      if (!this.accessInode(there, openAccessMask(call), cred)) throw vfsKeyError('EACCES', reached.path);
       if (call.truncate === true) this.truncate(call.path, 0, cred);
     }
     if (call.fchmod !== undefined) {
@@ -9956,14 +9970,14 @@ export class SqliteVFS {
     if (call.description === undefined) return stat;
     if (described.descriptions === undefined) throw vfsError('ENOTSUP', call.path, 'no binding keeps open descriptions for this wave');
     // Its access, decided above: the open that made the file writes it whatever its mode, as creat(2) does.
-    const rights = { read: call.read === true, write: true };
+    const rights = openAccessRights(call.access);
     const handle = described.descriptions.adopt(call.description, stat.ino, rights, call.path, cred);
     if (handle === null) throw vfsError('ENOENT', call.path);
     // Kept with the op's cursor, in its transaction: a re-sent open, or a drain of the process's log, finds it.
     if (described.pid !== null) {
       this.sql.exec(
         'INSERT OR REPLACE INTO vfs_wave_descriptions (pid, id, ino, rights) VALUES (?, ?, ?, ?)',
-        described.pid, call.description, stat.ino, (rights.read ? 4 : 0) | 2,
+        described.pid, call.description, stat.ino, (rights.read ? 4 : 0) | (rights.write ? 2 : 0),
       );
     }
     return Object.assign(stat, { handle });

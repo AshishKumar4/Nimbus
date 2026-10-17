@@ -116,7 +116,8 @@ export function openMounted(options) {
         if (!isPromise(key))
             settleHeld(options.scope, key);
     };
-    return andThen(options.pin(options.name, openFollows(options.flags)), (name) => andThen(openOnMount(name, options, true, settle(name)), (stat) => (andThen(name.hold({ read: options.flags.read, write: options.flags.write }, stat.ino ?? 0), (file) => describeMounted(options, file, stat.ino ?? 0)))));
+    const rights = { read: options.flags.read, write: options.flags.write };
+    return andThen(options.pin(options.name, openFollows(options.flags)), (name) => andThen(openOnMount(name, options, true, settle(name)), (stat) => (andThen(name.hold(rights, stat.ino ?? 0), (file) => describeMounted(options, file, stat.ino ?? 0, rights)))));
 }
 /**
  * A new description of the file `description` is on (Linux's open of
@@ -133,9 +134,15 @@ export function reopenMounted(description, options) {
         return options.flags.truncate ? andThen(reopened.truncate(0), () => reopened) : reopened;
     });
 }
-/** The description of `file`, opened already (openOnMount), its number `ino`: what its descriptors share. */
-export function describeMounted(context, file, ino) {
-    return new MountedDescription(context, file, ino);
+/**
+ * The description of `file`, opened already (openOnMount), its number `ino`:
+ * what its descriptors share, with the rights its open asked. A read or a
+ * write it was not opened for is EBADF, as through the engine's own
+ * description (SqliteVFS.describeInode), whoever asks: a descriptor, or a
+ * wave's call that names it.
+ */
+export function describeMounted(context, file, ino, rights) {
+    return new MountedDescription(context, file, ino, rights);
 }
 /**
  * The description of a file on a mount. A write goes in place; on a mount
@@ -151,6 +158,7 @@ let opened = 0;
 class MountedDescription {
     options;
     file;
+    rights;
     ino;
     mounted = true;
     awaits;
@@ -161,9 +169,10 @@ class MountedDescription {
     held = 0;
     /** What a settle of its writes it did not ask for failed with (settleHeld): its next fsync or close says so. */
     failed = null;
-    constructor(options, file, ino) {
+    constructor(options, file, ino, rights) {
         this.options = options;
         this.file = file;
+        this.rights = rights;
         this.ino = ino;
         this.awaits = file.awaits;
         this.immediate = options.sync || file.awaits;
@@ -178,12 +187,16 @@ class MountedDescription {
         });
     }
     read(offset, length, admit) {
+        if (!this.rights.read)
+            throw this.options.refuse('EBADF', 'read');
         const view = this.viewed(admit);
         if (view === undefined)
             return this.file.read(offset, length, this.admitted('read', admit));
         return andThen(view, (bytes) => (bytes ? bytes.slice(offset, offset + length) : this.file.read(offset, length, this.admitted('read', admit))));
     }
     write(offset, bytes, admit) {
+        if (!this.rights.write)
+            throw this.options.refuse('EBADF', 'write');
         const written = this.inPlaceAt(offset, bytes, admit);
         if (written === undefined)
             return this.hold({ offset, bytes: bytes.slice() }, bytes.byteLength, admit);
@@ -191,6 +204,8 @@ class MountedDescription {
     }
     /** At the end as it is then (answers that end); a held one goes at the end as it stands at the flush. */
     append(bytes, admit) {
+        if (!this.rights.write)
+            throw this.options.refuse('EBADF', 'write');
         if (!this.inPlace)
             return this.heldAppend(bytes, admit);
         return andThen(this.file.stat(this.admitted('write', admit)), (there) => {
@@ -202,6 +217,8 @@ class MountedDescription {
     }
     /** After the writes the process holds on its file, its own among them (settleHeld): none of them comes back after it. */
     truncate(size, admit) {
+        if (!this.rights.write)
+            throw this.options.refuse('EBADF', 'ftruncate');
         settleHeld(this.options.scope, this.file.key);
         return this.file.truncate(size, this.admitted('ftruncate', admit));
     }

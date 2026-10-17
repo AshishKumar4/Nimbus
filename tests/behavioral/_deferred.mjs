@@ -112,10 +112,12 @@ export const DEFERRED = validateDeferrals([
   {
     probe: 'frameworks/remix-real',
     excluded: true,
-    reason: 'React Router dev under Vite 8 needs ~87 MiB of wasm (rolldown 55 MiB) plus ~44 MiB of JS heap even in Node, '
-      + "past a facet's sustained memory",
+    reason: "React Router dev's first run is ended by its relaunch as a server: Vite's config load writes "
+      + 'node_modules/.vite-temp/vite.config.ts.timestamp-<ms>-<random>.mjs, which the relaunch does not retrace '
+      + '(4 of 4 runs on 2026-10-16, the Tailwind oxide build staged); behind it, the memory measured before: '
+      + "~87 MiB of wasm (rolldown 55 MiB) plus ~44 MiB of JS heap even in Node, past a facet's sustained memory",
     approved: 'user, 2026-10-12',
     owner: 'Main',
-    tracking: 'unsupported: the per-bundle engine split was measured and not shipped (user decision 2026-10-12)',
+    tracking: 'verify/handoffs/ticket-remix-relaunch-retrace.md (P1, SlimyBeaver)',
   },
 ]);

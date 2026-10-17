@@ -286,6 +286,12 @@ try {
     }
     steps.push(`paged pack index v${version}`);
   }
+
+  // A file where git expects a directory: src, tracked as one, is a file now.
+  // git lstats src/a.js below it and gets ENOTDIR, which it reads as gone.
+  execFileSync('sh', ['-c', 'rm -rf src && printf x > src'], { cwd: join(hostDir, 'repo') });
+  assert.equal((await ws.exec('cd repo && rm -rf src && printf x > src')).exitCode, 0);
+  await step('a file where a directory was', { git: [['status'], ['status', '--porcelain'], ['add', '-A'], ['status'], ['status', '--porcelain'], ['ls-files', '-s']] });
 } finally {
   rmSync(hostDir, { recursive: true, force: true });
   await host.dispose?.();

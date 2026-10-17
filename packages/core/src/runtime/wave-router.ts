@@ -36,6 +36,7 @@ import type { VfsCred, VfsRemoval, VfsStat } from '../vfs/vfs.js';
 import { VFS_DESCRIPTION, VfsError, type VfsErrorCode } from '../vfs/vfs-error.js';
 import { openFollows, openOnMount } from '../vfs/mounted-description.js';
 import { openFlags } from './descriptors.js';
+import { openAccessRights } from '@nimbus-sh/platform/w7-frame.js';
 
 /** The suffix of a link's slot: `.<name>${LINK_SLOT_SUFFIX}-<wave>-<record>`. */
 export const LINK_SLOT_SUFFIX = '.nimbus-wave';
@@ -88,7 +89,7 @@ export function namespaceWaveRouter(namespace: CompositeVFS, credential: (cred: 
     async open(call, cred, guard, owner) {
       // Pinned under the wave's lease alone: its description's later writes are not this wave's to admit.
       const ns = view(cred, undefined, owner);
-      const flags = openFlags({ read: call.read === true, write: true, create: call.create === true, exclusive: call.exclusive === true, truncate: call.truncate === true, followSymlinks: call.nofollow !== true });
+      const flags = openFlags({ ...openAccessRights(call.access), create: call.create === true, exclusive: call.exclusive === true, truncate: call.truncate === true, followSymlinks: call.nofollow !== true });
       const file = await ns.pin(call.path, { follow: openFollows(flags), sync: false });
       await pinOf(ns, parentOf(call.path))();
       const opened = await openOnMount(file, {
