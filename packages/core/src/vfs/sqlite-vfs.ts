@@ -1376,6 +1376,8 @@ interface AppendRun {
   readonly privileged: boolean;
   /** Whose call wrote it: the principal its write event names. */
   readonly origin: Principal | null;
+  /** The delegations its writer's process holds (that process's live set): it is stored holding them, as its writer's calls are. */
+  readonly holds: ReadonlySet<string> | null;
   /** The descriptions that wrote it: a failure to store it is theirs. */
   readonly writers: Set<OpenedNode>;
   /** When its last append was made: the mtime and ctime it is stored with, whenever that is. */
@@ -2809,11 +2811,11 @@ export class SqliteVFS {
     if (this.activePipeline !== null) return false;
     let run = this.appendRuns.get(node.ino);
     // A run is one caller's: another's write stores it first (writable), as its own.
-    if (run !== undefined && (run.privileged !== this.privileged || !samePrincipal(run.origin, this.activeOrigin))) return false;
+    if (run !== undefined && (run.privileged !== this.privileged || !samePrincipal(run.origin, this.activeOrigin) || run.holds !== this.activeHolds)) return false;
     if (offset !== (run === undefined ? node.size : run.base + run.bytes)) return false;
     if (run === undefined) {
       if (this.refusalAt(path) !== null) return false;
-      run = { ino: node.ino, path, base: node.size, parts: [], bytes: 0, admitted: 0, privileged: this.privileged, origin: this.activeOrigin, writers: new Set(), madeAt: 0, timer: null };
+      run = { ino: node.ino, path, base: node.size, parts: [], bytes: 0, admitted: 0, privileged: this.privileged, origin: this.activeOrigin, holds: this.activeHolds, writers: new Set(), madeAt: 0, timer: null };
     }
     if (run.bytes + bytes.byteLength > run.admitted) {
       try {
@@ -2855,11 +2857,12 @@ export class SqliteVFS {
       let at = 0;
       for (const part of run.parts) { block.set(part, at); at += part.byteLength; }
     }
-    const caller = { privileged: this.privileged, owner: this.activeMutationOwner, reservation: this.activeReservation, origin: this.activeOrigin };
+    const caller = { privileged: this.privileged, owner: this.activeMutationOwner, reservation: this.activeReservation, origin: this.activeOrigin, holds: this.activeHolds };
     this.privileged = run.privileged;
     this.activeMutationOwner = null;
     this.activeReservation = null;
     this.activeOrigin = run.origin;
+    this.activeHolds = run.holds;
     try {
       // Published with the time it was made, in the same transaction as its
       // bytes: a stat that stores it later must not move the file's mtime and
@@ -2873,6 +2876,7 @@ export class SqliteVFS {
       this.activeMutationOwner = caller.owner;
       this.activeReservation = caller.reservation;
       this.activeOrigin = caller.origin;
+      this.activeHolds = caller.holds;
     }
   }
 
