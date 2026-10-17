@@ -1,17 +1,11 @@
 
-// ── Cirrus real-vite bundler: __require2 + __require shim ───────
+// ── Cirrus real-vite bundler: __require2 shim ───────
 // Injected by scripts/bundle-real-vite.mjs.
 //
-// 1. __cirrusRealRequireShim resolves a small whitelist of bundled
-//    CJS factories (picomatch/postcss inside readdirp/chokidar) —
-//    consumed by the post-patched __require2 call sites.
-// 2. __cirrusRealCjsRequire is a general CJS require polyfill that
-//    works inside workerd. esbuild's built-in __require polyfill
-//    uses `typeof require !== "undefined" ? require : throw`, which
-//    always throws in workerd because the global `require` doesn't
-//    exist in ESM contexts. We replace the polyfill below.
+// __cirrusRealRequireShim resolves a small whitelist of bundled CJS
+// factories (picomatch/postcss inside readdirp/chokidar) — consumed by the
+// post-patched __require2 call sites.
 ;(() => {
-  const _origCreateRequire = globalThis.__origCreateRequire || null;
   const _bundledFactories = { "picomatch": () => require_picomatch(), "postcss": () => require_postcss() };
   const _stubModule = { __stubbed: true };
   const _stubsFor = new Set(['bufferutil', 'utf-8-validate', 'fsevents', 'sugarss']);
@@ -19,35 +13,6 @@
     if (_bundledFactories[name]) return _bundledFactories[name]();
     if (_stubsFor.has(name)) return _stubModule;
     throw new Error('[cirrus-real] __require2("' + name + '") — not bundled');
-  };
-
-  // CJS require polyfill. Build a createRequire-backed fallback for
-  // node:* builtins. Non-builtin specifiers throw loudly so we see
-  // which deps still need bundling.
-  let _cjsRequire = null;
-  globalThis.__cirrusRealCjsRequire = function(name) {
-    if (_bundledFactories[name]) return _bundledFactories[name]();
-    if (_stubsFor.has(name)) return _stubModule;
-    if (!_cjsRequire) {
-      try {
-        const { createRequire } = globalThis.require
-          ? { createRequire: globalThis.require('node:module').createRequire }
-          : (() => {
-              // ESM-only path: import node:module statically up top? No,
-              // we can't do that from injected JS. Use a synchronous
-              // createRequire workaround: workerd DOES populate a
-              // top-level createRequire for certain contexts.
-              try { return require('node:module'); } catch { return null; }
-            })();
-        _cjsRequire = createRequire ? createRequire('file:///vite.bundle.js') : null;
-      } catch { _cjsRequire = null; }
-    }
-    if (_cjsRequire) {
-      try { return _cjsRequire(name); } catch (e) {
-        throw new Error('[cirrus-real] __require("' + name + '") failed: ' + (e?.message || e));
-      }
-    }
-    throw new Error('[cirrus-real] __require("' + name + '") — no CJS require available');
   };
 })();
 
@@ -137,7 +102,7 @@ var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: tru
 // node_modules/@rollup/wasm-node/dist/wasm-node/bindings_wasm.js
 var require_bindings_wasm = __commonJS({
   "node_modules/@rollup/wasm-node/dist/wasm-node/bindings_wasm.js"(exports) {
-    function parse10(code, allow_return_outside_function, jsx) {
+    function parse8(code, allow_return_outside_function, jsx) {
       try {
         const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
         const ptr0 = passStringToWasm0(code, wasm.__wbindgen_export2, wasm.__wbindgen_export3);
@@ -152,8 +117,8 @@ var require_bindings_wasm = __commonJS({
         wasm.__wbindgen_add_to_stack_pointer(16);
       }
     }
-    __name(parse10, "parse");
-    exports.parse = parse10;
+    __name(parse8, "parse");
+    exports.parse = parse8;
     function xxhashBase162(input) {
       let deferred1_0;
       let deferred1_1;
@@ -366,13 +331,13 @@ var require_bindings_wasm = __commonJS({
 var require_native = __commonJS({
   "node_modules/@rollup/wasm-node/dist/native.js"(exports) {
     var {
-      parse: parse10,
+      parse: parse8,
       xxhashBase64Url: xxhashBase64Url2,
       xxhashBase36: xxhashBase362,
       xxhashBase16: xxhashBase162
     } = require_bindings_wasm();
-    exports.parse = parse10;
-    exports.parseAsync = async (code, allowReturnOutsideFunction, jsx, _signal) => parse10(code, allowReturnOutsideFunction, jsx);
+    exports.parse = parse8;
+    exports.parseAsync = async (code, allowReturnOutsideFunction, jsx, _signal) => parse8(code, allowReturnOutsideFunction, jsx);
     exports.xxhashBase64Url = xxhashBase64Url2;
     exports.xxhashBase36 = xxhashBase362;
     exports.xxhashBase16 = xxhashBase162;
@@ -2931,7 +2896,7 @@ var require_scan = __commonJS({
         token.depth = token.isGlobstar ? Infinity : 1;
       }
     }, "depth");
-    var scan3 = /* @__PURE__ */ __name((input, options2) => {
+    var scan = /* @__PURE__ */ __name((input, options2) => {
       const opts = options2 || {};
       const length = input.length - 1;
       const scanToEnd = opts.parts === true || opts.scanToEnd === true;
@@ -3212,7 +3177,7 @@ var require_scan = __commonJS({
       }
       return state;
     }, "scan");
-    module.exports = scan3;
+    module.exports = scan;
   }
 });
 
@@ -3469,7 +3434,7 @@ var require_parse = __commonJS({
       }
       return { risky: false };
     }, "analyzeRepeatedExtglob");
-    var parse10 = /* @__PURE__ */ __name((input, options2) => {
+    var parse8 = /* @__PURE__ */ __name((input, options2) => {
       if (typeof input !== "string") {
         throw new TypeError("Expected a string");
       }
@@ -3639,7 +3604,7 @@ var require_parse = __commonJS({
             output = token.close = `)$))${extglobStar}`;
           }
           if (token.inner.includes("*") && (rest = remaining()) && /^\.[^\\/.]+$/.test(rest)) {
-            const expression = parse10(rest, { ...options2, fastpaths: false }).output;
+            const expression = parse8(rest, { ...options2, fastpaths: false }).output;
             output = token.close = `)${expression})${extglobStar})`;
           }
           if (token.prev.type === "bos") {
@@ -4161,7 +4126,7 @@ var require_parse = __commonJS({
       }
       return state;
     }, "parse");
-    parse10.fastpaths = (input, options2) => {
+    parse8.fastpaths = (input, options2) => {
       const opts = { ...options2 };
       const max = typeof opts.maxLength === "number" ? Math.min(MAX_LENGTH2, opts.maxLength) : MAX_LENGTH2;
       const len = input.length;
@@ -4226,7 +4191,7 @@ var require_parse = __commonJS({
       }
       return source;
     };
-    module.exports = parse10;
+    module.exports = parse8;
   }
 });
 
@@ -4234,8 +4199,8 @@ var require_parse = __commonJS({
 var require_picomatch = __commonJS({
   "node_modules/picomatch/lib/picomatch.js"(exports, module) {
     "use strict";
-    var scan3 = require_scan();
-    var parse10 = require_parse();
+    var scan = require_scan();
+    var parse8 = require_parse();
     var utils4 = require_utils();
     var constants4 = require_constants();
     var isObject3 = /* @__PURE__ */ __name((val) => val && typeof val === "object" && !Array.isArray(val), "isObject");
@@ -4323,9 +4288,9 @@ var require_picomatch = __commonJS({
     picomatch5.isMatch = (str2, patterns, options2) => picomatch5(patterns, options2)(str2);
     picomatch5.parse = (pattern, options2) => {
       if (Array.isArray(pattern)) return pattern.map((p2) => picomatch5.parse(p2, options2));
-      return parse10(pattern, { ...options2, fastpaths: false });
+      return parse8(pattern, { ...options2, fastpaths: false });
     };
-    picomatch5.scan = (input, options2) => scan3(input, options2);
+    picomatch5.scan = (input, options2) => scan(input, options2);
     picomatch5.compileRe = (state, options2, returnOutput = false, returnState = false) => {
       if (returnOutput === true) {
         return state.output;
@@ -4349,10 +4314,10 @@ var require_picomatch = __commonJS({
       }
       let parsed = { negated: false, fastpaths: true };
       if (options2.fastpaths !== false && (input[0] === "." || input[0] === "*")) {
-        parsed.output = parse10.fastpaths(input, options2);
+        parsed.output = parse8.fastpaths(input, options2);
       }
       if (!parsed.output) {
-        parsed = parse10(input, options2);
+        parsed = parse8(input, options2);
       }
       return picomatch5.compileRe(parsed, options2, returnOutput, returnState);
     };
@@ -6576,8 +6541,8 @@ function splitPattern(path6) {
 }
 function isDynamicPattern(pattern, options2) {
   if ((options2 === null || options2 === void 0 ? void 0 : options2.caseSensitiveMatch) === false) return true;
-  const scan3 = import_picomatch.default.scan(pattern);
-  return scan3.isGlob || scan3.negated;
+  const scan = import_picomatch.default.scan(pattern);
+  return scan.isGlob || scan.negated;
 }
 function log(...tasks) {
   console.log(`[tinyglobby ${(/* @__PURE__ */ new Date()).toLocaleTimeString("es")}]`, ...tasks);
@@ -14342,7 +14307,7 @@ var require_public_api = __commonJS({
       return doc;
     }
     __name(parseDocument, "parseDocument");
-    function parse10(src3, reviver, options2) {
+    function parse8(src3, reviver, options2) {
       let _reviver = void 0;
       if (typeof reviver === "function") {
         _reviver = reviver;
@@ -14361,7 +14326,7 @@ var require_public_api = __commonJS({
       }
       return doc.toJS(Object.assign({ reviver: _reviver }, options2));
     }
-    __name(parse10, "parse");
+    __name(parse8, "parse");
     function stringify6(value2, replacer, options2) {
       let _replacer = null;
       if (typeof replacer === "function" || Array.isArray(replacer)) {
@@ -14385,7 +14350,7 @@ var require_public_api = __commonJS({
       return new Document2.Document(value2, _replacer, options2).toString(options2);
     }
     __name(stringify6, "stringify");
-    exports.parse = parse10;
+    exports.parse = parse8;
     exports.parseAllDocuments = parseAllDocuments;
     exports.parseDocument = parseDocument;
     exports.stringify = stringify6;
@@ -22379,100 +22344,17 @@ var init_dep_CvfTChi5 = __esm({
 // real-vite-stub:fsevents
 var fsevents_exports = {};
 __export(fsevents_exports, {
-  TsconfigCache: () => TsconfigCache,
-  VERSION: () => VERSION2,
-  Visitor: () => Visitor,
   bundle: () => bundle,
   bundleAsync: () => bundleAsync,
   default: () => fsevents_default,
-  dev: () => dev,
-  esmExternalRequirePlugin: () => esmExternalRequirePlugin,
-  exactRegex: () => exactRegex,
-  makeIdFiltersToMatchWithQuery: () => makeIdFiltersToMatchWithQuery,
-  minify: () => minify,
-  minifySync: () => minifySync,
-  oxcRuntimePlugin: () => oxcRuntimePlugin,
-  parse: () => parse3,
-  parseAst: () => parseAst2,
-  parseAstAsync: () => parseAstAsync2,
-  parseSync: () => parseSync,
-  prefixRegex: () => prefixRegex,
-  resolveTsconfig: () => resolveTsconfig,
-  rolldown: () => rolldown,
-  scan: () => scan,
-  transform: () => transform2,
-  transformSync: () => transformSync2,
-  viteAliasPlugin: () => viteAliasPlugin,
-  viteBuildImportAnalysisPlugin: () => viteBuildImportAnalysisPlugin,
-  viteDynamicImportVarsPlugin: () => viteDynamicImportVarsPlugin,
-  viteImportGlobPlugin: () => viteImportGlobPlugin,
-  viteJsonPlugin: () => viteJsonPlugin,
-  viteLoadFallbackPlugin: () => viteLoadFallbackPlugin,
-  viteManifestPlugin: () => viteManifestPlugin,
-  viteModulePreloadPolyfillPlugin: () => viteModulePreloadPolyfillPlugin,
-  viteReporterPlugin: () => viteReporterPlugin,
-  viteResolvePlugin: () => viteResolvePlugin,
-  viteTransformPlugin: () => viteTransformPlugin,
-  viteWasmFallbackPlugin: () => viteWasmFallbackPlugin,
-  viteWebWorkerPostPlugin: () => viteWebWorkerPostPlugin,
-  withFilter: () => withFilter
+  transform: () => transform2
 });
-var NOOP_PLUGIN, thrower2, parseAst2, parseAstAsync2, rolldown, VERSION2, TsconfigCache, Visitor, minify, minifySync, parse3, parseSync, transformSync2, esmExternalRequirePlugin, exactRegex, makeIdFiltersToMatchWithQuery, prefixRegex, withFilter, dev, oxcRuntimePlugin, resolveTsconfig, scan, viteAliasPlugin, viteBuildImportAnalysisPlugin, viteDynamicImportVarsPlugin, viteImportGlobPlugin, viteJsonPlugin, viteLoadFallbackPlugin, viteManifestPlugin, viteModulePreloadPolyfillPlugin, viteReporterPlugin, viteResolvePlugin, viteTransformPlugin, viteWasmFallbackPlugin, viteWebWorkerPostPlugin, transform2, bundle, bundleAsync, fsevents_default;
+var thrower2, transform2, bundle, bundleAsync, fsevents_default;
 var init_fsevents = __esm({
   "real-vite-stub:fsevents"() {
-    NOOP_PLUGIN = /* @__PURE__ */ __name((name) => ({ name: "real-vite-spike-stub-" + name }), "NOOP_PLUGIN");
     thrower2 = /* @__PURE__ */ __name((name) => () => {
       throw new Error("[real-vite-spike] " + name + " is stubbed (native binding)");
     }, "thrower");
-    parseAst2 = thrower2("rolldown.parseAst");
-    parseAstAsync2 = /* @__PURE__ */ __name(async (...a) => parseAst2(...a), "parseAstAsync");
-    rolldown = thrower2("rolldown");
-    VERSION2 = "0.0.0-stub";
-    TsconfigCache = class {
-      static {
-        __name(this, "TsconfigCache");
-      }
-      constructor() {
-      }
-      get() {
-        return null;
-      }
-      set() {
-      }
-    };
-    Visitor = class {
-      static {
-        __name(this, "Visitor");
-      }
-    };
-    minify = thrower2("minify");
-    minifySync = thrower2("minifySync");
-    parse3 = thrower2("parse");
-    parseSync = thrower2("parseSync");
-    transformSync2 = thrower2("transformSync");
-    esmExternalRequirePlugin = /* @__PURE__ */ __name(() => NOOP_PLUGIN("esmExternalRequirePlugin"), "esmExternalRequirePlugin");
-    exactRegex = /* @__PURE__ */ __name((r2) => r2, "exactRegex");
-    makeIdFiltersToMatchWithQuery = /* @__PURE__ */ __name(() => [], "makeIdFiltersToMatchWithQuery");
-    prefixRegex = /* @__PURE__ */ __name((r2) => r2, "prefixRegex");
-    withFilter = /* @__PURE__ */ __name((x) => x, "withFilter");
-    dev = /* @__PURE__ */ __name(() => {
-    }, "dev");
-    oxcRuntimePlugin = /* @__PURE__ */ __name(() => NOOP_PLUGIN("oxcRuntimePlugin"), "oxcRuntimePlugin");
-    resolveTsconfig = /* @__PURE__ */ __name(() => null, "resolveTsconfig");
-    scan = /* @__PURE__ */ __name(async () => ({}), "scan");
-    viteAliasPlugin = /* @__PURE__ */ __name(() => NOOP_PLUGIN("viteAliasPlugin"), "viteAliasPlugin");
-    viteBuildImportAnalysisPlugin = /* @__PURE__ */ __name(() => NOOP_PLUGIN("viteBuildImportAnalysisPlugin"), "viteBuildImportAnalysisPlugin");
-    viteDynamicImportVarsPlugin = /* @__PURE__ */ __name(() => NOOP_PLUGIN("viteDynamicImportVarsPlugin"), "viteDynamicImportVarsPlugin");
-    viteImportGlobPlugin = /* @__PURE__ */ __name(() => NOOP_PLUGIN("viteImportGlobPlugin"), "viteImportGlobPlugin");
-    viteJsonPlugin = /* @__PURE__ */ __name(() => NOOP_PLUGIN("viteJsonPlugin"), "viteJsonPlugin");
-    viteLoadFallbackPlugin = /* @__PURE__ */ __name(() => NOOP_PLUGIN("viteLoadFallbackPlugin"), "viteLoadFallbackPlugin");
-    viteManifestPlugin = /* @__PURE__ */ __name(() => NOOP_PLUGIN("viteManifestPlugin"), "viteManifestPlugin");
-    viteModulePreloadPolyfillPlugin = /* @__PURE__ */ __name(() => NOOP_PLUGIN("viteModulePreloadPolyfillPlugin"), "viteModulePreloadPolyfillPlugin");
-    viteReporterPlugin = /* @__PURE__ */ __name(() => NOOP_PLUGIN("viteReporterPlugin"), "viteReporterPlugin");
-    viteResolvePlugin = /* @__PURE__ */ __name(() => NOOP_PLUGIN("viteResolvePlugin"), "viteResolvePlugin");
-    viteTransformPlugin = /* @__PURE__ */ __name(() => NOOP_PLUGIN("viteTransformPlugin"), "viteTransformPlugin");
-    viteWasmFallbackPlugin = /* @__PURE__ */ __name(() => NOOP_PLUGIN("viteWasmFallbackPlugin"), "viteWasmFallbackPlugin");
-    viteWebWorkerPostPlugin = /* @__PURE__ */ __name(() => NOOP_PLUGIN("viteWebWorkerPostPlugin"), "viteWebWorkerPostPlugin");
     transform2 = thrower2("lightningcss.transform");
     bundle = thrower2("lightningcss.bundle");
     bundleAsync = /* @__PURE__ */ __name(async (...a) => thrower2("lightningcss.bundleAsync")(), "bundleAsync");
@@ -22801,7 +22683,7 @@ function requireScan$1() {
       token.depth = token.isGlobstar ? Infinity : 1;
     }
   }, "depth");
-  const scan3 = /* @__PURE__ */ __name((input, options2) => {
+  const scan = /* @__PURE__ */ __name((input, options2) => {
     const opts = options2 || {};
     const length = input.length - 1;
     const scanToEnd = opts.parts === true || opts.scanToEnd === true;
@@ -23082,7 +22964,7 @@ function requireScan$1() {
     }
     return state;
   }, "scan");
-  scan_1$1 = scan3;
+  scan_1$1 = scan;
   return scan_1$1;
 }
 function requireParse$2() {
@@ -23315,7 +23197,7 @@ function requireParse$2() {
     }
     return { risky: false };
   }, "analyzeRepeatedExtglob");
-  const parse10 = /* @__PURE__ */ __name((input, options2) => {
+  const parse8 = /* @__PURE__ */ __name((input, options2) => {
     if (typeof input !== "string") {
       throw new TypeError("Expected a string");
     }
@@ -23486,7 +23368,7 @@ function requireParse$2() {
           output = token.close = `)$))${extglobStar}`;
         }
         if (token.inner.includes("*") && (rest = remaining()) && /^\.[^\\/.]+$/.test(rest)) {
-          const expression = parse10(rest, { ...options2, fastpaths: false }).output;
+          const expression = parse8(rest, { ...options2, fastpaths: false }).output;
           output = token.close = `)${expression})${extglobStar})`;
         }
         if (token.prev.type === "bos") {
@@ -24011,7 +23893,7 @@ function requireParse$2() {
     }
     return state;
   }, "parse");
-  parse10.fastpaths = (input, options2) => {
+  parse8.fastpaths = (input, options2) => {
     const opts = { ...options2 };
     const max = typeof opts.maxLength === "number" ? Math.min(MAX_LENGTH2, opts.maxLength) : MAX_LENGTH2;
     const len = input.length;
@@ -24077,15 +23959,15 @@ function requireParse$2() {
     }
     return source;
   };
-  parse_1$2 = parse10;
+  parse_1$2 = parse8;
   return parse_1$2;
 }
 function requirePicomatch$3() {
   if (hasRequiredPicomatch$3) return picomatch_1$1;
   hasRequiredPicomatch$3 = 1;
   const path6 = require$$0$1;
-  const scan3 = /* @__PURE__ */ requireScan$1();
-  const parse10 = /* @__PURE__ */ requireParse$2();
+  const scan = /* @__PURE__ */ requireScan$1();
+  const parse8 = /* @__PURE__ */ requireParse$2();
   const utils4 = /* @__PURE__ */ requireUtils$2();
   const constants4 = /* @__PURE__ */ requireConstants$3();
   const isObject3 = /* @__PURE__ */ __name((val) => val && typeof val === "object" && !Array.isArray(val), "isObject");
@@ -24173,9 +24055,9 @@ function requirePicomatch$3() {
   picomatch5.isMatch = (str2, patterns, options2) => picomatch5(patterns, options2)(str2);
   picomatch5.parse = (pattern, options2) => {
     if (Array.isArray(pattern)) return pattern.map((p2) => picomatch5.parse(p2, options2));
-    return parse10(pattern, { ...options2, fastpaths: false });
+    return parse8(pattern, { ...options2, fastpaths: false });
   };
-  picomatch5.scan = (input, options2) => scan3(input, options2);
+  picomatch5.scan = (input, options2) => scan(input, options2);
   picomatch5.compileRe = (state, options2, returnOutput = false, returnState = false) => {
     if (returnOutput === true) {
       return state.output;
@@ -24199,10 +24081,10 @@ function requirePicomatch$3() {
     }
     let parsed = { negated: false, fastpaths: true };
     if (options2.fastpaths !== false && (input[0] === "." || input[0] === "*")) {
-      parsed.output = parse10.fastpaths(input, options2);
+      parsed.output = parse8.fastpaths(input, options2);
     }
     if (!parsed.output) {
-      parsed = parse10(input, options2);
+      parsed = parse8(input, options2);
     }
     return picomatch5.compileRe(parsed, options2, returnOutput, returnState);
   };
@@ -24760,7 +24642,7 @@ function requireScan() {
       token.depth = token.isGlobstar ? Infinity : 1;
     }
   }, "depth");
-  const scan3 = /* @__PURE__ */ __name((input, options2) => {
+  const scan = /* @__PURE__ */ __name((input, options2) => {
     const opts = options2 || {};
     const length = input.length - 1;
     const scanToEnd = opts.parts === true || opts.scanToEnd === true;
@@ -25041,7 +24923,7 @@ function requireScan() {
     }
     return state;
   }, "scan");
-  scan_1 = scan3;
+  scan_1 = scan;
   return scan_1;
 }
 function requireParse$1() {
@@ -25274,7 +25156,7 @@ function requireParse$1() {
     }
     return { risky: false };
   }, "analyzeRepeatedExtglob");
-  const parse10 = /* @__PURE__ */ __name((input, options2) => {
+  const parse8 = /* @__PURE__ */ __name((input, options2) => {
     if (typeof input !== "string") {
       throw new TypeError("Expected a string");
     }
@@ -25445,7 +25327,7 @@ function requireParse$1() {
           output = token.close = `)$))${extglobStar}`;
         }
         if (token.inner.includes("*") && (rest = remaining()) && /^\.[^\\/.]+$/.test(rest)) {
-          const expression = parse10(rest, { ...options2, fastpaths: false }).output;
+          const expression = parse8(rest, { ...options2, fastpaths: false }).output;
           output = token.close = `)${expression})${extglobStar})`;
         }
         if (token.prev.type === "bos") {
@@ -25970,7 +25852,7 @@ function requireParse$1() {
     }
     return state;
   }, "parse");
-  parse10.fastpaths = (input, options2) => {
+  parse8.fastpaths = (input, options2) => {
     const opts = { ...options2 };
     const max = typeof opts.maxLength === "number" ? Math.min(MAX_LENGTH2, opts.maxLength) : MAX_LENGTH2;
     const len = input.length;
@@ -26036,15 +25918,15 @@ function requireParse$1() {
     }
     return source;
   };
-  parse_1$1 = parse10;
+  parse_1$1 = parse8;
   return parse_1$1;
 }
 function requirePicomatch$1() {
   if (hasRequiredPicomatch$1) return picomatch_1;
   hasRequiredPicomatch$1 = 1;
   const path6 = require$$0$1;
-  const scan3 = /* @__PURE__ */ requireScan();
-  const parse10 = /* @__PURE__ */ requireParse$1();
+  const scan = /* @__PURE__ */ requireScan();
+  const parse8 = /* @__PURE__ */ requireParse$1();
   const utils4 = /* @__PURE__ */ requireUtils$1();
   const constants4 = /* @__PURE__ */ requireConstants$2();
   const isObject3 = /* @__PURE__ */ __name((val) => val && typeof val === "object" && !Array.isArray(val), "isObject");
@@ -26132,9 +26014,9 @@ function requirePicomatch$1() {
   picomatch5.isMatch = (str2, patterns, options2) => picomatch5(patterns, options2)(str2);
   picomatch5.parse = (pattern, options2) => {
     if (Array.isArray(pattern)) return pattern.map((p2) => picomatch5.parse(p2, options2));
-    return parse10(pattern, { ...options2, fastpaths: false });
+    return parse8(pattern, { ...options2, fastpaths: false });
   };
-  picomatch5.scan = (input, options2) => scan3(input, options2);
+  picomatch5.scan = (input, options2) => scan(input, options2);
   picomatch5.compileRe = (state, options2, returnOutput = false, returnState = false) => {
     if (returnOutput === true) {
       return state.output;
@@ -26158,10 +26040,10 @@ function requirePicomatch$1() {
     }
     let parsed = { negated: false, fastpaths: true };
     if (options2.fastpaths !== false && (input[0] === "." || input[0] === "*")) {
-      parsed.output = parse10.fastpaths(input, options2);
+      parsed.output = parse8.fastpaths(input, options2);
     }
     if (!parsed.output) {
-      parsed = parse10(input, options2);
+      parsed = parse8(input, options2);
     }
     return picomatch5.compileRe(parsed, options2, returnOutput, returnState);
   };
@@ -27262,7 +27144,7 @@ function requireParse() {
     CHAR_NO_BREAK_SPACE: CHAR_NO_BREAK_SPACE2,
     CHAR_ZERO_WIDTH_NOBREAK_SPACE: CHAR_ZERO_WIDTH_NOBREAK_SPACE2
   } = /* @__PURE__ */ requireConstants$1();
-  const parse10 = /* @__PURE__ */ __name((input, options2 = {}) => {
+  const parse8 = /* @__PURE__ */ __name((input, options2 = {}) => {
     if (typeof input !== "string") {
       throw new TypeError("Expected a string");
     }
@@ -27462,7 +27344,7 @@ function requireParse() {
     push2({ type: "eos" });
     return ast;
   }, "parse");
-  parse_1 = parse10;
+  parse_1 = parse8;
   return parse_1;
 }
 function requireBraces() {
@@ -27471,7 +27353,7 @@ function requireBraces() {
   const stringify6 = /* @__PURE__ */ requireStringify();
   const compile2 = /* @__PURE__ */ requireCompile();
   const expand2 = /* @__PURE__ */ requireExpand();
-  const parse10 = /* @__PURE__ */ requireParse();
+  const parse8 = /* @__PURE__ */ requireParse();
   const braces2 = /* @__PURE__ */ __name((input, options2 = {}) => {
     let output = [];
     if (Array.isArray(input)) {
@@ -27491,7 +27373,7 @@ function requireBraces() {
     }
     return output;
   }, "braces");
-  braces2.parse = (input, options2 = {}) => parse10(input, options2);
+  braces2.parse = (input, options2 = {}) => parse8(input, options2);
   braces2.stringify = (input, options2 = {}) => {
     if (typeof input === "string") {
       return stringify6(braces2.parse(input, options2), options2);
@@ -31513,7 +31395,7 @@ function requireScan2() {
       token.depth = token.isGlobstar ? Infinity : 1;
     }
   }, "depth");
-  const scan3 = /* @__PURE__ */ __name((input, options2) => {
+  const scan = /* @__PURE__ */ __name((input, options2) => {
     const opts = options2 || {};
     const length = input.length - 1;
     const scanToEnd = opts.parts === true || opts.scanToEnd === true;
@@ -31794,7 +31676,7 @@ function requireScan2() {
     }
     return state;
   }, "scan");
-  scan_12 = scan3;
+  scan_12 = scan;
   return scan_12;
 }
 function requireParse2() {
@@ -32027,7 +31909,7 @@ function requireParse2() {
     }
     return { risky: false };
   }, "analyzeRepeatedExtglob");
-  const parse10 = /* @__PURE__ */ __name((input, options2) => {
+  const parse8 = /* @__PURE__ */ __name((input, options2) => {
     if (typeof input !== "string") {
       throw new TypeError("Expected a string");
     }
@@ -32197,7 +32079,7 @@ function requireParse2() {
           output = token.close = `)$))${extglobStar}`;
         }
         if (token.inner.includes("*") && (rest = remaining()) && /^\.[^\\/.]+$/.test(rest)) {
-          const expression = parse10(rest, { ...options2, fastpaths: false }).output;
+          const expression = parse8(rest, { ...options2, fastpaths: false }).output;
           output = token.close = `)${expression})${extglobStar})`;
         }
         if (token.prev.type === "bos") {
@@ -32719,7 +32601,7 @@ function requireParse2() {
     }
     return state;
   }, "parse");
-  parse10.fastpaths = (input, options2) => {
+  parse8.fastpaths = (input, options2) => {
     const opts = { ...options2 };
     const max = typeof opts.maxLength === "number" ? Math.min(MAX_LENGTH2, opts.maxLength) : MAX_LENGTH2;
     const len = input.length;
@@ -32784,14 +32666,14 @@ function requireParse2() {
     }
     return source;
   };
-  parse_12 = parse10;
+  parse_12 = parse8;
   return parse_12;
 }
 function requirePicomatch$12() {
   if (hasRequiredPicomatch$12) return picomatch_1$12;
   hasRequiredPicomatch$12 = 1;
-  const scan3 = /* @__PURE__ */ requireScan2();
-  const parse10 = /* @__PURE__ */ requireParse2();
+  const scan = /* @__PURE__ */ requireScan2();
+  const parse8 = /* @__PURE__ */ requireParse2();
   const utils4 = /* @__PURE__ */ requireUtils2();
   const constants4 = /* @__PURE__ */ requireConstants2();
   const isObject3 = /* @__PURE__ */ __name((val) => val && typeof val === "object" && !Array.isArray(val), "isObject");
@@ -32879,9 +32761,9 @@ function requirePicomatch$12() {
   picomatch5.isMatch = (str2, patterns, options2) => picomatch5(patterns, options2)(str2);
   picomatch5.parse = (pattern, options2) => {
     if (Array.isArray(pattern)) return pattern.map((p2) => picomatch5.parse(p2, options2));
-    return parse10(pattern, { ...options2, fastpaths: false });
+    return parse8(pattern, { ...options2, fastpaths: false });
   };
-  picomatch5.scan = (input, options2) => scan3(input, options2);
+  picomatch5.scan = (input, options2) => scan(input, options2);
   picomatch5.compileRe = (state, options2, returnOutput = false, returnState = false) => {
     if (returnOutput === true) {
       return state.output;
@@ -32905,10 +32787,10 @@ function requirePicomatch$12() {
     }
     let parsed = { negated: false, fastpaths: true };
     if (options2.fastpaths !== false && (input[0] === "." || input[0] === "*")) {
-      parsed.output = parse10.fastpaths(input, options2);
+      parsed.output = parse8.fastpaths(input, options2);
     }
     if (!parsed.output) {
-      parsed = parse10(input, options2);
+      parsed = parse8(input, options2);
     }
     return picomatch5.compileRe(parsed, options2, returnOutput, returnState);
   };
@@ -52288,12 +52170,12 @@ function requireUnit() {
 }
 function ValueParser(value2) {
   if (this instanceof ValueParser) {
-    this.nodes = parse4(value2);
+    this.nodes = parse3(value2);
     return this;
   }
   return new ValueParser(value2);
 }
-var openParentheses, closeParentheses, singleQuote, doubleQuote, backslash, slash2, comma3, colon, star, uLower, uUpper, plus, isUnicodeRange, parse$1, walk$1, stringify_1, unit, hasRequiredUnit, parse4, walk2, stringify2, lib;
+var openParentheses, closeParentheses, singleQuote, doubleQuote, backslash, slash2, comma3, colon, star, uLower, uUpper, plus, isUnicodeRange, parse$1, walk$1, stringify_1, unit, hasRequiredUnit, parse3, walk2, stringify2, lib;
 var init_dep_3RmXg9uo = __esm({
   "node_modules/vite/dist/node/chunks/dep-3RmXg9uo.js"() {
     openParentheses = "(".charCodeAt(0);
@@ -52559,7 +52441,7 @@ var init_dep_3RmXg9uo = __esm({
     __name(stringify$1, "stringify$1");
     stringify_1 = stringify$1;
     __name(requireUnit, "requireUnit");
-    parse4 = parse$1;
+    parse3 = parse$1;
     walk2 = walk$1;
     stringify2 = stringify_1;
     __name(ValueParser, "ValueParser");
@@ -54522,7 +54404,7 @@ var require_container = __commonJS({
     var Node2 = require_node();
     var { isClean, my } = require_symbols();
     var AtRule2;
-    var parse10;
+    var parse8;
     var Root2;
     var Rule2;
     function cleanSource(nodes) {
@@ -54694,7 +54576,7 @@ var require_container = __commonJS({
       }
       normalize(nodes, sample) {
         if (typeof nodes === "string") {
-          nodes = cleanSource(parse10(nodes).nodes);
+          nodes = cleanSource(parse8(nodes).nodes);
         } else if (typeof nodes === "undefined") {
           nodes = [];
         } else if (Array.isArray(nodes)) {
@@ -54903,7 +54785,7 @@ var require_container = __commonJS({
       }
     };
     Container2.registerParse = (dependant) => {
-      parse10 = dependant;
+      parse8 = dependant;
     };
     Container2.registerRule = (dependant) => {
       Rule2 = dependant;
@@ -58479,7 +58361,7 @@ var require_parse2 = __commonJS({
     var Container2 = require_container();
     var Input2 = require_input();
     var Parser3 = require_parser2();
-    function parse10(css, opts) {
+    function parse8(css, opts) {
       let input = new Input2(css, opts);
       let parser2 = new Parser3(input);
       try {
@@ -58500,10 +58382,10 @@ var require_parse2 = __commonJS({
       }
       return parser2.root;
     }
-    __name(parse10, "parse");
-    module.exports = parse10;
-    parse10.default = parse10;
-    Container2.registerParse(parse10);
+    __name(parse8, "parse");
+    module.exports = parse8;
+    parse8.default = parse8;
+    Container2.registerParse(parse8);
   }
 });
 
@@ -58610,7 +58492,7 @@ var require_lazy_result = __commonJS({
     var Container2 = require_container();
     var Document2 = require_document();
     var MapGenerator = require_map_generator();
-    var parse10 = require_parse2();
+    var parse8 = require_parse2();
     var Result2 = require_result();
     var Root2 = require_root();
     var stringify6 = require_stringify2();
@@ -58751,7 +58633,7 @@ var require_lazy_result = __commonJS({
             opts.map.prev = css.map;
           }
         } else {
-          let parser2 = parse10;
+          let parser2 = parse8;
           if (opts.syntax) parser2 = opts.syntax.parse;
           if (opts.parser) parser2 = opts.parser;
           if (parser2.parse) parser2 = parser2.parse;
@@ -59132,7 +59014,7 @@ var require_no_work_result = __commonJS({
   "node_modules/postcss/lib/no-work-result.js"(exports, module) {
     "use strict";
     var MapGenerator = require_map_generator();
-    var parse10 = require_parse2();
+    var parse8 = require_parse2();
     var Result2 = require_result();
     var stringify6 = require_stringify2();
     var warnOnce = require_warn_once();
@@ -59163,7 +59045,7 @@ var require_no_work_result = __commonJS({
           return this._root;
         }
         let root4;
-        let parser2 = parse10;
+        let parser2 = parse8;
         try {
           root4 = parser2(this._css, this._opts);
         } catch (error3) {
@@ -59321,7 +59203,7 @@ var require_postcss = __commonJS({
     var LazyResult = require_lazy_result();
     var list2 = require_list();
     var Node2 = require_node();
-    var parse10 = require_parse2();
+    var parse8 = require_parse2();
     var Processor2 = require_processor();
     var Result2 = require_result();
     var Root2 = require_root();
@@ -59368,7 +59250,7 @@ var require_postcss = __commonJS({
       return creator;
     }, "plugin");
     postcss3.stringify = stringify6;
-    postcss3.parse = parse10;
+    postcss3.parse = parse8;
     postcss3.fromJSON = fromJSON2;
     postcss3.list = list2;
     postcss3.comment = (defaults) => new Comment2(defaults);
@@ -59419,13 +59301,13 @@ __export(postcss_exports, {
   document: () => document2,
   fromJSON: () => fromJSON,
   list: () => list,
-  parse: () => parse5,
+  parse: () => parse4,
   plugin: () => plugin,
   root: () => root,
   rule: () => rule,
   stringify: () => stringify4
 });
-var import_postcss, postcss_default, stringify4, fromJSON, plugin, parse5, list, document2, comment, atRule, rule, decl, root, CssSyntaxError, Declaration, Container, Processor, Document, Comment, Warning, AtRule, Result, Input, Rule, Root, Node;
+var import_postcss, postcss_default, stringify4, fromJSON, plugin, parse4, list, document2, comment, atRule, rule, decl, root, CssSyntaxError, Declaration, Container, Processor, Document, Comment, Warning, AtRule, Result, Input, Rule, Root, Node;
 var init_postcss = __esm({
   "node_modules/postcss/lib/postcss.mjs"() {
     import_postcss = __toESM(require_postcss(), 1);
@@ -59433,7 +59315,7 @@ var init_postcss = __esm({
     stringify4 = import_postcss.default.stringify;
     fromJSON = import_postcss.default.fromJSON;
     plugin = import_postcss.default.plugin;
-    parse5 = import_postcss.default.parse;
+    parse4 = import_postcss.default.parse;
     list = import_postcss.default.list;
     document2 = import_postcss.default.document;
     comment = import_postcss.default.comment;
@@ -64621,7 +64503,7 @@ var init_dep_lpEPC2f9 = __esm({
           this.current._inferEndPosition();
           return this.root;
         }, "loop");
-        _proto.parse = /* @__PURE__ */ __name(function parse10(throwOnParenthesis) {
+        _proto.parse = /* @__PURE__ */ __name(function parse8(throwOnParenthesis) {
           switch (this.currToken[_tokenize.FIELDS.TYPE]) {
             case tokens.space:
               this.space();
@@ -64880,7 +64762,7 @@ var init_dep_lpEPC2f9 = __esm({
             return result.transform;
           });
         }, "transform");
-        _proto.transformSync = /* @__PURE__ */ __name(function transformSync4(rule2, options2) {
+        _proto.transformSync = /* @__PURE__ */ __name(function transformSync2(rule2, options2) {
           return this._runSync(rule2, options2).transform;
         }, "transformSync");
         _proto.process = /* @__PURE__ */ __name(function process3(rule2, options2) {
@@ -65702,100 +65584,17 @@ var init_dep_lpEPC2f9 = __esm({
 // real-vite-stub:lightningcss
 var lightningcss_exports = {};
 __export(lightningcss_exports, {
-  TsconfigCache: () => TsconfigCache2,
-  VERSION: () => VERSION3,
-  Visitor: () => Visitor2,
   bundle: () => bundle2,
   bundleAsync: () => bundleAsync2,
   default: () => lightningcss_default,
-  dev: () => dev2,
-  esmExternalRequirePlugin: () => esmExternalRequirePlugin2,
-  exactRegex: () => exactRegex2,
-  makeIdFiltersToMatchWithQuery: () => makeIdFiltersToMatchWithQuery2,
-  minify: () => minify2,
-  minifySync: () => minifySync2,
-  oxcRuntimePlugin: () => oxcRuntimePlugin2,
-  parse: () => parse6,
-  parseAst: () => parseAst3,
-  parseAstAsync: () => parseAstAsync3,
-  parseSync: () => parseSync2,
-  prefixRegex: () => prefixRegex2,
-  resolveTsconfig: () => resolveTsconfig2,
-  rolldown: () => rolldown2,
-  scan: () => scan2,
-  transform: () => transform4,
-  transformSync: () => transformSync3,
-  viteAliasPlugin: () => viteAliasPlugin2,
-  viteBuildImportAnalysisPlugin: () => viteBuildImportAnalysisPlugin2,
-  viteDynamicImportVarsPlugin: () => viteDynamicImportVarsPlugin2,
-  viteImportGlobPlugin: () => viteImportGlobPlugin2,
-  viteJsonPlugin: () => viteJsonPlugin2,
-  viteLoadFallbackPlugin: () => viteLoadFallbackPlugin2,
-  viteManifestPlugin: () => viteManifestPlugin2,
-  viteModulePreloadPolyfillPlugin: () => viteModulePreloadPolyfillPlugin2,
-  viteReporterPlugin: () => viteReporterPlugin2,
-  viteResolvePlugin: () => viteResolvePlugin2,
-  viteTransformPlugin: () => viteTransformPlugin2,
-  viteWasmFallbackPlugin: () => viteWasmFallbackPlugin2,
-  viteWebWorkerPostPlugin: () => viteWebWorkerPostPlugin2,
-  withFilter: () => withFilter2
+  transform: () => transform4
 });
-var NOOP_PLUGIN2, thrower3, parseAst3, parseAstAsync3, rolldown2, VERSION3, TsconfigCache2, Visitor2, minify2, minifySync2, parse6, parseSync2, transformSync3, esmExternalRequirePlugin2, exactRegex2, makeIdFiltersToMatchWithQuery2, prefixRegex2, withFilter2, dev2, oxcRuntimePlugin2, resolveTsconfig2, scan2, viteAliasPlugin2, viteBuildImportAnalysisPlugin2, viteDynamicImportVarsPlugin2, viteImportGlobPlugin2, viteJsonPlugin2, viteLoadFallbackPlugin2, viteManifestPlugin2, viteModulePreloadPolyfillPlugin2, viteReporterPlugin2, viteResolvePlugin2, viteTransformPlugin2, viteWasmFallbackPlugin2, viteWebWorkerPostPlugin2, transform4, bundle2, bundleAsync2, lightningcss_default;
+var thrower3, transform4, bundle2, bundleAsync2, lightningcss_default;
 var init_lightningcss = __esm({
   "real-vite-stub:lightningcss"() {
-    NOOP_PLUGIN2 = /* @__PURE__ */ __name((name) => ({ name: "real-vite-spike-stub-" + name }), "NOOP_PLUGIN");
     thrower3 = /* @__PURE__ */ __name((name) => () => {
       throw new Error("[real-vite-spike] " + name + " is stubbed (native binding)");
     }, "thrower");
-    parseAst3 = thrower3("rolldown.parseAst");
-    parseAstAsync3 = /* @__PURE__ */ __name(async (...a) => parseAst3(...a), "parseAstAsync");
-    rolldown2 = thrower3("rolldown");
-    VERSION3 = "0.0.0-stub";
-    TsconfigCache2 = class {
-      static {
-        __name(this, "TsconfigCache");
-      }
-      constructor() {
-      }
-      get() {
-        return null;
-      }
-      set() {
-      }
-    };
-    Visitor2 = class {
-      static {
-        __name(this, "Visitor");
-      }
-    };
-    minify2 = thrower3("minify");
-    minifySync2 = thrower3("minifySync");
-    parse6 = thrower3("parse");
-    parseSync2 = thrower3("parseSync");
-    transformSync3 = thrower3("transformSync");
-    esmExternalRequirePlugin2 = /* @__PURE__ */ __name(() => NOOP_PLUGIN2("esmExternalRequirePlugin"), "esmExternalRequirePlugin");
-    exactRegex2 = /* @__PURE__ */ __name((r2) => r2, "exactRegex");
-    makeIdFiltersToMatchWithQuery2 = /* @__PURE__ */ __name(() => [], "makeIdFiltersToMatchWithQuery");
-    prefixRegex2 = /* @__PURE__ */ __name((r2) => r2, "prefixRegex");
-    withFilter2 = /* @__PURE__ */ __name((x) => x, "withFilter");
-    dev2 = /* @__PURE__ */ __name(() => {
-    }, "dev");
-    oxcRuntimePlugin2 = /* @__PURE__ */ __name(() => NOOP_PLUGIN2("oxcRuntimePlugin"), "oxcRuntimePlugin");
-    resolveTsconfig2 = /* @__PURE__ */ __name(() => null, "resolveTsconfig");
-    scan2 = /* @__PURE__ */ __name(async () => ({}), "scan");
-    viteAliasPlugin2 = /* @__PURE__ */ __name(() => NOOP_PLUGIN2("viteAliasPlugin"), "viteAliasPlugin");
-    viteBuildImportAnalysisPlugin2 = /* @__PURE__ */ __name(() => NOOP_PLUGIN2("viteBuildImportAnalysisPlugin"), "viteBuildImportAnalysisPlugin");
-    viteDynamicImportVarsPlugin2 = /* @__PURE__ */ __name(() => NOOP_PLUGIN2("viteDynamicImportVarsPlugin"), "viteDynamicImportVarsPlugin");
-    viteImportGlobPlugin2 = /* @__PURE__ */ __name(() => NOOP_PLUGIN2("viteImportGlobPlugin"), "viteImportGlobPlugin");
-    viteJsonPlugin2 = /* @__PURE__ */ __name(() => NOOP_PLUGIN2("viteJsonPlugin"), "viteJsonPlugin");
-    viteLoadFallbackPlugin2 = /* @__PURE__ */ __name(() => NOOP_PLUGIN2("viteLoadFallbackPlugin"), "viteLoadFallbackPlugin");
-    viteManifestPlugin2 = /* @__PURE__ */ __name(() => NOOP_PLUGIN2("viteManifestPlugin"), "viteManifestPlugin");
-    viteModulePreloadPolyfillPlugin2 = /* @__PURE__ */ __name(() => NOOP_PLUGIN2("viteModulePreloadPolyfillPlugin"), "viteModulePreloadPolyfillPlugin");
-    viteReporterPlugin2 = /* @__PURE__ */ __name(() => NOOP_PLUGIN2("viteReporterPlugin"), "viteReporterPlugin");
-    viteResolvePlugin2 = /* @__PURE__ */ __name(() => NOOP_PLUGIN2("viteResolvePlugin"), "viteResolvePlugin");
-    viteTransformPlugin2 = /* @__PURE__ */ __name(() => NOOP_PLUGIN2("viteTransformPlugin"), "viteTransformPlugin");
-    viteWasmFallbackPlugin2 = /* @__PURE__ */ __name(() => NOOP_PLUGIN2("viteWasmFallbackPlugin"), "viteWasmFallbackPlugin");
-    viteWebWorkerPostPlugin2 = /* @__PURE__ */ __name(() => NOOP_PLUGIN2("viteWebWorkerPostPlugin"), "viteWebWorkerPostPlugin");
     transform4 = thrower3("lightningcss.transform");
     bundle2 = thrower3("lightningcss.bundle");
     bundleAsync2 = /* @__PURE__ */ __name(async (...a) => thrower3("lightningcss.bundleAsync")(), "bundleAsync");
@@ -66192,9 +65991,9 @@ function isReference(node3, parent) {
   }
   return false;
 }
-function tryParse(parse10, code, id3) {
+function tryParse(parse8, code, id3) {
   try {
-    return parse10(code, { allowReturnOutsideFunction: true });
+    return parse8(code, { allowReturnOutsideFunction: true });
   } catch (err2) {
     err2.message += ` in ${id3}`;
     throw err2;
@@ -66204,8 +66003,8 @@ function hasCjsKeywords(code, ignoreGlobal) {
   const firstpass = ignoreGlobal ? firstpassNoGlobal : firstpassGlobal;
   return firstpass.test(code);
 }
-function analyzeTopLevelStatements(parse10, code, id3) {
-  const ast = tryParse(parse10, code, id3);
+function analyzeTopLevelStatements(parse8, code, id3) {
+  const ast = tryParse(parse8, code, id3);
   let isEsModule = false;
   let hasDefaultExport = false;
   let hasNamedExports = false;
@@ -67185,8 +66984,8 @@ function getGenerateRequireName() {
     return name;
   };
 }
-async function transformCommonjs(parse10, code, id3, isEsModule, ignoreGlobal, ignoreRequire, ignoreDynamicRequires, getIgnoreTryCatchRequireStatementMode, sourceMap, isDynamicRequireModulesEnabled, dynamicRequireModules, commonDir, astCache, defaultIsModuleExports, needsRequireWrapper, resolveRequireSourcesAndUpdateMeta, isRequired, checkDynamicRequire, commonjsMeta) {
-  const ast = astCache || tryParse(parse10, code, id3);
+async function transformCommonjs(parse8, code, id3, isEsModule, ignoreGlobal, ignoreRequire, ignoreDynamicRequires, getIgnoreTryCatchRequireStatementMode, sourceMap, isDynamicRequireModulesEnabled, dynamicRequireModules, commonDir, astCache, defaultIsModuleExports, needsRequireWrapper, resolveRequireSourcesAndUpdateMeta, isRequired, checkDynamicRequire, commonjsMeta) {
+  const ast = astCache || tryParse(parse8, code, id3);
   const magicString = new MagicString2(code);
   const uses = {
     module: false,
@@ -68411,7 +68210,7 @@ function requireMs() {
     options2 = options2 || {};
     var type = typeof val;
     if (type === "string" && val.length > 0) {
-      return parse10(val);
+      return parse8(val);
     } else if (type === "number" && isFinite(val)) {
       return options2.long ? fmtLong2(val) : fmtShort2(val);
     }
@@ -68419,7 +68218,7 @@ function requireMs() {
       "val is not a non-empty string or a valid number. val=" + JSON.stringify(val)
     );
   }, "ms$1");
-  function parse10(str2) {
+  function parse8(str2) {
     str2 = String(str2);
     if (str2.length > 100) {
       return;
@@ -68475,7 +68274,7 @@ function requireMs() {
         return void 0;
     }
   }
-  __name(parse10, "parse");
+  __name(parse8, "parse");
   function fmtShort2(ms2) {
     var msAbs = Math.abs(ms2);
     if (msAbs >= d2) {
@@ -70935,8 +70734,8 @@ function esbuildPlugin(config2) {
 }
 function resolveEsbuildTranspileOptions(config2, format2) {
   const target = config2.build.target;
-  const minify3 = config2.build.minify === "esbuild";
-  if ((!target || target === "esnext") && !minify3) {
+  const minify = config2.build.minify === "esbuild";
+  if ((!target || target === "esnext") && !minify) {
     return null;
   }
   const isEsLibBuild = config2.build.lib && format2 === "es";
@@ -70952,7 +70751,7 @@ function resolveEsbuildTranspileOptions(config2, format2) {
       ...esbuildOptions.supported
     }
   };
-  if (!minify3) {
+  if (!minify) {
     return {
       ...options2,
       minify: false,
@@ -80040,7 +79839,7 @@ function totalist(dir, callback2, pre = "") {
     stats.isDirectory() ? totalist(abs, callback2, join2(pre, arr[i])) : callback2(join2(pre, arr[i]), abs, stats);
   }
 }
-function parse9(req2) {
+function parse7(req2) {
   let raw = req2.url;
   if (raw == null) return;
   let prev = req2._parsedUrl;
@@ -80184,7 +79983,7 @@ function sirv(dir, opts = {}) {
   let lookup2 = opts.dev ? viaLocal.bind(0, dir.endsWith(sep$1) ? dir : dir + sep$1, isEtag) : viaCache.bind(0, FILES);
   return function(req2, res, next) {
     let extns = [""];
-    let pathname = parse9(req2).pathname;
+    let pathname = parse7(req2).pathname;
     let val = req2.headers["accept-encoding"] || "";
     if (gzips && val.includes("gzip")) extns.unshift(...gzips);
     if (brots && /(br|brotli)/i.test(val)) extns.unshift(...brots);
@@ -80827,8 +80626,8 @@ function traverseNodes(node3, visitor) {
   }
 }
 async function traverseHtml(html, filePath, visitor) {
-  const { parse: parse10 } = await Promise.resolve().then(() => (init_dep_CvfTChi5(), dep_CvfTChi5_exports));
-  const ast = parse10(html, {
+  const { parse: parse8 } = await Promise.resolve().then(() => (init_dep_CvfTChi5(), dep_CvfTChi5_exports));
+  const ast = parse8(html, {
     scriptingEnabled: false,
     // parse inside <noscript>
     sourceCodeLocationInfo: true,
@@ -85776,7 +85575,7 @@ function createBackCompatIdResolver(config2, options2) {
   };
 }
 function createIdResolver(config2, options2) {
-  const scan3 = options2?.scan;
+  const scan = options2?.scan;
   const pluginContainerMap = /* @__PURE__ */ new Map();
   async function resolve8(environment, id3, importer) {
     let pluginContainer = pluginContainerMap.get(environment);
@@ -85802,7 +85601,7 @@ function createIdResolver(config2, options2) {
       );
       pluginContainerMap.set(environment, pluginContainer);
     }
-    return await pluginContainer.resolveId(id3, importer, { scan: scan3 });
+    return await pluginContainer.resolveId(id3, importer, { scan });
   }
   __name(resolve8, "resolve");
   const aliasOnlyPluginContainerMap = /* @__PURE__ */ new Map();
@@ -85817,7 +85616,7 @@ function createIdResolver(config2, options2) {
       );
       aliasOnlyPluginContainerMap.set(environment, pluginContainer);
     }
-    return await pluginContainer.resolveId(id3, importer, { scan: scan3 });
+    return await pluginContainer.resolveId(id3, importer, { scan });
   }
   __name(resolveAlias, "resolveAlias");
   return async (environment, id3, importer, aliasOnly) => {
@@ -86926,7 +86725,7 @@ function combineSourcemapsIfExists(filename, map1, map2) {
     map2
   ]);
 }
-async function finalizeCss(css, minify3, config2) {
+async function finalizeCss(css, minify, config2) {
   if (css.includes("@import") || css.includes("@charset")) {
     css = await hoistAtRules(css);
   }
@@ -89940,7 +89739,7 @@ function defaultCreateClientDevEnvironment(name, config2, context2) {
 function defaultCreateDevEnvironment(name, config2) {
   return createRunnableDevEnvironment(name, config2);
 }
-function resolveDevEnvironmentOptions(dev3, environmentName, consumer, skipSsrTransform, preTransformRequest2) {
+function resolveDevEnvironmentOptions(dev, environmentName, consumer, skipSsrTransform, preTransformRequest2) {
   const resolved = mergeWithDefaults(
     {
       ...configDefaults.dev,
@@ -89950,7 +89749,7 @@ function resolveDevEnvironmentOptions(dev3, environmentName, consumer, skipSsrTr
       recoverable: consumer === "client",
       moduleRunnerTransform: skipSsrTransform !== void 0 && consumer === "server" ? skipSsrTransform : consumer === "server"
     },
-    dev3 ?? {}
+    dev ?? {}
   );
   return {
     ...resolved,
@@ -99893,7 +99692,7 @@ ${e2.message}`);
     __name(matchAll, "matchAll");
     __name(getVar, "getVar");
     __name(parseInternal, "parseInternal");
-    parse$6 = /* @__PURE__ */ __name(function parse8(s2, env4, opts) {
+    parse$6 = /* @__PURE__ */ __name(function parse6(s2, env4, opts) {
       var mapped = parseInternal(s2, env4, opts);
       if (typeof env4 !== "function") {
         return mapped;
@@ -104952,7 +104751,7 @@ ${e2.message}`);
     };
     __name(send$1, "send$1");
     __name(totalist, "totalist");
-    __name(parse9, "parse");
+    __name(parse7, "parse");
     noop2 = /* @__PURE__ */ __name(() => {
     }, "noop");
     __name(isMatch, "isMatch");
@@ -106414,9 +106213,9 @@ ${e2.message}`);
         }
         const skip = options2?.skip;
         const skipCalls = options2?.skipCalls;
-        const scan3 = !!options2?.scan;
+        const scan = !!options2?.scan;
         const ssr = this.environment.config.consumer === "server";
-        const ctx = new ResolveIdContext(this, skip, skipCalls, scan3);
+        const ctx = new ResolveIdContext(this, skip, skipCalls, scan);
         const mergedSkip = new Set(skip);
         for (const call2 of skipCalls ?? []) {
           if (call2.called || call2.id === rawId && call2.importer === importer) {
@@ -106441,7 +106240,7 @@ ${e2.message}`);
               custom: options2?.custom,
               isEntry: !!options2?.isEntry,
               ssr,
-              scan: scan3
+              scan
             })
           );
           if (!result) continue;
@@ -106827,11 +106626,11 @@ ${err22.stack || err22.message}
       static {
         __name(this, "ResolveIdContext");
       }
-      constructor(container2, skip, skipCalls, scan3) {
+      constructor(container2, skip, skipCalls, scan) {
         super(null, container2);
         this._resolveSkips = skip;
         this._resolveSkipCalls = skipCalls;
-        this._scan = scan3;
+        this._scan = scan;
       }
     };
     LoadPluginContext = class extends PluginContext {
