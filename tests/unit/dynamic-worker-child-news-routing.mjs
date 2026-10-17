@@ -60,12 +60,14 @@ child.on('close', (code, signal) => console.log('close:' + code + ':' + signal))
     assert.equal(waits[0].knownStarted, false);
 
     // Output arrives ahead of the start reply; it is applied without acknowledging the gap.
+    const beforeOutput = reports.length;
     reads[1][0].resolve({ chunks: [{ seq: 1, data: new TextEncoder().encode('late') }], closed: false, news: [2] });
-    await until(() => reads[1].length === 2 && reports.some((report) => !report.blocked), 'the output and the timer keeping the parent runnable');
+    await until(() => reads[1].length === 2 && reports.length > beforeOutput && !reports.at(-1).blocked, 'the output and the timer keeping the parent runnable');
     assert.equal(reads[1][1].sinceSeq, 1);
     assert.equal(reports.at(-1).frontier, 0, 'out-of-order news does not advance the reported frontier');
+    const beforeResume = reports.length;
     reads[1][1].resolve({ chunks: [{ seq: 2, data: new TextEncoder().encode('resume') }], closed: false, news: [2] });
-    await until(() => reads[1].length === 3 && reports.at(-1).blocked, 'the parent blocked again after clearing its timer');
+    await until(() => reads[1].length === 3 && reports.length > beforeResume && reports.at(-1).blocked, 'the parent blocked again after clearing its timer');
     assert.equal(reads[1][2].sinceSeq, 2);
     assert.equal(reports.at(-1).frontier, 0, 'duplicate news still leaves the earlier gap unacknowledged');
 
