@@ -214,6 +214,11 @@ function moduleFacts(host: LateLinkHost, row: number): ModuleFacts | null {
  */
 const linkFailures = new Map<string, Error>();
 
+/** The failure an import()'s link kept for the staged module at `key` (linkFailures): what a later load of it throws. */
+export function keptFailure(key: string): Error | undefined {
+  return linkFailures.get(key);
+}
+
 /** Every late module a link has read, by URL: what an interpreted module's `export *` asks of (starConflicts). */
 const lateModules = new Map<string, LateNode>();
 
