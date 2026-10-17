@@ -214,7 +214,7 @@ export function parseNodeCommandLine(args, nodeOptions = '') {
         return fromArgs;
     // The options before the program, but the `--` that ended them.
     const options = args.slice(0, fromArgs.end);
-    return {
+    const line = {
         execArgv: options.at(-1) === '--' ? options.slice(0, -1) : options,
         programIndex: fromArgs.end,
         conditions: [...fromEnv.conditions, ...fromArgs.conditions],
@@ -232,4 +232,14 @@ export function parseNodeCommandLine(args, nodeOptions = '') {
         version: fromArgs.version,
         help: fromArgs.help,
     };
+    // What Node refuses of the options once read (EnvironmentOptions::CheckOptions), each on its line.
+    const refused = [];
+    if (line.defaultType !== undefined && line.defaultType !== 'module' && line.defaultType !== 'commonjs') {
+        refused.push('--experimental-default-type must be "module" or "commonjs"');
+    }
+    if (line.check && line.eval !== undefined)
+        refused.push('either --check or --eval can be used, not both');
+    if (refused.length > 0)
+        return { error: refused.map((message) => `node: ${message}\n`).join(''), exitCode: 9 };
+    return line;
 }
