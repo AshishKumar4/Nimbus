@@ -2284,6 +2284,8 @@ var __nimbusResidentModule = (() => {
       const landed = /* @__PURE__ */ new Map();
       let filled = 0, failed = 0, fetchedBytes = 0;
       const failedPaths = /* @__PURE__ */ new Set();
+      const why = [];
+      Reflect.set(globalThis, "__nimbusDiagFill", { requested: ranges.length, why });
       const revOf = new Map(ranges.map((range) => [range.path, range.rev]));
       for (let at = 0; at < ranges.length; ) {
         const batch = [];
@@ -2294,7 +2296,10 @@ var __nimbusResidentModule = (() => {
           at++;
         }
         if (!await admission.ensureRoom(bytes + batch.length * RESIDENT_ROW_BYTES)) {
-          for (const r of batch) failedPaths.add(r.path);
+          for (const r of batch) {
+            failedPaths.add(r.path);
+            why.push("room " + r.path);
+          }
           continue;
         }
         let results;
@@ -2302,8 +2307,11 @@ var __nimbusResidentModule = (() => {
           results = await supervisor.fsReadBatch(
             batch.map((r) => ({ path: r.path, offset: r.offset, length: r.length, expectedEpoch: r.epoch, expectedRevision: r.rev }))
           );
-        } catch {
-          for (const r of batch) failedPaths.add(r.path);
+        } catch (e) {
+          for (const r of batch) {
+            failedPaths.add(r.path);
+            why.push("batch " + messageOf(e).slice(0, 160) + " " + r.path);
+          }
           continue;
         }
         for (let i = 0; i < batch.length; i++) {
@@ -2314,11 +2322,15 @@ var __nimbusResidentModule = (() => {
             if (code === "EACCES" && range.part === 0) {
               cells.put(t, range.path, { error: "EACCES" }, range.rev);
               filled++;
-            } else failedPaths.add(range.path);
+            } else {
+              failedPaths.add(range.path);
+              why.push("error " + String(code) + " " + range.path);
+            }
             continue;
           }
           if (entry.bytes === null || entry.bytes === void 0) {
             failedPaths.add(range.path);
+            why.push("nobytes " + range.path);
             continue;
           }
           const chunk = residentBytes(entry.bytes);
@@ -2328,11 +2340,13 @@ var __nimbusResidentModule = (() => {
           }
           if (outdated(t, range.path, range.rev)) {
             failedPaths.add(range.path);
+            why.push("outdated " + range.path);
             continue;
           }
           fetchedBytes += chunk.byteLength;
           if (!cells.putChunk(t, range.path, range.part, chunk)) {
             failedPaths.add(range.path);
+            why.push("putChunk " + range.path);
             continue;
           }
           const seen = (landed.get(range.path) || 0) + 1;
