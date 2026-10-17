@@ -39,7 +39,11 @@ export function runnerLoader(name, { rewrite = (config) => config, get } = {}) {
       const loaded = import(pathToFileURL(file).href);
       return {
         getEntrypoint: () => ({
-          async run(request, supervisor) { return (await loaded).default.fetch(request, { SUPERVISOR: supervisor }); },
+          // Entered as the real entry is (one-shot-entry.ts): it asks how its run ends first.
+          async run(request, supervisor, ended) {
+            ended?.().catch(() => {});
+            return (await loaded).default.fetch(request, { SUPERVISOR: supervisor });
+          },
           [Symbol.dispose]() {},
         }),
         [Symbol.dispose]() {},
@@ -74,10 +78,10 @@ export function adoptSessionSupervisor(host, onOutput) {
   });
 }
 
-/** A FacetManager named `name` over `rawVfs`, loading runners through `loader`. */
-export function oneShotManager(name, { host, rawVfs, loader }) {
+/** A FacetManager named `name` over `rawVfs`, loading runners through `loader`, on `ctx` (its Durable Object's state). */
+export function oneShotManager(name, { host, rawVfs, loader, ctx = createFacetCtx(createFacetWorld(() => ({})), name) }) {
   const manager = new FacetManager(
-    createFacetCtx(createFacetWorld(() => ({})), name),
+    ctx,
     { LOADER: loader, ASSETS: stagedAssets }, host.processes, new PortRegistry(), processHostFor,
     { supervise: (props) => supervisorEntrypoint()({ props }) },
   );

@@ -675,7 +675,10 @@ export function suspendLaunchAdmission(ctx, pid) {
             throw new Error('Nimbus: a finished launch cannot regain its admission');
         }
         admission.end = hold;
-    })();
+    })().catch((error) => {
+        resumed = undefined;
+        throw error;
+    });
 }
 /**
  * Within an admitted launch on `ctx`'s ledger, a hold on that launch's own

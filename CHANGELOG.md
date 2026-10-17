@@ -33,6 +33,12 @@ The 2026-10-14 and 2026-10-15 versions reached production but were never publish
   the way, that credit is reclaimed: the launch prepares again at its turn,
   and the load takes its credit once it has a worker. A load refused its
   credit fails at once with EAGAIN.
+- Fixed: a command waiting for its session's busy workers no longer stalls
+  commands in other sessions sharing its isolate. One-shot commands prepare
+  their module maps before waiting and keep only their retained share of the
+  isolate budget; new builds use the remaining room within a checked bound.
+  Running programs can reclaim parked maps for their writes and reads; the
+  waiting commands prepare their maps again before taking a worker.
 - Fixed: one session's compiles no longer reset the other sessions that
   share its isolate. The platform runs several sessions in one isolate
   with one memory limit, and resets all of them when it is crossed. Each
