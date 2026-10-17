@@ -9,7 +9,8 @@ export class ByteQueue {
     consumed;
     buffer = [];
     waiting = [];
-    decoder = new TextDecoder('utf-8');
+    // What flows through keeps a leading U+FEFF, as a pipe's bytes do.
+    decoder = new TextDecoder('utf-8', { ignoreBOM: true });
     ended = false;
     /** `consumed` hears how many bytes each read takes (a pipe's capacity accounting). */
     constructor(consumed = () => { }) {

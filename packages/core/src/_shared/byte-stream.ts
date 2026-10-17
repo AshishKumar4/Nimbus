@@ -45,7 +45,8 @@ export class SinkWriter {
   private written = 0;
 
   constructor(private readonly sink: ByteSink) {
-    this.decoder = sink.writeBytes ? null : new TextDecoder('utf-8');
+    // A stream's text keeps a leading U+FEFF: it is output, not a document.
+    this.decoder = sink.writeBytes ? null : new TextDecoder('utf-8', { ignoreBOM: true });
   }
 
   get bytesWritten(): number {

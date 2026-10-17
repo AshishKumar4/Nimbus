@@ -1,4 +1,5 @@
 import { normalizeVfsPath } from '../vfs/path.js';
+import { nameDec } from '../_shared/bytes.js';
 // The environment esbuild reads; esbuild-wasm's own launcher passes exactly these.
 const ESBUILD_ENV = ['NO_COLOR', 'NODE_PATH', 'npm_config_user_agent', 'WT_SESSION'];
 async function readStdin(stdin) {
@@ -24,7 +25,7 @@ async function emit(stream, bytes) {
     if (stream.writeBytes)
         await stream.writeBytes(bytes);
     else
-        await stream.write(new TextDecoder().decode(bytes));
+        await stream.write(nameDec.decode(bytes));
 }
 export function makeEsbuildCommand(deps) {
     return async function esbuild(ctx) {
