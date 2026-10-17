@@ -14297,56 +14297,17 @@ function __makeProcessStdin() {
   __nimbusStdinSource.attach(r);
   // As in Node: readFileSync(process.stdin.fd) reads fd 0.
   r.fd = 0;
-  let encoding = null;
   r.isTTY = __nimbusAttachedTty;
   r.isRaw = false;
   r.setRawMode = function(mode) {
     r.isRaw = mode !== false;
     return r;
   };
-  r.setEncoding = function(enc) { encoding = enc || null; return r; };
   r.__nimbusStartLivePump = __nimbusStdinSource.seed;
   const origOn = r.on.bind(r);
-  const calls = Symbol("nimbus.stdin.calls");
-  function wrapDataListener(listener) {
-    // Node's setEncoding decodes with one StringDecoder (string_decoder): a
-    // character split across chunks is one, and a leading U+FEFF is kept.
-    let decoder = null;
-    let decoding = null;
-    const wrapped = (chunk) => {
-      let out = chunk;
-      if (encoding && chunk instanceof Uint8Array) {
-        try {
-          if (decoding !== encoding) {
-            decoder = new __stringDecoderMod.StringDecoder(encoding);
-            decoding = encoding;
-          }
-          out = decoder.write(chunk);
-        } catch { out = chunk; }
-      }
-      return listener(out);
-    };
-    // node:events answers listeners() with a wrapper's .listener: the
-    // program's function, also through once()'s own wrapper. The function
-    // this one calls is kept apart, so once()'s wrapper can remove itself.
-    wrapped.listener = listener.listener ?? listener;
-    wrapped[calls] = listener;
-    return wrapped;
-  }
-  // Removal finds the wrapper of the function passed: the program's own, or
-  // once()'s wrapper removing itself after it fires.
-  const origRemove = r.removeListener.bind(r);
-  r.removeListener = function(event, listener) {
-    if (event === "data" && typeof listener === "function") {
-      const raw = r.rawListeners("data");
-      for (let i = raw.length - 1; i >= 0; i--) {
-        const w = raw[i];
-        if (w === listener || w[calls] === listener || w.listener === listener) return origRemove(event, w);
-      }
-    }
-    return origRemove(event, listener);
-  };
-  r.off = r.removeListener;
+  // setEncoding is the Readable's own, as Node's: the chunks pushed are
+  // decoded by one StringDecoder (a character split across two is one, a
+  // leading U+FEFF is kept), its remainder delivered before 'end'.
   // Only a consumer starts stdin, as in Node: a 'data' or 'readable'
   // listener, resume() or read(). An 'end', 'close' or 'error' listener on
   // paused stdin receives nothing. Vite's dev server registers
@@ -14355,13 +14316,11 @@ function __makeProcessStdin() {
   // itself down seconds after it started.
   r.on = function(event, listener) {
     if (event === "data" || event === "readable") __nimbusStdinSource.seed();
+    const ret = origOn(event, listener);
     if (event === "data" && typeof listener === "function") {
-      const wrapped = wrapDataListener(listener);
-      const ret = origOn(event, wrapped);
       try { r.resume(); } catch {}
-      return ret;
     }
-    return origOn(event, listener);
+    return ret;
   };
   r.addListener = r.on;
   return r;
