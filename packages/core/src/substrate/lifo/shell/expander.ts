@@ -782,6 +782,13 @@ function parameterWordParts(word: string): WordPart[] {
       i += 2;
       continue;
     }
+    if (ch === '$' && word[i + 1] === "'") {
+      flush();
+      const quoted = readAnsiCQuote(word, i);
+      parts.push({ text: quoted.text, quoted: 'single' });
+      i = quoted.end;
+      continue;
+    }
     if (ch === "'" || ch === '"') {
       const end = word.indexOf(ch, i + 1);
       const close = end === -1 ? word.length : end;

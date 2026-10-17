@@ -10,15 +10,19 @@ import { decodeLossless, encodeLossless } from './bytes-io.js';
  * one. NUL was the parking spot, so `printf 'a\0b'` came back as `a\b`. One
  * pass consumes `\\` as a unit and needs no parking spot.
  *
- * The dialects differ only in how an octal byte is spelled and in `\"`/`\E`:
+ * The dialects differ only in how an octal byte is spelled, in `\"`/`\E`,
+ * and in `\c`:
  * - `echo`: bash's `echo -e`, `\0NNN` (a zero, then up to three digits);
  *   `\E` is ESC; `\"` is not an escape.
  * - `printf`: a printf FORMAT, `\NNN` (one to three digits); `\"` is `"`.
  * - `printf-b`: printf's `%b` argument, either spelling (coreutils' and
  *   bash's `%b`); `\"` is `"`.
+ * - `ansi-c`: the body of a `$'...'` word, `\NNN`; `\E` is ESC; `\'`, `\"`
+ *   and `\?` are themselves; `\cX` is X's control character (`\c?` DEL), and
+ *   a NUL ends the text there, as bash's C strings have it.
  * Every dialect reads `\\ \a \b \e \f \n \r \t \v`, `\xHH` (one or two hex
- * digits), `\uHHHH` and `\UHHHHHHHH`, and `\c`, which ends the output there.
- * Any other backslash stays as it is.
+ * digits), `\uHHHH` and `\UHHHHHHHH`, and, but in `ansi-c`, `\c`, which ends
+ * the output there. Any other backslash stays as it is.
  *
  * An octal or hex escape names one byte, as bash's and coreutils' putchar
  * write it: `\303\251` is the two bytes of "é", `\377` the byte 0xff. A `\u`
@@ -26,7 +30,7 @@ import { decodeLossless, encodeLossless } from './bytes-io.js';
  * lossless decoding of those bytes (bytes-io.ts), which its writer encodes
  * back to them.
  */
-export type EscapeDialect = 'echo' | 'printf' | 'printf-b';
+export type EscapeDialect = 'echo' | 'printf' | 'printf-b' | 'ansi-c';
 
 const SIMPLE: Readonly<Record<string, string>> = {
   '\\': '\\',
@@ -40,11 +44,12 @@ const SIMPLE: Readonly<Record<string, string>> = {
   v: '\v',
 };
 
-const OCTAL = {
+const OCTAL: Readonly<Record<EscapeDialect, RegExp>> = {
   echo: /0([0-7]{0,3})/y,
   printf: /([0-7]{1,3})/y,
   'printf-b': /(?:0([0-7]{0,3})|([1-7][0-7]{0,2}))/y,
-} as const;
+  'ansi-c': /([0-7]{1,3})/y,
+};
 const HEX = /x([0-9a-fA-F]{1,2})/y;
 const UNICODE = /(?:u([0-9a-fA-F]{1,4})|U([0-9a-fA-F]{1,8}))/y;
 
@@ -70,7 +75,18 @@ export function expandBackslashEscapes(text: string, dialect: EscapeDialect): { 
     if (slash === -1 || slash === text.length - 1) { out += text.slice(i); break; }
     out += text.slice(i, slash);
     const next = text[slash + 1];
-    if (next === 'c') { stopped = true; break; }
+    if (next === 'c' && dialect !== 'ansi-c') { stopped = true; break; }
+    if (next === 'c' && slash + 2 < text.length) {
+      // X's control character, from its first UTF-8 byte (the rest follow
+      // it); `\c\\` takes both backslashes, as bash reads it.
+      const target = String.fromCodePoint(text.codePointAt(slash + 2) ?? 0);
+      const [lead, ...rest] = encodeLossless(target);
+      const control = lead === 0x3f ? 0x7f : lead & 0x1f;
+      out += String.fromCharCode(control) + rest.map((byte) => String.fromCharCode(0xdc00 + byte)).join('');
+      bytes ||= rest.length > 0;
+      i = slash + 2 + target.length + (target === '\\' && text[slash + 3] === '\\' ? 1 : 0);
+      continue;
+    }
     const numeric = numericEscape(text, slash + 1, dialect);
     const digits = numeric?.[1] ?? numeric?.[2] ?? '';
     const unicode = next === 'u' || next === 'U';
@@ -86,10 +102,15 @@ export function expandBackslashEscapes(text: string, dialect: EscapeDialect): { 
       continue;
     }
     if (SIMPLE[next] !== undefined) out += SIMPLE[next];
-    else if (next === 'E' && dialect === 'echo') out += '\x1b';
+    else if (next === 'E' && (dialect === 'echo' || dialect === 'ansi-c')) out += '\x1b';
     else if (next === '"' && dialect !== 'echo') out += '"';
+    else if ((next === "'" || next === '?') && dialect === 'ansi-c') out += next;
     else out += `\\${next}`;
     i = slash + 2;
+  }
+  if (dialect === 'ansi-c') {
+    const nul = out.indexOf('\0');
+    if (nul !== -1) out = out.slice(0, nul);
   }
   // Escaped bytes that spell a character together (`\303\251`) read as it.
   return { text: bytes ? decodeLossless(encodeLossless(out)) : out, stopped };

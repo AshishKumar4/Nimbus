@@ -1,4 +1,5 @@
 import { TokenKind, type Token, type WordPart } from './types.js';
+import { expandBackslashEscapes } from '../utils/backslash-escapes.js';
 
 export function lex(input: string): Token[] {
   const tokens: Token[] = [];
@@ -93,6 +94,12 @@ export function continuationState(input: string): ContinuationState | null {
     }
     if (quote === '"') {
       if (ch === '"') quote = null;
+      continue;
+    }
+    if (ch === '$' && input[i + 1] === "'") {
+      const end = ansiCQuoteEnd(input, i);
+      if (end === -1) return 'single';
+      i = end - 1;
       continue;
     }
     if (ch === "'" || ch === '"') {
@@ -485,6 +492,16 @@ function readWord(input: string, pos: number): { token: Token; end: number } | n
       continue;
     }
 
+    // $'...': ANSI-C quoting, one quoted part whose escapes are decoded
+    if (ch === '$' && input[i + 1] === "'") {
+      flushCurrentText();
+      const quoted = readAnsiCQuote(input, i);
+      parts.push({ text: quoted.text, quoted: 'single' });
+      i = quoted.end;
+      hasContent = true;
+      continue;
+    }
+
     // $(...) or $((...)) command/arithmetic substitution
     if (ch === '$' && input[i + 1] === '(') {
       const subst = readCommandSubstitution(input, i);
@@ -701,6 +718,13 @@ export function readBalancedCommand(
       i = quoted.end;
       continue;
     }
+    if (ch === '$' && input[i + 1] === "'") {
+      const end = ansiCQuoteEnd(input, i);
+      const stop = end === -1 ? input.length : end;
+      body += input.slice(i, stop);
+      i = stop;
+      continue;
+    }
     if (ch === '$' && input[i + 1] === '(') {
       const nested = readBalancedCommand(input, i + 2, '(', ')');
       body += input.slice(i, nested.end);
@@ -727,6 +751,24 @@ export function readBalancedCommand(
   }
 
   return { body, end: i, closed: false };
+}
+
+/**
+ * Where the `$'...'` at `pos` ends, just past its closing quote, or -1 when
+ * the input ends first. A backslash takes the character after it, so `\'`
+ * does not close it.
+ */
+function ansiCQuoteEnd(input: string, pos: number): number {
+  let i = pos + 2;
+  while (i < input.length && input[i] !== "'") i += input[i] === '\\' ? 2 : 1;
+  return i < input.length ? i + 1 : -1;
+}
+
+/** The `$'...'` at `pos`: its text, escapes decoded (backslash-escapes.ts, `ansi-c`), and where it ends. */
+export function readAnsiCQuote(input: string, pos: number): { text: string; end: number } {
+  const end = ansiCQuoteEnd(input, pos);
+  const body = input.slice(pos + 2, end === -1 ? input.length : end - 1);
+  return { text: expandBackslashEscapes(body, 'ansi-c').text, end: end === -1 ? input.length : end };
 }
 
 function readQuoted(input: string, pos: number, quote: '"' | "'"): { text: string; end: number } {
