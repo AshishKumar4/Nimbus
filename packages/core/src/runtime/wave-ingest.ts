@@ -9,7 +9,7 @@
  * with its namespace as the router; a filesystem without one ingests with none.
  */
 
-import { acquireSupervisorAllocation, tryAcquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
+import { acquireSupervisorRunningAllocation, tryAcquireSupervisorRunningAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { decodeWriteBatchStream, encodeWriteBatchStream, type BatchInodeEntry, type BatchWritePayload, type W7DataCall, type W7DecodedRecord } from '@nimbus-sh/platform/w7-frame.js';
 import type { CreditLease } from '@nimbus-sh/platform/weighted-credit-pool.js';
 import { concatBytes, nameDec } from '../_shared/bytes.js';
@@ -525,9 +525,10 @@ export class WaveIngest {
       );
       let supervisorLease: CreditLease;
       try {
+        // A running facet's wave: running work, never held up by a launch that is not running (the lock order).
         supervisorLease = await awaitCredit(
-          () => tryAcquireSupervisorAllocation(byteLength),
-          () => acquireSupervisorAllocation(byteLength, abort),
+          () => tryAcquireSupervisorRunningAllocation(byteLength),
+          () => acquireSupervisorRunningAllocation(byteLength, abort),
         );
       } catch (error) {
         writeLease.release();

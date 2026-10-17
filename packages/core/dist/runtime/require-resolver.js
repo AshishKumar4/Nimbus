@@ -128,7 +128,7 @@ export class ClosureBoundExceededError extends Error {
         this.name = 'ClosureBoundExceededError';
     }
 }
-export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBundleBytes = VFS_BUNDLE_MAX_BYTES, progress, policy, requiredRoots, conditions = []) {
+export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBundleBytes = VFS_BUNDLE_MAX_BYTES, progress, policy, requiredRoots, conditions = [], abortBundleBytes) {
     const report = progress;
     if (report)
         progress = async (work) => {
@@ -144,6 +144,7 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
     const speculative = new Set();
     const visited = new Set();
     let bytesSeen = 0;
+    let abortBytesSeen = 0;
     let closureExceeded = null;
     let declined = null;
     let additionalBytes = 0;
@@ -229,11 +230,15 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
         }
         let size = 0;
         const counted = !policy && (kind === 'module' || lazy);
-        if (!reuseHeld && (policy || counted)) {
+        if (!reuseHeld && (policy || counted || abortBundleBytes !== undefined)) {
             try {
                 size = (await vfs.stat(path))?.size ?? 0;
             }
             catch { /* the read decides */ }
+            if (abortBundleBytes !== undefined && abortBytesSeen + size > abortBundleBytes) {
+                closureExceeded = { kind: 'closure-exceeds-bound', entry: entryFile ?? 'entry code', bytesSeen: abortBytesSeen, bound: abortBundleBytes, lastPath: path };
+                return null;
+            }
             if (!fits(path, size))
                 return null;
             if (counted && bytesSeen + size > maxBundleBytes) {
@@ -269,6 +274,8 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
         }
         if (counted)
             bytesSeen += size;
+        if (abortBundleBytes !== undefined)
+            abortBytesSeen += size;
         bundle[path] = content;
         if (lazy)
             speculative.add(path);
@@ -664,7 +671,7 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
         }
         // Phase 2: dynamic-import subtrees, fewest alternatives first; the queue grows as they are walked.
         lazy = true;
-        for (let next = nextDeferred(); next !== undefined && bytesSeen < maxBundleBytes; next = nextDeferred()) {
+        for (let next = nextDeferred(); next !== undefined && !closureExceeded && bytesSeen < maxBundleBytes; next = nextDeferred()) {
             const resolved = next.path ?? (next.require
                 ? (await resolveStaticDependency(next.specifier, next.fromDir))?.resolved ?? null
                 : await resolveDynamicImport(next.specifier, next.fromDir));
@@ -688,6 +695,8 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
                         delete bundle[path];
                         speculative.delete(path);
                         bytesSeen -= size;
+                        if (abortBundleBytes !== undefined)
+                            abortBytesSeen -= size;
                     }
                     let at = 0;
                     const walked = [];
@@ -706,9 +715,13 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
                 }
                 unit = null;
             }
+            if (closureExceeded)
+                return closureExceeded;
             if (configRoots.has(resolved) && typeof bundle[resolved] === 'string')
                 await deferConfigNames(resolved);
         }
+        if (closureExceeded)
+            return closureExceeded;
         return { bundle, speculative, entryPaths, edges, ...(units.length > 0 ? { units } : {}) };
     }
     try {
