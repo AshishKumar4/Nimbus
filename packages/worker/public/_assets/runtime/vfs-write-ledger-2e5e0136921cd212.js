@@ -1355,6 +1355,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
   }
   var DATA_PIECE_BYTES = WAVE_BYTES;
   var FOLD_BUFFER =   Symbol("process-fs-fold-buffer");
+  var FOLD_WAITERS =   Symbol("process-fs-fold-waiters");
   var MAX_DELEGATIONS_PER_PROCESS = 8;
   var GRANT_AFTER = 8;
   var LINGER_MS = 10;
@@ -1413,6 +1414,21 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
   }
   function descriptionOf(call) {
     return "description" in call ? call.description : void 0;
+  }
+  function startFoldWaiters(entry) {
+    const resolves = [entry.resolve];
+    const rejects = [entry.reject];
+    const waiters = { resolves, rejects };
+    entry[FOLD_WAITERS] = waiters;
+    entry.resolve = (answer) => {
+      for (const resolve of resolves) resolve(answer);
+      resolves.length = rejects.length = 0;
+    };
+    entry.reject = (error) => {
+      for (const reject of rejects) reject(error);
+      resolves.length = rejects.length = 0;
+    };
+    return waiters;
   }
   function extended(call, data, buffer) {
     const size = call.data.byteLength + data.byteLength;
@@ -2059,16 +2075,9 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
           counters.ops++;
           counters.folded++;
           const answer2 = new Promise((resolve, reject) => {
-            const resolveTail = tail.resolve;
-            const rejectTail = tail.reject;
-            tail.resolve = (answered2) => {
-              resolveTail(answered2);
-              resolve(answered2);
-            };
-            tail.reject = (error) => {
-              rejectTail(error);
-              reject(error);
-            };
+            const waiters = tail[FOLD_WAITERS] ?? startFoldWaiters(tail);
+            waiters.resolves.push(resolve);
+            waiters.rejects.push(reject);
           });
           if (acknowledged) answer2.catch(() => {
           });
