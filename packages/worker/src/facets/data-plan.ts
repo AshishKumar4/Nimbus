@@ -135,9 +135,9 @@ export function packageRootOf(k: string): string | null {
   return k.slice(0, at) + 'node_modules/' + rest.slice(0, take).join('/');
 }
 
-/** `rel` under the canonical key `base`, a leading slash in `rel` not resetting it. */
+/** `rel` under the key `base`, taken as it is; a leading slash in `rel` does not reset it. */
 function joinKey(base: string, rel: string): string {
-  return rootClampedSegments(`${base}/${rel}`).join('/');
+  return rootClampedSegments(rel, base ? base.split('/') : []).join('/');
 }
 
 /**

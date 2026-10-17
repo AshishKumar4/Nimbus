@@ -33,6 +33,10 @@ for (const [path, segments] of cases) {
   assert.equal(normalizeVfsPath(path), segments.join('/'), `normalizeVfsPath(${JSON.stringify(path)}) is its key`);
 }
 
+// A base is taken as it is, and the path's names reduced after it.
+assert.deepEqual(rootClampedSegments('../../x', ['a', '', 'b']), ['a', 'x']);
+assert.deepEqual(rootClampedSegments('../../../x', ['a']), ['x']);
+
 // MemoryVFS resolves the same spellings to the same file, and keeps a '..'
 // past its root at the root.
 const memory = new MemoryVFS({ uid: 0, gid: 0 });

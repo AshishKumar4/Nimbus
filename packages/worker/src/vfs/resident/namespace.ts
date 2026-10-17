@@ -183,7 +183,7 @@ export function nsRowAt(t: ResidentTables, k: string): NsRow | undefined {
 
 function joinTarget(linkPath: string, target: unknown): string {
   const text = String(target);
-  return rootClampedSegments(text.startsWith('/') ? text : `${nsSplit(linkPath)[0]}/${text}`).join('/');
+  return rootClampedSegments(text, text.startsWith('/') ? [] : nsSplit(linkPath)[0].split('/').filter(Boolean)).join('/');
 }
 
 export function createNamespace(coherence: Coherence, admission: Admission): Namespace {
