@@ -47,6 +47,17 @@ const waitingAt = async ({ manager }, stage, count) => {
 const run = ({ manager }, opts = {}) => manager.exec('process.stdout.write("ran\\n")', { cwd: '/home/user', captureOutput: true, ...opts });
 try {
   // No program runs before the checks below, so the timers and console they read are this test's.
+  // The load launches first: one waiting at admission holds its build's
+  // credit, which a launch preparing beside it would wait for.
+  const killLoading = new AbortController();
+  const killedLoading = run(load, { signal: killLoading.signal });
+  const [killedLoadingPid] = await waitingAt(load, 'load', 1);
+  killLoading.abort();
+  await within(killedLoading.catch(() => {}), 'the run killed at load');
+  const stuckLoading = new AbortController();
+  const stuck = run(load, { signal: stuckLoading.signal });
+  const [stuckPid] = await waitingAt(load, 'load', 1);
+
   const holds = Array.from({ length: DO_DYNAMIC_WORKER_LIMIT }, (_, i) => beginLoaderFetch(admission.ctx, `held-${i}`));
   const longCommand = `node -e ${'x'.repeat(5000)}`;
   const killAdmitting = new AbortController();
@@ -56,15 +67,6 @@ try {
   await within(killedAdmitting.catch(() => {}), 'the run killed at admission');
   const held = run(admission, { command: longCommand });
   const [heldPid] = await waitingAt(admission, 'admission', 1);
-
-  const killLoading = new AbortController();
-  const killedLoading = run(load, { signal: killLoading.signal });
-  const [killedLoadingPid] = await waitingAt(load, 'load', 1);
-  killLoading.abort();
-  await within(killedLoading.catch(() => {}), 'the run killed at load');
-  const stuckLoading = new AbortController();
-  const stuck = run(load, { signal: stuckLoading.signal });
-  const [stuckPid] = await waitingAt(load, 'load', 1);
 
   await new Promise((resolve) => setTimeout(resolve, 10_500));
   const byPid = Object.fromEntries(reports.map((report) => [report.pid, report]));
