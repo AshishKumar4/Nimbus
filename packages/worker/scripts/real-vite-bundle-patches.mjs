@@ -47,19 +47,13 @@ function bundledFactories(bundle) {
 
 function shimInjection(nameToFactory) {
   return `
-// ── Cirrus real-vite bundler: __require2 + __require shim ───────
+// ── Cirrus real-vite bundler: __require2 shim ───────
 // Injected by scripts/bundle-real-vite.mjs.
 //
-// 1. __cirrusRealRequireShim resolves a small whitelist of bundled
-//    CJS factories (picomatch/postcss inside readdirp/chokidar) —
-//    consumed by the post-patched __require2 call sites.
-// 2. __cirrusRealCjsRequire is a general CJS require polyfill that
-//    works inside workerd. esbuild's built-in __require polyfill
-//    uses \`typeof require !== "undefined" ? require : throw\`, which
-//    always throws in workerd because the global \`require\` doesn't
-//    exist in ESM contexts. We replace the polyfill below.
+// __cirrusRealRequireShim resolves a small whitelist of bundled CJS
+// factories (picomatch/postcss inside readdirp/chokidar) — consumed by the
+// post-patched __require2 call sites.
 ;(() => {
-  const _origCreateRequire = globalThis.__origCreateRequire || null;
   const _bundledFactories = { ${Object.entries(nameToFactory)
     .map(([k, v]) => `${JSON.stringify(k)}: () => ${v}()`)
     .join(', ')} };
@@ -69,35 +63,6 @@ function shimInjection(nameToFactory) {
     if (_bundledFactories[name]) return _bundledFactories[name]();
     if (_stubsFor.has(name)) return _stubModule;
     throw new Error('[cirrus-real] __require2("' + name + '") — not bundled');
-  };
-
-  // CJS require polyfill. Build a createRequire-backed fallback for
-  // node:* builtins. Non-builtin specifiers throw loudly so we see
-  // which deps still need bundling.
-  let _cjsRequire = null;
-  globalThis.__cirrusRealCjsRequire = function(name) {
-    if (_bundledFactories[name]) return _bundledFactories[name]();
-    if (_stubsFor.has(name)) return _stubModule;
-    if (!_cjsRequire) {
-      try {
-        const { createRequire } = globalThis.require
-          ? { createRequire: globalThis.require('node:module').createRequire }
-          : (() => {
-              // ESM-only path: import node:module statically up top? No,
-              // we can't do that from injected JS. Use a synchronous
-              // createRequire workaround: workerd DOES populate a
-              // top-level createRequire for certain contexts.
-              try { return require('node:module'); } catch { return null; }
-            })();
-        _cjsRequire = createRequire ? createRequire('file:///vite.bundle.js') : null;
-      } catch { _cjsRequire = null; }
-    }
-    if (_cjsRequire) {
-      try { return _cjsRequire(name); } catch (e) {
-        throw new Error('[cirrus-real] __require("' + name + '") failed: ' + (e?.message || e));
-      }
-    }
-    throw new Error('[cirrus-real] __require("' + name + '") — no CJS require available');
   };
 })();
 `;
