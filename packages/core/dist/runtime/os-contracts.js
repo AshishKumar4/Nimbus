@@ -42,10 +42,15 @@ export function sameCred(a, b) {
     return a.uid === b.uid && a.gid === b.gid && a.umask === b.umask
         && a.groups.length === b.groups.length && a.groups.every((group, index) => group === b.groups[index]);
 }
-/** Whether `stat` is the file `expected` named, unchanged as far as its stat can tell. */
+/**
+ * Whether `stat` is the file `expected` named, unchanged as far as its stat
+ * can tell; its revision too where `expected` names one (0 names none: a
+ * backend that keeps none, or a name kept without it, as a resident's
+ * namespace keeps a mount's).
+ */
 export function sameFileVersion(stat, expected) {
     return stat !== null && stat.dev === expected.dev && stat.ino === expected.ino && stat.size === expected.size
-        && stat.mtime === expected.mtime && stat.ctime === expected.ctime && stat.revision === expected.revision;
+        && stat.mtime === expected.mtime && stat.ctime === expected.ctime && (expected.revision === 0 || stat.revision === expected.revision);
 }
 /**
  * N17: a launch that reads synchronously waits for the paths it names (its
