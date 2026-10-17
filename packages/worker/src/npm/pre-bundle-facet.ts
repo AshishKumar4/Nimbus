@@ -125,7 +125,7 @@ export class PrebundleInputs {
     if (revision === this.checkedRevision) return true;
     try {
       for (const [path, stat] of this.stats) {
-        if (stat === null ? this.vfs.exists(path) : !sameStat(this.vfs.stat(path), stat)) return false;
+        if (stat === null ? !missing(this.vfs, path) : !sameStat(this.vfs.stat(path), stat)) return false;
       }
       for (const check of this.checks.values()) if (!check()) return false;
     } catch (error) {
@@ -139,6 +139,14 @@ export class PrebundleInputs {
 
 function inputName(path: string): string {
   return path.startsWith('/') ? path.slice(1) : path;
+}
+
+/** Whether a following stat of `path` still finds nothing there, as it did when observed (a dangling link included). */
+function missing(vfs: PrebundleReadFs, path: string): boolean {
+  try { vfs.stat(path); return false; } catch (error) {
+    if (recallOf(error) !== null) throw error;
+    return vanished(error);
+  }
 }
 
 function unavailable(read: () => void): boolean {

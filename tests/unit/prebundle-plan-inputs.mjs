@@ -168,6 +168,17 @@ await runScenarios(fileURLToPath(import.meta.url), {
     for (const { inputs, path } of observations) if (path.endsWith('/index.js')) assert.equal(inputs.current(), false,
       'successful reads still notice a same-size file change');
   },
+  danglingLinkStaysMissing() {
+    const { fs, dir } = inputFixture();
+    const link = dir + '/package.json';
+    fs.symlink('nowhere.json', link);
+    const inputs = new PrebundleInputs(fs);
+    assert.throws(() => inputs.fs.stat(link));
+    advanceFloor(fs, dir + '/absent.json', 'dangling');
+    assert.equal(inputs.current(), true, 'an unchanged dangling link is still missing to a following stat');
+    fs.writeFile(dir + '/nowhere.json', '{}');
+    assert.equal(inputs.current(), false, 'its target appearing makes it present');
+  },
   async entryDisappears() {
     const h = fixture('queued-entry-disappears');
     const result = await h.queued(() => h.fs.writeFile(h.pkg + '/package.json', '{"main":"missing.js"}'));
