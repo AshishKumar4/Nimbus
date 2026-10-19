@@ -347,11 +347,11 @@ export function heapTables(): HeapTables {
   // here after a program may have replaced Map.prototype.get.
   const files = new SafeMap<string, HeapFile>();
   const chunks = new SafeMap<string, SafeMap<number, HeapChunk>>();
-  const meta = new Map<string, string>();
+  const meta = new SafeMap<string, string>();
   const ns = new SafeMap<string, SafeMap<string, NsRow>>();
-  const byKey = new Map<string, Set<string>>();
+  const byKey = new SafeMap<string, Set<string>>();
   // Pages by "path\0rev\0part".
-  const pages = new Map<string, { path: string; rev: number; part: number; bin: Uint8Array; used: number }>();
+  const pages = new SafeMap<string, { path: string; rev: number; part: number; bin: Uint8Array; used: number }>();
   const pageKey = (path: string, rev: number, part: number): string => path + '\u0000' + rev + '\u0000' + part;
   let sorted: string[] | null = null;
   let used = 0;
