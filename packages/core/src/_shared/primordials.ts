@@ -278,3 +278,6 @@ export const mapGet: <K, V>(map: Map<K, V>, key: K) => V | undefined = uncurryTh
 export const MapConstructor = Map;
 export const objectPreventExtensions = Object.preventExtensions;
 export const symbolToStringTag: typeof Symbol.toStringTag = Symbol.toStringTag;
+export const objectDefineProperty = Object.defineProperty;
+export const arrayPush: <T>(list: T[], ...items: T[]) => number = uncurryThis(Array.prototype.push);
+export const ObjectPrototypePropertyIsEnumerableOf: (object: object, key: PropertyKey) => boolean = uncurryThis(Object.prototype.propertyIsEnumerable);

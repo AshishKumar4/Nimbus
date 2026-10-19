@@ -1092,7 +1092,7 @@ function __nimbusRuntimeInterpreter() {
     __nimbusInterpreter = createInterpreter(__nimbusRegistryRequire("./${RUNTIME_INTERPRETER_OPS_MODULE}"), {
       dynamicImport: (parentUrl, specifier, options) => globalThis.__nimbusDynamicImport(parentUrl, specifier, options),
       primordials: __nimbusLaunchPrimordials,
-      moduleHelpers: ${ESM_MODULE_HELPERS},
+      moduleHelpers: ${ESM_MODULE_HELPERS}(__nimbusLaunchCaptures),
       stackCapture: __nimbusRecordInterpretedStack,
       stackIsProxy: __nimbusStackIsProxy,
       stackIsError: __nimbusStackIsError,
