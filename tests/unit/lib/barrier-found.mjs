@@ -214,7 +214,11 @@ const OWN_RENAMES = new Set([
   'a file renamed in a directory then renamed with it is found once the first rename lands alone',
 ]);
 
-/** The scenarios and gaps of engine `kind`: all, or only (`renames` true) or but (false) the process's own renames. */
+/**
+ * The scenarios and gaps of engine `kind`: all, or only (`renames` true) or but (false) the process's own renames.
+ * @param {string} kind
+ * @param {{ renames?: boolean }} [options]
+ */
 export function foundScenarios(kind, { renames } = {}) {
   const suffix = ` [${kind}]`;
   const chosen = (name) => name.endsWith(suffix) && (renames === undefined || OWN_RENAMES.has(name.slice(0, -suffix.length)) === renames);
