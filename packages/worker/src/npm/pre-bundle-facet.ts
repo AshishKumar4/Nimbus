@@ -18,10 +18,13 @@
  * part of the spec; the bundler reads from that in-memory map.
  */
 
-import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { CredentialedVfs, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import { recallOf } from '@nimbus-sh/core/vfs/recall.js';
 import { getSharedRuntimeExternals } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import type { SliceEntry } from '@nimbus-sh/core/runtime/prebundle-slice.js';
+import { prebundleEntryBytes } from '@nimbus-sh/core/runtime/prebundle-slice.js';
 import { packageNameFromSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
+import { z } from 'zod';
 
 export type { PrebundleResult, PrebundleSpec, SlicedDir, SlicedFile, SliceEntry } from '@nimbus-sh/core/runtime/prebundle-slice.js';
 
@@ -38,16 +41,160 @@ function vanished(error: unknown): boolean {
   return code === 'ENOENT' || code === 'ENOTDIR';
 }
 
+export type PrebundleReadFs = Pick<CredentialedVfs, 'exists' | 'isDirectory' | 'access' | 'readdir' | 'readFile' | 'readFileString'> & {
+  stat(path: string): Readonly<VfsStat>;
+  revision(): number;
+};
 
+/** Only consulted answers guard a plan: sibling package/synthetic writes are not inputs. */
+export class PrebundleInputs {
+  readonly fs: PrebundleReadFs;
+  private readonly checks = new Map<string, () => boolean>();
+  private readonly stats = new Map<string, Readonly<VfsStat> | null>();
+  private checkedRevision: number;
 
+  constructor(private readonly vfs: PrebundleReadFs) {
+    this.checkedRevision = vfs.revision();
+    this.fs = {
+      revision: () => vfs.revision(),
+      exists: (path) => {
+        const exists = vfs.exists(path);
+        this.remember(`exists:${path}`, () => vfs.exists(path) === exists);
+        return exists;
+      },
+      isDirectory: (path) => {
+        const directory = vfs.isDirectory(path);
+        this.remember(`directory:${path}`, () => vfs.isDirectory(path) === directory);
+        return directory;
+      },
+      access: (path, mode) => {
+        let allowed = false;
+        try { vfs.access(path, mode); allowed = true; }
+        finally {
+          this.remember(`access:${mode}:${path}`, () => {
+            return unavailable(() => vfs.access(path, mode)) !== allowed;
+          });
+        }
+      },
+      stat: (path) => {
+        const name = inputName(path);
+        try {
+          const stat = vfs.stat(path);
+          if (!this.stats.has(name)) this.stats.set(name, stat);
+          return stat;
+        } catch (error) {
+          if (vanished(error)) {
+            if (!this.stats.has(name)) this.stats.set(name, null);
+          } else this.remember(`stat:${name}`, () => unavailable(() => { vfs.stat(path); }));
+          throw error;
+        }
+      },
+      readdir: (path) => {
+        try {
+          const entries = vfs.readdir(path);
+          const observed = entries.map(({ name, type }) => ({ name, type }));
+          this.remember(`readdir:${path}`, () => sameDirectory(vfs.readdir(path), observed));
+          return entries;
+        } catch (error) {
+          this.remember(`readdir:${path}`, () => unavailable(() => { vfs.readdir(path); }));
+          throw error;
+        }
+      },
+      readFile: (path) => { this.file(path); return vfs.readFile(path); },
+      readFileString: (path) => { this.file(path); return vfs.readFileString(path); },
+    };
+  }
 
+  private remember(key: string, check: () => boolean): void {
+    // First observation wins, including a missing resolution candidate that appears later.
+    if (!this.checks.has(key)) this.checks.set(key, check);
+  }
 
-export function buildSliceForSpecifierWithCap(
-  vfs: CredentialedVfs,
+  private file(path: string): void {
+    const name = inputName(path);
+    if (this.stats.has(name) || this.checks.has(`stat:${name}`)) return;
+    // Missing names and directories have floor-based revisions, not identities.
+    // Keep their own metadata answer; let the read itself report its failure.
+    try { this.fs.stat(path); } catch (error) {
+      if (recallOf(error) !== null) throw error;
+    }
+  }
+
+  current(): boolean {
+    const revision = this.vfs.revision();
+    if (revision === this.checkedRevision) return true;
+    try {
+      for (const [path, stat] of this.stats) {
+        if (stat === null ? !missing(this.vfs, path) : !sameStat(this.vfs.stat(path), stat)) return false;
+      }
+      for (const check of this.checks.values()) if (!check()) return false;
+    } catch (error) {
+      if (recallOf(error) !== null) throw error;
+      return false;
+    }
+    this.checkedRevision = revision;
+    return true;
+  }
+}
+
+function inputName(path: string): string {
+  return path.startsWith('/') ? path.slice(1) : path;
+}
+
+/** Whether a following stat of `path` still finds nothing there, as it did when observed (a dangling link included). */
+function missing(vfs: PrebundleReadFs, path: string): boolean {
+  try { vfs.stat(path); return false; } catch (error) {
+    if (recallOf(error) !== null) throw error;
+    return vanished(error);
+  }
+}
+
+function unavailable(read: () => void): boolean {
+  try { read(); return false; } catch (error) {
+    if (recallOf(error) !== null) throw error;
+    return true;
+  }
+}
+
+function sameStat(now: Readonly<VfsStat>, observed: Readonly<VfsStat>): boolean {
+  // A directory's subtree generation/mtime changes when an unrelated descendant is written.
+  return now.dev === observed.dev && now.ino === observed.ino && now.type === observed.type
+    && now.mode === observed.mode && now.uid === observed.uid && now.gid === observed.gid
+    && (now.type === 'directory' || (now.gen === observed.gen && now.size === observed.size
+      && now.ctime === observed.ctime && now.mtime === observed.mtime));
+}
+
+function sameDirectory(now: ReturnType<PrebundleReadFs['readdir']>, observed: ReturnType<PrebundleReadFs['readdir']>): boolean {
+  // CredentialedVfs.readdir already supplies a stable UTF-16 name order.
+  return now.length === observed.length && now.every((entry, i) => entry.name === observed[i]?.name && entry.type === observed[i]?.type);
+}
+
+export interface SlicePlanEntry { path: string; slicePath: string; isDir: boolean; size: number }
+export interface PrebundleSlicePlan {
+  inputs: PrebundleInputs;
+  entries: SlicePlanEntry[];
+  totalBytes: number;
+  allocationBytes: number;
+}
+export class PrebundlePlanChanged extends Error {
+  constructor() { super('the package changed while its prebundle was being prepared'); }
+}
+const DependencyManifest = z.object({ dependencies: z.record(z.string(), z.json()).optional().catch(undefined) });
+
+export function buildSliceForSpecifierWithCap(vfs: PrebundleReadFs, specifier: string, nmDir: string, capBytes: number): { slice: SliceEntry[]; totalBytes: number } | null {
+  const plan = planSliceForSpecifierWithCap(vfs, specifier, nmDir, capBytes);
+  return plan === null ? null : { slice: materializePrebundleSlice(vfs, plan), totalBytes: plan.totalBytes };
+}
+
+/** Discover names and sizes without retaining a slice; metadata parsing owns only its current input. */
+export function planSliceForSpecifierWithCap(
+  vfs: PrebundleReadFs,
   specifier: string,
   nmDir: string,
   capBytes: number,
-): { slice: SliceEntry[]; totalBytes: number } | null {
+  inputs = new PrebundleInputs(vfs),
+): PrebundleSlicePlan | null {
+  vfs = inputs.fs;
   const externals = new Set<string>();
   for (const e of getSharedRuntimeExternals(specifier)) {
     // strip glob suffix: "react/*" → "react"
@@ -55,21 +202,25 @@ export function buildSliceForSpecifierWithCap(
     else externals.add(e);
   }
 
-  const slice: SliceEntry[] = [];
+  const entries: SlicePlanEntry[] = [];
   let totalBytes = 0;
+  let allocationBytes = 0;
   const visitedPkgs = new Set<string>();
 
   const addFile = (path: string): boolean => {
     try {
-      if (vfs.isDirectory(path)) {
-        slice.push({ path: '/' + path.replace(/^\/+/, ''), isDir: true });
-        return true;
+      const stat = vfs.stat(path);
+      const slicePath = '/' + path.replace(/^\/+/, '');
+      if (stat.type === 'directory') {
+        entries.push({ path, slicePath, isDir: true, size: 0 });
+        allocationBytes += prebundleEntryBytes(slicePath);
+        return allocationBytes <= capBytes;
       }
-      const bytes = vfs.readFile(path);
-      totalBytes += bytes.length + path.length;
+      totalBytes += stat.size + path.length;
       if (totalBytes > capBytes) return false; // caller bails
-      slice.push({ path: '/' + path.replace(/^\/+/, ''), bytes, isDir: false });
-      return true;
+      entries.push({ path, slicePath, isDir: false, size: stat.size });
+      allocationBytes += prebundleEntryBytes(slicePath, stat.size);
+      return allocationBytes <= capBytes;
     } catch (error) {
       if (vanished(error)) return true;
       throw error;
@@ -137,7 +288,7 @@ export function buildSliceForSpecifierWithCap(
 
     // Read deps; recurse. Recursion is never `isRoot` — only the
     // outermost spec gets that exemption.
-    let pkgJson: any = null;
+    let deps: string[] = [];
     const pkgJsonPath = pkgDir + '/package.json';
     if (vfs.exists(pkgJsonPath)) {
       let text: string | null = null;
@@ -145,9 +296,11 @@ export function buildSliceForSpecifierWithCap(
         if (!vanished(error)) throw error;
       }
       // A manifest that is not JSON names no dependencies.
-      try { pkgJson = text === null ? null : JSON.parse(text); } catch {}
+      try {
+        const parsed = DependencyManifest.safeParse(text === null ? null : JSON.parse(text));
+        if (parsed.success) deps = Object.keys(parsed.data.dependencies ?? {});
+      } catch {}
     }
-    const deps = pkgJson?.dependencies ? Object.keys(pkgJson.dependencies) : [];
     for (const dep of deps) {
       if (!visitPkg(dep, false)) return false;
     }
@@ -161,5 +314,43 @@ export function buildSliceForSpecifierWithCap(
     return null;
   }
 
-  return { slice, totalBytes };
+  return { inputs, entries, totalBytes, allocationBytes };
+}
+
+/** A discovered scoped graph, including the same directories its old slice carried. */
+export function planSliceFromPaths(vfs: PrebundleReadFs, paths: ReadonlyArray<{ path: string; isDir: boolean }>, capBytes: number, inputs = new PrebundleInputs(vfs)): PrebundleSlicePlan | null {
+  vfs = inputs.fs;
+  const entries: SlicePlanEntry[] = [];
+  let totalBytes = 0;
+  let allocationBytes = 0;
+  for (const entry of paths) {
+    const size = entry.isDir ? 0 : vfs.stat(entry.path).size;
+    const slicePath = '/' + entry.path.replace(/^\/+/, '');
+    if (!entry.isDir) totalBytes += size + entry.path.length;
+    if (totalBytes > capBytes) return null;
+    entries.push({ ...entry, slicePath, size });
+    allocationBytes += prebundleEntryBytes(slicePath, size);
+    if (allocationBytes > capBytes) return null;
+  }
+  return { inputs, entries, totalBytes, allocationBytes };
+}
+
+/** Synchronous and admitted by its caller: no parser/RPC wait can retain a partial slice. */
+export function materializePrebundleSlice(vfs: PrebundleReadFs, plan: PrebundleSlicePlan): SliceEntry[] {
+  const turn = vfs.revision();
+  if (!plan.inputs.current()) throw new PrebundlePlanChanged();
+  const slice: SliceEntry[] = [];
+  for (const entry of plan.entries) {
+    const path = entry.slicePath;
+    if (entry.isDir) { slice.push({ path, isDir: true }); continue; }
+    try {
+      const bytes = vfs.readFile(entry.path);
+      if (bytes.byteLength > entry.size) throw new PrebundlePlanChanged();
+      slice.push({ path, isDir: false, bytes });
+    } catch (error) {
+      if (!vanished(error)) throw error;
+    }
+  }
+  if (vfs.revision() !== turn) throw new PrebundlePlanChanged();
+  return slice;
 }

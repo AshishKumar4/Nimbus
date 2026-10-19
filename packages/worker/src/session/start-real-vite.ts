@@ -77,7 +77,7 @@ export async function startRealVite(self: any, opts: StartRealViteOptions): Prom
   // snapshotFiles inlined, the resident's module map). Peak pressure on a
   // shared isolate is what kills us, not steady state. Released in a finally so
   // a throw in the boot path doesn't permanently hold the shared budget.
-  const heavyAllocRelease = await acquireHeavyAlloc(opts.signal);
+  const heavyAllocRelease = await acquireHeavyAlloc(opts.signal, { owner: 'cirrus-real startup', session: self.ctx?.id?.toString() });
   try {
     // Pre-bundle the user's vite.config if present. Plugin imports
     // (@vitejs/plugin-react, vite-plugin-svgr, …) live in the project's

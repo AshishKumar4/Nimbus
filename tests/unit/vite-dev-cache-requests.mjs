@@ -311,7 +311,7 @@ try {
     // The session's bundle pool, as the build facet runs it: the slice built on esbuild.
     const specs = [];
     const engine = await esbuildEngine();
-    const pool = { prebundle: async (spec) => (specs.push(spec), prebundleSlice(spec, (options, plugin) => buildWithEsbuild(engine, options, plugin))) };
+    const pool = { prebundle: async (task) => { const spec = task.prepare(); specs.push(spec); return prebundleSlice(spec, (options, plugin) => buildWithEsbuild(engine, options, plugin)); } };
     const installer = new NpmInstaller(new ProcessFiles(project.vfs), project.harness.sql, {
       esbuild: new EsbuildService(undefined, { engine: esbuildEngine }),
       bundlePool: { acquire: async () => pool },
@@ -369,7 +369,7 @@ try {
     });
     const engine = await esbuildEngine();
     const specs = [];
-    const pool = { prebundle: async (spec) => (specs.push(spec.specifier), prebundleSlice(spec, (options, plugin) => buildWithEsbuild(engine, options, plugin))) };
+    const pool = { prebundle: async (task) => { const spec = task.prepare(); specs.push(spec.specifier); return prebundleSlice(spec, (options, plugin) => buildWithEsbuild(engine, options, plugin)); } };
     const installer = new NpmInstaller(new ProcessFiles(project.vfs), project.harness.sql, {
       esbuild: new EsbuildService(undefined, { engine: esbuildEngine }),
       bundlePool: { acquire: async () => pool },
@@ -416,7 +416,7 @@ try {
       },
     });
     const engine = await esbuildEngine();
-    const pool = { prebundle: async (spec) => prebundleSlice(spec, (options, plugin) => buildWithEsbuild(engine, options, plugin)) };
+    const pool = { prebundle: async (task) => prebundleSlice(task.prepare(), (options, plugin) => buildWithEsbuild(engine, options, plugin)) };
     const server = new ViteDevServer({
       vfs: importing, cred: CRED_KERNEL, esbuild: new EsbuildService(undefined, { engine: esbuildEngine }), root, sql: project.harness.sql,
       onHmrMessage() {}, basePath: '/preview', port: 5173, bundlePool: { acquire: async () => pool },

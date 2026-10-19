@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 /**
  * The heap estimate's pre-bundle slice is the slices pre-bundles hold now:
- * a live build's leased bytes while it runs, nothing once it has ended,
+ * its leased bytes while preparing, nothing once RPC has taken them,
  * however it ended. A build whose package was reinstalled under it (its
  * bundle served, not stored) ends like any other; before, it counted as an
  * attempt with no outcome, and the estimate kept a 28 MiB slice for the
@@ -16,7 +16,9 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { NpmInstaller } from '../../packages/worker/src/npm/installer.ts';
 import { readDiagCounters } from '../../packages/platform/src/diag-counters.ts';
 import { estimateSupervisorHeap } from '../../packages/platform/src/heap-estimate.ts';
-import { readSupervisorAllocationBudget } from '../../packages/platform/src/heavy-alloc-coord.ts';
+import { readSupervisorAllocationBudget, registerAllocObserver } from '../../packages/platform/src/heavy-alloc-coord.ts';
+import { PrebundlePool } from '../../packages/worker/src/facets/prebundle-pool.ts';
+import { namedFacetPlatform } from './lib/named-facet-platform.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const root = 'home/user/app';
@@ -40,16 +42,25 @@ let entered;
 const building = new Promise((resolve) => { entered = resolve; });
 let finish;
 const finished = new Promise((resolve) => { finish = resolve; });
-const pool = {
-  prebundle: async (spec) => {
+class Bundler {
+  async warm() {}
+  async prebundle(spec) {
     entered(spec);
     await finished;
     return { specifier: spec.specifier, ok: true, esmCode: 'export const x = 1;\n', elapsed: 0, warnings: [] };
-  },
-};
+  }
+}
+const platform = namedFacetPlatform({ id: 'prebundle-heap', classFor: () => Bundler,
+  invoke(_name, method, args, instance) { const copy = structuredClone(args); return instance.then((target) => target[method](...copy)); },
+});
+const pool = new PrebundlePool(platform.env, platform.ctx);
+let preparing = 0;
+const stop = registerAllocObserver({ onAcquire: () => {
+  preparing = Math.max(preparing, readDiagCounters().preBundleSliceBytes);
+} });
 const installer = new NpmInstaller(new ProcessFiles(vfs), harness.sql, {
   esbuild: new EsbuildService(undefined, {}),
-  bundlePool: { acquire: async () => pool },
+  bundlePool: pool,
 });
 const lines = [];
 const phase = installer.prebundleUsedModules(root, new Map([['pkg', {}]]), kernel, (line) => lines.push(line));
@@ -60,14 +71,16 @@ assert.equal(
   live.breakdown.preBundleSliceBytes, readSupervisorAllocationBudget().current,
   `a live pre-bundle's slice is what its lease holds (${JSON.stringify(live.breakdown)})`,
 );
-assert.ok(live.breakdown.preBundleSliceBytes > 0, 'and it holds something');
+assert.ok(preparing > 0, 'preparing the slice is attributed to its actual budget lease');
+assert.equal(live.breakdown.preBundleSliceBytes, 0, 'a pending RPC keeps no supervisor slice credit');
 assert.equal(live.breakdown.unattributedReservationBytes, 0, 'so none of the reservation is unattributed');
-console.log(`  ✓ a live pre-bundle's slice is its lease: ${live.breakdown.preBundleSliceBytes} bytes`);
+console.log(`  a prepared pre-bundle held ${preparing} bytes, then dropped its credit at RPC handoff`);
 
 // The package is reinstalled while it is bundled: the bundle is served, not stored.
 write('node_modules/pkg/package.json', JSON.stringify({ name: 'pkg', version: '2.0.0', type: 'module', main: 'index.js' }));
 finish();
 await phase;
+stop();
 assert.ok(lines.some((line) => /not cached: its package changed while it was bundled/.test(line)), `the build ended on a moved manifest:\n${lines.join('\n')}`);
 
 const idle = heap();

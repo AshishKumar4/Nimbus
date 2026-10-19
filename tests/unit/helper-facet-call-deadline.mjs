@@ -16,7 +16,7 @@
 import assert from 'node:assert/strict';
 import { FacetCallDeadlineError, loadHelperFacet } from '../../packages/worker/src/facets/helper-facet.ts';
 import { oxcTransformHost } from '../../packages/worker/src/facets/oxc-transform.ts';
-import { buildFacetPrebundler } from '../../packages/worker/src/facets/build-facet.ts';
+import { PrebundlePool } from '../../packages/worker/src/facets/prebundle-pool.ts';
 import { facetCallDeadlineMs } from '../../packages/fabric/src/facet-limits.ts';
 import { loaderLedgerStats } from '../../packages/fabric/src/budgets.ts';
 import * as oxcHarness from './lib/oxc-facet-harness.mjs';
@@ -79,7 +79,10 @@ try {
   {
     let calls = 0;
     const { ctx, env } = buildHarness.durableObject(class { warm() {} prebundle() { calls++; return new Promise(() => {}); } });
-    const result = await settle(buildFacetPrebundler(ctx, env)({ specifier: 'react', slice: { files: {} } }));
+    const pool = await new PrebundlePool(env, ctx).acquire();
+    const result = await settle(pool.prebundle({ specifier: 'react', bytes: 1, prepare: () => ({
+      specifier: 'react', entryPath: '/react.js', slice: [], externals: [], bundlerVersion: 'deadline-test',
+    }) }));
     assert.ok(result instanceof FacetCallDeadlineError, `the deadline, not a reset or its retry: ${result}`);
     assert.equal(calls, 1, 'one call: a pre-bundle past its deadline is not run again');
   }

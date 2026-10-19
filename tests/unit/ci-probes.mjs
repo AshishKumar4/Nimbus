@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { writeScreenshots } from '../../scripts/ci/lib/probe-screenshots.mjs';
 import { gradeMatrix } from '../../scripts/ci/lib/matrix.mjs';
+import { ARMS } from '../behavioral/_paired.mjs';
 
 const REPO = join(import.meta.dirname, '..', '..');
 const TOKEN = `probe-token-${process.pid}-not-a-jwt`;
@@ -134,7 +135,7 @@ try {
   }
   {
     // The paired perf probes' arms carry tokens of their own (_paired.mjs).
-    const arms = Object.fromEntries(['a1', 'a2', 'b'].map((arm) => [arm, { base, token: `${arm}-arm-token-${process.pid}-not-a-jwt` }]));
+    const arms = Object.fromEntries(ARMS.map((arm) => [arm, { base, token: `${arm}-arm-token-${process.pid}-not-a-jwt` }]));
     writeFileSync(join(behavioral, 'paired-print.mjs'), "const arms = JSON.parse(process.env.NIMBUS_PAIRED_TARGETS); for (const arm of Object.values(arms)) { console.log('holding ' + arm.token); console.error(('y'.repeat(5) + arm.token).repeat(3000)); }\nprocess.exit(1);\n");
     const verdict = await probes(['--base', base, '--only', 'paired-print'], { NIMBUS_PAIRED_TARGETS: JSON.stringify(arms) });
     assert.equal(verdict.status, 1, 'a failing probe: its output is printed whole');
