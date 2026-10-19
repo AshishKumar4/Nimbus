@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "1618f3cd06fc9b0ae2b3e14dcc092ca8265317809c5159956368d3070bb98789",
+  "fingerprint": "a6c759ee2a4d2e2a57ddc25d27e088cf5a6d7f6e08c10631b49ba5b10a2d9486",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1226,8 +1226,8 @@
     "packages/core/dist/substrate/lifo/shell/bash-builtins.d.ts.map": "b13e53cca0f93b7b379c74398e98993f882eb3ac5fc89b5e558e947ef642c790",
     "packages/core/dist/substrate/lifo/shell/bash-builtins.js": "e0539677af432c19a88ea7be394848465e363f55a1f4de05f7550fe1deb84144",
     "packages/core/dist/substrate/lifo/shell/builtins.d.ts": "92a30e22b2a26edabe0d2ded53a4579c34badb3a78db9e9c903cb0cce3846f73",
-    "packages/core/dist/substrate/lifo/shell/builtins.d.ts.map": "7b90d21d40cb7f2532dab7e73efc062fedef643d69dd511d94d269b9b49fcee2",
-    "packages/core/dist/substrate/lifo/shell/builtins.js": "0b1ad302245782becc35a46fa9e4ac1e0fb9ae1d850ef409f9bae939655c3464",
+    "packages/core/dist/substrate/lifo/shell/builtins.d.ts.map": "408bd4eec1a214d8055c373d10b3d45da6ec22a3848e4d933476679fbecf2d34",
+    "packages/core/dist/substrate/lifo/shell/builtins.js": "6ddaeb59e261c81ca800d739891b72b48b89fc1cac4ea65d42bade172dd1b1d5",
     "packages/core/dist/substrate/lifo/shell/byte-queue.d.ts": "80b47fe198945fecd70b3b0b14dcf3fa45e721baa0ad0fff354de5f8102752d7",
     "packages/core/dist/substrate/lifo/shell/byte-queue.d.ts.map": "f1b0b9f48d8161b512aeaf5e3e2055fd7330dc022663a4c9dbd4b02530f3bb24",
     "packages/core/dist/substrate/lifo/shell/byte-queue.js": "705f15fb18ab9b3385ad3d656ccba62c500fc01046ac711722cdd4fb5b8072e3",
@@ -1806,7 +1806,7 @@
     "packages/core/src/substrate/lifo/sandbox/run-command.ts": "0165ffd638c4f0126bdaa728962ce43a2a619f84fa71ccb8031975f8d003222b",
     "packages/core/src/substrate/lifo/shell/Shell.ts": "470359d8dcaedda4154ba98a6c2ab484faf9a5a6892792b5e903e3b160b19169",
     "packages/core/src/substrate/lifo/shell/bash-builtins.ts": "78787c8c03af5e2f6a458997f267a40a933b2888c567100f622f5d03d65e86e3",
-    "packages/core/src/substrate/lifo/shell/builtins.ts": "1416daf7cc799b060262eb76e2e95f8b802aaac61ed5f3dd7152b32cf98d11ff",
+    "packages/core/src/substrate/lifo/shell/builtins.ts": "9f8aaae09453b44c26269bd71ac78da3c8f60f77897d28d17ec1740678ec6d0d",
     "packages/core/src/substrate/lifo/shell/byte-queue.ts": "26eebf08bb16673e071f288e78e68bc73db171fb90518e94af1bab32e0f1a2c6",
     "packages/core/src/substrate/lifo/shell/completer.ts": "4313f0edf551a248c100ba03e522443cb9f2334f1c1a956906117c46703dc6e1",
     "packages/core/src/substrate/lifo/shell/conditional-operators.ts": "2d56a54524b6e4c06a4f8227c6dda3b39e6e9ba40faa35262f8cd4625edd2455",
