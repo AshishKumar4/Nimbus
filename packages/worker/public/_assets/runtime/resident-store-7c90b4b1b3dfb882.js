@@ -332,6 +332,9 @@ var __nimbusResidentModule = (() => {
     };
   }
 
+  // nimbus-launch-captures:launch-captures
+  var { reflectApply, reflectConstruct, reflectGet, reflectSet, reflectHas, reflectOwnKeys, reflectDefineProperty, reflectDeleteProperty, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectSetPrototypeOf, objectCreate, objectKeys, objectFreeze, objectAssign, objectHasOwn, objectGetOwnPropertyNames, arrayIsArray, symbolFor, symbolIterator, symbolAsyncIterator, symbolUnscopables, stringOf, ObjectOf, PromiseConstructor, PromiseResolve, PromiseReject, PromisePrototypeThen, ObjectPrototypePropertyIsEnumerable, ArrayConstructor, ArrayFrom, ArrayValues, ArrayIteratorPrototype, ArrayIteratorNext, ArrayPrototypeWith, ArrayPrototypeToSpliced, StringPrototypeSlice, StringPrototypeLastIndexOf, StringPrototypeCharCodeAt, SymbolPrototypeToString, StringPrototypeCharAt, StringPrototypeIndexOf, StringPrototypeSubstr, StringFromCharCode, ArrayPrototypePop, ArrayPrototypeIndexOf, ArrayPrototypeLastIndexOf, RegExpPrototypeExec, RegExpPrototypeAccessors, NumberPrototypeToString, BigIntPrototypeToString, ObjectPrototype, ObjectPrototypeHasOwnProperty, ObjectPrototypeToString, objectDefineProperties, parseIntOf, parseFloatOf, SymbolConstructor, SymbolPrototypeDescription, globalObject, JSONParse, JSONStringify, decodeURIComponentOf, encodeURIComponentOf, NumberOf, numberIsInteger, objectIs, objectIsExtensible, mathAbs, captureStackTraceOf, useCaptureStackTrace, dataDescriptor, SafeMap, SafeSet, SafeWeakMap, SafeWeakSet, SafeList, SafeGeneratorPrototype, SafeAsyncGeneratorPrototype, SafeRegExpPrototype, GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, FunctionPrototypeBind, stringCharCodeAt, stringSlice, stringLastIndexOf, arrayJoin, stringStartsWith, stringEndsWith, stringIncludes, stringIndexOf, stringToLowerCase, arrayIncludes, arrayIndexOf, setForEach, arraySort, regExpExec, generatorNext, generatorThrow, newURL, safeGenerator, ownField, BigInt, Error: Error2, RangeError, ReferenceError: ReferenceError2, RegExp, SyntaxError, TypeError: TypeError2, URIError, URL } = __nimbusLaunchCaptures;
+
   // ../core/dist/vfs/posix-access.js
   function posixAccess(entry, want, cred) {
     const requested = want & 7;
@@ -340,7 +343,7 @@ var __nimbusResidentModule = (() => {
     const permissions = entry.mode & 511;
     if (cred.uid === 0)
       return (requested & 1) === 0 || (permissions & 73) !== 0 || entry.type === "directory";
-    const shift = cred.uid === entry.uid ? 6 : cred.gid === entry.gid || cred.groups.includes(entry.gid) ? 3 : 0;
+    const shift = cred.uid === entry.uid ? 6 : cred.gid === entry.gid || arrayIncludes(cred.groups, entry.gid) ? 3 : 0;
     return (permissions >> shift & requested) === requested;
   }
   function chmodRefusal(entry, cred) {
@@ -618,10 +621,10 @@ var __nimbusResidentModule = (() => {
     };
   }
   function heapTables() {
-    const files = /* @__PURE__ */ new Map();
-    const chunks = /* @__PURE__ */ new Map();
+    const files = new SafeMap();
+    const chunks = new SafeMap();
     const meta = /* @__PURE__ */ new Map();
-    const ns = /* @__PURE__ */ new Map();
+    const ns = new SafeMap();
     const byKey = /* @__PURE__ */ new Map();
     const pages = /* @__PURE__ */ new Map();
     const pageKey = (path, rev, part) => path + "\0" + rev + "\0" + part;
@@ -689,7 +692,7 @@ var __nimbusResidentModule = (() => {
     const addChunk = (path, part, cell, replace) => {
       let parts = chunks.get(path);
       if (!parts) {
-        parts = /* @__PURE__ */ new Map();
+        parts = new SafeMap();
         chunks.set(path, parts);
       }
       const had = parts.get(part);
@@ -924,7 +927,7 @@ var __nimbusResidentModule = (() => {
         const bytes = namespaceRowBytes(parent, name, target);
         const growth = bytes - (previous === void 0 ? 0 : namespaceRowBytes(parent, name, previous.target));
         if (!dir) {
-          dir = /* @__PURE__ */ new Map();
+          dir = new SafeMap();
           ns.set(parent, dir);
         }
         if (previous === void 0) names++;
@@ -1007,29 +1010,129 @@ var __nimbusResidentModule = (() => {
     };
   }
 
-  // ../platform/dist/lexical-path.js
-  function rootClampedSegments(path, base = []) {
-    const out = [...base];
-    for (const segment of path.split("/")) {
-      if (segment === "..")
-        out.pop();
-      else if (segment !== "" && segment !== ".")
-        out.push(segment);
+  // src/vfs/resident/namespace-lookup.ts
+  var NS_MAX_HOPS = 40;
+  var removed = (word) => objectHasOwn(word, "absent");
+  var linked = (word) => objectHasOwn(word, "target");
+  var moved = (word) => objectHasOwn(word, "from");
+  function nsParent(k) {
+    const i = stringLastIndexOf(k, "/");
+    return i < 0 ? "" : stringSlice(k, 0, i);
+  }
+  function nsName(k) {
+    return stringSlice(k, stringLastIndexOf(k, "/") + 1);
+  }
+  function nsSplit(k) {
+    return [nsParent(k), nsName(k)];
+  }
+  function nsKey(path) {
+    const text = stringOf(path);
+    let at = 0;
+    while (at < text.length && stringCharCodeAt(text, at) === 47) at++;
+    return at === 0 ? text : stringSlice(text, at);
+  }
+  function nsRowAt(t, k) {
+    if (k === "") {
+      return { kind: NS_DIR, size: 0, mode: 16877, uid: 0, gid: 0, atime: 0, mtime: 0, ctime: 0, ino: 1, rev: 0, target: null, dev: 0, nlink: 1 };
     }
-    return out;
+    return t.nsGet(nsParent(k), nsName(k));
+  }
+  function segments(path) {
+    const out = new SafeList();
+    if (path === "") return out;
+    let from = 0;
+    for (; ; ) {
+      const slash = stringIndexOf(path, "/", from);
+      if (slash < 0) {
+        out[out.length] = stringSlice(path, from);
+        return out;
+      }
+      out[out.length] = stringSlice(path, from, slash);
+      from = slash + 1;
+    }
+  }
+  function joined(names, start, end) {
+    let text = "";
+    for (let i = start; i < end; i++) text = i === start ? names[i] ?? "" : `${text}/${names[i] ?? ""}`;
+    return text;
+  }
+  function joinTarget(linkPath, target) {
+    const text = stringOf(target);
+    const out = new SafeList();
+    const add = (names) => {
+      for (let i = 0; i < names.length; i++) {
+        const name = names[i] ?? "";
+        if (name === "..") {
+          if (out.length > 0) out.length--;
+        } else if (name !== "" && name !== ".") out[out.length] = name;
+      }
+    };
+    if (stringCharCodeAt(text, 0) !== 47) {
+      const base = segments(nsParent(linkPath));
+      for (let i = 0; i < base.length; i++) if (base[i] !== "") out[out.length] = base[i] ?? "";
+    }
+    add(segments(text));
+    return joined(out, 0, out.length);
+  }
+  function walkNamespace(t, links, k, followLeaf, own, visit) {
+    if (own === void 0 && links.size === 0 && visit === void 0) return { path: k, table: k, row: nsRowAt(t, k) };
+    let path = k;
+    walk: for (let hops = 0; hops <= NS_MAX_HOPS; hops++) {
+      const segs = segments(path);
+      let table = "";
+      let prefix = "";
+      for (let i = 1; i <= segs.length; i++) {
+        const name = segs[i - 1] ?? "";
+        prefix = i === 1 ? name : `${prefix}/${name}`;
+        if (visit !== void 0 && !visit(prefix)) return "EACCES";
+        const leaf = i === segs.length;
+        const step = table === null ? null : table ? `${table}/${name}` : name;
+        const word = own === void 0 ? void 0 : own(prefix);
+        let target;
+        if (word !== void 0 && removed(word)) {
+          return { path, table: null, row: void 0, own: word };
+        } else if (word !== void 0 && linked(word)) {
+          if (leaf && !followLeaf) return { path, table: null, row: void 0, own: word };
+          target = word.target;
+        } else if (word !== void 0 && moved(word)) {
+          const named = ownField(word, "link");
+          const link = typeof named === "string" ? named : void 0;
+          if (link !== void 0 && leaf && !followLeaf) {
+            const at = nsRowAt(t, link) !== void 0 ? link : prefix;
+            return { path, table: at, row: nsRowAt(t, at), own: word };
+          }
+          if (word.from === void 0) return { path, table: null, row: void 0, own: { absent: true } };
+          if (link !== void 0) target = `/${word.from}`;
+          else {
+            table = word.from;
+            if (leaf) return { path, table, row: nsRowAt(t, table), own: word };
+            continue;
+          }
+        } else if (word !== void 0) {
+          table = ownField(word, "hide") === true ? null : prefix;
+          if (leaf) return { path, table: prefix, row: nsRowAt(t, prefix), own: word };
+          continue;
+        } else {
+          if (step === null) return { path, table: null, row: void 0 };
+          table = step;
+          if (!links.has(step) || leaf && !followLeaf) continue;
+          const row = nsRowAt(t, step);
+          if (!row || row.kind !== NS_LINK) continue;
+          target = row.target;
+        }
+        const rest = joined(segs, i, segs.length);
+        const reached = joinTarget(prefix, target);
+        path = rest ? reached ? `${reached}/${rest}` : rest : reached;
+        continue walk;
+      }
+      return { path, table, row: table === null ? void 0 : nsRowAt(t, table) };
+    }
+    return "ELOOP";
   }
 
   // src/vfs/resident/namespace.ts
-  var NS_MAX_HOPS = 40;
-  function nsSplit(k) {
-    const i = k.lastIndexOf("/");
-    return i < 0 ? ["", k] : [k.slice(0, i), k.slice(i + 1)];
-  }
   function nsKindCode(type) {
     return type === "directory" ? NS_DIR : type === "symlink" ? NS_LINK : NS_FILE;
-  }
-  function nsKey(path) {
-    return String(path).replace(/^\/+/, "");
   }
   function nsDescribes(stat) {
     const described = stat;
@@ -1046,26 +1149,15 @@ var __nimbusResidentModule = (() => {
     }
     return null;
   }
-  function nsRowAt(t, k) {
-    if (k === "") {
-      return { kind: NS_DIR, size: 0, mode: 16877, uid: 0, gid: 0, atime: 0, mtime: 0, ctime: 0, ino: 1, rev: 0, target: null, dev: 0, nlink: 1 };
-    }
-    const [parent, name] = nsSplit(k);
-    return t.nsGet(parent, name);
-  }
-  function joinTarget(linkPath, target) {
-    const text = String(target);
-    return rootClampedSegments(text, text.startsWith("/") ? [] : nsSplit(linkPath)[0].split("/").filter(Boolean)).join("/");
-  }
   function createNamespace(coherence, admission) {
     const realNow = Date.now;
-    let links = /* @__PURE__ */ new Set();
-    let unlisted = /* @__PURE__ */ new Map();
+    let links = new SafeSet();
+    let unlisted = new SafeMap();
     let cred = null;
     let ok = false;
     let cause = "the process has not listed it yet";
     let lazy = false;
-    const listed = /* @__PURE__ */ new Set();
+    const listed = new SafeSet();
     const ready = () => ok && coherence.serving();
     const markReady = (t, isReady, why) => {
       t.metaSet("ns", isReady ? "1" : "0");
@@ -1079,7 +1171,7 @@ var __nimbusResidentModule = (() => {
     const unlistedOver = (k, self) => {
       if (unlisted.size === 0) return null;
       const t = coherence.require();
-      for (let at = self ? k : nsSplit(k)[0]; at !== ""; at = nsSplit(at)[0]) {
+      for (let at = self ? k : nsParent(k); at !== ""; at = nsParent(at)) {
         const mount = unlisted.get(at);
         if (mount !== void 0) return mount;
         const row = nsRowAt(t, at);
@@ -1136,8 +1228,8 @@ var __nimbusResidentModule = (() => {
       if (lazy) forgetListed(k);
       if (k === "") {
         t.nsClear();
-        links = /* @__PURE__ */ new Set();
-        unlisted = /* @__PURE__ */ new Map();
+        links = new SafeSet();
+        unlisted = new SafeMap();
         return;
       }
       const prefix = k + "/";
@@ -1160,56 +1252,7 @@ var __nimbusResidentModule = (() => {
       unlisted.delete(k);
     };
     function lookup(k, followLeaf, own, visit) {
-      const t = coherence.require();
-      if (own === void 0 && links.size === 0 && visit === void 0) return { path: k, table: k, row: nsRowAt(t, k) };
-      let path = k;
-      walk: for (let hops = 0; hops <= NS_MAX_HOPS; hops++) {
-        const segs = path === "" ? [] : path.split("/");
-        let table = "";
-        for (let i = 1; i <= segs.length; i++) {
-          const prefix = segs.slice(0, i).join("/");
-          if (visit !== void 0 && !visit(prefix)) return "EACCES";
-          const leaf = i === segs.length;
-          const step = table === null ? null : table ? table + "/" + segs[i - 1] : segs[i - 1];
-          const word = own?.(prefix);
-          let target;
-          if (word !== void 0 && "absent" in word) {
-            return { path, table: null, row: void 0, own: word };
-          } else if (word !== void 0 && "target" in word) {
-            if (leaf && !followLeaf) return { path, table: null, row: void 0, own: word };
-            target = word.target;
-          } else if (word !== void 0 && "from" in word) {
-            if (word.link !== void 0 && leaf && !followLeaf) {
-              const at = nsRowAt(t, word.link) !== void 0 ? word.link : prefix;
-              return { path, table: at, row: nsRowAt(t, at), own: word };
-            }
-            if (word.from === void 0) return { path, table: null, row: void 0, own: { absent: true } };
-            if (word.link !== void 0) target = "/" + word.from;
-            else {
-              table = word.from;
-              if (leaf) return { path, table, row: nsRowAt(t, table), own: word };
-              continue;
-            }
-          } else if (word !== void 0) {
-            table = word.hide ? null : prefix;
-            if (leaf) return { path, table: prefix, row: nsRowAt(t, prefix), own: word };
-            continue;
-          } else {
-            if (step === null) return { path, table: null, row: void 0 };
-            table = step;
-            if (!links.has(step) || leaf && !followLeaf) continue;
-            const row = nsRowAt(t, step);
-            if (!row || row.kind !== NS_LINK) continue;
-            target = row.target;
-          }
-          const rest = segs.slice(i).join("/");
-          const joined = joinTarget(prefix, target);
-          path = rest ? joined ? joined + "/" + rest : rest : joined;
-          continue walk;
-        }
-        return { path, table, row: table === null ? void 0 : nsRowAt(t, table) };
-      }
-      return "ELOOP";
+      return walkNamespace(coherence.require(), links, k, followLeaf, own, visit);
     }
     const traversable = (row) => {
       if (!row || row.kind !== NS_DIR) return false;
@@ -1218,12 +1261,12 @@ var __nimbusResidentModule = (() => {
     const children = (k) => coherence.require().nsChildren(k).map((row) => ({ name: String(row.name), kind: Number(row.kind), mode: Number(row.mode) }));
     return {
       bind(t) {
-        links = /* @__PURE__ */ new Set();
+        links = new SafeSet();
         for (const row of t.nsOfKind(NS_LINK)) {
           const parent = String(row.parent);
           links.add(parent ? parent + "/" + String(row.name) : String(row.name));
         }
-        unlisted = /* @__PURE__ */ new Map();
+        unlisted = new SafeMap();
         for (const row of t.nsUnlisted()) {
           const parent = String(row.parent);
           unlisted.set(parent ? parent + "/" + String(row.name) : String(row.name), String(row.target));
@@ -1416,8 +1459,8 @@ var __nimbusResidentModule = (() => {
         tryPut(t, k, stat, written ?? cursor.rev, target);
       },
       clear() {
-        links = /* @__PURE__ */ new Set();
-        unlisted = /* @__PURE__ */ new Map();
+        links = new SafeSet();
+        unlisted = new SafeMap();
         ok = false;
       },
       get lazy() {
@@ -1426,11 +1469,11 @@ var __nimbusResidentModule = (() => {
       beginLazy() {
         lazy = true;
         listed.clear();
-        links = /* @__PURE__ */ new Set();
-        unlisted = /* @__PURE__ */ new Map();
+        links = new SafeSet();
+        unlisted = new SafeMap();
       },
       listedAt(k) {
-        return listed.has(nsSplit(k)[0]);
+        return listed.has(nsParent(k));
       },
       isListed(dir) {
         return listed.has(dir);
@@ -1445,8 +1488,8 @@ var __nimbusResidentModule = (() => {
 
   // src/vfs/resident/cells.ts
   function createCells(coherence, admission, namespace, observeRead) {
-    const held = /* @__PURE__ */ new Map();
-    const unheld = /* @__PURE__ */ new Set();
+    const held = new SafeMap();
+    const unheld = new SafeSet();
     const cellSize = (cell) => typeof cell === "string" ? cell.length * 3 : residentBytes(cell).byteLength;
     const forgetHeld = (path) => {
       const cell = held.get(path);
@@ -1600,7 +1643,7 @@ var __nimbusResidentModule = (() => {
       return { dropped, kept, pushed, relist, cursor: { epoch, rev } };
     };
     const get = (path) => {
-      if (observeRead !== null) observeRead(path.replace(/^\/+/, ""));
+      if (observeRead !== null) observeRead(nsKey(path));
       const found = head(path);
       if (found === void 0) {
         const cell = held.get(path);
@@ -1617,18 +1660,21 @@ var __nimbusResidentModule = (() => {
         if (row === void 0) return void 0;
         return kind === RK_TEXT ? row.txt : residentBytes(row.bin);
       }
+      const rows = t.chunkParts(path);
+      if (rows.length === 0) return void 0;
       if (kind === RK_TEXT) {
-        const parts2 = t.chunkParts(path).map((row) => row.txt);
-        return parts2.length === 0 ? void 0 : parts2.join("");
+        let text = "";
+        for (let i = 0; i < rows.length; i++) text += rows[i]?.txt ?? "";
+        return text;
       }
-      const parts = t.chunkParts(path).map((row) => residentBytes(row.bin));
-      if (parts.length === 0) return void 0;
-      const total = parts.reduce((n, p) => n + p.byteLength, 0);
+      let total = 0;
+      for (let i = 0; i < rows.length; i++) total += residentBytes(rows[i]?.bin).byteLength;
       const out = new Uint8Array(total);
       let offset = 0;
-      for (const p of parts) {
-        out.set(p, offset);
-        offset += p.byteLength;
+      for (let i = 0; i < rows.length; i++) {
+        const bytes = residentBytes(rows[i]?.bin);
+        out.set(bytes, offset);
+        offset += bytes.byteLength;
       }
       return out;
     };
