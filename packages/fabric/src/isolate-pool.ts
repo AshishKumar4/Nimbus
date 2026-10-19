@@ -64,6 +64,7 @@ import type { ResizableCreditLease } from '@nimbus-sh/platform/weighted-credit-p
 import { memberBuffer } from '@nimbus-sh/platform/worker-code.js';
 import type { ModuleContent, WorkerCode, WorkerLoader } from './vendor/types.js';
 import { hostWasmIdentity } from './host-wasm.js';
+import { TASK_BODY_ERROR_SOURCE } from './task-body-error.js';
 
 
 /** The one binding a pool needs off whichever env its host hands it. */
@@ -367,6 +368,7 @@ export function assembleLoaderWorkerModuleSource(
     ? '__fn__(request, this.env)'
     : '__fn__(request)';
   lines.push(
+    TASK_BODY_ERROR_SOURCE,
     'export default class extends WorkerEntrypoint {',
     '  execute(...args) {',
     `    return ${callExpr};`,
@@ -387,7 +389,8 @@ export function assembleLoaderWorkerModuleSource(
     '      // Fail loud inside the response so an abort of the transport is',
     '      // not conflated with a guest exception: the caller sees 500 only',
     '      // for a real fn failure, and aborts arrive as fetch rejections.',
-    '      const message = err instanceof Error && err.message ? err.message : String(err);',
+    '      const failure = __nimbusTaskBodyError(err, request);
+      const message = failure instanceof Error && failure.message ? failure.message : String(failure);',
     '      return Response.json({ __nimbusFacetError: message }, { status: 500 });',
     '    }',
     '  }',
