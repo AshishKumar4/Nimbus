@@ -293,8 +293,12 @@ export function delegationHolder(options) {
         },
     });
     // The provisional decisions are the newest wherever they are pending: a held subtree decides nothing there (deciding).
-    /** entryOf, with the provisional decisions' word first: the row asked of the store once, for both. */
     const composedEntry = (key) => {
+        const mine = prov.entry(key);
+        return mine !== undefined ? mine : names.entry(key);
+    };
+    /** entryOf, with the provisional decisions' word first: the store asked once, for both. */
+    const composedRow = (key) => {
         const row = entryOf(key);
         const mine = prov.entry(key, row);
         return mine !== undefined ? mine : row;
@@ -407,7 +411,8 @@ export function delegationHolder(options) {
         client,
         provisional: prov,
         // Composed with the provisional decisions while the process sees any (ProvisionalHost.active).
-        entry: (key) => (provisionalActive ? composedEntry(key) : entryOf(key)),
+        entry: (key) => (provisionalActive ? composedEntry(key) : names.entry(key)),
+        row: (key) => (provisionalActive ? composedRow(key) : entryOf(key)),
         children: (key, base) => (provisionalActive ? composedChildren(key, base) : names.children(key, base)),
         copyFile: (from, to, path, stored, keepMode) => {
             const source = entryOf(from);

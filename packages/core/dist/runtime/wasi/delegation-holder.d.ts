@@ -88,8 +88,10 @@ export interface DelegationHolder {
     readonly client: ProcessFsClient;
     /** What a caller that cannot wait decides where no held subtree does: its descriptors are the holder's too (owns). */
     readonly provisional: Provisional;
-    /** What the process sees at `key`: its own word (its provisional decisions', then its grants'), else the store's; undefined where neither knows. */
+    /** What the process decided is at `key`: an entry, null (removed), or undefined (nothing decided). */
     entry(key: string): ResidentEntry | null | undefined;
+    /** What the process sees at `key`: what it decided (entry), else the store's; undefined where neither knows. */
+    row(key: string): ResidentEntry | null | undefined;
     /** The names in `key`, as `base` lists them with what the process decided there. */
     children(key: string, base: RuntimeVfsDirEntry[] | undefined): RuntimeVfsDirEntry[] | undefined;
     /** The bytes of a file made or rewritten here. */
