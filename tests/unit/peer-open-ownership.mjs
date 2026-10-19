@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { settledScope } from './lib/response-scope.mjs';
 import { createFacetCtx, createFacetWorld, createPeerNamespace } from './lib/facet-host-harness.mjs';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
+import { peerHostFor } from '../../packages/worker/src/session/rpc.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { runColdStart } from '../../packages/fabric/src/generation.ts';
 import { hostActivity } from '../../packages/fabric/src/host-activity.ts';
@@ -183,5 +184,31 @@ for (const code of [1000, 1005, 1006, 'error']) {
   peer.resetBy = new Error('the peer restarted');
   await process.release();
   assert.ok(!t.world.liveFacets().includes(name), `the cancelled process's facet ${name} is ended`);
+}
+// A cancel that arrives after the peer restarted twice, the name its record
+// names given to another process in between: that process's facet is not
+// the cancelled one's, whichever life of the peer gave it the name.
+{
+  const t = setup(), host = t.open();
+  const first = await host.open(t.params);
+  await first.started; await turns();
+  const placement = await peerPlacement(t.ctx, t.params.pid);
+  const peer = t.peers.get(placement.peerName);
+  const name = (await peer.peerHost.inspect(placement.workerKey)).facet;
+  const restart = () => {
+    peer.ctx = createFacetCtx(t.world, placement.peerName, peer.ctx.storage.rows);
+    peer.peerHost = peerHostFor(peer.ctx, peer.env);
+  };
+  restart();
+  const secondParams = { ...t.params, pid: 12, workerKey: 'nimbus-process:owner:12', writerId: crypto.randomUUID() };
+  const second = await host.open(secondParams);
+  await second.started; await turns();
+  assert.equal((await peerPlacement(t.ctx, 12)).peerName, placement.peerName, 'both processes are hosted by one peer');
+  assert.equal((await peer.peerHost.inspect(secondParams.workerKey)).facet, name, 'the restarted peer gave the second process the same name');
+  restart();
+  await peer.peerHost.cancel(placement.workerKey);
+  assert.ok(t.world.liveFacets().includes(name), 'the first process\'s cancel leaves the second one\'s facet running');
+  await peer.peerHost.cancel(secondParams.workerKey);
+  assert.ok(!t.world.liveFacets().includes(name), 'and the second one\'s cancel ends it');
 }
 console.log('peer-open-ownership: cancellation fences delayed opens and only live calls own stubs');

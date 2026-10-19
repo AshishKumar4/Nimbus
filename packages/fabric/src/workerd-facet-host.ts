@@ -346,12 +346,9 @@ function sessionLedger(ctx: DurableObjectState): StorageLedger | null {
   return sql ? new StorageLedger(sql) : null;
 }
 
-/**
- * A process's hold on its facet's name, made by its spawn: the incarnation
- * (its `ctx`) that spawned it.
- */
+/** A process's hold on its facet's name, made by its spawn: whose it is (the process's worker key). */
 interface FacetNameHold {
-  readonly ctx: DurableObjectState;
+  readonly workerKey: string;
 }
 
 /**
@@ -371,12 +368,13 @@ function holdersOf(facets: FacetContainer): Map<string, FacetNameHold> {
 }
 
 /**
- * Whether a process this incarnation (`ctx`) spawned holds `name`: then its
- * facet is that process's. A hold an ended incarnation left (a process whose
- * release never ran) is no process of this one.
+ * Whether a process other than `workerKey`'s holds `name`: then its facet is
+ * that process's. The process's own hold, which an ended incarnation never
+ * released, is its own facet still.
  */
-export function facetNameHeld(ctx: DurableObjectState, name: string): boolean {
-  return holdersOf(facetContainer(ctx)).get(name)?.ctx === ctx;
+export function facetNameHeldByAnother(ctx: DurableObjectState, name: string, workerKey: string): boolean {
+  const hold = holdersOf(facetContainer(ctx)).get(name);
+  return hold !== undefined && hold.workerKey !== workerKey;
 }
 
 const facetNames = new WeakMap<object, Map<number, string>>();
@@ -540,7 +538,7 @@ function spawnResident(
   const book = slotBook(ctx);
   const ledger = sessionLedger(ctx);
   // This process's hold on `name`, until its release or a newer process's spawn.
-  const holding: FacetNameHold = { ctx };
+  const holding: FacetNameHold = { workerKey: params.workerKey };
   const holders = holdersOf(facets);
   const holds = (): boolean => holders.get(name) === holding;
   // A warm worker keeps the SUPERVISOR binding it was built with, and the
