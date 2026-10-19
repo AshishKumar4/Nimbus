@@ -10,7 +10,8 @@ export const HOLDER_CPU_SOURCES = {
 
 export const PLATFORM_CPU_SOURCES = { source: 'packages/platform/src' };
 
+// The shell and the pattern and glob helpers it reads (substrate/lifo/utils).
 export const LIFO_SHELL_CPU_SOURCES = {
   source: 'packages/core/src',
-  directories: ['substrate/lifo/shell'],
+  directories: ['substrate/lifo/shell', 'substrate/lifo/utils'],
 };
