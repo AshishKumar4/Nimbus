@@ -1979,6 +1979,12 @@ export class CompositeVFS {
     // that backend's. Inside a mount whose backend resolves its own paths
     // (MountOptions.resolvesPaths) nothing is looked up: the backend is handed
     // the rest of the path whole.
+    /** locate(path), its rel the rest as written where the lookup handed it to a mount that resolves its own paths (LookupTrace.verbatim). */
+    located(path, trace) {
+        const route = this.locate(path);
+        const given = trace.verbatim;
+        return given !== undefined && given.point === route.mount.point && route.mount.options.resolvesPaths === true ? { ...route, rel: given.rel } : route;
+    }
     /** The mount `path` (resolved, normalized) is on: the longest point at or above it. */
     locate(path) {
         for (let at = path;; at = parentOf(at)) {
@@ -2107,12 +2113,13 @@ export class CompositeVFS {
      * parents are the lookup's, as any path's.
      */
     onCapability(input, sync, name, write, run, { written, creates = false } = {}) {
-        return andThen(this.resolve(input, true, sync), (path) => {
+        const trace = { links: [], at: '' };
+        return andThen(this.resolve(input, true, sync, false, trace), (path) => {
             this.present(path);
             if (this.isStructural(path)) {
                 throw new Refusal('EISDIR', path);
             }
-            const route = this.locate(path);
+            const route = this.located(path, trace);
             if (write && route.mount.options.readOnly)
                 throw new Refusal('EROFS', path, `${route.mount.point} is mounted read-only`);
             return andThen(this.reachable(path, sync), () => {
@@ -2174,8 +2181,14 @@ export class CompositeVFS {
                 if (final)
                     return null;
                 const holder = this.locate(prefix).mount;
-                if (holder.options.resolvesPaths && this.locate(normalizePath(`${prefix}/${components.slice(at + 1).join('/')}`)).mount === holder)
+                const rest = components.slice(at + 1).join('/');
+                const lands = normalizePath(`${prefix}/${rest}`);
+                if (holder.options.resolvesPaths && this.locate(lands).mount === holder) {
+                    // Below the mount point, the backend walks the rest as written; the point itself stays the namespace's.
+                    if (trace !== undefined && prefix === holder.point && lands !== prefix)
+                        trace.verbatim = { point: prefix, rel: `/${rest}` };
                     return null;
+                }
                 const mount = this.table.mounts.get(prefix);
                 return andThen(mount === undefined ? this.heldDirectory(prefix, sync) : this.mountRoot(mount, prefix, sync), (held) => {
                     if (held !== null && !this.permits(held, 1))
@@ -2350,18 +2363,19 @@ export class CompositeVFS {
     }
     statAt(input, follow, sync) {
         // Nothing at a component on the way is "not there" too: stat answers null.
+        const trace = { links: [], at: '' };
         const walked = () => {
             const absent = (e) => { if (isVfsError(e, 'ENOENT'))
                 return null; throw e; };
             try {
-                const out = this.resolve(input, follow, sync);
+                const out = this.resolve(input, follow, sync, false, trace);
                 return isPromise(out) ? out.catch(absent) : out;
             }
             catch (e) {
                 return absent(e);
             }
         };
-        return andThen(walked(), (path) => (path === null ? null : andThen(this.statResolved(path, follow, sync), (stat) => stat === null ? null : this.identify(path, stat))));
+        return andThen(walked(), (path) => (path === null ? null : andThen(this.statResolved(path, follow, sync, trace), (stat) => stat === null ? null : this.identify(path, stat))));
     }
     /**
      * A mount point's stat: its backend root's. Only a backend that cannot
@@ -2385,7 +2399,7 @@ export class CompositeVFS {
         });
     }
     /** The stat of a resolved namespace path, before its identity is stamped. */
-    statResolved(path, follow, sync) {
+    statResolved(path, follow, sync, trace) {
         if (this.absentOn(path) !== null)
             return null;
         // A live mount point is the mounted backend's root: its mode, owner
@@ -2409,7 +2423,7 @@ export class CompositeVFS {
         return andThen(this.shadowed(path, sync), (hidden) => {
             if (hidden)
                 return null;
-            const route = this.locate(path);
+            const route = trace === undefined ? this.locate(path) : this.located(path, trace);
             return this.softStat(this.ops(route, sync), route.rel, follow);
         });
     }
@@ -2438,10 +2452,11 @@ export class CompositeVFS {
         return [...names].filter((name) => this.isStructural(prefix + name));
     }
     readdirAt(input, sync) {
-        return andThen(this.resolve(input, true, sync), (path) => this.readdirOf(path, sync));
+        const trace = { links: [], at: '' };
+        return andThen(this.resolve(input, true, sync, false, trace), (path) => this.readdirOf(path, sync, trace));
     }
     /** readdir of a path already resolved in this namespace. */
-    readdirOf(path, sync) {
+    readdirOf(path, sync, trace) {
         this.present(path);
         const prefix = path === ROOT_POINT ? '/' : `${path}/`;
         const extra = this.liveNamesIn(path);
@@ -2472,7 +2487,7 @@ export class CompositeVFS {
                 ? own()
                 : andThen(this.heldDirectory(path, sync), (held) => (held === null ? [] : own())), finish));
         }
-        const route = this.locate(path);
+        const route = trace === undefined ? this.locate(path) : this.located(path, trace);
         const ops = this.ops(route, sync);
         // opendir(O_DIRECTORY) answers ENOTDIR before a permission check (a
         // backend that resolves its own paths answers in its own order).
@@ -2503,7 +2518,8 @@ export class CompositeVFS {
         throw error;
     }
     onFile(input, follow, sync, run) {
-        return andThen(this.resolve(input, follow, sync), (path) => {
+        const trace = { links: [], at: '' };
+        return andThen(this.resolve(input, follow, sync, false, trace), (path) => {
             this.present(path);
             if (this.isStructural(path)) {
                 // open(2) checks read permission before a read answers EISDIR.
@@ -2513,7 +2529,7 @@ export class CompositeVFS {
                     throw new Refusal('EISDIR', path);
                 });
             }
-            const route = this.locate(path);
+            const route = this.located(path, trace);
             return andThen(this.reachable(path, sync), () => {
                 this.check?.();
                 return run(this.ops(route, sync), route.rel, path);
@@ -2526,7 +2542,8 @@ export class CompositeVFS {
      * observers are told stands after (WriteSpec.written).
      */
     onMutation(input, follow, sync, what, run, { parents = false, written, told, children = false, recursiveEntry = false } = {}) {
-        return andThen(this.resolve(input, follow, sync, parents), (path) => {
+        const trace = { links: [], at: '' };
+        return andThen(this.resolve(input, follow, sync, parents, trace), (path) => {
             this.present(path);
             // unlink(2) refuses a directory before anything else (Linux), and a
             // mount point is one.
@@ -2540,7 +2557,7 @@ export class CompositeVFS {
                     throw new Refusal('EISDIR', path);
                 });
             }
-            const route = this.locate(path);
+            const route = this.located(path, trace);
             // chmod, chown and utimes of a mount point change the mounted root, as
             // on Linux; only a directory above a mount point has no backend to ask.
             const metadataOnly = what === 'changed' && (path === ROOT_POINT || this.table.mounts.get(path) !== undefined);

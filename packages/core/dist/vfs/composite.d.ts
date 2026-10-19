@@ -111,8 +111,10 @@ export interface MountOptions {
      * mounted root included), checks no parent, and reads no link inside the
      * mount. The backend follows its own links, in its own tree, and answers
      * for every component itself: ENOENT, ENOTDIR, EACCES on an ancestor it
-     * will not show, or a parent it makes on write. A `..` inside the mount is
-     * taken lexically, so it leaves the mount only past its root. readlink
+     * will not show, or a parent it makes on write. It is handed the path below
+     * the mount point as written, its `.`, `..` and trailing slash included,
+     * for it to walk; a `..` that climbs past the mount's root leaves the
+     * mount, taken lexically by the namespace. readlink
      * answers a link's text, as written; a walk over the namespace that
      * follows a link itself (a launch's staged view, a process's walks) asks
      * `linkLeadsTo` where it leads (an absolute target re-rooted at the mount
@@ -778,6 +780,8 @@ export declare class CompositeVFS implements VFS {
     get principal(): Principal;
     get sync(): CompositeSyncVFS;
     private resynthesize;
+    /** locate(path), its rel the rest as written where the lookup handed it to a mount that resolves its own paths (LookupTrace.verbatim). */
+    private located;
     /** The mount `path` (resolved, normalized) is on: the longest point at or above it. */
     private locate;
     private backend;
