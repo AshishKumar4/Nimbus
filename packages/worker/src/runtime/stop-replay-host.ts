@@ -1,5 +1,5 @@
 import { base64Decode } from '@nimbus-sh/core/_shared/crypto.js';
-import { REPLAY_PREFIX_MAX_BYTES, REPLAY_TAPE_MAX_READINGS, REPLAY_TAPE_MAX_RANDOM_BYTES, REPLAY_TAPE_MAX_WRITES, REPLAY_WRITE_ENTRY_MAX_CHARS, STOP_RECORD_MAX_CHARS, STOP_RECORD_PREFIX, type ReplayTape, type StopRecord, type StoppedOutput } from './stop-replay-contracts.js';
+import { REPLAY_PREFIX_MAX_BYTES, REPLAY_TAPE_MAX_READINGS, REPLAY_TAPE_MAX_RANDOM_BYTES, STOP_RECORD_MAX_CHARS, STOP_RECORD_PREFIX, type ReplayTape, type StopRecord, type StoppedOutput } from './stop-replay-contracts.js';
 
 /** A tape's bytes from their base64: none for an absent or empty entry. */
 export function decodeBase64(text: string | undefined): Uint8Array {
@@ -21,9 +21,7 @@ function isTape(value: unknown): value is ReplayTape {
   return Array.isArray(tape.seed) && tape.seed.length === 4 && tape.seed.every((word) => isCount(word, 0xffffffff))
     && isReadings(tape.now) && isReadings(tape.perf)
     && isBase64Within(tape.random, REPLAY_TAPE_MAX_RANDOM_BYTES)
-    && Array.isArray(tape.reads) && tape.reads.length <= REPLAY_TAPE_MAX_READINGS && tape.reads.every((n) => isCount(n, Number.MAX_SAFE_INTEGER))
-    && Array.isArray(tape.writes) && tape.writes.length <= REPLAY_TAPE_MAX_WRITES
-    && tape.writes.every((entry) => typeof entry === 'string' && entry.length <= REPLAY_WRITE_ENTRY_MAX_CHARS);
+    && Array.isArray(tape.reads) && tape.reads.length <= REPLAY_TAPE_MAX_READINGS && tape.reads.every((n) => isCount(n, Number.MAX_SAFE_INTEGER));
 }
 
 function isOutput(value: unknown): value is StoppedOutput[] {
@@ -105,11 +103,28 @@ function concatBytes(parts: readonly Uint8Array[], size: number): Uint8Array {
  * says it showed.
  */
 export class ReplayOutputGate {
-  run = 1;
+  run: number;
   private received = { stdout: 0, stderr: 0 };
   private shown: Record<'stdout' | 'stderr', Uint8Array[]> = { stdout: [], stderr: [] };
   /** More than REPLAY_PREFIX_MAX_BYTES was shown on a stream: no run after a stop can be checked. */
   over = false;
+
+  /** `run`: the run whose output it delivers first (a run from its start after one that stopped). */
+  constructor(run = 1) {
+    this.run = run;
+  }
+
+  /**
+   * Run `run` starts over from its start, unchecked: all it prints is
+   * delivered from its first byte, and an earlier run's late chunk is not.
+   */
+  restart(run: number): void {
+    if (this.run === -1) return;
+    this.run = run;
+    this.received = { stdout: 0, stderr: 0 };
+    this.shown = { stdout: [], stderr: [] };
+    this.over = false;
+  }
 
   /** A run strayed: nothing more it prints is delivered. */
   close(): void {

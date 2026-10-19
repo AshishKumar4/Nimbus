@@ -1469,6 +1469,7 @@ ${VFS_CURSOR_SEED_SOURCE}
       captured: !!captureOutput || !workerEnv?.SUPERVISOR,
       nonce: __startArgs && __startArgs.stopNonce,
       boundary: () => { const b = __supervisor && __supervisor.replayBoundary; return typeof b === "function" ? Reflect.apply(b, __supervisor, []) : undefined; },
+      run: __startArgs && __startArgs.run,
     });
     const __supervisor = workerEnv?.SUPERVISOR
       ? __nimbusStopReplay.ledger(globalThis.__nimbusAnsweringSupervisor(workerEnv.SUPERVISOR)) : null;
@@ -6439,6 +6440,10 @@ export class FacetManager {
                 const divergence = new AbortController();
                 if (stoppable || promotable)
                     this.outputGates.set(entry.pid, new ReplayOutputGate());
+                // A promoted run is run again from what it started from: what it
+                // changes is kept, to be put back then (_promote).
+                if (promotable)
+                    this.vfs?.captureRun(entry.pid);
                 if (stoppable) {
                     const { journal } = this.replay.open(entry.pid, () => {
                         this.outputGates.get(entry.pid)?.close();
@@ -6600,6 +6605,7 @@ export class FacetManager {
                     this.outputGates.delete(entry.pid);
                     if (stoppable)
                         this.replay.close(entry.pid);
+                    this.vfs?.releaseRun(entry.pid);
                 }
             });
         }
@@ -6669,10 +6675,11 @@ export class FacetManager {
     }
     /**
      * A one-shot that stopped at its first listen (stop-replay.ts listen) runs
-     * on as a resident, the same process: the resident replays the run up to
-     * that listen, checked against it, then listens and serves. What the
-     * one-shot printed is shown once; the resident prints it again only to be
-     * checked (the prefix).
+     * on as a resident, the same process: the resident starts from what the
+     * run started from (what the run changed put back, SqliteVFS.restoreRun),
+     * replays the run's draws and output up to that listen, then listens and
+     * serves. What the one-shot printed is shown once; the resident prints it
+     * again only to be checked (the prefix).
      */
     /**
      * A file's identity as the process sees it: which file, and its version;
@@ -6730,6 +6737,21 @@ export class FacetManager {
         await this.hooks.rewindProcessFiles?.(pid);
         // Every long-running process has an input channel on its pid.
         this.processes.openInput(pid);
+        // The resident starts from what the run started from: each file the run
+        // changed is put back as the run found it, and the resident's changes are
+        // its own. When they cannot all be put back, it starts from its start
+        // over the files as they are, unretraced, as a server known to be one is
+        // started (server-hints.ts): what it printed is printed again, and it
+        // says why.
+        // Its waves still being applied land first: none lands after.
+        await openSupervisorDeliveries(this.ctx).retireWaveWriters(pid);
+        const restored = this.vfs?.restoreRun(pid) ?? { refused: 'what it changed was not kept' };
+        if ('refused' in restored) {
+            await this._deliverOutput(pid, 'stderr', new TextEncoder().encode(`node: this program listens as a server, so Nimbus runs it again as one from its start, over the files as they are: ${restored.refused}. What it printed before it listened is printed again.\n`));
+            // Its run from the start is the next run, unchecked: all it prints is
+            // shown, and the stopped run's late chunks still are not.
+            gate?.restart(stop.run + 1);
+        }
         const resume = {
             replay: {
                 run: stop.run + 1,
@@ -6757,11 +6779,14 @@ export class FacetManager {
                 esModule: opts.esModule, moduleScope: opts.moduleScope, preamble: opts.preamble,
                 command: opts.command, invokerPid: opts.invokerPid, bundleProfile: opts.bundleProfile, node: opts.node,
                 ...(opts.stdin !== undefined ? { stdin: opts.stdin } : {}),
-                skipSpawn: true, callerPid: pid, resume,
+                skipSpawn: true, callerPid: pid,
+                ...('refused' in restored
+                    ? { run: stop.run + 1, ...(run.inputChannel > 0 ? { stdinWriter: true } : {}), ...(opts.stdinFile ? { stdinFile: { ...opts.stdinFile, syncRead: true } } : {}) }
+                    : { resume }),
             });
             // Its \`< file\` changed between the run that read it and the resident
             // that read it again: they did not read the same input.
-            changed = this.processExitCode(pid) === null && run.stdinFile !== undefined
+            changed = this.processExitCode(pid) === null && !('refused' in restored) && run.stdinFile !== undefined
                 && await this._stdinFileIdentity(entry, opts.stdinFile.path) !== run.stdinFile;
             run.signal.throwIfAborted();
         }
@@ -8289,7 +8314,7 @@ export class FacetManager {
             // process fails, naming how.
             let strayed = null;
             if (stdinWriter) {
-                this.outputGates.set(entry.pid, new ReplayOutputGate());
+                this.outputGates.set(entry.pid, new ReplayOutputGate(opts.run));
                 this.stdinTaken.set(entry.pid, new StdinTaken(heldStdin, STDIN_SYNC_READ_BYTES));
                 this.replay.open(entry.pid, () => {
                     this.outputGates.get(entry.pid)?.close();
@@ -8315,8 +8340,10 @@ export class FacetManager {
                     this._assertLaunchStillOwned(entry.pid);
                     // Its worker, the launch admission it was started in, before its boot claims it.
                     await admitted();
+                    // The run this boot is: past a stop, the one its replay names; a run from its start past one that stopped, its own.
+                    const launchingRun = rerun?.replay.run ?? opts.run ?? 1;
                     try {
-                        const launchingNonce = stopNonce, launchingRun = rerun?.replay.run ?? 1;
+                        const launchingNonce = stopNonce;
                         handle = await this._startResidentProcess(entry.pid, {
                             // The attached-TTY runner holds startProcess open for the process's
                             // life; the server/watch runner returns once it is up.
@@ -8344,11 +8371,13 @@ export class FacetManager {
                                 // A boot after a stop: what the stopped boot drew and printed, and
                                 // the stdin it is handed back.
                                 ...(rerun !== null ? { replay: rerun.replay, stdinAtLeast: rerun.stdinAtLeast ?? 0, ...(rerun.stdinWhole ? { stdinWhole: true } : {}) } : {}),
-                                ...(rerun?.stdinFile ? { stdinFile: rerun.stdinFile } : {}),
+                                // A run from its start after a run that stopped: its output is that next run's.
+                                ...(rerun === null && opts.run !== undefined ? { run: opts.run } : {}),
+                                ...(rerun?.stdinFile ? { stdinFile: rerun.stdinFile } : opts.stdinFile ? { stdinFile: opts.stdinFile } : {}),
                             },
                             // Each boot after a stop is a fresh isolate: a keyed loader keeps the
                             // stopped one's module state.
-                            ...(rerun !== null ? { run: rerun.replay.run } : {}),
+                            ...(rerun !== null ? { run: rerun.replay.run } : opts.run !== undefined ? { run: opts.run } : {}),
                             storageBytes,
                             // A resident whose declared port is reserved binds the owner's
                             // durable slot — the same store a durable worker spawn takes — so the
@@ -8431,9 +8460,9 @@ export class FacetManager {
                         // The boot stopped itself at a synchronous read of stdin that has to
                         // wait: wait for the input, then boot it again.
                         const journal = this.replay.get(entry.pid)?.journal;
-                        let stop = stoppable ? stopRecordOf(e, stopNonce, rerun?.replay.run ?? 1) : null;
+                        let stop = stoppable ? stopRecordOf(e, stopNonce, launchingRun) : null;
                         if (stop === null && journal?.diverged)
-                            stop = { v: 3, kind: 'diverged', run: rerun?.replay.run ?? 1, out: [], why: journal.diverged };
+                            stop = { v: 3, kind: 'diverged', run: launchingRun, out: [], why: journal.diverged };
                         if (stop === null)
                             throw e;
                         this.stdinTaken.get(entry.pid)?.retire();
