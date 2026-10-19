@@ -1,7 +1,6 @@
 #!/usr/bin/env bun
 // One process's paired VFS workloads; the remote client grades independent runs.
 import assert from 'node:assert/strict';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { hostSqlite } from '../unit/lib/host-sqlite.mjs';
 import { cpuMs } from './lib/paired-cpu.mjs';
 import { CORE_CPU_SOURCES } from './lib/cpu-sources.mjs';
@@ -17,6 +16,7 @@ async function make({
   'vfs/sqlite-files.ts': { sqliteFiles: files, SqliteFiles: FilesClass },
   'runtime/process-files.ts': { ProcessFiles: Processes },
   'vfs/path.ts': { normalizeVfsPath: normalize },
+  'runtime/os-contracts.ts': { CRED_KERNEL },
 }, removedFiles) {
   const host = await hostSqlite();
   const engine = new Store(host.sql, host.transactions);
@@ -39,6 +39,8 @@ async function make({
   const namespace = new Namespace(files(engine, CRED_KERNEL)).as(USER).sync;
   const authority = new Processes(engine);
   const process = authority.view({ pid: 71, cred: USER });
+  // A WASI program's lookups (ruby's, python's): the synchronous bridge, by name and beneath a preopen.
+  const bridge = authority.bind({ pid: 72, cred: USER }).synchronous;
   class Walked extends FilesClass {
     removeRecursive = undefined;
     as(cred, actor, options) { return new Walked(engine, engine.as(cred, { ...options, actor })); }
@@ -49,13 +51,13 @@ async function make({
     root.chown('home/user/tree', USER.uid, USER.gid);
     for (let at = 0; at < removedFiles; at += 64) root.writeBatch({ inodes: Array.from({ length: Math.min(64, removedFiles - at) }, (_, i) => ({ path: `home/user/tree/f${at + i}`, parentPath: 'home/user/tree', isDir: false, size: 0, mtime: 1, mode: 0o644, chunkCount: 0, uid: USER.uid, gid: USER.gid })), chunks: [] });
   };
-  return { engine, root, store, namespace, process, paths, packagePaths, chainPaths, removal, seedRemoval, normalize };
+  return { engine, root, store, namespace, process, bridge, paths, packagePaths, chainPaths, removal, seedRemoval, normalize };
 }
 
 // Spellings normalizeVfsPath reduces by its names, not by its plain-key fast path.
 const SPELLED = ['/home/user/a/./b/../b/c/d/f1', 'home//user/a/b/c/d/', '/../home/user/a/b/c/d/../d/./f2', './home/user/node_modules/x/lib/../lib/f3'];
 
-async function runWork({ store, namespace, process, paths, packagePaths, chainPaths, removal, normalize }, kind, iterations) {
+async function runWork({ store, namespace, process, bridge, paths, packagePaths, chainPaths, removal, normalize }, kind, iterations) {
   if (kind === 'walked-removal') {
     const report = removal.removeRecursive('/home/user/tree');
     assert.equal(report.failures.length, 0);
@@ -69,6 +71,11 @@ async function runWork({ store, namespace, process, paths, packagePaths, chainPa
     else if (kind === 'namespace-walk') checksum += namespace.stat(`/home/user/link/../d/f${(i * 17) % paths.length}`).size;
     else if (kind === 'process-view') checksum += (await process.stat(path)).size;
     else if (kind === 'process-linked') checksum += (await process.stat(chainPaths[(i * 17) % chainPaths.length])).size;
+    else if (kind === 'bridge-plain') checksum += bridge.stat(path).size;
+    else if (kind === 'bridge-beneath') checksum += bridge.stat({ root: '', path: path.slice(1), beneath: true }).size;
+    else if (kind === 'bridge-beneath-linked') checksum += bridge.stat({ root: 'home/user', path: packagePaths[(i * 17) % packagePaths.length].slice('/home/user/'.length), beneath: true }).size;
+    else if (kind === 'bridge-dotdot') checksum += bridge.stat(`/home/user/link/../d/f${(i * 17) % paths.length}`).size;
+    else if (kind === 'bridge-lstat') checksum += bridge.stat(path, { followSymlinks: false }).size;
     else switch (i % 4) {
       case 0: checksum += store.stat(lookupPath(kind, i, path, packagePaths, chainPaths)).size; break;
       case 1: checksum += store.readFile(lookupPath(kind, i, path, packagePaths, chainPaths)).byteLength; break;
@@ -79,22 +86,23 @@ async function runWork({ store, namespace, process, paths, packagePaths, chainPa
 }
 
 await runPairedBenchmark({
-  source: CORE_CPU_SOURCES.source,
   async run({ short, cleanup, withArms, sample }) {
     const iterations = short ? 120 : 24_000;
+    // A walk beneath a preopen (or through `..`) costs some 25 plain lookups: a twelfth as many keep its sample near the others', and the run within its time.
+    const iterationsOf = (kind) => (kind.startsWith('bridge-beneath') || kind === 'bridge-dotdot' ? iterations / 12 : iterations);
     const removedFiles = short ? 64 : 2000;
     await withArms(async (from) => make(await loadIsolatedCore(from, cleanup, {
       sources: CORE_CPU_SOURCES,
-      modules: ['vfs/sqlite-vfs.ts', 'vfs/composite.ts', 'vfs/sqlite-files.ts', 'runtime/process-files.ts', 'vfs/path.ts'],
+      modules: ['vfs/sqlite-vfs.ts', 'vfs/composite.ts', 'vfs/sqlite-files.ts', 'runtime/process-files.ts', 'vfs/path.ts', 'runtime/os-contracts.ts'],
     }), removedFiles), async (arms) => {
-      for (const kind of ['normalize-spelled', 'store', 'namespace', 'namespace-walk', 'store-linked', 'store-pnpm-chain', 'store-dot', 'store-link-parent', 'store-dot-lease', 'process-view', 'process-linked', 'walked-removal']) {
+      for (const kind of ['normalize-spelled', 'store', 'namespace', 'namespace-walk', 'store-linked', 'store-pnpm-chain', 'store-dot', 'store-link-parent', 'store-dot-lease', 'process-view', 'process-linked', 'bridge-plain', 'bridge-beneath', 'bridge-beneath-linked', 'bridge-dotdot', 'bridge-lstat', 'walked-removal']) {
         const leases = kind === 'store-dot-lease' ? Object.values(arms).map((arm) => [arm, arm.engine.acquireExclusiveMutation('lease')]) : [];
         const walked = kind === 'walked-removal';
         try {
           await sample(kind, arms, (arm) => {
             if (walked) arm.seedRemoval();
-            return cpuMs(() => runWork(arm, kind, iterations));
-          }, { pairs: 36, warm: walked ? 2 : 12, iterations: walked ? removedFiles : iterations });
+            return cpuMs(() => runWork(arm, kind, iterationsOf(kind)));
+          }, { pairs: 36, warm: walked ? 2 : 12, iterations: walked ? removedFiles : iterationsOf(kind) });
         } finally {
           for (const [arm, lease] of leases) arm.engine.releaseExclusiveMutation(lease.owner);
         }

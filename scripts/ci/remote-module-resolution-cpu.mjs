@@ -6,8 +6,7 @@ import { remotePairedCpu } from './lib/paired-cpu.mjs';
 await remotePairedCpu({
   name: 'remote-module-resolution-cpu',
   receipts: 'remote-module-resolution-cpu',
-  source: 'packages/core/src',
-  baselineDir: 'packages/core/.ci-resolution-baseline',
+  baselineDir: '.ci-resolution-baseline',
   engine: 'node',
   // Its arms are bundled on their own (esbuild): bun runs it too, for context.
   engines: ['node', 'bun'],

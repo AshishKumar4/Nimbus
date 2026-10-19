@@ -13,7 +13,7 @@ import { cloudflareApiToken } from './cloudflare-api.mjs';
 import { describeContainerStorage, readContainerStorage } from './container-storage.mjs';
 import { NIMBUS_STATE } from './state-dir.mjs';
 
-const SELF_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+export const SELF_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 // The armada client, pinned: exactly ARMADA_CLIENT, a commit on main of
 // ARMADA_REPO, as a clean checkout at ARMADA_DIR with its node_modules from
@@ -72,8 +72,9 @@ export async function reportContainerStorage(log = (line) => console.error(line)
 
 /**
  * A file laid over a commit's tree: a path whose bytes and executable bit
- * are taken from this checkout, or the bytes given for a path.
- * @typedef {string | { path: string, bytes: string | Uint8Array }} OverlayFile
+ * are taken from this checkout, or the bytes given for a path; or another
+ * commit's whole tree (`tree`, a commit-ish), laid under a path.
+ * @typedef {string | { path: string, bytes: string | Uint8Array } | { path: string, tree: string }} OverlayFile
  */
 
 /** The armada recipe every task needs, whatever the lane's commit has. */
@@ -88,7 +89,8 @@ const git = (cwd, args, options = {}) => {
 /**
  * A commit object, on no branch, whose tree is `sha`'s with each `files`
  * path replaced by the bytes and executable bit it has under `from` (or by
- * the `{ path, bytes }` given, as a plain file). Its
+ * the `{ path, bytes }` given, as a plain file, or by the commit `tree`'s
+ * whole tree for a `{ path, tree }`). Its
  * parent is `sha`. Each call makes a new one (its date is now): armada keeps
  * the pack it was sent for a commit, so a commit reused across runs would
  * reuse a pack that was wrong once.
@@ -104,6 +106,11 @@ export function overlayCommit(repo, sha, files, from = SELF_ROOT) {
     const env = { ...process.env, GIT_INDEX_FILE: join(scratch, 'index') };
     git(repo, ['read-tree', sha], { env });
     for (const file of files) {
+      // A commit's whole tree, laid under `path`.
+      if (typeof file !== 'string' && 'tree' in file) {
+        git(repo, ['read-tree', `--prefix=${file.path}/`, file.tree], { env });
+        continue;
+      }
       const path = typeof file === 'string' ? file : file.path;
       const blob = git(repo, ['hash-object', '-w', '--stdin'], { input: typeof file === 'string' ? readFileSync(join(from, path)) : file.bytes });
       const mode = typeof file === 'string' && statSync(join(from, path)).mode & 0o100 ? '100755' : '100644';

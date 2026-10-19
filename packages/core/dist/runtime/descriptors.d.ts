@@ -207,6 +207,8 @@ export declare class Descriptors {
     fsync(id?: number): Awaitable<void>;
     /** The absolute path a descriptor was opened at. */
     path(id: number): string;
+    /** Whether descriptor `id`'s description is a mount's (its path its own name for it, not a SQLite name), however it answers. */
+    mounted(id: number): boolean;
     /** The name descriptor `id` was opened by: what its errors name, its file having none now perhaps. */
     openedAs(id: number): string;
     fstat(id: number): Awaitable<RuntimeVfsStat>;

@@ -3,8 +3,8 @@
 // a view's principal — the mount point, that backend as the principal sees
 // it, and the path the backend is handed — so an embedder calls a backend's
 // own extras (a device's writeFileWithReport) without re-parsing paths. The
-// lookup is every operation's: root links on the way are followed, `..`
-// inside a resolvesPaths mount is lexical, and an absent mount answers a
+// lookup is every operation's: root links on the way are followed, a
+// resolvesPaths mount is handed the rest as written, and an absent mount answers a
 // null source with its absentReason.
 
 import assert from 'node:assert/strict';
@@ -41,11 +41,14 @@ vfs.mount('/pc', () => (connected ? pc.files : null), { resolvesPaths: true, abs
 vfs.mount('/gone', () => null, { absentReason: () => 'the container stopped' });
 vfs.mount('/gone/inner', new MemoryVFS());
 
-// A resolvesPaths mount: `..` inside it is lexical, the path is mount-relative.
+// A resolvesPaths mount: the path is mount-relative, as written past the
+// point (the backend walks `..` itself, Kinu ask 58); a `..` past its root
+// leaves it, the namespace's.
 {
   const route = await vfs.route('/pc/a/../b');
   assert.equal(route.point, '/pc');
-  assert.equal(route.path, '/b');
+  assert.equal(route.path, '/a/../b');
+  assert.equal((await vfs.route('/pc/./b/')).path, '/./b/');
   assert.equal(route.source, pc.files, "the embedder's view is the backend itself");
   assert.equal(route.absentReason, undefined);
 }

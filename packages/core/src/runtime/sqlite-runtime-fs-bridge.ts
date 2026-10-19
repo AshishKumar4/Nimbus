@@ -6,7 +6,8 @@ import { WaveIngest } from './wave-ingest.js';
 import { runtimeStatOf, type CompositeVFS } from '../vfs/composite.js';
 import { abandon, andThen, isCharacterDevice, isPromise, readDeclaredSource, readRangeOrWhole, syncValue, type Awaitable, type SyncVFS, type VfsRemoval } from '../vfs/vfs.js';
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
-import { fsError, MAX_LINK_HOPS, walkBeneath, type FsError } from './beneath-walk.js';
+import { entryVfsPath } from '../vfs/path-walk.js';
+import { fsError, handedSpelling, MAX_LINK_HOPS, walkBeneath, type BeneathReached, type FsError } from './beneath-walk.js';
 import { modeAllows } from '../vfs/posix-access.js';
 import { sameFileVersion } from './os-contracts.js';
 
@@ -56,11 +57,12 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     // The namespace declined the walk's first name, and with it every name below.
     const walked = this.walkOnSqlite(path, followSymlinks);
     if (walked !== null) return walked.end === 'absent' ? { path: walked.name, absent: true } : { path: walked.name };
-    const resolved = this.resolveDataPath(path, followSymlinks);
-    if (resolved === null) return null;
+    const found = this.resolveDataPath(path, followSymlinks);
+    if (found === null) return null;
+    const resolved = found.reached;
     const mounted = this.mounted;
     if (!mounted || !this.namespace!.composes('/' + resolved)) return { path: resolved };
-    return { mount: mounted, namespace: this.namespace!, path: '/' + resolved };
+    return { mount: mounted, namespace: this.namespace!, path: found.spelling, name: '/' + resolved };
   }
 
   /**
@@ -618,10 +620,12 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
 
   realpath(path: RuntimeFsPath): string {
     return called({ syscall: 'realpath', path }, () => {
-      const resolved = this.walkOnSqlite(path, true)?.name ?? this.resolveDataPath(path, true);
-      if (resolved === null) throw fsError('ELOOP', 'realpath', path);
+      const walked = this.walkOnSqlite(path, true);
+      const found = walked !== null ? { reached: walked.name, spelling: '/' + walked.name } : this.resolveDataPath(path, true);
+      if (found === null) throw fsError('ELOOP', 'realpath', path);
+      const resolved = found.reached;
       if (resolved === '') return '/';
-      if (this.namespace?.composes('/' + resolved)) return this.namespace.realpath('/' + resolved);
+      if (this.namespace?.composes('/' + resolved)) return this.namespace.realpath(found.spelling);
       this.vfs.stat(resolved);
       return '/' + resolved;
     });
@@ -783,12 +787,16 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     return this.descriptors.path(directory) + '/' + path.path;
   }
 
-  private resolveDataPath(path: RuntimeFsPath, followSymlinks: boolean): string | null {
+  /** The walk component by component: the name reached and its spelling for the namespace (walkBeneath's BeneathReached). */
+  private resolveDataPath(path: RuntimeFsPath, followSymlinks: boolean): BeneathReached | null {
     if (typeof path !== 'string' && path.beneath) {
       // The root is found by name, so every directory above it must grant
       // search (VFS-COMP-006) before anything is looked up beneath it.
-      const root = normalizeVfsPath('root' in path ? path.root : this.descriptors.path(path.directory));
-      const walk = walkBeneath(root, path, followSymlinks, this.vfs.cred, (name, to) => this.namespace?.resolvedByBackend(name, '/' + root, to) === true);
+      const spelled = 'root' in path ? path.root : this.descriptors.path(path.directory);
+      const root = normalizeVfsPath(spelled);
+      // A mounted directory's own name (as written past a `..` its backend walks) is where lookups beneath it start.
+      const rootSpelling = 'root' in path || !this.descriptors.mounted(path.directory) ? '/' + root : spelled;
+      const walk = walkBeneath(root, path, followSymlinks, this.vfs.cred, (name, to) => this.namespace?.resolvedByBackend(name, '/' + root, to) === true, rootSpelling);
       for (let step = walk.next(); ; ) {
         if (step.done) return step.value;
         const lookup = step.value;
@@ -797,9 +805,12 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
           : lookup.stat === '/' ? this.rootStat() : this.stat(lookup.stat, { followSymlinks: false }));
       }
     }
-    const pending = this.pathArgument(path).split('/').filter(Boolean);
+    const spelled = this.pathArgument(path);
+    const pending = spelled.split('/').filter(Boolean);
     const resolved: string[] = [];
     let hops = 0;
+    // Where names began going to a backend that resolves its own paths, for its spelling (handedSpelling).
+    let handoff: { base: string; rest: string[] } | null = null;
 
     while (pending.length > 0) {
       const segment = pending.shift();
@@ -812,6 +823,10 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       const candidate = [...resolved, segment].join('/');
       const isFinal = pending.length === 0;
       if (!followSymlinks && isFinal) {
+        // Not followed, the last name is no link to read; handed to a backend that resolves its own paths, it keeps its spelling.
+        if (handoff === null && this.namespace?.composes('/' + candidate) && this.namespace.resolvedByBackend('/' + candidate, '/', '/' + candidate)) {
+          handoff = { base: '/' + resolved.join('/'), rest: [segment] };
+        }
         resolved.push(segment);
         continue;
       }
@@ -821,7 +836,9 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       // mount whose backend resolves its own paths: its links are its own.
       if (this.namespace?.composes('/' + candidate)) {
         const to = '/' + [...resolved, segment, ...pending].join('/');
-        const link = this.namespace.resolvedByBackend('/' + candidate, '/', to) ? null : this.mountedLink('/' + candidate);
+        const handed = this.namespace.resolvedByBackend('/' + candidate, '/', to);
+        if (handed) handoff ??= { base: '/' + resolved.join('/'), rest: [segment, ...pending] };
+        const link = handed ? null : this.mountedLink('/' + candidate);
         if (link === null) {
           resolved.push(segment);
           continue;
@@ -829,6 +846,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         if (++hops > MAX_LINK_HOPS) return null;
         if (link.startsWith('/')) resolved.length = 0;
         pending.unshift(...link.split('/').filter(Boolean));
+        handoff = null;
         continue;
       }
       if (!followSymlinks && isFinal) {
@@ -854,9 +872,11 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       resolved.length = 0;
       resolved.push(...from.split('/').filter(Boolean));
       pending.unshift(...target.split('/').filter(Boolean));
+      handoff = null;
     }
 
-    return resolved.join('/');
+    const reached = resolved.join('/');
+    return { reached, spelling: handedSpelling(handoff, '/' + reached, spelled.endsWith('/')) };
   }
 
   /**
@@ -895,7 +915,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
 
   /** The name a mutation by `owner` reaches, checked against the leases on a mount as on SQLite. */
   private reached(located: Located, owner?: string): Located {
-    this.leaseAllows(located.path, owner);
+    this.leaseAllows(located.mount ? located.name : located.path, owner);
     // The namespace's own guard, which each mount call meets, is presented the lease too.
     if (located.mount && owner !== undefined) {
       const namespace = this.namespace!.scoped(() => {}, owner);
@@ -1003,7 +1023,11 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   }
 
   /** The absolute path a descriptor was opened at. */
-  descriptorPath(handleId: number): string { return '/' + normalizeVfsPath(this.descriptors.path(handleId)); }
+  /** The name a descriptor's later lookups start from: a mounted description's own (HeldFile.name: as written past a `..` its backend walks), else its SQLite name. */
+  descriptorPath(handleId: number): string {
+    const path = this.descriptors.path(handleId);
+    return this.descriptors.mounted(handleId) ? path : '/' + normalizeVfsPath(path);
+  }
 
   fstat(handleId: number): RuntimeVfsStat { return syncValue(this.descriptors.fstat(handleId)); }
   dup(handleId: number): RuntimeFileHandle { return this.descriptors.dup(handleId); }
@@ -1022,7 +1046,8 @@ const DOT_DOT_SEGMENT = /(?:^|\/)\.\.(?:\/|$)/;
 /** A confined path, and whether a mount other than the SQLite root owns it. */
 type Located =
   /** `namespace`: the view `mount` is the synchronous face of (the lease it presents included). */
-  | { mount: CompositeVFS['sync']; namespace: CompositeVFS; path: string; absent?: undefined }
+  /** `path`: what the namespace is handed (a spelling its backend walks, BeneathReached); `name`: the namespace's own name, for leases. */
+  | { mount: CompositeVFS['sync']; namespace: CompositeVFS; path: string; name: string; absent?: undefined }
   /** `absent`: the one walk on SQLite ended at an absent name (walkOnSqlite). */
   | { mount?: undefined; path: string; absent?: true };
 
@@ -1042,7 +1067,9 @@ interface FsCall {
 
 /** mkdir -p of a mounted path's parent. */
 function mountParents(mount: SyncVFS, path: string): void {
-  const parent = path.slice(0, path.lastIndexOf('/'));
+  // The name's final separators are not its parent's: a spelling may end in one.
+  const entry = entryVfsPath(path).path;
+  const parent = entry.slice(0, entry.lastIndexOf('/'));
   if (parent !== '') mount.mkdir(parent, { recursive: true });
 }
 

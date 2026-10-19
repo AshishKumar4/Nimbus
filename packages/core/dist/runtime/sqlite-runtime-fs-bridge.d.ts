@@ -176,6 +176,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     /** No process: its writes wait for their publication, so none is held. */
     published(): void;
     private pathArgument;
+    /** The walk component by component: the name reached and its spelling for the namespace (walkBeneath's BeneathReached). */
     private resolveDataPath;
     /**
      * A mounted (or composed) entry's link target, or null when it is not a
@@ -214,6 +215,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     private mountReceipt;
     private assertExpectedRevision;
     /** The absolute path a descriptor was opened at. */
+    /** The name a descriptor's later lookups start from: a mounted description's own (HeldFile.name: as written past a `..` its backend walks), else its SQLite name. */
     descriptorPath(handleId: number): string;
     fstat(handleId: number): RuntimeVfsStat;
     dup(handleId: number): RuntimeFileHandle;
