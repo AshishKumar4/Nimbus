@@ -5,6 +5,12 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a Vite preview could crash on its first load with a SyntaxError
+  in a pre-bundled package (react-query, remark-parse, rehype-highlight,
+  react-dom), about once in 35 cold loads. The dev server answered a
+  module's first requests with clones of one response, and a clone's body
+  reached the browser with a 16 KiB block out of order. Each request now
+  gets a response of its own made from the module's text.
 
 - Fixed: a launch could wait forever in "prepare" (a vite dev server sat 5
   minutes) after a session that shared its isolate was deleted while it
