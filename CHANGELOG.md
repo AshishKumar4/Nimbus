@@ -31,6 +31,18 @@ published independently in the `@nimbus-sh` npm scope.
   😀 leaves nothing rather than half of it, `?` and `case 😀 in ?)` match it
   whole, `${#x}` is 1, and IFS=😀 joins and splits by 😀 without splitting
   😁. Before, these could leave a lone surrogate in a value.
+- Fixed: Tailwind v4 generates the utilities its stylesheets' `@source`
+  directives name outside the working tree. Tailwind's scanner reads those
+  files synchronously, and they were not held for it, so their classes were
+  silently missing. A process carrying the scanner now holds the files under
+  each such source, found from the project's stylesheets (its own, those
+  behind its links, and the sheets they `@import`), each brace alternative's
+  directory taken whole, through links, with the project's exclusions
+  (`node_modules`, VCS and cache directories). Their changes reach the
+  dev server as the working tree's do, and a source on a mounted drive is
+  listed for the process. At most 5,000 files of under 256 KiB each are
+  held this way; past that, a launch says where it stopped, and the rest
+  are learned from what the scanner misses.
 - Fixed: a Vite dev server with Tailwind v4 could serve its first
   stylesheet without the classes the app's components use, about one
   start in three. Each time the dev server read a source file it had
@@ -42,6 +54,12 @@ published independently in the `@nimbus-sh` npm scope.
   other character outside the Basic Multilingual Plane at a chunk boundary
   read back with two replacement characters in place of it, from a
   process's resident store.
+
+- Fixed: the shell's patterns, trims, substitutions, `${#x}` and IFS count
+  characters, as bash does in a UTF-8 locale, not UTF-16 units. `${x%?}` of
+  😀 leaves nothing rather than half of it, `?` and `case 😀 in ?)` match it
+  whole, `${#x}` is 1, and IFS=😀 joins and splits by 😀 without splitting
+  😁. Before, these could leave a lone surrogate in a value.
 - Fixed: the shell reads quoting as bash does wherever quoting decides what
   a word is.
   - A quoted reserved word is a command: `'if' true` runs a command named
