@@ -1,4 +1,5 @@
 import type { FsTime } from '../runtime/os-contracts.js';
+import { arrayIncludes } from '../_shared/primordials.js';
 
 /** What an entry is, as its filesystem says: the type every access check is given. */
 export type PosixNodeType = 'file' | 'directory' | 'symlink';
@@ -24,7 +25,8 @@ export function posixAccess(
   if (requested === 0) return true;
   const permissions = entry.mode & 0o777;
   if (cred.uid === 0) return (requested & 0o1) === 0 || (permissions & 0o111) !== 0 || entry.type === 'directory';
-  const shift = cred.uid === entry.uid ? 6 : cred.gid === entry.gid || cred.groups.includes(entry.gid) ? 3 : 0;
+  // A program's Array.prototype.includes is not asked (module loading checks access: design-guest-loader-primordials).
+  const shift = cred.uid === entry.uid ? 6 : cred.gid === entry.gid || arrayIncludes(cred.groups, entry.gid) ? 3 : 0;
   return ((permissions >> shift) & requested) === requested;
 }
 

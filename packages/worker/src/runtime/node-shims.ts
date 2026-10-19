@@ -864,16 +864,44 @@ const __nimbusProcessExitPromise = new Promise((resolve) => {
 // ═══════════════════════════════════════════════════════════════════════
 // ──  path module ────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
+// Module loading's path work, on the launch's captures (core _shared
+// primordials.ts): by the time a program imports, it may have replaced
+// String.prototype.split or Array.prototype.push, which Node's loader never
+// asks (design-guest-loader-primordials.md §3.5).
+const {
+  stringSlice: __pathSlice, stringIndexOf: __pathIndexOf, stringStartsWith: __pathStartsWith,
+  stringCharCodeAt: __pathCharCodeAt, arrayJoin: __pathJoin, SafeList: __PathList, SafeMap: __NimbusSafeMap,
+  decodeURIComponentOf: __pathDecodeURIComponent,
+} = __nimbusPrimordials;
+/** \`text\`'s names, what lies between its slashes, empty ones dropped. */
+function __vfsNames(text) {
+  const out = new __PathList();
+  let from = 0;
+  while (from <= text.length) {
+    let slash = __pathIndexOf(text, "/", from);
+    if (slash < 0) slash = text.length;
+    if (slash > from) out[out.length] = __pathSlice(text, from, slash);
+    from = slash + 1;
+  }
+  return out;
+}
+/** \`text\` without its leading slashes: a VFS key. */
+function __vfsKey(text) {
+  let at = 0;
+  while (at < text.length && __pathCharCodeAt(text, at) === 47) at++;
+  return at === 0 ? text : __pathSlice(text, at);
+}
 // A VFS key's normalization: "." and "" segments dropped, ".." applied,
 // no trailing slash. Nimbus's own fs and resolver keys, not userland's path.
 function __vfsNormalizePath(p) {
-  const parts = p.split("/");
-  const out = [];
-  for (const s of parts) {
-    if (s === "..") { if (out.length && out[out.length-1] !== "..") out.pop(); else out.push(s); }
-    else if (s !== "." && s !== "") out.push(s);
+  const parts = __vfsNames(p);
+  const out = new __PathList();
+  for (let i = 0; i < parts.length; i++) {
+    const s = parts[i];
+    if (s === "..") { if (out.length && out[out.length - 1] !== "..") out.length--; else out[out.length] = s; }
+    else if (s !== ".") out[out.length] = s;
   }
-  return (p.startsWith("/") ? "/" : "") + out.join("/");
+  return (__pathCharCodeAt(p, 0) === 47 ? "/" : "") + __pathJoin(out, "/");
 }
 // Userland's path is workerd's node:path, Node's own lib/path.js
 // (https://developers.cloudflare.com/workers/runtime-apis/nodejs/path/).
@@ -1051,7 +1079,7 @@ const __fsMod = (() => {
   }
 
   // ── helpers ──
-  function _strip(p) { return String(p).replace(/^\\/+/, ""); }
+  function _strip(p) { return __vfsKey(String(p)); }
   function _resolve(p) {
     // X.5-O: WHATWG-URL → POSIX path coercion. Pre-fix String(p) on
     // a URL instance or 'file://' string produced 'file:///package.json';
@@ -1061,18 +1089,18 @@ const __fsMod = (() => {
     let s;
     if (p && typeof p === "object" && p.protocol === "file:" && typeof p.pathname === "string") {
       // URL instance — pathname is already a POSIX path with leading /
-      try { s = decodeURIComponent(p.pathname); } catch { s = p.pathname; }
+      try { s = __pathDecodeURIComponent(p.pathname); } catch { s = p.pathname; }
     } else {
       s = String(p);
-      if (s.startsWith("file://")) {
+      if (__pathStartsWith(s, "file://")) {
         // 'file:///abs' → '/abs', 'file://host/abs' → '/abs'
-        const tail = s.slice(7);
-        const slashIdx = tail.indexOf("/");
-        const pathPart = tail.startsWith("/") ? tail : (slashIdx >= 0 ? tail.slice(slashIdx) : "/" + tail);
-        try { s = decodeURIComponent(pathPart); } catch { s = pathPart; }
+        const tail = __pathSlice(s, 7);
+        const slashIdx = __pathIndexOf(tail, "/");
+        const pathPart = __pathStartsWith(tail, "/") ? tail : (slashIdx >= 0 ? __pathSlice(tail, slashIdx) : "/" + tail);
+        try { s = __pathDecodeURIComponent(pathPart); } catch { s = pathPart; }
       }
     }
-    if (s.startsWith("/")) return __vfsNormalizePath(s);
+    if (__pathStartsWith(s, "/")) return __vfsNormalizePath(s);
     return __vfsNormalizePath(__pathMod.resolve(cwd || "/home/user", s));
   }
 
@@ -1199,13 +1227,13 @@ const __fsMod = (() => {
   // field placed anew, owned by the rename), a removal drops it. Content and
   // delivery (parked cells, generations, announced directories) are kept
   // apart: they are the ledger's.
-  const _own = new Map();
+  const _own = new __NimbusSafeMap();
   // Records with an entry: the walk takes this process's words only when there are any.
   let _ownEntries = 0;
   let _nsFresh = [];
   let _barrierBegins = 0;
   // _nsDeviceAbove's answers per directory, until the next barrier.
-  const _nsDevices = new Map();
+  const _nsDevices = new __NimbusSafeMap();
   /** An own record's attribute fields: chmod's mode, utimes' times, chown's owner ({ uid, gid }). */
   const _OWN_ATTRS = ["mode", "times", "owner"];
   function _ownRecord(k) {
@@ -4584,7 +4612,10 @@ const __fsMod = (() => {
     return _accessEntry;
   }
   function _posixCred() {
-    return _accessCred ??= { uid: Number(cred.uid), gid: Number(cred.gid), groups: cred.groups.map(Number) };
+    if (_accessCred != null) return _accessCred;
+    const groups = new __PathList();
+    for (let i = 0; i < cred.groups.length; i++) groups[i] = Number(cred.groups[i]);
+    return _accessCred = { uid: Number(cred.uid), gid: Number(cred.gid), groups };
   }
 
   /** \`p\` and \`dest\`: what a refusal names, the call's own paths, whichever of them \`absPath\` is. */
@@ -4594,10 +4625,12 @@ const __fsMod = (() => {
   /** Whether each ancestor of \`absPath\` this view knows may be searched (x), as the session's walk to it must. */
   function _ancestorsSearchable(absPath) {
     _nsRequire("stat", absPath, "fs.promises.stat");
-    const parts = _strip(absPath).split("/").filter(Boolean);
+    const parts = __vfsNames(_strip(absPath));
+    let ancestor = "";
     for (let index = 1; index < parts.length; index++) {
-      const ancestor = _entry(parts.slice(0, index).join("/"), true);
-      if (ancestor !== undefined && !_modeAllows(ancestor, 1)) return false;
+      ancestor = index === 1 ? parts[0] : ancestor + "/" + parts[index - 1];
+      const entry = _entry(ancestor, true);
+      if (entry !== undefined && !_modeAllows(entry, 1)) return false;
     }
     return true;
   }
@@ -12488,7 +12521,7 @@ function __nimbusExplainCommonJSGlobalLike(e, url, hasTopLevelAwait) {
  * because resolver paths are already in VFS format (no leading /).
  */
 function __readFileOr(path, fallback) {
-  const k = path.replace(/^\\/+/, "");
+  const k = __vfsKey(path);
   // binary-fs: bundle/writes cells may be Uint8Array; module-resolution
   // callers (package.json parse, source compile) want strings. Decode
   // bytes lossily — same as Node's Buffer.toString('utf8').
@@ -12505,7 +12538,7 @@ function __readFileOr(path, fallback) {
   try { return __fsMod.readFileSync("/" + k, "utf8"); } catch { return fallback; }
 }
 function __fileExists(path) {
-  const k = path.replace(/^\\/+/, "");
+  const k = __vfsKey(path);
   // The namespace answers exactly (vfs/resident), except on a
   // mounted directory the launch did not list: asked only when the namespace
   // holds such a directory, statSync's refusal says so, and resolution
