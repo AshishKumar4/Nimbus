@@ -71,6 +71,8 @@ function identifierError(token, checkWord) {
     const valid = literal !== null && !literal.includes('$') && !/^[0-9]+$/.test(literal) && (!checkWord || IDENTIFIER.test(literal));
     return valid ? null : `\`${sourceOf(token)}': not a valid identifier`;
 }
+const endsNothing = () => false;
+const endsCaseItem = (token) => token.kind === TokenKind.DoubleSemi || isUnquotedLiteralWord(token, 'esac');
 class Parser {
     reader;
     // The tokens read so far, and for a token that began a batch the reader's mark before it.
@@ -116,7 +118,8 @@ class Parser {
             const mark = this.reader.mark();
             const batch = this.reader.next();
             this.marks[this.tokens.length] = mark;
-            this.tokens.push(...batch);
+            for (const token of batch)
+                this.tokens.push(token);
         }
     }
     peek() {
@@ -176,7 +179,8 @@ class Parser {
     parseScript() {
         const lists = [];
         for (let line = this.nextLine(); line !== null; line = this.nextLine())
-            lists.push(...line);
+            for (const list of line)
+                lists.push(list);
         return { type: 'script', lists };
     }
     /** The next line's lists, read whole; null at the end. */
@@ -189,6 +193,7 @@ class Parser {
             const prevPos = this.pos;
             const list = this.parseList();
             lists.push(list);
+            this.requireListEnd(list, endsNothing);
             // Its separators: a newline ends the line (read no further, so the next line is read after this one runs).
             let newline = this.consumeHeredocBodies();
             while (!newline && (this.peek().kind === TokenKind.Semi || this.peek().kind === TokenKind.Newline)) {
@@ -204,6 +209,18 @@ class Parser {
             if (list.endsLine)
                 return lists;
         }
+    }
+    /**
+     * After a list: a separator, or what ends what encloses it (`ends`), comes
+     * next, unless it runs in the background, as bash's grammar has it; any
+     * other token there is a syntax error (`x=1 (echo)`, `echo a (b)`).
+     */
+    requireListEnd(list, ends) {
+        const token = this.peek();
+        const kind = token.kind;
+        if (list.background || kind === TokenKind.Semi || kind === TokenKind.Newline || kind === TokenKind.EOF || ends(token))
+            return;
+        throw new ParseError(`syntax error near unexpected token \`${token.value}'`, token.pos);
     }
     skipSeparators() {
         while (this.peek().kind === TokenKind.Semi || this.peek().kind === TokenKind.Newline) {
@@ -338,7 +355,8 @@ class Parser {
     parseRegexWord(inGroup) {
         this.rereadFromHere();
         const regex = this.reader.readRegexWord();
-        if (regex === null)
+        // Nothing there, or the conditional's own `]]`: no operand.
+        if (regex === null || unquotedLiteral(regex.token) === ']]')
             throw new ParseError('unexpected argument to conditional binary operator', this.peek().pos);
         if (regex.unclosed)
             throw new ParseError("unexpected EOF while looking for matching `)'", regex.token.pos);
@@ -358,6 +376,10 @@ class Parser {
     }
     parseCompoundList(terminators) {
         const lists = [];
+        const ends = (token) => {
+            const word = unquotedLiteral(token);
+            return (word !== null && terminators.includes(word)) || (token.kind === TokenKind.RParen && terminators.includes(')'));
+        };
         this.skipSeparators();
         while (!this.isAtEnd()) {
             const prevPos = this.pos;
@@ -372,7 +394,9 @@ class Parser {
             }
             if (t.kind === TokenKind.EOF)
                 break;
-            lists.push(this.parseList());
+            const list = this.parseList();
+            lists.push(list);
+            this.requireListEnd(list, ends);
             this.consumeHeredocBodies();
             this.skipSeparators();
             if (this.pos === prevPos) {
@@ -483,7 +507,9 @@ class Parser {
                     break;
                 if (t.kind === TokenKind.EOF)
                     break;
-                body.push(this.parseList());
+                const list = this.parseList();
+                body.push(list);
+                this.requireListEnd(list, endsCaseItem);
                 this.skipSeparators();
                 if (this.pos === prevPos) {
                     throw new ParseError(`unexpected token '${this.peek().value}'`, this.peek().pos);

@@ -8,10 +8,15 @@ interface Frame {
     readonly alias: string | null;
     readonly blank: boolean;
 }
-/** Where a reader is between tokens: the text it reads at each depth, and the here-documents whose bodies follow its next newline. */
+/**
+ * Where a reader is between tokens: the text it reads at each depth, and the
+ * here-documents whose bodies follow its next newline (the first
+ * `pendingCount` of `pending`, which a line's words only add to).
+ */
 export interface ReaderMark {
     readonly frames: readonly Frame[];
     readonly pending: readonly HeredocDelimiter[];
+    readonly pendingCount: number;
     readonly operator: TokenKind.Heredoc | TokenKind.HeredocStripTabs | null;
     readonly checkNext: boolean;
 }
@@ -44,9 +49,12 @@ export declare class TokenReader {
      * The word after `=~`, as bash's reader reads a regular expression: up to a
      * blank or an operator, except that its parentheses nest and, inside them,
      * blanks, newlines, `#` and operators are its own, and `|` is its own
-     * anywhere. A `)` outside them ends it, for the conditional to read. Null
-     * when no word begins here (a comment, a newline, an operator); `unclosed`
-     * when the input ends inside its parentheses.
+     * anywhere. A `)` outside them ends it, for the conditional to read. Inside
+     * them, it goes on past the end of an alias's text into the text the alias
+     * was read in, with a blank between unless the alias's text ended in one or
+     * in an operator's character (bash's reader gives that blank). Null when no
+     * word begins here (a comment, a newline, an operator); `unclosed` when the
+     * input ends inside its parentheses.
      */
     readRegexWord(): {
         token: Token;
