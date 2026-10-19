@@ -33,9 +33,13 @@ console.log("lchown", t(() => fs.lchownSync("own.lnk", -1, -1)), mine("own.lnk",
 const fd = fs.openSync("own", "r"); console.log("fchown", t(() => fs.fchownSync(fd, -1, process.getgid())), t(() => fs.fchownSync(fd, 0, 0))); fs.closeSync(fd);
 console.log("missing", t(() => fs.chownSync("nope", -1, -1)));
 console.log("thrown", t(() => fs.chown("own", -2, 0, () => console.log("called back"))));
-fs.chown("own", -1, -1, (e) => console.log("cb", e && e.code));
-fs.promises.chown("own", 0, 0).catch((e) => console.log("promise", e.code));
-fs.promises.open("own", "r").then(async (h) => { console.log("handle", await h.chown(-1, -1).then(() => "ok", (e) => e.code)); await h.close() });`;
+// One after another: the callback's, then the promise's, then the handle's (their completions would race).
+fs.chown("own", -1, -1, (e) => {
+  console.log("cb", e && e.code);
+  fs.promises.chown("own", 0, 0).catch((e) => console.log("promise", e.code))
+    .then(() => fs.promises.open("own", "r"))
+    .then(async (h) => { console.log("handle", await h.chown(-1, -1).then(() => "ok", (e) => e.code)); await h.close() });
+});`;
 
 const CASES = [
   [`node -e 'let n = 0; process.on("beforeExit", (c) => { console.log("beforeExit", c, n); if (n++ < 2) setTimeout(() => console.log("timer"), 1) }); process.exitCode = 3'; echo "status=$?"`,
