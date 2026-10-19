@@ -35,6 +35,8 @@ import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-netwo
 }
 
 // ── two sessions, one isolate's loader ───────────────────────────────────
+// Both sessions use the same warm name, and their ids share more than the
+// pool's short id: only the session in the key keeps their workers apart.
 {
   const built = [];
   const loader = {
@@ -51,26 +53,24 @@ import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-netwo
     },
   };
   const ctxOf = (name) => ({ id: { toString: () => name }, waitUntil() {} });
-  // Two sessions whose ids share a long prefix, as two Durable Object ids can share the pool's short one.
-  const sessions = ['0123456789abcdef-one', '0123456789abcdef-two'].map((id) => ({ ctx: ctxOf(id), keys: warmFacetKeys(id, 'ruby', 2) }));
+  const sessions = ['0123456789abcdef-one', '0123456789abcdef-two'].map((id) => ({ ctx: ctxOf(id), key: { session: id, name: 'ruby-1' } }));
   const task = facetTaskSource('async () => "ok"');
-  const run = async ({ ctx, keys }) => {
-    const key = keys.take();
+  const run = async ({ ctx, key }) => {
     const facet = loaderFacetHost(loader, ctx, ISOLATE_NETWORK).open({ tag: 'ruby-runner', concurrency: 1, warm: key });
     try {
       assert.equal(await facet.submit(task, {}), 'ok');
     } finally {
       facet.dispose();
     }
-    keys.give(key);
   };
   for (let i = 0; i < 3; i++) for (const session of sessions) await run(session);
   assert.equal(built.length, 2, `one worker per session, kept warm across its processes: ${JSON.stringify(built)}`);
-  for (const [i, { ctx }] of sessions.entries()) {
-    const own = built.filter((id) => id.includes(ctx.id.toString()));
-    assert.equal(own.length, 1, `session ${i + 1}'s processes ran on a worker of its own`);
-    assert.ok(!own[0].includes(sessions[1 - i].ctx.id.toString()), 'and not on one keyed by the other session');
-  }
   console.log('  ✓ two sessions in one isolate never share a warm worker');
+
+  // A key that names no session is refused where the host reads it.
+  for (const key of [{ session: '', name: 'ruby-1' }, { name: 'ruby-1' }]) {
+    assert.throws(() => loaderFacetHost(loader, ctxOf('0123456789abcdef-one'), ISOLATE_NETWORK).open({ tag: 'ruby-runner', concurrency: 1, warm: key }), /belongs to a session/);
+  }
+  console.log('  ✓ a warm key without a session is refused by the host');
 }
 console.log('warm-facet-keys: ok');
