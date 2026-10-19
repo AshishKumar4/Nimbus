@@ -15,6 +15,10 @@ published independently in the `@nimbus-sh` npm scope.
 - Fixed: a `bash` script goes on after a special builtin's own failure
   (`. ./missing`, `eval -x`), as bash does outside POSIX mode; an `sh`
   script still ends there. Before, every script ended.
+- Fixed: dragging a workspace divider could stop following the pointer at
+  once when the preview's frame took focus as it loaded. The shell ended a
+  drag whenever its window lost focus; it now ends one only when the
+  pointer is no longer held by the divider.
 - Added: the shell's `[[ word =~ regex ]]`, as in bash 5.2. The regex is a
   POSIX extended regular expression as glibc compiles it. Its parentheses,
   and the blanks and `|` inside them, are its own; quoted characters match
