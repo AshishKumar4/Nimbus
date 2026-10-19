@@ -31,7 +31,13 @@ export function warmFacetKeys(session, runtime, kept) {
         },
     };
 }
-/** The scope a host keys a warm facet's worker by: the session first, so no other session's key can name it. */
+/**
+ * The scope a host keys a warm facet's worker by: the session first, so no
+ * other session's key can name it. A key that names no session is refused
+ * here, where every host reads one, however the key was made.
+ */
 export function warmFacetScope(key) {
+    if (typeof key.session !== 'string' || key.session === '')
+        throw new Error(`warm facet ${key.name}: a warm facet belongs to a session, and none was named`);
     return `${key.session}:${key.name}`;
 }

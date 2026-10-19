@@ -31,6 +31,10 @@ export interface WarmFacetKeys {
  * facet one left running is not this one's to enter.
  */
 export declare function warmFacetKeys(session: string, runtime: string, kept: number): WarmFacetKeys;
-/** The scope a host keys a warm facet's worker by: the session first, so no other session's key can name it. */
+/**
+ * The scope a host keys a warm facet's worker by: the session first, so no
+ * other session's key can name it. A key that names no session is refused
+ * here, where every host reads one, however the key was made.
+ */
 export declare function warmFacetScope(key: WarmFacetKey): string;
 //# sourceMappingURL=warm-facets.d.ts.map

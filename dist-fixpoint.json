@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "99ad90006c63513862147aa5fdb29e3798615a06c4a3f783af536bd1f044c30b",
+  "fingerprint": "7063058df203398faeb25bb2bc19c48ef82e90618fe8cbfbcda7c91cf15c4d43",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -763,9 +763,9 @@
     "packages/core/dist/runtime/vite-esbuild-options.d.ts": "7b20a8c24d6f84da639cce4d981d0bd83be352552a92e2e0af26954530e5eda0",
     "packages/core/dist/runtime/vite-esbuild-options.d.ts.map": "4158ef72b99280f685773a3d39febb9c27dd2ba9c63a830b3aa0975e4797297e",
     "packages/core/dist/runtime/vite-esbuild-options.js": "87ee1b2a12b4e4938b69fc1b9fc1b91d2d6825afc9373e80374bb2cfe6fb23a4",
-    "packages/core/dist/runtime/warm-facets.d.ts": "0c065631a305fad9b862a9a1deb897a25054abad7891b53df07cb641946b38ba",
-    "packages/core/dist/runtime/warm-facets.d.ts.map": "ca32ec8fe7d4c2f19a7cd1591050aec1d2d9f40e27ca08a65abdb221318de055",
-    "packages/core/dist/runtime/warm-facets.js": "a1df0004a0eaa34bf185308c4134648edfc148d7adb8e03b3899b8ea6f14b51c",
+    "packages/core/dist/runtime/warm-facets.d.ts": "de75ad66afcb920f18941a0e67a5c41fe0534bdd4e2de2ddff811bcfff662f0f",
+    "packages/core/dist/runtime/warm-facets.d.ts.map": "d593258dc2f96a6ed105b3566e48ab6563f59e9896e3e6ce98f24a0c12b64891",
+    "packages/core/dist/runtime/warm-facets.js": "8d53d9d87205f5ddbf473f90209e548a40b6221dbd231b3e848f8fdc2b4d1a7d",
     "packages/core/dist/runtime/wasi-instance.d.ts": "84a30f8ce274d818a1721586f25942a93b4084be0127b31852f0320f71a22724",
     "packages/core/dist/runtime/wasi-instance.d.ts.map": "4dd3fd78ba0e2860822ee6c626cc6c7c871fc28159a6051a956cb8a0da7fc2e4",
     "packages/core/dist/runtime/wasi-instance.generated.d.ts": "9ba2ca3a17a1a2e90a99f9d684780088b2e1c5facf2638d4a16ca954d2c3dcf6",
@@ -1653,7 +1653,7 @@
     "packages/core/src/runtime/vite-assets.ts": "80b80ca39dd8f7ed405ae87cfc2cc8ae2c15f869c13b0c39260e1293b004a883",
     "packages/core/src/runtime/vite-config-parser.ts": "faca277ed6444339c7e1403fac31827c64db9a3d9d154e2f4bc0c797e1e02c05",
     "packages/core/src/runtime/vite-esbuild-options.ts": "6ed8ddde56a20ceffdbc06cdda8afc353c00a88d29bef2fcedf6824ff39fc3fb",
-    "packages/core/src/runtime/warm-facets.ts": "6fa510dc0926a21e46663d9efa1906b2267bc4bc5a0fb436cd5bf863ba51378a",
+    "packages/core/src/runtime/warm-facets.ts": "a82fbea30361ce218a43b94e3763ddf9db8c8c2586c96eaa352f5a4be6ae7280",
     "packages/core/src/runtime/wasi-instance.generated.ts": "788b0df1b53eb969048ce94661d892f63407553025f00620a857bb1891749450",
     "packages/core/src/runtime/wasi-instance.ts": "ceee5a1625b944a82c9a1555568d34a0ac1bb0e4f965c112482040af0dc3cb32",
     "packages/core/src/runtime/wasi-threads.ts": "f24db65d0db09a714208e990f859cfcd8dc765abcb7511930d88bf3c7000ba3c",
