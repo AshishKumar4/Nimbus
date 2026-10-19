@@ -399,21 +399,31 @@ async function deployPreview({ account, token, preview, secret, before, config }
     printed = JSON.parse(stdout.slice(stdout.indexOf('{')));
   } catch { /* reported below */ }
   const deploymentId = printed?.deployment?.id ?? null;
+  // Read until the API serves the upload or 30 s have passed. A read the
+  // deadline cuts off is no answer: the wait ends with what was last read.
   const settleBy = Date.now() + 30_000;
   const signal = AbortSignal.timeout(Math.max(1, settleBy - Date.now()));
-  let latest = await latestDeployment({ account, token, preview, signal });
-  while (deploymentId && latest?.id !== deploymentId && Date.now() < settleBy) {
-    await delay(Math.min(500, Math.max(1, settleBy - Date.now())), undefined, { signal });
-    latest = await latestDeployment({ account, token, preview, signal });
+  let latest;
+  for (;;) {
+    try {
+      latest = await latestDeployment({ account, token, preview, signal });
+    } catch (error) {
+      if (!signal.aborted) throw error;
+      break;
+    }
+    if (!deploymentId || latest?.id === deploymentId || Date.now() >= settleBy) break;
+    await delay(Math.min(500, Math.max(1, settleBy - Date.now())));
   }
   const after = latest?.id ?? null;
   if (!deploymentId || after !== deploymentId || after === (before?.id ?? null)) {
     process.stderr.write(`${stdout}${result.stderr || ''}`);
     const detail = !deploymentId
       ? '`wrangler preview` reported no deployment id'
-      : after !== deploymentId
-        ? `the API serves ${after} as the latest deployment, not ${deploymentId}`
-        : `the latest deployment is still ${after} — nothing was deployed`;
+      : latest === undefined
+        ? 'the API answered no read of its latest deployment within 30 s of the upload'
+        : after !== deploymentId
+          ? `30 s after the upload, the API serves ${after ?? 'no deployment'} as the latest, not ${deploymentId}`
+          : `the latest deployment is still ${after} — nothing was deployed`;
     throw new Error(`Preview ${preview} of ${PREVIEW_PARENT} did not land: ${detail}; wrangler exited ${result.status}`);
   }
   const base = workersDevUrlOf(printed.preview?.urls);
