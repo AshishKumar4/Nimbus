@@ -6,6 +6,8 @@ published independently in the `@nimbus-sh` npm scope.
 ## Unreleased
 
 - Changed: a paired perf probe grades each candidate Preview against the mean of the two baseline Previews, and a probe red on one set of Previews is run again on a fresh set of four, red only when it is red on both. Against each single baseline Preview, a real +46% cold start was found on only half the sets. A paired CPU bench's slower kind is measured again on a second set of runs, and is slower only when both find it slower: 95% per kind finds about one slower kind in two runs of a dozen that are not.
+- Fixed: shell function nesting is bounded. A call past the bound is refused with `f: maximum function nesting level exceeded (N)`, and the rest of its line is discarded, as bash 5.2 does with FUNCNEST set. The shell goes on with the next line, its own or a sourced file's, with `$?` 1; a subshell, command substitution, pipeline element or background job ends with 1; a trap's action ends. The bound is FUNCNEST when it is a number above 0, otherwise 1000, and never more than 1000. Before, a function that called itself ran until the session's heap was gone (bash with no FUNCNEST segfaults).
+- Fixed: a process that ends now says why on its stderr. A run again that stops after it has booted (it did not retrace its run, say) ends with status 1 and its reason. Before, its facet was released while the session showed it running, with no exit and no output. A process whose host the platform reset says so too.
 - Changed: the paired perf probes measure the candidate on two Previews
   beside the baseline's two, and grade it slower only when both of its
   Previews are slower than both of the baseline's. One Preview can run
