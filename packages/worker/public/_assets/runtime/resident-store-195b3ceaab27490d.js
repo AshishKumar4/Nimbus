@@ -837,7 +837,17 @@ var __nimbusResidentModule = (() => {
       chunkParts(path) {
         const parts = chunks.get(path);
         if (!parts) return [];
-        return [...parts.keys()].sort((a, b) => a - b).map((part) => copy(parts.get(part)));
+        const numbers = new SafeList();
+        parts.forEach((_cell, part) => {
+          numbers[numbers.length] = part;
+        });
+        arraySort(numbers, (a, b) => a - b);
+        const out = [];
+        for (let i = 0; i < numbers.length; i++) {
+          const cell = parts.get(numbers[i] ?? 0);
+          if (cell !== void 0) out[out.length] = copy(cell);
+        }
+        return out;
       },
       chunkAddText(path, part, txt) {
         addChunk(path, Number(part), { txt: String(txt), bin: null }, false);

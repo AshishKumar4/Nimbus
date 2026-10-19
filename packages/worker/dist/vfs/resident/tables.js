@@ -18,7 +18,7 @@
  * callers normalise with residentBytes), ns rows with every stat column.
  */
 import { RESIDENT_ROW_BYTES, namespaceRowBytes, residentBytes, utf8Length } from './cell-cost.js';
-import { SafeMap } from '@nimbus-sh/core/_shared/primordials.js';
+import { arraySort, SafeList, SafeMap } from '@nimbus-sh/core/_shared/primordials.js';
 /**
  * Cell kinds. A cell is one of the three things __vfsBundle has always held,
  * and the kind is stored rather than inferred so a text file whose bytes happen
@@ -421,7 +421,17 @@ export function heapTables() {
             const parts = chunks.get(path);
             if (!parts)
                 return [];
-            return [...parts.keys()].sort((a, b) => a - b).map((part) => copy(parts.get(part)));
+            // In part order, through the captures (module loading reads a large file's parts here).
+            const numbers = new SafeList();
+            parts.forEach((_cell, part) => { numbers[numbers.length] = part; });
+            arraySort(numbers, (a, b) => a - b);
+            const out = [];
+            for (let i = 0; i < numbers.length; i++) {
+                const cell = parts.get(numbers[i] ?? 0);
+                if (cell !== undefined)
+                    out[out.length] = copy(cell);
+            }
+            return out;
         },
         chunkAddText(path, part, txt) { addChunk(path, Number(part), { txt: String(txt), bin: null }, false); },
         chunkAddBin(path, part, bin) { addChunk(path, Number(part), { txt: null, bin: owned(bin) }, false); },
