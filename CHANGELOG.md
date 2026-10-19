@@ -5,6 +5,10 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Added: `/api/_diag/session` reports the session's last facet calls under
+  `launch.facetCalls`: each call's facet, whether its worker was built for
+  it (cold) or kept warm, and how long its code took to load and the call
+  took.
 - Fixed: a syntax error in `eval`'s text, or in a file `.` runs, is that
   command's status 2, said on its stderr, and the rest of the line runs, as in
   bash: `eval 'if' 2>/dev/null || echo recovered` prints `recovered`. Lines
