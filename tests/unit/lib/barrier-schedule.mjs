@@ -63,7 +63,7 @@ export const SEED_TREE = Object.freeze({ d: null, 'd/e': null, x: null, 'd/f': '
 
 /** The names a schedule reads and changes. */
 export const UNIVERSE = Object.freeze({
-  files: Object.freeze(['top', 'new', 'd/f', 'd/n', 'd/e/g', 'x/h', 'x/f', 'z/k']),
+  files: Object.freeze(['top', 'new', 'd/f', 'd/n', 'd/e/g', 'x/h', 'x/f', 'z/k', 'x/e/g', 'z/g']),
   dirs: Object.freeze(['d', 'd/e', 'x', 'z', 'x/e']),
 });
 const NAMES = [...UNIVERSE.dirs, ...UNIVERSE.files];

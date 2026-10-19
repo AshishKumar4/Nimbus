@@ -78,7 +78,8 @@ const FOUND = {
   },
   'a name the process renamed stays while a later rename of its waits on the session': {
     schedule: [['sync', 'rename', 'd/e', 'x/e'], ['settle'], ['hold', 'wave'], ['sync', 'rename', 'x/h', 'd/n'], ['input'], ['settle'],
-      ['sync', 'stat', 'x/e'], ['sync', 'stat', 'd/n'], ['release', 'wave'], ['settle'], ['sync', 'stat', 'x/e'], ['sync', 'stat', 'd/n']],
+      ['sync', 'stat', 'x/e'], ['sync', 'stat', 'x/e/g'], ['sync', 'stat', 'd/n'], ['release', 'wave'], ['settle'],
+      ['sync', 'stat', 'x/e'], ['sync', 'stat', 'x/e/g'], ['sync', 'stat', 'd/n'], ['input'], ['settle'], ['sync', 'stat', 'x/e/g'], ['sync', 'readdir', 'x/e']],
   },
   'a name the process renamed into place stays once the session acknowledges it after a barrier reported it': {
     schedule: [['hold', 'wave'], ['own', 'rename', 'x/h', 'd/f'], ['own', 'readFile', 'top'], ['settle'], ['release', 'wave'], ['settle'],
