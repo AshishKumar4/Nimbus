@@ -72,8 +72,8 @@ export interface ProvisionalHost {
   row(key: string): ResidentEntry | null | undefined;
   /** The listing of `key`, as `row` sees it. */
   children(key: string): RuntimeVfsDirEntry[] | undefined;
-  /** The store's bytes of `key` at `revision`, where it holds them. */
-  content(key: string, revision: number): Uint8Array | undefined;
+  /** The view's bytes of file `row` at `key`, where it holds them and they are the view's (DelegationHolder.bytes' last source). */
+  content(key: string, row: ResidentEntry): Uint8Array | undefined;
   reserve(bytes: number): boolean;
   release(bytes: number): void;
   readonly client: ProcessFsClient;
@@ -99,6 +99,8 @@ export interface ProvisionalHost {
    * where no grant holds it. The one way these decisions take a held file.
    */
   promote(dev: number, ino: number): Inode | undefined;
+  /** File (dev, ino)'s Inode where a grant decides it alone (the holder's, outside the table): a borrow, to price a change before take promotes it. */
+  held(dev: number, ino: number): Inode | undefined;
   /** What the files a grant holds alone keep of the budget (their Inodes, outside the table). */
   heldCost(): number;
 }
@@ -466,7 +468,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       if (name === undefined) continue;
       const row = host.row(name);
       if (!row || row.dev !== inode.dev || row.ino !== inode.ino) continue;
-      const held = inode.type === 'file' ? host.content(name, row.revision) : undefined;
+      const held = inode.type === 'file' ? host.content(name, row) : undefined;
       return { row, bytes: held !== undefined && held.byteLength === row.size ? held : undefined };
     }
     return undefined;
@@ -555,6 +557,36 @@ export function provisional(host: ProvisionalHost): Provisional {
     }
     if (need < 0) host.release(-need);
     inode.reserved += need;
+  };
+
+  /**
+   * What a change that takes file (dev, ino) asks of the budget, where a
+   * grant holds it alone: its promotion (its cell's bytes, its baseline
+   * then) and `price`, what the change admits of its Inode as it would be
+   * promoted. 0 where none holds it. A borrow: nothing moves.
+   */
+  const promotionNeed = (dev: number, ino: number, price: (inode: Inode) => number): number => {
+    if (inodeAtNumber(dev, ino) !== undefined) return 0;
+    const shell = host.held(dev, ino);
+    if (shell === undefined) return 0;
+    const cell = shell.cell!;
+    const row = shell.row;
+    const base: InodeState = { bytes: cell.bytes.subarray(0, cell.length), size: cell.length, mode: row.mode, uid: row.uid, gid: row.gid, atime: row.atime, mtime: row.mtime, ctime: row.ctime };
+    const promoted: Inode = { ...shell, base, state: base };
+    delete promoted.cell;
+    promoted.reserved = cost(promoted);
+    return cell.length + Math.max(0, price(promoted));
+  };
+
+  /**
+   * `bytes` of the budget there now, nothing taken: ENOSPC where it has no
+   * room. A change that takes a file a grant holds alone checks all it will
+   * admit first, so a refusal leaves the file the grant's (§11).
+   */
+  const probe = (bytes: number, syscall: string, path: string): void => {
+    if (bytes <= 0) return;
+    admit(bytes, syscall, path);
+    host.release(bytes);
   };
 
   /** What `ops` on `inode` cost before they are made: admitted (ENOSPC where the budget has no room), its charge raised to it. */
@@ -819,6 +851,9 @@ export function provisional(host: ProvisionalHost): Provisional {
    * name goes (an unlink, a rename over it): admitted with what removes it
    * (`more`, its record), then taken.
    */
+  /** What keepForDescriptors(`inode`, `more`) admits. */
+  const keepNeed = (inode: Inode | undefined, more: number): number =>
+    (inode === undefined || inode.descs === 0 || inode.base !== null ? more : more + 2 * (viewed(inode)?.bytes?.byteLength ?? 0));
   const keepForDescriptors = (inode: Inode | undefined, more: number, syscall: string, path: string): void => {
     if (inode === undefined || inode.descs === 0 || inode.base !== null) {
       admit(more, syscall, path);
@@ -1164,6 +1199,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     // What older decisions left unlogged goes first, and with what this logs, must fit what the log holds unanswered.
     host.drain();
     host.client.fitsSync(bytes?.byteLength ?? 0, path);
+    if (row !== null) probe(promotionNeed(row.dev, row.ino, (promoted) => projectedCost(promoted, ops) + openCredit(promoted, key) - promoted.reserved), 'open', path);
     const inode = row === null ? null : inodeAt(key, row);
     let credit: number;
     if (inode !== null) {
@@ -1347,6 +1383,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       // Read-only: metadata only, nothing read and nothing logged.
       if (row.type === 'directory' || row.type !== 'file') return undefined;
       if (!modeAllows(row, 4, host.cred)) throw fsError('EACCES', 'open', path);
+      probe(promotionNeed(row.dev, row.ino, (promoted) => projectedCost(promoted, []) - promoted.reserved), 'open', path);
       const inode = inodeAt(key, row);
       try {
         admitOps(inode, [], 'open', path);
@@ -1527,6 +1564,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       if (writableParent(key, path, 'unlink') === undefined) return false;
       // Its descriptors keep what it holds: its bytes, where only the view has them, admitted for their lifetime first.
       host.drain();
+      probe(promotionNeed(row.dev, row.ino, () => nameCost([key])), 'unlink', path);
       keepForDescriptors(take(row.dev, row.ino), nameCost([key]), 'unlink', path);
       loggedName({ type: 'call', call: { call: 'unlink', path: key } }, [key], nameCost([key]), () => place(key, null));
       return true;
@@ -1571,6 +1609,16 @@ export function provisional(host: ProvisionalHost): Provisional {
       if (writableParent(from, path, 'rename') === undefined || writableParent(to, path, 'rename') === undefined) return false;
       // A file it replaces keeps, for its descriptors, what it holds: admitted first, with the record and the Inode it moves.
       host.drain();
+      // All it will admit, a file a grant holds alone among them priced as promoted, before it takes any (§11).
+      {
+        const borrowed = layer.get(from) ?? inodeAtNumber(source.dev, source.ino) ?? host.held(source.dev, source.ino);
+        const more = nameCost([from, to]) + (borrowed === undefined ? INODE_COST + 2 * stringCost(from) + 2 * stringCost(to) : 2 * stringCost(to));
+        const sourceNeed = layer.has(from) ? 0 : promotionNeed(source.dev, source.ino, () => 0);
+        const replaced = target === null ? undefined : inodeAtNumber(target.dev, target.ino);
+        const targetNeed = target === null || replaced !== undefined ? keepNeed(replaced, more)
+          : host.held(target.dev, target.ino) !== undefined ? promotionNeed(target.dev, target.ino, () => more) : more;
+        probe(sourceNeed + targetNeed, 'rename', path);
+      }
       const known = layer.get(from) ?? take(source.dev, source.ino);
       const moves = known === undefined ? INODE_COST + 2 * stringCost(from) + 2 * stringCost(to) : 2 * stringCost(to);
       keepForDescriptors(target === null ? undefined : take(target.dev, target.ino), nameCost([from, to]) + moves, 'rename', path);
@@ -1604,8 +1652,9 @@ export function provisional(host: ProvisionalHost): Provisional {
       if (row === null) throw fsError('ENOENT', syscall, path);
       judgeAttrs(row, attrs, syscall, path);
       host.drain();
-      const inode = layer.get(key) ?? inodeAt(key, row);
       const op = attrOp(attrs, host.now());
+      if (!layer.has(key)) probe(promotionNeed(row.dev, row.ino, (promoted) => projectedCost(promoted, [op]) - promoted.reserved), syscall, path);
+      const inode = layer.get(key) ?? inodeAt(key, row);
       try {
         admitOps(inode, [op], syscall, path);
       } catch (error) {

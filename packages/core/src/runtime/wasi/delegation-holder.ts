@@ -109,8 +109,15 @@ export interface DelegationHolder {
   row(key: string): ResidentEntry | null | undefined;
   /** The names in `key`, as `base` lists them with what the process decided there. */
   children(key: string, base: RuntimeVfsDirEntry[] | undefined): RuntimeVfsDirEntry[] | undefined;
-  /** The bytes of a file made or rewritten here. */
-  content(entry: ResidentEntry): Uint8Array | undefined;
+  /**
+   * File `entry`'s bytes (at `key`) as this process may read them here, the
+   * one source of them: its grant's cell; its provisional decisions' fold;
+   * else the view's at its revision, unless the file's bytes are this
+   * process's and not yet the view's (pendingFile). null: this process's,
+   * not here (the session reads them); undefined: not here, the view may
+   * fetch them.
+   */
+  bytes(key: string, entry: ResidentEntry): Uint8Array | null | undefined;
   /**
    * Whether file (dev, ino)'s bytes are this process's, not the view's: its
    * provisional decisions' (Provisional.pending), or a grant's given back
@@ -522,10 +529,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     get cred() { return store.cred; },
     row: (key) => entryOf(key),
     children: (key) => names.children(key, store.children(key)),
-    content: (key, revision) => {
-      const entry = decided.get(key);
-      return (entry ? heldContent(entry) : undefined) ?? store.content?.(key, revision);
-    },
+    content: (key, row) => viewBytes(key, row),
     reserve: (bytes) => store.reserve?.(bytes) ?? true,
     release: (bytes) => store.release?.(bytes),
     client,
@@ -546,6 +550,10 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       promote(inode);
       return inode;
     },
+    held: (dev, ino) => {
+      const inode = heldOf(dev, ino);
+      return inode === undefined || inode.cell!.detached !== undefined ? undefined : inode;
+    },
     heldCost: () => {
       let total = 0;
       for (const inode of heldFiles.values()) total += inode.reserved;
@@ -565,7 +573,24 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     return mine !== undefined ? mine : row;
   };
   const composedChildren = (key: string, base: RuntimeVfsDirEntry[] | undefined): RuntimeVfsDirEntry[] | undefined => prov.children(key, names.children(key, base));
-  const composedContent = (entry: ResidentEntry): Uint8Array | undefined => prov.content(entry) ?? heldContent(entry);
+  /** The view's bytes of file `entry` at `key`, where it holds them whole and they are the view's (not fenced, not the provisional decisions'). */
+  const viewBytes = (key: string, entry: ResidentEntry): Uint8Array | undefined => {
+    if (pendingFile(entry.dev, entry.ino)) return undefined;
+    const stored = store.content?.(key, entry.revision);
+    return stored !== undefined && stored.byteLength === entry.size ? stored : undefined;
+  };
+  /** DelegationHolder.bytes. */
+  const bytesOf = (key: string, entry: ResidentEntry): Uint8Array | null | undefined => {
+    const held = heldContent(entry);
+    if (held !== undefined) return held;
+    if (provisionalActive) {
+      const mine = prov.content(entry);
+      if (mine !== undefined) return mine;
+    }
+    if (pendingFile(entry.dev, entry.ino)) return null;
+    return viewBytes(key, entry);
+  };
+  const pendingFile = (dev: number, ino: number): boolean => (dev === store.device && fenced.has(ino)) || prov.pending(dev, ino);
 
   /** Log a decision, after the bytes written before it. */
   const log = (op: ProcessFsOp): void => {
@@ -692,7 +717,9 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       // Counted toward taking the destination's subtree, as any change there is.
       const grant = deciding(to);
       if (grant === undefined || client.held(from) === undefined) return false;
-      const bytes = holder.content(source) ?? stored;
+      const known = bytesOf(from, source);
+      if (known === null) return false;
+      const bytes = known ?? stored;
       if (bytes === undefined) return false;
       const known = target === null ? undefined : heldOf(target.dev, target.ino);
       // Another's file there, or one this process holds open or changes outside a grant, is the session's to copy over.
@@ -750,13 +777,13 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       drain();
     },
 
-    content: (entry) => (provisionalActive ? composedContent(entry) : heldContent(entry)),
+    bytes: bytesOf,
 
     owns: (handleId) => heldHandles.has(handleId) || prov.owns(handleId),
 
     descriptor: (handleId) => heldHandles.get(handleId) ?? prov.descriptor(handleId),
 
-    pendingFile: (dev, ino) => (dev === store.device && fenced.has(ino)) || prov.pending(dev, ino),
+    pendingFile,
 
     open: (key, path, flags, initial = 0) => {
       if (!flags.write || flags.append) return undefined;

@@ -626,9 +626,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       const sibling = dir === '' ? child.name : `${dir}/${child.name}`;
       if (fetchingAhead.has(sibling)) continue;
       const found = entryAt(sibling);
-      if (!found || found.type !== 'file' || found.size > READ_AHEAD_FILE_BYTES || store.content(sibling, found.revision) !== undefined) continue;
-      // What this process decided or changes is its own to read.
-      if (holder?.content(found) !== undefined || holder?.pendingFile(found.dev, found.ino)) continue;
+      // Here already, or this process's own to read: nothing to fetch.
+      if (!found || found.type !== 'file' || found.size > READ_AHEAD_FILE_BYTES || bytesHere(sibling, found) !== undefined) continue;
       if (bytes + found.size > FS_READ_BATCH_REQUEST_BYTES || readAheadBytes + bytes + found.size > READ_AHEAD_PROCESS_BYTES) break;
       batch.push([sibling, found]);
       bytes += found.size;
@@ -732,13 +731,10 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
    * its changes first).
    */
   const contentOf = (key: string, entry: ResidentEntry): Uint8Array | undefined | Promise<Uint8Array | undefined> => {
-    const decided = holder?.content(entry);
-    if (decided !== undefined) return decided;
-    if (holder?.pendingFile(entry.dev, entry.ino)) return undefined;
+    const here = bytesHere(key, entry);
+    if (here !== undefined) return here ?? undefined;
     const keep = (bytes: Uint8Array | null | undefined): Uint8Array | undefined =>
       (bytes === null || bytes === undefined || bytes.byteLength !== entry.size ? undefined : bytes);
-    const held = store.content(key, entry.revision);
-    if (held !== undefined && held.byteLength === entry.size) return held;
     if (now) notNow();
     const fill = (): Promise<Uint8Array | undefined> => {
       counts.fills++;
@@ -749,9 +745,21 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     const batch = fetchingAhead.get(key) ?? readAhead(key, entry);
     if (batch === undefined) return fill();
     return batch.then(() => {
-      const fetched = store.content(key, entry.revision);
-      return fetched !== undefined && fetched.byteLength === entry.size ? fetched : fill();
+      const fetched = bytesHere(key, entry);
+      return fetched !== undefined ? fetched ?? undefined : fill();
     });
+  };
+
+  /**
+   * File `entry`'s bytes at `key` as this process may read them here
+   * (DelegationHolder.bytes, the one source of them; the store's, whole,
+   * where no holder is). null: this process's, not here; undefined: not
+   * here, the view may fetch them.
+   */
+  const bytesHere = (key: string, entry: ResidentEntry): Uint8Array | null | undefined => {
+    if (holder !== null) return holder.bytes(key, entry);
+    const stored = store.content(key, entry.revision);
+    return stored !== undefined && stored.byteLength === entry.size ? stored : undefined;
   };
 
   /**
@@ -1524,12 +1532,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     const cursor = store.cursor();
     if (cursor === null || holder!.client.vouch(key, cursor) !== 'held') return undefined;
     const entry = entryAt(key);
-    return entry ? store.content(key, entry.revision) : undefined;
-  };
-  /** The bytes this view holds of file `key` (at `entry`), as it stands. */
-  const residentContent = (key: string, entry: ResidentEntry): Uint8Array | undefined => {
-    const bytes = store.content(key, entry.revision);
-    return bytes !== undefined && bytes.byteLength === entry.size ? bytes : undefined;
+    return entry ? bytesHere(key, entry) ?? undefined : undefined;
   };
   // A copy both of whose names a held subtree holds, its source's bytes the
   // holder's or ones the view vouches for: decided here; any other, and one
@@ -1546,7 +1549,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     return after(local, (done) => (done !== DELEGATE ? undefined
       : now ? void provisionally(from, true, (source, row) => {
         if (row === null) throw fsError('ENOENT', 'copyfile', pathOf(from));
-        return provisionally(to, true, (target, there) => holder!.provisional.copyFile(target, pathOf(to), row, residentContent(source, row), there, options?.keepMode === true));
+        return provisionally(to, true, (target, there) => holder!.provisional.copyFile(target, pathOf(to), row, bytesHere(source, row) ?? undefined, there, options?.keepMode === true));
       })
       : bySessionCopy(from, to, options)));
   };
