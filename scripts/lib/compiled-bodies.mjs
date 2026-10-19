@@ -26,7 +26,7 @@ function builtinImports() {
 }
 
 /**
- * @param {{ entry?: string; exports?: string[]; contents?: string; resolveDir?: string; external?: string[]; alias?: Record<string,string>; target?: string }} input
+ * @param {{ entry?: string; exports?: string[]; contents?: string; resolveDir?: string; external?: string[]; alias?: Record<string,string>; target?: string; plugins?: import('esbuild').Plugin[] }} input
  * @returns {Promise<{ module: string; expression: string; imports: string[] }>}
  */
 export async function compiledBodies({ entry, exports, contents, resolveDir = process.cwd(), external = [], alias = {}, target = 'esnext', plugins = [] }) {

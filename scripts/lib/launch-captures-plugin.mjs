@@ -30,7 +30,11 @@ function isPrimordials(specifier, from) {
   return target === PRIMORDIALS || target === join(CORE, 'dist', '_shared', 'primordials');
 }
 
-/** The plugin: imports of primordials read `global`, the launch's captures by the name the bundle's evaluator binds. */
+/**
+ * The plugin: imports of primordials read `global`, the launch's captures by the name the bundle's evaluator binds.
+ * @param {string} global
+ * @returns {Promise<import('esbuild').Plugin>}
+ */
 export async function launchCapturesPlugin(global) {
   const names = await primordialNames();
   return {
