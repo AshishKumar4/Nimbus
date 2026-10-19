@@ -5,6 +5,11 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Added: before each armada run, the CI client says how much the account's
+  container registry holds, what has changed since the last run and who
+  holds the most, and warns when the total grew 10 GB or more since the
+  last run. The registry holds every armada environment snapshot and every
+  container image, and the account's storage is limited.
 - Changed (core): the resident filesystem decides what a caller that
   cannot wait changes outside a subtree the process holds (its
   `synchronous` view). Such a change is answered at once, logged through

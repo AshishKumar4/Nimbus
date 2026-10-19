@@ -9,6 +9,9 @@ import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { cloudflareApiToken } from './cloudflare-token.mjs';
+import { describeContainerStorage, readContainerStorage } from './container-storage.mjs';
+import { NIMBUS_STATE } from './state-dir.mjs';
 
 const SELF_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
@@ -34,6 +37,32 @@ export const ARMADA_CONNECTION = join(homedir(), '.config', 'armada', 'nimbus-ar
  */
 export function armadaEnv(env = process.env) {
   return { ...env, ARMADA_CONNECTION: env.ARMADA_CONNECTION || ARMADA_CONNECTION };
+}
+
+/** How long a run waits for the account's container storage to be read before it starts anyway. */
+const STORAGE_READ_MS = 30_000;
+
+/**
+ * Says what the account's container storage holds, before a run
+ * (container-storage.mjs): its total, its change since the last run, and
+ * who holds the most. A read that fails is said and changes nothing; one
+ * slower than STORAGE_READ_MS is said when it ends, the run started.
+ */
+async function reportContainerStorage(log) {
+  const said = (async () => {
+    try {
+      const { account } = JSON.parse(readFileSync(armadaEnv().ARMADA_CONNECTION, 'utf8'));
+      const cacheDir = join(NIMBUS_STATE, 'container-storage');
+      const usage = await readContainerStorage({ account, token: cloudflareApiToken({ cwd: SELF_ROOT, account }), cacheDir });
+      for (const line of describeContainerStorage(usage, { cacheDir })) log(line);
+    } catch (error) {
+      log(`container storage: not read (${error instanceof Error ? error.message : String(error)})`);
+    }
+  })();
+  let timer;
+  const late = new Promise((resolve) => { timer = setTimeout(() => resolve(true), STORAGE_READ_MS); });
+  if (await Promise.race([said.then(() => false), late])) log(`container storage: still being read after ${STORAGE_READ_MS / 1000} s; the run starts`);
+  clearTimeout(timer);
 }
 
 /**
@@ -148,6 +177,7 @@ export function armadaClient({ dir = process.env.ARMADA_DIR || ARMADA_DIR, repo 
 export async function mapOnArmada({ repo, sha, files, setup, items, command, env = {}, label, pool = items.length, timeout = 3600, log = (line) => console.error(line) }) {
   const armadaDir = armadaClient();
   Object.assign(process.env, armadaEnv());
+  await reportContainerStorage(log);
   const { connect } = await import(join(armadaDir, 'src', 'sdk.ts'));
   const { argvOf, cancelOnInterrupt, onCommit } = await import(join(armadaDir, 'src', 'ci.ts'));
   const { commandTask } = await import(join(armadaDir, 'src', 'task.ts'));

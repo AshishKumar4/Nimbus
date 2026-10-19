@@ -27,6 +27,7 @@ import { fileURLToPath } from 'node:url';
 import { Terminal, stripAnsi } from './_driver.mjs';
 import { VERSION_HEADER, createProbeTarget } from './_session-transport.mjs';
 import { NIMBUS_STATE } from '../../scripts/ci/lib/state-dir.mjs';
+import { cloudflareApiToken } from '../../scripts/ci/lib/cloudflare-token.mjs';
 
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -184,17 +185,8 @@ export function withSecretsFile(secrets, fn) {
 
 const CF_API = 'https://api.cloudflare.com/client/v4';
 
-/**
- * A token for the REST API: CLOUDFLARE_API_TOKEN when set (CI), otherwise
- * the one wrangler's own login holds (`wrangler auth token --json`).
- */
-export function apiToken({ cwd, account }) {
-  if (process.env.CLOUDFLARE_API_TOKEN) return process.env.CLOUDFLARE_API_TOKEN;
-  const out = wrangle(WRANGLER, ['auth', 'token', '--json'], { cwd, account });
-  const token = JSON.parse(out.stdout).token;
-  if (typeof token !== 'string' || !token) throw new Error('wrangler auth token --json printed no token');
-  return token;
-}
+/** A token for the REST API (cloudflare-token.mjs). */
+export const apiToken = cloudflareApiToken;
 
 /**
  * One API call under the account. Answers `{ ok, status, result, errors }`;
