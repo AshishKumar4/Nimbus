@@ -1392,6 +1392,17 @@ interface CapturedKey {
   present: boolean;
 }
 
+/**
+ * How to undo what a captured run kept inside an embedder transaction that
+ * rolled back: a key it kept first (`prior` null), or one whose state it moved.
+ */
+interface CaptureUndo {
+  readonly capture: RunCapture;
+  readonly key: string;
+  readonly kept: CapturedKey;
+  readonly prior: { readonly gen: number; readonly present: boolean; readonly written: boolean } | null;
+}
+
 /** What putting a run's changes back did (SqliteVFS.restoreRun): how many keys, or why it did nothing. */
 export type RunRestore = { restored: number } | { refused: string };
 
@@ -1747,6 +1758,9 @@ export class SqliteVFS {
   /** Runs whose changes are kept undoable (captureRun), by pid, and the rows they found, held. */
   private readonly runCaptures = new Map<number, RunCapture>();
   private readonly capturedRefs = new Set<OpenedNode>();
+  /** The chunks and contents capturedRefs hold, counted: a write asks these, not every captured row (chunkUnshared). */
+  private readonly capturedChunks = new Map<number, number>();
+  private readonly capturedContents = new Map<number, number>();
   /** The process whose wave is committing (waveScope): its run, if one is captured, keeps what it changes. */
   private activeWriterPid: number | null = null;
   /**
@@ -1754,7 +1768,7 @@ export class SqliteVFS {
    * captured runs kept of it, should it roll back. Kept at once, its rows
    * held at once, so a later plan of the transaction meets them.
    */
-  private captureUndo: (() => void)[] | null = null;
+  private captureUndo: CaptureUndo[] | null = null;
   /** Whose call is running: the principal its write events name (a view's, re-entered by work it defers). */
   private activeOrigin: Principal | null = null;
   /**
@@ -5700,8 +5714,8 @@ export class SqliteVFS {
    */
   private chunkUnshared(node: INode, path: string): boolean {
     const chunkId = node.chunkId!;
-    if (node.gen <= this._pinGen || this.writeObservers.size > 0 || this.capturesFirst(path)) return false;
-    for (const opened of this.pinningNodes()) {
+    if (node.gen <= this._pinGen || this.writeObservers.size > 0 || this.capturesFirst(path) || this.capturedChunks.has(chunkId)) return false;
+    for (const opened of this.describedNodes()) {
       if (opened.inode.chunkId === chunkId && opened.path !== path) return false;
     }
     return [...this.sql.exec(
@@ -5719,8 +5733,8 @@ export class SqliteVFS {
   /** The manifest counterpart of chunkUnshared: the CoW guard for large files. */
   private contentUnshared(node: INode, path: string): boolean {
     const contentId = node.contentId!;
-    if (node.gen <= this._pinGen || this.writeObservers.size > 0 || this.capturesFirst(path)) return false;
-    for (const opened of this.pinningNodes()) {
+    if (node.gen <= this._pinGen || this.writeObservers.size > 0 || this.capturesFirst(path) || this.capturedContents.has(contentId)) return false;
+    for (const opened of this.describedNodes()) {
       if (opened.inode.contentId === contentId && opened.path !== path) return false;
     }
     return [...this.sql.exec(
@@ -7940,14 +7954,16 @@ export class SqliteVFS {
     touched: readonly string[],
   ): Map<string, INode | null> {
     const taken = new Map<string, INode | null>();
-    const take = (key: string, found: () => INode | undefined): void => {
-      if (capture.keys.has(key) || taken.has(key)) return;
-      const row = found();
+    const fresh = (key: string): boolean => !capture.keys.has(key) && !taken.has(key);
+    const take = (key: string, row: INode | undefined): void => {
       taken.set(key, row === undefined ? null : { ...row });
     };
-    for (const entry of plan.deletes) take(entry.path, () => deletedPrior.get(entry.path) ?? this.loadInode(entry.path));
-    for (const [index, entry] of plan.inodes.entries()) if (!entry.detached) take(entry.path, () => prior[index]);
-    for (const path of touched) take(path, () => this.inodes.peek(path) ?? this.loadInode(path));
+    for (const entry of plan.deletes) if (fresh(entry.path)) take(entry.path, deletedPrior.get(entry.path) ?? this.loadInode(entry.path));
+    for (let index = 0; index < plan.inodes.length; index++) {
+      const entry = plan.inodes[index];
+      if (entry !== undefined && !entry.detached && fresh(entry.path)) take(entry.path, prior[index]);
+    }
+    for (const path of touched) if (fresh(path)) take(path, this.inodes.peek(path) ?? this.loadInode(path));
     return taken;
   }
 
@@ -7967,22 +7983,15 @@ export class SqliteVFS {
     const undo = this.captureUndo;
     for (const [key, row] of taken) {
       const before = row === null ? null : { inode: row, path: null, closed: false };
-      if (before !== null) this.capturedRefs.add(before);
-      capture.keys.set(key, { before, written: false, gen, present: true });
-      undo?.push(() => {
-        capture.keys.delete(key);
-        if (before === null) return;
-        before.closed = true;
-        this.capturedRefs.delete(before);
-      });
+      if (before !== null) this.holdCaptured(before);
+      const kept: CapturedKey = { before, written: false, gen, present: true };
+      capture.keys.set(key, kept);
+      undo?.push({ capture, key, kept, prior: null });
     }
     const left = (key: string, written: boolean, present: boolean): void => {
       const kept = capture.keys.get(key);
       if (kept === undefined) return;
-      if (undo !== null && !taken.has(key)) {
-        const prior = { gen: kept.gen, present: kept.present, written: kept.written };
-        undo.push(() => { Object.assign(kept, prior); });
-      }
+      if (undo !== null && !taken.has(key)) undo.push({ capture, key, kept, prior: { gen: kept.gen, present: kept.present, written: kept.written } });
       kept.gen = gen;
       kept.present = present;
       if (written) kept.written = true;
@@ -7990,6 +7999,42 @@ export class SqliteVFS {
     for (const path of touched) left(path, false, true);
     for (const entry of plan.deletes) left(entry.path, true, false);
     for (const entry of plan.inodes) if (!entry.detached) left(entry.path, true, true);
+  }
+
+  /** A rolled-back transaction's change to a capture, undone. */
+  private undoCapture({ capture, key, kept, prior }: CaptureUndo): void {
+    if (prior !== null) {
+      kept.gen = prior.gen;
+      kept.present = prior.present;
+      kept.written = prior.written;
+      return;
+    }
+    capture.keys.delete(key);
+    if (kept.before !== null) this.releaseCaptured(kept.before);
+  }
+
+  /** Hold `before`'s content for a captured run, as a description holds what it opened. */
+  private holdCaptured(before: OpenedNode): void {
+    this.capturedRefs.add(before);
+    const { chunkId, contentId } = before.inode;
+    if (chunkId !== null) this.capturedChunks.set(chunkId, (this.capturedChunks.get(chunkId) ?? 0) + 1);
+    if (contentId !== null) this.capturedContents.set(contentId, (this.capturedContents.get(contentId) ?? 0) + 1);
+  }
+
+  /** Let go of `before`'s content: collectable once nothing else holds it. */
+  private releaseCaptured(before: OpenedNode): void {
+    if (before.closed) return;
+    before.closed = true;
+    this.capturedRefs.delete(before);
+    const { chunkId, contentId } = before.inode;
+    const less = (counts: Map<number, number>, id: number | null): void => {
+      if (id === null) return;
+      const left = (counts.get(id) ?? 1) - 1;
+      if (left > 0) counts.set(id, left);
+      else counts.delete(id);
+    };
+    less(this.capturedChunks, chunkId);
+    less(this.capturedContents, contentId);
   }
 
   /** `capture` can no longer be put back, for `why`: it keeps nothing more, and lets go of what it held. */
@@ -8001,11 +8046,7 @@ export class SqliteVFS {
 
   /** Let go of what `capture` held: collectable now, as a closed description's is. */
   private unpinCapture(capture: RunCapture): void {
-    for (const kept of capture.keys.values()) {
-      if (kept.before === null) continue;
-      kept.before.closed = true;
-      this.capturedRefs.delete(kept.before);
-    }
+    for (const kept of capture.keys.values()) if (kept.before !== null) this.releaseCaptured(kept.before);
     capture.keys.clear();
     this.maintenancePending = true;
   }
@@ -10613,7 +10654,7 @@ export class SqliteVFS {
     }]));
     // The shared roots registered: a change it made that revoked one is undone with it.
     const sharedBefore = this.sharedDirectories.size === 0 ? null : new Map(this.sharedDirectories);
-    const captureUndo: (() => void)[] = [];
+    const captureUndo: CaptureUndo[] = [];
     this.transactionPublication = publication;
     this.captureUndo = captureUndo;
     let result: T;
@@ -10629,7 +10670,7 @@ export class SqliteVFS {
     } catch (error) {
       // Nothing it did landed: no observer hears of it, and no run kept it.
       for (const event of publication.events) event.write?.release();
-      for (const undo of captureUndo.reverse()) undo();
+      for (const undo of captureUndo.reverse()) this.undoCapture(undo);
       this.evictAll();
       this.maintenancePending = maintenancePending;
       if (sharedBefore !== null || this.sharedDirectories.size > 0) {
@@ -10828,9 +10869,14 @@ export class SqliteVFS {
    * observers have not let go of, and the rows captured runs found.
    */
   private *pinningNodes(): Iterable<OpenedNode> {
+    yield* this.describedNodes();
+    yield* this.capturedRefs;
+  }
+
+  /** The open descriptions and the write events observers hold: what pins content but a captured run's rows. */
+  private *describedNodes(): Iterable<OpenedNode> {
     yield* this.openNodes;
     yield* this.observedRefs;
-    yield* this.capturedRefs;
   }
 
   private transactionSync(callback: () => void): void {
