@@ -814,7 +814,8 @@ const ENTRYPOINT_TIMER_TRACKER = `
   g.__nimbusRawSetTimeout = st;
   g.__nimbusRawClearTimeout = ct;
   // Each live handle: the call that clears it, and whether it holds the process.
-  const live = new Map();
+  // A SafeMap (the launch's captures): a timer's firing releases it, after the program may have replaced Map's methods.
+  const live = new __nimbusLaunchCaptures.SafeMap();
   const drop = () => { g.__nimbusPendingTimers--; g.__nimbusHandleReleased?.(); };
   const release = (id) => {
     const entry = live.get(id);

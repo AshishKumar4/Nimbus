@@ -1753,7 +1753,7 @@ const __fsMod = (() => {
    * the same path again later, successfully.
    */
   const _residencyMisses = globalThis.__nimbusVfsResidencyMisses
-    || (globalThis.__nimbusVfsResidencyMisses = new Set());
+    || (globalThis.__nimbusVfsResidencyMisses = new __NimbusSafeSet());
 
   /**
    * A speculative read: the import() prefetch (__nimbusHydrated) reads ahead
@@ -3259,7 +3259,7 @@ const __fsMod = (() => {
   // creates missing parents implicitly and so papered over the gap; fsAppend
   // and fsTruncate do not, which is how an appendFileSync log inside a fresh
   // mkdir tree failed ENOENT on its own parent and never reached authority.
-  const _announcedDirs = new Set();
+  const _announcedDirs = new __NimbusSafeSet();
 
   // Announce every directory on \`absPath\` the authority may not know about.
   // supervisor.mkdir is recursive, so the deepest unannounced one creates all
@@ -3836,7 +3836,7 @@ const __fsMod = (() => {
 
 
   /** Paths whose write-back this process issued and the authority accepted. */
-  const _acceptedHere = new Set();
+  const _acceptedHere = new __NimbusSafeSet();
   globalThis.__nimbusVfsWriteLanded = (key) => {
     const k = String(key).replace(/^\\/+/, "");
     _acceptedHere.add(k);
