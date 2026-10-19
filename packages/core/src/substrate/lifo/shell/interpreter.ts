@@ -1063,7 +1063,7 @@ export class Interpreter {
     if (viaCommand) [name, ...args] = args[0] === '--' ? args.slice(1) : args;
     if (io.dispatched?.shell === this) io.dispatched.last = this.functions.has(name) && !viaCommand ? null : name;
 
-    // Apply per-command assignments (temporary env)
+    // Apply per-command assignments (temporary env, exported for the command, as bash's tempenv is)
     const saved = new Map<string, SavedVariable>();
     for (const assign of cmd.assignments) {
       if (!saved.has(assign.name)) saved.set(assign.name, saveVariable(this.config, assign.name));
@@ -1071,6 +1071,7 @@ export class Interpreter {
         (await (io.stderr ?? this.terminalSink(io)).write(`${assign.name}: readonly variable\n`));
         return 1;
       }
+      this.config.exportedNames.add(assign.name);
     }
 
     // Set up stdout/stderr (per-execution io target, then the terminal sink)

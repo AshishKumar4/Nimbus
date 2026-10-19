@@ -63,6 +63,7 @@ const CASES = [
   "x=outer; x=inner eval 'export x'; declare -p x; unset x; x=inner eval 'export x'; declare -p x; echo $?",
   "x=0; x=1 export x; declare -p x; y=0; y=1 readonly y; declare -p y; z=0; z=1 export w; declare -p z",
   "export -n ghost; declare -p ghost; echo $?",
+  "x=1 declare -p x; f() { declare -p x; }; x=2 f; x=3 eval 'declare -p x'; declare -p x; echo $?",
   "g() { declare -p p; }; f() { local p; g; }; f; declare -p p; echo $?",
 ];
 
