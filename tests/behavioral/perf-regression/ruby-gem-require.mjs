@@ -85,7 +85,8 @@ async function rubyCall(t) {
   const calls = await t.facetCalls();
   if (typeof calls === 'string') return calls;
   const call = calls.findLast((c) => c.tag === 'ruby-runner');
-  return call ? (call.cold ? `cold load ${call.loadMs} + call ${call.callMs} ms` : `warm call ${call.callMs} ms`) : 'no ruby call recorded';
+  // A cold call's time includes its code's load.
+  return call ? (call.cold ? `cold call ${call.callMs} ms, its code read in ${call.loadMs}` : `warm call ${call.callMs} ms`) : 'no ruby call recorded';
 }
 
 let round = 0;
