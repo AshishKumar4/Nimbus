@@ -624,11 +624,12 @@ async function runSteps(steps, met, grants) {
    * A file made here whose creating open's answer is late: the session makes
    * it (its open alone in that wave), a peer moves it, the view admits it
    * there, and the process opens it there before the answer names it to the
-   * process. Then the answer, and a write through the first descriptor: one
-   * file, which both read (§0.1).
+   * process; and opens it again by the name it made (its answer comes after
+   * the first's merge). Then the answers, and a write through the first
+   * descriptor: one file, which all its descriptors read (§0.1).
    */
   const lateStep = async (step, label) => {
-    if (grants || fds.has(step.fd) || fds.has(step.fd2) || viewOf().names.has(step.name)) return;
+    if (grants || fds.has(step.fd) || fds.has(step.fd2) || fds.has(step.fd3) || viewOf().names.has(step.name)) return;
     await deliver();
     // A file the session has there already (the view not caught up): its create is refused, not late.
     if ((await errnoOf(() => direct.stat(path(step.name)).then((stat) => { if (stat !== null) throw Object.assign(new Error(), { code: 'EEXIST' }); }))) !== null) return;
@@ -657,6 +658,7 @@ async function runSteps(steps, met, grants) {
       await admitView(false);
       pending = pending.slice(mark);
       await processStep({ op: 'open', fd: step.fd2, name: step.to, flags: { read: true, write: true, append: false, create: false, exclusive: false, truncate: false } }, label);
+      await processStep({ op: 'open', fd: step.fd3, name: step.name, flags: { read: true, write: true, append: false, create: false, exclusive: false, truncate: false } }, label);
     } finally {
       const late = answers;
       answers = null;
@@ -756,6 +758,47 @@ async function runSteps(steps, met, grants) {
     assert.ok(done, 'an awaited call never answered');
     return settled;
   };
+  /**
+   * A peer moves the names' directory to a longer name and back. The view
+   * takes in the move with the budget full, so the files the process has
+   * open there may not afford their longer names: lost (their names a
+   * cache), what a descriptor says of them is EAGAIN or the truth, never a
+   * stale name's (nlink 0 for a linked file). An unrelated name record of
+   * the process's settles meanwhile, and leaves them lost. Once back, all is
+   * as before.
+   */
+  const peerMoveStep = async (label) => {
+    if (grants || dir === DIR) return;
+    await deliver();
+    const aside = `${DIR}/moved-aside-by-a-peer-to-a-longer-name`;
+    await withRecall(() => s.kernel.rename(dir, aside));
+    ref.kernel.rename(dir, aside);
+    budget.limit = budget.used;
+    s.fs.inbound();
+    await s.fs.stat(`/${aside}`);
+    for (const name of NAMES) await errnoOf(() => s.fs.stat(`/${aside}/${name}`));
+    budget.limit = 1 << 30;
+    // An unrelated record of the process's: made, answered, retired.
+    assert.equal(await errnoOf(() => sync.close(sync.open(`/${DIR}/unrelated`, { write: true, create: true, truncate: true }).id)), null, `${label}: an unrelated create`);
+    ref.kernel.writeFile(`${DIR}/unrelated`, '');
+    await errnoOf(() => s.fs.flush());
+    s.fs.inbound();
+    await s.fs.stat(`/${DIR}`);
+    const number = (id) => (typeof id === 'string' && id.startsWith('S') ? Number(id.slice(1)) : id);
+    for (const [fd, opened] of fds) {
+      let stat;
+      const code = await errnoOf(() => { stat = sync.fstat(opened.handle); });
+      if (code === 'EAGAIN') continue;
+      assert.equal(code, null, `${label}: fd ${fd} fstat ${code}`);
+      const ino = number(resolve({ opened }));
+      const linked = NAMES.some((name) => ref.kernel.exists(`${aside}/${name}`) && ref.kernel.stat(`${aside}/${name}`).ino === ino);
+      if (linked) assert.ok(Number(stat.nlink) > 0, `${label}: fd ${fd} fstat of a linked file says nlink ${stat.nlink}`);
+    }
+    await withRecall(() => s.kernel.rename(aside, dir));
+    ref.kernel.rename(aside, dir);
+    await catchUp();
+  };
+
   /** Each name's size and mode in `where` as a call that cannot wait sees them, or its errno. */
   const statsAt = (where) => Object.fromEntries(NAMES.map((name) => {
     try {
@@ -782,6 +825,7 @@ async function runSteps(steps, met, grants) {
       else if (step.op === 'peer') await peerStep(step);
       else if (step.op === 'readAsync') await readAsync(step, label);
       else if (step.op === 'swap') await swapStep(step, label);
+      else if (step.op === 'peerMove') await peerMoveStep(label);
       else await processStep(step, label);
     } catch (error) {
       if (error !== NO_SPACE) throw error;
@@ -1089,6 +1133,14 @@ const FOUND = [
   // A file made here, its creating answer late, moved by a peer and opened there first: one owner.
   { name: 'a late creating answer, the file moved by a peer and opened there', grants: false, steps: [
     { op: 'late', name: 'a', to: 'b', fd: 0, fd2: 1, data: 'pqrs' },
+  ] },
+  // A file made late, opened again by its name after a peer moved it: the second answer settles on the merged owner.
+  { name: 'a late creating answer, the file opened twice', grants: false, steps: [
+    { op: 'late', name: 'a', to: 'b', fd: 0, fd2: 1, fd3: 2, data: 'pqrs' },
+    { op: 'close', fd: 0 },
+    { op: 'close', fd: 1 },
+    { op: 'close', fd: 2 },
+    { op: 'catchUp' },
   ] },
 ];
 for (const found of FOUND) {
