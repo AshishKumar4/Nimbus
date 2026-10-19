@@ -1262,6 +1262,29 @@ var __nimbusResidentModule = (() => {
     let generation = 0;
     const learnings = new SafeSet();
     const ready = () => ok && coherence.serving();
+    let relisting = new SafeSet();
+    const fenced = (k) => {
+      if (relisting.size === 0) return false;
+      let hit = false;
+      relisting.forEach((dir) => {
+        if (!hit && (dir === "" || k === dir || stringStartsWith(k, dir + "/"))) hit = true;
+      });
+      return hit;
+    };
+    const isListed = (dir) => {
+      if (lazy) return listed.has(dir);
+      if (!ready() || fenced(dir) || unlisted.get(dir) !== void 0) return false;
+      if (dir === "") return true;
+      const row = nsRowAt(coherence.require(), dir);
+      return row !== void 0 && row.kind === NS_DIR;
+    };
+    const learnedMark = (k) => {
+      for (let at = nsParent(k); ; at = nsParent(at)) {
+        const mount = unlisted.get(at);
+        if (mount !== void 0) return mount;
+        if (at === "") return k;
+      }
+    };
     const markReady = (t, isReady, why) => {
       t.metaSet("ns", isReady ? "1" : "0");
       ok = !!isReady;
@@ -1504,6 +1527,7 @@ var __nimbusResidentModule = (() => {
        */
       replace(t, entries) {
         generation++;
+        relisting = new SafeSet();
         const names = new SafeSet();
         for (let i = 0; i < entries.length; i++) names.add(nsKey(entries[i].path));
         const rows = t.nsKeys();
@@ -1608,6 +1632,7 @@ var __nimbusResidentModule = (() => {
       },
       clear() {
         generation++;
+        relisting = new SafeSet();
         links = new SafeSet();
         unlisted = new SafeMap();
         ok = false;
@@ -1617,20 +1642,39 @@ var __nimbusResidentModule = (() => {
       },
       beginLazy() {
         generation++;
+        relisting = new SafeSet();
         lazy = true;
         listed.clear();
         links = new SafeSet();
         unlisted = new SafeMap();
       },
       listedAt(k) {
-        return listed.has(nsParent(k));
+        return isListed(nsParent(k));
       },
-      isListed(dir) {
-        return listed.has(dir);
-      },
+      isListed,
       markListed(dir) {
-        listed.add(dir);
+        if (lazy) {
+          listed.add(dir);
+          return;
+        }
+        if (dir === "" || unlisted.get(dir) === void 0) return;
+        const t = coherence.require();
+        const row = nsRowAt(t, dir);
+        if (row === void 0 || row.kind !== NS_DIR) return;
+        t.nsPut(nsParent(dir), nsName(dir), row.kind, row.size, row.mode, row.uid, row.gid, row.atime, row.mtime, row.ctime, row.ino, row.rev, null, row.dev, row.nlink);
+        unlisted.delete(dir);
       },
+      learn(t, k, stat, rev, target) {
+        if (lazy || stat.type !== "directory" || nsRowAt(t, k) !== void 0) return tryPut(t, k, stat, rev, target);
+        return tryPut(t, k, stat, rev, target, learnedMark(k));
+      },
+      fence(dir) {
+        relisting.add(dir);
+      },
+      unfence(dir) {
+        relisting.delete(dir);
+      },
+      fenced,
       onPut(listener) {
         putListener = listener;
       },
@@ -1835,7 +1879,10 @@ var __nimbusResidentModule = (() => {
           const path = entry.path;
           if (namespaced && namespace.ready()) {
             const again = namespace.applyEntry(t, entry);
-            if (again !== null) relist[relist.length] = again;
+            if (again !== null) {
+              relist[relist.length] = again;
+              namespace.fence(again);
+            }
           }
           const subtree = ownValue2(entry, "subtree");
           const stat = ownValue2(entry, "stat");
@@ -1854,7 +1901,10 @@ var __nimbusResidentModule = (() => {
               if (!stringStartsWith(heldPath, path + "/") || heldCell2.rev === RK_OWN_WRITE || heldCell2.rev >= entryRev) return;
               forgetHeld(heldPath);
             });
-            if (namespaced && !namespace.lazy && subtree && stat && stat.type === "directory") relist[relist.length] = path;
+            if (namespaced && !namespace.lazy && subtree && stat && stat.type === "directory") {
+              relist[relist.length] = path;
+              namespace.fence(path);
+            }
           }
           let isHeld = false, stamped = 0, heldKey = null;
           const row = t.fileRevKey(path);
@@ -2280,9 +2330,10 @@ var __nimbusResidentModule = (() => {
     };
   }
 
-  // src/vfs/resident/lazy.ts
+  // src/vfs/resident/view.ts
   var LOOKUP_CONTENT_BYTES = 256 * 1024;
-  function createLazy(coherence, admission, namespace, cells, transport, sync, pages) {
+  var REPAIR_JOINS_MAX = 4;
+  function createView(coherence, admission, namespace, cells, transport, sync, pages) {
     const beginLazy = (t, cursor) => {
       namespace.beginLazy();
       t.clear();
@@ -2305,46 +2356,162 @@ var __nimbusResidentModule = (() => {
       beginLazy(coherence.tables("bootLazy"), { epoch: answer.epoch, rev: answer.rev });
       return true;
     };
-    const lazyBarrier = async (supervisor) => {
-      const t = coherence.tables("lazyBarrier");
+    const current = (answer) => {
       const cursor = coherence.cursor();
-      let answer = null;
-      if (cursor !== null) {
-        try {
-          answer = await supervisor.fsAcquire(cursor.epoch, cursor.rev, { namespace: true });
-        } catch {
-          answer = null;
-        }
-      }
-      if (answer && typeof answer.epoch === "string" && typeof answer.rev === "number") {
-        if (!answer.poison) {
-          await sync.applyAcquire(supervisor, answer);
-          if (namespace.ready()) return true;
-          beginLazy(t, coherence.cursor());
-          return true;
-        }
-        beginLazy(t, { epoch: answer.epoch, rev: answer.rev });
-        return true;
-      }
-      return bootLazy(supervisor);
+      if (cursor === null || answer.poison === true || answer.epoch !== cursor.epoch) return answer;
+      if (answer.rev <= cursor.rev) return { ...answer, rev: cursor.rev, paths: [] };
+      const paths = answer.paths.filter((entry) => entry.rev > cursor.rev);
+      return paths.length === answer.paths.length ? answer : { ...answer, paths };
+    };
+    const delivered = (given) => {
+      if (!given || typeof given !== "object") return null;
+      const { args, answer } = given;
+      const cursor = coherence.cursor();
+      if (cursor === null || !args || !answer || answer.poison === true || !Array.isArray(answer.paths)) return null;
+      if (typeof answer.rev !== "number" || answer.epoch !== cursor.epoch || args.epoch !== cursor.epoch) return null;
+      if (!(args.cursor <= cursor.rev)) return null;
+      return current(answer);
     };
     return {
       bootLazy,
       /**
-       * The store as a WASI process's filesystem adapter reads it (core
-       * runtime/wasi/resident-filesystem.ts, ResidentNamespace): names as lstats,
-       * listed on demand, file bytes held or fetched, and the barrier. `device` is
-       * the session's SQLite device, the only one the adapter answers for.
+       * The store as a process's filesystem adapter reads it: names as lstats,
+       * file bytes held or fetched, and the barrier. `device` is the session's
+       * SQLite device, the only one the adapter answers for.
        */
       namespaceView(supervisor, device, cred) {
         namespace.setCred(cred);
         const encoder3 = new TextEncoder();
         const typeOf = (kind) => kind === NS_DIR ? "directory" : kind === NS_LINK ? "symlink" : "file";
+        const argsNow = () => {
+          const cursor = coherence.cursor();
+          return cursor === null ? null : { epoch: cursor.epoch, cursor: cursor.rev, options: sync.acquireOptions() };
+        };
+        const acquire = async (lease) => {
+          const args = argsNow();
+          if (args === null || typeof supervisor.fsAcquire !== "function") return null;
+          let answer = null;
+          try {
+            answer = await supervisor.fsAcquire(args.epoch, args.cursor, lease ? { ...args.options, lease: true } : args.options);
+          } catch {
+            return null;
+          }
+          if (!answer || typeof answer.epoch !== "string" || typeof answer.rev !== "number") return null;
+          if (lease && answer.readLease) lease.answered(answer.readLease);
+          return current(answer);
+        };
+        const restart = async (answer, applied) => {
+          if (answer === null) return bootLazy(supervisor);
+          if (applied && namespace.ready()) return true;
+          beginLazy(coherence.tables("restart"), applied ? coherence.cursor() : { epoch: answer.epoch, rev: answer.rev });
+          return true;
+        };
+        let repairOwed = false;
+        let repairing = null;
+        const repairFromFloor = async (answer) => {
+          if (typeof supervisor.fsAcquire !== "function" || !namespace.ready()) return false;
+          if (answer !== null && answer.poison === true) return false;
+          const floor = coherence.cursor();
+          if (floor === null || answer !== null && answer.epoch !== floor.epoch) return false;
+          let delta = null;
+          try {
+            delta = await supervisor.fsAcquire(floor.epoch, floor.rev, { namespace: true });
+          } catch {
+            return false;
+          }
+          if (!delta || delta.poison === true || typeof delta.rev !== "number" || delta.epoch !== floor.epoch) return false;
+          const applied = await sync.applyAcquire(supervisor, delta);
+          if (!namespace.ready()) return false;
+          await sync.refillFromNamespace(supervisor, applied.dropped);
+          repairOwed = false;
+          return true;
+        };
+        const runRepair = async (answer) => {
+          if (await repairFromFloor(answer)) return;
+          let repaired = null;
+          try {
+            repaired = await sync.synchronize(supervisor);
+          } catch {
+            repaired = null;
+          }
+          if (!repaired || !repaired.cursor) {
+            if (answer !== null) cells.admit(answer);
+            else cells.dropDated();
+            try {
+              repaired = await sync.synchronize(supervisor);
+            } catch {
+              repaired = null;
+            }
+          }
+          repairOwed = !(repaired && repaired.cursor);
+        };
+        const repair = (answer) => {
+          if (repairing === null) repairing = runRepair(answer).finally(() => {
+            repairing = null;
+          });
+          return repairing;
+        };
+        const refetching = /* @__PURE__ */ new Map();
+        const refetch = (keys) => {
+          if (keys.length === 0) return [];
+          const read = sync.refillFromNamespace(supervisor, keys).catch(() => void 0);
+          const t = coherence.require();
+          return keys.map((k) => {
+            const record = { rev: nsRowAt(t, k)?.rev ?? 0, read, done: Promise.resolve() };
+            record.done = read.then(() => {
+              const newer = refetching.get(k);
+              return Promise.all([newer !== void 0 && newer !== record ? newer.read : void 0, repairing ?? void 0]);
+            }).then(() => void 0, () => void 0).finally(() => {
+              if (refetching.get(k) === record) refetching.delete(k);
+            });
+            refetching.set(k, record);
+            return record.done;
+          });
+        };
+        const enumerated = async (first, lease) => {
+          const joined = [...refetching.values()].map((record) => record.done);
+          let answer = first;
+          let namespaceAsked = false;
+          let repaired = false;
+          for (let joins = 0; ; joins++) {
+            const joining = repairing !== null;
+            const namespaceOwed = !namespaceAsked && !namespace.ready();
+            const needsRepair = answer === null || answer.poison === true || repairOwed || namespaceOwed;
+            if (!joining && !needsRepair) break;
+            repaired = true;
+            if (namespaceOwed) namespaceAsked = true;
+            await (joining ? repairing : repair(answer));
+            if (!joining) {
+              if (repairOwed) return { landed: false };
+              answer = await acquire(lease);
+              if (answer === null || answer.poison === true) return { landed: namespace.ready() };
+              continue;
+            }
+            if (joins + 1 >= REPAIR_JOINS_MAX) {
+              cells.dropDated();
+              repairOwed = true;
+              return { landed: false };
+            }
+            answer = await acquire(lease);
+          }
+          const applied = await sync.applyAcquire(supervisor, answer);
+          if (!namespace.ready()) return { landed: false };
+          await Promise.all([...refetch(applied.dropped), ...joined]);
+          return answer.readLease ? { landed: true, applied: !repaired, readLease: answer.readLease } : { landed: true, applied: !repaired };
+        };
+        const lazily = async (answer) => {
+          if (answer === null || answer.poison === true) return { landed: await restart(answer, false), applied: false };
+          await sync.applyAcquire(supervisor, answer);
+          const applied = namespace.ready();
+          const landed = await restart(answer, true);
+          return applied && answer.readLease ? { landed, applied, readLease: answer.readLease } : { landed, applied };
+        };
         const view = {
           device: Number(device),
           cred: { uid: Number(cred.uid), gid: Number(cred.gid), groups: (cred.groups || []).map(Number) },
-          ready: () => namespace.lazy && namespace.ready(),
+          ready: () => namespace.ready(),
           entry(k) {
+            if (namespace.fenced(k)) return void 0;
             const row = nsRowAt(coherence.require(), k);
             if (row === void 0) return namespace.listedAt(k) ? null : void 0;
             return {
@@ -2393,18 +2560,15 @@ var __nimbusResidentModule = (() => {
             if (cursor === null || files.length === 0) return;
             await transport.fetchFiles(supervisor, files.map(([k, entry]) => ({ path: k, size: entry.size, rev: entry.revision, epoch: cursor.epoch, ckey: null, version: entry })));
           },
-          barrier: () => lazyBarrier(supervisor),
-          cursor: () => coherence.cursor(),
-          // An ACQUIRE answer the caller took itself, applied as the barrier applies one.
-          async admit(answer) {
-            if (!answer || typeof answer.epoch !== "string" || typeof answer.rev !== "number") return false;
-            const before = coherence.cursor();
-            if (before && answer.epoch === before.epoch && answer.rev < before.rev) return false;
-            await sync.applyAcquire(supervisor, answer);
-            if (!answer.poison && namespace.ready()) return true;
-            beginLazy(coherence.tables("admit"), { epoch: answer.epoch, rev: answer.rev });
-            return false;
+          acquireArgs: () => argsNow(),
+          repairOwed: () => repairOwed,
+          async barrier(options = {}) {
+            const standIn = options.answer === void 0 ? delivered(options.delivered) : null;
+            const answer = options.answer !== void 0 ? current(options.answer) : standIn ?? await acquire(options.lease);
+            const result = namespace.lazy ? await lazily(answer) : await enumerated(answer, options.lease);
+            return standIn === null ? result : { ...result, fromDelivery: true };
           },
+          cursor: () => coherence.cursor(),
           reserve: (bytes) => admission.pin(bytes),
           release: (bytes) => admission.unpin(bytes),
           // Each row as it is put, the process's (one listener: this view's process, a later one replacing it).
@@ -2590,12 +2754,22 @@ var __nimbusResidentModule = (() => {
         const entry = seen[i];
         namespace.put(t, nsKey(entry.path), entry.stat, entry.rev, ownValue3(entry, "linkTarget"), ownValue3(entry, "unlisted") ?? null);
       }
+      namespace.unfence(dir);
     };
-    const outdated = (t, path, rev) => {
+    const outdated = (t, learning, path, rev) => {
+      if (!learning.installs(path)) return true;
       const listed = t.nsGet(nsParent(path), nsName(path));
       return listed !== void 0 && NumberOf(listed.rev) > rev;
     };
     const fetchFiles = async (supervisor, wantedFiles) => {
+      const learning = namespace.learning();
+      try {
+        return await fetchWith(learning, supervisor, wantedFiles);
+      } finally {
+        learning.end();
+      }
+    };
+    const fetchWith = async (learning, supervisor, wantedFiles) => {
       const t = coherence.tables("fetchFiles");
       const requested = wantedFiles.length;
       let copied = 0;
@@ -2698,7 +2872,7 @@ var __nimbusResidentModule = (() => {
             failedPaths.add(range.path);
             continue;
           }
-          if (outdated(t, range.path, range.rev)) {
+          if (outdated(t, learning, range.path, range.rev)) {
             failedPaths.add(range.path);
             continue;
           }
@@ -2725,7 +2899,7 @@ var __nimbusResidentModule = (() => {
       });
       for (let i = 0; i < later.length; i++) {
         const file = later[i];
-        if (!outdated(t, file.path, file.rev) && cells.copyByKey(t, file.path, ownValue3(file, "ckey"), file.rev)) copied++;
+        if (!outdated(t, learning, file.path, file.rev) && cells.copyByKey(t, file.path, ownValue3(file, "ckey"), file.rev)) copied++;
         else failed++;
       }
       if (ranges.length > 0) await admission.reportSize();
@@ -2826,7 +3000,7 @@ var __nimbusResidentModule = (() => {
             }
             if (typeof target !== "string") break;
           }
-          if (!learning.installs(batch[i]) || !namespace.tryPut(t, batch[i], stat, NumberOf(stat.revision) || 0, target)) return false;
+          if (!learning.installs(batch[i]) || !namespace.learn(t, batch[i], stat, NumberOf(stat.revision) || 0, target)) return false;
           if (i === batch.length - 1) reachedLast = true;
           if (stat.type !== "directory") break;
         }
@@ -2917,7 +3091,7 @@ var __nimbusResidentModule = (() => {
         for (let i = 0; i < statKeys.length; i++) {
           const k = statKeys[i];
           const stat = stats.get(k);
-          if (stat !== void 0 && !namespace.tryPut(t, k, stat, NumberOf(stat.revision) || 0, targets.get(k))) return false;
+          if (stat !== void 0 && !namespace.learn(t, k, stat, NumberOf(stat.revision) || 0, targets.get(k))) return false;
         }
         namespace.markListed(dir);
         return true;
@@ -3315,7 +3489,7 @@ var __nimbusResidentModule = (() => {
     const transport = createTransport(coherence, admission, namespace, cells);
     const sync = createSync(coherence, admission, namespace, cells, transport);
     const pages = createPages(coherence, admission);
-    const lazy = createLazy(coherence, admission, namespace, cells, transport, sync, pages);
+    const view = createView(coherence, admission, namespace, cells, transport, sync, pages);
     const bindTables = (t, heap) => {
       t.dropOwn();
       coherence.bind(t, heap);
@@ -3346,7 +3520,7 @@ var __nimbusResidentModule = (() => {
       transport,
       sync,
       pages,
-      lazy
+      view
     };
   }
   return __toCommonJS(index_exports);

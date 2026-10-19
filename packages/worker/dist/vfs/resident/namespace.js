@@ -106,6 +106,43 @@ export function createNamespace(coherence, admission) {
     /** Each learning in flight, with every path an admitted delta named since it was asked. */
     const learnings = new SafeSet();
     const ready = () => ok && coherence.serving();
+    /** Directories whose relist is on its way (fence): nothing at or under one is answered. */
+    let relisting = new SafeSet();
+    const fenced = (k) => {
+        if (relisting.size === 0)
+            return false;
+        let hit = false;
+        relisting.forEach((dir) => { if (!hit && (dir === '' || k === dir || stringStartsWith(k, dir + '/')))
+            hit = true; });
+        return hit;
+    };
+    /**
+     * Whether every entry of directory `dir` is a row, so a missing row below
+     * it is an absent name. Listed on demand: once a completed listing named
+     * them. Enumerated: a directory the table holds that carries no mark (a
+     * mount left it unlisted, or a lookup learned it without its entries) and
+     * no relist is on its way to; the top once the namespace is answering.
+     */
+    const isListed = (dir) => {
+        if (lazy)
+            return listed.has(dir);
+        if (!ready() || fenced(dir) || unlisted.get(dir) !== undefined)
+            return false;
+        if (dir === '')
+            return true;
+        const row = nsRowAt(coherence.require(), dir);
+        return row !== undefined && row.kind === NS_DIR;
+    };
+    /** The mark a directory a learning makes takes: the mount the nearest marked directory above it is on, or its own name. */
+    const learnedMark = (k) => {
+        for (let at = nsParent(k);; at = nsParent(at)) {
+            const mount = unlisted.get(at);
+            if (mount !== undefined)
+                return mount;
+            if (at === '')
+                return k;
+        }
+    };
     const markReady = (t, isReady, why) => {
         t.metaSet('ns', isReady ? '1' : '0');
         ok = !!isReady;
@@ -369,6 +406,7 @@ export function createNamespace(coherence, admission) {
          */
         replace(t, entries) {
             generation++;
+            relisting = new SafeSet();
             const names = new SafeSet();
             for (let i = 0; i < entries.length; i++)
                 names.add(nsKey(entries[i].path));
@@ -493,6 +531,7 @@ export function createNamespace(coherence, admission) {
         },
         clear() {
             generation++;
+            relisting = new SafeSet();
             links = new SafeSet();
             unlisted = new SafeMap();
             ok = false;
@@ -500,14 +539,36 @@ export function createNamespace(coherence, admission) {
         get lazy() { return lazy; },
         beginLazy() {
             generation++;
+            relisting = new SafeSet();
             lazy = true;
             listed.clear();
             links = new SafeSet();
             unlisted = new SafeMap();
         },
-        listedAt(k) { return listed.has(nsParent(k)); },
-        isListed(dir) { return listed.has(dir); },
-        markListed(dir) { listed.add(dir); },
+        listedAt(k) { return isListed(nsParent(k)); },
+        isListed,
+        markListed(dir) {
+            if (lazy) {
+                listed.add(dir);
+                return;
+            }
+            if (dir === '' || unlisted.get(dir) === undefined)
+                return;
+            const t = coherence.require();
+            const row = nsRowAt(t, dir);
+            if (row === undefined || row.kind !== NS_DIR)
+                return;
+            t.nsPut(nsParent(dir), nsName(dir), row.kind, row.size, row.mode, row.uid, row.gid, row.atime, row.mtime, row.ctime, row.ino, row.rev, null, row.dev, row.nlink);
+            unlisted.delete(dir);
+        },
+        learn(t, k, stat, rev, target) {
+            if (lazy || stat.type !== 'directory' || nsRowAt(t, k) !== undefined)
+                return tryPut(t, k, stat, rev, target);
+            return tryPut(t, k, stat, rev, target, learnedMark(k));
+        },
+        fence(dir) { relisting.add(dir); },
+        unfence(dir) { relisting.delete(dir); },
+        fenced,
         onPut(listener) {
             putListener = listener;
         },

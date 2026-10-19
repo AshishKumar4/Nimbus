@@ -107,8 +107,30 @@ export interface Namespace {
     beginLazy(): void;
     /** Whether a missing row at `k` means nothing is there (its directory is listed). */
     listedAt(k: string): boolean;
+    /**
+     * Whether every entry of directory `dir` is a row: below it a missing row is
+     * an absent name. Listed on demand, a directory is once a listing named its
+     * entries; enumerated, every directory the namespace holds is, unless a
+     * mount left it unlisted (the same fact `unknown` reads).
+     */
     isListed(dir: string): boolean;
+    /** A completed listing named every entry of `dir`: listed on demand, it is listed; enumerated, its mark goes (it is whole). */
     markListed(dir: string): void;
+    /**
+     * A row a lookup, or the listing of its parent, learned. Enumerated, a
+     * directory it makes is not whole until a listing of it names its entries:
+     * it is marked, with the mount it is on or its own name; one the table
+     * holds keeps its mark. Listed on demand, it is put as it is.
+     */
+    learn(t: ResidentTables, k: string, stat: NsStat, rev: unknown, target?: string | null): boolean;
+    /**
+     * A delta made `dir`'s listing stale and its relist is on its way: until
+     * it lands (`unfence`), nothing at or under it is answered, cached rows and
+     * nested directories' absences included (`fenced`).
+     */
+    fence(dir: string): void;
+    unfence(dir: string): void;
+    fenced(k: string): boolean;
     /**
      * A lookup or listing about to be asked of the session: a delta admitted
      * before its answer lands is newer than the answer at every path it names,

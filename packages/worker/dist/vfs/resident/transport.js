@@ -2,7 +2,7 @@
  * The store's reads of the session: whole listings a page at a time, one
  * directory's, one subtree's, an lstat walk down one path, and file bytes in
  * packed ranged batches. What boot, reconcile and a lazily listed namespace
- * fetch with (sync.ts, lazy.ts). Every bound here is the session's.
+ * fetch with (sync.ts, view.ts). Every bound here is the session's.
  */
 import { FS_LIST_PAGE_LIMIT, FS_LIST_TREE_MAX_ENTRIES, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES, } from '@nimbus-sh/core/constants.js';
 import { arrayCopy, arrayIsArray, Error, mathCeil, mathMax, mathMin, NumberOf, numberIsSafeInteger, objectHasOwn, ownField, reflectApply, reflectGet, SafeList, SafeMap, SafeSet, stringOf, stringStartsWith, typedArrayByteLength, TypeError, } from '@nimbus-sh/core/_shared/primordials.js';
@@ -129,6 +129,7 @@ export function createTransport(coherence, admission, namespace, cells) {
             const entry = seen[i];
             namespace.put(t, nsKey(entry.path), entry.stat, entry.rev, ownValue(entry, 'linkTarget'), ownValue(entry, 'unlisted') ?? null);
         }
+        namespace.unfence(dir);
     };
     /**
      * Fetch these files from the authority and install them, each dated at the
@@ -164,11 +165,23 @@ export function createTransport(coherence, admission, namespace, cells) {
      * in flight (read-ahead goes on beside the program's own calls), and are not
      * installed, or a later read would be served them by their length alone.
      */
-    const outdated = (t, path, rev) => {
+    const outdated = (t, learning, path, rev) => {
+        if (!learning.installs(path))
+            return true;
         const listed = t.nsGet(nsParent(path), nsName(path));
         return listed !== undefined && NumberOf(listed.rev) > rev;
     };
+    /** A fill is a learning too (namespace.learning): bytes a delta admitted while it was asked outdate are not installed. */
     const fetchFiles = async (supervisor, wantedFiles) => {
+        const learning = namespace.learning();
+        try {
+            return await fetchWith(learning, supervisor, wantedFiles);
+        }
+        finally {
+            learning.end();
+        }
+    };
+    const fetchWith = async (learning, supervisor, wantedFiles) => {
         // Content already held under another path, or wanted twice in this batch,
         // is fetched once: equal keys are equal bytes (the second copy is local).
         const t = coherence.tables('fetchFiles');
@@ -296,7 +309,7 @@ export function createTransport(coherence, admission, namespace, cells) {
                     continue;
                 }
                 // Not a byte of it beneath a newer revision of the file (another fill's head and chunks).
-                if (outdated(t, range.path, range.rev)) {
+                if (outdated(t, learning, range.path, range.rev)) {
                     failedPaths.add(range.path);
                     continue;
                 }
@@ -330,7 +343,7 @@ export function createTransport(coherence, admission, namespace, cells) {
         });
         for (let i = 0; i < later.length; i++) {
             const file = later[i];
-            if (!outdated(t, file.path, file.rev) && cells.copyByKey(t, file.path, ownValue(file, 'ckey'), file.rev))
+            if (!outdated(t, learning, file.path, file.rev) && cells.copyByKey(t, file.path, ownValue(file, 'ckey'), file.rev))
                 copied++;
             else
                 failed++;
@@ -480,7 +493,7 @@ export function createTransport(coherence, admission, namespace, cells) {
                     if (typeof target !== 'string')
                         break;
                 }
-                if (!learning.installs(batch[i]) || !namespace.tryPut(t, batch[i], stat, NumberOf(stat.revision) || 0, target))
+                if (!learning.installs(batch[i]) || !namespace.learn(t, batch[i], stat, NumberOf(stat.revision) || 0, target))
                     return false;
                 if (i === batch.length - 1)
                     reachedLast = true;
@@ -602,7 +615,7 @@ export function createTransport(coherence, admission, namespace, cells) {
             for (let i = 0; i < statKeys.length; i++) {
                 const k = statKeys[i];
                 const stat = stats.get(k);
-                if (stat !== undefined && !namespace.tryPut(t, k, stat, NumberOf(stat.revision) || 0, targets.get(k)))
+                if (stat !== undefined && !namespace.learn(t, k, stat, NumberOf(stat.revision) || 0, targets.get(k)))
                     return false;
             }
             namespace.markListed(dir);

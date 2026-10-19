@@ -147,7 +147,7 @@
 import { createAdmission } from './admission.js';
 import { createCells } from './cells.js';
 import { createCoherence } from './coherence.js';
-import { createLazy } from './lazy.js';
+import { createView } from './view.js';
 import { createPages } from './pages.js';
 import { createNamespace } from './namespace.js';
 import { createSync } from './sync.js';
@@ -166,7 +166,7 @@ export function createResidentStore(options = {}) {
     const transport = createTransport(coherence, admission, namespace, cells);
     const sync = createSync(coherence, admission, namespace, cells, transport);
     const pages = createPages(coherence, admission);
-    const lazy = createLazy(coherence, admission, namespace, cells, transport, sync, pages);
+    const view = createView(coherence, admission, namespace, cells, transport, sync, pages);
     const bindTables = (t, heap) => {
         // A store can outlive its process. Own rows left by an earlier one are
         // writes that never reached the authority or cells whose acknowledgement it
@@ -199,6 +199,6 @@ export function createResidentStore(options = {}) {
         transport,
         sync,
         pages,
-        lazy,
+        view,
     };
 }

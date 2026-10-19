@@ -2,7 +2,7 @@
  * The store's reads of the session: whole listings a page at a time, one
  * directory's, one subtree's, an lstat walk down one path, and file bytes in
  * packed ranged batches. What boot, reconcile and a lazily listed namespace
- * fetch with (sync.ts, lazy.ts). Every bound here is the session's.
+ * fetch with (sync.ts, view.ts). Every bound here is the session's.
  */
 import type { RuntimeFileVersion, RuntimeVfsStat, VfsListEntry } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { Admission } from './admission.js';

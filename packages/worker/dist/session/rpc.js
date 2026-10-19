@@ -399,6 +399,8 @@ const FsAcquireArgsSchema = z.object({
     cursor: z.number().int().min(0),
     /** The asking process's own count of when it built these (node-shims _acquireArgs): echoed with the answer, never read here. */
     begin: z.number().int().min(0).optional(),
+    /** Its own changes' debt then (ResidentFilesystem.acquireArgs): echoed with the answer, never read here. */
+    own: z.number().int().min(0).optional(),
     options: z.object({
         namespace: z.boolean().optional(),
         lease: z.boolean().optional(),
