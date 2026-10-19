@@ -49,7 +49,7 @@ try {
 } catch (error) {
   notGraded(error.message);
 }
-await reportContainerStorage();
+const stopReport = await reportContainerStorage();
 const words = [...(flags.tier ? ['--tier', flags.tier] : []), ...(flags.only ? ['--only', flags.only] : [])];
 // Not spawnSync: a storage read slower than its wait finishes during the run.
 let status = null;
@@ -59,6 +59,8 @@ try {
   });
   [status] = await once(ran, 'exit');
 } catch (error) {
+  stopReport();
   notGraded(`armada did not start: ${error.message}`);
 }
+stopReport();
 process.exit(status ?? 2);
