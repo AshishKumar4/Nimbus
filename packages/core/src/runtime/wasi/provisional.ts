@@ -187,7 +187,7 @@ interface InodeRecord {
   /** The inode it is of: the one its op reached at the session, once an open's answer says which (reconcile). */
   owner: Inode;
   /** The description it was made through, where one was: what an open's answer moves with it. */
-  readonly description: string | undefined;
+  readonly description?: string;
   answered: boolean;
   /** Barriers begun when it was answered: one begun after retires it. */
   answeredAt: number;
@@ -408,7 +408,7 @@ export function provisional(host: ProvisionalHost): Provisional {
   const inodeAt = (key: string, row: ResidentEntry): Inode => {
     let inode = inodeAtNumber(row.dev, row.ino);
     if (inode === undefined) {
-      inode = { dev: row.dev, ino: row.ino, type: row.type, key, origin: key, row, base: null, state: null, records: NO_RECORDS, recordsCost: 0, unnamed: false, local: false, descs: 0, retained: NO_RETAINED, credit: 0, reserved: 0, opened: undefined, mergedInto: undefined, pin: undefined, cell: undefined, heldAt: undefined };
+      inode = { dev: row.dev, ino: row.ino, type: row.type, key, origin: key, row, base: null, state: null, records: NO_RECORDS, recordsCost: 0, unnamed: false, local: false, descs: 0, retained: NO_RETAINED, credit: 0, reserved: 0 };
       addInode(inode);
     }
     return inode;
@@ -530,7 +530,7 @@ export function provisional(host: ProvisionalHost): Provisional {
   const fit = (inode: Inode): void => {
     let need = cost(inode) - inode.reserved;
     if (need > 0 && !host.reserve(need)) {
-      inode.pin = undefined;
+      delete inode.pin;
       if (inode.base !== null) inode.base = { ...inode.base, bytes: null };
       if (inode.state !== null) inode.state = foldOps(inode.base ?? { ...inode.state, bytes: null }, inode.records.map((record) => record.op));
       need = cost(inode) - inode.reserved;
@@ -567,7 +567,7 @@ export function provisional(host: ProvisionalHost): Provisional {
 
   /** `op` recorded for `inode` (ready) and folded into its state. */
   const recorded = (inode: Inode, op: InodeOp, description?: string): InodeRecord => {
-    const record: InodeRecord = { id: ++ids, op, room: undefined, owner: inode, description, answered: false, answeredAt: 0, gone: undefined };
+    const record: InodeRecord = { id: ++ids, op, owner: inode, ...(description === undefined ? {} : { description }), answered: false, answeredAt: 0 };
     if (inode.records === NO_RECORDS) inode.records = [record];
     else inode.records.push(record);
     inode.recordsCost += recordCost(record);
@@ -777,7 +777,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       type, dev: host.device, ino: localIno++, nlink: type === 'directory' ? 2 : 1, size: target === null ? 0 : new TextEncoder().encode(target).byteLength,
       atime: at, mtime: at, ctime: at, mode, uid, gid, revision: 0, target,
     };
-    const inode: Inode = { dev: row.dev, ino: row.ino, type, key, origin: key, row, base: null, state: null, records: NO_RECORDS, recordsCost: 0, unnamed: false, local: true, descs: 0, retained: NO_RETAINED, credit: 0, reserved: 0, opened: undefined, mergedInto: undefined, pin: undefined, cell: undefined, heldAt: undefined };
+    const inode: Inode = { dev: row.dev, ino: row.ino, type, key, origin: key, row, base: null, state: null, records: NO_RECORDS, recordsCost: 0, unnamed: false, local: true, descs: 0, retained: NO_RETAINED, credit: 0, reserved: 0 };
     if (type === 'file') {
       inode.base = { bytes: new Uint8Array(0), size: 0, mode, uid, gid, atime: at, mtime: at, ctime: at };
       inode.state = copyState(inode.base);
@@ -832,7 +832,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       target.reserved += kept;
     }
     for (const [from, mine] of leaving) dropRecords(from, mine);
-    for (const record of records) record.gone = undefined;
+    for (const record of records) delete record.gone;
     target.records = [...target.records, ...records].sort((a, b) => a.id - b.id);
     for (const record of records) target.recordsCost += recordCost(record);
     if (target.base === null) {
@@ -856,7 +856,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       atime: receipt.mtimeMs, mtime: receipt.mtimeMs, ctime: receipt.ctimeMs, mode: receipt.mode, uid: receipt.uid, gid: receipt.gid,
       revision: receipt.revision ?? 0, target: null,
     };
-    const inode: Inode = { dev: row.dev, ino: row.ino, type: 'file', key: like.key, origin: like.origin, row, base: null, state: null, records: NO_RECORDS, recordsCost: 0, unnamed: true, local: false, descs: 0, retained: NO_RETAINED, credit: 0, reserved: 0, opened: undefined, mergedInto: undefined, pin: undefined, cell: undefined, heldAt: undefined };
+    const inode: Inode = { dev: row.dev, ino: row.ino, type: 'file', key: like.key, origin: like.origin, row, base: null, state: null, records: NO_RECORDS, recordsCost: 0, unnamed: true, local: false, descs: 0, retained: NO_RETAINED, credit: 0, reserved: 0 };
     addInode(inode);
     return inode;
   };
@@ -964,7 +964,7 @@ export function provisional(host: ProvisionalHost): Provisional {
   const descriptor = (inode: Inode, path: string, flags: RuntimeOpenFlags, description: string | undefined): RuntimeFileHandle => {
     const id = host.nextHandle();
     const write = flags.write === true || flags.append === true;
-    descs.set(id, { inode, read: flags.read === true || !write, write, append: flags.append === true, position: 0, path, description, opening: undefined, lastRecord: null, lastAnswer: null });
+    descs.set(id, { inode, read: flags.read === true || !write, write, append: flags.append === true, position: 0, path, ...(description === undefined ? {} : { description }), lastRecord: null, lastAnswer: null });
     inode.descs++;
     return { id, path } as RuntimeFileHandle;
   };
@@ -1221,7 +1221,7 @@ export function provisional(host: ProvisionalHost): Provisional {
 
     heldDescriptor: (inode, path, read, append) => {
       const id = host.nextHandle();
-      descs.set(id, { inode, read, write: true, append, position: 0, path, description: undefined, opening: undefined, lastRecord: null, lastAnswer: null });
+      descs.set(id, { inode, read, write: true, append, position: 0, path, lastRecord: null, lastAnswer: null });
       inode.descs++;
       return { id, path } as RuntimeFileHandle;
     },
@@ -1236,7 +1236,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     cells: () => [...everyInode()].filter((inode) => inode.cell !== undefined),
 
     dropCell: (inode) => {
-      inode.cell = undefined;
+      delete inode.cell;
       fit(inode);
       release(inode);
     },
@@ -1252,7 +1252,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     unhold: (inode, entry) => {
       const cell = inode.cell;
       if (cell === undefined) return;
-      inode.cell = undefined;
+      delete inode.cell;
       inode.row = { ...entry, size: cell.length };
       // The cell's buffer is the baseline's own: no one else holds it now.
       inode.base = { bytes: cell.bytes.subarray(0, cell.length), size: cell.length, mode: entry.mode, uid: entry.uid, gid: entry.gid, atime: entry.atime, mtime: entry.mtime, ctime: entry.ctime };
@@ -1420,7 +1420,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     },
 
     abandon: (handleId) => {
-      descOf(handleId).description = undefined;
+      delete descOf(handleId).description;
       provisional.close(handleId);
     },
 
@@ -1445,7 +1445,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       }
       if (desc.description !== undefined && !inode.retained.includes(desc.description)) sessions.delete(desc.description);
       // A grant's file that lost its name goes with its last descriptor (POSIX: its last close).
-      if (inode.descs === 0 && inode.cell?.detached !== undefined) inode.cell = undefined;
+      if (inode.descs === 0 && inode.cell?.detached !== undefined) delete inode.cell;
       release(inode);
     },
 
@@ -1650,7 +1650,7 @@ export function provisional(host: ProvisionalHost): Provisional {
         if (inode.cell !== undefined) continue;
         if (inode.heldAt !== undefined) {
           if (inode.heldAt >= begun) continue;
-          inode.heldAt = undefined;
+          delete inode.heldAt;
         }
         // Its records answered before the barrier began are the view's now: it is the view's version with the rest folded over it.
         // One made here and never numbered (its creating open refused, or not answered yet) the view has nothing of: as a file no name leads to.
