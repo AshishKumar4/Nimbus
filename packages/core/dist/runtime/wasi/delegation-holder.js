@@ -111,6 +111,24 @@ export function delegationHolder(options) {
     /** Whether the process sees anything of its provisional decisions (ProvisionalHost.active). */
     let provisionalActive = false;
     /**
+     * Set while a change commits: judged and admitted in full first, or one
+     * nothing refuses (a give-back, a drain of what was decided, a call handed
+     * to the session). A file a grant holds alone is promoted only then, so a
+     * refused change never moved one (§11).
+     */
+    let committing = false;
+    const commit = (work) => {
+        if (committing)
+            return work();
+        committing = true;
+        try {
+            return work();
+        }
+        finally {
+            committing = false;
+        }
+    };
+    /**
      * No grant decides `inode` from now on (its grant is shared, recalled or
      * gone, or the process is about to change a name or an access above it,
      * or a provisional decision takes it): in one synchronous step it and its
@@ -127,6 +145,8 @@ export function delegationHolder(options) {
      * is the session's.
      */
     const promote = (inode, made) => {
+        if (!committing)
+            throw new Error('a file a grant holds was promoted outside a commit (§11)');
         const cell = inode.cell;
         if (cell === undefined || cell.detached !== undefined || heldFiles.get(inode.ino) !== inode)
             return;
@@ -233,15 +253,19 @@ export function delegationHolder(options) {
      * the state the local open saw, never re-authorized against a later one.
      */
     const throughAt = (keys) => {
-        if (heldHandles.size === 0)
-            return;
-        const open = [...heldFiles.values()].filter((inode) => inode.cell.detached === undefined && inode.descs > 0
-            && (keys === undefined || keys.some((key) => within(inode.key, key))));
+        const open = heldOpenAt(keys);
         if (open.length === 0)
             return;
         drain();
         for (const inode of open)
             promote(inode);
+    };
+    /** The files it holds open at or under `keys` (anywhere, when absent), a name leading to each: what throughAt promotes. */
+    const heldOpenAt = (keys) => {
+        if (heldHandles.size === 0)
+            return [];
+        return [...heldFiles.values()].filter((inode) => inode.cell.detached === undefined && inode.descs > 0
+            && (keys === undefined || keys.some((key) => within(inode.key, key))));
     };
     /**
      * Log each file's latest bytes, in the order last written, under the name
@@ -263,7 +287,8 @@ export function delegationHolder(options) {
                 dirty.delete(inode);
                 delete file.changedFrom;
                 delete file.made;
-                promote(inode, ino);
+                // The commit of the open that made it, decided before.
+                commit(() => promote(inode, ino));
                 continue;
             }
             if (ino === undefined && from > 0) {
@@ -292,7 +317,7 @@ export function delegationHolder(options) {
      * write through from now on: a peer may write the file, and a whole-file
      * write of what this process held would overwrite what the peer wrote.
      */
-    const dropDecisions = (root) => {
+    const dropDecisions = (root) => commit(() => {
         drain();
         // One with a descriptor open goes on through it (promote); any other goes, its bytes fenced until the view has them.
         for (const inode of [...heldFiles.values()]) {
@@ -306,7 +331,7 @@ export function delegationHolder(options) {
         names.released(root);
         prov.answeredHeld(root);
         options.sent?.();
-    };
+    });
     const client = processFsClient({
         session: options.session,
         now,
@@ -318,14 +343,10 @@ export function delegationHolder(options) {
         // Closing starts (a recall, an idle or renewing give-back): nothing more
         // is decided under it, and its files' descriptions write through from now
         // on, so the flush that follows covers everything accepted before.
-        freezing: (root) => {
+        freezing: (root) => commit(() => {
             drain();
-            if (heldHandles.size === 0)
-                return;
-            for (const inode of [...heldFiles.values()])
-                if (inode.descs > 0 && inode.cell.detached === undefined && within(inode.key, root))
-                    promote(inode);
-        },
+            throughAt([root]);
+        }),
         drain,
     });
     /** A file's bytes a grant decides here (its cell). */
@@ -352,6 +373,7 @@ export function delegationHolder(options) {
         umask: () => options.umask?.() ?? 0o022,
         now,
         nextHandle: () => nextHandle--,
+        commit,
         promote: (dev, ino) => {
             const inode = heldOf(dev, ino);
             // One no name leads to stays its descriptors' alone (POSIX: until its last close): nothing of the session's reaches it by number.
@@ -365,13 +387,33 @@ export function delegationHolder(options) {
             const inode = heldOf(dev, ino);
             return inode === undefined || inode.cell.detached !== undefined ? undefined : inode;
         },
+        heldHandle: (handleId) => {
+            const desc = heldHandles.get(handleId);
+            return desc === undefined || desc.inode.cell.detached !== undefined ? undefined : desc;
+        },
+        heldOpen: (keys) => heldOpenAt(keys),
         heldCost: () => {
             let total = 0;
             for (const inode of heldFiles.values())
                 total += inode.reserved;
             return total;
         },
-        settled: (key) => names.settled(key),
+        generation: (key) => names.generation(key),
+        settled: (key, generation) => names.settled(key, generation),
+        absorb: (key, file) => {
+            const decision = decided.get(key);
+            if (!decision || decision.dev !== file.dev || decision.ino !== file.ino)
+                return undefined;
+            // In place: the decision it is, not a new one (its generation and what was given back of it stand).
+            decision.size = file.size;
+            decision.mode = file.mode;
+            decision.uid = file.uid;
+            decision.gid = file.gid;
+            decision.atime = file.atime;
+            decision.mtime = file.mtime;
+            decision.ctime = file.ctime;
+            return decision;
+        },
     });
     // The provisional decisions are the newest wherever they are pending: a held subtree decides nothing there (deciding).
     const composedEntry = (key) => {
@@ -588,7 +630,7 @@ export function delegationHolder(options) {
             file.mode = mode;
             if (target === null)
                 names.note(parentKey(to), nameOf(to), 'file');
-            decided.set(to, entry);
+            names.decide(to, entry);
             hold(inode, file);
             const description = descriptionId();
             changes++;
@@ -648,7 +690,7 @@ export function delegationHolder(options) {
                 if (inode === undefined)
                     return undefined;
                 hold(inode, file);
-                decided.set(key, entry);
+                names.decide(key, entry);
                 names.note(parentKey(key), nameOf(key), 'file');
                 // Made here: the name exists from now on, in the log's order. Logged
                 // with its bytes, before the next decision (drain), as one call.
@@ -685,7 +727,7 @@ export function delegationHolder(options) {
                 }
                 file.length = 0;
                 hold(inode, file);
-                decided.set(key, { ...current, size: 0, mtime: now(), ctime: now() });
+                names.decide(key, { ...current, size: 0, mtime: now(), ctime: now() });
                 written(inode);
             }
             return heldDescriptor(inode, path, !!flags.read, false);
@@ -858,7 +900,7 @@ export function delegationHolder(options) {
             const stamp = now();
             const umask = mask ?? grant.umask;
             const perm = (mode & 0o777 & ~umask) | (setgid ? 0o2000 : 0);
-            decided.set(key, {
+            names.decide(key, {
                 type: 'directory', dev: store.device, ino, nlink: 2, size: 0, atime: stamp, mtime: stamp, ctime: stamp,
                 mode: 0o40000 | perm, uid, gid, revision: 0, target: null,
             });
@@ -875,7 +917,7 @@ export function delegationHolder(options) {
                 return false;
             if (writableParent(key, path, 'unlink') === undefined)
                 return false;
-            decided.set(key, null);
+            names.decide(key, null);
             names.note(parentKey(key), nameOf(key), null);
             const local = heldOf(current.dev, current.ino);
             if (local !== undefined && local.key === key) {
@@ -912,8 +954,8 @@ export function delegationHolder(options) {
             drain();
             // What was decided under the source moves with it.
             names.move(from, to);
-            decided.set(from, null);
-            decided.set(to, { ...source, ctime: now() });
+            names.decide(from, null);
+            names.decide(to, { ...source, ctime: now() });
             names.note(parentKey(from), nameOf(from), null);
             names.note(parentKey(to), nameOf(to), source.type);
             // A file it replaces loses its name: its open descriptions keep its bytes.
@@ -951,13 +993,12 @@ export function delegationHolder(options) {
             // A grant a confined principal may not make: the session's to judge.
             if ('mode' in attrs && confinedModeRefusal(current.mode, attrs.mode) !== null)
                 return false;
-            if ('mode' in attrs) {
-                throughAt([key]);
-                if (provisionalActive && prov.touches(key))
-                    return false;
-            }
+            // An access change at or above a file it holds open: those files go through first, their descriptions keeping the access
+            // they were opened with (throughAt), and are the provisional decisions' then. Theirs or the session's to make, with that in its commit.
+            if ('mode' in attrs && heldOpenAt([key]).length > 0)
+                return false;
             const next = changedBy(current, attrs);
-            decided.set(key, next);
+            names.decide(key, next);
             const local = heldOf(current.dev, current.ino)?.cell;
             if (local !== undefined) {
                 local.mode = next.mode & 0o7777;
@@ -968,35 +1009,30 @@ export function delegationHolder(options) {
         },
         fsetattr: (handleId, change) => {
             const handle = heldDesc(handleId);
-            if (handle === undefined) {
-                prov.fsetattr(handleId, change);
-                return false;
-            }
-            const inode = handle.inode;
-            const file = inode.cell;
-            const entry = file.detached ?? atName(inode);
-            // Its times as it is decided (timeAt): now, explicit, or as they are.
-            const at = now();
-            const attrs = entry && 'atime' in change ? { atime: timeAt(change.atime, entry.atime, at), mtime: timeAt(change.mtime, entry.mtime, at) } : change;
-            if (file.detached === undefined) {
-                // By its name where its grant decides it; else no grant decides the file from now on: the provisional decisions', through its description.
-                if (entry && holder.setattr(inode.key, attrs))
+            const detached = handle?.inode.cell.detached;
+            if (handle === undefined || detached === undefined) {
+                const entry = handle === undefined ? undefined : atName(handle.inode);
+                // Its times as it is decided (timeAt): now, explicit, or as they are.
+                const at = now();
+                const attrs = entry && 'atime' in change ? { atime: timeAt(change.atime, entry.atime, at), mtime: timeAt(change.mtime, entry.mtime, at) } : change;
+                // By its name where its grant decides it; else no grant decides the file from now on: the provisional
+                // decisions', through its description (one a grant holds is promoted in their commit, once judged and admitted).
+                if (handle !== undefined && entry && holder.setattr(handle.inode.key, attrs))
                     return true;
-                drain();
-                promote(inode);
                 prov.fsetattr(handleId, change);
                 return false;
             }
             // Its name gone, the file is this process's alone: judged and changed
             // here, as the session judges a description, its confinement of the
             // principal too (judged confined once no grant there says).
-            const detached = file.detached;
-            const confined = client.held(inode.key)?.confined ?? true;
+            const file = handle.inode.cell;
+            const attrs = 'atime' in change ? { atime: timeAt(change.atime, detached.atime, now()), mtime: timeAt(change.mtime, detached.mtime, now()) } : change;
+            const confined = client.held(handle.inode.key)?.confined ?? true;
             const refused = 'mode' in attrs ? chmodRefusal(detached, store.cred) ?? (confined ? confinedModeRefusal(detached.mode, attrs.mode) : null)
                 : 'uid' in attrs ? chownRefusal(detached, attrs.uid, attrs.gid, store.cred)
                     : utimesRefusal(detached, 'atime' in change && explicitTimes(change.atime, change.mtime), store.cred);
             if (refused !== null)
-                throw fsError(refused, 'mode' in attrs ? 'fchmod' : 'uid' in attrs ? 'fchown' : 'futimes', '/' + inode.key);
+                throw fsError(refused, 'mode' in attrs ? 'fchmod' : 'uid' in attrs ? 'fchown' : 'futimes', '/' + handle.inode.key);
             file.detached = changedBy(detached, attrs);
             file.mode = file.detached.mode & 0o7777;
             return true;
@@ -1030,7 +1066,7 @@ export function delegationHolder(options) {
             sentSome(covered);
         },
         reportRecorded: () => failed(),
-        changing: (keys) => throughAt(keys),
+        changing: (keys) => commit(() => throughAt(keys)),
         settle: async () => {
             drain();
             const covered = changes;

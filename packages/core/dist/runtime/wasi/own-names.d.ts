@@ -17,8 +17,12 @@ export interface OwnNamesOptions {
 export interface OwnNames {
     /** This process's word on `key`: what it decided, or absent for a name not made in a directory it made. Undefined where it has none. */
     entry(key: string): ResidentEntry | null | undefined;
-    /** What it decided, by name (null: removed): read and changed as the holder decides; a name decided again is the deciding grant's. */
-    readonly decided: Map<string, ResidentEntry | null>;
+    /** What it decided, by name (null: removed): read as the holder decides; a name decided again is the deciding grant's. */
+    readonly decided: ReadonlyMap<string, ResidentEntry | null>;
+    /** Decide `key` (null: removed): a new decision there, of a new generation. */
+    decide(key: string, entry: ResidentEntry | null): void;
+    /** The generation of its decision at `key`: undefined where it has none. */
+    generation(key: string): number | undefined;
     /** Its decision at `key` while the deciding grant's own, not given back: undefined where it has none or gave it back. */
     current(key: string): ResidentEntry | null | undefined;
     /** Its decision at `key` was changed in place (a held write): decided again, not what was given back. */
@@ -27,8 +31,13 @@ export interface OwnNames {
     undecide(key: string): void;
     /** The session moved or removed the name `key`: what it decided at and under it goes, with what was noted there (its listing, a file's cell). */
     superseded(key: string): void;
-    /** A change of the process's own at `key`, made after its decision there, is the view's: the decision and what was noted of the name go; true where there was one. */
-    settled(key: string): boolean;
+    /**
+     * A change of the process's own at `key`, made over its decision there of
+     * `generation`, is the view's: that decision and what was noted of the
+     * name go (true). One decided or moved there since is newer than the
+     * view's answer, and stays.
+     */
+    settled(key: string, generation: number | undefined): boolean;
     /** Directory `dir` gained `name` (`type`), or lost it (null). */
     note(dir: string, name: string, type: RuntimeVfsDirEntry['type'] | null): void;
     /** A directory made at `key`: its names are the ones made in it. */

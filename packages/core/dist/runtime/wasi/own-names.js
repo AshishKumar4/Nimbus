@@ -18,6 +18,9 @@ function within(key, root) {
 }
 export function ownNames(options) {
     const decided = new Map();
+    /** Each decision's generation: one made again, or moved, is a new one. */
+    const born = new Map();
+    let generations = 0;
     /**
      * The barrier begun when each name's subtree was last given back,
      * everything decided there answered, and the decision it gave back: one
@@ -37,6 +40,7 @@ export function ownNames(options) {
         const entry = decided.get(key);
         own.delete(key);
         decided.delete(key);
+        born.delete(key);
         made.delete(key);
         added.get(parentKey(key))?.delete(nameOf(key));
         removed.get(parentKey(key))?.delete(nameOf(key));
@@ -53,19 +57,27 @@ export function ownNames(options) {
             return key !== '' && madeHere(dir) && !added.get(dir)?.has(nameOf(key)) ? null : undefined;
         },
         decided,
+        decide: (key, entry) => {
+            decided.set(key, entry);
+            born.set(key, ++generations);
+        },
+        generation: (key) => born.get(key),
         current: (key) => (own.has(key) ? undefined : decided.get(key)),
         rewritten: (key) => {
             if (own.size !== 0)
                 own.delete(key);
         },
-        undecide: (key) => { decided.delete(key); },
+        undecide: (key) => {
+            decided.delete(key);
+            born.delete(key);
+        },
         superseded: (key) => {
             for (const name of [...decided.keys()])
                 if (within(name, key))
                     forget(name);
         },
-        settled: (key) => {
-            if (!decided.has(key))
+        settled: (key, generation) => {
+            if (generation === undefined || born.get(key) !== generation)
                 return false;
             forget(key);
             return true;
@@ -113,11 +125,14 @@ export function ownNames(options) {
         },
         move: (from, to) => {
             const moved = (key) => to + key.slice(from.length);
-            for (const [key, value] of [...decided])
-                if (key !== from && within(key, from)) {
-                    decided.delete(key);
-                    decided.set(moved(key), value);
-                }
+            for (const [key, value] of [...decided]) {
+                if (key === from || !within(key, from))
+                    continue;
+                decided.delete(key);
+                born.delete(key);
+                decided.set(moved(key), value);
+                born.set(moved(key), ++generations);
+            }
             for (const key of [...made])
                 if (within(key, from)) {
                     made.delete(key);

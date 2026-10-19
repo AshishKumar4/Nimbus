@@ -73,12 +73,32 @@ export interface ProvisionalHost {
     heldFile(dev: number, ino: number): Inode | undefined;
     /** What the files a grant holds alone keep of the budget (their Inodes, outside the table). */
     heldCost(): number;
+    /** Descriptor `handleId` where a grant holds its file alone (the holder's): a borrow, to judge and price a change before take promotes it. */
+    heldHandle(handleId: number): Desc | undefined;
+    /** The files a grant holds alone with a descriptor open, at or under `keys`: a borrow, as for heldFile. */
+    heldOpen(keys: readonly string[]): readonly Inode[];
     /**
-     * The view has what these decisions did at `key`: a grant's decision of
-     * the name, made before them (a grant decides nothing they touch), answers
-     * no more, the view's row does (OwnNames.settled); true where one did.
+     * `work`, the commit of a change judged and admitted in full: nothing it
+     * does is refused. The only place promote runs (§11).
      */
-    settled(key: string): boolean;
+    commit<T>(work: () => T): T;
+    /** The generation of a grant's decision at `key` (OwnNames.generation): undefined where none. */
+    generation(key: string): number | undefined;
+    /**
+     * The view has what these decisions did at `key`, made over a grant's
+     * decision there of `generation`: that decision answers no more, the
+     * view's row does (OwnNames.settled); true where it did. One made since
+     * is newer than the view's answer, and stays.
+     */
+    settled(key: string, generation: number | undefined): boolean;
+    /**
+     * A grant's decision of file `file` (by number) at `key`, made since these
+     * decisions' records of it began (a move above it): newer than the view's
+     * answer, it stays, and takes `file`'s size, mode, owner and times, what
+     * their retired records made of it. The decision; undefined where `key`
+     * has none of that file.
+     */
+    absorb(key: string, file: ResidentEntry): ResidentEntry | undefined;
 }
 /**
  * A file's content while a grant decides it (the holder's): its bytes here,
@@ -160,6 +180,11 @@ export interface Inode {
      * until they are. Its own content stands until a barrier begun after (retire).
      */
     heldAt?: number;
+    /** The grant's decision of its name its records fold over (its baseline's row), by name and generation: settled once they retire. */
+    over?: {
+        readonly key: string;
+        readonly generation: number;
+    };
 }
 /** One of the process's operations on an inode, kept until the view has its outcome (retire). */
 interface InodeRecord {
@@ -241,7 +266,7 @@ export interface Provisional {
     /** Open description `description` was answered: `handle` is the session's descriptor of it. */
     anchored(description: string, handle: number | undefined, read: boolean): void;
     owns(handleId: number): boolean;
-    /** Whether a decision of this process's at `key`, or at the directory it is in, is not yet the view's: a held subtree decides nothing there until it is. */
+    /** Whether a decision of this process's at `key`, at the directory it is in, or at a name under it, is not yet the view's: a held subtree decides nothing there until it is. */
     touches(key: string): boolean;
     /** fcntl(F_SETFL) of a descriptor: O_APPEND is its writes' to keep. */
     setStatus(handleId: number, status: {
