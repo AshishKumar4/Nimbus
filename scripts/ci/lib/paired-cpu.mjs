@@ -20,7 +20,7 @@ import { median, medianInterval } from '../../lib/statistics.mjs';
  */
 export function pairedCpuVerdicts(runs) {
   return (runs[0] ?? []).map(({ kind }) => {
-    const of = runs.map((results) => results.find((result) => result.kind === kind));
+    const of = runs.flatMap((results) => results.filter((result) => result.kind === kind));
     // Cancel the common A inside each pair, not after two independent medians:
     // median(real - A) - median(null - A) need not equal median(real - null).
     const deltas = of.map((result) => median(result.samples.map((sample) => sample.real - sample.null)));
@@ -36,12 +36,14 @@ export function pairedCpuVerdicts(runs) {
  * `verdicts` with each slower kind confirmed by `again` (the verdicts of a
  * second set of runs): a kind is slower only when both sets find it slower.
  * Its interval is drawn from one set of processes, and at 95% a bench with
- * a dozen kinds finds about one slower in two runs that are not.
+ * a dozen kinds finds about one slower in two runs that are not. A kind the
+ * second set did not measure stays slower.
  */
 export function confirmedVerdicts(verdicts, again) {
   return verdicts.map((verdict) => {
     if (verdict.failures.length === 0) return verdict;
     const second = again.find((other) => other.kind === verdict.kind);
+    if (!second) return { ...verdict, confirmation: null, failures: [...verdict.failures, 'unconfirmed: the second set of runs measured no such kind'] };
     const confirmation = { medianDelta: second.medianDelta, ci95: second.ci95, failures: second.failures };
     return { ...verdict, confirmation, failures: second.failures.length > 0 ? [...verdict.failures, 'confirmed: a second set of runs finds it slower too'] : [] };
   });

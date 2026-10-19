@@ -33,11 +33,15 @@ const rounds = ({ count, factor, sigma = 0.25, seed, offset = {} }) => pairedRou
 // A faster candidate is never slower.
 assert.equal(gradePaired(rounds({ count: 15, factor: 0.6, sigma: 0.1, seed: 12 })).slower, false);
 
+/** 15 rounds at the four arms' given times, each arm with a small jitter of its own. */
+const fixed = (a1, a2, b1, b2) => Array.from({ length: 15 }, (_, i) => ({ a1: a1 + (i % 5), a2: a2 + (i % 3), b1: b1 + (i % 4), b2: b2 + (i % 2) }));
+
 // One Preview behind the others for the whole run, the candidate's own
 // code unchanged: not slower, whichever arm it is. ruby-gem-require's
-// receipts had one arm 1.3-1.6x the others in 9 of 14 runs.
-for (const arm of ['a1', 'a2', 'b1', 'b2']) {
-  const grade = gradePaired(rounds({ count: 20, factor: 1, sigma: 0.1, seed: 21, offset: { [arm]: 1.5 } }));
+// receipts had one arm 1.3-1.6x the others in 9 of 14 runs. How often
+// noise alone reds such a set is paired-grader-power's.
+for (const [arm, samples] of Object.entries({ a1: fixed(900, 600, 600, 600), a2: fixed(600, 900, 600, 600), b1: fixed(600, 600, 900, 600), b2: fixed(600, 600, 600, 900) })) {
+  const grade = gradePaired(samples);
   assert.equal(grade.slower, false, `${arm} 1.5x behind: ${JSON.stringify(grade)}`);
 }
 
@@ -51,7 +55,6 @@ for (const [arm, by] of [['a1', 1.2], ['a2', 1.2], ['b1', 1.5], ['b2', 1.5]]) {
   assert.equal(grade.slower, true, `1.3x slower with ${arm} ${by}x behind: ${JSON.stringify(grade)}`);
 }
 {
-  const fixed = (a1, a2, b1, b2) => Array.from({ length: 15 }, (_, i) => ({ a1: a1 + (i % 5), a2: a2 + (i % 3), b1: b1 + (i % 4), b2: b2 + (i % 2) }));
   assert.equal(gradePaired(fixed(600, 600, 1170, 780)).slower, true, 'a 1.3x code shift beside a 1.5x slow candidate Preview');
   assert.equal(gradePaired(fixed(600, 720, 780, 780)).slower, true, 'a 1.3x code shift over a 1.2x slow baseline Preview');
   const grade = gradePaired(fixed(600, 600, 900, 600));
@@ -118,6 +121,16 @@ for (const shift of [-10, 0, 10]) {
   assert.deepEqual(cleared.confirmation.ci95, [0, 0], 'and the verdict keeps what the second set found');
   const [untouched] = confirmedVerdicts([graded(0)], [graded(10)]);
   assert.deepEqual(untouched, graded(0), 'a kind the first set clears is graded by it alone');
+  const [unmeasured] = confirmedVerdicts([graded(10)], pairedCpuVerdicts([]));
+  assert.equal(unmeasured.failures.length, 2, `a second set that measured nothing leaves it slower: ${JSON.stringify(unmeasured)}`);
+}
+
+// A run that measured fewer kinds leaves the others graded over the runs that measured them.
+{
+  const runs = cpuRuns([100, 200, 300].map((ms) => ({ A1: ms, A2: ms, null: ms, real: ms + 10 })));
+  const other = { ...runs[0][0], kind: 'other-cpu' };
+  const verdicts = pairedCpuVerdicts([[...runs[0], other], ...runs.slice(1)]);
+  assert.deepEqual(verdicts.map(({ kind, runs: measured }) => [kind, measured]), [['copy-cpu', 8], ['other-cpu', 1]]);
 }
 
 console.log('paired-grading: ok');

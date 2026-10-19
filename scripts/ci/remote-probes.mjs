@@ -358,7 +358,8 @@ async function probeRun({ baseline, releases }) {
         if (second?.exitCode === 0) {
           row.regraded = { task: confirm[0].task, evidence: ['red on one set of Previews and green on a fresh set: where they landed, not the code'] };
           console.log(`REGRADED ${row.name}: red on one set of Previews, green on a fresh set`);
-        } else if (second) console.log(`CONFIRMED ${row.name}: red on two sets of Previews`);
+        } else if (second?.exitCode === 1) console.log(`CONFIRMED ${row.name}: red on two sets of Previews`);
+        else console.log(`UNCONFIRMED ${row.name}: the fresh set ${second ? `did not grade it (exit ${second.exitCode})` : 'has no row of it'}`);
       }
     } catch (error) {
       problems.push(`the paired confirmation could not run: ${scrub(error.message)}`);

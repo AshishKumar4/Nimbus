@@ -21,8 +21,8 @@
 //
 // On a log scale, a round's d_i = ln bi - (ln a1 + ln a2) / 2 for each
 // candidate arm bi. The candidate is slower when both d_i's 95% bootstrap
-// intervals lie above 0: each of its Previews slower than the baseline's
-// two. One slow candidate Preview leaves the other at 0; a slow baseline
+// intervals lie above 0: each of its Previews slower than the mean of the
+// baseline's two. One slow candidate Preview leaves the other at 0; a slow baseline
 // Preview raises the mean both are judged against. A set whose candidate
 // Previews both landed slow is red here, and remote-probes asks a fresh set
 // before calling it red. Against each single baseline Preview instead, a
