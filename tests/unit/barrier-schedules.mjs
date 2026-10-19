@@ -57,8 +57,12 @@ const FOUND = {
   },
   'a listing whose names and stats straddle a peer\'s rename is not served': {
     engines: ['holder'],
-    schedule: [['own', 'stat', 'd/e'], ['settle'], ['hold', 'lookup', 1], ['own', 'stat', 'd/e/q'], ['settle'], ['peer', 'rename', 'd/e/g', 'd/e/g2'], ['settle'],
-      ['release', 'lookup'], ['settle'], ['own', 'readdir', 'd/e'], ['own', 'stat', 'd/e/g2']],
+    schedule: [['own', 'stat', 'd/e'], ['settle'], ['hold', 'listing'], ['own', 'stat', 'd/e/q'], ['settle'], ['peer', 'rename', 'd/e/g', 'd/e/g2'], ['settle'],
+      ['release', 'listing'], ['settle'], ['own', 'readdir', 'd/e'], ['own', 'stat', 'd/e/g2']],
+  },
+  'a tree listing of a directory a peer moved away is not an empty directory': {
+    engines: ['holder'],
+    schedule: [['own', 'stat', 'd/e'], ['settle'], ['peer', 'rename', 'd/e', 'z'], ['settle'], ['own', 'readdir', 'd/e'], ['own', 'stat', 'd/e']],
   },
   'a directory a call that cannot wait has not listed is not refused as a directory': {
     schedule: [['own', 'stat', 'd'], ['settle'], ['sync', 'readdir', 'd'], ['sync', 'readdir', 'x']],
