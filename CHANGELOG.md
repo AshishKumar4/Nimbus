@@ -11,7 +11,8 @@ published independently in the `@nimbus-sh` npm scope.
   time. Each process boots a VM of its own there, so it finds nothing an
   earlier process left. A worker is used again only after a process that
   ended clean and never reached JavaScript (`require "js"`); a session keeps
-  at most two idle.
+  at most two idle. On paired Previews a `ruby -e` launch took 0.38× the
+  time (medians 471–493 ms against 1000–1731 ms) and a gem require 0.32×.
 - Fixed: a WASI program (python, ruby, clang, bash) could see a file
   another process had deleted. A lookup or listing it asked before the
   delete, answered after it, put the name back. A name under a directory
