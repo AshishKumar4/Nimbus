@@ -5,6 +5,8 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+## 2026-10-19 (patch): core 0.24.1, fabric 0.19.1 (every other package unchanged from the 2026-10-19 release)
+
 - Fixed (data loss, since core 0.19): a recursive removal no longer enters a
   mount point. `CompositeVFS.removeRecursive`, and so the shell's `rm -r`, the
   SDK's `files.delete`, npm's and git's removals and a guest's `fs.rm`, keeps

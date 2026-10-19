@@ -98,7 +98,7 @@
     },
     "packages/core": {
       "name": "@nimbus-sh/core",
-      "version": "0.24.0",
+      "version": "0.24.1",
       "dependencies": {
         "@nimbus-sh/platform": "^0.13.0",
         "@npmcli/config": "9.0.0",
@@ -140,7 +140,7 @@
     },
     "packages/fabric": {
       "name": "@nimbus-sh/fabric",
-      "version": "0.19.0",
+      "version": "0.19.1",
       "dependencies": {
         "@nimbus-sh/core": "^0.24.0",
         "@nimbus-sh/platform": "^0.13.0",
