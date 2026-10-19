@@ -3,24 +3,22 @@
 // once, and asks that queue and are served as credit comes back, the path a
 // running program's reads and writes take under load.
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { build } from 'esbuild';
 import { cpuMs } from './lib/paired-cpu.mjs';
 import { PLATFORM_CPU_SOURCES } from './lib/cpu-sources.mjs';
+import { armTree, importBundle } from './lib/isolated-core.mjs';
 import { runPairedBenchmark } from './lib/paired-runner.mjs';
 
 let checksum = 0;
 
-/** Each arm bundled on its own, from its own platform sources. */
-async function arm(name, dir, scratch) {
+/** Each arm bundled on its own, from its side's tree (`from`). */
+async function arm(name, from, scratch, cleanup) {
+  const tree = armTree(from, cleanup);
+  const dir = join(tree, PLATFORM_CPU_SOURCES.source);
   const contents = `export { WeightedCreditPool } from ${JSON.stringify(join(dir, 'weighted-credit-pool.ts'))};`;
-  const bundled = await build({ stdin: { contents, resolveDir: dir, loader: 'js' }, bundle: true, write: false, format: 'esm', platform: 'neutral', target: 'esnext' });
-  const file = join(scratch, `${name}.mjs`);
-  writeFileSync(file, bundled.outputFiles[0].text);
-  return import(pathToFileURL(file).href);
+  return importBundle(tree, { stdin: { contents, resolveDir: dir, loader: 'js' }, format: 'esm', platform: 'neutral', target: 'esnext' }, join(scratch, `${name}.mjs`));
 }
 
 const MiB = 1024 * 1024;
@@ -66,12 +64,11 @@ function workloads(short) {
 }
 
 await runPairedBenchmark({
-  source: PLATFORM_CPU_SOURCES.source,
   async run({ short, cleanup, withArms, sample }) {
     const scratch = mkdtempSync(join(tmpdir(), 'credit-pool-cpu-'));
     cleanup(() => rmSync(scratch, { recursive: true, force: true }));
     const work = workloads(short);
-    await withArms((from, name) => arm(name, from, scratch), async (arms) => {
+    await withArms((from, name) => arm(name, from, scratch, cleanup), async (arms) => {
       for (const kind of Object.keys(work)) {
         await sample(kind, arms, (exports) => cpuMs(() => work[kind](exports)), { pairs: 30, warm: 8, iterations: 1 });
       }

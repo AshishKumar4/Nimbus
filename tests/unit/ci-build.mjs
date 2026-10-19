@@ -13,8 +13,8 @@
 // rebuild moved dist (recording nothing), 2 when the build failed.
 //
 // Then overlayCommit (scripts/ci/lib/armada.mjs): the commit a container
-// gets is the lane's tree with the overlay files' bytes and modes, a new
-// commit each time.
+// gets is the lane's tree with the overlay files' bytes and modes (or another
+// commit's whole tree under a path), a new commit each time.
 
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
@@ -244,6 +244,11 @@ if (import.meta.main && existsSync('pkg/dist/old.bin')) { renameSync('pkg/dist/o
     assert.equal(git(dir, 'rev-parse', 'HEAD'), sha, 'no branch moved');
     assert.equal(git(dir, 'status', '--porcelain'), '', 'the worktree and its index are untouched');
     console.log('  ok  overlayCommit: the lane\'s tree with the overlay\'s bytes and modes, on no branch, new each time');
+    // Another commit's whole tree, laid under a path (a paired bench's baseline).
+    const laid = overlayCommit(dir, commit, [{ path: '.ci-baseline', tree: sha }]);
+    assert.equal(git(dir, 'rev-parse', `${laid}:.ci-baseline`), git(dir, 'rev-parse', `${sha}^{tree}`));
+    assert.equal(git(dir, 'rev-parse', `${laid}:package.json`), git(dir, 'rev-parse', `${commit}:package.json`), 'the lane\'s own files stay');
+    console.log('  ok  overlayCommit: a commit\'s whole tree laid under a path');
   }
   {
     // A client's overlay carries its producer whole: every module it imports
