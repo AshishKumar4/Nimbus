@@ -1009,24 +1009,24 @@ for (const [route, told] of [['idle', 'fsync'], ['idle', 'settle'], ['renewal', 
   const delegated = () => s.fs.stats().delegated.open ?? 0;
   const ninth = create(s.fs, '/home/user/proj/d7/x', 'x').catch(() => null);
   await Promise.resolve();
-  // Under one of the seven, being given back: the session's to decide, not this process's.
+  // Under one of the seven, being given back (the other's file small again): the session's to decide, not this
+  // process's under a lease about to end.
+  await s.fs.ftruncate(big.id, 1);
   const before = delegated();
   const after = (async () => {
     const handle = await s.fs.open('/home/user/proj/d0/after', { write: true, create: true, truncate: true, mode: 0o644 });
     await s.fs.close(handle.id);
     return null;
   })().catch((error) => error?.code ?? String(error));
-  assert.equal(delegated() - before, 1, 'a create under a grant being given back went to the session');
-  await s.fs.ftruncate(big.id, 1);
   gated = false;
   opened.resolve();
   await ninth;
-  // What was written before it cannot be logged yet: the program is told, and nothing is made.
-  assert.equal(await after, 'ENOMEM', 'the create under the grant given back');
+  assert.equal(await after, null, 'the create under the grant given back');
+  assert.equal(delegated() - before, 1, 'a create under a grant being given back went to the session');
   await s.fs.close(big.id);
   assert.deepEqual(await s.fs.settle(), []);
   assert.equal(s.filesystem.delegations.size, 0, 'everything given back');
-  assert.equal(s.kernel.exists('home/user/proj/d0/after'), false);
+  assert.equal(s.kernel.exists('home/user/proj/d0/after'), true);
 }
 
 // ── A decision whose drain the client refuses (a held file past its synchronous cap) leaves nothing decided ──
