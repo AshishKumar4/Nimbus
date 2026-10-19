@@ -580,6 +580,15 @@ const metKnown = [];
  * only where no name led to it, so a read that could not wait was EAGAIN.
  */
 const FOUND = [
+  // A file opened before its subtree is taken, its times then set by name under the grant: the provisional decisions' (the name is theirs), not the session's.
+  { name: 'times by name of a file the provisional decisions hold, under a grant', grants: true, steps: [
+    { op: 'open', fd: 0, name: 'a', flags: { read: true, write: true, append: false, create: true, exclusive: false, truncate: true } },
+    { op: 'write', fd: 0, offset: null, data: 'pq' },
+    { op: 'close', fd: 0 },
+    { op: 'writeFile', name: 'b', data: 'r' },
+    { op: 'utimes', name: 'a', atime: 1600000007000, mtime: 1600000007000 },
+    { op: 'catchUp' },
+  ] },
   { name: 'a read-only descriptor does not read through a borrowed write-only anchor', grants: false, steps: [
     { op: 'writeFile', name: 'c', data: 'qq' },
     { op: 'open', fd: 2, name: 'c', flags: { read: false, write: true, append: false, create: false, exclusive: false, truncate: false } },
