@@ -36,6 +36,7 @@ function overlay() {
     umask: () => 0o022,
     now: () => 5,
     nextHandle: () => handles--,
+    settled: () => false,
   });
   const answer = async (outcome) => {
     pending.shift().resolve(outcome);
