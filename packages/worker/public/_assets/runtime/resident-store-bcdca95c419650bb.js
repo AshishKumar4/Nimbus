@@ -845,7 +845,7 @@ var __nimbusResidentModule = (() => {
         const out = [];
         for (let i = 0; i < numbers.length; i++) {
           const cell = parts.get(numbers[i] ?? 0);
-          if (cell !== void 0) out[out.length] = copy(cell);
+          if (cell !== void 0) reflectDefineProperty(out, out.length, dataDescriptor(copy(cell), true, true, true));
         }
         return out;
       },
