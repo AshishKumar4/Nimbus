@@ -46,9 +46,14 @@ export function arrayFor(store, name) {
 }
 /** One variable's whole binding, so a scope can put it back exactly. */
 export function saveVariable(store, name) {
-    return { scalar: store.env[name], array: store.arrays.get(name) };
+    return { scalar: store.env[name], array: store.arrays.get(name), exported: store.exportedNames.has(name), declared: store.declaredNames.has(name) };
 }
-export function restoreVariable(store, name, saved) {
+/**
+ * `name` bound again as `saved` holds it. `attributes`: its export mark and
+ * declaredness too (a local's, at its function's return); a command's prefix
+ * assignment gives back only its value (`x=1 export x` exports x).
+ */
+export function restoreVariable(store, name, saved, attributes = true) {
     if (saved.array === undefined)
         store.arrays.delete(name);
     else
@@ -57,6 +62,16 @@ export function restoreVariable(store, name, saved) {
         delete store.env[name];
     else
         store.env[name] = saved.scalar;
+    if (!attributes)
+        return;
+    if (saved.exported)
+        store.exportedNames.add(name);
+    else
+        store.exportedNames.delete(name);
+    if (saved.declared)
+        store.declaredNames.add(name);
+    else
+        store.declaredNames.delete(name);
 }
 /** A copy of `arrays` whose arrays are copies too: what a subshell or a saved shell state holds. */
 export function cloneArrays(arrays) {

@@ -157,7 +157,7 @@ for (const kind of ['python', 'ruby', 'loader', 'loader-per-call']) {
       if (kind.startsWith('loader')) {
         const facet = loaderFacetHost(w.env, w.ctx, ISOLATE_NETWORK).open({
           tag: 'credential-scenario', concurrency: 1, syscalls: { vfs: {}, pid: user.pid },
-          ...(kind === 'loader-per-call' ? { warm: 'credential-scenario' } : {}),
+          ...(kind === 'loader-per-call' ? { warm: { session: w.ctx.id.toString(), name: 'credential-scenario' } } : {}),
         });
         try { await facet.submit(task, {}); } finally { facet.dispose(); }
       } else await prompt(w, kind, user);

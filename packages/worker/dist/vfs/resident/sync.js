@@ -76,21 +76,17 @@ export function createSync(coherence, admission, namespace, cells, transport) {
         : { namespace: true });
     /**
      * Apply one ACQUIRE answer to the store: room for what it pushes (N18), the
-     * delta itself, then the directories it says no delta will itemise — relisted
-     * now where the namespace is enumerated, forgotten where it is listed on
-     * demand, so the next lookup there lists it again. The store's catch-up and a
+     * delta itself, then the directories it says no delta will itemise, relisted
+     * where the namespace is enumerated (one listed on demand forgets what is
+     * beneath them as it applies the delta). The store's catch-up and a
      * WASI process's barrier run it; node-shims.ts's barriers run the same three
      * steps inline.
      */
     const applyAcquire = async (supervisor, result) => {
         await admission.roomForPushed(result);
         const applied = cells.admit(result);
-        for (const dir of applied.relist) {
-            if (namespace.lazy)
-                namespace.forgetListed(dir);
-            else
-                await transport.relist(supervisor, dir);
-        }
+        for (const dir of applied.relist)
+            await transport.relist(supervisor, dir);
         return applied;
     };
     /**

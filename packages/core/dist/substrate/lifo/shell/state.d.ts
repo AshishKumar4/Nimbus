@@ -33,6 +33,10 @@ export interface ShellState {
     readonly options: ShellOptions;
     readonly traps: TrapTable;
     readonly readonlyNames: Set<string>;
+    /** The variables with the export attribute: what came in the environment, and what `export` or `declare -x` marked. */
+    readonly exportedNames: Set<string>;
+    /** Variables declared with no value (`declare p`, `export p`): set or not, they exist until unset. */
+    readonly declaredNames: Set<string>;
     readonly aliases: Map<string, string>;
     readonly jobTable: JobTable;
 }
@@ -52,6 +56,8 @@ export interface ShellStateFrame {
     readonly options: ShellOptions;
     readonly traps: Map<string, string>;
     readonly readonlyNames: Set<string>;
+    readonly exportedNames: Set<string>;
+    readonly declaredNames: Set<string>;
     readonly aliases: Map<string, string>;
 }
 export declare function snapshotShellState(state: ShellState): ShellStateFrame;

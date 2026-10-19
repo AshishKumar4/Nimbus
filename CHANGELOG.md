@@ -9,6 +9,12 @@ published independently in the `@nimbus-sh` npm scope.
   module resolved inside it, and a bench fails if an arm resolves one outside.
   Before, only a hand-kept list of modules was the baseline's, and the rest
   were the head's for both arms.
+- Fixed: a WASI program (python, ruby, clang, bash) could see a file
+  another process had deleted. A lookup or listing it asked before the
+  delete, answered after it, put the name back. A name under a directory
+  another process replaced was also still served. Now a lookup or listing
+  that a later change overtook adds nothing, and a replaced directory's
+  names are looked up again.
 - Fixed: a Node program's `fs.statfs` reports the storage limit a session
   enforces (10,000,000,000 bytes, `DO_STORAGE_LIMIT_BYTES`) as its capacity.
   Before, it reported 10 GiB, 737,418,240 bytes more than a session can
@@ -18,6 +24,13 @@ published independently in the `@nimbus-sh` npm scope.
   holds the most, and warns when the total grew 10 GB or more since the
   last run. The registry holds every armada environment snapshot and every
   container image, and the account's storage is limited.
+- Added: `declare -p` (and `typeset -p`, `local -p`) prints each named
+  variable as bash does, as a declaration it reads back: `declare -- x="1"`,
+  `declare -a a=([0]="a" [5]="z")`, `declare -rx w="5"`, a control
+  character as `$'…'`; an unset name is `declare: NAME: not found`, status 1.
+  `export` marks a name exported (`export -n` unmarks it, `export -p` lists
+  them), as `declare -x` does, and `unset` drops the mark. Before, `declare
+  -p` was an invalid option.
 - Changed (core): the resident filesystem decides what a caller that
   cannot wait changes outside a subtree the process holds (its
   `synchronous` view). Such a change is answered at once, logged through
@@ -146,11 +159,6 @@ published independently in the `@nimbus-sh` npm scope.
   read back with two replacement characters in place of it, from a
   process's resident store.
 
-- Fixed: the shell's patterns, trims, substitutions, `${#x}` and IFS count
-  characters, as bash does in a UTF-8 locale, not UTF-16 units. `${x%?}` of
-  😀 leaves nothing rather than half of it, `?` and `case 😀 in ?)` match it
-  whole, `${#x}` is 1, and IFS=😀 joins and splits by 😀 without splitting
-  😁. Before, these could leave a lone surrogate in a value.
 - Fixed: the shell reads quoting as bash does wherever quoting decides what
   a word is.
   - A quoted reserved word is a command: `'if' true` runs a command named

@@ -50,7 +50,7 @@ export interface Admitted {
   /** Rows kept because their revision already covers the report (this facet's own writes coming back). */
   kept: number;
   pushed: number;
-  /** Directories the namespace must relist: no delta will itemise what is under them. */
+  /** Directories an enumerated namespace must relist: no delta will itemise what is under them. */
   relist: string[];
   cursor: Cursor;
   /** An answer older than the store's cursor: nothing was applied. */
@@ -368,8 +368,8 @@ export function createCells(
             forgetHeld(heldPath);
           });
           // Names under it may have become hidden or visible without being
-          // named: the namespace relists that subtree.
-          if (namespaced && subtree && stat && stat.type === 'directory') relist[relist.length] = path;
+          // named: an enumerated namespace relists that subtree.
+          if (namespaced && !namespace.lazy && subtree && stat && stat.type === 'directory') relist[relist.length] = path;
         }
         let isHeld = false, stamped = 0, heldKey: string | null = null;
         const row = t.fileRevKey(path);
