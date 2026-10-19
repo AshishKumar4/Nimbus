@@ -101,6 +101,11 @@ const GAPS = {
     lacks: 'its synchronous refusal names the call: a directory is EISDIR only to a call for bytes (notResident, the cutover)',
     shows: 'answered EISDIR',
   },
+  'a chain of renames whose first lands alone keeps the moved file at its last name [holder]': {
+    lacks: 'its own decisions keep a rename chain whose first rename a barrier landed alone (the cutover\'s own-state rows): '
+      + 'meanwhile a call that cannot wait sees the file the last rename replaced',
+    shows: 'the last name, once a barrier landed the first rename alone',
+  },
   'a directory the process may search again shows nothing stale while it is relisted [node]': {
     lacks: 'B2: a relist answers what is under its directory as unknown until it lands (the cutover\'s relist fence); '
       + 'meanwhile a call that cannot wait sees a false ENOENT for a name the session holds there',
