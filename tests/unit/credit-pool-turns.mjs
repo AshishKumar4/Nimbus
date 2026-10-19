@@ -145,6 +145,20 @@ const within = (promise, ms, what) => {
   console.log('  ✓ a turn left stays gone');
 }
 
+// ── a turn asked with a signal already aborted is refused, holding nothing ─
+{
+  const pool = new WeightedCreditPool(40 * MiB);
+  const abort = new AbortController();
+  abort.abort(new Error('gone before it asked'));
+  const turn = pool.queue(10 * MiB, abort.signal);
+  await assert.rejects(turn.woken(), { name: 'AbortError' });
+  assert.equal(turn.take(), null);
+  assert.equal(pool.stats.current, 0);
+  assert.equal(pool.stats.queued, 0);
+  turn.leave();
+  console.log('  ✓ a turn asked already aborted is refused');
+}
+
 // ── a turn never even looked at lapses too ───────────────────────────────
 {
   const pool = new WeightedCreditPool(40 * MiB);
