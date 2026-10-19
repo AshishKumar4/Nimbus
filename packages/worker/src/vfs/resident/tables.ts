@@ -19,7 +19,7 @@
  */
 
 import { RESIDENT_ROW_BYTES, namespaceRowBytes, residentBytes, utf8Length } from './cell-cost.js';
-import { arraySort, SafeList, SafeMap } from '@nimbus-sh/core/_shared/primordials.js';
+import { arraySort, dataDescriptor, reflectDefineProperty, SafeList, SafeMap } from '@nimbus-sh/core/_shared/primordials.js';
 
 /**
  * Cell kinds. A cell is one of the three things __vfsBundle has always held,
@@ -495,10 +495,13 @@ export function heapTables(): HeapTables {
       const numbers = new SafeList<number>();
       parts.forEach((_cell, part) => { numbers[numbers.length] = part; });
       arraySort(numbers, (a, b) => a - b);
+      // An ordinary array, as the SQL backing answers, each element defined
+      // on it: an append past its end would meet a setter a program put on
+      // Array.prototype.
       const out: ChunkRow[] = [];
       for (let i = 0; i < numbers.length; i++) {
         const cell = parts.get(numbers[i] ?? 0);
-        if (cell !== undefined) out[out.length] = copy(cell);
+        if (cell !== undefined) reflectDefineProperty(out, out.length, dataDescriptor(copy(cell), true, true, true));
       }
       return out;
     },

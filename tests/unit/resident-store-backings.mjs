@@ -258,4 +258,29 @@ for (let seed = 1; seed <= SEQUENCES; seed++) {
   assert.equal(t.nsCount(), 2);
 }
 
+// A large file's parts, read as module loading reads them, after a program
+// put setters on Array.prototype's first indexes: the heap's answer is built
+// without meeting them (design-guest-loader-primordials.md §3.5), and is an
+// ordinary array, as SQLite's is.
+{
+  const heap = heapTables();
+  heap.chunkAddText('home/user/big.js', 1, 'b');
+  heap.chunkAddText('home/user/big.js', 0, 'a');
+  const met = [];
+  const descriptors = [0, 1].map((index) => [index, Object.getOwnPropertyDescriptor(Array.prototype, index)]);
+  for (const index of [0, 1]) Object.defineProperty(Array.prototype, index, { configurable: true, set(value) { met.push([index, value]); } });
+  let parts;
+  try {
+    parts = heap.chunkParts('home/user/big.js');
+  } finally {
+    for (const [index, descriptor] of descriptors) {
+      if (descriptor) Object.defineProperty(Array.prototype, index, descriptor);
+      else delete Array.prototype[index];
+    }
+  }
+  assert.deepEqual(met, [], 'no setter on Array.prototype is met');
+  assert.ok(Array.isArray(parts) && Object.getPrototypeOf(parts) === Array.prototype);
+  assert.deepEqual(parts.map((part) => part.txt), ['a', 'b'], 'in part order');
+}
+
 console.log(`resident-store-backings: ${compared} states compared across ${SEQUENCES} sequences; the heap answers as SQLite does`);
