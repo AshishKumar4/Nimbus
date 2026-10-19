@@ -1487,15 +1487,40 @@ var __nimbusResidentModule = (() => {
     const unheld = new SafeSet();
     const cellSize = (cell) => typeof cell === "string" ? cell.length * 3 : residentBytes(cell).byteLength;
     const encodeText = TextEncoder.prototype.encode.bind(new TextEncoder());
-    const sameCell = (held2, incoming) => {
-      if (held2 === void 0 || typeof held2 === "object" && "error" in held2) return false;
-      if (typeof incoming === "object" && "error" in incoming) return false;
-      if (typeof held2 === "string" && typeof incoming === "string") return held2 === incoming;
-      const a = typeof held2 === "string" ? encodeText(held2) : residentBytes(held2);
-      const b = typeof incoming === "string" ? encodeText(incoming) : residentBytes(incoming);
+    const sameBytes = (a, b) => {
       if (a.byteLength !== b.byteLength) return false;
       for (let i = 0; i < a.byteLength; i++) if (a[i] !== b[i]) return false;
       return true;
+    };
+    const holds = (t, path, incoming) => {
+      if (typeof incoming === "object" && "error" in incoming) return false;
+      const found = t.fileHead(path);
+      if (found === void 0) {
+        const cell = held.get(path)?.cell;
+        if (cell === void 0 || typeof cell === "object" && "error" in cell) return false;
+        if (typeof cell === "string" && typeof incoming === "string") return cell === incoming;
+        return sameBytes(typeof cell === "string" ? encodeText(cell) : residentBytes(cell), typeof incoming === "string" ? encodeText(incoming) : residentBytes(incoming));
+      }
+      if (found.kind === RK_DENIED) return false;
+      if (found.kind === RK_TEXT && typeof incoming === "string") {
+        if (found.size !== incoming.length) return false;
+        let at2 = 0;
+        for (const row of t.chunkParts(path)) {
+          const text = row.txt ?? "";
+          if (incoming.slice(at2, at2 + text.length) !== text) return false;
+          at2 += text.length;
+        }
+        return at2 === incoming.length;
+      }
+      const bytes = typeof incoming === "string" ? encodeText(incoming) : residentBytes(incoming);
+      if (found.kind === RK_BINARY ? found.size !== bytes.byteLength : bytes.byteLength < found.size || bytes.byteLength > 3 * found.size) return false;
+      let at = 0;
+      for (const row of t.chunkParts(path)) {
+        const part = found.kind === RK_TEXT ? encodeText(row.txt ?? "") : residentBytes(row.bin);
+        if (!sameBytes(part, bytes.subarray(at, at + part.byteLength))) return false;
+        at += part.byteLength;
+      }
+      return at === bytes.byteLength;
     };
     const forgetHeld = (path) => {
       const cell = held.get(path);
@@ -1634,6 +1659,11 @@ var __nimbusResidentModule = (() => {
             continue;
           }
           if (entry.bytes != null && entry.stat && entry.stat.type === "file") {
+            if (isHeld && holds(t, path, residentBytes(entry.bytes))) {
+              t.fileSetRev(path, Number(entry.rev));
+              kept++;
+              continue;
+            }
             if (put(t, path, residentBytes(entry.bytes), Number(entry.rev), entry.contentKey)) pushed++;
             else if (isHeld) dropped.push(path);
             continue;
@@ -1650,9 +1680,6 @@ var __nimbusResidentModule = (() => {
     };
     const get = (path) => {
       if (observeRead !== null) observeRead(nsKey(path));
-      return cellOf(path);
-    };
-    const cellOf = (path) => {
       const found = head(path);
       if (found === void 0) {
         const cell = held.get(path);
@@ -1869,7 +1896,7 @@ var __nimbusResidentModule = (() => {
         if (dated !== void 0 && (dated === RK_OWN_WRITE || dated > rev)) return false;
         const heldCell = held.get(path);
         if (heldCell !== void 0 && (heldCell.rev === RK_OWN_WRITE || heldCell.rev > rev)) return false;
-        if (sameCell(cellOf(path), cell)) {
+        if (holds(t, path, cell)) {
           if (dated !== void 0) t.fileSetRev(path, rev);
           else if (heldCell !== void 0) heldCell.rev = rev;
           return true;
@@ -2517,10 +2544,8 @@ var __nimbusResidentModule = (() => {
         const read = answers[batch.length];
         const after = answers[batch.length + 1];
         const bytes = read && !read.error && read.bytes ? residentBytes(read.bytes) : null;
-        if (before.type === "file" && bytes !== null && bytes.byteLength === Number(before.size) && after && !after.error && after.stat && after.stat.type === "file" && Number(after.stat.ino) === Number(before.ino) && Number(after.stat.revision) === Number(before.revision) && await admission.ensureRoom(bytes.byteLength + RESIDENT_ROW_BYTES)) {
-          t.fileDelete(last);
-          t.chunkDelete(last);
-          if (cells.putChunk(t, last, 0, bytes)) cells.putHead(t, last, RK_BINARY, bytes.byteLength, 1, Number(before.revision) || 0, null);
+        if (before.type === "file" && bytes !== null && bytes.byteLength === Number(before.size) && after && !after.error && after.stat && after.stat.type === "file" && Number(after.stat.ino) === Number(before.ino) && Number(after.stat.revision) === Number(before.revision) && await admission.ensureRoom(residentCellCost(bytes))) {
+          cells.fill(last, bytes, Number(before.revision) || 0);
         }
       }
       return true;

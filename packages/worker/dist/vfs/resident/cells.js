@@ -38,26 +38,57 @@ export function createCells(coherence, admission, namespace, observeRead) {
     const cellSize = (cell) => (typeof cell === 'string' ? cell.length * 3 : residentBytes(cell).byteLength);
     // Bound at the store's creation, before the program runs: never a method it replaced.
     const encodeText = TextEncoder.prototype.encode.bind(new TextEncoder());
-    /**
-     * Whether `held` is `incoming`: the same bytes, held as text or as bytes
-     * (a sync fill holds text, an async read returns bytes). A denial is never
-     * a read's bytes.
-     */
-    const sameCell = (held, incoming) => {
-        if (held === undefined || typeof held === 'object' && 'error' in held)
-            return false;
-        if (typeof incoming === 'object' && 'error' in incoming)
-            return false;
-        if (typeof held === 'string' && typeof incoming === 'string')
-            return held === incoming;
-        const a = typeof held === 'string' ? encodeText(held) : residentBytes(held);
-        const b = typeof incoming === 'string' ? encodeText(incoming) : residentBytes(incoming);
+    const sameBytes = (a, b) => {
         if (a.byteLength !== b.byteLength)
             return false;
         for (let i = 0; i < a.byteLength; i++)
             if (a[i] !== b[i])
                 return false;
         return true;
+    };
+    /**
+     * Whether the store holds `incoming` for `path` already: the same bytes,
+     * held as text or as bytes (a sync fill holds text, an async read returns
+     * bytes), compared a stored chunk at a time. A denial is never a file's bytes.
+     */
+    const holds = (t, path, incoming) => {
+        if (typeof incoming === 'object' && 'error' in incoming)
+            return false;
+        const found = t.fileHead(path);
+        if (found === undefined) {
+            const cell = held.get(path)?.cell;
+            if (cell === undefined || typeof cell === 'object' && 'error' in cell)
+                return false;
+            if (typeof cell === 'string' && typeof incoming === 'string')
+                return cell === incoming;
+            return sameBytes(typeof cell === 'string' ? encodeText(cell) : residentBytes(cell), typeof incoming === 'string' ? encodeText(incoming) : residentBytes(incoming));
+        }
+        if (found.kind === RK_DENIED)
+            return false;
+        if (found.kind === RK_TEXT && typeof incoming === 'string') {
+            if (found.size !== incoming.length)
+                return false;
+            let at = 0;
+            for (const row of t.chunkParts(path)) {
+                const text = row.txt ?? '';
+                if (incoming.slice(at, at + text.length) !== text)
+                    return false;
+                at += text.length;
+            }
+            return at === incoming.length;
+        }
+        const bytes = typeof incoming === 'string' ? encodeText(incoming) : residentBytes(incoming);
+        // A text row's size is its UTF-16 length: each unit is 1 to 3 bytes of UTF-8.
+        if (found.kind === RK_BINARY ? found.size !== bytes.byteLength : bytes.byteLength < found.size || bytes.byteLength > 3 * found.size)
+            return false;
+        let at = 0;
+        for (const row of t.chunkParts(path)) {
+            const part = found.kind === RK_TEXT ? encodeText(row.txt ?? '') : residentBytes(row.bin);
+            if (!sameBytes(part, bytes.subarray(at, at + part.byteLength)))
+                return false;
+            at += part.byteLength;
+        }
+        return at === bytes.byteLength;
     };
     const forgetHeld = (path) => {
         const cell = held.get(path);
@@ -266,6 +297,12 @@ export function createCells(coherence, admission, namespace, observeRead) {
                 // Pushed content: the file's bytes at the answer's revision, so dating
                 // them at the path's own revision cannot be newer than they are.
                 if (entry.bytes != null && entry.stat && entry.stat.type === 'file') {
+                    // Bytes it holds already (no content key to say so): dated, never rewritten and lost at the cap.
+                    if (isHeld && holds(t, path, residentBytes(entry.bytes))) {
+                        t.fileSetRev(path, Number(entry.rev));
+                        kept++;
+                        continue;
+                    }
                     if (put(t, path, residentBytes(entry.bytes), Number(entry.rev), entry.contentKey))
                         pushed++;
                     else if (isHeld)
@@ -297,10 +334,6 @@ export function createCells(coherence, admission, namespace, observeRead) {
     const get = (path) => {
         if (observeRead !== null)
             observeRead(nsKey(path));
-        return cellOf(path);
-    };
-    /** The cell held for `path`, as `get` reads it, unobserved. */
-    const cellOf = (path) => {
         const found = head(path);
         if (found === undefined) {
             const cell = held.get(path);
@@ -543,7 +576,7 @@ export function createCells(coherence, admission, namespace, observeRead) {
             // Bytes the store holds already are its own: the read dates them, and
             // rewriting them could only lose them, refused at the store's cap (a dev
             // server rereads its sources asynchronously, every one it serves).
-            if (sameCell(cellOf(path), cell)) {
+            if (holds(t, path, cell)) {
                 if (dated !== undefined)
                     t.fileSetRev(path, rev);
                 else if (heldCell !== undefined)
