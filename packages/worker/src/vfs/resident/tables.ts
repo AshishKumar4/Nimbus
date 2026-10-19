@@ -19,7 +19,7 @@
  */
 
 import { RESIDENT_ROW_BYTES, namespaceRowBytes, residentBytes, utf8Length } from './cell-cost.js';
-import { arraySort, dataDescriptor, reflectDefineProperty, SafeList, SafeMap } from '@nimbus-sh/core/_shared/primordials.js';
+import { arraySort, dataDescriptor, reflectDefineProperty, SafeList, SafeMap, SafeSet } from '@nimbus-sh/core/_shared/primordials.js';
 
 /**
  * Cell kinds. A cell is one of the three things __vfsBundle has always held,
@@ -347,11 +347,11 @@ export function heapTables(): HeapTables {
   // here after a program may have replaced Map.prototype.get.
   const files = new SafeMap<string, HeapFile>();
   const chunks = new SafeMap<string, SafeMap<number, HeapChunk>>();
-  const meta = new Map<string, string>();
+  const meta = new SafeMap<string, string>();
   const ns = new SafeMap<string, SafeMap<string, NsRow>>();
-  const byKey = new Map<string, Set<string>>();
+  const byKey = new SafeMap<string, SafeSet<string>>();
   // Pages by "path\0rev\0part".
-  const pages = new Map<string, { path: string; rev: number; part: number; bin: Uint8Array; used: number }>();
+  const pages = new SafeMap<string, { path: string; rev: number; part: number; bin: Uint8Array; used: number }>();
   const pageKey = (path: string, rev: number, part: number): string => path + '\u0000' + rev + '\u0000' + part;
   let sorted: string[] | null = null;
   let used = 0;
@@ -466,7 +466,7 @@ export function heapTables(): HeapTables {
       if (had === undefined) { sorted = null; used += RESIDENT_ROW_BYTES; } else unkey(path, had);
       const row: HeapFile = { kind: Number(kind), size: Number(size), chunks: Number(chunkCount), rev: Number(rev), ckey: ckey == null ? null : String(ckey) };
       files.set(path, row);
-      if (row.ckey !== null) { let set = byKey.get(row.ckey); if (!set) { set = new Set(); byKey.set(row.ckey, set); } set.add(path); }
+      if (row.ckey !== null) { let set = byKey.get(row.ckey); if (!set) { set = new SafeSet(); byKey.set(row.ckey, set); } set.add(path); }
     },
     fileSetRev(path, rev) { const row = files.get(path); if (row !== undefined) row.rev = Number(rev); },
     fileStampOwn(path, rev) { const row = files.get(path); if (row !== undefined && row.rev === RK_OWN_WRITE) row.rev = Number(rev); },
