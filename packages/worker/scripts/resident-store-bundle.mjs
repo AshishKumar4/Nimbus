@@ -14,24 +14,18 @@
  * own, which would run later and replace Function.prototype.toString again.
  */
 import { build } from 'esbuild';
-import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { FACET_GLOBALS, freeNames } from './free-names.mjs';
+import { moduleBody } from '../../../scripts/lib/compiled-bodies.mjs';
 
 export const RESIDENT_STORE_GLOBAL = '__nimbusResidentModule';
 /** The launch's captures, in scope where the store is evaluated (core _shared/commonjs-cell.ts). */
 export const LAUNCH_CAPTURES = '__nimbusLaunchCaptures';
 
-/** Every name core's _shared/primordials.ts exports, as its source declares them. */
-function primordialNames(path) {
-  const source = readFileSync(path, 'utf8');
-  const names = [...source.matchAll(/^export (?:const|function|class|let) (\w+)/gm)].map((match) => match[1]);
-  for (const block of source.matchAll(/^export \{([^}]*)\};/gm)) {
-    for (const part of block[1].split(',')) {
-      const name = part.trim().split(/\s+as\s+/).pop();
-      if (name) names.push(name);
-    }
-  }
+/** Every name core's _shared/primordials.ts exports: its module bundled alone, its exports read from the syntax tree. */
+async function primordialNames(path) {
+  const result = await build({ entryPoints: [path], bundle: true, format: 'esm', platform: 'neutral', target: 'esnext', write: false, logLevel: 'warning' });
+  const names = moduleBody(result.outputFiles[0].text).exported.map(([name]) => name);
   if (names.length === 0) throw new Error(`[resident-store-bundle] no exports read from ${path}`);
   return names;
 }
@@ -40,7 +34,7 @@ function primordialNames(path) {
 export async function bundleResidentStore(root) {
   const core = join(root, '..', 'core');
   const primordials = join(core, 'src', '_shared', 'primordials');
-  const names = primordialNames(`${primordials}.ts`);
+  const names = await primordialNames(`${primordials}.ts`);
   // Core's module, by whichever of its spellings an import resolves to: its
   // package name (`@nimbus-sh/core/_shared/primordials.js`), or a relative
   // path into its source or its built dist.
