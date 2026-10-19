@@ -154,4 +154,21 @@ for (const code of [1000, 1005, 1006, 'error']) {
     assert.equal(record.watchers.size, 0, 'duplicate close/error is harmless');
   } finally { lease.release(); await process.release(); }
 }
+// A cancel of a process an earlier life of the peer hosted names the facet
+// it ran in. That name is given out again from 0 after the peer restarted:
+// a live process holding it now is not the cancelled one, and keeps running.
+{
+  const t = setup(), host = t.open(), process = await host.open(t.params);
+  await process.started; await turns();
+  const placement = await peerPlacement(t.ctx, t.params.pid);
+  const peer = t.peers.get(placement.peerName);
+  const name = (await peer.peerHost.inspect(placement.workerKey)).facet;
+  const earlier = 'nimbus-process:owner:earlier-life';
+  await peer.ctx.storage.put(`hosting:${earlier}`, { coordinatorDoId: 'owner', workerKey: earlier, capability: 'gone', incarnation: 'an-earlier-life', facet: name });
+  assert.deepEqual(await peer.peerHost.cancel(earlier), { cancelled: true });
+  assert.ok(t.world.liveFacets().includes(name), `the process holding ${name} now still runs`);
+  assert.equal(await (await process.handleHttpRequest(new Request('http://process/'), settledScope())).text(), 'ok');
+  await process.release();
+  assert.ok(!t.world.liveFacets().includes(name), 'and its own release ends it');
+}
 console.log('peer-open-ownership: cancellation fences delayed opens and only live calls own stubs');
