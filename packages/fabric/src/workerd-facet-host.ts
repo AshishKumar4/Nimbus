@@ -346,11 +346,6 @@ function sessionLedger(ctx: DurableObjectState): StorageLedger | null {
   return sql ? new StorageLedger(sql) : null;
 }
 
-/** A process's hold on its facet's name, made by its spawn: whose it is (the process's worker key). */
-interface FacetNameHold {
-  readonly workerKey: string;
-}
-
 /**
  * The hold each facet name was last given, per facet container: the
  * platform's `ctx.facets`, shared by every incarnation of an object that the
@@ -359,22 +354,12 @@ interface FacetNameHold {
  * newer process has been given the name (a later incarnation's, or a
  * relaunch of the same application), the facet under it is that process's.
  */
-const nameHolders = new WeakMap<FacetContainer, Map<string, FacetNameHold>>();
+const nameHolders = new WeakMap<FacetContainer, Map<string, object>>();
 
-function holdersOf(facets: FacetContainer): Map<string, FacetNameHold> {
+function holdersOf(facets: FacetContainer): Map<string, object> {
   let holders = nameHolders.get(facets);
   if (!holders) nameHolders.set(facets, holders = new Map());
   return holders;
-}
-
-/**
- * Whether a process other than `workerKey`'s holds `name`: then its facet is
- * that process's. The process's own hold, which an ended incarnation never
- * released, is its own facet still.
- */
-export function facetNameHeldByAnother(ctx: DurableObjectState, name: string, workerKey: string): boolean {
-  const hold = holdersOf(facetContainer(ctx)).get(name);
-  return hold !== undefined && hold.workerKey !== workerKey;
 }
 
 const facetNames = new WeakMap<object, Map<number, string>>();
@@ -538,7 +523,7 @@ function spawnResident(
   const book = slotBook(ctx);
   const ledger = sessionLedger(ctx);
   // This process's hold on `name`, until its release or a newer process's spawn.
-  const holding: FacetNameHold = { workerKey: params.workerKey };
+  const holding = {};
   const holders = holdersOf(facets);
   const holds = (): boolean => holders.get(name) === holding;
   // A warm worker keeps the SUPERVISOR binding it was built with, and the
