@@ -259,3 +259,9 @@ export function safeGenerator(fn) {
 export function ownField(object, key) {
     return objectHasOwn(object, key) ? reflectGet(object, key) : undefined;
 }
+// The loader glue's own collections and objects (node-shims L3; design-guest-loader-primordials.md §8).
+/** Map.prototype.get of a Map the glue did not make (the launch's tables on globalThis). */
+export const mapGet = uncurryThis(Map.prototype.get);
+export const MapConstructor = Map;
+export const objectPreventExtensions = Object.preventExtensions;
+export const symbolToStringTag = Symbol.toStringTag;

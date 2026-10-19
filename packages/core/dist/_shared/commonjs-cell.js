@@ -991,8 +991,9 @@ function __nimbusWithCodeCells(bundle) {
   return bundle;
 }
 // ── Runtime code (see RUNTIME CODE in commonjs-cell.ts) ──
-const __nimbusRuntimeKeys = new Set(__NIMBUS_RUNTIME_CODE);
-const __nimbusRuntimeLedger = new Map();
+// The launch's SafeSet and SafeMap: compiling a program's code asks these after it may have replaced Set's and Map's methods.
+const __nimbusRuntimeKeys = new __nimbusLaunchCaptures.SafeSet(__NIMBUS_RUNTIME_CODE);
+const __nimbusRuntimeLedger = new __nimbusLaunchCaptures.SafeMap();
 let __nimbusRuntimeLedgerBytes = 0;
 let __nimbusRuntimeCodeReporter = null;
 let __nimbusCodeNotifyQueued = false;

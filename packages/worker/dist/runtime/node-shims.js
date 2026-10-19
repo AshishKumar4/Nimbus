@@ -855,7 +855,28 @@ const {
   stringSlice: __pathSlice, stringIndexOf: __pathIndexOf, stringStartsWith: __pathStartsWith,
   stringCharCodeAt: __pathCharCodeAt, arrayJoin: __pathJoin, SafeList: __PathList, SafeMap: __NimbusSafeMap,
   decodeURIComponentOf: __pathDecodeURIComponent, stringLastIndexOf: __pathLastIndexOf, stringToLowerCase: __pathToLowerCase,
+  stringIncludes: __pathIncludes, stringEndsWith: __pathEndsWith, SafeSet: __NimbusSafeSet, SafeWeakSet: __NimbusSafeWeakSet,
+  objectCreate: __nimbusObjectCreate, reflectDefineProperty: __nimbusDefine, dataDescriptor: __nimbusData,
+  objectFreeze: __nimbusFreeze, objectPreventExtensions: __nimbusPreventExtensions, objectKeys: __nimbusKeys,
+  arrayIsArray: __nimbusIsArray, arrayIndexOf: __nimbusIndexOf, arraySort: __nimbusSort, JSONParse: __nimbusJsonParse,
+  mapGet: __nimbusMapGet, MapConstructor: __NimbusMap, PromiseConstructor: __NimbusPromise,
+  PromiseResolve: __nimbusPromiseResolve, PromisePrototypeThen: __nimbusPromiseThen, reflectApply: __nimbusApply,
 } = __nimbusPrimordials;
+/** A SafeSet's or a SafeMap's members (keys), in order, as a SafeList: never their iterator. */
+function __nimbusListOf(collection) {
+  const out = new __PathList();
+  collection.forEach((_value, key) => { out[out.length] = key; });
+  return out;
+}
+/** Each promise of \`list\` settled, however it settles: Promise.allSettled, without the array iterator. */
+function __nimbusSettled(list) {
+  return new __NimbusPromise((resolve) => {
+    let left = list.length;
+    if (left === 0) { resolve(); return; }
+    const one = () => { if (--left === 0) resolve(); };
+    for (let i = 0; i < list.length; i++) __nimbusApply(__nimbusPromiseThen, __nimbusApply(__nimbusPromiseResolve, __NimbusPromise, [list[i]]), [one, one]);
+  });
+}
 /** \`text\`'s names, what lies between its slashes, empty ones dropped. */
 function __vfsNames(text) {
   const out = new __PathList();
@@ -1805,7 +1826,7 @@ const __fsMod = (() => {
       // Asked for already: a speculation waits on that same fill, and reads
       // again after it as the one that issued it does.
       const pending = _repairOf.get(k);
-      if (speculation && pending) { speculation.repairs.push(pending); speculation.issued.add(k); }
+      if (speculation && pending) { speculation.repairs[speculation.repairs.length] = pending; speculation.issued.add(k); }
       return;
     }
     // A speculation's fetch is charged to its quota before it is issued, and
@@ -1827,7 +1848,7 @@ const __fsMod = (() => {
       });
       _repairs.push(repair);
       _repairOf.set(k, repair);
-      if (speculation) { speculation.repairs.push(repair); speculation.issued.add(k); }
+      if (speculation) { speculation.repairs[speculation.repairs.length] = repair; speculation.issued.add(k); }
     } catch { /* the fill is speculative */ }
   }
 
@@ -8293,12 +8314,12 @@ const __nimbusDecodeStringLiteral = ${DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE};
   // Each module's origin (THE WRAPPER): import() against its URL, and a
   // Function of its own whose code keeps the origin. One per URL, so a
   // module's Function is one object for as long as the process runs.
-  const origins = new Map();
+  const origins = new __NimbusSafeMap();
   globalThis.__nimbusCodeOrigin = (importer) => {
     let origin = origins.get(importer);
     if (origin === undefined) {
       const Bound = routedConstructor("function", nativeFunction, () => origin);
-      origin = Object.freeze({ import: (specifier, options) => globalThis.__nimbusDynamicImport(importer, specifier, options), Function: Bound });
+      origin = __nimbusFreeze({ import: (specifier, options) => globalThis.__nimbusDynamicImport(importer, specifier, options), Function: Bound });
       origins.set(importer, origin);
     }
     return origin;
@@ -12566,26 +12587,27 @@ const __requireResolver = createRequireResolver({
 // name the file, without the URL's query or fragment.
 // \`main\`: whether the module is the program's entry, as Node 22's import.meta.main.
 function __nimbusFileImportMeta(filename, url = builtins.url.pathToFileURL(filename).href, main = false) {
-  return Object.assign(Object.create(null), {
-    dirname: __pathMod.dirname(filename),
-    filename,
-    main,
-    resolve: (specifier) => globalThis.__nimbusImportMetaResolve(specifier, url),
-    url,
-  });
+  // Made over nothing, so each assignment meets no setter a program put on Object.prototype.
+  const meta = __nimbusObjectCreate(null);
+  meta.dirname = __pathMod.dirname(filename);
+  meta.filename = filename;
+  meta.main = main;
+  meta.resolve = (specifier) => globalThis.__nimbusImportMetaResolve(specifier, url);
+  meta.url = url;
+  return meta;
 }
 
 // Errors a known Workers-incompatible package's load threw, advised once.
-const __nimbusAdvised = new WeakSet();
+const __nimbusAdvised = new __NimbusSafeWeakSet();
 // The CommonJS modules whose bodies are running now (Node's kIsExecuting):
 // an ES module that imports one is in a require(esm) cycle.
-const __nimbusExecutingCommonJs = new WeakSet();
+const __nimbusExecutingCommonJs = new __NimbusSafeWeakSet();
 // \`required\`: loaded by a require() call, not by an import of a CommonJS or
 // JSON module (an import of an ES module is its graph's: __nimbusGraphRecord).
 // A staged ES module is the registry's (__nimbusEsmRequire): this loads it
 // only when the interpreter evaluates it instead.
 function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = true, parent = undefined) {
-  const cacheKey = evaluationKey === resolvedPath ? "/" + resolvedPath.replace(/^\\/+/, "") : evaluationKey;
+  const cacheKey = evaluationKey === resolvedPath ? "/" + __vfsKey(resolvedPath) : evaluationKey;
   // A CommonJS module an import read the syntax of, not yet run: run now, once (__nimbusCommonJsPending).
   const pending = __nimbusCommonJsPending.get(cacheKey);
   if (pending !== undefined) {
@@ -12595,7 +12617,7 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
   // An ES module its graph has a record of: that record's, as require() evaluates one (require(esm)).
   const record = __nimbusGraphRecords.get(cacheKey);
   if (record !== undefined && record.state !== undefined) {
-    if (typeof __resident !== "undefined" && __resident.observeRead !== null) __resident.observeRead(String(resolvedPath).replace(/^\\/+/, ""));
+    if (typeof __resident !== "undefined" && __resident.observeRead !== null) __resident.observeRead(__vfsKey(String(resolvedPath)));
     return __nimbusRequireRecord(record, parent);
   }
   const loaded = __nimbusPrepareModule(resolvedPath, evaluationKey, required, parent, false);
@@ -12607,16 +12629,16 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
 // The CommonJS modules an import read the syntax of (a typeless .js) and has
 // not run yet, by cacheKey: each runs once, where its graph evaluates it or
 // where a require() of it comes first.
-const __nimbusCommonJsPending = new Map();
+const __nimbusCommonJsPending = new __NimbusSafeMap();
 // What loading the file at \`resolvedPath\` as \`evaluationKey\` finds: its
 // exports where it is loaded already, or JSON (\`exports\`); else what to
 // evaluate it from (\`state\`): its Module, in require.cache, or the ES
 // loader's for an import of an ES module (\`esModule\`), its import.meta, and
 // its cell compiled, nothing of it run.
 function __nimbusPrepareModule(resolvedPath, evaluationKey, required, parent, esModule) {
-  if (typeof __resident !== "undefined" && __resident.observeRead !== null) __resident.observeRead(String(resolvedPath).replace(/^\\/+/, ""));
-  const filename = "/" + resolvedPath.replace(/^\\/+/, "");
-  const normalizedPath = filename.slice(1);
+  if (typeof __resident !== "undefined" && __resident.observeRead !== null) __resident.observeRead(__vfsKey(String(resolvedPath)));
+  const filename = "/" + __vfsKey(resolvedPath);
+  const normalizedPath = __pathSlice(filename, 1);
   // A query's or fragment's import is a job of its own, kept by its URL.
   const cacheKey = evaluationKey === resolvedPath ? filename : evaluationKey;
   // A staged ES module: its namespace once the registry evaluated it, else
@@ -12647,23 +12669,27 @@ function __nimbusPrepareModule(resolvedPath, evaluationKey, required, parent, es
   mod.paths = __NodeModule._nodeModulePaths(mod.path);
   // An imported JSON file is require()'s too, as Node's JSON translator
   // keeps it; a query's or a fragment's is its own.
-  if (esModule && !required && !(resolvedPath.endsWith(".json") && cacheKey === filename)) __nimbusEsmInstances.set(cacheKey, mod);
+  if (esModule && !required && !(__pathEndsWith(resolvedPath, ".json") && cacheKey === filename)) __nimbusEsmInstances.set(cacheKey, mod);
   else __NodeModule._cache[cacheKey] = mod;
   const unload = () => {
     if (__NodeModule._cache[cacheKey] === mod) delete __NodeModule._cache[cacheKey];
     if (__nimbusEsmInstances.get(cacheKey) === mod) __nimbusEsmInstances.delete(cacheKey);
     const siblings = parent?.children;
-    const at = Array.isArray(siblings) ? siblings.indexOf(mod) : -1;
-    if (at !== -1) siblings.splice(at, 1);
+    const at = __nimbusIsArray(siblings) ? __nimbusIndexOf(siblings, mod) : -1;
+    if (at !== -1) {
+      // splice(at, 1), by its own elements: no method or setter of Array.prototype.
+      for (let i = at; i < siblings.length - 1; i++) siblings[i] = siblings[i + 1];
+      siblings.length--;
+    }
   };
 
   // JSON (Module._extensions[".json"])
-  if (resolvedPath.endsWith(".json")) {
+  if (__pathEndsWith(resolvedPath, ".json")) {
     const code = __readFileOr(resolvedPath, null);
     try {
       if (code === null) throw new Error("Cannot read module: " + resolvedPath);
       try {
-        mod.exports = JSON.parse(code.charCodeAt(0) === 0xFEFF ? code.slice(1) : code);
+        mod.exports = __nimbusJsonParse(__pathCharCodeAt(code, 0) === 0xFEFF ? __pathSlice(code, 1) : code);
       } catch (error) {
         error.message = filename + ": " + error.message;
         throw error;
@@ -12687,9 +12713,9 @@ function __nimbusPrepareModule(resolvedPath, evaluationKey, required, parent, es
   // recursive __loadModule.
   const __prevModulePath = globalThis.__currentModulePath;
   globalThis.__currentModulePath = resolvedPath;
-  const moduleUrl = evaluationKey.startsWith("file:")
+  const moduleUrl = __pathStartsWith(evaluationKey, "file:")
     ? evaluationKey : builtins.url.pathToFileURL("/" + resolvedPath).href;
-  Object.defineProperty(mod, "__nimbusImportMeta", { value: __nimbusFileImportMeta("/" + resolvedPath, moduleUrl) });
+  __nimbusDefine(mod, "__nimbusImportMeta", __nimbusData(__nimbusFileImportMeta("/" + resolvedPath, moduleUrl), false, false, false));
   try {
     __nimbusLoadsTypeScript(normalizedPath);
     let cell = esmId === -1 ? __nimbusModuleCell(normalizedPath) : null;
@@ -12707,7 +12733,7 @@ function __nimbusPrepareModule(resolvedPath, evaluationKey, required, parent, es
       // content, this text wherever it was written (a fresh name each run
       // included) — core/_shared/commonjs-cell.ts, RUNTIME CODE. A content
       // key the launch already carries answers now.
-      (globalThis.__nimbusModuleMisses ??= new Set()).add(normalizedPath);
+      (globalThis.__nimbusModuleMisses ??= new __NimbusSafeSet()).add(normalizedPath);
       if (typeof __nimbusNotifyRuntimeCode === "function") __nimbusNotifyRuntimeCode();
       const text = __readFileOr(resolvedPath, null);
       if (text === null) throw new Error("Cannot load module '" + resolvedPath + "': it was not in this launch's module map; the next launch of the same command stages it.");
@@ -12829,19 +12855,30 @@ function __nimbusCjsResolve(specifier, parentPath) {
     return found ? "/" + String(found).replace(/^\\/+/, "") : null;
   } catch { return null; }
 }
-const __esmNamespaces = new Map();
+const __esmNamespaces = new __NimbusSafeMap();
 /** A module namespace: its names sorted, read through to the exports. */
 function __esmNamespaceOf(names, read) {
-  const ns = Object.create(null);
-  for (const name of [...names].sort()) {
-    Object.defineProperty(ns, name, { enumerable: true, get: () => read(name) });
+  const ns = __nimbusObjectCreate(null);
+  // \`names\`: a Set (a SafeSet's own forEach) or a list, in code-unit order as sort() orders strings.
+  const sorted = new __PathList();
+  if (__nimbusIsArray(names)) for (let i = 0; i < names.length; i++) sorted[sorted.length] = names[i];
+  else names.forEach((name) => { sorted[sorted.length] = name; });
+  __nimbusSort(sorted, (a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  for (let i = 0; i < sorted.length; i++) {
+    const name = sorted[i];
+    const getter = __nimbusObjectCreate(null);
+    getter.enumerable = true;
+    getter.get = () => read(name);
+    __nimbusDefine(ns, name, getter);
   }
-  Object.defineProperty(ns, Symbol.toStringTag, { value: "Module" });
-  return Object.preventExtensions(ns);
+  __nimbusDefine(ns, __nimbusPrimordials.symbolToStringTag, __nimbusData("Module", false, false, false));
+  return __nimbusPreventExtensions(ns);
 }
 // A builtin's (or a staged N-API binding's) namespace: \`value\` as default, its own names read through.
 function __nimbusObjectNamespace(value) {
-  const names = new Set(value && (typeof value === "object" || typeof value === "function") ? Object.keys(value) : []);
+  const names = new __NimbusSafeSet();
+  const keys = value && (typeof value === "object" || typeof value === "function") ? __nimbusKeys(value) : [];
+  for (let i = 0; i < keys.length; i++) names.add(keys[i]);
   names.add("default");
   return __esmNamespaceOf(names, (name) => name === "default" ? value : value[name]);
 }
@@ -12854,14 +12891,17 @@ function __nimbusCommonJsNames(key) {
 // their values once it has: JSON's value as default; CommonJS's
 // module.exports as default (whatever its __esModule) and each lexed name's
 // own value then (createCJSModuleWrap). Filled, it is import()'s too.
-const __nimbusTranslations = new Map();
+const __nimbusTranslations = new __NimbusSafeMap();
 function __nimbusTranslation(resolution) {
   const known = __nimbusTranslations.get(resolution.url);
   if (known !== undefined) return known;
-  const names = resolution.format === "json" ? [] : __nimbusCommonJsNames(resolution.path.replace(/^\\/+/, ""));
+  const names = resolution.format === "json" ? [] : __nimbusCommonJsNames(__vfsKey(resolution.path));
+  const known = new __NimbusSafeSet();
+  known.add("default");
+  for (let i = 0; i < names.length; i++) known.add(names[i]);
   let read = () => undefined;
   const translation = {
-    namespace: __esmNamespaceOf(new Set(["default", ...names]), (name) => read(name)),
+    namespace: __esmNamespaceOf(known, (name) => read(name)),
     filled: false,
     fill(exports) {
       if (translation.filled) return;
@@ -12869,9 +12909,10 @@ function __nimbusTranslation(resolution) {
       if (resolution.format === "json") {
         read = () => exports;
       } else {
-        const values = new Map();
-        for (const name of names) {
-          if (name === "default" || !Object.prototype.hasOwnProperty.call(exports, name)) continue;
+        const values = new __NimbusSafeMap();
+        for (let i = 0; i < names.length; i++) {
+          const name = names[i];
+          if (name === "default" || !__nimbusPrimordials.objectHasOwn(exports, name)) continue;
           // A getter may throw: the name is then undefined, as Node's.
           try { values.set(name, exports[name]); } catch {}
         }
@@ -12936,8 +12977,11 @@ function __nimbusEsmName(id) {
 function __nimbusEsmId(kind, key) {
   if (__nimbusEsm.table.length === 0) return -1;
   if (__nimbusEsmIds === null) {
-    __nimbusEsmIds = new Map();
-    __nimbusEsm.table.forEach((row, id) => { __nimbusEsmIds.set(row[0] + ":" + row[1], id); });
+    __nimbusEsmIds = new __NimbusSafeMap();
+    for (let id = 0; id < __nimbusEsm.table.length; id++) {
+      const row = __nimbusEsm.table[id];
+      if (row !== undefined) __nimbusEsmIds.set(row[0] + ":" + row[1], id);
+    }
   }
   return __nimbusEsmIds.get(kind + ":" + key) ?? -1;
 }
@@ -12968,14 +13012,14 @@ let __nimbusEsmAdoptions = 0;
 // The ES modules the interpreter evaluated for an import (a query's or a
 // fragment's instance, an adopted module, a file outside the map), by
 // evaluation key: the ES loader's, never require.cache's until required.
-const __nimbusEsmInstances = new Map();
+const __nimbusEsmInstances = new __NimbusSafeMap();
 // The batch the meta instances evaluating now join: one evaluation's, which
 // runs every meta instance it links in one synchronous turn, and ends with it.
 let __nimbusEsmOpenBatch = null;
 // How many evaluations have opened: an import() knows which began after it.
 let __nimbusEsmBatches = 0;
 // What each import() in flight resolves once its graph has loaded (__nimbusEsmImport).
-const __nimbusEsmLoading = new Set();
+const __nimbusEsmLoading = new __NimbusSafeSet();
 const __nimbusEsmResolved = Promise.resolve();
 const __nimbusEsmThen = Promise.prototype.then;
 // A builtin facade's reads again of its builtin's names (module.syncBuiltinESMExports).
@@ -12998,7 +13042,7 @@ function __nimbusEsmEnter(metaUrl) {
     const loading = [...__nimbusEsmLoading];
     __nimbusEsmLoading.clear();
     for (const loaded of loading) loaded();
-    __nimbusEsmOpenBatch = { running: new Set(), stop: null, thrower: null, seq: ++__nimbusEsmBatches };
+    __nimbusEsmOpenBatch = { running: new __NimbusSafeSet(), stop: null, thrower: null, seq: ++__nimbusEsmBatches };
     __nimbusReflectApply(__nimbusEsmThen, __nimbusEsmResolved, [() => { __nimbusEsmOpenBatch = null; }]);
   }
   record.batch = __nimbusEsmOpenBatch;
@@ -13060,7 +13104,7 @@ function __nimbusEsmGraphAwaits(id) {
   return __nimbusEsmAwaits[id] ??= __nimbusEsmGraphWalksAwait(id);
 }
 function __nimbusEsmGraphWalksAwait(id) {
-  const seen = new Set();
+  const seen = new __NimbusSafeSet();
   const stack = [id];
   while (stack.length > 0) {
     const at = stack.pop();
@@ -13087,7 +13131,7 @@ function __nimbusEsmSourceText(id) {
 // again. (A module Nimbus stopped fails the registry's evaluation with
 // Nimbus's own error, which hands the module to the interpreter then.)
 function __nimbusEsmTainted(id) {
-  const seen = new Set();
+  const seen = new __NimbusSafeSet();
   const stack = [id];
   while (stack.length > 0) {
     const at = stack.pop();
@@ -13177,7 +13221,7 @@ const { importCallArguments: __nimbusImportCallArguments, dataModule: __nimbusDa
 // built-ins it took then.
 const __nimbusGraph = ${ESM_GRAPH_SOURCE};
 // The package.json files Node's loader has warned are typeless (MODULE_TYPELESS_PACKAGE_JSON).
-const __nimbusTypelessWarned = new Set();
+const __nimbusTypelessWarned = new __NimbusSafeSet();
 // Node's warning of an imported .js that is an ES module by its syntax alone
 // under \`pjsonPath\`, a package.json with no "type" (get_format.js
 // warnTypelessPackageJsonFile): once per package.json, never under node_modules.
@@ -13193,7 +13237,8 @@ function __nimbusWarnTypeless(path, pjsonPath) {
 // first such module it loads: \`id\`'s graph, in the order a load reaches
 // it (each module, then the modules it imports, level by level).
 function __nimbusEsmWarnTypeless(id) {
-  const seen = new Set([id]);
+  const seen = new __NimbusSafeSet();
+  seen.add(id);
   const queue = [id];
   for (let at = 0; at < queue.length; at++) {
     const row = __nimbusEsm.table[queue[at]];
@@ -13298,7 +13343,7 @@ async function __nimbusEsmImport(id, entry = false) {
 // by its record's key: the failure stays, as Node's loader keeps a
 // ModuleJob that did not link, and a later import of it rejects with it,
 // whatever the program wrote since. import()'s alone: require() retries.
-const __nimbusImportFailures = new Map();
+const __nimbusImportFailures = new __NimbusSafeMap();
 async function __nimbusEsmInterpret(id, linked) {
   const key = __nimbusEsm.table[id][1];
   const url = __nimbusEsmUrl("/" + key);
@@ -13351,7 +13396,7 @@ function __nimbusEsmLinkError(error, id) {
 }
 // The unevaluated modules of \`id\`'s graph, in link order.
 function __nimbusEsmPending(id) {
-  const seen = new Set();
+  const seen = new __NimbusSafeSet();
   const order = [];
   const visit = (at) => {
     if (at < 0 || seen.has(at)) return;
@@ -13447,7 +13492,7 @@ if (typeof __nimbusEsmHost !== "undefined" && __nimbusEsmHost !== null) __nimbus
 // query's or fragment's URL), a data: module by its URL, a CommonJS or JSON
 // module's translation by its URL, a builtin by "node:" and its name, a
 // staged module the registry evaluates by "row:" and its id.
-const __nimbusGraphRecords = new Map();
+const __nimbusGraphRecords = new __NimbusSafeMap();
 // The late link (core runtime/esm-late-link.ts), loaded the first time a late graph is linked.
 let __nimbusLateModule = null;
 const __nimbusLateOf = () => __nimbusLateModule ??= __nimbusRegistryRequire("./${RUNTIME_ESM_LATE_MODULE}");
@@ -13585,7 +13630,7 @@ function __nimbusDecideStaged(placeholder, first) {
 // that order: evaluated before the graph's evaluation, they run just where
 // Node's would, though the registry evaluates asynchronously.
 function __nimbusPlanGraph(root, sync) {
-  const visited = new Set();
+  const visited = new __NimbusSafeSet();
   const first = [];
   let ran = false;
   const visit = (record) => {
@@ -13616,7 +13661,7 @@ function __nimbusAdoptedRecord(id, key, parent = undefined) {
 // Whether staged module \`id\`'s graph reaches a module staging handed on (the
 // registry cannot link it: the interpreter adopts it where it is imported).
 function __nimbusEsmHandsOn(id) {
-  const seen = new Set();
+  const seen = new __NimbusSafeSet();
   const stack = [id];
   while (stack.length > 0) {
     const at = stack.pop();
@@ -13670,7 +13715,7 @@ function __nimbusInterpretedRecord(state) {
   const parentUrl = state.data ? moduleUrl : builtins.url.pathToFileURL(state.filename).href;
   const requests = __nimbusModuleRequestsOf(cell);
   // Each request's index in \`requested\`, by its specifier and type (the plan may replace a staged module's placeholder there).
-  const targets = new Map();
+  const targets = new __NimbusSafeMap();
   let requested = null;
   let execute = null;
   let namespace = null;
@@ -13839,8 +13884,8 @@ async function __nimbusImportRecord(record, url) {
 // module does not export rejects before any body runs, in Node's words),
 // then its graph's.
 async function __nimbusImportGraph(resolution) {
-  const key = resolution.format === "data" ? resolution.url : resolution.path.replace(/^\\/+/, "");
-  const recordKey = resolution.format === "data" || resolution.url.includes("?") || resolution.url.includes("#") ? resolution.url : "/" + key;
+  const key = resolution.format === "data" ? resolution.url : __vfsKey(resolution.path);
+  const recordKey = resolution.format === "data" || __pathIncludes(resolution.url, "?") || __pathIncludes(resolution.url, "#") ? resolution.url : "/" + key;
   let record = __nimbusGraphRecords.get(recordKey);
   if (record === undefined || record.status === "unlinked") {
     if (__nimbusImportFailures.has(recordKey)) throw __nimbusImportFailures.get(recordKey);
@@ -13877,13 +13922,13 @@ function __nimbusRequireRecord(record, parent) {
       // Its late graph's names, as its import() checks them: a runtime module's.
       if (record.status === "unlinked" && !state.adopted && !state.data) __nimbusLateLink(state.resolvedPath.replace(/^\\/+/, ""), state.moduleUrl, false);
       __nimbusPlanGraph(record, true);
-      if (__nimbusGraphAwaits(record, new Set())) throw __nimbusRequireAsync(parent, state.filename);
+      if (__nimbusGraphAwaits(record, new __NimbusSafeSet())) throw __nimbusRequireAsync(parent, state.filename);
       __nimbusGraph.link(record);
     } finally {
       __nimbusGraphSync = previous;
     }
     __nimbusReflectApply(__nimbusEsmThen, __nimbusGraph.evaluate(record), [undefined, () => {}]);
-  } else if (__nimbusGraphAwaits(record, new Set())) {
+  } else if (__nimbusGraphAwaits(record, new __NimbusSafeSet())) {
     throw __nimbusRequireAsync(parent, state.filename);
   }
   if (record.status !== "evaluated") throw __nimbusRequireAsync(parent, state.filename);
@@ -13909,9 +13954,9 @@ function __esmLoad(resolution) {
     return __nimbusTranslatedNamespace(resolution, builtins[resolution.builtin]);
   }
   if (resolution.format === "data") return __nimbusImportGraph(resolution);
-  const key = resolution.path.replace(/^\\/+/, "");
+  const key = __vfsKey(resolution.path);
   // A query or a fragment is a module instance of its own: the interpreter's.
-  const variant = resolution.url.includes("?") || resolution.url.includes("#");
+  const variant = __pathIncludes(resolution.url, "?") || __pathIncludes(resolution.url, "#");
   if (!variant) {
     const id = __nimbusEsmId("module", key);
     if (id !== -1) return __nimbusEsmImport(id);
@@ -14031,30 +14076,43 @@ function __nimbusPrefetchQuota(specifier, limits) {
 // every attempt) fails the import(), named: the step's answer would rest
 // on a read that did not happen (a resolver falling back past an unread
 // manifest).
+// A speculation (the fs's residency fault-in reads it): its misses and the
+// fills it issued, SafeSets, and the fills to wait on, a SafeList.
+function __nimbusSpeculation(quota) {
+  return { misses: new __NimbusSafeSet(), repairs: new __PathList(), issued: new __NimbusSafeSet(), quota };
+}
+/** The first \`count\` of \`list\`, each through \`each\`, joined by ", ". */
+function __nimbusFirstJoined(list, count, each) {
+  let text = "";
+  for (let i = 0; i < list.length && i < count; i++) text += (i === 0 ? "" : ", ") + each(list[i]);
+  return text;
+}
 async function __nimbusHydrated(step, quota) {
   for (let round = 1; ; round++) {
-    const speculation = { misses: new Set(), repairs: [], issued: new Set(), quota };
+    const speculation = __nimbusSpeculation(quota);
     const outer = globalThis.__nimbusVfsSpeculation;
     globalThis.__nimbusVfsSpeculation = speculation;
     let value;
     let error;
     let threw = false;
     try { value = step(); } catch (e) { error = e; threw = true; } finally { globalThis.__nimbusVfsSpeculation = outer; }
-    await Promise.allSettled(speculation.repairs);
+    await __nimbusSettled(speculation.repairs);
     if (quota.error) throw quota.error;
     if (speculation.misses.size === 0) {
       if (threw) throw error;
       return value;
     }
-    const given = [...speculation.misses].filter((k) => !speculation.issued.has(k));
+    const misses = __nimbusListOf(speculation.misses);
+    const given = new __PathList();
+    for (let i = 0; i < misses.length; i++) if (!speculation.issued.has(misses[i])) given[given.length] = misses[i];
     if (given.length > 0) {
-      const unread = nodeError(Error, "ERR_NIMBUS_PREFETCH_UNREADABLE", "import() prefetch: could not fetch " + given.slice(0, 3).map((k) => "/" + k).join(", ")
+      const unread = nodeError(Error, "ERR_NIMBUS_PREFETCH_UNREADABLE", "import() prefetch: could not fetch " + __nimbusFirstJoined(given, 3, (k) => "/" + k)
         + (given.length > 3 ? " and " + (given.length - 3) + " more" : "") + "; its fetches did not land");
       throw unread;
     }
     if (round >= __IMPORT_HYDRATE_ROUNDS) {
       const bound = nodeError(Error, "ERR_NIMBUS_PREFETCH_BOUND", "import() prefetch: a resolution still misses after " + __IMPORT_HYDRATE_ROUNDS + " rounds of fetching ("
-        + [...speculation.misses].slice(0, 3).join(", ") + ")");
+        + __nimbusFirstJoined(misses, 3, (k) => k) + ")");
       throw bound;
     }
   }
@@ -14065,13 +14123,13 @@ async function __nimbusHydrated(step, quota) {
 // rests on these reads: one that does not land (a file the store has no room
 // for) is left to the module's own read, which reports it as any refused read.
 async function __nimbusReadAhead(paths, quota) {
-  const speculation = { misses: new Set(), repairs: [], issued: new Set(), quota };
+  const speculation = __nimbusSpeculation(quota);
   const outer = globalThis.__nimbusVfsSpeculation;
   globalThis.__nimbusVfsSpeculation = speculation;
   try {
-    for (const path of paths) { try { __fsMod.readFileSync("/" + path); } catch {} }
+    for (let i = 0; i < paths.length; i++) { try { __fsMod.readFileSync("/" + paths[i]); } catch {} }
   } finally { globalThis.__nimbusVfsSpeculation = outer; }
-  await Promise.allSettled(speculation.repairs);
+  await __nimbusSettled(speculation.repairs);
   if (quota.error) throw quota.error;
 }
 
@@ -14096,7 +14154,7 @@ function __nimbusRequestTarget(kind, specifier, importer) {
   }
   if (__nimbusBuiltinId(specifier) !== null || __nimbusFacetProvidedPackages.has(specifier)) return null;
   if (__stagedBinding(specifier)) return null;
-  return __resolveFrom(specifier, importer.includes("/") ? importer.slice(0, importer.lastIndexOf("/")) : "");
+  return __resolveFrom(specifier, __pathIncludes(importer, "/") ? __pathSlice(importer, 0, __pathLastIndexOf(importer, "/")) : "");
 }
 
 // core/_shared/relative-wasm-paths.ts, compiled once by the build (a
@@ -14108,7 +14166,7 @@ function __nimbusImportStager(quota) {
   // which only a process with a supervisor has.
   const supervisor = typeof __supervisor !== "undefined" ? __supervisor : null;
   if (!supervisor) return null;
-  const strip = (path) => String(path).replace(/^\\/+/, "");
+  const strip = (path) => __vfsKey(String(path));
   const target = (request, importer) => {
     try {
       const found = __nimbusRequestTarget(request.kind, request.specifier, importer);
@@ -14119,32 +14177,49 @@ function __nimbusImportStager(quota) {
     // The target and what it requests, and theirs, each read as the load
     // will read it, through the fs: its lookup follows links component by
     // component, and a miss is faulted in (ranged, any size) and read again.
+    // Lists here are SafeLists, sets SafeSets: a closure is walked after the program may have replaced their methods.
     async closure(root) {
-      const visited = new Set();
-      let frontier = [strip(root)];
+      const visited = new __NimbusSafeSet();
+      let frontier = new __PathList();
+      frontier[0] = strip(root);
       while (frontier.length > 0) {
-        const unseen = frontier.filter((k) => !visited.has(k));
-        for (const k of unseen) visited.add(k);
-        const round = unseen.filter((k) => !(typeof __nimbusCodeCells !== "undefined" && __nimbusCodeCells.has(k)));
-        const texts = await __nimbusHydrated(() => round.map((k) => __readFileOr(k, null)), quota);
-        const wanted = [];
-        const images = new Set();
+        const round = new __PathList();
+        for (let i = 0; i < frontier.length; i++) {
+          const k = frontier[i];
+          if (visited.has(k)) continue;
+          visited.add(k);
+          if (!(typeof __nimbusCodeCells !== "undefined" && __nimbusCodeCells.has(k))) round[round.length] = k;
+        }
+        const texts = await __nimbusHydrated(() => {
+          const read = new __PathList();
+          for (let i = 0; i < round.length; i++) read[i] = __readFileOr(round[i], null);
+          return read;
+        }, quota);
+        const wanted = new __PathList();
+        const images = new __NimbusSafeSet();
         for (let i = 0; i < round.length; i++) {
           const text = texts[i];
           if (typeof text !== "string") continue;
-          if (!/\\.[cm]?js$/.test(round[i])) continue;
+          // /\\.[cm]?js$/, by its endings.
+          if (!(__pathEndsWith(round[i], ".js") || __pathEndsWith(round[i], ".cjs") || __pathEndsWith(round[i], ".mjs"))) continue;
           // A late module's image was not in the launch's data-read table.
           // Read it ahead by the same relative-path rule the image collector
           // uses; the file/byte quota applies before any fill is issued.
-          for (const image of __nimbusRelativeWasmPaths(text, round[i])) images.add(image);
+          const named = __nimbusRelativeWasmPaths(text, round[i]);
+          for (let j = 0; j < named.length; j++) images.add(named[j]);
           // An import() in the closure is its own: it prefetches when it runs.
-          for (const request of __nimbusModuleRequests(round[i], text).requests) if (request.kind !== "dynamic") wanted.push([request, round[i]]);
+          const requests = __nimbusModuleRequests(round[i], text).requests;
+          for (let j = 0; j < requests.length; j++) if (requests[j].kind !== "dynamic") wanted[wanted.length] = { request: requests[j], from: round[i] };
         }
-        if (images.size > 0) await __nimbusReadAhead(images, quota);
-        const found = await __nimbusHydrated(() => wanted.map(([request, k]) => target(request, k)), quota);
-        const next = new Set();
-        for (const path of found) if (path !== null && !visited.has(path)) next.add(path);
-        frontier = [...next];
+        if (images.size > 0) await __nimbusReadAhead(__nimbusListOf(images), quota);
+        const found = await __nimbusHydrated(() => {
+          const targets = new __PathList();
+          for (let i = 0; i < wanted.length; i++) targets[i] = target(wanted[i].request, wanted[i].from);
+          return targets;
+        }, quota);
+        const next = new __NimbusSafeSet();
+        for (let i = 0; i < found.length; i++) if (found[i] !== null && !visited.has(found[i])) next.add(found[i]);
+        frontier = __nimbusListOf(next);
       }
       return visited;
     },
@@ -14163,15 +14238,22 @@ async function __nimbusStageImport(specifier, parentUrl) {
     // entry (the planner's lazyReadsByTarget), and the entry of each module
     // the walk read because the map lacks it (an evicted one's,
     // evictedModuleReads). Read here, under the quota, so a miss is fetched.
-    const table = globalThis.__nimbusLazyReads instanceof Map ? globalThis.__nimbusLazyReads : null;
-    const lazyReads = [];
+    const table = globalThis.__nimbusLazyReads instanceof __NimbusMap ? globalThis.__nimbusLazyReads : null;
+    const unheld = new __PathList();
     if (table !== null) {
-      for (const k of [String(resolution.path).replace(/^\\/+/, ""), ...(walked || [])]) {
-        const reads = table.get(k);
-        if (reads) for (const read of reads) lazyReads.push(read);
+      // The entry's first, then each module the walk read.
+      const keys = new __PathList();
+      keys[0] = __vfsKey(String(resolution.path));
+      if (walked) walked.forEach((k) => { keys[keys.length] = k; });
+      for (let i = 0; i < keys.length; i++) {
+        const reads = __nimbusMapGet(table, keys[i]);
+        if (!reads) continue;
+        for (let j = 0; j < reads.length; j++) {
+          const k = reads[j];
+          if (!(k in __vfsBundle || (__vfsWrites && k in __vfsWrites))) unheld[unheld.length] = k;
+        }
       }
     }
-    const unheld = lazyReads.filter((k) => !(k in __vfsBundle || (__vfsWrites && k in __vfsWrites)));
     if (unheld.length > 0) await __nimbusReadAhead(unheld, quota);
   }
   return resolution;
@@ -14236,7 +14318,7 @@ globalThis.__nimbusImportMetaResolve = function __nimbusImportMetaResolve(specif
  */
 function __stagedBinding(id) {
   const registry = globalThis.__nimbusStagedBindings;
-  return registry instanceof Map ? registry.get(id) : undefined;
+  return registry instanceof __NimbusMap ? __nimbusMapGet(registry, id) : undefined;
 }
 
 /**
@@ -14244,7 +14326,7 @@ function __stagedBinding(id) {
  * those its closure names (staged-bindings.ts stagedBindingsRequiredBy).
  */
 const __NIMBUS_STAGED_BINDINGS = ${JSON.stringify(STAGED_BINDING_ARTIFACTS.map(({ name, owner, version, requiredAs }) => ({ name, owner, version, requiredAs })))};
-const __stagedBindingsNamed = new Set();
+const __stagedBindingsNamed = new __NimbusSafeSet();
 
 // The version of \`owner\` a require from \`fromDir\` comes from, and its
 // package.json: the installed package \`fromDir\` is in, when its package.json
@@ -14288,11 +14370,21 @@ function __stagedVersionUnbuilt(owner, version, manifest) {
  * own fallbacks then reach it).
  */
 function __stagedBindingNotCarried(id, fromDir) {
-  for (const binding of __NIMBUS_STAGED_BINDINGS) {
-    const shard = binding.requiredAs.some((wasi) => id === wasi || id.startsWith(wasi.replace(/wasm32-wasi$/, "")));
-    const native = id.endsWith(".node") && __stagedOwnerVersion(binding.owner, fromDir).version !== null;
+  // Every require that is not a builtin's or a staged binding's asks this, after the program ran: by index, on captures.
+  for (let b = 0; b < __NIMBUS_STAGED_BINDINGS.length; b++) {
+    const binding = __NIMBUS_STAGED_BINDINGS[b];
+    let shard = false;
+    let carried = false;
+    for (let i = 0; i < binding.requiredAs.length; i++) {
+      const wasi = binding.requiredAs[i];
+      // wasi.replace(/wasm32-wasi$/, "")
+      const stem = __pathEndsWith(wasi, "wasm32-wasi") ? __pathSlice(wasi, 0, wasi.length - 11) : wasi;
+      if (id === wasi || __pathStartsWith(id, stem)) shard = true;
+      if (__stagedBinding(wasi)) carried = true;
+    }
+    const native = __pathEndsWith(id, ".node") && __stagedOwnerVersion(binding.owner, fromDir).version !== null;
     if (!shard && !native) continue;
-    if (binding.requiredAs.some((wasi) => __stagedBinding(wasi))) return null;
+    if (carried) return null;
     // A version with no staged build is the version's to fix, not the launch's.
     const loaded = __stagedOwnerVersion(binding.owner, fromDir);
     if (loaded.version !== null && !__NIMBUS_STAGED_BINDINGS.some((b) => b.owner === binding.owner && b.version === loaded.version)) {
@@ -14351,7 +14443,7 @@ function __loadStagedBinding(builds, fromDir) {
 // (require(esm)), whose job it keeps. A CommonJS module require() loaded is no job of its.
 function __nimbusEsmJobCached(path) {
   if (typeof path !== "string") return false;
-  const id = __nimbusEsmId("module", path.replace(/^\\/+/, ""));
+  const id = __nimbusEsmId("module", __vfsKey(path));
   const state = id === -1 ? 0 : __nimbusEsmRecords[id]?.state ?? 0;
   return state === __ESM_DONE || state === __ESM_ADOPTED;
 }
@@ -14378,7 +14470,7 @@ function __requireFrom(id, fromDir, parent) {
   const binding = __nimbusFacetProvidedPackages.has(id) ? null : __stagedBinding(id);
   const provided = binding ? __loadStagedBinding(binding, fromDir) : __nimbusFacetProvidedPackages.has(id) ? builtins[id] : undefined;
   if (provided !== undefined) return provided;
-  if (id.startsWith("node:")) throw nodeError(Error, "ERR_UNKNOWN_BUILTIN_MODULE", "No such built-in module: " + id);
+  if (__pathStartsWith(id, "node:")) throw nodeError(Error, "ERR_UNKNOWN_BUILTIN_MODULE", "No such built-in module: " + id);
   const notCarried = __stagedBindingNotCarried(id, fromDir);
   if (notCarried) throw notCarried;
   const resolved = __resolveFrom(id, fromDir, parent?.filename);

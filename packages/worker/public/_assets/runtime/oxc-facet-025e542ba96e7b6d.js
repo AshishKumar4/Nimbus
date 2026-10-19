@@ -10243,6 +10243,7 @@ error: the Oxc transform crashed (${reason})`);
   }.prototype);
   var generatorNext = uncurryThis(reflectGet(generatorPrototype ?? {}, "next"));
   var generatorThrow = uncurryThis(reflectGet(generatorPrototype ?? {}, "throw"));
+  var mapGet = uncurryThis(Map.prototype.get);
 
   function extensionOf(path) {
     const base = stringSlice(path, stringLastIndexOf(path, "/") + 1);

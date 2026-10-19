@@ -200,4 +200,9 @@ export declare function newURL(input: string, base?: string | URL): URL;
 export declare function safeGenerator<A extends unknown[], R>(fn: (...args: A) => Generator<unknown, R, unknown>): (...args: A) => Generator<unknown, R, unknown>;
 /** `object`'s own `key`, or undefined: a parsed package.json's field, which Node's reader takes only as the file has it (no inherited one). */
 export declare function ownField(object: object, key: string): unknown;
+/** Map.prototype.get of a Map the glue did not make (the launch's tables on globalThis). */
+export declare const mapGet: <K, V>(map: Map<K, V>, key: K) => V | undefined;
+export declare const MapConstructor: MapConstructor;
+export declare const objectPreventExtensions: <T>(o: T) => T;
+export declare const symbolToStringTag: typeof Symbol.toStringTag;
 //# sourceMappingURL=primordials.d.ts.map
