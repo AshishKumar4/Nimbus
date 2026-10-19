@@ -4368,6 +4368,8 @@ interface PrefetchAdmission {
   fit(closureBytes: number): void;
   /** Keeps only what the generated map owns while its launch waits for a worker. */
   retain(bytes: number): void;
+  /** Holds `bytes` (within the budget) if what it lacks can be granted now, without waiting; else false. */
+  grow(bytes: number): boolean;
   /** Registers its parked map until the worker is granted or the share is released. */
   reclaimable(reclaim: () => void): () => void;
   /** Gives it all back; once. */
@@ -4449,6 +4451,10 @@ function admissionOf(admitted: SupervisorAllocationLease, queued: boolean): Pref
       const retained = Math.max(1, Math.min(SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES, bytes));
       if (retained > lease.bytes) throw new Error('Nimbus: a parked module map exceeds its supervisor credit');
       if (!released) lease.shrinkTo(retained);
+    },
+    grow(bytes) {
+      const wanted = Math.min(SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES, bytes);
+      return !released && (wanted <= lease.bytes || lease.tryGrowTo(wanted));
     },
     reclaimable(reclaim) {
       if (released) return () => {};
@@ -7452,7 +7458,7 @@ export class FacetManager {
           let brokeredGranted = false;
           try {
             if (brokered) {
-              await brokered(parked.signal);
+              await brokered(parked.signal, parked.reclaimable);
               brokeredGranted = true;
               parked.unregister();
             }
@@ -7460,7 +7466,7 @@ export class FacetManager {
               parked.unregister();
               parked.signal.throwIfAborted();
               return run();
-            });
+            }, parked.reclaimable);
           } catch (error) {
             if (!parked.reclaimed || abortController.signal.aborted) throw error;
             if (brokeredGranted) brokered = suspendLaunchAdmission(this.ctx, entry.pid);
@@ -7562,7 +7568,7 @@ export class FacetManager {
               const parked = this._parkOneShotMap(entry.pid, prepared, abortController.signal);
               let granted = false;
               try {
-                await resumeAdmission?.(parked.signal);
+                await resumeAdmission?.(parked.signal, parked.reclaimable);
                 granted = true;
                 parked.unregister();
                 parked.signal.throwIfAborted();
@@ -8026,11 +8032,8 @@ export class FacetManager {
     const need = Math.min(SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES, Math.max(1, Math.ceil(bytes)));
     const admission = this.buildAdmissions.get(pid);
     if (admission === undefined) throw new Error(`Nimbus: the module map for pid ${pid} has no share of the credit`);
-    if (admission.held() >= need) return;
-    const replacement = tryAdmitPrefetch(need, true, this._allocationOwner(pid));
-    if (replacement === null) throw new OneShotAllocationNeeded(need);
-    this.buildAdmissions.set(pid, replacement);
-    admission.release();
+    // What it lacks beside what it holds, or back to its build for the whole: it never waits holding its sources.
+    if (!admission.grow(need)) throw new OneShotAllocationNeeded(need);
   }
 
   private async _oneShotMemberBytes(entry: ProcessEntry, images: readonly FacetWasmImport[], bindings: readonly string[]): Promise<{ owned: number; wire: number }> {
@@ -8053,19 +8056,28 @@ export class FacetManager {
     return { owned: bytes, wire };
   }
 
+  /**
+   * `prepared`'s map, parked for its worker: `reclaimable` lets running work
+   * reclaim it, and is called only if the launch has to wait for one. A
+   * launch whose worker is free takes it and loads, and running work waits
+   * for that load as it waits for any running work's credit.
+   */
   private _parkOneShotMap(pid: number, prepared: PreparedOneShotCode, signal: AbortSignal): {
-    readonly signal: AbortSignal; readonly reclaimed: boolean; unregister(): void;
+    readonly signal: AbortSignal; readonly reclaimed: boolean; reclaimable(): void; unregister(): void;
   } {
     const reclaimed = new AbortController();
-    const unregister = this.buildAdmissions.get(pid)?.reclaimable(() => {
-      prepared.discard();
-      this._releaseBuildAdmission(pid);
-      reclaimed.abort(new Error(`Nimbus: the parked module map for pid ${pid} was reclaimed for running work`));
-    }) ?? (() => {});
+    let unregister = () => {};
     return {
       signal: AbortSignal.any([signal, reclaimed.signal]),
       get reclaimed() { return reclaimed.signal.aborted; },
-      unregister,
+      reclaimable: () => {
+        unregister = this.buildAdmissions.get(pid)?.reclaimable(() => {
+          prepared.discard();
+          this._releaseBuildAdmission(pid);
+          reclaimed.abort(new Error(`Nimbus: the parked module map for pid ${pid} was reclaimed for running work`));
+        }) ?? (() => {});
+      },
+      unregister: () => unregister(),
     };
   }
 

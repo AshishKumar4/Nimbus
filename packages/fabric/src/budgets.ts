@@ -619,7 +619,8 @@ export function beginLoaderFetch(ctx: object, workerKey: string, claim?: Dynamic
  * `signal` abandons the wait: it rejects with the signal's reason and holds
  * nothing. A wait outlives nothing on its own: bound it with a signal when
  * room may never come (a resident process holds its worker for as long as
- * it runs).
+ * it runs). `onWait` is called once, as the call queues, when it is not let
+ * in at once.
  *
  * `process` is the process the wait is for, and the ones it descends from;
  * the hold it is let in on is that process's. When every worker of a full
@@ -635,9 +636,9 @@ export function beginLoaderFetch(ctx: object, workerKey: string, claim?: Dynamic
 export function beginLoaderFetchWhenFree(
   ctx: object,
   workerKey: string,
-  options: { signal?: AbortSignal; claim?: DynamicWorkerClaim; process?: LedgerProcess } = {},
+  options: { signal?: AbortSignal; claim?: DynamicWorkerClaim; process?: LedgerProcess; onWait?: () => void } = {},
 ): Promise<EndLoaderFetch> {
-  return queue(ledger(ctx), workerKey, claimOf(ctx, options.claim), options.process, false, options.signal);
+  return queue(ledger(ctx), workerKey, claimOf(ctx, options.claim), options.process, false, options.signal, options.onWait);
 }
 
 /** Wait on `entry` for a hold of `key`, in the order asked: see {@link beginLoaderFetchWhenFree}. */
@@ -648,6 +649,7 @@ function queue(
   process: LedgerProcess | undefined,
   refused: boolean,
   signal: AbortSignal | undefined,
+  onWait?: () => void,
 ): Promise<EndLoaderFetch> {
   const { promise, resolve, reject } = withResolvers<EndLoaderFetch>();
   if (signal?.aborted) {
@@ -677,6 +679,7 @@ function queue(
   entry.waiters.push(waiter);
   signal?.addEventListener('abort', abandon, { once: true });
   admitWaiters(entry);
+  if (entry.waiters.includes(waiter)) onWait?.();
   return promise;
 }
 
@@ -784,17 +787,19 @@ export function withLaunchPreparation<T>(ctx: object, process: LedgerProcess, bo
  * its next run. (A helper call its program makes later, over RPC, is not in that
  * context: a worker more, it waits its turn.) `signal` abandons the wait; a
  * wait no release can satisfy is refused with {@link DynamicWorkerDeadlockError}.
+ * `onWait` is called if the launch has to wait for its worker, as it queues.
  */
 export async function withLaunchAdmission<T>(
   ctx: object,
   process: LedgerProcess,
   signal: AbortSignal | undefined,
   body: () => Promise<T>,
+  onWait?: () => void,
 ): Promise<T> {
   // Already this process's launch (a broker admitted the child it runs): the one admission.
   const current = launchAdmission.getStore();
   if (current?.ctx === ctx && current.process.pid === process.pid && !current.closed) return body();
-  const end = await beginLoaderFetchWhenFree(ctx, launchWorkerKey(process.pid), { signal, process });
+  const end = await beginLoaderFetchWhenFree(ctx, launchWorkerKey(process.pid), { signal, process, onWait });
   const admission: Admission = { ctx, process, end, claimed: false, closed: false };
   try {
     return await launchAdmission.run(admission, body);
@@ -809,13 +814,14 @@ export async function withLaunchAdmission<T>(
  * A program that stopped has no Worker in flight: give back its launch's
  * admission before waiting on input. Its nested run hold must already have
  * ended. The returned resume waits on the ledger with the same process,
- * fairly and abortably, before the caller does any replay preparation.
+ * fairly and abortably, before the caller does any replay preparation;
+ * `onWait` is called if it has to wait, as it queues.
  * Calling resume twice joins one readmission, never takes two holds. If the
  * process ends instead, the launch's finally finds nothing held.
  * Undefined outside a launch admission (a shell's one-shot owns only its
  * run hold, which has already ended), or outside `pid`'s when one is named.
  */
-export function suspendLaunchAdmission(ctx: object, pid?: number): ((signal?: AbortSignal) => Promise<void>) | undefined {
+export function suspendLaunchAdmission(ctx: object, pid?: number): ((signal?: AbortSignal, onWait?: () => void) => Promise<void>) | undefined {
   const admission = launchAdmission.getStore();
   if (admission?.ctx !== ctx || (pid !== undefined && admission.process.pid !== pid)) return undefined;
   if (admission.claimed || admission.end === undefined || admission.closed) {
@@ -825,9 +831,9 @@ export function suspendLaunchAdmission(ctx: object, pid?: number): ((signal?: Ab
   admission.end = undefined;
   end();
   let resumed: Promise<void> | undefined;
-  return (signal) => resumed ??= (async () => {
+  return (signal, onWait) => resumed ??= (async () => {
     if (admission.closed) throw new Error('Nimbus: a finished launch cannot regain its admission');
-    const hold = await beginLoaderFetchWhenFree(ctx, launchWorkerKey(admission.process.pid), { signal, process: admission.process });
+    const hold = await beginLoaderFetchWhenFree(ctx, launchWorkerKey(admission.process.pid), { signal, process: admission.process, onWait });
     // A kill may arrive after admission but before this continuation runs.
     if (signal?.aborted || admission.closed) {
       hold();

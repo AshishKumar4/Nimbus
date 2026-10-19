@@ -3,7 +3,7 @@
 // before reading a file that does not fit their share of the isolate budget.
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
-import { beginHelperFetch, beginLoaderFetch, DO_DYNAMIC_WORKER_LIMIT, loaderLedgerStats, withLaunchAdmission } from '../../packages/fabric/src/budgets.ts';
+import { beginHelperFetch, beginLoaderFetch, beginLoaderFetchWhenFree, DO_DYNAMIC_WORKER_LIMIT, loaderLedgerStats, withLaunchAdmission } from '../../packages/fabric/src/budgets.ts';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { ModuleSource } from '../../packages/platform/src/module-source.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
@@ -32,6 +32,41 @@ const ran = (result, stdout) => {
   assert.equal(result.exitCode, 0, result.stderr);
   assert.equal(result.stdout, stdout);
 };
+/** `promise`, or a failure saying `waited` once 5 s have passed. */
+const withinMs = (promise, waited) => {
+  let timer;
+  return Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(waited)), 5000); })])
+    .finally(() => clearTimeout(timer));
+};
+/** A wasm module of `payloadBytes` in one custom section. */
+function wasmImage(payloadBytes) {
+  const length = [];
+  for (let rest = payloadBytes; ;) {
+    const part = rest & 127;
+    rest >>>= 7;
+    length.push(part | (rest > 0 ? 128 : 0));
+    if (rest === 0) break;
+  }
+  const bytes = new Uint8Array(9 + length.length + payloadBytes);
+  bytes.set([0, 97, 115, 109, 1, 0, 0, 0]);
+  bytes.set(length, 9);
+  return bytes;
+}
+/** `manager`'s transforms held at the first until `proceed`: its launch's map is being generated meanwhile. */
+async function gatedTransforms(manager) {
+  const { oxcTransforms } = await import('./lib/oxc-engine.mjs');
+  const native = new EsbuildService(undefined, oxcTransforms);
+  const entered = Promise.withResolvers();
+  const proceed = Promise.withResolvers();
+  manager.setEsbuildService(new EsbuildService(undefined, {
+    transformHost: async (requests) => {
+      entered.resolve();
+      await proceed.promise;
+      return native.transformMany(requests);
+    },
+  }));
+  return { entered: entered.promise, proceed: () => proceed.resolve() };
+}
 
 async function runningWorkReclaims(brokered, race) {
   const authority = createAuthority();
@@ -63,13 +98,9 @@ async function runningWorkReclaims(brokered, race) {
         'the generated map is parked on its own session ledger', 20_000);
       assert.ok(readSupervisorAllocationBudget().current > 0, 'the parked map retains its share');
       if (race === 'grant') holds.shift()();
-      let timer;
       const acquiring = acquireSupervisorRunningAllocation(readSupervisorAllocationBudget().capacity);
       if (race === 'kill') manager.kill(manager.launchState().launches[0].pid);
-      const lease = await Promise.race([
-        acquiring,
-        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('running work waited on a parked launch')), 5000); }),
-      ]).finally(() => clearTimeout(timer));
+      const lease = await withinMs(acquiring, 'running work waited on a parked launch');
       if (race === 'kill') {
         lease.release();
         const result = await waiting;
@@ -160,17 +191,7 @@ await runScenarios(fileURLToPath(import.meta.url), {
     const { manager, ctx } = session(authority, 'owned-wasm-member');
     const cwd = '/home/user/owned-wasm';
     authority.kfs.mkdir(cwd);
-    const payloadBytes = 4 * 1024 * 1024;
-    const length = [];
-    for (let rest = payloadBytes; ;) {
-      const part = rest & 127;
-      rest >>>= 7;
-      length.push(part | (rest > 0 ? 128 : 0));
-      if (rest === 0) break;
-    }
-    const bytes = new Uint8Array(9 + length.length + payloadBytes);
-    bytes.set([0, 97, 115, 109, 1, 0, 0, 0]);
-    bytes.set(length, 9);
+    const bytes = wasmImage(4 * 1024 * 1024);
     authority.kfs.writeFile(`${cwd}/image.wasm`, bytes);
     authority.kfs.writeFile(`${cwd}/cell.js`, 'require("fs").readFileSync(require("path").join(__dirname, "image.wasm")); module.exports = "wasm";');
     const holds = occupy(ctx);
@@ -201,30 +222,17 @@ await runScenarios(fileURLToPath(import.meta.url), {
     const cwd = '/home/user/before-parking';
     authority.kfs.mkdir(cwd);
     authority.kfs.writeFile(`${cwd}/cell.js`, `module.exports = 7;\n// ${'x'.repeat(256 * 1024)}\n`);
-    const { oxcTransforms } = await import('./lib/oxc-engine.mjs');
-    const native = new EsbuildService(undefined, oxcTransforms);
-    const entered = Promise.withResolvers();
-    const proceed = Promise.withResolvers();
-    manager.setEsbuildService(new EsbuildService(undefined, {
-      transformHost: async (requests) => {
-        entered.resolve();
-        await proceed.promise;
-        return native.transformMany(requests);
-      },
-    }));
+    const generating = await gatedTransforms(manager);
     const holds = occupy(ctx);
     const waiting = manager.exec('require("./cell.js"); import("node:path").then(path => process.stdout.write(path.default.basename("/home/user/entry")))', {
       cwd, captureOutput: true,
     });
     try {
-      await entered.promise;
-      let timer;
-      const running = Promise.race([
-        acquireSupervisorRunningAllocation(readSupervisorAllocationBudget().capacity),
-        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('running work was not woken by a map becoming reclaimable')), 5000); }),
-      ]).finally(() => clearTimeout(timer));
+      await generating.entered;
+      const running = withinMs(acquireSupervisorRunningAllocation(readSupervisorAllocationBudget().capacity),
+        'running work was not woken by a map becoming reclaimable');
       await until(() => readSupervisorAllocationBudget().queued === 1, 'running work queues while the map is still being generated');
-      proceed.resolve();
+      generating.proceed();
       const lease = await running;
       try {
         await until(() => manager.launchState().launches[0]?.stage === 'prepare' && loaderLedgerStats(ctx).waiting === 0,
@@ -237,9 +245,113 @@ await runScenarios(fileURLToPath(import.meta.url), {
       holds.shift()();
       ran(await waiting, 'entry');
     } finally {
-      proceed.resolve();
+      generating.proceed();
       for (const release of holds) release();
     }
+    drained();
+  },
+
+  // A launch whose worker is free takes it and loads its map, though running
+  // work waits for credit as it parks: the running ask waits for that load,
+  // and the map it waited for is not dropped and made again.
+  async freeWorkerKeepsItsMap() {
+    const authority = createAuthority();
+    adoptSessionSupervisor(authority.host, () => {});
+    const { manager, ctx } = session(authority, 'free-worker');
+    const cwd = '/home/user/free-worker';
+    authority.kfs.mkdir(cwd);
+    authority.kfs.writeFile(`${cwd}/cell.js`, `module.exports = 7;\n// ${'x'.repeat(256 * 1024)}\n`);
+    const generating = await gatedTransforms(manager);
+    const waiting = manager.exec('require("./cell.js"); import("node:path").then(path => process.stdout.write(path.default.basename("/home/user/entry")))', {
+      cwd, captureOutput: true,
+    });
+    try {
+      await generating.entered;
+      const running = withinMs(acquireSupervisorRunningAllocation(readSupervisorAllocationBudget().capacity)
+        .then((lease) => ({ lease, stage: manager.launchState().launches[0]?.stage })), 'running work waited past the launch\'s load');
+      await until(() => readSupervisorAllocationBudget().queued === 1, 'running work queues while the map is still being generated');
+      assert.equal(loaderLedgerStats(ctx).inFlightWorkers.length, 0, 'the launch\'s worker is free');
+      generating.proceed();
+      const { lease, stage } = await running;
+      try {
+        assert.equal(stage, 'load', 'running work gets the credit as the launch loads its map, not by reclaiming it');
+      } finally {
+        lease.release();
+      }
+      ran(await waiting, 'entry');
+    } finally {
+      generating.proceed();
+    }
+    drained();
+  },
+
+  // A launch whose worker is not free waits its turn behind an older wait,
+  // and its parked map is running work's meanwhile.
+  async waitingLaunchKeepsItsTurn() {
+    const authority = createAuthority();
+    adoptSessionSupervisor(authority.host, () => {});
+    const { manager, ctx } = session(authority, 'keeps-turn');
+    const cwd = '/home/user/keeps-turn';
+    authority.kfs.mkdir(cwd);
+    authority.kfs.writeFile(`${cwd}/cell.js`, `module.exports = 7;\n// ${'x'.repeat(256 * 1024)}\n`);
+    const holds = occupy(ctx);
+    let olderEnd;
+    const older = beginLoaderFetchWhenFree(ctx, 'older-wait').then((end) => { olderEnd = end; });
+    const waiting = manager.exec('process.stdout.write(String(require("./cell.js")))', { cwd, filename: `${cwd}/run.js`, captureOutput: true });
+    try {
+      await until(() => manager.launchState().launches[0]?.stage === 'admission' && loaderLedgerStats(ctx).waiting === 2,
+        'the map is parked behind the older wait', 20_000);
+      const lease = await withinMs(acquireSupervisorRunningAllocation(readSupervisorAllocationBudget().capacity), 'running work waited on a launch waiting for its worker');
+      try {
+        await until(() => manager.launchState().launches[0]?.stage === 'prepare' && loaderLedgerStats(ctx).waiting === 1,
+          'the waiting launch\'s map is reclaimed and it leaves its worker wait');
+      } finally {
+        lease.release();
+      }
+      await until(() => manager.launchState().launches[0]?.stage === 'admission' && loaderLedgerStats(ctx).waiting === 2,
+        'the launch parks again, behind the older wait');
+      holds.shift()();
+      await older;
+      assert.equal(manager.launchState().launches[0]?.stage, 'admission', 'the older wait takes the freed worker first');
+      olderEnd();
+      ran(await waiting, '7');
+    } finally {
+      olderEnd?.();
+      for (const release of holds) release();
+    }
+    drained();
+  },
+
+  // A map that needs more than the share its closure was fitted to takes
+  // what it lacks beside that share when it is free, and keeps the closure
+  // it gathered: a closure no cache keeps is gathered once.
+  async shortfallBesideItsShare() {
+    const authority = createAuthority();
+    adoptSessionSupervisor(authority.host, () => {});
+    const { manager } = session(authority, 'shortfall');
+    const files = processFiles(authority.rawVfs);
+    const bind = files.bind.bind(files);
+    let gathered = 0;
+    files.bind = (binding) => new Proxy(bind(binding), {
+      get(target, name) {
+        const value = Reflect.get(target, name);
+        if (name !== 'readFile' || typeof value !== 'function') return value;
+        return (path, ...rest) => {
+          if (String(path).endsWith('/big.js')) gathered++;
+          return Reflect.apply(value, target, [path, ...rest]);
+        };
+      },
+    });
+    manager.setVfs(authority.rawVfs, files);
+    const cwd = '/home/user/shortfall';
+    authority.kfs.mkdir(cwd);
+    authority.kfs.writeFile(`${cwd}/big.js`, `module.exports = "big";\n// ${'x'.repeat(11 * 1024 * 1024)}\n`);
+    authority.kfs.writeFile(`${cwd}/image.wasm`, wasmImage(4 * 1024 * 1024));
+    authority.kfs.writeFile(`${cwd}/cell.js`, 'require("fs").readFileSync(require("path").join(__dirname, "image.wasm")); module.exports = require("./big.js");');
+    ran(await manager.exec('process.stdout.write(require("./cell.js"))', {
+      cwd, dirname: cwd, filename: `${cwd}/run.js`, captureOutput: true,
+    }), 'big');
+    assert.equal(gathered, 1, `the closure is gathered once, not again for its map's shortfall (read ${gathered} times)`);
     drained();
   },
 
