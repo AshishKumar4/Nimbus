@@ -9,7 +9,10 @@
  *     inside the barrier that takes the row in sees it;
  *   - a view started anew knows neither the name nor the file: the
  *     descriptor's fstat is refused as a stat by that name is (EAGAIN), and
- *     answers once the name is looked up again.
+ *     answers once the name is looked up again;
+ *   - a peer's move to a longer name the budget has no room for is not kept
+ *     (what is taken stays what is kept): the descriptor answers by identity
+ *     alone until a move is kept.
  */
 
 import assert from 'node:assert/strict';
@@ -90,6 +93,33 @@ async function resident(s, name, text) {
   await s.fs.stat(`/${OTHER}/a`);
   assert.equal(Number(sync.stat(`/${OTHER}/a`).size), 1);
   assert.equal(Number(sync.fstat(fd).size), 1, 'fstat once the view has the file again');
+  sync.close(fd);
+}
+
+// ── A peer renames a file a descriptor has open to a longer name, the budget full ──
+// Its names are a cache: the move it has no room for is not kept, and its descriptor answers by identity alone.
+{
+  const budget = { used: 0, limit: 1 << 30 };
+  const s = session({ view: {}, acquired: never, budget });
+  const sync = s.fs.synchronous;
+  const kept = () => {
+    const stats = s.fs.stats();
+    return stats.provisionalBytes + stats.pinnedBytes;
+  };
+  await resident(s, 'a', 'x');
+  const fd = sync.open(`/${OTHER}/a`, { read: true }).id;
+  const longer = `/${OTHER}/a-renamed-by-a-peer-to-a-much-longer-name`;
+  s.kernel.rename(`${OTHER}/a`, longer.slice(1));
+  budget.limit = budget.used;
+  s.fs.inbound();
+  await s.fs.stat(longer);
+  assert.equal(budget.used, kept(), 'the budget full: what is taken is what is kept');
+  assert.equal(await errnoOf(() => sync.fstat(fd)), 'EAGAIN', 'a file whose move was not kept: as where the view cannot say');
+  budget.limit = 1 << 30;
+  s.fs.inbound();
+  await s.fs.stat(longer);
+  assert.equal(budget.used, kept(), 'with room: what is taken is what is kept');
+  assert.equal(Number(sync.fstat(fd).size), 1, 'with room, the move is kept');
   sync.close(fd);
 }
 

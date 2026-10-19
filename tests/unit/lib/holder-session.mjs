@@ -15,11 +15,12 @@ export const user = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
  * A process over a real session. `view`: its store is a view as a resident's
  * is, what it read of a name kept as read until a barrier reads it again
  * (`view.barrier` runs after, within the barrier); else the store reads the
- * session at every call. `view.forget()` true at a barrier: the view starts
+ * session at every call. `view.admitted` runs after each row it takes in is
+ * told to the process. `view.forget()` true at a barrier: the view starts
  * anew there, knowing no name until one is looked up or its directory listed
  * again (as a resident's lazy store after a barrier it cannot apply). `acquired`: what the session's grant waits for. `grantBytes`: the
  * storage a grant reserves.
- * @param {{ grantInos?: number, journal?: any, gate?: PromiseLike<unknown>, refuse?: () => boolean, view?: { barrier?: () => unknown, forget?: () => boolean }, acquired?: PromiseLike<unknown>, grantBytes?: number, budget?: { used: number, limit: number } }} [options]
+ * @param {{ grantInos?: number, journal?: any, gate?: PromiseLike<unknown>, refuse?: () => boolean, view?: { barrier?: () => unknown, forget?: () => boolean, admitted?: () => void }, acquired?: PromiseLike<unknown>, grantBytes?: number, budget?: { used: number, limit: number } }} [options]
  */
 export function session({ grantInos, journal, gate, refuse, view, acquired, grantBytes, budget } = {}) {
   const harness = createSqliteVfsTestHarness();
@@ -57,7 +58,10 @@ export function session({ grantInos, journal, gate, refuse, view, acquired, gran
   const admit = (key) => {
     const row = { entry: entryNow(key), content: contentNow(key) };
     seen.set(key, row);
-    if (row.entry) admitted?.(key, row.entry);
+    if (row.entry) {
+      admitted?.(key, row.entry);
+      view.admitted?.();
+    }
     return row;
   };
   /** Started anew (view.forget): the names looked up and the directories listed since, the only ones it knows. */

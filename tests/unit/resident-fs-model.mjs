@@ -106,9 +106,17 @@ async function runSteps(steps, met, grants) {
   /** A barrier waits once it begins while `pausing`, until `landing` is called. */
   let pausing = false;
   let landing;
+  /** Each admission's budget, checked once the call it came in finished: what is taken is what is kept. */
+  const admissions = [];
   const s = session({
     budget,
-    view: { barrier: () => (pausing ? new Promise((resolve) => { landing = resolve; }) : undefined) },
+    view: {
+      barrier: () => (pausing ? new Promise((resolve) => { landing = resolve; }) : undefined),
+      admitted: () => queueMicrotask(() => {
+        const stats = s.fs.stats();
+        if (budget.used !== stats.provisionalBytes + stats.pinnedBytes) admissions.push(`${budget.used} taken, ${stats.provisionalBytes} + ${stats.pinnedBytes} kept`);
+      }),
+    },
     ...(grants ? {} : { acquired: { then: (_resolve, reject) => reject(Object.assign(new Error('EBUSY'), { code: 'EBUSY' })) } }),
     gate: { then: (resolve, reject) => (control.held ? control.opened.promise : Promise.resolve()).then(resolve, reject) },
   });
@@ -180,6 +188,7 @@ async function runSteps(steps, met, grants) {
   const fds = new Map();
 
   const check = async (label) => {
+    assert.deepEqual(admissions.splice(0), [], `${label}: the budget after a row the view took in`);
     const stats = s.fs.stats();
     assert.equal(budget.used, stats.provisionalBytes + stats.pinnedBytes, `${label}: the budget taken (${budget.used}) is not what is kept (${stats.provisionalBytes} + ${stats.pinnedBytes} pinned)`);
     const now = viewOf();
