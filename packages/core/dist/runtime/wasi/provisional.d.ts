@@ -157,7 +157,7 @@ interface InodeRecord {
     /** The inode it is of: the one its op reached at the session, once an open's answer says which (reconcile). */
     owner: Inode;
     /** The description it was made through, where one was: what an open's answer moves with it. */
-    readonly description?: string;
+    readonly description: string | undefined;
     answered: boolean;
     /** Barriers begun when it was answered: one begun after retires it. */
     answeredAt: number;
