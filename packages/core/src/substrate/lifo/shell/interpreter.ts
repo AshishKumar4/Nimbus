@@ -34,7 +34,7 @@ import type { VfsCred } from '../../../runtime/os-contracts.js';
 import { syscallError } from '../../../vfs/vfs-error.js';
 import { execRefusal } from '../../../shell/exec-dispatch.js';
 import { withRecall } from '../../../vfs/recall.js';
-import { endsInComment, lex } from './lexer.js';
+import { lex, lexText } from './lexer.js';
 import { parse, parseAssignment, ParseError } from './parser.js';
 import {
   expandWords, expandWord, expandPatternWord, evaluateSubscript, ExpansionError,
@@ -1023,8 +1023,8 @@ export class Interpreter {
    * as text. Its assignments go before the first command that text makes, and
    * its redirections after the last; before a compound command they are a
    * syntax error, as bash's grammar has it. A text that ends in a comment takes
-   * the command's other words and redirections into it (the rest of the line,
-   * in bash; here, the rest of the command). An alias whose text ends in a
+   * the command's words and redirections written after it into it (the rest of
+   * the line, in bash; here, the rest of the command). An alias whose text ends in a
    * blank has the next word checked too. None of the text's commands expands
    * those aliases, or the ones this command was read within, again. Null when
    * the word is no alias.
@@ -1042,9 +1042,10 @@ export class Interpreter {
       const value = name === null || expanding.has(name) ? undefined : aliases.get(name);
       if (name === null || value === undefined) break;
       expanding.add(name);
-      for (const token of lex(value)) if (token.kind !== TokenKind.EOF) tokens.push(token);
+      const lexed = lexText(value);
+      for (const token of lexed.tokens) if (token.kind !== TokenKind.EOF) tokens.push(token);
       used++;
-      commented = endsInComment(value);
+      commented = lexed.endsInComment;
       if (commented || !/[ \t\n]$/.test(value)) break;
     }
     if (used === 0) return null;
@@ -1068,7 +1069,9 @@ export class Interpreter {
       if (first?.type === 'simple_command') first.assignments.unshift(...cmd.assignments);
       else script.lists.unshift({ type: 'list', entries: [{ pipeline: { type: 'pipeline', negated: false, commands: [{ type: 'simple_command', assignments: cmd.assignments, words: [], redirections: [] }] }, connector: null }], background: false });
     }
-    if (!commented && cmd.redirections.length > 0 && last !== undefined && last.type !== 'function_def') last.redirections.push(...cmd.redirections);
+    // A comment takes the redirections written after the last alias word, not those before it.
+    const kept = commented ? cmd.redirections.filter((redirection) => (redirection.wordsBefore ?? 0) < used) : cmd.redirections;
+    if (kept.length > 0 && last !== undefined && last.type !== 'function_def') last.redirections.push(...kept);
     return script;
   }
 

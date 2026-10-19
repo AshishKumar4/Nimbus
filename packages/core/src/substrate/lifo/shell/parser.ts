@@ -517,7 +517,7 @@ class Parser {
 
       // Check for redirections
       if (this.isRedirectOperator(token.kind)) {
-        redirections.push(this.parseRedirection());
+        redirections.push({ ...this.parseRedirection(), wordsBefore: words.length });
         continue;
       }
 

@@ -102,6 +102,8 @@ const CONTEXTS = [
     "mkdir 'a\\b' && cd 'a\\b' && touch x.txt && printf '<%s>' *.txt; echo",
     "v='x y'; a=(\"$v\"); declare b=(\"$v\" z); printf '<%s>' \"\${a[@]}\" - \"\${b[@]}\"; echo",
     "printf '<%s>' a\\\nb \"c\\\nd\" 'e\\\nf'; echo\necho x | \\\n  { cat; }\n\\\necho g",
+    "set -- \"\\\n\"; printf '%s\\n' \"$#\"",
+    "alias p='printf hi #'\n>/dev/null p ignored\necho after",
     // \`<<\` in arithmetic shifts; it opens no here-document.
     "printf '<%s>' \"$(echo $(( 1 << 3 ))\necho after)\"; echo",
     "printf '<%s>' \"$(cat <<-EOF\n\tit's\n\tEOF\necho after)\"; echo",

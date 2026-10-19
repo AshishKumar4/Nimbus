@@ -2,7 +2,17 @@ import { TokenKind, type Token, type WordPart } from './types.js';
 import { expandBackslashEscapes } from '../utils/backslash-escapes.js';
 
 export function lex(input: string): Token[] {
+  return lexText(input).tokens;
+}
+
+/**
+ * The tokens of `input`, and whether it ends inside a comment, which takes the
+ * rest of its line: what would follow it there is no word (an alias whose text
+ * ends in `#…`).
+ */
+export function lexText(input: string): { tokens: Token[]; endsInComment: boolean } {
   const tokens: Token[] = [];
+  let endsInComment = false;
   const pendingHeredocs: HeredocDelimiter[] = [];
   let nextHeredocOperator: TokenKind.Heredoc | TokenKind.HeredocStripTabs | null = null;
   let i = 0;
@@ -37,6 +47,7 @@ export function lex(input: string): Token[] {
       while (i < input.length && input[i] !== '\n') {
         i++;
       }
+      endsInComment = i >= input.length;
       continue;
     }
 
@@ -72,17 +83,7 @@ export function lex(input: string): Token[] {
   }
 
   tokens.push({ kind: TokenKind.EOF, value: '', pos: i });
-  return tokens;
-}
-
-/**
- * Whether `text` ends inside a comment, which takes the rest of its line: what
- * would follow it there is no word (an alias whose text ends in `#…`).
- */
-export function endsInComment(text: string): boolean {
-  const marked = (tail: string): boolean => lex(`${text}${tail}`)
-    .some((token) => token.kind === TokenKind.Word && token.pos === text.length + 1 && token.value === ':');
-  return !marked(' :') && marked('\n:');
+  return { tokens, endsInComment };
 }
 
 export type ContinuationState = 'single' | 'double' | 'backslash';
@@ -448,10 +449,12 @@ function readWord(input: string, pos: number): { token: Token; end: number } | n
       while (i < input.length && input[i] !== '"') {
         if (input[i] === '\\' && i + 1 < input.length) {
           const nextCh = input[i + 1];
-          // Inside double quotes, only these chars are special with backslash; before a newline it continues the line.
+          // Inside double quotes, only these chars are special with backslash; before a newline it continues the line, no content.
           if (nextCh === '\n') {
             i += 2;
-          } else if (nextCh === '"' || nextCh === '\\' || nextCh === '$' || nextCh === '`') {
+            continue;
+          }
+          if (nextCh === '"' || nextCh === '\\' || nextCh === '$' || nextCh === '`') {
             flushDoubleText();
             parts.push({ text: nextCh, quoted: 'single' });
             doubleQuotedContent = true;
