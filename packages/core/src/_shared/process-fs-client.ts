@@ -471,6 +471,8 @@ interface Grant extends ProcessFsGrant {
   shared: boolean;
   /** Being given back (idle, renewed, widened, settled): nothing more is decided under it. */
   closing: boolean;
+  /** Its close in flight (close): one at a time, a second joining it. */
+  closed?: Promise<boolean>;
   ended: boolean;
   lastUsed: number;
 }
@@ -1049,20 +1051,26 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
    * (numbered from its range) is sent, then it is released, so no op names a
    * number of a lease the session no longer holds. Where what was decided
    * there cannot be logged yet (freezing refused), it is not given back: it
-   * stays held, its bytes the runtime's, and the next flush (a sync, the
-   * settle at the run's end) reports the refusal (false).
+   * stays as it was (held, or closing for whoever set that), its bytes the
+   * runtime's, and the next flush (a sync, the settle at the run's end)
+   * reports the refusal (false). One close at a time: a second joins it.
    */
-  const close = async (grant: Grant): Promise<boolean> => {
+  const close = (grant: Grant): Promise<boolean> => {
+    if (grant.closed !== undefined) return grant.closed;
+    const wasClosing = grant.closing;
     grant.closing = true;
     try {
       options.freezing?.(grant.root);
     } catch {
-      grant.closing = false;
-      return false;
+      grant.closing = wasClosing;
+      return Promise.resolve(false);
     }
-    await client.flush();
-    await end(grant);
-    return true;
+    grant.closed = (async () => {
+      await client.flush();
+      await end(grant);
+      return true;
+    })();
+    return grant.closed;
   };
 
   /** Release `grant` (its log already sent: close). */
