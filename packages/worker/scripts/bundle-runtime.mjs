@@ -231,6 +231,14 @@ if (spec.auxiliary_bins) {
   }
 }
 
+/** `path` holds the bytes the spec pins for `what`, or the run stops: a URL's bytes can change under it. */
+function assertPinned(path, sha256, what) {
+  const got = createHash('sha256').update(readFileSync(path)).digest('hex');
+  if (got === sha256) return;
+  console.error(`[bundle-runtime] ${what}: sha256 ${got}; ${sha256 === undefined ? 'the spec pins none' : `the spec pins ${sha256}`}`);
+  process.exit(1);
+}
+
 // ── 0. Optional repackage step (sysroot-prep wave) ──────────────────
 // Runs BEFORE the fetch loop. Produces one or more local files inside
 // workDir that the fetch loop then sees as "already downloaded" (its
@@ -264,7 +272,8 @@ for (const f of spec.files) {
       const tarballLocal = join(workDir, '_tarball.tgz');
       if (!existsSync(tarballLocal)) {
         console.log(`[bundle-runtime] fetch tarball ${spec.upstream_base}`);
-        execSync(`curl -sS -L -k -o "${tarballLocal}" "${spec.upstream_base}"`, { stdio: 'inherit' });
+        execSync(`curl -sS -L -o "${tarballLocal}" "${spec.upstream_base}"`, { stdio: 'inherit' });
+        assertPinned(tarballLocal, spec.upstream_sha256, spec.upstream_base);
       }
       console.log(`[bundle-runtime] extract ${spec.tarball_extract}/${f.src}`);
       execSync(
@@ -291,6 +300,7 @@ for (const f of spec.files) {
       const url = `${spec.upstream_base}/${f.src}`;
       console.log(`[bundle-runtime] fetch ${url}`);
       execSync(`curl -sS -L -o "${local}" "${url}"`, { stdio: 'inherit' });
+      assertPinned(local, f.sha256, url);
     }
   }
   const sourceBytes = readFileSync(local);
@@ -812,9 +822,7 @@ function writeNpmPackage(outDir, manifest, downloaded) {
   console.log(`\n[bundle-runtime] DONE (npm package)`);
   console.log(`[bundle-runtime] ${spec.npm.name}@${npmVersion} → ${outDir}`);
   console.log(`[bundle-runtime] ${written.size} blobs, ${(unpackedBytes / 1024 / 1024).toFixed(2)} MiB unpacked`);
-  // `--tag latest` because a rebuild (`5.2.37-2`) sorts below the build it
-  // replaces; see packages/core/scripts/check-runtime-packages.mjs.
-  console.log(`[bundle-runtime] publish with: cd ${outDir} && npm publish --tag latest --access public --auth-type=web`);
+  console.log('[bundle-runtime] npm gets it from the publish workflow with the release that needs it (scripts/ci/publish-pack.mjs)');
   console.log(`[bundle-runtime] R2: UNTOUCHED (nothing was read from or written to Cloudflare)`);
 }
 

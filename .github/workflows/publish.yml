@@ -1,0 +1,45 @@
+# npm releases, published by npm trusted publishing (OIDC): no npm token
+# exists anywhere. scripts/ci/promote.mjs pushes the tag npm/<sha12> once
+# production serves that commit and its live checks are green. The publish
+# job packs the commit with every gate (scripts/ci/publish-pack.mjs) and
+# publishes each version npm lacks (scripts/ci/npm-publish.mjs), in the `npm`
+# environment, which only npm/* tags may use and which each package's trust
+# names. A tag npm-dry-run/<sha12> runs the same pack and `npm publish
+# --dry-run`, outside that environment and with no OIDC token.
+name: publish
+
+on:
+  push:
+    tags: ['npm/*', 'npm-dry-run/*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: startsWith(github.ref, 'refs/tags/npm/')
+    runs-on: ubuntu-24.04
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/npm-pack
+      - run: bun scripts/ci/npm-publish.mjs --pack "$RUNNER_TEMP/pack.json" --tarballs "$RUNNER_TEMP/tarballs"
+
+  dry-run:
+    if: startsWith(github.ref, 'refs/tags/npm-dry-run/')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/npm-pack
+      - run: bun scripts/ci/npm-publish.mjs --pack "$RUNNER_TEMP/pack.json" --tarballs "$RUNNER_TEMP/tarballs" --dry-run

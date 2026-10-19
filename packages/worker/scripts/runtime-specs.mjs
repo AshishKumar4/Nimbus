@@ -24,7 +24,9 @@ export const SPECS = {
     cliDefaultSync: true,
     license: 'Apache-2.0-with-LLVM-exception',
     wasi_namespace: 'wasi_unstable',
-    upstream_base: 'https://raw.githubusercontent.com/binji/wasm-clang/master',
+    // A commit, and each file's sha256 (bundle-runtime.mjs refuses other
+    // bytes): the publish workflow builds this unattended.
+    upstream_base: 'https://raw.githubusercontent.com/binji/wasm-clang/648c4a89997a351eef75cdaec3ef5b89d4937dec',
     npm: {
       name: '@nimbus-sh/runtime-clang',
       summary: 'clang 8.0.1 and wasm-ld for wasm32-wasi, with a wasi-libc sysroot',
@@ -35,9 +37,9 @@ export const SPECS = {
       version: '8.0.1',
     },
     files: [
-      { src: 'clang',       vfs: 'bin/clang',                  mode: 'exec',   runner: 'clang-runner', binName: 'clang' },
-      { src: 'lld',         vfs: 'bin/wasm-ld',                mode: 'exec',   runner: 'clang-runner', binName: 'wasm-ld', kind: 'linker' },
-      { src: 'sysroot.tar', vfs: 'share/clang/sysroot.tar' },
+      { src: 'clang',       vfs: 'bin/clang',                  mode: 'exec',   runner: 'clang-runner', binName: 'clang', sha256: '2a466f0e990329d3230b869d04fc20803eae96a7feb3a3f6c93e25a77b8aed1d' },
+      { src: 'lld',         vfs: 'bin/wasm-ld',                mode: 'exec',   runner: 'clang-runner', binName: 'wasm-ld', kind: 'linker', sha256: '36419ed202011765222098d7701218378b67f634d50f0a4625059ae2c9860f48' },
+      { src: 'sysroot.tar', vfs: 'share/clang/sysroot.tar', sha256: '2435a7b549af30c2be7ec249c405bc2e911ab0c6003012f0909ec3c131bff867' },
     ],
     // Bundled LICENSE text — Apache 2.0 with LLVM exception (full text below).
     // Source: https://github.com/llvm/llvm-project/blob/main/LICENSE.TXT
@@ -62,6 +64,7 @@ export const SPECS = {
     license: 'Ruby+BSD-2-Clause',
     wasi_namespace: 'wasi_snapshot_preview1',
     upstream_base: 'https://registry.npmjs.org/@ruby/3.3-wasm-wasi/-/3.3-wasm-wasi-2.9.3-2.9.4.tgz',
+    upstream_sha256: '91d97a5d4f2e9122c22333015a408fa39736a68f65e046b0399466fb8c2f0fe1',
     npm: {
       name: '@nimbus-sh/runtime-ruby',
       summary: 'Ruby 3.3.4 (ruby.wasm) for wasm32-wasi, with its stdlib packed in',
