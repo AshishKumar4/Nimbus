@@ -960,7 +960,7 @@ function registerWasmRuntimes(deps: {
   // as a one-shot that dies with it. Same for ruby, where a script is the
   // shape that may bind a port.
   const cpython = (restartsWaits: boolean) => lazy(async () => (await import('../runtime/cpython-runner.js'))
-    .makeCPythonRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes, network: deps.network, restartsWaits }));
+    .makeCPythonRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes, network: deps.network, restartsWaits, session }));
   const bash = lazy(async () => (await import('../runtime/bash-runner.js'))
     .makeBashRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes }));
   const runners: Record<string, RunnerFactory> = {
@@ -969,7 +969,7 @@ function registerWasmRuntimes(deps: {
     'ruby-runner': lazy(async () => (await import('../runtime/ruby-runner.js'))
       .makeRubyRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes, registry: deps.registry, getHome: deps.getHome, network: deps.network })),
     'clang-runner': lazy(async () => (await import('../runtime/clang-runner.js'))
-      .makeClangRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes })),
+      .makeClangRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes, session })),
     ...Object.fromEntries(Object.entries(GIT_RUNNER_CONTRACTS).map(([key, contract]) => [key, lazy(async () => {
       const [{ makeGitRunnerFactory }, { sqliteGitFsmonitorState }] = await Promise.all([
         import('../runtime/git-runner.js'), import('../runtime/git-fsmonitor.js'),

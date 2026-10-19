@@ -48,7 +48,7 @@ const commandContext = (filesystem, env) => runtimeContext(filesystem, { args: [
       kind: 'workerd-adapter',
     }],
   };
-  const run = makeCPythonRunnerFactory({ facets: loaderFacetHost(harness.env, harness.ctx, ISOLATE_NETWORK), filesystem, processes: runtimeSupervisor(), network: ISOLATE_NETWORK })(
+  const run = makeCPythonRunnerFactory({ facets: loaderFacetHost(harness.env, harness.ctx, ISOLATE_NETWORK), filesystem, processes: runtimeSupervisor(), network: ISOLATE_NETWORK, session: 'runtime-home-env' })(
     manifest,
     '/runtime/python',
     'python',

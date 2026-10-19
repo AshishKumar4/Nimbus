@@ -69,6 +69,7 @@ import type { SessionProcessSupervisor } from './session-process-supervisor.js';
 import type { NimbusFilesystemAuthority } from './os-contracts.js';
 import { openRuntimeStdio, runtimeOutput } from './runtime-stdio.js';
 import { errorText } from '../_shared/error-text.js';
+import { warmFacetKeys } from './warm-facets.js';
 
 const PYTHON_VERSION_FLAGS = new Set(['--version', '-V']);
 const PYTHON_HELP_FLAGS = new Set(['--help', '-h']);
@@ -221,7 +222,12 @@ export interface CPythonFacetResult {
   stderr: string;
   exitCode: number;
   error?: string;
+  /** A one-shot's: whether its worker may run another process (__wasiReusable). */
+  reusable?: boolean;
 }
+
+/** Idle warm CPython workers a session keeps, per interpreter: each holds its compiled python.wasm. */
+const WARM_CPYTHON_FACETS = 2;
 
 
 /**
@@ -255,8 +261,15 @@ export function makeCPythonRunnerFactory(deps: {
   startResident?: CPythonResidentStart;
   /** The installed image asks again a wait its host gave up on: its runner key's contract (CPYTHON_RUNNER_CONTRACTS). */
   restartsWaits: boolean;
+  /** The session the python processes run in: its warm facets are its own (warm-facets.ts). */
+  session: string;
 }): (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) =>
     Command {
+  // One set per interpreter: a warm worker holds the one python.wasm it compiled.
+  const warmKeys = {
+    plain: warmFacetKeys(deps.session, CPYTHON_RUNNER, WARM_CPYTHON_FACETS),
+    sci: warmFacetKeys(deps.session, `${CPYTHON_RUNNER}:sci`, WARM_CPYTHON_FACETS),
+  };
 
   return function cpythonRunnerFactory(manifest, installRoot, binName, _binKind) {
     const findFile = (rel: string): string | null => installedPath(manifest, installRoot, rel);
@@ -437,6 +450,12 @@ export function makeCPythonRunnerFactory(deps: {
       facetArgs.supervisorPid = stdio.pid;
       let exitCode = 1;
       let facet: import('./facet-host.js').Facet | null = null;
+      // A warm worker of the session's keeps the compiled interpreter; each
+      // process instantiates a fresh one in it (cpython-preamble.ts). Its key
+      // goes back only when the process ended clean, was not killed, and
+      // neither abandoned a syscall nor reached the network there.
+      const keys = wantsSci ? warmKeys.sci : warmKeys.plain;
+      const warm = keys.take();
       try {
       facet = deps.facets.open({
         // The variant is in the tag because a host's constructor-time wasm
@@ -453,11 +472,15 @@ export function makeCPythonRunnerFactory(deps: {
         preamble: buildCPythonPreamble(),
         // Opened, not read: the host reads it for the facet's load alone (FacetImage).
         wasmModules: { 'python.wasm': await vfs.image(wasmVfs) },
+        warm,
       });
 
+        // Killed while its image was read: it never starts.
+        stdio.signal.throwIfAborted();
         const result = await facet.submit(CPYTHON_RUN_TASK, facetArgs, {
           signal: stdio.signal,
         });
+        if (result.reusable === true && result.error === undefined && !stdio.signal.aborted) keys.give(warm);
         exitCode = result.error ? result.exitCode || 1 : result.exitCode;
         if (result.error) await ctx.stderr.write(`${binName}: ${result.error}\n`);
         return exitCode;

@@ -5,6 +5,14 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Changed: a `python3` one-shot (`-c`, a script, `-m`) and a `clang` or
+  `wasm-ld` run go to one of their session's warm workers, which keep the
+  compiled interpreter or tool, instead of loading it into a new worker
+  every time. Each process instantiates a fresh one there, so it finds
+  nothing an earlier process left. A worker is used again only after a
+  process that ended clean, was not killed, and never reached the network
+  (a socket); a session keeps at most two idle per interpreter or tool.
+
 - Fixed: a WASI program (python, ruby, clang, bash) could see a stale name
   after another process changed it. A lookup or listing asked before the
   change and answered after it could put back a deleted file, keep the old

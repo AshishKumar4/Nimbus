@@ -180,14 +180,17 @@ for (const [key, contract] of Object.entries(GIT_RUNNER_CONTRACTS)) {
     },
   );
 }
+let clangFactory: Promise<RunnerFactory> | null = null;
 workspace.runtimes.registerRunner(
   'clang-runner',
   (manifest, installRoot, binName, binKind) => async (ctx: CommandContext) => {
-    const { makeClangRunnerFactory } = await import('@nimbus-sh/core/runtime/clang-runner.js');
-    const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
-    return await makeClangRunnerFactory({ facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem, processes: self.processes })(
-      manifest, installRoot, binName, binKind,
-    )(ctx);
+    // One factory per session: it holds the session's warm clang and wasm-ld workers' keys.
+    clangFactory ??= (async () => {
+      const { makeClangRunnerFactory } = await import('@nimbus-sh/core/runtime/clang-runner.js');
+      const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
+      return makeClangRunnerFactory({ facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem, processes: self.processes, session: self.ctx.id.toString() });
+    })().catch((error) => { clangFactory = null; throw error; });
+    return await (await clangFactory)(manifest, installRoot, binName, binKind)(ctx);
   },
 );
 // Pyodide v1 — Python 3.13 via the same R2-package-manager
@@ -200,6 +203,7 @@ workspace.runtimes.registerRunner(
 // no flags that would consume args) drops into an interactive
 // REPL. The wrap is purely additive — args-bearing invocations
 // pass through to the existing handler unchanged.
+const cpythonFactories = new Map<boolean, Promise<RunnerFactory>>();
 const cpython = (restartsWaits: boolean): RunnerFactory => (manifest, installRoot, binName, binKind) => async function pythonReplOrOneShot(ctx: CommandContext): Promise<number> {
   const argv: string[] = ctx.args || [];
   // No args at all → REPL session. Hand off to runPythonRepl
@@ -226,19 +230,29 @@ const cpython = (restartsWaits: boolean): RunnerFactory => (manifest, installRoo
       start: { cwd: ctx.cwd || shell.getCwd(), binName },
     });
   }
-  // Args present (one-shot mode: -c, script, -m, -). Fall through
-  // to the canonical handler (imported lazily on first use).
-  const { makeCPythonRunnerFactory } = await import('@nimbus-sh/core/runtime/cpython-runner.js');
-  const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
-  const { cpythonResidentStart } = await import('../runtime/cpython-resident.js');
-  return await makeCPythonRunnerFactory({
-    facets: facetHostForManager(facetMgr),
-    filesystem: workspace.filesystem,
-    processes: self.processes,
-    startResident: cpythonResidentStart(facetMgr),
-    network: workspace.network,
-    restartsWaits,
-  })(manifest, installRoot, binName, binKind)(ctx);
+  // Args present (one-shot mode: -c, script, -m, -). Fall through to the
+  // canonical handler, one per runner contract for the session (imported
+  // lazily on first use): it holds the session's warm CPython workers' keys.
+  let factory = cpythonFactories.get(restartsWaits);
+  if (!factory) {
+    factory = (async () => {
+      const { makeCPythonRunnerFactory } = await import('@nimbus-sh/core/runtime/cpython-runner.js');
+      const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
+      const { cpythonResidentStart } = await import('../runtime/cpython-resident.js');
+      return makeCPythonRunnerFactory({
+        facets: facetHostForManager(facetMgr),
+        filesystem: workspace.filesystem,
+        processes: self.processes,
+        startResident: cpythonResidentStart(facetMgr),
+        network: workspace.network,
+        restartsWaits,
+        session: self.ctx.id.toString(),
+      });
+    })();
+    factory.catch(() => cpythonFactories.delete(restartsWaits));
+    cpythonFactories.set(restartsWaits, factory);
+  }
+  return await (await factory)(manifest, installRoot, binName, binKind)(ctx);
 };
 // Each runner key's build, on its own contract (CPYTHON_RUNNER_CONTRACTS).
 for (const [key, { restartsWaits }] of Object.entries(CPYTHON_RUNNER_CONTRACTS)) workspace.runtimes.registerRunner(key, cpython(restartsWaits));

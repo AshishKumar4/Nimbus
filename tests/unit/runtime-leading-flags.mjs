@@ -49,6 +49,7 @@ const unreachableFacets = {
   const runClang = makeClangRunnerFactory({
     facets: unreachableFacets,
     filesystem,
+    session: 'runtime-leading-flags',
   })(manifest, '/runtime/clang', 'clang', undefined);
   const invocation = outputContext(filesystem, ['main.c', '--version']);
   assert.equal(await runClang(invocation.ctx), 127);
