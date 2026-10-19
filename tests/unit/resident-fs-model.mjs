@@ -197,6 +197,14 @@ async function runSteps(steps, met, grants) {
       if (file === undefined) continue;
       assert.equal(Number(stat.size), file.size, `${label}: ${name} size`);
       assert.equal(Number(stat.mode) & 0o7777, file.mode, `${label}: ${name} mode`);
+      // A read of the name that cannot wait, a grant just given back included: what the model has, or
+      // refused where the view does not hold the bytes (EAGAIN); never older bytes than the process wrote.
+      if (file.bytes === null) continue;
+      let bytes;
+      const code = await errnoOf(() => { bytes = sync.readFile(path(name)); });
+      if (code === 'EAGAIN') continue;
+      assert.equal(code, null, `${label}: ${name} read now ${code}`);
+      assert.equal(dec.decode(bytes), dec.decode(file.bytes), `${label}: ${name} read now`);
     }
   };
 
