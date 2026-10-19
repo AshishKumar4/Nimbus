@@ -248,6 +248,9 @@ export function residentFilesystem(session, resident, delegation) {
             // What it sent changed the session: the store catches up before it answers next.
             sent: () => { owed++; directoryPool?.invalidate(); },
         });
+        // Each row the view takes in reaches the file the process holds by that number, in the same turn.
+        const decisions = holder.provisional;
+        resident.onAdmitted?.((key, entry) => decisions.admitted(key, entry));
         if (delegation.readDirectories)
             directoryPool = readDirectoryPool({
                 call: (request) => { delegated('readDirectories'); return begin(() => delegation.readDirectories(request)); }, store, client: holder.client,
@@ -849,7 +852,16 @@ export function residentFilesystem(session, resident, delegation) {
         return '/' + key;
     }), () => authority.realpath(path));
     /** A descriptor of the holder's, as an open answers it: with its stat, the holder's. */
-    const heldOpen = (handle) => ({ ...handle, stat: statOf(holder.fstat(handle.id)) });
+    /** `handleId`'s file's attributes, by its identity; where the view can say nothing of it now, what a stat by name there says (notResident). */
+    const identified = (handleId, syscall) => {
+        const entry = holder.fstat(handleId);
+        if (entry !== undefined)
+            return entry;
+        if (now)
+            notNow();
+        throw notResident(syscall, handleId);
+    };
+    const heldOpen = (handle) => ({ ...handle, stat: statOf(identified(handle.id, 'open')) });
     fs.access = (path, mode) => answer('access', () => after(resolve(path, true), (key) => {
         if (key === DELEGATE || key === '')
             return DELEGATE;
@@ -1086,8 +1098,9 @@ export function residentFilesystem(session, resident, delegation) {
                 // As its open description at the session has it (its names, its size), as its reads are.
                 if (!now && holder.provisional.descriptor(handleId).inode.cell === undefined && holder.provisional.sessionOf(handleId) !== undefined)
                     return statByAnchor(handleId);
+                const entry = identified(handleId, 'fstat');
                 counts.local++;
-                return statOf(holder.fstat(handleId));
+                return statOf(entry);
             });
         delegated('fstat');
         return authority.fstat(handleId);
@@ -1253,7 +1266,8 @@ export function residentFilesystem(session, resident, delegation) {
             }
             if (now)
                 throw NOT_NOW;
-            const identity = held.fstat(target.handle);
+            // Its file by its identity, not by what a stat would say of it now.
+            const identity = { dev: desc.inode.dev, ino: desc.inode.ino };
             const name = '/' + held.keyOf(target.handle);
             return held.flush().then(() => held.provisional.sessionOf(target.handle)).then((session) => (session === undefined
                 ? openIdentified(fs, name, false, flags, identity)

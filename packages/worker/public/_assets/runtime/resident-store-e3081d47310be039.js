@@ -1147,6 +1147,7 @@ var __nimbusResidentModule = (() => {
   function createNamespace(coherence, admission) {
     const realNow = Date.now;
     let links = new SafeSet();
+    let putListener = null;
     let unlisted = new SafeMap();
     let cred = null;
     let ok = false;
@@ -1205,6 +1206,7 @@ var __nimbusResidentModule = (() => {
       else links.delete(k);
       if (mount !== null) unlisted.set(k, mount);
       else unlisted.delete(k);
+      putListener?.(k);
     };
     const tryPut = (t, k, stat, rev, target, unlistedAt) => {
       try {
@@ -1475,6 +1477,9 @@ var __nimbusResidentModule = (() => {
       },
       markListed(dir) {
         listed.add(dir);
+      },
+      onPut(listener) {
+        putListener = listener;
       },
       /** Forget that `dir` and every directory beneath it are listed: a change no delta itemises may have moved their names. */
       forgetListed
@@ -2120,7 +2125,14 @@ var __nimbusResidentModule = (() => {
             return false;
           },
           reserve: (bytes) => admission.pin(bytes),
-          release: (bytes) => admission.unpin(bytes)
+          release: (bytes) => admission.unpin(bytes),
+          // Each row as it is put, the process's (one listener: this view's process, a later one replacing it).
+          onAdmitted(listener) {
+            namespace.onPut((k) => {
+              const entry = view.entry(k);
+              if (entry) listener(k, entry);
+            });
+          }
         };
         return view;
       }

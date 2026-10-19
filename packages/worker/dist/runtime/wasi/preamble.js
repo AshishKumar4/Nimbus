@@ -193,6 +193,8 @@ function __wasiStartResident(sup, cred) {
     let view = kept === null ? null : store.lazy.namespaceView(supervisor, kept.device, cred);
     if (view !== null && !view.ready())
         view = null;
+    /** The process's admission listener, given to the view once there is one (ResidentNamespace.onAdmitted). */
+    let admitted = null;
     if (view === null)
         store.bindInMemory(WASI_RESIDENT_STORE_BYTES);
     const ready = view !== null ? Promise.resolve(view) : (async () => {
@@ -201,6 +203,8 @@ function __wasiStartResident(sup, cred) {
         if (root === null || !(await store.lazy.bootLazy(supervisor)))
             return null;
         view = store.lazy.namespaceView(supervisor, root.dev, cred);
+        if (admitted !== null)
+            view.onAdmitted?.(admitted);
         return view;
     })().catch(() => { view = null; return null; });
     const booting = {
@@ -221,6 +225,10 @@ function __wasiStartResident(sup, cred) {
         admit: (answer) => view === null ? Promise.resolve(false) : view.admit(answer),
         reserve: (bytes) => view !== null && view.reserve(bytes),
         release: (bytes) => { view?.release(bytes); },
+        onAdmitted: (listener) => {
+            admitted = listener;
+            view?.onAdmitted?.(listener);
+        },
     };
     // The process holds the subtrees it writes (delegation-holder.ts): its
     // creates, writes, mkdirs, unlinks and renames there are decided here and

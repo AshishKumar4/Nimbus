@@ -962,6 +962,25 @@ const FOUND = [
     { op: 'write', fd: 1, offset: null, data: 'qsq' },
     { op: 'catchUp' },
   ] },
+  // A descriptor whose file a peer renamed, the names' directory renamed and back: through it, that file as the view has it.
+  { name: 'a descriptor of a file a peer renamed, its directory renamed and back', grants: true, steps: [
+    { op: 'open', fd: 0, name: 'a', flags: { read: false, write: true, append: false, create: true, exclusive: true, truncate: false } },
+    { op: 'copy', from: 'a', to: 'b' },
+    { op: 'peer', kind: 'rename', name: 'a', to: 'b', data: 'pq', mode: 292 },
+    { op: 'peer', kind: 'write', name: 'b', to: 'a', data: 'pq', mode: 420 },
+    { op: 'rename', from: 'b', to: 'c' },
+    { op: 'swap', awaited: false },
+  ] },
+  { name: 'a read through a descriptor of a file a peer renamed twice, its directory renamed and back', grants: true, steps: [
+    { op: 'open', fd: 2, name: 'a', flags: { read: true, write: true, append: true, create: true, exclusive: false, truncate: false } },
+    { op: 'peer', kind: 'rename', name: 'a', to: 'b', data: 'rq', mode: 292 },
+    { op: 'swap', awaited: true },
+    { op: 'writeFile', name: 'b', data: 'rr' },
+    { op: 'copy', from: 'b', to: 'a' },
+    { op: 'peer', kind: 'rename', name: 'a', to: 'b', data: 'rq', mode: 420 },
+    { op: 'unlink', name: 'a' },
+    { op: 'swap', awaited: false },
+  ] },
 ];
 for (const found of FOUND) {
   const failure = await run(found.steps, found.grants).then(() => null, (error) => error);

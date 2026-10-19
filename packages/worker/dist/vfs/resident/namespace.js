@@ -78,6 +78,8 @@ export function createNamespace(coherence, admission) {
     const realNow = Date.now;
     /** Paths of every symlink in the table: resolution walks only past these. */
     let links = new SafeSet();
+    /** Told of each row put (onPut). */
+    let putListener = null;
     /**
      * Directories on a mount whose entries the listing did not name (the launch
      * did not name them, or they were past its bound), each to the mount point
@@ -153,6 +155,7 @@ export function createNamespace(coherence, admission) {
             unlisted.set(k, mount);
         else
             unlisted.delete(k);
+        putListener?.(k);
     };
     // The authority operation may succeed while metadata cannot be cached.
     // A heap put refused for room has sealed the sync view; keep the async result.
@@ -459,6 +462,9 @@ export function createNamespace(coherence, admission) {
         listedAt(k) { return listed.has(nsParent(k)); },
         isListed(dir) { return listed.has(dir); },
         markListed(dir) { listed.add(dir); },
+        onPut(listener) {
+            putListener = listener;
+        },
         /** Forget that `dir` and every directory beneath it are listed: a change no delta itemises may have moved their names. */
         forgetListed,
     };

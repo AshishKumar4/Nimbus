@@ -14,10 +14,12 @@ export const user = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 /**
  * A process over a real session. `view`: its store is a view as a resident's
  * is, what it read of a name kept as read until a barrier reads it again
- * (`view.barrier` runs after); else the store reads the session at every
- * call. `acquired`: what the session's grant waits for. `grantBytes`: the
+ * (`view.barrier` runs after, within the barrier); else the store reads the
+ * session at every call. `view.forget()` true at a barrier: the view starts
+ * anew there, knowing no name until one is looked up or its directory listed
+ * again (as a resident's lazy store after a barrier it cannot apply). `acquired`: what the session's grant waits for. `grantBytes`: the
  * storage a grant reserves.
- * @param {{ grantInos?: number, journal?: any, gate?: PromiseLike<unknown>, refuse?: () => boolean, view?: { barrier?: () => unknown }, acquired?: PromiseLike<unknown>, grantBytes?: number, budget?: { used: number, limit: number } }} [options]
+ * @param {{ grantInos?: number, journal?: any, gate?: PromiseLike<unknown>, refuse?: () => boolean, view?: { barrier?: () => unknown, forget?: () => boolean }, acquired?: PromiseLike<unknown>, grantBytes?: number, budget?: { used: number, limit: number } }} [options]
  */
 export function session({ grantInos, journal, gate, refuse, view, acquired, grantBytes, budget } = {}) {
   const harness = createSqliteVfsTestHarness();
@@ -50,10 +52,18 @@ export function session({ grantInos, journal, gate, refuse, view, acquired, gran
   const cursorNow = () => ({ epoch: engine.epoch, rev: engine.revision() });
   const seen = new Map();
   let cursor = cursorNow();
-  const viewed = (key) => {
-    if (!seen.has(key)) seen.set(key, { entry: entryNow(key), content: contentNow(key) });
-    return seen.get(key);
+  /** The process's admission listener (ResidentNamespace.onAdmitted): told of each row the view takes in, as it does. */
+  let admitted = null;
+  const admit = (key) => {
+    const row = { entry: entryNow(key), content: contentNow(key) };
+    seen.set(key, row);
+    if (row.entry) admitted?.(key, row.entry);
+    return row;
   };
+  /** Started anew (view.forget): the names looked up and the directories listed since, the only ones it knows. */
+  let known = null;
+  const viewed = (key) => seen.get(key) ?? admit(key);
+  const parentOf = (key) => key.slice(0, Math.max(0, key.lastIndexOf('/')));
   /** A name in a directory the session does not have is not the view's to say (the process's own word may make one there). */
   const parentKnown = (key) => {
     const at = key.lastIndexOf('/');
@@ -65,19 +75,26 @@ export function session({ grantInos, journal, gate, refuse, view, acquired, gran
     device,
     cred: user,
     ready: () => true,
-    entry: (key) => (!view ? entryNow(key) : viewed(key).entry === null && !parentKnown(key) ? undefined : viewed(key).entry),
+    entry: (key) => {
+      if (!view) return entryNow(key);
+      if (known !== null && !known.has(key) && !known.has(parentOf(key) + '/')) return undefined;
+      return viewed(key).entry === null && !parentKnown(key) ? undefined : viewed(key).entry;
+    },
     children: (key) => {
       try { return bridge.readdir('/' + key); } catch { return undefined; }
     },
-    list: async () => true,
-    lookup: async () => true,
+    list: async (key) => { known?.add(key + '/'); return true; },
+    lookup: async (keys) => { for (const key of keys) known?.add(key); return true; },
     listTree: async () => false,
     content: (key) => (view ? viewed(key).content : contentNow(key)),
     fill: async (key) => bridge.readFile('/' + key),
     cursor: () => (view ? cursor : cursorNow()),
     barrier: async () => {
       if (!view) return true;
-      for (const key of seen.keys()) seen.set(key, { entry: entryNow(key), content: contentNow(key) });
+      if (view.forget?.() === true) {
+        seen.clear();
+        known = new Set(['']);
+      } else for (const key of [...seen.keys()]) admit(key);
       cursor = cursorNow();
       await view.barrier?.();
       return true;
@@ -90,6 +107,7 @@ export function session({ grantInos, journal, gate, refuse, view, acquired, gran
       return true;
     },
     release: (bytes) => { if (budget !== undefined) budget.used -= bytes; },
+    ...(view ? { onAdmitted: (listener) => { admitted = listener; } } : {}),
   };
   const waves = [];
   // In process: nothing between the client and the session loses a call, so it fences nothing.

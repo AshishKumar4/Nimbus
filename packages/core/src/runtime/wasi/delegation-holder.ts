@@ -149,7 +149,8 @@ export interface DelegationHolder {
   write(handleId: number, offset: number | null, bytes: Uint8Array): number;
   seek(handleId: number, offset: number, whence: 'set' | 'current' | 'end'): number;
   ftruncate(handleId: number, size: number): void;
-  fstat(handleId: number): ResidentEntry;
+  /** Its file's attributes, by its identity: undefined where the view can say nothing of it now (Provisional.fstat). */
+  fstat(handleId: number): ResidentEntry | undefined;
   close(handleId: number): void;
   /** The name a descriptor of the holder's writes, now. */
   keyOf(handleId: number): string;
@@ -564,6 +565,15 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
   };
 
   /** Descriptor `handleId` where its file's grant decides it (its cell), else undefined: the provisional decisions' to answer. */
+  /** What a descriptor of a grant's file stats: its file at its name, at its cell's size; one whose name went, as it was then. */
+  const heldEntry = (handle: Desc & { inode: Inode & { cell: HeldCell } }): ResidentEntry => {
+    const file = handle.inode.cell;
+    if (file.detached !== undefined) return { ...file.detached, size: file.length };
+    const entry = atName(handle.inode);
+    if (!entry) throw fsError('EBADF', 'fstat', handle.path);
+    return { ...entry, size: file.length };
+  };
+
   const heldDesc = (handleId: number): (Desc & { inode: Inode & { cell: HeldCell } }) | undefined => {
     const desc = prov.descriptor(handleId);
     if (desc === undefined) throw fsError('EBADF', 'fd', String(handleId));
@@ -760,7 +770,8 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       const handle = holder.open(key, path, flags, bytes.byteLength);
       if (handle === undefined) return undefined;
       holder.write(handle.id, 0, bytes);
-      const revision = holder.fstat(handle.id).revision;
+      const held = heldDesc(handle.id);
+      const revision = held === undefined ? undefined : heldEntry(held).revision;
       holder.close(handle.id);
       return revision;
     },
@@ -822,14 +833,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
 
     fstat: (handleId) => {
       const handle = heldDesc(handleId);
-      if (handle === undefined) return prov.fstat(handleId);
-      const inode = handle.inode;
-      const file = inode.cell;
-      // Its name gone: the description's own file, as it was then.
-      if (file.detached !== undefined) return { ...file.detached, size: file.length };
-      const entry = atName(inode);
-      if (!entry) throw fsError('EBADF', 'fstat', handle.path);
-      return { ...entry, size: file.length };
+      return handle === undefined ? prov.fstat(handleId) : heldEntry(handle);
     },
 
     close: (handleId) => prov.close(handleId),

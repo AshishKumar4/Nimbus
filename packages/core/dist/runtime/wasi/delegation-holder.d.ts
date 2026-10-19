@@ -135,7 +135,8 @@ export interface DelegationHolder {
     write(handleId: number, offset: number | null, bytes: Uint8Array): number;
     seek(handleId: number, offset: number, whence: 'set' | 'current' | 'end'): number;
     ftruncate(handleId: number, size: number): void;
-    fstat(handleId: number): ResidentEntry;
+    /** Its file's attributes, by its identity: undefined where the view can say nothing of it now (Provisional.fstat). */
+    fstat(handleId: number): ResidentEntry | undefined;
     close(handleId: number): void;
     /** The name a descriptor of the holder's writes, now. */
     keyOf(handleId: number): string;

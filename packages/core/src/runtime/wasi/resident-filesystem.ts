@@ -114,6 +114,14 @@ export interface ResidentNamespace {
   reserve(bytes: number): boolean;
   /** Return what `reserve` charged. */
   release(bytes: number): void;
+  /**
+   * `listener` is told of each row the view takes in (a barrier's or an
+   * answer's delta, a listing, a lookup), as `entry` at `key`, synchronously
+   * within the admission: in the same turn the view holds the row, before
+   * any caller can read it, so whoever holds a file by its number has its
+   * row and name as the view does, never one behind.
+   */
+  onAdmitted?(listener: (key: string, entry: ResidentEntry) => void): void;
 }
 
 /** A file's bytes, kept for a descriptor's lifetime: `release` when it closes. */
@@ -479,6 +487,9 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       // What it sent changed the session: the store catches up before it answers next.
       sent: () => { owed++; directoryPool?.invalidate(); },
     });
+    // Each row the view takes in reaches the file the process holds by that number, in the same turn.
+    const decisions = holder.provisional;
+    resident.onAdmitted?.((key, entry) => decisions.admitted(key, entry));
     if (delegation.readDirectories) directoryPool = readDirectoryPool({
       call: (request) => { delegated('readDirectories'); return begin(() => delegation.readDirectories!(request)); }, store, client: holder.client,
       before: async () => { if (holder?.pending()) await holder.send(); },
@@ -1007,7 +1018,14 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   }), () => authority.realpath(path));
 
   /** A descriptor of the holder's, as an open answers it: with its stat, the holder's. */
-  const heldOpen = (handle: RuntimeFileHandle): RuntimeOpenedFile => ({ ...handle, stat: statOf(holder!.fstat(handle.id)) });
+  /** `handleId`'s file's attributes, by its identity; where the view can say nothing of it now, what a stat by name there says (notResident). */
+  const identified = (handleId: number, syscall: string): ResidentEntry => {
+    const entry = holder!.fstat(handleId);
+    if (entry !== undefined) return entry;
+    if (now) notNow();
+    throw notResident(syscall, handleId);
+  };
+  const heldOpen = (handle: RuntimeFileHandle): RuntimeOpenedFile => ({ ...handle, stat: statOf(identified(handle.id, 'open')) });
 
   fs.access = (path, mode) => answer<void>('access', () => after(resolve(path, true), (key) => {
     if (key === DELEGATE || key === '') return DELEGATE;
@@ -1213,8 +1231,9 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     if (holder?.owns(handleId)) return caughtUpFor(() => {
       // As its open description at the session has it (its names, its size), as its reads are.
       if (!now && holder!.provisional.descriptor(handleId)!.inode.cell === undefined && holder!.provisional.sessionOf(handleId) !== undefined) return statByAnchor(handleId);
+      const entry = identified(handleId, 'fstat');
       counts.local++;
-      return statOf(holder!.fstat(handleId));
+      return statOf(entry);
     });
     delegated('fstat');
     return authority.fstat(handleId);
@@ -1356,7 +1375,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       const local = !now && described ? undefined : held.reopen(target.handle, flags);
       if (local !== undefined) { counts.local++; return heldOpen(local); }
       if (now) throw NOT_NOW;
-      const identity = held.fstat(target.handle);
+      // Its file by its identity, not by what a stat would say of it now.
+      const identity = { dev: desc.inode.dev, ino: desc.inode.ino };
       const name = '/' + held.keyOf(target.handle);
       return held.flush().then(() => held.provisional.sessionOf(target.handle)).then((session) => (session === undefined
         ? openIdentified(fs, name, false, flags, identity)

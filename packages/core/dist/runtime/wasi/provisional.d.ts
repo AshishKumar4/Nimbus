@@ -126,8 +126,6 @@ export interface Inode {
     key: string;
     /** The name it is reached by in the view, its retired renames included: where a replay of the pending ones starts it. */
     origin: string;
-    /** The name the session last opened it by (an open's answer): where the view will have it, a peer's rename since included. */
-    opened?: string;
     /** Its row: the view's as last read while nothing of the process's is pending on it, or what this process made it. */
     row: ResidentEntry;
     /**
@@ -148,14 +146,14 @@ export interface Inode {
     descs: number;
     /** An open description at the session whose descriptor closed while others of the file stay open, none of them with one: kept until the last closes (at most one), its anchor. */
     retained: string[];
-    /** What it holds back of the budget for its pending opens' answers: an Inode another file may need (reconcile). */
-    credit: number;
+    /** Its opens not answered yet: it stays while an answer may still name it (reconcile). */
+    answers: number;
     /** The view's bytes of it at `revision` its descriptors last read: what they read once the view no longer has a name for it. */
     pin?: {
         readonly revision: number;
         readonly bytes: Uint8Array;
     };
-    /** What it holds of the process's budget: cost(inode), its credit included, and never more but transiently. */
+    /** What it holds of the process's budget: cost(inode), and never more but transiently. */
     reserved: number;
     /** While a grant decides it: its content, which every descriptor of it reads and writes. Its bytes are the grant's, not the budget's. */
     cell?: HeldCell;
@@ -278,7 +276,14 @@ export interface Provisional {
     write(handleId: number, offset: number | null, bytes: Uint8Array): number;
     ftruncate(handleId: number, size: number): void;
     seek(handleId: number, offset: number, whence: 'set' | 'current' | 'end'): number;
-    fstat(handleId: number): ResidentEntry;
+    /** Its file's attributes, by its identity: undefined where the view can say nothing of it now (unknown: as a stat by name there). */
+    fstat(handleId: number): ResidentEntry | undefined;
+    /**
+     * The view took in `entry` at `key` (ResidentNamespace.onAdmitted): a file
+     * these decisions hold by its number is at `key` in the view from now on,
+     * its row that one, in the same turn the view's is.
+     */
+    admitted(key: string, entry: ResidentEntry): void;
     fsetattr(handleId: number, attrs: W7Attrs): void;
     close(handleId: number): void;
     dup(handleId: number): RuntimeFileHandle;
