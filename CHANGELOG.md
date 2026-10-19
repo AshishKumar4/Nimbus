@@ -5,12 +5,14 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
-- Fixed: a WASI program (python, ruby, clang, bash) could see a file
-  another process had deleted. A lookup or listing it asked before the
-  delete, answered after it, put the name back. A name under a directory
-  another process replaced was also still served. Now a lookup or listing
-  that a later change overtook adds nothing, and a replaced directory's
-  names are looked up again.
+- Fixed: a WASI program (python, ruby, clang, bash) could see a stale name
+  after another process changed it. A lookup or listing asked before the
+  change and answered after it could put back a deleted file, keep the old
+  file where another process renamed a new one onto the name, or hide a
+  name another process added. A name under a directory another process
+  replaced, renamed, or gave a new mode or owner was also still served.
+  Now a lookup or listing that a later change overtook adds nothing, and
+  that directory's names are looked up again.
 - Fixed: a Node program's `fs.statfs` reports the storage limit a session
   enforces (10,000,000,000 bytes, `DO_STORAGE_LIMIT_BYTES`) as its capacity.
   Before, it reported 10 GiB, 737,418,240 bytes more than a session can
