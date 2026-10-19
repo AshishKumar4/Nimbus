@@ -588,6 +588,28 @@ const metKnown = [];
  * only where no name led to it, so a read that could not wait was EAGAIN.
  */
 const FOUND = [
+  // A resident file overwritten same-size under a grant, the grant given back before the view admits the write: read now, the new bytes or EAGAIN, never the old.
+  { name: 'an overwritten resident file read now after a give-back', grants: true, steps: [
+    { op: 'writeFile', name: 'a', data: 'xy' },
+    { op: 'catchUp' },
+    { op: 'writeFile', name: 'a', data: 'pq' },
+    { op: 'writeFile', name: 'b', data: 'r' },
+    { op: 'peer', kind: 'write', name: 'c', to: 'c', data: 'zz', mode: 420 },
+    { op: 'catchUp' },
+  ] },
+  // A provisional open whose receipt resolves to a file a grant holds by then: one file, by both descriptors and by name.
+  { name: 'a receipt resolving to a held owner', grants: true, steps: [
+    { op: 'open', fd: 0, name: 'a', flags: { read: true, write: true, append: false, create: true, exclusive: false, truncate: false } },
+    { op: 'write', fd: 0, offset: null, data: 'x' },
+    { op: 'writeFile', name: 'b', data: 'q' },
+    { op: 'writeFile', name: 'c', data: 'w' },
+    { op: 'open', fd: 1, name: 'a', flags: { read: true, write: true, append: false, create: false, exclusive: false, truncate: false } },
+    { op: 'write', fd: 1, offset: 1, data: 'y' },
+    { op: 'deliver' },
+    { op: 'readAsync', fd: 0 },
+    { op: 'write', fd: 0, offset: null, data: 'z' },
+    { op: 'catchUp' },
+  ] },
   // A grant ends (a peer's change recalls it) with descriptors open on files it decided: they read and write on, and their names read what was written.
   { name: 'grant ends with descriptors open on held files', grants: true, steps: [
     { op: 'open', fd: 0, name: 'a', flags: { read: true, write: true, append: false, create: true, exclusive: false, truncate: true } },
