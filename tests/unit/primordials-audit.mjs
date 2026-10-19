@@ -70,6 +70,8 @@ const GUEST_LOADING = [
   join(CORE, 'src/_shared/relative-wasm-paths.ts'),
   // The filesystem reads it makes: the resident namespace's walk.
   fileURLToPath(new URL('../../packages/worker/src/vfs/resident/namespace-lookup.ts', import.meta.url)),
+  fileURLToPath(new URL('../../packages/worker/src/vfs/resident/namespace.ts', import.meta.url)),
+  fileURLToPath(new URL('../../packages/worker/src/vfs/resident/transport.ts', import.meta.url)),
 ];
 const FILES = [
   ...readdirSync(DIR).filter((f) => f.endsWith('.ts') && !UNCHECKED.has(f)).map((f) => join(DIR, f)),

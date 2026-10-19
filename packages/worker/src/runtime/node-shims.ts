@@ -2899,8 +2899,8 @@ const __fsMod = (() => {
       // the report is noted first: the write or mutation that owns the row
       // judges it against its own revision when that arrives, as it does for
       // a heap cell. A read in flight gets the same note.
-      if (Array.isArray(result.paths)) {
-        for (const entry of result.paths) _noteReport(entry);
+      if (__nimbusIsArray(result.paths)) {
+        for (let i = 0; i < result.paths.length; i++) _noteReport(result.paths[i]);
       }
       // N18: room for what it pushes, before it is held.
       await __resident.admission.roomForPushed(result);
@@ -2909,7 +2909,7 @@ const __fsMod = (() => {
         _cursor.epoch = admitted.cursor.epoch;
         _cursor.rev = admitted.cursor.rev;
         // A directory that became searchable has descendants no delta names.
-        for (const dir of admitted.relist) await __resident.transport.relist(supervisor, dir);
+        for (let i = 0; i < admitted.relist.length; i++) await __resident.transport.relist(supervisor, admitted.relist[i]);
         return admitted;
       });
       _nsRetire(begin);
@@ -3695,16 +3695,16 @@ const __fsMod = (() => {
     const end = meta ? Number(meta.size) || 0 : 0;
     // A charged read pays for the remainder it plans before issuing it.
     if (charge && !charge(end)) throw _fsErr("EFBIG", "read", displayPath);
-    const offsets = [];
-    for (let off = from; off < end; off += READ_STREAM_CHUNK_BYTES) offsets.push(off);
-    const chunks = await Promise.all(offsets.map((off) => _readRangeAt(
-      absPath, displayPath, off, Math.min(READ_STREAM_CHUNK_BYTES, end - off),
-    )));
-    const parts = [];
-    for (const chunk of chunks) {
-      if (chunk === null) break;
-      parts.push(chunk);
-      if (chunk.byteLength < READ_STREAM_CHUNK_BYTES) break;
+    const reads = new __PathList();
+    for (let off = from; off < end; off += READ_STREAM_CHUNK_BYTES) {
+      reads[reads.length] = _readRangeAt(absPath, displayPath, off, Math.min(READ_STREAM_CHUNK_BYTES, end - off));
+    }
+    const chunks = await __nimbusAll(reads);
+    const parts = new __PathList();
+    for (let i = 0; i < chunks.length; i++) {
+      if (chunks[i] === null) break;
+      parts[parts.length] = chunks[i];
+      if (chunks[i].byteLength < READ_STREAM_CHUNK_BYTES) break;
     }
     return parts;
   }
@@ -3918,7 +3918,7 @@ const __fsMod = (() => {
       _served.fsAcquired = false;
       await _acquireBarrier(supervisor);
       if (fill) fill.reported = Infinity;
-      return rpc(supervisor[op](...args));
+      return rpc(__nimbusApply(supervisor[op], supervisor, args));
     }
     const acquired = answer ? answer.acquired : undefined;
     // Taken as its answer arrives.

@@ -291,12 +291,33 @@ export function promiseSettled<T>(list: ArrayLike<T>): Promise<void> {
     for (let i = 0; i < list.length; i++) reflectApply(PromisePrototypeThen, reflectApply(PromiseResolve, PromiseConstructor, [list[i]]), [one, one]);
   });
 }
-/** Once every promise in `list` has fulfilled, or at the first rejection: Promise.all's wait, on the same captures. */
-export function promiseAll<T>(list: ArrayLike<T>): Promise<void> {
-  return new PromiseConstructor<void>((resolve, reject) => {
+/** What each promise in `list` fulfilled with, in its order, or the first rejection: Promise.all, on the same captures. */
+export function promiseAll<T>(list: ArrayLike<T>): Promise<SafeList<Awaited<T>>> {
+  return new PromiseConstructor<SafeList<Awaited<T>>>((resolve, reject) => {
+    const values = new SafeList<Awaited<T>>();
     let left = list.length;
-    if (left === 0) { resolve(); return; }
-    const one = (): void => { if (--left === 0) resolve(); };
-    for (let i = 0; i < list.length; i++) reflectApply(PromisePrototypeThen, reflectApply(PromiseResolve, PromiseConstructor, [list[i]]), [one, reject]);
+    if (left === 0) { resolve(values); return; }
+    for (let i = 0; i < list.length; i++) {
+      const at = i;
+      const one = (value: Awaited<T>): void => {
+        values[at] = value;
+        if (--left === 0) resolve(values);
+      };
+      reflectApply(PromisePrototypeThen, reflectApply(PromiseResolve, PromiseConstructor, [list[i]]), [one, reject]);
+    }
   });
 }
+
+export const dateNow = Date.now;
+export const mathMax = Math.max;
+export const mathCeil = Math.ceil;
+export const numberIsSafeInteger = Number.isSafeInteger;
+/** A list copied with ArrayCreate and CreateDataProperty, never its species or a prototype's setters. */
+export const arrayCopy: <T>(list: ArrayLike<T>) => T[] = uncurryThis(Reflect.get(Array.prototype, 'toSpliced'));
+/** TypedArray's byteLength accessor, reading only the view's internal slots. */
+export const typedArrayByteLength: (view: Uint8Array) => number = (() => {
+  const prototype = reflectGetPrototypeOf(Uint8Array.prototype);
+  const getter = reflectGetOwnPropertyDescriptor(prototype ?? {}, 'byteLength')?.get;
+  if (getter === undefined) throw new TypeErrorConstructor('TypedArray.prototype.byteLength is not an accessor');
+  return uncurryThis(getter);
+})();
