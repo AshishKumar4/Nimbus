@@ -35,7 +35,8 @@ const FILES = { 'App.tsx': 'export const App = () => <div className="text-red-50
 vfs.mkdir(dir, { recursive: true });
 for (const [name, body] of Object.entries(FILES)) vfs.writeFile(`${dir}/${name}`, enc.encode(body));
 
-// The session's ledger grants what is asked until the store holds the sources; then it has none left.
+// The session's ledger grants what is asked until the store holds the sources; then it has none left,
+// and the store's allowance is what it holds.
 let granting = true;
 const supervisor = {
   readFile: async (path) => {
@@ -54,12 +55,12 @@ const factory = new Function(
   '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
   '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode()
     + '\n;__resident.admission.setStorage({ facet: "proc-slot-0", grant: 0 }, __supervisor);'
-    + '\n;return { fs: __fsMod, held: (path) => __resident.cells.has(path) };',
+    + '\n;return { fs: __fsMod, held: (path) => __resident.cells.has(path), full: () => __resident.admission.setStorage({ facet: "proc-slot-0", grant: 0 }, __supervisor) };',
 );
 const statOf = (size) => ({ type: 'file', size, mode: 0o644, uid: 1000, gid: 1000 });
 const metadata = { 'home/user/reread': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 } };
 for (const [name, body] of Object.entries(FILES)) metadata[`home/user/reread/${name}`] = statOf(body.length);
-const { fs, held } = (declareNamespace({ metadata, manifest: { 'home/user': ['reread'], 'home/user/reread': Object.keys(FILES) } }), factory(
+const { fs, held, full } = (declareNamespace({ metadata, manifest: { 'home/user': ['reread'], 'home/user/reread': Object.keys(FILES) } }), factory(
   {}, {}, supervisor, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, dir, [], {}, `${dir}/entry.js`, dir,
 ));
 
@@ -70,6 +71,7 @@ for (const [name, body] of Object.entries(FILES)) assert.equal(fs.readFileSync(`
 
 // Now the store is at its cap, and the ledger has nothing more.
 granting = false;
+full();
 for (const [name, body] of Object.entries(FILES)) {
   assert.equal(await fs.promises.readFile(`${dir}/${name}`, 'utf8'), body, `${name} reads asynchronously`);
   assert.ok(held(`home/user/reread/${name}`), `${name} is still held after an async read of the same bytes, at the cap`);
