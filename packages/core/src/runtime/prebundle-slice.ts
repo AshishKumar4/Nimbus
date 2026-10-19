@@ -37,6 +37,15 @@ export interface SlicedDir {
 }
 export type SliceEntry = SlicedFile | SlicedDir;
 
+/** Bytes held by the payload's path and contents, as V8 keeps their strings and buffers. */
+export function prebundleEntryBytes(path: string, bytes = 0): number {
+  return bytes + path.length * (/[^\u0000-\u00ff]/.test(path) ? 2 : 1);
+}
+
+export function prebundleSliceBytes(slice: readonly SliceEntry[]): number {
+  return slice.reduce((bytes, entry) => bytes + prebundleEntryBytes(entry.path, entry.isDir ? 0 : entry.bytes.byteLength), 0);
+}
+
 /**
  * What a Vite dev server's modules read of their environment, as Vite's dev
  * values: `process.env.NODE_ENV` so React's CommonJS (and every other
