@@ -156,6 +156,8 @@ function applied(world, [way, op, a, b]) {
       const to = world.get(b);
       if (at === undefined || a === '' || a === b || under(b, a) || world.get(parentOf(b))?.type !== 'dir') return null;
       if (!root && (!mayChangeIn(world, a) || !mayChangeIn(world, b))) return null;
+      // A directory moved to another parent has its '..' rewritten: the process must be able to write it.
+      if (!root && at.type === 'dir' && parentOf(a) !== parentOf(b) && (bits(at) & 2) === 0) return null;
       if (to !== undefined && (to.type !== at.type || (to.type === 'dir' && childrenOf(world, b).length > 0))) return null;
       for (const rel of world.keys()) if (under(rel, b)) next.delete(rel);
       for (const [rel, state] of world) {
@@ -233,12 +235,14 @@ export function generate(seed, steps = 40) {
  * drawn schedule finds something new. A gap closed is removed from both.
  *   - unshownAwaitedChange: an awaited change outside a grant is not shown
  *     to a call that cannot wait until a barrier lands (O9);
- *   - readdirIsDirectory: a call that cannot wait to list a directory the
- *     view has not listed is refused EISDIR.
+ *   - refusedAsDirectory: a call that cannot wait, on a directory the view
+ *     cannot answer it for, is refused EISDIR, whatever it asked;
+ *   - absentWhileRelisted: a directory being relisted answers a name under
+ *     it as absent (B2).
  */
 export const KNOWN_GAPS = Object.freeze({
-  node: Object.freeze({}),
-  holder: Object.freeze({ unshownAwaitedChange: true, readdirIsDirectory: true }),
+  node: Object.freeze({ absentWhileRelisted: true }),
+  holder: Object.freeze({ unshownAwaitedChange: true, refusedAsDirectory: true }),
 });
 
 /** A finding: the schedule, the step, and what was wrong there. */
@@ -260,17 +264,20 @@ function laid(world, domain, effect) {
   return next;
 }
 
+/** Whether a stat (normalized; null for nothing) describes `state`. */
+function statIs(answer, state) {
+  if (state === undefined) return answer === null;
+  if (answer === null || answer.type !== (state.type === 'dir' ? 'directory' : 'file') || (answer.mode & 0o777) !== state.mode || answer.uid !== state.uid) return false;
+  return state.type !== 'file' || answer.size === enc.encode(state.content).byteLength;
+}
+
 /** Whether `answer` (of read `op` of `rel`) is what `world` says to the process. */
 function answers(op, rel, answer, world) {
   const blocked = unreachable(world, rel);
   if (blocked !== null) return op === 'stat' && blocked === 'ENOENT' ? answer === null : answer?.code === blocked;
   const state = world.get(rel);
   if (state !== undefined && op !== 'stat' && (bits(state) & 4) === 0) return answer?.code === 'EACCES';
-  if (op === 'stat') {
-    if (state === undefined) return answer === null;
-    if (answer === null || answer.type !== (state.type === 'dir' ? 'directory' : 'file') || (answer.mode & 0o777) !== state.mode || answer.uid !== state.uid) return false;
-    return state.type !== 'file' || answer.size === enc.encode(state.content).byteLength;
-  }
+  if (op === 'stat') return statIs(answer, state);
   if (op === 'readFile') {
     if (state === undefined) return answer?.code === 'ENOENT';
     if (state.type === 'dir') return answer?.code === 'EISDIR';
@@ -352,7 +359,8 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps = {}, de
   const judge = (at, way, op, rel, answer, from, to) => {
     // A namespace relisting a directory answers what is under it as unknown until the listing lands.
     if (answer?.code === 'EAGAIN' && way === 'sync' && (lazy || poisoned || op === 'readFile' || transport.inFlight('listing') > 0)) return;
-    if (gaps.readdirIsDirectory && way === 'sync' && op === 'readdir' && answer?.code === 'EISDIR') return;
+    if (gaps.refusedAsDirectory && way === 'sync' && answer?.code === 'EISDIR' && worldsSeen(rel, from, to).some((world) => world.get(rel)?.type === 'dir')) return;
+    if (gaps.absentWhileRelisted && way === 'sync' && answer === null && transport.inFlight('listing') > 0) return;
     const worlds = worldsSeen(rel, from, to);
     if (worlds.some((world) => answers(op, rel, answer, world))) return;
     const shown = answer?.code ?? (answer && typeof answer === 'object' && !Array.isArray(answer) ? `${answer.type} ${(answer.mode & 0o777).toString(8)} size ${answer.size}` : JSON.stringify(answer));
@@ -407,7 +415,7 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps = {}, de
     }
     const publishes = outside(way) && overlaps(unpublished, domain) ? unpublished : null;
     // A write the process makes is an open that truncates, then the bytes: while it is in flight, the file may be empty.
-    const partial = way === 'own' && step[1] === 'write' ? new Map([...post, [step[2], { type: 'file', content: '', mode: world.get(step[2])?.mode ?? FILE_MODE }]]) : null;
+    const partial = way === 'own' && step[1] === 'write' ? new Map([...post, [step[2], { ...post.get(step[2]), content: '' }]]) : null;
     const record = { domain, post, partial, begun: seq(), done: null, way, step };
     const finish = () => {
       // Its effect, on whatever else changed meanwhile (nothing it overlaps).
@@ -427,6 +435,7 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps = {}, de
       } catch (error) {
         changes.splice(changes.indexOf(record), 1);
         if (error?.code === 'EAGAIN' && (lazy || poisoned)) return null;
+        if (error?.code === 'EISDIR' && gaps.refusedAsDirectory && domain.some((rel) => world.get(rel)?.type === 'dir')) return null;
         throw new Finding(`sync ${step[1]} ${step.slice(2).join(' ')} failed: ${error?.code ?? error?.message ?? error}`, at);
       }
       finish();
@@ -537,14 +546,15 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps = {}, de
         for (const op of ['stat', state?.type === 'dir' ? 'readdir' : 'readFile']) {
           const answer = await read(way, op, rel);
           if (answer?.code === 'EAGAIN' && way === 'sync' && (lazy || op === 'readFile')) continue;
+          if (answer?.code === 'EISDIR' && way === 'sync' && gaps.refusedAsDirectory && state?.type === 'dir') continue;
           if (!answers(op, rel, answer, world)) {
             throw new Finding(`at rest, ${way} ${op} ${rel || '.'} answered ${JSON.stringify(answer)}; the model holds ${describe(state)}`, end);
           }
         }
       }
-      // What the session holds is what the model says: nothing the process wrote was lost.
-      const held = normalized(await engine.peerStat(abs(rel), { followSymlinks: false }).catch(() => null));
-      if (!answers('stat', rel, held, world)) throw new Finding(`at rest, the session holds ${JSON.stringify(held)} at ${rel || '.'}; the model says ${describe(state)}`, end);
+      // What the session holds is what the model says, as root sees it: nothing the process wrote was lost.
+      const held = normalized(await engine.authority.peerAs(CRED_KERNEL).lstat(key(rel)).catch(() => null));
+      if (!statIs(held, state)) throw new Finding(`at rest, the session holds ${JSON.stringify(held)} at ${rel || '.'}; the model says ${describe(state)}`, end);
     }
   } finally {
     transport.drain();

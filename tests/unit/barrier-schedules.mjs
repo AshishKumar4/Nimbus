@@ -73,6 +73,9 @@ const FOUND = {
       ['hold', 'listing'], ['input'], ['settle'], ['sync', 'stat', 'd/e/g'], ['sync', 'readdir', 'd/e'], ['sync', 'stat', 'd/f'],
       ['release', 'listing'], ['settle'], ['sync', 'stat', 'd/e/g'], ['sync', 'readdir', 'd/e']],
   },
+  'a name the process renamed into place can be renamed again at once': {
+    schedule: [['own', 'rename', 'x/h', 'd/f'], ['settle'], ['sync', 'rename', 'd/f', 'd/e/g'], ['settle'], ['sync', 'stat', 'd/e/g'], ['own', 'readFile', 'd/e/g']],
+  },
   'a file a call that cannot wait missed stays a miss until an awaited read answers it': {
     engines: ['node'],
     schedule: [['peer', 'write', 'new', 'not resident'], ['settle'], ['input'], ['settle'], ['sync', 'readFile', 'new'], ['own', 'stat', 'new'], ['settle']],
@@ -88,6 +91,10 @@ const GAPS = {
   'a directory a call that cannot wait has not listed is not refused as a directory [holder]': {
     lacks: 'its synchronous refusal names the call: a directory is EISDIR only to a call for bytes (notResident, the cutover)',
     shows: 'answered EISDIR',
+  },
+  'a directory the process may search again shows nothing stale while it is relisted [node]': {
+    lacks: 'B2: a relist answers what is under its directory as unknown until it lands (the cutover\'s relist fence)',
+    shows: 'answered null',
   },
 };
 
