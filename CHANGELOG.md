@@ -28,6 +28,17 @@ published independently in the `@nimbus-sh` npm scope.
 - Fixed: `utimes`/`futimes` with `'now'` (or an omitted time) by a file's
   owner now succeeds when the owner lacks write permission, as
   utimensat(2) allows. Before, it was refused `EACCES`.
+- Fixed (data loss, since core 0.19): a recursive removal no longer enters a
+  mount point. `CompositeVFS.removeRecursive`, and so the shell's `rm -r`, the
+  SDK's `files.delete`, npm's and git's removals and a guest's `fs.rm`, keeps
+  the mount point and everything under it, reports it EBUSY in the result's
+  failures, and removes the rest, as GNU `rm --one-file-system` does. Before,
+  `rm -r` of a directory holding a mount deleted what the mount held (Kinu
+  ask 60: a connected machine's files).
+- Added: `MountOptions.removalCrosses`. A mount that sets it is crossed by a
+  recursive removal from above, as Linux's `rm -r` crosses one.
+- Fixed: the shell's `rm -r /` is refused, as GNU's `--preserve-root` (the
+  default; `--no-preserve-root` lifts it). `--one-file-system` is taken.
 - Fixed: a Node program that replaced `Array.prototype.push`, the array
   iterator, `String.prototype.split` or `replace`, `RegExp.prototype.exec` or
   `Set.prototype.has` can still import a module the launch did not hold, and
