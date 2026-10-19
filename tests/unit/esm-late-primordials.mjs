@@ -4,10 +4,16 @@
 // order, and the lists it hands back remain ordinary arrays. The wasm path
 // collector uses the same captures, with root-clamped, insertion-ordered paths.
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { Script, createContext } from 'node:vm';
 import { build } from 'esbuild';
 import { bundleInterpreter, PRIMORDIALS_FILE } from '../../packages/worker/scripts/interpreter-bundle.mjs';
+
+if (process.versions.bun) {
+  const ran = spawnSync('node', [fileURLToPath(import.meta.url)], { stdio: 'inherit', timeout: 30_000 });
+  process.exit(ran.status ?? 1);
+}
 
 const bundles = await bundleInterpreter({ start: fileURLToPath(new URL('../../packages/worker/', import.meta.url)) });
 const wasm = await build({
