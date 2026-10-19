@@ -8312,8 +8312,9 @@ const __nimbusDecodeStringLiteral = ${DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE};
       }
     };
     // Made as each module's code origin is, after the program ran: through the launch's captures.
-    __nimbusDefine(routed, "name", __nimbusData(Native.name, false, false, false));
-    __nimbusDefine(routed, "length", __nimbusData(Native.length, false, false, false));
+    // A function's own name and length stay configurable, as the definitions they replace leave them.
+    __nimbusDefine(routed, "name", __nimbusData(Native.name, false, false, true));
+    __nimbusDefine(routed, "length", __nimbusData(Native.length, false, false, true));
     __nimbusDefine(routed, "prototype", __nimbusData(Native.prototype, false, false, false));
     __nimbusDefine(routed, "__nimbusNative", __nimbusData(Native, false, false, false));
     __nimbusDefine(routed, "toString", __nimbusData(() => __nimbusApply(nativeToString, Native, []), true, false, true));
@@ -12706,11 +12707,8 @@ function __nimbusPrepareModule(resolvedPath, evaluationKey, required, parent, es
     if (__nimbusEsmInstances.get(cacheKey) === mod) __nimbusEsmInstances.delete(cacheKey);
     const siblings = parent?.children;
     const at = __nimbusIsArray(siblings) ? __nimbusIndexOf(siblings, mod) : -1;
-    if (at !== -1) {
-      // splice(at, 1), by its own elements: no method or setter of Array.prototype.
-      for (let i = at; i < siblings.length - 1; i++) siblings[i] = siblings[i + 1];
-      siblings.length--;
-    }
+    // Node's own removal (ArrayPrototypeSplice), on the launch's capture.
+    if (at !== -1) __nimbusPrimordials.arraySplice(siblings, at, 1);
   };
 
   // JSON (Module._extensions[".json"])
@@ -12844,9 +12842,9 @@ function __nimbusAdvise(e, resolvedPath) {
  * Returns the resolved VFS path, or null.
  */
 function __resolveFrom(id, fromDir, parentFile) {
-  const found = __requireResolver.resolveSync(id, "/" + String(fromDir).replace(/^\\/+/, ""), typeof parentFile === "string" ? { parent: parentFile } : undefined);
+  const found = __requireResolver.resolveSync(id, "/" + __vfsKey(String(fromDir)), typeof parentFile === "string" ? { parent: parentFile } : undefined);
   if (!found) return null;
-  return found.builtin ? "node:" + found.builtin : found.path.replace(/^\\/+/, "");
+  return found.builtin ? "node:" + found.builtin : __vfsKey(found.path);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -12873,7 +12871,8 @@ const __esmResolver = createEsmResolver({
   // Node's builtins, and the packages the process provides in place of any
   // installed copy (builtins.undici), which load as builtins do.
   isBuiltin(specifier) {
-    return __nimbusBuiltinId(specifier) !== null || __nimbusFacetProvidedPackages.has(specifier.replace(/^node:/, ""));
+    return __nimbusBuiltinId(specifier) !== null
+      || __nimbusFacetProvidedPackages.has(__pathStartsWith(specifier, "node:") ? __pathSlice(specifier, 5) : specifier);
   },
   cjsResolve: __nimbusCjsResolve,
 }, { conditions: __nimbusConditions, stripTypes: !__nimbusTypeScriptAsJavaScript, cwd: () => __processMod.cwd() });
@@ -14332,9 +14331,9 @@ function __nimbusEntryOutcome(result) {
 // Node's import.meta.resolve, synchronous as in Node: the URL a specifier
 // names, even for a file or directory that will not load.
 globalThis.__nimbusImportMetaResolve = function __nimbusImportMetaResolve(specifier, parentUrl) {
-  const parent = typeof parentUrl === "string" && parentUrl.startsWith("file:")
+  const parent = typeof parentUrl === "string" && __pathStartsWith(parentUrl, "file:")
     ? parentUrl
-    : "file:///" + String(globalThis.__currentModulePath || "[eval]").replace(/^\\/+/, "");
+    : "file:///" + __vfsKey(String(globalThis.__currentModulePath || "[eval]"));
   return __esmResolver.metaResolveSync(String(specifier), parent);
 };
 

@@ -208,5 +208,6 @@ export declare const objectPreventExtensions: <T>(o: T) => T;
 export declare const symbolToStringTag: typeof Symbol.toStringTag;
 export declare const objectDefineProperty: <T>(o: T, p: PropertyKey, attributes: PropertyDescriptor & ThisType<any>) => T;
 export declare const arrayPush: <T>(list: T[], ...items: T[]) => number;
+export declare const arraySplice: <T>(list: T[], start: number, deleteCount: number) => T[];
 export declare const ObjectPrototypePropertyIsEnumerableOf: (object: object, key: PropertyKey) => boolean;
 //# sourceMappingURL=primordials.d.ts.map

@@ -224,8 +224,9 @@ var objectPreventExtensions = Object.preventExtensions;
 var symbolToStringTag = Symbol.toStringTag;
 var objectDefineProperty = Object.defineProperty;
 var arrayPush = uncurryThis(Array.prototype.push);
+var arraySplice = uncurryThis(Array.prototype.splice);
 var ObjectPrototypePropertyIsEnumerableOf = uncurryThis(Object.prototype.propertyIsEnumerable);
-return { ArrayConstructor, ArrayFrom, ArrayIteratorNext, ArrayIteratorPrototype, ArrayPrototypeIndexOf, ArrayPrototypeLastIndexOf, ArrayPrototypePop, ArrayPrototypeToSpliced, ArrayPrototypeWith, ArrayValues, BigInt: BigIntOf, BigIntPrototypeToString, Error: ErrorConstructor, FunctionPrototypeBind, GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, JSONParse, JSONStringify, MapConstructor, NumberOf, NumberPrototypeToString, ObjectOf, ObjectPrototype, ObjectPrototypeHasOwnProperty, ObjectPrototypePropertyIsEnumerable, ObjectPrototypePropertyIsEnumerableOf, ObjectPrototypeToString, PromiseConstructor, PromisePrototypeThen, PromiseReject, PromiseResolve, RangeError: RangeErrorConstructor, ReferenceError: ReferenceErrorConstructor, RegExp: RegExpConstructor, RegExpPrototypeAccessors, RegExpPrototypeExec, SafeAsyncGeneratorPrototype, SafeGeneratorPrototype, SafeList, SafeMap, SafeRegExpPrototype, SafeSet, SafeWeakMap, SafeWeakSet, StringFromCharCode, StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeIndexOf, StringPrototypeLastIndexOf, StringPrototypeSlice, StringPrototypeSubstr, SymbolConstructor, SymbolPrototypeDescription, SymbolPrototypeToString, SyntaxError: SyntaxErrorConstructor, TypeError: TypeErrorConstructor, URIError: URIErrorConstructor, URL: URLConstructor, arrayIncludes, arrayIndexOf, arrayIsArray, arrayJoin, arrayPush, arraySort, captureStackTraceOf, dataDescriptor, decodeURIComponentOf, encodeURIComponentOf, generatorNext, generatorThrow, globalObject, mapGet, mathAbs, mathMin, newURL, numberIsInteger, objectAssign, objectCreate, objectDefineProperties, objectDefineProperty, objectFreeze, objectGetOwnPropertyNames, objectHasOwn, objectIs, objectIsExtensible, objectKeys, objectPreventExtensions, ownField, parseFloatOf, parseIntOf, reflectApply, reflectConstruct, reflectDefineProperty, reflectDeleteProperty, reflectGet, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectHas, reflectOwnKeys, reflectSet, reflectSetPrototypeOf, regExpExec, safeGenerator, setForEach, stringCharCodeAt, stringEndsWith, stringIncludes, stringIndexOf, stringLastIndexOf, stringOf, stringSlice, stringStartsWith, stringToLowerCase, symbolAsyncIterator, symbolFor, symbolIterator, symbolToStringTag, symbolUnscopables, useCaptureStackTrace };
+return { ArrayConstructor, ArrayFrom, ArrayIteratorNext, ArrayIteratorPrototype, ArrayPrototypeIndexOf, ArrayPrototypeLastIndexOf, ArrayPrototypePop, ArrayPrototypeToSpliced, ArrayPrototypeWith, ArrayValues, BigInt: BigIntOf, BigIntPrototypeToString, Error: ErrorConstructor, FunctionPrototypeBind, GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, JSONParse, JSONStringify, MapConstructor, NumberOf, NumberPrototypeToString, ObjectOf, ObjectPrototype, ObjectPrototypeHasOwnProperty, ObjectPrototypePropertyIsEnumerable, ObjectPrototypePropertyIsEnumerableOf, ObjectPrototypeToString, PromiseConstructor, PromisePrototypeThen, PromiseReject, PromiseResolve, RangeError: RangeErrorConstructor, ReferenceError: ReferenceErrorConstructor, RegExp: RegExpConstructor, RegExpPrototypeAccessors, RegExpPrototypeExec, SafeAsyncGeneratorPrototype, SafeGeneratorPrototype, SafeList, SafeMap, SafeRegExpPrototype, SafeSet, SafeWeakMap, SafeWeakSet, StringFromCharCode, StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeIndexOf, StringPrototypeLastIndexOf, StringPrototypeSlice, StringPrototypeSubstr, SymbolConstructor, SymbolPrototypeDescription, SymbolPrototypeToString, SyntaxError: SyntaxErrorConstructor, TypeError: TypeErrorConstructor, URIError: URIErrorConstructor, URL: URLConstructor, arrayIncludes, arrayIndexOf, arrayIsArray, arrayJoin, arrayPush, arraySort, arraySplice, captureStackTraceOf, dataDescriptor, decodeURIComponentOf, encodeURIComponentOf, generatorNext, generatorThrow, globalObject, mapGet, mathAbs, mathMin, newURL, numberIsInteger, objectAssign, objectCreate, objectDefineProperties, objectDefineProperty, objectFreeze, objectGetOwnPropertyNames, objectHasOwn, objectIs, objectIsExtensible, objectKeys, objectPreventExtensions, ownField, parseFloatOf, parseIntOf, reflectApply, reflectConstruct, reflectDefineProperty, reflectDeleteProperty, reflectGet, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectHas, reflectOwnKeys, reflectSet, reflectSetPrototypeOf, regExpExec, safeGenerator, setForEach, stringCharCodeAt, stringEndsWith, stringIncludes, stringIndexOf, stringLastIndexOf, stringOf, stringSlice, stringStartsWith, stringToLowerCase, symbolAsyncIterator, symbolFor, symbolIterator, symbolToStringTag, symbolUnscopables, useCaptureStackTrace };
 })();
 
 var { captureStack, determineSpecificType, hideStackFrames, invalidArgType, invalidArgValue, isErrorStackTraceLimitWritable, nodeError, nodeErrorCodes, nodeSystemError, outOfRange, reshapeAsNodeError, useNodeErrorInspect } = (() => {
@@ -12179,8 +12180,9 @@ const __nimbusDecodeStringLiteral = function decodeJavaScriptStringLiteral(sourc
       }
     };
     // Made as each module's code origin is, after the program ran: through the launch's captures.
-    __nimbusDefine(routed, "name", __nimbusData(Native.name, false, false, false));
-    __nimbusDefine(routed, "length", __nimbusData(Native.length, false, false, false));
+    // A function's own name and length stay configurable, as the definitions they replace leave them.
+    __nimbusDefine(routed, "name", __nimbusData(Native.name, false, false, true));
+    __nimbusDefine(routed, "length", __nimbusData(Native.length, false, false, true));
     __nimbusDefine(routed, "prototype", __nimbusData(Native.prototype, false, false, false));
     __nimbusDefine(routed, "__nimbusNative", __nimbusData(Native, false, false, false));
     __nimbusDefine(routed, "toString", __nimbusData(() => __nimbusApply(nativeToString, Native, []), true, false, true));
@@ -19811,11 +19813,8 @@ function __nimbusPrepareModule(resolvedPath, evaluationKey, required, parent, es
     if (__nimbusEsmInstances.get(cacheKey) === mod) __nimbusEsmInstances.delete(cacheKey);
     const siblings = parent?.children;
     const at = __nimbusIsArray(siblings) ? __nimbusIndexOf(siblings, mod) : -1;
-    if (at !== -1) {
-      // splice(at, 1), by its own elements: no method or setter of Array.prototype.
-      for (let i = at; i < siblings.length - 1; i++) siblings[i] = siblings[i + 1];
-      siblings.length--;
-    }
+    // Node's own removal (ArrayPrototypeSplice), on the launch's capture.
+    if (at !== -1) __nimbusPrimordials.arraySplice(siblings, at, 1);
   };
 
   // JSON (Module._extensions[".json"])
@@ -19949,9 +19948,9 @@ function __nimbusAdvise(e, resolvedPath) {
  * Returns the resolved VFS path, or null.
  */
 function __resolveFrom(id, fromDir, parentFile) {
-  const found = __requireResolver.resolveSync(id, "/" + String(fromDir).replace(/^\/+/, ""), typeof parentFile === "string" ? { parent: parentFile } : undefined);
+  const found = __requireResolver.resolveSync(id, "/" + __vfsKey(String(fromDir)), typeof parentFile === "string" ? { parent: parentFile } : undefined);
   if (!found) return null;
-  return found.builtin ? "node:" + found.builtin : found.path.replace(/^\/+/, "");
+  return found.builtin ? "node:" + found.builtin : __vfsKey(found.path);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -20413,7 +20412,8 @@ const __esmResolver = createEsmResolver({
   // Node's builtins, and the packages the process provides in place of any
   // installed copy (builtins.undici), which load as builtins do.
   isBuiltin(specifier) {
-    return __nimbusBuiltinId(specifier) !== null || __nimbusFacetProvidedPackages.has(specifier.replace(/^node:/, ""));
+    return __nimbusBuiltinId(specifier) !== null
+      || __nimbusFacetProvidedPackages.has(__pathStartsWith(specifier, "node:") ? __pathSlice(specifier, 5) : specifier);
   },
   cjsResolve: __nimbusCjsResolve,
 }, { conditions: __nimbusConditions, stripTypes: !__nimbusTypeScriptAsJavaScript, cwd: () => __processMod.cwd() });
@@ -21738,131 +21738,7 @@ function __nimbusRequestTarget(kind, specifier, importer) {
 // core/_shared/relative-wasm-paths.ts, compiled once by the build (a
 // function's own text differs between compilers, so it is never spliced).
 var { relativeWasmPaths } = (() => {
-var reflectApply = Reflect.apply;
-var reflectGet = Reflect.get;
-var reflectDefineProperty = Reflect.defineProperty;
-var reflectGetOwnPropertyDescriptor = Reflect.getOwnPropertyDescriptor;
-var reflectGetPrototypeOf = Reflect.getPrototypeOf;
-var reflectSetPrototypeOf = Reflect.setPrototypeOf;
-var objectCreate = Object.create;
-var objectHasOwn = Object.hasOwn;
-var symbolFor = Symbol.for;
-var PromiseResolve = Promise.resolve;
-var PromiseReject = Promise.reject;
-var PromisePrototypeThen = Promise.prototype.then;
-var ArrayValues = Array.prototype[Symbol.iterator];
-var ArrayIteratorPrototype = Reflect.getPrototypeOf([][Symbol.iterator]()) ?? {};
-var ArrayIteratorNext = Reflect.get(ArrayIteratorPrototype, "next");
-var ArrayPrototypeWith = Reflect.get(Array.prototype, "with");
-var ArrayPrototypeToSpliced = Reflect.get(Array.prototype, "toSpliced");
-var StringPrototypeSlice = String.prototype.slice;
-var StringPrototypeLastIndexOf = String.prototype.lastIndexOf;
-var StringPrototypeCharCodeAt = String.prototype.charCodeAt;
-var SymbolPrototypeToString = Symbol.prototype.toString;
-var StringPrototypeCharAt = String.prototype.charAt;
-var StringPrototypeIndexOf = String.prototype.indexOf;
-var StringPrototypeSubstr = String.prototype.substr;
-var StringFromCharCode = String.fromCharCode;
-var ArrayPrototypePop = Array.prototype.pop;
-var ArrayPrototypeIndexOf = Array.prototype.indexOf;
-var ArrayPrototypeLastIndexOf = Array.prototype.lastIndexOf;
-var RegExpPrototypeExec = RegExp.prototype.exec;
-var RegExpPrototypeAccessors = (() => {
-  const accessors = objectCreate(null);
-  const names = Object.getOwnPropertyNames(RegExp.prototype);
-  for (let i = 0; i < names.length; i++) {
-    const getter = Reflect.getOwnPropertyDescriptor(RegExp.prototype, names[i])?.get;
-    if (getter !== void 0) accessors[names[i]] = getter;
-  }
-  return accessors;
-})();
-var NumberPrototypeToString = Number.prototype.toString;
-var BigIntPrototypeToString = BigInt.prototype.toString;
-var ObjectPrototype = Object.prototype;
-var SymbolPrototypeDescription = Reflect.getOwnPropertyDescriptor(Symbol.prototype, "description")?.get;
-var numberIsInteger = Number.isInteger;
-var runtimeCaptureStackTrace = Reflect.get(Error, "captureStackTrace");
-function dataDescriptor(value, writable, enumerable, configurable) {
-  const descriptor = objectCreate(null);
-  descriptor.value = value;
-  descriptor.writable = writable;
-  descriptor.enumerable = enumerable;
-  descriptor.configurable = configurable;
-  return descriptor;
-}
-function copyMethods(to, from, methods) {
-  for (let i = 0; i < methods.length; i++) {
-    const descriptor = reflectGetOwnPropertyDescriptor(from, methods[i]);
-    if (descriptor) reflectDefineProperty(to, methods[i], descriptor);
-  }
-}
-var SafeMap = class extends Map {
-};
-copyMethods(SafeMap.prototype, Map.prototype, ["get", "set", "has", "delete", "clear", "forEach", "size"]);
-var SafeSet = class extends Set {
-};
-copyMethods(SafeSet.prototype, Set.prototype, ["add", "has", "delete", "clear", "forEach", "size"]);
-var SafeWeakMap = class extends WeakMap {
-};
-copyMethods(SafeWeakMap.prototype, WeakMap.prototype, ["get", "set", "has", "delete"]);
-var SafeWeakSet = class extends WeakSet {
-};
-copyMethods(SafeWeakSet.prototype, WeakSet.prototype, ["add", "has", "delete"]);
-var SafeList = class extends Array {
-};
-reflectSetPrototypeOf(SafeList.prototype, null);
-var SafeGeneratorPrototype = objectCreate(null);
-var SafeAsyncGeneratorPrototype = objectCreate(null);
-{
-  const generatorPrototype2 = reflectGetPrototypeOf(function* () {
-  }.prototype) ?? {};
-  const asyncGeneratorPrototype = reflectGetPrototypeOf(async function* () {
-  }.prototype) ?? {};
-  copyMethods(SafeGeneratorPrototype, generatorPrototype2, ["next", "return", "throw"]);
-  copyMethods(SafeGeneratorPrototype, reflectGetPrototypeOf(generatorPrototype2) ?? {}, [Symbol.iterator]);
-  copyMethods(SafeAsyncGeneratorPrototype, asyncGeneratorPrototype, ["next", "return", "throw"]);
-  copyMethods(SafeAsyncGeneratorPrototype, reflectGetPrototypeOf(asyncGeneratorPrototype) ?? {}, [Symbol.asyncIterator]);
-}
-var SafeRegExpPrototype = objectCreate(null);
-{
-  const keys = Reflect.ownKeys(RegExp.prototype);
-  const members = [];
-  for (let i = 0; i < keys.length; i++) {
-    const key = keys[i];
-    if (key !== "constructor" && key !== Symbol.split && key !== Symbol.matchAll) members[members.length] = key;
-  }
-  copyMethods(SafeRegExpPrototype, RegExp.prototype, members);
-}
-var GeneratorPrototypeNext = reflectGet(SafeGeneratorPrototype, "next");
-var GeneratorPrototypeReturn = reflectGet(SafeGeneratorPrototype, "return");
-var GeneratorPrototypeThrow = reflectGet(SafeGeneratorPrototype, "throw");
-var FunctionPrototypeCall = Function.prototype.call;
-var FunctionPrototypeBind = Function.prototype.bind;
-function uncurryThis(fn) {
-  return reflectApply(FunctionPrototypeBind, FunctionPrototypeCall, [fn]);
-}
-var stringCharCodeAt = uncurryThis(String.prototype.charCodeAt);
-var stringSlice = uncurryThis(String.prototype.slice);
-var stringLastIndexOf = uncurryThis(String.prototype.lastIndexOf);
-var arrayJoin = uncurryThis(Array.prototype.join);
-var stringStartsWith = uncurryThis(String.prototype.startsWith);
-var stringEndsWith = uncurryThis(String.prototype.endsWith);
-var stringIncludes = uncurryThis(String.prototype.includes);
-var stringIndexOf = uncurryThis(String.prototype.indexOf);
-var stringToLowerCase = uncurryThis(String.prototype.toLowerCase);
-var arrayIncludes = uncurryThis(Array.prototype.includes);
-var arrayIndexOf = uncurryThis(Array.prototype.indexOf);
-var setForEach = uncurryThis(Set.prototype.forEach);
-var arraySort = uncurryThis(Array.prototype.sort);
-var regExpExec = uncurryThis(RegExp.prototype.exec);
-var generatorPrototype = reflectGetPrototypeOf(function* () {
-}.prototype);
-var generatorNext = uncurryThis(reflectGet(generatorPrototype ?? {}, "next"));
-var generatorThrow = uncurryThis(reflectGet(generatorPrototype ?? {}, "throw"));
-var mapGet = uncurryThis(Map.prototype.get);
-var arrayPush = uncurryThis(Array.prototype.push);
-var ObjectPrototypePropertyIsEnumerableOf = uncurryThis(Object.prototype.propertyIsEnumerable);
-
+const { arrayJoin, dataDescriptor, reflectDefineProperty, regExpExec, SafeList, SafeSet, stringSlice } = __nimbusPrimordials;
 function relativeWasmPaths(source, filename) {
   const literals = /["'`]((?:\.{1,2}\/)*[\w@.-]+(?:\/[\w@.-]+)*\.wasm)["'`]/g;
   const dir = new SafeList();
@@ -22038,9 +21914,9 @@ function __nimbusEntryOutcome(result) {
 // Node's import.meta.resolve, synchronous as in Node: the URL a specifier
 // names, even for a file or directory that will not load.
 globalThis.__nimbusImportMetaResolve = function __nimbusImportMetaResolve(specifier, parentUrl) {
-  const parent = typeof parentUrl === "string" && parentUrl.startsWith("file:")
+  const parent = typeof parentUrl === "string" && __pathStartsWith(parentUrl, "file:")
     ? parentUrl
-    : "file:///" + String(globalThis.__currentModulePath || "[eval]").replace(/^\/+/, "");
+    : "file:///" + __vfsKey(String(globalThis.__currentModulePath || "[eval]"));
   return __esmResolver.metaResolveSync(String(specifier), parent);
 };
 

@@ -1029,9 +1029,11 @@ export function processFsClient(options) {
         guards(key) {
             if (escaped !== null)
                 return false;
-            for (let i = 0; i < grants.length; i++)
-                if (standingOf(grants[i], key) !== undefined)
+            for (let i = 0; i < grants.length; i++) {
+                const grant = grants[i];
+                if (grant !== undefined && standingOf(grant, key) !== undefined)
                     return true;
+            }
             return false;
         },
         pending() {

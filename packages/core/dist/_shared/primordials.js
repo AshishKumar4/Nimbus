@@ -268,4 +268,5 @@ export const objectPreventExtensions = Object.preventExtensions;
 export const symbolToStringTag = Symbol.toStringTag;
 export const objectDefineProperty = Object.defineProperty;
 export const arrayPush = uncurryThis(Array.prototype.push);
+export const arraySplice = uncurryThis(Array.prototype.splice);
 export const ObjectPrototypePropertyIsEnumerableOf = uncurryThis(Object.prototype.propertyIsEnumerable);

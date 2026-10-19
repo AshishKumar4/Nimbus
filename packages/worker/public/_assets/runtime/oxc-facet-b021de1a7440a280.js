@@ -10245,6 +10245,7 @@ error: the Oxc transform crashed (${reason})`);
   var generatorThrow = uncurryThis(reflectGet(generatorPrototype ?? {}, "throw"));
   var mapGet = uncurryThis(Map.prototype.get);
   var arrayPush = uncurryThis(Array.prototype.push);
+  var arraySplice = uncurryThis(Array.prototype.splice);
   var ObjectPrototypePropertyIsEnumerableOf = uncurryThis(Object.prototype.propertyIsEnumerable);
 
   function extensionOf(path) {

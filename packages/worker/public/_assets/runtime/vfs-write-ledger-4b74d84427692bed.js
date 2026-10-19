@@ -2040,7 +2040,10 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       },
       guards(key) {
         if (escaped !== null) return false;
-        for (let i = 0; i < grants.length; i++) if (standingOf(grants[i], key) !== void 0) return true;
+        for (let i = 0; i < grants.length; i++) {
+          const grant = grants[i];
+          if (grant !== void 0 && standingOf(grant, key) !== void 0) return true;
+        }
         return false;
       },
       pending() {
