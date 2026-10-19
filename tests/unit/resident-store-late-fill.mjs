@@ -64,7 +64,7 @@ try {
   await new Promise((resolve) => setTimeout(resolve, 5));
   // A same-size rewrite, and a barrier that admits it, while the old read is in flight.
   await kernel.writeFile('/home/user/index', enc.encode('new!'));
-  assert.equal(await view.barrier(), true);
+  assert.equal((await view.barrier()).landed, true);
   open();
   await late;
   gate = null;
