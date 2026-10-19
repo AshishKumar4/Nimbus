@@ -160,11 +160,11 @@ async function rangeReadBytes(fs, path, offset, length) {
         return 0;
     return Math.max(0, Math.min(length, stat.size - offset));
 }
-export async function withReadAllocation(bytes, read) {
+export async function withReadAllocation(bytes, read, pid, session) {
     const payloadBytes = checkedReadPayloadBytes(bytes);
     if (payloadBytes === 0)
         return read();
-    const lease = await acquireSupervisorReadAllocation(payloadBytes);
+    const lease = await acquireSupervisorReadAllocation(payloadBytes, undefined, { owner: 'filesystem read RPC', pid, session });
     rpcPayloadStart(payloadBytes);
     try {
         return await read();
@@ -705,7 +705,7 @@ export async function _rpcFsReadBatch(self, requests, pid) {
             }
         }
         return entries;
-    });
+    }, pid, self.ctx?.id?.toString());
 }
 export async function _rpcFsWriteRange(self, path, offset, bytes, pid) {
     const args = FsWriteRangeArgsSchema.parse({ path, offset });

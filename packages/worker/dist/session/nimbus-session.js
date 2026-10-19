@@ -1030,7 +1030,7 @@ export class NimbusSession extends CloudflareDurableObject {
         if (this.filesystem)
             return this.filesystem;
         const engine = new SqliteVFS(this.ctx.storage.sql, this.ctx);
-        const filesystem = this.filesystem = new SessionFilesystem(engine, this);
+        const filesystem = this.filesystem = new SessionFilesystem(engine, this, this.ctx.id.toString());
         // W5 Lever 5: rehydrate the OOM ring from storage (best-effort).
         // Survives DO hibernation; lets cf-tail-style forensics include
         // pre-hibernate failures. Fail-soft on garbage / missing — the

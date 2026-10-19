@@ -18,11 +18,10 @@
  * reboot — itself a useful signal (counters at 0 immediately after the
  * banner reprinted = the killed isolate took its state with it).
  */
+import { readSupervisorAllocationAttribution } from './heavy-alloc-coord.js';
 const _counters = {
     installPhase: 'idle',
     inFlightRpcPayloadBytes: 0,
-    prefetchBundleBytes: 0,
-    preBundleSliceBytes: 0,
     prefetchCacheBytes: 0,
     supervisorAnsweredBytes: 0,
     installFacet: {
@@ -47,7 +46,7 @@ const _counters = {
 };
 /** Read a snapshot — caller-side mutations don't affect the singleton. */
 export function readDiagCounters() {
-    return { ..._counters };
+    return { ..._counters, ...readSupervisorAllocationAttribution() };
 }
 /** Count `bytes` the session answered a process's supervisor call with. */
 export function recordSupervisorAnswer(bytes) {
@@ -100,30 +99,12 @@ export function rpcPayloadEnd(bytes) {
     }
 }
 /**
- * `lease`, its bytes counted under `owner` for as long as it holds them: a
- * shrink takes what it gives back off at once, and the release the rest.
- * The count is the lease's own, so it is right however its holder ends.
+ * Attribution belongs to the budget's actual lease. The public gauges are
+ * derived from its holders, never maintained in a second counter registry.
  */
 export function attributeAllocation(owner, lease) {
-    _counters[owner] += lease.bytes;
-    let released = false;
-    return {
-        get bytes() {
-            return lease.bytes;
-        },
-        shrinkTo(bytes) {
-            const before = lease.bytes;
-            lease.shrinkTo(bytes);
-            _counters[owner] -= before - lease.bytes;
-        },
-        release() {
-            if (released)
-                return;
-            released = true;
-            _counters[owner] -= lease.bytes;
-            lease.release();
-        },
-    };
+    lease.attribute(owner);
+    return lease;
 }
 /**
  * Publish the prefetch-bundle LRU's live retained total. A gauge: the cache

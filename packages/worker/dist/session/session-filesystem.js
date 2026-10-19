@@ -15,13 +15,15 @@ import { buildSessionSupervisorOps } from './supervisor-op.js';
 export class SessionFilesystem {
     engine;
     host;
+    session;
     /** The session's namespace and process bindings: one, for the workspace, facets and RPC alike. */
     authority;
     unsubscribe;
     ops = null;
-    constructor(engine, host) {
+    constructor(engine, host, session) {
         this.engine = engine;
         this.host = host;
+        this.session = session;
         this.authority = new ProcessFiles(engine, {
             // A delegation's holder that did not answer a recall in time is stopped
             // (SIGKILL): its later writes are refused already (its lease ended), and
@@ -70,7 +72,7 @@ export class SessionFilesystem {
      * Made on first use.
      */
     supervisorOps() {
-        return this.ops ??= buildSessionSupervisorOps(this.host);
+        return this.ops ??= buildSessionSupervisorOps(this.host, undefined, undefined, this.session);
     }
     /** Close a live pid's descriptors for a run that starts in place of another. */
     rewind(pid) {
