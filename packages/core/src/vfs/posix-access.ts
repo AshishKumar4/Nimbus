@@ -1,4 +1,4 @@
-import type { FsTime } from '../runtime/os-contracts.js';
+import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 import { arrayIncludes } from '../_shared/primordials.js';
 
 /** What an entry is, as its filesystem says: the type every access check is given. */
@@ -102,14 +102,15 @@ export function timeAt(time: FsTime, kept: number, now: number): number {
 }
 
 /**
- * utimes(2)'s rule: explicit times only by the owner or root (EPERM); the
- * current time by anyone who may write the entry (EACCES).
+ * utimensat(2)'s rule: explicit times only by the owner or root (EPERM); the
+ * current time (and an omitted one) by the owner, root or anyone who may
+ * write the entry (EACCES).
  */
 export function utimesRefusal(
   entry: { readonly mode: number; readonly uid: number; readonly gid: number; readonly type: PosixNodeType },
   explicit: boolean,
   cred: PosixCred,
 ): 'EPERM' | 'EACCES' | null {
-  if (!explicit) return posixAccess(entry, 0o2, cred) ? null : 'EACCES';
+  if (!explicit) return cred.uid === 0 || cred.uid === entry.uid || posixAccess(entry, 0o2, cred) ? null : 'EACCES';
   return cred.uid !== 0 && cred.uid !== entry.uid ? 'EPERM' : null;
 }

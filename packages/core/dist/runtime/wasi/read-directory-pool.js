@@ -214,12 +214,12 @@ export function readDirectoryPool({ call, store, client, before, endWaitMs = DIR
         owns: (id) => owned.has(id),
         closed: (id) => retiring.has(id),
         local: (id) => { const entry = owned.get(id); return entry ? local(entry) : null; },
-        close(id) {
+        close(id, wait = true) {
             if (!owned.delete(id))
                 throw failure('EBADF', 'directory description is not open');
             claiming.delete(id);
             retiring.add(id);
-            if (retiring.size >= DIRECTORY_PREFETCH_LIMIT)
+            if (wait && retiring.size >= DIRECTORY_PREFETCH_LIMIT)
                 return serial(drain);
         },
         io() {

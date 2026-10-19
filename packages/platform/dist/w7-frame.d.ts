@@ -70,14 +70,24 @@ export interface BatchWritePayload {
  * chmod, chown and utimes each make. An owner side that is null keeps what
  * the file has when the change lands (chown's -1).
  */
+/**
+ * A time utimes and futimes set, as utimensat(2) takes it: ms since the
+ * epoch (explicit: only the owner may set it), 'now' (UTIME_NOW: the
+ * clock of the filesystem that commits the change, as it commits it) or
+ * 'omit' (UTIME_OMIT: left as it is then). 'now' and 'omit' need the owner or write
+ * permission. Carried as it is to the filesystem that commits the change,
+ * which alone resolves it (posix-access.ts, timeAt) and judges it
+ * (utimesRefusal, explicitTimes).
+ */
+export type FsTime = number | 'now' | 'omit';
 export type W7Attrs = {
     mode: number;
 } | {
     uid: number | null;
     gid: number | null;
 } | {
-    atime: number;
-    mtime: number;
+    atime: FsTime;
+    mtime: FsTime;
 };
 /**
  * A process's filesystem call as a record (v4), applied by the session's own
@@ -100,6 +110,20 @@ export declare function openAccessMask(call: {
     access: W7OpenAccess;
     truncate?: true;
 }): number;
+/**
+ * What a process decided a call on from its own view of the name: the file
+ * it expected there (its number on the session's filesystem), none (null),
+ * or the file its open of description `made` reached, for a file that open
+ * made and the process has no number of yet (it keeps that description
+ * open until it has). Where the name leads elsewhere now (a stale view: a
+ * peer replaced the name, or a link there leads to another file; or that
+ * open was refused), the session refuses the call before any effect:
+ * ENOENT where it expected a file, EEXIST where it expected none, EXDEV
+ * where the name leads to a mount.
+ */
+export type W7Expected = number | null | {
+    readonly made: string;
+};
 export type W7Call = 
 /**
  * `ino`, on a call that makes a name (writeFile, appendFile, mkdir,
@@ -169,9 +193,11 @@ export type W7Call =
 } | {
     call: 'unlink';
     path: string;
+    expect?: W7Expected;
 } | {
     call: 'rmdir';
     path: string;
+    expect?: W7Expected;
 } | {
     call: 'symlink';
     path: string;
@@ -245,6 +271,7 @@ export type W7Call =
     nofollow?: true;
     description?: string;
     fchmod?: number;
+    expect?: W7Expected;
 }
 /** close(2) of the session's open description `description` (an `open` call's). */
  | {
@@ -275,18 +302,26 @@ export type W7Op = {
     type: 'file';
     inode: BatchInodeEntry;
     source: AsyncIterable<Uint8Array>;
-} | {
+}
+/** `expect`, `expectTo`: the files the process expected at `from` and at `to` (W7Expected). */
+ | {
     type: 'rename';
     from: string;
     to: string;
+    expect?: W7Expected;
+    expectTo?: W7Expected;
 } | {
     type: 'truncate';
     path: string;
     size: number;
-} | {
+}
+/** `description`: through the session's open description of that id (fchmod, fchown, futimens): its file, whatever names it now. */
+ | {
     type: 'setattr';
     path: string;
     attrs: W7Attrs;
+    description?: string;
+    expect?: W7Expected;
 } | {
     type: 'call';
     call: W7Call;
@@ -369,6 +404,8 @@ export type W7DecodedRecord = {
     type: 'rename';
     from: string;
     to: string;
+    expect?: W7Expected;
+    expectTo?: W7Expected;
 } | {
     type: 'truncate';
     path: string;
@@ -377,6 +414,8 @@ export type W7DecodedRecord = {
     type: 'setattr';
     path: string;
     attrs: W7Attrs;
+    description?: string;
+    expect?: W7Expected;
 } | {
     type: 'call';
     call: W7PathCall;
@@ -409,5 +448,7 @@ export declare function encodeWriteBatch(payload: BatchWritePayload): Promise<Ui
  * and before its payload bytes are read or copied.
  */
 export declare function decodeWriteBatchStream(stream: ReadableStream<Uint8Array>, options?: W7DecodeOptions): Promise<W7DecodedStream>;
+/** `value` as an FsTime (a finite number of milliseconds, 'now' or 'omit'); else an error naming `label`. */
+export declare function parseFsTime(value: unknown, label: string): FsTime;
 export {};
 //# sourceMappingURL=w7-frame.d.ts.map

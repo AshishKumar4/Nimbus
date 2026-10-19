@@ -248,7 +248,7 @@ var __nimbusProcessFsModule = (() => {
         case "rename":
           state.summary.pathCount++;
           state.summary.opCount++;
-          yield encodeMetadataRecord(RecordTag.Rename, { from: op.from, to: op.to }, state);
+          yield encodeMetadataRecord(RecordTag.Rename, { from: op.from, to: op.to, ...expectations(op, "rename") }, state);
           break;
         case "truncate":
           state.summary.pathCount++;
@@ -258,7 +258,7 @@ var __nimbusProcessFsModule = (() => {
         case "setattr":
           state.summary.pathCount++;
           state.summary.opCount++;
-          yield encodeMetadataRecord(RecordTag.SetAttr, { path: op.path, ...op.attrs }, state);
+          yield encodeMetadataRecord(RecordTag.SetAttr, { path: op.path, ...op.attrs, ...op.description === void 0 ? {} : { description: op.description }, ...expectations(op, "setattr") }, state);
           break;
         case "call":
           state.summary.pathCount++;
@@ -451,12 +451,19 @@ var __nimbusProcessFsModule = (() => {
           return {
             kind: "rename",
             from: ownedPaths.claim(canonicalPath(op.from, "rename source")),
-            to: ownedPaths.claim(canonicalPath(op.to, "rename target"))
+            to: ownedPaths.claim(canonicalPath(op.to, "rename target")),
+            ...expectations(op, "rename")
           };
         case "truncate":
           return { kind: "truncate", path: ownedPaths.claim(canonicalPath(op.path, "truncate path")), size: safeInteger(op.size, "truncate size") };
         case "setattr":
-          return { kind: "setattr", path: ownedPaths.claim(canonicalPath(op.path, "setattr path")), attrs: parseAttrs(op.attrs, "setattr") };
+          return {
+            kind: "setattr",
+            path: ownedPaths.claim(canonicalPath(op.path, "setattr path")),
+            attrs: parseAttrs(op.attrs, "setattr"),
+            ...op.description === void 0 ? {} : { description: descriptionId(op.description, "setattr description") },
+            ...expectations(op, "setattr")
+          };
         case "call": {
           const call = op.call;
           if ("data" in call) {
@@ -494,8 +501,15 @@ var __nimbusProcessFsModule = (() => {
     if (keys === "gid,uid")
       return { uid: ownerId(value.uid, `${label} uid`), gid: ownerId(value.gid, `${label} gid`) };
     if (keys === "atime,mtime")
-      return { atime: safeInteger(value.atime, `${label} atime`), mtime: safeInteger(value.mtime, `${label} mtime`) };
+      return { atime: parseFsTime(value.atime, `w7-frame: ${label} atime`), mtime: parseFsTime(value.mtime, `w7-frame: ${label} mtime`) };
     throw new Error(`w7-frame: ${label} changes the mode, the owner or the times, one of them: got ${keys || "nothing"}`);
+  }
+  function parseFsTime(value, label) {
+    if (value === "now" || value === "omit")
+      return value;
+    if (typeof value === "number" && Number.isFinite(value))
+      return value;
+    throw new Error(`${label} must be a time: milliseconds, 'now' or 'omit'`);
   }
   function parsePathCall(value, path) {
     const keys = Object.keys(value).sort().join(",");
@@ -517,9 +531,9 @@ var __nimbusProcessFsModule = (() => {
       }
       case "unlink":
       case "rmdir":
-        if (keys !== "call,path")
+        if (keys !== "call,path" && keys !== "call,expect,path")
           break;
-        return { call: value.call, path: path(value.path, `${value.call} path`) };
+        return { call: value.call, path: path(value.path, `${value.call} path`), ...expectations(value, value.call) };
       case "symlink":
         if (keys !== "call,path,target" && keys !== "call,ino,path,target")
           break;
@@ -568,7 +582,7 @@ var __nimbusProcessFsModule = (() => {
       case "open": {
         const flags = ["create", "exclusive", "nofollow", "truncate"];
         let required = keys;
-        for (const flag of ["create", "description", "exclusive", "fchmod", "ino", "nofollow", "truncate", "umask"])
+        for (const flag of ["create", "description", "exclusive", "expect", "fchmod", "ino", "nofollow", "truncate", "umask"])
           required = required.replace(`,${flag}`, "");
         if (required !== "access,call,mode,path")
           break;
@@ -591,7 +605,8 @@ var __nimbusProcessFsModule = (() => {
           ...value.exclusive === true ? { exclusive: true } : {},
           ...value.nofollow === true ? { nofollow: true } : {},
           ...value.description === void 0 ? {} : { description: descriptionId(value.description, "open description") },
-          ...value.fchmod === void 0 ? {} : { fchmod: u32(value.fchmod, "open fchmod") }
+          ...value.fchmod === void 0 ? {} : { fchmod: u32(value.fchmod, "open fchmod") },
+          ...expectations(value, "open")
         };
       }
       case "lutimes":
@@ -625,6 +640,22 @@ var __nimbusProcessFsModule = (() => {
     if (ino < 2)
       throw new Error(`w7-frame: ${label} must be at least 2`);
     return ino;
+  }
+  function expectations(value, label) {
+    const expected = (field, name) => {
+      if (field === null)
+        return null;
+      if (isObject(field) && !Array.isArray(field)) {
+        if (Object.keys(field).join(",") !== "made")
+          throw new Error(`w7-frame: ${label} ${name} is a number, null or { made }`);
+        return { made: descriptionId(field.made, `${label} ${name} made`) };
+      }
+      return inodeNumber(field, `${label} ${name}`);
+    };
+    return {
+      ...value.expect === void 0 ? {} : { expect: expected(value.expect, "expect") },
+      ...value.expectTo === void 0 ? {} : { expectTo: expected(value.expectTo, "expectTo") }
+    };
   }
   function normalizeInode(inode) {
     canonicalPath(inode.path, "inode path");
@@ -779,6 +810,9 @@ var __nimbusProcessFsModule = (() => {
       offset += part.byteLength;
     }
     return output;
+  }
+  function isObject(value) {
+    return typeof value === "object" && value !== null;
   }
 
   function classifyMessage(msg) {
@@ -1356,7 +1390,6 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
   }
   var DATA_PIECE_BYTES = WAVE_BYTES;
   var FOLD_BUFFER =   Symbol("process-fs-fold-buffer");
-  var FOLD_WAITERS =   Symbol("process-fs-fold-waiters");
   var MAX_DELEGATIONS_PER_PROCESS = 8;
   var GRANT_AFTER = 8;
   var LINGER_MS = 10;
@@ -1419,21 +1452,6 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
   function descriptionOf(call) {
     return "description" in call ? call.description : void 0;
   }
-  function startFoldWaiters(entry) {
-    const resolves = [entry.resolve];
-    const rejects = [entry.reject];
-    const waiters = { resolves, rejects };
-    entry[FOLD_WAITERS] = waiters;
-    entry.resolve = (answer) => {
-      for (const resolve of resolves) resolve(answer);
-      resolves.length = rejects.length = 0;
-    };
-    entry.reject = (error) => {
-      for (const reject of rejects) reject(error);
-      resolves.length = rejects.length = 0;
-    };
-    return waiters;
-  }
   function extended(call, data, buffer) {
     const size = call.data.byteLength + data.byteLength;
     if (buffer === null || buffer.byteLength < size) {
@@ -1444,25 +1462,25 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
     const joined = buffer.subarray(0, size);
     return { op: { type: "call", call: { ...call, data: joined } }, buffer, append: joined.subarray(call.data.byteLength) };
   }
-  function folded(last, next, buffer) {
+  function foldOf(last, next) {
     if (last.type !== "call" || next.type !== "call" || !("data" in last.call) || !("data" in next.call)) return null;
     const a = last.call;
     const b = next.call;
     if (a.path !== b.path || descriptionOf(a) !== descriptionOf(b) || a.data.byteLength + b.data.byteLength > DATA_PIECE_BYTES) return null;
     const inoOf = (call) => "ino" in call ? call.ino : void 0;
-    if (b.call === "writeFile" && inoOf(b) === void 0 && (a.call === "writeFile" || a.call === "appendFile")) {
-      return { op: { type: "call", call: { ...a, call: "writeFile", data: b.data } }, buffer: null };
-    }
-    if (b.call === "appendFile" && inoOf(b) === void 0 && (a.call === "writeFile" || a.call === "appendFile")) {
-      return extended(a, b.data, buffer);
-    }
-    if (b.call === "append" && a.call === "append" && inoOf(a) === inoOf(b)) {
-      return extended(a, b.data, buffer);
-    }
-    if (b.call === "write" && a.call === "write" && inoOf(a) === inoOf(b) && a.offset + a.data.byteLength === b.offset) {
-      return extended(a, b.data, buffer);
-    }
+    if (b.call === "writeFile" && inoOf(b) === void 0 && (a.call === "writeFile" || a.call === "appendFile")) return "replaces";
+    if (b.call === "appendFile" && inoOf(b) === void 0 && (a.call === "writeFile" || a.call === "appendFile")) return "extends";
+    if (b.call === "append" && a.call === "append" && inoOf(a) === inoOf(b)) return "extends";
+    if (b.call === "write" && a.call === "write" && inoOf(a) === inoOf(b) && a.offset + a.data.byteLength === b.offset) return "extends";
     return null;
+  }
+  function folded(last, next, buffer) {
+    const fold = foldOf(last, next);
+    if (fold === null) return null;
+    const a = last.call;
+    const b = next.call;
+    if (fold === "replaces") return { op: { type: "call", call: { ...a, call: "writeFile", data: b.data } }, buffer: null };
+    return extended(a, b.data, buffer);
   }
   function pieces(op) {
     if (op.type !== "call" || !("data" in op.call) || op.call.data.byteLength <= DATA_PIECE_BYTES) return [op];
@@ -1552,12 +1570,12 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         if (marks[at].mark <= answered) marks.splice(at, 1)[0].resolve();
       }
     };
-    const fail = (entry, errno, message) => {
+    const fail = (entry, errno, message, refused = false) => {
       settled(entry);
       const path = entry.paths[0] ?? "";
       if (entry.acknowledged) {
         failures.push({ op: entry.name, path, errno, message });
-        entry.resolve({ failed: { errno, message } });
+        entry.resolve({ failed: { errno, message, ...refused ? { refused: true } : {} } });
       } else {
         entry.reject(fsError(errno, message, path));
       }
@@ -1633,7 +1651,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
           endedProcess(entries, error2, epoch?.writer ?? null);
           return;
         }
-        for (const entry of entries) fail(entry, "EIO", `the session gave this process no writer: ${error2 instanceof Error ? error2.message : String(error2)}`);
+        for (const entry of entries) fail(entry, "EIO", `the session gave this process no writer: ${error2 instanceof Error ? error2.message : String(error2)}`, true);
         forget(entries[entries.length - 1].jid, false);
         return;
       }
@@ -1651,7 +1669,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       } catch (error2) {
         const code = error2?.code;
         const errno = typeof code === "string" && /^E[A-Z0-9]+$/.test(code) ? code : "EIO";
-        for (const entry of entries) fail(entry, errno, `this write could not be sent: ${error2 instanceof Error ? error2.message : String(error2)}`);
+        for (const entry of entries) fail(entry, errno, `this write could not be sent: ${error2 instanceof Error ? error2.message : String(error2)}`, true);
         forget(entries[entries.length - 1].jid, false);
         epoch = null;
         for (const entry of queue) entry.seq = 0;
@@ -1706,7 +1724,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       for (const [index, entry] of entries.entries()) {
         if (refused !== null && entry.seq === refused.seq) {
           counters.refused++;
-          fail(entry, refused.errno, refused.message);
+          fail(entry, refused.errno, refused.message, true);
           if (writer === null) ack = Math.max(ack, entry.seq);
           continue;
         }
@@ -1802,6 +1820,82 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         sending = null;
         pump();
       });
+    };
+    const entered = (given, submitOptions, foldOnly) => {
+      const acknowledged = submitOptions?.acknowledged === true;
+      if (processGone !== null && !(sealed && (acknowledged || submitOptions?.decided === true))) throw processGone;
+      const op = withUmaskOf(given, options.umask);
+      const named = pathsOf(op);
+      const lingers = (acknowledged || submitOptions?.decided === true) && named.every((path) => heldGrant(path) !== void 0);
+      for (const path of named) if (!canonical(path)) throw fsError("EINVAL", `EINVAL: not a filesystem path the session takes: '${path}'`, path);
+      if (op.type === "call" && op.call.call === "symlink" && utf8Length(op.call.target) > SYMLINK_TARGET_MAX) {
+        throw fsError("ENAMETOOLONG", `ENAMETOOLONG: a link's target is at most ${SYMLINK_TARGET_MAX} bytes`, op.call.path);
+      }
+      const parts = pieces(op);
+      const bytes = parts.reduce((sum, part) => sum + (part.type === "call" && "data" in part.call ? part.call.data.byteLength : 0), 0);
+      if (acknowledged && !sealed && pendingSyncBytes + bytes > syncCap) throw syncCapRefusal(bytes, pathsOf(op)[0] ?? "");
+      const tail = foldTail(parts, named, acknowledged);
+      const merged = tail !== void 0 ? folded(tail.op, parts[0], tail[FOLD_BUFFER] ?? null) : null;
+      if (merged !== null && tail !== void 0) {
+        const mergedBytes = merged.op.type === "call" && "data" in merged.op.call ? merged.op.call.data.byteLength : 0;
+        journal.replace(tail.jid, merged.op, merged.append);
+        const grown = mergedBytes - tail.bytes;
+        tail.op = merged.op;
+        if (merged.buffer !== null || tail[FOLD_BUFFER] !== void 0) tail[FOLD_BUFFER] = merged.buffer ?? void 0;
+        tail.bytes = mergedBytes;
+        if (tail.lingers && !lingers) {
+          tail.lingers = false;
+          schedule();
+        }
+        heapBytes += grown;
+        pendingBytes += grown;
+        if (acknowledged) pendingSyncBytes += grown;
+        counters.ops++;
+        counters.folded++;
+        return tail.answer;
+      }
+      if (foldOnly) return void 0;
+      const answers = parts.map((part) => {
+        let entry;
+        const answer2 = new Promise((resolve, reject) => {
+          const partBytes = part.type === "call" && "data" in part.call ? part.call.data.byteLength : 0;
+          const jid = journal.append(part);
+          const kept = !journal.durable || heapBytes + partBytes <= PROCESS_FS_HEAP_WINDOW_BYTES;
+          if (kept) heapBytes += partBytes;
+          entry = { op: kept ? part : null, jid, name: nameOf(part), seq: 0, order: ++logged, bytes: partBytes, paths: pathsOf(part), acknowledged, lingers, resolve, reject, answer: null };
+          queue.push(entry);
+          pendingBytes += partBytes;
+          if (acknowledged) {
+            pendingSyncBytes += partBytes;
+            pendingSyncOps++;
+          }
+          counters.ops++;
+        });
+        if (entry !== void 0) entry.answer = answer2;
+        return { entry, answer: answer2 };
+      });
+      schedule();
+      const answer = Promise.all(answers.map((piece) => piece.answer)).then((all) => {
+        const first = all[0]?.mutation;
+        const last = all[all.length - 1];
+        if (last === void 0) return {};
+        const failures2 = all.filter((piece) => piece.failed !== void 0);
+        if (failures2.length > 0) {
+          const { errno, message } = failures2[0].failed;
+          return { failed: failures2.length === all.length && failures2.every((piece) => piece.failed.refused === true) ? { errno, message, refused: true } : { errno, message } };
+        }
+        const { mutation: _mutation, ...rest } = last;
+        return first !== void 0 && last.mutation !== void 0 ? { ...rest, mutation: { before: first.before, after: last.mutation.after } } : rest;
+      });
+      if (acknowledged) answer.catch(() => {
+      });
+      const only = answers.length === 1 ? answers[0].entry : void 0;
+      if (only !== void 0) only.answer = answer;
+      return answer;
+    };
+    const foldTail = (parts, named, acknowledged) => {
+      const tail = queue[queue.length - 1];
+      return parts.length === 1 && tail !== void 0 && tail.paths[0] === named[0] && tail.seq === 0 && tail.op !== null && tail.acknowledged === acknowledged ? tail : void 0;
     };
     const schedule = () => {
       if (scheduled || inFlight !== null || paused || sealed) return;
@@ -1996,6 +2090,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       });
     };
     const heldGrant = (key) => escaped !== null ? void 0 : grants.find((grant) => !grant.ended && !grant.closing && !grant.shared && within(key, grant.root));
+    const syncCapRefusal = (bytes, path) => fsError("ENOMEM", `ENOMEM: ${pendingSyncBytes} bytes of synchronous writes are waiting for the session, and this one (${bytes}) would pass the ${syncCap}-byte cap; let the program yield (an await) for them to be sent`, path);
     const client = {
       holder(key) {
         const held = heldGrant(key);
@@ -2061,74 +2156,14 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       pending() {
         return queue.length > 0 || inFlight !== null;
       },
+      fitsSync(bytes, path) {
+        if (!sealed && pendingSyncBytes + bytes > syncCap) throw syncCapRefusal(bytes, path);
+      },
       submit(given, submitOptions) {
-        const acknowledged = submitOptions?.acknowledged === true;
-        if (processGone !== null && !(sealed && (acknowledged || submitOptions?.decided === true))) throw processGone;
-        const op = withUmaskOf(given, options.umask);
-        const named = pathsOf(op);
-        const lingers = (acknowledged || submitOptions?.decided === true) && named.every((path) => heldGrant(path) !== void 0);
-        for (const path of named) if (!canonical(path)) throw fsError("EINVAL", `EINVAL: not a filesystem path the session takes: '${path}'`, path);
-        if (op.type === "call" && op.call.call === "symlink" && utf8Length(op.call.target) > SYMLINK_TARGET_MAX) {
-          throw fsError("ENAMETOOLONG", `ENAMETOOLONG: a link's target is at most ${SYMLINK_TARGET_MAX} bytes`, op.call.path);
-        }
-        const parts = pieces(op);
-        const bytes = parts.reduce((sum, part) => sum + (part.type === "call" && "data" in part.call ? part.call.data.byteLength : 0), 0);
-        if (acknowledged && !sealed && pendingSyncBytes + bytes > syncCap) {
-          throw fsError("ENOMEM", `ENOMEM: ${pendingSyncBytes} bytes of synchronous writes are waiting for the session, and this one (${bytes}) would pass the ${syncCap}-byte cap; let the program yield (an await) for them to be sent`, pathsOf(op)[0] ?? "");
-        }
-        const tail = queue[queue.length - 1];
-        const merged = parts.length === 1 && tail !== void 0 && tail.paths[0] === named[0] && tail.seq === 0 && tail.op !== null && tail.acknowledged === acknowledged ? folded(tail.op, parts[0], tail[FOLD_BUFFER] ?? null) : null;
-        if (merged !== null && tail !== void 0) {
-          const mergedBytes = merged.op.type === "call" && "data" in merged.op.call ? merged.op.call.data.byteLength : 0;
-          journal.replace(tail.jid, merged.op, merged.append);
-          const grown = mergedBytes - tail.bytes;
-          tail.op = merged.op;
-          if (merged.buffer !== null || tail[FOLD_BUFFER] !== void 0) tail[FOLD_BUFFER] = merged.buffer ?? void 0;
-          tail.bytes = mergedBytes;
-          if (tail.lingers && !lingers) {
-            tail.lingers = false;
-            schedule();
-          }
-          heapBytes += grown;
-          pendingBytes += grown;
-          if (acknowledged) pendingSyncBytes += grown;
-          counters.ops++;
-          counters.folded++;
-          const answer2 = new Promise((resolve, reject) => {
-            const waiters = tail[FOLD_WAITERS] ?? startFoldWaiters(tail);
-            waiters.resolves.push(resolve);
-            waiters.rejects.push(reject);
-          });
-          if (acknowledged) answer2.catch(() => {
-          });
-          return answer2;
-        }
-        const answers = parts.map((part) => new Promise((resolve, reject) => {
-          const partBytes = part.type === "call" && "data" in part.call ? part.call.data.byteLength : 0;
-          const jid = journal.append(part);
-          const kept = !journal.durable || heapBytes + partBytes <= PROCESS_FS_HEAP_WINDOW_BYTES;
-          if (kept) heapBytes += partBytes;
-          queue.push({ op: kept ? part : null, jid, name: nameOf(part), seq: 0, order: ++logged, bytes: partBytes, paths: pathsOf(part), acknowledged, lingers, resolve, reject });
-          pendingBytes += partBytes;
-          if (acknowledged) {
-            pendingSyncBytes += partBytes;
-            pendingSyncOps++;
-          }
-          counters.ops++;
-        }));
-        schedule();
-        const answer = Promise.all(answers).then((all) => {
-          const first = all[0]?.mutation;
-          const last = all[all.length - 1];
-          if (last === void 0) return {};
-          const failed = all.find((piece) => piece.failed !== void 0)?.failed;
-          if (failed !== void 0) return { failed };
-          const { mutation: _mutation, ...rest } = last;
-          return first !== void 0 && last.mutation !== void 0 ? { ...rest, mutation: { before: first.before, after: last.mutation.after } } : rest;
-        });
-        if (acknowledged) answer.catch(() => {
-        });
-        return answer;
+        return entered(given, submitOptions, false);
+      },
+      fold(given, submitOptions) {
+        return entered(given, submitOptions, true);
       },
       hurry() {
         for (const entry of queue) entry.lingers = false;

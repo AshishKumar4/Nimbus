@@ -9,6 +9,7 @@ import { ProcessFiles } from '../runtime/process-files.js';
 import { RuntimeFsPathSchema as FsPath } from '../runtime/filesystem-path.js';
 import { readDirectoryBatch } from '../runtime/read-directory-batch.js';
 import { sendRemoval } from '../runtime/filesystem-methods.js';
+import { parseFsTime } from '@nimbus-sh/platform/w7-frame.js';
 import { supervisorDeliveredOp, supervisorDeliveryAnswer, supervisorJoinedReadOp, SUPERVISOR_DELIVER_OP, } from './supervisor-delivery.js';
 const OpenOptions = z.object({
     read: z.boolean().optional(), write: z.boolean().optional(), append: z.boolean().optional(),
@@ -44,8 +45,7 @@ function nullableNumberArg(envelope, index) {
 }
 /** A time as utimes and futimes take it (FsTime): finite ms, 'now' or 'omit'. */
 function timeArg(envelope, index) {
-    const value = envelope.args?.[index];
-    return value === 'now' || value === 'omit' ? value : numberArg(envelope, index);
+    return parseFsTime(envelope.args?.[index], `supervisor op ${envelope.op}: argument ${index}`);
 }
 function bytesArg(envelope, index) {
     const value = envelope.args?.[index];

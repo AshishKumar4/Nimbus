@@ -69,6 +69,8 @@ export interface Namespace {
   /** Why the namespace is not answering (meaningful only while ready() is false). */
   notReadyCause(): string;
   put(t: ResidentTables, k: string, stat: NsStat, rev: unknown, target?: string | null, unlisted?: string | null): void;
+  /** `listener` told of each row put, by its key, in the same turn (ResidentNamespace.onAdmitted): one, a later one replacing it. */
+  onPut(listener: ((k: string) => void) | null): void;
   tryPut(t: ResidentTables, k: string, stat: NsStat, rev: unknown, target?: string | null, unlisted?: string | null): boolean;
   deleteTree(t: ResidentTables, k: string, self: boolean): void;
   /** Drop one row and what the table keeps of it in heap. */
@@ -155,6 +157,8 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
   const realNow = dateNow;
   /** Paths of every symlink in the table: resolution walks only past these. */
   let links = new SafeSet<string>();
+  /** Told of each row put (onPut). */
+  let putListener: ((k: string) => void) | null = null;
   /**
    * Directories on a mount whose entries the listing did not name (the launch
    * did not name them, or they were past its bound), each to the mount point
@@ -230,6 +234,7 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
     );
     if (kind === NS_LINK) links.add(k); else links.delete(k);
     if (mount !== null) unlisted.set(k, mount); else unlisted.delete(k);
+    putListener?.(k);
   };
 
   // The authority operation may succeed while metadata cannot be cached.
@@ -534,6 +539,9 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
     listedAt(k) { return listed.has(nsParent(k)); },
     isListed(dir) { return listed.has(dir); },
     markListed(dir) { listed.add(dir); },
+    onPut(listener) {
+      putListener = listener;
+    },
     /** Forget that `dir` and every directory beneath it are listed: a change no delta itemises may have moved their names. */
     forgetListed,
   };

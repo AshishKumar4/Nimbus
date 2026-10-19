@@ -25,7 +25,8 @@ export interface ReadDirectoryPool {
   owns(id: number): boolean;
   closed(id: number): boolean;
   local(id: number): { key: string; entry: ResidentEntry } | null;
-  close(id: number): void | Promise<void>;
+  /** `wait`: a close that may wait for the session retires what is queued when the queue is full; one that cannot queues it. */
+  close(id: number, wait?: boolean): void | Promise<void>;
   /** Only call where a real supervisor/store I/O reply arrived; timers never establish trust. */
   io(): void;
   /**
@@ -222,11 +223,11 @@ export function readDirectoryPool({ call, store, client, before, endWaitMs = DIR
     owns: (id) => owned.has(id),
     closed: (id) => retiring.has(id),
     local: (id) => { const entry = owned.get(id); return entry ? local(entry) : null; },
-    close(id) {
+    close(id, wait = true) {
       if (!owned.delete(id)) throw failure('EBADF', 'directory description is not open');
       claiming.delete(id);
       retiring.add(id);
-      if (retiring.size >= DIRECTORY_PREFETCH_LIMIT) return serial(drain);
+      if (wait && retiring.size >= DIRECTORY_PREFETCH_LIMIT) return serial(drain);
     },
     io() {
       trustedAtIo = owner !== null && client.readUnchanged(owner) && client.readTrusted();

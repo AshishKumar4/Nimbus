@@ -385,7 +385,7 @@ v3) {
                         throw new Error(`w7-frame: unknown record tag ${envelope.tag}`);
                     summary.pathCount++;
                     summary.opCount++;
-                    const value = parseObject(payload, 'call', ['call', 'path'], ['mode', 'target', 'from', 'ino', 'size', 'existing', 'recursive', 'force', 'uid', 'gid', 'atime', 'mtime', 'umask', 'access', 'create', 'truncate', 'exclusive', 'nofollow', 'description', 'fchmod']);
+                    const value = parseObject(payload, 'call', ['call', 'path'], ['mode', 'target', 'from', 'ino', 'size', 'existing', 'recursive', 'force', 'uid', 'gid', 'atime', 'mtime', 'umask', 'access', 'create', 'truncate', 'exclusive', 'nofollow', 'description', 'fchmod', 'expect']);
                     yield { type: 'call', call: parsePathCall(value, (path, label) => ownedPaths.claim(canonicalPath(path, label))) };
                     break;
                 }
@@ -397,20 +397,23 @@ v3) {
                     summary.pathCount++;
                     summary.opCount++;
                     if (envelope.tag === RecordTag.Rename) {
-                        const value = parseObject(payload, 'rename', ['from', 'to']);
+                        const value = parseObject(payload, 'rename', ['from', 'to'], ['expect', 'expectTo']);
                         const from = ownedPaths.claim(canonicalPath(value.from, 'rename source'));
                         const to = ownedPaths.claim(canonicalPath(value.to, 'rename target'));
-                        yield { type: 'rename', from, to };
+                        yield { type: 'rename', from, to, ...expectations(value, 'rename') };
                     }
                     else if (envelope.tag === RecordTag.Truncate) {
                         const value = parseObject(payload, 'truncate', ['path', 'size']);
                         yield { type: 'truncate', path: ownedPaths.claim(canonicalPath(value.path, 'truncate path')), size: safeInteger(value.size, 'truncate size') };
                     }
                     else {
-                        const value = parseObject(payload, 'setattr', ['path'], ['mode', 'uid', 'gid', 'atime', 'mtime']);
+                        const value = parseObject(payload, 'setattr', ['path'], ['mode', 'uid', 'gid', 'atime', 'mtime', 'description', 'expect']);
                         const path = ownedPaths.claim(canonicalPath(value.path, 'setattr path'));
-                        const { path: _path, ...attrs } = value;
-                        yield { type: 'setattr', path, attrs: parseAttrs(attrs, 'setattr') };
+                        const { path: _path, description, expect: _expect, ...attrs } = value;
+                        yield {
+                            type: 'setattr', path, attrs: parseAttrs(attrs, 'setattr'),
+                            ...(description === undefined ? {} : { description: descriptionId(description, 'setattr description') }), ...expectations(value, 'setattr'),
+                        };
                     }
                     break;
                 }
@@ -483,7 +486,7 @@ async function* encodeRecords(batchId, ops) {
             case 'rename':
                 state.summary.pathCount++;
                 state.summary.opCount++;
-                yield encodeMetadataRecord(RecordTag.Rename, { from: op.from, to: op.to }, state);
+                yield encodeMetadataRecord(RecordTag.Rename, { from: op.from, to: op.to, ...expectations(op, 'rename') }, state);
                 break;
             case 'truncate':
                 state.summary.pathCount++;
@@ -493,7 +496,7 @@ async function* encodeRecords(batchId, ops) {
             case 'setattr':
                 state.summary.pathCount++;
                 state.summary.opCount++;
-                yield encodeMetadataRecord(RecordTag.SetAttr, { path: op.path, ...op.attrs }, state);
+                yield encodeMetadataRecord(RecordTag.SetAttr, { path: op.path, ...op.attrs, ...(op.description === undefined ? {} : { description: op.description }), ...expectations(op, 'setattr') }, state);
                 break;
             case 'call':
                 state.summary.pathCount++;
@@ -702,11 +705,16 @@ function prepareOps(payload, batchId) {
                     kind: 'rename',
                     from: ownedPaths.claim(canonicalPath(op.from, 'rename source')),
                     to: ownedPaths.claim(canonicalPath(op.to, 'rename target')),
+                    ...expectations(op, 'rename'),
                 };
             case 'truncate':
                 return { kind: 'truncate', path: ownedPaths.claim(canonicalPath(op.path, 'truncate path')), size: safeInteger(op.size, 'truncate size') };
             case 'setattr':
-                return { kind: 'setattr', path: ownedPaths.claim(canonicalPath(op.path, 'setattr path')), attrs: parseAttrs(op.attrs, 'setattr') };
+                return {
+                    kind: 'setattr', path: ownedPaths.claim(canonicalPath(op.path, 'setattr path')), attrs: parseAttrs(op.attrs, 'setattr'),
+                    ...(op.description === undefined ? {} : { description: descriptionId(op.description, 'setattr description') }),
+                    ...expectations(op, 'setattr'),
+                };
             case 'call': {
                 const call = op.call;
                 if ('data' in call) {
@@ -747,8 +755,16 @@ function parseAttrs(value, label) {
     if (keys === 'gid,uid')
         return { uid: ownerId(value.uid, `${label} uid`), gid: ownerId(value.gid, `${label} gid`) };
     if (keys === 'atime,mtime')
-        return { atime: safeInteger(value.atime, `${label} atime`), mtime: safeInteger(value.mtime, `${label} mtime`) };
+        return { atime: parseFsTime(value.atime, `w7-frame: ${label} atime`), mtime: parseFsTime(value.mtime, `w7-frame: ${label} mtime`) };
     throw new Error(`w7-frame: ${label} changes the mode, the owner or the times, one of them: got ${keys || 'nothing'}`);
+}
+/** `value` as an FsTime (a finite number of milliseconds, 'now' or 'omit'); else an error naming `label`. */
+export function parseFsTime(value, label) {
+    if (value === 'now' || value === 'omit')
+        return value;
+    if (typeof value === 'number' && Number.isFinite(value))
+        return value;
+    throw new Error(`${label} must be a time: milliseconds, 'now' or 'omit'`);
 }
 function parseDelete(bytes) {
     const value = parseObject(bytes, 'delete', ['path']);
@@ -822,9 +838,9 @@ function parsePathCall(value, path) {
         }
         case 'unlink':
         case 'rmdir':
-            if (keys !== 'call,path')
+            if (keys !== 'call,path' && keys !== 'call,expect,path')
                 break;
-            return { call: value.call, path: path(value.path, `${value.call} path`) };
+            return { call: value.call, path: path(value.path, `${value.call} path`), ...expectations(value, value.call) };
         case 'symlink':
             if (keys !== 'call,path,target' && keys !== 'call,ino,path,target')
                 break;
@@ -868,7 +884,7 @@ function parsePathCall(value, path) {
         case 'open': {
             const flags = ['create', 'exclusive', 'nofollow', 'truncate'];
             let required = keys;
-            for (const flag of ['create', 'description', 'exclusive', 'fchmod', 'ino', 'nofollow', 'truncate', 'umask'])
+            for (const flag of ['create', 'description', 'exclusive', 'expect', 'fchmod', 'ino', 'nofollow', 'truncate', 'umask'])
                 required = required.replace(`,${flag}`, '');
             if (required !== 'access,call,mode,path')
                 break;
@@ -889,6 +905,7 @@ function parsePathCall(value, path) {
                 ...(value.nofollow === true ? { nofollow: true } : {}),
                 ...(value.description === undefined ? {} : { description: descriptionId(value.description, 'open description') }),
                 ...(value.fchmod === undefined ? {} : { fchmod: u32(value.fchmod, 'open fchmod') }),
+                ...expectations(value, 'open'),
             };
         }
         case 'lutimes':
@@ -959,6 +976,23 @@ function inodeNumber(value, label) {
     if (ino < 2)
         throw new Error(`w7-frame: ${label} must be at least 2`);
     return ino;
+}
+/** A record's expectations (W7Expected), checked: `expect`, and a rename's `expectTo`. */
+function expectations(value, label) {
+    const expected = (field, name) => {
+        if (field === null)
+            return null;
+        if (isObject(field) && !Array.isArray(field)) {
+            if (Object.keys(field).join(',') !== 'made')
+                throw new Error(`w7-frame: ${label} ${name} is a number, null or { made }`);
+            return { made: descriptionId(field.made, `${label} ${name} made`) };
+        }
+        return inodeNumber(field, `${label} ${name}`);
+    };
+    return {
+        ...(value.expect === undefined ? {} : { expect: expected(value.expect, 'expect') }),
+        ...(value.expectTo === undefined ? {} : { expectTo: expected(value.expectTo, 'expectTo') }),
+    };
 }
 function parseObject(bytes, label, required, optional = []) {
     let value;

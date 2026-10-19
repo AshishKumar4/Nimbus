@@ -9,7 +9,8 @@
 
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { ProcessView } from '../runtime/process-files.js';
-import { requireVfsCred, type FsTime } from '../runtime/os-contracts.js';
+import { requireVfsCred } from '../runtime/os-contracts.js';
+import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 import { dec, enc } from '../_shared/bytes.js';
 import { errorText } from '../_shared/error-text.js';
 import { shellEscape } from '../_shared/shell-quote.js';

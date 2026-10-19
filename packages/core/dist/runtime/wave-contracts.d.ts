@@ -188,10 +188,13 @@ export type RoutedWaveRecord = {
     readonly type: 'truncate';
     readonly path: string;
     readonly size: number;
-} | {
+}
+/** `description`: through the session's open description of that id, its file whatever names it now. */
+ | {
     readonly type: 'setattr';
     readonly path: string;
     readonly attrs: W7Attrs;
+    readonly description?: string;
 };
 /** A routed name's stat once published: what its receipt reports. */
 export interface RoutedStat {
