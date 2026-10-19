@@ -59,6 +59,9 @@ const FOUND = {
     schedule: [['own', 'readFile', 'top'], ['settle'], ['hold', 'acquire'], ['input'], ['peer', 'write', 'top', 'rewritten once'], ['settle'],
       ['input'], ['peer', 'write', 'top', 'rewritten twice!'], ['settle'], ['release', 'acquire'], ['settle'], ['sync', 'readFile', 'top'], ['own', 'readFile', 'top']],
   },
+  'a directory a call that cannot wait has not listed is not refused as a directory': {
+    schedule: [['own', 'stat', 'd'], ['settle'], ['sync', 'readdir', 'd'], ['sync', 'readdir', 'x']],
+  },
   'a file a call that cannot wait missed stays a miss until an awaited read answers it': {
     engines: ['node'],
     schedule: [['peer', 'write', 'new', 'not resident'], ['settle'], ['input'], ['settle'], ['sync', 'readFile', 'new'], ['own', 'stat', 'new'], ['settle']],
@@ -70,6 +73,10 @@ const GAPS = {
   'an awaited chmod outside a grant is what the next call that cannot wait reads [holder]': {
     lacks: 'O9: an awaited mutation outside a grant is decided by the provisional decisions (the cutover)',
     shows: 'sync stat top answered file 644',
+  },
+  'a directory a call that cannot wait has not listed is not refused as a directory [holder]': {
+    lacks: 'its synchronous refusal names the call: a directory is EISDIR only to a call for bytes (notResident, the cutover)',
+    shows: 'answered EISDIR',
   },
 };
 
