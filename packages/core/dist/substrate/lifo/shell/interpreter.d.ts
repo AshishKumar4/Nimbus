@@ -109,6 +109,18 @@ type ExecutionIo = {
      */
     background?: boolean;
     scriptMode?: boolean;
+    /**
+     * The command word this shell's text last dispatched (null for a
+     * function's call), before its redirections: bash's this_shell_builtin,
+     * which decides whether a syntax error in eval's or `.`'s text is theirs
+     * (evalstring). One per line a shell reads (a nested bash or sh has its
+     * own), and only that shell's dispatches count: a child's (a subshell's, a
+     * substitution's, a pipeline's) are another process's.
+     */
+    dispatched?: {
+        readonly shell: Interpreter;
+        last: string | null;
+    };
     signal?: AbortSignal;
     positionals?: PositionalFrame;
     /** Host-supplied fields merged into each command's CommandContext. */
@@ -180,7 +192,6 @@ export interface InterpreterConfig extends ShellState {
 export declare class Interpreter {
     private config;
     private lastExitCode;
-    private lastBuiltin;
     private functions;
     private persistentOutputFds;
     private persistentInputFds;

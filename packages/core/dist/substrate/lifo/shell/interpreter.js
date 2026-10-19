@@ -129,10 +129,6 @@ function exited(status) {
 export class Interpreter {
     config;
     lastExitCode = 0;
-    // The command word last dispatched (null for a function's call), before its
-    // redirections: as bash's this_shell_builtin, it decides whether a syntax error
-    // in eval's or `.`'s text is theirs (evalstring).
-    lastBuiltin = null;
     functions = new Map();
     persistentOutputFds = new Map();
     persistentInputFds = new Map();
@@ -762,7 +758,8 @@ export class Interpreter {
             && args.length > 0 && (args[0] === '--' ? args.length > 1 : !args[0].startsWith('-'));
         if (viaCommand)
             [name, ...args] = args[0] === '--' ? args.slice(1) : args;
-        this.lastBuiltin = this.functions.has(name) && !viaCommand ? null : name;
+        if (io.dispatched?.shell === this)
+            io.dispatched.last = this.functions.has(name) && !viaCommand ? null : name;
         // Apply per-command assignments (temporary env)
         const saved = new Map();
         for (const assign of cmd.assignments) {
@@ -866,7 +863,8 @@ export class Interpreter {
                                         // A syntax error while eval or `.` is still the builtin last dispatched (no
                                         // other command of the text has been, or one was, an eval or `.`) is the
                                         // builtin's own failure, as bash's evalstring has it: fatal in a POSIX script.
-                                        if (error instanceof TextSyntaxError && (this.lastBuiltin === 'eval' || this.lastBuiltin === '.' || this.lastBuiltin === 'source'))
+                                        const last = io.dispatched?.last;
+                                        if (error instanceof TextSyntaxError && (last === 'eval' || last === '.' || last === 'source'))
                                             ranText = false;
                                         throw error;
                                     }
@@ -1259,6 +1257,7 @@ export class Interpreter {
             io.terminalFds = terminalFds;
         if (scriptMode)
             io.scriptMode = true;
+        io.dispatched = { shell: this, last: null };
         return io;
     }
     createCommandIo(io) {
@@ -1279,6 +1278,8 @@ export class Interpreter {
             next.background = true;
         if (io.scriptMode)
             next.scriptMode = true;
+        if (io.dispatched)
+            next.dispatched = io.dispatched;
         if (io.signal)
             next.signal = io.signal;
         if (io.positionals)
