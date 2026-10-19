@@ -645,7 +645,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       file.mode = mode;
       if (target === null) names.note(parentKey(to), nameOf(to), 'file');
       decided.set(to, entry);
-      inode.cell = file;
+      prov.hold(inode, file);
       const description = descriptionId();
       changes++;
       acknowledged({ type: 'call', call: { call: 'open', path: to, mode: asked, access: 'write', ...(made === undefined ? {} : { ino: made, umask }), create: true, truncate: true, ...(keepMode ? { fchmod: mode } : {}), description } });
@@ -694,7 +694,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
         if (initial > 0 && !room(file, key, initial)) return undefined;
         inode = prov.inodeFor(key, { ...entry });
         if (inode === undefined) return undefined;
-        inode.cell = file;
+        prov.hold(inode, file);
         decided.set(key, entry);
         names.note(parentKey(key), nameOf(key), 'file');
         // Made here: the name exists from now on, in the log's order. Logged
@@ -723,7 +723,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
           return undefined;
         }
         file.length = 0;
-        inode.cell = file;
+        prov.hold(inode, file);
         decided.set(key, { ...current, size: 0, mtime: now(), ctime: now() });
         written(inode);
       }
