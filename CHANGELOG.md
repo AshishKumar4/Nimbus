@@ -5,6 +5,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a Vite dev server with Tailwind v4 could serve its first
+  stylesheet without the classes the app's components use, about one
+  start in three. Each time the dev server read a source file it had
+  already been given, the copy was written again, and once its store was
+  full the write was refused and the file dropped. Tailwind's scanner then
+  skipped the file. A read of bytes the store already holds no longer
+  rewrites them.
 - Fixed: a launch whose program loads wasm or a native binding (rolldown's,
   in a remix dev server) no longer gathers its closure twice. Its build
   gave back the bytes its module map would need for them, then had to ask
