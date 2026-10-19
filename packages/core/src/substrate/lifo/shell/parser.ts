@@ -517,7 +517,10 @@ class Parser {
 
       // Check for redirections
       if (this.isRedirectOperator(token.kind)) {
-        redirections.push({ ...this.parseRedirection(), wordsBefore: words.length });
+        // The node itself: a here-document's body is filled into it when the parser reaches it.
+        const redirection = this.parseRedirection();
+        redirection.wordsBefore = words.length;
+        redirections.push(redirection);
         continue;
       }
 
