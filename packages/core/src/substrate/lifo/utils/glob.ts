@@ -1,6 +1,7 @@
 import type { ProcessView } from '../../../runtime/process-files.js';
 import { resolve } from './path.js';
 import { exists } from '../../../vfs/vfs.js';
+import { encodeLossless, firstLosslessByte } from './lossless-text.js';
 
 /**
  * Match a glob pattern against a text string, as fnmatch(3) without flags:
@@ -32,12 +33,6 @@ export function characterAt(s: string, i: number): string {
   return s.charAt(i);
 }
 
-/** Whether `char` is a surrogate on its own: a byte lossless text keeps (U+DC80+byte), or half of a pair. */
-function isLoneSurrogate(char: string): boolean {
-  const unit = char.charCodeAt(0);
-  return char.length === 1 && unit >= 0xd800 && unit <= 0xdfff;
-}
-
 /** The UTF-16 indices where `s`'s characters begin, and its length: every place a character boundary falls. */
 export function characterBounds(s: string): number[] {
   const bounds: number[] = [];
@@ -46,7 +41,27 @@ export function characterBounds(s: string): number[] {
   return bounds;
 }
 
+/**
+ * As bash's xstrmatch: by character, or, when the pattern or the text holds a
+ * byte that is no character (lossless text keeps it as U+DC80 + byte), by
+ * byte, both read as their UTF-8 bytes: a `?` is a byte, and a range orders
+ * bytes ($'\200' is in [a-😀], whose 😀 is four bytes; z is in $'[a-\377]').
+ */
 function matchPattern(pattern: string, text: string, finalBackslash: boolean): boolean {
+  if (firstLosslessByte(text) !== -1 || firstLosslessByte(pattern) !== -1) {
+    return matchCharacters(byteString(pattern), byteString(text), finalBackslash);
+  }
+  return matchCharacters(pattern, text, finalBackslash);
+}
+
+/** `text`'s bytes, each one character of a string. */
+function byteString(text: string): string {
+  let out = '';
+  for (const byte of encodeLossless(text)) out += String.fromCharCode(byte);
+  return out;
+}
+
+function matchCharacters(pattern: string, text: string, finalBackslash: boolean): boolean {
   let pi = 0;
   let ti = 0;
   let starPi = -1;
@@ -115,12 +130,8 @@ function matchCharClass(pattern: string, pos: number, ch: string): { matched: bo
     const lo = classMember(pattern, i);
     if (lo.end + 1 < pattern.length && pattern[lo.end] === '-' && pattern[lo.end + 1] !== ']') {
       const hi = classMember(pattern, lo.end + 1);
-      // A range orders by code point, among characters of one kind: a byte
-      // lossless text keeps as a lone surrogate is in no range of characters,
-      // as bash's matcher keeps an undecodable byte out of one.
-      const kind = isLoneSurrogate(ch);
-      if (kind === isLoneSurrogate(lo.char) && kind === isLoneSurrogate(hi.char)
-        && code >= (lo.char.codePointAt(0) ?? 0) && code <= (hi.char.codePointAt(0) ?? 0)) matched = true;
+      // A range orders by code point (by byte, in byte matching).
+      if (code >= (lo.char.codePointAt(0) ?? 0) && code <= (hi.char.codePointAt(0) ?? 0)) matched = true;
       i = hi.end;
     } else {
       if (ch === lo.char) matched = true;
