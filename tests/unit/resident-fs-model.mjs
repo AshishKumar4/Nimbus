@@ -213,7 +213,7 @@ async function runSteps(steps, met, grants) {
       const code = await errnoOf(() => { got = sync.read(opened.handle, 0, 1 << 12); });
       // Bytes the view does not hold: refused (EAGAIN), or ESTALE once no name leads to them. A descriptor
       // that never wrote reads the view's bytes, which the view may not hold yet (a grant's given back).
-      if ((code === 'EAGAIN' || code === 'ESTALE') && (file === undefined || file.bytes === null || (code === 'EAGAIN' && (!opened.wrote || file.thin)))) continue;
+      if ((code === 'EAGAIN' || code === 'ESTALE') && (file === undefined || file.bytes === null || (code === 'EAGAIN' && (!opened.wrote || file.thin || opened.dropped)))) continue;
       if (code === 'ESTALE' && unnamed.has(id)) continue;
       assert.equal(code, null, `${label}: fd ${fd} read ${code}`);
       if (file === undefined || file.bytes === null) continue;
@@ -602,6 +602,7 @@ async function runSteps(steps, met, grants) {
     thin = false;
     await admitView(thinly);
     pending = [];
+    for (const opened of fds.values()) delete opened.dropped;
   };
 
   /** The model's view is the session's now (`thinly`: its bytes not held, what a read refused EAGAIN may say). */
@@ -816,8 +817,12 @@ async function runSteps(steps, met, grants) {
       squeezed = true;
       continue;
     }
-    // The budget full for this step: a change it needs room for is refused (ENOSPC), and leaves nothing changed.
-    if (squeezed) budget.limit = budget.used;
+    // The budget full for this step: a change it needs room for is refused (ENOSPC), and leaves nothing changed; what
+    // the process holds may not be kept (fit), so a read that cannot wait may be refused (EAGAIN) until the view has it.
+    if (squeezed) {
+      budget.limit = budget.used;
+      for (const opened of fds.values()) opened.dropped = true;
+    }
     try {
       if (step.op === 'deliver') await deliver();
       else if (step.op === 'catchUp') await catchUp(step.thin === true);
