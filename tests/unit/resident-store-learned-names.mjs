@@ -1,12 +1,14 @@
 #!/usr/bin/env bun
 /**
- * resident-store-triage — what a process's resident filesystem answers when
- * the session's replies land late, or a peer changes what its store already
- * learned:
+ * resident-store-learned-names — what a process's store learned of the
+ * session's names stays what the session holds, when the session's replies
+ * land late or a peer changes what the store already learned:
  *
  * - a lookup's reply, asked before a peer removed the file and landing after
- *   a barrier admitted the removal, never brings the file back;
- * - nor does a listing's;
+ *   a barrier admitted the removal, never brings the file back; nor does a
+ *   listing's;
+ * - nor does either stand in for what a peer's rename put at the name, or
+ *   hide a name a rename brought into the directory;
  * - a name the store learned under a directory a peer replaced is not
  *   served once the barrier admitted the replacement, on either engine.
  *
@@ -103,18 +105,27 @@ function notServed(fs, path, what) {
   assert.ok(seen === null || seen === 'EAGAIN', `${what}: served ${JSON.stringify(seen)}`);
 }
 
-/** A barrier admits a peer's removal of `d/f` while `learning` (begun before the removal, `d` known) waits on its parked `reply`; then it lands. */
-async function lateLearning(tree, reply, learning) {
+/** `path` is the file the peer's rename put there, and nothing answers with the one it replaced. */
+async function renamedOnto(s, path) {
+  const moved = (await s.kernel.stat(k(path))).ino;
+  const seen = synchronously(s.fs, k(path));
+  assert.ok(seen === 'EAGAIN' || seen?.ino === moved, `what a call that cannot wait reads of it: ${JSON.stringify(seen)}`);
+  assert.equal((await s.fs.stat(k(path))).ino, moved, 'what an awaited stat reads of it');
+  assert.equal(new TextDecoder().decode(await s.fs.readFile(k(path))), 'new', 'its bytes');
+}
+
+/** A barrier admits a peer's `change` (by default, removing `d/f`) while `learning` (begun before it, `d` known) waits on its parked lstat batch; then it lands. */
+async function lateLearning(tree, learning, change = (kernel) => kernel.unlink(k('d/f'))) {
   const s = await session(tree);
   assert.equal((await s.fs.stat(k('d'))).type, 'directory');
-  const asked = s.hold(reply);
+  const asked = s.hold('fsReadBatch');
   const first = learning(s);
   await asked();
-  await s.kernel.unlink(k('d/f'));
+  await change(s.kernel);
   s.fs.inbound();
   const barrier = s.fs.stat(k('other'));
   const landed = await Promise.race([barrier.then(() => true), sleep(1_000).then(() => false)]);
-  s.release(reply);
+  s.release('fsReadBatch');
   await first;
   await barrier;
   assert.ok(landed, 'the barrier landed while the learning waited on its reply');
@@ -123,15 +134,36 @@ async function lateLearning(tree, reply, learning) {
 
 const scenarios = {
   async 'a late lookup reply never brings back a file a barrier saw removed'() {
-    const s = await lateLearning({ d: null, 'd/f': 'f', other: 'o' }, 'fsReadBatch', (s) => s.fs.stat(k('d/f')));
+    const s = await lateLearning({ d: null, 'd/f': 'f', other: 'o' }, (s) => s.fs.stat(k('d/f')));
     notServed(s.fs, k('d/f'), 'what a call that cannot wait reads of the removed file');
     assert.equal(await s.fs.stat(k('d/f')), null, 'the removed file');
   },
   async 'a late listing never brings back a file a barrier saw removed'() {
-    const s = await lateLearning({ d: null, 'd/f': 'f', 'd/g': 'g', other: 'o' }, 'fsReadBatch', (s) => s.fs.readdir(k('d')));
+    const s = await lateLearning({ d: null, 'd/f': 'f', 'd/g': 'g', other: 'o' }, (s) => s.fs.readdir(k('d')));
     notServed(s.fs, k('d/f'), 'what a call that cannot wait reads of the removed file');
     assert.equal(await s.fs.stat(k('d/f')), null, 'the removed file');
     assert.deepEqual((await s.fs.readdir(k('d'))).map((entry) => entry.name).sort(), ['g'], 'the directory');
+  },
+  async 'a late lookup never stands in for the file a peer renamed onto its name'() {
+    const s = await lateLearning({ d: null, 'd/f': 'old', 'd/n': 'new', other: 'o' }, (s) => s.fs.stat(k('d/f')),
+      (kernel) => kernel.rename(k('d/n'), k('d/f')));
+    await renamedOnto(s, 'd/f');
+  },
+  async 'a late lookup never stands in for what a peer renamed onto the directory above it'() {
+    const s = await lateLearning({ d: null, 'd/f': 'old', x: null, 'x/f': 'new', other: 'o' }, (s) => s.fs.stat(k('d/f')),
+      async (kernel) => { await kernel.rename(k('d'), k('d-old')); await kernel.rename(k('x'), k('d')); });
+    await renamedOnto(s, 'd/f');
+  },
+  async 'a late listing never hides a name a peer renamed into the directory'() {
+    const s = await lateLearning({ d: null, 'd/f': 'f', 'd/n': 'n', other: 'o' }, (s) => s.fs.readdir(k('d')),
+      (kernel) => kernel.rename(k('d/n'), k('d/e')));
+    const moved = (await s.kernel.stat(k('d/e'))).ino;
+    const seen = synchronously(s.fs, k('d/e'));
+    assert.ok(seen === 'EAGAIN' || seen?.ino === moved, `what a call that cannot wait reads of the name the rename brought: ${JSON.stringify(seen)}`);
+    notServed(s.fs, k('d/n'), 'what a call that cannot wait reads of the name the rename took away');
+    assert.equal((await s.fs.stat(k('d/e'))).ino, moved, 'the name the rename brought');
+    assert.equal(await s.fs.stat(k('d/n')), null, 'the name the rename took away');
+    assert.deepEqual((await s.fs.readdir(k('d'))).map((entry) => entry.name).sort(), ['e', 'f'], 'the directory');
   },
   async 'a learned name under a directory a peer made unsearchable is refused after the barrier'() {
     const s = await session({ d: null, 'd/f': 'f', other: 'o' });
