@@ -481,7 +481,7 @@ export function provisional(host: ProvisionalHost): Provisional {
   /** What `inode` keeps of the budget now: itself and its names, its baseline's and fold's buffers, its records and their bytes, its anchors, its credit. */
   const cost = (inode: Inode): number => {
     let total = INODE_COST + stringCost(inode.key) + stringCost(inode.origin) + (inode.opened === undefined ? 0 : stringCost(inode.opened))
-      + (inode.row.target === null ? 0 : stringCost(inode.row.target)) + (inode.base?.bytes?.byteLength ?? 0) + (inode.state?.bytes?.byteLength ?? 0)
+      + (inode.row.target === null ? 0 : stringCost(inode.row.target)) + (inode.base?.bytes?.byteLength ?? 0) + (inode.state === inode.base ? 0 : inode.state?.bytes?.byteLength ?? 0)
       + (inode.pin?.bytes.byteLength ?? 0) + inode.credit + inode.recordsCost;
     return total;
   };
@@ -562,6 +562,11 @@ export function provisional(host: ProvisionalHost): Provisional {
     if (need > 0) inode.reserved += need;
   };
 
+  /** `inode`'s state its own, before it changes in place: one given back shares its baseline until then (unhold). */
+  const unshared = (inode: Inode): void => {
+    if (inode.state !== null && inode.state === inode.base) inode.state = copyState(inode.base);
+  };
+
   /** Fold `op` into `inode` (its baseline taken first): its record, kept until it retires; `description` the one it was made through. */
   /** `inode` ready for a change here: a grant's no longer (what that logs goes first), and its fold begun. */
   const ready = (inode: Inode): void => {
@@ -571,6 +576,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       inode.base = baseline(inode);
       inode.state = copyState(inode.base);
     }
+    unshared(inode);
     touched.add(inode);
     activity();
   };
@@ -1076,7 +1082,8 @@ export function provisional(host: ProvisionalHost): Provisional {
     const was = last.op;
     if (!('data' in was) || (start === undefined ? was.kind !== 'append' : was.kind !== 'write' || start !== was.offset + was.data.byteLength)) return false;
     // What it adds is what grows: its record's room and its state's, each by doubling; most writes add nothing to admit.
-    const state = inode.state;
+    unshared(inode);
+    const state = inode.state!;
     const before = was.data.byteLength;
     const length = before + bytes.byteLength;
     const recordRoom = last.room !== undefined && last.room.byteLength >= length ? last.room.byteLength : Math.max(length, before * 2);
@@ -1273,7 +1280,8 @@ export function provisional(host: ProvisionalHost): Provisional {
       inode.row = { ...entry, size: cell.length };
       // The cell's buffer is the baseline's own: no one else holds it now.
       inode.base = { bytes: cell.bytes.subarray(0, cell.length), size: cell.length, mode: entry.mode, uid: entry.uid, gid: entry.gid, atime: entry.atime, mtime: entry.mtime, ctime: entry.ctime };
-      inode.state = copyState(inode.base);
+      // Its state is its baseline until something changes it here (unshared): no copy of bytes nothing may change.
+      inode.state = inode.base;
       inode.heldAt = Infinity;
       touched.add(inode);
       // Its bytes are the budget's from now on: kept where it has room, else unknown here (the session reads them).
@@ -1687,6 +1695,7 @@ export function provisional(host: ProvisionalHost): Provisional {
           // (else they stay records while a descriptor may still read them).
           if (inode.descs > 0 && inode.base !== null && inode.base.bytes === null && retired.some((record) => payloadOf(record.op) > 0)) continue;
           dropRecords(inode, new Set(retired));
+          unshared(inode);
           if (inode.base !== null) for (const record of retired) inode.base = applyOp(inode.base, record.op);
           if (inode.records.length === 0 && inode.descs === 0) {
             inode.base = null;
