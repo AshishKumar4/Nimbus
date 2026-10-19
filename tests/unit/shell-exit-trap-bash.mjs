@@ -29,11 +29,22 @@ const SCRIPTS = [
   "trap 'echo in; exit 7; echo no' EXIT; exit 2",
   "x=$(trap 'exit 9' EXIT; echo out); echo \"cs $? $x\"",
   "trap 'echo \"st $?\"' EXIT; (exit 3)",
-  // A bare `exit` in a substitution or a pipeline's element is still in the action; in ( … ) or a job, not.
+  // A substitution, and a simple command forked (a pipeline's element, a job), are still in the action:
+  // a bare `exit` there ends with the trap's entry status, and an EXIT trap set there does not run.
+  // A compound command forked, `( … )` among them, is not.
   "trap 'x=$(false; exit); exit $?' EXIT; exit 3",
+  "trap 'x=$( { false; exit; } ); exit $?' EXIT; exit 3",
+  "trap 'x=$( (false; exit) ); exit $?' EXIT; exit 3",
   "trap 'false | exit; exit $?' EXIT; exit 3",
+  "trap 'false | f; exit $?' EXIT; f() { false; exit; }; exit 3",
+  "trap 'true | { false; exit; }; exit $?' EXIT; exit 3",
+  "trap 'true | ( false; exit ); exit $?' EXIT; exit 3",
   "trap '(false; exit); exit $?' EXIT; exit 3",
+  "f() { false; exit; }; trap 'f & wait $!; exit $?' EXIT; exit 3",
   "trap '{ false; exit; } & wait $!; exit $?' EXIT; exit 3",
+  "trap 'x=$(trap \"exit 7\" EXIT; exit); exit $?' EXIT; exit 3",
+  "trap '( trap \"exit 7\" EXIT; exit ); exit $?' EXIT; exit 3",
+  "trap 'true | trap \"exit 7\" EXIT; exit $?' EXIT; exit 3",
 ];
 
 const plainStderr = (text) => text.replace(/^(?:bash|\.\/s\.sh): (?:line \d+: )?/gm, '');

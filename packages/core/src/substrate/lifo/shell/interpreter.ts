@@ -426,8 +426,19 @@ export class Interpreter {
     for (const handle of child.persistentHandles()) handle.refs++;
     child.localFrames = this.localFrames.map((frame) => new Map(frame));
     child.errexitSuppressionDepth = this.errexitSuppressionDepth;
-    // A pipeline's element and a substitution run the trap's action still (bash keeps running_trap).
+    return child;
+  }
+
+  /**
+   * `child`, forked for a substitution or a simple command (a pipeline's
+   * element, a job), runs inside the EXIT trap's action still: a bare `exit`
+   * there ends with the trap's entry status, and an EXIT trap set there does
+   * not run. bash keeps running_trap for these, and clears it in the
+   * subshell of a compound command, `( … )` among them.
+   */
+  private inTrapAction(child: Interpreter): Interpreter {
     child.trapEntryStatus = this.trapEntryStatus;
+    child.exitTrapDepth = this.exitTrapDepth;
     return child;
   }
 
@@ -568,9 +579,9 @@ export class Interpreter {
 
       // A job is a process of its own, as a fork makes one: its commands run
       // as it, on its own thread of work, until a kill of it stops them.
-      const child = this.fork();
-      // A job, as a ( … ) subshell, is a shell of its own: no trap's action runs in it.
-      child.trapEntryStatus = null;
+      const [only] = list.entries;
+      const simple = list.entries.length === 1 && only?.pipeline.commands.length === 1 && only.pipeline.commands[0]?.type === 'simple_command';
+      const child = simple ? this.inTrapAction(this.fork()) : this.fork();
       const job = this.config.jobTable.start(
         { command: this.getListCommandText(list), cwd: this.config.getCwd(), parent },
         async ({ identity, signal }) => {
@@ -708,7 +719,7 @@ export class Interpreter {
         // Each element is a thread of its own, which the pipeline's waits on.
         cmdIo.workThread = io.workThread?.fork();
         // Each element runs in a child shell (bash forks every one).
-        const element = this.fork();
+        const element = cmd.type === 'simple_command' ? this.inTrapAction(this.fork()) : this.fork();
         const cmdPromise = (async (): Promise<number> => {
           try {
             return await element.finishChild(async () => (await element.executeCommand(cmd, cmdIo)), cmdIo);
@@ -940,7 +951,6 @@ export class Interpreter {
 
   private async executeSubshell(node: SubshellNode, io: ExecutionIo): Promise<number> {
     const child = this.fork();
-    child.trapEntryStatus = null;
     const subshellIo = this.createCommandIo(io);
     subshellIo.positionals = this.forkPositionals(io);
     let exitCode: number;
@@ -1402,7 +1412,7 @@ export class Interpreter {
     captureIo.stdout = capture.stream;
     captureIo.positionals = this.forkPositionals(io);
     // $( ) runs in a child shell.
-    const child = this.fork();
+    const child = this.inTrapAction(this.fork());
     const exitCode = await child.finishChild(async () => (await child.executeLineWithIo(input, captureIo)), captureIo);
     capture.end();
 
