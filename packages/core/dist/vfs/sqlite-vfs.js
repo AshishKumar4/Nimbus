@@ -52,7 +52,7 @@ import { inodeKind, linkedSignal, untilAborted, validateFileChunks, validateInod
 import { LEDGER_ROW_BYTES, StorageLedger, databaseBytesOf } from '../runtime/storage-ledger.js';
 import { CDC_MIN, ContentCutter, EMPTY_CONTENT_KEY, ManifestDigest, chunkHash, cutContent, hex, } from './content-chunking.js';
 import { inflateChunk } from './chunk-codec.js';
-import { CRED_KERNEL, sameCred, } from '../runtime/os-contracts.js';
+import { CRED_KERNEL, sameCred } from '../runtime/os-contracts.js';
 /**
  * Schema version of the content store. 3: `/` is inode 1 and the allocator
  * starts at 2, and directories carry a default ACL (dacl). A schema-2 store
@@ -8965,8 +8965,42 @@ export class SqliteVFS {
             refuseInSequence: (writer, refused, closed) => this.refuseInSequence(writer, refused, closed),
         };
     }
+    /**
+     * A process decided `path`'s op on its own view of the name: the file it
+     * expected there (W7Expected; `followLeaf` as the op reaches it). Where
+     * the name leads elsewhere now, the op is refused before any effect, as
+     * W7Expected says: its decision was made on a row that turned out wrong.
+     */
+    expectAt(path, expected, followLeaf, cred, described) {
+        if (expected === undefined)
+            return;
+        // A file its open of a description made: the one that description reached (none where it was refused).
+        const want = expected === null || typeof expected === 'number' ? expected : this.described(described, expected.made, path, cred)?.ino ?? -1;
+        let found;
+        try {
+            found = this.checkAccess(path, 0, cred, { followLeaf, allowMissingLeaf: true }).inode?.ino ?? null;
+        }
+        catch (error) {
+            // Its directory gone: no file there. Any other refusal is the op's own.
+            if (errnoCodeOf(error) !== 'ENOENT')
+                throw error;
+            found = null;
+        }
+        if (found !== want)
+            throw vfsError(want === null ? 'EEXIST' : 'ENOENT', path, `the process decided this on ${want === null ? 'no file' : want < 0 ? 'a file its refused open would have made' : `file ${want}`} there, and the name leads to ${found === null ? 'none' : `file ${found}`} now`);
+    }
     /** A wave's op that lands here, applied by this filesystem's operation of that name: an open's or a data call's stat. */
     applyWaveOp(op, cred, described) {
+        if (op.type === 'rename') {
+            this.expectAt(op.from, op.expect, false, cred, described);
+            this.expectAt(op.to, op.expectTo, false, cred, described);
+        }
+        else if (op.type === 'setattr' && op.description === undefined) {
+            this.expectAt(op.path, op.expect, true, cred, described);
+        }
+        else if (op.type === 'call' && (op.call.call === 'unlink' || op.call.call === 'rmdir' || op.call.call === 'open')) {
+            this.expectAt(op.call.path, op.call.expect, op.call.call === 'open' && op.call.nofollow !== true, cred, described);
+        }
         if (op.type === 'data-call') {
             try {
                 return this.applyDataCall(op.file, op.bytes, cred, described);
@@ -8980,7 +9014,17 @@ export class SqliteVFS {
         else if (op.type === 'truncate')
             this.truncate(op.path, op.size, cred);
         else if (op.type === 'setattr') {
-            if ('mode' in op.attrs)
+            // Through its description when it names one: the file it opened, judged as fchmod, fchown and futimens are.
+            const through = op.description === undefined ? null : this.describedBy(described, op.description, op.path, cred);
+            if (through !== null) {
+                if ('mode' in op.attrs)
+                    through.chmod(op.attrs.mode);
+                else if ('uid' in op.attrs)
+                    through.chown(op.attrs.uid, op.attrs.gid);
+                else
+                    through.utimes(op.attrs.atime, op.attrs.mtime);
+            }
+            else if ('mode' in op.attrs)
                 this.chmod(op.path, op.attrs.mode, cred);
             else if ('uid' in op.attrs)
                 this.chown(op.path, op.attrs.uid, op.attrs.gid, cred, true);

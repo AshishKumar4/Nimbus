@@ -12,7 +12,7 @@
 import { type CredentialedVfs, type SqliteVFS } from './sqlite-vfs.js';
 import type { SyncVFS, VFS, VfsCasResult, VfsChanges, VfsCopyOptions, VfsCred, VfsDirent, VfsOpenFile, VfsRemoval, VfsRevision, VfsStat, VfsViewOptions, VfsWriteObserver } from './vfs.js';
 import { type VfsEvent } from './events.js';
-import type { FsTime } from '../runtime/os-contracts.js';
+import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 export declare class SqliteFiles implements VFS {
     private readonly engine;
     private readonly view;

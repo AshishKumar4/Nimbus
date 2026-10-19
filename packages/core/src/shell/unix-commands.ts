@@ -9,7 +9,8 @@
 
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { ProcessView } from '../runtime/process-files.js';
-import { requireVfsCred, type FsTime } from '../runtime/os-contracts.js';
+import { requireVfsCred } from '../runtime/os-contracts.js';
+import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 import { dec, enc } from '../_shared/bytes.js';
 import { errorText } from '../_shared/error-text.js';
 import { shellEscape } from '../_shared/shell-quote.js';
@@ -2177,18 +2178,27 @@ function mkLs(): Command {
 
 /**
  * POSIX rm: -f makes a missing target no error (exit 0), -r removes a
- * directory tree, and a failure is reported with the POSIX text.
+ * directory tree, and a failure is reported with the POSIX text. A tree's
+ * removal keeps out of a mount point (VFS removeRecursive), as GNU's
+ * --one-file-system, which is taken; and -r of `/` is refused, as GNU's
+ * --preserve-root (the default; --no-preserve-root lifts it).
  */
 function mkRm(): Command {
   return async ctx => {
     const vfs = ctx.vfs;
     const recursive = ctx.args.some(arg => /^-[^-]*[rR]/.test(arg) || arg === '--recursive');
     const force = ctx.args.some(arg => /^-[^-]*f/.test(arg) || arg === '--force');
+    const preserveRoot = !ctx.args.includes('--no-preserve-root');
     const targets = ctx.args.filter(arg => !arg.startsWith('-'));
     if (!targets.length) { if (force) return 0; await ctx.stderr.write('rm: missing operand\n'); return 1; }
     let code = 0;
     for (const target of targets) {
       const path = resolvePath(ctx.cwd, target);
+      if (recursive && preserveRoot && path === '/') {
+        await ctx.stderr.write("rm: it is dangerous to operate recursively on '/'\nrm: use --no-preserve-root to override this failsafe\n");
+        code = 1;
+        continue;
+      }
       try {
         if (!recursive) { await vfs.remove(path, { force }); continue; }
         const report = await vfs.removeRecursive(path, { keepVanishedAncestors: !force });

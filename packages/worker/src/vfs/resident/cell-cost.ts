@@ -6,11 +6,48 @@
  */
 
 import { LEDGER_ROW_BYTES } from '@nimbus-sh/core/runtime/storage-ledger.js';
-import { utf8Length } from '@nimbus-sh/platform/utf8.js';
+import {
+  arrayCopy, ArrayBufferConstructor, mathCeil, mathFloor, mathMax, mathMin, reflectGet, SafeList, stringCharCodeAt, stringOf, stringSlice,
+  newTextEncoder, textEncoderEncodeInto, typedArrayByteLength, Uint8ArrayConstructor,
+} from '@nimbus-sh/core/_shared/primordials.js';
 import { RESIDENT_CHUNK_BYTES } from '../facet-resident-limits.js';
-import { stringCharCodeAt } from '@nimbus-sh/core/_shared/primordials.js';
+import { UTF8_LONG_UNITS, UTF8_SCRATCH_BYTES } from '@nimbus-sh/platform/utf8.js';
 
-export { utf8Length };
+let encoder: TextEncoder | undefined;
+let scratch: Uint8Array | undefined;
+
+/**
+ * The platform's UTF-8 measure (@nimbus-sh/platform/utf8.js), its policy and
+ * its count, on the launch's captures: a fill measures after a program may
+ * have replaced String.prototype.charCodeAt. Kept apart from the platform's,
+ * which host hot paths call on their realm's methods.
+ */
+export function utf8Length(text: string): number {
+  if (text.length >= UTF8_LONG_UNITS) {
+    scratch ??= new Uint8ArrayConstructor(UTF8_SCRATCH_BYTES);
+    encoder ??= newTextEncoder();
+    let bytes = 0;
+    for (let read = 0; read < text.length;) {
+      const done = textEncoderEncodeInto(encoder, read === 0 ? text : stringSlice(text, read), scratch);
+      // encodeInto returns these as own data properties, not library accessors.
+      read += reflectGet(done, 'read');
+      bytes += reflectGet(done, 'written');
+    }
+    return bytes;
+  }
+  let bytes = text.length;
+  for (let index = 0; index < text.length; index++) {
+    const unit = stringCharCodeAt(text, index);
+    if (unit < 0x80) continue;
+    if (unit < 0x800) bytes++;
+    else if (unit >= 0xd800 && unit <= 0xdbff && index + 1 < text.length) {
+      const next = stringCharCodeAt(text, index + 1);
+      bytes += 2;
+      if (next >= 0xdc00 && next <= 0xdfff) index++;
+    } else bytes += 2;
+  }
+  return bytes;
+}
 
 /** A row's allowance: what one row of 'file', 'chunk' or 'ns' is charged beside its payload. */
 export const RESIDENT_ROW_BYTES = LEDGER_ROW_BYTES;
@@ -19,13 +56,13 @@ export const RESIDENT_ROW_BYTES = LEDGER_ROW_BYTES;
 export type ResidentCell = string | Uint8Array | { error: 'EACCES' };
 
 export function residentBytes(value: unknown): Uint8Array {
-  if (value instanceof Uint8Array) return value;
-  if (value instanceof ArrayBuffer) return new Uint8Array(value);
-  return new Uint8Array(0);
+  if (value instanceof Uint8ArrayConstructor) return value;
+  if (value instanceof ArrayBufferConstructor) return new Uint8ArrayConstructor(value);
+  return new Uint8ArrayConstructor(0);
 }
 
 /** The most UTF-16 units a chunk of text holds: its UTF-8 at most a chunk's bytes. */
-const TEXT_CHUNK_UNITS = Math.floor(RESIDENT_CHUNK_BYTES / 3);
+const TEXT_CHUNK_UNITS = mathFloor(RESIDENT_CHUNK_BYTES / 3);
 
 /**
  * Where text's chunks end: at most TEXT_CHUNK_UNITS each, never inside a
@@ -33,16 +70,16 @@ const TEXT_CHUNK_UNITS = Math.floor(RESIDENT_CHUNK_BYTES / 3);
  * character: stored apart, both halves came back as U+FFFD.
  */
 export function textChunkEnds(text: string): number[] {
-  const ends: number[] = [];
+  const ends = new SafeList<number>();
   let at = 0;
   do {
-    let end = Math.min(text.length, at + TEXT_CHUNK_UNITS);
+    let end = mathMin(text.length, at + TEXT_CHUNK_UNITS);
     const last = stringCharCodeAt(text, end - 1);
     if (end < text.length && last >= 0xd800 && last <= 0xdbff) end--;
-    ends.push(end);
+    ends[ends.length] = end;
     at = end;
   } while (at < text.length);
-  return ends;
+  return arrayCopy(ends);
 }
 
 /**
@@ -52,9 +89,9 @@ export function textChunkEnds(text: string): number[] {
  */
 export function residentCellCost(cell: unknown): number {
   const isText = typeof cell === 'string';
-  const size = isText ? utf8Length(cell) : residentBytes(cell).byteLength;
-  const chunks = isText ? textChunkEnds(cell).length : Math.max(1, Math.ceil(size / RESIDENT_CHUNK_BYTES));
-  return Math.ceil(size * 1.01) + (chunks + 1) * RESIDENT_ROW_BYTES + 4096;
+  const size = isText ? utf8Length(cell) : typedArrayByteLength(residentBytes(cell));
+  const chunks = isText ? textChunkEnds(cell).length : mathMax(1, mathCeil(size / RESIDENT_CHUNK_BYTES));
+  return mathCeil(size * 1.01) + (chunks + 1) * RESIDENT_ROW_BYTES + 4096;
 }
 
 /**
@@ -64,8 +101,8 @@ export function residentCellCost(cell: unknown): number {
  */
 export function residentFileCost(size: number): number {
   // A text chunk ends a unit early rather than inside a pair (textChunkEnds).
-  const chunks = Math.max(1, Math.ceil(size / (TEXT_CHUNK_UNITS - 1)));
-  return Math.ceil(size * 1.01) + (chunks + 1) * RESIDENT_ROW_BYTES + 4096;
+  const chunks = mathMax(1, mathCeil(size / (TEXT_CHUNK_UNITS - 1)));
+  return mathCeil(size * 1.01) + (chunks + 1) * RESIDENT_ROW_BYTES + 4096;
 }
 
 /**
@@ -74,5 +111,5 @@ export function residentFileCost(size: number): number {
  * when the engine can compress text.
  */
 export function namespaceRowBytes(parent: string, name: string, target: string | null | undefined): number {
-  return RESIDENT_ROW_BYTES + 2 * (String(parent).length + String(name).length + (target == null ? 0 : String(target).length));
+  return RESIDENT_ROW_BYTES + 2 * (stringOf(parent).length + stringOf(name).length + (target == null ? 0 : stringOf(target).length));
 }

@@ -448,6 +448,59 @@ function loadedIds(ctx: object): Set<string> {
 }
 
 /**
+ * A facet call, as its Durable Object's pools made it: on a worker the
+ * loader built for it (`cold`: its code read, then compiled and its preamble
+ * run as the call began) or on a warm one, the time the loader's callback
+ * took to read its code, and the time the call took from its worker's hold
+ * to its answer, compile and preamble included when cold.
+ */
+export interface FacetCallTime {
+  tag: string;
+  cold: boolean;
+  loadMs: number;
+  callMs: number;
+  at: number;
+}
+
+/**
+ * Each Durable Object's last FACET_CALLS_KEPT facet calls: a ring of slots
+ * made once, written in place, so a call allocates nothing to be noted.
+ */
+interface FacetCallRing { slots: FacetCallTime[]; next: number; count: number }
+const callsByCtx = new WeakMap<object, FacetCallRing>();
+const FACET_CALLS_KEPT = 16;
+
+/** The last facet calls `ctx`'s pools made, oldest first: what a launch's phases cost (`/api/_diag/session`). */
+export function recentFacetCalls(ctx: object): FacetCallTime[] {
+  const ring = callsByCtx.get(ctx);
+  if (ring === undefined) return [];
+  const first = (ring.next - ring.count + FACET_CALLS_KEPT) % FACET_CALLS_KEPT;
+  const calls: FacetCallTime[] = [];
+  for (let i = 0; i < ring.count; i++) {
+    const slot = ring.slots[(first + i) % FACET_CALLS_KEPT];
+    if (slot !== undefined) calls.push({ ...slot });
+  }
+  return calls;
+}
+
+function noteFacetCall(ctx: object, tag: string, loadMs: number | null, began: number): void {
+  let ring = callsByCtx.get(ctx);
+  if (ring === undefined) {
+    ring = { slots: Array.from({ length: FACET_CALLS_KEPT }, () => ({ tag: '', cold: false, loadMs: 0, callMs: 0, at: 0 })), next: 0, count: 0 };
+    callsByCtx.set(ctx, ring);
+  }
+  const slot = ring.slots[ring.next];
+  if (slot === undefined) return;
+  slot.tag = tag;
+  slot.cold = loadMs !== null;
+  slot.loadMs = loadMs ?? 0;
+  slot.callMs = Date.now() - began;
+  slot.at = began;
+  ring.next = (ring.next + 1) % FACET_CALLS_KEPT;
+  ring.count = Math.min(FACET_CALLS_KEPT, ring.count + 1);
+}
+
+/**
  * A load's images' credit, taken before its worker and not yet used: running
  * work may reclaim it (the lock order) until the loader's callback takes it,
  * for the load may wait for a worker, and a worker the loader answers warm
@@ -925,8 +978,11 @@ export class IsolatePool {
       // dispatching here), the first dispatch is the launch's own worker.
       const endFetch = readmitted?.admitted ?? (this.claim ? undefined : claimAdmission(this.ctx)) ?? beginLoaderFetch(this.ctx, id, this.claim);
       held = endFetch;
+      const began = Date.now();
+      let loadMs: number | null = null;
       try {
         const stub = this.loader.get(id, async () => {
+          const loading = Date.now();
           const lease = imageBytes === 0 ? null : credit?.take() ?? tryAcquireSupervisorLoad(imageBytes,
             { owner: `facet '${this.tag}' images`, pid: this.writerPid, session: this.ctx.id?.toString() });
           if (imageBytes > 0 && lease === null) {
@@ -939,12 +995,15 @@ export class IsolatePool {
             return code;
           } finally {
             lease?.release();
+            loadMs = Date.now() - loading;
           }
         });
         const entrypoint = stub.getEntrypoint(undefined, { limits: facetLimits(this.facetKind) });
         // Direct property call, awaited by this frame — bracketed, never
         // wrapped. See beginLoaderFetch for the measured DO-poisoning hazard.
-        return await invoke(entrypoint, attempt);
+        const answer = await invoke(entrypoint, attempt);
+        noteFacetCall(this.ctx, this.tag, loadMs, began);
+        return answer;
       } catch (err) {
         // The ledger learns a limit refusal from the hold it ends.
         endFetch(err);

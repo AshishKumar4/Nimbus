@@ -13,9 +13,11 @@
   Rules (DECIDED where DESIGN.md is silent, flagged to the Filesystem lane):
   - All walk with `follow = false` for their operands (`readRange` and the CAS reads
     follow the final link) and answer walk errors, then ENXIO, first.
-  - `removeRecursive p`: `/` → EBUSY. A live mount is entered, not rejected up
-    front: its children are removed as allowed (EROFS at each refused read-only
-    child), and its own rmdir is EBUSY only if no child failed. A failed child
+  - `removeRecursive p`: `/` → EBUSY. A live mount point is not entered (GNU rm
+    --one-file-system; Kinu ask 60, Main's ruling 2026-10-19): it and its tree
+    stay, its rmdir EBUSY, and the rest is removed. (A mount that asks to be
+    crossed, MountOptions.removalCrosses, is outside the model.) A read-only
+    tree's children are refused EROFS each. A failed child
     keeps its ancestors without attempting their rmdir or adding failure lines.
     Native removal is used only on a non-composed writable tree. The readable
     single-backend fallback retains its exact partition and maximal-root proofs

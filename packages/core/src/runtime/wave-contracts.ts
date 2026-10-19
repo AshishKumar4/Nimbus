@@ -179,7 +179,8 @@ export type RoutedWaveRecord =
   /** A process's rename, truncate or attribute change (W7 v4), made by the namespace's operation of that name. */
   | { readonly type: 'rename'; readonly from: string; readonly to: string }
   | { readonly type: 'truncate'; readonly path: string; readonly size: number }
-  | { readonly type: 'setattr'; readonly path: string; readonly attrs: W7Attrs };
+  /** `description`: through the session's open description of that id, its file whatever names it now. */
+  | { readonly type: 'setattr'; readonly path: string; readonly attrs: W7Attrs; readonly description?: string };
 
 /** A routed name's stat once published: what its receipt reports. */
 export interface RoutedStat {

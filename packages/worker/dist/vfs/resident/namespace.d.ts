@@ -61,6 +61,8 @@ export interface Namespace {
     /** Why the namespace is not answering (meaningful only while ready() is false). */
     notReadyCause(): string;
     put(t: ResidentTables, k: string, stat: NsStat, rev: unknown, target?: string | null, unlisted?: string | null): void;
+    /** `listener` told of each row put, by its key, in the same turn (ResidentNamespace.onAdmitted): one, a later one replacing it. */
+    onPut(listener: ((k: string) => void) | null): void;
     tryPut(t: ResidentTables, k: string, stat: NsStat, rev: unknown, target?: string | null, unlisted?: string | null): boolean;
     deleteTree(t: ResidentTables, k: string, self: boolean): void;
     /** Drop one row and what the table keeps of it in heap. */

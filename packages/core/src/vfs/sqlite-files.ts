@@ -14,7 +14,7 @@ import type { SyncVFS, VFS, VfsCasResult, VfsChanges, VfsCopyOptions, VfsCred, V
 import { syscallError, toVfsError, VfsError, VFS_ERRNO, type VfsErrorCode } from './vfs-error.js';
 import { projectChange, type VfsEvent } from './events.js';
 import { normalizeVfsPath } from './path.js';
-import type { FsTime } from '../runtime/os-contracts.js';
+import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 
 function absolute(key: string): string {
   return key.startsWith('/') ? key : `/${key}`;

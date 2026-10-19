@@ -120,6 +120,47 @@ const WORK = {
       for (let n = 0; n < (short ? 4 : 200); n++) for (let i = 0; i < 50; i++) checksum += (await settled(fs.stat(`/home/user/proj/d3/f${i}.txt`))).size;
     });
   },
+  // tar xf: each directory made, each member made, written, closed and given its time.
+  async tar(fs, short) {
+    const member = KB.subarray(0, 700);
+    return cpuMs(async () => {
+      for (let d = 0; d < (short ? 4 : 40); d++) {
+        const dir = `/home/user/proj/x/d${d}`;
+        await settled(fs.mkdir(dir, { recursive: true }));
+        for (let f = 0; f < (short ? 5 : 50); f++) {
+          const path = `${dir}/m${f}.txt`;
+          const h = await open(fs, path);
+          checksum += await settled(fs.write(h.id, null, member));
+          await settled(fs.close(h.id));
+          await settled(fs.utimes(path, 1_600_000_000_000, 1_600_000_000_000));
+        }
+      }
+    });
+  },
+  // git checkout: each path looked up, its parents made, its file made exclusively, written, closed, and stat'd for the index.
+  async checkout(fs, short) {
+    const blob = KB.subarray(0, 500);
+    const made = new Set();
+    return cpuMs(async () => {
+      for (let a = 0; a < (short ? 2 : 10); a++) {
+        for (let b = 0; b < (short ? 2 : 10); b++) {
+          for (let f = 0; f < (short ? 3 : 30); f++) {
+            const dir = `/home/user/proj/w/a${a}/b${b}`;
+            const path = `${dir}/f${f}.c`;
+            checksum += (await settled(fs.stat(path, { followSymlinks: false }))) === null ? 1 : 0;
+            if (!made.has(dir)) {
+              await settled(fs.mkdir(dir, { recursive: true }));
+              made.add(dir);
+            }
+            const h = await settled(fs.open(path, { write: true, create: true, exclusive: true, mode: 0o644 }));
+            checksum += await settled(fs.write(h.id, null, blob));
+            await settled(fs.close(h.id));
+            checksum += (await settled(fs.stat(path, { followSymlinks: false }))).size;
+          }
+        }
+      }
+    });
+  },
   async reads(fs, short) {
     for (let i = 0; i < 50; i++) await fs.readFile(`/home/user/proj/d3/f${i}.txt`);
     return cpuMs(async () => {

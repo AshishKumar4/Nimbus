@@ -5,7 +5,8 @@ import { WaveIngest } from './wave-ingest.js';
 import { type CompositeVFS } from '../vfs/composite.js';
 import { type Awaitable, type VfsRemoval } from '../vfs/vfs.js';
 export { fsError, walkBeneath, type BeneathLookup } from './beneath-walk.js';
-import type { RuntimeFileHandle, RuntimeOpenedFile, RuntimeFsPath, RuntimeReadFileOptions, RuntimeReadOptions, RuntimeSynchronousFs, RuntimeFsBridge, RuntimeOpenFlags, RuntimeReopenTarget, RuntimeVfsDirEntry, RuntimeVfsStat, VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeMutationOwner, ExclusiveMutationGrant, ExclusiveMutationRequest, FsTime } from './os-contracts.js';
+import type { RuntimeFileHandle, RuntimeOpenedFile, RuntimeFsPath, RuntimeReadFileOptions, RuntimeReadOptions, RuntimeSynchronousFs, RuntimeFsBridge, RuntimeOpenFlags, RuntimeReopenTarget, RuntimeVfsDirEntry, RuntimeVfsStat, VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeMutationOwner, ExclusiveMutationGrant, ExclusiveMutationRequest } from './os-contracts.js';
+import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     private readonly rawVfs;
     private readonly scope;

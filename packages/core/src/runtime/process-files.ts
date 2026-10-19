@@ -51,7 +51,6 @@ import {
   type RuntimeFsPath,
   type ExclusiveMutationGrant,
   type ExclusiveMutationRequest,
-  type FsTime,
   type RecallKind,
   type RuntimeOpenFlags,
   type RuntimeReadFileOptions,
@@ -70,6 +69,7 @@ import {
   type VfsMutationReceipt,
   type RuntimeMutationOwner,
 } from './os-contracts.js';
+import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 import { fsError, SqliteRuntimeFsBridge, walkBeneath } from './sqlite-runtime-fs-bridge.js';
 import { modeAllows } from '../vfs/posix-access.js';
 import { closeDescriptions, closeScopeSignal, createDescriptorScope, Descriptors, openFlags, processView, reportLost, scopeSignal, settleHeldAt, type Authority, type DescriptorScope } from './descriptors.js';

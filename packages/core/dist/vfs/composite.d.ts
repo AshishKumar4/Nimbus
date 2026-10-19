@@ -21,7 +21,8 @@
  * would change what the operation means.
  */
 import type { Awaitable, Principal, SyncVFS, VFS, VfsCasResult, VfsCopyOptions, VfsCred, VfsDirent, VfsMountDescription, VfsRemoval, VfsRevision, VfsStat, VfsUsage, VfsViewOptions, VfsWriteObserver, VfsWriteWants } from './vfs.js';
-import type { FsTime, RuntimeVfsStat, VfsAcquireOptions, VfsInvalidatedPath, VfsListEntry } from '../runtime/os-contracts.js';
+import type { RuntimeVfsStat, VfsAcquireOptions, VfsInvalidatedPath, VfsListEntry } from '../runtime/os-contracts.js';
+import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 import { type VfsEvent } from './events.js';
 import { type VfsErrorCode } from './vfs-error.js';
 import { compareUtf8 as comparePaths } from '@nimbus-sh/platform/utf8.js';
@@ -130,6 +131,15 @@ export interface MountOptions {
      * `resolvedByBackend` and hands such a path over whole too.
      */
     resolvesPaths?: boolean;
+    /**
+     * A recursive removal from above (rm -r of a directory holding the mount
+     * point) enters the mount and removes what it holds, as Linux's rm -r
+     * does. Without it, a removal keeps out of the mount, as GNU rm
+     * --one-file-system does: the mount point and everything under it stay,
+     * reported EBUSY, and the rest of the tree is removed. A mount is often
+     * storage that is not the session's (another machine, a user's files).
+     */
+    removalCrosses?: boolean;
 }
 /** Options shared by `route` and `mutationRoute`. */
 export interface VfsRouteOptions {

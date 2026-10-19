@@ -28,6 +28,7 @@ import { subtreeListing } from '../../../packages/core/src/runtime/fs-list-tree.
 import { SessionProcessSupervisor } from '../../../packages/core/src/runtime/session-process-supervisor.ts';
 import { createSupervisorBridgeStore, createSupervisorOpHandler } from '../../../packages/core/src/workspace/supervisor-op.ts';
 import { SupervisorDeliveries } from '../../../packages/core/src/workspace/supervisor-delivery.ts';
+import { withRecall } from '../../../packages/core/src/vfs/recall.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { makeImportsWithoutJSPI } from './wasi-imports.mjs';
 import { acrossRpc } from './rpc-error.mjs';
@@ -44,7 +45,7 @@ export async function residentGuest({ refuse = () => false, of, after, cred = US
   let P = after?.P;
   if (P === undefined) {
     const modulePath = path.join(os.tmpdir(), `wasi-resident-guest-${process.pid}-${Math.random().toString(16).slice(2)}.mjs`);
-    writeFileSync(modulePath, `${WASI_INSTANCE_PREAMBLE_SRC}\n${source}\nexport { __wasiInitFS, __wasiMakeImports, __wasiAdoptSupervisor, __wasiFsStats, __wasiSettleWrites, __wasiRunStartAsync, __wasiPrepareFilesystem };`);
+    writeFileSync(modulePath, `${WASI_INSTANCE_PREAMBLE_SRC}\n${source}\nexport { __wasiInitFS, __wasiMakeImports, __wasiAdoptSupervisor, __wasiFsStats, __wasiSettleWrites, __wasiRunStartAsync, __wasiPrepareFilesystem, __wasiInbound, __wasiSettleFirst };`);
     try { P = await import(pathToFileURL(modulePath).href); } finally { rmSync(modulePath, { force: true }); }
   }
 
@@ -124,9 +125,14 @@ export async function residentGuest({ refuse = () => false, of, after, cred = US
   });
   const view = () => new DataView(memory.buffer);
   const bytesAt = () => new Uint8Array(memory.buffer);
-  const PATH = 1024, OUT = 2048, IOV = 3072, DATA = 4096;
+  const PATH = 1024, PATH2 = 1536, OUT = 2048, IOV = 3072, DATA = 4096;
   const putPath = (name) => { const b = enc.encode(name); bytesAt().set(b, PATH); return b.length; };
   const RIGHTS_ALL = 0x1fffffffn;
+  const times = (atime, mtime) => [
+    typeof atime === 'number' ? BigInt(atime) * 1_000_000n : 0n,
+    typeof mtime === 'number' ? BigInt(mtime) * 1_000_000n : 0n,
+    (atime === 'now' ? 2 : atime === 'omit' ? 0 : 1) | (mtime === 'now' ? 8 : mtime === 'omit' ? 0 : 4),
+  ];
 
   const guest = {
     P, kernel, raw, session, pid, supervisor, wasiImport, fsImport, memory, batches, stats: () => P.__wasiFsStats(),
@@ -143,12 +149,14 @@ export async function residentGuest({ refuse = () => false, of, after, cred = US
       session.deliveries = new SupervisorDeliveries();
       session.dispatch = createSupervisorOpHandler({ vfs: raw, filesystem: authority, processes: next, bridge: session.bridge, host: {}, deliveries: session.deliveries });
     },
-    /** path_open: the fd, or a thrown errno. `flags`: { create, truncate, exclusive, directory, write }. */
-    async open(name, { create = false, truncate = false, exclusive = false, directory = false, write = false } = {}) {
+    /** path_open: the fd, or a thrown errno. `allocate` also asks for FD_ALLOCATE (a live description, not a read-only copy). */
+    async open(name, { create = false, truncate = false, exclusive = false, directory = false, read = true, write = false, append = false, allocate = false } = {}) {
       const n = putPath(name);
       const oflags = (create ? 1 : 0) | (directory ? 2 : 0) | (exclusive ? 4 : 0) | (truncate ? 8 : 0);
-      const rights = write ? RIGHTS_ALL : RIGHTS_ALL & ~(1n << 6n) & ~(1n << 22n) & ~(1n << 8n);
-      const errno = await wasiImport.path_open(PREOPEN_FD, 1, PATH, n, oflags, rights, rights, 0, OUT);
+      let rights = write ? RIGHTS_ALL : RIGHTS_ALL & ~(1n << 6n) & ~(1n << 22n) & ~(1n << 8n);
+      if (!read) rights &= ~(1n << 1n);
+      if (allocate) rights |= 1n << 8n;
+      const errno = await wasiImport.path_open(PREOPEN_FD, 1, PATH, n, oflags, rights, rights, append ? 1 : 0, OUT);
       if (errno !== 0) throw Object.assign(new Error(`path_open ${name}: errno ${errno}`), { errno });
       return view().getUint32(OUT, true);
     },
@@ -159,7 +167,27 @@ export async function residentGuest({ refuse = () => false, of, after, cred = US
       view().setUint32(IOV + 4, b.length, true);
       return wasiImport.fd_write(fd, IOV, 1, OUT);
     },
+    /** fd_write/fd_pwrite: the byte count, or a thrown errno. */
+    async writeAt(fd, text, offset = null) {
+      const b = enc.encode(text);
+      bytesAt().set(b, DATA);
+      view().setUint32(IOV, DATA, true);
+      view().setUint32(IOV + 4, b.length, true);
+      const errno = offset === null
+        ? await wasiImport.fd_write(fd, IOV, 1, OUT)
+        : await wasiImport.fd_pwrite(fd, IOV, 1, BigInt(offset), OUT);
+      if (errno !== 0) throw Object.assign(new Error(`fd_write: errno ${errno}`), { errno });
+      return view().getUint32(OUT, true);
+    },
     close: (fd) => wasiImport.fd_close(fd),
+    /** fd_read from the description's current offset, as text, or a thrown errno. */
+    async read(fd, n) {
+      view().setUint32(IOV, DATA, true);
+      view().setUint32(IOV + 4, n, true);
+      const errno = await wasiImport.fd_read(fd, IOV, 1, OUT);
+      if (errno !== 0) throw Object.assign(new Error(`fd_read: errno ${errno}`), { errno });
+      return new TextDecoder().decode(bytesAt().slice(DATA, DATA + view().getUint32(OUT, true)));
+    },
     /** fd_pread of up to `n` bytes at `offset`, as text, or a thrown errno. */
     async pread(fd, n, offset = 0) {
       view().setUint32(IOV, DATA, true);
@@ -184,6 +212,33 @@ export async function residentGuest({ refuse = () => false, of, after, cred = US
       if (errno !== 0) throw Object.assign(new Error(`stat ${name}: errno ${errno}`), { errno });
       return Number(view().getBigUint64(OUT + 32, true));
     },
+    /** Preview1's path stat, with the mode from the guest's nimbus_fs extension. */
+    async stat(name) {
+      const n = putPath(name);
+      const errno = await wasiImport.path_filestat_get(PREOPEN_FD, 1, PATH, n, OUT);
+      if (errno !== 0) throw Object.assign(new Error(`path_filestat_get ${name}: errno ${errno}`), { errno });
+      const stat = { size: Number(view().getBigUint64(OUT + 32, true)), nlink: Number(view().getBigUint64(OUT + 24, true)) };
+      const modeErrno = await fsImport.path_stat(PREOPEN_FD, 1, PATH, n, OUT);
+      if (modeErrno !== 0) throw Object.assign(new Error(`path_stat ${name}: errno ${modeErrno}`), { errno: modeErrno });
+      return { ...stat, mode: view().getUint32(OUT + 64, true) & 0o7777 };
+    },
+    async rename(from, to) {
+      const n = putPath(from), b = enc.encode(to);
+      bytesAt().set(b, PATH2);
+      return wasiImport.path_rename(PREOPEN_FD, PATH, n, PREOPEN_FD, PATH2, b.length);
+    },
+    async unlink(name) { const n = putPath(name); return wasiImport.path_unlink_file(PREOPEN_FD, PATH, n); },
+    ftruncate: (fd, size) => wasiImport.fd_filestat_set_size(fd, BigInt(size)),
+    async chmod(name, mode) { const n = putPath(name); return fsImport.path_chmod(PREOPEN_FD, 1, PATH, n, mode); },
+    fchmod: (fd, mode) => fsImport.fd_chmod(fd, mode),
+    async utimes(name, atime, mtime) { const n = putPath(name); return wasiImport.path_filestat_set_times(PREOPEN_FD, 1, PATH, n, ...times(atime, mtime)); },
+    futimes: (fd, atime, mtime) => wasiImport.fd_filestat_set_times(fd, ...times(atime, mtime)),
+    /** Delivery without ending the process or giving its grants back. */
+    flush: () => P.__wasiSettleFirst(() => 0),
+    settle: () => P.__wasiSettleWrites(),
+    inbound: () => P.__wasiInbound(0),
+    /** A peer on the same session, waiting for any grant its access recalls. */
+    peer: (work) => withRecall(() => work(kernel)),
     /** poll_oneoff with one relative clock subscription of `ms`: the errno the guest is handed. */
     sleep(ms) {
       const SUB = 8192, EVENT = 8192 + 48, NEVENTS = 8192 + 48 + 32;

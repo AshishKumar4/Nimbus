@@ -14,119 +14,14 @@
  */
 
 import assert from 'node:assert/strict';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
-import { residentFilesystem } from '../../packages/core/src/runtime/wasi/resident-filesystem.ts';
 import { MAX_DELEGATIONS_PER_PROCESS, sqlJournal } from '../../packages/core/src/_shared/process-fs-client.ts';
-import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { withRecall } from '../../packages/core/src/vfs/recall.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
-const user = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
+import { session } from './lib/holder-session.mjs';
 
-/**
- * A process over a real session. `view`: its store is a view as a resident's
- * is, what it read of a name kept as read until a barrier reads it again
- * (`view.barrier` runs after); else the store reads the session at every
- * call. `acquired`: what the session's grant waits for. `grantBytes`: the
- * storage a grant reserves.
- */
-function session({ grantInos, journal, gate, refuse, view, acquired, grantBytes } = {}) {
-  const harness = createSqliteVfsTestHarness();
-  const engine = new SqliteVFS(harness.sql, harness.ctx);
-  const kernel = engine.as(CRED_KERNEL);
-  for (const dir of ['home/user/proj', 'home/user/other', 'tmp']) kernel.mkdir(dir, { recursive: true });
-  kernel.chown('home/user', 1000, 1000);
-  kernel.chown('home/user/proj', 1000, 1000);
-  kernel.chown('home/user/other', 1000, 1000);
-  kernel.chmod('tmp', 0o1777);
-  for (let index = 0; index < 10; index++) {
-    kernel.mkdir(`home/user/proj/d${index}`);
-    kernel.chown(`home/user/proj/d${index}`, 1000, 1000);
-  }
-  const filesystem = new ProcessFiles(engine);
-  const bridge = filesystem.bind({ pid: 7, cred: user });
-  // The process's store, coherent with the session at every call: reads as the process does.
-  const entryOf = (stat, target = null) => ({
-    type: stat.type, dev: stat.dev, ino: stat.ino, nlink: stat.nlink, size: stat.size, atime: stat.atime, mtime: stat.mtime,
-    ctime: stat.ctime, mode: stat.mode, uid: stat.uid, gid: stat.gid, revision: stat.revision ?? 0, target,
-  });
-  const device = bridge.stat('/').dev;
-  const entryNow = (key) => {
-    try {
-      const stat = bridge.stat('/' + key, { followSymlinks: false });
-      return stat === null ? null : entryOf(stat, view && stat.type === 'symlink' ? bridge.readlink('/' + key) : null);
-    } catch { return null; }
-  };
-  const contentNow = (key) => { try { return bridge.readFile('/' + key) ?? undefined; } catch { return undefined; } };
-  const cursorNow = () => ({ epoch: engine.epoch, rev: engine.revision() });
-  const seen = new Map();
-  let cursor = cursorNow();
-  const viewed = (key) => {
-    if (!seen.has(key)) seen.set(key, { entry: entryNow(key), content: contentNow(key) });
-    return seen.get(key);
-  };
-  const store = {
-    device,
-    cred: user,
-    ready: () => true,
-    entry: (key) => (view ? viewed(key).entry : entryNow(key)),
-    children: (key) => {
-      try { return bridge.readdir('/' + key); } catch { return undefined; }
-    },
-    list: async () => true,
-    lookup: async () => true,
-    listTree: async () => false,
-    content: (key) => (view ? viewed(key).content : contentNow(key)),
-    fill: async (key) => bridge.readFile('/' + key),
-    cursor: () => (view ? cursor : cursorNow()),
-    barrier: async () => {
-      if (!view) return true;
-      for (const key of seen.keys()) seen.set(key, { entry: entryNow(key), content: contentNow(key) });
-      cursor = cursorNow();
-      await view.barrier?.();
-      return true;
-    },
-    reserve: () => true,
-    release: () => {},
-  };
-  const waves = [];
-  // In process: nothing between the client and the session loses a call, so it fences nothing.
-  const processSession = {
-    openWriter: async () => null,
-    writeBatchStream: async (stream, _fence, owner) => {
-      if (gate) await gate;
-      // A refusal the test asks for: the whole wave refused, as a full store refuses it.
-      if (refuse?.()) {
-        await new Response(stream).arrayBuffer();
-        return { ok: false, committedOps: 0, committedPathCount: 0, committedGroupSequence: 0, receipts: [], error: { code: 'ERR_WRITE_BATCH_STREAM', phase: 'publish', message: 'ENOSPC: no space left on device', errno: 'ENOSPC' } };
-      }
-      const result = await bridge.writeStream(stream, owner === undefined ? {} : { mutationOwner: owner });
-      waves.push(result);
-      return result;
-    },
-    grants: {
-      acquire: async (path, delegate) => {
-        await acquired;
-        return bridge.acquireExclusiveMutation(path, { delegate: grantBytes === undefined ? delegate : { ...delegate, bytes: grantBytes } });
-      },
-      release: async (owner) => { bridge.releaseExclusiveMutation(owner); },
-      awaitRecall: (owner, waitMs) => bridge.awaitRecall(owner, waitMs),
-      recalled: async (owner, kind) => { bridge.recalled(owner, kind); },
-    },
-  };
-  // A subtree is taken at its first mutation here, as P4a did.
-  const fs = residentFilesystem(bridge, store, {
-    session: processSession,
-    grantAfter: 1,
-    ...(grantInos === undefined ? {} : { grantInos }),
-    ...(journal === undefined ? {} : { journal }),
-    isHomeRoot: (key) => key.startsWith('home/') && !key.slice(5).includes('/'),
-  });
-  return { engine, kernel, filesystem, fs, waves };
-}
 
 /** What a run does: write `text` to a new file at `path`. */
 async function create(fs, path, text) {
@@ -209,13 +104,14 @@ async function create(fs, path, text) {
 {
   const s = session();
   await create(s.fs, '/home/user/proj/d1/notes.txt', 'decided');
-  assert.equal(s.filesystem.delegations.size, 1);
+  await until(() => s.filesystem.delegations.size === 1, 'the grant');
   const read = await withRecall(() => s.kernel.readFileString('home/user/proj/d1/notes.txt'));
   assert.equal(read, 'decided', "a reader did not wait for the holder's send");
   await withRecall(() => s.kernel.writeFile('home/user/proj/d1/notes.txt', 'theirs'));
   assert.equal(dec.decode(s.kernel.readFile('home/user/proj/d1/notes.txt')), 'theirs');
-  // Given up; the holder may take it again for its next write, and a reader waits for that one too.
+  // Given up; the holder takes it again for its next write, and a reader waits for that one too.
   await create(s.fs, '/home/user/proj/d1/after.txt', 'after the revoke');
+  await until(() => s.filesystem.delegations.size === 1, 'the grant again');
   assert.equal(await withRecall(() => s.kernel.readFileString('home/user/proj/d1/after.txt')), 'after the revoke');
   await s.fs.settle();
 }
@@ -313,6 +209,8 @@ async function until(ready, what) {
     await until(() => s.filesystem.delegations.size === 1, 'the grant');
     await new Promise((resolve) => setTimeout(resolve, 10));
   };
+  // Input arrives: the barrier the source's create takes first is the one the peer's write and the grant come after.
+  s.fs.inbound();
   await create(s.fs, '/home/user/proj/d7/src.txt', 'MINE');
   await assert.rejects(async () => s.fs.copyFile('/home/user/proj/d7/src.txt', '/home/user/proj/d7/dst.txt'), { code: 'EACCES' });
   await s.fs.settle().catch(() => {});
@@ -357,6 +255,281 @@ async function until(ready, what) {
   assert.equal((s.fs.stats().delegated.copyFile ?? 0) - before, 1, 'a copy past the grant\'s reservation was held here');
   await s.fs.settle();
   for (const name of ['c1.bin', 'c2.bin']) assert.equal(dec.decode(s.kernel.readFile(`home/user/proj/d6/${name}`)), big);
+}
+
+// ── A synchronous write no held subtree decides takes the process's budget ──
+// Decided provisionally, its bytes are charged to the store's budget; one the
+// budget has no room for is refused ENOSPC before anything changes; and what
+// the cells took goes back once the view has them. Past the client's cap on
+// synchronous bytes it is refused as the client refuses one (ENOMEM).
+{
+  const budget = { used: 0, limit: 64 * 1024 };
+  // No grant comes: the writes stay provisional.
+  const s = session({ budget, acquired: new Promise(() => {}) });
+  const sync = s.fs.synchronous;
+  await s.fs.readdir('/home/user/other');
+  sync.writeFile('/home/user/other/a.bin', new Uint8Array(20 * 1024));
+  assert.ok(budget.used >= 20 * 1024, `the write took ${budget.used} bytes of the budget`);
+  assert.throws(() => sync.writeFile('/home/user/other/b.bin', new Uint8Array(60 * 1024)), { code: 'ENOSPC' });
+  assert.equal(sync.stat('/home/user/other/b.bin'), null, 'a refused write changed the view');
+  await s.fs.flush();
+  // The view has it once a barrier lands: what its cell took goes back.
+  s.fs.inbound();
+  assert.equal((await s.fs.stat('/home/user/other/a.bin')).size, 20 * 1024);
+  assert.equal(budget.used, 0, `${budget.used} bytes still taken after the view had them`);
+}
+{
+  const s = session();
+  const sync = s.fs.synchronous;
+  await s.fs.readdir('/home/user/other');
+  const chunk = new Uint8Array(1024 * 1024);
+  let refused;
+  let written = 0;
+  for (; written < 300 && refused === undefined; written++) {
+    try { sync.writeFile(`/home/user/other/f${written}.bin`, chunk); } catch (error) { refused = error; }
+  }
+  assert.equal(refused?.code, 'ENOMEM', `${written} synchronous MiB without a yield: ${refused?.message ?? 'all answered'}`);
+  assert.equal(sync.stat(`/home/user/other/f${written - 1}.bin`), null, 'the refused write changed the view');
+  assert.equal(sync.stat(`/home/user/other/f${written - 2}.bin`).size, chunk.byteLength);
+  // Once it yields, what it logged is sent, and it writes again.
+  await s.fs.flush();
+  sync.writeFile(`/home/user/other/after.bin`, chunk);
+}
+
+// ── A caller that cannot wait: its provisional decisions (provisional.ts) ──
+// The session grants no subtree here (it refuses each asked for, as one
+// another holds): what the process decides synchronously outside a held
+// subtree is answered from its view, logged as it made it, and the session's
+// to refuse. `control`: the session's waves wait while it holds them, and are
+// refused or accepted in turn as `verdicts` says (true: refused).
+function provisionalSession(options = {}) {
+  const control = { held: false, entered: 0, verdicts: [], acquires: 0 };
+  let opened = Promise.withResolvers();
+  control.hold = () => { control.held = true; control.entered = 0; opened = Promise.withResolvers(); };
+  control.open = () => { control.held = false; opened.resolve(); };
+  const s = session({
+    ...options,
+    acquired: { then: (_resolve, reject) => { control.acquires++; reject(Object.assign(new Error('EBUSY: another holds it'), { code: 'EBUSY' })); } },
+    gate: { then: (resolve, reject) => { control.entered++; return (control.held ? opened.promise : Promise.resolve()).then(resolve, reject); } },
+    refuse: () => control.verdicts.shift() ?? false,
+  });
+  return { s, control, sync: s.fs.synchronous };
+}
+const OTHER = '/home/user/other';
+const other = (name) => `${OTHER}/${name}`;
+/** A file the session has, the process's (uid 1000), its bytes resident in the view. */
+async function resident(s, name, text) {
+  s.kernel.writeFile(`home/user/other/${name}`, enc.encode(text));
+  s.kernel.chown(`home/user/other/${name}`, 1000, 1000);
+  await s.fs.readdir(OTHER);
+  assert.equal(dec.decode(await s.fs.readFile(other(name))), text);
+}
+/** The view brought to the session's: a barrier taken, what was answered before it retired. */
+async function caughtUp(s) {
+  await s.fs.flush().catch(() => {});
+  s.fs.inbound();
+  await s.fs.stat(OTHER);
+}
+
+// A descriptor is its file's: once its name leads to another file, it reads
+// and changes nothing of that one (ESTALE). Red before: an inode descriptor
+// read the name's new file's row, and fchmod changed the new file.
+{
+  const { s, sync } = provisionalSession();
+  await resident(s, 'id.txt', 'AAAA');
+  const fd = sync.open(other('id.txt'), { read: true }).id;
+  s.kernel.unlink('home/user/other/id.txt');
+  s.kernel.writeFile('home/user/other/id.txt', enc.encode('BBBBBBBB'));
+  s.kernel.chown('home/user/other/id.txt', 1000, 1000);
+  assert.throws(() => sync.read(fd, 0, 16), { code: 'ESTALE' });
+  const before = s.kernel.stat('home/user/other/id.txt').mode;
+  assert.throws(() => sync.fchmod(fd, 0o600), { code: 'ESTALE' });
+  assert.equal(s.kernel.stat('home/user/other/id.txt').mode, before, 'a descriptor changed another file\'s mode');
+  sync.close(fd);
+}
+
+// The overlay is the log: a refused operation leaves it, and what remains is
+// folded again from the view's bytes; what is logged is what the process
+// did, by its descriptors. Red before: the refused append stayed in the cell,
+// and the session was sent the cell's snapshot.
+{
+  const { s, control, sync } = provisionalSession();
+  await resident(s, 'f.txt', 'ab');
+  const appender = sync.open(other('f.txt'), { write: true, append: true }).id;
+  const writer = sync.open(other('f.txt'), { read: true, write: true }).id;
+  await s.fs.flush();
+  control.hold();
+  sync.write(appender, null, enc.encode('X'));
+  const sent = s.fs.flush().catch(() => {});
+  await until(() => control.entered > 0, 'the append on its way');
+  sync.write(writer, 0, enc.encode('Y'));
+  assert.equal(dec.decode(sync.readFile(other('f.txt'))), 'YbX');
+  control.verdicts.push(true);
+  control.open();
+  await sent;
+  await s.fs.flush().catch(() => {});
+  assert.equal(dec.decode(sync.readFile(other('f.txt'))), 'Yb', 'a refused append stayed in the view');
+  assert.equal(dec.decode(s.kernel.readFile('home/user/other/f.txt')), 'Yb');
+  sync.close(appender);
+  sync.close(writer);
+}
+
+// A file's first change by a descriptor is what its name shows: a stat by
+// name and the descriptor's agree. Red before: the name kept the view's size.
+{
+  const { s, sync } = provisionalSession();
+  await resident(s, 'g.txt', 'ab');
+  const fd = sync.open(other('g.txt'), { write: true }).id;
+  sync.write(fd, 2, enc.encode('cd'));
+  assert.equal(Number(sync.stat(other('g.txt')).size), 4);
+  assert.equal(Number(sync.fstat(fd).size), 4);
+  sync.close(fd);
+}
+
+// Once the view has the session's version of a file this process changed,
+// that version is what every descriptor of it reads: a peer's rewrite after
+// it, too. Red before: an open descriptor kept the process's bytes.
+{
+  const { s, sync } = provisionalSession();
+  await resident(s, 'r.txt', 'OLD');
+  const fd = sync.open(other('r.txt'), { read: true }).id;
+  sync.writeFile(other('r.txt'), enc.encode('OWN'));
+  assert.equal(dec.decode(sync.read(fd, 0, 16)), 'OWN');
+  await caughtUp(s);
+  s.kernel.writeFile('home/user/other/r.txt', enc.encode('THEIRS'));
+  s.fs.inbound();
+  await s.fs.stat(other('r.txt'));
+  assert.equal(dec.decode(sync.read(fd, 0, 16)), 'THEIRS', 'the descriptor kept the process\'s bytes after the view had the session\'s');
+  sync.close(fd);
+}
+
+// fsync of a descriptor the process closed is EBADF. Red before: answered.
+{
+  const { s, sync } = provisionalSession();
+  await resident(s, 'c.txt', 'c');
+  const fd = sync.open(other('c.txt'), { read: true }).id;
+  sync.close(fd);
+  assert.throws(() => sync.fsync(fd), { code: 'EBADF' });
+}
+
+// A change a caller that cannot wait does not make counts toward taking no
+// subtree. Red before: a refused mkdir asked for a grant.
+{
+  const { s, control, sync } = provisionalSession();
+  s.kernel.mkdir('home/user/other/d');
+  await s.fs.readdir(OTHER);
+  await s.fs.stat(other('d'));
+  const before = control.acquires;
+  assert.throws(() => sync.mkdir(other('d')), { code: 'EEXIST' });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(control.acquires, before, 'a refused change asked for a grant');
+}
+
+// A file made here is the session's file once its creating open is answered:
+// its number is the session's. Red before: it kept a number of its own.
+{
+  const { s, sync } = provisionalSession();
+  await s.fs.readdir(OTHER);
+  sync.writeFile(other('made.txt'), enc.encode('M'));
+  await s.fs.flush();
+  const fd = sync.open(other('made.txt'), { read: true }).id;
+  assert.equal(Number(sync.fstat(fd).ino), s.kernel.stat('home/user/other/made.txt').ino);
+  sync.close(fd);
+}
+
+// What a decision keeps of the process's budget is admitted before it is
+// made, its records too, and the file an unlink leaves to its descriptors:
+// refused ENOSPC, nothing changed. Red before: neither was admitted.
+{
+  const budget = { used: 0, limit: 100 };
+  const { s, sync } = provisionalSession({ budget });
+  await s.fs.readdir(OTHER);
+  assert.throws(() => sync.mkdir(other('tiny')), { code: 'ENOSPC' });
+  assert.equal(sync.stat(other('tiny')), null);
+}
+{
+  const budget = { used: 0, limit: 4096 };
+  const { s, sync } = provisionalSession({ budget });
+  await resident(s, 'big.bin', 'x'.repeat(10_000));
+  const fd = sync.open(other('big.bin'), { read: true }).id;
+  assert.throws(() => sync.unlink(other('big.bin')), { code: 'ENOSPC' });
+  assert.equal(Number(sync.stat(other('big.bin')).size), 10_000, 'a refused unlink changed the view');
+  sync.close(fd);
+}
+
+// A descriptor's rights are the open's: one that made its file 0444 writes
+// it (creat(2)); a reopen that empties a file it may not write is refused,
+// no descriptor made and nothing emptied; and a write by a descriptor lands
+// in its file under the name a rename since gave it.
+{
+  const { s, sync } = provisionalSession();
+  await s.fs.readdir(OTHER);
+  const made = sync.open(other('ro-made.txt'), { write: true, create: true, mode: 0o444 }).id;
+  assert.equal(sync.write(made, null, enc.encode('MINE')), 4);
+  sync.close(made);
+  assert.equal(dec.decode(sync.readFile(other('ro-made.txt'))), 'MINE');
+  await resident(s, 'locked.txt', 'KEEP');
+  s.kernel.chmod('home/user/other/locked.txt', 0o444);
+  await caughtUp(s);
+  const reader = sync.open(other('locked.txt'), { read: true }).id;
+  assert.throws(() => sync.reopen({ handle: reader }, { write: true, truncate: true }), { code: 'EACCES' });
+  assert.equal(dec.decode(sync.readFile(other('locked.txt'))), 'KEEP');
+  sync.close(reader);
+  await resident(s, 'from.txt', 'abc');
+  const fd = sync.open(other('from.txt'), { read: true, write: true }).id;
+  sync.rename(other('from.txt'), other('to.txt'));
+  sync.write(fd, 0, enc.encode('X'));
+  assert.equal(dec.decode(sync.readFile(other('to.txt'))), 'Xbc');
+  assert.equal(sync.stat(other('from.txt')), null);
+  sync.close(fd);
+  await s.fs.flush();
+  assert.equal(dec.decode(s.kernel.readFile('home/user/other/to.txt')), 'Xbc');
+}
+
+// A file made here, decided on the name being free (its unlink before it),
+// where the session still has the file it unlinked (the unlink refused):
+// the session refuses the creating open too (EEXIST, W7Expected), so
+// nothing of the file it would have reached changes, and every descriptor
+// of that file reads what the session has.
+{
+  const { s, control, sync } = provisionalSession();
+  await resident(s, 'same.txt', 'OLDOLDOLD');
+  const fd = sync.open(other('same.txt'), { read: true }).id;
+  control.hold();
+  sync.unlink(other('same.txt'));
+  const sent = s.fs.flush().catch(() => {});
+  await until(() => control.entered > 0, 'the unlink on its way');
+  sync.writeFile(other('same.txt'), enc.encode('NEW'));
+  control.verdicts.push(true);
+  control.open();
+  await sent;
+  // Each flush reports the next refusal: the unlink's, then the open's.
+  const reported = [];
+  for (let tries = 0; tries < 4; tries++) {
+    const code = await s.fs.flush().then(() => null, (error) => error?.code);
+    if (code === null) break;
+    reported.push(code);
+  }
+  assert.ok(reported.length > 0, 'the refusals reported');
+  assert.equal(dec.decode(s.kernel.readFile('home/user/other/same.txt')), 'OLDOLDOLD');
+  assert.equal(dec.decode(sync.readFile(other('same.txt'))), 'OLDOLDOLD');
+  assert.equal(dec.decode(sync.read(fd, 0, 16)), 'OLDOLDOLD', 'a descriptor of the file the session kept');
+  assert.equal(Number(sync.fstat(fd).ino), s.kernel.stat('home/user/other/same.txt').ino);
+  sync.close(fd);
+}
+
+// What a decision kept goes back once the view has it, whatever became of
+// its name since. Red before: a renamed file's cell was never given back.
+{
+  const budget = { used: 0, limit: 1 << 20 };
+  const { s, sync } = provisionalSession({ budget });
+  await s.fs.readdir(OTHER);
+  sync.writeFile(other('moving.bin'), new Uint8Array(10_000));
+  sync.rename(other('moving.bin'), other('moved.bin'));
+  await caughtUp(s);
+  await caughtUp(s);
+  assert.equal(budget.used, 0, `${budget.used} bytes still taken after the view had them`);
+  assert.equal(Number(sync.stat(other('moved.bin')).size), 10_000);
 }
 
 // ── A copy that preserves is the session's ──
@@ -833,27 +1006,24 @@ for (const [route, told] of [['idle', 'fsync'], ['idle', 'settle'], ['renewal', 
   }
   // The other's held file grows past the cap; then a ninth subtree widens over the seven.
   await s.fs.write(big.id, null, new Uint8Array(65 * 1024 * 1024));
-  const delegated = () => s.fs.stats().delegated.open ?? 0;
   const ninth = create(s.fs, '/home/user/proj/d7/x', 'x').catch(() => null);
   await Promise.resolve();
-  // Under one of the seven, being given back: the session's to decide, not this process's.
-  const before = delegated();
+  // Under one of the seven, being given back (the other's file small again): not decided under a lease about to
+  // end, so the session has it once all is given back.
+  await s.fs.ftruncate(big.id, 1);
   const after = (async () => {
     const handle = await s.fs.open('/home/user/proj/d0/after', { write: true, create: true, truncate: true, mode: 0o644 });
     await s.fs.close(handle.id);
     return null;
   })().catch((error) => error?.code ?? String(error));
-  assert.equal(delegated() - before, 1, 'a create under a grant being given back went to the session');
-  await s.fs.ftruncate(big.id, 1);
   gated = false;
   opened.resolve();
   await ninth;
-  // What was written before it cannot be logged yet: the program is told, and nothing is made.
-  assert.equal(await after, 'ENOMEM', 'the create under the grant given back');
+  assert.equal(await after, null, 'the create under the grant given back');
   await s.fs.close(big.id);
   assert.deepEqual(await s.fs.settle(), []);
   assert.equal(s.filesystem.delegations.size, 0, 'everything given back');
-  assert.equal(s.kernel.exists('home/user/proj/d0/after'), false);
+  assert.equal(s.kernel.exists('home/user/proj/d0/after'), true);
 }
 
 // ── A decision whose drain the client refuses (a held file past its synchronous cap) leaves nothing decided ──

@@ -226,7 +226,98 @@ var objectDefineProperty = Object.defineProperty;
 var arrayPush = uncurryThis(Array.prototype.push);
 var arraySplice = uncurryThis(Array.prototype.splice);
 var ObjectPrototypePropertyIsEnumerableOf = uncurryThis(Object.prototype.propertyIsEnumerable);
-return { ArrayConstructor, ArrayFrom, ArrayIteratorNext, ArrayIteratorPrototype, ArrayPrototypeIndexOf, ArrayPrototypeLastIndexOf, ArrayPrototypePop, ArrayPrototypeToSpliced, ArrayPrototypeWith, ArrayValues, BigInt: BigIntOf, BigIntPrototypeToString, Error: ErrorConstructor, FunctionPrototypeBind, GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, JSONParse, JSONStringify, MapConstructor, NumberOf, NumberPrototypeToString, ObjectOf, ObjectPrototype, ObjectPrototypeHasOwnProperty, ObjectPrototypePropertyIsEnumerable, ObjectPrototypePropertyIsEnumerableOf, ObjectPrototypeToString, PromiseConstructor, PromisePrototypeThen, PromiseReject, PromiseResolve, RangeError: RangeErrorConstructor, ReferenceError: ReferenceErrorConstructor, RegExp: RegExpConstructor, RegExpPrototypeAccessors, RegExpPrototypeExec, SafeAsyncGeneratorPrototype, SafeGeneratorPrototype, SafeList, SafeMap, SafeRegExpPrototype, SafeSet, SafeWeakMap, SafeWeakSet, StringFromCharCode, StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeIndexOf, StringPrototypeLastIndexOf, StringPrototypeSlice, StringPrototypeSubstr, SymbolConstructor, SymbolPrototypeDescription, SymbolPrototypeToString, SyntaxError: SyntaxErrorConstructor, TypeError: TypeErrorConstructor, URIError: URIErrorConstructor, URL: URLConstructor, arrayIncludes, arrayIndexOf, arrayIsArray, arrayJoin, arrayPush, arraySort, arraySplice, captureStackTraceOf, dataDescriptor, decodeURIComponentOf, encodeURIComponentOf, generatorNext, generatorThrow, globalObject, mapGet, mathAbs, mathMin, newURL, numberIsInteger, objectAssign, objectCreate, objectDefineProperties, objectDefineProperty, objectFreeze, objectGetOwnPropertyNames, objectHasOwn, objectIs, objectIsExtensible, objectKeys, objectPreventExtensions, ownField, parseFloatOf, parseIntOf, reflectApply, reflectConstruct, reflectDefineProperty, reflectDeleteProperty, reflectGet, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectHas, reflectOwnKeys, reflectSet, reflectSetPrototypeOf, regExpExec, safeGenerator, setForEach, stringCharCodeAt, stringEndsWith, stringIncludes, stringIndexOf, stringLastIndexOf, stringOf, stringSlice, stringStartsWith, stringToLowerCase, symbolAsyncIterator, symbolFor, symbolIterator, symbolToStringTag, symbolUnscopables, useCaptureStackTrace };
+function promiseSettled(list) {
+  return new PromiseConstructor((resolve) => {
+    let left = list.length;
+    if (left === 0) {
+      resolve();
+      return;
+    }
+    const one = () => {
+      if (--left === 0) resolve();
+    };
+    for (let i = 0; i < list.length; i++) reflectApply(PromisePrototypeThen, reflectApply(PromiseResolve, PromiseConstructor, [list[i]]), [one, one]);
+  });
+}
+function promiseAll(list) {
+  return new PromiseConstructor((resolve, reject) => {
+    const values = new SafeList();
+    let left = list.length;
+    if (left === 0) {
+      resolve(values);
+      return;
+    }
+    for (let i = 0; i < list.length; i++) {
+      const at = i;
+      const one = (value) => {
+        values[at] = value;
+        if (--left === 0) resolve(values);
+      };
+      reflectApply(PromisePrototypeThen, reflectApply(PromiseResolve, PromiseConstructor, [list[i]]), [one, reject]);
+    }
+  });
+}
+var dateNow = Date.now;
+var mathMax = Math.max;
+var mathCeil = Math.ceil;
+var numberIsSafeInteger = Number.isSafeInteger;
+var arrayCopy = uncurryThis(Reflect.get(Array.prototype, "toSpliced"));
+var typedArrayByteLength = (() => {
+  const prototype = reflectGetPrototypeOf(Uint8Array.prototype);
+  const getter = reflectGetOwnPropertyDescriptor(prototype ?? {}, "byteLength")?.get;
+  if (getter === void 0) throw new TypeErrorConstructor("TypedArray.prototype.byteLength is not an accessor");
+  return uncurryThis(getter);
+})();
+var ProxyConstructor = Proxy;
+var Uint8ArrayConstructor = Uint8Array;
+var ArrayBufferConstructor = ArrayBuffer;
+var TextEncoderOf = typeof TextEncoder === "function" ? TextEncoder : void 0;
+var encode = TextEncoderOf === void 0 ? void 0 : uncurryThis(TextEncoderOf.prototype.encode);
+var encodeInto = TextEncoderOf === void 0 ? void 0 : uncurryThis(TextEncoderOf.prototype.encodeInto);
+function newTextEncoder() {
+  if (TextEncoderOf === void 0) throw new TypeErrorConstructor("TextEncoder is not defined");
+  return new TextEncoderOf();
+}
+function textEncoderEncode(encoder, text) {
+  if (encode === void 0) throw new TypeErrorConstructor("TextEncoder is not defined");
+  return encode(encoder, text);
+}
+function textEncoderEncodeInto(encoder, text, destination) {
+  if (encodeInto === void 0) throw new TypeErrorConstructor("TextEncoder is not defined");
+  return encodeInto(encoder, text, destination);
+}
+var mathFloor = Math.floor;
+var stringCodePointAt = uncurryThis(String.prototype.codePointAt);
+var typedArraySet = uncurryThis(Uint8Array.prototype.set);
+var typedArrayBuffer = (() => {
+  const prototype = reflectGetPrototypeOf(Uint8Array.prototype);
+  const getter = reflectGetOwnPropertyDescriptor(prototype ?? {}, "buffer")?.get;
+  if (getter === void 0) throw new TypeErrorConstructor("TypedArray.prototype.buffer is not an accessor");
+  return uncurryThis(getter);
+})();
+var typedArrayByteOffset = (() => {
+  const prototype = reflectGetPrototypeOf(Uint8Array.prototype);
+  const getter = reflectGetOwnPropertyDescriptor(prototype ?? {}, "byteOffset")?.get;
+  if (getter === void 0) throw new TypeErrorConstructor("TypedArray.prototype.byteOffset is not an accessor");
+  return uncurryThis(getter);
+})();
+var arrayBufferByteLength = (() => {
+  const getter = reflectGetOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength")?.get;
+  if (getter === void 0) throw new TypeErrorConstructor("ArrayBuffer.prototype.byteLength is not an accessor");
+  const length = uncurryThis(getter);
+  const sharedGetter = typeof SharedArrayBuffer === "function" ? reflectGetOwnPropertyDescriptor(SharedArrayBuffer.prototype, "byteLength")?.get : void 0;
+  const sharedLength = sharedGetter === void 0 ? void 0 : uncurryThis(sharedGetter);
+  return (buffer) => buffer instanceof ArrayBufferConstructor || sharedLength === void 0 ? length(buffer) : sharedLength(buffer);
+})();
+var arrayShift = uncurryThis(Array.prototype.shift);
+var setValuesOf = uncurryThis(Set.prototype.values);
+var setIteratorNext = uncurryThis(reflectGet(reflectGetPrototypeOf((  new Set()).values()) ?? {}, "next"));
+function setFind(set, test) {
+  const iterator = setValuesOf(set);
+  for (let step = setIteratorNext(iterator); !step.done; step = setIteratorNext(iterator)) if (test(step.value)) return step.value;
+  return void 0;
+}
+return { ArrayBufferConstructor, ArrayConstructor, ArrayFrom, ArrayIteratorNext, ArrayIteratorPrototype, ArrayPrototypeIndexOf, ArrayPrototypeLastIndexOf, ArrayPrototypePop, ArrayPrototypeToSpliced, ArrayPrototypeWith, ArrayValues, BigInt: BigIntOf, BigIntPrototypeToString, Error: ErrorConstructor, FunctionPrototypeBind, GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, JSONParse, JSONStringify, MapConstructor, NumberOf, NumberPrototypeToString, ObjectOf, ObjectPrototype, ObjectPrototypeHasOwnProperty, ObjectPrototypePropertyIsEnumerable, ObjectPrototypePropertyIsEnumerableOf, ObjectPrototypeToString, PromiseConstructor, PromisePrototypeThen, PromiseReject, PromiseResolve, Proxy: ProxyConstructor, RangeError: RangeErrorConstructor, ReferenceError: ReferenceErrorConstructor, RegExp: RegExpConstructor, RegExpPrototypeAccessors, RegExpPrototypeExec, SafeAsyncGeneratorPrototype, SafeGeneratorPrototype, SafeList, SafeMap, SafeRegExpPrototype, SafeSet, SafeWeakMap, SafeWeakSet, StringFromCharCode, StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeIndexOf, StringPrototypeLastIndexOf, StringPrototypeSlice, StringPrototypeSubstr, SymbolConstructor, SymbolPrototypeDescription, SymbolPrototypeToString, SyntaxError: SyntaxErrorConstructor, TypeError: TypeErrorConstructor, URIError: URIErrorConstructor, URL: URLConstructor, Uint8ArrayConstructor, arrayBufferByteLength, arrayCopy, arrayIncludes, arrayIndexOf, arrayIsArray, arrayJoin, arrayPush, arrayShift, arraySort, arraySplice, captureStackTraceOf, dataDescriptor, dateNow, decodeURIComponentOf, encodeURIComponentOf, generatorNext, generatorThrow, globalObject, mapGet, mathAbs, mathCeil, mathFloor, mathMax, mathMin, newTextEncoder, newURL, numberIsInteger, numberIsSafeInteger, objectAssign, objectCreate, objectDefineProperties, objectDefineProperty, objectFreeze, objectGetOwnPropertyNames, objectHasOwn, objectIs, objectIsExtensible, objectKeys, objectPreventExtensions, ownField, parseFloatOf, parseIntOf, promiseAll, promiseSettled, reflectApply, reflectConstruct, reflectDefineProperty, reflectDeleteProperty, reflectGet, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectHas, reflectOwnKeys, reflectSet, reflectSetPrototypeOf, regExpExec, safeGenerator, setFind, setForEach, stringCharCodeAt, stringCodePointAt, stringEndsWith, stringIncludes, stringIndexOf, stringLastIndexOf, stringOf, stringSlice, stringStartsWith, stringToLowerCase, symbolAsyncIterator, symbolFor, symbolIterator, symbolToStringTag, symbolUnscopables, textEncoderEncode, textEncoderEncodeInto, typedArrayBuffer, typedArrayByteLength, typedArrayByteOffset, typedArraySet, useCaptureStackTrace };
 })();
 
 var { captureStack, determineSpecificType, hideStackFrames, invalidArgType, invalidArgValue, isErrorStackTraceLimitWritable, nodeError, nodeErrorCodes, nodeSystemError, outOfRange, reshapeAsNodeError, useNodeErrorInspect } = (() => {
@@ -3767,8 +3858,8 @@ const {
   objectCreate: __nimbusObjectCreate, reflectDefineProperty: __nimbusDefine, dataDescriptor: __nimbusData,
   objectFreeze: __nimbusFreeze, objectPreventExtensions: __nimbusPreventExtensions, objectKeys: __nimbusKeys,
   arrayIsArray: __nimbusIsArray, arrayIndexOf: __nimbusIndexOf, arraySort: __nimbusSort, JSONParse: __nimbusJsonParse,
-  mapGet: __nimbusMapGet, MapConstructor: __NimbusMap, PromiseConstructor: __NimbusPromise,
-  PromiseResolve: __nimbusPromiseResolve, PromisePrototypeThen: __nimbusPromiseThen, reflectApply: __nimbusApply,
+  mapGet: __nimbusMapGet, MapConstructor: __NimbusMap, reflectApply: __nimbusApply,
+  promiseSettled: __nimbusSettled, promiseAll: __nimbusAll, PromiseConstructor: __NimbusPromise, arrayCopy: __nimbusArrayCopy,
 } = __nimbusPrimordials;
 /** A SafeSet's or a SafeMap's members (keys), in order, as a SafeList: never their iterator. */
 function __nimbusListOf(collection) {
@@ -3800,15 +3891,6 @@ function __nimbusFileHref(path) {
   const url = __nimbusPrimordials.newURL("file:///");
   url.pathname = encoded;
   return url.href;
-}
-/** Each promise of `list` settled, however it settles: Promise.allSettled, without the array iterator. */
-function __nimbusSettled(list) {
-  return new __NimbusPromise((resolve) => {
-    let left = list.length;
-    if (left === 0) { resolve(); return; }
-    const one = () => { if (--left === 0) resolve(); };
-    for (let i = 0; i < list.length; i++) __nimbusApply(__nimbusPromiseThen, __nimbusApply(__nimbusPromiseResolve, __NimbusPromise, [list[i]]), [one, one]);
-  });
 }
 /** `text`'s names, what lies between its slashes, empty ones dropped. */
 function __vfsNames(text) {
@@ -3972,7 +4054,7 @@ const __fsConstants = Object.freeze({
 // ═══════════════════════════════════════════════════════════════════════
 // libuv's words for each code (core vfs-error.ts ERRNO_DESCRIPTION).
 const __nimbusErrnoDescription = {"E2BIG":"argument list too long","EPERM":"operation not permitted","ENOENT":"no such file or directory","EIO":"i/o error","ENXIO":"no such device or address","EAGAIN":"resource temporarily unavailable","EACCES":"permission denied","EBUSY":"resource busy or locked","EEXIST":"file already exists","EXDEV":"cross-device link not permitted","ENOTDIR":"not a directory","EISDIR":"illegal operation on a directory","EINVAL":"invalid argument","ENOSPC":"no space left on device","EROFS":"read-only file system","ELOOP":"too many symbolic links encountered","ENAMETOOLONG":"name too long","ENOTEMPTY":"directory not empty","ENOTSUP":"operation not supported on socket","ESTALE":"stale file handle","EBADF":"bad file descriptor","EFBIG":"file too large","ENODATA":"no data available","ENOSYS":"function not implemented","EMFILE":"too many open files","ENFILE":"file table overflow","ENOMEM":"not enough memory","ETXTBSY":"text file is busy","EMLINK":"too many links","ENODEV":"no such device","ESPIPE":"invalid seek","EPIPE":"broken pipe","EINTR":"interrupted system call","ERANGE":"result too large","EOVERFLOW":"value too large for defined data type","ETIMEDOUT":"connection timed out","ECANCELED":"operation canceled","EFAULT":"bad address in system call argument"};
-const { utf8Length: __nimbusUtf8Length } = (()=>{var c=new TextEncoder,f;function d(n){if(n.length>=256)return s(n);let e=n.length;for(let t=0;t<n.length;t++){let r=n.charCodeAt(t);if(!(r<128))if(r<2048)e+=1;else if(r>=55296&&r<=56319&&t+1<n.length){let o=n.charCodeAt(t+1);o>=56320&&o<=57343?(e+=2,t++):e+=2}else e+=2}return e}function s(n){f??=new Uint8Array(256*1024);let e=0;for(let t=0;t<n.length;){let r=c.encodeInto(t===0?n:n.slice(t),f);t+=r.read,e+=r.written}return e}
+const { utf8Length: __nimbusUtf8Length } = (()=>{var c=new TextEncoder,f;function d(n){if(n.length>=256)return s(n);let e=n.length;for(let t=0;t<n.length;t++){let r=n.charCodeAt(t);if(!(r<128))if(r<2048)e+=1;else if(r>=55296&&r<=56319&&t+1<n.length){let o=n.charCodeAt(t+1);o>=56320&&o<=57343?(e+=2,t++):e+=2}else e+=2}return e}function s(n){f??=new Uint8Array(262144);let e=0;for(let t=0;t<n.length;){let r=c.encodeInto(t===0?n:n.slice(t),f);t+=r.read,e+=r.written}return e}
 
 return {"utf8Length":d};})();
 const __fsMod = (() => {
@@ -4311,9 +4393,15 @@ const __fsMod = (() => {
   }
   function _nsRetire(begin) {
     const done = (part) => part !== null && part.settled !== null && part.settled < begin;
-    for (const [k, rec] of [..._own]) {
+    // The records as they are now (a drop changes _own), by the SafeMap's own forEach.
+    const keys = new __PathList();
+    const recs = new __PathList();
+    _own.forEach((rec, k) => { keys[keys.length] = k; recs[recs.length] = rec; });
+    for (let i = 0; i < keys.length; i++) {
+      const k = keys[i];
+      const rec = recs[i];
       if (done(rec.entry)) _nsOwnDrop(k);
-      for (const field of _OWN_ATTRS) if (done(rec[field])) rec[field] = null;
+      for (let j = 0; j < _OWN_ATTRS.length; j++) if (done(rec[_OWN_ATTRS[j]])) rec[_OWN_ATTRS[j]] = null;
       _ownCompact(k, rec);
     }
     _nsDevices.clear();
@@ -5801,8 +5889,8 @@ const __fsMod = (() => {
       // the report is noted first: the write or mutation that owns the row
       // judges it against its own revision when that arrives, as it does for
       // a heap cell. A read in flight gets the same note.
-      if (Array.isArray(result.paths)) {
-        for (const entry of result.paths) _noteReport(entry);
+      if (__nimbusIsArray(result.paths)) {
+        for (let i = 0; i < result.paths.length; i++) _noteReport(result.paths[i]);
       }
       // N18: room for what it pushes, before it is held.
       await __resident.admission.roomForPushed(result);
@@ -5811,7 +5899,7 @@ const __fsMod = (() => {
         _cursor.epoch = admitted.cursor.epoch;
         _cursor.rev = admitted.cursor.rev;
         // A directory that became searchable has descendants no delta names.
-        for (const dir of admitted.relist) await __resident.transport.relist(supervisor, dir);
+        for (let i = 0; i < admitted.relist.length; i++) await __resident.transport.relist(supervisor, admitted.relist[i]);
         return admitted;
       });
       _nsRetire(begin);
@@ -6169,19 +6257,22 @@ const __fsMod = (() => {
   async function _announceLocalDirs(absPath, supervisor) {
     await _awaitStructuralOrder(absPath);
     if (!__vfsDirs) return;
-    const pending = [];
+    const pending = new __PathList();
+    const names = __vfsNames(_strip(absPath));
     let key = "";
-    for (const segment of _strip(absPath).split("/")) {
-      if (!segment) continue;
-      key = key ? key + "/" + segment : segment;
-      if (key in __vfsDirs && !_announcedDirs.has(key)) pending.push(key);
+    for (let i = 0; i < names.length; i++) {
+      key = key ? key + "/" + names[i] : names[i];
+      if (key in __vfsDirs && !_announcedDirs.has(key)) pending[pending.length] = key;
     }
     if (pending.length === 0) return;
     const deepest = "/" + pending[pending.length - 1];
     // Each one, shallowest first, as mkdir -p makes them.
-    const made = pending.map((dir) => _vfsCall({ call: "mkdir", path: dir, mode: _localAttr("mode", dir)?.value ?? 0o777, existing: "ok" }));
-    await _fsRpc(Promise.all(made), "mkdir", deepest, () => undefined);
-    for (const dir of pending) _announcedDirs.add(dir);
+    const made = new __PathList();
+    for (let i = 0; i < pending.length; i++) {
+      made[i] = _vfsCall({ call: "mkdir", path: pending[i], mode: _localAttr("mode", pending[i])?.value ?? 0o777, existing: "ok" });
+    }
+    await _fsRpc(__nimbusAll(made), "mkdir", deepest, () => undefined);
+    for (let i = 0; i < pending.length; i++) _announcedDirs.add(pending[i]);
     _markVfsStale();
   }
 
@@ -6511,7 +6602,8 @@ const __fsMod = (() => {
       batch = null;
     }
     if (!batch) {
-      batch = { supervisor, requests: [], settlers: [], bytes: 0 };
+      // SafeLists: a fill's chunked read reaches them after the program may have replaced Array.prototype.push.
+      batch = { supervisor, requests: new __PathList(), settlers: new __PathList(), bytes: 0 };
       _openReadBatch = batch;
       queueMicrotask(() => {
         // A batch a bound closed was flushed then; sending it here too would
@@ -6522,19 +6614,22 @@ const __fsMod = (() => {
       });
     }
     batch.bytes += bytes;
-    batch.requests.push(request);
-    const settler = Promise.withResolvers();
-    batch.settlers.push(settler);
-    return settler.promise;
+    batch.requests[batch.requests.length] = request;
+    let settler;
+    const promise = new __NimbusPromise((resolve, reject) => { settler = { resolve, reject }; });
+    batch.settlers[batch.settlers.length] = settler;
+    return promise;
   }
 
   async function _flushReadBatch(batch) {
     // A read round trip is one that carries a range; a batch of learns
     // (lstat requests) is metadata, which the read count leaves out.
-    if (batch.requests.some((request) => request.lstat !== true)) globalThis.__nimbusFsRpcReads++;
+    for (let i = 0; i < batch.requests.length; i++) {
+      if (batch.requests[i].lstat !== true) { globalThis.__nimbusFsRpcReads++; break; }
+    }
     try {
       const entries = await __nimbusUseRpcResult(
-        batch.supervisor.fsReadBatch(batch.requests), (r) => r,
+        batch.supervisor.fsReadBatch(__nimbusArrayCopy(batch.requests)), (r) => r,
       );
       for (let i = 0; i < batch.settlers.length; i++) {
         const entry = entries[i];
@@ -6547,7 +6642,7 @@ const __fsMod = (() => {
         }
       }
     } catch (error) {
-      for (const settler of batch.settlers) settler.reject(error);
+      for (let i = 0; i < batch.settlers.length; i++) batch.settlers[i].reject(error);
     }
   }
 
@@ -6594,16 +6689,16 @@ const __fsMod = (() => {
     const end = meta ? Number(meta.size) || 0 : 0;
     // A charged read pays for the remainder it plans before issuing it.
     if (charge && !charge(end)) throw _fsErr("EFBIG", "read", displayPath);
-    const offsets = [];
-    for (let off = from; off < end; off += READ_STREAM_CHUNK_BYTES) offsets.push(off);
-    const chunks = await Promise.all(offsets.map((off) => _readRangeAt(
-      absPath, displayPath, off, Math.min(READ_STREAM_CHUNK_BYTES, end - off),
-    )));
-    const parts = [];
-    for (const chunk of chunks) {
-      if (chunk === null) break;
-      parts.push(chunk);
-      if (chunk.byteLength < READ_STREAM_CHUNK_BYTES) break;
+    const reads = new __PathList();
+    for (let off = from; off < end; off += READ_STREAM_CHUNK_BYTES) {
+      reads[reads.length] = _readRangeAt(absPath, displayPath, off, Math.min(READ_STREAM_CHUNK_BYTES, end - off));
+    }
+    const chunks = await __nimbusAll(reads);
+    const parts = new __PathList();
+    for (let i = 0; i < chunks.length; i++) {
+      if (chunks[i] === null) break;
+      parts[parts.length] = chunks[i];
+      if (chunks[i].byteLength < READ_STREAM_CHUNK_BYTES) break;
     }
     return parts;
   }
@@ -6638,7 +6733,8 @@ const __fsMod = (() => {
           [[{ path: absPath, offset: 0, length: firstLength }, { path: absPath, lstat: true }]],
           (promise) => _fsReadRpc(promise, "read", p, (result) => result), "read", p, fill,
         );
-        const [read, learned] = Array.isArray(entries) ? entries : [];
+        const read = __nimbusIsArray(entries) ? entries[0] : undefined;
+        const learned = __nimbusIsArray(entries) ? entries[1] : undefined;
         if (!read || read.error) throw _mapSupervisorError(read ? read.error : null, "read", p);
         if (read.bytes === null || read.bytes === undefined) throw _fsErr("ENOENT", "open", p);
         first = {
@@ -6676,20 +6772,21 @@ const __fsMod = (() => {
         // that fits in one. When it comes back full there is demonstrably
         // more, and a stat says how much, so the remainder is issued together
         // and the read batch carries it in a single trip.
-        const parts = [];
+        const parts = new __PathList();
         let total = 0;
         for (;;) {
           const want = total === 0 ? firstLength : READ_STREAM_CHUNK_BYTES;
           if (charge && !charge(total + want)) throw _fsErr("EFBIG", "read", p);
           const chunk = first !== null && total === 0 ? first.chunk : await _readRangeAt(absPath, p, total, want);
           if (chunk === null) break;
-          parts.push(chunk);
+          parts[parts.length] = chunk;
           total += chunk.byteLength;
           if (chunk.byteLength < want) break;
           if (typeof supervisor.stat !== "function") continue;
-          for (const rest of await _readChunksFrom(absPath, p, supervisor, total, charge)) {
-            parts.push(rest);
-            total += rest.byteLength;
+          const rest = await _readChunksFrom(absPath, p, supervisor, total, charge);
+          for (let i = 0; i < rest.length; i++) {
+            parts[parts.length] = rest[i];
+            total += rest[i].byteLength;
           }
           break;
         }
@@ -6750,7 +6847,7 @@ const __fsMod = (() => {
   function _concatBytes(parts, total) {
     const out = new Uint8Array(total);
     let off = 0;
-    for (const part of parts) { out.set(part, off); off += part.byteLength; }
+    for (let i = 0; i < parts.length; i++) { out.set(parts[i], off); off += parts[i].byteLength; }
     return out;
   }
 
@@ -6815,7 +6912,7 @@ const __fsMod = (() => {
       _served.fsAcquired = false;
       await _acquireBarrier(supervisor);
       if (fill) fill.reported = Infinity;
-      return rpc(supervisor[op](...args));
+      return rpc(__nimbusApply(supervisor[op], supervisor, args));
     }
     const acquired = answer ? answer.acquired : undefined;
     // Taken as its answer arrives.
@@ -14667,7 +14764,8 @@ function __nimbusTakeStdin() {
   return { source: { bytes: __BufferMod.from(typeof stdin === "string" ? stdin : "") }, ended };
 }
 // The paths that name fd 0.
-const __NIMBUS_STDIN_PATHS = new Set(["/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"]);
+// A SafeSet: every file read asks it, after the program may have replaced Set.prototype.has.
+const __NIMBUS_STDIN_PATHS = new __NimbusSafeSet(["/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"]);
 // Synchronous reads of fd 0 (readSync, readFileSync, fs.read) share one
 // position in what fd 0 held, as they do in Node, and process.stdin goes on
 // from it (__nimbusStdinRemainder).
@@ -20785,9 +20883,9 @@ function __nimbusEsmRequire(id, required, parent = undefined) {
   return null;
 }
 // Node's require(esm) result of a record's namespace (core runtime/native-esm-runtime.ts requiredEsModule).
-const __nimbusEsmRequired = (()=>{function f(o){let{namespace:e}=o;return Object.hasOwn(e,"module.exports")?Reflect.get(e,"module.exports"):!Object.hasOwn(e,"default")||Object.hasOwn(e,"__esModule")?e:o.required??=s(e)}function s(o){let e=Object.create(null),l=n=>n==="__esModule"?!0:Reflect.get(o,n);for(let n of[...Object.keys(o),"__esModule"].sort())Object.defineProperty(e,n,{value:l(n),writable:!0,enumerable:!0});Object.defineProperty(e,Symbol.toStringTag,{value:"Module"}),Object.preventExtensions(e);let u=n=>e[n]=l(n);return new Proxy(e,{get:(n,t)=>typeof t=="string"&&Object.hasOwn(e,t)?u(t):Reflect.get(e,t),getOwnPropertyDescriptor(n,t){let r=Reflect.getOwnPropertyDescriptor(e,t);return r!==void 0&&typeof t=="string"&&(r.value=u(t)),r},set:()=>!1,defineProperty(n,t,r){return typeof t=="symbol"?Reflect.defineProperty(e,t,r):!Object.hasOwn(e,t)||r.configurable===!0||r.enumerable===!1||"get"in r||"set"in r||r.writable===!1?!1:!("value"in r)||Object.is(r.value,u(t))},deleteProperty:(n,t)=>typeof t=="symbol"?Reflect.deleteProperty(e,t):!Object.hasOwn(e,t)})}
+const __nimbusEsmRequired = (()=>{function a(o){let{namespace:e}=o;return Object.hasOwn(e,"module.exports")?Reflect.get(e,"module.exports"):!Object.hasOwn(e,"default")||Object.hasOwn(e,"__esModule")?e:o.required??=f(e)}function f(o){let e=Object.create(null),l=n=>n==="__esModule"?!0:Reflect.get(o,n);for(let n of[...Object.keys(o),"__esModule"].sort())Object.defineProperty(e,n,{value:l(n),writable:!0,enumerable:!0});Object.defineProperty(e,Symbol.toStringTag,{value:"Module"}),Object.preventExtensions(e);let u=n=>e[n]=l(n);return new Proxy(e,{get:(n,t)=>typeof t=="string"&&Object.hasOwn(e,t)?u(t):Reflect.get(e,t),getOwnPropertyDescriptor(n,t){let r=Reflect.getOwnPropertyDescriptor(e,t);return r!==void 0&&typeof t=="string"&&(r.value=u(t)),r},set:()=>!1,defineProperty(n,t,r){return typeof t=="symbol"?Reflect.defineProperty(e,t,r):!Object.hasOwn(e,t)||r.configurable===!0||r.enumerable===!1||"get"in r||"set"in r||r.writable===!1?!1:!("value"in r)||Object.is(r.value,u(t))},deleteProperty:(n,t)=>typeof t=="symbol"?Reflect.deleteProperty(e,t):!Object.hasOwn(e,t)})}
 
-return {"requiredEsModule":f};})().requiredEsModule;
+return {"requiredEsModule":a};})().requiredEsModule;
 const { importCallArguments: __nimbusImportCallArguments, dataModule: __nimbusDataModuleOf } = (()=>{function u(i,t){if(typeof i=="symbol")throw new TypeError("Cannot convert a Symbol value to a string");let r=String(i),o=Object.create(null);if(t===void 0)return{specifier:r,attributes:o};if(t===null||typeof t!="object"&&typeof t!="function")throw new TypeError("The second argument to import() must be an object");let n=Reflect.get(t,"with");if(n===void 0)return{specifier:r,attributes:o};if(n===null||typeof n!="object"&&typeof n!="function")throw new TypeError("The 'assert' option must be an object");let e=!0;for(let s of Object.keys(n)){let a=Reflect.get(n,s);typeof a=="string"?o[s]=a:e=!1}if(!e)throw new TypeError("Import assertion value must be a string");return{specifier:r,attributes:o}}function f(i){let t=new TextEncoder().encode(i),r=new Uint8Array(t.length),o=0,n=e=>e>=48&&e<=57||e>=65&&e<=70||e>=97&&e<=102;for(let e=0;e<t.length;e++){let s=t[e];s===37&&e+2<t.length&&n(t[e+1])&&n(t[e+2])?(r[o++]=parseInt(String.fromCharCode(t[e+1],t[e+2]),16),e+=2):r[o++]=s}return r.subarray(0,o)}function d(i){let t=new URL(i),r=/^([^/]+\/[^;,]+)(?:[^,]*?)(;base64)?,/.exec(t.pathname),o=r===null?null:/^\s*(text|application)\/javascript\s*(;\s*charset=utf-?8\s*)?$/i.test(r[1])?"module":r[1]==="application/json"?"json":null;if(o===null)return{format:o,mime:r?.[1]??null};t.hash="";let n=t.href.slice(5),e=n.indexOf(","),s=f(n.slice(e+1));if(/; *base64$/i.test(n.slice(0,e).replace(/^[\t\n\f\r ]+|[\t\n\f\r ]+$/g,""))){let a="";for(let c of s)a+=String.fromCharCode(c);let l;try{l=atob(a)}catch{throw Object.assign(new TypeError("Invalid URL"),{code:"ERR_INVALID_URL",input:i})}s=Uint8Array.from(l,c=>c.charCodeAt(0))}return{format:o,source:new TextDecoder().decode(s)}}
 
 return {"dataModule":d,"importCallArguments":u};})();
@@ -21016,8 +21114,11 @@ function __nimbusEsmExportError(error, id, requested, name) {
     const line = lines.length;
     const column = lines[line - 1].length - (line === 1 ? module.head : 0);
     let delta = 0;
-    for (const [, editAt, length, written] of __nimbusColumnEdits(module)?.get(line) ?? []) {
-      if (editAt + delta === column && length === sourceEnd - sourceStart) { specifier = written.slice(1, -1); break; }
+    // A SafeList of the line's edits, read by index.
+    const edits = __nimbusColumnEdits(module)?.get(line);
+    for (let i = 0; edits !== undefined && i < edits.length; i++) {
+      const editAt = edits[i][1], length = edits[i][2], written = edits[i][3];
+      if (editAt + delta === column && length === sourceEnd - sourceStart) { specifier = __pathSlice(written, 1, -1); break; }
       delta += length - written.length;
     }
     // The module the importer's specifier names, as the registry resolved it.

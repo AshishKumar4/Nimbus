@@ -8,6 +8,14 @@
  * TextEncoder would write: one to four per code point, and three for a
  * lone surrogate, which it writes as U+FFFD.
  */
+/**
+ * From this many UTF-16 units, a string is counted natively (longUtf8Length),
+ * into a scratch buffer of SCRATCH_BYTES. The resident store's count on the
+ * launch's captures (worker vfs/resident/cell-cost.ts) keeps the same policy,
+ * and tests/unit/utf8-length.mjs holds both to TextEncoder.
+ */
+export declare const UTF8_LONG_UNITS = 256;
+export declare const UTF8_SCRATCH_BYTES: number;
 export declare function utf8Length(text: string): number;
 /**
  * `a` against `b` (negative, 0, positive) as their UTF-8 bytes order them,
