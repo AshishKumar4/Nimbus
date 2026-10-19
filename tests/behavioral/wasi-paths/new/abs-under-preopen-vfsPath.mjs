@@ -9,7 +9,7 @@
 // strip '/home/user' from the path; the relative 'abs.txt' resolves
 // against vfsPath 'home/user' → 'home/user/abs.txt' ✓.
 
-import { mintSession, Terminal, makeAsserter, heredocCommand, stripAnsi } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, heredocCommand, stripAnsi, hasOutputLine } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('wasi-paths/new/abs-under-preopen-vfsPath');
@@ -44,12 +44,12 @@ a.check('program exits 0 with PROGRAM_OK on stdout', runOK,
 // THE bug check: file at /home/user/abs-fix.txt MUST exist; file at
 // /home/user/home/user/abs-fix.txt MUST NOT exist.
 const rCorrect = await t.run(`node -e "console.log(require('fs').existsSync('/home/user/abs-fix.txt') ? 'EXISTS' : 'ABSENT')"`, 15_000);
-const correctExists = /EXISTS/.test(stripAnsi(rCorrect.output));
+const correctExists = hasOutputLine(rCorrect.output, 'EXISTS');
 a.check('file at /home/user/abs-fix.txt EXISTS (correct location)', correctExists,
   correctExists ? '' : JSON.stringify(stripAnsi(rCorrect.output).slice(-200)));
 
 const rBuggy = await t.run(`node -e "console.log(require('fs').existsSync('/home/user/home/user/abs-fix.txt') ? 'EXISTS' : 'ABSENT')"`, 15_000);
-const buggyAbsent = /ABSENT/.test(stripAnsi(rBuggy.output));
+const buggyAbsent = hasOutputLine(rBuggy.output, 'ABSENT');
 a.check('file at /home/user/home/user/abs-fix.txt ABSENT (no double-prefix)', buggyAbsent,
   buggyAbsent ? '' : JSON.stringify(stripAnsi(rBuggy.output).slice(-200)));
 

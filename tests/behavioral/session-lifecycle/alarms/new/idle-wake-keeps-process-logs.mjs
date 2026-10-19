@@ -11,7 +11,7 @@
 // (flushCount advanced), /api/_diag still serves, the shell works, and
 // a new exit is still flushed (flushCount > 0).
 
-import { mintSession, Terminal, sleep, readUntil, makeAsserter, BASE } from '../../../_driver.mjs';
+import { mintSession, Terminal, sleep, readUntil, makeAsserter, BASE, hasOutputLine } from '../../../_driver.mjs';
 import { diagMemory } from '../../../heap-correctness/_diag.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -35,7 +35,7 @@ for (let i = 0; i < 3; i++) {
     20_000,
   );
   a.check(`facet run ${i} produced marker output`,
-    new RegExp(`janitor-run-${i}`).test(output),
+    hasOutputLine(output, `janitor-run-${i}`),
     `output tail=${JSON.stringify(output.slice(-200))}`);
 }
 

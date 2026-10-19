@@ -18,6 +18,7 @@
  * callers normalise with residentBytes), ns rows with every stat column.
  */
 import { RESIDENT_ROW_BYTES, namespaceRowBytes, residentBytes, utf8Length } from './cell-cost.js';
+import { arraySort, dataDescriptor, reflectDefineProperty, SafeList, SafeMap } from '@nimbus-sh/core/_shared/primordials.js';
 /**
  * Cell kinds. A cell is one of the three things __vfsBundle has always held,
  * and the kind is stored rather than inferred so a text file whose bytes happen
@@ -222,10 +223,13 @@ export function sqlTables(sql) {
  * row, and the payload's bytes), so the store's one budget rule serves both.
  */
 export function heapTables() {
-    const files = new Map();
-    const chunks = new Map();
+    // What a read asks (a row, a file's head, its first chunk) goes through
+    // SafeMap's methods, as the launch captured them: module loading reads
+    // here after a program may have replaced Map.prototype.get.
+    const files = new SafeMap();
+    const chunks = new SafeMap();
     const meta = new Map();
-    const ns = new Map();
+    const ns = new SafeMap();
     const byKey = new Map();
     // Pages by "path\0rev\0part".
     const pages = new Map();
@@ -311,7 +315,7 @@ export function heapTables() {
     const addChunk = (path, part, cell, replace) => {
         let parts = chunks.get(path);
         if (!parts) {
-            parts = new Map();
+            parts = new SafeMap();
             chunks.set(path, parts);
         }
         const had = parts.get(part);
@@ -417,7 +421,20 @@ export function heapTables() {
             const parts = chunks.get(path);
             if (!parts)
                 return [];
-            return [...parts.keys()].sort((a, b) => a - b).map((part) => copy(parts.get(part)));
+            // In part order, through the captures (module loading reads a large file's parts here).
+            const numbers = new SafeList();
+            parts.forEach((_cell, part) => { numbers[numbers.length] = part; });
+            arraySort(numbers, (a, b) => a - b);
+            // An ordinary array, as the SQL backing answers, each element defined
+            // on it: an append past its end would meet a setter a program put on
+            // Array.prototype.
+            const out = [];
+            for (let i = 0; i < numbers.length; i++) {
+                const cell = parts.get(numbers[i] ?? 0);
+                if (cell !== undefined)
+                    reflectDefineProperty(out, out.length, dataDescriptor(copy(cell), true, true, true));
+            }
+            return out;
         },
         chunkAddText(path, part, txt) { addChunk(path, Number(part), { txt: String(txt), bin: null }, false); },
         chunkAddBin(path, part, bin) { addChunk(path, Number(part), { txt: null, bin: owned(bin) }, false); },
@@ -499,7 +516,7 @@ export function heapTables() {
             const bytes = namespaceRowBytes(parent, name, target);
             const growth = bytes - (previous === undefined ? 0 : namespaceRowBytes(parent, name, previous.target));
             if (!dir) {
-                dir = new Map();
+                dir = new SafeMap();
                 ns.set(parent, dir);
             }
             if (previous === undefined)

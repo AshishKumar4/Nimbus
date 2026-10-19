@@ -3,11 +3,12 @@
 // No module reload or fresh realm can accidentally provide their isolation.
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
+import './lib/launch-captures.mjs';
 import { nodeFacetSources } from './lib/node-facet-sources.mjs';
 
 const text = nodeFacetSources('').residentStore;
 const library = /** @type {typeof import('../../packages/worker/src/vfs/resident/index.ts')} */ (
-  new Function(text + '\nreturn __nimbusResidentModule;')()
+  new Function('__nimbusLaunchCaptures', text + '\nreturn __nimbusResidentModule;')(globalThis.__nimbusTestLaunchCaptures)
 );
 const db = new Database(':memory:');
 const sql = {

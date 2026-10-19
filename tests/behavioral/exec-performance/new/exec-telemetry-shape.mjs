@@ -17,7 +17,7 @@
 //   - moduleMapBytes is large (the embedded 238 KiB shim + bundle)
 //   - rpcWrites >= 1 (the console.log streamed a supervisor RPC write)
 
-import { mintSession, Terminal, makeAsserter, requestHeaders, BASE, deleteSession } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, requestHeaders, BASE, deleteSession, hasOutputLine } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('exec-performance/exec-telemetry-shape');
@@ -41,7 +41,7 @@ try {
 
   // A foreground exec that prints (forces an RPC stdout write).
   const r = await t.run('node -e "console.log(\'telemetry-probe\')"', 30_000);
-  a.check('node -e ran and printed', /telemetry-probe/.test(r.output),
+  a.check('node -e ran and printed', hasOutputLine(r.output, 'telemetry-probe'),
     `tail=${JSON.stringify(r.output.slice(-200))}`);
 
   const diagResp = await execDiag('/api/_diag/exec');

@@ -7,5 +7,6 @@ await remotePairedCpu({
   name: 'remote-process-fs-client-cpu',
   receipts: 'remote-process-fs-client-cpu',
   baselineDir: '.ci-process-fs-client-baseline',
-  command: ['bun', 'tests/bench/process-fs-client-cpu.mjs'],
+  engine: 'bun',
+  bench: 'tests/bench/process-fs-client-cpu.mjs',
 });
