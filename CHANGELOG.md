@@ -25,12 +25,6 @@ published independently in the `@nimbus-sh` npm scope.
     error, as `(echo a) (echo b)` and `x=1 (echo hi)` are in bash.
   Before, a whole script was parsed first, an alias was expanded when its
   command ran, and those two commands both ran.
-## 2026-10-19: platform 0.13.0, core 0.24.0, fabric 0.19.0, worker 0.22.0, sdk 0.18.0, react 0.4.0, config 0.3.2, cli 0.2.9, loom 0.3.2, create-nimbus-app 0.2.5 (runtimes unchanged: runtime-bash 5.2.37-7, runtime-cpython 3.13.14-3, runtime-git 2.53.0-1)
-- Fixed: the shell's patterns, trims, substitutions, `${#x}` and IFS count
-  characters, as bash does in a UTF-8 locale, not UTF-16 units. `${x%?}` of
-  😀 leaves nothing rather than half of it, `?` and `case 😀 in ?)` match it
-  whole, `${#x}` is 1, and IFS=😀 joins and splits by 😀 without splitting
-  😁. Before, these could leave a lone surrogate in a value.
 - Fixed: Tailwind v4 generates the utilities its stylesheets' `@source`
   directives name outside the working tree. Tailwind's scanner reads those
   files synchronously, and they were not held for it, so their classes were
@@ -43,6 +37,14 @@ published independently in the `@nimbus-sh` npm scope.
   listed for the process. At most 5,000 files of under 256 KiB each are
   held this way; past that, a launch says where it stopped, and the rest
   are learned from what the scanner misses.
+
+## 2026-10-19: platform 0.13.0, core 0.24.0, fabric 0.19.0, worker 0.22.0, sdk 0.18.0, react 0.4.0, config 0.3.2, cli 0.2.9, loom 0.3.2, create-nimbus-app 0.2.5 (runtimes unchanged: runtime-bash 5.2.37-7, runtime-cpython 3.13.14-3, runtime-git 2.53.0-1)
+
+- Fixed: the shell's patterns, trims, substitutions, `${#x}` and IFS count
+  characters, as bash does in a UTF-8 locale, not UTF-16 units. `${x%?}` of
+  😀 leaves nothing rather than half of it, `?` and `case 😀 in ?)` match it
+  whole, `${#x}` is 1, and IFS=😀 joins and splits by 😀 without splitting
+  😁. Before, these could leave a lone surrogate in a value.
 - Fixed: a Vite dev server with Tailwind v4 could serve its first
   stylesheet without the classes the app's components use, about one
   start in three. Each time the dev server read a source file it had
