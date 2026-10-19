@@ -16,7 +16,13 @@ try {
   await t.waitForPrompt(60_000);
 
   await t.run('nimbus install ruby', 180_000);
-  await t.run('gem install rack rackup webrick', 240_000);
+  {
+    // When rackup is missing below, this says why: the install's own words.
+    const { output, exitCode } = await t.run('gem install rack rackup webrick', 240_000);
+    const stripped = stripAnsi(output);
+    console.log(`gem install (exit ${exitCode}): ${JSON.stringify(stripped.slice(-800))}`);
+    a.check('gem install rack rackup webrick succeeds', exitCode === 0, JSON.stringify(stripped.slice(-800)));
+  }
   await t.run('mkdir -p /home/user/rack-app && cd /home/user/rack-app', 10_000);
   await t.run(heredocCommand('config.ru', [
     'require "rack"',

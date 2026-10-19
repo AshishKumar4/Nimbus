@@ -17,6 +17,14 @@ published independently in the `@nimbus-sh` npm scope.
   missing from the directory it was renamed within. A listing is now of the
   directory as it stood at one moment, or the session is asked instead; a
   file or a missing name is no longer listed as an empty directory.
+- Changed: a `ruby` one-shot (`ruby -e`, `gem --version`, `bundle --version`
+  and the like) runs on one of its session's warm Ruby workers, which keep
+  ruby+stdlib.wasm compiled, instead of loading it into a new worker every
+  time. Each process boots a VM of its own there, so it finds nothing an
+  earlier process left. A worker is used again only after a process that
+  ended clean and never reached JavaScript (`require "js"`); a session keeps
+  at most two idle. On paired Previews a `ruby -e` launch took 0.38× the
+  time (medians 471–493 ms against 1000–1731 ms) and a gem require 0.32×.
 - Fixed: a WASI program (python, ruby, clang, bash) could see a file
   another process had deleted. A lookup or listing it asked before the
   delete, answered after it, put the name back. A name under a directory
@@ -60,7 +68,6 @@ published independently in the `@nimbus-sh` npm scope.
   and Ruby's tarball to their sha256. A tag `npm-dry-run/<sha12>` runs the
   pack and `npm publish --dry-run` on GitHub's runner.
   `bun scripts/npm-trust.mjs` links the packages to the workflow, once.
-
 - Changed (core): the resident filesystem decides what a caller that
   cannot wait changes outside a subtree the process holds (its
   `synchronous` view). Such a change is answered at once, logged through

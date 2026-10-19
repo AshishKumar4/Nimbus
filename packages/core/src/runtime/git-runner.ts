@@ -153,8 +153,9 @@ export function makeGitRunnerFactory(deps: {
           ctx.stderr.write(`${binName}: ${errorMessage(error)}\n`);
           return (outcome = 1);
         }
-        // A facet in which a syscall was abandoned may still be written by it: never another git's.
-        if (result.error === undefined && result.reusable === true) warmKeys.give(warm);
+        // A facet in which a syscall was abandoned may still be written by it, and a git killed
+        // mid-run may still run on it: never another git's.
+        if (result.error === undefined && result.reusable === true && !stdio.signal.aborted) warmKeys.give(warm);
         const returned = Date.now();
         if (ctx.env?.NIMBUS_WASI_FS_STATS === '1') {
           // Milliseconds from the command's start: the host's clock, and the facet's where it moved.

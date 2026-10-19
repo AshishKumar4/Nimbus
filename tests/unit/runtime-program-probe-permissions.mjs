@@ -68,7 +68,7 @@ function invocationVfs(filesystem) {
   const filesystem = deniedProgramAuthority({
     '/runtime/ruby/share/ruby/ruby+stdlib.wasm': new Uint8Array([0]),
   }, 'home/user/locked/tool.rb');
-  const run = await makeRubyRunnerFactory({ facets: unreachableFacets, filesystem, getHome: () => '/home/user', network: ISOLATE_NETWORK })(
+  const run = await makeRubyRunnerFactory({ facets: unreachableFacets, filesystem, getHome: () => '/home/user', network: ISOLATE_NETWORK, session: 'runtime-program-probe-permissions' })(
     { files: [manifestFile('share/ruby/ruby+stdlib.wasm', new Uint8Array([0]))] },
     '/runtime/ruby',
     'ruby',
