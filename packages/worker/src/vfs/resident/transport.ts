@@ -506,8 +506,9 @@ export function createTransport(coherence: Coherence, admission: Admission, name
    * List the entries directly under `dir`: its names (readdir) and each one's
    * stat (an lstat batch), then each symlink's target. Two round trips for a
    * directory of any size up to the batch bound, where a stat per name would be
-   * one each. A name that went between the two is not written; one that came is
-   * reported by the next delta, since the store's cursor predates both.
+   * one each. A name that went between the two leaves a listing the directory
+   * never held, and nothing is written; one that came is reported by the next
+   * delta, since the store's cursor predates both.
    * Returns false when the directory cannot be listed (gone, not a directory,
    * not readable): the caller asks the authority instead.
    */
@@ -540,8 +541,7 @@ export function createTransport(coherence: Coherence, admission: Admission, name
           const answer = ownValue(answers, j);
           if (!answer || ownValue(answer, 'error')) return false;
           const stat = ownValue(answer, 'stat');
-          if (stat === null || stat === undefined) continue;
-          if (!nsDescribes(stat)) return false;
+          if (stat === null || stat === undefined || !nsDescribes(stat)) return false;
           stats.set(batch[j], stat);
         }
       }

@@ -5,6 +5,12 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a WASI program (python, ruby, clang, bash) listing a directory
+  while another process changed it could be shown a listing the directory
+  never had: a directory moved away listed as empty, or a renamed file
+  missing from the directory it was renamed within. A listing is now of the
+  directory as it stood at one moment, or the session is asked instead; a
+  file or a missing name is no longer listed as an empty directory.
 - Changed (core): the resident filesystem decides what a caller that
   cannot wait changes outside a subtree the process holds (its
   `synchronous` view). Such a change is answered at once, logged through
