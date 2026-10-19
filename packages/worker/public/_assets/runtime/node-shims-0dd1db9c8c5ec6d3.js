@@ -21105,8 +21105,11 @@ function __nimbusEsmExportError(error, id, requested, name) {
     const line = lines.length;
     const column = lines[line - 1].length - (line === 1 ? module.head : 0);
     let delta = 0;
-    for (const [, editAt, length, written] of __nimbusColumnEdits(module)?.get(line) ?? []) {
-      if (editAt + delta === column && length === sourceEnd - sourceStart) { specifier = written.slice(1, -1); break; }
+    // A SafeList of the line's edits, read by index.
+    const edits = __nimbusColumnEdits(module)?.get(line);
+    for (let i = 0; edits !== undefined && i < edits.length; i++) {
+      const editAt = edits[i][1], length = edits[i][2], written = edits[i][3];
+      if (editAt + delta === column && length === sourceEnd - sourceStart) { specifier = __pathSlice(written, 1, -1); break; }
       delta += length - written.length;
     }
     // The module the importer's specifier names, as the registry resolved it.

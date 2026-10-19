@@ -519,7 +519,7 @@ const {
   reflectDeleteProperty: __nimbusStackDelete, arrayIsArray: __nimbusStackIsArray, dataDescriptor: __nimbusStackData,
   TypeError: __nimbusStackTypeError, SafeMap: __NimbusCellMap, SafeSet: __NimbusCellSet,
   SafeWeakMap: __NimbusCellWeakMap, SafeWeakSet: __NimbusCellWeakSet, SafeList: __NimbusCellList,
-  arrayCopy: __nimbusStackCopy, JSONParse: __nimbusStackJsonParse,
+  arrayCopy: __nimbusStackCopy, JSONParse: __nimbusStackJsonParse, mathMin: __nimbusStackMin, mathFloor: __nimbusStackFloor,
 } = __nimbusLaunchCaptures;
 /** Whether \`test\` holds of any of \`sites\`: Array.prototype.some, on no method of the list. */
 function __nimbusSomeSite(sites, test) {
@@ -611,7 +611,8 @@ function __nimbusModuleNamed(name) {
   return module;
 }
 function __nimbusFileUrl(path) {
-  const url = new URL("file://");
+  // The realm's own URL, not the shims' subclass: a stack names a frame's file after the program may have replaced String.prototype.startsWith.
+  const url = __nimbusLaunchCaptures.newURL("file://");
   url.pathname = path;
   return url.href;
 }
@@ -878,9 +879,9 @@ function __nimbusProgramSites(error, original) {
     output[output.length] = __NimbusCallSite.of(site);
   }
   while (next < stamp.frames.length) output[output.length] = new __NimbusInterpretedCallSite(stamp.frames[next++]);
-  const limit = typeof stamp.limit === "number" ? Math.floor(stamp.limit) : 0;
+  const limit = typeof stamp.limit === "number" ? __nimbusStackFloor(stamp.limit) : 0;
   // NaN, as negative, keeps none (slice's ToIntegerOrInfinity).
-  output.length = limit > 0 ? Math.min(limit, output.length) : 0;
+  output.length = limit > 0 ? __nimbusStackMin(limit, output.length) : 0;
   return __nimbusStackCopy(output);
 }
 // What a runtime's shims format a stack with instead (node --enable-source-maps): null to keep the hook's own.
