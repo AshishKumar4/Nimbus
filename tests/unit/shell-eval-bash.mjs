@@ -17,10 +17,10 @@
 // (stdout, status, stderr without bash's line prefix). A script's special
 // builtin that fails on its own (`.` of a missing file, an eval option)
 // ends it, as POSIX has it, inside eval's text or a sourced file too, and so
-// does a syntax error in that text before it ran a command (bash's
-// evalstring): those run as `sh ./s.sh`, with `bash --posix` the oracle
-// (stdout and status). `bash ./s.sh` is not in POSIX mode: it goes on (before,
-// every script ended).
+// does a syntax error in that text while eval or `.` is the builtin last
+// dispatched (bash's evalstring): those run as `sh ./s.sh`, with `bash
+// --posix` the oracle (stdout and status). `bash ./s.sh`, or a bash an sh
+// runs, is not in POSIX mode: it goes on (before, every script ended).
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -96,6 +96,11 @@ const SCRIPTS = [
 
 /** Run as POSIX scripts: a special builtin's own failure ends one, from inside eval's text or a sourced file too. */
 const POSIX_SCRIPTS = [
+  "eval $'echo before\\neval\\nif' 2>/dev/null; echo survived",
+  "eval $'echo a >/dev/null/missing\\nif' 2>/dev/null; echo survived",
+  "printf 'if\\n' > b5.sh; source ./b5.sh 2>/dev/null; echo survived",
+  "source ./missing 2>/dev/null; echo after",
+  "bash -c 'eval -x 2>/dev/null; echo survived; set -o | grep posix | grep -c on'; echo after",
   "eval 'if' 2>/dev/null; echo survived",
   "eval $'echo a\\nif' 2>/dev/null; echo survived",
   "eval $'x=1\\nif' 2>/dev/null; echo survived",

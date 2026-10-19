@@ -114,6 +114,7 @@ function makeHarness(files = {}, existingCommands = new Map()) {
   assert.equal(calls.length, 1);
   assert.equal(calls[0].body, 'false | true');
   assert.deepEqual(calls[0].options.shellOptions, {
+    posix: true,
     errexit: true,
     nounset: true,
     pipefail: true,

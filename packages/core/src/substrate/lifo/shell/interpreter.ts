@@ -356,8 +356,10 @@ export interface InterpreterConfig extends ShellState {
 export class Interpreter {
   private config: InterpreterConfig;
   private lastExitCode = 0;
-  // Commands (words) run, for whether eval's or `.`'s text ran one before a syntax error in it.
-  private commandsRun = 0;
+  // The command word last dispatched (null for a function's call), before its
+  // redirections: as bash's this_shell_builtin, it decides whether a syntax error
+  // in eval's or `.`'s text is theirs (evalstring).
+  private lastBuiltin: string | null = null;
   private functions = new Map<string, CompoundCommandNode>();
   private persistentOutputFds = new Map<number, CommandOutputStream>();
   private persistentInputFds = new Map<number, CommandInputStream | undefined>();
@@ -1047,6 +1049,7 @@ export class Interpreter {
     const viaCommand = name === 'command' && !replacesShell && !this.functions.has(name) && !this.config.aliases.has(name)
       && args.length > 0 && (args[0] === '--' ? args.length > 1 : !args[0].startsWith('-'));
     if (viaCommand) [name, ...args] = args[0] === '--' ? args.slice(1) : args;
+    this.lastBuiltin = this.functions.has(name) && !viaCommand ? null : name;
 
     // Apply per-command assignments (temporary env)
     const saved = new Map<string, SavedVariable>();
@@ -1088,7 +1091,6 @@ export class Interpreter {
     let writeFailed = false;
     // eval's and `.`'s status is their text's once it runs: its failure is not theirs.
     let ranText = false;
-    this.commandsRun++;
 
     try {
       // Check for break/continue/return builtins
@@ -1145,13 +1147,13 @@ export class Interpreter {
                 setPositionals: (nextArgs) => this.writePositionals(builtinIo, nextArgs),
                 executeInline: async (input, options) => {
                   ranText = true;
-                  const before = this.commandsRun;
                   try {
                     return (await this.executeInline(input, builtinIo, options));
                   } catch (error) {
-                    // A syntax error before the text ran any command is the builtin's own
-                    // failure, as bash's evalstring has it (fatal in a POSIX script).
-                    if (error instanceof TextSyntaxError && this.commandsRun === before) ranText = false;
+                    // A syntax error while eval or `.` is still the builtin last dispatched (no
+                    // other command of the text has been, or one was, an eval or `.`) is the
+                    // builtin's own failure, as bash's evalstring has it: fatal in a POSIX script.
+                    if (error instanceof TextSyntaxError && (this.lastBuiltin === 'eval' || this.lastBuiltin === '.' || this.lastBuiltin === 'source')) ranText = false;
                     throw error;
                   }
                 },
@@ -2167,6 +2169,8 @@ function isFatalSpecialBuiltin(name: string): boolean {
   switch (name) {
     case ':':
     case '.':
+    // bash's source_builtin is `.`'s: either name fails alike.
+    case 'source':
     case 'break':
     case 'continue':
     case 'eval':

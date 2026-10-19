@@ -114,8 +114,8 @@ function makeShellEntrypoint(
         cwd: ctx.cwd || '/home/user',
         env: shellEnvWithPositionals(ctx.env, program.argv0, program.args),
         isolateShellState: true,
-        // sh is bash in its POSIX mode.
-        shellOptions: shellName === 'sh' ? { ...program.options, posix: true } : program.options,
+        // sh is bash in its POSIX mode; bash is not, whatever shell runs it.
+        shellOptions: { posix: shellName === 'sh', ...program.options },
         scriptMode: true,
         stdin: inheritedStdin.stdin,
         terminalStdin: ctx.terminalStdin,
