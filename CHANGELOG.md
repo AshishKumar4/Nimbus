@@ -5,7 +5,6 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
-
 - Fixed (data loss, since core 0.19): a recursive removal no longer enters a
   mount point. `CompositeVFS.removeRecursive`, and so the shell's `rm -r`, the
   SDK's `files.delete`, npm's and git's removals and a guest's `fs.rm`, keeps
