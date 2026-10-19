@@ -38,6 +38,7 @@ export interface Token {
   heredocQuoted?: boolean; // only for HeredocBody tokens
   heredocTerminated?: boolean; // only for HeredocBody tokens: its delimiter line was found
   parts?: WordPart[];  // only for Word tokens
+  source?: string;     // only for Word tokens: the word as written, its quotes in it
 }
 
 // ─── AST node types ───
@@ -114,6 +115,8 @@ export interface IfNode {
 export interface ForNode {
   type: 'for';
   variable: string;
+  /** Not a name (quoted, or not an identifier): bash's error, the loop not run. */
+  variableError?: string;
   words: WordPart[][] | null;  // null = use "$@"
   body: ListNode[];
   redirections: RedirectionNode[];
@@ -140,6 +143,8 @@ export interface CaseNode {
 export interface FunctionDefNode {
   type: 'function_def';
   name: string;
+  /** Not a function name (quoted, a `$` in it, or all digits): bash's error, nothing defined. */
+  nameError?: string;
   body: CompoundCommandNode;
 }
 

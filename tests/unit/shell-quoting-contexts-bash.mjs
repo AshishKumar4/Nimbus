@@ -37,52 +37,53 @@ const FORMS = {
 };
 const WHOLE = ['bare', 'single', 'double', 'backslash', 'ansiC'];
 
-/** Contexts: a line with a hole `@` for the formed payload, the payloads, and the forms that fit. */
+/** Contexts: a line with a hole `•` for the formed payload, the payloads, and the forms that fit. */
 const CONTEXTS = [
   // Reserved words, as the command word and as terminators.
-  ...['then', 'fi', 'do', 'done', 'esac', 'in', 'elif', 'else', '}', '!', ']]'].map((word) => ({ line: `@ true; echo "st=$?"`, payloads: [word] })),
-  { line: `@ true; then echo T; fi; echo "st=$?"`, payloads: ['if'] },
+  ...['then', 'fi', 'do', 'done', 'esac', 'in', 'elif', 'else', '}', '!', ']]'].map((word) => ({ line: `• true; echo "st=$?"`, payloads: [word] })),
+  { line: `• true; then echo T; fi; echo "st=$?"`, payloads: ['if'] },
   // The body breaks: `until false` would loop forever.
-  { line: `@ false; do break; done; echo "st=$?"`, payloads: ['while', 'until'] },
-  { line: `@ x in a; do echo "[$x]"; done; echo "st=$?"`, payloads: ['for'] },
-  { line: `@ a in a) echo A;; esac; echo "st=$?"`, payloads: ['case'] },
-  { line: `@ echo G; }; echo "st=$?"`, payloads: ['{'] },
-  { line: `@ -n x ]] && echo B; echo "st=$?"`, payloads: ['[['] },
-  { line: `for x in a; do echo "$x"; @; done; echo "st=$?"`, payloads: ['done'] },
-  { line: `if true; then echo a; @ 2>/dev/null; fi; echo "st=$?"`, payloads: ['fi', 'then'] },
+  { line: `• false; do break; done; echo "st=$?"`, payloads: ['while', 'until'] },
+  { line: `• x in a; do echo "[$x]"; done; echo "st=$?"`, payloads: ['for'] },
+  { line: `• a in a) echo A;; esac; echo "st=$?"`, payloads: ['case'] },
+  { line: `• echo G; }; echo "st=$?"`, payloads: ['{'] },
+  { line: `• -n x ]] && echo B; echo "st=$?"`, payloads: ['[['] },
+  { line: `for x in a; do echo "$x"; •; done; echo "st=$?"`, payloads: ['done'] },
+  { line: `if true; then echo a; • 2>/dev/null; fi; echo "st=$?"`, payloads: ['fi', 'then'] },
   // Assignments: the name and the = unquoted; the value as quoted as it likes.
-  { line: `@; printf '<%s>' "\${x-unset}"`, payloads: ['x=set'] },
-  { line: `x@y; printf '<%s>' "\${x-unset}"`, payloads: ['='] },
-  { line: `a[@]=v; printf '<%s>' "\${a[@]}" "\${!a[@]}"`, payloads: ['1'] },
-  { line: `x=@; printf '<%s>' "\${x[@]}" "\${#x[@]}"`, payloads: ['(a b)'], forms: WHOLE },
+  { line: `•; printf '<%s>' "\${x-unset}"`, payloads: ['x=set'] },
+  { line: `x•y; printf '<%s>' "\${x-unset}"`, payloads: ['='] },
+  { line: `x=•; printf '<%s>' "\${x[@]}" "\${#x[@]}"`, payloads: ['(a b)'], forms: WHOLE },
+  { line: `declare x=•; printf '<%s>' "\${x[@]}" "\${#x[@]}"`, payloads: ['(a b)'], forms: WHOLE },
+  { line: `f() { local x=•; printf '<%s>' "\${x[@]}" "\${#x[@]}"; }; f`, payloads: ['(a b)'], forms: WHOLE },
   // A for variable and a function name are identifiers, not quoted words.
-  { line: `for @ in one; do echo "[$v]"; done; echo "st=$?"`, payloads: ['v'] },
-  { line: `@() { echo F; }; f; echo "st=$?"`, payloads: ['f'] },
+  { line: `for • in one; do echo "[$v]"; done; echo "st=$?"`, payloads: ['v'] },
+  { line: `•() { echo F; }; f; echo "st=$?"`, payloads: ['f'] },
   // Aliases: the command word, unquoted, as written; its arguments stay its words.
-  { line: `alias p='printf <%s>'\n@ x; echo`, payloads: ['p'] },
-  { line: `alias p='printf <%s>'\np @; echo`, payloads: ['a;echo injected', 'a b'], forms: ['single', 'double', 'backslash', 'ansiC'] },
-  { line: `alias p='printf <%s>'\nc=p; $c x; echo "st=$?"`, payloads: [''], forms: ['bare'] },
-  { line: `alias p='printf <%s>'\np @ > out; cat out; echo`, payloads: ['x'] },
+  { line: `alias p='printf "<%s>"'\n• x; echo`, payloads: ['p'] },
+  { line: `alias p='printf "<%s>"'\np •; echo`, payloads: ['a;echo injected', 'a b'], forms: ['single', 'double', 'backslash', 'ansiC'] },
+  { line: `alias p='printf "<%s>"'\nc=p; $c x; echo "st=$?"`, payloads: [''], forms: ['bare'] },
+  { line: `alias p='printf "<%s>"'\np • > out; cat out; echo`, payloads: ['x'] },
   // Patterns: a quoted character is itself.
   ...[['abc', '*'], ['abc', 'a*'], ['abc', 'a?c'], ['abc', '[ab]bc'], ['abc', 'abc'], ['*', '*'], ['a*', 'a*']].flatMap(([subject, pattern]) => [
-    { line: `case '${subject}' in @) echo m;; *) echo n;; esac`, payloads: [pattern] },
-    { line: `[[ '${subject}' == @ ]] && echo m || echo n; [[ '${subject}' != @ ]] && echo d || echo s`, payloads: [pattern] },
-    { line: `v='${subject}'; printf '<%s>' "\${v#@}" "\${v##@}" "\${v%@}" "\${v/@/X}" "\${v//@/X}" "\${v^^@}" \${v#@}`, payloads: [pattern] },
+    { line: `case '${subject}' in •) echo m;; *) echo n;; esac`, payloads: [pattern] },
+    { line: `[[ '${subject}' == • ]] && echo m || echo n; [[ '${subject}' != • ]] && echo d || echo s`, payloads: [pattern] },
+    { line: `v='${subject}'; printf '<%s>' "\${v#•}" "\${v##•}" "\${v%•}" "\${v/•/X}" "\${v//•/X}" "\${v^^•}" \${v#•}`, payloads: [pattern] },
   ]),
-  { line: `[[ a.c =~ @ ]] && echo m || echo n; [[ abc =~ @ ]] && echo m || echo n`, payloads: ['a.c', '^a.'] },
+  { line: `[[ a.c =~ • ]] && echo m || echo n; [[ abc =~ • ]] && echo m || echo n`, payloads: ['a.c', '^a.'] },
   { line: `p='a*'; case abc in $p) echo m;; *) echo n;; esac; case abc in "$p") echo m;; *) echo n;; esac; [[ abc == $p ]] && echo m; [[ abc == "$p" ]] || echo n`, payloads: [''], forms: ['bare'] },
   // Default words: their quoted characters are neither split nor globbed.
-  { line: `unset x; printf '<%s>' \${x:-@} "\${x:-@}" \${x-@}; echo`, payloads: ['a b', '*.txt', 'a'] },
-  { line: `x=1; printf '<%s>' \${x:+@} "\${x:+@}"; echo`, payloads: ['a b', '*.txt'] },
-  { line: `unset x; : \${x:=@}; printf '<%s>' "$x"; echo`, payloads: ['a b', '*'] },
+  { line: `unset x; printf '<%s>' \${x:-•} "\${x:-•}" \${x-•}; echo`, payloads: ['a b', '*.txt', 'a'] },
+  { line: `x=1; printf '<%s>' \${x:+•} "\${x:+•}"; echo`, payloads: ['a b', '*.txt'] },
+  { line: `unset x; : \${x:=•}; printf '<%s>' "$x"; echo`, payloads: ['a b', '*'] },
   // Pathname expansion: quoted characters match themselves; an unquoted expansion's are pattern.
-  { line: `printf '<%s>' @; echo`, payloads: ['*.txt', '?.txt', '[ab].txt', 'a.t*'] },
+  { line: `printf '<%s>' •; echo`, payloads: ['*.txt', '?.txt', '[ab].txt', 'a.t*'] },
   ...['*.txt', 'a.*', '[ab]*', 'a\\*', 'x*'].map((value) => ({ line: `v='${value}'; printf '<%s>' $v "$v"; echo`, payloads: [''], forms: ['bare'] })),
   // Tilde and brace expansion: quoted, they are text.
-  { line: `HOME=/h; printf '<%s>' @; x=@; printf '[%s]' "$x"; echo`, payloads: ['~', '~/x'] },
-  { line: `printf '<%s>' @; echo`, payloads: ['{a,b}', 'x{a,b}y'] },
+  { line: `HOME=/h; printf '<%s>' •; x=•; printf '[%s]' "$x"; echo`, payloads: ['~', '~/x'] },
+  { line: `printf '<%s>' •; echo`, payloads: ['{a,b}', 'x{a,b}y'] },
   // A here-document's delimiter, quoted anyhow, keeps its body literal.
-  { line: `v=1; cat <<@\n$v\nEOF\necho end`, payloads: ['EOF'] },
+  { line: `v=1; cat <<•\n$v\nEOF\necho end`, payloads: ['EOF'] },
   // An alias naming itself expands once (last: the session's expanded without end, until its heap ran out).
   { line: `alias echo='echo X'\necho hi`, payloads: [''], forms: ['bare'] },
 ];
@@ -90,7 +91,7 @@ const CONTEXTS = [
 /** Every case: its line, once per distinct text. */
 const CASES = [...new Set(CONTEXTS.flatMap(({ line, payloads, forms = Object.keys(FORMS) }) => payloads.flatMap((payload) => forms.flatMap((form) => {
   const word = FORMS[form](payload);
-  return word === null ? [] : [line.split('@').join(word)];
+  return word === null ? [] : [line.split('•').join(word)];
 }))))];
 
 const FILES = ['a.txt', 'b.txt'];

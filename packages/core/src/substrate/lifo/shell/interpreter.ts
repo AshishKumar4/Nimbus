@@ -786,7 +786,7 @@ export class Interpreter {
       case 'subshell':
         return (await this.executeSubshell(cmd, io));
       case 'function_def':
-        return (await this.executeFunctionDef(cmd));
+        return (await this.executeFunctionDef(cmd, io));
     }
   }
 
@@ -843,6 +843,11 @@ export class Interpreter {
 
   private async executeFor(node: ForNode, io: ExecutionIo): Promise<number> {
     return (await this.executeWithRedirections(node.redirections, io, async (redirIo) => {
+      // Its variable is not a name (bash's check_identifier): said, and the loop not run.
+      if (node.variableError !== undefined) {
+        (await (redirIo.stderr ?? this.terminalSink(redirIo)).write(`${node.variableError}\n`));
+        return 1;
+      }
       const expandCtx = this.createExpandContext(redirIo);
       let exitCode = 0;
 
@@ -937,7 +942,11 @@ export class Interpreter {
     }));
   }
 
-  private async executeFunctionDef(node: FunctionDefNode): Promise<number> {
+  private async executeFunctionDef(node: FunctionDefNode, io: ExecutionIo): Promise<number> {
+    if (node.nameError !== undefined) {
+      (await (io.stderr ?? this.terminalSink(io)).write(`${node.nameError}\n`));
+      return 1;
+    }
     this.functions.set(node.name, node.body);
     return 0;
   }

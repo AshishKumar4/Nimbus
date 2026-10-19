@@ -579,7 +579,7 @@ function readWord(input: string, pos: number): { token: Token; end: number } | n
   const value = parts.map((p) => p.text).join('');
 
   return {
-    token: { kind: TokenKind.Word, value, pos, parts },
+    token: { kind: TokenKind.Word, value, pos, parts, source: input.slice(pos, i) },
     end: i,
   };
 }
