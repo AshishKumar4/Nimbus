@@ -1035,57 +1035,42 @@ var __nimbusResidentModule = (() => {
     if (k === "") {
       return { kind: NS_DIR, size: 0, mode: 16877, uid: 0, gid: 0, atime: 0, mtime: 0, ctime: 0, ino: 1, rev: 0, target: null, dev: 0, nlink: 1 };
     }
-    return t.nsGet(nsParent(k), nsName(k));
-  }
-  function segments(path) {
-    const out = new SafeList();
-    if (path === "") return out;
-    let from = 0;
-    for (; ; ) {
-      const slash = stringIndexOf(path, "/", from);
-      if (slash < 0) {
-        out[out.length] = stringSlice(path, from);
-        return out;
-      }
-      out[out.length] = stringSlice(path, from, slash);
-      from = slash + 1;
-    }
-  }
-  function joined(names, start, end) {
-    let text = "";
-    for (let i = start; i < end; i++) text = i === start ? names[i] ?? "" : `${text}/${names[i] ?? ""}`;
-    return text;
+    const i = stringLastIndexOf(k, "/");
+    return i < 0 ? t.nsGet("", k) : t.nsGet(stringSlice(k, 0, i), stringSlice(k, i + 1));
   }
   function joinTarget(linkPath, target) {
     const text = stringOf(target);
     const out = new SafeList();
-    const add = (names) => {
-      for (let i = 0; i < names.length; i++) {
-        const name = names[i] ?? "";
-        if (name === "..") {
+    const names = (path, reduce) => {
+      for (let start = 0; start <= path.length; ) {
+        let stop = stringIndexOf(path, "/", start);
+        if (stop < 0) stop = path.length;
+        const name = stringSlice(path, start, stop);
+        start = stop + 1;
+        if (name === "") continue;
+        if (reduce && name === "..") {
           if (out.length > 0) out.length--;
-        } else if (name !== "" && name !== ".") out[out.length] = name;
+        } else if (!reduce || name !== ".") out[out.length] = name;
       }
     };
-    if (stringCharCodeAt(text, 0) !== 47) {
-      const base = segments(nsParent(linkPath));
-      for (let i = 0; i < base.length; i++) if (base[i] !== "") out[out.length] = base[i] ?? "";
-    }
-    add(segments(text));
-    return joined(out, 0, out.length);
+    if (stringCharCodeAt(text, 0) !== 47) names(nsParent(linkPath), false);
+    names(text, true);
+    return arrayJoin(out, "/");
   }
   function walkNamespace(t, links, k, followLeaf, own, visit) {
     if (own === void 0 && links.size === 0 && visit === void 0) return { path: k, table: k, row: nsRowAt(t, k) };
     let path = k;
     walk: for (let hops = 0; hops <= NS_MAX_HOPS; hops++) {
-      const segs = segments(path);
       let table = "";
-      let prefix = "";
-      for (let i = 1; i <= segs.length; i++) {
-        const name = segs[i - 1] ?? "";
-        prefix = i === 1 ? name : `${prefix}/${name}`;
+      for (let start = 0, more = path !== ""; more; ) {
+        let stop = stringIndexOf(path, "/", start);
+        const leaf = stop < 0;
+        if (leaf) stop = path.length;
+        const name = stringSlice(path, start, stop);
+        const prefix = stringSlice(path, 0, stop);
+        more = !leaf;
+        start = stop + 1;
         if (visit !== void 0 && !visit(prefix)) return "EACCES";
-        const leaf = i === segs.length;
         const step = table === null ? null : table ? `${table}/${name}` : name;
         const word = own === void 0 ? void 0 : own(prefix);
         let target;
@@ -1120,7 +1105,7 @@ var __nimbusResidentModule = (() => {
           if (!row || row.kind !== NS_LINK) continue;
           target = row.target;
         }
-        const rest = joined(segs, i, segs.length);
+        const rest = leaf ? "" : stringSlice(path, stop + 1);
         const reached = joinTarget(prefix, target);
         path = rest ? reached ? `${reached}/${rest}` : rest : reached;
         continue walk;
