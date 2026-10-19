@@ -503,6 +503,9 @@ export declare class SqliteVFS {
      * held at once, so a later plan of the transaction meets them.
      */
     private captureUndo;
+    /** The embedder transaction running (publishedTransaction), by serial: 0 outside one. */
+    private captureTransaction;
+    private captureTransactions;
     /** Whose call is running: the principal its write events name (a view's, re-entered by work it defers). */
     private activeOrigin;
     /**
@@ -1958,6 +1961,8 @@ export declare class SqliteVFS {
     private capturedBefores;
     /** Once its transaction committed at `gen`: `capture` keeps the rows it found first, held, and each key as the transaction left it. */
     private captureCommitted;
+    /** Key `key` of `capture` as the transaction committing at `gen` left it: its state before kept, once a transaction, for a rollback. */
+    private captureLeft;
     /** A rolled-back transaction's change to a capture, undone. */
     private undoCapture;
     /** Hold `before`'s content for a captured run, as a description holds what it opened. */
