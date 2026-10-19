@@ -5,6 +5,10 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: when the file tree could not list the session's files, filtering
+  it or opening a file (the editor's welcome page opens one) replaced the
+  failure with "Empty", as if the session had no files. The failure now
+  stays shown until the files are listed.
 - Added: the shell's `[[ word =~ regex ]]`, as in bash 5.2. The regex is a
   POSIX extended regular expression as glibc compiles it. Its parentheses,
   and the blanks and `|` inside them, are its own; quoted characters match
