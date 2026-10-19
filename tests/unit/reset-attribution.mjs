@@ -43,7 +43,7 @@ function api(events) {
     const found = events.filter((e) => e.timestamp >= from && e.timestamp <= to
       && body.parameters.filters.every(({ key, operation, value }) => (operation === 'neq' ? read(e, key) !== value : read(e, key) === value))
       && (!body.parameters.needle || JSON.stringify(e).includes(body.parameters.needle.value)));
-    return Response.json({ result: { events: { events: found.slice(0, body.limit) } } });
+    return Response.json({ success: true, result: { events: { events: found.slice(0, body.limit) } } });
   };
   return { request, queries };
 }

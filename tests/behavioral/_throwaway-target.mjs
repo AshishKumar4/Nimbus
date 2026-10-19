@@ -194,7 +194,7 @@ async function up() {
   // Also before the build: a Preview already standing that this checkout
   // holds no secret for belongs to somebody else's run, and taking it
   // over is the one thing `up` must not do by accident.
-  const token = apiToken({ cwd: PROBE_APP, account });
+  const token = await apiToken({ cwd: PROBE_APP, account });
   const before = await latestDeployment({ account, token, preview });
   assertCredentialHeld({
     name,
@@ -250,7 +250,7 @@ async function token() {
 async function version() {
   const name = resolveName();
   const account = requireAccountPin();
-  const latest = await latestDeployment({ account, token: apiToken({ cwd: PROBE_APP, account }), preview: readState(statePath(name))?.preview ?? previewName(name) });
+  const latest = await latestDeployment({ account, token: await apiToken({ cwd: PROBE_APP, account }), preview: readState(statePath(name))?.preview ?? previewName(name) });
   if (!latest?.id) throw new Error(`${name} serves no deployment`);
   process.stdout.write(`${latest.id}\n`);
 }
@@ -267,7 +267,7 @@ async function down() {
   const account = requireAccountPin();
   const names = flags.all ? listStateNames() : [resolveName()];
   if (names.length === 0) log('no throwaway targets recorded');
-  const token = apiToken({ cwd: PROBE_APP, account });
+  const token = await apiToken({ cwd: PROBE_APP, account });
 
   for (const name of names) {
     const recorded = readState(statePath(name));
@@ -299,7 +299,7 @@ async function down() {
  */
 async function list() {
   const account = requireAccountPin();
-  const token = apiToken({ cwd: PROBE_APP, account });
+  const token = await apiToken({ cwd: PROBE_APP, account });
   const held = new Map(listStateNames().map((name) => [readState(statePath(name))?.preview ?? previewName(name), name]));
   const listed = await cfApi(`/workers/workers/${PREVIEW_PARENT}/previews`, { account, token });
   if (!listed.ok) throw new Error(`listing Previews of ${PREVIEW_PARENT} failed (${listed.status}): ${JSON.stringify(listed.errors)}`);

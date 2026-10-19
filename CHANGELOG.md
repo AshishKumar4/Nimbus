@@ -9,6 +9,11 @@ published independently in the `@nimbus-sh` npm scope.
   enforces (10,000,000,000 bytes, `DO_STORAGE_LIMIT_BYTES`) as its capacity.
   Before, it reported 10 GiB, 737,418,240 bytes more than a session can
   store. `VFS_CAPACITY` is now that limit.
+- Added: before each armada run, the CI client says how much the account's
+  container registry holds, what has changed since the last run and who
+  holds the most, and warns when the total grew 10 GB or more since the
+  last run. The registry holds every armada environment snapshot and every
+  container image, and the account's storage is limited.
 - Changed (core): the resident filesystem decides what a caller that
   cannot wait changes outside a subtree the process holds (its
   `synchronous` view). Such a change is answered at once, logged through
@@ -48,7 +53,10 @@ published independently in the `@nimbus-sh` npm scope.
   embedder's `spawnWorker` with `durable`) could fail its first start
   with "resident process released": the earlier process's release ended
   the facet its successor had just started in. A release now ends,
-  drains and deletes only a facet whose name is still its own.
+  drains and deletes only a facet whose name is still its own. The bug
+  needs an ended activation's code to keep running against the shared
+  facets, which an embedder's harness can do and workerd's own abort does
+  not.
 - Fixed: a Node program that replaced `Array.prototype.push`, the array
   iterator, `String.prototype.split` or `replace`, `RegExp.prototype.exec` or
   `Set.prototype.has` can still import a module the launch did not hold, and
