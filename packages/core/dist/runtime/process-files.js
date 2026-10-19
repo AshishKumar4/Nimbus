@@ -944,7 +944,8 @@ class AwaitingProcessBridge {
             return (base === '/' ? '' : base) + '/' + path.path;
         }
         const root = normalizeVfsPath(base);
-        const walk = walkBeneath(root, path, follow, this.cred, (name, to) => this.namespace.resolvedByBackend(name, '/' + root, to));
+        // `base` is a mounted directory's own name where it has one (descriptorPath): lookups beneath it start there.
+        const walk = walkBeneath(root, path, follow, this.cred, (name, to) => this.namespace.resolvedByBackend(name, '/' + root, to), base);
         for (let step = walk.next();;) {
             if (step.done) {
                 if (step.value === null)

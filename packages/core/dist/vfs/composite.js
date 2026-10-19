@@ -96,6 +96,20 @@ function lookupReport(trace, run) {
 }
 /** A `..` component: past one, a backend that resolves its own paths may reach another file than the lexical name (it follows a link first). */
 const DOT_DOT = /(?:^|\/)\.\.(?:\/|$)/;
+/** A path ending `/` or `/.`: its last name must be a directory, a link there followed. */
+const DIRECTORY_ENDING = /\/\.?$/;
+/**
+ * `r`, its operand given back the final separators `input`'s lookup was made
+ * without (entryVfsPath): the namespace's rules take the entry, a backend
+ * that resolves its own paths the name as written.
+ */
+function withEnding(r, input) {
+    const operand = r.operand;
+    const ending = input.length - entryVfsPath(input).path.length;
+    if (operand === undefined || ending === 0)
+        return r;
+    return { path: r.path, operand: { point: operand.point, rel: operand.rel + input.slice(input.length - ending) }, spelling: r.spelling };
+}
 /** Entry `name` of the directory `r` found, as its own lookup would: its operand extends the directory's (the backend's walk, not the namespace's). */
 function childOf(r, name) {
     const path = r.path === '/' ? `/${name}` : `${r.path}/${name}`;
@@ -1870,13 +1884,18 @@ export class CompositeVFS {
      * another mount's (a mount nested in this one covers it): the backend
      * follows the link to its own file, which the namespace has no name for,
      * so a caller hands the link's own path to the namespace instead (whose
-     * backend follows it) or takes what it leads to as unknown. Any other
-     * link leads to its text. readlink answers the text, as written, so a
+     * backend follows it) or takes what it leads to as unknown. A relative
+     * link read at a spelling past a `..` (Resolution.spelling) leads to its
+     * text, from that spelling. Any other link leads to its text. readlink answers the text, as written, so a
      * copied link is the same link.
      */
     linkLeadsTo(path, link) {
         const route = this.locate(normalizePath(path));
         if (!route.mount.options.resolvesPaths)
+            return link;
+        // Read at a name past a `..` its backend walks (a walk anchored at a directory
+        // opened so), a relative target is the walk's to follow from that name.
+        if (!link.startsWith('/') && DOT_DOT.test(path))
             return link;
         const inBackend = normalizePath(link.startsWith('/') ? link : `${parentOf(route.rel)}/${link}`);
         const leads = inBackend === ROOT_POINT ? route.mount.point : `${route.mount.point}${inBackend}`;
@@ -1896,7 +1915,7 @@ export class CompositeVFS {
             return andThen(this.statResolved(r.path, follow, sync, r), (stat) => {
                 if (stat === null)
                     throw new Refusal('ENOENT', input);
-                return r.spelling;
+                return entryVfsPath(r.spelling).path;
             });
         });
     }
@@ -2285,7 +2304,9 @@ export class CompositeVFS {
             const given = operand;
             if (given === undefined || this.locate(path).mount.point !== given.point)
                 return { path, spelling: path };
-            return { path, operand: given, spelling: DOT_DOT.test(given.rel) ? rerooted(given.point, given.rel) : path };
+            // Not followed, a final `/` or `/.` makes the last name a directory's, through its link.
+            const raw = DOT_DOT.test(given.rel) || (!follow && DIRECTORY_ENDING.test(given.rel));
+            return { path, operand: given, spelling: raw ? rerooted(given.point, given.rel) : path };
         });
     }
     /**
@@ -2298,12 +2319,15 @@ export class CompositeVFS {
      * owns (a nested mount point, a directory above one), and a `..` from one,
      * move the cut past them, the position there rebased (`/m/n/../f`, n a
      * mount, is handed `/f`). None when a `..` climbs past the point (the path
-     * is the namespace's, lexically), or the rest lands on the point, on a name
+     * is the namespace's, lexically; at `/` it climbs nowhere, and the backend
+     * walks it), or the rest lands on the point, on a name
      * the namespace owns, or in another mount.
      */
     forwardedTail(holder, components, from) {
         const point = holder.point;
         const named = (names) => (names.length === 0 ? point : rerooted(point, `/${names.join('/')}`));
+        // A mount point is the namespace's while it is mounted, its source there or not; a directory above one while that one is live.
+        const owned = (path) => this.table.mounts.has(path) || this.isStructural(path);
         const position = [];
         let cut = from;
         let base = '';
@@ -2312,18 +2336,22 @@ export class CompositeVFS {
             if (name === '' || name === '.')
                 continue;
             if (name === '..') {
-                if (position.length === 0)
+                // At `/` a `..` stays there (the backend walks it); past any other point it leaves the mount.
+                if (position.length === 0) {
+                    if (point === ROOT_POINT)
+                        continue;
                     return undefined;
-                const owned = this.isStructural(named(position));
+                }
+                const leaving = owned(named(position));
                 position.pop();
-                if (owned) {
+                if (leaving) {
                     cut = i + 1;
                     base = position.length === 0 ? '' : `/${position.join('/')}`;
                 }
                 continue;
             }
             position.push(name);
-            if (this.isStructural(named(position))) {
+            if (owned(named(position))) {
                 cut = i + 1;
                 base = `/${position.join('/')}`;
             }
@@ -2331,7 +2359,7 @@ export class CompositeVFS {
         if (position.length === 0)
             return undefined;
         const lands = named(position);
-        if (this.isStructural(lands) || this.locate(lands).mount !== holder)
+        if (owned(lands) || this.locate(lands).mount !== holder)
             return undefined;
         return { point, rel: `${base}/${components.slice(cut).join('/')}` };
     }
@@ -2446,13 +2474,13 @@ export class CompositeVFS {
     }
     /**
      * What `r`'s synthetic inode number is kept under: its namespace path, or,
-     * where its operand has a `..` (the backend walks it physically, so it may
-     * reach another file than the lexical name), the operand as handed. Two
-     * files never share a number; one reached by two such spellings may get two.
+     * where its spelling is not that (Resolution.spelling: the backend may reach
+     * another file than the lexical name), the operand as handed. Two files
+     * never share a number; one reached by two such spellings may get two.
      */
     identityOf(r) {
         const operand = r.operand;
-        return operand !== undefined && DOT_DOT.test(operand.rel) ? `${operand.point}\0${operand.rel}` : r.path;
+        return operand !== undefined && r.spelling !== r.path ? `${operand.point}\0${operand.rel}` : r.path;
     }
     /** `identify`, on the mount `identity` was found on (a pin's, which may since have left its point). */
     identifyOn(mount, identity, stat) {
@@ -2647,8 +2675,9 @@ export class CompositeVFS {
      * where the lookup lands. `written`: the whole content it writes, what
      * observers are told stands after (WriteSpec.written).
      */
-    onMutation(input, follow, sync, what, run, { parents = false, written, told, children = false, recursiveEntry = false } = {}) {
-        return andThen(this.resolve(input, follow, sync, parents), (resolved) => {
+    onMutation(input, follow, sync, what, run, { parents = false, written, told, children = false, recursiveEntry = false, spelled } = {}) {
+        return andThen(this.resolve(input, follow, sync, parents), (entry) => {
+            const resolved = spelled === undefined ? entry : withEnding(entry, spelled);
             const path = resolved.path;
             this.present(path);
             // unlink(2) refuses a directory before anything else (Linux), and a
@@ -2711,7 +2740,8 @@ export class CompositeVFS {
         }
     }
     mkdirAt(input, options, sync) {
-        return andThen(this.resolve(entryVfsPath(input).path, false, sync, options?.recursive === true), (resolved) => {
+        return andThen(this.resolve(entryVfsPath(input).path, false, sync, options?.recursive === true), (entry) => {
+            const resolved = withEnding(entry, input);
             const path = resolved.path;
             this.present(path);
             if (this.isStructural(path)) {
@@ -2798,7 +2828,9 @@ export class CompositeVFS {
     renameAt(fromInput, toInput, sync) {
         const fromEntry = entryVfsPath(fromInput);
         const toEntry = entryVfsPath(toInput);
-        return andThen(this.resolve(fromEntry.path, false, sync), (fromR) => andThen(this.resolve(toEntry.path, false, sync), (toR) => {
+        return andThen(this.resolve(fromEntry.path, false, sync), (fromEntryR) => andThen(this.resolve(toEntry.path, false, sync), (toEntryR) => {
+            const fromR = withEnding(fromEntryR, fromInput);
+            const toR = withEnding(toEntryR, toInput);
             const from = fromR.path;
             const to = toR.path;
             this.present(from);
@@ -2832,8 +2864,9 @@ export class CompositeVFS {
                     }
                     return this.renameIn(source, target, from, sync);
                 };
-                // A name renamed onto itself changes nothing.
-                if (from === to)
+                // A name renamed onto itself changes nothing (the same operand: on a mount that
+                // resolves its own paths, two spellings of one name may be two files).
+                if (from === to && source.rel === target.rel)
                     return move();
                 return this.reportWrite({ path: to, route: target, ops: this.ops(target, sync), follow: false, kind: 'write', oldPath: from }, move, sync);
             }));
@@ -2919,8 +2952,19 @@ export class CompositeVFS {
                         if (parent.type !== 'directory')
                             throw new Refusal('ENOTDIR', to);
                     }), () => {
-                        if (dir && (to === from || to.startsWith(`${from}/`)))
+                        // Into itself, by name, unless the backend copies it itself from names it
+                        // walks (a spelling past a `..`, which only it can judge); a copy walked here
+                        // could not tell its own new root among the entries it lists.
+                        const spelled = fromR.spelling !== from || toR.spelling !== to;
+                        const judgesItself = spelled && source.mount === target.mount && typeof sourceOps.copy === 'function';
+                        if (dir && !judgesItself && (to === from || to.startsWith(`${from}/`))) {
                             throw new Refusal('EINVAL', to, 'a tree cannot be copied into itself');
+                        }
+                        // A tree named past a `..` its backend walks may hold the copy's own root under
+                        // another name: only that backend's own copy can tell, so none is walked here.
+                        if (dir && spelled && !judgesItself) {
+                            throw new Refusal('ENOTSUP', from, 'a tree named past a `..` its backend walks is copied by that backend, which has no copy');
+                        }
                         return andThen(this.statOf(toR, false, sync), (existing) => {
                             if (existing !== null) {
                                 if (dir)
@@ -3069,7 +3113,7 @@ export class CompositeVFS {
                     return backend.unlink(rel);
                 });
             });
-        }, { told: 'unlinkDir' });
+        }, { told: 'unlinkDir', spelled: input });
     }
     /**
      * rm -r of one tree, with an exact report. `removed` lists the maximal
@@ -3121,7 +3165,7 @@ export class CompositeVFS {
                     throw new Refusal('ENOTDIR', path);
                 return remove();
             });
-        }, { told: null, children: true });
+        }, { told: null, children: true, spelled: input });
     }
     walkRemove(ops, rel, path, mount, sync, composed = false, keepVanishedAncestors = false) {
         // The walk extends `rel` (an operand, on a mount that resolves its own

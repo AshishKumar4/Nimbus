@@ -17,12 +17,12 @@ export function fsError(code, syscall, path, dest, options = {}) {
 }
 /**
  * Where a walk began handing names over (`base`, absolute, and the rest as
- * written from there), as BeneathReached.spelling; `trailing`: the name the
- * walk was given ends in a separator.
+ * written from there), as BeneathReached.spelling, else `reached` (absolute);
+ * `trailing`: the name the walk was given ends in a separator.
  */
 export function handedSpelling(handoff, reached, trailing) {
     if (handoff === null)
-        return '/' + reached;
+        return reached;
     return `${handoff.base === '/' ? '' : handoff.base}/${handoff.rest.join('/')}${trailing ? '/' : ''}`;
 }
 /**
@@ -44,12 +44,24 @@ export function handedSpelling(handoff, reached, trailing) {
  * its lookups, which the synchronous bridge answers at once and a face over
  * asynchronous mounts awaits. `root` is normalized; the answer is the
  * resolved path, normalized, and the spelling to hand the namespace
- * (BeneathReached).
+ * (BeneathReached). `rootSpelling`: the root's own name for its lookups (a
+ * directory opened past a `..` a backend walks, HeldFile.name), which every
+ * lookup beneath it starts from until an absolute link leaves it; its
+ * confinement is the normalized `root`'s.
  */
-export function* walkBeneath(root, path, follow, cred, handedOver) {
+export function* walkBeneath(root, path, follow, cred, handedOver, rootSpelling = '/' + root) {
     const name = typeof path === 'string' ? path : path.path;
+    const rootDepth = root === '' ? 0 : root.split('/').length;
+    // Below the root by descent from it (no absolute link since), a name is the root's spelling, then the rest.
+    let fromRoot = true;
+    const named = (parts) => {
+        if (!fromRoot || rootSpelling === '/' + root)
+            return '/' + parts.join('/');
+        const below = parts.slice(rootDepth).join('/');
+        return below === '' ? rootSpelling : `${rootSpelling === '/' ? '' : rootSpelling}/${below}`;
+    };
     if (root !== '')
-        yield { stat: '/' + root };
+        yield { stat: rootSpelling };
     if (name.startsWith('/'))
         throw fsError('ENOTCAPABLE', 'path', path);
     const pending = name.split('/').filter(Boolean);
@@ -63,7 +75,7 @@ export function* walkBeneath(root, path, follow, cred, handedOver) {
         const to = '/' + [dir, segment, ...pending].filter(Boolean).join('/');
         const handed = handedOver('/' + dir, to) || (segment !== '.' && segment !== '..' && handedOver('/' + candidate, to));
         if (!handed) {
-            const searched = (yield { stat: '/' + dir });
+            const searched = (yield { stat: named(resolved) });
             if (searched === null)
                 throw fsError('ENOENT', 'path', path);
             if (searched.type !== 'directory')
@@ -80,14 +92,14 @@ export function* walkBeneath(root, path, follow, cred, handedOver) {
             continue;
         }
         if (handed) {
-            handoff ??= { base: '/' + dir, rest: [segment, ...pending] };
+            handoff ??= { base: named(resolved), rest: [segment, ...pending] };
             resolved.push(segment);
             continue;
         }
         // Every component already walked is a directory, not a link, so a
         // lookup by its literal name is the walk's own.
         const isFinal = pending.length === 0;
-        const stat = (yield { stat: '/' + candidate });
+        const stat = (yield { stat: named([...resolved, segment]) });
         if (stat === null && !isFinal)
             throw fsError('ENOENT', 'path', path);
         if (stat === null || stat.type !== 'symlink' || (isFinal && !follow)) {
@@ -96,13 +108,15 @@ export function* walkBeneath(root, path, follow, cred, handedOver) {
         }
         if (++hops > MAX_LINK_HOPS)
             return null;
-        const target = (yield { readlink: '/' + candidate });
+        const target = (yield { readlink: named([...resolved, segment]) });
         // A link whose target the namespace has no name for (a mount nested in
         // its backend covers it) cannot be followed beneath the root.
         if (target === null)
             throw fsError('ENOTCAPABLE', 'path', path);
-        if (target.startsWith('/'))
+        if (target.startsWith('/')) {
             resolved.length = 0;
+            fromRoot = false;
+        }
         pending.unshift(...target.split('/').filter(Boolean));
         // A link followed after a handoff: the rest as written is no longer what is reached.
         handoff = null;
@@ -110,5 +124,5 @@ export function* walkBeneath(root, path, follow, cred, handedOver) {
     const reached = resolved.join('/');
     if (root !== '' && reached !== root && !reached.startsWith(root + '/'))
         throw fsError('ENOTCAPABLE', 'path', path);
-    return { reached, spelling: handedSpelling(handoff, reached, name.endsWith('/')) };
+    return { reached, spelling: handedSpelling(handoff, named(resolved), name.endsWith('/')) };
 }

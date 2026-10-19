@@ -215,6 +215,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     private mountReceipt;
     private assertExpectedRevision;
     /** The absolute path a descriptor was opened at. */
+    /** The name a descriptor's later lookups start from: a mounted description's own (HeldFile.name: as written past a `..` its backend walks), else its SQLite name. */
     descriptorPath(handleId: number): string;
     fstat(handleId: number): RuntimeVfsStat;
     dup(handleId: number): RuntimeFileHandle;

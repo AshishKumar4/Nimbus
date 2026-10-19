@@ -35,8 +35,8 @@ export interface BeneathReached {
 }
 /**
  * Where a walk began handing names over (`base`, absolute, and the rest as
- * written from there), as BeneathReached.spelling; `trailing`: the name the
- * walk was given ends in a separator.
+ * written from there), as BeneathReached.spelling, else `reached` (absolute);
+ * `trailing`: the name the walk was given ends in a separator.
  */
 export declare function handedSpelling(handoff: {
     base: string;
@@ -67,11 +67,14 @@ type BeneathAnswer = {
  * its lookups, which the synchronous bridge answers at once and a face over
  * asynchronous mounts awaits. `root` is normalized; the answer is the
  * resolved path, normalized, and the spelling to hand the namespace
- * (BeneathReached).
+ * (BeneathReached). `rootSpelling`: the root's own name for its lookups (a
+ * directory opened past a `..` a backend walks, HeldFile.name), which every
+ * lookup beneath it starts from until an absolute link leaves it; its
+ * confinement is the normalized `root`'s.
  */
 export declare function walkBeneath(root: string, path: RuntimeFsPath, follow: boolean, cred: {
     uid: number;
     gid: number;
     groups: readonly number[];
-}, handedOver: (path: string, to: string) => boolean): Generator<BeneathLookup, BeneathReached | null, BeneathAnswer>;
+}, handedOver: (path: string, to: string) => boolean, rootSpelling?: string): Generator<BeneathLookup, BeneathReached | null, BeneathAnswer>;
 //# sourceMappingURL=beneath-walk.d.ts.map

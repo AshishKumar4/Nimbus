@@ -841,8 +841,11 @@ export class SqliteRuntimeFsBridge {
         if (typeof path !== 'string' && path.beneath) {
             // The root is found by name, so every directory above it must grant
             // search (VFS-COMP-006) before anything is looked up beneath it.
-            const root = normalizeVfsPath('root' in path ? path.root : this.descriptors.path(path.directory));
-            const walk = walkBeneath(root, path, followSymlinks, this.vfs.cred, (name, to) => this.namespace?.resolvedByBackend(name, '/' + root, to) === true);
+            const spelled = 'root' in path ? path.root : this.descriptors.path(path.directory);
+            const root = normalizeVfsPath(spelled);
+            // A mounted directory's own name (as written past a `..` its backend walks) is where lookups beneath it start.
+            const rootSpelling = 'root' in path || !this.descriptors.mounted(path.directory) ? '/' + root : spelled;
+            const walk = walkBeneath(root, path, followSymlinks, this.vfs.cred, (name, to) => this.namespace?.resolvedByBackend(name, '/' + root, to) === true, rootSpelling);
             for (let step = walk.next();;) {
                 if (step.done)
                     return step.value;
@@ -870,10 +873,6 @@ export class SqliteRuntimeFsBridge {
             }
             const candidate = [...resolved, segment].join('/');
             const isFinal = pending.length === 0;
-            if (!followSymlinks && isFinal) {
-                resolved.push(segment);
-                continue;
-            }
             // On a mount, or a directory above one, the namespace answers whether
             // this component is a link (the SQLite rows it covers, links among
             // them, are never followed). The walk itself stays here, except on a
@@ -881,9 +880,10 @@ export class SqliteRuntimeFsBridge {
             if (this.namespace?.composes('/' + candidate)) {
                 const to = '/' + [...resolved, segment, ...pending].join('/');
                 const handed = this.namespace.resolvedByBackend('/' + candidate, '/', to);
+                // A last name not followed is handed over as written too (its final `/` kept: handedSpelling).
                 if (handed)
                     handoff ??= { base: '/' + resolved.join('/'), rest: [segment, ...pending] };
-                const link = handed ? null : this.mountedLink('/' + candidate);
+                const link = handed || (!followSymlinks && isFinal) ? null : this.mountedLink('/' + candidate);
                 if (link === null) {
                     resolved.push(segment);
                     continue;
@@ -922,7 +922,7 @@ export class SqliteRuntimeFsBridge {
             handoff = null;
         }
         const reached = resolved.join('/');
-        return { reached, spelling: handedSpelling(handoff, reached, spelled.endsWith('/')) };
+        return { reached, spelling: handedSpelling(handoff, '/' + reached, spelled.endsWith('/')) };
     }
     /**
      * A mounted (or composed) entry's link target, or null when it is not a
@@ -1076,7 +1076,11 @@ export class SqliteRuntimeFsBridge {
         }
     }
     /** The absolute path a descriptor was opened at. */
-    descriptorPath(handleId) { return '/' + normalizeVfsPath(this.descriptors.path(handleId)); }
+    /** The name a descriptor's later lookups start from: a mounted description's own (HeldFile.name: as written past a `..` its backend walks), else its SQLite name. */
+    descriptorPath(handleId) {
+        const path = this.descriptors.path(handleId);
+        return this.descriptors.mounted(handleId) ? path : '/' + normalizeVfsPath(path);
+    }
     fstat(handleId) { return syncValue(this.descriptors.fstat(handleId)); }
     dup(handleId) { return this.descriptors.dup(handleId); }
     seek(handleId, offset, whence) { return syncValue(this.descriptors.seek(handleId, offset, whence)); }

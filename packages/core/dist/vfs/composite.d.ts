@@ -739,8 +739,9 @@ export declare class CompositeVFS implements VFS {
      * another mount's (a mount nested in this one covers it): the backend
      * follows the link to its own file, which the namespace has no name for,
      * so a caller hands the link's own path to the namespace instead (whose
-     * backend follows it) or takes what it leads to as unknown. Any other
-     * link leads to its text. readlink answers the text, as written, so a
+     * backend follows it) or takes what it leads to as unknown. A relative
+     * link read at a spelling past a `..` (Resolution.spelling) leads to its
+     * text, from that spelling. Any other link leads to its text. readlink answers the text, as written, so a
      * copied link is the same link.
      */
     linkLeadsTo(path: string, link: string): string | null;
@@ -850,7 +851,8 @@ export declare class CompositeVFS implements VFS {
      * owns (a nested mount point, a directory above one), and a `..` from one,
      * move the cut past them, the position there rebased (`/m/n/../f`, n a
      * mount, is handed `/f`). None when a `..` climbs past the point (the path
-     * is the namespace's, lexically), or the rest lands on the point, on a name
+     * is the namespace's, lexically; at `/` it climbs nowhere, and the backend
+     * walks it), or the rest lands on the point, on a name
      * the namespace owns, or in another mount.
      */
     private forwardedTail;
@@ -895,9 +897,9 @@ export declare class CompositeVFS implements VFS {
     private identify;
     /**
      * What `r`'s synthetic inode number is kept under: its namespace path, or,
-     * where its operand has a `..` (the backend walks it physically, so it may
-     * reach another file than the lexical name), the operand as handed. Two
-     * files never share a number; one reached by two such spellings may get two.
+     * where its spelling is not that (Resolution.spelling: the backend may reach
+     * another file than the lexical name), the operand as handed. Two files
+     * never share a number; one reached by two such spellings may get two.
      */
     private identityOf;
     /** `identify`, on the mount `identity` was found on (a pin's, which may since have left its point). */
