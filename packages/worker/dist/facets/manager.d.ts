@@ -1551,6 +1551,8 @@ export declare class FacetManager {
      * URL('lightningcss_node.wasm', import.meta.url)), which as a map cell
      * left the closure no room under the map's bound.
      */
+    /** Says on the process's stderr where its stylesheet sources' walk stopped at its bound (planStylesheetSources), if it did. */
+    private _noteSourcesStopped;
     private _staticReadPlan;
     /**
      * Per credential: the manifest copies read at one install revision, as the

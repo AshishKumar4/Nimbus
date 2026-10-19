@@ -62,6 +62,8 @@ export interface DataPlan {
     }>;
     /** The stylesheet sources outside the working tree it planned (stylesheet-source), as absolute paths. */
     sourceRoots: string[];
+    /** Where the stylesheet-source walk stopped at its bound (planStylesheetSources' `stopped`), or null. */
+    sourcesStopped: string | null;
     /** The names the namespace listed, once however many walks the plan took: what a store holding it holds a row for. */
     names: number;
 }
@@ -103,8 +105,9 @@ export declare const STYLESHEET_SOURCE_MAX_FILES = 5000;
  * mount that walks only what is named must be named.
  *
  * It holds a file under the package-data bound (PACKAGE_DATA_MAX_BYTES), and
- * at most STYLESHEET_SOURCE_MAX_FILES of them: at that, `stopped` names the
- * root it was walking.
+ * at most STYLESHEET_SOURCE_MAX_FILES of them, whether a source names the
+ * file or a directory above it: at that, `stopped` names the root it was
+ * walking, for the launch to say so on the process's stderr.
  */
 export declare function planStylesheetSources(source: Pick<DataPlanSource, 'readText' | 'stat' | 'linkTarget' | 'readdir'>, input: {
     cwd: string;

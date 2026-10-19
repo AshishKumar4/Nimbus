@@ -50,7 +50,7 @@ import { prefetchForRequire, requireFsOverBridge, resolveDeferredImport, Closure
 import { typeScriptStripOptions } from '@nimbus-sh/core/runtime/node-cli.js';
 import { findStaticFsReferences } from '@nimbus-sh/core/runtime/static-fs-refs.js';
 import { fileCell, fileText, packageScopeType } from '@nimbus-sh/core/runtime/require-resolution.js';
-import { carriesOxide, isManifestKey, linkTargetOf, packageRootOf, planFacetData, planStylesheetSources } from './data-plan.js';
+import { carriesOxide, isManifestKey, linkTargetOf, packageRootOf, planFacetData, planStylesheetSources, STYLESHEET_SOURCE_MAX_FILES } from './data-plan.js';
 import { principalTag, profilePrincipal, ReadProfile, verifiedEvidence, } from './read-profile.js';
 /** What the shared read profile may add to one launch: an eighth of its module map's bytes. */
 const READ_PROFILE_LAUNCH_BYTES = Math.floor(VFS_BUNDLE_MAX_BYTES / 8);
@@ -5350,6 +5350,7 @@ export class FacetManager {
         // costed when the map was built (its cells are released once serialized).
         const moduleBytes = vfsState.moduleStorageBytes ?? moduleMapStorageBytes(vfsState.bundle, vfsState.codeOnly);
         const storageBytes = Math.ceil(plan.bytes * 1.01) + rows * LEDGER_ROW_BYTES + moduleBytes + 65_536;
+        this._noteSourcesStopped(entry, plan.sourcesStopped);
         return { paths: plan.paths, storageBytes, lazyReads, sourceRoots: plan.sourceRoots };
     }
     /**
@@ -5363,6 +5364,12 @@ export class FacetManager {
      * URL('lightningcss_node.wasm', import.meta.url)), which as a map cell
      * left the closure no room under the map's bound.
      */
+    /** Says on the process's stderr where its stylesheet sources' walk stopped at its bound (planStylesheetSources), if it did. */
+    _noteSourcesStopped(entry, stopped) {
+        if (stopped === null)
+            return;
+        this.processes.appendOutput(entry.pid, 'stderr', `[nimbus: Tailwind's stylesheet sources: held the first ${STYLESHEET_SOURCE_MAX_FILES} files under ${stopped}; the rest are held as the scanner reads them]\n`);
+    }
     async _staticReadPlan(entry, vfsState, cwd, home, pacer) {
         if (!this.filesystem)
             return [];
@@ -5403,6 +5410,7 @@ export class FacetManager {
             for (const file of found.files)
                 if (!held.has(file.path))
                     plan.add(file.path);
+            this._noteSourcesStopped(entry, found.stopped);
             // Where its listing walks mounts, as its launch's names are.
             this.filesystem.nameLaunch?.(entry, () => found.read);
         }
