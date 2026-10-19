@@ -26,6 +26,13 @@
   covers that name, which the namespace cannot name). `handsWF_beneath`: the
   restriction keeps the hand-off well formed.
 
+  `walkB`/`resolveB` retain this lexical proof projection. `walkBResolution` carries
+  the same path together with the shared design §3 operand. `resolveBResolution`
+  checks confinement lexically, then interprets that operand with `backendWalk`;
+  `resolveBDispatch` returns the spelling that reaches the same entry. Carrying an
+  operand cannot change the lexical result (`walkBResolution_path`), and backend
+  refusals only narrow successful namespace resolutions (`beneath_dispatch_lexical`).
+
   Proved:
   - `beneath_contained`: whatever `resolve(R, path)` resolves to lies at or under `R`,
     through any number of links, `..`, mounts and directories above them.
@@ -103,6 +110,130 @@ def resolveB (S : St) (c : Cred) (follow : Bool) (R : Path) (abs : Bool) (raw : 
     | .ok p => if R.isPrefixOf p then .ok p else .error "ENOTCAPABLE"
     | .error e => .error e
 
+/-- `walkB` with the same lexical cursor/confinement checks and a separate raw
+    backend operand. Capturing never suppresses a namespace-owned component or
+    lets a backend's physical parent replace the cursor used for `..` at `R`. -/
+def walkBResolution (S : St) (c : Cred) (follow : Bool) (R : Path) :
+    Nat → Nat → Path → List String → Capture → Except String Resolution
+  | 0, _, _, _, _ => .error "ELOOP"
+  | _ + 1, _, done, [], cap => .ok ⟨done, cap.operand⟩
+  | n + 1, h, done, x :: rs, cap =>
+    let cap := captureTail S done (x :: rs) cap
+    if handed S done x rs then
+      if x = "" ∨ x = "." then walkBResolution S c follow R n h done rs cap
+      else if x = ".." then
+        if done = R then .error "ENOTCAPABLE" else walkBResolution S c follow R n h done.dropLast rs cap
+      else walkBResolution S c follow R n h (done ++ [x]) rs cap
+    else if !grants c (metaAt S done) 1 then .error "EACCES"
+    else if x = "" ∨ x = "." then walkBResolution S c follow R n h done rs cap
+    else if x = ".." then
+      if done = R then .error "ENOTCAPABLE" else walkBResolution S c follow R n h done.dropLast rs cap
+    else
+      let q := done ++ [x]
+      match entAt S q with
+      | none => if rs = [] then .ok ⟨q, cap.operand⟩ else .error "ENOENT"
+      | some (.link a t, _) =>
+        if rs = [] ∧ follow = false then .ok ⟨q, cap.operand⟩
+        else if h = 0 then .error "ELOOP"
+        else match linkComps S q a t with
+          | none => .error "ENOTCAPABLE"
+          | some l => walkBResolution S c follow R n (h - 1)
+              (if (S.hands q || a) = true then [] else done) (l ++ rs) { cap with operand := none }
+      | some (.dir, _) => walkBResolution S c follow R n h q rs cap
+      | some (.file _, _) => if rs = [] then .ok ⟨q, cap.operand⟩ else .error "ENOTDIR"
+
+private theorem walkBResolution_path (S : St) (c : Cred) (f : Bool) (R : Path) :
+    ∀ n h done rs cap,
+      (walkBResolution S c f R n h done rs cap).map Resolution.path = walkB S c f R n h done rs := by
+  intro n
+  induction n with
+  | zero => intro _ _ _ _; rfl
+  | succ n ih =>
+    intro h done rs cap
+    cases rs with
+    | nil => rfl
+    | cons x rs =>
+      simp only [walkBResolution, walkB]
+      split
+      · split
+        · exact ih _ _ _ _
+        · split
+          · split
+            · rfl
+            · exact ih _ _ _ _
+          · exact ih _ _ _ _
+      · split
+        · rfl
+        · split
+          · exact ih _ _ _ _
+          · split
+            · split
+              · rfl
+              · exact ih _ _ _ _
+            · split
+              · split <;> rfl
+              · split
+                · rfl
+                · split
+                  · rfl
+                  · split
+                    · rfl
+                    · exact ih _ _ _ _
+              · exact ih _ _ _ _
+              · split <;> rfl
+
+/-- Confinement and ownership are checked on `r.path`, lexically, *before* the
+    backend interprets the operand in its own tree. Backend errors stand. The
+    returned spelling reopens that same entry, including a physical link parent. -/
+def resolveBResolution (S : St) (c : Cred) (follow : Bool) (R : Path) (abs : Bool)
+    (raw : List String) : Except String Resolution :=
+  if rootDenied S c R then .error "EACCES"
+  else if abs then .error "ENOTCAPABLE"
+  else match walkBResolution (beneathSt S R) c follow R fuel maxLinks R raw {} with
+    | .error e => .error e
+    | .ok r =>
+      if !R.isPrefixOf r.path then .error "ENOTCAPABLE"
+      else match r.operand with
+        | none => .ok r
+        | some o => match backendWalk (holder S r.path) c follow o.rel with
+          | .error e => .error e
+          | .ok _ => .ok r
+
+def resolveBDispatch (S : St) (c : Cred) (follow : Bool) (R : Path) (abs : Bool)
+    (raw : List String) : Except String Path :=
+  (resolveBResolution S c follow R abs raw).map Resolution.spelling
+
+/-- Backend interpretation cannot change or widen lexical confinement. -/
+private theorem beneath_dispatch_lexical {S : St} {c : Cred} {f : Bool} {R : Path} {abs : Bool}
+    {raw : List String} {r : Resolution} (h : resolveBResolution S c f R abs raw = .ok r) :
+    resolveB S c f R abs raw = .ok r.path := by
+  unfold resolveBResolution at h
+  unfold resolveB
+  split at h
+  · cases h
+  · rw [if_neg ‹_›]
+    split at h
+    · cases h
+    · rw [if_neg ‹_›]
+      split at h
+      · cases h
+      · rename_i r' hw
+        have hp := walkBResolution_path (beneathSt S R) c f R fuel maxLinks R raw {}
+        rw [hw] at hp
+        simp only [Except.map] at hp
+        rw [← hp]
+        simp only
+        split at h
+        · cases h
+        · rename_i hr
+          have hr : R.isPrefixOf r'.path = true := by simpa using hr
+          rw [if_pos hr]
+          split at h
+          · cases h; rfl
+          · split at h
+            · cases h
+            · cases h; rfl
+
 /-- What `resolveB` answers `.ok` for is what the walk reached, and it lies at or under `R`. -/
 theorem resolveB_ok {S : St} {c : Cred} {f : Bool} {R : Path} {abs : Bool} {raw : List String} {p : Path}
     (h : resolveB S c f R abs raw = .ok p) :
@@ -134,6 +265,10 @@ theorem prefix_dropLast {R d : Path} (h : R <+: d) (hne : d ≠ R) : R <+: d.dro
 theorem beneath_contained (S : St) (c : Cred) (f : Bool) (R : Path) (abs : Bool) (raw : List String) (p : Path)
     (h : resolveB S c f R abs raw = .ok p) : R <+: p :=
   (resolveB_ok h).2.2
+
+private theorem beneath_dispatch_contained {S : St} {c : Cred} {f : Bool} {R : Path} {abs : Bool}
+    {raw : List String} {r : Resolution} (h : resolveBResolution S c f R abs raw = .ok r) : R <+: r.path :=
+  beneath_contained S c f R abs raw r.path (beneath_dispatch_lexical h)
 
 /-! ## Handed over beneath a root -/
 
@@ -537,5 +672,19 @@ theorem beneath_hands_over :
     ans (resolveB (deviceTrace true) kernel true ["pc", "locked"] false ["l"]) = ("ENOTCAPABLE", []) ∧
     ans (resolveB (deviceTrace true) kernel true ["pc", "locked"] false ["inner", "x"]) = ("", ["pc", "locked", "inner", "x"]) := by
   decide
+
+/-- The namespace result and its confinement remain lexical, while the dispatch
+    preserves a physical parent and lets the backend's own refusals stand. -/
+private theorem beneath_dispatch_walks_the_operand :
+    resolveB operandTrace kernel true ["m"] false ["link", "..", "f"] = .ok ["m", "f"] ∧
+    resolveBDispatch operandTrace kernel true ["m"] false ["link", "..", "f"] = .ok ["m", "link", "..", "f"] ∧
+    resolveBDispatch operandTrace kernel true ["m"] false [".", "f"] = .ok ["m", "f"] ∧
+    resolveBDispatch operandTrace kernel true [] false ["m", "", "f"] = .ok ["m", "f"] ∧
+    resolveBDispatch operandTrace kernel true ["m"] false ["missing", "..", "f"] = .error "ENOENT" ∧
+    resolveBDispatch operandTrace kernel true ["m"] false ["f", ""] = .error "ENOTDIR" ∧
+    resolveBDispatch operandTrace kernel true ["m"] false ["f", "."] = .error "ENOTDIR" ∧
+    resolveBDispatch operandTrace kernel true ["m"] false ["link", "..", "..", "f"] = .error "ENOTCAPABLE" ∧
+    resolveBDispatch (deviceTrace true) u2 true [] false ["pc", "vault", "mine", "g"] = .error "EACCES" := by
+  exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
 
 end Nimbus.Vfs.CompositeBeneath

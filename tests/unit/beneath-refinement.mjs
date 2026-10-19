@@ -14,6 +14,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { sqliteFiles } from '../../packages/core/src/vfs/sqlite-files.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
+import { CompositeVFS } from '../../packages/core/src/vfs/composite.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { modelessBackend } from './lib/composite-backends.mjs';
@@ -128,7 +129,10 @@ for (const face of ['synchronous', 'awaiting']) for (const [index, testCase] of 
   files.vfs.unmount('/proc');
   files.vfs.unmount('/dev');
   for (const mount of testCase.mounts) {
-    files.vfs.mount(mount.point, face === 'synchronous' ? source(mount.backend) : asyncOnly(source(mount.backend), { deep: true }), { resolvesPaths: mount.resolvesPaths === true });
+    // A backend that resolves its own paths walks what it is handed as a kernel does (the model's backend-local walk).
+    const resolves = mount.resolvesPaths === true;
+    const mounted = resolves ? new CompositeVFS(source(mount.backend)) : source(mount.backend);
+    files.vfs.mount(mount.point, face === 'synchronous' ? mounted : asyncOnly(mounted, { deep: true }), { resolvesPaths: resolves });
   }
   const bind = (binding) => (face === 'synchronous' ? files.bind(binding).synchronous : files.bind(binding));
   const kernel = bind({ pid: 1, cred: CRED_KERNEL });

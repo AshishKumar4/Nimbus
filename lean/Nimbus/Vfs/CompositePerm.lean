@@ -23,10 +23,13 @@
   or a synthesized 0755 root:root where that backend holds nothing there or reports
   no modes; any other path is its holder's entry.
 
-  The resolved path, which has no links left but possibly the last component of an
-  operation that does not follow, then goes to the composite itself (a structural
-  directory: stat, readdir with read (r) permission, the rest refused) or to the
-  backend that holds it, at its relative path, which applies its own checks. A new
+  `resolveResolution` carries that namespace path and an optional raw `Operand`.
+  `scanTail`/`forwardedTail` implement design §3's lexical cursor and raw cut. A
+  resolving mount receives that operand, interpreted by `backendWalk`: `walk` in
+  the backend's own mountless namespace, with physical links and parents, before
+  `bOp`. No operand means the existing unflagged backend path and operation.
+  Structural directories still go to the composite itself (stat, readdir with
+  read (r) permission, the rest refused). A new
   entry in a setgid directory of a backend with modes takes the directory's group,
   and a new directory there is setgid too (N26).
 
@@ -36,7 +39,8 @@
     reaches only what it could name directly. `walk_named`: so with `hands` (a
     mount whose backend resolves its own paths, past its point and off the way to
     a mount nested in it), except where the walk handed the rest to that backend,
-    which looks up, searches and follows links there itself (`..` is lexical).
+    which looks up, searches and follows links there itself (the namespace cursor
+    is lexical; the backend's operand is not).
   - `never_widens` / `backend_refusal_stands`: the answer at a resolved path the
     composite does not make is the backend's own, and a backend refusal is never
     turned into a success. `resolved_frame`: that answer depends only on the backend
@@ -208,9 +212,9 @@ theorem acl_never_widens (c : Cred) (cm : Nat) (a : Dacl) (uid gid w : Nat) (hw 
 
 /-! ## A backend's own operations
 
-  The composite hands a backend a path with no link left (but the last component
-  of an operation that does not follow), so its own lookup is a walk from its root
-  that checks search on each directory, as SqliteVFS's `checkAccess` does. -/
+  `bLookup` and `bOp` operate on a physically resolved backend path. Unflagged
+  namespace walks already supply one; a resolving mount first runs its raw operand
+  through `backendWalk`, the same unflagged walker in the backend's own tree. -/
 
 def bLookup (b : Backend) (c : Cred) (r : Path) : Except String Unit :=
   (List.range r.length).foldl (fun acc i => match acc with
@@ -457,6 +461,72 @@ def linkComps (S : St) (q : Path) (a : Bool) (t : List String) : Option (List St
 def handed (S : St) (done : Path) (x : String) (rs : List String) : Bool :=
   handsTo S done (lex done (x :: rs)) || (x != "" && x != "." && x != ".." && handsTo S (done ++ [x]) (lex done (x :: rs)))
 
+/-- The backend's operand, kept separately from the namespace's lexical name.
+    Components retain empty names, dots and final separators: `rel = ["", "f"]`
+    denotes `//f`, not `/f`. -/
+structure Operand where
+  point : Path
+  rel : Path
+  deriving DecidableEq, Repr
+
+structure Resolution where
+  path : Path
+  operand : Option Operand := none
+  deriving DecidableEq, Repr
+
+/-- Dispatch always uses `operand.rel`. The public spelling needs its raw text
+    only when a physical `..` can name a different parent; harmless dots and
+    duplicate separators retain the existing canonical realpath result. -/
+def Resolution.spelling (r : Resolution) : Path :=
+  match r.operand with
+  | some o => if ".." ∈ o.rel then o.point ++ o.rel else r.path
+  | none => r.path
+
+/-- `hands` describes paths *past* a resolving point. A fresh empty component
+    probes that option without inventing a backend name, including at `/`. -/
+def resolvesAt (S : St) (point : Path) : Bool := S.hands (point ++ [""])
+
+structure TailScan where
+  operand : Option Operand := none
+  escaped : Bool := false
+  deriving DecidableEq, Repr
+
+/-- Design §3: `pos` is the lexical cursor; `cut` and `raw` remember the saved
+    position and untouched suffix. Only namespace-owned names and a `..` leaving
+    one move the cut. An escape past the point invalidates the whole operand. -/
+def scanTail (S : St) (point : Path) : Path → Path → List String → List String → TailScan
+  | pos, cut, raw, [] =>
+    if pos == point || structural S.mounts pos || (ownerOf S.mounts pos).point != point then {}
+    else ⟨some ⟨point, cut.drop point.length ++ raw⟩, false⟩
+  | pos, cut, raw, x :: rs =>
+    if x = "" ∨ x = "." then scanTail S point pos cut raw rs
+    else if x = ".." then
+      if pos == point || !point.isPrefixOf pos then ⟨none, true⟩
+      else if structural S.mounts pos then scanTail S point pos.dropLast pos.dropLast rs rs
+      else scanTail S point pos.dropLast cut raw rs
+    else
+      let q := pos ++ [x]
+      if structural S.mounts q then scanTail S point q q rs rs
+      else scanTail S point q cut raw rs
+
+def forwardedTail (S : St) (done : Path) (raw : List String) : TailScan :=
+  let point := (ownerOf S.mounts done).point
+  if resolvesAt S point && S.within.isPrefixOf point then scanTail S point done done raw raw else {}
+
+/-- Capturing does not change component ownership or the namespace walk. Once a
+    scan has found an operand, later backend-owned steps cannot shorten its raw
+    prefix. A namespace-followed link starts a new scan; escaped points remain
+    lexical even if the path subsequently enters them again. -/
+structure Capture where
+  operand : Option Operand := none
+  escaped : List Path := []
+
+def captureTail (S : St) (done : Path) (raw : List String) (cap : Capture) : Capture :=
+  if cap.operand.isSome || (ownerOf S.mounts done).point ∈ cap.escaped then cap
+  else
+    let scanned := forwardedTail S done raw
+    ⟨scanned.operand, if scanned.escaped then (ownerOf S.mounts done).point :: cap.escaped else cap.escaped⟩
+
 /-- Linux path walk in the caller's namespace; in a path its backend resolves,
     lexical (the backend answers for the rest). -/
 def walk (S : St) (c : Cred) (follow : Bool) : Nat → Nat → Path → List String → Except String Path
@@ -486,6 +556,109 @@ def walk (S : St) (c : Cred) (follow : Bool) : Nat → Nat → Path → List Str
 def resolve (S : St) (c : Cred) (follow : Bool) (raw : List String) : Except String Path :=
   walk S c follow fuel maxLinks [] raw
 
+/-- The same namespace walk with its dispatch operand carried alongside its
+    lexical result. In particular it still visits nested mounts, checks their
+    namespace-owned components and follows only namespace-owned links. -/
+def walkResolution (S : St) (c : Cred) (follow : Bool) :
+    Nat → Nat → Path → List String → Capture → Except String Resolution
+  | 0, _, _, _, _ => .error "ELOOP"
+  | _ + 1, _, done, [], cap => .ok ⟨done, cap.operand⟩
+  | n + 1, h, done, x :: rs, cap =>
+    let cap := captureTail S done (x :: rs) cap
+    if handed S done x rs then
+      if x = "" ∨ x = "." then walkResolution S c follow n h done rs cap
+      else if x = ".." then walkResolution S c follow n h done.dropLast rs cap
+      else walkResolution S c follow n h (done ++ [x]) rs cap
+    else if !grants c (metaAt S done) 1 then .error "EACCES"
+    else if x = "" ∨ x = "." then walkResolution S c follow n h done rs cap
+    else if x = ".." then walkResolution S c follow n h done.dropLast rs cap
+    else
+      let q := done ++ [x]
+      match entAt S q with
+      | none => if rs = [] then .ok ⟨q, cap.operand⟩ else .error "ENOENT"
+      | some (.link a t, _) =>
+        if rs = [] ∧ follow = false then .ok ⟨q, cap.operand⟩
+        else if h = 0 then .error "ELOOP"
+        else match linkComps S q a t with
+          | none => .error "ENOTCAPABLE"
+          | some l => walkResolution S c follow n (h - 1)
+              (if (S.hands q || a) = true then [] else done) (l ++ rs) { cap with operand := none }
+      | some (.dir, _) => walkResolution S c follow n h q rs cap
+      | some (.file _, _) => if rs = [] then .ok ⟨q, cap.operand⟩ else .error "ENOTDIR"
+
+def resolveResolution (S : St) (c : Cred) (follow : Bool) (raw : List String) : Except String Resolution :=
+  walkResolution S c follow fuel maxLinks [] raw {}
+
+/-- Carrying the operand changes neither lexical ownership nor the namespace's
+    answer, including its refusal order. -/
+private theorem walkResolution_path (S : St) (c : Cred) (f : Bool) :
+    ∀ n h done rs cap,
+      (walkResolution S c f n h done rs cap).map Resolution.path = walk S c f n h done rs := by
+  intro n
+  induction n with
+  | zero => intro _ _ _ _; rfl
+  | succ n ih =>
+    intro h done rs cap
+    cases rs with
+    | nil => rfl
+    | cons x rs =>
+      simp only [walkResolution, walk]
+      split
+      · split
+        · exact ih _ _ _ _
+        · split <;> exact ih _ _ _ _
+      · split
+        · rfl
+        · split
+          · exact ih _ _ _ _
+          · split
+            · exact ih _ _ _ _
+            · split
+              · split <;> rfl
+              · split
+                · rfl
+                · split
+                  · rfl
+                  · split
+                    · rfl
+                    · exact ih _ _ _ _
+              · exact ih _ _ _ _
+              · split <;> rfl
+
+private theorem resolveResolution_path (S : St) (c : Cred) (f : Bool) (raw : List String) :
+    (resolveResolution S c f raw).map Resolution.path = resolve S c f raw :=
+  walkResolution_path S c f fuel maxLinks [] raw {}
+
+/-- A backend is its own mountless namespace. Its native permissions do not
+    depend on whether it reports modes to the composite. -/
+def backendNamespace (b : Backend) : St :=
+  { mounts := [], bks := fun _ => { b with reports := true } }
+
+/-- Physical backend-local interpretation: links use the backend root, `..`
+    pops the directory actually reached, and a remaining slash or dot requires
+    a directory. The unflagged walker also supplies final-follow/create rules. -/
+def backendWalk (b : Backend) (c : Cred) (follow : Bool) (raw : Path) : Except String Path :=
+  walk (backendNamespace b) (if b.enforces then c else ⟨0, 0, [0]⟩) follow fuel maxLinks [] raw
+
+def backendOp (b : Backend) (c : Cred) (op : Op) (raw : Path) : Out × Option Backend :=
+  match backendWalk b c op.follow raw with
+  | .error e => (if op = .stat ∧ e = "ENOENT" then .null else .err e, none)
+  | .ok p => bOp b c op p
+
+/-- Unhanded paths keep the old `bOp` exactly. An operand is accepted only by
+    the mount whose point anchors it. -/
+def backendAnswer (S : St) (c : Cred) (op : Op) (p : Path) (operand : Option Operand) : Out × Option Backend :=
+  match operand with
+  | some o => if o.point == (ownerOf S.mounts p).point then backendOp (holder S p) c op o.rel
+      else bOp (holder S p) c op (rel S.mounts p)
+  | none => bOp (holder S p) c op (rel S.mounts p)
+
+def backendPath (S : St) (c : Cred) (follow : Bool) (r : Resolution) : Except String Path :=
+  match r.operand with
+  | some o => if o.point == (ownerOf S.mounts r.path).point then backendWalk (holder S r.path) c follow o.rel
+      else .ok (rel S.mounts r.path)
+  | none => .ok (rel S.mounts r.path)
+
 def structOp (S : St) (c : Cred) (op : Op) (p : Path) : Out :=
   match op with
   | .stat => .stat "directory" (some (descMeta S p))
@@ -502,9 +675,9 @@ def structOp (S : St) (c : Cred) (op : Op) (p : Path) : Out :=
   | .mkdir => .err "EBUSY"
   | .unlink => if p ≠ [] ∧ !grants c (descMeta S p.dropLast) 2 then .err "EACCES" else .err "EISDIR"
 
-def backendStep (S : St) (c : Cred) (op : Op) (p : Path) : Out × St :=
+def backendStep (S : St) (c : Cred) (op : Op) (p : Path) (operand : Option Operand := none) : Out × St :=
   let k := (ownerOf S.mounts p).bk
-  match bOp (S.bks k) c op (rel S.mounts p) with
+  match backendAnswer S c op p operand with
   | (o, some b) => (o, { S with bks := fun j => if j = k then b else S.bks j })
   | (o, none) => (o, S)
 
@@ -514,27 +687,31 @@ def underShadow (S : St) (p : Path) : Bool :=
   p != [] && structural S.mounts p.dropLast && !(look (holder S p.dropLast) (rel S.mounts p.dropLast)).any (·.k == .dir)
 
 def cOp (S : St) (c : Cred) (op : Op) (raw : List String) : Out × St :=
-  match resolve S c op.follow raw with
+  match resolveResolution S c op.follow raw with
   | .error e => (if op = .stat ∧ e = "ENOENT" then .null else .err e, S)
-  | .ok p =>
-    if structural S.mounts p then (structOp S c op p, S)
-    else if underShadow S p then (if op = .stat then .null else .err "ENOENT", S)
-    else backendStep S c op p
+  | .ok r =>
+    if structural S.mounts r.path then (structOp S c op r.path, S)
+    else if underShadow S r.path then (if op = .stat then .null else .err "ENOENT", S)
+    else backendStep S c op r.path r.operand
 
 /-- rename(2) through the composite: neither side followed; a structural path is
     EBUSY; across backends EXDEV; else the holder's own rename. -/
 def cRename (S : St) (c : Cred) (a b : List String) : Out × St :=
-  match resolve S c false a, resolve S c false b with
+  match resolveResolution S c false a, resolveResolution S c false b with
   | .error e, _ => (.err e, S)
   | _, .error e => (.err e, S)
   | .ok p, .ok q =>
-    if structural S.mounts p || structural S.mounts q then (.err "EBUSY", S)
-    else if ownerOf S.mounts p ≠ ownerOf S.mounts q then (.err "EXDEV", S)
+    if structural S.mounts p.path || structural S.mounts q.path then (.err "EBUSY", S)
+    else if ownerOf S.mounts p.path ≠ ownerOf S.mounts q.path then (.err "EXDEV", S)
     else
-      let k := (ownerOf S.mounts p).bk
-      match bRename (S.bks k) c (rel S.mounts p) (rel S.mounts q) with
-      | (o, some b) => (o, { S with bks := fun j => if j = k then b else S.bks j })
-      | (o, none) => (o, S)
+      let k := (ownerOf S.mounts p.path).bk
+      match backendPath S c false p, backendPath S c false q with
+      | .error e, _ => (.err e, S)
+      | _, .error e => (.err e, S)
+      | .ok ra, .ok rb =>
+        match bRename (S.bks k) c ra rb with
+        | (o, some b) => (o, { S with bks := fun j => if j = k then b else S.bks j })
+        | (o, none) => (o, S)
 
 /-! ## Links reach only what the caller could name -/
 
@@ -619,7 +796,8 @@ theorem namedH_parent {S : St} {c : Cred} {d : Path} (hw : HandsWF S) (hn : Name
       · exact .inr (by rw [← hdl]; exact h')
     · exact .inr h.1
 
-/-- What `handed` says, without where the lookup goes. -/
+/-- Component ownership, without where the lookup goes. Capturing an operand
+    does not change this decision (`walkResolution_path`). -/
 theorem handed_hands {S : St} {done : Path} {x : String} {rs : List String} (h : handed S done x rs = true) :
     handsIn S done = true ∨ ((x = "" → False) ∧ (x = "." → False) ∧ (x = ".." → False) ∧ handsIn S (done ++ [x]) = true) := by
   unfold handed handsTo at h
@@ -629,7 +807,7 @@ theorem handed_hands {S : St} {done : Path} {x : String} {rs : List String} (h :
   · exact .inr ⟨h.1.1.1, h.1.1.2, h.1.2, h.2.1⟩
 
 /-- A walk not handed over at a path past a flagged point is at a directory above a
-    nested mount. -/
+    nested mount. This remains lexical even when a raw operand is captured. -/
 theorem unhanded_dir {S : St} {done : Path} {x : String} {rs : List String} (h : handed S done x rs = false)
     (hd : handsIn S done = true ∨ IsDir S done) : IsDir S done := by
   rcases hd with hd | hd
@@ -713,50 +891,51 @@ theorem resolve_named (S : St) (c : Cred) (f : Bool) (hS : ∀ q, S.hands q = fa
 /-! ## Never wider than the backend -/
 
 theorem never_widens (S : St) (c : Cred) (op : Op) (raw : List String) :
-    (∃ e, resolve S c op.follow raw = .error e ∧ (cOp S c op raw).2 = S) ∨
-      (∃ p, resolve S c op.follow raw = .ok p ∧ structural S.mounts p = true ∧ cOp S c op raw = (structOp S c op p, S)) ∨
-      (∃ p, resolve S c op.follow raw = .ok p ∧ underShadow S p = true ∧ (cOp S c op raw).2 = S ∧
+    (∃ e, resolveResolution S c op.follow raw = .error e ∧ (cOp S c op raw).2 = S) ∨
+      (∃ r, resolveResolution S c op.follow raw = .ok r ∧ structural S.mounts r.path = true ∧ cOp S c op raw = (structOp S c op r.path, S)) ∨
+      (∃ r, resolveResolution S c op.follow raw = .ok r ∧ underShadow S r.path = true ∧ (cOp S c op raw).2 = S ∧
         ((cOp S c op raw).1 = .null ∨ (cOp S c op raw).1 = .err "ENOENT")) ∨
-      (∃ p, resolve S c op.follow raw = .ok p ∧ structural S.mounts p = false ∧ underShadow S p = false ∧
-        cOp S c op raw = backendStep S c op p) := by
+      (∃ r, resolveResolution S c op.follow raw = .ok r ∧ structural S.mounts r.path = false ∧ underShadow S r.path = false ∧
+        cOp S c op raw = backendStep S c op r.path r.operand) := by
   unfold cOp
-  cases h : resolve S c op.follow raw with
+  cases h : resolveResolution S c op.follow raw with
   | error e => exact Or.inl ⟨e, rfl, rfl⟩
-  | ok p =>
-    cases hs : structural S.mounts p
-    · cases hu : underShadow S p
-      · exact Or.inr (Or.inr (Or.inr ⟨p, rfl, hs, hu, by simp [hs, hu]⟩))
-      · refine Or.inr (Or.inr (Or.inl ⟨p, rfl, hu, by simp [hs, hu], ?_⟩))
+  | ok r =>
+    cases hs : structural S.mounts r.path
+    · cases hu : underShadow S r.path
+      · exact Or.inr (Or.inr (Or.inr ⟨r, rfl, hs, hu, by simp [hs, hu]⟩))
+      · refine Or.inr (Or.inr (Or.inl ⟨r, rfl, hu, by simp [hs, hu], ?_⟩))
         simp only [hs, hu, Bool.false_eq_true, if_false, if_true]
         split <;> simp
-    · exact Or.inr (Or.inl ⟨p, rfl, hs, by simp [hs]⟩)
+    · exact Or.inr (Or.inl ⟨r, rfl, hs, by simp [hs]⟩)
 
 /-- A backend's refusal stands: where it refuses, the composite answers an error. -/
-theorem backend_refusal_stands (S : St) (c : Cred) (op : Op) (raw : List String) (p : Path)
-    (hr : resolve S c op.follow raw = .ok p) (hs : structural S.mounts p = false) (hu : underShadow S p = false)
-    {e : String} (hb : (bOp (holder S p) c op (rel S.mounts p)).1 = .err e) : (cOp S c op raw).1 = .err e := by
+theorem backend_refusal_stands (S : St) (c : Cred) (op : Op) (raw : List String) (r : Resolution)
+    (hr : resolveResolution S c op.follow raw = .ok r) (hs : structural S.mounts r.path = false) (hu : underShadow S r.path = false)
+    {e : String} (hb : (backendAnswer S c op r.path r.operand).1 = .err e) : (cOp S c op raw).1 = .err e := by
   unfold cOp
   simp only [hr, hs, hu, Bool.false_eq_true, if_false, backendStep]
-  unfold holder at hb
   revert hb
-  cases bOp (S.bks (ownerOf S.mounts p).bk) c op (rel S.mounts p) with
+  cases backendAnswer S c op r.path r.operand with
   | mk o t => intro hb; cases t <;> simpa using hb
 
 /-- Once resolved, the answer depends only on the backend that holds the path. -/
-theorem resolved_frame (S S' : St) (c : Cred) (op : Op) (p : Path) (hm : S'.mounts = S.mounts)
+theorem resolved_frame (S S' : St) (c : Cred) (op : Op) (p : Path) (operand : Option Operand) (hm : S'.mounts = S.mounts)
     (hb : S'.bks (ownerOf S.mounts p).bk = S.bks (ownerOf S.mounts p).bk) :
-    (backendStep S c op p).1 = (backendStep S' c op p).1 := by
+    (backendStep S c op p operand).1 = (backendStep S' c op p operand).1 := by
+  have ha : backendAnswer S' c op p operand = backendAnswer S c op p operand := by
+    simp only [backendAnswer, holder, hm, hb, rel]
   unfold backendStep
-  simp only [hm, hb]
-  cases bOp (S.bks (ownerOf S.mounts p).bk) c op (rel S.mounts p) with
+  rw [ha]
+  cases backendAnswer S c op p operand with
   | mk o t => cases t <;> rfl
 
 /-- A mutation changes only the backend the resolved path is handed to. -/
-theorem step_frame (S : St) (c : Cred) (op : Op) (p : Path) :
-    (backendStep S c op p).2.mounts = S.mounts ∧
-      ∀ j, j ≠ (ownerOf S.mounts p).bk → (backendStep S c op p).2.bks j = S.bks j := by
+theorem step_frame (S : St) (c : Cred) (op : Op) (p : Path) (operand : Option Operand) :
+    (backendStep S c op p operand).2.mounts = S.mounts ∧
+      ∀ j, j ≠ (ownerOf S.mounts p).bk → (backendStep S c op p operand).2.bks j = S.bks j := by
   unfold backendStep
-  rcases h : bOp (S.bks (ownerOf S.mounts p).bk) c op (rel S.mounts p) with ⟨o, _ | b⟩
+  rcases h : backendAnswer S c op p operand with ⟨o, _ | b⟩
   · simp [h]
   · refine ⟨by simp [h], fun j hj => by simp [h, hj]⟩
 
@@ -890,6 +1069,97 @@ theorem a_default_acl_masks_and_is_inherited :
       (cOp S3 c .stat ["a", "d", "g"]).1 = .stat "file" (some ⟨0o640, 1, 10⟩) ∧
       daclAt (S3.bks 0) ["a", "d"] = some ⟨7, 5, 0⟩ ∧
       (cOp S4 c .stat ["f"]).1 = .stat "file" (some ⟨0o640, 1, 10⟩) := by
+  decide
+
+/-! ## Resolving mount operands (design §3) -/
+
+def operandBackend : Backend := sqlite
+  [(["f"], ⟨.file 1, ⟨0o644, 0, 0⟩⟩),
+   (["dir"], ⟨.dir, synthMeta⟩),
+   (["a"], ⟨.dir, synthMeta⟩), (["a", "b"], ⟨.dir, synthMeta⟩),
+   (["a", "f"], ⟨.file 2, ⟨0o644, 0, 0⟩⟩),
+   (["a", "x"], ⟨.dir, synthMeta⟩), (["a", "x", "f"], ⟨.file 3, ⟨0o644, 0, 0⟩⟩),
+   (["link"], ⟨.link true ["a", "b"], ⟨0o777, 0, 0⟩⟩),
+   (["toF"], ⟨.link true ["f"], ⟨0o777, 0, 0⟩⟩),
+   (["loop"], ⟨.link true ["loop"], ⟨0o777, 0, 0⟩⟩),
+   (["x"], ⟨.file 99, ⟨0o644, 0, 0⟩⟩)]
+
+def operandMounts : List Mnt := [⟨["m"], 1⟩, ⟨["m", "n"], 2⟩, ⟨["m", "a", "n"], 3⟩]
+
+def operandTrace (nestedResolves : Bool := false) : St :=
+  { mounts := operandMounts,
+    bks := fun k => if k = 0 then sqlite [(["x"], ⟨.file 99, ⟨0o644, 0, 0⟩⟩)]
+      else if k = 1 then operandBackend
+      else sqlite [(["f"], ⟨.file (if k = 2 then 4 else 5), ⟨0o644, 0, 0⟩⟩)],
+    hands := fun q =>
+      ((ownerOf operandMounts q).point == ["m"] && decide (1 < q.length)) ||
+      (nestedResolves && (ownerOf operandMounts q).point == ["m", "n"] && decide (2 < q.length)) }
+
+def rootOperandMounts : List Mnt := [⟨["n"], 1⟩, ⟨["a", "n"], 2⟩]
+
+def rootOperandTrace : St :=
+  { mounts := rootOperandMounts,
+    bks := fun k => if k = 0 then operandBackend else sqlite [(["f"], ⟨.file 4, ⟨0o644, 0, 0⟩⟩)],
+    hands := fun q => (ownerOf rootOperandMounts q).point == [] && !q.isEmpty }
+
+/-- Exact operands, not merely equal lexical destinations. -/
+private theorem the_forwarded_operands :
+    let S := operandTrace
+    let tail := fun raw => (forwardedTail S ["m"] raw).operand
+    tail ["missing", "..", "f"] = some ⟨["m"], ["missing", "..", "f"]⟩ ∧
+    tail [".", "f"] = some ⟨["m"], [".", "f"]⟩ ∧
+    tail ["", "f"] = some ⟨["m"], ["", "f"]⟩ ∧
+    tail ["f", ""] = some ⟨["m"], ["f", ""]⟩ ∧
+    tail ["f", "."] = some ⟨["m"], ["f", "."]⟩ ∧
+    tail ["n", "..", "f"] = some ⟨["m"], ["f"]⟩ ∧
+    tail ["n", "..", "missing", "..", "f"] = some ⟨["m"], ["missing", "..", "f"]⟩ ∧
+    tail ["a", "x", "missing", "..", "f"] = some ⟨["m"], ["a", "x", "missing", "..", "f"]⟩ ∧
+    tail ["n", "..", "..", "x"] = none ∧
+    tail ["dir", ".."] = none ∧
+    tail ["x", "..", "n", "f"] = none ∧
+    (forwardedTail rootOperandTrace [] ["", "f"]).operand = some ⟨[], ["", "f"]⟩ := by
+  decide
+
+/-- The resolution carries the scan unchanged through lexical cursor steps;
+    these assertions also cover the implicit root and the deepest resolving mount. -/
+private theorem the_resolution_keeps_its_operand :
+    (resolveResolution operandTrace kernel true ["m", ".", "f"]).map Resolution.operand =
+      .ok (some ⟨["m"], [".", "f"]⟩) ∧
+    (resolveResolution operandTrace kernel true ["m", "", "f"]).map Resolution.operand =
+      .ok (some ⟨["m"], ["", "f"]⟩) ∧
+    (resolveResolution operandTrace kernel true ["m", "f", ""]).map Resolution.operand =
+      .ok (some ⟨["m"], ["f", ""]⟩) ∧
+    (resolveResolution operandTrace kernel true ["m", "n", "..", "missing", "..", "f"]).map Resolution.operand =
+      .ok (some ⟨["m"], ["missing", "..", "f"]⟩) ∧
+    (resolveResolution (operandTrace true) kernel true ["m", "missing", "..", "n", "f"]).map Resolution.operand =
+      .ok (some ⟨["m", "n"], ["f"]⟩) ∧
+    (resolveResolution rootOperandTrace kernel true ["", "f"]).map Resolution.operand =
+      .ok (some ⟨[], ["", "f"]⟩) ∧
+    (resolveResolution operandTrace kernel true ["m", "..", "m", "missing", "..", "f"]).map Resolution.operand =
+      .ok none := by
+  exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
+
+/-- Namespace ownership stays lexical, while the operand's backend-local walk
+    observes missing/non-directory components and the physical parent of a link. -/
+private theorem resolving_backends_walk_physically :
+    (cOp operandTrace kernel .readFile ["m", "missing", "..", "f"]).1 = .err "ENOENT" ∧
+    (cOp operandTrace kernel .readFile ["m", "f", ""]).1 = .err "ENOTDIR" ∧
+    (cOp operandTrace kernel .readFile ["m", "f", "."]).1 = .err "ENOTDIR" ∧
+    (cOp operandTrace kernel .readFile ["m", "link", "..", "f"]).1 = .bytes 2 ∧
+    (cOp operandTrace kernel .readFile ["m", "n", "..", "f"]).1 = .bytes 1 ∧
+    (cOp operandTrace kernel .readFile ["m", "n", "..", "missing", "..", "f"]).1 = .err "ENOENT" ∧
+    (cOp operandTrace kernel .readFile ["m", "missing", "..", "n", "f"]).1 = .bytes 4 ∧
+    (cOp operandTrace kernel .readFile ["m", "n", "..", "..", "x"]).1 = .bytes 99 ∧
+    (cOp rootOperandTrace kernel .readFile ["link", "..", "f"]).1 = .bytes 2 ∧
+    (cOp rootOperandTrace kernel .readFile ["missing", "..", "f"]).1 = .err "ENOENT" := by
+  decide
+
+private theorem resolving_creation_keeps_the_physical_parent :
+    let S := (cOp operandTrace kernel (.writeFile 7) ["m", "link", "new"]).2
+    let T := (cOp S kernel (.writeFile 8) ["m", "link", "..", "made"]).2
+    (cOp S kernel .readFile ["m", "a", "b", "new"]).1 = .bytes 7 ∧
+    (cOp T kernel .readFile ["m", "a", "made"]).1 = .bytes 8 ∧
+    look (T.bks 1) ["new"] = none ∧ look (T.bks 1) ["made"] = none := by
   decide
 
 end Nimbus.Vfs.CompositePerm
