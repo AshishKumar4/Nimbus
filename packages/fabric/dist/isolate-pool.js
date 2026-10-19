@@ -42,6 +42,7 @@ import { BindingError, ExecutionError, RetryExhaustedError, TimeoutError, } from
 import { SupervisorLoadWaitError, acquireSupervisorLoad, reclaimableSupervisorAllocation, tryAcquireSupervisorLoad, } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { memberBuffer } from '@nimbus-sh/platform/worker-code.js';
 import { hostWasmIdentity } from './host-wasm.js';
+import { TASK_BODY_ERROR_SOURCE } from './task-body-error.js';
 /** Result ownership shared by guest tasks that call the supervisor. */
 const FACET_RPC_PREAMBLE = [
     'const __nimbusDisposeRpcResult = (value) => {',
@@ -87,7 +88,7 @@ export function assembleLoaderWorkerModuleSource(options) {
     const requestCallExpr = options.hasBindings
         ? '__fn__(request, this.env)'
         : '__fn__(request)';
-    lines.push('export default class extends WorkerEntrypoint {', '  execute(...args) {', `    return ${callExpr};`, '  }', '', '  // Request/Response transport: the ONE dispatch path whose abort is', '  // real. workerd cancels the inner execution context when the request', '  // signal aborts while the fn is suspended on I/O; RPC execute() above', '  // has no equivalent (measured: Symbol.dispose on a pending RPC does', '  // not cancel). The fn is request-shaped — it encodes and decodes its', '  // own payload; nothing generic is serialized here.', '  async fetch(request) {', '    try {', `      const result = await ${requestCallExpr};`, '      if (result instanceof Response) return result;', '      return Response.json(result ?? null);', '    } catch (err) {', '      // Fail loud inside the response so an abort of the transport is', '      // not conflated with a guest exception: the caller sees 500 only', '      // for a real fn failure, and aborts arrive as fetch rejections.', '      const message = err instanceof Error && err.message ? err.message : String(err);', '      return Response.json({ __nimbusFacetError: message }, { status: 500 });', '    }', '  }', '}');
+    lines.push(TASK_BODY_ERROR_SOURCE, 'export default class extends WorkerEntrypoint {', '  execute(...args) {', `    return ${callExpr};`, '  }', '', '  // Request/Response transport: the ONE dispatch path whose abort is', '  // real. workerd cancels the inner execution context when the request', '  // signal aborts while the fn is suspended on I/O; RPC execute() above', '  // has no equivalent (measured: Symbol.dispose on a pending RPC does', '  // not cancel). The fn is request-shaped — it encodes and decodes its', '  // own payload; nothing generic is serialized here.', '  async fetch(request) {', '    try {', `      const result = await ${requestCallExpr};`, '      if (result instanceof Response) return result;', '      return Response.json(result ?? null);', '    } catch (err) {', '      // Fail loud inside the response so an abort of the transport is', '      // not conflated with a guest exception: the caller sees 500 only', '      // for a real fn failure, and aborts arrive as fetch rejections.', '      const failure = __nimbusTaskBodyError(err, request);', '      const message = failure instanceof Error && failure.message ? failure.message : String(failure);', '      return Response.json({ __nimbusFacetError: message }, { status: 500 });', '    }', '  }', '}');
     return lines.join('\n');
 }
 /**
