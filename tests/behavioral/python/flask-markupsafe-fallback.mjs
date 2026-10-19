@@ -3,7 +3,7 @@
 // MarkupSafe ships an optional Pyodide extension module that Workers cannot
 // dynamically instantiate at request time.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi } from '../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, hasOutputLine } from '../_driver.mjs';
 import { installPython, pipInstall } from './_setup.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -27,7 +27,7 @@ await pipInstall(t, a, 'flask', { timeoutMs: 240_000 });
   );
   const stripped = stripAnsi(output);
   a.check('Flask and MarkupSafe import after install',
-    /FLASK_OK/.test(stripped) && /&lt;nimbus&gt;/.test(stripped),
+    hasOutputLine(stripped, 'FLASK_OK') && /&lt;nimbus&gt;/.test(stripped),
     JSON.stringify(stripped.slice(-1500)));
   a.check('import path does not attempt runtime wasm generation',
     !/Wasm code generation disallowed|Failed to load dynamic library/i.test(stripped),

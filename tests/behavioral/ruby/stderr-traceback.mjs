@@ -2,7 +2,7 @@
 // ruby/stderr-traceback — uncaught exceptions surface via stderr with
 // a traceback; shell $? is non-zero.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi } from '../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, termBody } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('ruby/stderr-traceback');
@@ -16,7 +16,7 @@ await t.run('nimbus install ruby', 180_000);
 
 {
   const { output } = await t.run(`ruby -e 'raise "boom"'`, 60_000);
-  const stripped = stripAnsi(output);
+  const stripped = termBody(output);
   const hasErrorMarker = /RuntimeError|boom/.test(stripped);
   a.check('ruby -e \'raise "boom"\' surfaces RuntimeError on stderr',
     hasErrorMarker, JSON.stringify(stripped.slice(-400)));

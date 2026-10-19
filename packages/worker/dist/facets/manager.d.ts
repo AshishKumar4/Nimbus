@@ -1030,6 +1030,10 @@ export interface ResidentSpawnOptions {
     resume?: StoppedRunNext;
     /** Its stdin, given whole (exec's `stdin`): a promoted one-shot's, given again. */
     stdin?: string;
+    /** Its `< file`, read from the start: a promoted one-shot's, run again from its start unretraced (_promote). */
+    stdinFile?: NonNullable<ExecLaunchOpts['stdinFile']>;
+    /** The run its output is tagged with, past one that stopped: a promoted one-shot's, run again from its start unretraced. */
+    run?: number;
     /**
      * Its launcher writes its stdin and ends it, and does not wait for the
      * boot (RuntimeRunOpts.stdinWriter): the boot may stop at a synchronous
@@ -1807,10 +1811,11 @@ export declare class FacetManager {
     };
     /**
      * A one-shot that stopped at its first listen (stop-replay.ts listen) runs
-     * on as a resident, the same process: the resident replays the run up to
-     * that listen, checked against it, then listens and serves. What the
-     * one-shot printed is shown once; the resident prints it again only to be
-     * checked (the prefix).
+     * on as a resident, the same process: the resident starts from what the
+     * run started from (what the run changed put back, SqliteVFS.restoreRun),
+     * replays the run's draws and output up to that listen, then listens and
+     * serves. What the one-shot printed is shown once; the resident prints it
+     * again only to be checked (the prefix).
      */
     /**
      * A file's identity as the process sees it: which file, and its version;

@@ -254,10 +254,46 @@ export async function exchangeAttachCookie(page, sid) {
   }
 }
 
+/** `url` with no credentials, query or fragment: an http(s) URL's origin and path, any other only its scheme. */
+function shownUrl(url) {
+  if (!URL.canParse(url)) return '(not a URL)';
+  const at = new URL(url);
+  return at.protocol === 'http:' || at.protocol === 'https:' ? `${at.origin}${at.pathname}` : `${at.protocol}…`;
+}
+
+/**
+ * Print every navigation of `page`'s top document that a page starts (a
+ * script, a meta or header refresh, a frame, cross-site ones and theirs
+ * included, navigating the top), with why and when: a probe's own goto
+ * starts none. Evidence for a probe that finds its page replaced; it never
+ * fails one.
+ */
+async function reportPageNavigations(page) {
+  const since = performance.now();
+  const cdp = await page.createCDPSession();
+  const top = (await cdp.send('Page.getFrameTree')).frameTree.frame.id;
+  const report = ({ frameId, reason, url, disposition }) => {
+    if (frameId !== top) return;
+    console.log(`  [page] the page navigated itself (${reason}, ${disposition}) to ${shownUrl(url)} at +${Math.round(performance.now() - since)} ms`);
+  };
+  // A cross-site frame runs in a process of its own: its requests are its own target's, and so are its frames'.
+  const watch = async (session) => {
+    session.on('Page.frameRequestedNavigation', report);
+    session.on('Target.attachedToTarget', ({ sessionId }) => {
+      const frame = session.connection()?.session(sessionId);
+      if (frame) watch(frame).catch(() => {});
+    });
+    await session.send('Page.enable');
+    await session.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: false, flatten: true, filter: [{ type: 'iframe', exclude: false }, { exclude: true }] });
+  };
+  await watch(cdp);
+}
+
 export async function openPage(browser, sid, opts = {}) {
   const page = await browser.newPage();
   await applyProbeCookies(page, BASE, sid);
   await exchangeAttachCookie(page, sid);
+  await reportPageNavigations(page);
   const consoleMessages = [];
   const pageErrors = [];
 

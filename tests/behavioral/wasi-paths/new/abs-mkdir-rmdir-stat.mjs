@@ -8,7 +8,7 @@
 //   2. stat reports it as a directory.
 //   3. rmdir removes it (existsSync returns false post-rmdir).
 
-import { mintSession, Terminal, makeAsserter, heredocCommand, stripAnsi } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, heredocCommand, stripAnsi, hasOutputLine } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('wasi-paths/new/abs-mkdir-rmdir-stat');
@@ -48,13 +48,13 @@ a.check('exit code 0', rr.exitCode === 0, JSON.stringify(out.slice(-200)));
 
 // Phase 2: post-run, dir should be absent (it was removed).
 const rExists = await t.run(`node -e "console.log(require('fs').existsSync('/home/user/new-dir') ? 'EXISTS' : 'ABSENT')"`, 15_000);
-const absent = /ABSENT/.test(stripAnsi(rExists.output));
+const absent = hasOutputLine(rExists.output, 'ABSENT');
 a.check('/home/user/new-dir ABSENT after rmdir', absent,
   absent ? '' : JSON.stringify(stripAnsi(rExists.output).slice(-200)));
 
 // Phase 3: the double-prefix path should never have existed.
 const rBuggy = await t.run(`node -e "console.log(require('fs').existsSync('/home/user/home/user/new-dir') ? 'EXISTS' : 'ABSENT')"`, 15_000);
-const buggyAbsent = /ABSENT/.test(stripAnsi(rBuggy.output));
+const buggyAbsent = hasOutputLine(rBuggy.output, 'ABSENT');
 a.check('/home/user/home/user/new-dir ABSENT (no double-prefix)', buggyAbsent,
   buggyAbsent ? '' : JSON.stringify(stripAnsi(rBuggy.output).slice(-200)));
 

@@ -13,7 +13,7 @@
 // whole deliverable here, so the probe asserts the remedy is IN it, not merely
 // that the build failed.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi, heredocCommand } from '../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, heredocCommand, hasOutputLine } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('clang/pthread-refused');
@@ -62,7 +62,7 @@ await t.run(heredocCommand('th.c', threadedC), 15_000);
 {
   const { output } = await t.run('ls th.wasm 2>&1 || echo NO_OUTPUT_FILE', 15_000);
   const stripped = stripAnsi(output);
-  const absent = /NO_OUTPUT_FILE|No such file/.test(stripped);
+  const absent = hasOutputLine(stripped, 'NO_OUTPUT_FILE');
   a.check('no binary is left behind by the refused build',
     absent, absent ? '' : JSON.stringify(stripped.slice(-300)));
 }

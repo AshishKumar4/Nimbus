@@ -7,7 +7,7 @@
 // '/home/user' preopen must NOT affect paths that DON'T start with
 // '/home/user').
 
-import { mintSession, Terminal, makeAsserter, heredocCommand, stripAnsi } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, heredocCommand, stripAnsi, hasOutputLine } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('wasi-paths/regression/abs-tmp-still-works');
@@ -45,7 +45,7 @@ a.check('program exits 0 with PROGRAM_OK on stdout', runOK,
 // destination — abs path '/tmp/x' with preopen '/' resolving to vfsPath
 // 'home/user', so the file lands at 'home/user/tmp/x').
 const rExists = await t.run(`node -e "console.log(require('fs').existsSync('/home/user/tmp/regression-tmp.txt') ? 'EXISTS' : 'ABSENT')"`, 15_000);
-const exists = /EXISTS/.test(stripAnsi(rExists.output));
+const exists = hasOutputLine(rExists.output, 'EXISTS');
 a.check('file at /home/user/tmp/regression-tmp.txt EXISTS (pre-fix destination preserved)', exists,
   exists ? '' : JSON.stringify(stripAnsi(rExists.output).slice(-200)));
 

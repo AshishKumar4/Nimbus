@@ -24,7 +24,7 @@
 // exactly why it went unnoticed.
 
 import {
-  mintSession, Terminal, makeAsserter, stripAnsi, sleep, requestHeaders, BASE,
+  mintSession, Terminal, makeAsserter, stripAnsi, sleep, requestHeaders, BASE, hasOutputLine, outputLines,
 } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -191,7 +191,7 @@ const marked = (marker, then, bound) => [
   );
   a.check(
     'a relayed socket either connects or reports why — it never silently does nothing',
-    /WS_OPEN|WS_ERROR/.test(out),
+    hasOutputLine(out, 'WS_OPEN') || outputLines(out).some((line) => line.startsWith('WS_ERROR[')),
     `tail: ${JSON.stringify(out.slice(-500))}`,
   );
 }

@@ -4,7 +4,7 @@
 // its relative name and writes one the shell then sees. And a local variable
 // lasts to the next line, as the JavaScript REPLs' probe checks theirs.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi } from '../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, hasOutputLine } from '../_driver.mjs';
 import { pushLine } from './_push.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -30,11 +30,8 @@ try {
   process.exit(1);
 }
 
-t.reset();
-t.cmd('puts "hi"');
-await t.waitFor((b) => /\bhi\b/m.test(b), 30_000, 'puts "hi" output');
-const out1 = stripAnsi(t.buf);
-a.check('puts "hi" prints "hi" in REPL', /\bhi\b/m.test(out1),
+const out1 = await pushLine(t, 'puts "hi"', { prompt: /irb>\s*$/, timeoutMs: 30_000 });
+a.check('puts "hi" prints "hi" in REPL', hasOutputLine(out1, 'hi'),
   JSON.stringify(out1.slice(-200)));
 
 t.reset();

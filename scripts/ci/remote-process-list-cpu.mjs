@@ -7,5 +7,6 @@ await remotePairedCpu({
   name: 'remote-process-list-cpu',
   receipts: 'remote-process-list-cpu',
   baselineDir: '.ci-process-list-baseline',
-  command: ['bun', 'tests/bench/process-list-cpu.mjs'],
+  engine: 'bun',
+  bench: 'tests/bench/process-list-cpu.mjs',
 });

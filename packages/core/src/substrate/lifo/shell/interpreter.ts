@@ -146,6 +146,8 @@ export interface BuiltinExecutionContext {
   /** The state of the shell running the builtin: a child shell's own, after a fork. */
   shell: ShellState;
   getLastExitCode(): number;
+  /** The status a bare `exit` ends the shell with: the last command's, or in a trap's action the one before the trap (POSIX). */
+  exitStatus(): number;
   /** The process the builtin runs as: a kill's caller, a wait's waiter. */
   identity(): Pick<CommandIdentity, 'pid' | 'cred'>;
 }
@@ -383,6 +385,8 @@ export class Interpreter {
   private persistentInputHandles = new Map<number, OpenFile>();
   private errexitSuppressionDepth = 0;
   private exitTrapDepth = 0;
+  /** While the EXIT trap's action runs: the status the shell was ending with, a bare `exit`'s there. */
+  private trapEntryStatus: number | null = null;
   /** One frame per running function call, holding the bindings `local` shadowed. */
   private localFrames: Array<Map<string, SavedVariable>> = [];
   /** A child shell (fork): a discarded line ends it (finishChild). */
@@ -422,6 +426,19 @@ export class Interpreter {
     for (const handle of child.persistentHandles()) handle.refs++;
     child.localFrames = this.localFrames.map((frame) => new Map(frame));
     child.errexitSuppressionDepth = this.errexitSuppressionDepth;
+    return child;
+  }
+
+  /**
+   * `child`, forked for a substitution or a simple command (a pipeline's
+   * element, a job), runs inside the EXIT trap's action still: a bare `exit`
+   * there ends with the trap's entry status, and an EXIT trap set there does
+   * not run. bash keeps running_trap for these, and clears it in the
+   * subshell of a compound command, `( … )` among them.
+   */
+  private inTrapAction(child: Interpreter): Interpreter {
+    child.trapEntryStatus = this.trapEntryStatus;
+    child.exitTrapDepth = this.exitTrapDepth;
     return child;
   }
 
@@ -562,7 +579,12 @@ export class Interpreter {
 
       // A job is a process of its own, as a fork makes one: its commands run
       // as it, on its own thread of work, until a kill of it stops them.
-      const child = this.fork();
+      // A job that is one pipeline goes on in the trap's action, as its simple elements do (a pipeline of
+      // several decides per element); an and-or list or a compound command does not.
+      const [only] = list.entries;
+      const commands = list.entries.length === 1 ? only?.pipeline.commands ?? [] : [];
+      const inAction = commands.length > 1 || commands[0]?.type === 'simple_command';
+      const child = inAction ? this.inTrapAction(this.fork()) : this.fork();
       const job = this.config.jobTable.start(
         { command: this.getListCommandText(list), cwd: this.config.getCwd(), parent },
         async ({ identity, signal }) => {
@@ -700,7 +722,7 @@ export class Interpreter {
         // Each element is a thread of its own, which the pipeline's waits on.
         cmdIo.workThread = io.workThread?.fork();
         // Each element runs in a child shell (bash forks every one).
-        const element = this.fork();
+        const element = cmd.type === 'simple_command' ? this.inTrapAction(this.fork()) : this.fork();
         const cmdPromise = (async (): Promise<number> => {
           try {
             return await element.finishChild(async () => (await element.executeCommand(cmd, cmdIo)), cmdIo);
@@ -1124,6 +1146,7 @@ export class Interpreter {
             shell: this.config,
             interactive: io.interactive,
             getLastExitCode: () => this.lastExitCode,
+            exitStatus: () => this.trapEntryStatus ?? this.lastExitCode,
             identity: () => {
               if (!io.commandIdentity) throw new Error('shell command identity is unavailable');
               return io.commandIdentity;
@@ -1392,7 +1415,7 @@ export class Interpreter {
     captureIo.stdout = capture.stream;
     captureIo.positionals = this.forkPositionals(io);
     // $( ) runs in a child shell.
-    const child = this.fork();
+    const child = this.inTrapAction(this.fork());
     const exitCode = await child.finishChild(async () => (await child.executeLineWithIo(input, captureIo)), captureIo);
     capture.end();
 
@@ -1448,16 +1471,21 @@ export class Interpreter {
     if (action === undefined) return exitCode;
 
     const savedLastExitCode = this.lastExitCode;
+    const savedTrapEntryStatus = this.trapEntryStatus;
     this.lastExitCode = exitCode;
+    this.trapEntryStatus = exitCode;
     this.exitTrapDepth++;
     try {
-      await this.executeLineWithIo(action, io, { readsLines: true });
+      // Run as the shell's own text: an `exit` in it, or an end by `set -e`, is the shell's status.
+      await this.executeLineWithIo(action, io, { readsLines: true, inline: true });
     } catch (e) {
+      if (e instanceof ExitSignal || e instanceof ErrexitSignal) return e.exitCode;
       // A call past the nesting bound ends the action, a child shell's too; the status stays (bash 5.2).
       if (!(e instanceof FunctionNestingSignal)) throw e;
     } finally {
       this.exitTrapDepth--;
       this.lastExitCode = savedLastExitCode;
+      this.trapEntryStatus = savedTrapEntryStatus;
     }
     return exitCode;
   }

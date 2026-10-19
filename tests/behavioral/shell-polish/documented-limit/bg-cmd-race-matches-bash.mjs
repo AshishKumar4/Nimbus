@@ -44,13 +44,13 @@ await t.waitForPrompt(60_000);
 //    just assert both appear within a bounded window.
 {
   t.reset();
-  t.cmd('echo bg-race-marker-7842 &');
+  t.cmd("printf '\\nbg-race-marker-7842\\n' &");
   // Wait for the job notice, bash's `[1] PID`.
   await t.waitFor((b) => /^\[1\] \d+\r?$/m.test(b), 5_000, 'bg banner');
   // Now poll for the actual output up to 3s.
   let sawOutput = false;
   for (let i = 0; i < 30; i++) {
-    if (/\bbg-race-marker-7842\b/.test(stripAnsi(t.buf))) { sawOutput = true; break; }
+    if (hasOutputLine(t.buf, 'bg-race-marker-7842')) { sawOutput = true; break; }
     await sleep(100);
   }
   a.check('naked cmd & emits the [1] PID job notice', /^\[1\] \d+\r?$/m.test(stripAnsi(t.buf)),

@@ -21,7 +21,7 @@
 // see the bug. The 8s wait + prompt check captures the "shell hangs"
 // experience verbatim.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi, sleep } from '../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, sleep, hasOutputLine } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('shell/wrap-stdin-no-deadlock');
@@ -57,7 +57,7 @@ t.cmd('touch /tmp/sweep-probe.txt && ls /tmp/sweep-probe.txt');
 let touchOk = false;
 try {
   await t.waitFor(
-    (b) => /sweep-probe\.txt/.test(b) && /[$#]\s*$/.test(b.trimEnd().slice(-3)),
+    (b) => hasOutputLine(b, '/tmp/sweep-probe.txt') && /[$#]\s*$/.test(b.trimEnd().slice(-3)),
     10_000,
     'touch + ls output + prompt',
   );
@@ -66,7 +66,7 @@ try {
 const touchOut = stripAnsi(t.buf);
 a.check(
   'wrap\'d `touch <file>` completes and file is visible to `ls`',
-  touchOk && /sweep-probe\.txt/.test(touchOut),
+  touchOk && hasOutputLine(touchOut, '/tmp/sweep-probe.txt'),
   `tail: ${JSON.stringify(touchOut.slice(-200))}`,
 );
 
