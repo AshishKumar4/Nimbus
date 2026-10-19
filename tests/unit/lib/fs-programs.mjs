@@ -17,9 +17,11 @@ function generator(seed) {
 /**
  * A program of `length` steps from `seed`; `wasi` adds descriptor-path opens
  * and stream reads; `copies` adds copies (one name's file to another name)
- * and squeezes (the budget full for the next step), from a stream of their own.
+ * and squeezes (the budget full for the next step), from a stream of their
+ * own; `swaps` adds, from another, renames of the names' directory and back
+ * while a barrier begun before them waits.
  */
-export function program(seed, length = 40, { wasi = false, copies = false } = {}) {
+export function program(seed, length = 40, { wasi = false, copies = false, swaps = false } = {}) {
   const random = generator(seed);
   const pick = (items) => items[Math.floor(random() * items.length)];
   const word = () => 'x'.repeat(1 + Math.floor(random() * 3)).replace(/x/g, () => pick(['p', 'q', 'r', 's']));
@@ -50,8 +52,9 @@ export function program(seed, length = 40, { wasi = false, copies = false } = {}
     else steps.push({ op: 'catchUp' });
   }
   if (copies) {
-    // Keep the original stream intact: copies and squeezes have their own.
+    // Keep the original stream intact: copies and squeezes have their own, and so do swaps.
     const extra = generator(seed ^ 0x636f7079);
+    const swap = generator(seed ^ 0x73776170);
     return steps.flatMap((step) => {
       const out = [];
       if (extra() < 0.08) out.push({ op: 'squeeze' });
@@ -61,6 +64,7 @@ export function program(seed, length = 40, { wasi = false, copies = false } = {}
         const to = NAMES[(NAMES.indexOf(from) + 1 + Math.floor(extra() * (NAMES.length - 1))) % NAMES.length];
         out.push({ op: 'copy', from, to });
       }
+      if (swaps && swap() < 0.12) out.push({ op: 'swap' });
       return out;
     });
   }

@@ -101,9 +101,14 @@ async function runSteps(steps, met, grants) {
   const budget = { used: 0, limit: 1 << 30 };
   /** The next step runs with the budget full (a squeeze). */
   let squeezed = false;
+  // A program with swaps keeps its names in a directory of the subtree a grant takes, so a grant decides its renames.
+  const dir = steps.some((step) => step.op === 'swap') ? `${DIR}/s` : DIR;
+  /** A barrier waits once it begins while `pausing`, until `landing` is called. */
+  let pausing = false;
+  let landing;
   const s = session({
     budget,
-    view: {},
+    view: { barrier: () => (pausing ? new Promise((resolve) => { landing = resolve; }) : undefined) },
     ...(grants ? {} : { acquired: { then: (_resolve, reject) => reject(Object.assign(new Error('EBUSY'), { code: 'EBUSY' })) } }),
     gate: { then: (resolve, reject) => (control.held ? control.opened.promise : Promise.resolve()).then(resolve, reject) },
   });
@@ -116,7 +121,7 @@ async function runSteps(steps, met, grants) {
   const ref = session();
   const sync = s.fs.synchronous;
   const direct = ref.filesystem.bind({ pid: 8, cred: user });
-  const path = (name) => `/${DIR}/${name}`;
+  const path = (name) => `/${dir}/${name}`;
 
   // A file is named by a reference: `{ fixed: ino }` for one the view admitted
   // (its session number), or an open of the process's (`opened`), which is the
@@ -456,12 +461,12 @@ async function runSteps(steps, met, grants) {
   const peerStep = async (step) => {
     // A peer's write stamps its own mtime, at each session's own clock: not one the process set.
     if (step.kind === 'write' || step.kind === 'rename') peerWritten.add(step.kind === 'rename' ? step.to : step.name);
-    const key = `${DIR}/${step.name}`;
+    const key = `${dir}/${step.name}`;
     const change = async (target) => {
       try {
         if (step.kind === 'write') { target.writeFile(key, enc.encode(step.data)); target.chown(key, 1000, 1000); }
         else if (step.kind === 'unlink') target.unlink(key);
-        else if (step.kind === 'rename') target.rename(key, `${DIR}/${step.to}`);
+        else if (step.kind === 'rename') target.rename(key, `${dir}/${step.to}`);
         else target.chmod(key, step.mode);
       } catch (error) {
         if (error?.code !== 'ENOENT') throw error;
@@ -515,10 +520,10 @@ async function runSteps(steps, met, grants) {
     }
     const name = [...now.names].find(([, reference]) => resolve(reference) === id)?.[0];
     // Caught up, the name the view had for it may have gone at the session: then no name leads to it.
-    if (named && !(caught && (name === undefined || !ref.kernel.exists(`${DIR}/${name}`)))) {
+    if (named && !(caught && (name === undefined || !ref.kernel.exists(`${dir}/${name}`)))) {
       const file = now.fileOf(id);
       assert.equal(code, null, `${label}: an awaited read of a named file: ${code}`);
-      if (caught) assert.equal(dec.decode(got), dec.decode(ref.kernel.readFile(`${DIR}/${name}`)), `${label}: an awaited read of a named file, caught up`);
+      if (caught) assert.equal(dec.decode(got), dec.decode(ref.kernel.readFile(`${dir}/${name}`)), `${label}: an awaited read of a named file, caught up`);
       else if (file !== undefined && file.bytes !== null) assert.equal(dec.decode(got), dec.decode(file.bytes), `${label}: an awaited read of a named file`);
       if (caught) await catchUp();
       return;
@@ -531,7 +536,7 @@ async function runSteps(steps, met, grants) {
   const catchUp = async () => {
     await deliver();
     s.fs.inbound();
-    await s.fs.stat(`/${DIR}`);
+    await s.fs.stat(`/${dir}`);
     for (const name of NAMES) {
       await errnoOf(() => s.fs.stat(path(name)));
       await errnoOf(() => s.fs.readFile(path(name)));
@@ -549,7 +554,56 @@ async function runSteps(steps, met, grants) {
       unnamed.add(id);
     }
   };
+  if (dir !== DIR) {
+    // Made by the process, at a change that takes the subtree above it.
+    ref.kernel.mkdir(dir);
+    ref.kernel.chown(dir, user.uid, user.gid);
+    sync.mkdir(`/${dir}`, { mode: 0o755 });
+  }
   await catchUp();
+
+  /**
+   * The names' directory renamed and back by a call that cannot wait (a
+   * grant decides it where one holds the subtree), while a barrier begun
+   * before it waits. Once it lands, what such a call sees of each name is
+   * what the session has: a decision the rename moved is newer than that
+   * barrier's answer.
+   */
+  const swapStep = async (label) => {
+    await deliver();
+    control.held = false;
+    control.opened.resolve();
+    pausing = true;
+    s.fs.inbound();
+    const catching = s.fs.stat(`/${dir}`).catch(() => null);
+    for (let tries = 0; tries < 400 && landing === undefined; tries++) await new Promise((resolve) => setTimeout(resolve, 2));
+    pausing = false;
+    control.held = true;
+    control.opened = Promise.withResolvers();
+    assert.ok(landing !== undefined, `${label}: the barrier began`);
+    const aside = `/${DIR}/t`;
+    if ((await errnoOf(() => sync.rename(`/${dir}`, aside))) === null) {
+      budget.limit = 1 << 30;
+      assert.equal(await errnoOf(() => sync.rename(aside, `/${dir}`)), null, `${label}: the rename back`);
+    }
+    const land = landing;
+    landing = undefined;
+    land();
+    await catching;
+    const seen = statsNow();
+    await catchUp();
+    assert.deepEqual(seen, statsNow(), `${label}: what a call that cannot wait saw of each name once the barrier landed, against the session's`);
+  };
+  /** Each name's size and mode as a call that cannot wait sees them, or its errno. */
+  const statsNow = () => Object.fromEntries(NAMES.map((name) => {
+    try {
+      const stat = sync.stat(path(name));
+      return [name, stat === null ? null : [stat.size, stat.mode & 0o7777]];
+    } catch (error) {
+      return [name, error?.code ?? String(error)];
+    }
+  }));
+
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i];
     const label = `step ${i} ${JSON.stringify(step)}`;
@@ -564,6 +618,7 @@ async function runSteps(steps, met, grants) {
       else if (step.op === 'catchUp') await catchUp();
       else if (step.op === 'peer') await peerStep(step);
       else if (step.op === 'readAsync') await readAsync(step, label);
+      else if (step.op === 'swap') await swapStep(label);
       else await processStep(step, label);
     } catch (error) {
       if (error !== NO_SPACE) throw error;
@@ -585,15 +640,15 @@ async function runSteps(steps, met, grants) {
   const theirs = [];
   const final = viewOf();
   for (const name of NAMES) {
-    const mine = s.kernel.exists(`${DIR}/${name}`) ? `${dec.decode(s.kernel.readFile(`${DIR}/${name}`))}:${(s.kernel.stat(`${DIR}/${name}`).mode & 0o7777).toString(8)}` : '-';
-    const other = ref.kernel.exists(`${DIR}/${name}`) ? `${dec.decode(ref.kernel.readFile(`${DIR}/${name}`))}:${(ref.kernel.stat(`${DIR}/${name}`).mode & 0o7777).toString(8)}` : '-';
+    const mine = s.kernel.exists(`${dir}/${name}`) ? `${dec.decode(s.kernel.readFile(`${dir}/${name}`))}:${(s.kernel.stat(`${dir}/${name}`).mode & 0o7777).toString(8)}` : '-';
+    const other = ref.kernel.exists(`${dir}/${name}`) ? `${dec.decode(ref.kernel.readFile(`${dir}/${name}`))}:${(ref.kernel.stat(`${dir}/${name}`).mode & 0o7777).toString(8)}` : '-';
     ours.push(`${name}=${mine}`);
     theirs.push(`${name}=${other}`);
     // An mtime the process set explicitly since the file's content last changed is the session's too.
     const reference = final.names.get(name);
     const mtime = reference === undefined ? undefined : final.fileOf(resolve(reference))?.mtime;
     if (typeof mtime === 'number' && mine !== '-' && other !== '-' && !peerWritten.has(name)) {
-      assert.equal(Number(s.kernel.stat(`${DIR}/${name}`).mtime), Number(ref.kernel.stat(`${DIR}/${name}`).mtime), `the end: ${name}'s mtime differs from the reference's`);
+      assert.equal(Number(s.kernel.stat(`${dir}/${name}`).mtime), Number(ref.kernel.stat(`${dir}/${name}`).mtime), `the end: ${name}'s mtime differs from the reference's`);
     }
   }
   assert.equal(ours.join(' '), theirs.join(' '), 'the end: the session differs from the reference');
@@ -833,10 +888,11 @@ for (const found of FOUND) {
   const failure = await run(found.steps, found.grants).then(() => null, (error) => error);
   if (failure !== null && failure.known !== true) failures.set(`found: ${found.name}`, { seeds: [0], reason: failure, minimal: found.steps, grants: found.grants });
 }
-for (const seed of seeds) {
-  const steps = program(seed, 40, { copies: true });
+// Each seed twice: as it is, and with swaps (half of those granted).
+for (const [seed, swaps] of [...seeds.map((seed) => [seed, false]), ...seeds.slice(0, Math.ceil(seeds.length / 3)).map((seed) => [seed, true])]) {
+  const steps = program(seed, 40, { copies: true, swaps });
   // A third of the programs run with the session granting the subtree the process changes.
-  const grants = seed % 3 === 0;
+  const grants = swaps ? seed % 2 === 0 : seed % 3 === 0;
   const failure = await run(steps, grants).then(() => null, (error) => error);
   if (failure === null) continue;
   if (failure.known === true) {

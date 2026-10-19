@@ -8,8 +8,12 @@
  *     or a copy, is the new bytes or EAGAIN, never the old;
  *   - a copy that cannot wait reads a held source's bytes from its cell,
  *     cold or once resident, to a destination no grant holds;
- *   - a change the budget refuses leaves a held file with a descriptor open
- *     the grant's: nothing of it moved or logged for a failed call.
+ *   - a change refused, for room or permission, leaves a held file with a
+ *     descriptor open the grant's: nothing of it moved or logged for a
+ *     failed call, by name or through the descriptor;
+ *   - a grant's rename above a file the provisional decisions changed, while
+ *     a barrier begun before it lands: the moved decision stays (newer than
+ *     the barrier's answer), with what they made of the file.
  */
 
 import assert from 'node:assert/strict';
@@ -46,9 +50,10 @@ async function rewrite(fs, path, text) {
   await fs.close(handle.id);
 }
 
-/** A session whose process holds home/user/proj (a first change there takes it). */
-async function holding(options) {
+/** A session whose process holds home/user/proj (a first change there takes it), `prepare` given its kernel first. */
+async function holding({ prepare, ...options } = {}) {
   const s = session({ view: {}, ...options });
+  prepare?.(s.kernel);
   await rewrite(s.fs, '/home/user/proj/warm', 'w');
   await until(() => s.filesystem.delegations.size === 1, 'the subtree taken');
   return s;
@@ -108,10 +113,17 @@ async function holding(options) {
   assert.equal(s.kernel.readFileString('tmp/warm2-copy'), 'NEW2', 'a copy took the resident bytes of a held source, not its cell');
 }
 
-// ── A change the budget refuses leaves a held file with a descriptor open the grant's ──
-for (const change of ['open', 'rename', 'unlink']) {
+// ── A change refused, for room or permission, leaves a held file with a descriptor open the grant's ──
+// Each that would promote it judges and admits everything first: by name (open, rename, unlink, chmod) and through its
+// descriptor (fchmod; fchown and futimes the grant declines). `refusal`: its errno, or null where it may also succeed.
+for (const [change, refusal] of [['open', null], ['rename', null], ['unlink', null], ['chmod', 'ENOSPC'], ['fchmod', 'ENOSPC'], ['fchown', 'EPERM'], ['futimes', 'EPERM']]) {
   const budget = { used: 0, limit: 1 << 30 };
-  const s = await holding({ budget });
+  // Another's file the process may write: its times are not the process's to set (futimes).
+  const s = await holding({ budget, prepare: change !== 'futimes' ? undefined : (kernel) => {
+    kernel.writeFile('home/user/proj/h', 'x');
+    kernel.chown('home/user/proj/h', 2000, 2000);
+    kernel.chmod('home/user/proj/h', 0o666);
+  } });
   const handle = await s.fs.open('/home/user/proj/h', { write: true, create: true, truncate: true, mode: 0o644 });
   await s.fs.write(handle.id, null, enc.encode('held'));
   const sync = s.fs.synchronous;
@@ -122,17 +134,60 @@ for (const change of ['open', 'rename', 'unlink']) {
     if (change === 'open') sync.open('/home/user/proj/h', { read: true });
     // To a subtree the grant does not hold: the provisional decisions' to decide.
     else if (change === 'rename') sync.rename('/home/user/proj/h', '/tmp/h');
-    else sync.unlink('/home/user/proj/h');
+    else if (change === 'unlink') sync.unlink('/home/user/proj/h');
+    else if (change === 'chmod') sync.chmod('/home/user/proj/h', 0o600);
+    else if (change === 'fchmod') sync.fchmod(handle.id, 0o600);
+    else if (change === 'fchown') sync.fchown(handle.id, 0, -1);
+    else sync.futimes(handle.id, 1_600_000_000_000, 1_600_000_000_000);
   });
   budget.limit = 1 << 30;
-  if (code === null) continue;
-  assert.equal(code, 'ENOSPC', `${change}: refused`);
+  if (refusal === null && code === null) continue;
+  assert.equal(code, refusal ?? 'ENOSPC', `${change}: refused`);
   assert.equal(s.fs.stats().client.ops, ops, `${change}: a refused change moved the held file (its descriptor's open logged)`);
   // Still the grant's: its descriptor writes here, and the session has its bytes once sent.
   await s.fs.write(handle.id, null, enc.encode('!'));
   await s.fs.close(handle.id);
   await s.fs.settle();
   assert.equal(s.kernel.readFileString('home/user/proj/h'), 'held!', `${change}: the held file's bytes`);
+}
+
+// ── A grant's rename above a file the provisional decisions changed, while a barrier begun before it lands ──
+// Its decision of the file, moved, is newer than that barrier's answer: it stays, with what they made of the file.
+{
+  let land;
+  let pausing = false;
+  const s = await holding({
+    view: { barrier: () => (pausing ? new Promise((resolve) => { land = resolve; }) : undefined) },
+    prepare: (kernel) => {
+      kernel.mkdir('home/user/proj/p');
+      kernel.chown('home/user/proj/p', 1000, 1000);
+      kernel.writeFile('home/user/proj/p/f', 'ab');
+      kernel.chown('home/user/proj/p/f', 1000, 1000);
+    },
+  });
+  const sync = s.fs.synchronous;
+  await s.fs.readFile('/home/user/proj/p/f');
+  // Opened to write, neither made nor emptied: the provisional decisions' descriptor.
+  const fd = sync.open('/home/user/proj/p/f', { read: true, write: true });
+  await s.fs.chmod('/home/user/proj/p/f', 0o640);
+  sync.write(fd.id, 0, enc.encode('xyz'));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  // A barrier begins (a call that may wait catches up), and waits.
+  pausing = true;
+  const catching = s.fs.stat('/home/user/proj/p/f').catch(() => null);
+  await until(() => land !== undefined, 'the barrier begun');
+  pausing = false;
+  sync.rename('/home/user/proj/p', '/home/user/proj/q');
+  land();
+  await catching;
+  const now = sync.stat('/home/user/proj/q/f');
+  assert.deepEqual([now.size, now.mode & 0o777], [3, 0o640], 'what a call that cannot wait sees of the moved file');
+  const waited = await s.fs.stat('/home/user/proj/q/f');
+  assert.deepEqual([waited.size, waited.mode & 0o777], [3, 0o640], 'what a call that may wait sees of the moved file');
+  sync.close(fd.id);
+  await s.fs.settle();
+  assert.equal(s.kernel.readFileString('home/user/proj/q/f'), 'xyz', 'the moved file\'s bytes');
+  assert.equal(s.kernel.stat('home/user/proj/q/f').mode & 0o777, 0o640, 'the moved file\'s mode');
 }
 
 console.log('ok - wasi-held-promotion');
