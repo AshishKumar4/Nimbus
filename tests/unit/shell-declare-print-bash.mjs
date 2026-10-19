@@ -97,11 +97,11 @@ try {
     if (JSON.stringify(ours) !== JSON.stringify(want[i])) failed.push(`${JSON.stringify(line)}\n  bash: ${JSON.stringify(want[i])}\n  ours: ${JSON.stringify(ours)}`);
   }
   // A prefix assignment whose expansion throws gives back the bindings before it, in a shell
-  // that goes on (a session's, as an interactive bash's): x as it was, unexported.
-  await ws.exec('x=outer', { cwd: '/home/user' });
+  // that goes on (a session's, as an interactive bash's; it keeps what is exported): x as it was.
+  await ws.exec('export x=outer', { cwd: '/home/user' });
   await ws.exec('x=inner y=${missing:?oops} true', { cwd: '/home/user' });
   const after = await ws.exec('declare -p x', { cwd: '/home/user' });
-  if (after.stdout !== 'declare -- x="outer"\n') failed.push(`a throwing prefix expansion: ${JSON.stringify(after.stdout)}`);
+  if (after.stdout !== 'declare -x x="outer"\n') failed.push(`a throwing prefix expansion: ${JSON.stringify(after)}`);
 } finally {
   await ws.close();
 }
