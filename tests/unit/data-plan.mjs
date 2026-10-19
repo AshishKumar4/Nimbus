@@ -3,7 +3,7 @@
 // rule, over a namespace — and what it leaves out.
 
 import assert from 'node:assert/strict';
-import { linkTargetOf, planFacetData, planStylesheetSources, PACKAGE_DATA_MAX_BYTES } from '../../packages/worker/src/facets/data-plan.ts';
+import { linkTargetOf, planFacetData, planStylesheetSources, PACKAGE_DATA_MAX_BYTES, STYLESHEET_SOURCE_MAX_FILES } from '../../packages/worker/src/facets/data-plan.ts';
 import { findStaticFsReferences } from '../../packages/core/src/runtime/static-fs-refs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles, ProcessView } from '../../packages/core/src/runtime/process-files.ts';
@@ -478,6 +478,33 @@ assert.equal(noTs.rules.typescript.files, 0);
   const direct = await planStylesheetSources(ns, { cwd: '/home/user/app', home: '/home/user', sheets: ['home/user/app/src/index.css'] });
   assert.deepEqual(direct.files.map((f) => f.path).sort(), withOxide.paths.filter((p) => !p.startsWith('home/user/app/') && !p.startsWith('home/user/theme/')).sort(), 'a one-shot holds the same files, from its stylesheets alone');
   assert.deepEqual(direct.roots, withOxide.sourceRoots);
+}
+
+// A source can name a tree of any size: the rule holds at most
+// STYLESHEET_SOURCE_MAX_FILES files, each under the package-data bound, and
+// says where it stopped. The rest are learned from the scanner's misses.
+{
+  const tree = {
+    'home/user/app/src/index.css': '@import "tailwindcss";\n@source "../..";',
+    'home/user/aaa/small.tsx': 'held',
+    'home/user/aab/huge.tsx': big(PACKAGE_DATA_MAX_BYTES),
+  };
+  for (let i = 0; i < STYLESHEET_SOURCE_MAX_FILES + 50; i++) tree[`home/user/big/f${String(i).padStart(5, '0')}.tsx`] = 'x';
+  const warned = [];
+  const warn = console.warn;
+  console.warn = (...args) => warned.push(args.join(' '));
+  let found;
+  try {
+    found = await planStylesheetSources(namespace(tree), { cwd: '/home/user/app', home: '/home/user', sheets: ['home/user/app/src/index.css'] });
+  } finally {
+    console.warn = warn;
+  }
+  const held = new Set(found.files.map((f) => f.path));
+  assert.equal(found.files.length, STYLESHEET_SOURCE_MAX_FILES, 'the walk holds no more than the bound');
+  assert.ok(held.has('home/user/aaa/small.tsx'), 'a file under the bounds is held');
+  assert.ok(!held.has('home/user/aab/huge.tsx'), 'a file over the package-data bound is not');
+  assert.equal(found.stopped, '/home/user', 'it names where it stopped');
+  assert.equal(warned.filter((line) => line.includes('stylesheet sources: stopped at') && line.includes('/home/user')).length, 1, `and says so once: ${JSON.stringify(warned)}`);
 }
 
 // The project's stylesheets behind its links are its stylesheets: a sheet

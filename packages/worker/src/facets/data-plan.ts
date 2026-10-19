@@ -705,6 +705,14 @@ export function carriesOxide(closure: Iterable<string>): boolean {
   return false;
 }
 
+/**
+ * The most files the stylesheet-source rule holds for one launch. A source
+ * can name a tree of any size (`@source "../.."`); past this, the walk stops
+ * and says so, and the files it did not reach are learned from the scanner's
+ * misses, as any file a launch did not plan.
+ */
+export const STYLESHEET_SOURCE_MAX_FILES = 5_000;
+
 /** A directory planStylesheetSources walks: as it is named below its root, where it is, and the one it was found in. */
 interface WalkedDir {
   readonly named: string;
@@ -729,11 +737,15 @@ function below(dir: WalkedDir, at: string): boolean {
  * returns are what the facet's barriers push: those, and wherever a link
  * below one leads; `read` is where it read, which a process's listing of a
  * mount that walks only what is named must be named.
+ *
+ * It holds a file under the package-data bound (PACKAGE_DATA_MAX_BYTES), and
+ * at most STYLESHEET_SOURCE_MAX_FILES of them: at that, `stopped` names the
+ * root it was walking.
  */
 export async function planStylesheetSources(
   source: Pick<DataPlanSource, 'readText' | 'stat' | 'linkTarget' | 'readdir'>,
   input: { cwd: string; home: string; sheets: Iterable<string>; spend?: (units: number) => Promise<void> | void },
-): Promise<{ roots: string[]; files: DataPlanEntry[]; read: string[] }> {
+): Promise<{ roots: string[]; files: DataPlanEntry[]; read: string[]; stopped: string | null }> {
   const cwd = key(input.cwd);
   const home = key(input.home);
   const roots: string[] = [];
@@ -770,10 +782,11 @@ export async function planStylesheetSources(
   // What a barrier pushes: the roots, and wherever a link below one leads out of them.
   const pushed = [...roots];
   const pushFrom = (k: string) => { if (!pushed.some((dir) => under(dir, k))) pushed.push(k); };
-  for (const root of roots) {
+  let stopped: string | null = null;
+  walk: for (const root of roots) {
     const at = await source.stat(root);
     if (at?.kind === 'file') {
-      files.set(root, { path: root, kind: 'file', size: at.size });
+      if (at.size < PACKAGE_DATA_MAX_BYTES) files.set(root, { path: root, kind: 'file', size: at.size });
       read.add(root);
       continue;
     }
@@ -804,11 +817,16 @@ export async function planStylesheetSources(
           queue.push({ named, at: path, up: dir });
         } else if (kind === 'file' && !excludedBelow(home, root, named)) {
           pushFrom(path);
+          if (size >= PACKAGE_DATA_MAX_BYTES || files.has(path)) continue;
+          if (files.size >= STYLESHEET_SOURCE_MAX_FILES) { stopped = root; break walk; }
           files.set(path, { path, kind, size });
           if (path !== entry.path) read.add(path);
         }
       }
     }
   }
-  return { roots: pushed.map((root) => '/' + root), files: [...files.values()], read: [...read].map((k) => '/' + k) };
+  if (stopped !== null) {
+    console.warn(`[nimbus] stylesheet sources: stopped at ${STYLESHEET_SOURCE_MAX_FILES} files under /${stopped}; the rest are learned from the scanner's misses`);
+  }
+  return { roots: pushed.map((root) => '/' + root), files: [...files.values()], read: [...read].map((k) => '/' + k), stopped: stopped === null ? null : '/' + stopped };
 }

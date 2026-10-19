@@ -14,7 +14,9 @@ published independently in the `@nimbus-sh` npm scope.
   directory taken whole, through links, with the project's exclusions
   (`node_modules`, VCS and cache directories). Their changes reach the
   dev server as the working tree's do, and a source on a mounted drive is
-  listed for the process.
+  listed for the process. At most 5,000 files of under 256 KiB each are
+  held this way; past that, a launch says where it stopped, and the rest
+  are learned from what the scanner misses.
 - Fixed: a Vite dev server with Tailwind v4 could serve its first
   stylesheet without the classes the app's components use, about one
   start in three. Each time the dev server read a source file it had
