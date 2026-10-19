@@ -151,9 +151,13 @@ export function hasGlobChars(s: string): boolean {
   return s.includes('*') || s.includes('?') || s.includes('[');
 }
 
-/** `text` as a pattern that matches only itself: each character globMatch reads specially quoted with a backslash. */
+/**
+ * `text` as a pattern that matches only itself: each character globMatch reads
+ * specially quoted with a backslash, a bracket expression's `-`, `!` and `^`
+ * too (`[a$'-'z]` holds a, - and z).
+ */
 export function escapeGlob(text: string): string {
-  return text.replace(/[\\*?[\]]/g, '\\$&');
+  return text.replace(/[\\*?[\]\-!^]/g, '\\$&');
 }
 
 /** Whether pattern `s` holds a glob character no backslash quotes. */

@@ -714,7 +714,7 @@ function stopTable(chars: string): Uint8Array {
 
 /** Where a balanced span's scan must look, by its brackets: every other character is body as it stands. */
 const SPAN_STOPS: Readonly<Record<'(' | '{', Uint8Array>> = {
-  '(': stopTable('\\\'"$`#()'),
+  '(': stopTable('\\\'"$`#()<\n'),
   '{': stopTable('\\\'"$`#{}'),
 };
 /** Where a double-quoted span's scan must look. */
@@ -733,18 +733,24 @@ function nextStop(input: string, i: number, stops: Uint8Array): number {
  * The body of a balanced `open`...`close` span whose body starts at `pos`
  * (just past `open`), and where it ends (just past `close`, or the input's
  * end when it never closes). Quotes and nested `$(...)` inside it are
- * skipped whole, so a `close` inside them does not end it.
+ * skipped whole, so a `close` inside them does not end it. In a command's
+ * span, a here-document's body is too: read at the newline after its `<<`,
+ * as the shell's reader reads it, so its `'` or `)` is text. An arithmetic
+ * span (`arithmetic`: `$((…))`, `((…))`) has no here-document: `<<` shifts.
  */
 export function readBalancedCommand(
   input: string,
   pos: number,
   open: '(' | '{',
   close: ')' | '}',
+  arithmetic = false,
 ): { body: string; end: number; closed: boolean } {
   const stops = SPAN_STOPS[open];
   let i = pos;
   let depth = 1;
   let body = '';
+  // The here-documents whose bodies follow the next newline.
+  const heredocs: Array<{ delimiter: string; stripTabs: boolean }> = [];
 
   while (i < input.length) {
     // Characters that are no syntax here go into the body as one run.
@@ -774,11 +780,18 @@ export function readBalancedCommand(
         : next === '$' ? i + 2
         : next === "'" ? ansiCQuoteEnd(input, i)
         : next === '{' ? readBracedExpansion(input, i).end
-        : next === '(' ? readBalancedCommand(input, i + 2, '(', ')').end
+        : next === '(' ? readBalancedCommand(input, i + 2, '(', ')', input[i + 2] === '(').end
         : i + 1;
       const stop = end === -1 ? input.length : end;
       body += input.slice(i, stop);
       i = stop;
+      continue;
+    }
+    // An arithmetic command, `((…))`, whole.
+    if (ch === '(' && open === '(' && !arithmetic && input[i + 1] === '(') {
+      const span = readBalancedCommand(input, i + 1, '(', ')', true);
+      body += input.slice(i, span.end);
+      i = span.end;
       continue;
     }
     // A comment, where a word may start in a command's span: its text to
@@ -788,6 +801,33 @@ export function readBalancedCommand(
       const stop = newline === -1 ? input.length : newline;
       body += input.slice(i, stop);
       i = stop;
+      continue;
+    }
+    // A `<<` or `<<-` (not `<<<`): its delimiter word, its quotes removed, names where its body ends.
+    if (ch === '<' && open === '(' && !arithmetic && input[i + 1] === '<' && input[i + 2] !== '<') {
+      const stripTabs = input[i + 2] === '-';
+      let at = i + (stripTabs ? 3 : 2);
+      while (input[at] === ' ' || input[at] === '\t') at++;
+      const word = readWord(input, at);
+      if (word !== null) {
+        heredocs.push({ delimiter: word.token.value, stripTabs });
+        body += input.slice(i, word.end);
+        i = word.end;
+        continue;
+      }
+    }
+    if (ch === '\n' && heredocs.length > 0) {
+      i++;
+      body += ch;
+      for (const heredoc of heredocs) {
+        while (i < input.length) {
+          const line = readLine(input, i);
+          body += input.slice(i, line.end);
+          i = line.end;
+          if (endsHeredoc(line.text, heredoc) || !line.hadNewline) break;
+        }
+      }
+      heredocs.length = 0;
       continue;
     }
     if (ch === open) depth++;
