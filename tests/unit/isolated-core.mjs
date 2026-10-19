@@ -103,7 +103,8 @@ try {
   put(join(leaky, 'packages/b/src/leak.mjs'), `export * from ${JSON.stringify(join(outside, 'imported.mjs'))};`);
   put(join(leaky, 'packages/b/src/required.cjs'), `module.exports = require(${JSON.stringify(join(outside, 'required.cjs'))});`);
   put(join(leaky, 'packages/b/src/bridged.mjs'), "export * from 'bridge';");
-  put(join(leaky, 'packages/b/src/lazy.mjs'), `export const later = () => import(${JSON.stringify(outside)} + '/lazy.mjs');`);
+  // A name the bundler cannot fold: what is loaded is only known when it runs.
+  put(join(leaky, 'packages/b/src/lazy.mjs'), `export const later = () => import([${JSON.stringify(outside)}, 'lazy.mjs'].join('/'));`);
   for (const module of ['leak.mjs', 'required.cjs', 'bridged.mjs']) {
     await assert.rejects(loadIsolatedCore(leaky, cleanup, { sources, modules: [module], harness }), /none of the harness repository's/, module);
   }
