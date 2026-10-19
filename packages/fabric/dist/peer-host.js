@@ -18,7 +18,7 @@ import { z } from 'zod/v4';
 import { ProcessHostLost } from './process-fabric.js';
 import { infrastructureSupervisor, infrastructureSupervisorProps, supervisorBindingProps } from './supervisor-props.js';
 import { withResolvers } from './turn-budget.js';
-import { processes, abortFacet, deleteFacetStorage, facetNameHeldByAnother } from './workerd-facet-host.js';
+import { processes, abortFacet, deleteFacetStorage } from './workerd-facet-host.js';
 import { HandledRequests, HOST_INCARNATION_HEADER } from './host-activity.js';
 import { responseScope } from '@nimbus-sh/core/runtime/port-registry.js';
 import { isHostReset } from '@nimbus-sh/platform/oom-classify.js';
@@ -429,8 +429,7 @@ export class PeerHost {
         const stored = await this.ctx.storage.get(key);
         if (!stored)
             return { cancelled: record !== undefined };
-        // A name since given another process (this life of the peer's, or an earlier one's) is that process's facet now.
-        if (stored.facet && !facetNameHeldByAnother(this.ctx, stored.facet, workerKey)) {
+        if (stored.facet) {
             abortFacet(this.ctx, stored.facet, new Error('Nimbus: the coordinator released its previous process'));
             deleteFacetStorage(this.ctx, stored.facet);
         }
