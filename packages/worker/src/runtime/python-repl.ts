@@ -30,6 +30,7 @@ import { z } from 'zod/v4';
 import type { FacetManager } from '../facets/manager.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
 import type { RuntimeManifest } from '@nimbus-sh/core/runtime/runtime-manifest.js';
+import { facetAnswer } from '@nimbus-sh/core/runtime/facet-host.js';
 import type { ReplAdapter, ReplPushResult } from './repl-session.js';
 import { ReplSession } from './repl-session.js';
 import { sessionUsesSciVariant } from '@nimbus-sh/core/runtime/python-pip.js';
@@ -98,7 +99,6 @@ export interface PythonReplDeps {
   start?: { cwd: string; binName: string };
 }
 const PythonFacetResult = z.object({ stdout: z.string(), stderr: z.string(), exitCode: z.number().int(), error: z.string().optional(), control: z.record(z.string(), z.string()).optional() });
-const PythonFacetFailure = z.object({ __nimbusFacetError: z.string() });
 type PythonReplFacetResult = z.infer<typeof PythonFacetResult>;
 type InterpreterDeps = Pick<PythonReplDeps, 'facetMgr' | 'authority' | 'installRoot' | 'home' | 'manifest' | 'pid' | 'cred' | 'start' | 'restartsWaits'>;
 
@@ -322,11 +322,7 @@ class PythonReplAdapter implements ReplAdapter {
       }),
       // No deadline: an evaluation is the REPL process running the user's code.
     );
-    if (!response.ok) {
-      const failure = PythonFacetFailure.parse(await response.json());
-      throw new Error(failure.__nimbusFacetError);
-    }
-    return PythonFacetResult.parse(await response.json());
+    return PythonFacetResult.parse(await facetAnswer(response));
   }
 }
 

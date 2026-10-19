@@ -30,7 +30,7 @@ import { type SupervisorBindingProps } from './supervisor-props.js';
 import { type FacetKind } from './facet-limits.js';
 import { type FacetTaskSource } from '@nimbus-sh/core/runtime/facet-task.js';
 import { type DynamicWorkerClaim } from './budgets.js';
-import type { FacetImage } from '@nimbus-sh/core/runtime/facet-host.js';
+import { type FacetImage } from '@nimbus-sh/core/runtime/facet-host.js';
 import type { WorkerLoader } from './vendor/types.js';
 /** The one binding a pool needs off whichever env its host hands it. */
 export interface IsolatePoolEnv {

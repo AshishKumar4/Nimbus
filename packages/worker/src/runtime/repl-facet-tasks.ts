@@ -12,7 +12,11 @@ import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
  * interpreter at its suspension point.
  */
 export async function pythonReplStepRequestFn(request: Request, facetEnv: FacetBindings): Promise<Response> {
-    const args = await request.json();
+    // A body that does not parse is marked for the entry to name (TASK_BODY_FAILED).
+    const args = await request.json().catch((error: unknown) => {
+        if (error instanceof Error) Reflect.set(error, 'nimbusTaskBodyFailed', true);
+        throw error;
+    });
     if (typeof args !== 'object' || args === null || !('userCode' in args) || typeof args.userCode !== 'string') {
         throw new Error('Python REPL request must contain userCode');
     }

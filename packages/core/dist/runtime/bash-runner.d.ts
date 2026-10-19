@@ -1,5 +1,5 @@
 import { type RuntimeManifest } from './runtime-manifest.js';
-import type { FacetHost } from './facet-host.js';
+import { type FacetHost } from './facet-host.js';
 import type { Command } from '../substrate/lifo/commands/types.js';
 import type { BashSlice } from './bash/types.js';
 import type { NimbusFilesystemAuthority, RuntimeFsBridge, VfsCred } from './os-contracts.js';

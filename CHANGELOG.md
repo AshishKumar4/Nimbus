@@ -35,7 +35,10 @@ published independently in the `@nimbus-sh` npm scope.
   - A here-document inside `$(…)` may hold an unbalanced quote or `)`.
 
   Before, these read a word's text after its quotes were gone.
-
+- Fixed: a bash step that failed inside its facet said only "facet returned
+  an invalid payload"; it now says what the step failed with, as a python
+  step already did. And a step or process whose request body reaches its
+  facet unreadable now says that the body did not parse, and its length.
 - Fixed: a launch whose program loads wasm or a native binding (rolldown's,
   in a remix dev server) no longer gathers its closure twice. Its build
   gave back the bytes its module map would need for them, then had to ask

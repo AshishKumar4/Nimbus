@@ -9,7 +9,12 @@
  * interpreter at its suspension point.
  */
 export async function pythonReplStepRequestFn(request, facetEnv) {
-    const args = await request.json();
+    // A body that does not parse is marked for the entry to name (TASK_BODY_FAILED).
+    const args = await request.json().catch((error) => {
+        if (error instanceof Error)
+            Reflect.set(error, 'nimbusTaskBodyFailed', true);
+        throw error;
+    });
     if (typeof args !== 'object' || args === null || !('userCode' in args) || typeof args.userCode !== 'string') {
         throw new Error('Python REPL request must contain userCode');
     }
