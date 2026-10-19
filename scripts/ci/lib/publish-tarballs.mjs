@@ -1,5 +1,6 @@
-// Prepare archives once. The immutable-version check and signing use these
-// same files; only package.json formatting is ignored in content comparison.
+// Prepare archives once. The immutable-version check and the publish use
+// these same files; only package.json formatting is ignored in content
+// comparison.
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -19,8 +20,7 @@ export function prepareTarball(dir, into) {
   const bytes = readFileSync(path);
   const hash = (algorithm, encoding) => createHash(algorithm).update(bytes).digest(encoding);
   return { name: pkg.name, version: pkg.version, file, path, bytes: bytes.length,
-    sha256: hash('sha256', 'hex'), shasum: hash('sha1', 'hex'), integrity: 'sha512-' + hash('sha512', 'base64'),
-    base64: bytes.toString('base64') };
+    sha256: hash('sha256', 'hex'), shasum: hash('sha1', 'hex'), integrity: 'sha512-' + hash('sha512', 'base64') };
 }
 
 function unpack(tarball, into) {

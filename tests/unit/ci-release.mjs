@@ -28,14 +28,13 @@ try {
       const env = { ...process.env };
       if (xdg) env.XDG_STATE_HOME = xdg;
       else delete env.XDG_STATE_HOME;
-      delete env.NIMBUS_PUBLISH_ARTIFACTS;
       const queried = spawnSync(process.execPath, ['-e', `
         const [state,release,lease,target]=await Promise.all(${JSON.stringify(paths.map(path => new URL('../../' + path, import.meta.url).href))}.map(path=>import(path)));
-        console.log(JSON.stringify([state.NIMBUS_STATE,release.RELEASES,lease.LEASES,target.MACHINE_STATE_DIR,state.PUBLISH_ARTIFACTS]));
+        console.log(JSON.stringify([state.NIMBUS_STATE,release.RELEASES,lease.LEASES,target.MACHINE_STATE_DIR]));
       `], { encoding: 'utf8', env });
       assert.equal(queried.status, 0, queried.stderr);
       const base = join(xdg || join(homedir(), '.local', 'state'), 'nimbus');
-      assert.deepEqual(JSON.parse(queried.stdout), [base, join(base, 'releases'), join(base, 'leases'), base, join(base, 'publish')]);
+      assert.deepEqual(JSON.parse(queried.stdout), [base, join(base, 'releases'), join(base, 'leases'), base]);
     }
   }
   {
@@ -53,7 +52,7 @@ try {
       const check = spawnSync(process.execPath, ['-e', `
         import { mock } from 'bun:test';
         mock.module(${JSON.stringify(installed)}, () => ({ assertInstalled() {} }));
-        mock.module(${JSON.stringify(bundles)}, () => ({ fetchRelease: async () => ({ dir: '/fixture/bundle', release: {} }), productionCommit: () => 'c0ffee', releaseDigest() { throw new Error('an ungraded upload must not be sealed'); } }));
+        mock.module(${JSON.stringify(bundles)}, () => ({ fetchRelease: async () => ({ dir: '/fixture/bundle', release: {} }), packNpmRelease: async () => [], productionCommit: () => 'c0ffee', releaseDigest() { throw new Error('an ungraded upload must not be sealed'); } }));
         mock.module(${JSON.stringify(lease)}, () => ({ holdLease: () => require('node:fs').openSync('/dev/null', 'r') }));
         process.env.CLOUDFLARE_ACCOUNT_ID = 'fixture-account';
         process.argv = ['bun', 'release.mjs', 'staging'];

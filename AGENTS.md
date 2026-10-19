@@ -218,16 +218,18 @@ runtime joins the npm set by gaining an `npm` entry in its spec
 (`packages/worker/scripts/runtime-specs.mjs`). `node` and `bun` have none,
 because they are workerd's `nodejs_compat` rather than an artifact to ship.
 
-Release runtimes first, then core. Core's `prepublishOnly` runs
-`scripts/dist-integrity.mjs --publish` (see Build And Deploy), then
-`packages/core/scripts/check-runtime-packages.mjs`, which builds each npm
-runtime package and refuses the core publish unless the registry has that
-version, with the same `manifest.json`, as `dist-tags.latest`, and the core
-being published runs it. It prints the fix for each failure. Publish runtime
-packages with `npm publish --tag latest --access public --auth-type=web`:
-`5.2.37-2` sorts below `5.2.37` and any range admitting one admits the other,
-so consumers get the new build only through `latest`. Deprecate the build it
-replaces.
+A runtime reaches npm with the release that needs it. The release's pack
+(`scripts/ci/publish-pack.mjs`, Build And Deploy) builds every runtime with an
+`npm` entry and packs it, and the publish workflow publishes each version npm
+lacks before core, with `--tag latest`: `5.2.37-2` sorts below `5.2.37` and any
+range admitting one admits the other, so consumers get the new build only
+through `latest`. The pack runs the runtime gate,
+`packages/core/scripts/check-runtime-packages.mjs` (also core's
+`prepublishOnly`): each runtime is either the build npm holds at its version,
+as `latest`, or a version npm lacks, and it installs through the core being
+published. It prints the fix for each failure. Deprecate the build a new one
+replaces. A runtime fetched from upstream is pinned in its spec, by commit or
+version and by sha256; `bundle-runtime.mjs` refuses other bytes.
 
 Current runtime substrate:
 
@@ -609,6 +611,7 @@ Agent-specific probes:
 | Behavioral suite against staging, from containers | `bun run staging:test` |
 | What staging is serving right now | `bun run staging:status` |
 | Promote a staged release to production (`nimbus`) | `bun run deploy:production <commit>` (`scripts/ci/promote.mjs`) |
+| Publish to npm | automatic once promote is green: it pushes `npm/<sha12>` (`.github/workflows/publish.yml`); a dry run is the tag `npm-dry-run/<sha12>` |
 | Dry-run production deploy | `bun run --cwd apps/hosted-demo wrangler deploy -e production --dry-run --outdir /tmp/wrangler-build` |
 | Check deploy isolation | `bun scripts/deploy-isolation.mjs` |
 | Check dist matches src | `bun scripts/dist-integrity.mjs` |
@@ -639,18 +642,31 @@ source contains. The gate makes that a refusal rather than a silent no-op
 deploy. When it refuses, `bun scripts/ci/remote-build.mjs` returns the
 patch: review it, commit it, deploy again.
 
-Publishing works the same way. No package builds at pack time; every
-published package's `prepublishOnly` is `bun ../../scripts/dist-integrity.mjs
---publish`, which also refuses a package directory that differs from HEAD, so
-the tarball holds the committed, verified dist. Build and commit first.
+Publishing works the same way, and npm is published from one place: the
+publish workflow (`.github/workflows/publish.yml`), by npm trusted publishing
+(OIDC). No npm token exists. `promote.mjs` pushes the tag `npm/<sha12>` once
+production serves the commit and its live checks are green. The workflow packs
+that commit with `scripts/ci/publish-pack.mjs` and publishes each version npm
+lacks with `scripts/ci/npm-publish.mjs`: the runtimes first, then the packages
+in dependency order. `npm publish <tarball>` runs no lifecycle script, so the
+pack runs every publish gate:
 
-A publish skips a version npm already has, and `prepublishOnly` runs only
-for the packages it publishes. So before publishing anything, run
-`bun scripts/check-published.mjs`: it packs every package whose version is
-already on npm and refuses if one differs from what npm holds, naming the
-files. Bump that package and move the ranges that need the change. (Worker
-0.13.0 went out importing an export that platform 0.7.0 lacked: platform's
-source had changed without a version bump.)
+- `dist-integrity --publish`: the tarball holds the committed, verified dist,
+  and a package directory that differs from HEAD is refused. No package builds
+  at pack time; build and commit first.
+- `check-published`: a version npm already has must pack to what it holds,
+  else bump it and move the ranges that need the change. (Worker 0.13.0 went
+  out importing an export that platform 0.7.0 lacked: platform's source had
+  changed without a version bump.) `bun scripts/check-published.mjs` runs it
+  alone.
+- The runtime gate (Runtimes).
+
+`release.mjs staging` runs the same pack on CI and refuses a release npm would
+refuse, so it never reaches production. A tag `npm-dry-run/<sha12>` runs the
+pack and `npm publish --dry-run` on GitHub's runner, outside the `npm`
+environment and with no OIDC token. `bun scripts/npm-trust.mjs`, run once by
+hand, links every package to the workflow and lets only `npm/*` tags deploy
+from the `npm` environment.
 
 **Production is `wrangler deploy -e production`, and nothing else.**
 `apps/hosted-demo/wrangler.jsonc` has three tiers, each naming its own
