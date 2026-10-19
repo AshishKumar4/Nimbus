@@ -814,7 +814,8 @@ const ENTRYPOINT_TIMER_TRACKER = `
   g.__nimbusRawSetTimeout = st;
   g.__nimbusRawClearTimeout = ct;
   // Each live handle: the call that clears it, and whether it holds the process.
-  const live = new Map();
+  // A SafeMap (the launch's captures): a timer's firing releases it, after the program may have replaced Map's methods.
+  const live = new __nimbusLaunchCaptures.SafeMap();
   const drop = () => { g.__nimbusPendingTimers--; g.__nimbusHandleReleased?.(); };
   const release = (id) => {
     const entry = live.get(id);
@@ -4366,19 +4367,29 @@ interface PrefetchAdmission {
   readonly queued: boolean;
   /** The bytes it holds now. */
   held(): number;
-  /** What it is made from is known (`closureBytes`): it keeps only what that needs, giving the rest back. */
-  fit(closureBytes: number): void;
+  /**
+   * What it is made from is known (`closureBytes`, and the bytes its map owns
+   * beside them): it keeps only what that needs, giving the rest back.
+   */
+  fit(closureBytes: number, memberBytes?: number): void;
   /** Keeps only what the generated map owns while its launch waits for a worker. */
   retain(bytes: number): void;
+  /** Holds `bytes` (within the budget) if what it lacks can be granted now, without waiting; else false. */
+  grow(bytes: number): boolean;
   /** Registers its parked map until the worker is granted or the share is released. */
   reclaimable(reclaim: () => void): () => void;
   /** Gives it all back; once. */
   release(): void;
 }
 
-/** What work made from a closure of `closureBytes` holds at its peak, within the budget. */
-function prefetchNeed(closureBytes: number): number {
-  return Math.min(SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES, Math.max(1, Math.ceil(closureBytes * PREFETCH_PEAK_PER_BYTE)));
+/**
+ * What work made from a closure of `closureBytes` holds at its peak, within
+ * the budget: its build's, or its generated map's `textBytes` if more, beside
+ * the `memberBytes` the map owns (its wasm, its staged bindings).
+ */
+function prefetchNeed(closureBytes: number, memberBytes = 0, textBytes = 0): number {
+  return Math.min(SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES,
+    Math.max(1, Math.ceil(Math.max(closureBytes * PREFETCH_PEAK_PER_BYTE, textBytes) + memberBytes)));
 }
 
 /**
@@ -4442,8 +4453,8 @@ function admissionOf(admitted: SupervisorAllocationLease, queued: boolean): Pref
   return {
     queued,
     held: () => (released ? 0 : lease.bytes),
-    fit(closureBytes) {
-      const need = prefetchNeed(closureBytes);
+    fit(closureBytes, memberBytes = 0) {
+      const need = prefetchNeed(closureBytes, memberBytes);
       if (released || need >= lease.bytes) return;
       lease.shrinkTo(need);
     },
@@ -4451,6 +4462,10 @@ function admissionOf(admitted: SupervisorAllocationLease, queued: boolean): Pref
       const retained = Math.max(1, Math.min(SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES, bytes));
       if (retained > lease.bytes) throw new Error('Nimbus: a parked module map exceeds its supervisor credit');
       if (!released) lease.shrinkTo(retained);
+    },
+    grow(bytes) {
+      const wanted = Math.min(SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES, bytes);
+      return !released && (wanted <= lease.bytes || lease.tryGrowTo(wanted));
     },
     reclaimable(reclaim) {
       if (released) return () => {};
@@ -6730,8 +6745,6 @@ export class FacetManager {
         ],
         ...(evaluatedModule ? { entryEsModule: entryEsModuleKey(spec.scriptPath, spec.cwd) } : {}),
       }, creditLimit);
-      // A preparation returning for a larger map keeps the share it already sized.
-      if (held === undefined) admission.fit(vfsState.rawBytes ?? 0);
       if (offered.length > 0) {
         const staged: StagedProfileEntry[] = [];
         const unresolved: string[] = [];
@@ -6755,7 +6768,8 @@ export class FacetManager {
       const declaredBindings = await stagedBindingsDeclaredBy(declaredBindingFs(vfs), spec.scriptPath, undefined, declaredWalk);
       const namedBindings = stagedBindingsRequiredBy(Object.entries(vfsState.bundle));
       const requiredBindings = new Set([...namedBindings, ...declaredBindings]);
-      vfsState.stagedBindings = STAGED_BINDINGS.filter((b) => requiredBindings.has(b.key)).map((b) => b.key);
+      const stagedBindings = STAGED_BINDINGS.filter((b) => requiredBindings.has(b.key)).map((b) => b.key);
+      vfsState.stagedBindings = stagedBindings;
       if (this.debugEnabled) {
         this.processes.appendOutput(entry.pid, 'stderr', `[nimbus-debug] staged bindings: [${vfsState.stagedBindings.join(', ')}]`
           + ` (named by the closure: [${namedBindings.join(', ')}]; declared by the bin's dependencies: [${declaredBindings.join(', ')}],`
@@ -6767,6 +6781,13 @@ export class FacetManager {
       // And so do the images earlier runs compiled from bytes in memory (learnedWasmImages).
       const inlineWasm = this._stageWasmImageBytes([...findInlineWasmImages(vfsState.bundle), ...learnedWasmImages(learning.code)], entry.pid);
       if (inlineWasm.length > 0) vfsState.wasmImages = [...(vfsState.wasmImages ?? []), ...inlineWasm];
+      // Sized with what its map owns beside the closure, so a launch never
+      // gives back what its map takes moments later. A preparation returning
+      // for a larger map keeps the share it already sized.
+      if (held === undefined) {
+        const members = await this._oneShotMemberBytes(entry, facetWasmImports([], vfsState.wasmImages ?? []), stagedBindings);
+        admission.fit(vfsState.rawBytes ?? 0, members.owned);
+      }
       // And what the module map costs the facet's store, which adopts it at boot
       // (N18): taken now, while the cells exist, for every launch this state
       // serves (a cache hit included).
@@ -7458,7 +7479,7 @@ export class FacetManager {
           let brokeredGranted = false;
           try {
             if (brokered) {
-              await brokered(parked.signal);
+              await brokered(parked.signal, parked.reclaimable);
               brokeredGranted = true;
               parked.unregister();
             }
@@ -7466,7 +7487,7 @@ export class FacetManager {
               parked.unregister();
               parked.signal.throwIfAborted();
               return run();
-            });
+            }, parked.reclaimable);
           } catch (error) {
             if (!parked.reclaimed || abortController.signal.aborted) throw error;
             if (brokeredGranted) brokered = suspendLaunchAdmission(this.ctx, entry.pid);
@@ -7571,7 +7592,7 @@ export class FacetManager {
               const parked = this._parkOneShotMap(entry.pid, prepared, abortController.signal);
               let granted = false;
               try {
-                await resumeAdmission?.(parked.signal);
+                await resumeAdmission?.(parked.signal, parked.reclaimable);
                 granted = true;
                 parked.unregister();
                 parked.signal.throwIfAborted();
@@ -8057,11 +8078,8 @@ export class FacetManager {
     const need = Math.min(SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES, Math.max(1, Math.ceil(bytes)));
     const admission = this.buildAdmissions.get(pid);
     if (admission === undefined) throw new Error(`Nimbus: the module map for pid ${pid} has no share of the credit`);
-    if (admission.held() >= need) return;
-    const replacement = tryAdmitPrefetch(need, true, this._allocationOwner(pid));
-    if (replacement === null) throw new OneShotAllocationNeeded(need);
-    this.buildAdmissions.set(pid, replacement);
-    admission.release();
+    // What it lacks beside what it holds, or back to its build for the whole: it never waits holding its sources.
+    if (!admission.grow(need)) throw new OneShotAllocationNeeded(need);
   }
 
   private async _oneShotMemberBytes(entry: ProcessEntry, images: readonly FacetWasmImport[], bindings: readonly string[]): Promise<{ owned: number; wire: number }> {
@@ -8084,19 +8102,28 @@ export class FacetManager {
     return { owned: bytes, wire };
   }
 
+  /**
+   * `prepared`'s map, parked for its worker: `reclaimable` lets running work
+   * reclaim it, and is called only if the launch has to wait for one. A
+   * launch whose worker is free takes it and loads, and running work waits
+   * for that load as it waits for any running work's credit.
+   */
   private _parkOneShotMap(pid: number, prepared: PreparedOneShotCode, signal: AbortSignal): {
-    readonly signal: AbortSignal; readonly reclaimed: boolean; unregister(): void;
+    readonly signal: AbortSignal; readonly reclaimed: boolean; reclaimable(): void; unregister(): void;
   } {
     const reclaimed = new AbortController();
-    const unregister = this.buildAdmissions.get(pid)?.reclaimable(() => {
-      prepared.discard();
-      this._releaseBuildAdmission(pid);
-      reclaimed.abort(new Error(`Nimbus: the parked module map for pid ${pid} was reclaimed for running work`));
-    }) ?? (() => {});
+    let unregister = () => {};
     return {
       signal: AbortSignal.any([signal, reclaimed.signal]),
       get reclaimed() { return reclaimed.signal.aborted; },
-      unregister,
+      reclaimable: () => {
+        unregister = this.buildAdmissions.get(pid)?.reclaimable(() => {
+          prepared.discard();
+          this._releaseBuildAdmission(pid);
+          reclaimed.abort(new Error(`Nimbus: the parked module map for pid ${pid} was reclaimed for running work`));
+        }) ?? (() => {});
+      },
+      unregister: () => unregister(),
     };
   }
 
@@ -8125,7 +8152,7 @@ export class FacetManager {
       true,
     );
     const textBytes = generatedMapRetainedBytes(generated, {});
-    this._ensureOneShotShare(entry.pid, Math.max(prefetchNeed(vfsState.rawBytes ?? 0), textBytes) + memberBytes.owned);
+    this._ensureOneShotShare(entry.pid, prefetchNeed(vfsState.rawBytes ?? 0, memberBytes.owned, textBytes));
     const wasmModules = await this._wasmModulesByValue(entry, wasmImports);
     const stagedModules = await this._stagedBindingModulesByValue(bindingNames);
     const ownedMembers = { ...wasmModules, ...stagedModules };

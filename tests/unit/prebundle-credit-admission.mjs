@@ -139,6 +139,37 @@ await runScenarios(fileURLToPath(import.meta.url), {
     }
     assert.equal(readSupervisorAllocationBudget().current, 0);
   },
+  // A slice prepared once its credit is granted is not reclaimed while its
+  // slot and worker are free, though running work asks as it is granted:
+  // running work waits for the slice's call, and the slice is prepared once.
+  async freeWaysKeepTheSlice() {
+    const h = bundleFixture('prebundle-free-ways');
+    let prepares = 0;
+    const provider = h.context.pool;
+    h.context.pool = { session: provider.session, acquire: async (signal) => {
+      const pool = await provider.acquire(signal);
+      return { prebundle: (task) => pool.prebundle({ ...task, prepare: () => { prepares++; return task.prepare(); } }) };
+    } };
+    await provider.acquire();
+    const capacity = readSupervisorAllocationBudget().capacity;
+    const held = await acquireSupervisorAllocation(capacity);
+    const building = h.build();
+    await until(() => readSupervisorAllocationBudget().queued > 0, 'the prebundle waits for its credit first');
+    held.release();
+    const running = acquireSupervisorRunningAllocation(capacity);
+    try {
+      let timer;
+      const lease = await Promise.race([running, new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('running work waited past the slice\'s call')), 5000);
+      })]).finally(() => clearTimeout(timer));
+      lease.release();
+    } finally {
+      h.finish();
+    }
+    assert.equal((await building).kind, 'built');
+    assert.equal(prepares, 1, 'the slice was prepared once: not reclaimed while its slot and worker were free');
+    assert.equal(readSupervisorAllocationBudget().current, 0);
+  },
   async runningCallerOvertakesOrdinaryAsks() {
     const parked = bundleFixture('parked-prebundle', 20 * 1024 * 1024);
     const caller = bundleFixture('running-prebundle', 20 * 1024 * 1024);

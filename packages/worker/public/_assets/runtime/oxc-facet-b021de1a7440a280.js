@@ -6913,13 +6913,13 @@ error: the Oxc transform crashed (${reason})`);
     }
   }
 
-  var ESM_EXPORTS_HELPER = '(() => { const O = ({}).constructor; const tag = O.getOwnPropertySymbols(O.getPrototypeOf(async () => {}))[0]; return (exports) => { O.defineProperty(exports, "__esModule", { value: true, configurable: true }); O.defineProperty(exports, tag, { value: "Module" }); return (name, get) => O.defineProperty(exports, name, { enumerable: true, configurable: false, get }); }; })()';
-  var ESM_STAR_HELPER = '(exports, define, m, omitted) => { for (const k in m) { if (k === "default" || ({}).propertyIsEnumerable.call(exports, k)) continue; let left = false; for (let i = 0; omitted && i < omitted.length; i++) if (omitted[i] === k) left = true; if (!left) define(k, () => m[k]); } }';
+  var ESM_EXPORTS_HELPER = '((exports) => { P.objectDefineProperty(exports, "__esModule", { __proto__: null, value: true, configurable: true }); P.objectDefineProperty(exports, P.symbolToStringTag, { __proto__: null, value: "Module" }); return (name, get) => P.objectDefineProperty(exports, name, { __proto__: null, enumerable: true, configurable: false, get }); })';
+  var ESM_STAR_HELPER = '(exports, define, m, omitted) => { for (const k in m) { if (k === "default" || P.ObjectPrototypePropertyIsEnumerableOf(exports, k)) continue; let left = false; for (let i = 0; omitted && i < omitted.length; i++) if (omitted[i] === k) left = true; if (!left) define(k, () => m[k]); } }';
   var ESM_STAR_CONFLICTS = "nimbus:star-conflicts";
   var ESM_CONFLICTS_HELPER = `(require) => require("", "${ESM_STAR_CONFLICTS}")`;
   var ESM_STATIC_IMPORT = "nimbus:static-import";
   var ESM_LOAD_HELPER = `(require, source, type) => require(source, "${ESM_STATIC_IMPORT}", type)`;
-  var ESM_MODULE_HELPERS = `{ exports: ${ESM_EXPORTS_HELPER}, star: ${ESM_STAR_HELPER}, conflicts: ${ESM_CONFLICTS_HELPER}, load: ${ESM_LOAD_HELPER} }`;
+  var ESM_MODULE_HELPERS = `((P) => ({ exports: ${ESM_EXPORTS_HELPER}, star: ${ESM_STAR_HELPER}, conflicts: ${ESM_CONFLICTS_HELPER}, load: ${ESM_LOAD_HELPER} }))`;
   function importType(node) {
     const attributes = node.attributes ?? [];
     for (let i = 0; i < attributes.length; i++) {
@@ -10243,6 +10243,10 @@ error: the Oxc transform crashed (${reason})`);
   }.prototype);
   var generatorNext = uncurryThis(reflectGet(generatorPrototype ?? {}, "next"));
   var generatorThrow = uncurryThis(reflectGet(generatorPrototype ?? {}, "throw"));
+  var mapGet = uncurryThis(Map.prototype.get);
+  var arrayPush = uncurryThis(Array.prototype.push);
+  var arraySplice = uncurryThis(Array.prototype.splice);
+  var ObjectPrototypePropertyIsEnumerableOf = uncurryThis(Object.prototype.propertyIsEnumerable);
 
   function extensionOf(path) {
     const base = stringSlice(path, stringLastIndexOf(path, "/") + 1);

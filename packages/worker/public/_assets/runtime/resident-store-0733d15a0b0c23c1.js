@@ -145,6 +145,9 @@ var __nimbusResidentModule = (() => {
     return RESIDENT_ROW_BYTES + 2 * (String(parent).length + String(name).length + (target == null ? 0 : String(target).length));
   }
 
+  // nimbus-launch-captures:launch-captures
+  var { ArrayConstructor, ArrayFrom, ArrayIteratorNext, ArrayIteratorPrototype, ArrayPrototypeIndexOf, ArrayPrototypeLastIndexOf, ArrayPrototypePop, ArrayPrototypeToSpliced, ArrayPrototypeWith, ArrayValues, BigInt, BigIntPrototypeToString, Error: Error2, FunctionPrototypeBind, GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, JSONParse, JSONStringify, MapConstructor, NumberOf, NumberPrototypeToString, ObjectOf, ObjectPrototype, ObjectPrototypeHasOwnProperty, ObjectPrototypePropertyIsEnumerable, ObjectPrototypePropertyIsEnumerableOf, ObjectPrototypeToString, PromiseConstructor, PromisePrototypeThen, PromiseReject, PromiseResolve, RangeError, ReferenceError: ReferenceError2, RegExp, RegExpPrototypeAccessors, RegExpPrototypeExec, SafeAsyncGeneratorPrototype, SafeGeneratorPrototype, SafeList, SafeMap, SafeRegExpPrototype, SafeSet, SafeWeakMap, SafeWeakSet, StringFromCharCode, StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeIndexOf, StringPrototypeLastIndexOf, StringPrototypeSlice, StringPrototypeSubstr, SymbolConstructor, SymbolPrototypeDescription, SymbolPrototypeToString, SyntaxError, TypeError: TypeError2, URIError, URL, arrayIncludes, arrayIndexOf, arrayIsArray, arrayJoin, arrayPush, arraySort, arraySplice, captureStackTraceOf, dataDescriptor, decodeURIComponentOf, encodeURIComponentOf, generatorNext, generatorThrow, globalObject, mapGet, mathAbs, mathMin, newURL, numberIsInteger, objectAssign, objectCreate, objectDefineProperties, objectDefineProperty, objectFreeze, objectGetOwnPropertyNames, objectHasOwn, objectIs, objectIsExtensible, objectKeys, objectPreventExtensions, ownField, parseFloatOf, parseIntOf, reflectApply, reflectConstruct, reflectDefineProperty, reflectDeleteProperty, reflectGet, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectHas, reflectOwnKeys, reflectSet, reflectSetPrototypeOf, regExpExec, safeGenerator, setForEach, stringCharCodeAt, stringEndsWith, stringIncludes, stringIndexOf, stringLastIndexOf, stringOf, stringSlice, stringStartsWith, stringToLowerCase, symbolAsyncIterator, symbolFor, symbolIterator, symbolToStringTag, symbolUnscopables, useCaptureStackTrace } = __nimbusLaunchCaptures;
+
   // src/vfs/resident/admission.ts
   function createAdmission(coherence) {
     let cap = null;
@@ -157,7 +160,7 @@ var __nimbusResidentModule = (() => {
     let namespaceReserveBytes = 0;
     let pinnedBytes = 0;
     let available = null;
-    const reservations = /* @__PURE__ */ new Map();
+    const reservations = new SafeMap();
     let reservedBytes = 0;
     const reserveQueue = [];
     let reserveServing = false;
@@ -331,9 +334,6 @@ var __nimbusResidentModule = (() => {
       }
     };
   }
-
-  // nimbus-launch-captures:launch-captures
-  var { ArrayConstructor, ArrayFrom, ArrayIteratorNext, ArrayIteratorPrototype, ArrayPrototypeIndexOf, ArrayPrototypeLastIndexOf, ArrayPrototypePop, ArrayPrototypeToSpliced, ArrayPrototypeWith, ArrayValues, BigInt, BigIntPrototypeToString, Error: Error2, FunctionPrototypeBind, GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, JSONParse, JSONStringify, NumberOf, NumberPrototypeToString, ObjectOf, ObjectPrototype, ObjectPrototypeHasOwnProperty, ObjectPrototypePropertyIsEnumerable, ObjectPrototypeToString, PromiseConstructor, PromisePrototypeThen, PromiseReject, PromiseResolve, RangeError, ReferenceError: ReferenceError2, RegExp, RegExpPrototypeAccessors, RegExpPrototypeExec, SafeAsyncGeneratorPrototype, SafeGeneratorPrototype, SafeList, SafeMap, SafeRegExpPrototype, SafeSet, SafeWeakMap, SafeWeakSet, StringFromCharCode, StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeIndexOf, StringPrototypeLastIndexOf, StringPrototypeSlice, StringPrototypeSubstr, SymbolConstructor, SymbolPrototypeDescription, SymbolPrototypeToString, SyntaxError, TypeError: TypeError2, URIError, URL, arrayIncludes, arrayIndexOf, arrayIsArray, arrayJoin, arraySort, captureStackTraceOf, dataDescriptor, decodeURIComponentOf, encodeURIComponentOf, generatorNext, generatorThrow, globalObject, mathAbs, newURL, numberIsInteger, objectAssign, objectCreate, objectDefineProperties, objectFreeze, objectGetOwnPropertyNames, objectHasOwn, objectIs, objectIsExtensible, objectKeys, ownField, parseFloatOf, parseIntOf, reflectApply, reflectConstruct, reflectDefineProperty, reflectDeleteProperty, reflectGet, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectHas, reflectOwnKeys, reflectSet, reflectSetPrototypeOf, regExpExec, safeGenerator, setForEach, stringCharCodeAt, stringEndsWith, stringIncludes, stringIndexOf, stringLastIndexOf, stringOf, stringSlice, stringStartsWith, stringToLowerCase, symbolAsyncIterator, symbolFor, symbolIterator, symbolUnscopables, useCaptureStackTrace } = __nimbusLaunchCaptures;
 
   // ../core/dist/vfs/posix-access.js
   function posixAccess(entry, want, cred) {
@@ -623,10 +623,10 @@ var __nimbusResidentModule = (() => {
   function heapTables() {
     const files = new SafeMap();
     const chunks = new SafeMap();
-    const meta = /* @__PURE__ */ new Map();
+    const meta = new SafeMap();
     const ns = new SafeMap();
-    const byKey = /* @__PURE__ */ new Map();
-    const pages = /* @__PURE__ */ new Map();
+    const byKey = new SafeMap();
+    const pages = new SafeMap();
     const pageKey = (path, rev, part) => path + "\0" + rev + "\0" + part;
     let sorted = null;
     let used = 0;
@@ -775,7 +775,7 @@ var __nimbusResidentModule = (() => {
         if (row.ckey !== null) {
           let set = byKey.get(row.ckey);
           if (!set) {
-            set = /* @__PURE__ */ new Set();
+            set = new SafeSet();
             byKey.set(row.ckey, set);
           }
           set.add(path);

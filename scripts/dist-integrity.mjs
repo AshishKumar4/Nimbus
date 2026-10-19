@@ -254,6 +254,7 @@ export const INPUT_ROOTS = [
   'scripts/clean-dist.mjs',
   'scripts/compile-facet-bodies.mjs',
   'scripts/lib/compiled-bodies.mjs',
+  'scripts/lib/launch-captures-plugin.mjs',
   'scripts/ci/lib/output-patch.mjs',
   'packages/worker/wasm/bash/inputs.mjs',
   'packages/worker/runtime-contracts',

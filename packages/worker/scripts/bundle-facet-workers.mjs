@@ -922,6 +922,7 @@ async function main() {
   const relativeWasm = await bundleAsPreamble(
     join(coreRoot, 'src', '_shared', 'relative-wasm-paths.ts'),
     'relative-wasm-paths',
+    { bound: { primordials: '__nimbusPrimordials' } },
   );
   if (!/^function relativeWasmPaths\(/m.test(relativeWasm)) {
     throw new Error('[bundle-facet-workers/relative-wasm-paths] the bundle no longer declares function relativeWasmPaths');

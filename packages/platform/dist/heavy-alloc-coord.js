@@ -144,7 +144,7 @@ export class SupervisorAllocationBudget {
     reclaimable(reclaim) {
         this.reclaimers.add(reclaim);
         // A running ask queued before this launch parked is owed it, once the registration has returned.
-        if (this.credits.aheadQueued)
+        if (this.credits.aheadStarved)
             queueMicrotask(() => this.reclaimForRunning());
         return () => {
             this.reclaimers.delete(reclaim);
@@ -175,7 +175,7 @@ export class SupervisorAllocationBudget {
     /** Reclaim parked launches' credit, the oldest parked first, while a running ask waits: what a reclaim frees goes to running asks first. */
     reclaimForRunning() {
         for (const reclaim of this.reclaimers) {
-            if (!this.credits.aheadQueued)
+            if (!this.credits.aheadStarved)
                 return;
             this.reclaimers.delete(reclaim);
             reclaim();
@@ -221,6 +221,7 @@ export class SupervisorAllocationBudget {
             shrinkTo: (nextBytes) => {
                 credit.shrinkTo(nextBytes);
             },
+            tryGrowTo: (nextBytes) => credit.tryGrowTo(nextBytes),
             attribute: (attribution) => { if (!released)
                 holder.owner = { ...holder.owner, attribution }; },
             release: () => {

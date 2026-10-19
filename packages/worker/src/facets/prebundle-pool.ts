@@ -35,6 +35,8 @@ export interface PrebundleDispatch {
   readonly signal?: AbortSignal;
   take(): PrebundleSpec;
   transferred(): void;
+  /** Called as its call queues for a worker, when it has to wait for one. */
+  waiting(): void;
 }
 class PrebundleCreditUnavailable extends Error {
   constructor(readonly bytes: number) { super(`prebundle needs ${bytes} bytes of supervisor credit`); }
@@ -90,6 +92,8 @@ export class PrebundlePool implements BundlePoolProvider {
       let lease: SupervisorAllocationLease | null = null;
       let payload: PrebundleSpec | null = null;
       let unregister = () => {};
+      // A prepared slice is running work's to reclaim only while it waits (credit first: its admission, its slot, its worker).
+      let reclaimable = () => {};
       let slot = false;
       const transferred = () => {
         unregister();
@@ -122,16 +126,19 @@ export class PrebundlePool implements BundlePoolProvider {
           const running = task.running || runningLaunchAdmission(this.ctx);
           lease = await (running ? acquireSupervisorRunningAllocation : acquireSupervisorAllocation)(Math.max(1, task.bytes), signal, owner);
           prepare();
-          unregister = reclaimableSupervisorAllocation(() => {
-            transferred();
-            reclaimed.abort(new Error('the parked prebundle slice was reclaimed for running work'));
-          });
-          await resume?.(signal);
+          reclaimable = () => {
+            reclaimable = () => {};
+            unregister = reclaimableSupervisorAllocation(() => {
+              transferred();
+              reclaimed.abort(new Error('the parked prebundle slice was reclaimed for running work'));
+            });
+          };
+          await resume?.(signal, () => reclaimable());
           resume = undefined;
         }
-        await this.waitForSlot(signal);
+        await this.waitForSlot(signal, () => reclaimable());
         slot = true;
-        return await run({ specifier: task.specifier, signal, transferred, take: () => {
+        return await run({ specifier: task.specifier, signal, transferred, waiting: () => reclaimable(), take: () => {
           signal.throwIfAborted();
           unregister();
           unregister = () => {};
@@ -155,7 +162,8 @@ export class PrebundlePool implements BundlePoolProvider {
     }
   }
 
-  private waitForSlot(signal?: AbortSignal): Promise<void> {
+  /** A slot, now or in turn; `onWait` is called as it queues. */
+  private waitForSlot(signal?: AbortSignal, onWait?: () => void): Promise<void> {
     signal?.throwIfAborted();
     if (this.running < PRE_BUNDLE_CONCURRENCY) { this.running++; return Promise.resolve(); }
     return new Promise((resolve, reject) => {
@@ -169,6 +177,7 @@ export class PrebundlePool implements BundlePoolProvider {
       };
       this.waiting.push(waiter);
       signal?.addEventListener('abort', waiter.cancel, { once: true });
+      onWait?.();
     });
   }
 

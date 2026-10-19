@@ -26,9 +26,15 @@ export const SUPERVISOR_ANSWERED_METHODS = [
     ...FILESYSTEM_ANSWERED_RPC_METHODS,
     ...NODE_SHIM_RPC_METHODS,
 ];
-const ANSWERED = new Set(SUPERVISOR_ANSWERED_METHODS);
+// A table that inherits nothing, made as the module loads: a guest's every
+// supervisor call asks it, after its program may have replaced
+// Set.prototype.has (or put a name on Object.prototype).
+const ANSWERED = {};
+Reflect.setPrototypeOf(ANSWERED, null);
+for (const name of SUPERVISOR_ANSWERED_METHODS)
+    ANSWERED[name] = true;
 export function isSupervisorAnsweredMethod(name) {
-    return typeof name === 'string' && ANSWERED.has(name);
+    return typeof name === 'string' && ANSWERED[name] === true;
 }
 /** The refusal `error` is, or undefined when it is not one (no string `code`) and must still throw. */
 export function supervisorRefusal(error) {

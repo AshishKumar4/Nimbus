@@ -95,6 +95,7 @@ export const numberIsInteger = Number.isInteger;
 export const objectIs = Object.is;
 export const objectIsExtensible = Object.isExtensible;
 export const mathAbs = Math.abs;
+export const mathMin = Math.min;
 /**
  * Error.captureStackTrace as the runtime has it before any program code:
  * V8's (none where the engine has none), or the one the launch's cell
@@ -270,3 +271,14 @@ export function safeGenerator<A extends unknown[], R>(fn: (...args: A) => Genera
 export function ownField(object: object, key: string): unknown {
   return objectHasOwn(object, key) ? reflectGet(object, key) : undefined;
 }
+
+// The loader glue's own collections and objects (node-shims L3; design-guest-loader-primordials.md §8).
+/** Map.prototype.get of a Map the glue did not make (the launch's tables on globalThis). */
+export const mapGet: <K, V>(map: Map<K, V>, key: K) => V | undefined = uncurryThis(Map.prototype.get);
+export const MapConstructor = Map;
+export const objectPreventExtensions = Object.preventExtensions;
+export const symbolToStringTag: typeof Symbol.toStringTag = Symbol.toStringTag;
+export const objectDefineProperty = Object.defineProperty;
+export const arrayPush: <T>(list: T[], ...items: T[]) => number = uncurryThis(Array.prototype.push);
+export const arraySplice: <T>(list: T[], start: number, deleteCount: number) => T[] = uncurryThis(Array.prototype.splice);
+export const ObjectPrototypePropertyIsEnumerableOf: (object: object, key: PropertyKey) => boolean = uncurryThis(Object.prototype.propertyIsEnumerable);

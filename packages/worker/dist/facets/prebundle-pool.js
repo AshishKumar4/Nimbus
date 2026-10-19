@@ -66,6 +66,8 @@ export class PrebundlePool {
             let lease = null;
             let payload = null;
             let unregister = () => { };
+            // A prepared slice is running work's to reclaim only while it waits (credit first: its admission, its slot, its worker).
+            let reclaimable = () => { };
             let slot = false;
             const transferred = () => {
                 unregister();
@@ -103,16 +105,19 @@ export class PrebundlePool {
                     const running = task.running || runningLaunchAdmission(this.ctx);
                     lease = await (running ? acquireSupervisorRunningAllocation : acquireSupervisorAllocation)(Math.max(1, task.bytes), signal, owner);
                     prepare();
-                    unregister = reclaimableSupervisorAllocation(() => {
-                        transferred();
-                        reclaimed.abort(new Error('the parked prebundle slice was reclaimed for running work'));
-                    });
-                    await resume?.(signal);
+                    reclaimable = () => {
+                        reclaimable = () => { };
+                        unregister = reclaimableSupervisorAllocation(() => {
+                            transferred();
+                            reclaimed.abort(new Error('the parked prebundle slice was reclaimed for running work'));
+                        });
+                    };
+                    await resume?.(signal, () => reclaimable());
                     resume = undefined;
                 }
-                await this.waitForSlot(signal);
+                await this.waitForSlot(signal, () => reclaimable());
                 slot = true;
-                return await run({ specifier: task.specifier, signal, transferred, take: () => {
+                return await run({ specifier: task.specifier, signal, transferred, waiting: () => reclaimable(), take: () => {
                         signal.throwIfAborted();
                         unregister();
                         unregister = () => { };
@@ -145,7 +150,8 @@ export class PrebundlePool {
             }
         }
     }
-    waitForSlot(signal) {
+    /** A slot, now or in turn; `onWait` is called as it queues. */
+    waitForSlot(signal, onWait) {
         signal?.throwIfAborted();
         if (this.running < PRE_BUNDLE_CONCURRENCY) {
             this.running++;
@@ -163,6 +169,7 @@ export class PrebundlePool {
             };
             this.waiting.push(waiter);
             signal?.addEventListener('abort', waiter.cancel, { once: true });
+            onWait?.();
         });
     }
     /** The build facet is the Durable Object's, not the pool's: nothing to release. */
