@@ -88,6 +88,8 @@ async function runWork({ store, namespace, process, bridge, paths, packagePaths,
 await runPairedBenchmark({
   async run({ short, cleanup, withArms, sample }) {
     const iterations = short ? 120 : 24_000;
+    // A walk beneath a preopen (or through `..`) costs some 25 plain lookups: a twelfth as many keep its sample near the others', and the run within its time.
+    const iterationsOf = (kind) => (kind.startsWith('bridge-beneath') || kind === 'bridge-dotdot' ? iterations / 12 : iterations);
     const removedFiles = short ? 64 : 2000;
     await withArms(async (from) => make(await loadIsolatedCore(from, cleanup, {
       sources: CORE_CPU_SOURCES,
@@ -99,8 +101,8 @@ await runPairedBenchmark({
         try {
           await sample(kind, arms, (arm) => {
             if (walked) arm.seedRemoval();
-            return cpuMs(() => runWork(arm, kind, iterations));
-          }, { pairs: 36, warm: walked ? 2 : 12, iterations: walked ? removedFiles : iterations });
+            return cpuMs(() => runWork(arm, kind, iterationsOf(kind)));
+          }, { pairs: 36, warm: walked ? 2 : 12, iterations: walked ? removedFiles : iterationsOf(kind) });
         } finally {
           for (const [arm, lease] of leases) arm.engine.releaseExclusiveMutation(lease.owner);
         }
