@@ -67,9 +67,9 @@ const supervisor = {
   },
 };
 storeSource.admission.setStorage(undefined, supervisor);
-assert.equal(await storeSource.lazy.bootLazy(supervisor), true);
+assert.equal(await storeSource.view.bootLazy(supervisor), true);
 const device = (await authority.stat('/')).dev;
-const view = storeSource.lazy.namespaceView(supervisor, device, USER);
+const view = storeSource.view.namespaceView(supervisor, device, USER);
 
 /** A session that refuses every write with ENOSPC, as a full store does. */
 const refusing = new Proxy(authority, {

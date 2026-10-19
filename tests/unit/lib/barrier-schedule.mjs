@@ -58,6 +58,13 @@
  * decides a change of names a peer changed since its last input landed: it
  * cannot know of them, and the session may refuse what it decides.
  *
+ * The drawn schedules once missed a class a review found: every pair of
+ * overlapping changes ran one after the other, and nothing held a wave
+ * before it reached the session, so a chain of Node's own renames whose
+ * first landed alone could not arise. Node's own changes now fly together in
+ * program order, and ['stall'] holds its waves; barrier-oracle.mjs holds the
+ * model itself to refusing every answer no world gave.
+ *
  * Directory note: under tests/unit/lib/ so the suite does not run it as a test.
  */
 

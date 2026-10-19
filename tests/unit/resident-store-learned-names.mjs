@@ -62,8 +62,10 @@ async function session(tree) {
     await release.promise;
     return answer;
   };
+  let poisonNext = false;
   const supervisor = {
-    fsAcquire: (...args) => authority.acquire(...args),
+    // A poison is the session's answer to an ACQUIRE from no cursor.
+    fsAcquire: (...args) => (poisonNext ? (poisonNext = false, authority.acquire(null, 0, { namespace: true })) : authority.acquire(...args)),
     fsList: (...args) => authority.list(...args),
     readdir: (path) => answered('readdir', () => authority.readdir(path)),
     readlink: (path) => authority.readlink(path),
@@ -83,15 +85,17 @@ async function session(tree) {
   const store = createResidentStore();
   store.bindInMemory(64 * 1024 * 1024);
   store.admission.setStorage(undefined, supervisor);
-  assert.equal(await store.lazy.bootLazy(supervisor), true);
+  assert.equal(await store.view.bootLazy(supervisor), true);
   const device = (await authority.stat('/')).dev;
-  const view = store.lazy.namespaceView(supervisor, device, USER);
+  const view = store.view.namespaceView(supervisor, device, USER);
   const fs = residentFilesystem(authority, view);
   return {
     kernel,
     authority,
     view,
     fs,
+    /** The next barrier is answered with a poison. */
+    poison() { poisonNext = true; },
     /** Park the next reply of `name`; the returned wait resolves once something asked it. */
     hold(name) {
       holds.add(name);
@@ -187,8 +191,9 @@ const scenarios = {
     const first = s.fs.stat(k('d/f'));
     await asked();
     await s.kernel.unlink(k('d/f'));
-    // An ACQUIRE from no cursor is a poison by construction: the namespace starts again from nothing at the authority's cursor.
-    assert.equal(await s.view.admit(await s.authority.acquire(null, 0, { namespace: true })), false);
+    // A poison: the namespace starts again from nothing at the authority's cursor.
+    s.poison();
+    assert.equal((await s.view.barrier()).landed, true);
     s.release('fsReadBatch');
     await first;
     notServed(s.fs, k('d/f'), 'what a call that cannot wait reads of the removed file');

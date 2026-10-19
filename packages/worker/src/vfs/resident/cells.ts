@@ -337,7 +337,10 @@ export function createCells(
         const path = entry.path;
         if (namespaced && namespace.ready()) {
           const again = namespace.applyEntry(t, entry);
-          if (again !== null) relist[relist.length] = again;
+          if (again !== null) {
+            relist[relist.length] = again;
+            namespace.fence(again);
+          }
         }
         // A row at or above the reported revision already holds that mutation —
         // this facet's own write coming back, or bytes fetched after it; anything
@@ -369,7 +372,10 @@ export function createCells(
           });
           // Names under it may have become hidden or visible without being
           // named: an enumerated namespace relists that subtree.
-          if (namespaced && !namespace.lazy && subtree && stat && stat.type === 'directory') relist[relist.length] = path;
+          if (namespaced && !namespace.lazy && subtree && stat && stat.type === 'directory') {
+            relist[relist.length] = path;
+            namespace.fence(path);
+          }
         }
         let isHeld = false, stamped = 0, heldKey: string | null = null;
         const row = t.fileRevKey(path);
