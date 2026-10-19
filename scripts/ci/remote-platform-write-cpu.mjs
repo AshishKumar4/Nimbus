@@ -9,5 +9,6 @@ await remotePairedCpu({
   name: 'remote-platform-write-cpu',
   receipts: 'remote-platform-cpu',
   baselineDir: '.ci-platform-baseline',
-  command: ['node', 'tests/bench/platform-write-cpu.mjs'],
+  engine: 'node',
+  bench: 'tests/bench/platform-write-cpu.mjs',
 });

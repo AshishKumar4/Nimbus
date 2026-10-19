@@ -7,5 +7,6 @@ await remotePairedCpu({
   source: 'packages/worker/src',
   baselineDir: '.ci-launch-baseline',
   files: ['facets/manager.ts'],
-  command: ['bun', 'tests/bench/launch-credit-cpu.mjs'],
+  engine: 'bun',
+  bench: 'tests/bench/launch-credit-cpu.mjs',
 });

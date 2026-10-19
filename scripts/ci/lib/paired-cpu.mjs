@@ -60,15 +60,20 @@ const git = (...args) => {
  * the command line (`<baseline> [<revision>]`), on armada: RUNS processes,
  * each given the baseline's `files` or `directories` (paths under `source`;
  * every file there when both are omitted) under `baselineDir`, as
- * `command --baseline <baselineDir> --out <file>`. Writes
+ * `<engine> <bench> --baseline <baselineDir> --out <file>`. `engine` is the
+ * one the code runs on in production: `node` (V8, as workerd runs the
+ * guest's code) or `bun`; `--engine` runs another, for context, and the
+ * receipt names it. Writes
  * the receipt under NIMBUS_STATE/`receipts`, prints the verdicts, and exits
  * 0 only when every run finished and no kind is slower.
  * `--short` runs two small workload smoke checks without grading performance.
  *
- * @param {{ name: string, receipts: string, source: string, baselineDir: string, files?: string[], directories?: string[], command: string[] }} bench
+ * @param {{ name: string, receipts: string, source: string, baselineDir: string, files?: string[], directories?: string[], engine: 'node' | 'bun', bench: string }} bench
  */
-export async function remotePairedCpu({ name, receipts, source, baselineDir, files, directories, command }) {
-  const { values, positionals } = parseArgs({ options: { short: { type: 'boolean', default: false } }, allowPositionals: true });
+export async function remotePairedCpu({ name, receipts, source, baselineDir, files, directories, engine: graded, bench }) {
+  const { values, positionals } = parseArgs({ options: { short: { type: 'boolean', default: false }, engine: { type: 'string' } }, allowPositionals: true });
+  const engine = values.engine ?? graded;
+  if (engine !== 'node' && engine !== 'bun') throw new Error(`${name}: --engine is node or bun, not ${engine}`);
   const RUNS = values.short ? 2 : 8;
   const [baseline, revision = 'HEAD'] = positionals;
   if (!baseline || positionals.length > 2) throw new Error(`usage: ${name}.mjs <baseline> [<revision>] [--short]`);
@@ -84,8 +89,8 @@ export async function remotePairedCpu({ name, receipts, source, baselineDir, fil
   const measured = overlayCommit(repo, sha, names.map((path) => ({ path: `${baselineDir}/${path}`, bytes: git('show', `${base}:${source}/${path}`) })));
   const runSet = (label) => mapOnArmada({
     repo, sha: measured, files: [], items: Array.from({ length: RUNS }, (_, i) => i + 1), pool: RUNS, timeout: 1200,
-    label: `${name} ${sha.slice(0, 12)}${label}`,
-    command: [...command, '--baseline', baselineDir, '--out', '{out}', ...(values.short ? ['--short'] : [])],
+    label: `${name} ${sha.slice(0, 12)} ${engine}${label}`,
+    command: [engine, bench, '--baseline', baselineDir, '--out', '{out}', ...(values.short ? ['--short'] : [])],
   });
   const resultsOf = (set) => set.outputs.filter((output) => output !== null).map((output) => JSON.parse(output));
   const run = await runSet('');
@@ -98,7 +103,7 @@ export async function remotePairedCpu({ name, receipts, source, baselineDir, fil
   const directory = join(NIMBUS_STATE, receipts);
   mkdirSync(directory, { recursive: true });
   const receipt = join(directory, `${values.short ? 'short-' : ''}${sha.slice(0, 12)}-${run.jobId}.json`);
-  writeFileSync(receipt, `${JSON.stringify({ baseline: base, head: sha, short: values.short, performanceGraded: !values.short, verdicts, ...run, ...(confirmation ? { confirmation } : {}) }, null, 2)}\n`);
+  writeFileSync(receipt, `${JSON.stringify({ baseline: base, head: sha, engine, graded: engine === graded, short: values.short, performanceGraded: !values.short && engine === graded, verdicts, ...run, ...(confirmation ? { confirmation } : {}) }, null, 2)}\n`);
   console.log(`receipt: ${receipt}`);
   const sets = [run, ...(confirmation ? [confirmation] : [])];
   for (const set of sets) for (const outcome of set.outcomes) if (outcome.kind !== 'exited' || outcome.exitCode !== 0) console.log(outcome.tail);
@@ -108,5 +113,6 @@ export async function remotePairedCpu({ name, receipts, source, baselineDir, fil
   for (const verdict of partial) console.log(`incomplete: ${verdict.kind} was measured in ${verdict.runs} of ${RUNS} runs of a set`);
   const complete = partial.length === 0 && sets.every((set) => resultsOf(set).length === RUNS && set.outcomes.every((outcome) => outcome.kind === 'exited' && outcome.exitCode === 0));
   if (values.short) console.log(`short smoke: ${runs.length}/${RUNS} runs completed; performance is not graded`);
+  if (engine !== graded) console.log(`${engine}: context only; ${name} is graded on ${graded}`);
   process.exit(complete && verdicts.every((verdict) => verdict.failures.length === 0) ? 0 : 1);
 }
