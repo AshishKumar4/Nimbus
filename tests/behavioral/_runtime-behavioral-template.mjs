@@ -296,13 +296,15 @@ export async function openPage(browser, sid, opts = {}) {
   await reportPageNavigations(page);
   const consoleMessages = [];
   const pageErrors = [];
-  /** Every pre-bundled module's text as the page received it, by path: what it evaluated. */
+  /** Every pre-bundled module the page received, by path: its last text (what it evaluated), how many times it came, and its headers. */
   const receivedModules = new Map();
 
   page.on('response', (response) => {
     const path = new URL(response.url()).pathname;
     if (!path.includes('/@modules/')) return;
-    response.text().then((text) => receivedModules.set(path, text), () => {});
+    const responses = (receivedModules.get(path)?.responses ?? 0) + 1;
+    const headers = response.headers();
+    response.text().then((text) => receivedModules.set(path, { text, responses, headers }), () => {});
   });
   page.on('console', (msg) => {
     consoleMessages.push({
@@ -421,7 +423,8 @@ export async function openPage(browser, sid, opts = {}) {
       if (!at) return null;
       const [, path, named] = at;
       const line = Number(named);
-      const received = receivedModules.get(path) ?? null;
+      const got = receivedModules.get(path) ?? null;
+      const received = got?.text ?? null;
       const now = await page.evaluate(async (path) => {
         try {
           const response = await fetch(path, { cache: 'no-store' });
@@ -444,11 +447,21 @@ export async function openPage(browser, sid, opts = {}) {
         for (let i = 0; i < end; i++) if (a.charCodeAt(i) !== b.charCodeAt(i)) return i;
         return a.length === b.length ? null : end;
       };
+      // Where each 4 KiB block of what the page received sits in what is served now (-1: nowhere): a permutation or a substitution.
+      const blockMap = (got, served) => {
+        const map = [];
+        for (let at = 0; at < got.length; at += 4096) {
+          const block = got.slice(at, at + 4096);
+          map.push(served.startsWith(block, at) ? at : served.indexOf(block));
+        }
+        return map.map((found, i) => (found === i * 4096 ? '=' : `${i * 4096}<-${found}`)).filter((entry) => entry !== '=');
+      };
       return {
         path, line,
-        received: received === null ? null : excerpt(received),
+        received: received === null ? null : { ...excerpt(received), responses: got.responses, headers: got.headers },
         now: 'text' in now ? { status: now.status, bundleStatus: now.bundleStatus, ...excerpt(now.text) } : now,
         firstDifference: received !== null && 'text' in now ? firstDifference(received, now.text) : null,
+        movedBlocks: received !== null && 'text' in now ? blockMap(received, now.text) : null,
       };
     },
 
