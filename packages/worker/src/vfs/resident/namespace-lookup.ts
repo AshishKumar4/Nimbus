@@ -172,7 +172,7 @@ export function walkNamespace(
       start = stop + 1;
       if (visit !== undefined && !visit(prefix)) return 'EACCES';
       const step: string | null = table === null ? null : table ? `${table}/${name}` : name;
-      const word = own === undefined ? undefined : standing(t, step, own(prefix));
+      const word: OwnWord | undefined = own === undefined ? undefined : standing(t, step, own(prefix));
       let target: unknown;
       if (word !== undefined && removed(word)) {
         return { path, table: null, row: undefined, own: word };

@@ -9,5 +9,5 @@
 import { runScenarios } from './lib/resident-body.mjs';
 import { foundScenarios } from './lib/barrier-found.mjs';
 
-const { scenarios, gaps } = foundScenarios('node');
+const { scenarios, gaps } = foundScenarios('node', { renames: false });
 await runScenarios(import.meta.path, scenarios, { gaps });

@@ -204,11 +204,22 @@ async function run(kind, schedule) {
   }
 }
 
-/** The scenarios and gaps of engine `kind`. */
-export function foundScenarios(kind) {
+/** What the process renamed itself: Node's own renames, run apart so each file stays in the fast tier. */
+const OWN_RENAMES = new Set([
+  'a name the process renamed into place can be renamed again at once',
+  'a name the process renamed stays while a later rename of its waits on the session',
+  'a name the process renamed into place stays once the session acknowledges it after a barrier reported it',
+  'a file renamed in a directory then renamed with it shows at its last name while the first rename lands alone',
+  'a chain of renames whose first lands alone keeps the moved file at its last name',
+  'a file renamed in a directory then renamed with it is found once the first rename lands alone',
+]);
+
+/** The scenarios and gaps of engine `kind`: all, or only (`renames` true) or but (false) the process's own renames. */
+export function foundScenarios(kind, { renames } = {}) {
   const suffix = ` [${kind}]`;
+  const chosen = (name) => name.endsWith(suffix) && (renames === undefined || OWN_RENAMES.has(name.slice(0, -suffix.length)) === renames);
   return {
-    scenarios: Object.fromEntries(Object.entries(scenarios).filter(([name]) => name.endsWith(suffix))),
-    gaps: Object.fromEntries(Object.entries(GAPS).filter(([name]) => name.endsWith(suffix))),
+    scenarios: Object.fromEntries(Object.entries(scenarios).filter(([name]) => chosen(name))),
+    gaps: Object.fromEntries(Object.entries(GAPS).filter(([name]) => chosen(name))),
   };
 }
