@@ -15,7 +15,7 @@
 import { residentBytes, residentCellCost } from './cell-cost.js';
 import type { Coherence } from './coherence.js';
 import type { ResidentSupervisor } from './supervisor.js';
-import { SafeMap } from '@nimbus-sh/core/_shared/primordials.js';
+import { arrayIsArray, arrayPush, arraySplice, mathMax, NumberOf, SafeList, SafeMap } from '@nimbus-sh/core/_shared/primordials.js';
 
 export interface Admission {
   /** Whether the store is a one-shot's heap rather than a facet's SQLite. */
@@ -96,7 +96,8 @@ export function createAdmission(coherence: Coherence): Admission {
    * fill of a batch, and the batch's tail gave up with the ledger granting
    * every byte asked (astro dev: a hundred of zod's locales at once).
    */
-  const reserveQueue: { path: string; bytes: number; resolve: (held: boolean) => void }[] = [];
+  // A SafeList: a fill's reservation reaches it after the program may have replaced Array.prototype's methods.
+  const reserveQueue = new SafeList<{ path: string; bytes: number; resolve: (held: boolean) => void }>();
   let reserveServing = false;
 
   const tablesBytes = (): number => coherence.tables('a storage measure').bytes();
@@ -128,19 +129,22 @@ export function createAdmission(coherence: Coherence): Admission {
     try {
       for (let idle = 0; ; ) {
         const waiting = reserveQueue.length;
-        while (reserveQueue.length > 0 && holdRoom(reserveQueue[0]!.path, reserveQueue[0]!.bytes)) {
-          reserveQueue.shift()!.resolve(true);
+        while (reserveQueue.length > 0 && holdRoom(reserveQueue[0].path, reserveQueue[0].bytes)) {
+          const held = reserveQueue[0];
+          arraySplice(reserveQueue, 0, 1);
+          held.resolve(true);
         }
         if (reserveQueue.length === 0) return;
         idle = reserveQueue.length < waiting ? 0 : idle + 1;
         const before = cap;
         if (idle <= 8) {
           let need = 0;
-          for (const reservation of reserveQueue) need += reservation.bytes;
+          for (let i = 0; i < reserveQueue.length; i++) need += reserveQueue[i].bytes;
           await askGrant(need);
         }
         if (cap === before) {
-          for (const reservation of reserveQueue.splice(0)) reservation.resolve(false);
+          const refused = arraySplice(reserveQueue, 0, reserveQueue.length);
+          for (let i = 0; i < refused.length; i++) refused[i].resolve(false);
           return;
         }
       }
@@ -173,7 +177,7 @@ export function createAdmission(coherence: Coherence): Admission {
     if (grantAsk) {
       return grantAsk.then(() => dbBytes() + reservedBytes + bytes <= cap! || askGrant(bytes));
     }
-    const want = Math.max(0, dbBytes() + reservedBytes + bytes - cap);
+    const want = mathMax(0, dbBytes() + reservedBytes + bytes - cap);
     const named = facet;
     grantAsk = (async () => {
       try {
@@ -231,14 +235,14 @@ export function createAdmission(coherence: Coherence): Admission {
       return true;
     },
     unpin(bytes) {
-      pinnedBytes = Math.max(0, pinnedBytes - bytes);
+      pinnedBytes = mathMax(0, pinnedBytes - bytes);
     },
     get heldBytes() { return heldBytes; },
     addHeld(bytes) { heldBytes += bytes; },
     heldLimit(maxBytes) {
       // In a facet the held cells have their own bound. In a one-shot's heap they
       // share the store's: what the cap leaves beside the tables.
-      return inHeap ? Math.max(0, Number(cap) - tablesBytes() - namespaceOverlayBytes - namespaceReserveBytes) : maxBytes;
+      return inHeap ? mathMax(0, NumberOf(cap) - tablesBytes() - namespaceOverlayBytes - namespaceReserveBytes) : maxBytes;
     },
     namespaceRefusal(bytes) { return refusal(dbBytes() + bytes); },
     rowRefusal(growth) { return refusal(tablesBytes() + heldBytes + namespaceOverlayBytes + namespaceReserveBytes + growth); },
@@ -253,7 +257,7 @@ export function createAdmission(coherence: Coherence): Admission {
       if (cap === null) return Promise.resolve(true);
       if (reserveQueue.length === 0 && holdRoom(path, bytes)) return Promise.resolve(true);
       return new Promise((resolve) => {
-        reserveQueue.push({ path, bytes, resolve });
+        arrayPush(reserveQueue, { path, bytes, resolve });
         void serveReserves();
       });
     },
@@ -263,9 +267,11 @@ export function createAdmission(coherence: Coherence): Admission {
     /** Room for what an ACQUIRE answer pushes, asked for before it is applied. */
     async roomForPushed(result) {
       const answer = result as { paths?: unknown } | null | undefined;
-      if (cap === null || !answer || !Array.isArray(answer.paths)) return;
+      if (cap === null || !answer || !arrayIsArray(answer.paths)) return;
+      const paths = answer.paths as ({ bytes?: unknown } | null | undefined)[];
       let bytes = 0;
-      for (const entry of answer.paths as ({ bytes?: unknown } | null | undefined)[]) {
+      for (let i = 0; i < paths.length; i++) {
+        const entry = paths[i];
         if (entry && entry.bytes != null) bytes += residentCellCost(residentBytes(entry.bytes));
       }
       if (bytes > 0) await ensureRoom(bytes);
