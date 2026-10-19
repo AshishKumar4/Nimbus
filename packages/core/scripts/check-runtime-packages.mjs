@@ -28,9 +28,8 @@
  */
 
 import { createHash } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
-import { createReadStream, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { createGunzip } from 'node:zlib';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -57,7 +56,7 @@ export const PUBLISH_FIX = 'the publish workflow (.github/workflows/publish.yml)
 export async function checkRuntimePackage({ name, version, dir, registry, runThroughCore, tarball }) {
   const problems = [];
   const built = sha256(readFileSync(join(dir, 'manifest.json')));
-  const archive = tarball ? await unpackRuntime(tarball) : null;
+  const archive = tarball ? unpackRuntime(tarball) : null;
 
   try {
     try {
@@ -103,17 +102,14 @@ export async function checkRuntimePackage({ name, version, dir, registry, runThr
   }
 }
 
-async function unpackRuntime(tarball) {
+/**
+ * `tarball` unpacked whole, by tar: a runtime's blobs run past the 20 MB a
+ * workspace's own tarball reader keeps (clang's compiler is 31 MB).
+ */
+function unpackRuntime(tarball) {
   const dir = mkdtempSync(join(tmpdir(), 'nimbus-runtime-tarball-'));
   try {
-    const tar = async function* () {
-      for await (const chunk of createReadStream(tarball).pipe(createGunzip())) yield new Uint8Array(chunk);
-    };
-    for await (const entry of streamPackageEntries(tar())) {
-      const path = join(dir, entry.name);
-      mkdirSync(join(path, '..'), { recursive: true });
-      writeFileSync(path, entry.data);
-    }
+    execFileSync('tar', ['-xzf', tarball, '-C', dir, '--strip-components=1'], { stdio: ['ignore', 'ignore', 'pipe'] });
     return { dir };
   } catch (error) {
     rmSync(dir, { recursive: true, force: true });
