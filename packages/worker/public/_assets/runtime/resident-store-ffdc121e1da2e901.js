@@ -1196,8 +1196,8 @@ var __nimbusResidentModule = (() => {
           const named = ownField(word, "link");
           const link = typeof named === "string" ? named : void 0;
           if (link !== void 0 && leaf && !followLeaf) {
-            const at = nsRowAt(t, link) !== void 0 ? link : prefix;
-            return { path, table: at, row: nsRowAt(t, at), own: word };
+            const at = nsRowAt(t, link) !== void 0 ? link : step;
+            return { path, table: at, row: at === null ? void 0 : nsRowAt(t, at), own: word };
           }
           if (word.from === void 0) return { path, table: null, row: void 0, own: { absent: true } };
           if (link !== void 0) target = `/${word.from}`;
