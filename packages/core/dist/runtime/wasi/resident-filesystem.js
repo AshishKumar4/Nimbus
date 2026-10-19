@@ -1515,7 +1515,14 @@ export function residentFilesystem(session, resident, delegation) {
                 named = walk.key;
                 if (!decidable(walk.key, walk))
                     return DELEGATE;
-                return holder.setattr(walk.key, attrs) ? undefined : DELEGATE;
+                if (holder.setattr(walk.key, attrs))
+                    return undefined;
+                // A held name its provisional decisions touch is theirs (the grant does not decide it): its times or owner are
+                // decided there, judged as the holder judges them. A mode stays the session's, which judges a confined principal's.
+                if ('mode' in attrs || !holder.holds(walk.key) || !holder.provisional.touches(walk.key))
+                    return DELEGATE;
+                const row = entryAt(walk.key);
+                return row !== undefined && holder.provisional.setattr(walk.key, pathOf(path), attrs, row) ? undefined : DELEGATE;
             }));
             return after(local, (done) => {
                 if (done !== DELEGATE)

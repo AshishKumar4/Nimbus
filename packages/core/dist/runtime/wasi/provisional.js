@@ -1493,9 +1493,19 @@ export function provisional(host) {
                 }
                 // Its records answered before the barrier began are the view's now: it is the view's version with the rest folded over it.
                 // One made here and never numbered (its creating open refused, or not answered yet) the view has nothing of: as a file no name leads to.
-                const retired = inode.records.filter((record) => record.answered && record.answeredAt < begun);
+                const retired = inode.records.length === 0 ? NO_RECORDS : inode.records.filter((record) => record.answered && record.answeredAt < begun);
                 if (retired.length === 0 && inode.records.length > 0)
                     continue;
+                // Nothing of it pending and nothing open on it (a file given back, say): it goes, and the view is not asked what it is.
+                if (inode.records.length === 0 && inode.descs === 0 && inode.credit === 0) {
+                    inode.base = null;
+                    inode.state = null;
+                    touched.delete(inode);
+                    fit(inode);
+                    release(inode);
+                    if (inodeAtNumber(inode.dev, inode.ino) !== inode)
+                        continue;
+                }
                 const seen = viewed(inode);
                 if (seen === undefined) {
                     // No name leads to it in the view: what it holds is what retired made of it, where its baseline's bytes can say so
