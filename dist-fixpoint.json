@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "0c0a46cd27cfddb3274f8a53812f06e2ab9bdae5a1b2caed8f0448c30081084d",
+  "fingerprint": "0fe40529f2b8918028c69c0d632bb84c7ce4a00b79660839630061c75eb27e49",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2308,9 +2308,9 @@
     "packages/worker/dist/esbuild-wasm-bundle.generated.d.ts": "65f3faa0f690d5e5ddbede777309d6ea0695dd5df91877ad9d2b6360b6cb473e",
     "packages/worker/dist/esbuild-wasm-bundle.generated.d.ts.map": "32c7ec40b6566f522c02f6b3855ea4a4ad7749b2648fd7b35f8d15263244534b",
     "packages/worker/dist/esbuild-wasm-bundle.generated.js": "887b56dd376faf698b57e81d77b2ed24a3e112c17f4574ee8caabff68af670dc",
-    "packages/worker/dist/facets/build-facet.d.ts": "1f6c2dd548c08b743f705161f82adf1b5592946188df2ae7b50236a712b2da79",
-    "packages/worker/dist/facets/build-facet.d.ts.map": "5bc7d0270bdea4f4547815551d7c4434b5251d86998cdbdfe7f81f497c3513a4",
-    "packages/worker/dist/facets/build-facet.js": "990d06e820dd99b96826d83aa8d0c04973204c95b90338965d9882cdbde0733b",
+    "packages/worker/dist/facets/build-facet.d.ts": "b72a219f83dec824f6858ea953bd25c321694868b7ced1f35195baefab3c8be9",
+    "packages/worker/dist/facets/build-facet.d.ts.map": "3f9905f721ad10cfa3bd1f74982a63b2e098713d7c44b410abe62b81ec5f74d7",
+    "packages/worker/dist/facets/build-facet.js": "f2fe7880ed40afcf0da99a1b10187dc6f1329a6e4851a799f8090746a918d5d3",
     "packages/worker/dist/facets/cirrus-real.d.ts": "afe50036a0d0fd759b29130fa227bac68fe8c27d7bedb27fb2f1cdb2046257c5",
     "packages/worker/dist/facets/cirrus-real.d.ts.map": "1cb78ea762070900772f6fd4e2ddb0060c22de04815613ea3361b9a3cb0384f2",
     "packages/worker/dist/facets/cirrus-real.js": "e46aa983550600d2526ddca58890f29a3d594a008ba29721531cdfd0e18668cc",
@@ -3217,7 +3217,7 @@
     "packages/worker/src/cirrus-plugin-react.generated.ts": "1d68ba0bad0299c7b9f9a7e9284670db138414791b53e9ef8bea64617584be87",
     "packages/worker/src/esbuild-cli-artifact.generated.ts": "f2f4bc3d3bdab2c5e195370855386d7d996980d2b42c0709bdbe9348989134f2",
     "packages/worker/src/esbuild-wasm-bundle.generated.ts": "93fc8bda7345020fd8556518b3f02b965020b1a777f94c8bfa1570501632eca4",
-    "packages/worker/src/facets/build-facet.ts": "89c1fbb4280a03947a7bbeb3d0c3e7228c9943d1d24bb04636031952e0398c20",
+    "packages/worker/src/facets/build-facet.ts": "9d234616cf4a4524e2da8d0397fcc0133abb5297325b5e32445fffe326c79d09",
     "packages/worker/src/facets/cirrus-real.ts": "b04599d15b8f40e373aa2769e5bd42d3364b963c649b0cd706fc1b200308a4ba",
     "packages/worker/src/facets/compose.ts": "247f9265997fd043a4f61a043dfd8d66905ef4abd31bdf382c1e48b8dd17db33",
     "packages/worker/src/facets/data-plan.ts": "589bdb5e5257b943cbf7a2ba791b5cabfc486766b163dd7ab15f041a5d07170f",
