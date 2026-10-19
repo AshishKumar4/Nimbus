@@ -40,6 +40,17 @@ published independently in the `@nimbus-sh` npm scope.
   😀 leaves nothing rather than half of it, `?` and `case 😀 in ?)` match it
   whole, `${#x}` is 1, and IFS=😀 joins and splits by 😀 without splitting
   😁. Before, these could leave a lone surrogate in a value.
+- Fixed: a Vite dev server with Tailwind v4 could serve its first
+  stylesheet without the classes the app's components use, about one
+  start in three. Each time the dev server read a source file it had
+  already been given, the copy was written again, and once its store was
+  full the write was refused and the file dropped. Tailwind's scanner then
+  skipped the file. A read of bytes the store already holds no longer
+  rewrites them.
+- Fixed: a text file of more than about 350,000 characters with an emoji or
+  other character outside the Basic Multilingual Plane at a chunk boundary
+  read back with two replacement characters in place of it, from a
+  process's resident store.
 - Fixed: the shell reads quoting as bash does wherever quoting decides what
   a word is.
   - A quoted reserved word is a command: `'if' true` runs a command named
@@ -63,7 +74,6 @@ published independently in the `@nimbus-sh` npm scope.
   - `${v/pat/rep}` and `${v//pat/rep}` replace the longest match (`${v/*/X}`
     is `X`).
   - A here-document inside `$(…)` may hold an unbalanced quote or `)`.
-
   Before, these read a word's text after its quotes were gone.
 - Fixed: a bash step that failed inside its facet said only "facet returned
   an invalid payload"; it now says what the step failed with, as a python

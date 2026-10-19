@@ -5,7 +5,7 @@
  * fetch with (sync.ts, lazy.ts). Every bound here is the session's.
  */
 import { FS_LIST_PAGE_LIMIT, FS_LIST_TREE_MAX_ENTRIES, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES, } from '@nimbus-sh/core/constants.js';
-import { RESIDENT_ROW_BYTES, namespaceRowBytes, residentBytes } from './cell-cost.js';
+import { RESIDENT_ROW_BYTES, namespaceRowBytes, residentBytes, residentCellCost } from './cell-cost.js';
 import { nsDescribes, nsKey, nsSplit } from './namespace.js';
 import { RESIDENT_CHUNK_BYTES } from '../facet-resident-limits.js';
 import { RK_BINARY, RK_OWN_WRITE } from './tables.js';
@@ -438,12 +438,9 @@ export function createTransport(coherence, admission, namespace, cells) {
             if (before.type === 'file' && bytes !== null && bytes.byteLength === Number(before.size)
                 && after && !after.error && after.stat && after.stat.type === 'file'
                 && Number(after.stat.ino) === Number(before.ino) && Number(after.stat.revision) === Number(before.revision)
-                && await admission.ensureRoom(bytes.byteLength + RESIDENT_ROW_BYTES)) {
-                // Whatever was held there is replaced whole, never left headless or with stray parts.
-                t.fileDelete(last);
-                t.chunkDelete(last);
-                if (cells.putChunk(t, last, 0, bytes))
-                    cells.putHead(t, last, RK_BINARY, bytes.byteLength, 1, Number(before.revision) || 0, null);
+                && await admission.ensureRoom(residentCellCost(bytes))) {
+                // As a read's bytes: dating what is held already, replacing the rest whole.
+                cells.fill(last, bytes, Number(before.revision) || 0);
             }
         }
         return true;
