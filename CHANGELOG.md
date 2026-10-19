@@ -12,6 +12,10 @@ published independently in the `@nimbus-sh` npm scope.
   nothing an earlier process left. A worker is used again only after a
   process that ended clean, was not killed, and never reached the network
   (a socket); a session keeps at most two idle per interpreter or tool.
+  Measured on two Previews deployed side by side, 8 runs each (medians):
+  `python3 -c pass` 513 ms against 1256, `python3 -c 'import json, re'` 819
+  against 1828, `clang -c` 340 against 1929, and `clang` compile and link
+  570 against 2825.
 - Changed: a `ruby` one-shot (`ruby -e`, `gem --version`, `bundle --version`
   and the like) runs on one of its session's warm Ruby workers, which keep
   ruby+stdlib.wasm compiled, instead of loading it into a new worker every
