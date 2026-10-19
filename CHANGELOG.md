@@ -5,6 +5,28 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Changed (core): the resident filesystem decides what a caller that
+  cannot wait changes outside a subtree the process holds (its
+  `synchronous` view). Such a change is answered at once, logged through
+  the process's one client, and seen by the process until the view has
+  the session's version of it. A descriptor names an inode, as on Linux.
+  This is the engine Node's `fs` moves onto next, and that move deletes
+  the shim's own. Each file the holder decides costs more CPU: on
+  holder-ops-cpu against main, writing 1,000 files is 14% slower, a tar
+  extract 5% and a checkout 6%. Clone and warm install take the same wall
+  time (paired against main, no detectable change).
+- Changed (core): an operation a process decides by name without waiting
+  carries the file it was decided on (W7 `expect`): the file's number,
+  none, or the open that made it. The session refuses it before any
+  effect where the name leads elsewhere by then (a peer replaced it, or a
+  link there leads to another file): ENOENT where a file was expected,
+  EEXIST where none was, EXDEV on a mount. The refusal is reported as any
+  refusal of a decision is. Before, the operation acted on whatever the
+  name led to, and an open's answer that named another file was merged
+  into it.
+- Fixed: `utimes`/`futimes` with `'now'` (or an omitted time) by a file's
+  owner now succeeds when the owner lacks write permission, as
+  utimensat(2) allows. Before, it was refused `EACCES`.
 - Fixed: the shell reads quoting as bash does wherever quoting decides what
   a word is.
   - A quoted reserved word is a command: `'if' true` runs a command named
@@ -380,10 +402,6 @@ The 2026-10-14 and 2026-10-15 versions reached production but were never publish
 - Fixed: `child_process.spawn(' node')` (a command with spaces or a BOM
   around its name) finds no program (ENOENT), as in Node. Before, the name
   was trimmed and `node` ran.
-- Fixed: `utimes`/`futimes` with `'now'` (or an omitted time) by a file's
-  owner now succeeds when the owner lacks write permission, as
-  utimensat(2) allows. Before, it was refused `EACCES`.
-
 - Breaking (worker): `vendor/git.generated.mjs` no longer exports
   `gitHttp`, cf-git's own HTTP client (isomorphic-git/http/web), nor
   declares it (`vendor/git-http.generated.d.ts` is gone). Nimbus's git
