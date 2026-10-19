@@ -1812,17 +1812,22 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
     };
     const live = () => grants.filter((grant) => !grant.ended);
     const allowedRoot = (root) => root !== "" && !(options.isHomeRoot?.(root) ?? false);
-    const close = async (grant) => {
+    const close = (grant) => {
+      if (grant.closed !== void 0) return grant.closed;
+      const wasClosing = grant.closing;
       grant.closing = true;
       try {
         options.freezing?.(grant.root);
       } catch {
-        grant.closing = false;
-        return false;
+        grant.closing = wasClosing;
+        return Promise.resolve(false);
       }
-      await client.flush();
-      await end(grant);
-      return true;
+      grant.closed = (async () => {
+        await client.flush();
+        await end(grant);
+        return true;
+      })();
+      return grant.closed;
     };
     const end = async (grant) => {
       if (grant.ended) return;
