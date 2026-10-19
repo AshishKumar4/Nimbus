@@ -128,10 +128,12 @@ class CreditLane {
     let recheck: ReturnType<typeof setInterval> | undefined;
     const place = () => {
       queue.push(waiter);
-      recheck ??= setInterval(() => {
+      if (recheck !== undefined) return;
+      const timer = setInterval(() => {
         if (queue.includes(waiter)) this.drain();
-        else { clearInterval(recheck); recheck = undefined; }
+        else { clearInterval(timer); recheck = undefined; }
       }, CREDIT_TURN_MS);
+      recheck = timer;
     };
     const remove = () => {
       const index = queue.indexOf(waiter);
