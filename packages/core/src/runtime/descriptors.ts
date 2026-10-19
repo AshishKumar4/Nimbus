@@ -386,6 +386,11 @@ export class Descriptors {
     return this.opened(id).node.path();
   }
 
+  /** Whether descriptor `id`'s description is a mount's (its path its own name for it, not a SQLite name), however it answers. */
+  mounted(id: number): boolean {
+    return this.opened(id).node.mounted === true;
+  }
+
   /** The name descriptor `id` was opened by: what its errors name, its file having none now perhaps. */
   openedAs(id: number): string {
     return this.opened(id).handle.path;

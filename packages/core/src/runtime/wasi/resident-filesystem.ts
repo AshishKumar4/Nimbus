@@ -529,7 +529,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     const walk = walkBeneath(root, { root, path: name, beneath: true }, follow, store.cred, () => false);
     if (crossed !== undefined) crossed.length = 0;
     for (let step = walk.next(); ;) {
-      if (step.done) return step.value;
+      if (step.done) return step.value === null ? null : step.value.reached;
       const lookup = step.value;
       if ('readlink' in lookup) {
         const entry = store.entry(keyOf(lookup.readlink));
