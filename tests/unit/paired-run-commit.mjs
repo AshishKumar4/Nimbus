@@ -1,0 +1,92 @@
+#!/usr/bin/env bun
+// The commit a paired CPU run sends (scripts/ci/lib/paired-cpu.mjs
+// pairedRunCommit): the measured revision's tree, with this checkout's bench
+// harness laid over it (the bench and the tests/ and scripts/ files it
+// imports, transitively), so an older revision is measured with the bench as
+// it is now, and the baseline's whole tree under the run's baseline directory.
+// A harness that imports workspace package code is refused (it is each arm's
+// own), and none of this repository's paired benches does.
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { benchHarness, pairedRunCommit } from '../../scripts/ci/lib/paired-cpu.mjs';
+
+const root = mkdtempSync(join(tmpdir(), 'paired-run-commit-'));
+const env = { ...process.env, GIT_AUTHOR_NAME: 'a', GIT_AUTHOR_EMAIL: 'a@x', GIT_COMMITTER_NAME: 'a', GIT_COMMITTER_EMAIL: 'a@x' };
+const git = (cwd, ...args) => execFileSync('git', args, { cwd, env, encoding: 'utf8' }).trim();
+const put = (at, path, text) => {
+  mkdirSync(dirname(join(at, path)), { recursive: true });
+  writeFileSync(join(at, path), text);
+};
+
+try {
+  const repo = join(root, 'repo');
+  mkdirSync(repo);
+  git(repo, 'init', '-q', '-b', 'main');
+  // The baseline, and an older revision whose bench is the old protocol's.
+  put(repo, 'packages/p/src/m.ts', "export const side = 'baseline';\n");
+  put(repo, 'tests/bench/x-cpu.mjs', "import './lib/old.mjs';\n");
+  put(repo, 'tests/bench/lib/old.mjs', 'export {};\n');
+  git(repo, 'add', '-A');
+  git(repo, 'commit', '-q', '-m', 'baseline');
+  const baseline = git(repo, 'rev-parse', 'HEAD');
+  put(repo, 'packages/p/src/m.ts', "export const side = 'revision';\n");
+  git(repo, 'commit', '-q', '-am', 'revision');
+  const revision = git(repo, 'rev-parse', 'HEAD');
+
+  // This checkout: the bench as it is now, and what it imports.
+  const from = join(root, 'checkout');
+  put(from, 'tests/bench/x-cpu.mjs', [
+    '#!/usr/bin/env bun',
+    "import { a } from './lib/new.mjs';",
+    "import { s } from '../../scripts/lib/s.mjs';",
+    "const lazy = () => import(`../unit/lib/h.mjs`);",
+    "const required = () => require('./lib/req.cjs');",
+    "export { a, s, lazy, required };",
+  ].join('\n'));
+  put(from, 'tests/bench/lib/req.cjs', 'module.exports = {};\n');
+  put(from, 'tests/bench/lib/new.mjs', "export * from './deeper.mjs';\nexport const a = 1;\n");
+  put(from, 'tests/bench/lib/deeper.mjs', 'export const d = 1;\n');
+  put(from, 'scripts/lib/s.mjs', 'export const s = 1;\n');
+  put(from, 'tests/unit/lib/h.mjs', 'export {};\n');
+  put(from, 'packages/p/src/m.ts', "export const side = 'checkout';\n");
+
+  assert.deepEqual(benchHarness('tests/bench/x-cpu.mjs', from), [
+    'scripts/lib/s.mjs', 'tests/bench/lib/deeper.mjs', 'tests/bench/lib/new.mjs', 'tests/bench/lib/req.cjs', 'tests/bench/x-cpu.mjs', 'tests/unit/lib/h.mjs',
+  ], "the bench and the tests/ and scripts/ files it imports, transitively, of every form (a template-literal import, a require)");
+
+  const run = pairedRunCommit({ repo, revision, baseline, baselineDir: '.ci-x-baseline', bench: 'tests/bench/x-cpu.mjs', from });
+  const show = (path) => git(repo, 'show', `${run}:${path}`);
+  assert.equal(git(repo, 'rev-parse', `${run}^`), revision);
+  assert.match(show('tests/bench/x-cpu.mjs'), /lib\/new\.mjs/, "the bench is this checkout's");
+  assert.equal(show('tests/bench/lib/deeper.mjs'), 'export const d = 1;');
+  assert.equal(show('scripts/lib/s.mjs'), 'export const s = 1;');
+  assert.equal(show('packages/p/src/m.ts'), "export const side = 'revision';", "the measured code is the revision's");
+  assert.equal(git(repo, 'rev-parse', `${run}:.ci-x-baseline`), git(repo, 'rev-parse', `${baseline}^{tree}`), "the baseline's whole tree");
+
+  // A harness that imports workspace package code, at any depth and in any form, is refused.
+  for (const text of [
+    "export { side } from '../../../packages/p/src/m.ts';\n",
+    "import /* a comment */ '../../../packages/p/src/m.ts';\n",
+    "const later = () => import(`../../../packages/p/src/m.ts`);\n",
+  ]) {
+    put(from, 'tests/bench/lib/deeper.mjs', text);
+    assert.throws(() => benchHarness('tests/bench/x-cpu.mjs', from), /deeper\.mjs imports \.\.\/\.\.\/\.\.\/packages\/p\/src\/m\.ts: a paired bench's harness takes no workspace package code/, text);
+  }
+} finally {
+  rmSync(root, { recursive: true, force: true });
+}
+
+// This repository's paired benches: each harness takes no workspace package code.
+const repository = join(import.meta.dirname, '../..');
+const scripts = readdirSync(join(repository, 'scripts/ci')).filter((name) => /^remote-.*-cpu\.mjs$/.test(name));
+assert.ok(scripts.length > 10);
+for (const script of scripts) {
+  const bench = readFileSync(join(repository, 'scripts/ci', script), 'utf8').match(/bench: '([^']+)'/)?.[1];
+  assert.ok(bench !== undefined, `${script} names its bench`);
+  assert.ok(benchHarness(bench, repository).includes(bench), script);
+}
+
+console.log('paired-run-commit: ok');

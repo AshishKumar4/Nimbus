@@ -1,13 +1,10 @@
 #!/usr/bin/env bun
 // The shell's own work, CPU per arm: lines of builtins read one after another,
 // a loop, function calls, pipelines of builtins (each element a child shell),
-// and words split and matched as patterns. Independent copies of the shell
-// (substrate/lifo/shell) for main, main's null arm, and head, each on a fresh
-// filesystem.
+// and words split and matched as patterns. Each arm is its side's whole tree
+// (main, main's null arm, and head): its shell, commands, supervisor and
+// filesystem, a fresh filesystem each sample.
 import assert from 'node:assert/strict';
-import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
-import { createDefaultRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
-import { memoryFiles } from '../unit/lib/test-box.mjs';
 import { cpuMs } from './lib/paired-cpu.mjs';
 import { LIFO_SHELL_CPU_SOURCES } from './lib/cpu-sources.mjs';
 import { loadIsolatedCore } from './lib/isolated-core.mjs';
@@ -15,7 +12,12 @@ import { runPairedBenchmark } from './lib/paired-runner.mjs';
 
 let ran = 0;
 
-function shellOf({ 'substrate/lifo/shell/Shell.ts': { Shell } }) {
+function shellOf({
+  'substrate/lifo/shell/Shell.ts': { Shell },
+  'runtime/session-process-supervisor.ts': { SessionProcessSupervisor },
+  'substrate/lifo/commands/registry.ts': { createDefaultRegistry },
+  'tests/unit/lib/test-box.mjs': { memoryFiles },
+}) {
   const { files } = memoryFiles();
   const terminal = { write() {}, writeln() {}, onData() {}, cols: 80, rows: 24, focus() {}, clear() {} };
   return new Shell(terminal, files, createDefaultRegistry(), { HOME: '/home/user', USER: 'user', PATH: '/usr/bin:/bin' }, new SessionProcessSupervisor());
@@ -31,11 +33,12 @@ const WORK = {
 };
 
 await runPairedBenchmark({
-  source: LIFO_SHELL_CPU_SOURCES.source,
   async run({ short, cleanup, withArms, sample }) {
     const n = short ? 20 : 400;
     await withArms((from) => loadIsolatedCore(from, cleanup, {
-      sources: LIFO_SHELL_CPU_SOURCES, modules: ['substrate/lifo/shell/Shell.ts'],
+      sources: LIFO_SHELL_CPU_SOURCES,
+      modules: ['substrate/lifo/shell/Shell.ts', 'runtime/session-process-supervisor.ts', 'substrate/lifo/commands/registry.ts'],
+      helpers: ['tests/unit/lib/test-box.mjs'],
     }), async (arms) => {
       for (const [kind, script] of Object.entries(WORK)) {
         const text = script(kind === 'pipelines' ? Math.ceil(n / 4) : n);
