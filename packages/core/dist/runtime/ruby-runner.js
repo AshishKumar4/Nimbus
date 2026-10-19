@@ -565,13 +565,16 @@ async function dispatchRubyFacet(facets, warmKeys, syscalls, args, image, pid, s
         warm,
     });
     try {
+        // Killed while its image was read: it never starts.
+        signal.throwIfAborted();
         const rawResult = await facet.submit(RUBY_CALL_TASK, { ...toRubyCallArgs(args), supervisorPid: pid }, {
             // No deadline: a process runs until it exits or is killed. A kill or
             // Ctrl-C ends the facet too, where the host can.
             signal,
         });
         const result = normalizeRubyFacetResult(rawResult);
-        if (result?.reusable === true && result.error === undefined)
+        // A process killed mid-run may still be running on its worker: its key is not used again.
+        if (result?.reusable === true && result.error === undefined && !signal.aborted)
             warmKeys.give(warm);
         return result || {
             exitCode: 1,
@@ -597,10 +600,11 @@ async function dispatchRubyFacet(facets, warmKeys, syscalls, args, image, pid, s
     }
 }
 /**
- * Compose the facet preamble. It is evaluated once in the facet's scope,
- * instantiates ruby+stdlib.wasm from the module the host compiled, and
- * bootstraps the Ruby VM. Per-call __rubyRun then drives
- * `rb-eval-string-protect` for each invocation.
+ * Compose the facet preamble. It is evaluated once in the facet's scope and
+ * defines how a Ruby VM is booted from the module the host compiled; a run
+ * boots one (a one-shot's, __rubyRunProcess) or uses the one its process
+ * keeps (a resident's or the prompt's, __rubyRun), then drives
+ * `rb-eval-string-protect`.
  *
  * Exported because the resident-process substrate composes the same source
  * into its own worker module: a server and a `ruby -e` one-liner are the same
@@ -727,12 +731,12 @@ class __NimbusRubySlab {
 
 // ── A Ruby VM ────────────────────────────────────────────────────────
 //
-// ruby+stdlib.wasm instantiated from the Module the host compiled, with
-// imports of its own, and booted as far as it may before a request
-// (ruby-init waits for the first run: it reads entropy). Its state is its
-// instance's memory and these imports' closures; nothing of it is left at
-// module scope, so a warm worker's next process boots a VM of its own
-// (__rubyRunProcess).
+// ruby+stdlib.wasm instantiated from the Module the host compiled when it
+// loaded the worker, with imports of its own; booted in a request, by the
+// run that needs it (ruby-init and the prelude follow, on its first run).
+// Its state is its instance's memory and these imports' closures; nothing
+// of it is left at module scope, so a warm worker's next process boots a VM
+// of its own (__rubyRunProcess).
 async function __nimbusRubyBoot() {
   const wasmTable = globalThis.__NIMBUS_WASM || {};
   const rubyMod = wasmTable['ruby+stdlib.wasm'];
@@ -778,9 +782,8 @@ async function __nimbusRubyBoot() {
     stderrBytes: (bytes) => __nimbusRubyWriteOutput('stderr', bytes),
   });
 
-  // canonical_abi imports — 3 resource lifecycle fns. The Slab is
-  // shared across the lifetime of the facet (single call, then the
-  // facet is reaped).
+  // canonical_abi imports — 3 resource lifecycle fns. The Slabs are this
+  // VM's, and go with it.
   const rbValueSlab = new __NimbusRubySlab();
   const jsValueSlab = new __NimbusRubySlab();
   const canonical_abi = {
@@ -1000,15 +1003,8 @@ async function __nimbusRubyBoot() {
     return { ptr, len: bytes.length };
   }
 
-  // NOTE: We DO NOT call ruby-init or ruby-init-loadpath here. Both
-  // invoke CPython-like random-seed initialization (random_get via
-  // wasi_snapshot_preview1.random_get), which workerd blocks in the
-  // global-scope (module-init) context. Same constraint that bit us
-  // for Pyodide v2 P21. The per-call __rubyRun runs them at request-
-  // handler time where crypto.getRandomValues is permitted.
-  //
-  // _initialize and __wasi_vfs_rt_init are safe at module-init because
-  // they only do static initialization (no entropy reads).
+  // ruby-init and ruby-init-loadpath wait for the VM's first run
+  // (__rubyRunOnce), which runs the language prelude after them.
 
   return {
     ok: true,
@@ -1035,9 +1031,8 @@ function __nimbusRubyVm() {
 // Invoked from the LOADER child facet's execute() (which calls the
 // serialized facetFn that does globalThis.__rubyRun(args)).
 //
-// At this point the bootstrap promise has resolved (since it's
-// awaited inside the child facet's module-init context — the
-// instantiate finishes before the request handler runs). We:
+// The run's VM is booted (__rubyRunProcess, or the one its process keeps
+// for __rubyRun). We:
 //   1. Update Ruby's $0 / $PROGRAM_NAME / ARGV via rb-eval-string-protect
 //   2. Wrap the user code in a begin/rescue SystemExit/StandardError
 //      handler so we can extract exit code without losing stdout

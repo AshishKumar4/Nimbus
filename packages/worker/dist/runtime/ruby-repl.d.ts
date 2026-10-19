@@ -2,9 +2,9 @@
  * ruby-repl.ts — Ruby REPL adapter.
  *
  * Mirrors python-repl.ts pattern: a long-lived child-facet holds the
- * Ruby VM (instantiated once at facet module-init via the ruby-runner
- * preamble) and per-push calls go through __rubyRun with a generated
- * line wrapper.
+ * Ruby VM (booted by its first line, and kept for the prompt's life, via
+ * the ruby-runner preamble) and per-push calls go through __rubyRun with a
+ * generated line wrapper.
  *
  * Approach to result-handling + incomplete detection:
  *   - The wrapper Ruby code captures the LAST line as an expression
