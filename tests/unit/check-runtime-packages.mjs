@@ -22,10 +22,9 @@ const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const NAME = '@nimbus-sh/runtime-toy';
 const root = mkdtempSync(join(tmpdir(), 'nimbus-gate-test-'));
 
-/** A runtime package directory in the shape bundle-runtime.mjs writes. */
-function packageDir(label, runner) {
+/** A runtime package directory in the shape bundle-runtime.mjs writes, its one blob `bytes`. */
+function packageDir(label, runner, bytes = Buffer.from('# marker\n')) {
   const dir = join(root, label);
-  const bytes = Buffer.from('# marker\n');
   const content = `blobs/toy-1.0.0-2/${sha256(bytes)}/BIN_MARKER`;
   mkdirSync(join(dir, content, '..'), { recursive: true });
   writeFileSync(join(dir, content), bytes);
@@ -70,6 +69,9 @@ try {
   assert.deepEqual(await packedCheck(pack(good), fakeRegistry(null)), [], 'a packed version npm lacks is published with the release');
   assert.deepEqual(await packedCheck(pack(good), fakeRegistry({ '1.0.0-2': builtSha }, '1.0.0-2')), [], 'a packed version npm has as latest');
   assert.match((await packedCheck(pack(good), fakeRegistry({ '1.0.0-2': 'f'.repeat(64) }, '1.0.0-2')))[0]?.problem ?? '', /on the registry carries manifest.json sha256 f{64}/, 'npm holds that version with other bytes');
+  // clang's compiler is 31 MB and Ruby's interpreter 34 MB.
+  const big = packageDir('big', BASH_RUNNER, Buffer.alloc(32_000_000, 7));
+  assert.deepEqual(await checkRuntimePackage({ name: NAME, version: '1.0.0-2', dir: big, registry: fakeRegistry(null), runThroughCore, tarball: pack(big) }), [], 'a packed runtime with a blob past 20 MB installs whole');
   const wrong = packageDir('wrong-archive', 'bash-runner');
   const wrongProblems = await packedCheck(pack(wrong), fakeRegistry(null));
   assert.ok(wrongProblems.some((item) => /core being published refuses/.test(item.problem)), 'the actual packed runner is installed through core, not the build directory');
