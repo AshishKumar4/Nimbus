@@ -50,10 +50,12 @@ const moved = (word: OwnWord): word is { readonly from: string | undefined; read
  * carry the rename (or an earlier one of the entry, `via`) to the table
  * before the word retires: the word stands while the table holds the entry
  * where the word reads it (a link's own row at `link`, else at `from`); once
- * the name itself holds it, the table's row there answers; where an earlier
- * rename left it, the word reads it there. A word that names no entry stands.
+ * the name holds it (at `step`, where the table keeps the name the walk
+ * reached, an outer rename's mapping applied), the table's row there
+ * answers; where an earlier rename left it, the word reads it there. A word
+ * that names no entry stands.
  */
-function standing(t: ResidentTables, name: string, word: OwnWord | undefined): OwnWord | undefined {
+function standing(t: ResidentTables, step: string | null, word: OwnWord | undefined): OwnWord | undefined {
   if (word === undefined || !moved(word) || word.from === undefined) return word;
   const ino = ownField(word, 'ino');
   if (typeof ino !== 'number') return word;
@@ -65,7 +67,7 @@ function standing(t: ResidentTables, name: string, word: OwnWord | undefined): O
     return row !== undefined && row.ino === ino && (typeof dev !== 'number' || row.dev === dev);
   };
   if (holds(link ?? word.from)) return word;
-  if (holds(name)) return undefined;
+  if (step !== null && holds(step)) return undefined;
   const via = ownField(word, 'via');
   if (arrayIsArray(via)) {
     for (let i = 0; i < via.length; i++) {
@@ -170,7 +172,7 @@ export function walkNamespace(
       start = stop + 1;
       if (visit !== undefined && !visit(prefix)) return 'EACCES';
       const step: string | null = table === null ? null : table ? `${table}/${name}` : name;
-      const word = own === undefined ? undefined : standing(t, prefix, own(prefix));
+      const word = own === undefined ? undefined : standing(t, step, own(prefix));
       let target: unknown;
       if (word !== undefined && removed(word)) {
         return { path, table: null, row: undefined, own: word };
