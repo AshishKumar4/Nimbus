@@ -49,7 +49,10 @@ published independently in the `@nimbus-sh` npm scope.
   embedder's `spawnWorker` with `durable`) could fail its first start
   with "resident process released": the earlier process's release ended
   the facet its successor had just started in. A release now ends,
-  drains and deletes only a facet whose name is still its own.
+  drains and deletes only a facet whose name is still its own. The bug
+  needs an ended activation's code to keep running against the shared
+  facets, which an embedder's harness can do and workerd's own abort does
+  not.
 - Fixed: a Node program that replaced `Array.prototype.push`, the array
   iterator, `String.prototype.split` or `replace`, `RegExp.prototype.exec` or
   `Set.prototype.has` can still import a module the launch did not hold, and
