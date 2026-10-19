@@ -57,18 +57,20 @@ const factory = new Function(
   '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
   '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode()
     + '\n;__resident.admission.setStorage({ facet: "proc-slot-0", grant: 0 }, __supervisor);'
-    + '\n;return { fs: __fsMod, held: (path) => __resident.cells.has(path), full: () => __resident.admission.setStorage({ facet: "proc-slot-0", grant: 0 }, __supervisor),'
+    + '\n;const allow = (grant) => __resident.admission.setStorage({ facet: "proc-slot-0", grant }, __supervisor);'
+    + '\n;return { fs: __fsMod, held: (path) => __resident.cells.has(path), room: () => allow(1 << 20), full: () => allow(0),'
     + ' synced: (path, text) => __resident.cells.fill(path, text, __resident.coherence.cursor().rev) };',
 );
 const statOf = (size) => ({ type: 'file', size, mode: 0o644, uid: 1000, gid: 1000 });
 const metadata = { 'home/user/reread': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 } };
 for (const [name, body] of Object.entries(FILES)) metadata[`home/user/reread/${name}`] = statOf(body.length);
-const { fs, held, full, synced } = (declareNamespace({ metadata, manifest: { 'home/user': ['reread'], 'home/user/reread': Object.keys(FILES) } }), factory(
+const { fs, held, room, full, synced } = (declareNamespace({ metadata, manifest: { 'home/user': ['reread'], 'home/user/reread': Object.keys(FILES) } }), factory(
   {}, {}, supervisor, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, dir, [], {}, `${dir}/entry.js`, dir,
 ));
 
 // App.tsx is held as text, as the boot's synchronize fills a planned source;
 // main.tsx faults in, as bytes.
+room();
 assert.ok(synced('home/user/reread/App.tsx', FILES['App.tsx']), 'App.tsx is filled as text');
 assert.throws(() => fs.readFileSync(`${dir}/main.tsx`, 'utf8'), { code: 'EAGAIN' });
 await globalThis.__nimbusVfsResidencySettle();

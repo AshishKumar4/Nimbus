@@ -15,7 +15,7 @@ import type { RuntimeFileVersion, RuntimeVfsStat, VfsListEntry } from '@nimbus-s
 import type { FsReadBatchRequest } from '../../session/rpc.js';
 import type { Admission } from './admission.js';
 import type { Cells } from './cells.js';
-import { RESIDENT_ROW_BYTES, namespaceRowBytes, residentBytes } from './cell-cost.js';
+import { RESIDENT_ROW_BYTES, namespaceRowBytes, residentBytes, residentCellCost } from './cell-cost.js';
 import type { Coherence, Cursor } from './coherence.js';
 import { nsDescribes, nsKey, nsSplit, type Namespace } from './namespace.js';
 import { RESIDENT_CHUNK_BYTES } from '../facet-resident-limits.js';
@@ -426,12 +426,10 @@ export function createTransport(coherence: Coherence, admission: Admission, name
         before.type === 'file' && bytes !== null && bytes.byteLength === Number(before.size)
         && after && !after.error && after.stat && after.stat.type === 'file'
         && Number(after.stat.ino) === Number(before.ino) && Number(after.stat.revision) === Number(before.revision)
-        && await admission.ensureRoom(bytes.byteLength + RESIDENT_ROW_BYTES)
+        && await admission.ensureRoom(residentCellCost(bytes))
       ) {
-        // Whatever was held there is replaced whole, never left headless or with stray parts.
-        t.fileDelete(last);
-        t.chunkDelete(last);
-        if (cells.putChunk(t, last, 0, bytes)) cells.putHead(t, last, RK_BINARY, bytes.byteLength, 1, Number(before.revision) || 0, null);
+        // As a read's bytes: dating what is held already, replacing the rest whole.
+        cells.fill(last, bytes, Number(before.revision) || 0);
       }
     }
     return true;
