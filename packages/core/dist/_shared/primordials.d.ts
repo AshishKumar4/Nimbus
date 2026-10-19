@@ -113,6 +113,7 @@ export declare const numberIsInteger: (number: unknown) => boolean;
 export declare const objectIs: (value1: any, value2: any) => boolean;
 export declare const objectIsExtensible: (o: any) => boolean;
 export declare const mathAbs: (x: number) => number;
+export declare const mathMin: (...values: number[]) => number;
 export declare function captureStackTraceOf(): unknown;
 /** The runtime's own Error.captureStackTrace, installed before any program code (commonjs-cell). */
 export declare function useCaptureStackTrace(capture: Function): void;
