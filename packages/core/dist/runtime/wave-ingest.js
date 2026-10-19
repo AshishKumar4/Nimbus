@@ -1152,7 +1152,8 @@ export class WaveIngest {
                         return false;
                     at.setPhase('publish');
                     await at.settleBefore();
-                    reached();
+                    // A mount's change, wherever its name leads now: as a write through a description, its record's name.
+                    reached(record.path);
                     const attrs = record.attrs;
                     await backend(Promise.resolve('mode' in attrs ? described.chmod(attrs.mode, at.guard)
                         : 'uid' in attrs ? described.chown(attrs.uid, attrs.gid, at.guard)
