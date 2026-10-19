@@ -9,9 +9,3 @@ export const HOLDER_CPU_SOURCES = {
 };
 
 export const PLATFORM_CPU_SOURCES = { source: 'packages/platform/src' };
-
-/** The resident store (worker vfs/resident), whose read path module loading takes. */
-export const RESIDENT_CPU_SOURCES = {
-  source: 'packages/worker/src',
-  directories: ['vfs/resident'],
-};

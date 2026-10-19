@@ -7,7 +7,7 @@
  * reads files on its primordials.
  */
 import {
-  objectHasOwn, ownField, SafeList, type SafeSet, stringCharCodeAt, stringIndexOf, stringLastIndexOf, stringOf, stringSlice,
+  arrayJoin, objectHasOwn, ownField, SafeList, type SafeSet, stringCharCodeAt, stringIndexOf, stringLastIndexOf, stringOf, stringSlice,
 } from '@nimbus-sh/core/_shared/primordials.js';
 import { NS_DIR, NS_LINK, type NsRow, type ResidentTables } from './tables.js';
 
@@ -72,30 +72,8 @@ export function nsRowAt(t: ResidentTables, k: string): NsRow | undefined {
   if (k === '') {
     return { kind: NS_DIR, size: 0, mode: 0o40755, uid: 0, gid: 0, atime: 0, mtime: 0, ctime: 0, ino: 1, rev: 0, target: null, dev: 0, nlink: 1 };
   }
-  return t.nsGet(nsParent(k), nsName(k));
-}
-
-/** The names of `path`, split at '/', empty ones and '.' kept: a walk's steps. */
-function segments(path: string): SafeList<string> {
-  const out = new SafeList<string>();
-  if (path === '') return out;
-  let from = 0;
-  for (;;) {
-    const slash = stringIndexOf(path, '/', from);
-    if (slash < 0) {
-      out[out.length] = stringSlice(path, from);
-      return out;
-    }
-    out[out.length] = stringSlice(path, from, slash);
-    from = slash + 1;
-  }
-}
-
-/** `names` from `start` to `end`, joined by '/'. */
-function joined(names: SafeList<string>, start: number, end: number): string {
-  let text = '';
-  for (let i = start; i < end; i++) text = i === start ? names[i] ?? '' : `${text}/${names[i] ?? ''}`;
-  return text;
+  const i = stringLastIndexOf(k, '/');
+  return i < 0 ? t.nsGet('', k) : t.nsGet(stringSlice(k, 0, i), stringSlice(k, i + 1));
 }
 
 /**
@@ -108,21 +86,23 @@ function joined(names: SafeList<string>, start: number, end: number): string {
 export function joinTarget(linkPath: string, target: unknown): string {
   const text = stringOf(target);
   const out = new SafeList<string>();
-  const add = (names: SafeList<string>): void => {
-    for (let i = 0; i < names.length; i++) {
-      const name = names[i] ?? '';
-      if (name === '..') {
+  // Each name of `path`, as `reduce` takes it: '..' and '.' reduced, or kept as they are.
+  const names = (path: string, reduce: boolean): void => {
+    for (let start = 0; start <= path.length;) {
+      let stop = stringIndexOf(path, '/', start);
+      if (stop < 0) stop = path.length;
+      const name = stringSlice(path, start, stop);
+      start = stop + 1;
+      if (name === '') continue;
+      if (reduce && name === '..') {
         if (out.length > 0) out.length--;
-      } else if (name !== '' && name !== '.') out[out.length] = name;
+      } else if (!reduce || name !== '.') out[out.length] = name;
     }
   };
-  if (stringCharCodeAt(text, 0) !== 0x2f) {
-    // The link's directory, its names as they are.
-    const base = segments(nsParent(linkPath));
-    for (let i = 0; i < base.length; i++) if (base[i] !== '') out[out.length] = base[i] ?? '';
-  }
-  add(segments(text));
-  return joined(out, 0, out.length);
+  // The link's directory, its names as they are.
+  if (stringCharCodeAt(text, 0) !== 0x2f) names(nsParent(linkPath), false);
+  names(text, true);
+  return arrayJoin(out, '/');
 }
 
 /**
@@ -144,14 +124,18 @@ export function walkNamespace(
   if (own === undefined && links.size === 0 && visit === undefined) return { path: k, table: k, row: nsRowAt(t, k) };
   let path = k;
   walk: for (let hops = 0; hops <= NS_MAX_HOPS; hops++) {
-    const segs = segments(path);
     let table: string | null = '';
-    let prefix = '';
-    for (let i = 1; i <= segs.length; i++) {
-      const name = segs[i - 1] ?? '';
-      prefix = i === 1 ? name : `${prefix}/${name}`;
+    // Each name of the path in turn: its prefix is the path up to it, the
+    // rest what follows it (empty names kept, as a walk's steps).
+    for (let start = 0, more = path !== ''; more;) {
+      let stop = stringIndexOf(path, '/', start);
+      const leaf = stop < 0;
+      if (leaf) stop = path.length;
+      const name = stringSlice(path, start, stop);
+      const prefix = stringSlice(path, 0, stop);
+      more = !leaf;
+      start = stop + 1;
       if (visit !== undefined && !visit(prefix)) return 'EACCES';
-      const leaf = i === segs.length;
       const step: string | null = table === null ? null : table ? `${table}/${name}` : name;
       const word = own === undefined ? undefined : own(prefix);
       let target: unknown;
@@ -187,7 +171,7 @@ export function walkNamespace(
         if (!row || row.kind !== NS_LINK) continue;
         target = row.target;
       }
-      const rest = joined(segs, i, segs.length);
+      const rest = leaf ? '' : stringSlice(path, stop + 1);
       const reached = joinTarget(prefix, target);
       path = rest ? (reached ? `${reached}/${rest}` : rest) : reached;
       continue walk;
