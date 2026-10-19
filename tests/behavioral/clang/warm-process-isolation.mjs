@@ -23,10 +23,16 @@ const run = async (command, ms = 180_000) => {
   const { output, exitCode } = await t.run(command, ms);
   return { text: stripAnsi(output), exitCode };
 };
-/** The session's facet calls of `tool` (clang, wasm-ld) since `since`. */
-const callsOf = async (tool, since) => {
+/** The session's facet-call record, as one string per call. */
+const record = async () => {
   const calls = await t.facetCalls();
-  return typeof calls === 'string' ? calls : calls.filter((call) => call.tag === `clang-runner-${tool}` && call.at >= since);
+  if (typeof calls === 'string') throw new Error(`facet calls: ${calls}`);
+  return calls;
+};
+/** The calls of `tool` (clang, wasm-ld) that `after` has and `before` had not: the record's clock is the session's, not this one's. */
+const newCalls = (before, after, tool) => {
+  const seen = new Set(before.map((call) => JSON.stringify(call)));
+  return after.filter((call) => call.tag === `clang-runner-${tool}` && !seen.has(JSON.stringify(call)));
 };
 const source = (word) => `#include <stdio.h>\nint main(void) { puts("${word}"); return 0; }\n`;
 
@@ -37,29 +43,29 @@ try {
   // The first build of the session is cold; it leaves both tools' workers warm.
   await run('clang /tmp/one.c -o /tmp/one');
 
-  const since = Date.now();
+  const before = await record();
   const two = await run('clang /tmp/two.c -o /tmp/two && /tmp/two && /tmp/one');
-  const clangCalls = await callsOf('clang', since);
-  const ldCalls = await callsOf('wasm-ld', since);
+  const after = await record();
+  const clangCalls = newCalls(before, after, 'clang');
+  const ldCalls = newCalls(before, after, 'wasm-ld');
   a.check('the next build runs clang and wasm-ld on warm workers',
-    Array.isArray(clangCalls) && clangCalls.length > 0 && clangCalls.every((call) => call.cold === false)
-      && Array.isArray(ldCalls) && ldCalls.length > 0 && ldCalls.every((call) => call.cold === false),
+    clangCalls.length > 0 && clangCalls.every((call) => call.cold === false) && ldCalls.length > 0 && ldCalls.every((call) => call.cold === false),
     JSON.stringify({ clangCalls, ldCalls }));
   a.check('each build is its own program', /TWO\s+ONE/.test(two.text) && two.exitCode === 0, two.text.slice(-300));
 
   // ── A compile-only run gives its worker back too ───────────────────────
   await run('clang -c /tmp/one.c -o /tmp/one.o');
-  const compileSince = Date.now();
+  const beforeCompile = await record();
   const compiled = await run('clang -c /tmp/two.c -o /tmp/two.o && ls /tmp/two.o');
-  const compileCalls = await callsOf('clang', compileSince);
-  a.check('clang -c runs warm after another clang -c', Array.isArray(compileCalls) && compileCalls.length > 0 && compileCalls.every((call) => call.cold === false) && compiled.exitCode === 0,
+  const compileCalls = newCalls(beforeCompile, await record(), 'clang');
+  a.check('clang -c runs warm after another clang -c', compileCalls.length > 0 && compileCalls.every((call) => call.cold === false) && compiled.exitCode === 0,
     JSON.stringify({ compileCalls, out: compiled.text.slice(-200) }));
 
   // ── Killed mid-run: the next build works ───────────────────────────────
   await run(heredocCommand('/tmp/slow.c', 'int main(void) { return 0; }\n'), 10_000);
   await run('timeout 0.3 clang /tmp/slow.c -o /tmp/slow');
-  const after = await run('clang /tmp/one.c -o /tmp/again && /tmp/again');
-  a.check('a build after one killed mid-run works', /ONE/.test(after.text) && after.exitCode === 0, after.text.slice(-300));
+  const again = await run('clang /tmp/one.c -o /tmp/again && /tmp/again');
+  a.check('a build after one killed mid-run works', /ONE/.test(again.text) && again.exitCode === 0, again.text.slice(-300));
 } catch (error) {
   a.check('the scenario ran', false, error instanceof Error ? error.message : String(error));
 } finally {
