@@ -207,10 +207,13 @@ function synthesizeEntry(ctx, fs, specifier, barrel) {
             names,
         };
     }
-    const entryPath = syntheticEntryPath(ctx.root, pkgName);
+    const entryPath = syntheticEntryPath(ctx.root, pkgName, synth.code);
     try {
-        ctx.vfs.mkdir(entryPath.substring(0, entryPath.lastIndexOf('/')), { recursive: true });
-        ctx.vfs.writeFile(entryPath, synth.code);
+        // Named by its content: written by an earlier request for the same names, it is this entry already.
+        if (!ctx.vfs.exists(entryPath)) {
+            ctx.vfs.mkdir(entryPath.substring(0, entryPath.lastIndexOf('/')), { recursive: true });
+            ctx.vfs.writeFile(entryPath, synth.code);
+        }
     }
     catch (error) {
         return { kind: 'refused', status: 'vfs-write-failed', message: `failed to write synthetic entry for ${specifier}: ${describeError(error)}`, names };
