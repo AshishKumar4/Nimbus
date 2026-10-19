@@ -213,8 +213,10 @@ export async function runSchedule(kind, schedule, { parkSeed, deadlineMs = 40_00
   const note = (line) => { trace.push(line); writeSync(2, `  | ${line}\n`); };
   note(`boot ${kind}`);
   const lazy = kind === 'holder';
+  // Replies park at random once the process is up: its boot waits on replies no step releases.
   const parkRandom = parkSeed === undefined ? null : prng(parkSeed);
-  const transport = scheduleTransport({ park: parkRandom === null ? () => false : () => parkRandom() < 0.3 });
+  let booted = false;
+  const transport = scheduleTransport({ park: () => booted && parkRandom !== null && parkRandom() < 0.3 });
   const engine = await bootEngine(kind, {
     seed: (authority) => {
       for (const [rel, content] of Object.entries(SEED_TREE)) {
@@ -225,6 +227,7 @@ export async function runSchedule(kind, schedule, { parkSeed, deadlineMs = 40_00
     supervise: transport.supervise,
     stdin: kind === 'node',
   });
+  booted = true;
   const deadline = Date.now() + deadlineMs;
 
   // The model, and every state it has had: history[i] is the world after i changes returned.
