@@ -5,6 +5,11 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: the shell's patterns, trims, substitutions, `${#x}` and IFS count
+  characters, as bash does in a UTF-8 locale, not UTF-16 units. `${x%?}` of
+  😀 leaves nothing rather than half of it, `?` and `case 😀 in ?)` match it
+  whole, `${#x}` is 1, and IFS=😀 joins and splits by 😀 without splitting
+  😁. Before, these could leave a lone surrogate in a value.
 - Fixed: the shell reads quoting as bash does wherever quoting decides what
   a word is.
   - A quoted reserved word is a command: `'if' true` runs a command named
