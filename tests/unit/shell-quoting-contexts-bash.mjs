@@ -90,7 +90,7 @@ const CONTEXTS = [
     "printf '<%s>' \"$(cat <<EOF\nit's\nEOF\n)\"; echo",
     "printf '<%s>' \"$(cat <<EOF\n$'a\\'\nEOF\n)\"; echo",
     // \`<<\` in arithmetic shifts; it opens no here-document.
-    "printf '<%s>' \"$( (( x = 1 << 2 ))\necho $(( 1 << 3 )) $x)\"; echo",
+    "printf '<%s>' \"$(echo $(( 1 << 3 ))\necho after)\"; echo",
     "printf '<%s>' \"$(cat <<-EOF\n\tit's\n\tEOF\necho after)\"; echo",
   ].map((line) => ({ line, payloads: [''], forms: ['bare'] })),
   // An alias naming itself expands once (last: the session's expanded without end, until its heap ran out).

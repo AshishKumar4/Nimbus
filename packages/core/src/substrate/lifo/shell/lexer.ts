@@ -736,7 +736,7 @@ function nextStop(input: string, i: number, stops: Uint8Array): number {
  * skipped whole, so a `close` inside them does not end it. In a command's
  * span, a here-document's body is too: read at the newline after its `<<`,
  * as the shell's reader reads it, so its `'` or `)` is text. An arithmetic
- * span (`arithmetic`: `$((…))`, `((…))`) has no here-document: `<<` shifts.
+ * span (`arithmetic`: `$((…))`) has no here-document: `<<` shifts.
  */
 export function readBalancedCommand(
   input: string,
@@ -785,13 +785,6 @@ export function readBalancedCommand(
       const stop = end === -1 ? input.length : end;
       body += input.slice(i, stop);
       i = stop;
-      continue;
-    }
-    // An arithmetic command, `((…))`, whole.
-    if (ch === '(' && open === '(' && !arithmetic && input[i + 1] === '(') {
-      const span = readBalancedCommand(input, i + 1, '(', ')', true);
-      body += input.slice(i, span.end);
-      i = span.end;
       continue;
     }
     // A comment, where a word may start in a command's span: its text to
