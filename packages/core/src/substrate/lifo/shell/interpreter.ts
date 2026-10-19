@@ -37,7 +37,7 @@ import { withRecall } from '../../../vfs/recall.js';
 import { lex } from './lexer.js';
 import { isArrayLiteralWord, parse } from './parser.js';
 import {
-  expandWords, expandWord, evaluateSubscript, ExpansionError,
+  expandWords, expandWord, expandPatternWord, evaluateSubscript, ExpansionError,
   type ExpandContext, type CapturedCommand,
 } from './expander.js';
 import { evaluateDoubleBracketWords } from './test-builtin.js';
@@ -951,8 +951,8 @@ export class Interpreter {
 
       for (const item of node.items) {
         for (const pattern of item.patterns) {
-          const patternValue = await expandWord(pattern, expandCtx);
-          if (globMatch(patternValue, wordValue)) {
+          // Its quoted characters match only themselves.
+          if (globMatch((await expandPatternWord(pattern, expandCtx)).pattern, wordValue)) {
             exitCode = await this.executeCompoundList(item.body, redirIo);
             this.lastExitCode = exitCode;
             return exitCode;

@@ -2,7 +2,7 @@ import type { WordPart } from './types.js';
 import { isShellIdentifier } from './names.js';
 import { DEFAULT_HOME } from '../../../constants.js';
 import type { ProcessView } from '../../../runtime/process-files.js';
-import { expandGlob, globMatch } from '../utils/glob.js';
+import { escapeGlob, expandGlob, globMatch } from '../utils/glob.js';
 import { readAnsiCQuote, readBalancedCommand, readBracedExpansion } from './lexer.js';
 import type { ShellOptions } from './state.js';
 
@@ -78,18 +78,36 @@ export async function expandWords(words: WordPart[][], ctx: ExpandContext): Prom
 
   for (const word of words) {
     for (const braceExpandedWord of expandBraceWord(word)) {
-      const fields = splitFields(await expandParts(braceExpandedWord, ctx), ifsOf(ctx));
-
-      // Glob expansion only for unquoted parts
-      if (hasUnquotedGlob(braceExpandedWord)) {
-        for (const field of fields) results.push(...await expandGlob(field, ctx.cwd, ctx.vfs));
-      } else {
-        results.push(...fields);
+      // Each field globbed as a pattern whose quoted characters match only
+      // themselves: an unquoted expansion's `*` globs, a quoted one's does not.
+      for (const field of splitFields(await expandParts(braceExpandedWord, ctx), ifsOf(ctx))) {
+        results.push(...await expandGlob(field.pattern, field.text, ctx.cwd, ctx.vfs));
       }
     }
   }
 
   return results;
+}
+
+/**
+ * A pattern word (a case pattern, `[[ ]]`'s right-hand side) expanded, as its
+ * value and as the pattern globMatch reads: each character that came from
+ * quotes, a quoted part or a quoted expansion, escaped so it matches only
+ * itself, and an unquoted expansion's characters left as pattern characters.
+ */
+export async function expandPatternWord(parts: WordPart[], ctx: ExpandContext): Promise<{ value: string; pattern: string }> {
+  const pieces = await expandParts(parts, ctx);
+  return { value: joinPieces(pieces), pattern: patternOf(pieces) };
+}
+
+/** `pieces` as a pattern: quoted characters escaped (escapeGlob). */
+function patternOf(pieces: readonly Piece[]): string {
+  let pattern = '';
+  for (const piece of pieces) {
+    if (piece.kind === 'break') pattern += ' ';
+    else pattern += piece.literal ? escapeGlob(piece.text) : piece.text;
+  }
+  return pattern;
 }
 
 /**
@@ -433,7 +451,7 @@ async function resolveParameter(ref: ParameterRef, ctx: ExpandContext): Promise<
 export async function evaluateSubscript(
   subscript: string, length: number, ctx: ExpandContext,
 ): Promise<number> {
-  const expanded = await expandParameterWord(subscript, ctx);
+  const expanded = joinPieces(await expandParameterWord(subscript, ctx, 'word'));
   if (expanded.trim() === '') return 0;
   const index = evaluateArithmetic(expanded, ctx.env, ctx.positionals);
   return index < 0 ? length + index : index;
@@ -579,19 +597,35 @@ async function applyDefault(
     : parameter.value !== undefined && (!colon || parameter.value !== '');
 
   if (operator === '+') {
-    return [valuePiece(set ? await expandParameterWord(word, ctx, true) : '', quoted)];
+    return set ? await operandPieces(word, ctx, quoted) : [valuePiece('', quoted)];
   }
   if (set) return parameterPieces(parameter, ctx, quoted);
 
-  const value = await expandParameterWord(word, ctx, true);
+  const pieces = await operandPieces(word, ctx, quoted);
+  const value = joinPieces(pieces);
   if (operator === '?') {
     throw new ExpansionError(`${ref.name}: ${value || 'parameter null or not set'}`);
   }
   if (operator === '=' && ref.subscript === undefined
     && isShellIdentifier(ref.name)) {
     ctx.env[ref.name] = value;
+    // What `=` gives is the value assigned, split and globbed as an expansion's is.
+    return [valuePiece(value, quoted)];
   }
-  return [valuePiece(value, quoted)];
+  return pieces;
+}
+
+/**
+ * A `-` or `+` word's expansion as the value it gives: inside double quotes
+ * all of it is quoted; outside them its quoted characters stay one field and
+ * match only themselves, and the rest, its plain text too, is split and
+ * globbed as an expansion's result is (bash's parameter_brace_expand_rhs).
+ */
+async function operandPieces(word: string, ctx: ExpandContext, quoted: boolean): Promise<Piece[]> {
+  const mode = ctx.hereDocument === true ? 'heredoc' : quoted ? 'double' : 'word';
+  const pieces = await expandParameterWord(word, ctx, mode);
+  if (quoted) return pieces.map((piece) => (piece.kind === 'break' ? piece : { ...piece, split: false, literal: true }));
+  return pieces.map((piece) => (piece.kind === 'break' || piece.literal ? piece : { ...piece, split: true }));
 }
 
 /** `${p:offset}` and `${p:offset:length}` -- substring, or a slice of `$@`/`$*`. */
@@ -625,7 +659,7 @@ function sliceRange<T>(values: readonly T[], offset: number, length: number | nu
 }
 
 async function evaluateSliceIndex(text: string, ctx: ExpandContext): Promise<number> {
-  const expanded = await expandParameterWord(text, ctx);
+  const expanded = joinPieces(await expandParameterWord(text, ctx, 'word'));
   if (expanded.trim() === '') return 0;
   return evaluateArithmetic(expanded, ctx.env, ctx.positionals);
 }
@@ -646,7 +680,7 @@ async function applyTrim(
 ): Promise<Piece[]> {
   const operator = rest[0];
   const longest = rest[1] === operator;
-  const pattern = await expandParameterWord(rest.slice(longest ? 2 : 1), ctx);
+  const pattern = await expandParameterPattern(rest.slice(longest ? 2 : 1), ctx);
   return (await mapParameter(ref, ctx, quoted, (value) => operator === '#'
     ? trimPrefix(value, pattern, longest)
     : trimSuffix(value, pattern, longest)));
@@ -685,8 +719,8 @@ async function applySubstitution(
   const mode = rest[0] === '/' ? 'all' : rest[0] === '#' ? 'prefix' : rest[0] === '%' ? 'suffix' : 'first';
   const body = mode === 'first' ? rest : rest.slice(1);
   const cut = unescapedSlash(body);
-  const pattern = await expandParameterWord(cut === -1 ? body : body.slice(0, cut), ctx);
-  const replacement = cut === -1 ? '' : await expandParameterWord(body.slice(cut + 1), ctx);
+  const pattern = await expandParameterPattern(cut === -1 ? body : body.slice(0, cut), ctx);
+  const replacement = cut === -1 ? '' : joinPieces(await expandParameterWord(body.slice(cut + 1), ctx, 'word'));
 
   return (await mapParameter(ref, ctx, quoted, (value) => {
     if (mode === 'all') return replaceAll(value, pattern, replacement);
@@ -728,7 +762,7 @@ async function applyCase(
 ): Promise<Piece[]> {
   const operator = rest[0];
   const every = rest[1] === operator;
-  const pattern = await expandParameterWord(rest.slice(every ? 2 : 1), ctx);
+  const pattern = await expandParameterPattern(rest.slice(every ? 2 : 1), ctx);
   const convert = (c: string): string => (operator === '^' ? c.toUpperCase() : c.toLowerCase());
   const matches = (c: string): boolean => pattern === '' || globMatch(pattern, c);
 
@@ -761,21 +795,28 @@ function scalarOf(parameter: Parameter, ctx: ExpandContext): string {
 }
 
 /**
- * The word inside `${p:-word}`, `${p#pattern}` and friends is itself expanded,
- * with quote removal, before it is used. `operand`: a `-`, `+`, `=` or `?`
- * word, which a here-document's body quotes as it quotes itself.
+ * How a word inside `${…}` is quoted: as a word (`word`), as double-quoted text
+ * (`double`: a `-`, `+`, `=` or `?` word inside "…", where `'` is literal and a
+ * backslash quotes only `$`, `` ` ``, `"`, itself and a newline), or as a
+ * here-document's body (`heredoc`: so, and `$'…'` and `"` before a backslash
+ * literal too).
  */
-async function expandParameterWord(word: string, ctx: ExpandContext, operand = false): Promise<string> {
-  if (word === '') return '';
-  // A here-document's quoting reaches the -, +, = and ? words; its patterns read quotes as anywhere.
-  return joinPieces(await expandParts(parameterWordParts(word, operand && ctx.hereDocument === true), ctx));
+type ParameterWordMode = 'word' | 'double' | 'heredoc';
+
+/** The word inside `${p:-word}`, `${p#pattern}` and friends, expanded with quote removal, as pieces. */
+async function expandParameterWord(word: string, ctx: ExpandContext, mode: ParameterWordMode): Promise<Piece[]> {
+  if (word === '') return [];
+  return (await expandParts(parameterWordParts(word, mode), ctx));
 }
 
-/**
- * The operand word's parts. In a here-document's body, `'` and `$'...'` are
- * literal there, and a backslash quotes only what it quotes in the body.
- */
-function parameterWordParts(word: string, hereDocument: boolean): WordPart[] {
+/** A pattern operand (`#`, `%`, `/`, `^`, `,`): its quoting read as a word's anywhere, its quoted characters escaped. */
+async function expandParameterPattern(word: string, ctx: ExpandContext): Promise<string> {
+  return patternOf(await expandParameterWord(word, ctx, 'word'));
+}
+
+/** The operand word's parts, quoted as `mode` reads them. */
+function parameterWordParts(word: string, mode: ParameterWordMode): WordPart[] {
+  const plain = mode !== 'word';
   const parts: WordPart[] = [];
   let text = '';
   const flush = (): void => {
@@ -787,8 +828,8 @@ function parameterWordParts(word: string, hereDocument: boolean): WordPart[] {
   let i = 0;
   while (i < word.length) {
     const ch = word[i];
-    // In a here-document a backslash quotes only $, `, itself and a newline; before anything else it is text.
-    if (ch === '\\' && i + 1 < word.length && (!hereDocument || '$`\\\n'.includes(word[i + 1]))) {
+    // In double-quoted text a backslash quotes only $, `, ", itself and a newline (not ", in a here-document); before anything else it is text.
+    if (ch === '\\' && i + 1 < word.length && (!plain || (mode === 'double' ? '$`"\\\n' : '$`\\\n').includes(word[i + 1]))) {
       flush();
       parts.push({ text: word[i + 1], quoted: 'single' });
       i += 2;
@@ -799,14 +840,14 @@ function parameterWordParts(word: string, hereDocument: boolean): WordPart[] {
       i += 2;
       continue;
     }
-    if (!hereDocument && ch === '$' && word[i + 1] === "'") {
+    if (mode !== 'heredoc' && ch === '$' && word[i + 1] === "'") {
       flush();
       const quoted = readAnsiCQuote(word, i);
       parts.push({ text: quoted.text, quoted: 'single' });
       i = quoted.end;
       continue;
     }
-    if ((ch === "'" && !hereDocument) || ch === '"') {
+    if ((ch === "'" && !plain) || ch === '"') {
       const end = word.indexOf(ch, i + 1);
       const close = end === -1 ? word.length : end;
       flush();
@@ -843,17 +884,22 @@ function joinPieces(pieces: readonly Piece[]): string {
  * an unquoted expansion are eligible delimiters, so literal text keeps its
  * IFS characters, and `"$@"` boundaries split regardless of IFS.
  */
-function splitFields(pieces: readonly Piece[], ifs: string): string[] {
-  const fields: string[] = [];
+/** A field: its text, and the pattern pathname expansion reads (its quoted characters escaped). */
+type Field = { text: string; pattern: string };
+
+function splitFields(pieces: readonly Piece[], ifs: string): Field[] {
+  const fields: Field[] = [];
   let text = '';
   let eligible: boolean[] = [];
+  let quoted: boolean[] = [];
   let literal = false;
   let started = false;
 
   const flush = (): void => {
-    if (started) fields.push(...splitGroup(text, eligible, literal, ifs));
+    if (started) fields.push(...splitGroup(text, eligible, quoted, literal, ifs));
     text = '';
     eligible = [];
+    quoted = [];
     literal = false;
     started = false;
   };
@@ -866,7 +912,10 @@ function splitFields(pieces: readonly Piece[], ifs: string): string[] {
     started = true;
     if (piece.literal) literal = true;
     text += piece.text;
-    for (let i = 0; i < piece.text.length; i++) eligible.push(piece.split);
+    for (let i = 0; i < piece.text.length; i++) {
+      eligible.push(piece.split);
+      quoted.push(piece.literal);
+    }
   }
   flush();
 
@@ -874,12 +923,17 @@ function splitFields(pieces: readonly Piece[], ifs: string): string[] {
 }
 
 function splitGroup(
-  text: string, eligible: readonly boolean[], literal: boolean, ifs: string,
-): string[] {
-  const keep = (fields: string[]): string[] =>
-    (fields.length === 1 && fields[0] === '' && !literal ? [] : fields);
+  text: string, eligible: readonly boolean[], quoted: readonly boolean[], literal: boolean, ifs: string,
+): Field[] {
+  const keep = (fields: Field[]): Field[] =>
+    (fields.length === 1 && fields[0]?.text === '' && !literal ? [] : fields);
+  const field = (start: number, end: number): Field => {
+    let pattern = '';
+    for (let i = start; i < end; i++) pattern += quoted[i] ? escapeGlob(text[i] ?? '') : text[i];
+    return { text: text.slice(start, end), pattern };
+  };
 
-  if (ifs === '') return keep([text]);
+  if (ifs === '') return keep([field(0, text.length)]);
 
   const isDelimiter = (i: number): boolean => eligible[i] && ifs.includes(text[i]);
   const isWhitespace = (i: number): boolean => IFS_WHITESPACE.includes(text[i]);
@@ -889,75 +943,74 @@ function splitGroup(
   while (start < end && isDelimiter(start) && isWhitespace(start)) start++;
   while (end > start && isDelimiter(end - 1) && isWhitespace(end - 1)) end--;
 
-  const fields: string[] = [];
-  let current = '';
+  const fields: Field[] = [];
+  let from = start;
   let i = start;
 
   while (i < end) {
     if (!isDelimiter(i)) {
-      current += text[i];
       i++;
       continue;
     }
+    const until = i;
     // One delimiter: a run of IFS whitespace around at most one other IFS char.
     while (i < end && isDelimiter(i) && isWhitespace(i)) i++;
     if (i < end && isDelimiter(i) && !isWhitespace(i)) i++;
     while (i < end && isDelimiter(i) && isWhitespace(i)) i++;
-    fields.push(current);
-    current = '';
+    fields.push(field(from, until));
+    from = i;
     // A word ending in a delimiter has no trailing empty field.
     if (i >= end) return keep(fields);
   }
 
-  fields.push(current);
+  fields.push(field(from, end));
   return keep(fields);
 }
 
 // ─── Pattern replacement ───
 
-function replaceFirst(val: string, pattern: string, replacement: string): string {
-  for (let i = 0; i < val.length; i++) {
-    for (let j = i + 1; j <= val.length; j++) {
-      if (globMatch(pattern, val.slice(i, j))) {
-        return val.slice(0, i) + replacement + val.slice(j);
-      }
+/** The leftmost match of `pattern` in `val` at `from` or after, the longest there (bash's match_pattern, MATCH_ANY): [start, end], or null. */
+function leftmostLongest(val: string, pattern: string, from: number): [number, number] | null {
+  for (let start = from; start <= val.length; start++) {
+    for (let end = val.length; end >= start; end--) {
+      if (globMatch(pattern, val.slice(start, end))) return [start, end];
     }
   }
-  return val;
+  return null;
+}
+
+function replaceFirst(val: string, pattern: string, replacement: string): string {
+  return replaceMatches(val, pattern, replacement, false);
 }
 
 function replaceAll(val: string, pattern: string, replacement: string): string {
-  let result = '';
-  let i = 0;
-  while (i < val.length) {
-    let matched = false;
-    for (let j = i + 1; j <= val.length; j++) {
-      if (globMatch(pattern, val.slice(i, j))) {
-        result += replacement;
-        i = j;
-        matched = true;
-        break;
-      }
-    }
-    if (!matched) {
-      result += val[i];
-      i++;
-    }
-  }
-  return result;
+  return replaceMatches(val, pattern, replacement, true);
 }
 
-function hasUnquotedGlob(parts: WordPart[]): boolean {
-  // Check if any unquoted part contains glob characters
-  for (const part of parts) {
-    if (part.commandSubstitution !== undefined) continue;
-    if (part.quoted === 'none') {
-      if (part.text.includes('*') || part.text.includes('?') || part.text.includes('[')) {
-        return true;
-      }
+/**
+ * `${v/pat/rep}` (`all`: `${v//pat/rep}`), as bash's pat_subst: each match the
+ * leftmost and longest from where the last ended; an empty pattern replaces
+ * nothing; an empty match keeps the character after it, and ends the search
+ * at the end of the value.
+ */
+function replaceMatches(val: string, pattern: string, replacement: string, all: boolean): string {
+  if (pattern === '') return val;
+  let out = '';
+  let i = 0;
+  for (;;) {
+    const match = leftmostLongest(val, pattern, i);
+    if (match === null) break;
+    const [start, end] = match;
+    out += val.slice(i, start) + replacement;
+    i = end;
+    if (start === end) {
+      if (start >= val.length) break;
+      out += val[start];
+      i = start + 1;
     }
+    if (!all || i >= val.length) break;
   }
-  return false;
+  return out + val.slice(i);
 }
 
 // ─── Arithmetic evaluator ───
