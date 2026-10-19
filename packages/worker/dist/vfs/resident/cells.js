@@ -20,10 +20,10 @@
  * of one.
  */
 import { FACET_OWN_WRITE_MEMORY_BYTES } from '@nimbus-sh/platform/limits.js';
-import { RESIDENT_ROW_BYTES, residentBytes, residentCellCost } from './cell-cost.js';
+import { RESIDENT_ROW_BYTES, residentBytes, residentCellCost, textChunkEnds } from './cell-cost.js';
 import { nsDescribes, prefixEnd } from './namespace.js';
 import { nsKey } from './namespace-lookup.js';
-import { SafeMap, SafeSet } from '@nimbus-sh/core/_shared/primordials.js';
+import { SafeMap, SafeSet, stringSlice } from '@nimbus-sh/core/_shared/primordials.js';
 import { RESIDENT_CHUNK_BYTES } from '../facet-resident-limits.js';
 import { RK_BINARY, RK_DENIED, RK_OWN_WRITE, RK_TEXT } from './tables.js';
 export function createCells(coherence, admission, namespace, observeRead) {
@@ -65,13 +65,19 @@ export function createCells(coherence, admission, namespace, observeRead) {
         }
         if (found.kind === RK_DENIED)
             return false;
+        // One chunk is read as `get` reads it; a file of several, in part order.
+        const rows = () => (found.chunks === 1 ? [t.chunkFirst(path)] : t.chunkParts(path));
         if (found.kind === RK_TEXT && typeof incoming === 'string') {
             if (found.size !== incoming.length)
                 return false;
+            if (found.chunks === 1)
+                return t.chunkFirst(path)?.txt === incoming;
             let at = 0;
-            for (const row of t.chunkParts(path)) {
+            for (const row of rows()) {
+                if (row === undefined)
+                    return false;
                 const text = row.txt ?? '';
-                if (incoming.slice(at, at + text.length) !== text)
+                if (stringSlice(incoming, at, at + text.length) !== text)
                     return false;
                 at += text.length;
             }
@@ -81,8 +87,11 @@ export function createCells(coherence, admission, namespace, observeRead) {
         // A text row's size is its UTF-16 length: each unit is 1 to 3 bytes of UTF-8.
         if (found.kind === RK_BINARY ? found.size !== bytes.byteLength : bytes.byteLength < found.size || bytes.byteLength > 3 * found.size)
             return false;
+        // A text chunk never ends inside a surrogate pair (textChunkEnds): each encodes whole.
         let at = 0;
-        for (const row of t.chunkParts(path)) {
+        for (const row of rows()) {
+            if (row === undefined)
+                return false;
             const part = found.kind === RK_TEXT ? encodeText(row.txt ?? '') : residentBytes(row.bin);
             if (!sameBytes(part, bytes.subarray(at, at + part.byteLength)))
                 return false;
@@ -145,11 +154,11 @@ export function createCells(coherence, admission, namespace, observeRead) {
         const isText = typeof cell === 'string';
         const kind = isText ? RK_TEXT : RK_BINARY;
         const body = isText ? cell : residentBytes(cell);
-        const size = isText ? body.length : body.byteLength;
-        // Chunk on the encoded length for text, since the ceiling is on bytes and a
-        // multi-byte string would otherwise cross it while measuring short.
-        const limit = isText ? Math.floor(RESIDENT_CHUNK_BYTES / 3) : RESIDENT_CHUNK_BYTES;
-        const chunks = Math.max(1, Math.ceil(size / limit));
+        const size = typeof body === 'string' ? body.length : body.byteLength;
+        // Text is chunked on its encoded length, since the ceiling is on bytes and
+        // a multi-byte string would otherwise cross it while measuring short.
+        const ends = typeof body === 'string' ? textChunkEnds(body) : null;
+        const chunks = ends !== null ? ends.length : Math.max(1, Math.ceil(size / RESIDENT_CHUNK_BYTES));
         // Not admitted: nothing is held for the path (its old bytes are gone above).
         if (!admission.fits(residentCellCost(cell), stamp !== RK_OWN_WRITE)) {
             t.fileDelete(path);
@@ -157,13 +166,15 @@ export function createCells(coherence, admission, namespace, observeRead) {
                 hold(path, cell);
             return false;
         }
-        for (let part = 0; part < chunks; part++) {
-            // Bytes are viewed, not copied: the table keeps what it is given as its own (tables.ts).
-            const slice = typeof body === 'string' ? body.slice(part * limit, (part + 1) * limit) : body.subarray(part * limit, (part + 1) * limit);
-            if (typeof slice === 'string')
-                t.chunkAddText(path, part, slice);
-            else
-                t.chunkAddBin(path, part, slice);
+        for (let part = 0, from = 0; part < chunks; part++) {
+            if (typeof body === 'string' && ends !== null) {
+                t.chunkAddText(path, part, stringSlice(body, from, ends[part]));
+                from = ends[part];
+            }
+            else if (typeof body !== 'string') {
+                // Bytes are viewed, not copied: the table keeps what it is given as its own (tables.ts).
+                t.chunkAddBin(path, part, body.subarray(part * RESIDENT_CHUNK_BYTES, (part + 1) * RESIDENT_CHUNK_BYTES));
+            }
         }
         t.filePut(path, kind, size, chunks, stamp, stamp === RK_OWN_WRITE || ckey == null ? null : String(ckey));
         return true;
