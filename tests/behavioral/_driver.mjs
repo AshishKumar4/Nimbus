@@ -34,22 +34,36 @@ const targetOf = (sid) => sessionTargets.get(sid) ?? probeTarget;
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** How long a read in flight at readUntil's deadline has to answer before the wait calls it stalled. */
+const READ_GRACE_MS = 2_000;
+
 /**
  * Read `read(signal)` every 100 ms until `done(value)` holds or `timeoutMs`
  * has passed; resolves to the last value read, which the caller checks.
  * The bounded wait a probe uses in place of a fixed sleep. `signal` aborts
- * at the deadline, and a read still pending then rejects the wait, so a
- * stalled read cannot outlast it.
+ * at the deadline. A read in flight then answers the wait if it answers
+ * within READ_GRACE_MS, and one the abort ends answers it with the value
+ * read before it; one that does neither rejects it, so a stalled read
+ * cannot outlast the wait, and a quick one is never taken for a stall.
  */
 export async function readUntil(read, done, timeoutMs = 10_000) {
   const signal = AbortSignal.timeout(timeoutMs);
-  const expired = new Promise((_, reject) => signal.addEventListener('abort',
-    () => reject(new Error(`a read was still pending at the end of its ${timeoutMs} ms wait`)), { once: true }));
-  expired.catch(() => {});
-  for (;;) {
-    const value = await Promise.race([read(signal), expired]);
+  const stall = new Error(`a read was still pending ${READ_GRACE_MS} ms past the end of its ${timeoutMs} ms wait`);
+  const stalled = new Promise((_, reject) => signal.addEventListener('abort', () => setTimeout(() => reject(stall), READ_GRACE_MS), { once: true }));
+  stalled.catch(() => {});
+  const deadline = new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }));
+  let last;
+  for (let reads = 0; ; reads++) {
+    let value;
+    try {
+      value = await Promise.race([read(signal), stalled]);
+    } catch (error) {
+      if (error !== stall && signal.aborted && reads > 0) return last;
+      throw error;
+    }
     if (done(value) || signal.aborted) return value;
-    await Promise.race([sleep(100), expired]).catch(() => {});
+    last = value;
+    await Promise.race([sleep(100), deadline]);
     if (signal.aborted) return value;
   }
 }

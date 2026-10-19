@@ -30,6 +30,18 @@ console.log('  ✓ a condition that never holds ends with the last value, wherev
   console.log('  ✓ a read that never answers is reported as stalled');
 }
 
+// A read the deadline aborts ends the wait with the value read before it.
+{
+  let reads = 0;
+  const value = await readUntil((signal) => new Promise((resolve, reject) => {
+    reads++;
+    if (reads === 1) { resolve('first'); return; }
+    signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+  }), () => false, 300);
+  assert.equal(value, 'first');
+  console.log('  ✓ a read the deadline aborts ends the wait with the value before it');
+}
+
 // The condition met: the wait ends at once with the value that met it.
 {
   let reads = 0;
