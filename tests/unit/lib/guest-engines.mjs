@@ -282,7 +282,7 @@ export async function bootEngine(kind, { seed, supervise = {}, stdin = false } =
     journal: () => sqlJournal(sql),
     /** Waves sent so far. */
     waves: () => waves,
-    stall: () => { stalled = Promise.withResolvers(); },
+    stall: () => { stalled ??= Promise.withResolvers(); },
     release: async () => { const was = stalled; stalled = null; was?.resolve(); await sleep(0); },
     failListings: (fails) => { listingFails = fails; },
     /**

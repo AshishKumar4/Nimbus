@@ -81,6 +81,7 @@ const FOUND = {
       ['sync', 'stat', 'd/f'], ['sync', 'rename', 'd/f', 'd/e/g'], ['settle'], ['sync', 'stat', 'd/e/g']],
   },
   'a file renamed in a directory then renamed with it shows at its last name while the first rename lands alone': {
+    engines: ['node'],
     schedule: [['own', 'stat', 'd/f'], ['settle'], ['hold', 'wave'], ['own', 'rename', 'd/f', 'd/n'], ['settle'], ['stall'], ['own', 'rename', 'd', 'z'],
       ['input'], ['settle'], ['sync', 'stat', 'z/n'], ['sync', 'stat', 'd/n'], ['unstall'], ['release', 'wave'], ['settle'], ['sync', 'stat', 'z/n']],
   },
@@ -100,11 +101,6 @@ const GAPS = {
     lacks: 'its synchronous refusal names the call: a directory is EISDIR only to a call for bytes (notResident, the cutover)',
     shows: 'answered EISDIR',
   },
-  'a chain of renames whose first lands alone keeps the moved file at its last name [holder]': {
-    lacks: 'its own decisions keep a rename chain whose first rename a barrier landed alone (the cutover\'s own-state rows): '
-      + 'meanwhile a call that cannot wait sees the file the last rename replaced',
-    shows: 'the last name, once a barrier landed the first rename alone',
-  },
   'a directory the process may search again shows nothing stale while it is relisted [node]': {
     lacks: 'B2: a relist answers what is under its directory as unknown until it lands (the cutover\'s relist fence); '
       + 'meanwhile a call that cannot wait sees a false ENOENT for a name the session holds there',
@@ -117,7 +113,8 @@ for (const [name, { schedule, engines = ENGINES }] of Object.entries(FOUND)) {
   for (const kind of engines) scenarios[`${name} [${kind}]`] = () => run(kind, schedule);
 }
 
-for (const kind of ENGINES) {
+// A WASI guest makes one call at a time: a second rename before the first returned is Node's (and RF's, once Node runs on it).
+for (const kind of ['node']) {
   scenarios[`a chain of renames whose first lands alone keeps the moved file at its last name [${kind}]`] = async () => {
     const transport = scheduleTransport();
     const engine = await bootEngine(kind, {
@@ -139,7 +136,7 @@ for (const kind of ENGINES) {
     await sleep(50);
     await engine.input();
     const seen = (() => { try { return engine.sync.stat(`${APP}/top`); } catch (error) { return error?.code; } })();
-    assert.ok((kind === 'holder' && seen === 'EAGAIN') || Number(seen?.ino) === moved, `the last name, once a barrier landed the first rename alone: ${JSON.stringify(seen)}`);
+    assert.ok(Number(seen?.ino) === moved, `the last name, once a barrier landed the first rename alone: ${JSON.stringify(seen)}`);
     await engine.release();
     transport.drain();
     await Promise.all([first, second]);
@@ -148,7 +145,7 @@ for (const kind of ENGINES) {
   };
 }
 
-for (const kind of ENGINES) {
+for (const kind of ['node']) {
   scenarios[`a file renamed in a directory then renamed with it is found once the first rename lands alone [${kind}]`] = async () => {
     const transport = scheduleTransport();
     const engine = await bootEngine(kind, {
@@ -169,7 +166,7 @@ for (const kind of ENGINES) {
     await sleep(50);
     await engine.input();
     const seen = (() => { try { return engine.sync.stat(`${APP}/x/n`); } catch (error) { return error?.code; } })();
-    assert.ok((kind === 'holder' && seen === 'EAGAIN') || Number(seen?.ino) === moved, `the file under its directory's new name, once a barrier landed its own rename alone: ${JSON.stringify(seen)}`);
+    assert.ok(Number(seen?.ino) === moved, `the file under its directory's new name, once a barrier landed its own rename alone: ${JSON.stringify(seen)}`);
     await engine.release();
     transport.drain();
     await Promise.all([first, second]);

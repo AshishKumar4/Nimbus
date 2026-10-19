@@ -48,9 +48,11 @@
  *
  * A change from outside the process is never in flight with one whose names
  * it overlaps: it waits for the step after the other returns, so its effect
- * is the model's at its start. The process's own changes are in flight
- * together in program order: each is the model's as its earlier ones leave
- * it, and lands after every earlier one it overlaps. The process's own changes reach the
+ * is the model's at its start. Node's own changes are in flight together
+ * in program order (it decides each when it is called): each is the model's
+ * as its earlier ones leave it, and lands after every earlier one it
+ * overlaps. A WASI guest makes one call at a time: its own overlapping
+ * changes wait for each other, as a peer's do. The process's own changes reach the
  * session when something leaves the process (publish): a peer's change of
  * names the process changed since waits for that first. The process never
  * decides a change of names a peer changed since its last input landed: it
@@ -348,8 +350,8 @@ export function createModel() {
     get world() { return world; },
     seq,
     worldsSeen,
-    /** Whether `step` must wait: a change in flight overlaps it, other than (for one of the process's own) its own earlier ones. */
-    busy: (step) => changes.some((change) => change.done === null && overlaps(change.domain, domainOf(step)) && (outside(step[0]) || !change.own)),
+    /** Whether `step` must wait: a change in flight overlaps it, other than its own earlier ones for a process that orders its own (`ordered`). */
+    busy: (step, ordered = false) => changes.some((change) => change.done === null && overlaps(change.domain, domainOf(step)) && (!ordered || outside(step[0]) || !change.own)),
     /** `step` begun now, as the process's own changes in flight leave the model for one of its own: its record, or null where it would fail. */
     begin(step) {
       const [way, op, a] = step;
@@ -501,7 +503,7 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
   /** A change begun now, as the model stands: 'wait' while one it may not overlap is in flight; null when it cannot be asked at all. */
   const begin = (at, way, step) => {
     const domain = domainOf(step);
-    if (model.busy(step)) return 'wait';
+    if (model.busy(step, kind === 'node')) return 'wait';
     if (!outside(way) && peerAt.some(({ done, domain: theirs }) => done > landed && overlaps(theirs, [...domain, ...domain.map(parentOf)]))) {
       note(`  (step ${at} skipped: a peer changed its names since the process's last input)`);
       return null;
