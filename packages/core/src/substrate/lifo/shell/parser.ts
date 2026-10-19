@@ -274,9 +274,43 @@ class Parser {
         };
       }
       words.push(this.doubleBracketTokenParts(token));
+      if (isUnquotedLiteralWord(token, '=~')) words.push(this.parseRegexWord());
     }
 
     throw new ParseError('missing ]]', this.peek().pos);
+  }
+
+  /**
+   * The word after `=~`, as bash reads a regular expression: the tokens that
+   * touch, from one to the next, with parentheses nesting, and inside them
+   * blanks, `|` and any other operator its own text. It ends at a blank, or
+   * an operator other than `(`, `)` and `|`, outside parentheses.
+   */
+  private parseRegexWord(): WordPart[] {
+    const parts: WordPart[] = [];
+    let depth = 0;
+    let end: number | null = null;
+    for (;;) {
+      const token = this.peek();
+      if (token.kind === TokenKind.EOF) break;
+      const touching = end === null || token.pos === end;
+      const regexToken = token.kind === TokenKind.Word || token.kind === TokenKind.LParen
+        || token.kind === TokenKind.RParen || token.kind === TokenKind.Pipe;
+      if (depth === 0 && (!touching || !regexToken || isUnquotedLiteralWord(token, ']]'))) break;
+      if (token.kind === TokenKind.RParen && depth === 0) {
+        throw new ParseError("syntax error in conditional expression: unexpected token `)'", token.pos);
+      }
+      // A blank inside parentheses is the regular expression's.
+      if (end !== null && token.pos > end) parts.push({ text: ' '.repeat(token.pos - end), quoted: 'none' });
+      if (token.kind === TokenKind.LParen) depth++;
+      else if (token.kind === TokenKind.RParen) depth--;
+      this.advance();
+      parts.push(...this.doubleBracketTokenParts(token));
+      end = token.end ?? token.pos + token.value.length;
+    }
+    if (depth > 0) throw new ParseError("unexpected EOF while looking for matching `)'", this.peek().pos);
+    if (parts.length === 0) throw new ParseError('unexpected argument to conditional binary operator', this.peek().pos);
+    return parts;
   }
 
   private doubleBracketTokenParts(token: Token): WordPart[] {

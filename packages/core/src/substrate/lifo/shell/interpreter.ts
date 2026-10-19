@@ -845,7 +845,11 @@ export class Interpreter {
         this.createExpandContext(redirIo),
         redirIo.vfs ?? this.config.vfs,
         stderr,
-        { cwd: this.config.getCwd(), isFdTerminal: (fd) => this.isFdTerminal(fds, fd) },
+        {
+          cwd: this.config.getCwd(),
+          isFdTerminal: (fd) => this.isFdTerminal(fds, fd),
+          setRematch: (values) => { assignArray(this.config, 'BASH_REMATCH', values); },
+        },
       )));
       this.lastExitCode = exitCode;
       return exitCode;

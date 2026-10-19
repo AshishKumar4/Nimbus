@@ -608,7 +608,7 @@ function readWord(input: string, pos: number): { token: Token; end: number } | n
   const value = parts.map((p) => p.text).join('');
 
   return {
-    token: { kind: TokenKind.Word, value, pos, parts, source: writtenWord(input, pos, i, ansiC) },
+    token: { kind: TokenKind.Word, value, pos, parts, source: writtenWord(input, pos, i, ansiC), end: i },
     end: i,
   };
 }
