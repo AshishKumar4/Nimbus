@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "7eb14c22202ebc50e247ad61369409161a92b8a72d84163ec00b7a82b944aa39",
+  "fingerprint": "7356fc46c1d150de474bd2006cd34408a27a6267cd14d239e1f102e7622c8f97",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1379,8 +1379,8 @@
     "packages/core/dist/vfs/recall.d.ts.map": "3bd63705eedb161d97f7df14a517fabed32d0d1c9cf2e0c61c2a332b0db23b1b",
     "packages/core/dist/vfs/recall.js": "87df1c5b095420e3448dee5af2926d8624cc29a8e791a27d9b390a938ee1dd30",
     "packages/core/dist/vfs/removal-walk.d.ts": "6b7341eecbab296b7a347df0a869f1824db085c616d9678bbe48d9665c641e2c",
-    "packages/core/dist/vfs/removal-walk.d.ts.map": "29c4c64877f36328dfa5409ad628a3338df751aeceded97f80e2f7e936b903bd",
-    "packages/core/dist/vfs/removal-walk.js": "eedaabc3853f4fba31ec7025462e13f301b169eef8254f5f52e46f141fd115d0",
+    "packages/core/dist/vfs/removal-walk.d.ts.map": "94f8bf890de0fe24a1ce69223b9eb47df34978e42416135e8093fc637945de56",
+    "packages/core/dist/vfs/removal-walk.js": "daecf3ce3698c7ad05264f86e7a1ec04d4e885fd7035930a78535f2b3e8a1d1f",
     "packages/core/dist/vfs/seed-project.d.ts": "786a1098e4b33959d99bdffc187b249cdc995e652b834498aefd9a7d54313bdd",
     "packages/core/dist/vfs/seed-project.d.ts.map": "8ecd38c5a0274a26be3d64ddb7524c93865d31b881c89f9e7ed988349086b5f6",
     "packages/core/dist/vfs/seed-project.js": "827f9726ac47d0ed6675e4a667d90da487e28acd59689abdb8680fc314eeeb8c",
@@ -1864,7 +1864,7 @@
     "packages/core/src/vfs/posix-access.ts": "7335d853f45ec525c0456944849854357e3052db20e08f59e7c2937d6286f7be",
     "packages/core/src/vfs/proc-vfs.ts": "4d0db3b88f4d8439444725a337e81b8239fe715cc5269b6c04dac91a85283a17",
     "packages/core/src/vfs/recall.ts": "229c7f336961cdbc1908e8cdab481e0f740814212c4ab8a1d98df4cc0b1e3993",
-    "packages/core/src/vfs/removal-walk.ts": "843b3f18a534181bad3ba45319a359723ae5be6530b25348f476febf4ea1318f",
+    "packages/core/src/vfs/removal-walk.ts": "28ef02249a278f265bd6bb51f31d28c93a5d972ba14a7bbaef639b2f50d8fe89",
     "packages/core/src/vfs/seed-project.ts": "0bae0c52abab747c22f53db63aad4fc0668972abea74cf384fd9637d4c542801",
     "packages/core/src/vfs/sqlite-files.ts": "59a840612915f1b62448055e1538ef6f4abbc9deec69ed9a897cd39b2944105b",
     "packages/core/src/vfs/sqlite-vfs.ts": "2d91b20dac3f75f8a43437183830cf512936b30c4b8debdf6419722000ee90ef",
