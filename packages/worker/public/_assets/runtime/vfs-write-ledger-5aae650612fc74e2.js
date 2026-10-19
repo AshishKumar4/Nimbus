@@ -1813,11 +1813,22 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
     };
     const live = () => grants.filter((grant) => !grant.ended);
     const allowedRoot = (root) => root !== "" && !(options.isHomeRoot?.(root) ?? false);
-    const close = async (grant) => {
+    const close = (grant) => {
+      if (grant.closed !== void 0) return grant.closed;
+      const wasClosing = grant.closing;
       grant.closing = true;
-      options.freezing?.(grant.root);
-      await client.flush();
-      await end(grant);
+      try {
+        options.freezing?.(grant.root);
+      } catch {
+        grant.closing = wasClosing;
+        return Promise.resolve(false);
+      }
+      grant.closed = (async () => {
+        await client.flush();
+        await end(grant);
+        return true;
+      })();
+      return grant.closed;
     };
     const end = async (grant) => {
       if (grant.ended) return;
@@ -1941,7 +1952,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         }
         const covered = live().filter((grant2) => within(grant2.root, target));
         if (covered.length > 0) {
-          await Promise.all(covered.map(close));
+          if (!(await Promise.all(covered.map(close))).every(Boolean)) return;
           if (covered.some((grant2) => grant2.root !== target)) counters.widened++;
           else counters.renewed++;
         }
