@@ -242,6 +242,8 @@ interface NameRecord {
   readonly over: readonly (number | undefined)[];
   /** What it keeps of the budget until it leaves (refused, retired). */
   readonly cost: number;
+  /** The files it names (the layer's at its keys once it is applied): kept while it may be replayed (release). */
+  readonly places: readonly Inode[];
   readonly replay: () => void;
   /** It is the view's now: what it moved is where the view has it (Inode.origin). */
   readonly retired?: () => void;
@@ -704,6 +706,8 @@ export function provisional(host: ProvisionalHost): Provisional {
   const release = (inode: Inode): void => {
     if (inode.records.length > 0 || inode.descs > 0 || inode.answers > 0 || inode.cell !== undefined) return;
     for (const value of layer.values()) if (value === inode) return;
+    // A name record that may be replayed names it again (one after it refused, say).
+    for (const record of nameRecords) if (record.places.includes(inode)) return;
     // What the process sees of a file it changed stays until the view has it (retire), but where no name leads to it.
     if (inode.state !== null && named(inode)) return;
     touched.delete(inode);
@@ -829,9 +833,14 @@ export function provisional(host: ProvisionalHost): Provisional {
    * subtree at its names, as a change decided there is.
    */
   const loggedName = (op: ProcessFsOp, keys: readonly string[], cost: number, apply: () => void, settled?: (refused: boolean, answer: ProcessFsAnswer | undefined) => void, retired?: () => void, awaited = false): Promise<unknown> | undefined => {
-    const record: NameRecord = { id: ++ids, keys, over: keys.map((key) => host.generation(key)), cost, replay: apply, ...(retired === undefined ? {} : { retired }), answered: false, answeredAt: 0 };
-    nameRecords.push(record);
+    const over = keys.map((key) => host.generation(key));
     apply();
+    const places = keys.flatMap((key) => {
+      const placed = layer.get(key);
+      return placed ? [placed] : [];
+    });
+    const record: NameRecord = { id: ++ids, keys, over, cost, places, replay: apply, ...(retired === undefined ? {} : { retired }), answered: false, answeredAt: 0 };
+    nameRecords.push(record);
     for (const key of keys) host.count(key);
     return logged(op, (refused, answer) => {
       if (refused) {

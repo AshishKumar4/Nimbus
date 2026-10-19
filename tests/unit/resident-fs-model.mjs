@@ -990,6 +990,13 @@ const FOUND = [
     { op: 'unlink', name: 'a' },
     { op: 'swap', awaited: false },
   ] },
+  // A file made and closed, a peer's unlink of it, then the process's own refused: the open's record names it again.
+  { name: 'a refused unlink of a closed file made here, a peer unlinked', grants: false, steps: [
+    { op: 'open', fd: 1, name: 'b', flags: { read: true, write: true, append: false, create: true, exclusive: false, truncate: false } },
+    { op: 'deliver' },
+    { op: 'peer', kind: 'unlink', name: 'b', to: 'b', data: 'rq', mode: 420 },
+    { op: 'unlink', name: 'b' },
+  ] },
 ];
 for (const found of FOUND) {
   const failure = await run(found.steps, found.grants).then(() => null, (error) => error);
