@@ -169,8 +169,9 @@ await runScenarios(import.meta.path, {
     s.poison();
     await s.fs.catchUp();
     const read = s.reads.slice(before).flat();
-    assert.ok(read.includes(`/${ROOT}/g`), 'the changed file is fetched');
-    assert.ok(!read.includes(`/${ROOT}/f`), 'the unchanged one is not');
+    const named = (name) => read.some((path) => path.replace(/^\//, '') === `${ROOT}/${name}`);
+    assert.ok(named('g'), `the changed file is fetched: ${JSON.stringify(s.reads.slice(before))}`);
+    assert.ok(!named('f'), 'the unchanged one is not');
     assert.equal(synchronously(s.fs, k('g'), 'readFile'), 'TWO');
     assert.equal(synchronously(s.fs, k('f'), 'readFile'), 'one');
   },
@@ -179,7 +180,8 @@ await runScenarios(import.meta.path, {
     assert.equal(dec.decode(await s.fs.readFile(k('f'))), 'one');
     await s.kernel.writeFile(k('f'), enc.encode('two'));
     s.poison();
-    s.fail('fsList');
+    // The repair lists, and lists once more: both fail.
+    s.fail('fsList', 2);
     await s.fs.catchUp();
     assert.notEqual(synchronously(s.fs, k('f'), 'readFile'), 'one', 'never the old bytes');
     assert.equal(s.view.repairOwed(), true);
@@ -236,7 +238,8 @@ await runScenarios(import.meta.path, {
     const s = await storeSession({ f: 'one' }, { eager: true, delegated: true });
     await s.fs.catchUp();
     s.poison();
-    s.fail('fsList');
+    // The repair lists, and lists once more: both fail.
+    s.fail('fsList', 2);
     await s.fs.catchUp();
     assert.equal(s.view.repairOwed(), true);
     const asked = s.calls.fsAcquire;

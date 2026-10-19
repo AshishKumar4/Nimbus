@@ -50,7 +50,8 @@ export async function storeSession(tree, { eager = false, unlisted = [], delegat
     await kernel.chown(k(path), 1000, 1000);
   }
   const holds = new Set();
-  const failing = new Set();
+  /** @type {Map<string, number>} */
+  const failing = new Map();
   const parked = [];
   /** @type {Record<string, number>} */
   const calls = {};
@@ -58,7 +59,11 @@ export async function storeSession(tree, { eager = false, unlisted = [], delegat
   const reads = [];
   const answered = async (name, compute) => {
     calls[name] = (calls[name] ?? 0) + 1;
-    if (failing.delete(name)) throw new Error('Network connection lost.');
+    const fails = failing.get(name) ?? 0;
+    if (fails > 0) {
+      failing.set(name, fails - 1);
+      throw new Error('Network connection lost.');
+    }
     const answer = await compute();
     if (!holds.delete(name)) return answer;
     const release = Promise.withResolvers();
@@ -135,8 +140,8 @@ export async function storeSession(tree, { eager = false, unlisted = [], delegat
     reads,
     /** The next barrier is answered with a poison. */
     poison() { poisonNext = true; },
-    /** The next call of `name` fails, as a dropped connection does. */
-    fail(name) { failing.add(name); },
+    /** The next `times` calls of `name` fail, as a dropped connection does. */
+    fail(name, times = 1) { failing.set(name, times); },
     /** Park the next reply of `name`; the returned wait resolves once something asked it. */
     hold(name) {
       holds.add(name);
