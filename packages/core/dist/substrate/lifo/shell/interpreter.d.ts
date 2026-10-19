@@ -59,6 +59,8 @@ export interface BuiltinExecutionContext {
     /** The state of the shell running the builtin: a child shell's own, after a fork. */
     shell: ShellState;
     getLastExitCode(): number;
+    /** The status a bare `exit` ends the shell with: the last command's, or in a trap's action the one before the trap (POSIX). */
+    exitStatus(): number;
     /** The process the builtin runs as: a kill's caller, a wait's waiter. */
     identity(): Pick<CommandIdentity, 'pid' | 'cred'>;
 }
@@ -183,6 +185,8 @@ export declare class Interpreter {
     private persistentInputHandles;
     private errexitSuppressionDepth;
     private exitTrapDepth;
+    /** While the EXIT trap's action runs: the status the shell was ending with, a bare `exit`'s there. */
+    private trapEntryStatus;
     /** One frame per running function call, holding the bindings `local` shadowed. */
     private localFrames;
     /** A child shell (fork): a discarded line ends it (finishChild). */
@@ -199,6 +203,14 @@ export declare class Interpreter {
      * EXIT trap when it finishes (`finishChild`).
      */
     fork(): Interpreter;
+    /**
+     * `child`, forked for a substitution or a simple command (a pipeline's
+     * element, a job), runs inside the EXIT trap's action still: a bare `exit`
+     * there ends with the trap's entry status, and an EXIT trap set there does
+     * not run. bash keeps running_trap for these, and clears it in the
+     * subshell of a compound command, `( … )` among them.
+     */
+    private inTrapAction;
     getLastExitCode(): number;
     setLastExitCode(exitCode: number): void;
     executeScript(script: ScriptNode, terminalStdin?: TerminalInputStream): Promise<number>;
@@ -207,6 +219,8 @@ export declare class Interpreter {
      * a sourced file's, a trap's; not an alias's text, which is part of the
      * line it is in), a line a nested call discards ends, and the next runs
      * with $? 1, in a shell that is no child: a child's ends (finishChild).
+     * Text run `inline` (eval's, a sourced file's, an alias's) leaves an `exit`,
+     * and an end by `set -e` or a fatal error, to the shell that runs it.
      */
     private executeScriptWithIo;
     executeLine(input: string, terminalStdin?: TerminalInputStream, options?: {

@@ -2,7 +2,7 @@
 // ruby/gem-install-pure-ruby — gem install fetches and installs a pure
 // Ruby gem into persistent GEM_HOME, then require works in a later command.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi } from '../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, hasOutputLine } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const label = 'ruby/gem-install-pure-ruby';
@@ -37,7 +37,7 @@ await t.run('nimbus install ruby', 180_000);
   const { output } = await t.run('test -d /home/user/.gem/gems/rack-* && echo GEM_PERSISTED', 10_000);
   const stripped = stripAnsi(output);
   a.check('installed gem files persist in Nimbus VFS',
-    /GEM_PERSISTED/.test(stripped),
+    hasOutputLine(stripped, 'GEM_PERSISTED'),
     JSON.stringify(stripped.slice(-500)));
 }
 

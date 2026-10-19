@@ -50,7 +50,7 @@ type ProcessRpcHost = Pick<NimbusSession, 'processes'>;
 type ReportRpcHost = ProcessRpcHost & Pick<NimbusSession, 'facetManager'>;
 type ExitRpcHost = ReportRpcHost & Pick<NimbusSession, 'terminal' | 'shell' | 'webSocketRelay' | 'supervisorDeliveries' | 'servedReads' | '_emitExitDump' | 'nimbusDebug' | 'childProcessManager'>;
 export declare function checkedReadPayloadBytes(bytes: number): number;
-export declare function withReadAllocation<T>(bytes: number, read: () => Promise<T>): Promise<T>;
+export declare function withReadAllocation<T>(bytes: number, read: () => Promise<T>, pid?: number, session?: string): Promise<T>;
 /**
  * `files.readFile` — the read with the supervisor's allocation lease.
  * The body lives in `buildSessionSupervisorOps`'s `readFile` override so

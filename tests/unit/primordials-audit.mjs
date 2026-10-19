@@ -60,8 +60,12 @@ const UNCHECKED = new Set(['primordials.ts', 'host-ops.ts']);
 /** The mark of a line that reaches the program's realm because Node's own code does (posix-path.ts: lib/path.js join's push). */
 const LIVE_AS_NODE = /\/\/ as Node's, live:/;
 /** The guest's module loading, as it is converted: node:path's posix half, the module resolvers, their package maps and TypeScript rules, Node's errors. */
-const GUEST_LOADING = ['posix-path.ts', 'esm-resolver.ts', 'package-map.ts', 'node-error.ts', 'commonjs-resolver.ts', 'typescript-specifiers.ts']
-  .map((file) => join(CORE, 'src/_shared', file));
+const GUEST_LOADING = [
+  ...['posix-path.ts', 'esm-resolver.ts', 'package-map.ts', 'node-error.ts', 'commonjs-resolver.ts', 'typescript-specifiers.ts']
+    .map((file) => join(CORE, 'src/_shared', file)),
+  // The filesystem reads it makes: the resident namespace's walk.
+  fileURLToPath(new URL('../../packages/worker/src/vfs/resident/namespace-lookup.ts', import.meta.url)),
+];
 const FILES = [
   ...readdirSync(DIR).filter((f) => f.endsWith('.ts') && !UNCHECKED.has(f)).map((f) => join(DIR, f)),
   join(CORE, 'src/_shared/runtime-function-source.ts'),
@@ -126,7 +130,7 @@ for (const file of FILES) {
     const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
     // A call Node's own code makes through the program's realm, which a port of it must make too: marked on its line.
     if (LIVE_AS_NODE.test(source.text.split('\n')[line - 1])) return;
-    violations.push(`${file.slice(CORE.length)}:${line} ${what}`);
+    violations.push(`${file.startsWith(CORE) ? file.slice(CORE.length) : file}:${line} ${what}`);
   };
   const visit = (node) => {
     if (ts.isIdentifier(node) && isValueName(node) && !FIXED_GLOBALS.has(node.text)) {

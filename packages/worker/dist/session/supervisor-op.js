@@ -30,7 +30,7 @@ function outputPlace(args) {
     const run = args?.[2];
     return typeof at === 'number' && typeof run === 'number' ? [at, run] : [];
 }
-export function buildSessionSupervisorOps(host, store, methods) {
+export function buildSessionSupervisorOps(host, store, methods, session) {
     host.ensureSqliteFs();
     const vfs = host.sqliteFs;
     if (!vfs)
@@ -58,7 +58,7 @@ export function buildSessionSupervisorOps(host, store, methods) {
         ])),
         bridge: store,
         // Every native read holds a lease for the payload it can answer with.
-        readLease: withReadAllocation,
+        readLease: (bytes, read, pid) => withReadAllocation(bytes, read, pid, session),
         extend,
         deliveries: host.supervisorDeliveries,
         ...(host.waveTurn === undefined ? {} : { turn: () => host.waveTurn() }),

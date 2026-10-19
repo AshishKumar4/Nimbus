@@ -2,7 +2,8 @@
 // repl/python-syntax-error — invalid syntax surfaces SyntaxError and
 // returns to REPL prompt (does NOT crash the session).
 
-import { mintSession, Terminal, makeAsserter, stripAnsi } from '../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, hasOutputLine } from '../_driver.mjs';
+import { pushLine } from './_push.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('repl/python-syntax-error');
@@ -42,11 +43,8 @@ a.check('invalid syntax surfaces SyntaxError', hasErr,
   hasErr ? '' : JSON.stringify(out1.slice(-200)));
 
 // After the error, REPL should still respond. Send a valid statement.
-t.reset();
-t.cmd('print("alive")');
-await t.waitFor((b) => /\balive\b/.test(b), 10_000, 'post-error alive');
-const out2 = stripAnsi(t.buf);
-const stillAlive = /\balive\b/.test(out2);
+const out2 = await pushLine(t, 'print("alive")', { timeoutMs: 10_000 });
+const stillAlive = hasOutputLine(out2, 'alive');
 a.check('REPL recovers from syntax error', stillAlive,
   stillAlive ? '' : JSON.stringify(out2.slice(-200)));
 

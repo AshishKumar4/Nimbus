@@ -332,6 +332,9 @@ var __nimbusResidentModule = (() => {
     };
   }
 
+  // nimbus-launch-captures:launch-captures
+  var { ArrayConstructor, ArrayFrom, ArrayIteratorNext, ArrayIteratorPrototype, ArrayPrototypeIndexOf, ArrayPrototypeLastIndexOf, ArrayPrototypePop, ArrayPrototypeToSpliced, ArrayPrototypeWith, ArrayValues, BigInt, BigIntPrototypeToString, Error: Error2, FunctionPrototypeBind, GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, JSONParse, JSONStringify, NumberOf, NumberPrototypeToString, ObjectOf, ObjectPrototype, ObjectPrototypeHasOwnProperty, ObjectPrototypePropertyIsEnumerable, ObjectPrototypeToString, PromiseConstructor, PromisePrototypeThen, PromiseReject, PromiseResolve, RangeError, ReferenceError: ReferenceError2, RegExp, RegExpPrototypeAccessors, RegExpPrototypeExec, SafeAsyncGeneratorPrototype, SafeGeneratorPrototype, SafeList, SafeMap, SafeRegExpPrototype, SafeSet, SafeWeakMap, SafeWeakSet, StringFromCharCode, StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeIndexOf, StringPrototypeLastIndexOf, StringPrototypeSlice, StringPrototypeSubstr, SymbolConstructor, SymbolPrototypeDescription, SymbolPrototypeToString, SyntaxError, TypeError: TypeError2, URIError, URL, arrayIncludes, arrayIndexOf, arrayIsArray, arrayJoin, arraySort, captureStackTraceOf, dataDescriptor, decodeURIComponentOf, encodeURIComponentOf, generatorNext, generatorThrow, globalObject, mathAbs, newURL, numberIsInteger, objectAssign, objectCreate, objectDefineProperties, objectFreeze, objectGetOwnPropertyNames, objectHasOwn, objectIs, objectIsExtensible, objectKeys, ownField, parseFloatOf, parseIntOf, reflectApply, reflectConstruct, reflectDefineProperty, reflectDeleteProperty, reflectGet, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectHas, reflectOwnKeys, reflectSet, reflectSetPrototypeOf, regExpExec, safeGenerator, setForEach, stringCharCodeAt, stringEndsWith, stringIncludes, stringIndexOf, stringLastIndexOf, stringOf, stringSlice, stringStartsWith, stringToLowerCase, symbolAsyncIterator, symbolFor, symbolIterator, symbolUnscopables, useCaptureStackTrace } = __nimbusLaunchCaptures;
+
   // ../core/dist/vfs/posix-access.js
   function posixAccess(entry, want, cred) {
     const requested = want & 7;
@@ -340,7 +343,7 @@ var __nimbusResidentModule = (() => {
     const permissions = entry.mode & 511;
     if (cred.uid === 0)
       return (requested & 1) === 0 || (permissions & 73) !== 0 || entry.type === "directory";
-    const shift = cred.uid === entry.uid ? 6 : cred.gid === entry.gid || cred.groups.includes(entry.gid) ? 3 : 0;
+    const shift = cred.uid === entry.uid ? 6 : cred.gid === entry.gid || arrayIncludes(cred.groups, entry.gid) ? 3 : 0;
     return (permissions >> shift & requested) === requested;
   }
   function chmodRefusal(entry, cred) {
@@ -358,7 +361,7 @@ var __nimbusResidentModule = (() => {
     const owner = cred.uid === entry.uid;
     if (uid !== null && (uid !== entry.uid || !owner))
       return "EPERM";
-    if (gid !== null && (!owner || gid !== entry.gid && !cred.groups.includes(gid)))
+    if (gid !== null && (!owner || gid !== entry.gid && !arrayIncludes(cred.groups, gid)))
       return "EPERM";
     return null;
   }
@@ -618,10 +621,10 @@ var __nimbusResidentModule = (() => {
     };
   }
   function heapTables() {
-    const files = /* @__PURE__ */ new Map();
-    const chunks = /* @__PURE__ */ new Map();
+    const files = new SafeMap();
+    const chunks = new SafeMap();
     const meta = /* @__PURE__ */ new Map();
-    const ns = /* @__PURE__ */ new Map();
+    const ns = new SafeMap();
     const byKey = /* @__PURE__ */ new Map();
     const pages = /* @__PURE__ */ new Map();
     const pageKey = (path, rev, part) => path + "\0" + rev + "\0" + part;
@@ -689,7 +692,7 @@ var __nimbusResidentModule = (() => {
     const addChunk = (path, part, cell, replace) => {
       let parts = chunks.get(path);
       if (!parts) {
-        parts = /* @__PURE__ */ new Map();
+        parts = new SafeMap();
         chunks.set(path, parts);
       }
       const had = parts.get(part);
@@ -834,7 +837,17 @@ var __nimbusResidentModule = (() => {
       chunkParts(path) {
         const parts = chunks.get(path);
         if (!parts) return [];
-        return [...parts.keys()].sort((a, b) => a - b).map((part) => copy(parts.get(part)));
+        const numbers = new SafeList();
+        parts.forEach((_cell, part) => {
+          numbers[numbers.length] = part;
+        });
+        arraySort(numbers, (a, b) => a - b);
+        const out = [];
+        for (let i = 0; i < numbers.length; i++) {
+          const cell = parts.get(numbers[i] ?? 0);
+          if (cell !== void 0) reflectDefineProperty(out, out.length, dataDescriptor(copy(cell), true, true, true));
+        }
+        return out;
       },
       chunkAddText(path, part, txt) {
         addChunk(path, Number(part), { txt: String(txt), bin: null }, false);
@@ -924,7 +937,7 @@ var __nimbusResidentModule = (() => {
         const bytes = namespaceRowBytes(parent, name, target);
         const growth = bytes - (previous === void 0 ? 0 : namespaceRowBytes(parent, name, previous.target));
         if (!dir) {
-          dir = /* @__PURE__ */ new Map();
+          dir = new SafeMap();
           ns.set(parent, dir);
         }
         if (previous === void 0) names++;
@@ -1007,29 +1020,114 @@ var __nimbusResidentModule = (() => {
     };
   }
 
-  // ../platform/dist/lexical-path.js
-  function rootClampedSegments(path, base = []) {
-    const out = [...base];
-    for (const segment of path.split("/")) {
-      if (segment === "..")
-        out.pop();
-      else if (segment !== "" && segment !== ".")
-        out.push(segment);
+  // src/vfs/resident/namespace-lookup.ts
+  var NS_MAX_HOPS = 40;
+  var removed = (word) => objectHasOwn(word, "absent");
+  var linked = (word) => objectHasOwn(word, "target");
+  var moved = (word) => objectHasOwn(word, "from");
+  function nsParent(k) {
+    const i = stringLastIndexOf(k, "/");
+    return i < 0 ? "" : stringSlice(k, 0, i);
+  }
+  function nsName(k) {
+    return stringSlice(k, stringLastIndexOf(k, "/") + 1);
+  }
+  function nsSplit(k) {
+    return [nsParent(k), nsName(k)];
+  }
+  function nsKey(path) {
+    const text = stringOf(path);
+    let at = 0;
+    while (at < text.length && stringCharCodeAt(text, at) === 47) at++;
+    return at === 0 ? text : stringSlice(text, at);
+  }
+  function nsRowAt(t, k) {
+    if (k === "") {
+      return { kind: NS_DIR, size: 0, mode: 16877, uid: 0, gid: 0, atime: 0, mtime: 0, ctime: 0, ino: 1, rev: 0, target: null, dev: 0, nlink: 1 };
     }
-    return out;
+    const i = stringLastIndexOf(k, "/");
+    return i < 0 ? t.nsGet("", k) : t.nsGet(stringSlice(k, 0, i), stringSlice(k, i + 1));
+  }
+  function joinTarget(linkPath, target) {
+    const text = stringOf(target);
+    const out = new SafeList();
+    const names = (path, reduce) => {
+      for (let start = 0; start <= path.length; ) {
+        let stop = stringIndexOf(path, "/", start);
+        if (stop < 0) stop = path.length;
+        const name = stringSlice(path, start, stop);
+        start = stop + 1;
+        if (name === "") continue;
+        if (reduce && name === "..") {
+          if (out.length > 0) out.length--;
+        } else if (!reduce || name !== ".") out[out.length] = name;
+      }
+    };
+    if (stringCharCodeAt(text, 0) !== 47) names(nsParent(linkPath), false);
+    names(text, true);
+    return arrayJoin(out, "/");
+  }
+  function walkNamespace(t, links, k, followLeaf, own, visit) {
+    if (own === void 0 && links.size === 0 && visit === void 0) return { path: k, table: k, row: nsRowAt(t, k) };
+    let path = k;
+    walk: for (let hops = 0; hops <= NS_MAX_HOPS; hops++) {
+      let table = "";
+      for (let start = 0, more = path !== ""; more; ) {
+        let stop = stringIndexOf(path, "/", start);
+        const leaf = stop < 0;
+        if (leaf) stop = path.length;
+        const name = stringSlice(path, start, stop);
+        const prefix = stringSlice(path, 0, stop);
+        more = !leaf;
+        start = stop + 1;
+        if (visit !== void 0 && !visit(prefix)) return "EACCES";
+        const step = table === null ? null : table ? `${table}/${name}` : name;
+        const word = own === void 0 ? void 0 : own(prefix);
+        let target;
+        if (word !== void 0 && removed(word)) {
+          return { path, table: null, row: void 0, own: word };
+        } else if (word !== void 0 && linked(word)) {
+          if (leaf && !followLeaf) return { path, table: null, row: void 0, own: word };
+          target = word.target;
+        } else if (word !== void 0 && moved(word)) {
+          const named = ownField(word, "link");
+          const link = typeof named === "string" ? named : void 0;
+          if (link !== void 0 && leaf && !followLeaf) {
+            const at = nsRowAt(t, link) !== void 0 ? link : prefix;
+            return { path, table: at, row: nsRowAt(t, at), own: word };
+          }
+          if (word.from === void 0) return { path, table: null, row: void 0, own: { absent: true } };
+          if (link !== void 0) target = `/${word.from}`;
+          else {
+            table = word.from;
+            if (leaf) return { path, table, row: nsRowAt(t, table), own: word };
+            continue;
+          }
+        } else if (word !== void 0) {
+          table = ownField(word, "hide") === true ? null : prefix;
+          if (leaf) return { path, table: prefix, row: nsRowAt(t, prefix), own: word };
+          continue;
+        } else {
+          if (step === null) return { path, table: null, row: void 0 };
+          table = step;
+          if (!links.has(step) || leaf && !followLeaf) continue;
+          const row = nsRowAt(t, step);
+          if (!row || row.kind !== NS_LINK) continue;
+          target = row.target;
+        }
+        const rest = leaf ? "" : stringSlice(path, stop + 1);
+        const reached = joinTarget(prefix, target);
+        path = rest ? reached ? `${reached}/${rest}` : rest : reached;
+        continue walk;
+      }
+      return { path, table, row: table === null ? void 0 : nsRowAt(t, table) };
+    }
+    return "ELOOP";
   }
 
   // src/vfs/resident/namespace.ts
-  var NS_MAX_HOPS = 40;
-  function nsSplit(k) {
-    const i = k.lastIndexOf("/");
-    return i < 0 ? ["", k] : [k.slice(0, i), k.slice(i + 1)];
-  }
   function nsKindCode(type) {
     return type === "directory" ? NS_DIR : type === "symlink" ? NS_LINK : NS_FILE;
-  }
-  function nsKey(path) {
-    return String(path).replace(/^\/+/, "");
   }
   function nsDescribes(stat) {
     const described = stat;
@@ -1046,26 +1144,15 @@ var __nimbusResidentModule = (() => {
     }
     return null;
   }
-  function nsRowAt(t, k) {
-    if (k === "") {
-      return { kind: NS_DIR, size: 0, mode: 16877, uid: 0, gid: 0, atime: 0, mtime: 0, ctime: 0, ino: 1, rev: 0, target: null, dev: 0, nlink: 1 };
-    }
-    const [parent, name] = nsSplit(k);
-    return t.nsGet(parent, name);
-  }
-  function joinTarget(linkPath, target) {
-    const text = String(target);
-    return rootClampedSegments(text, text.startsWith("/") ? [] : nsSplit(linkPath)[0].split("/").filter(Boolean)).join("/");
-  }
   function createNamespace(coherence, admission) {
     const realNow = Date.now;
-    let links = /* @__PURE__ */ new Set();
-    let unlisted = /* @__PURE__ */ new Map();
+    let links = new SafeSet();
+    let unlisted = new SafeMap();
     let cred = null;
     let ok = false;
     let cause = "the process has not listed it yet";
     let lazy = false;
-    const listed = /* @__PURE__ */ new Set();
+    const listed = new SafeSet();
     const ready = () => ok && coherence.serving();
     const markReady = (t, isReady, why) => {
       t.metaSet("ns", isReady ? "1" : "0");
@@ -1079,7 +1166,7 @@ var __nimbusResidentModule = (() => {
     const unlistedOver = (k, self) => {
       if (unlisted.size === 0) return null;
       const t = coherence.require();
-      for (let at = self ? k : nsSplit(k)[0]; at !== ""; at = nsSplit(at)[0]) {
+      for (let at = self ? k : nsParent(k); at !== ""; at = nsParent(at)) {
         const mount = unlisted.get(at);
         if (mount !== void 0) return mount;
         const row = nsRowAt(t, at);
@@ -1136,8 +1223,8 @@ var __nimbusResidentModule = (() => {
       if (lazy) forgetListed(k);
       if (k === "") {
         t.nsClear();
-        links = /* @__PURE__ */ new Set();
-        unlisted = /* @__PURE__ */ new Map();
+        links = new SafeSet();
+        unlisted = new SafeMap();
         return;
       }
       const prefix = k + "/";
@@ -1160,56 +1247,7 @@ var __nimbusResidentModule = (() => {
       unlisted.delete(k);
     };
     function lookup(k, followLeaf, own, visit) {
-      const t = coherence.require();
-      if (own === void 0 && links.size === 0 && visit === void 0) return { path: k, table: k, row: nsRowAt(t, k) };
-      let path = k;
-      walk: for (let hops = 0; hops <= NS_MAX_HOPS; hops++) {
-        const segs = path === "" ? [] : path.split("/");
-        let table = "";
-        for (let i = 1; i <= segs.length; i++) {
-          const prefix = segs.slice(0, i).join("/");
-          if (visit !== void 0 && !visit(prefix)) return "EACCES";
-          const leaf = i === segs.length;
-          const step = table === null ? null : table ? table + "/" + segs[i - 1] : segs[i - 1];
-          const word = own?.(prefix);
-          let target;
-          if (word !== void 0 && "absent" in word) {
-            return { path, table: null, row: void 0, own: word };
-          } else if (word !== void 0 && "target" in word) {
-            if (leaf && !followLeaf) return { path, table: null, row: void 0, own: word };
-            target = word.target;
-          } else if (word !== void 0 && "from" in word) {
-            if (word.link !== void 0 && leaf && !followLeaf) {
-              const at = nsRowAt(t, word.link) !== void 0 ? word.link : prefix;
-              return { path, table: at, row: nsRowAt(t, at), own: word };
-            }
-            if (word.from === void 0) return { path, table: null, row: void 0, own: { absent: true } };
-            if (word.link !== void 0) target = "/" + word.from;
-            else {
-              table = word.from;
-              if (leaf) return { path, table, row: nsRowAt(t, table), own: word };
-              continue;
-            }
-          } else if (word !== void 0) {
-            table = word.hide ? null : prefix;
-            if (leaf) return { path, table: prefix, row: nsRowAt(t, prefix), own: word };
-            continue;
-          } else {
-            if (step === null) return { path, table: null, row: void 0 };
-            table = step;
-            if (!links.has(step) || leaf && !followLeaf) continue;
-            const row = nsRowAt(t, step);
-            if (!row || row.kind !== NS_LINK) continue;
-            target = row.target;
-          }
-          const rest = segs.slice(i).join("/");
-          const joined = joinTarget(prefix, target);
-          path = rest ? joined ? joined + "/" + rest : rest : joined;
-          continue walk;
-        }
-        return { path, table, row: table === null ? void 0 : nsRowAt(t, table) };
-      }
-      return "ELOOP";
+      return walkNamespace(coherence.require(), links, k, followLeaf, own, visit);
     }
     const traversable = (row) => {
       if (!row || row.kind !== NS_DIR) return false;
@@ -1218,12 +1256,12 @@ var __nimbusResidentModule = (() => {
     const children = (k) => coherence.require().nsChildren(k).map((row) => ({ name: String(row.name), kind: Number(row.kind), mode: Number(row.mode) }));
     return {
       bind(t) {
-        links = /* @__PURE__ */ new Set();
+        links = new SafeSet();
         for (const row of t.nsOfKind(NS_LINK)) {
           const parent = String(row.parent);
           links.add(parent ? parent + "/" + String(row.name) : String(row.name));
         }
-        unlisted = /* @__PURE__ */ new Map();
+        unlisted = new SafeMap();
         for (const row of t.nsUnlisted()) {
           const parent = String(row.parent);
           unlisted.set(parent ? parent + "/" + String(row.name) : String(row.name), String(row.target));
@@ -1416,8 +1454,8 @@ var __nimbusResidentModule = (() => {
         tryPut(t, k, stat, written ?? cursor.rev, target);
       },
       clear() {
-        links = /* @__PURE__ */ new Set();
-        unlisted = /* @__PURE__ */ new Map();
+        links = new SafeSet();
+        unlisted = new SafeMap();
         ok = false;
       },
       get lazy() {
@@ -1426,11 +1464,11 @@ var __nimbusResidentModule = (() => {
       beginLazy() {
         lazy = true;
         listed.clear();
-        links = /* @__PURE__ */ new Set();
-        unlisted = /* @__PURE__ */ new Map();
+        links = new SafeSet();
+        unlisted = new SafeMap();
       },
       listedAt(k) {
-        return listed.has(nsSplit(k)[0]);
+        return listed.has(nsParent(k));
       },
       isListed(dir) {
         return listed.has(dir);
@@ -1445,8 +1483,8 @@ var __nimbusResidentModule = (() => {
 
   // src/vfs/resident/cells.ts
   function createCells(coherence, admission, namespace, observeRead) {
-    const held = /* @__PURE__ */ new Map();
-    const unheld = /* @__PURE__ */ new Set();
+    const held = new SafeMap();
+    const unheld = new SafeSet();
     const cellSize = (cell) => typeof cell === "string" ? cell.length * 3 : residentBytes(cell).byteLength;
     const forgetHeld = (path) => {
       const cell = held.get(path);
@@ -1600,7 +1638,7 @@ var __nimbusResidentModule = (() => {
       return { dropped, kept, pushed, relist, cursor: { epoch, rev } };
     };
     const get = (path) => {
-      if (observeRead !== null) observeRead(path.replace(/^\/+/, ""));
+      if (observeRead !== null) observeRead(nsKey(path));
       const found = head(path);
       if (found === void 0) {
         const cell = held.get(path);
@@ -1617,18 +1655,21 @@ var __nimbusResidentModule = (() => {
         if (row === void 0) return void 0;
         return kind === RK_TEXT ? row.txt : residentBytes(row.bin);
       }
+      const rows = t.chunkParts(path);
+      if (rows.length === 0) return void 0;
       if (kind === RK_TEXT) {
-        const parts2 = t.chunkParts(path).map((row) => row.txt);
-        return parts2.length === 0 ? void 0 : parts2.join("");
+        let text = "";
+        for (let i = 0; i < rows.length; i++) text += rows[i]?.txt ?? "";
+        return text;
       }
-      const parts = t.chunkParts(path).map((row) => residentBytes(row.bin));
-      if (parts.length === 0) return void 0;
-      const total = parts.reduce((n, p) => n + p.byteLength, 0);
+      let total = 0;
+      for (let i = 0; i < rows.length; i++) total += residentBytes(rows[i]?.bin).byteLength;
       const out = new Uint8Array(total);
       let offset = 0;
-      for (const p of parts) {
-        out.set(p, offset);
-        offset += p.byteLength;
+      for (let i = 0; i < rows.length; i++) {
+        const bytes = residentBytes(rows[i]?.bin);
+        out.set(bytes, offset);
+        offset += bytes.byteLength;
       }
       return out;
     };

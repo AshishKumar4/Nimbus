@@ -4,7 +4,7 @@
 //
 // Black-box surfaces only.
 
-import { mintSession, Terminal, makeAsserter, writeFileViaShell } from './_driver.mjs';
+import { mintSession, Terminal, makeAsserter, writeFileViaShell, hasOutputLine } from './_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('session-recovery');
@@ -30,7 +30,7 @@ await t2.connect();
 // 3. scrollback replay surfaces the previous "scrollback-line-A" output,
 //    read before any command runs (a run resets the buffer).
 {
-  const replayed = await t2.waitFor((b) => /scrollback-line-A/.test(b), 15_000, 'scrollback replay').then(() => '', (error) => error.message);
+  const replayed = await t2.waitFor((b) => hasOutputLine(b, 'scrollback-line-A'), 15_000, 'scrollback replay').then(() => '', (error) => error.message);
   a.check('scrollback replay surfaces prior-session output', replayed === '', replayed);
 }
 await t2.waitForPrompt(60_000);

@@ -14,7 +14,7 @@
 // for directory delete (uses internal recursive helper that walks
 // SqliteVFS readdir).
 
-import { mintSession, Terminal, makeAsserter, stripAnsi, sleep } from '../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, sleep, hasOutputLine } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('shell/rm-force-missing');
@@ -30,7 +30,7 @@ const r1 = await t.run('rm -rf /tmp/nimbus-bsr2-no-such && echo CHAIN_OK', 10_00
 const out1 = stripAnsi(r1.output);
 a.check(
   '`rm -rf <missing>` returns 0; chained `&& echo X` runs',
-  /CHAIN_OK/.test(out1),
+  hasOutputLine(out1, 'CHAIN_OK'),
   `tail: ${JSON.stringify(out1.slice(-200))}`,
 );
 
@@ -63,7 +63,7 @@ const r4 = await t.run(
 const out4 = stripAnsi(r4.output);
 a.check(
   'cleanup idiom `rm -rf X && mkdir X && touch X/y && ls X` chains correctly',
-  /\bx\b/.test(out4),
+  hasOutputLine(out4, 'x'),
   `tail: ${JSON.stringify(out4.slice(-200))}`,
 );
 
@@ -79,7 +79,7 @@ const out5 = stripAnsi(r5.output);
 const out5stat = stripAnsi(r5stat.output);
 a.check(
   '`rm -rf <dir>` actually removes a populated directory recursively',
-  /\bsub\b/.test(stripAnsi(before.output)) && /GONE/.test(out5) && /No such file/.test(out5stat),
+  /\bsub\b/.test(stripAnsi(before.output)) && hasOutputLine(out5, 'GONE') && /No such file/.test(out5stat),
   `out5: ${JSON.stringify(out5.slice(-150))}, stat: ${JSON.stringify(out5stat.slice(-150))}`,
 );
 

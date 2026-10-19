@@ -22,11 +22,12 @@ export type SessionFilesystemHost = SessionSupervisorHost & {
 export declare class SessionFilesystem {
     readonly engine: SqliteVFS;
     private readonly host;
+    private readonly session?;
     /** The session's namespace and process bindings: one, for the workspace, facets and RPC alike. */
     readonly authority: ProcessFiles;
     private readonly unsubscribe;
     private ops;
-    constructor(engine: SqliteVFS, host: SessionFilesystemHost);
+    constructor(engine: SqliteVFS, host: SessionFilesystemHost, session?: string | undefined);
     /**
      * The one supervisor-op handler this session's bindings, loopback stubs and
      * `_rpc*` delegates all dispatch through — native filesystem ops against

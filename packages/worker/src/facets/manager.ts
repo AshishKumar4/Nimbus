@@ -226,7 +226,7 @@ import {
   acquireSupervisorAllocation, acquireSupervisorCopyAllocation, readSupervisorAllocationBudget, tryAcquireSupervisorAllocation, tryAcquireSupervisorCopyAllocation,
   reclaimableSupervisorAllocation,
 } from '@nimbus-sh/platform/heavy-alloc-coord.js';
-import type { ResizableCreditLease } from '@nimbus-sh/platform/weighted-credit-pool.js';
+import type { SupervisorAllocationLease, SupervisorAllocationOwner } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { streamedWasmImageDigest, type WasmImageRecord } from './wasm-image-digest.js';
 import { wasmImageDigest } from './wasm-image-key.js';
@@ -1858,6 +1858,7 @@ ${VFS_CURSOR_SEED_SOURCE}
       captured: !!captureOutput || !workerEnv?.SUPERVISOR,
       nonce: __startArgs && __startArgs.stopNonce,
       boundary: () => { const b = __supervisor && __supervisor.replayBoundary; return typeof b === "function" ? Reflect.apply(b, __supervisor, []) : undefined; },
+      run: __startArgs && __startArgs.run,
     });
     const __supervisor = workerEnv?.SUPERVISOR
       ? __nimbusStopReplay.ledger(globalThis.__nimbusAnsweringSupervisor(workerEnv.SUPERVISOR)) : null;
@@ -1886,7 +1887,8 @@ ${VFS_CURSOR_SEED_SOURCE}
     // synchronously, fetched when that import() runs (node-shims.ts
     // __nimbusStageImport; the planner's lazyReadsByTarget).
     globalThis.__nimbusLazyReads = new Map(Object.entries((__startArgs && __startArgs.lazyReads) || {}));
-    __nimbusProfileStaged = new Set((__startArgs && __startArgs.profileStaged) || []);
+    // A SafeSet (the launch's captures): every read strikes one off, after a program may have replaced Set.prototype.delete.
+    __nimbusProfileStaged = new __nimbusLaunchCaptures.SafeSet((__startArgs && __startArgs.profileStaged) || []);
     __resident.sync.setPushRoots([_cwd || "/home/user", "/tmp"]);
     // Bring the store to the authority's current state before the program's
     // first instruction. This is what makes a first synchronous read of an
@@ -4356,6 +4358,7 @@ export async function buildPrefetchBundle(vfs: LaunchFs, options: PrefetchBundle
 const PREFETCH_PEAK_PER_BYTE = 3;
 // A speculative admission must fit a small module before paying for a bounced walk.
 const PREFETCH_MIN_CLOSURE_BYTES = 4096;
+const PREFETCH_ALLOCATION_OWNER: SupervisorAllocationOwner = { owner: 'prefetch bundle/map', attribution: 'prefetchBundleBytes' };
 
 /** An admission to the supervisor's admitted transient budget (Kinu #29). */
 interface PrefetchAdmission {
@@ -4398,12 +4401,12 @@ type LaunchWait = () => { readonly signal: AbortSignal; dispose(): void };
  * build joined, before a worker). One that has to wait for room waits under
  * `wait`: a launch whose process ends meanwhile is never admitted.
  */
-async function admitPrefetch(wait?: LaunchWait, bytes = SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES, copy = false): Promise<PrefetchAdmission> {
-  const now = tryAdmitPrefetch(bytes, copy);
+async function admitPrefetch(wait?: LaunchWait, bytes = SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES, copy = false, owner = PREFETCH_ALLOCATION_OWNER): Promise<PrefetchAdmission> {
+  const now = tryAdmitPrefetch(bytes, copy, owner);
   if (now !== null) return now;
   const waiting = wait?.();
   try {
-    const lease = await (copy ? acquireSupervisorCopyAllocation : acquireSupervisorAllocation)(bytes, waiting?.signal);
+    const lease = await (copy ? acquireSupervisorCopyAllocation : acquireSupervisorAllocation)(bytes, waiting?.signal, owner);
     // Room came as its launch ended: given back, not used.
     if (waiting?.signal.aborted) {
       lease.release();
@@ -4420,18 +4423,18 @@ async function admitPrefetch(wait?: LaunchWait, bytes = SUPERVISOR_IN_FLIGHT_ALL
  * null where it would wait. A `copy` (a map made from a state already
  * staged) takes the credit without shrinking the VFS cache.
  */
-function tryAdmitPrefetch(bytes: number, copy = false): PrefetchAdmission | null {
-  const lease = copy ? tryAcquireSupervisorCopyAllocation(bytes) : tryAcquireSupervisorAllocation(bytes);
+function tryAdmitPrefetch(bytes: number, copy = false, owner = PREFETCH_ALLOCATION_OWNER): PrefetchAdmission | null {
+  const lease = (copy ? tryAcquireSupervisorCopyAllocation : tryAcquireSupervisorAllocation)(bytes, owner);
   return lease === null ? null : admissionOf(lease, false);
 }
 
-function tryAdmitPrefetchBuild(): PrefetchAdmission | null {
+function tryAdmitPrefetchBuild(owner: SupervisorAllocationOwner): PrefetchAdmission | null {
   const budget = readSupervisorAllocationBudget();
   const free = budget.capacity - budget.current;
-  return free / PREFETCH_PEAK_PER_BYTE < PREFETCH_MIN_CLOSURE_BYTES ? null : tryAdmitPrefetch(free);
+  return free / PREFETCH_PEAK_PER_BYTE < PREFETCH_MIN_CLOSURE_BYTES ? null : tryAdmitPrefetch(free, false, owner);
 }
 
-function admissionOf(admitted: ResizableCreditLease, queued: boolean): PrefetchAdmission {
+function admissionOf(admitted: SupervisorAllocationLease, queued: boolean): PrefetchAdmission {
   // Attributed so it lands under `prefetchBundleBytes`, not the unattributed remainder.
   const lease = attributeAllocation('prefetchBundleBytes', admitted);
   let released = false;
@@ -4469,8 +4472,8 @@ function admissionOf(admitted: ResizableCreditLease, queued: boolean): PrefetchA
 }
 
 /** `work` under an admission of its own (admitPrefetch's `wait` and `bytes`), given back as it ends. */
-async function withPrefetchAllocation<T>(work: (admission: PrefetchAdmission) => Promise<T>, wait?: LaunchWait, bytes?: number): Promise<T> {
-  const admission = await admitPrefetch(wait, bytes);
+async function withPrefetchAllocation<T>(work: (admission: PrefetchAdmission) => Promise<T>, wait?: LaunchWait, bytes?: number, owner = PREFETCH_ALLOCATION_OWNER): Promise<T> {
+  const admission = await admitPrefetch(wait, bytes, false, owner);
   try {
     return await work(admission);
   } finally {
@@ -5192,6 +5195,10 @@ export interface ResidentSpawnOptions {
   resume?: StoppedRunNext;
   /** Its stdin, given whole (exec's `stdin`): a promoted one-shot's, given again. */
   stdin?: string;
+  /** Its `< file`, read from the start: a promoted one-shot's, run again from its start unretraced (_promote). */
+  stdinFile?: NonNullable<ExecLaunchOpts['stdinFile']>;
+  /** The run its output is tagged with, past one that stopped: a promoted one-shot's, run again from its start unretraced. */
+  run?: number;
   /**
    * Its launcher writes its stdin and ends it, and does not wait for the
    * boot (RuntimeRunOpts.stdinWriter): the boot may stop at a synchronous
@@ -6804,7 +6811,8 @@ export class FacetManager {
     // Its helpers wait for a worker as its process (withLaunchPreparation): a wait nothing can satisfy is one the ledger tells.
     const building = withLaunchPreparation(this.ctx, { pid: entry.pid }, async () => {
       // Held from the moment it is taken: the detector names its holders (_creditHolders).
-      let admission = held ?? tryAdmitPrefetchBuild() ?? await admitPrefetch(() => this._launchEnds(entry.pid));
+      const owner = this._allocationOwner(entry.pid);
+      let admission = held ?? tryAdmitPrefetchBuild(owner) ?? await admitPrefetch(() => this._launchEnds(entry.pid), undefined, false, owner);
       for (;;) {
         this.buildAdmissions.set(entry.pid, admission);
         const fullBound = spec.maxBundleBytes ?? VFS_BUNDLE_MAX_BYTES;
@@ -6817,7 +6825,7 @@ export class FacetManager {
           // The failed gather has unwound before its credit is returned; no partial cells survive the bounce.
           this._releaseBuildAdmission(entry.pid);
           if (creditLimit === undefined || !(error instanceof ClosureBoundExceededError) || error.outcome.bound !== creditLimit) throw error;
-          admission = await admitPrefetch(() => this._launchEnds(entry.pid));
+          admission = await admitPrefetch(() => this._launchEnds(entry.pid), undefined, false, owner);
         }
       }
     });
@@ -7389,7 +7397,7 @@ export class FacetManager {
               resized = true;
               if (!vfsState.cacheRetained) releaseGeneratedSources(vfsState);
               this._releaseBuildAdmission(entry.pid);
-              const admission = await admitPrefetch(() => this._launchEnds(entry.pid), error.bytes, true);
+              const admission = await admitPrefetch(() => this._launchEnds(entry.pid), error.bytes, true, this._allocationOwner(entry.pid));
               this.buildAdmissions.set(entry.pid, admission);
               vfsState = await this._buildProcessBundle(entry, bundleSpec, pacer);
               continue;
@@ -7487,6 +7495,9 @@ export class FacetManager {
         // it is not a kill: the process fails, naming how it strayed.
         const divergence = new AbortController();
         if (stoppable || promotable) this.outputGates.set(entry.pid, new ReplayOutputGate());
+        // A promoted run is run again from what it started from: what it
+        // changes is kept, to be put back then (_promote).
+        if (promotable) this.vfs?.captureRun(entry.pid);
         if (stoppable) {
           const { journal } = this.replay.open(entry.pid, () => {
             this.outputGates.get(entry.pid)?.close();
@@ -7627,6 +7638,7 @@ export class FacetManager {
           held.give();
           this.outputGates.delete(entry.pid);
           if (stoppable) this.replay.close(entry.pid);
+          this.vfs?.releaseRun(entry.pid);
         }
       });
     } catch (err: unknown) {
@@ -7682,7 +7694,7 @@ export class FacetManager {
     this.launching.delete(pid);
   }
 
-  /** The one-shot launches not yet running (their stage and its age) and the launches waiting for a turn. */
+  /** Launches not yet running (their stage and its age) and the launches waiting for a turn. */
   launchState(now = Date.now()): { launches: Array<{ pid: number; stage: string; ms: number }>; pacer: { waiting: number; oldestMs: number | null } } {
     return {
       launches: [...this.launching].map(([pid, { stage, since }]) => ({ pid, stage, ms: now - since })),
@@ -7692,10 +7704,11 @@ export class FacetManager {
 
   /**
    * A one-shot that stopped at its first listen (stop-replay.ts listen) runs
-   * on as a resident, the same process: the resident replays the run up to
-   * that listen, checked against it, then listens and serves. What the
-   * one-shot printed is shown once; the resident prints it again only to be
-   * checked (the prefix).
+   * on as a resident, the same process: the resident starts from what the
+   * run started from (what the run changed put back, SqliteVFS.restoreRun),
+   * replays the run's draws and output up to that listen, then listens and
+   * serves. What the one-shot printed is shown once; the resident prints it
+   * again only to be checked (the prefix).
    */
   /**
    * A file's identity as the process sees it: which file, and its version;
@@ -7754,6 +7767,23 @@ export class FacetManager {
     await this.hooks.rewindProcessFiles?.(pid);
     // Every long-running process has an input channel on its pid.
     this.processes.openInput(pid);
+    // The resident starts from what the run started from: each file the run
+    // changed is put back as the run found it, and the resident's changes are
+    // its own. When they cannot all be put back, it starts from its start
+    // over the files as they are, unretraced, as a server known to be one is
+    // started (server-hints.ts): what it printed is printed again, and it
+    // says why.
+    // Its waves still being applied land first: none lands after.
+    await openSupervisorDeliveries(this.ctx).retireWaveWriters(pid);
+    const restored = this.vfs?.restoreRun(pid) ?? { refused: 'what it changed was not kept' };
+    if ('refused' in restored) {
+      await this._deliverOutput(pid, 'stderr', new TextEncoder().encode(
+        `node: this program listens as a server, so Nimbus runs it again as one from its start, over the files as they are: ${restored.refused}. What it printed before it listened is printed again.\n`,
+      ));
+      // Its run from the start is the next run, unchecked: all it prints is
+      // shown, and the stopped run's late chunks still are not.
+      gate?.restart(stop.run + 1);
+    }
     const resume: StoppedRunNext = {
       replay: {
         run: stop.run + 1,
@@ -7780,11 +7810,14 @@ export class FacetManager {
         esModule: opts.esModule, moduleScope: opts.moduleScope, preamble: opts.preamble,
         command: opts.command, invokerPid: opts.invokerPid, bundleProfile: opts.bundleProfile, node: opts.node,
         ...(opts.stdin !== undefined ? { stdin: opts.stdin } : {}),
-        skipSpawn: true, callerPid: pid, resume,
+        skipSpawn: true, callerPid: pid,
+        ...('refused' in restored
+          ? { run: stop.run + 1, ...(run.inputChannel > 0 ? { stdinWriter: true } : {}), ...(opts.stdinFile ? { stdinFile: { ...opts.stdinFile, syncRead: true } } : {}) }
+          : { resume }),
       });
       // Its \`< file\` changed between the run that read it and the resident
       // that read it again: they did not read the same input.
-      changed = this.processExitCode(pid) === null && run.stdinFile !== undefined
+      changed = this.processExitCode(pid) === null && !('refused' in restored) && run.stdinFile !== undefined
         && await this._stdinFileIdentity(entry, opts.stdinFile!.path) !== run.stdinFile;
       run.signal.throwIfAborted();
     } finally {
@@ -8025,7 +8058,7 @@ export class FacetManager {
     const admission = this.buildAdmissions.get(pid);
     if (admission === undefined) throw new Error(`Nimbus: the module map for pid ${pid} has no share of the credit`);
     if (admission.held() >= need) return;
-    const replacement = tryAdmitPrefetch(need, true);
+    const replacement = tryAdmitPrefetch(need, true, this._allocationOwner(pid));
     if (replacement === null) throw new OneShotAllocationNeeded(need);
     this.buildAdmissions.set(pid, replacement);
     admission.release();
@@ -8377,7 +8410,7 @@ export class FacetManager {
       const serialized = _serializeBundleForFacet(gathered.bundle);
       assertStagedBundleFitsRpcPayload(serialized, gathered.bundle);
       return { vfsState: gathered, vfsBundle: serialized };
-    }, () => this._launchEnds(entry.pid));
+    }, () => this._launchEnds(entry.pid), undefined, this._allocationOwner(entry.pid));
 
     return {
       mode,
@@ -8629,6 +8662,10 @@ export class FacetManager {
     return readSupervisorAllocationBudget().current > own ? null : [...this.buildAdmissions.keys()];
   }
 
+  private _allocationOwner(pid: number): SupervisorAllocationOwner {
+    return { owner: 'launch bundle/map', pid, session: this.ctx?.id?.toString(), attribution: 'prefetchBundleBytes' };
+  }
+
   /**
    * A launch's share of the credit for the module map it makes from `state`
    * (another launch's build, the cache's), taken before it holds a worker:
@@ -8639,12 +8676,12 @@ export class FacetManager {
     if (this.buildAdmissions.has(entry.pid)) return state;
     const need = Math.min(SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES,
       Math.max(prefetchNeed(state.rawBytes ?? 0), state.oneShotMapBytes ?? 0));
-    const now = tryAdmitPrefetch(need, true);
+    const now = tryAdmitPrefetch(need, true, this._allocationOwner(entry.pid));
     if (now !== null) {
       this.buildAdmissions.set(entry.pid, now);
       return state;
     }
-    return admitPrefetch(() => this._launchEnds(entry.pid), need, true).then((admission) => {
+    return admitPrefetch(() => this._launchEnds(entry.pid), need, true, this._allocationOwner(entry.pid)).then((admission) => {
       this.buildAdmissions.set(entry.pid, admission);
       return state;
     });
@@ -9070,17 +9107,21 @@ export class FacetManager {
     // gives it back for good, and its boot takes a slot of its own, as a
     // resident started in none does (_startResidentProcess).
     const inherited = suspendLaunchAdmission(this.ctx);
-    let admitted: () => Promise<void> = async () => {};
-    let stopWaiting = () => {};
-    if (inherited !== undefined && !opts.attachedTty) {
-      const ended = new AbortController();
-      stopWaiting = this.processes.subscribeTerminal(entry.pid, () => {
-        ended.abort(new Error(`Nimbus: the launch for pid ${entry.pid} was cancelled while it waited for a worker`));
-      });
-      admitted = () => inherited(ended.signal);
-    }
+    const ended = new AbortController();
+    const stopWaiting = this.processes.subscribeTerminal(entry.pid, () => {
+      ended.abort(new Error(`Nimbus: the launch for pid ${entry.pid} ended`));
+      this._launchEnded(entry.pid);
+    });
+    this._launchStage(entry, 'prepare', ended.signal);
+    const admitted = async () => {
+      if (inherited !== undefined && !opts.attachedTty) {
+        this._launchStage(entry, 'admission', ended.signal);
+        await inherited(ended.signal);
+      }
+      this._launchStage(entry, 'load', ended.signal);
+    };
     const launch = withLaunchPreparation(this.ctx, { pid: entry.pid }, () => this._runResidentLaunchBody(entry, code, command, opts, attempt, admitted));
-    return this.trackLaunchTask(launch.finally(() => { stopWaiting(); preparing(); }));
+    return this.trackLaunchTask(launch.finally(() => { this._launchEnded(entry.pid); stopWaiting(); preparing(); }));
   }
 
   private async _runResidentLaunchBody(
@@ -9369,7 +9410,7 @@ export class FacetManager {
       // process fails, naming how.
       let strayed: (() => void) | null = null;
       if (stdinWriter) {
-        this.outputGates.set(entry.pid, new ReplayOutputGate());
+        this.outputGates.set(entry.pid, new ReplayOutputGate(opts.run));
         this.stdinTaken.set(entry.pid, new StdinTaken(heldStdin, STDIN_SYNC_READ_BYTES));
         this.replay.open(entry.pid, () => {
           this.outputGates.get(entry.pid)?.close();
@@ -9395,8 +9436,10 @@ export class FacetManager {
       this._assertLaunchStillOwned(entry.pid);
       // Its worker, the launch admission it was started in, before its boot claims it.
       await admitted();
+      // The run this boot is: past a stop, the one its replay names; a run from its start past one that stopped, its own.
+      const launchingRun = rerun?.replay.run ?? opts.run ?? 1;
       try {
-      const launchingNonce = stopNonce, launchingRun = rerun?.replay.run ?? 1;
+      const launchingNonce = stopNonce;
       handle = await this._startResidentProcess(entry.pid, {
         // The attached-TTY runner holds startProcess open for the process's
         // life; the server/watch runner returns once it is up.
@@ -9422,11 +9465,13 @@ export class FacetManager {
           // A boot after a stop: what the stopped boot drew and printed, and
           // the stdin it is handed back.
           ...(rerun !== null ? { replay: rerun.replay, stdinAtLeast: rerun.stdinAtLeast ?? 0, ...(rerun.stdinWhole ? { stdinWhole: true } : {}) } : {}),
-          ...(rerun?.stdinFile ? { stdinFile: rerun.stdinFile } : {}),
+          // A run from its start after a run that stopped: its output is that next run's.
+          ...(rerun === null && opts.run !== undefined ? { run: opts.run } : {}),
+          ...(rerun?.stdinFile ? { stdinFile: rerun.stdinFile } : opts.stdinFile ? { stdinFile: opts.stdinFile } : {}),
         },
         // Each boot after a stop is a fresh isolate: a keyed loader keeps the
         // stopped one's module state.
-        ...(rerun !== null ? { run: rerun.replay.run } : {}),
+        ...(rerun !== null ? { run: rerun.replay.run } : opts.run !== undefined ? { run: opts.run } : {}),
         storageBytes,
         // A resident whose declared port is reserved binds the owner's
         // durable slot — the same store a durable worker spawn takes — so the
@@ -9505,14 +9550,15 @@ export class FacetManager {
       } else {
         await handle.booted();
       }
+      this._launchEnded(entry.pid);
       launching = false;
       break;
       } catch (e: unknown) {
         // The boot stopped itself at a synchronous read of stdin that has to
         // wait: wait for the input, then boot it again.
         const journal = this.replay.get(entry.pid)?.journal;
-        let stop = stoppable ? stopRecordOf(e, stopNonce, rerun?.replay.run ?? 1) : null;
-        if (stop === null && journal?.diverged) stop = { v: 3, kind: 'diverged', run: rerun?.replay.run ?? 1, out: [], why: journal.diverged };
+        let stop = stoppable ? stopRecordOf(e, stopNonce, launchingRun) : null;
+        if (stop === null && journal?.diverged) stop = { v: 3, kind: 'diverged', run: launchingRun, out: [], why: journal.diverged };
         if (stop === null) throw e;
         this.stdinTaken.get(entry.pid)?.retire();
         const refused = stop.kind === 'stdin' && journal ? journal.unreplayable : null;

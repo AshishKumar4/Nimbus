@@ -139,6 +139,8 @@ const MANIFEST_WINDOWS = 64;
 const HISTORY_SELECT_COLUMNS = 'path, parent_path, kind, size, atime, mtime, ctime, mode, uid, gid, ino, gen_from AS gen, chunk_id, content_id, dacl';
 /** Paths one restore transaction changes, and history rows one drop transaction examines. */
 const RESTORE_PAGE_ROWS = 200;
+/** Storage keys a run's changes are kept undoable for (captureRun): past them, it cannot be put back. */
+export const RUN_CAPTURE_MAX_KEYS = 4_096;
 /** Rows, chunk references and chunk bytes one export page or frame carries. */
 const EXPORT_PAGE_ROWS = 250;
 const EXPORT_PAGE_PIECES = 4_096;
@@ -820,6 +822,25 @@ export class SqliteVFS {
      */
     writeObservers = new Set();
     observedRefs = new Set();
+    /** Runs whose changes are kept undoable (captureRun), by pid, and the rows they found, held. */
+    runCaptures = new Map();
+    capturedRefs = new Set();
+    /** The chunks and contents capturedRefs hold, counted: a write asks these, not every captured row (chunkUnshared). */
+    capturedChunks = new Map();
+    capturedContents = new Map();
+    /** The process whose wave is committing (waveScope): its run, if one is captured, keeps what it changes. */
+    activeWriterPid = null;
+    /**
+     * Inside an embedder transaction (publishedTransaction): how to undo what
+     * captured runs kept of it, should it roll back. Kept at once, its rows
+     * held at once, so a later plan of the transaction meets them.
+     */
+    captureUndo = null;
+    /** The keys the committing transaction kept first (captureFirst): what its failure lets go of. */
+    captureFresh = [];
+    /** The embedder transaction running (publishedTransaction), by serial: 0 outside one. */
+    captureTransaction = 0;
+    captureTransactions = 0;
     /** Whose call is running: the principal its write events name (a view's, re-entered by work it defers). */
     activeOrigin = null;
     /**
@@ -1944,14 +1965,15 @@ export class SqliteVFS {
             return false;
         let run = this.appendRuns.get(node.ino);
         // A run is one caller's: another's write stores it first (writable), as its own.
-        if (run !== undefined && (run.privileged !== this.privileged || !samePrincipal(run.origin, this.activeOrigin) || run.holds !== this.activeHolds))
+        if (run !== undefined && (run.privileged !== this.privileged || !samePrincipal(run.origin, this.activeOrigin) || run.holds !== this.activeHolds
+            || run.writerPid !== this.activeWriterPid))
             return false;
         if (offset !== (run === undefined ? node.size : run.base + run.bytes))
             return false;
         if (run === undefined) {
             if (this.refusalAt(path) !== null)
                 return false;
-            run = { ino: node.ino, path, base: node.size, parts: [], bytes: 0, admitted: 0, privileged: this.privileged, origin: this.activeOrigin, holds: this.activeHolds, writers: new Set(), madeAt: 0, timer: null };
+            run = { ino: node.ino, path, base: node.size, parts: [], bytes: 0, admitted: 0, privileged: this.privileged, origin: this.activeOrigin, holds: this.activeHolds, writerPid: this.activeWriterPid, writers: new Set(), madeAt: 0, timer: null };
         }
         if (run.bytes + bytes.byteLength > run.admitted) {
             try {
@@ -1999,12 +2021,13 @@ export class SqliteVFS {
                 at += part.byteLength;
             }
         }
-        const caller = { privileged: this.privileged, owner: this.activeMutationOwner, reservation: this.activeReservation, origin: this.activeOrigin, holds: this.activeHolds };
+        const caller = { privileged: this.privileged, owner: this.activeMutationOwner, reservation: this.activeReservation, origin: this.activeOrigin, holds: this.activeHolds, writerPid: this.activeWriterPid };
         this.privileged = run.privileged;
         this.activeMutationOwner = null;
         this.activeReservation = null;
         this.activeOrigin = run.origin;
         this.activeHolds = run.holds;
+        this.activeWriterPid = run.writerPid;
         try {
             // Published with the time it was made, in the same transaction as its
             // bytes: a stat that stores it later must not move the file's mtime and
@@ -2023,6 +2046,7 @@ export class SqliteVFS {
             this.activeReservation = caller.reservation;
             this.activeOrigin = caller.origin;
             this.activeHolds = caller.holds;
+            this.activeWriterPid = caller.writerPid;
         }
     }
     /** Write the appends held for inode `ino`, if any. */
@@ -3612,6 +3636,9 @@ export class SqliteVFS {
      */
     promote(paths) {
         let builder = this.newPlan();
+        // A restamp changes nothing: a captured run whose last change of a key it
+        // was keeps the key as its own (restoreRun), at the new generation.
+        let carried = [];
         const commit = () => {
             if (builder.empty)
                 return;
@@ -3623,6 +3650,9 @@ export class SqliteVFS {
                 if (inode !== undefined)
                     inode.gen = entry.gen;
             }
+            for (const kept of carried)
+                kept.gen = this._gen;
+            carried = [];
             builder = this.newPlan();
         };
         for (const path of paths) {
@@ -3632,6 +3662,11 @@ export class SqliteVFS {
             const inode = this.inodes.get(key);
             if ((inode === undefined ? builder.wouldExceedDeletion() : builder.wouldExceedInode()) !== null)
                 commit();
+            for (const capture of this.runCaptures.values()) {
+                const kept = capture.keys.get(key);
+                if (kept !== undefined && kept.present === (inode !== undefined) && kept.gen === (inode === undefined ? this.tombstoneGen(key) : inode.gen))
+                    carried.push(kept);
+            }
             builder.restamp(key, inode);
         }
         commit();
@@ -4685,9 +4720,9 @@ export class SqliteVFS {
      */
     chunkUnshared(node, path) {
         const chunkId = node.chunkId;
-        if (node.gen <= this._pinGen || this.writeObservers.size > 0)
+        if (node.gen <= this._pinGen || this.writeObservers.size > 0 || this.capturesFirst(path) || this.capturedChunks.has(chunkId))
             return false;
-        for (const opened of this.pinningNodes()) {
+        for (const opened of this.describedNodes()) {
             if (opened.inode.chunkId === chunkId && opened.path !== path)
                 return false;
         }
@@ -4699,9 +4734,9 @@ export class SqliteVFS {
     /** The manifest counterpart of chunkUnshared: the CoW guard for large files. */
     contentUnshared(node, path) {
         const contentId = node.contentId;
-        if (node.gen <= this._pinGen || this.writeObservers.size > 0)
+        if (node.gen <= this._pinGen || this.writeObservers.size > 0 || this.capturesFirst(path) || this.capturedContents.has(contentId))
             return false;
-        for (const opened of this.pinningNodes()) {
+        for (const opened of this.describedNodes()) {
             if (opened.inode.contentId === contentId && opened.path !== path)
                 return false;
         }
@@ -6695,24 +6730,6 @@ export class SqliteVFS {
             // Its checkpoint (the job row) is the transaction's last write.
             const builder = this.newPlan(true);
             const deletedInodes = [];
-            const restoredRow = (past) => {
-                const entry = {
-                    path: past.path,
-                    parentPath: past.parentPath,
-                    kind: past.kind,
-                    size: past.size,
-                    atime: past.atime,
-                    mtime: past.mtime,
-                    mode: past.mode,
-                    uid: past.uid,
-                    gid: past.gid,
-                    ino: past.ino,
-                    content: { type: 'ref', chunkId: past.chunkId, contentId: past.contentId },
-                    defaultAcl: past.defaultAcl,
-                };
-                this.normalizeSharedEntry(entry, CRED_KERNEL);
-                return entry;
-            };
             // As many as one transaction admits (the builder's measure, history and
             // superseded references with the rows): a changed path not taken stays
             // changed for the next page, and a revived one past the cursor.
@@ -6726,7 +6743,7 @@ export class SqliteVFS {
                     deletedInodes.push(live);
                 }
                 else
-                    builder.addInode(restoredRow(past));
+                    builder.addInode(this.restoredRow(past));
                 taken.add(live.path);
                 stamped.delete(live.path);
             }
@@ -6735,7 +6752,7 @@ export class SqliteVFS {
                 for (const past of revived) {
                     if (!builder.empty && builder.wouldExceedInode() !== null)
                         break;
-                    builder.addInode(restoredRow(past));
+                    builder.addInode(this.restoredRow(past));
                     taken.add(past.path);
                     revivedTaken++;
                 }
@@ -6767,11 +6784,317 @@ export class SqliteVFS {
             restored += taken.size;
         }
     }
+    /** `past` as a row written again: its identity, attributes and content by reference; its ctime and generation the writing transaction's. */
+    restoredRow(past) {
+        const entry = {
+            path: past.path,
+            parentPath: past.parentPath,
+            kind: past.kind,
+            size: past.size,
+            atime: past.atime,
+            mtime: past.mtime,
+            mode: past.mode,
+            uid: past.uid,
+            gid: past.gid,
+            ino: past.ino,
+            content: { type: 'ref', chunkId: past.chunkId, contentId: past.contentId },
+            defaultAcl: past.defaultAcl,
+        };
+        this.normalizeSharedEntry(entry, CRED_KERNEL);
+        return entry;
+    }
     /** The history row covering generation `g` at `path`, if any. */
     historyAt(path, g) {
         const row = [...this.sql.exec(`SELECT ${HISTORY_SELECT_COLUMNS} FROM vfs_inode_history
        WHERE path = ? AND gen_to > ? AND gen_from <= ? ORDER BY gen_to LIMIT 1`, path, g, g)][0];
         return row === undefined ? undefined : this.inodeFromRow(row);
+    }
+    // ── A run's changes, put back ─────────────────────────────────────────
+    //
+    // A program run again from its start (a one-shot that listened, run on as
+    // a resident) starts from what its first run started from. That run's
+    // waves name its process (WaveSequence.pid); from captureRun on, the first
+    // change of each storage key keeps the row it found there, or that there
+    // was none, held as a description holds what it opened, until restoreRun
+    // puts each back or releaseRun lets them go. Kept in memory: a reset ends
+    // the run with it.
+    /** Keep what process `pid`'s waves change, from now on, undoable (restoreRun). */
+    captureRun(pid) {
+        this.releaseRun(pid);
+        this.runCaptures.set(pid, { keys: new Map(), unrestorable: null });
+    }
+    /** Stop keeping process `pid`'s changes, and let go of the rows they held. */
+    releaseRun(pid) {
+        const capture = this.runCaptures.get(pid);
+        if (capture === undefined)
+            return;
+        this.runCaptures.delete(pid);
+        this.unpinCapture(capture);
+    }
+    /**
+     * Put each storage key process `pid` changed since captureRun back as the
+     * run found it, its row or no row, and stop keeping them. An ordinary write:
+     * new generations, events, before-images for a snapshot. It changes
+     * nothing, and says why, when it cannot put all of them back: they were
+     * not kept, or not all of them (past RUN_CAPTURE_MAX_KEYS), or another
+     * writer changed one since the run last did, or holds it.
+     */
+    restoreRun(pid) {
+        // Its appends held, written first: what they change is the run's too.
+        this.settleAppends();
+        const capture = this.runCaptures.get(pid);
+        if (capture === undefined)
+            return { refused: 'what it changed was not kept' };
+        this.runCaptures.delete(pid);
+        try {
+            if (capture.unrestorable !== null)
+                return { refused: capture.unrestorable };
+            const named = (key) => `/${normalizeVfsPath(this.logicalPath(key, CRED_KERNEL) ?? key)}`;
+            const changed = [];
+            const removals = [];
+            const revivals = [];
+            // Directories there now that the restore removes or puts a file over.
+            const vanishing = [];
+            for (const [key, kept] of capture.keys) {
+                if (!kept.written)
+                    continue;
+                const live = this.inodes.get(key);
+                // As the run left it: its row, or its removal (the tombstone of that
+                // generation); a later writer's row or removal is not the run's to undo.
+                const left = kept.present
+                    ? live?.gen === kept.gen
+                    : live === undefined && (kept.before === null || this.tombstoneGen(key) === kept.gen);
+                if (!left)
+                    return { refused: `${named(key)} was changed since it changed it` };
+                changed.push(key);
+                if (kept.before !== null)
+                    revivals.push(kept.before.inode);
+                else if (live !== undefined)
+                    removals.push(live);
+                if (live?.kind === 'directory' && kept.before?.inode.kind !== 'directory')
+                    vanishing.push(live);
+            }
+            // A directory it made goes only with every entry in it: an entry another writer made is not the run's.
+            const removed = new Set(removals.map((inode) => inode.path));
+            for (const inode of vanishing) {
+                for (const row of this.sql.exec('SELECT path FROM vfs_inodes WHERE parent_path = ?', inode.path)) {
+                    if (!removed.has(String(row.path)))
+                        return { refused: `${named(String(row.path))} was made in ${named(inode.path)}, which it made` };
+                }
+            }
+            try {
+                this.assertMutationsAllowed(changed);
+            }
+            catch (error) {
+                return { refused: this.errorMessage(error) };
+            }
+            // Entries go before their directory, and come back after it. One
+            // transaction: all of them, or (refused, the store full, say) none.
+            removals.sort((a, b) => (a.path < b.path ? 1 : a.path > b.path ? -1 : 0));
+            revivals.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+            try {
+                this.publishedTransaction(() => {
+                    let builder = this.newPlan();
+                    let deletedInodes = [];
+                    const flush = () => {
+                        if (builder.empty)
+                            return;
+                        const plan = builder.build();
+                        this.assertTransactionFits(plan.metrics);
+                        this._writeBatchOnce({ plan, deletedInodes }, { source: 'content-publish' });
+                        builder = this.newPlan();
+                        deletedInodes = [];
+                    };
+                    for (const live of removals) {
+                        if (!builder.empty && builder.wouldExceedDeletion() !== null)
+                            flush();
+                        builder.addDeletedPath(live.path, live);
+                        deletedInodes.push(live);
+                    }
+                    for (const past of revivals) {
+                        if (!builder.empty && builder.wouldExceedInode() !== null)
+                            flush();
+                        builder.addInode(this.restoredRow(past));
+                    }
+                    flush();
+                    // A directory an entry came back into after it did was dated by that entry: its own times again.
+                    for (const past of revivals) {
+                        if (past.kind !== 'directory' || this.inodes.get(past.path)?.mtime === past.mtime)
+                            continue;
+                        if (!builder.empty && builder.wouldExceedInode() !== null)
+                            flush();
+                        builder.addInode(this.restoredRow(past));
+                    }
+                    flush();
+                }, (error) => error);
+            }
+            catch (error) {
+                // A rollback that could not reload the store leaves it unusable: that is no refusal.
+                if (error instanceof AggregateError)
+                    throw error;
+                return { refused: `putting back what it changed failed: ${this.errorMessage(error)}` };
+            }
+            return { restored: removals.length + revivals.length };
+        }
+        finally {
+            this.unpinCapture(capture);
+        }
+    }
+    /** The generation of `key`'s tombstone, the removal that left it absent; undefined once pruned. */
+    tombstoneGen(key) {
+        const row = [...this.sql.exec('SELECT gen FROM vfs_tombstones WHERE path = ?', key)][0];
+        return row === undefined ? undefined : Number(row.gen);
+    }
+    /** `run` as process `pid`'s wave commit (null: no process's), whose run a capture may keep. */
+    asWriterPid(pid, run) {
+        const prior = this.activeWriterPid;
+        this.activeWriterPid = pid;
+        try {
+            return run();
+        }
+        finally {
+            this.activeWriterPid = prior;
+        }
+    }
+    /** The committing run's capture has yet to keep `key`: what stands there must outlive the write, never be edited in place. */
+    capturesFirst(key) {
+        if (this.activeWriterPid === null)
+            return false;
+        const capture = this.runCaptures.get(this.activeWriterPid);
+        return capture !== undefined && capture.unrestorable === null && !capture.keys.has(key);
+    }
+    /**
+     * Keep, in `capture`, each key `plan` changes that it does not keep yet,
+     * with the row there before the transaction (a copy: a resident row is
+     * replaced as it changes), or none. Called inside the transaction at `gen`,
+     * before it writes; a key kept here is let go if the transaction fails
+     * (captureFresh), and, inside an embedder transaction, if that one rolls
+     * back (captureUndo).
+     */
+    captureFirst(capture, plan, prior, deletedPrior, touched, gen) {
+        this.captureFresh.length = 0;
+        for (const entry of plan.deletes) {
+            if (!capture.keys.has(entry.path))
+                this.captureKey(capture, entry.path, deletedPrior.get(entry.path) ?? this.loadInode(entry.path), gen);
+        }
+        for (let index = 0; index < plan.inodes.length; index++) {
+            const entry = plan.inodes[index];
+            if (entry !== undefined && !entry.detached && !capture.keys.has(entry.path))
+                this.captureKey(capture, entry.path, prior[index], gen);
+        }
+        for (const path of touched) {
+            if (!capture.keys.has(path))
+                this.captureKey(capture, path, this.inodes.peek(path) ?? this.loadInode(path), gen);
+        }
+    }
+    /** Keep `key` in `capture`, as `row` held it before (none: undefined); past the bound, the capture can no longer be put back. */
+    captureKey(capture, key, row, gen) {
+        if (capture.unrestorable !== null)
+            return;
+        if (capture.keys.size >= RUN_CAPTURE_MAX_KEYS) {
+            this.unrestorable(capture, `it changed more than ${RUN_CAPTURE_MAX_KEYS} files and directories`);
+            return;
+        }
+        const before = row === undefined ? null : { inode: { ...row }, path: null, closed: false };
+        if (before !== null)
+            this.holdCaptured(before);
+        const tx = this.captureTransaction;
+        const kept = {
+            capture, key, before, written: false, gen, present: true, keptIn: tx, movedIn: tx, movedGen: gen, movedPresent: true, movedWritten: false,
+        };
+        capture.keys.set(key, kept);
+        this.captureFresh.push(kept);
+        this.captureUndo?.push(kept);
+    }
+    /** `kept`, kept by a transaction that did not commit, let go. */
+    uncapture(kept) {
+        if (kept.capture.keys.get(kept.key) !== kept)
+            return;
+        kept.capture.keys.delete(kept.key);
+        if (kept.before !== null)
+            this.releaseCaptured(kept.before);
+    }
+    /** Once its transaction committed at `gen`: each key `capture` keeps as the transaction left it. */
+    captureCommitted(capture, plan, touched, gen) {
+        this.captureFresh.length = 0;
+        for (const path of touched)
+            this.captureLeft(capture, path, gen, false, true);
+        for (const entry of plan.deletes)
+            this.captureLeft(capture, entry.path, gen, true, false);
+        for (const entry of plan.inodes)
+            if (!entry.detached)
+                this.captureLeft(capture, entry.path, gen, true, true);
+    }
+    /** Key `key` of `capture` as the transaction committing at `gen` left it: its state before kept, once a transaction, for a rollback. */
+    captureLeft(capture, key, gen, written, present) {
+        const kept = capture.keys.get(key);
+        if (kept === undefined)
+            return;
+        const tx = this.captureTransaction;
+        if (this.captureUndo !== null && kept.keptIn !== tx && kept.movedIn !== tx) {
+            kept.movedIn = tx;
+            kept.movedGen = kept.gen;
+            kept.movedPresent = kept.present;
+            kept.movedWritten = kept.written;
+            this.captureUndo.push(kept);
+        }
+        kept.gen = gen;
+        kept.present = present;
+        if (written)
+            kept.written = true;
+    }
+    /** A rolled-back transaction's change to a capture, undone. */
+    undoCapture(kept) {
+        if (kept.keptIn !== this.captureTransaction) {
+            kept.gen = kept.movedGen;
+            kept.present = kept.movedPresent;
+            kept.written = kept.movedWritten;
+            return;
+        }
+        this.uncapture(kept);
+    }
+    /** Hold `before`'s content for a captured run, as a description holds what it opened. */
+    holdCaptured(before) {
+        this.capturedRefs.add(before);
+        const { chunkId, contentId } = before.inode;
+        if (chunkId !== null)
+            this.capturedChunks.set(chunkId, (this.capturedChunks.get(chunkId) ?? 0) + 1);
+        if (contentId !== null)
+            this.capturedContents.set(contentId, (this.capturedContents.get(contentId) ?? 0) + 1);
+    }
+    /** Let go of `before`'s content: collectable once nothing else holds it. */
+    releaseCaptured(before) {
+        if (before.closed)
+            return;
+        before.closed = true;
+        this.capturedRefs.delete(before);
+        const { chunkId, contentId } = before.inode;
+        const less = (counts, id) => {
+            if (id === null)
+                return;
+            const left = (counts.get(id) ?? 1) - 1;
+            if (left > 0)
+                counts.set(id, left);
+            else
+                counts.delete(id);
+        };
+        less(this.capturedChunks, chunkId);
+        less(this.capturedContents, contentId);
+    }
+    /** `capture` can no longer be put back, for `why`: it keeps nothing more, and lets go of what it held. */
+    unrestorable(capture, why) {
+        if (capture.unrestorable !== null)
+            return;
+        capture.unrestorable = why;
+        this.unpinCapture(capture);
+    }
+    /** Let go of what `capture` held: collectable now, as a closed description's is. */
+    unpinCapture(capture) {
+        for (const kept of capture.keys.values())
+            if (kept.before !== null)
+                this.releaseCaptured(kept.before);
+        capture.keys.clear();
+        this.maintenancePending = true;
     }
     /**
      * Drop snapshot `name`: its row and pin_gen in one transaction, then the
@@ -8518,18 +8841,25 @@ export class SqliteVFS {
         const owner = options.mutationOwner;
         // A delegation's holder's wave: the names it made are owned as the caller's.
         const delegated = owner !== undefined && (this.exclusiveMutationLeases.get(owner)?.delegation ?? null) !== null;
-        // As the stream's writer: the delegations it holds, and what it commits ahead of a reader's recall (`pipeline`).
-        const asWriter = (fn) => this.inPipeline(pipeline, () => this.withHolds(holds, fn));
-        // As the stream's caller: its origin and the lease it writes under, too.
-        const asCaller = (fn) => this.asOrigin(origin, () => this.withMutationOwner(owner, () => asWriter(fn)));
         // The descriptions its calls name: its binding's, and what the session kept of its process's.
         const described = { descriptions: options.descriptions, pid: options.sequence?.pid ?? null };
+        // As the stream's writer: the delegations it holds, what it commits ahead
+        // of a reader's recall (`pipeline`), and its process, whose run a capture
+        // may keep (captureRun).
+        const asWriter = (fn) => this.inPipeline(pipeline, () => this.withHolds(holds, () => this.asWriterPid(described.pid, fn)));
+        // As the stream's caller: its origin and the lease it writes under, too.
+        const asCaller = (fn) => this.asOrigin(origin, () => this.withMutationOwner(owner, () => asWriter(fn)));
         return {
             cred,
             signal,
             mutationOwner: owner,
             deviceId: this.deviceId,
             asWriter,
+            landsElsewhere: (path) => {
+                const capture = described.pid === null ? undefined : this.runCaptures.get(described.pid);
+                if (capture !== undefined)
+                    this.unrestorable(capture, `it changed /${normalizeVfsPath(path)}, on a mounted filesystem, which is not put back`);
+            },
             revision: () => this._revision,
             pathRevision: (path) => this.revision(path, cred),
             leased: () => this.exclusiveMutationLeases.size > 0 || this.readLeases.size > 0,
@@ -9395,7 +9725,10 @@ export class SqliteVFS {
             }]));
         // The shared roots registered: a change it made that revoked one is undone with it.
         const sharedBefore = this.sharedDirectories.size === 0 ? null : new Map(this.sharedDirectories);
+        const captureUndo = [];
         this.transactionPublication = publication;
+        this.captureUndo = captureUndo;
+        this.captureTransaction = ++this.captureTransactions;
         let result;
         try {
             result = storage.transactionSync(() => {
@@ -9408,9 +9741,11 @@ export class SqliteVFS {
             });
         }
         catch (error) {
-            // Nothing it did landed: no observer hears of it.
+            // Nothing it did landed: no observer hears of it, and no run kept it.
             for (const event of publication.events)
                 event.write?.release();
+            for (const kept of captureUndo.reverse())
+                this.undoCapture(kept);
             this.evictAll();
             this.maintenancePending = maintenancePending;
             if (sharedBefore !== null || this.sharedDirectories.size > 0) {
@@ -9452,6 +9787,8 @@ export class SqliteVFS {
         }
         finally {
             this.transactionPublication = null;
+            this.captureUndo = null;
+            this.captureTransaction = 0;
         }
         if (publication.paths.size > 0)
             this.bumpRevision([...publication.paths], publication.structural);
@@ -9621,8 +9958,16 @@ export class SqliteVFS {
             },
         };
     }
-    /** Every description holding content: the open ones, and the write events observers have not let go of. */
+    /**
+     * Every description holding content: the open ones, the write events
+     * observers have not let go of, and the rows captured runs found.
+     */
     *pinningNodes() {
+        yield* this.describedNodes();
+        yield* this.capturedRefs;
+    }
+    /** The open descriptions and the write events observers hold: what pins content but a captured run's rows. */
+    *describedNodes() {
         yield* this.openNodes;
         yield* this.observedRefs;
     }
@@ -9730,6 +10075,8 @@ export class SqliteVFS {
         for (const entry of plan.deletes)
             deletedPrior.set(entry.path, entry.prior);
         const touched = this.entryChangedDirectories(plan, prior, deletedPaths);
+        const capture = this.activeWriterPid === null ? undefined : this.runCaptures.get(this.activeWriterPid);
+        let capturing = false;
         if (this.sharedDirectories.size > 0) {
             for (const entry of plan.deletes)
                 this.revokeSharedDirectories(entry.path);
@@ -9770,6 +10117,11 @@ export class SqliteVFS {
                 if (pinGen > 0) {
                     this.recordBeforeImages([...plan.inodes.filter((entry) => !entry.detached).map((entry) => entry.path), ...deletedPaths, ...touched], gen, pinGen);
                 }
+                // What a captured run changes here first, as it stands before this transaction.
+                if (capture !== undefined && capture.unrestorable === null) {
+                    capturing = true;
+                    this.captureFirst(capture, plan, prior, deletedPrior, touched, gen);
+                }
                 const x = {
                     plan, gen, committedAt, queue,
                     next: { ino: nextIno, chunk: nextChunk, content: nextContent },
@@ -9792,9 +10144,15 @@ export class SqliteVFS {
         catch (error) {
             for (const staging of created)
                 staging.id = 0;
+            // What it kept first is no run's: the transaction did not commit.
+            if (capturing)
+                for (const kept of this.captureFresh)
+                    this.uncapture(kept);
             throw error;
         }
         this._gen = gen;
+        if (capture !== undefined && capturing && capture.unrestorable === null)
+            this.captureCommitted(capture, plan, touched, gen);
         // Deletions first, as the transaction ran them: a path it removed and
         // wrote again holds the row.
         for (const entry of plan.deletes)

@@ -22,6 +22,8 @@
 import { FACET_OWN_WRITE_MEMORY_BYTES } from '@nimbus-sh/platform/limits.js';
 import { RESIDENT_ROW_BYTES, residentBytes, residentCellCost } from './cell-cost.js';
 import { nsDescribes, prefixEnd } from './namespace.js';
+import { nsKey } from './namespace-lookup.js';
+import { SafeMap, SafeSet } from '@nimbus-sh/core/_shared/primordials.js';
 import { RESIDENT_CHUNK_BYTES } from '../facet-resident-limits.js';
 import { RK_BINARY, RK_DENIED, RK_OWN_WRITE, RK_TEXT } from './tables.js';
 export function createCells(coherence, admission, namespace, observeRead) {
@@ -31,8 +33,8 @@ export function createCells(coherence, admission, namespace, observeRead) {
     // its write-back is acknowledged, then the write's revision) and judged by
     // every report like one. A path it could not keep either is remembered by
     // name only, so a miss on it says why.
-    const held = new Map();
-    const unheld = new Set();
+    const held = new SafeMap();
+    const unheld = new SafeSet();
     const cellSize = (cell) => (typeof cell === 'string' ? cell.length * 3 : residentBytes(cell).byteLength);
     const forgetHeld = (path) => {
         const cell = held.get(path);
@@ -266,9 +268,12 @@ export function createCells(coherence, admission, namespace, observeRead) {
      * Uint8Array, or an { error: "EACCES" } denial — or undefined for a cell that
      * is not held.
      */
+    // A read of a module's file, as of any other: through the launch's
+    // captures only (SafeMap, its own loops), never a built-in the program
+    // may have replaced.
     const get = (path) => {
         if (observeRead !== null)
-            observeRead(path.replace(/^\/+/, ''));
+            observeRead(nsKey(path));
         const found = head(path);
         if (found === undefined) {
             const cell = held.get(path);
@@ -290,19 +295,24 @@ export function createCells(coherence, admission, namespace, observeRead) {
         }
         // Chunked: a file past the single-value ceiling. Reassembled here so callers
         // never learn the file was split.
-        if (kind === RK_TEXT) {
-            const parts = t.chunkParts(path).map((row) => row.txt);
-            return parts.length === 0 ? undefined : parts.join('');
-        }
-        const parts = t.chunkParts(path).map((row) => residentBytes(row.bin));
-        if (parts.length === 0)
+        const rows = t.chunkParts(path);
+        if (rows.length === 0)
             return undefined;
-        const total = parts.reduce((n, p) => n + p.byteLength, 0);
+        if (kind === RK_TEXT) {
+            let text = '';
+            for (let i = 0; i < rows.length; i++)
+                text += rows[i]?.txt ?? '';
+            return text;
+        }
+        let total = 0;
+        for (let i = 0; i < rows.length; i++)
+            total += residentBytes(rows[i]?.bin).byteLength;
         const out = new Uint8Array(total);
         let offset = 0;
-        for (const p of parts) {
-            out.set(p, offset);
-            offset += p.byteLength;
+        for (let i = 0; i < rows.length; i++) {
+            const bytes = residentBytes(rows[i]?.bin);
+            out.set(bytes, offset);
+            offset += bytes.byteLength;
         }
         return out;
     };

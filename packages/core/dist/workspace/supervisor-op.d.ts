@@ -94,7 +94,7 @@ export interface SupervisorOpDeps {
      * memory budget holds a lease for the payload while it is produced. Absent,
      * reads are unaccounted, which is an in-process workspace's whole budget.
      */
-    readonly readLease?: <T>(bytes: number, read: () => Promise<T>) => Promise<T>;
+    readonly readLease?: <T>(bytes: number, read: () => Promise<T>, pid?: number) => Promise<T>;
     readonly extend?: Partial<Record<SupervisorOpName, SupervisorOpHandler>>;
     /**
      * The instance's receipts for mutations delivered exactly once
