@@ -1,4 +1,7 @@
 #!/usr/bin/env bun
+// A file held as text keeps a surrogate pair whole across its chunks: SQLite
+// keeps text as UTF-8, where half of a pair is not a character.
+//
 // A resident store at its cap keeps a file whose bytes it is handed
 // again, whichever way they come: a read's write-through (fill) of the
 // same content held as text, as bytes, or in several chunks, and a delta
@@ -39,6 +42,9 @@ store.admission.setStorage({ facet: 'proc-slot-0', grant: 0 }, ledger);
 const t = store.coherence.require();
 const read = (path) => store.bundle[path];
 const bytesOf = (body) => (typeof body === 'string' ? enc.encode(body) : body);
+
+// Each reads back as it was given, the pair across a chunk boundary whole.
+for (const [path, body] of Object.entries(FILES)) assert.deepEqual(read(path), body, `${path} reads back as given`);
 
 for (const [path, body] of Object.entries(FILES)) {
   assert.ok(store.cells.fill(path, bytesOf(body), 8), `${path}: a read of the same bytes is taken`);

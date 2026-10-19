@@ -12,6 +12,10 @@ published independently in the `@nimbus-sh` npm scope.
   full the write was refused and the file dropped. Tailwind's scanner then
   skipped the file. A read of bytes the store already holds no longer
   rewrites them.
+- Fixed: a text file of more than about 350,000 characters with an emoji or
+  other character outside the Basic Multilingual Plane at a chunk boundary
+  read back with two replacement characters in place of it, from a
+  process's resident store.
 - Fixed: a launch whose program loads wasm or a native binding (rolldown's,
   in a remix dev server) no longer gathers its closure twice. Its build
   gave back the bytes its module map would need for them, then had to ask

@@ -22,11 +22,11 @@
 
 import { FACET_OWN_WRITE_MEMORY_BYTES } from '@nimbus-sh/platform/limits.js';
 import type { Admission } from './admission.js';
-import { RESIDENT_ROW_BYTES, residentBytes, residentCellCost, type ResidentCell } from './cell-cost.js';
+import { RESIDENT_ROW_BYTES, residentBytes, residentCellCost, textChunkEnds, type ResidentCell } from './cell-cost.js';
 import type { Coherence, Cursor } from './coherence.js';
 import { nsDescribes, prefixEnd, type Namespace } from './namespace.js';
 import { nsKey } from './namespace-lookup.js';
-import { SafeMap, SafeSet } from '@nimbus-sh/core/_shared/primordials.js';
+import { SafeMap, SafeSet, stringSlice } from '@nimbus-sh/core/_shared/primordials.js';
 import { RESIDENT_CHUNK_BYTES } from '../facet-resident-limits.js';
 import type { VfsAcquireResult } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { RK_BINARY, RK_DENIED, RK_OWN_WRITE, RK_TEXT, type FileHead, type ResidentTables } from './tables.js';
@@ -146,26 +146,14 @@ export function createCells(
     const bytes = typeof incoming === 'string' ? encodeText(incoming) : residentBytes(incoming);
     // A text row's size is its UTF-16 length: each unit is 1 to 3 bytes of UTF-8.
     if (found.kind === RK_BINARY ? found.size !== bytes.byteLength : bytes.byteLength < found.size || bytes.byteLength > 3 * found.size) return false;
+    // A text chunk never ends inside a surrogate pair (textChunkEnds): each encodes whole.
     let at = 0;
-    // Text is chunked by UTF-16 units, so a pair can straddle two chunks: its
-    // high half is carried into the next one, to be encoded whole.
-    let carry = '';
-    const matches = (part: Uint8Array): boolean => {
+    for (const row of t.chunkParts(path)) {
+      const part = found.kind === RK_TEXT ? encodeText(row.txt ?? '') : residentBytes(row.bin);
       if (!sameBytes(part, bytes.subarray(at, at + part.byteLength))) return false;
       at += part.byteLength;
-      return true;
-    };
-    for (const row of t.chunkParts(path)) {
-      if (found.kind !== RK_TEXT) {
-        if (!matches(residentBytes(row.bin))) return false;
-        continue;
-      }
-      const text = carry + (row.txt ?? '');
-      const last = text.charCodeAt(text.length - 1);
-      carry = last >= 0xd800 && last <= 0xdbff ? text.slice(-1) : '';
-      if (!matches(encodeText(carry === '' ? text : text.slice(0, -1)))) return false;
     }
-    return (carry === '' || matches(encodeText(carry))) && at === bytes.byteLength;
+    return at === bytes.byteLength;
   };
 
   const forgetHeld = (path: string): void => {
@@ -222,22 +210,25 @@ export function createCells(
     const isText = typeof cell === 'string';
     const kind = isText ? RK_TEXT : RK_BINARY;
     const body = isText ? cell : residentBytes(cell);
-    const size = isText ? body.length : (body as Uint8Array).byteLength;
-    // Chunk on the encoded length for text, since the ceiling is on bytes and a
-    // multi-byte string would otherwise cross it while measuring short.
-    const limit = isText ? Math.floor(RESIDENT_CHUNK_BYTES / 3) : RESIDENT_CHUNK_BYTES;
-    const chunks = Math.max(1, Math.ceil(size / limit));
+    const size = typeof body === 'string' ? body.length : body.byteLength;
+    // Text is chunked on its encoded length, since the ceiling is on bytes and
+    // a multi-byte string would otherwise cross it while measuring short.
+    const ends = typeof body === 'string' ? textChunkEnds(body) : null;
+    const chunks = ends !== null ? ends.length : Math.max(1, Math.ceil(size / RESIDENT_CHUNK_BYTES));
     // Not admitted: nothing is held for the path (its old bytes are gone above).
     if (!admission.fits(residentCellCost(cell), stamp !== RK_OWN_WRITE)) {
       t.fileDelete(path);
       if (stamp === RK_OWN_WRITE) hold(path, cell as ResidentCell);
       return false;
     }
-    for (let part = 0; part < chunks; part++) {
-      // Bytes are viewed, not copied: the table keeps what it is given as its own (tables.ts).
-      const slice = typeof body === 'string' ? body.slice(part * limit, (part + 1) * limit) : body.subarray(part * limit, (part + 1) * limit);
-      if (typeof slice === 'string') t.chunkAddText(path, part, slice);
-      else t.chunkAddBin(path, part, slice);
+    for (let part = 0, from = 0; part < chunks; part++) {
+      if (typeof body === 'string' && ends !== null) {
+        t.chunkAddText(path, part, stringSlice(body, from, ends[part]));
+        from = ends[part]!;
+      } else if (typeof body !== 'string') {
+        // Bytes are viewed, not copied: the table keeps what it is given as its own (tables.ts).
+        t.chunkAddBin(path, part, body.subarray(part * RESIDENT_CHUNK_BYTES, (part + 1) * RESIDENT_CHUNK_BYTES));
+      }
     }
     t.filePut(path, kind, size, chunks, stamp, stamp === RK_OWN_WRITE || ckey == null ? null : String(ckey));
     return true;
