@@ -86,6 +86,8 @@ export interface RedirectionNode {
     operator: 'write' | 'append' | 'read' | 'readWrite' | 'writeAll' | 'dupOutput' | 'dupInput' | 'heredoc';
     fd: number | null;
     target: WordPart[];
+    /** In a simple command: how many of its words came before it (an alias's comment takes only what follows its word). */
+    wordsBefore?: number;
     heredoc?: {
         body: string;
         quoted: boolean;
