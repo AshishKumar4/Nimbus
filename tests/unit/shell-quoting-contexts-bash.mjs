@@ -83,6 +83,13 @@ const CONTEXTS = [
   { line: `printf '<%s>' •; echo`, payloads: ['{a,b}', 'x{a,b}y'] },
   // A here-document's delimiter, quoted anyhow, keeps its body literal.
   { line: `v=1; cat <<•\n$v\nEOF\necho end`, payloads: ['EOF'] },
+  // The reds of the case-pattern, parameter-word and here-document tickets, as they were written.
+  ...[
+    "case abc in [a$'-'z]) echo m;; *) echo n;; esac; case - in [a$'-'z]) echo m;; *) echo n;; esac",
+    "unset x; printf '<%s>' \${x:-a$'\\t'b} \${x:-$'*'} \${x:-a b}; echo",
+    "printf '<%s>' \"$(cat <<EOF\nit's\nEOF\n)\"; echo",
+    "printf '<%s>' \"$(cat <<EOF\n$'a\\'\nEOF\n)\"; echo",
+  ].map((line) => ({ line, payloads: [''], forms: ['bare'] })),
   // An alias naming itself expands once (last: the session's expanded without end, until its heap ran out).
   { line: `alias echo='echo X'\necho hi`, payloads: [''], forms: ['bare'] },
 ];
