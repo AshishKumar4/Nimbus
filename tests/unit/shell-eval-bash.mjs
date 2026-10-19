@@ -96,6 +96,7 @@ const SCRIPTS = [
 
 /** Run as POSIX scripts: a special builtin's own failure ends one, from inside eval's text or a sourced file too. */
 const POSIX_SCRIPTS = [
+  "eval $'bash -c eval\\nif' 2>/dev/null; echo survived",
   "eval $'echo before\\neval\\nif' 2>/dev/null; echo survived",
   "eval $'echo a >/dev/null/missing\\nif' 2>/dev/null; echo survived",
   "printf 'if\\n' > b5.sh; source ./b5.sh 2>/dev/null; echo survived",

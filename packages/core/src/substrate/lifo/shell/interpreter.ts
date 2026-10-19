@@ -229,6 +229,15 @@ type ExecutionIo = {
    */
   background?: boolean;
   scriptMode?: boolean;
+  /**
+   * The command word this shell's text last dispatched (null for a
+   * function's call), before its redirections: bash's this_shell_builtin,
+   * which decides whether a syntax error in eval's or `.`'s text is theirs
+   * (evalstring). One per line a shell reads (a nested bash or sh has its
+   * own), and only that shell's dispatches count: a child's (a subshell's, a
+   * substitution's, a pipeline's) are another process's.
+   */
+  dispatched?: { readonly shell: Interpreter; last: string | null };
   signal?: AbortSignal;
   positionals?: PositionalFrame;
   /** Host-supplied fields merged into each command's CommandContext. */
@@ -356,10 +365,6 @@ export interface InterpreterConfig extends ShellState {
 export class Interpreter {
   private config: InterpreterConfig;
   private lastExitCode = 0;
-  // The command word last dispatched (null for a function's call), before its
-  // redirections: as bash's this_shell_builtin, it decides whether a syntax error
-  // in eval's or `.`'s text is theirs (evalstring).
-  private lastBuiltin: string | null = null;
   private functions = new Map<string, CompoundCommandNode>();
   private persistentOutputFds = new Map<number, CommandOutputStream>();
   private persistentInputFds = new Map<number, CommandInputStream | undefined>();
@@ -1049,7 +1054,7 @@ export class Interpreter {
     const viaCommand = name === 'command' && !replacesShell && !this.functions.has(name) && !this.config.aliases.has(name)
       && args.length > 0 && (args[0] === '--' ? args.length > 1 : !args[0].startsWith('-'));
     if (viaCommand) [name, ...args] = args[0] === '--' ? args.slice(1) : args;
-    this.lastBuiltin = this.functions.has(name) && !viaCommand ? null : name;
+    if (io.dispatched?.shell === this) io.dispatched.last = this.functions.has(name) && !viaCommand ? null : name;
 
     // Apply per-command assignments (temporary env)
     const saved = new Map<string, SavedVariable>();
@@ -1153,7 +1158,8 @@ export class Interpreter {
                     // A syntax error while eval or `.` is still the builtin last dispatched (no
                     // other command of the text has been, or one was, an eval or `.`) is the
                     // builtin's own failure, as bash's evalstring has it: fatal in a POSIX script.
-                    if (error instanceof TextSyntaxError && (this.lastBuiltin === 'eval' || this.lastBuiltin === '.' || this.lastBuiltin === 'source')) ranText = false;
+                    const last = io.dispatched?.last;
+                    if (error instanceof TextSyntaxError && (last === 'eval' || last === '.' || last === 'source')) ranText = false;
                     throw error;
                   }
                 },
@@ -1529,6 +1535,7 @@ export class Interpreter {
     if (terminalStdin) io.terminalStdin = terminalStdin;
     if (terminalFds) io.terminalFds = terminalFds;
     if (scriptMode) io.scriptMode = true;
+    io.dispatched = { shell: this, last: null };
     return io;
   }
 
@@ -1542,6 +1549,7 @@ export class Interpreter {
     if (io.terminalFds) next.terminalFds = io.terminalFds;
     if (io.background) next.background = true;
     if (io.scriptMode) next.scriptMode = true;
+    if (io.dispatched) next.dispatched = io.dispatched;
     if (io.signal) next.signal = io.signal;
     if (io.positionals) next.positionals = io.positionals;
     if (io.commandContext) next.commandContext = io.commandContext;
