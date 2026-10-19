@@ -232,10 +232,21 @@ for (const face of ['async', 'sync']) {
   const noCopy = new Proxy(m.vfs, { get: (t, key) => (key === 'copy' ? undefined : t[key]) });
   vfs.mount('/m', noCopy, { resolvesPaths: true });
   m.memory.mkdir('/src/inner', { recursive: true });
-  for (const [from, to] of [['/m/src', '/m/src/copy/'], ['/m/dir/../src', '/m/src/copy']]) {
-    assert.equal(await outcome(() => vfs.copy(from, to, { recursive: true })), 'EINVAL', `${from} -> ${to}`);
+  m.memory.mkdir('/a/src/inner', { recursive: true });
+  for (const [from, to, code] of [
+    ['/m/src', '/m/src/copy/', 'EINVAL'],
+    ['/m/dir/../src', '/m/src/copy', 'EINVAL'],
+    // Physically into itself under another name: /link/../src is /a/src.
+    ['/m/link/../src', '/m/a/src/copy', 'ENOTSUP'],
+  ]) {
+    assert.equal(await outcome(() => vfs.copy(from, to, { recursive: true })), code, `${from} -> ${to}`);
     assert.equal(m.memory.stat('/src/copy'), null);
+    assert.equal(m.memory.stat('/a/src/copy'), null);
   }
+  // A file copied through such a name is copied.
+  m.memory.writeFile('/a/src/file', enc.encode('a/src/file'));
+  await vfs.copy('/m/link/../src/file', '/m/copied-file');
+  assert.equal(dec.decode(m.memory.readFile('/copied-file')), 'a/src/file');
 }
 
 // A root that resolves its own paths is handed the rest from `/`.

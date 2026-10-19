@@ -3364,9 +3364,15 @@ export class CompositeVFS implements VFS {
           // Into itself, by name, unless the backend copies it itself from names it
           // walks (a spelling past a `..`, which only it can judge); a copy walked here
           // could not tell its own new root among the entries it lists.
-          const judgesItself = (fromR.spelling !== from || toR.spelling !== to) && source.mount === target.mount && typeof sourceOps.copy === 'function';
+          const spelled = fromR.spelling !== from || toR.spelling !== to;
+          const judgesItself = spelled && source.mount === target.mount && typeof sourceOps.copy === 'function';
           if (dir && !judgesItself && (to === from || to.startsWith(`${from}/`))) {
             throw new Refusal('EINVAL', to, 'a tree cannot be copied into itself');
+          }
+          // A tree named past a `..` its backend walks may hold the copy's own root under
+          // another name: only that backend's own copy can tell, so none is walked here.
+          if (dir && spelled && !judgesItself) {
+            throw new Refusal('ENOTSUP', from, 'a tree named past a `..` its backend walks is copied by that backend, which has no copy');
           }
           return andThen(this.statOf(toR, false, sync), (existing) => {
             if (existing !== null) {
