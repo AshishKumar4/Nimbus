@@ -339,10 +339,7 @@ export function delegationHolder(options) {
         get cred() { return store.cred; },
         row: (key) => entryOf(key),
         children: (key) => names.children(key, store.children(key)),
-        content: (key, revision) => {
-            const entry = decided.get(key);
-            return (entry ? heldContent(entry) : undefined) ?? store.content?.(key, revision);
-        },
+        content: (key, row) => viewBytes(key, row),
         reserve: (bytes) => store.reserve?.(bytes) ?? true,
         release: (bytes) => store.release?.(bytes),
         client,
@@ -364,6 +361,10 @@ export function delegationHolder(options) {
             promote(inode);
             return inode;
         },
+        heldFile: (dev, ino) => {
+            const inode = heldOf(dev, ino);
+            return inode === undefined || inode.cell.detached !== undefined ? undefined : inode;
+        },
         heldCost: () => {
             let total = 0;
             for (const inode of heldFiles.values())
@@ -383,7 +384,28 @@ export function delegationHolder(options) {
         return mine !== undefined ? mine : row;
     };
     const composedChildren = (key, base) => prov.children(key, names.children(key, base));
-    const composedContent = (entry) => prov.content(entry) ?? heldContent(entry);
+    /** The view's bytes of file `entry` at `key`, where it holds them whole and they are the view's (not fenced, not the provisional decisions'). */
+    const viewBytes = (key, entry) => {
+        if (pendingFile(entry.dev, entry.ino))
+            return undefined;
+        const stored = store.content?.(key, entry.revision);
+        return stored !== undefined && stored.byteLength === entry.size ? stored : undefined;
+    };
+    /** DelegationHolder.bytes. */
+    const bytesOf = (key, entry) => {
+        const held = heldContent(entry);
+        if (held !== undefined)
+            return held;
+        if (provisionalActive) {
+            const mine = prov.content(entry);
+            if (mine !== undefined)
+                return mine;
+        }
+        if (pendingFile(entry.dev, entry.ino))
+            return null;
+        return viewBytes(key, entry);
+    };
+    const pendingFile = (dev, ino) => (dev === store.device && fenced.has(ino)) || prov.pending(dev, ino);
     /** Log a decision, after the bytes written before it. */
     const log = (op) => {
         drain();
@@ -509,7 +531,10 @@ export function delegationHolder(options) {
             const grant = deciding(to);
             if (grant === undefined || client.held(from) === undefined)
                 return false;
-            const bytes = holder.content(source) ?? stored;
+            const here = bytesOf(from, source);
+            if (here === null)
+                return false;
+            const bytes = here ?? stored;
             if (bytes === undefined)
                 return false;
             const known = target === null ? undefined : heldOf(target.dev, target.ino);
@@ -575,10 +600,10 @@ export function delegationHolder(options) {
             client.seal();
             drain();
         },
-        content: (entry) => (provisionalActive ? composedContent(entry) : heldContent(entry)),
+        bytes: bytesOf,
         owns: (handleId) => heldHandles.has(handleId) || prov.owns(handleId),
         descriptor: (handleId) => heldHandles.get(handleId) ?? prov.descriptor(handleId),
-        pendingFile: (dev, ino) => (dev === store.device && fenced.has(ino)) || prov.pending(dev, ino),
+        pendingFile,
         open: (key, path, flags, initial = 0) => {
             if (!flags.write || flags.append)
                 return undefined;

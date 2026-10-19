@@ -42,8 +42,8 @@ export interface ProvisionalHost {
     row(key: string): ResidentEntry | null | undefined;
     /** The listing of `key`, as `row` sees it. */
     children(key: string): RuntimeVfsDirEntry[] | undefined;
-    /** The store's bytes of `key` at `revision`, where it holds them. */
-    content(key: string, revision: number): Uint8Array | undefined;
+    /** The view's bytes of file `row` at `key`, where it holds them and they are the view's (DelegationHolder.bytes' last source). */
+    content(key: string, row: ResidentEntry): Uint8Array | undefined;
     reserve(bytes: number): boolean;
     release(bytes: number): void;
     readonly client: ProcessFsClient;
@@ -69,6 +69,8 @@ export interface ProvisionalHost {
      * where no grant holds it. The one way these decisions take a held file.
      */
     promote(dev: number, ino: number): Inode | undefined;
+    /** File (dev, ino)'s Inode where a grant decides it alone (the holder's, outside the table): a borrow, to price a change before take promotes it. */
+    heldFile(dev: number, ino: number): Inode | undefined;
     /** What the files a grant holds alone keep of the budget (their Inodes, outside the table). */
     heldCost(): number;
 }

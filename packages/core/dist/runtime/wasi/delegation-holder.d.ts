@@ -94,8 +94,15 @@ export interface DelegationHolder {
     row(key: string): ResidentEntry | null | undefined;
     /** The names in `key`, as `base` lists them with what the process decided there. */
     children(key: string, base: RuntimeVfsDirEntry[] | undefined): RuntimeVfsDirEntry[] | undefined;
-    /** The bytes of a file made or rewritten here. */
-    content(entry: ResidentEntry): Uint8Array | undefined;
+    /**
+     * File `entry`'s bytes (at `key`) as this process may read them here, the
+     * one source of them: its grant's cell; its provisional decisions' fold;
+     * else the view's at its revision, unless the file's bytes are this
+     * process's and not yet the view's (pendingFile). null: this process's,
+     * not here (the session reads them); undefined: not here, the view may
+     * fetch them.
+     */
+    bytes(key: string, entry: ResidentEntry): Uint8Array | null | undefined;
     /**
      * Whether file (dev, ino)'s bytes are this process's, not the view's: its
      * provisional decisions' (Provisional.pending), or a grant's given back
