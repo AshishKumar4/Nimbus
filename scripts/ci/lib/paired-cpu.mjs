@@ -82,8 +82,8 @@ export function pairedCpuPasses(sets, verdicts, runsPerSet) {
   return measuredAll && finished && verdicts.every((verdict) => verdict.failures.length === 0);
 }
 
-/** A module's relative imports (static, re-exports, literal dynamic ones). */
-const IMPORTS = /\b(?:import|export)\b[^'"`;]*?\bfrom\s*['"]([^'"]+)['"]|\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)|\bimport\s+['"]([^'"]+)['"]/g;
+/** A module's imports, of every form Bun parses (static, side-effect, re-export, dynamic with a constant name, require). */
+const imports = (path, text) => new Bun.Transpiler({ loader: path.endsWith('.ts') ? 'ts' : 'js' }).scanImports(text.replace(/^#!.*\n/, ''));
 
 /**
  * A paired bench's harness: `bench` (a path from `root`) and every file of
@@ -99,8 +99,7 @@ export function benchHarness(bench, root = SELF_ROOT) {
     const path = pending.pop();
     if (files.has(path)) continue;
     files.add(path);
-    for (const match of readFileSync(join(root, path), 'utf8').matchAll(IMPORTS)) {
-      const specifier = match[1] ?? match[2] ?? match[3];
+    for (const { path: specifier } of imports(path, readFileSync(join(root, path), 'utf8'))) {
       if (!specifier.startsWith('.')) continue;
       const target = normalize(join(dirname(path), specifier));
       if (target.startsWith('packages/')) {

@@ -39,11 +39,14 @@ try {
   // This checkout: the bench as it is now, and what it imports.
   const from = join(root, 'checkout');
   put(from, 'tests/bench/x-cpu.mjs', [
+    '#!/usr/bin/env bun',
     "import { a } from './lib/new.mjs';",
     "import { s } from '../../scripts/lib/s.mjs';",
-    "const lazy = () => import('../unit/lib/h.mjs');",
-    "export { a, s, lazy };",
+    "const lazy = () => import(`../unit/lib/h.mjs`);",
+    "const required = () => require('./lib/req.cjs');",
+    "export { a, s, lazy, required };",
   ].join('\n'));
+  put(from, 'tests/bench/lib/req.cjs', 'module.exports = {};\n');
   put(from, 'tests/bench/lib/new.mjs', "export * from './deeper.mjs';\nexport const a = 1;\n");
   put(from, 'tests/bench/lib/deeper.mjs', 'export const d = 1;\n');
   put(from, 'scripts/lib/s.mjs', 'export const s = 1;\n');
@@ -51,8 +54,8 @@ try {
   put(from, 'packages/p/src/m.ts', "export const side = 'checkout';\n");
 
   assert.deepEqual(benchHarness('tests/bench/x-cpu.mjs', from), [
-    'scripts/lib/s.mjs', 'tests/bench/lib/deeper.mjs', 'tests/bench/lib/new.mjs', 'tests/bench/x-cpu.mjs', 'tests/unit/lib/h.mjs',
-  ], "the bench and the tests/ and scripts/ files it imports, transitively; none of packages/");
+    'scripts/lib/s.mjs', 'tests/bench/lib/deeper.mjs', 'tests/bench/lib/new.mjs', 'tests/bench/lib/req.cjs', 'tests/bench/x-cpu.mjs', 'tests/unit/lib/h.mjs',
+  ], "the bench and the tests/ and scripts/ files it imports, transitively, of every form (a template-literal import, a require)");
 
   const run = pairedRunCommit({ repo, revision, baseline, baselineDir: '.ci-x-baseline', bench: 'tests/bench/x-cpu.mjs', from });
   const show = (path) => git(repo, 'show', `${run}:${path}`);
@@ -63,9 +66,15 @@ try {
   assert.equal(show('packages/p/src/m.ts'), "export const side = 'revision';", "the measured code is the revision's");
   assert.equal(git(repo, 'rev-parse', `${run}:.ci-x-baseline`), git(repo, 'rev-parse', `${baseline}^{tree}`), "the baseline's whole tree");
 
-  // A harness that imports workspace package code, at any depth, is refused.
-  put(from, 'tests/bench/lib/deeper.mjs', "export { side } from '../../../packages/p/src/m.ts';\n");
-  assert.throws(() => benchHarness('tests/bench/x-cpu.mjs', from), /deeper\.mjs imports \.\.\/\.\.\/\.\.\/packages\/p\/src\/m\.ts: a paired bench's harness takes no workspace package code/);
+  // A harness that imports workspace package code, at any depth and in any form, is refused.
+  for (const text of [
+    "export { side } from '../../../packages/p/src/m.ts';\n",
+    "import /* a comment */ '../../../packages/p/src/m.ts';\n",
+    "const later = () => import(`../../../packages/p/src/m.ts`);\n",
+  ]) {
+    put(from, 'tests/bench/lib/deeper.mjs', text);
+    assert.throws(() => benchHarness('tests/bench/x-cpu.mjs', from), /deeper\.mjs imports \.\.\/\.\.\/\.\.\/packages\/p\/src\/m\.ts: a paired bench's harness takes no workspace package code/, text);
+  }
 } finally {
   rmSync(root, { recursive: true, force: true });
 }
