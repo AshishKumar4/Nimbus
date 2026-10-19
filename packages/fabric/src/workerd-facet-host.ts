@@ -268,6 +268,8 @@ interface SlotBook {
   next: number;
   /** Slot held by each live pid, so release can find it. */
   held: Map<number, number>;
+  /** Explicit (`app-slot-`) names this incarnation started a process under and has not released. */
+  live: Set<string>;
 }
 
 /**
@@ -277,13 +279,10 @@ interface SlotBook {
  * Keyed weakly off `ctx`, so a book describes one incarnation. A facet that
  * is still running when that incarnation ends outlives it (measured: a timer
  * or an outgoing call keeps it going), and a `get` of its name with a new
- * class then resets the whole object. So a process's first get of its name
- * ends whatever runs there first: a minted `proc-slot-` name is deleted,
- * which also wipes the storage a previous incarnation left, and an explicit
- * name is aborted, which keeps it. What still runs under an explicit name is
- * only ever a predecessor of the same application, here or in an ended
- * incarnation: its owner has one name for life, and a second running
- * instance of an owner is refused before it gets one.
+ * class then resets the whole object. So a fresh incarnation's first get of
+ * each name ends whatever runs there first: a minted `proc-slot-` name is
+ * deleted, which also wipes the storage a previous incarnation left, and an
+ * explicit name is aborted, which keeps it.
  *
  * The book allocates only the `proc-slot-` space. Durable `app-slot-` names
  * are allocated against DO storage instead (their owner survives a reset), so
@@ -294,7 +293,7 @@ const slotBooks = new WeakMap<DurableObjectState, SlotBook>();
 function slotBook(ctx: DurableObjectState): SlotBook {
   let book = slotBooks.get(ctx);
   if (!book) {
-    book = { next: 0, held: new Map() };
+    book = { next: 0, held: new Map(), live: new Set() };
     slotBooks.set(ctx, book);
   }
   return book;
@@ -526,6 +525,7 @@ function spawnResident(
     try { return { class: residentProcessClass(env, disk, supervisor, params, loaderKey, watchCapability) }; }
     catch (error) { refused = { error }; throw error; }
   };
+  const book = slotBook(ctx);
   const ledger = sessionLedger(ctx);
   // This process's hold on `name`, until its release or a newer process's spawn.
   const holding = {};
@@ -539,16 +539,17 @@ function spawnResident(
     // N18: the fill is admitted, and recorded under the facet's name, before
     // the facet exists; a refusal leaves no facet.
     if (ledger !== null && params.storageBytes !== undefined) ledger.fill(name, params.storageBytes);
-    // get() with a new class on a facet still running (its predecessor's, an
-    // earlier incarnation's) resets this object, and a running facet does not
-    // take a new class: what runs there is ended first, its storage kept.
-    if (explicit) facets.abort(name, new Error('Nimbus: a newer process takes this facet name'));
+    // get() with a new class on a facet an earlier incarnation left running resets this object.
+    if (explicit && !book.live.has(name)) {
+      facets.abort(name, new Error('Nimbus: a new incarnation takes this facet name'));
+    }
     params.created?.(name);
     facet = facets.get(name, start);
   } catch (error) {
     if (slot !== undefined) releaseSlot(ctx, params.pid);
     throw error;
   }
+  if (explicit) book.live.add(name);
   holders.set(name, holding);
   // A journaling process: the session holds its facet's name until its log is drained.
   params.journal?.opened(name);
@@ -581,6 +582,7 @@ function spawnResident(
       endResidency();
       if (!holds()) return;
       try { facets.abort(name, new Error('Nimbus: resident process released')); } catch { /* already gone */ }
+      if (explicit) book.live.delete(name);
     });
     // What the process logged and the session never answered is in its
     // facet's store: drained before the store goes, and before the release
