@@ -112,14 +112,14 @@ export const clangFacetCall = async function clangFacetCall(inArgs: {
 export const rubyFacetCall = async function rubyFacetCall(inArgs: RubyFacetCallArgs, facetEnv: {
     SUPERVISOR?: unknown;
 }): Promise<unknown> {
-    const fn = Reflect.get(globalThis, '__rubyRun');
+    const fn = Reflect.get(globalThis, '__rubyRunProcess');
     if (typeof fn !== 'function') {
         return { exitCode: 127, stdout: '', stderr: '',
-            error: 'ruby-runner preamble missing: __rubyRun not in scope' };
+            error: 'ruby-runner preamble missing: __rubyRunProcess not in scope' };
     }
     const adopt = Reflect.get(globalThis, '__wasiAdoptSupervisor') as ((s: unknown) => void) | undefined;
     const supervisor = facetEnv && facetEnv.SUPERVISOR;
-    // Published where __rubyRun re-adopts it after the mount; adopting only
+    // Published where the run re-adopts it after the mount; adopting only
     // here would be undone by __wasiInitFS.
     if (supervisor)
         Reflect.set(globalThis, '__nimbusRubySupervisor', supervisor);

@@ -32,6 +32,7 @@ import { rpcExposeApp, rpcListApps, rpcRemoveApp, rpcRotateLink } from '../sessi
 import { listInstalledRuntimes, type RunnerFactory } from '@nimbus-sh/core/runtime/installed-runtimes.js';
 import type { ClangRunnerFactory } from '@nimbus-sh/core/runtime/clang-runner.js';
 import type { CPythonRunnerFactory } from '@nimbus-sh/core/runtime/cpython-runner.js';
+import type { RubyRunnerFactory } from '@nimbus-sh/core/runtime/ruby-runner.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { stripAnsi, type LogChunk } from '@nimbus-sh/core/runtime/process-logs.js';
 import { DEFAULT_HOME, NODE_VERSION, NPM_VERSION } from '@nimbus-sh/core/constants.js';
@@ -259,14 +260,15 @@ const cpython = (restartsWaits: boolean): RunnerFactory => (manifest, installRoo
 // Each runner key's build, on its own contract (CPYTHON_RUNNER_CONTRACTS).
 for (const [key, { restartsWaits }] of Object.entries(CPYTHON_RUNNER_CONTRACTS)) workspace.runtimes.registerRunner(key, cpython(restartsWaits));
 // Ruby v1 — Ruby 3.3.4 via ruby.wasm 2.9.3-2.9.4. Same architecture
-// as python-runner: ruby+stdlib.wasm rides via LOADER modules-map,
-// bootstrap runs at child-facet module-init time, per-call
-// __rubyRun drives rb-eval-string-protect with a wrapper that
-// catches SystemExit. See src/runtime/ruby-runner.ts +
+// as python-runner: ruby+stdlib.wasm rides via LOADER modules-map; each
+// one-shot boots a VM of its own on the session's warm Ruby workers (one
+// factory per session, which holds their keys). See
+// src/runtime/ruby-runner.ts +
 //
 // REPL Stream A: wrap the one-shot factory so `ruby` with NO args
 // drops into an interactive REPL. The wrap is purely additive —
 // args-bearing invocations pass through to the existing handler.
+let rubyFactory: Promise<RubyRunnerFactory> | null = null;
 workspace.runtimes.registerRunner(
   'ruby-runner',
   (manifest, installRoot, binName, binKind) => async function rubyReplOrOneShot(ctx: any): Promise<number> {
@@ -286,18 +288,22 @@ workspace.runtimes.registerRunner(
         binName,
       });
     }
-    const { makeRubyRunnerFactory } = await import('@nimbus-sh/core/runtime/ruby-runner.js');
-    const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
-    const { rubyResidentStart } = await import('../runtime/ruby-resident.js');
-    const runner = await makeRubyRunnerFactory({
-      facets: facetHostForManager(facetMgr),
-      filesystem: workspace.filesystem,
-      processes: self.processes,
-      registry,
-      startResident: rubyResidentStart(facetMgr),
-      getHome: () => workspace.shell.getEnv().HOME ?? DEFAULT_HOME,
-      network: workspace.network,
-    })(manifest, installRoot, binName, binKind);
+    rubyFactory ??= (async () => {
+      const { makeRubyRunnerFactory } = await import('@nimbus-sh/core/runtime/ruby-runner.js');
+      const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
+      const { rubyResidentStart } = await import('../runtime/ruby-resident.js');
+      return makeRubyRunnerFactory({
+        facets: facetHostForManager(facetMgr),
+        filesystem: workspace.filesystem,
+        processes: self.processes,
+        registry,
+        startResident: rubyResidentStart(facetMgr),
+        getHome: () => workspace.shell.getEnv().HOME ?? DEFAULT_HOME,
+        network: workspace.network,
+        session: self.ctx.id.toString(),
+      });
+    })().catch((error) => { rubyFactory = null; throw error; });
+    const runner = await (await rubyFactory)(manifest, installRoot, binName, binKind);
     return runner(ctx);
   },
 );

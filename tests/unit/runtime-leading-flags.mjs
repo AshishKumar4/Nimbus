@@ -30,6 +30,7 @@ const unreachableFacets = {
     filesystem,
     getHome: () => '/home/user',
     network: ISOLATE_NETWORK,
+    session: 'runtime-leading-flags',
   })(manifest, '/runtime/ruby', 'ruby', undefined);
   const invocation = outputContext(filesystem, ['script.rb', '--version']);
   assert.equal(await runRuby(invocation.ctx), 127);

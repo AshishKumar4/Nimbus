@@ -81,6 +81,7 @@ Object.assign(globalThis, { __wasiSupervisorOutput: wasiOutputRelay, __wasiOutpu
 new Function('globalThis', `${RUBY_RUNNER_PREAMBLE_TAIL}
 function __nimbusInstallRubyFs() {}
 function __wasiAdoptSupervisor() {}
+async function __nimbusRubyBoot() { return { ok: true, rubyInitialized: true, reachedJs: () => false }; }
 async function __nimbusRubyEval(boot, code) { globalThis.__evaluated.push(code); return { status: 0 }; }`)(globalThis);
 globalThis.__rubyBootstrap = Promise.resolve({ ok: true, rubyInitialized: true });
 

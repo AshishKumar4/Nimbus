@@ -82,6 +82,7 @@ const commandContext = (filesystem, env) => runtimeContext(filesystem, { args: [
     processes: runtimeSupervisor(),
     getHome: () => '/home/session',
     network: ISOLATE_NETWORK,
+    session: 'runtime-home-env',
   })(
     manifest,
     '/runtime/ruby',
@@ -127,6 +128,7 @@ const commandContext = (filesystem, env) => runtimeContext(filesystem, { args: [
     registry,
     getHome: () => '/home/session',
     network: ISOLATE_NETWORK,
+    session: 'runtime-home-env',
   })({ files: [manifestFile('share/ruby/ruby+stdlib.wasm', new Uint8Array([0]))] }, '/runtime/ruby', 'ruby', undefined);
   const rake = commands.get('rake');
   assert.ok(rake, 'the session home\'s gem bins are registered when the runtime loads');

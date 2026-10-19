@@ -110,7 +110,7 @@ function assertHandedOff(raw, images, name) {
   const { raw, filesystem } = installedRuntime({ 'runtime/ruby/share/ruby/ruby+stdlib.wasm': image });
   const manifest = { files: [manifestFile('share/ruby/ruby+stdlib.wasm', image)] };
   const facets = recordingFacets();
-  const run = await makeRubyRunnerFactory({ facets: facets.host, filesystem, processes: runtimeSupervisor(), getHome: () => '/home/user', network: ISOLATE_NETWORK })(manifest, '/runtime/ruby', 'ruby', undefined);
+  const run = await makeRubyRunnerFactory({ facets: facets.host, filesystem, processes: runtimeSupervisor(), getHome: () => '/home/user', network: ISOLATE_NETWORK, session: 'runtime-image-handoff' })(manifest, '/runtime/ruby', 'ruby', undefined);
 
   assert.equal(await run(context(filesystem, ['-e', 'puts 1'])), 0);
   assertHandedOff(raw, facets.images, 'ruby+stdlib.wasm');

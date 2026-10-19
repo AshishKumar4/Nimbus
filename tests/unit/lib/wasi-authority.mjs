@@ -48,7 +48,7 @@ let preamble = null;
  */
 export async function loadWasiPreamble() {
   if (preamble) return preamble;
-  const src = `${WASI_INSTANCE_PREAMBLE_SRC}\nexport { __wasiInitFS, __wasiMakeImports, __wasiAdoptSupervisor, __wasiRunStartAsync, __wasiThreadsCreate, __WasiExit, fdTable };`;
+  const src = `${WASI_INSTANCE_PREAMBLE_SRC}\nexport { __wasiInitFS, __wasiMakeImports, __wasiAdoptSupervisor, __wasiReusable, __wasiRunStartAsync, __wasiThreadsCreate, __WasiExit, fdTable };`;
   const file = path.join(os.tmpdir(), `wasi-authority-${process.pid}-${Math.random().toString(16).slice(2)}.mjs`);
   writeFileSync(file, src);
   try {
