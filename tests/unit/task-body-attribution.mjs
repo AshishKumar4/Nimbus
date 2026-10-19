@@ -43,7 +43,8 @@ assert.equal(moved.length, sent.length);
 for (const [name, call] of Object.entries(entries)) {
   assert.deepEqual(await call(sent), { value: JSON.parse(sent) }, `${name}: a body as sent is the task's`);
   const changed = await call(moved);
-  const parse = (() => { try { JSON.parse(moved); } catch (error) { return error.message; } })();
+  // The failure as the task meets it, reading the same body.
+  const parse = await request(moved).json().then(() => null, (error) => error.message);
   assert.ok(changed.failure.endsWith(parse) && changed.failure !== parse && changed.failure.includes(String(sent.length)),
     `${name}: the parse failure is attributed to the body and its length: ${changed.failure}`);
   assert.deepEqual(await call(JSON.stringify({ fail: true })), { failure: 'the task itself failed' }, `${name}: another failure is the task's own`);
