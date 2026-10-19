@@ -3,18 +3,17 @@
 // A program that listens serves, however it was started and whatever it
 // looks like before it runs. One no rule names as a server starts as a
 // one-shot; its first listen() stops it, and Nimbus runs it on as a resident
-// that replays its run up to that listen, checked against it, and serves.
+// from what its run started from (each file the run changed put back), that
+// replays the run's draws and output up to that listen, and serves.
 //
 //   plain: `node srv.js`, where srv.js builds its server through a helper
 //     the static server check cannot follow: it serves on its port.
-//   wrote: it writes a file before it listens: the resident makes the same
-//     write again, checked against the first, and serves.
+//   wrote: it writes a file before it listens: the resident writes it
+//     again, and serves.
 //   awaited: as Vite loads its config, it awaits a mkdir -p of a directory
 //     that is not there, then a write into it of a file named for the clock
 //     and a random draw, imports the file, removes it, and listens. Run again,
-//     the directory its first run made is there and nothing is made of it,
-//     as mkdir -p of a directory there makes nothing: the run again retraces
-//     its run all the same, and serves.
+//     the directory is not there again: it makes it again, and serves.
 //   stamped: it writes the times fstat gives its stdout to a file before it
 //     listens: a run again is handed the same times, makes the same write,
 //     and serves.
@@ -27,8 +26,11 @@
 //     read: the resident is handed the same bytes.
 //   redirected: the same from a \`< file\`: the resident reads the file again.
 //   once: it awaits a write of a marker, and ends instead of listening when
-//     the marker is there. Run again, it ends before its listen: it fails,
-//     naming that, rather than ending 0 with no server.
+//     the marker is there. Run again, the marker is not there: it listens,
+//     and serves. (Before, the run again found the marker, ended, and failed.)
+//   crowded: it writes more files than a run's changes are kept for before
+//     it listens: it is run again from its start over the files as they
+//     are, printing again what it printed, says so, and serves.
 //
 // Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
 // generated artifacts before testing a runner change.
@@ -99,6 +101,16 @@ const FILES = {
     '  ' + SERVE(4107, 'once').split('\n').join('\n  '),
     '})();',
   ].join('\n'),
+  'crowded.js': [
+    "const fs = require('fs');",
+    '(async () => {',
+    "  fs.mkdirSync('crowd', { recursive: true });",
+    "  for (let i = 0; i < 4100; i++) fs.writeFileSync('crowd/' + i, '');",
+    // Awaited, a write goes with every one before it: all of them are the session's before it listens.
+    "  await fs.promises.writeFile('crowd/done', '');",
+    '  ' + SERVE(4111, 'crowded').split('\n').join('\n  '),
+    '})();',
+  ].join('\n'),
   'spawned.js': [
     "require('child_process').spawnSync('true');",
     SERVE(4104, 'spawned'),
@@ -162,8 +174,16 @@ try {
     check(/GOT 200 from-file/.test(redirectedGot), `redirected: the resident read the same file\n  ${JSON.stringify(redirectedGot)}\n  ${JSON.stringify(redirected.stdout.slice(-400))}`);
 
     const once = await run(`cd ${W} && node once.js; echo ONCE_RC=$?`, 120_000);
-    check(/ONCE_RC=1/.test(once.stdout) && /ended before it listened/.test(once.stdout),
-      `once: run again, it ended before its listen, and says so\n  ${JSON.stringify(once.stdout.slice(-600))}`);
+    check(/ONCE_RC=0/.test(once.stdout) && /LISTENING 4107/.test(once.stdout),
+      `once: run again from what its run started from, it listens again\n  ${JSON.stringify(once.stdout.slice(-600))}`);
+    const onceGot = await curl(4107);
+    check(/GOT 200 once/.test(onceGot), `once: it serves\n  ${JSON.stringify(onceGot)}`);
+
+    const crowded = await run(`cd ${W} && node crowded.js`, 240_000);
+    check(crowded.status === 0 && /runs it again as one from its start, over the files as they are: it changed more than 4096 files and directories/.test(crowded.stdout),
+      `crowded: past the bound, it is run again from its start, and says why\n  ${JSON.stringify(crowded.stdout.slice(-600))}`);
+    const crowdedGot = await curl(4111);
+    check(/GOT 200 crowded/.test(crowdedGot), `crowded: it serves\n  ${JSON.stringify(crowdedGot)}`);
 
     const spawned = await run(`cd ${W} && node spawned.js`, 120_000);
     check(spawned.status !== 0 && /listens as a server, so Nimbus runs it again as one, but it cannot: before it listened it did something outside itself first \(cpSpawn/.test(spawned.stdout),
@@ -178,4 +198,4 @@ if (failures.length > 0) {
   console.error(`server-promotion-workerd: ${failures.length} failed`);
   process.exit(1);
 }
-console.log('server-promotion-workerd: a program that listens serves, a cp child server is reachable, and a run that cannot be run again says why');
+console.log('server-promotion-workerd: a program that listens serves, from what its run started from or else from its start, a cp child server is reachable, and a run that cannot be run again says why');

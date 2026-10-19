@@ -15,13 +15,14 @@ export declare const REAL_NOW_SOURCE = "(typeof __nimbusStopReplay !== \"undefin
  *                        read fails where the program can catch it. The
  *                        session counts them too, and is what decides.
  *   begin(launch)        per run: { replay, abort, captured, capturedText,
- *                        nonce, boundary, outbound, promote }.
+ *                        nonce, boundary, outbound, promote, run (a run from its
+ *                        start past one that stopped) }.
  *   arm(canStop, whyNot) before the entry: records the run's draws when it can
  *                        stop, replays the stopped run's.
  *   write / ackedRun     each streamed chunk of output on its way out, and the ones a call took.
  *   readSome / readAll   how many bytes a synchronous read of stdin returns.
  *   block(until, syscall)  a read cannot complete: stops the run, or says why it cannot.
- *   mutation(op)         a change to the filesystem: recorded, and checked when replayed.
+ *   mutation(op)         a change to the filesystem: keeps the run from waiting for stdin.
  *   listen()             a server's first listen: a promotable run stops there,
  *                        to be run again as a resident that serves.
  *   effect(what) / unreplayable(why)  why a stop could not be replayed.

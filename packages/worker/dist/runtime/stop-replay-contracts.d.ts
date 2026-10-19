@@ -10,10 +10,6 @@ export declare const REPLAY_PREFIX_MAX_BYTES: number;
 /** The most clock readings, stdin reads and random bytes a replayable run may draw. */
 export declare const REPLAY_TAPE_MAX_READINGS = 65536;
 export declare const REPLAY_TAPE_MAX_RANDOM_BYTES: number;
-/** Filesystem changes a run that can be run again records, and the bytes they carry. */
-export declare const REPLAY_TAPE_MAX_WRITES = 4096;
-export declare const REPLAY_TAPE_MAX_WRITE_BYTES: number;
-export declare const REPLAY_WRITE_ENTRY_MAX_CHARS = 8192;
 /** The most answers the session journals for one run; past it the run cannot be replayed. */
 export declare const REPLAY_JOURNAL_MAX_ENTRIES = 65536;
 /** Joined reads keep their actual answers until the run ends, including lost-response resends. */
@@ -40,8 +36,6 @@ export interface ReplayTape {
     random: string;
     /** How many bytes each completed synchronous read of stdin returned. */
     reads: number[];
-    /** Each change it made to the filesystem: its call, its path and a digest of all of it. */
-    writes: string[];
 }
 /** A chunk of output the session had not acknowledged when the run stopped. */
 export interface StoppedOutput {

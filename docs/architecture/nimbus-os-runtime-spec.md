@@ -1353,6 +1353,35 @@ Language web servers should plug into this model:
 When a new port appears, the browser preview pane should create or focus the
 corresponding tab. The tab model should de-dupe by kind and port.
 
+A Node program that no rule names as a server starts as a one-shot. Its first
+`listen()` stops it before anything binds, and it is run again as a resident
+on the same pid (`FacetManager._promote`). The run again:
+
+- starts from what the first run started from. From launch, the session
+  keeps the row each storage key held before the run first changed it
+  (`SqliteVFS.captureRun`). At promotion it puts every such key back, files
+  and directories, made, changed or removed, and both names of a rename
+  (`restoreRun`). The run again's changes are then its own, in whatever
+  order its tasks make them.
+- draws the first run's clock, random and stdin, and prints the first run's
+  output up to its listen. That output is checked, not shown again.
+
+Between the restore and the run again's own writes, which is its boot up to
+its listen, every other process sees the files the run changed as they were
+before it ran: what it made is gone, and what it removed is back. This is
+the rollback window. The restore is refused, with nothing put back, in these
+cases:
+
+- another writer changed a key after the run last did;
+- another writer wrote into a directory the run made;
+- the run changed more than `RUN_CAPTURE_MAX_KEYS` (4096) keys.
+
+The program is then run again from its start over the files as they are, as
+a server known to be one is started (`server-hints.ts`). It prints again
+what it printed, and one line on its stderr says why. A first run that
+appended to a file, or did something outside itself (a child, a non-GET
+request), is not run again: its `listen()` throws, naming why.
+
 Cross-origin isolated previews: a preview asks for isolation with its own
 document's `Cross-Origin-Embedder-Policy` (`require-corp` or
 `credentialless`), and Nimbus never adds or rewrites COOP, COEP or CORP on a

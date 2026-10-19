@@ -5,7 +5,10 @@
 //   - the stdin the one-shot took is put back in front of its channel, and the
 //     resident is told to take at least that much before it replays;
 //   - a resident that ended while it booted is that exit, not a server;
-//   - the command's abort during the hand-off ends the process.
+//   - the command's abort during the hand-off ends the process;
+//   - what the run changed is kept from its launch and put back before the
+//     resident boots; when it cannot be, the resident runs from its start
+//     unretraced, with its \`< file\` and every byte it prints, and says why.
 import assert from 'node:assert/strict';
 import { ReplaySessions } from '../../packages/worker/src/runtime/replay-session.ts';
 import { mock } from 'bun:test';
@@ -18,12 +21,17 @@ const { FacetManager } = await import('../../packages/worker/src/facets/manager.
 
 const TAPE = { seed: [1, 2, 3, 4], now: [], perf: [], random: '', reads: [5], writes: [] };
 
-function handoff({ took = null, resident = async () => {}, signal, stdin, stdinFile, stat = () => ({ ino: 1, revision: 1, size: 5, mtime: 1, ctime: 1 }) } = {}) {
+function handoff({ took = null, resident = async () => {}, signal, stdin, stdinFile, restore = { restored: 0 }, stat = () => ({ ino: 1, revision: 1, size: 5, mtime: 1, ctime: 1 }) } = {}) {
   const processes = new SessionProcessSupervisor();
   const entry = processes.spawn('node srv.js', ['node', 'srv.js'], '/');
-  const unread = [], spawned = [], announced = [], learned = [];
+  const unread = [], spawned = [], announced = [], learned = [], kept = [];
   const manager = Object.assign(Object.create(FacetManager.prototype), {
     ctx: {}, processes, filesystem: { bind: () => ({ stat: (path) => stat(path) }) },
+    vfs: {
+      captureRun: (pid) => kept.push(['capture', pid]),
+      restoreRun: (pid) => { kept.push(['restore', pid, spawned.length]); return restore; },
+      releaseRun: (pid) => kept.push(['release', pid]),
+    },
     hooks: {
       rewindProcessFiles: async () => {},
       onSpawn: (pid) => announced.push(pid),
@@ -54,6 +62,11 @@ function handoff({ took = null, resident = async () => {}, signal, stdin, stdinF
     // ended during its boot returns (`ended`).
     spawnNode: async (_code, opts) => {
       spawned.push(opts);
+      // What the gate lets through as the resident boots: a stopped run's late chunk, and the resident's first.
+      result.gated = {
+        late: manager.gateOutput(entry.pid, 'stdout', new TextEncoder().encode('late'), 0, 1).byteLength,
+        first: manager.gateOutput(entry.pid, 'stdout', new TextEncoder().encode('first'), 0, opts.run ?? 2).byteLength,
+      };
       const outcome = await resident(entry);
       if (outcome !== 'ended' && processes.get(entry.pid)?.state !== 'running') throw new Error('the process ended while its facet was being created');
       return { pid: entry.pid };
@@ -66,7 +79,8 @@ function handoff({ took = null, resident = async () => {}, signal, stdin, stdinF
     ...(stdinFile !== undefined ? { stdinFile } : {}),
     server: { package: 'srv@1.0.0', bin: 'srv', arg0: '' },
   });
-  return { processes, entry, done, unread, spawned, announced, learned };
+  const result = { processes, entry, done, unread, spawned, announced, learned, kept, gated: null };
+  return result;
 }
 
 // The stdin it took goes back in front of its channel, and the resident
@@ -80,6 +94,20 @@ function handoff({ took = null, resident = async () => {}, signal, stdin, stdinF
   assert.equal(h.spawned[0].resume.stdinAtLeast, 5, 'the resident takes it again before it replays');
   assert.deepEqual(h.announced, [h.entry.pid]);
   assert.equal(h.learned.length, 1);
+  assert.deepEqual(h.kept, [['capture', h.entry.pid], ['restore', h.entry.pid, 0], ['release', h.entry.pid]],
+    'its changes are kept from its launch, put back before the resident boots, then let go');
+}
+
+// Not put back: the resident runs from its start, unretraced, with its own output and its \`< file\`, and says why.
+{
+  const h = handoff({ restore: { refused: '/home/user/x was changed since it changed it' }, stdinFile: { path: '/home/user/in.txt', offset: 3, syncRead: false } });
+  const result = await h.done;
+  assert.equal(result.promotedPid, h.entry.pid, 'a server all the same');
+  assert.equal(h.spawned[0].resume, undefined, 'no replay');
+  assert.equal(h.spawned[0].run, 2, 'its output is the next run\'s');
+  assert.deepEqual(h.gated, { late: 0, first: 5 }, 'all it prints from its first byte is shown, and none of the stopped run\'s late output');
+  assert.deepEqual(h.spawned[0].stdinFile, { path: '/home/user/in.txt', offset: 3, syncRead: true }, 'its file, from where it was read first');
+  assert.match(h.processes.allLogs(h.entry.pid).map((chunk) => chunk.data).join(''), /runs it again as one from its start, over the files as they are: \/home\/user\/x was changed since it changed it\. What it printed before it listened is printed again\./);
 }
 
 // Its stdin given whole: the resident is given it again.
