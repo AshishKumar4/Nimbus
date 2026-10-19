@@ -1383,6 +1383,8 @@ interface RunCapture {
 }
 
 interface CapturedKey {
+  readonly capture: RunCapture;
+  readonly key: string;
   /** The row the run found there first, held as a description holds it (pinningNodes); null: none. */
   readonly before: OpenedNode | null;
   /** The run changed the row; false while it only dated it (a directory whose entries it changed). */
@@ -1390,17 +1392,17 @@ interface CapturedKey {
   /** As the run's last change left it: the generation that change committed at, and whether a row stood. */
   gen: number;
   present: boolean;
-}
-
-/**
- * How to undo what a captured run kept inside an embedder transaction that
- * rolled back: a key it kept first (`prior` null), or one whose state it moved.
- */
-interface CaptureUndo {
-  readonly capture: RunCapture;
-  readonly key: string;
-  readonly kept: CapturedKey;
-  readonly prior: { readonly gen: number; readonly present: boolean; readonly written: boolean } | null;
+  /**
+   * The embedder transaction (publishedTransaction's serial) it was kept in,
+   * or last moved in, and its state before that one moved it: what a rollback
+   * of that transaction puts back. Kept on the key, so a write allocates no
+   * undo of its own.
+   */
+  keptIn: number;
+  movedIn: number;
+  movedGen: number;
+  movedPresent: boolean;
+  movedWritten: boolean;
 }
 
 /** What putting a run's changes back did (SqliteVFS.restoreRun): how many keys, or why it did nothing. */
@@ -1768,7 +1770,10 @@ export class SqliteVFS {
    * captured runs kept of it, should it roll back. Kept at once, its rows
    * held at once, so a later plan of the transaction meets them.
    */
-  private captureUndo: CaptureUndo[] | null = null;
+  private captureUndo: CapturedKey[] | null = null;
+  /** The embedder transaction running (publishedTransaction), by serial: 0 outside one. */
+  private captureTransaction = 0;
+  private captureTransactions = 0;
   /** Whose call is running: the principal its write events name (a view's, re-entered by work it defers). */
   private activeOrigin: Principal | null = null;
   /**
@@ -7954,16 +7959,23 @@ export class SqliteVFS {
     touched: readonly string[],
   ): Map<string, INode | null> {
     const taken = new Map<string, INode | null>();
-    const fresh = (key: string): boolean => !capture.keys.has(key) && !taken.has(key);
-    const take = (key: string, row: INode | undefined): void => {
-      taken.set(key, row === undefined ? null : { ...row });
-    };
-    for (const entry of plan.deletes) if (fresh(entry.path)) take(entry.path, deletedPrior.get(entry.path) ?? this.loadInode(entry.path));
+    const { keys } = capture;
+    for (const entry of plan.deletes) {
+      if (keys.has(entry.path) || taken.has(entry.path)) continue;
+      const row = deletedPrior.get(entry.path) ?? this.loadInode(entry.path);
+      taken.set(entry.path, row === undefined ? null : { ...row });
+    }
     for (let index = 0; index < plan.inodes.length; index++) {
       const entry = plan.inodes[index];
-      if (entry !== undefined && !entry.detached && fresh(entry.path)) take(entry.path, prior[index]);
+      if (entry === undefined || entry.detached || keys.has(entry.path) || taken.has(entry.path)) continue;
+      const row = prior[index];
+      taken.set(entry.path, row === undefined ? null : { ...row });
     }
-    for (const path of touched) if (fresh(path)) take(path, this.inodes.peek(path) ?? this.loadInode(path));
+    for (const path of touched) {
+      if (keys.has(path) || taken.has(path)) continue;
+      const row = this.inodes.peek(path) ?? this.loadInode(path);
+      taken.set(path, row === undefined ? null : { ...row });
+    }
     return taken;
   }
 
@@ -7981,35 +7993,47 @@ export class SqliteVFS {
       return;
     }
     const undo = this.captureUndo;
+    const tx = this.captureTransaction;
     for (const [key, row] of taken) {
       const before = row === null ? null : { inode: row, path: null, closed: false };
       if (before !== null) this.holdCaptured(before);
-      const kept: CapturedKey = { before, written: false, gen, present: true };
+      const kept: CapturedKey = {
+        capture, key, before, written: false, gen, present: true, keptIn: tx, movedIn: tx, movedGen: gen, movedPresent: true, movedWritten: false,
+      };
       capture.keys.set(key, kept);
-      undo?.push({ capture, key, kept, prior: null });
+      undo?.push(kept);
     }
-    const left = (key: string, written: boolean, present: boolean): void => {
-      const kept = capture.keys.get(key);
-      if (kept === undefined) return;
-      if (undo !== null && !taken.has(key)) undo.push({ capture, key, kept, prior: { gen: kept.gen, present: kept.present, written: kept.written } });
-      kept.gen = gen;
-      kept.present = present;
-      if (written) kept.written = true;
-    };
-    for (const path of touched) left(path, false, true);
-    for (const entry of plan.deletes) left(entry.path, true, false);
-    for (const entry of plan.inodes) if (!entry.detached) left(entry.path, true, true);
+    for (const path of touched) this.captureLeft(capture, path, gen, false, true);
+    for (const entry of plan.deletes) this.captureLeft(capture, entry.path, gen, true, false);
+    for (const entry of plan.inodes) if (!entry.detached) this.captureLeft(capture, entry.path, gen, true, true);
+  }
+
+  /** Key `key` of `capture` as the transaction committing at `gen` left it: its state before kept, once a transaction, for a rollback. */
+  private captureLeft(capture: RunCapture, key: string, gen: number, written: boolean, present: boolean): void {
+    const kept = capture.keys.get(key);
+    if (kept === undefined) return;
+    const tx = this.captureTransaction;
+    if (this.captureUndo !== null && kept.keptIn !== tx && kept.movedIn !== tx) {
+      kept.movedIn = tx;
+      kept.movedGen = kept.gen;
+      kept.movedPresent = kept.present;
+      kept.movedWritten = kept.written;
+      this.captureUndo.push(kept);
+    }
+    kept.gen = gen;
+    kept.present = present;
+    if (written) kept.written = true;
   }
 
   /** A rolled-back transaction's change to a capture, undone. */
-  private undoCapture({ capture, key, kept, prior }: CaptureUndo): void {
-    if (prior !== null) {
-      kept.gen = prior.gen;
-      kept.present = prior.present;
-      kept.written = prior.written;
+  private undoCapture(kept: CapturedKey): void {
+    if (kept.keptIn !== this.captureTransaction) {
+      kept.gen = kept.movedGen;
+      kept.present = kept.movedPresent;
+      kept.written = kept.movedWritten;
       return;
     }
-    capture.keys.delete(key);
+    kept.capture.keys.delete(kept.key);
     if (kept.before !== null) this.releaseCaptured(kept.before);
   }
 
@@ -10654,9 +10678,10 @@ export class SqliteVFS {
     }]));
     // The shared roots registered: a change it made that revoked one is undone with it.
     const sharedBefore = this.sharedDirectories.size === 0 ? null : new Map(this.sharedDirectories);
-    const captureUndo: CaptureUndo[] = [];
+    const captureUndo: CapturedKey[] = [];
     this.transactionPublication = publication;
     this.captureUndo = captureUndo;
+    this.captureTransaction = ++this.captureTransactions;
     let result: T;
     try {
       result = storage.transactionSync(() => {
@@ -10670,7 +10695,7 @@ export class SqliteVFS {
     } catch (error) {
       // Nothing it did landed: no observer hears of it, and no run kept it.
       for (const event of publication.events) event.write?.release();
-      for (const undo of captureUndo.reverse()) this.undoCapture(undo);
+      for (const kept of captureUndo.reverse()) this.undoCapture(kept);
       this.evictAll();
       this.maintenancePending = maintenancePending;
       if (sharedBefore !== null || this.sharedDirectories.size > 0) {
@@ -10709,6 +10734,7 @@ export class SqliteVFS {
     } finally {
       this.transactionPublication = null;
       this.captureUndo = null;
+      this.captureTransaction = 0;
     }
     if (publication.paths.size > 0) this.bumpRevision([...publication.paths], publication.structural);
     const holding = this.holding();
