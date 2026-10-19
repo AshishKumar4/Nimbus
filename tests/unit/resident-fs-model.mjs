@@ -186,8 +186,9 @@ async function runSteps(steps, met, grants) {
       if (!opened.read) continue;
       let got;
       const code = await errnoOf(() => { got = sync.read(opened.handle, 0, 1 << 12); });
-      // Bytes the view does not hold: refused (EAGAIN), or ESTALE once no name leads to them.
-      if ((code === 'EAGAIN' || code === 'ESTALE') && (file === undefined || file.bytes === null)) continue;
+      // Bytes the view does not hold: refused (EAGAIN), or ESTALE once no name leads to them. A descriptor
+      // that never wrote reads the view's bytes, which the view may not hold yet (a grant's given back).
+      if ((code === 'EAGAIN' || code === 'ESTALE') && (file === undefined || file.bytes === null || (code === 'EAGAIN' && !opened.write))) continue;
       if (code === 'ESTALE' && unnamed.has(id)) continue;
       assert.equal(code, null, `${label}: fd ${fd} read ${code}`);
       if (file === undefined || file.bytes === null) continue;

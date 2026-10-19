@@ -90,16 +90,17 @@ async function holding(options) {
 
 // ── A copy that cannot wait reads a held source from its cell, cold or once resident ──
 {
-  const s = await holding();
+  const s = session({ view: {} });
+  // Resident before the grant.
+  s.kernel.writeFile('home/user/proj/warm2', 'OLD2');
+  s.kernel.chown('home/user/proj/warm2', 1000, 1000);
+  assert.equal(dec.decode(await s.fs.readFile('/home/user/proj/warm2')), 'OLD2');
+  await rewrite(s.fs, '/home/user/proj/warm', 'w');
+  await until(() => s.filesystem.delegations.size === 1, 'the subtree taken');
   // Cold: made under the grant, never the view's.
   await rewrite(s.fs, '/home/user/proj/cold', 'NEWC');
   assert.equal(await errnoOf(() => s.fs.synchronous.copyFile('/home/user/proj/cold', '/tmp/cold-copy')), null, 'a copy of a held source its cell has the bytes of');
-  // Resident first, then rewritten same-size under the grant.
-  s.kernel.writeFile('home/user/proj/warm2', 'OLD2');
-  s.kernel.chown('home/user/proj/warm2', 1000, 1000);
-  assert.equal(dec.decode(await withRecall(() => s.fs.readFile('/home/user/proj/warm2'))), 'OLD2');
-  await rewrite(s.fs, '/home/user/proj/other-file', 'x');
-  await until(() => s.filesystem.delegations.size === 1, 'the subtree taken again');
+  // Rewritten same-size under the grant.
   await rewrite(s.fs, '/home/user/proj/warm2', 'NEW2');
   assert.equal(await errnoOf(() => s.fs.synchronous.copyFile('/home/user/proj/warm2', '/tmp/warm2-copy')), null, 'a copy of a held source once resident');
   await s.fs.settle();
