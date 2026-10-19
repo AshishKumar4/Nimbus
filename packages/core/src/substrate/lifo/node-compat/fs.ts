@@ -383,12 +383,22 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array, reachS
     },
   );
 
-  function truncateSync(path: string | URL, len?: number): void {
-    const abs = resolvePath(cwd, path);
-    const data = vfs.readFile(abs);
-    const newLen = len ?? 0;
-    if (newLen >= data.length) return;
-    vfs.writeFile(abs, data.slice(0, newLen));
+  /**
+   * truncate(2) as Node makes it: the file opened for writing (its errors
+   * name open), cut or zero-extended to `len` (a negative one is 0), closed.
+   * A descriptor in place of the path is ftruncate's (Node's DEP0081).
+   */
+  function truncateSync(path: string | URL | number, len?: number): void {
+    if (typeof path === 'number') {
+      ftruncateSync(path, len);
+      return;
+    }
+    const fd = vfs.open(resolvePath(cwd, path), openFlagsOf('r+', undefined));
+    try {
+      vfs.ftruncate(fd, Math.max(0, len ?? 0));
+    } finally {
+      vfs.close(fd);
+    }
   }
 
   // ─── File descriptor sync API ───
@@ -449,19 +459,22 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array, reachS
     onDescriptor(fd, 'fdatasync', (id) => vfs.fsync(id));
   }
 
-  // ─── Symlink stubs ───
+  // ─── Links ───
 
-  function symlinkSync(_target: string, _path: string, _type?: string): void {
-    // No-op - VFS has no symlink support yet
+  /** symlink(2): the link at `path` holds `target` as given (a relative target stays relative, read from the link's directory). */
+  function symlinkSync(target: string | URL, path: string | URL, _type?: string | null): void {
+    vfs.symlink(typeof target === 'string' ? target : target.pathname, resolvePath(cwd, path));
   }
 
   function linkSync(_existingPath: string, _newPath: string): void {
     // No-op
   }
 
-  function readlinkSync(path: string | URL): string {
-    // Return the path itself since we have no symlinks
-    return resolvePath(cwd, path);
+  /** readlink(2): the link's text, or its bytes with `encoding: 'buffer'`. */
+  function readlinkSync(path: string | URL, options?: string | { encoding?: string | null } | null): string | Buffer {
+    const text = vfs.readlink(resolvePath(cwd, path));
+    const encoding = typeof options === 'string' ? options : options?.encoding;
+    return encoding === 'buffer' ? Buffer.from(text) : text;
   }
 
   // ─── Callback API ───
@@ -550,6 +563,23 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array, reachS
     const callback = typeof modeOrCb === 'function' ? modeOrCb : cb!;
     const mode = typeof modeOrCb === 'function' ? undefined : modeOrCb;
     wrapCallback(() => accessSync(path, mode), callback);
+  }
+
+  function symlink(target: string | URL, path: string | URL, typeOrCb: string | null | undefined | Callback<void>, cb?: Callback<void>): void {
+    const callback = typeof typeOrCb === 'function' ? typeOrCb : cb!;
+    wrapCallback(() => symlinkSync(target, path), callback);
+  }
+
+  function readlink(path: string | URL, optionsOrCb: string | { encoding?: string | null } | null | undefined | Callback<string | Buffer>, cb?: Callback<string | Buffer>): void {
+    const callback = typeof optionsOrCb === 'function' ? optionsOrCb : cb!;
+    const options = typeof optionsOrCb === 'function' ? undefined : optionsOrCb;
+    wrapCallback(() => readlinkSync(path, options), callback);
+  }
+
+  function truncate(path: string | URL | number, lenOrCb: number | null | undefined | Callback<void>, cb?: Callback<void>): void {
+    const callback = typeof lenOrCb === 'function' ? lenOrCb : cb!;
+    const len = typeof lenOrCb === 'function' ? undefined : lenOrCb ?? undefined;
+    wrapCallback(() => truncateSync(path, len), callback);
   }
 
   function exists(path: string | URL, cb: (exists: boolean) => void): void {
@@ -743,6 +773,8 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array, reachS
     access: async (path: string | URL, mode?: number) => accessSync(path, mode),
     realpath: async (path: string | URL) => realpathSync(path),
     truncate: async (path: string | URL, len?: number) => truncateSync(path, len),
+    symlink: async (target: string | URL, path: string | URL, type?: string | null) => symlinkSync(target, path, type),
+    readlink: async (path: string | URL, options?: string | { encoding?: string | null } | null) => readlinkSync(path, options),
     chmod: async (path: string | URL, mode: number | string) => chmodSync(path, mode),
     chown: async (path: string | URL, uid: number, gid: number) => chownSync(path, uid, gid),
     lchown: async (path: string | URL, uid: number, gid: number) => lchownSync(path, uid, gid),
@@ -833,6 +865,9 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array, reachS
     rename,
     access,
     exists,
+    symlink,
+    readlink,
+    truncate,
     open,
     close,
     read,

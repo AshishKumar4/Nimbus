@@ -22,6 +22,10 @@ export interface NodeFilesystem {
   lstat(path: string): RuntimeVfsStat;
   /** Canonical VFS path, following links; native module caches key by it. */
   realpath(path: string): string;
+  /** symlink(2): a link at `path` whose text is `target`, as given (a relative one stays relative). */
+  symlink(target: string, path: string): void;
+  /** readlink(2): the text of the link at `path`; EINVAL where `path` is no link, ENOENT where nothing is there. */
+  readlink(path: string): string;
   mkdir(path: string, options?: { recursive?: boolean; mode?: number }): void;
   readdir(path: string): RuntimeVfsDirEntry[];
   unlink(path: string): void;
@@ -112,6 +116,13 @@ function bridgeFilesystem(bridge: RuntimeFsBridge, umask: () => number): NodeFil
       return stat;
     },
     realpath: path => fs.realpath(path),
+    symlink: (target, path) => fs.symlink(target, path),
+    readlink(path) {
+      const text = fs.readlink(path);
+      if (text !== null) return text;
+      // The bridge answers null for no link and for nothing there: readlink(2) tells them apart.
+      throw syscallError(fs.stat(path, { followSymlinks: false }) === null ? 'ENOENT' : 'EINVAL', 'readlink', path);
+    },
     mkdir: (path, options) => fs.mkdir(path, { ...options, umask: umask() }),
     readdir: path => fs.readdir(path) as RuntimeVfsDirEntry[],
     unlink: path => fs.unlink(path),
