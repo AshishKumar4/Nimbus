@@ -65,7 +65,8 @@ try {
     state.codeCount >= 3,
     JSON.stringify(state));
 
-  await ctx.page.click('#previewTabs .preview-tab:not(.markdown)');
+  // The strip re-renders as tabs come and go: a locator finds the tab again rather than click a replaced one.
+  await ctx.page.locator('#previewTabs .preview-tab:not(.markdown)').click();
   await ctx.page.waitForFunction(() => {
     const frame = document.getElementById('preview-frame');
     const url = document.getElementById('urlBar')?.value || '';

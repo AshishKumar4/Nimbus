@@ -23,7 +23,7 @@
 // where some indirection rebinds `process`. Probe asserts that EVERY
 // path correctly flushes and surfaces the code.
 
-import { mintSession, Terminal, BASE, writeFileViaShell } from '../_driver.mjs';
+import { mintSession, Terminal, BASE, writeFileViaShell, hasOutputLine } from '../_driver.mjs';
 
 const sid = await mintSession();
 console.log(`[G1] sid=${sid} BASE=${BASE}`);
@@ -37,7 +37,7 @@ await t.run('cd /home/user/g1-probe', 5_000);
 
 // ── Test 1: node -e + process.exit(7) ──
 const e1 = await t.run('node -e "console.log(\'a-marker\'); process.exit(7);"', 30_000);
-const t1Out = /a-marker/.test(e1.output);
+const t1Out = hasOutputLine(e1.output, 'a-marker');
 const t1Code = e1.exitCode === 7;
 
 // ── Test 2: node script.js + process.exit(13) ──
@@ -63,7 +63,7 @@ const t3Code = e3.exitCode === 21;
 
 // ── Test 4: process.exit(0) — success-path flush ──
 const e4 = await t.run("node -e \"console.log('d-marker'); process.exit(0);\"", 30_000);
-const t4Out = /d-marker/.test(e4.output);
+const t4Out = hasOutputLine(e4.output, 'd-marker');
 const t4Code = e4.exitCode === 0;
 
 // ── Test 5: stdout written via process.stdout.write (NOT console.log) ──
@@ -71,7 +71,7 @@ const t4Code = e4.exitCode === 0;
 // Some libs go straight to process.stdout.write. Asserts that the
 // stdout-write shim chain also flushes before exit.
 const e5 = await t.run("node -e \"process.stdout.write('e-marker\\n'); process.exit(2);\"", 30_000);
-const t5Out = /e-marker/.test(e5.output);
+const t5Out = hasOutputLine(e5.output, 'e-marker');
 const t5Code = e5.exitCode === 2;
 
 await t.close();

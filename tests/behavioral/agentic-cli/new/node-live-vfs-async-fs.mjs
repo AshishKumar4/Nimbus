@@ -10,6 +10,7 @@ import {
   makeAsserter,
   heredocCommand,
   stripAnsi,
+  hasOutputLine,
 } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -136,7 +137,7 @@ try {
     const { output } = await t.run('test ! -e /home/user/live-node-fs/made-by-node && echo removed-ok', 10_000);
     const stripped = stripAnsi(output);
     a.check('async-created directory is removed from persistent VFS',
-      /removed-ok/.test(stripped),
+      hasOutputLine(stripped, 'removed-ok'),
       JSON.stringify(stripped.slice(-400)));
   }
 

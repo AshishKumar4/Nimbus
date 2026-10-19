@@ -2,7 +2,7 @@
 // does: `a & b & … wait`. The step's wall time, and whether the session lived
 // through it, for a reset closes the terminal mid-step.
 
-import { BASE, requestHeaders, stripAnsi } from './_driver.mjs';
+import { BASE, requestHeaders, stripAnsi, hasOutputLine } from './_driver.mjs';
 
 /**
  * Run `commands` at once in `t`'s shell and wait for all of them: whether
@@ -15,7 +15,7 @@ export async function atOnce(t, commands, timeoutMs) {
   try {
     const { output } = await t.run(`${commands.map((command) => `${command} &`).join(' ')} wait; echo ${marker}`, timeoutMs);
     const text = stripAnsi(output);
-    return { survived: text.includes(marker), ms: Date.now() - started, detail: text.slice(-400) };
+    return { survived: hasOutputLine(output, marker), ms: Date.now() - started, detail: text.slice(-400) };
   } catch (error) {
     return { survived: false, ms: Date.now() - started, detail: String(error?.message ?? error) };
   }

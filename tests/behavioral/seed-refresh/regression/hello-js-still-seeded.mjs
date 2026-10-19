@@ -21,7 +21,7 @@ await t.waitForPrompt(60_000);
 {
   const r = await t.run('ls /home/user/hello.js 2>&1', 10_000);
   const out = stripAnsi(r.output);
-  const ok = /\/home\/user\/hello\.js/.test(out) && !/ENOENT|No such/.test(out);
+  const ok = hasOutputLine(out, '/home/user/hello.js');
   a.check('~/hello.js still seeded', ok, ok ? '' : JSON.stringify(out.slice(-300)));
 }
 
