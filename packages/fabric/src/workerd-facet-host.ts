@@ -268,8 +268,6 @@ interface SlotBook {
   next: number;
   /** Slot held by each live pid, so release can find it. */
   held: Map<number, number>;
-  /** Explicit (`app-slot-`) names this incarnation started a process under and has not released. */
-  live: Set<string>;
 }
 
 /**
@@ -279,10 +277,13 @@ interface SlotBook {
  * Keyed weakly off `ctx`, so a book describes one incarnation. A facet that
  * is still running when that incarnation ends outlives it (measured: a timer
  * or an outgoing call keeps it going), and a `get` of its name with a new
- * class then resets the whole object. So a fresh incarnation's first get of
- * each name ends whatever runs there first: a minted `proc-slot-` name is
- * deleted, which also wipes the storage a previous incarnation left, and an
- * explicit name is aborted, which keeps it.
+ * class then resets the whole object. So a process's first get of its name
+ * ends whatever runs there first: a minted `proc-slot-` name is deleted,
+ * which also wipes the storage a previous incarnation left, and an explicit
+ * name is aborted, which keeps it. What still runs under an explicit name is
+ * only ever a predecessor of the same application, here or in an ended
+ * incarnation: its owner has one name for life, and a second running
+ * instance of an owner is refused before it gets one.
  *
  * The book allocates only the `proc-slot-` space. Durable `app-slot-` names
  * are allocated against DO storage instead (their owner survives a reset), so
@@ -293,7 +294,7 @@ const slotBooks = new WeakMap<DurableObjectState, SlotBook>();
 function slotBook(ctx: DurableObjectState): SlotBook {
   let book = slotBooks.get(ctx);
   if (!book) {
-    book = { next: 0, held: new Map(), live: new Set() };
+    book = { next: 0, held: new Map() };
     slotBooks.set(ctx, book);
   }
   return book;
@@ -344,6 +345,27 @@ function releaseSlot(ctx: DurableObjectState, pid: number): void {
 function sessionLedger(ctx: DurableObjectState): StorageLedger | null {
   const sql = (ctx as { storage?: { sql?: SqlDatabase } }).storage?.sql;
   return sql ? new StorageLedger(sql) : null;
+}
+
+/**
+ * The process each facet name was last given to, per facet container: the
+ * platform's `ctx.facets`, shared by every incarnation of an object that the
+ * platform ended keeping its facets. A process's release ends, drains and
+ * deletes its facet by name only while the name is still its own; once a
+ * newer process has been given the name (a later incarnation's, or a
+ * relaunch of the same application), the facet under it is that process's.
+ */
+const nameHolders = new WeakMap<FacetContainer, Map<string, object>>();
+
+function holdersOf(facets: FacetContainer): Map<string, object> {
+  let holders = nameHolders.get(facets);
+  if (!holders) nameHolders.set(facets, holders = new Map());
+  return holders;
+}
+
+/** Whether a process this actor's facets were given `name` to still holds it: then its facet is that process's. */
+export function facetNameHeld(ctx: DurableObjectState, name: string): boolean {
+  return holdersOf(facetContainer(ctx)).has(name);
 }
 
 const facetNames = new WeakMap<object, Map<number, string>>();
@@ -504,8 +526,11 @@ function spawnResident(
     try { return { class: residentProcessClass(env, disk, supervisor, params, loaderKey, watchCapability) }; }
     catch (error) { refused = { error }; throw error; }
   };
-  const book = slotBook(ctx);
   const ledger = sessionLedger(ctx);
+  // This process's hold on `name`, until its release or a newer process's spawn.
+  const holding = {};
+  const holders = holdersOf(facets);
+  const holds = (): boolean => holders.get(name) === holding;
   // A warm worker keeps the SUPERVISOR binding it was built with, and the
   // loader outlives this instance.
   const loaderKey = supervisorLoaderKey(params.workerKey, supervisor);
@@ -514,17 +539,17 @@ function spawnResident(
     // N18: the fill is admitted, and recorded under the facet's name, before
     // the facet exists; a refusal leaves no facet.
     if (ledger !== null && params.storageBytes !== undefined) ledger.fill(name, params.storageBytes);
-    // get() with a new class on a facet an earlier incarnation left running resets this object.
-    if (explicit && !book.live.has(name)) {
-      facets.abort(name, new Error('Nimbus: a new incarnation takes this facet name'));
-    }
+    // get() with a new class on a facet still running (its predecessor's, an
+    // earlier incarnation's) resets this object, and a running facet does not
+    // take a new class: what runs there is ended first, its storage kept.
+    if (explicit) facets.abort(name, new Error('Nimbus: a newer process takes this facet name'));
     params.created?.(name);
     facet = facets.get(name, start);
   } catch (error) {
     if (slot !== undefined) releaseSlot(ctx, params.pid);
     throw error;
   }
-  if (explicit) book.live.add(name);
+  holders.set(name, holding);
   // A journaling process: the session holds its facet's name until its log is drained.
   params.journal?.opened(name);
   // The facet's worker is one Dynamic Worker in flight for as long as the
@@ -550,10 +575,12 @@ function spawnResident(
     // answer (gone, or never started again: the start above refuses once
     // released), is not waited for; one that does not answer in time is
     // aborted at the deadline.
-    const ended = (params.journal && !lostAlready ? settled(facet) : Promise.resolve()).then(() => {
+    // A name a newer process has since been given is that process's: its
+    // facet is not this release's to end, drain or delete.
+    const ended = (params.journal && !lostAlready && holds() ? settled(facet) : Promise.resolve()).then(() => {
       endResidency();
+      if (!holds()) return;
       try { facets.abort(name, new Error('Nimbus: resident process released')); } catch { /* already gone */ }
-      if (explicit) book.live.delete(name);
     });
     // What the process logged and the session never answered is in its
     // facet's store: drained before the store goes, and before the release
@@ -563,7 +590,7 @@ function spawnResident(
     // next drain of that name.
     if (params.journal) {
       try {
-        await params.journal.drain(onceSettled(ended, facetJournal(ctx, env, name)));
+        await params.journal.drain(onceSettled(ended, facetJournal(ctx, env, name, holds)));
       } catch (error) {
         console.error(`[nimbus] the write log of pid ${params.pid} (facet '${name}') was not drained: ${error instanceof Error ? error.message : String(error)}`);
         // Its store kept for that drain; the release still ends with the facet.
@@ -576,8 +603,11 @@ function spawnResident(
     // alone, so it goes with it, and a durable one's is the application
     // itself: abort ends the process, the data stays for the next boot, and
     // only removeDurableApp's explicit deleteFacetStorage call ever drops it.
-    if (!explicit?.durable) {
-      try { deleteFacetStorage(ctx, name); } catch { /* already gone */ }
+    if (holds()) {
+      if (!explicit?.durable) {
+        try { deleteFacetStorage(ctx, name); } catch { /* already gone */ }
+      }
+      holders.delete(name);
     }
     if (slot !== undefined) releaseSlot(ctx, params.pid);
   };
@@ -916,13 +946,21 @@ async function untilEnded<T>(signal: AbortSignal, start: (ended: () => Promise<s
  * the same SQLite. The name is aborted first: a get with a new class of a
  * facet still running (a previous incarnation's) would reset this object.
  */
-export function facetJournal(ctx: DurableObjectState, env: JournalReaderEnv, name: string): ProcessFsJournalSource {
+/**
+ * `name`'s write log, read by a reader started under the name. `holds`, if
+ * given, says the name is still its process's: a name a newer process has
+ * been given is that process's facet, never opened for a reader, and the
+ * log reads empty here (the newer process's store keeps it, for the
+ * session's next drain of the name).
+ */
+export function facetJournal(ctx: DurableObjectState, env: JournalReaderEnv, name: string, holds: () => boolean = () => true): ProcessFsJournalSource {
   const loader = env.LOADER;
   if (!loader) throw new Error('Nimbus: env.LOADER is missing: a process\'s write log cannot be read');
   const facets = facetContainer(ctx);
   let reader: JournalReaderStub | undefined;
-  const open = (): JournalReaderStub => {
+  const open = (): JournalReaderStub | null => {
     if (reader) return reader;
+    if (!holds()) return null;
     try { facets.abort(name, new Error('Nimbus: its write log is drained')); } catch { /* not running */ }
     const worker = loader.load(applyFacetLimits('process', {
       compatibilityDate: CF_COMPAT_DATE,
@@ -933,10 +971,10 @@ export function facetJournal(ctx: DurableObjectState, env: JournalReaderEnv, nam
     return reader;
   };
   return {
-    numberings: () => open().numberings(),
-    number: (numbering) => open().number(numbering),
-    readAfter: (after, maxBytes) => open().readAfter(after, maxBytes),
-    dropThrough: (jid) => open().dropThrough(jid),
+    numberings: async () => (await open()?.numberings()) ?? [],
+    number: async (numbering) => { await open()?.number(numbering); },
+    readAfter: async (after, maxBytes) => (await open()?.readAfter(after, maxBytes)) ?? [],
+    dropThrough: async (jid) => { await open()?.dropThrough(jid); },
   };
 }
 
