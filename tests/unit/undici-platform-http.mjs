@@ -14,6 +14,8 @@
 // throw with the limitation named rather than answer wrongly.
 
 import assert from 'node:assert/strict';
+// The launch's captures the write ledger reads (__nimbusLaunchCaptures).
+import './lib/launch-captures.mjs';
 import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import {

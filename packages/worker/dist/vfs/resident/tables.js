@@ -18,7 +18,7 @@
  * callers normalise with residentBytes), ns rows with every stat column.
  */
 import { RESIDENT_ROW_BYTES, namespaceRowBytes, residentBytes, utf8Length } from './cell-cost.js';
-import { arraySort, dataDescriptor, reflectDefineProperty, SafeList, SafeMap } from '@nimbus-sh/core/_shared/primordials.js';
+import { arraySort, dataDescriptor, reflectDefineProperty, SafeList, SafeMap, SafeSet } from '@nimbus-sh/core/_shared/primordials.js';
 /**
  * Cell kinds. A cell is one of the three things __vfsBundle has always held,
  * and the kind is stored rather than inferred so a text file whose bytes happen
@@ -228,11 +228,11 @@ export function heapTables() {
     // here after a program may have replaced Map.prototype.get.
     const files = new SafeMap();
     const chunks = new SafeMap();
-    const meta = new Map();
+    const meta = new SafeMap();
     const ns = new SafeMap();
-    const byKey = new Map();
+    const byKey = new SafeMap();
     // Pages by "path\0rev\0part".
-    const pages = new Map();
+    const pages = new SafeMap();
     const pageKey = (path, rev, part) => path + '\u0000' + rev + '\u0000' + part;
     let sorted = null;
     let used = 0;
@@ -386,7 +386,7 @@ export function heapTables() {
             if (row.ckey !== null) {
                 let set = byKey.get(row.ckey);
                 if (!set) {
-                    set = new Set();
+                    set = new SafeSet();
                     byKey.set(row.ckey, set);
                 }
                 set.add(path);

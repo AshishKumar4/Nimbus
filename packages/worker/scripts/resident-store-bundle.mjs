@@ -14,36 +14,15 @@
  * own, which would run later and replace Function.prototype.toString again.
  */
 import { build } from 'esbuild';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { FACET_GLOBALS, freeNames } from './free-names.mjs';
-import { moduleBody } from '../../../scripts/lib/compiled-bodies.mjs';
+import { launchCapturesPlugin } from '../../../scripts/lib/launch-captures-plugin.mjs';
 
 export const RESIDENT_STORE_GLOBAL = '__nimbusResidentModule';
 /** The launch's captures, in scope where the store is evaluated (core _shared/commonjs-cell.ts). */
 export const LAUNCH_CAPTURES = '__nimbusLaunchCaptures';
 
-/** Every name core's _shared/primordials.ts exports: its module bundled alone, its exports read from the syntax tree. */
-async function primordialNames(path) {
-  const result = await build({ entryPoints: [path], bundle: true, format: 'esm', platform: 'neutral', target: 'esnext', write: false, logLevel: 'warning' });
-  const names = moduleBody(result.outputFiles[0].text).exported.map(([name]) => name);
-  if (names.length === 0) throw new Error(`[resident-store-bundle] no exports read from ${path}`);
-  return names;
-}
-
-/** @param {string} root the worker package */
 export async function bundleResidentStore(root) {
-  const core = join(root, '..', 'core');
-  const primordials = join(core, 'src', '_shared', 'primordials');
-  const names = await primordialNames(`${primordials}.ts`);
-  // Core's module, by whichever of its spellings an import resolves to: its
-  // package name (`@nimbus-sh/core/_shared/primordials.js`), or a relative
-  // path into its source or its built dist.
-  const isPrimordials = (specifier, from) => {
-    if (specifier === '@nimbus-sh/core/_shared/primordials.js') return true;
-    if (!specifier.startsWith('.')) return false;
-    const target = resolve(from, specifier).replace(/\.(js|ts)$/, '');
-    return target === primordials || target === join(core, 'dist', '_shared', 'primordials');
-  };
   const result = await build({
     entryPoints: [join(root, 'src', 'vfs', 'resident', 'index.ts')],
     bundle: true,
@@ -55,18 +34,7 @@ export async function bundleResidentStore(root) {
     write: false,
     logLevel: 'warning',
     legalComments: 'none',
-    plugins: [{
-      name: 'resident-launch-captures',
-      setup(pluginBuild) {
-        pluginBuild.onResolve({ filter: /primordials(\.js|\.ts)?$/ }, (args) => (
-          isPrimordials(args.path, args.resolveDir) ? { path: 'launch-captures', namespace: 'nimbus-launch-captures' } : undefined
-        ));
-        pluginBuild.onLoad({ filter: /.*/, namespace: 'nimbus-launch-captures' }, () => ({
-          contents: `export const { ${names.join(', ')} } = ${LAUNCH_CAPTURES};\n`,
-          loader: 'js',
-        }));
-      },
-    }],
+    plugins: [await launchCapturesPlugin(LAUNCH_CAPTURES)],
   });
   const source = result.outputFiles?.[0]?.text;
   if (typeof source !== 'string' || source.length === 0) throw new Error('[resident-store-bundle] esbuild produced no output');

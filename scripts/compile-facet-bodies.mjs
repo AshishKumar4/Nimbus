@@ -2,6 +2,7 @@ import { writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { compiledBodies } from './lib/compiled-bodies.mjs';
+import { launchCapturesPlugin } from './lib/launch-captures-plugin.mjs';
 
 const repo = fileURLToPath(new URL('../', import.meta.url));
 const core = 'packages/core/src/runtime';
@@ -11,7 +12,7 @@ const fabric = 'packages/fabric/src';
  * path: string;
  * taskImport?: string;
  * tasks: Array<[name: string, entry: string, exported: string]>;
- * bodies: Array<[name: string, entry: string | null, names: string[], contents?: string]>;
+ * bodies: Array<[name: string, entry: string | null, names: string[], contents?: string, captures?: string]>;
  * }>} */
 const outputs = [
   {
@@ -30,11 +31,12 @@ const outputs = [
       ['ESBUILD_FACET_RUNTIME_SOURCE', './esbuild-service.js', ['buildWithEsbuild']],
       ['TRANSFORM_FACET_RUNTIME_SOURCE', './esbuild-service.js', ['runTransformRequest']],
       ['OPENTUI_BACKEND_CLASS_SOURCE', './opentui-wasm-backend.js', ['OpenTUIWasmBackend']],
+      // Evaluated in commonjs-cell's runtime, its primordials the launch's captures there.
       ['COMMONJS_CELL_HELPERS_SOURCE', null, [], [
         "export { moduleImporterUrl } from './packages/core/src/_shared/module-importer.ts';",
         "export { runtimeCodeKeySource, runtimeCodeSourceCharge } from './packages/core/src/_shared/runtime-code-identity.ts';",
         "export { sourceColumn } from './packages/core/src/runtime/native-esm-runtime.ts';",
-      ].join('\n')],
+      ].join('\n'), '__nimbusLaunchCaptures'],
       ['ESM_REQUIRED_SOURCE', './native-esm-runtime.js', ['requiredEsModule']],
       ['ESM_LOADER_POLICY_SOURCE', './esm-loader-policy.js', ['importCallArguments', 'dataModule']],
       ['ESM_GRAPH_SOURCE', './esm-graph.js', ['CyclicModuleRecord', 'OtherModuleRecord', 'link', 'evaluate']],
@@ -88,8 +90,9 @@ export async function compileFacetBodies() {
       const parameters = `Parameters<${type}>[0], Awaited<ReturnType<${type}>>`;
       lines.push(`export const ${name}: FacetTaskSource<${parameters}> = /* @__PURE__ */ facetTaskSource<${parameters}>(${JSON.stringify(`${compiled.expression}.${exported}`)});`);
     }
-    for (const [name, entry, names, contents] of output.bodies) {
-      const compiled = await compiledBodies(contents ? { contents, resolveDir: repo } : { entry: resolve(parent, entry.replace(/\.js$/, '.ts')), exports: names });
+    for (const [name, entry, names, contents, captures] of output.bodies) {
+      const plugins = captures === undefined ? [] : [await launchCapturesPlugin(captures)];
+      const compiled = await compiledBodies(contents ? { contents, resolveDir: repo, plugins } : { entry: resolve(parent, entry.replace(/\.js$/, '.ts')), exports: names, plugins });
       if (compiled.imports.length) throw new Error(`${name}: preamble has external imports: ${compiled.imports.join(' ')}`);
       lines.push(`export const ${name}: string = ${JSON.stringify(compiled.expression)};`);
     }

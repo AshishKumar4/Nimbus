@@ -11,6 +11,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+// The launch's captures the write ledger reads (__nimbusLaunchCaptures).
+import './launch-captures.mjs';
 import { VFS_WRITE_LEDGER_SOURCE } from '../../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { generateNodeLibModule, generateNodeLibRestModule, generateNodeDnsModule, generateNodeCpModule } from '../../../packages/worker/src/runtime/node-lib-module.ts';
 import { COMMONJS_CELL_RUNTIME_SOURCE } from '../../../packages/core/src/_shared/commonjs-cell.ts';

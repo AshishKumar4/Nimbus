@@ -12,25 +12,39 @@
  * It is a runtime module of its own (RUNTIME_ESM_LATE_MODULE, with Node's
  * CommonJS lexer), so a launch whose imports never need it never compiles it.
  */
+import { urlHash, urlHref, urlPathname, urlProtocol, urlSearch, urlSetPathname } from '../_shared/package-map.js';
+import { arrayIncludes, dataDescriptor, decodeURIComponentOf, Error, JSONParse, mathMin, newURL, objectHasOwn, ownField, reflectDefineProperty, SafeList, SafeMap, SafeSet, setForEach, stringIncludes, stringSlice, stringStartsWith, SyntaxError, } from '../_shared/primordials.js';
 import { cjsModuleExportNames } from './cjs-module-exports.js';
 import { dataModule } from './esm-loader-policy.js';
+function stripLeadingSlashes(path) {
+    let start = 0;
+    while (start < path.length && path[start] === '/')
+        start++;
+    return stringSlice(path, start);
+}
+function bindingsOf(analysis) {
+    return analysis !== null && objectHasOwn(analysis, 'bindings') ? analysis['bindings'] : undefined;
+}
+const rowTarget = (row) => ({ row, url: undefined, names: undefined });
+const moduleTarget = (url) => ({ row: undefined, url, names: undefined });
+const namedTarget = (url, names, commonjs) => ({ row: undefined, url, names, commonjs });
 /** The facades' export names, by row, read once. */
 let facadeNames;
 /** A facade row's export names, or null where unknown. */
 function rowNames(host, row) {
     if (facadeNames === undefined) {
         try {
-            const parsed = JSON.parse(host.rowBindings());
+            const parsed = JSONParse(host.rowBindings());
             facadeNames = parsed;
         }
         catch {
             facadeNames = [];
         }
     }
-    return facadeNames[row] ?? null;
+    return objectHasOwn(facadeNames, row) ? facadeNames[row] ?? null : null;
 }
 /** Staged module rows as read, by row, once each. */
-const rowReads = new Map();
+const rowReads = new SafeMap();
 /** A staged module row's source, read once (its static imports index its targets). */
 function rowRead(host, row) {
     const known = rowReads.get(row);
@@ -39,16 +53,20 @@ function rowRead(host, row) {
     const key = host.rowKey(row);
     const text = host.source(key, row);
     const analysis = text === null ? null : host.requests(key, text, true, 'module');
-    const specifiers = [];
-    for (const request of analysis?.requests ?? [])
-        if (request.kind === 'static')
-            specifiers.push(request.specifier);
+    const specifiers = new SafeList();
+    if (analysis !== null) {
+        for (let i = 0; i < analysis.requests.length; i++) {
+            const request = analysis.requests[i];
+            if (request.kind === 'static')
+                specifiers[specifiers.length] = request.specifier;
+        }
+    }
     const read = { analysis, specifiers };
     rowReads.set(row, read);
     return read;
 }
 /** Staged module rows' facts, by row, read from their sources when a link first needs them. */
-const rowFacts = new Map();
+const rowFacts = new SafeMap();
 /** A staged module row's facts, or null where its source does not tell them. */
 function moduleFacts(host, row) {
     const known = rowFacts.get(row);
@@ -57,40 +75,41 @@ function moduleFacts(host, row) {
     let facts = null;
     const key = host.rowKey(row);
     const { analysis, specifiers } = rowRead(host, row);
-    const bindings = analysis?.bindings;
+    const bindings = bindingsOf(analysis);
     const targets = host.rowTargets(row);
     if (bindings !== undefined && bindings.imports.length === targets.length && specifiers.length === targets.length) {
         // What static import `at` loads: a row, or what staging handed it on to.
         const loads = (at) => {
             if (targets[at] >= 0)
-                return { row: targets[at] };
+                return rowTarget(targets[at]);
             const missing = host.missing(-2 - targets[at]);
-            if (missing === null || !('handedOn' in missing))
+            const handedOn = missing === null ? undefined : ownField(missing, 'handedOn');
+            if (typeof handedOn !== 'string')
                 return null;
-            const file = handedOnFile(host, key, missing.handedOn, specifiers[at], bindings.types[at]);
-            return file === null ? handedOnTarget(missing.handedOn) : lateTarget(host, file);
+            const file = handedOnFile(host, key, handedOn, specifiers[at], bindings.types[at]);
+            return file === null ? handedOnTarget(handedOn) : lateTarget(host, file);
         };
-        const exports = [];
+        const exports = new SafeList();
         for (let i = 0; i < bindings.exports.length; i++)
-            exports.push(bindings.exports[i]);
-        const locals = [];
+            exports[exports.length] = bindings.exports[i];
+        const locals = new SafeList();
         for (let i = 0; i < bindings.locals.length; i++)
-            locals.push([bindings.locals[i][0], bindings.locals[i][1]]);
-        const stars = [];
+            locals[locals.length] = [bindings.locals[i][0], bindings.locals[i][1]];
+        const stars = new SafeList();
         for (let i = 0; i < bindings.stars.length; i++)
-            stars.push(loads(bindings.stars[i]));
-        const imports = [];
+            stars[stars.length] = loads(bindings.stars[i]);
+        const imports = new SafeList();
         for (let at = 0; at < targets.length; at++) {
-            const names = [];
+            const names = new SafeList();
             for (let i = 0; i < bindings.imports[at].length; i++)
-                names.push(bindings.imports[at][i]);
+                names[names.length] = bindings.imports[at][i];
             if (names.length > 0)
-                imports.push({ target: loads(at), specifier: specifiers[at], names });
+                imports[imports.length] = { target: loads(at), specifier: specifiers[at], names };
         }
-        const reexports = [];
+        const reexports = new SafeList();
         for (let i = 0; i < bindings.reexports.length; i++) {
-            const [exported, at, name] = bindings.reexports[i];
-            reexports.push([exported, loads(at), name]);
+            const entry = bindings.reexports[i];
+            reexports[reexports.length] = [entry[0], loads(entry[1]), entry[2]];
         }
         facts = { exports, locals, stars, imports, reexports };
     }
@@ -105,15 +124,15 @@ function moduleFacts(host, row) {
  * ModuleJob that did not link: a later link reaching one fails with it,
  * whatever the program wrote since.
  */
-const linkFailures = new Map();
+const linkFailures = new SafeMap();
 /** The failure an import()'s link kept for the staged module at `key` (linkFailures): what a later load of it throws. */
 export function keptFailure(key) {
     return linkFailures.get(key);
 }
 /** Every late module a link has read, by URL: what an interpreted module's `export *` asks of (starConflicts). */
-const lateModules = new Map();
+const lateModules = new SafeMap();
 /** The CommonJS modules' names Node's lexer found, by path. */
-const commonJsNameCache = new Map();
+const commonJsNameCache = new SafeMap();
 /**
  * The names Node's loader finds in the CommonJS module at `key` before it
  * runs: a staged facade's, else Node's lexer's over its source and the
@@ -124,7 +143,10 @@ export function commonJsNames(host, key) {
     const staged = facade === -1 ? null : rowNames(host, facade);
     if (staged !== null)
         return staged;
-    return [...cjsModuleExportNames(`/${key}`, { source: (path) => host.source(path.replace(/^\/+/, ''), -1), resolve: host.cjsResolve }, commonJsNameCache)];
+    const out = [];
+    const names = cjsModuleExportNames(`/${key}`, { source: (path) => host.source(stripLeadingSlashes(path), -1), resolve: host.cjsResolve }, commonJsNameCache);
+    setForEach(names, (name) => { reflectDefineProperty(out, out.length, dataDescriptor(name, true, true, true)); });
+    return out;
 }
 /**
  * Links the late graph of the module at `key` (`url`): throws the refusal
@@ -135,15 +157,15 @@ export function commonJsNames(host, key) {
  */
 export function linkLateGraph(host, key, url, kept) {
     const order = [];
-    const late = { modules: new Map(), rows: [], kept };
-    plan(host, key, url, new Set(), order, new Set(), late);
+    const late = { modules: new SafeMap(), rows: new SafeList(), kept };
+    plan(host, key, url, new SafeSet(), order, new SafeSet(), late);
     checkBindings(host, late, url);
-    for (const row of late.rows)
-        checkedRows.add(row);
+    for (let i = 0; i < late.rows.length; i++)
+        checkedRows.add(late.rows[i]);
     return order;
 }
 /** The staged rows whose graphs a link checked, every imported name in them: none is checked again. */
-const checkedRows = new Set();
+const checkedRows = new SafeSet();
 /**
  * Links staged row `id` (its module at `key`, `url`), which the interpreter
  * adopts because workerd could not link its graph (it reaches a module
@@ -158,15 +180,25 @@ export function linkAdopted(host, id, key, url) {
 }
 /** The names the `export *`s of the interpreted module at `url` reach two different bindings of, which its namespace omits. */
 export function starConflicts(host, url) {
-    const late = { modules: lateModules, rows: [], kept: false };
+    const late = { modules: lateModules, rows: new SafeList(), kept: false };
     // A staged module the interpreter evaluates, by its file; not a query's or a fragment's instance.
-    const { protocol, search, hash, pathname } = new URL(url);
-    const row = protocol === 'file:' && search === '' && hash === '' ? host.row('module', decodeURIComponent(pathname).replace(/^\/+/, '')) : -1;
-    const target = lateModules.has(url) ? { url } : row !== -1 ? { row } : null;
-    const names = target === null ? null : exportedNames(host, late, target, new Set());
+    const parsed = newURL(url);
+    const protocol = urlProtocol(parsed);
+    const search = urlSearch(parsed);
+    const hash = urlHash(parsed);
+    const pathname = urlPathname(parsed);
+    const row = protocol === 'file:' && search === '' && hash === '' ? host.row('module', stripLeadingSlashes(decodeURIComponentOf(pathname))) : -1;
+    const target = lateModules.has(url) ? moduleTarget(url) : row !== -1 ? rowTarget(row) : null;
+    const names = target === null ? null : exportedNames(host, late, target, new SafeSet());
     if (target === null || names === null)
         return [];
-    return names.filter((name) => resolveExport(host, late, target, name, new Set()) === AMBIGUOUS);
+    const out = [];
+    for (let i = 0; i < names.length; i++) {
+        const name = names[i];
+        if (resolveExport(host, late, target, name, new SafeSet()) === AMBIGUOUS)
+            reflectDefineProperty(out, out.length, dataDescriptor(name, true, true, true));
+    }
+    return out;
 }
 /**
  * The names of the namespace of the late module at `url`, as its link read
@@ -176,14 +208,20 @@ export function starConflicts(host, url) {
  * namespace taken in a cycle has them all.
  */
 export function namespaceNames(host, url) {
-    const late = { modules: lateModules, rows: [], kept: false };
+    const late = { modules: lateModules, rows: new SafeList(), kept: false };
     if (!lateModules.has(url))
         return null;
-    const target = { url };
-    const names = exportedNames(host, late, target, new Set());
+    const target = moduleTarget(url);
+    const names = exportedNames(host, late, target, new SafeSet());
     if (names === null)
         return null;
-    return names.filter((name) => resolveExport(host, late, target, name, new Set()) !== AMBIGUOUS);
+    const out = [];
+    for (let i = 0; i < names.length; i++) {
+        const name = names[i];
+        if (resolveExport(host, late, target, name, new SafeSet()) !== AMBIGUOUS)
+            reflectDefineProperty(out, out.length, dataDescriptor(name, true, true, true));
+    }
+    return out;
 }
 /**
  * Plans the late module at `url` (a file's at `key`; a data: URL's is its
@@ -194,7 +232,7 @@ function plan(host, key, url, seen, order, checked, late) {
     if (seen.has(url))
         return;
     seen.add(url);
-    const instance = url.startsWith('file:') && !url.includes('?') && !url.includes('#') ? key : url;
+    const instance = stringStartsWith(url, 'file:') && !stringIncludes(url, '?') && !stringIncludes(url, '#') ? key : url;
     const failure = linkFailures.get(instance);
     if (failure !== undefined)
         throw failure;
@@ -209,7 +247,7 @@ function plan(host, key, url, seen, order, checked, late) {
 }
 function planModule(host, key, url, seen, order, checked, late) {
     // A data: URL's module is its body, an ES module (its MIME type's goal): no row, no file.
-    const data = url.startsWith('data:') ? dataModule(url) : null;
+    const data = stringStartsWith(url, 'data:') ? dataModule(url) : null;
     const staged = data !== null ? -1 : host.row('module', key);
     const text = data !== null ? (data.format === 'module' ? data.source : null) : host.source(key, staged);
     if (text === null)
@@ -220,28 +258,29 @@ function planModule(host, key, url, seen, order, checked, late) {
     // A module its parser could not read (a syntax error, TypeScript, JSX) is
     // loaded as the interpreter loads it, for that load's error, before any
     // body runs; a staged one is the launch's own to link.
-    if (analysis.unread !== undefined && staged === -1)
+    if (ownField(analysis, 'unread') !== undefined && staged === -1)
         host.loadUnread(key, text, format);
     // The interpreter's lists (SafeLists: no methods) are read by index.
-    const bindings = analysis.bindings;
+    const bindings = bindingsOf(analysis);
     let statics = 0;
-    for (const request of analysis.requests)
-        if (request.kind === 'static')
+    for (let i = 0; i < analysis.requests.length; i++)
+        if (analysis.requests[i].kind === 'static')
             statics++;
     const known = bindings !== undefined && bindings.imports.length === statics;
-    const exports = [];
-    const locals = [];
+    const exports = new SafeList();
+    const locals = new SafeList();
     if (known) {
         for (let i = 0; i < bindings.exports.length; i++)
-            exports.push(bindings.exports[i]);
+            exports[exports.length] = bindings.exports[i];
         for (let i = 0; i < bindings.locals.length; i++)
-            locals.push([bindings.locals[i][0], bindings.locals[i][1]]);
+            locals[locals.length] = [bindings.locals[i][0], bindings.locals[i][1]];
     }
-    const node = { known, exports, locals, stars: [], imports: [], reexports: [] };
+    const node = { known, exports, locals, stars: new SafeList(), imports: new SafeList(), reexports: new SafeList() };
     late.modules.set(url, node);
     lateModules.set(url, node);
     let at = -1;
-    for (const request of analysis.requests) {
+    for (let index = 0; index < analysis.requests.length; index++) {
+        const request = analysis.requests[index];
         if (request.kind !== 'static')
             continue;
         at++;
@@ -251,17 +290,17 @@ function planModule(host, key, url, seen, order, checked, late) {
             const loads = lateTarget(host, resolution);
             for (let i = 0; i < bindings.stars.length; i++)
                 if (bindings.stars[i] === at)
-                    node.stars.push(loads);
-            const names = [];
+                    node.stars[node.stars.length] = loads;
+            const names = new SafeList();
             const reads = bindings.imports[at];
             for (let i = 0; i < reads.length; i++)
-                names.push(reads[i]);
+                names[names.length] = reads[i];
             if (names.length > 0)
-                node.imports.push({ target: loads, specifier: request.specifier, names });
+                node.imports[node.imports.length] = { target: loads, specifier: request.specifier, names };
             for (let i = 0; i < bindings.reexports.length; i++) {
                 const entry = bindings.reexports[i];
                 if (entry[1] === at)
-                    node.reexports.push([entry[0], loads, entry[2]]);
+                    node.reexports[node.reexports.length] = [entry[0], loads, entry[2]];
             }
         }
         // A data: JavaScript module is the late graph's own, by its URL.
@@ -269,10 +308,13 @@ function planModule(host, key, url, seen, order, checked, late) {
             plan(host, resolution.url, resolution.url, seen, order, checked, late);
             continue;
         }
-        if (resolution.path === undefined)
+        const path = ownField(resolution, 'path');
+        if (typeof path !== 'string')
             continue;
-        const target = resolution.path.replace(/^\/+/, '');
-        const { search, hash } = new URL(resolution.url);
+        const target = stripLeadingSlashes(path);
+        const parsed = newURL(resolution.url);
+        const search = urlSearch(parsed);
+        const hash = urlHash(parsed);
         const id = host.row('module', target);
         // An unstaged module, or a query's or a fragment's instance (the interpreter's own): its closure is the late graph's too.
         if (id === -1 || search !== '' || hash !== '') {
@@ -282,8 +324,8 @@ function planModule(host, key, url, seen, order, checked, late) {
             continue;
         }
         checkLinks(host, id, seen, checked, late);
-        if (!order.includes(id))
-            order.push(id);
+        if (!arrayIncludes(order, id))
+            reflectDefineProperty(order, order.length, dataDescriptor(id, true, true, true));
     }
 }
 /**
@@ -295,11 +337,11 @@ function planModule(host, key, url, seen, order, checked, late) {
  * resolve still.
  */
 function handedOnFile(host, key, url, specifier, type) {
-    if (new URL(url).protocol !== 'file:')
+    if (urlProtocol(newURL(url)) !== 'file:')
         return null;
-    const parent = new URL('file://');
-    parent.pathname = '/' + key;
-    return host.resolve(specifier, parent.href, type);
+    const parent = newURL('file://');
+    urlSetPathname(parent, '/' + key);
+    return host.resolve(specifier, urlHref(parent), type);
 }
 /**
  * What a module staging handed on (or a data: import) loads: a query's or a
@@ -307,36 +349,42 @@ function handedOnFile(host, key, url, specifier, type) {
  * type, JavaScript a late module of its own, JSON its default alone.
  */
 function handedOnTarget(url) {
-    if (!url.startsWith('data:'))
-        return { url };
+    if (!stringStartsWith(url, 'data:'))
+        return moduleTarget(url);
     const { format } = dataModule(url);
-    return format === 'module' ? { url } : format === 'json' ? { url, names: ['default'], commonjs: false } : null;
+    return format === 'module' ? moduleTarget(url) : format === 'json' ? namedTarget(url, ['default'], false) : null;
 }
 function lateTarget(host, resolution) {
-    if (resolution.format === 'builtin' && resolution.builtin !== undefined) {
-        const id = host.row('builtin', resolution.builtin);
-        return id !== -1 ? { row: id } : { url: resolution.url, names: host.builtinNames(resolution.builtin), commonjs: false };
+    if (resolution.format === 'builtin') {
+        const builtin = ownField(resolution, 'builtin');
+        if (typeof builtin === 'string') {
+            const id = host.row('builtin', builtin);
+            return id !== -1 ? rowTarget(id) : namedTarget(resolution.url, host.builtinNames(builtin), false);
+        }
     }
     if (resolution.format === 'data')
         return handedOnTarget(resolution.url);
-    if (resolution.path === undefined)
+    const path = ownField(resolution, 'path');
+    if (typeof path !== 'string')
         return null;
-    const key = resolution.path.replace(/^\/+/, '');
-    const { search, hash } = new URL(resolution.url);
+    const key = stripLeadingSlashes(path);
+    const parsed = newURL(resolution.url);
+    const search = urlSearch(parsed);
+    const hash = urlHash(parsed);
     if (search === '' && hash === '') {
         const id = host.row('module', key);
         if (id !== -1)
-            return { row: id };
+            return rowTarget(id);
         const facade = host.row(resolution.format === 'json' ? 'json' : 'commonjs', key);
         if (facade !== -1)
-            return { row: facade };
+            return rowTarget(facade);
     }
     if (resolution.format === 'module' || resolution.format === 'detect')
-        return { url: resolution.url };
+        return moduleTarget(resolution.url);
     if (resolution.format === 'json')
-        return { url: resolution.url, names: ['default'], commonjs: false };
+        return namedTarget(resolution.url, ['default'], false);
     if (resolution.format === 'commonjs')
-        return { url: resolution.url, names: commonJsNames(host, key), commonjs: true };
+        return namedTarget(resolution.url, commonJsNames(host, key), true);
     return null;
 }
 /**
@@ -359,10 +407,10 @@ function checkLinks(host, id, seen, checked, late) {
     if (failure !== undefined)
         throw failure;
     try {
-        late.rows.push(id);
+        late.rows[late.rows.length] = id;
         const { analysis, specifiers } = rowRead(host, id);
         const targets = host.rowTargets(id).length;
-        const statics = analysis === null ? targets : Math.min(specifiers.length, targets);
+        const statics = analysis === null ? targets : mathMin(specifiers.length, targets);
         for (let index = 0; index < statics; index++)
             checkTarget(host, id, index, seen, checked, late);
     }
@@ -382,23 +430,28 @@ function checkTarget(host, row, index, seen, checked, late) {
     const missing = host.missing(-2 - target);
     if (missing === null)
         return;
-    if ('refusal' in missing)
-        throw missing.refusal;
+    if (objectHasOwn(missing, 'refusal'))
+        throw ownField(missing, 'refusal');
     // A file handed on is resolved now, as the loader resolves it when the
     // module is imported (Node's error if it is missing still), and planned
     // as an unstaged module is: a JSON or CommonJS file has no links.
     const { analysis, specifiers } = rowRead(host, row);
     const specifier = specifiers[index];
-    const file = specifier === undefined ? null : handedOnFile(host, host.rowKey(row), missing.handedOn, specifier, analysis?.bindings?.types[index]);
+    const handedOn = ownField(missing, 'handedOn');
+    if (typeof handedOn !== 'string')
+        return;
+    const bindings = bindingsOf(analysis);
+    const file = specifier === undefined ? null : handedOnFile(host, host.rowKey(row), handedOn, specifier, bindings?.types[index]);
     if (file !== null) {
-        if (file.path !== undefined && (file.format === 'module' || file.format === 'detect'))
-            plan(host, file.path.replace(/^\/+/, ''), file.url, seen, [], checked, late);
+        const path = ownField(file, 'path');
+        if (typeof path === 'string' && (file.format === 'module' || file.format === 'detect'))
+            plan(host, stripLeadingSlashes(path), file.url, seen, [], checked, late);
         return;
     }
     // A query's or a fragment's file by its path; a data: module by its URL.
-    const handed = new URL(missing.handedOn);
-    const key = handed.protocol === 'data:' ? missing.handedOn : decodeURIComponent(handed.pathname).replace(/^\/+/, '');
-    plan(host, key, missing.handedOn, seen, [], checked, late);
+    const handed = newURL(handedOn);
+    const key = urlProtocol(handed) === 'data:' ? handedOn : stripLeadingSlashes(decodeURIComponentOf(urlPathname(handed)));
+    plan(host, key, handedOn, seen, [], checked, late);
 }
 /**
  * Each name a module of the late graph imports is one its module exports,
@@ -407,8 +460,10 @@ function checkTarget(host, row, index, seen, checked, late) {
  * interpreter's to find.
  */
 function checkBindings(host, late, rootUrl) {
-    const pending = new Set(late.rows);
-    const visited = new Set();
+    const pending = new SafeSet();
+    for (let i = 0; i < late.rows.length; i++)
+        pending.add(late.rows[i]);
+    const visited = new SafeSet();
     const visit = (target) => {
         if (target === null || target.names !== undefined)
             return;
@@ -419,11 +474,13 @@ function checkBindings(host, late, rootUrl) {
             return;
         visited.add(mark);
         const edges = edgesOf(host, late, target);
-        for (const edge of edges)
-            visit(edge.target);
-        for (const edge of edges) {
-            for (const name of edge.names) {
-                const resolution = resolveExport(host, late, edge.target, name, new Set());
+        for (let i = 0; i < edges.length; i++)
+            visit(edges[i].target);
+        for (let i = 0; i < edges.length; i++) {
+            const edge = edges[i];
+            for (let n = 0; n < edge.names.length; n++) {
+                const name = edge.names[n];
+                const resolution = resolveExport(host, late, edge.target, name, new SafeSet());
                 if (resolution !== null && resolution !== AMBIGUOUS)
                     continue;
                 const loads = edge.target;
@@ -434,11 +491,10 @@ function checkBindings(host, late, rootUrl) {
             }
         }
     };
-    visit({ url: rootUrl });
-    for (const url of late.modules.keys())
-        visit({ url });
-    for (const row of late.rows)
-        visit({ row });
+    visit(moduleTarget(rootUrl));
+    late.modules.forEach((_node, url) => { visit(moduleTarget(url)); });
+    for (let i = 0; i < late.rows.length; i++)
+        visit(rowTarget(late.rows[i]));
 }
 function edgesOf(host, late, target) {
     if (target.row === undefined)
@@ -469,11 +525,11 @@ function resolveExport(host, late, target, name, resolving) {
     if (target === null)
         return undefined;
     if (target.names !== undefined)
-        return target.names.includes(name) ? { module: `u${target.url}`, binding: name } : null;
+        return arrayIncludes(target.names, name) ? { module: `u${target.url}`, binding: name } : null;
     const module = target.row !== undefined ? `r${target.row}` : `u${target.url}`;
     if (target.row !== undefined && host.rowKind(target.row) !== 'module') {
         const names = rowNames(host, target.row);
-        return names === null ? undefined : names.includes(name) ? { module, binding: name } : null;
+        return names === null ? undefined : arrayIncludes(names, name) ? { module, binding: name } : null;
     }
     // A circular import request: nothing more to find this way.
     if (resolving.has(`${module}\0${name}`))
@@ -482,28 +538,33 @@ function resolveExport(host, late, target, name, resolving) {
     const facts = factsOf(host, late, target);
     if (facts === null)
         return undefined;
-    for (const [exported, from, imported] of facts.reexports) {
-        if (exported !== name)
+    for (let i = 0; i < facts.reexports.length; i++) {
+        const entry = facts.reexports[i];
+        if (entry[0] !== name)
             continue;
+        const from = entry[1];
+        const imported = entry[2];
         if (imported !== null)
             return resolveExport(host, late, from, imported, resolving);
         if (from === null)
             return undefined;
         return { module: from.row !== undefined ? `r${from.row}` : `u${from.url}`, binding: '*' };
     }
-    for (const [exported, local] of facts.locals)
-        if (exported === name)
-            return { module, binding: local };
+    for (let i = 0; i < facts.locals.length; i++) {
+        const entry = facts.locals[i];
+        if (entry[0] === name)
+            return { module, binding: entry[1] };
+    }
     if (name === 'default')
         return null;
     let found = null;
-    let unknown = false;
-    for (const star of facts.stars) {
-        const resolution = resolveExport(host, late, star, name, resolving);
+    let incomplete = false;
+    for (let i = 0; i < facts.stars.length; i++) {
+        const resolution = resolveExport(host, late, facts.stars[i], name, resolving);
         if (resolution === AMBIGUOUS)
             return resolution;
         if (resolution === undefined)
-            unknown = true;
+            incomplete = true;
         else if (resolution === null)
             continue;
         else if (found === null)
@@ -511,7 +572,7 @@ function resolveExport(host, late, target, name, resolving) {
         else if (found.module !== resolution.module || found.binding !== resolution.binding)
             return AMBIGUOUS;
     }
-    return unknown ? undefined : found;
+    return incomplete ? undefined : found;
 }
 /** ECMA-262 GetExportedNames of `target`: its own names, and its `export *`s' but `default`; null where not known here. */
 function exportedNames(host, late, target, seen) {
@@ -528,14 +589,18 @@ function exportedNames(host, late, target, seen) {
     const facts = factsOf(host, late, target);
     if (facts === null)
         return null;
-    const names = new Set(facts.exports);
-    for (const star of facts.stars) {
-        const starred = exportedNames(host, late, star, seen);
+    const names = new SafeSet();
+    for (let i = 0; i < facts.exports.length; i++)
+        names.add(facts.exports[i]);
+    for (let i = 0; i < facts.stars.length; i++) {
+        const starred = exportedNames(host, late, facts.stars[i], seen);
         if (starred === null)
             return null;
-        for (const starName of starred)
-            if (starName !== 'default')
-                names.add(starName);
+        for (let n = 0; n < starred.length; n++)
+            if (starred[n] !== 'default')
+                names.add(starred[n]);
     }
-    return [...names];
+    const out = new SafeList();
+    names.forEach((name) => { out[out.length] = name; });
+    return out;
 }
