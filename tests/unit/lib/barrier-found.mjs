@@ -1,25 +1,20 @@
-#!/usr/bin/env bun
 /**
- * barrier-schedules — a process's filesystem engine, Node's and a WASI
- * guest's, answers as the session holds its files however the session's
- * replies are timed against a peer's changes and the process's own
- * (lib/barrier-schedule.mjs says what each answer may be).
+ * The barrier schedules a review found an engine wrong on, each named for
+ * what it shows, and what each engine is known to lack (its gaps): run per
+ * engine by barrier-schedules-node.mjs and barrier-schedules-holder.mjs,
+ * each schedule in its own child (runScenarios), bounded by its steps, a
+ * wall budget, and the child's own timeout. barrier-schedules-seeded.mjs
+ * draws schedules at random, and prints what it finds to be added here.
  *
- * Each schedule here is one a review found an engine wrong on, named for
- * what it shows (barrier-schedules-seeded.mjs draws them at random, and
- * prints what it finds to be added here).
- *
- * Each schedule runs in its own child (runScenarios), bounded by its steps,
- * a wall budget, and the child's own timeout.
+ * Directory note: under tests/unit/lib/ so the suite does not run it as a test.
  */
 
 import assert from 'node:assert/strict';
-import { createAuthority, facetSupervisor, launchResident, runScenarios, sleep, until } from './lib/resident-body.mjs';
-import { APP, ENGINES, bootEngine } from './lib/guest-engines.mjs';
-import { runSchedule } from './lib/barrier-schedule.mjs';
-import { scheduleTransport, supervisedFacet } from './lib/schedule-transport.mjs';
+import { createAuthority, facetSupervisor, launchResident, sleep, until } from './resident-body.mjs';
+import { APP, ENGINES, bootEngine } from './guest-engines.mjs';
+import { runSchedule } from './barrier-schedule.mjs';
+import { scheduleTransport, supervisedFacet } from './schedule-transport.mjs';
 
-/** `engines`: where it applies (both, unless named). */
 const FOUND = {
   'a lookup asked before a peer removed the file never brings it back': {
     engines: ['holder'],
@@ -179,4 +174,11 @@ async function run(kind, schedule) {
   }
 }
 
-await runScenarios(import.meta.path, scenarios, { gaps: GAPS });
+/** The scenarios and gaps of engine `kind`. */
+export function foundScenarios(kind) {
+  const suffix = ` [${kind}]`;
+  return {
+    scenarios: Object.fromEntries(Object.entries(scenarios).filter(([name]) => name.endsWith(suffix))),
+    gaps: Object.fromEntries(Object.entries(GAPS).filter(([name]) => name.endsWith(suffix))),
+  };
+}

@@ -5,7 +5,7 @@
  * drawn from seeds, each reply parked at random once the process is up, on
  * each engine: NIMBUS_BARRIER_SEEDS=n runs n seeds (default 24). A seed
  * that fails is shrunk, one child per try within a budget, and printed as a
- * schedule to add to barrier-schedules.mjs; a seed that hangs is reported
+ * schedule to add to lib/barrier-found.mjs; a seed that hangs is reported
  * as it is.
  */
 

@@ -240,7 +240,7 @@ export function generate(seed, steps = 40) {
 
 /**
  * What an engine is known to answer wrong, each kept red by its scenario in
- * barrier-schedules.mjs (listed there as a gap), and let pass here so a
+ * lib/barrier-found.mjs (listed there as a gap), and let pass here so a
  * drawn schedule finds something new. A gap closed is removed from both.
  *   - unshownAwaitedChange: an awaited change outside a grant is not shown
  *     to a call that cannot wait until a barrier lands (O9);
