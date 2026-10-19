@@ -697,6 +697,14 @@ function characterList(s: string): string[] {
   return out;
 }
 
+/** The last IFS split on, and its characters: every word's split asks, and IFS seldom changes. */
+let lastIfs: { ifs: string; characters: ReadonlySet<string> } | null = null;
+
+function ifsCharacters(ifs: string): ReadonlySet<string> {
+  if (lastIfs?.ifs !== ifs) lastIfs = { ifs, characters: new Set(characterList(ifs)) };
+  return lastIfs.characters;
+}
+
 /** How many characters (code points) `s` holds: `${#x}`. */
 function characterCount(s: string): number {
   let count = 0;
@@ -965,7 +973,7 @@ function splitGroup(
   if (ifs === '') return keep([field(0, text.length)]);
 
   // IFS's characters, and the text's, are code points: 😀 in IFS splits at 😀 only, never at half of 😁.
-  const delimiters = new Set(characterList(ifs));
+  const delimiters = ifsCharacters(ifs);
   const isDelimiter = (i: number): boolean => eligible[i] === true && delimiters.has(characterAt(text, i));
   const isWhitespace = (i: number): boolean => IFS_WHITESPACE.includes(text.charAt(i));
   const next = (i: number): number => i + characterAt(text, i).length;
