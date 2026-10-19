@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
-// core's prepublishOnly gate, decision by decision, over a fake registry and
-// the real core: a runtime package core needs is either on npm as `latest`
-// with the manifest this tree builds, or core does not publish.
+// The runtime gate, decision by decision, over a fake registry and the real
+// core: a runtime package core needs is either on npm as `latest` with the
+// manifest this tree builds, or packed by this release to be published with
+// it; otherwise core does not publish.
 
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -12,7 +13,7 @@ import { join } from 'node:path';
 import {
   checkRuntimePackage,
   checkRuntimePackages,
-  publishCommand,
+  PUBLISH_FIX,
   runThroughCore,
 } from '../../packages/core/scripts/check-runtime-packages.mjs';
 import { BASH_RUNNER } from '../../packages/core/src/runtime/os-contracts.ts';
@@ -21,10 +22,9 @@ const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const NAME = '@nimbus-sh/runtime-toy';
 const root = mkdtempSync(join(tmpdir(), 'nimbus-gate-test-'));
 
-/** A runtime package directory in the shape bundle-runtime.mjs writes. */
-function packageDir(label, runner) {
+/** A runtime package directory in the shape bundle-runtime.mjs writes, its one blob `bytes`. */
+function packageDir(label, runner, bytes = Buffer.from('# marker\n')) {
   const dir = join(root, label);
-  const bytes = Buffer.from('# marker\n');
   const content = `blobs/toy-1.0.0-2/${sha256(bytes)}/BIN_MARKER`;
   mkdirSync(join(dir, content, '..'), { recursive: true });
   writeFileSync(join(dir, content), bytes);
@@ -62,13 +62,21 @@ try {
     assert.equal(result.status, 0, result.stderr);
     return join(root, JSON.parse(result.stdout)[0].filename);
   };
-  const unavailable = { packument() { throw new Error('a built artifact must not depend on already being published'); } };
-  assert.deepEqual(await checkRuntimePackage({ name: NAME, version: '1.0.0-2', dir: good, registry: unavailable, runThroughCore, tarball: pack(good) }), []);
+  // ── Packed by this release ──────────────────────────────────────────────
+  // A version npm lacks is published with the release; one npm has must be
+  // the same build, as `latest`, since npm keeps what it has.
+  const packedCheck = (tarball, registry) => checkRuntimePackage({ name: NAME, version: '1.0.0-2', dir: good, registry, runThroughCore, tarball });
+  assert.deepEqual(await packedCheck(pack(good), fakeRegistry(null)), [], 'a packed version npm lacks is published with the release');
+  assert.deepEqual(await packedCheck(pack(good), fakeRegistry({ '1.0.0-2': builtSha }, '1.0.0-2')), [], 'a packed version npm has as latest');
+  assert.match((await packedCheck(pack(good), fakeRegistry({ '1.0.0-2': 'f'.repeat(64) }, '1.0.0-2')))[0]?.problem ?? '', /on the registry carries manifest.json sha256 f{64}/, 'npm holds that version with other bytes');
+  // clang's compiler is 31 MB and Ruby's interpreter 34 MB.
+  const big = packageDir('big', BASH_RUNNER, Buffer.alloc(32_000_000, 7));
+  assert.deepEqual(await checkRuntimePackage({ name: NAME, version: '1.0.0-2', dir: big, registry: fakeRegistry(null), runThroughCore, tarball: pack(big) }), [], 'a packed runtime with a blob past 20 MB installs whole');
   const wrong = packageDir('wrong-archive', 'bash-runner');
-  const wrongProblems = await checkRuntimePackage({ name: NAME, version: '1.0.0-2', dir: good, registry: unavailable, runThroughCore, tarball: pack(wrong) });
+  const wrongProblems = await packedCheck(pack(wrong), fakeRegistry(null));
   assert.ok(wrongProblems.some((item) => /core being published refuses/.test(item.problem)), 'the actual packed runner is installed through core, not the build directory');
   assert.ok(wrongProblems.some((item) => /carries manifest.json sha256/.test(item.problem)), 'a different packed manifest cannot satisfy the gate');
-  assert.deepEqual(await check(good, fakeRegistry(null)), [{ problem: `${NAME}@1.0.0-2 is not on the registry`, fix: publishCommand(good) }], 'ordinary prepublish still requires the real public release');
+  assert.deepEqual(await check(good, fakeRegistry(null)), [{ problem: `${NAME}@1.0.0-2 is not on the registry`, fix: PUBLISH_FIX }], 'unpacked, it has to be on npm already');
 
   // ── Released: on the registry, same manifest, latest ───────────────────
   assert.deepEqual(await check(good, fakeRegistry({ '1.0.0': 'old', '1.0.0-2': builtSha }, '1.0.0-2')), []);
@@ -78,8 +86,7 @@ try {
     const problems = await check(good, registry);
     assert.equal(problems.length, 1, JSON.stringify(problems));
     assert.match(problems[0].problem, /@nimbus-sh\/runtime-toy@1\.0\.0-2 is not on the registry/);
-    assert.equal(problems[0].fix, publishCommand(good));
-    assert.equal(problems[0].fix, `cd ${good} && npm publish --tag latest --access public --auth-type=web`);
+    assert.equal(problems[0].fix, PUBLISH_FIX);
   }
 
   // ── Published under that version with other bytes ──────────────────────
@@ -100,8 +107,8 @@ try {
   }
 
   // ── The whole gate, with a runtime its caller built and packed already ──
-  // publish-pack builds CPython once and packs it for signing: the gate
-  // checks that build's tarball against its directory and builds the rest.
+  // publish-pack builds each runtime once and packs it: the gate checks that
+  // build's tarball against its directory and builds the rest.
   {
     const built = [];
     const build = (spec, dir) => {
@@ -114,7 +121,7 @@ try {
       { runtime: 'cpython', version: '1.0.0-2', name: NAME, npmVersion: '1.0.0-2' },
     ];
     const registry = fakeRegistry({ '1.0.0-2': builtSha }, '1.0.0-2');
-    const gate = (tarball) => checkRuntimePackages({ specs, registry, root: mkdtempSync(join(root, 'gate-')), build, prepared: { runtime: 'cpython', tarball, dir: good } });
+    const gate = (tarball) => checkRuntimePackages({ specs, registry, root: mkdtempSync(join(root, 'gate-')), build, prepared: [{ runtime: 'cpython', tarball, dir: good }] });
     const verdicts = await gate(pack(good));
     assert.deepEqual(built, ['toy'], 'the prepared runtime is not built again');
     assert.deepEqual(verdicts.map((verdict) => [verdict.prepared, verdict.problems]), [[false, []], [true, []]], JSON.stringify(verdicts));

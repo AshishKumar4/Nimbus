@@ -78,6 +78,29 @@ export async function fetchRelease({ repo, sha, targets, into = RELEASES, log = 
 }
 
 /**
+ * `sha`'s npm release, packed on armada by the one pack implementation
+ * (scripts/ci/publish-pack.mjs) and not published: a release npm would
+ * refuse (a version npm holds with other bytes, a runtime that does not
+ * build, or one the core refuses) stops before staging, not after
+ * production. The publish workflow runs the same pack again to publish.
+ * Resolves to its rows, each { name, exitCode, seconds, output }; throws
+ * when the pack was not graded.
+ *
+ * @param {{ repo: string, sha: string, log?: (line: string) => void }} options
+ */
+export async function packNpmRelease({ repo, sha, log = (line) => console.error(line) }) {
+  const mapped = await mapOnArmada({
+    repo, sha, files: [], items: [1], label: `npm pack ${sha.slice(0, 12)}`, log,
+    command: ['bun', 'scripts/ci/publish-pack.mjs', '--out', '{out}'],
+  });
+  const [outcome] = mapped.outcomes;
+  if (outcome?.kind !== 'exited' || mapped.outputs[0] === null) throw new Error(`armada could not pack ${sha.slice(0, 12)} for npm (job ${mapped.jobId}):\n${outcome?.tail ?? 'no outcome'}`);
+  const verdict = JSON.parse(mapped.outputs[0]);
+  if (verdict.head !== mapped.commit) throw new Error(`the npm pack is of ${verdict.head}, not ${mapped.commit} (job ${mapped.jobId})`);
+  return verdict.rows;
+}
+
+/**
  * The commit production serves, as this machine promoted it: the latest
  * promoted.json (scripts/ci/promote.mjs) whose live checks were green.
  * Throws when none is recorded here.
