@@ -419,6 +419,10 @@ export function provisional(host) {
         for (const value of layer.values())
             if (value === inode)
                 return;
+        // A name record that may be replayed names it again (one after it refused, say).
+        for (const record of nameRecords)
+            if (record.places.includes(inode))
+                return;
         // What the process sees of a file it changed stays until the view has it (retire), but where no name leads to it.
         if (inode.state !== null && named(inode))
             return;
@@ -540,9 +544,14 @@ export function provisional(host) {
      * subtree at its names, as a change decided there is.
      */
     const loggedName = (op, keys, cost, apply, settled, retired, awaited = false) => {
-        const record = { id: ++ids, keys, over: keys.map((key) => host.generation(key)), cost, replay: apply, ...(retired === undefined ? {} : { retired }), answered: false, answeredAt: 0 };
-        nameRecords.push(record);
+        const over = keys.map((key) => host.generation(key));
         apply();
+        const places = keys.flatMap((key) => {
+            const placed = layer.get(key);
+            return placed ? [placed] : [];
+        });
+        const record = { id: ++ids, keys, over, cost, places, replay: apply, ...(retired === undefined ? {} : { retired }), answered: false, answeredAt: 0 };
+        nameRecords.push(record);
         for (const key of keys)
             host.count(key);
         return logged(op, (refused, answer) => {
