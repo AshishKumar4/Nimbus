@@ -58,6 +58,8 @@ export interface ClangFacet extends Pick<Facet, 'dispose'> {
 /** Idle warm workers a session keeps per tool: each holds its compiled image (clang 31 MiB, wasm-ld 18.5 MiB). */
 const WARM_CLANG_FACETS = 2;
 
+export type ClangRunnerFactory = (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => Command;
+
 /** Build the runner factory. Closes over the facet host and the filesystem authority. */
 export function makeClangRunnerFactory(deps: {
   facets: { open(spec: FacetSpec): ClangFacet };
@@ -65,8 +67,7 @@ export function makeClangRunnerFactory(deps: {
   processes: SessionProcessSupervisor;
   /** The session the toolchain's processes run in: its warm facets are its own (warm-facets.ts). */
   session: string;
-}): (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) =>
-    Command {
+}): ClangRunnerFactory {
   const warmKeys = {
     clang: warmFacetKeys(deps.session, 'clang', WARM_CLANG_FACETS),
     'wasm-ld': warmFacetKeys(deps.session, 'wasm-ld', WARM_CLANG_FACETS),

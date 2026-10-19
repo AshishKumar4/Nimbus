@@ -47,6 +47,8 @@ export declare function makeClangRunnerFactory(deps: {
     };
     filesystem: NimbusFilesystemAuthority;
     processes: SessionProcessSupervisor;
+    /** The session the toolchain's processes run in: its warm facets are its own (warm-facets.ts). */
+    session: string;
 }): (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => Command;
 export declare const CLANG_RUNNER_PREAMBLE: string;
 //# sourceMappingURL=clang-runner.d.ts.map

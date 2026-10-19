@@ -229,6 +229,8 @@ export interface CPythonFacetResult {
 /** Idle warm CPython workers a session keeps, per interpreter: each holds its compiled python.wasm. */
 const WARM_CPYTHON_FACETS = 2;
 
+export type CPythonRunnerFactory = (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => Command;
+
 
 /**
  * Start a program that outlives the invocation, and report where it went.
@@ -263,8 +265,7 @@ export function makeCPythonRunnerFactory(deps: {
   restartsWaits: boolean;
   /** The session the python processes run in: its warm facets are its own (warm-facets.ts). */
   session: string;
-}): (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) =>
-    Command {
+}): CPythonRunnerFactory {
   // One set per interpreter: a warm worker holds the one python.wasm it compiled.
   const warmKeys = {
     plain: warmFacetKeys(deps.session, CPYTHON_RUNNER, WARM_CPYTHON_FACETS),

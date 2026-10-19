@@ -30,6 +30,8 @@ import { createNpmInstallPort } from '../session/npm-install-port.js';
 import { createRuntimeCommandHintResolver } from '../runtime/package-manager.js';
 import { rpcExposeApp, rpcListApps, rpcRemoveApp, rpcRotateLink } from '../session/programmatic.js';
 import { listInstalledRuntimes, type RunnerFactory } from '@nimbus-sh/core/runtime/installed-runtimes.js';
+import type { ClangRunnerFactory } from '@nimbus-sh/core/runtime/clang-runner.js';
+import type { CPythonRunnerFactory } from '@nimbus-sh/core/runtime/cpython-runner.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { stripAnsi, type LogChunk } from '@nimbus-sh/core/runtime/process-logs.js';
 import { DEFAULT_HOME, NODE_VERSION, NPM_VERSION } from '@nimbus-sh/core/constants.js';
@@ -180,7 +182,7 @@ for (const [key, contract] of Object.entries(GIT_RUNNER_CONTRACTS)) {
     },
   );
 }
-let clangFactory: Promise<RunnerFactory> | null = null;
+let clangFactory: Promise<ClangRunnerFactory> | null = null;
 workspace.runtimes.registerRunner(
   'clang-runner',
   (manifest, installRoot, binName, binKind) => async (ctx: CommandContext) => {
@@ -203,7 +205,7 @@ workspace.runtimes.registerRunner(
 // no flags that would consume args) drops into an interactive
 // REPL. The wrap is purely additive — args-bearing invocations
 // pass through to the existing handler unchanged.
-const cpythonFactories = new Map<boolean, Promise<RunnerFactory>>();
+const cpythonFactories = new Map<boolean, Promise<CPythonRunnerFactory>>();
 const cpython = (restartsWaits: boolean): RunnerFactory => (manifest, installRoot, binName, binKind) => async function pythonReplOrOneShot(ctx: CommandContext): Promise<number> {
   const argv: string[] = ctx.args || [];
   // No args at all → REPL session. Hand off to runPythonRepl
