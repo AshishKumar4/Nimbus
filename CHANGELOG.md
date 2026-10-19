@@ -5,6 +5,17 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Added: `/api/_diag/session`'s launch record names the session's thread
+  stalls (`stalls`): while a facet call or a supervisor call is in flight,
+  the session watches how late its own 50 ms ticks run, and records each
+  wait of 250 ms or more with the work in flight across it. The facets a
+  session loads share its thread, and a long slice of theirs ages the
+  session's queue until the platform refuses requests ("Durable Object is
+  overloaded. Requests queued for too long."). A probe that fails prints
+  the record. The probes that sample `/api/_diag/memory` under load now
+  sample one read at a time and back off after a 503, instead of adding to
+  the queue that refused them.
+
 - Fixed: a Node program could be told a file, directory or link it had
   just renamed was not there (`fs.statSync` ENOENT, and renaming it again
   refused) when input arrived while the rename was still on its way to the

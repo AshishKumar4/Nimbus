@@ -5,7 +5,7 @@
 // fields and a real install drives them above 0 at some point.
 
 import { mintSession, Terminal, stripAnsi, BASE } from '../_driver.mjs';
-import { diagMemory, fmtBytes } from './_diag.mjs';
+import { diagMemory, fmtBytes, sampleDiagMemory } from './_diag.mjs';
 import assert from 'node:assert/strict';
 
 const sid = await mintSession();
@@ -27,18 +27,10 @@ await t.connect();
 await t.waitForPrompt(15_000);
 
 const samples = [];
-let sampling = true;
-const sampler = (async () => {
-  while (sampling) {
-    try {
-      const m = await diagMemory(sid);
-      samples.push({
-        inFlight: m.heap?.breakdown?.vfsInFlightBytes ?? 0,
-        spoolBytes: m.vfsDetail?.writeStreamSpoolBytes ?? 0,
-      });
-    } catch {}
-  }
-})();
+const stopSampling = sampleDiagMemory(sid, (m) => samples.push({
+  inFlight: m.heap?.breakdown?.vfsInFlightBytes ?? 0,
+  spoolBytes: m.vfsDetail?.writeStreamSpoolBytes ?? 0,
+}));
 
 let outcome = 'TIMEOUT';
 try {
@@ -56,8 +48,8 @@ try {
     if (/added\s+\d+\s+packages/.test(stripAnsi(t.buf))) outcome = 'SUCCESS';
   } catch { outcome = 'TIMEOUT'; }
 } finally {
-  sampling = false;
-  await sampler;
+  const refused = await stopSampling();
+  if (refused > 0) console.log(`[diag-reports-stream-retention] ${refused} memory reads refused 503 (the session overloaded)`);
   await t.close();
 }
 

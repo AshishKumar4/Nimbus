@@ -11,7 +11,7 @@ import {
   stripAnsi,
   Terminal,
 } from '../../_driver.mjs';
-import { diagMemory, fmtBytes } from '../../heap-correctness/_diag.mjs';
+import { diagMemory, fmtBytes, sampleDiagMemory } from '../../heap-correctness/_diag.mjs';
 import { W7_MAX_RECORD_BYTES } from '../../../../packages/platform/src/w7-frame.ts';
 
 if (!process.env.BASE) {
@@ -26,8 +26,7 @@ const a = makeAsserter('install-performance/install-parallel-memory-bounded');
 const sid = await mintSession();
 const terminal = new Terminal(sid);
 const samples = [];
-let sampling = false;
-let sampler = null;
+let stopSampling = null;
 let cloneOutput = '';
 let installOutput = '';
 let finalMemory = null;
@@ -52,18 +51,7 @@ try {
     );
   }
 
-  sampling = true;
-  sampler = (async () => {
-    while (sampling) {
-      try {
-        const memory = await diagMemory(sid);
-        samples.push(memory.vfsDetail);
-      } catch (error) {
-        console.warn(`[install-parallel-memory-bounded] sampler: ${error.message}`);
-      }
-      await sleep(100);
-    }
-  })();
+  stopSampling = sampleDiagMemory(sid, (memory) => samples.push(memory.vfsDetail), { everyMs: 100 });
 
   ({ output: cloneOutput } = await terminal.run(
     'git clone https://github.com/AshishKumar4/Markflow /home/user/Markflow',
@@ -74,8 +62,8 @@ try {
   await sleep(500);
   finalMemory = await diagMemory(sid);
 } finally {
-  sampling = false;
-  if (sampler) await sampler.catch(() => {});
+  const refused = await stopSampling?.();
+  if (refused) console.warn(`[install-parallel-memory-bounded] sampler: ${refused} memory reads refused 503 (the session overloaded)`);
   try { await terminal.close(); } catch { /* cleanup continues */ }
   await deleteSession(sid).catch(() => {});
 }
