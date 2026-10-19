@@ -7,5 +7,6 @@ await remotePairedCpu({
   name: 'remote-shell-exec-cpu',
   receipts: 'remote-shell-exec-cpu',
   baselineDir: '.ci-shell-exec-baseline',
-  command: ['bun', 'tests/bench/shell-exec-cpu.mjs'],
+  engine: 'bun',
+  bench: 'tests/bench/shell-exec-cpu.mjs',
 });

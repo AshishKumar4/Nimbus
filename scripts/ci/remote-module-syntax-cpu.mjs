@@ -9,5 +9,8 @@ await remotePairedCpu({
   source: 'packages/core/src',
   baselineDir: 'packages/core/.ci-syntax-baseline',
   files: ['runtime/javascript-ast.ts'],
-  command: ['node', 'tests/bench/module-syntax-cpu.mjs'],
+  engine: 'node',
+  // Its arms are bundled on their own (esbuild): bun runs it too, for context.
+  engines: ['node', 'bun'],
+  bench: 'tests/bench/module-syntax-cpu.mjs',
 });
