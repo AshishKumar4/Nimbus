@@ -10,5 +10,6 @@ await remotePairedCpu({
   directories: ['vfs/resident'],
   files: ['vfs/facet-resident-limits.ts'],
   baselineDir: 'packages/worker/.ci-resident-read-baseline',
-  command: ['node', 'tests/bench/resident-read-cpu.mjs'],
+  engine: 'node',
+  bench: 'tests/bench/resident-read-cpu.mjs',
 });
