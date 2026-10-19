@@ -82,8 +82,9 @@ function method<K extends keyof ResidentSupervisor>(supervisor: ResidentSupervis
   return reflectGet(supervisor, name);
 }
 
+// An exception's message wherever it is defined (a DOMException's, a class's, is inherited).
 export const messageOf = (e: unknown): string => {
-  const message = e !== null && (typeof e === 'object' || typeof e === 'function') ? ownField(e, 'message') : undefined;
+  const message = e !== null && (typeof e === 'object' || typeof e === 'function') ? reflectGet(e, 'message') : undefined;
   return stringOf(message || e);
 };
 

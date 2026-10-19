@@ -536,7 +536,8 @@ const {
   reflectGetOwnPropertyDescriptor: __nimbusStackDescriptor, reflectDefineProperty: __nimbusStackDefine,
   reflectDeleteProperty: __nimbusStackDelete, arrayIsArray: __nimbusStackIsArray, dataDescriptor: __nimbusStackData,
   TypeError: __nimbusStackTypeError, SafeMap: __NimbusCellMap, SafeSet: __NimbusCellSet,
-  SafeWeakMap: __NimbusCellWeakMap, SafeWeakSet: __NimbusCellWeakSet,
+  SafeWeakMap: __NimbusCellWeakMap, SafeWeakSet: __NimbusCellWeakSet, SafeList: __NimbusCellList,
+  arrayCopy: __nimbusStackCopy, JSONParse: __nimbusStackJsonParse,
 } = __nimbusLaunchCaptures;
 /** Whether \`test\` holds of any of \`sites\`: Array.prototype.some, on no method of the list. */
 function __nimbusSomeSite(sites, test) {
@@ -616,7 +617,10 @@ function __nimbusModuleNamed(name) {
   if (__nimbusStackEntry !== null && name === __nimbusStackEntry[0]) {
     module = { name, path: null, file: __nimbusStackEntry[1], head: __nimbusStackEntry[2], tail: __nimbusStackEntry[4], esModule: __nimbusStackEntry[3] === 1, hashbang: false };
   } else {
-    __nimbusCellsByName ??= new Map(__NIMBUS_CODE_CELLS.map((row) => [row[1], row]));
+    if (__nimbusCellsByName === null) {
+      __nimbusCellsByName = new __NimbusCellMap();
+      for (let i = 0; i < __NIMBUS_CODE_CELLS.length; i++) __nimbusCellsByName.set(__NIMBUS_CODE_CELLS[i][1], __NIMBUS_CODE_CELLS[i]);
+    }
     const row = __nimbusCellsByName.get(name);
     if (row === undefined) return null;
     module = { name, path: "/" + row[0], file: null, head: row[2], tail: row[3], esModule: row[6] === 1, hashbang: row[4] === 1 };
@@ -644,14 +648,15 @@ function __nimbusColumnEdits(module) {
   if (!module.esModule) return null;
   let entries;
   try {
-    entries = JSON.parse(__nimbusReadBundleFile(__NIMBUS_BUNDLE_FILES + module.name + ${JSON.stringify(COLUMN_MAP_SUFFIX)}, "utf8"));
+    entries = __nimbusStackJsonParse(__nimbusReadBundleFile(__NIMBUS_BUNDLE_FILES + module.name + ${JSON.stringify(COLUMN_MAP_SUFFIX)}, "utf8"));
   } catch {
     return null;
   }
-  const columns = new Map();
-  for (const entry of entries) {
-    const line = columns.get(entry[0]) ?? [];
-    line.push(entry);
+  const columns = new __NimbusCellMap();
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    const line = columns.get(entry[0]) ?? new __NimbusCellList();
+    line[line.length] = entry;
     columns.set(entry[0], line);
   }
   module.columns = columns;
@@ -667,7 +672,8 @@ function __nimbusGeneratedColumn(module, line, column) {
   const edits = __nimbusColumnEdits(module)?.get(line);
   if (edits === undefined) return column;
   let delta = 0;
-  for (const [, at, length, text] of edits) {
+  for (let i = 0; i < edits.length; i++) {
+    const at = edits[i][1], length = edits[i][2], text = edits[i][3];
     if (column - 1 < at) break;
     if (column - 1 < at + text.length) return at + delta + 1;
     delta += length - text.length;
@@ -694,12 +700,13 @@ function __nimbusSourceLine(module, line, emitted) {
   let source = "";
   let at = 0;
   let delta = 0;
-  for (const [, column, length, text] of edits) {
-    source += emitted.slice(at, column + delta) + text;
+  for (let i = 0; i < edits.length; i++) {
+    const column = edits[i][1], length = edits[i][2], text = edits[i][3];
+    source += __nimbusStackSlice(emitted, at, column + delta) + text;
     at = column + delta + length;
     delta += length - text.length;
   }
-  return source + emitted.slice(at);
+  return source + __nimbusStackSlice(emitted, at);
 }
 let __nimbusModulesByFile = null;
 const __nimbusInterpretedModules = new __NimbusCellMap();
@@ -713,7 +720,7 @@ function __nimbusModuleOfFile(file) {
       const module = __nimbusModuleNamed(name);
       if (module !== null) __nimbusModulesByFile.set(__nimbusFrameFile(module), module);
     };
-    for (const row of __NIMBUS_CODE_CELLS) add(row[1]);
+    for (let i = 0; i < __NIMBUS_CODE_CELLS.length; i++) add(__NIMBUS_CODE_CELLS[i][1]);
     if (__nimbusStackEntry !== null) add(__nimbusStackEntry[0]);
   }
   return __nimbusModulesByFile.get(file) ?? null;
@@ -847,11 +854,11 @@ function __nimbusRecordInterpretedStack(error, frames) {
 }
 function __nimbusProgramSites(error, original) {
   const stamp = __nimbusInterpretedStacks.get(error);
-  // The program's formatter gets an array, as Node's does.
-  const output = [];
+  // Built as a SafeList (no Array.prototype setter reached); the program's formatter gets an ordinary array, as Node's does.
+  const output = new __NimbusCellList();
   if (stamp === undefined || (original.length !== 0 && !__nimbusSomeSite(original, __nimbusInterpreterSite))) {
     for (let i = 0; i < original.length; i++) output[i] = __NimbusCallSite.of(original[i]);
-    return output;
+    return __nimbusStackCopy(output);
   }
   // Host errors keep their native innermost frames. Their interpreted
   // callers are captured before the interpreter unwinds the fault's node.
@@ -889,9 +896,10 @@ function __nimbusProgramSites(error, original) {
     output[output.length] = __NimbusCallSite.of(site);
   }
   while (next < stamp.frames.length) output[output.length] = new __NimbusInterpretedCallSite(stamp.frames[next++]);
-  const limit = typeof stamp.limit === "number" ? Math.max(0, Math.floor(stamp.limit)) : 0;
-  if (output.length > limit) output.length = limit;
-  return output;
+  const limit = typeof stamp.limit === "number" ? Math.floor(stamp.limit) : 0;
+  // NaN, as negative, keeps none (slice's ToIntegerOrInfinity).
+  output.length = limit > 0 ? Math.min(limit, output.length) : 0;
+  return __nimbusStackCopy(output);
 }
 // What a runtime's shims format a stack with instead (node --enable-source-maps): null to keep the hook's own.
 let __nimbusStackFormatter = null;
@@ -943,7 +951,7 @@ function __nimbusStackSites(holder, count, above) {
       else ErrorOf[name] = descriptor.value;
     };
   };
-  const restores = [];
+  const restores = new __NimbusCellList();
   try {
     restores[restores.length] = set("prepareStackTrace", __nimbusSites);
     if (count !== undefined) {
@@ -1050,8 +1058,8 @@ const __nimbusModulesAcknowledged = new __NimbusCellSet();
 const __nimbusReadsAcknowledged = new __NimbusCellSet();
 // A SafeMap's or SafeSet's entries \`acknowledged\` does not hold: their keys and values, in order.
 function __nimbusUnacknowledged(collection, acknowledged) {
-  const keys = [];
-  const values = [];
+  const keys = new __NimbusCellList();
+  const values = new __NimbusCellList();
   if (collection) collection.forEach((value, key) => {
     if (acknowledged.has(key)) return;
     keys[keys.length] = key;
@@ -1059,11 +1067,11 @@ function __nimbusUnacknowledged(collection, acknowledged) {
   });
   return { keys, values };
 }
-// The \`count\` of \`list\` from \`from\`, as an array: what one report carries.
+// The \`count\` of \`list\` from \`from\`, as an ordinary array: what one report carries.
 function __nimbusReportBatch(list, from, count) {
-  const out = [];
+  const out = new __NimbusCellList();
   for (let i = from; i < list.length && i < from + count; i++) out[out.length] = list[i];
-  return out;
+  return __nimbusStackCopy(out);
 }
 let __nimbusCodeSending = Promise.resolve();
 // A server may catch a compile miss (SSR error page) and never exit. Persist

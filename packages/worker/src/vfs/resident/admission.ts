@@ -15,7 +15,7 @@
 import { residentBytes, residentCellCost } from './cell-cost.js';
 import type { Coherence } from './coherence.js';
 import type { ResidentSupervisor } from './supervisor.js';
-import { arrayIsArray, arrayPush, arraySplice, mathMax, NumberOf, SafeList, SafeMap } from '@nimbus-sh/core/_shared/primordials.js';
+import { arrayIsArray, arrayPush, arrayShift, mathMax, NumberOf, SafeList, SafeMap } from '@nimbus-sh/core/_shared/primordials.js';
 
 export interface Admission {
   /** Whether the store is a one-shot's heap rather than a facet's SQLite. */
@@ -130,9 +130,7 @@ export function createAdmission(coherence: Coherence): Admission {
       for (let idle = 0; ; ) {
         const waiting = reserveQueue.length;
         while (reserveQueue.length > 0 && holdRoom(reserveQueue[0].path, reserveQueue[0].bytes)) {
-          const held = reserveQueue[0];
-          arraySplice(reserveQueue, 0, 1);
-          held.resolve(true);
+          arrayShift(reserveQueue)?.resolve(true);
         }
         if (reserveQueue.length === 0) return;
         idle = reserveQueue.length < waiting ? 0 : idle + 1;
@@ -143,7 +141,9 @@ export function createAdmission(coherence: Coherence): Admission {
           await askGrant(need);
         }
         if (cap === before) {
-          const refused = arraySplice(reserveQueue, 0, reserveQueue.length);
+          const refused = new SafeList<{ path: string; bytes: number; resolve: (held: boolean) => void }>();
+          for (let i = 0; i < reserveQueue.length; i++) refused[i] = reserveQueue[i];
+          reserveQueue.length = 0;
           for (let i = 0; i < refused.length; i++) refused[i].resolve(false);
           return;
         }

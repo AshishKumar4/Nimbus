@@ -8,7 +8,9 @@
 // that answers each code unit XOR 1), the program imports an ES module two
 // directories down, requires a CommonJS one, imports a package by its name
 // (its exports' import condition) and resolves it with import.meta.resolve,
-// then puts the built-in back and prints what each gave. Host node runs the
+// and formats stacks (an error the staged module makes, its own, and the
+// sites its own Error.prepareStackTrace is handed), then puts the built-in
+// back and prints what each gave. Host node runs the
 // same program (lib/node-differential.mjs): its output is the answer.
 //
 // Red before: the guest's resolver read String.prototype methods on every
@@ -42,7 +44,7 @@ const BUILTINS = [
 const files = {};
 const lines = [];
 BUILTINS.forEach(([label, owner, key], n) => {
-  files[`m${n}/main/esm/index.mjs`] = `export const v = 'e${n}';\n`;
+  files[`m${n}/main/esm/index.mjs`] = `export const v = 'e${n}';\nexport function probe() { return new Error('p').stack; }\n`;
   files[`m${n}/c.cjs`] = `exports.v = 'c${n}';\n`;
   files[`node_modules/pkg${n}/package.json`] = JSON.stringify({ name: `pkg${n}`, exports: { '.': { import: './esm/i.mjs', require: './cjs/i.cjs' } } });
   files[`node_modules/pkg${n}/esm/i.mjs`] = `export const v = 'p${n}';\n`;
@@ -67,8 +69,14 @@ async function attempt(label, owner, key, n, fake) {
     const cjs = require('./m' + n + '/c.cjs');
     const bare = await import('pkg' + n);
     const resolved = import.meta.resolve('pkg' + n);
+    // Stacks formatted while the built-in is still replaced: a staged module's error, the program's own, and the sites a program's formatter is handed.
+    const staged = esm.probe();
+    const own = new Error('q').stack;
+    Error.prepareStackTrace = (error, sites) => (Array.isArray(sites) && sites.length > 0 && typeof sites[0].getFileName === 'function' ? 'sites' : 'none');
+    let formatted;
+    try { formatted = new Error('r').stack; } finally { Error.prepareStackTrace = undefined; }
     owner[key] = original;
-    got = [esm.v, cjs.v, bare.v, resolved.slice(resolved.indexOf('/node_modules/'))].join(' ');
+    got = [esm.v, cjs.v, bare.v, resolved.slice(resolved.indexOf('/node_modules/')), typeof staged, staged.startsWith('Error: p\\n'), typeof own, own.startsWith('Error: q\\n'), formatted].join(' ');
   } catch (error) {
     owner[key] = original;
     got = 'refused: ' + (error && error.code);
@@ -81,7 +89,7 @@ await attempt('String.prototype.charCodeAt (xor)', xor[0], xor[1], ${BUILTINS.le
 console.log(out.join('\\n'));
 `;
 const n = BUILTINS.length;
-files[`m${n}/main/esm/index.mjs`] = `export const v = 'e${n}';\n`;
+files[`m${n}/main/esm/index.mjs`] = `export const v = 'e${n}';\nexport function probe() { return new Error('p').stack; }\n`;
 files[`m${n}/c.cjs`] = `exports.v = 'c${n}';\n`;
 files[`node_modules/pkg${n}/package.json`] = JSON.stringify({ name: `pkg${n}`, exports: { '.': { import: './esm/i.mjs', require: './cjs/i.cjs' } } });
 files[`node_modules/pkg${n}/esm/i.mjs`] = `export const v = 'p${n}';\n`;
