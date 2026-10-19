@@ -3119,7 +3119,7 @@
     "packages/worker/public/_assets/terminal-policy/terminal-policy.js": "e8d1086738b229e61069d6ca85bd3ffec697d010d99e9ea54be49913259c15ad",
     "packages/worker/public/favicon.svg": "8b9e6679fd5f8a188498462eaa8dc966a4d18c160b5cedd2fec23128e339052b",
     "packages/worker/public/index.html": "b244caef0e983b1f28058b6d4db526728e9e494bfb2da18502fdf0466bc278c8",
-    "packages/worker/public/s/index.html": "1aaf10f8199078722db218aa5e589c5cb304a3c1387d19cb4a18ff0062c7a181",
+    "packages/worker/public/s/index.html": "f3967ae9c54f6527503ca4655592650648fdcb6dab6440c2a4f55ed888966ddf",
     "packages/worker/runtime-contracts/nimbus-threads.c": "f20fe40184b9b9664458b01a10536f4382f2141c468ffb8203cbb2649cc0a8be",
     "packages/worker/runtime-contracts/pyodide-workerd-adapter.json": "50b11f60f9bbf8d3e05a676ef19128e240ab53fc479d1f1a067b7799dd269410",
     "packages/worker/scripts/acorn-primordials.mjs": "7d8dc6d378a12abb29cc318b976d6eb8fbeb9b2334010a51b36ce3a99413f86f",
