@@ -322,11 +322,24 @@ const ProxyConstructor = Proxy;
 export { ProxyConstructor as Proxy };
 export const Uint8ArrayConstructor = Uint8Array;
 export const ArrayBufferConstructor = ArrayBuffer;
-export const TextEncoderConstructor = TextEncoder;
+// None in a realm with no TextEncoder (a test262 realm's), where nothing measures resident bytes.
+const TextEncoderOf = typeof TextEncoder === 'function' ? TextEncoder : undefined;
+const encodeInto = TextEncoderOf === undefined ? undefined : uncurryThis(TextEncoderOf.prototype.encodeInto);
+/** A TextEncoder of the realm's. */
+export function newTextEncoder() {
+    if (TextEncoderOf === undefined)
+        throw new TypeErrorConstructor('TextEncoder is not defined');
+    return new TextEncoderOf();
+}
+/** `encoder.encodeInto(text, destination)`, by the realm's TextEncoder.prototype.encodeInto. */
+export function textEncoderEncodeInto(encoder, text, destination) {
+    if (encodeInto === undefined)
+        throw new TypeErrorConstructor('TextEncoder is not defined');
+    return encodeInto(encoder, text, destination);
+}
 export const mathFloor = Math.floor;
 export const stringCodePointAt = uncurryThis(String.prototype.codePointAt);
 export const typedArraySet = uncurryThis(Uint8Array.prototype.set);
-export const textEncoderEncodeInto = uncurryThis(TextEncoder.prototype.encodeInto);
 export const typedArrayBuffer = (() => {
     const prototype = reflectGetPrototypeOf(Uint8Array.prototype);
     const getter = reflectGetOwnPropertyDescriptor(prototype ?? {}, 'buffer')?.get;

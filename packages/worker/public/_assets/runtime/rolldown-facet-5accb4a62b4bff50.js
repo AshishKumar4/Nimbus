@@ -16084,9 +16084,10 @@ var typedArrayByteLength = (() => {
   return uncurryThis(getter);
 })();
 var ArrayBufferConstructor = ArrayBuffer;
+var TextEncoderOf = typeof TextEncoder === "function" ? TextEncoder : void 0;
+var encodeInto = TextEncoderOf === void 0 ? void 0 : uncurryThis(TextEncoderOf.prototype.encodeInto);
 var stringCodePointAt = uncurryThis(String.prototype.codePointAt);
 var typedArraySet = uncurryThis(Uint8Array.prototype.set);
-var textEncoderEncodeInto = uncurryThis(TextEncoder.prototype.encodeInto);
 var typedArrayBuffer = (() => {
   const prototype = reflectGetPrototypeOf(Uint8Array.prototype);
   const getter = reflectGetOwnPropertyDescriptor(prototype ?? {}, "buffer")?.get;
