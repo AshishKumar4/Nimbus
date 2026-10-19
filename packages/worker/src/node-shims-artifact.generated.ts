@@ -70,6 +70,6 @@ export const ESM_LATE_BUILD_ID: string = "f6d79615561a3a52";
 export const ESM_LATE_SHA256: string = "f6d79615561a3a520f7921d466215e24c929c3a4b41a58958e661d2f32f9b296";
 
 /** core src/_shared/commonjs-cell.ts through interpreter-bundle.mjs */
-export const NODE_REGISTRY_ENTRY: string = "/_assets/runtime/node-registry-aa9439e9a0a8b8f6.js";
-export const NODE_REGISTRY_BUILD_ID: string = "aa9439e9a0a8b8f6";
-export const NODE_REGISTRY_SHA256: string = "aa9439e9a0a8b8f6870d12deea6615640218d9b741e541479f2e8eaa14247455";
+export const NODE_REGISTRY_ENTRY: string = "/_assets/runtime/node-registry-d31cc68eb02c422a.js";
+export const NODE_REGISTRY_BUILD_ID: string = "d31cc68eb02c422a";
+export const NODE_REGISTRY_SHA256: string = "d31cc68eb02c422abe868d739c7ed5a4eacfe6769141a76788d1bdcd7fb8e27d";
