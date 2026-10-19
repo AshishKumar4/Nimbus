@@ -2862,8 +2862,7 @@ var __nimbusResidentModule = (() => {
             const answer = ownValue3(answers, j);
             if (!answer || ownValue3(answer, "error")) return false;
             const stat = ownValue3(answer, "stat");
-            if (stat === null || stat === void 0) continue;
-            if (!nsDescribes(stat)) return false;
+            if (stat === null || stat === void 0 || !nsDescribes(stat)) return false;
             stats.set(batch[j], stat);
           }
         }
