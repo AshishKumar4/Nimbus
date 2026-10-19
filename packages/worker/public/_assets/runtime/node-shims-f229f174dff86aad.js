@@ -17557,7 +17557,8 @@ builtins.tty = {
 // packages the facet provides itself (FACET_PROVIDED_PACKAGES), which are not
 // core and must not be reported as such — a package that sniffs this list
 // would otherwise conclude e.g. undici ships with node.
-const __nimbusFacetProvidedPackages = new Set(["undici"]);
+// A SafeSet: every require asks it, after the program may have replaced Set.prototype.has.
+const __nimbusFacetProvidedPackages = new __NimbusSafeSet(["undici"]);
 // Node's builtins that exist only with the scheme (lib/internal/bootstrap/realm.js schemelessBlockList).
 const __NODE_SCHEME_ONLY_BUILTINS = new Set(["sea","sqlite","test","test/reporters"]);
 // The Node builtin `specifier` names, by its id, or null: what require,
