@@ -5,6 +5,26 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Added: the shell's `[[ word =~ regex ]]`, as in bash 5.2. The regex is a
+  POSIX extended regular expression as glibc compiles it. Its parentheses,
+  and the blanks and `|` inside them, are its own; quoted characters match
+  only themselves. A match is leftmost, then longest, and sets
+  `BASH_REMATCH`. A regex glibc refuses gives status 2. Before, `=~` was
+  "test: too many arguments".
+- Fixed: the shell reads a script a line at a time and expands aliases as it
+  reads, as bash does.
+  - A line is read whole before any of it runs. A syntax error on a later
+    line leaves the earlier lines run; one on the same line runs none of it.
+  - An alias defined on a line is expanded from the next line on.
+  - An alias's text is read in place of its word, before reserved words, so
+    `alias begin='if true; then'` works, and a comment in it takes the rest
+    of the line.
+  - A function keeps the aliases it was defined with.
+  - A here-document after `;` on its line is read.
+  - A command followed by another without `;`, `&` or a newline is a syntax
+    error, as `(echo a) (echo b)` and `x=1 (echo hi)` are in bash.
+  Before, a whole script was parsed first, an alias was expanded when its
+  command ran, and those two commands both ran.
 - Fixed: the shell's patterns, trims, substitutions, `${#x}` and IFS count
   characters, as bash does in a UTF-8 locale, not UTF-16 units. `${x%?}` of
   😀 leaves nothing rather than half of it, `?` and `case 😀 in ?)` match it

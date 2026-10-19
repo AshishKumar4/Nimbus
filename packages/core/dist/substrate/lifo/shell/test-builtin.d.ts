@@ -10,6 +10,8 @@ import { type ExpandContext } from './expander.js';
 export interface TestContext {
     readonly cwd: string;
     isFdTerminal?(fd: number): boolean;
+    /** `[[ =~ ]]`'s match, its text and each group's, or [] when there is none: BASH_REMATCH. */
+    setRematch?(values: readonly string[]): void;
 }
 /**
  * Implementation of the `test` / `[` shell builtin (POSIX `test`), and of

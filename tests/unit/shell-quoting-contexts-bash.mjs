@@ -70,6 +70,8 @@ const CONTEXTS = [
     { line: `[[ '${subject}' == • ]] && echo m || echo n; [[ '${subject}' != • ]] && echo d || echo s`, payloads: [pattern] },
     { line: `v='${subject}'; printf '<%s>' "\${v#•}" "\${v##•}" "\${v%•}" "\${v/•/X}" "\${v//•/X}" "\${v^^•}" \${v#•}`, payloads: [pattern] },
   ]),
+  // =~: a quoted character matches only itself, an unquoted expansion's is the regular expression's.
+  { line: `[[ a.c =~ • ]] && echo m || echo n; [[ abc =~ • ]] && echo m || echo n`, payloads: ['a.c', '^a.'] },
   { line: `p='a*'; case abc in $p) echo m;; *) echo n;; esac; case abc in "$p") echo m;; *) echo n;; esac; [[ abc == $p ]] && echo m; [[ abc == "$p" ]] || echo n`, payloads: [''], forms: ['bare'] },
   // Default words: their quoted characters are neither split nor globbed.
   { line: `unset x; printf '<%s>' \${x:-•} "\${x:-•}" \${x-•}; echo`, payloads: ['a b', '*.txt', 'a'] },
