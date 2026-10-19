@@ -196,6 +196,8 @@ export interface ProcessFsClientOptions {
      * renewal): called before the flush that sends what was decided under it,
      * so the runtime stops deciding there first (its files' descriptions go
      * through the session) and that flush covers all it accepted until now.
+     * It throws, having stopped nothing, where what was decided there cannot
+     * be logged yet (`drain`'s refusal: the synchronous cap's ENOMEM).
      */
     readonly freezing?: (root: string) => void;
     /**

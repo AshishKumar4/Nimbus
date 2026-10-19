@@ -1514,6 +1514,10 @@
       }
 
       function rerender() {
+        // Nothing to draw before the root is listed: the body keeps what its
+        // load said (waiting, or why it failed). Drawn, an unlisted root is
+        // "Empty", which reads as a session with no files.
+        if (!rootLoaded()) return;
         const order = computeOrder();
         const filter = (searchInput.value || '').trim().toLowerCase();
         body.innerHTML = '';
