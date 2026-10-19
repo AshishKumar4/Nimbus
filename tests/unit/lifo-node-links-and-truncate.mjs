@@ -12,7 +12,8 @@
 //     negative one is 0, none is 0), its errors open's (ENOENT, EISDIR), in
 //     the sync, callback and promise forms, and on a descriptor as ftruncate
 //     (Node's deprecation warning for that, DEP0081, is not compared: this
-//     node prints none).
+//     node prints none); a directory opened for writing is EISDIR, as
+//     open(2) answers Node.
 //
 // Red before (audit X-M1, X-M2): symlink did nothing, readlink answered the
 // path it was given, and truncate never extended a file and cut by
@@ -62,8 +63,9 @@ const fd = fs.openSync("y", "r+"); fs.truncateSync(fd, 2); fs.closeSync(fd);
 console.log("fd", bytes("y"));
 fs.truncate("y", 4, (e) => { console.log("cb", e && e.code, bytes("y"));
   fs.truncate("y", (e) => { console.log("cb none", e && e.code, bytes("y"));
-    fs.promises.truncate("y", 3).then(() => console.log("promise", bytes("y")));
-    fs.promises.truncate("missing").catch((e) => console.log("promise missing", e.code, e.syscall)); }); });`;
+    fs.promises.truncate("y", 3).then(() => { console.log("promise", bytes("y"));
+      return fs.promises.truncate("missing").catch((e) => console.log("promise missing", e.code, e.syscall)); }); }); });
+console.log("open dir", t(() => fs.openSync("dir", "r+")), t(() => fs.openSync("dir", "w")), typeof fs.openSync("dir", "r"));`;
 
 const CASES = [
   [`node -e '${LINKS}'; echo "status=$?"`, 'symlink and readlink, as Node makes and reads them'],

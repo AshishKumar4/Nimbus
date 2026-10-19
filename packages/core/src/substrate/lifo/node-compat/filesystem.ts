@@ -132,7 +132,15 @@ function bridgeFilesystem(bridge: RuntimeFsBridge, umask: () => number): NodeFil
     copyFile: (from, to) => fs.copyFile(from, to),
     chmod: (path, mode) => fs.chmod(path, mode),
     chown: (path, uid, gid, follow) => { fs.chown(path, uid, gid, { followSymlinks: follow }); },
-    open: (path, flags) => fs.open(path, { ...flags, umask: umask() }).id,
+    open(path, flags) {
+      const opened = fs.open(path, { ...flags, umask: umask() });
+      // A directory opens with whatever rights a WASI guest asks for; Node's open(2) refuses one for writing.
+      if (flags.write === true && opened.stat.type === 'directory') {
+        fs.close(opened.id);
+        throw syscallError('EISDIR', 'open', path);
+      }
+      return opened.id;
+    },
     read: (fd, position, length) => fs.read(fd, position, length),
     write: (fd, position, data) => fs.write(fd, position, data),
     fstat: (fd) => fs.fstat(fd),
