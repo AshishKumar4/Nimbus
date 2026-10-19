@@ -103,9 +103,10 @@ function notServed(fs, path, what) {
   assert.ok(seen === null || seen === 'EAGAIN', `${what}: served ${JSON.stringify(seen)}`);
 }
 
-/** A barrier admits a peer's removal of `d/f` while `learning` (begun before the removal) waits on its parked `reply`; then it lands. */
+/** A barrier admits a peer's removal of `d/f` while `learning` (begun before the removal, `d` known) waits on its parked `reply`; then it lands. */
 async function lateLearning(tree, reply, learning) {
   const s = await session(tree);
+  assert.equal((await s.fs.stat(k('d'))).type, 'directory');
   const asked = s.hold(reply);
   const first = learning(s);
   await asked();
@@ -152,8 +153,8 @@ for (const kind of ENGINES) {
       },
     });
     assert.notEqual(await engine.stat(`${APP}/d/f`), null);
-    engine.authority.kfs.rename('home/user/app/d', 'home/user/app/d-old');
-    engine.authority.kfs.rename('home/user/app/x', 'home/user/app/d');
+    await engine.authority.peer.rename('home/user/app/d', 'home/user/app/d-old');
+    await engine.authority.peer.rename('home/user/app/x', 'home/user/app/d');
     await engine.input();
     let seen;
     try { seen = engine.sync.stat(`${APP}/d/f`); } catch (error) { seen = error?.code; }
