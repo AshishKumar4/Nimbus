@@ -505,7 +505,7 @@ async function builtinDeclare(verb: 'local' | 'declare' | 'typeset', { args, std
   let global = false;
   let exitCode = 0;
 
-  for (const arg of args) {
+  for (const [index, arg] of args.entries()) {
     if (arg.startsWith('-') && arg.length > 1 && !arg.includes('=')) {
       for (const flag of arg.slice(1)) {
         if (flag === 'r') readonlyFlag = true;
@@ -532,19 +532,19 @@ async function builtinDeclare(verb: 'local' | 'declare' | 'typeset', { args, std
       return 1;
     }
 
-    if (eq !== -1 && !(await assignDeclared(state, name, arg.slice(eq + 1), stderr))) exitCode = 1;
+    if (eq !== -1 && !(await assignDeclared(state, name, arg.slice(eq + 1), context.arrayLiterals?.has(index) === true, stderr))) exitCode = 1;
     if (readonlyFlag) state.readonlyNames.add(name);
   }
   return exitCode;
 }
 
-/** The right-hand side of a declaration: `(word …)` is an array literal. */
-async function assignDeclared(state: ShellState, name: string, text: string, stderr: CommandOutputStream): Promise<boolean> {
+/** The right-hand side of a declaration: `(word …)` is an array literal when it was written as one (`literal`). */
+async function assignDeclared(state: ShellState, name: string, text: string, literal: boolean, stderr: CommandOutputStream): Promise<boolean> {
   if (state.readonlyNames.has(name)) {
     (await stderr.write(`${name}: readonly variable\n`));
     return false;
   }
-  if (text.startsWith('(') && text.endsWith(')')) {
+  if (literal && text.startsWith('(') && text.endsWith(')')) {
     const elements: string[] = [];
     for (const token of lex(text.slice(1, -1))) {
       if (token.kind === TokenKind.Word) elements.push(unquoteWord(token));

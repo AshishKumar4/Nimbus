@@ -14,7 +14,10 @@ import type {
   SubshellNode,
   RedirectionNode,
   AssignmentNode,
+  WordPart,
+  Token,
 } from './types.js';
+import { TokenKind } from './types.js';
 import { ProcessView, bindProcessView } from '../../../runtime/process-files.js';
 import type { NimbusFilesystemAuthority } from '../../../runtime/os-contracts.js';
 import { resolveContext, type CommandRegistry } from '../commands/registry.js';
@@ -32,7 +35,7 @@ import { syscallError } from '../../../vfs/vfs-error.js';
 import { execRefusal } from '../../../shell/exec-dispatch.js';
 import { withRecall } from '../../../vfs/recall.js';
 import { lex } from './lexer.js';
-import { parse } from './parser.js';
+import { isArrayLiteralWord, parse } from './parser.js';
 import {
   expandWords, expandWord, evaluateSubscript, ExpansionError,
   type ExpandContext, type CapturedCommand,
@@ -126,6 +129,8 @@ function redirectionDiagnostic(error: RedirectionOpenError): string {
 
 export interface BuiltinExecutionContext {
   interactive?: boolean;
+  /** The arguments (by index) written as compound array assignments, `name=(…)`: a declaration builtin's arrays. */
+  arrayLiterals?: ReadonlySet<number>;
   vfs: ProcessView;
   /** The working directory a builtin resolves its relative path operands against. */
   cwd: string;
@@ -238,6 +243,24 @@ type ExecutionIo = {
   /** Files the enclosing redirections hold open, by their stream. */
   openFiles?: ReadonlyMap<CommandInputStream | CommandOutputStream, OpenFile>;
 };
+
+/** The command word as written when it is one unquoted part with no substitution in it: the text an alias or a declaration builtin is named by. */
+function literalWordText(word: readonly WordPart[]): string | null {
+  const [only] = word;
+  return word.length === 1 && only !== undefined && only.quoted === 'none' && only.commandSubstitution === undefined
+    && !only.text.includes('$') && !only.text.includes('`') ? only.text : null;
+}
+
+function commandWordText(cmd: SimpleCommandNode): string | null {
+  const [word] = cmd.words;
+  return word === undefined ? null : literalWordText(word);
+}
+
+/** A declaration builtin's name, written unquoted: its compound array assignments are arrays. */
+function isDeclarationWord(word: readonly WordPart[]): boolean {
+  const text = literalWordText(word);
+  return text === 'declare' || text === 'typeset' || text === 'local';
+}
 
 /** Marks every simple command of `lists`, read from an alias's text, with the aliases it was read within. */
 function markAliasText(lists: readonly ListNode[], aliasesExpanding: ReadonlySet<string>): void {
@@ -992,6 +1015,49 @@ export class Interpreter {
     return exitCode;
   }
 
+  /**
+   * `cmd` with its command word's alias expanded, as bash's reader expands one:
+   * on the word as written, unquoted and before any expansion (`'p'` and `$c`
+   * are no alias). The alias's text is read as tokens in the word's place, and
+   * the command's other words follow as the words they are, never read again
+   * as text. Its assignments go before the first command that text makes, and
+   * its redirections after the last. An alias whose text ends in a blank has
+   * the next word checked too. None of the text's commands expands those
+   * aliases, or the ones this command was read within, again. Null when the
+   * word is no alias.
+   */
+  private aliasExpansion(cmd: SimpleCommandNode): ScriptNode | null {
+    const aliases = this.config.aliases;
+    if (aliases.size === 0) return null;
+    const expanding = new Set(cmd.aliasesExpanding);
+    const tokens: Token[] = [];
+    let used = 0;
+    for (;;) {
+      const word = cmd.words[used];
+      const name = word === undefined ? null : literalWordText(word);
+      const value = name === null || expanding.has(name) ? undefined : aliases.get(name);
+      if (name === null || value === undefined) break;
+      expanding.add(name);
+      for (const token of lex(value)) if (token.kind !== TokenKind.EOF) tokens.push(token);
+      used++;
+      if (!/[ \t\n]$/.test(value)) break;
+    }
+    if (used === 0) return null;
+    for (const parts of cmd.words.slice(used)) tokens.push({ kind: TokenKind.Word, value: parts.map((part) => part.text).join(''), pos: 0, parts });
+    tokens.push({ kind: TokenKind.EOF, value: '', pos: 0 });
+    const script = parse(tokens);
+    markAliasText(script.lists, expanding);
+    const commands = script.lists.flatMap((list) => list.entries.flatMap((entry) => entry.pipeline.commands));
+    const first = commands[0];
+    const last = commands.at(-1);
+    if (cmd.assignments.length > 0) {
+      if (first?.type === 'simple_command') first.assignments.unshift(...cmd.assignments);
+      else script.lists.unshift({ type: 'list', entries: [{ pipeline: { type: 'pipeline', negated: false, commands: [{ type: 'simple_command', assignments: cmd.assignments, words: [], redirections: [] }] }, connector: null }], background: false });
+    }
+    if (cmd.redirections.length > 0 && last !== undefined && last.type !== 'function_def') last.redirections.push(...cmd.redirections);
+    return script;
+  }
+
   private async executeSimpleCommand(
     cmd: SimpleCommandNode,
     io: ExecutionIo,
@@ -1002,10 +1068,28 @@ export class Interpreter {
       pid: io.commandIdentity.pid, cred: io.commandIdentity.cred, signal: io.signal,
     }) };
 
+    // An alias: read as bash's reader does, on the command word as written.
+    const aliased = this.aliasExpansion(cmd);
+    if (aliased !== null) return (await this.executeScriptWithIo(aliased, io, { inline: true }));
+
     const expandCtx = this.createExpandContext(io);
 
-    // Expand words
-    const expandedArgs = await expandWords(cmd.words, expandCtx);
+    // Expand words. A declaration builtin's (declare, typeset, local) are
+    // expanded one by one, so that the arguments its compound array
+    // assignments became are known by index (isArrayLiteralWord).
+    let arrayLiterals: Set<number> | undefined;
+    let expandedArgs: string[];
+    const [commandWord] = cmd.words;
+    if (commandWord !== undefined && isDeclarationWord(commandWord) && cmd.words.some(isArrayLiteralWord)) {
+      arrayLiterals = new Set();
+      expandedArgs = [];
+      for (const word of cmd.words) {
+        if (isArrayLiteralWord(word)) arrayLiterals.add(expandedArgs.length - 1);
+        expandedArgs.push(...await expandWords([word], expandCtx));
+      }
+    } else {
+      expandedArgs = await expandWords(cmd.words, expandCtx);
+    }
     if (expandedArgs.length === 0 && cmd.assignments.length > 0) {
       // Bare assignment -- set env vars
       for (const assign of cmd.assignments) {
@@ -1035,23 +1119,6 @@ export class Interpreter {
     const viaCommand = name === 'command' && !replacesShell && !this.functions.has(name) && !this.config.aliases.has(name)
       && args.length > 0 && (args[0] === '--' ? args.length > 1 : !args[0].startsWith('-'));
     if (viaCommand) [name, ...args] = args[0] === '--' ? args.slice(1) : args;
-
-    // Check alias expansion
-    const aliases = replacesShell || viaCommand ? undefined : this.config.aliases;
-    if (aliases) {
-      const aliasValue = aliases.get(name);
-      if (aliasValue !== undefined && !cmd.aliasesExpanding?.has(name)) {
-        // Rebuild the command line with the alias expanded: its commands are
-        // read from the alias's text, so none of them expands it, or the
-        // aliases this one was read within, again.
-        const expandedLine = aliasValue + (args.length > 0 ? ' ' + args.join(' ') : '');
-        const aliasesExpanding = new Set(cmd.aliasesExpanding);
-        aliasesExpanding.add(name);
-        const script = parse(lex(expandedLine));
-        markAliasText(script.lists, aliasesExpanding);
-        return (await this.executeScriptWithIo(script, io, { inline: true }));
-      }
-    }
 
     // Apply per-command assignments (temporary env)
     const saved = new Map<string, SavedVariable>();
@@ -1143,6 +1210,7 @@ export class Interpreter {
                   stderr: fds.terminalOutputFds.has(2),
                 },
                 scriptMode: io.scriptMode,
+                ...(arrayLiterals === undefined || name !== commandWordText(cmd) ? {} : { arrayLiterals }),
                 isFdTerminal: (fd) => this.isFdTerminal(fds, fd),
                 getPositionals: () => this.readPositionals(builtinIo),
                 setPositionals: (nextArgs) => this.writePositionals(builtinIo, nextArgs),

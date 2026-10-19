@@ -373,6 +373,8 @@ const ARRAY_ASSIGNMENT_PREFIX = /^[a-zA-Z_][a-zA-Z0-9_]*(\[[^\]]*\])?\+?=$/;
 
 function readWord(input: string, pos: number): { token: Token; end: number } | null {
   const parts: WordPart[] = [];
+  // Each $'…' span and its decoded text: bash's reader keeps the word with it as '…'.
+  const ansiC: Array<{ start: number; end: number; text: string }> = [];
   let i = pos;
   let currentText = '';
   let hasContent = false;
@@ -502,6 +504,7 @@ function readWord(input: string, pos: number): { token: Token; end: number } | n
       flushCurrentText();
       const quoted = readAnsiCQuote(input, i);
       parts.push({ text: quoted.text, quoted: 'single' });
+      ansiC.push({ start: i, end: quoted.end, text: quoted.text });
       i = quoted.end;
       hasContent = true;
       continue;
@@ -579,9 +582,20 @@ function readWord(input: string, pos: number): { token: Token; end: number } | n
   const value = parts.map((p) => p.text).join('');
 
   return {
-    token: { kind: TokenKind.Word, value, pos, parts, source: input.slice(pos, i) },
+    token: { kind: TokenKind.Word, value, pos, parts, source: writtenWord(input, pos, i, ansiC) },
     end: i,
   };
+}
+
+/** The word from `pos` to `end` as bash's reader keeps it: its quotes in it, each $'…' as '…' decoded. */
+function writtenWord(input: string, pos: number, end: number, ansiC: ReadonlyArray<{ start: number; end: number; text: string }>): string {
+  let written = '';
+  let at = pos;
+  for (const span of ansiC) {
+    written += `${input.slice(at, span.start)}'${span.text}'`;
+    at = span.end;
+  }
+  return written + input.slice(at, end);
 }
 
 type SubstitutionRead =

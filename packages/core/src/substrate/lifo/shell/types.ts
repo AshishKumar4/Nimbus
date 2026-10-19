@@ -38,7 +38,7 @@ export interface Token {
   heredocQuoted?: boolean; // only for HeredocBody tokens
   heredocTerminated?: boolean; // only for HeredocBody tokens: its delimiter line was found
   parts?: WordPart[];  // only for Word tokens
-  source?: string;     // only for Word tokens: the word as written, its quotes in it
+  source?: string;     // only for Word tokens: the word as bash's reader keeps it, its quotes in it ($'…' as '…' decoded)
 }
 
 // ─── AST node types ───
