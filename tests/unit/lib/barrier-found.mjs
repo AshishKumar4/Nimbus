@@ -174,6 +174,35 @@ for (const kind of ['node']) {
   };
 }
 
+for (const kind of ['node']) {
+  scenarios[`a dangling link renamed in a directory then renamed with it is found once the first rename lands alone [${kind}]`] = async () => {
+    const transport = scheduleTransport();
+    const engine = await bootEngine(kind, {
+      seed: (authority) => {
+        authority.kfs.mkdir('home/user/app/d', { mode: 0o755 });
+        authority.kfs.symlink('nowhere', 'home/user/app/d/l');
+      },
+      supervise: transport.supervise,
+      stdin: kind === 'node',
+    });
+    const moved = (await engine.stat(`${APP}/d/l`, { followSymlinks: false })).ino;
+    // The link's rename reaches the session and its answer waits; its directory's does not reach it.
+    transport.hold('wave');
+    const first = engine.fs.rename(`${APP}/d/l`, `${APP}/d/m`);
+    await until(() => transport.parked().length > 0, 'the link\'s rename sent');
+    engine.stall();
+    const second = engine.fs.rename(`${APP}/d`, `${APP}/x`);
+    await sleep(50);
+    await engine.input();
+    const seen = (() => { try { return engine.sync.stat(`${APP}/x/m`, { followSymlinks: false }); } catch (error) { return error?.code; } })();
+    assert.ok(Number(seen?.ino) === moved && (seen.isSymbolicLink?.() ?? seen.type === 'symlink'), `the link under its directory's new name, once a barrier landed its own rename alone: ${JSON.stringify(seen)}`);
+    await engine.release();
+    transport.drain();
+    await Promise.all([first, second]);
+    assert.equal((await engine.stat(`${APP}/x/m`, { followSymlinks: false })).ino, moved, 'once both landed');
+  };
+}
+
 scenarios['a floating awaited read finishes before a one-shot exits [node]'] = async () => {
   const authority = createAuthority(undefined, { sequenced: true });
   authority.kfs.mkdir('home/user/app', { recursive: true, mode: 0o755 });
@@ -212,6 +241,7 @@ const OWN_RENAMES = new Set([
   'a file renamed in a directory then renamed with it shows at its last name while the first rename lands alone',
   'a chain of renames whose first lands alone keeps the moved file at its last name',
   'a file renamed in a directory then renamed with it is found once the first rename lands alone',
+  'a dangling link renamed in a directory then renamed with it is found once the first rename lands alone',
 ]);
 
 /**
