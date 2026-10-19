@@ -40,6 +40,7 @@ import type { SessionProcessSupervisor } from './session-process-supervisor.js';
 export interface ClangFacet extends Pick<Facet, 'dispose'> {
     submit(task: typeof CLANG_CALL_TASK, args: Parameters<typeof clangFacetCall>[0], options?: FacetSubmitOptions): Promise<ClangFacetResult>;
 }
+export type ClangRunnerFactory = (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => Command;
 /** Build the runner factory. Closes over the facet host and the filesystem authority. */
 export declare function makeClangRunnerFactory(deps: {
     facets: {
@@ -49,6 +50,6 @@ export declare function makeClangRunnerFactory(deps: {
     processes: SessionProcessSupervisor;
     /** The session the toolchain's processes run in: its warm facets are its own (warm-facets.ts). */
     session: string;
-}): (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => Command;
+}): ClangRunnerFactory;
 export declare const CLANG_RUNNER_PREAMBLE: string;
 //# sourceMappingURL=clang-runner.d.ts.map

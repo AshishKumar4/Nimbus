@@ -77,6 +77,7 @@ export interface CPythonFacetResult {
     /** A one-shot's: whether its worker may run another process (__wasiReusable). */
     reusable?: boolean;
 }
+export type CPythonRunnerFactory = (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => Command;
 /**
  * Start a program that outlives the invocation, and report where it went.
  *
@@ -109,5 +110,5 @@ export declare function makeCPythonRunnerFactory(deps: {
     restartsWaits: boolean;
     /** The session the python processes run in: its warm facets are its own (warm-facets.ts). */
     session: string;
-}): (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => Command;
+}): CPythonRunnerFactory;
 //# sourceMappingURL=cpython-runner.d.ts.map
