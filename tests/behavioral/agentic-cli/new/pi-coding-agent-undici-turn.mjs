@@ -23,6 +23,8 @@ import {
   readUntil,
   stripAnsi,
   Terminal,
+  hasOutputLine,
+  outputLines,
 } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -125,7 +127,7 @@ try {
   const shadow = stripAnsi((await t.run(
     "grep -l 'Nimbus' $(find / -path '*/node_modules/undici/index.js' 2>/dev/null) 2>/dev/null; echo SCANNED", 90_000)).output);
   a.check('no undici on disk was shadowed with a stub',
-    /SCANNED/.test(shadow) && !/node_modules\/undici\/index\.js\s*$/m.test(shadow.split('SCANNED')[0]),
+    hasOutputLine(shadow, 'SCANNED') && !outputLines(shadow).slice(0, outputLines(shadow).indexOf('SCANNED')).some((line) => line.endsWith('node_modules/undici/index.js')),
     JSON.stringify(shadow.slice(-900)));
 } finally {
   await t.close();

@@ -10,6 +10,7 @@
 import {
   mintSession, deleteSession, Terminal,
   makeAsserter, heredocCommand, stripAnsi,
+  hasOutputLine,
 } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -69,14 +70,14 @@ try {
     JSON.stringify(elf.output.slice(-300)));
   a.check('(d) format error exit 126', elf.exitCode === 126, JSON.stringify(elf.output.slice(-200)));
   const alive = stripAnsi((await t.run('echo STILL_ALIVE', 30_000)).output);
-  a.check('(d) shell survives (no crash)', /STILL_ALIVE/.test(alive),
+  a.check('(d) shell survives (no crash)', hasOutputLine(alive, 'STILL_ALIVE'),
     JSON.stringify(alive.slice(-200)));
 
   // ── extras: sh ENOEXEC fallback + plain-file denial ──
   const shText = await t.run(
     `printf 'echo from-sh-fallback\\n' > plain && chmod +x plain && ./plain`,
     60_000);
-  a.check('exec-bit text with no shebang runs via sh', /from-sh-fallback/.test(shText.output)
+  a.check('exec-bit text with no shebang runs via sh', hasOutputLine(shText.output, 'from-sh-fallback')
     && shText.exitCode === 0, JSON.stringify(shText.output.slice(-300)));
 
   const plainDenied = await t.run(

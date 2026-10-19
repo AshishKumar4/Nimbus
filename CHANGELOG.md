@@ -19,6 +19,12 @@ published independently in the `@nimbus-sh` npm scope.
   the pre-bundle waits. And a map that needs a little more than its
   closure was sized for takes the rest when it is free, instead of
   gathering its whole closure again.
+- Fixed: a program that writes files before it listens as a server, as `react-router dev` (Vite) does from two tasks at once, is no longer ended when its run again writes them in another order. The run again starts from what the first run started from: every file and directory the first run made, changed or removed is put back first, and the run again's changes are its own. If another process changed one of those files meanwhile, or the run changed more than 4096, nothing is put back. The program is run again from its start instead, prints again what it printed, and says why in one line. A program that waited for a marker it wrote itself now serves on its run again instead of ending. Before, the run again had to make the same changes in the same order as the first run, so these programs were ended with "it changed the filesystem otherwise than the run before it".
+- Fixed: a process that ends now says why on its stderr. A run again that stops after it has booted (it did not retrace its run, say) ends with status 1 and its reason. Before, its facet was released while the session showed it running, with no exit and no output. A process whose host the platform reset says so too.
+- Fixed: shell function nesting is bounded. A call past the bound is refused with `f: maximum function nesting level exceeded (N)`, and the rest of its line is discarded, as bash 5.2 does with FUNCNEST set. The shell goes on with the next line, its own or a sourced file's, with `$?` 1; a subshell, command substitution, pipeline element or background job ends with 1; a trap's action ends. The bound is FUNCNEST when it is a number above 0, otherwise 1000, and never more than 1000. Before, a function that called itself ran until the session's heap was gone (bash with no FUNCNEST segfaults).
+- Fixed: in the shell, an `exit` in the EXIT trap's action is the shell's status, as in bash: `trap 'exit 5' EXIT; exit 1` ends with 5. So is an end by `set -e` there. A bare `exit` there ends with the status the shell was ending with. Before, the action's `exit` ended only the action, and the status was always the one before the trap.
+- Changed: a paired CPU bench names the engine it is graded on (`engine`, `node` for the guest's code, which workerd runs on V8) and the engines its bench runs on. `--engine bun|node` runs it on another of those, as context: the receipt names the engine, and only a run on the graded engine is graded. An engine its bench cannot run on is refused before anything is sent to armada.
+- Changed: a paired perf probe red on one set of Previews is run again on a fresh set of four, and is red only when it is red on both. Each candidate Preview is graded against the mean of the two baseline Previews: against each one alone, a real +46% cold start was found on only half the sets. A paired CPU bench's slower kind is measured again on a second set of runs, and is slower only when both find it slower: 95% per kind finds about one slower kind in two runs of a dozen that are not.
 - Fixed: a program's launch could wait minutes (a `vite build` sat 5
   minutes before it ran) while a dependency pre-bundle in another session
   of the same isolate waited for a compiler. The pre-bundle reserved 28 MiB
@@ -29,11 +35,9 @@ published independently in the `@nimbus-sh` npm scope.
   isolate's transient budget and who waits for it, and so does the
   session's launch diagnosis. Dev servers' launches log it too.
 - Added: the shell's `eval`. It runs its arguments, joined by spaces, in the current shell, as bash does: assignments, `cd`, functions and aliases persist; `return`, `break` and `exit` act in the calling shell; the status is the last command's, 0 for nothing. A leading `--` ends its options and any other option is refused with status 2. In a script, a failing status from the text is recoverable (`eval false || echo recovered`), and so is a sourced file's: `. ./f.sh` whose last command failed no longer ends the script. Before, `eval` was "command not found".
-- Fixed: shell function nesting is bounded. A call past the bound is refused with `f: maximum function nesting level exceeded (N)`, and the rest of its line is discarded, as bash 5.2 does with FUNCNEST set. The shell goes on with the next line, its own or a sourced file's, with `$?` 1; a subshell, command substitution, pipeline element or background job ends with 1; a trap's action ends. The bound is FUNCNEST when it is a number above 0, otherwise 1000, and never more than 1000. Before, a function that called itself ran until the session's heap was gone (bash with no FUNCNEST segfaults).
-- Fixed: a process that ends now says why on its stderr. A run again that stops after it has booted (it did not retrace its run, say) ends with status 1 and its reason. Before, its facet was released while the session showed it running, with no exit and no output. A process whose host the platform reset says so too.
 - Changed: the paired perf probes measure the candidate on two Previews
-  beside the baseline's two, and grade it slower only when both of its
-  Previews are slower than both of the baseline's. One Preview can run
+  beside the baseline's two, and grade it slower only when each of its
+  Previews is slower than the mean of the baseline's two. One Preview can run
   slower than another of the same code for a whole run (ruby launch had
   one of three 300-500 ms behind in 9 of 14 runs), and with one candidate
   Preview that read as a regression whenever it was the candidate's.
@@ -49,7 +53,6 @@ published independently in the `@nimbus-sh` npm scope.
   readings meant for the program, so its `Date.now()` named a file
   otherwise. Now the found directory counts as made again, and Nimbus reads
   the clock itself. `react-router dev` gets past its relaunch.
-
 - Fixed: Tailwind CSS v4 works again. Its scanner, `@tailwindcss/oxide`
   4.3.3, runs from Nimbus's staged threadless build, so `@tailwindcss/vite`,
   `@tailwindcss/postcss` and `@tailwindcss/cli` install and serve. A Vite
@@ -114,7 +117,6 @@ published independently in the `@nimbus-sh` npm scope.
   timeout of every command, as documented; a `runCommand` without its own
   `timeout` used to run with no deadline. `getInfo` reports that timeout,
   or 0 when none is configured, in place of a fixed 300000.
-
 - Fixed: with two versions of a gem installed, `require` now picks the
   version host Ruby does. A bare `require "a"` loads the highest version.
   A gem whose dependency requires `a < 2` gets a 1.x. Requiring both
@@ -125,6 +127,7 @@ published independently in the `@nimbus-sh` npm scope.
   the load path as before, at no added cost. A gem's executable runs the
   version RubyGems activates, as host Ruby's binstub does, including the
   wrappers an earlier Nimbus wrote into a persisted home.
+
 ## 2026-10-17: platform 0.12.0, core 0.23.0, fabric 0.18.0, worker 0.21.0, sdk 0.17.0, cli 0.2.8, loom 0.3.1, react 0.3.3, create-nimbus-app 0.2.4, runtime-bash 5.2.37-7, runtime-cpython 3.13.14-3, runtime-git 2.53.0-1 (config 0.3.1 unchanged)
 
 The 2026-10-14 and 2026-10-15 versions reached production but were never published to npm; these carry their changes too. The runtimes need core 0.23.0: it is the first core that registers bash-runner@6, cpython-runner@3 and git-runner@2.

@@ -6,7 +6,7 @@
 // the future's resolved value was discarded; result of `a` was silent.
 // Post-fix __nimbus_repl_finish explicitly emits repr(result)+'\\n'.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi } from '../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, hasOutputLine } from '../_driver.mjs';
 import { pushLine } from './_push.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -24,23 +24,15 @@ t.cmd('python');
 await t.waitFor((b) => /^>>> /m.test(b), 30_000, 'python prompt');
 
 // Assignment then bare expression — expect repr(5) on stdout.
-t.reset();
-t.cmd('a = 5');
-await t.waitFor((b) => (b.match(/>>> /g) || []).length >= 1, 10_000, '>>> after a=5');
-
-t.cmd('a');
-await t.waitFor((b) => /\b5\b/.test(b), 15_000, 'value of a printed');
-const out = stripAnsi(t.buf);
-const fiveSeen = /\b5\b/.test(out);
+await pushLine(t, 'a = 5');
+const out = await pushLine(t, 'a');
+const fiveSeen = hasOutputLine(out, '5');
 a.check('bare expression `a` prints repr (displayhook)', fiveSeen,
   fiveSeen ? '' : JSON.stringify(out.slice(-200)));
 
 // Bare arithmetic expression also exercises displayhook.
-t.reset();
-t.cmd('2 + 2');
-await t.waitFor((b) => /\b4\b/.test(b), 10_000, '2+2=4');
-const out2 = stripAnsi(t.buf);
-const fourSeen = /^4$/m.test(out2);
+const out2 = await pushLine(t, '2 + 2');
+const fourSeen = hasOutputLine(out2, '4');
 a.check('bare arithmetic `2 + 2` prints 4', fourSeen,
   fourSeen ? '' : JSON.stringify(out2.slice(-200)));
 

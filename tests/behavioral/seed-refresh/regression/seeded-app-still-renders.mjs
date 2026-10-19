@@ -14,7 +14,7 @@
 // We use a shorter readiness gate (esbuild transform of just our two
 // edited files) to keep the probe under 30s wall.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, hasOutputLine } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('seed-refresh/seeded-app-still-renders');
@@ -29,7 +29,7 @@ await t.waitForPrompt(60_000);
 {
   const r = await t.run('ls /home/user/example-app/package.json && ls /home/user/example-app/src/pages/Docs.tsx && ls /home/user/example-app/src/pages/Home.tsx', 10_000);
   const out = stripAnsi(r.output);
-  const ok = /package\.json/.test(out) && /Docs\.tsx/.test(out) && /Home\.tsx/.test(out)
+  const ok = ['/home/user/example-app/package.json', '/home/user/example-app/src/pages/Docs.tsx', '/home/user/example-app/src/pages/Home.tsx'].every((path) => hasOutputLine(out, path))
     && !/ENOENT|No such/.test(out);
   a.check('seeded app structure intact (package.json + Home.tsx + Docs.tsx)', ok,
     ok ? '' : JSON.stringify(out.slice(-400)));

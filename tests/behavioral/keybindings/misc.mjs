@@ -2,7 +2,7 @@
 // keybindings/misc — Ctrl+L clear-screen, Ctrl+\ quit, Ctrl+R reverse search.
 
 import { CTRL_L, CTRL_BACKSLASH, CTRL_R, CTRL_C, CTRL_U } from './_keys.mjs';
-import { mintSession, deleteSession, Terminal, makeAsserter, stripAnsi, sleep } from '../_driver.mjs';
+import { mintSession, deleteSession, Terminal, makeAsserter, stripAnsi, sleep, hasOutputLine } from '../_driver.mjs';
 
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -117,7 +117,7 @@ try {
     const out = stripAnsi(t.buf.slice(tail0));
     // Match the actual echo output (CARROT_MARKER printed). We also want
     // some evidence the (reverse-i-search) prompt appeared.
-    const matched = /CARROT_MARKER/.test(out);
+    const matched = hasOutputLine(out, 'CARROT_MARKER');
     const hadSearchPrompt = /reverse-?i-?search|\(reverse/i.test(out);
     a.check('Ctrl+R opens reverse-i-search prompt', hadSearchPrompt,
       hadSearchPrompt ? '' : JSON.stringify(out.slice(0, 300)));

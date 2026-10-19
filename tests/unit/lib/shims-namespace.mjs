@@ -23,6 +23,7 @@
 // before its factory instead, and the namespace is seeded from a listing of
 // it, with its real stats, as a launch's is.
 
+import './launch-captures.mjs';
 import { CRED_KERNEL } from '../../../packages/core/src/runtime/os-contracts.ts';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -34,6 +35,7 @@ import { moduleImporterUrl } from '../../../packages/core/src/_shared/module-imp
 
 const PUBLIC = fileURLToPath(new URL('../../../packages/worker/public', import.meta.url));
 const RESIDENT_STORE = readFileSync(join(PUBLIC, RESIDENT_STORE_ENTRY), 'utf8');
+
 
 const SEED = `
 ;(function __nimbusTestSeedNamespace() {
@@ -185,7 +187,7 @@ function __nimbusRegistryRequire(id) {
 `;
 
 /** Splice ahead of generateShimsCode() in a standalone shims factory. */
-export const SHIMS_STORE_PRELUDE = `\n${RESIDENT_STORE}\nconst __resident = __nimbusResidentModule.createResidentStore({
+export const SHIMS_STORE_PRELUDE = `\nconst __nimbusLaunchCaptures = globalThis.__nimbusTestLaunchCaptures;\n${RESIDENT_STORE}\nconst __resident = __nimbusResidentModule.createResidentStore({
   observeRead: (path) => {
     if (globalThis.__nimbusProfileStaged) globalThis.__nimbusProfileStaged.delete(path);
   },

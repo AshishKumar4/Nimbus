@@ -10,7 +10,7 @@
 //   there work; a failed clone there leaves nothing. Each step's wall time
 //   is printed.
 
-import { BASE, AUTH_TOKEN, makeAsserter, mintSession, deleteSession, Terminal, stripAnsi } from '../_driver.mjs';
+import { BASE, AUTH_TOKEN, makeAsserter, mintSession, deleteSession, Terminal, stripAnsi, termBody, outputLines, hasOutputLine } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 
@@ -36,10 +36,15 @@ try {
   await t.waitForPrompt(60_000);
 
   const listed = await step('/proc/mounts and df', 'grep " /mnt/data " /proc/mounts && df /mnt/data');
-  a.check('/proc/mounts and df name the mount at /mnt/data', listed.ok && /\/mnt\/data/.test(listed.out), listed.out.slice(-300));
+  const mountRows = outputLines(termBody(listed.out)).map((line) => line.split(/\s+/));
+  a.check('/proc/mounts and df name the mount at /mnt/data',
+    listed.ok
+      && mountRows.some((fields) => fields.length === 6 && fields[1] === '/mnt/data' && fields[4] === '0' && fields[5] === '0')
+      && mountRows.some((fields) => fields.length === 6 && fields[5] === '/mnt/data'),
+    listed.out.slice(-300));
 
   const shell = await step('files through the shell', 'mkdir -p /mnt/data/d && echo hello > /mnt/data/d/a.txt && mv /mnt/data/d/a.txt /mnt/data/d/b.txt && cat /mnt/data/d/b.txt && ls /mnt/data/d');
-  a.check('the shell writes, renames and reads there', shell.ok && /hello/.test(shell.out) && /b\.txt/.test(shell.out), shell.out.slice(-300));
+  a.check('the shell writes, renames and reads there', shell.ok && hasOutputLine(shell.out, 'hello') && hasOutputLine(shell.out, 'b.txt'), shell.out.slice(-300));
   a.check('the SDK reads what the shell wrote there', (await box.files.read('/mnt/data/d/b.txt')) === 'hello\n');
   await box.files.write('/mnt/data/d/c.txt', 'from the sdk');
   const seen = await step('a file the SDK wrote, through the shell', 'cat /mnt/data/d/c.txt && rm /mnt/data/d/c.txt && ls /mnt/data/d');
@@ -51,7 +56,7 @@ try {
   a.check('it checks out clean, and fetch and pull work there', status.ok && /^0$/m.test(status.out), status.out.slice(-400));
 
   const failed = await step('a clone that fails onto the mount', 'cd /home/user && git clone https://github.com/expressjs/nonexistent-repository-for-nimbus-probe /mnt/data/failed; test ! -e /mnt/data/failed && echo GONE');
-  a.check('a failed clone there leaves nothing', /GONE/.test(failed.out), failed.out.slice(-300));
+  a.check('a failed clone there leaves nothing', hasOutputLine(failed.out, 'GONE'), failed.out.slice(-300));
 } finally {
   await t.close().catch(() => {});
   await deleteSession(sid, 'mounts-embedder-mount').catch(() => {});

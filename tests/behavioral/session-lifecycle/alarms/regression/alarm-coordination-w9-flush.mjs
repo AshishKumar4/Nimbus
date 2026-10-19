@@ -11,7 +11,7 @@
 // a flush. We measure this via hib.flushCount which increments on every
 // processLogs.flush() that has dirty data.
 
-import { mintSession, Terminal, readUntil, makeAsserter, BASE } from '../../../_driver.mjs';
+import { mintSession, Terminal, readUntil, makeAsserter, BASE, hasOutputLine } from '../../../_driver.mjs';
 import { diagMemory } from '../../../heap-correctness/_diag.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -41,7 +41,7 @@ const { output } = await t.run(
   20_000,
 );
 a.check('node command produced flush-marker output',
-  /flush-marker/.test(output),
+  hasOutputLine(output, 'flush-marker'),
   `output=${JSON.stringify(output.slice(-200))}`);
 
 // The W9 flush runs after its 250 ms debounce: read the count until it does, at most 10 s.
