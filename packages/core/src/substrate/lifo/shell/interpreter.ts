@@ -579,9 +579,12 @@ export class Interpreter {
 
       // A job is a process of its own, as a fork makes one: its commands run
       // as it, on its own thread of work, until a kill of it stops them.
+      // A job that is one pipeline goes on in the trap's action, as its simple elements do (a pipeline of
+      // several decides per element); an and-or list or a compound command does not.
       const [only] = list.entries;
-      const simple = list.entries.length === 1 && only?.pipeline.commands.length === 1 && only.pipeline.commands[0]?.type === 'simple_command';
-      const child = simple ? this.inTrapAction(this.fork()) : this.fork();
+      const commands = list.entries.length === 1 ? only?.pipeline.commands ?? [] : [];
+      const inAction = commands.length > 1 || commands[0]?.type === 'simple_command';
+      const child = inAction ? this.inTrapAction(this.fork()) : this.fork();
       const job = this.config.jobTable.start(
         { command: this.getListCommandText(list), cwd: this.config.getCwd(), parent },
         async ({ identity, signal }) => {
