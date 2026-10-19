@@ -133,7 +133,7 @@ export function provisional(host) {
             ? (nlink === row.nlink ? row : { ...row, nlink })
             : { ...row, size: s.size, mode: s.mode, uid: s.uid, gid: s.gid, atime: s.atime, mtime: s.mtime, ctime: s.ctime, nlink };
     };
-    const provisionalEntry = (key) => {
+    const provisionalEntry = (key, known) => {
         if (layer.size === 0 && touched.size === 0)
             return undefined;
         if (layer.has(key)) {
@@ -142,7 +142,7 @@ export function provisional(host) {
         }
         // A file whose content this process changed, at any name the view has it at.
         if (touched.size > 0) {
-            const row = host.row(key);
+            const row = known !== undefined ? known : host.row(key);
             const changed = row ? inodeAtNumber(row.dev, row.ino) : undefined;
             if (changed !== undefined && changed.state !== null && !changed.local && changed.cell === undefined
                 && changed.heldAt === undefined && changed.records.length === 0 && ![...layer.values()].includes(changed)) {

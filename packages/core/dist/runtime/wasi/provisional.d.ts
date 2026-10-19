@@ -228,8 +228,8 @@ export interface Provisional {
     setStatus(handleId: number, status: {
         append?: boolean;
     }): void;
-    /** This process's provisional word on `key`: an entry, null (no name), or undefined (none). */
-    entry(key: string): ResidentEntry | null | undefined;
+    /** This process's provisional word on `key`: an entry, null (no name), or undefined (none). `row`: the host's row there (ProvisionalHost.row), where the caller has it. */
+    entry(key: string, row?: ResidentEntry | null): ResidentEntry | null | undefined;
     children(key: string, base: RuntimeVfsDirEntry[] | undefined): RuntimeVfsDirEntry[] | undefined;
     /** An open of `key` (resolved; `row` what it names, null for nothing): a descriptor, undefined where it is not made here. */
     open(key: string, path: string, flags: RuntimeOpenFlags, row: ResidentEntry | null, awaited?: boolean): RuntimeFileHandle | undefined;
