@@ -18,7 +18,7 @@
  * callers normalise with residentBytes), ns rows with every stat column.
  */
 import { RESIDENT_ROW_BYTES, namespaceRowBytes, residentBytes, utf8Length } from './cell-cost.js';
-import { arrayBufferByteLength, arrayCopy, arraySort, Error, mathMin, NumberOf, SafeList, SafeMap, SafeSet, stringCodePointAt, stringOf, typedArrayBuffer, typedArrayByteLength, typedArrayByteOffset, Uint8ArrayConstructor, } from '@nimbus-sh/core/_shared/primordials.js';
+import { arrayBufferByteLength, arrayCopy, arraySort, Error, mathMin, NumberOf, SafeList, SafeMap, SafeSet, setFind, stringCodePointAt, stringOf, typedArrayBuffer, typedArrayByteLength, typedArrayByteOffset, Uint8ArrayConstructor, } from '@nimbus-sh/core/_shared/primordials.js';
 /**
  * Cell kinds. A cell is one of the three things __vfsBundle has always held,
  * and the kind is stored rather than inferred so a text file whose bytes happen
@@ -406,15 +406,13 @@ export function heapTables() {
             const set = byKey.get(stringOf(ckey));
             if (!set)
                 return undefined;
-            let found;
-            set.forEach((path) => {
-                if (found !== undefined)
-                    return;
-                const row = files.get(path);
-                if (path !== notPath && row && row.rev >= 0)
-                    found = { path, kind: row.kind, size: row.size, chunks: row.chunks };
+            // The first that can be copied, and no further: a fill of N files of one content asks N times.
+            const path = setFind(set, (candidate) => {
+                const row = files.get(candidate);
+                return candidate !== notPath && row !== undefined && row.rev >= 0;
             });
-            return found;
+            const row = path === undefined ? undefined : files.get(path);
+            return path === undefined || row === undefined ? undefined : { path, kind: row.kind, size: row.size, chunks: row.chunks };
         },
         filePaths(from, to) { return arrayCopy(inRange(from, to)); },
         fileAny(from, to) { const list = paths(); const i = lowerBound(list, from); return i < list.length && (to === null || cmp(list[i], to) < 0); },

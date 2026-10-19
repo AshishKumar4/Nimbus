@@ -13949,11 +13949,12 @@ function spaceAfterUrl(handlers) {
 }
 
 // ../platform/dist/utf8.js
-var LONG_UNITS = 256;
+var UTF8_LONG_UNITS = 256;
+var UTF8_SCRATCH_BYTES = 256 * 1024;
 var encoder = new TextEncoder();
 var scratch;
 function utf8Length(text) {
-  if (text.length >= LONG_UNITS)
+  if (text.length >= UTF8_LONG_UNITS)
     return longUtf8Length(text);
   let bytes = text.length;
   for (let index = 0; index < text.length; index++) {
@@ -13977,7 +13978,7 @@ function utf8Length(text) {
   return bytes;
 }
 function longUtf8Length(text) {
-  scratch ??= new Uint8Array(256 * 1024);
+  scratch ??= new Uint8Array(UTF8_SCRATCH_BYTES);
   let bytes = 0;
   for (let read = 0; read < text.length; ) {
     const done = encoder.encodeInto(read === 0 ? text : text.slice(read), scratch);
@@ -16108,6 +16109,9 @@ var arrayBufferByteLength = (() => {
   const sharedLength = sharedGetter === void 0 ? void 0 : uncurryThis(sharedGetter);
   return (buffer) => buffer instanceof ArrayBufferConstructor || sharedLength === void 0 ? length(buffer) : sharedLength(buffer);
 })();
+var arrayShift = uncurryThis(Array.prototype.shift);
+var setValuesOf = uncurryThis(Set.prototype.values);
+var setIteratorNext = uncurryThis(reflectGet(reflectGetPrototypeOf((/* @__PURE__ */ new Set()).values()) ?? {}, "next"));
 
 // ../core/src/_shared/node-error.ts
 var nodeErrorClasses = new SafeMap();

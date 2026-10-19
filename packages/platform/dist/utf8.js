@@ -8,13 +8,19 @@
  * TextEncoder would write: one to four per code point, and three for a
  * lone surrogate, which it writes as U+FFFD.
  */
-/** From this many UTF-16 units, a string is counted natively (longUtf8Length). */
-const LONG_UNITS = 256;
+/**
+ * From this many UTF-16 units, a string is counted natively (longUtf8Length),
+ * into a scratch buffer of SCRATCH_BYTES. The resident store's count on the
+ * launch's captures (worker vfs/resident/cell-cost.ts) keeps the same policy,
+ * and tests/unit/utf8-length.mjs holds both to TextEncoder.
+ */
+export const UTF8_LONG_UNITS = 256;
+export const UTF8_SCRATCH_BYTES = 256 * 1024;
 const encoder = new TextEncoder();
 /** Where longUtf8Length's encodes land: written, never read. */
 let scratch;
 export function utf8Length(text) {
-    if (text.length >= LONG_UNITS)
+    if (text.length >= UTF8_LONG_UNITS)
         return longUtf8Length(text);
     let bytes = text.length;
     for (let index = 0; index < text.length; index++) {
@@ -47,7 +53,7 @@ export function utf8Length(text) {
  * a surrogate pair, so each slice starts on a code point.
  */
 function longUtf8Length(text) {
-    scratch ??= new Uint8Array(256 * 1024);
+    scratch ??= new Uint8Array(UTF8_SCRATCH_BYTES);
     let bytes = 0;
     for (let read = 0; read < text.length;) {
         const done = encoder.encodeInto(read === 0 ? text : text.slice(read), scratch);

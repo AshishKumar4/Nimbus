@@ -364,3 +364,15 @@ export const arrayBufferByteLength = (() => {
     const sharedLength = sharedGetter === undefined ? undefined : uncurryThis(sharedGetter);
     return (buffer) => buffer instanceof ArrayBufferConstructor || sharedLength === undefined ? length(buffer) : sharedLength(buffer);
 })();
+/** Array.prototype.shift: unlike splice, it makes no array, so it consults no species. */
+export const arrayShift = uncurryThis(Array.prototype.shift);
+const setValuesOf = uncurryThis(Set.prototype.values);
+const setIteratorNext = uncurryThis(reflectGet(reflectGetPrototypeOf(new Set().values()) ?? {}, 'next'));
+/** The first member of `set` that `test` holds of, or undefined: a walk that stops there, on the Set iterator as the launch found it. */
+export function setFind(set, test) {
+    const iterator = setValuesOf(set);
+    for (let step = setIteratorNext(iterator); !step.done; step = setIteratorNext(iterator))
+        if (test(step.value))
+            return step.value;
+    return undefined;
+}

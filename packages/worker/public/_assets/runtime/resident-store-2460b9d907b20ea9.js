@@ -55,7 +55,7 @@ var __nimbusResidentModule = (() => {
   var LEDGER_ROW_BYTES = 256;
 
   // nimbus-launch-captures:launch-captures
-  var { ArrayBufferConstructor, ArrayConstructor, ArrayFrom, ArrayIteratorNext, ArrayIteratorPrototype, ArrayPrototypeIndexOf, ArrayPrototypeLastIndexOf, ArrayPrototypePop, ArrayPrototypeToSpliced, ArrayPrototypeWith, ArrayValues, BigInt, BigIntPrototypeToString, Error: Error2, FunctionPrototypeBind, GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, JSONParse, JSONStringify, MapConstructor, NumberOf, NumberPrototypeToString, ObjectOf, ObjectPrototype, ObjectPrototypeHasOwnProperty, ObjectPrototypePropertyIsEnumerable, ObjectPrototypePropertyIsEnumerableOf, ObjectPrototypeToString, PromiseConstructor, PromisePrototypeThen, PromiseReject, PromiseResolve, Proxy: Proxy2, RangeError, ReferenceError: ReferenceError2, RegExp, RegExpPrototypeAccessors, RegExpPrototypeExec, SafeAsyncGeneratorPrototype, SafeGeneratorPrototype, SafeList, SafeMap, SafeRegExpPrototype, SafeSet, SafeWeakMap, SafeWeakSet, StringFromCharCode, StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeIndexOf, StringPrototypeLastIndexOf, StringPrototypeSlice, StringPrototypeSubstr, SymbolConstructor, SymbolPrototypeDescription, SymbolPrototypeToString, SyntaxError, TypeError: TypeError2, URIError, URL, Uint8ArrayConstructor, arrayBufferByteLength, arrayCopy, arrayIncludes, arrayIndexOf, arrayIsArray, arrayJoin, arrayPush, arraySort, arraySplice, captureStackTraceOf, dataDescriptor, dateNow, decodeURIComponentOf, encodeURIComponentOf, generatorNext, generatorThrow, globalObject, mapGet, mathAbs, mathCeil, mathFloor, mathMax, mathMin, newTextEncoder, newURL, numberIsInteger, numberIsSafeInteger, objectAssign, objectCreate, objectDefineProperties, objectDefineProperty, objectFreeze, objectGetOwnPropertyNames, objectHasOwn, objectIs, objectIsExtensible, objectKeys, objectPreventExtensions, ownField, parseFloatOf, parseIntOf, promiseAll, promiseSettled, reflectApply, reflectConstruct, reflectDefineProperty, reflectDeleteProperty, reflectGet, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectHas, reflectOwnKeys, reflectSet, reflectSetPrototypeOf, regExpExec, safeGenerator, setForEach, stringCharCodeAt, stringCodePointAt, stringEndsWith, stringIncludes, stringIndexOf, stringLastIndexOf, stringOf, stringSlice, stringStartsWith, stringToLowerCase, symbolAsyncIterator, symbolFor, symbolIterator, symbolToStringTag, symbolUnscopables, textEncoderEncodeInto, typedArrayBuffer, typedArrayByteLength, typedArrayByteOffset, typedArraySet, useCaptureStackTrace } = __nimbusLaunchCaptures;
+  var { ArrayBufferConstructor, ArrayConstructor, ArrayFrom, ArrayIteratorNext, ArrayIteratorPrototype, ArrayPrototypeIndexOf, ArrayPrototypeLastIndexOf, ArrayPrototypePop, ArrayPrototypeToSpliced, ArrayPrototypeWith, ArrayValues, BigInt, BigIntPrototypeToString, Error: Error2, FunctionPrototypeBind, GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, JSONParse, JSONStringify, MapConstructor, NumberOf, NumberPrototypeToString, ObjectOf, ObjectPrototype, ObjectPrototypeHasOwnProperty, ObjectPrototypePropertyIsEnumerable, ObjectPrototypePropertyIsEnumerableOf, ObjectPrototypeToString, PromiseConstructor, PromisePrototypeThen, PromiseReject, PromiseResolve, Proxy: Proxy2, RangeError, ReferenceError: ReferenceError2, RegExp, RegExpPrototypeAccessors, RegExpPrototypeExec, SafeAsyncGeneratorPrototype, SafeGeneratorPrototype, SafeList, SafeMap, SafeRegExpPrototype, SafeSet, SafeWeakMap, SafeWeakSet, StringFromCharCode, StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeIndexOf, StringPrototypeLastIndexOf, StringPrototypeSlice, StringPrototypeSubstr, SymbolConstructor, SymbolPrototypeDescription, SymbolPrototypeToString, SyntaxError, TypeError: TypeError2, URIError, URL, Uint8ArrayConstructor, arrayBufferByteLength, arrayCopy, arrayIncludes, arrayIndexOf, arrayIsArray, arrayJoin, arrayPush, arrayShift, arraySort, arraySplice, captureStackTraceOf, dataDescriptor, dateNow, decodeURIComponentOf, encodeURIComponentOf, generatorNext, generatorThrow, globalObject, mapGet, mathAbs, mathCeil, mathFloor, mathMax, mathMin, newTextEncoder, newURL, numberIsInteger, numberIsSafeInteger, objectAssign, objectCreate, objectDefineProperties, objectDefineProperty, objectFreeze, objectGetOwnPropertyNames, objectHasOwn, objectIs, objectIsExtensible, objectKeys, objectPreventExtensions, ownField, parseFloatOf, parseIntOf, promiseAll, promiseSettled, reflectApply, reflectConstruct, reflectDefineProperty, reflectDeleteProperty, reflectGet, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectHas, reflectOwnKeys, reflectSet, reflectSetPrototypeOf, regExpExec, safeGenerator, setFind, setForEach, stringCharCodeAt, stringCodePointAt, stringEndsWith, stringIncludes, stringIndexOf, stringLastIndexOf, stringOf, stringSlice, stringStartsWith, stringToLowerCase, symbolAsyncIterator, symbolFor, symbolIterator, symbolToStringTag, symbolUnscopables, textEncoderEncodeInto, typedArrayBuffer, typedArrayByteLength, typedArrayByteOffset, typedArraySet, useCaptureStackTrace } = __nimbusLaunchCaptures;
 
   // ../core/dist/constants.js
   var NODE_RELEASE = "22.22.3";
@@ -87,16 +87,21 @@ var __nimbusResidentModule = (() => {
   var RESIDENT_CHUNK_BYTES = 1048576;
   var ONE_SHOT_STORE_MEMORY_BYTES = VFS_BUNDLE_MAX_BYTES + 16 * 1024 * 1024;
 
+  // ../platform/dist/utf8.js
+  var UTF8_LONG_UNITS = 256;
+  var UTF8_SCRATCH_BYTES = 256 * 1024;
+  var encoder = new TextEncoder();
+
   // src/vfs/resident/cell-cost.ts
-  var encoder;
+  var encoder2;
   var scratch;
   function utf8Length(text) {
-    if (text.length >= 256) {
-      scratch ??= new Uint8ArrayConstructor(256 * 1024);
-      encoder ??= newTextEncoder();
+    if (text.length >= UTF8_LONG_UNITS) {
+      scratch ??= new Uint8ArrayConstructor(UTF8_SCRATCH_BYTES);
+      encoder2 ??= newTextEncoder();
       let bytes2 = 0;
       for (let read = 0; read < text.length; ) {
-        const done = textEncoderEncodeInto(encoder, read === 0 ? text : stringSlice(text, read), scratch);
+        const done = textEncoderEncodeInto(encoder2, read === 0 ? text : stringSlice(text, read), scratch);
         read += reflectGet(done, "read");
         bytes2 += reflectGet(done, "written");
       }
@@ -169,9 +174,7 @@ var __nimbusResidentModule = (() => {
         for (let idle = 0; ; ) {
           const waiting = reserveQueue.length;
           while (reserveQueue.length > 0 && holdRoom(reserveQueue[0].path, reserveQueue[0].bytes)) {
-            const held = reserveQueue[0];
-            arraySplice(reserveQueue, 0, 1);
-            held.resolve(true);
+            arrayShift(reserveQueue)?.resolve(true);
           }
           if (reserveQueue.length === 0) return;
           idle = reserveQueue.length < waiting ? 0 : idle + 1;
@@ -182,7 +185,9 @@ var __nimbusResidentModule = (() => {
             await askGrant(need);
           }
           if (cap === before) {
-            const refused = arraySplice(reserveQueue, 0, reserveQueue.length);
+            const refused = new SafeList();
+            for (let i = 0; i < reserveQueue.length; i++) refused[i] = reserveQueue[i];
+            reserveQueue.length = 0;
             for (let i = 0; i < refused.length; i++) refused[i].resolve(false);
             return;
           }
@@ -806,13 +811,12 @@ var __nimbusResidentModule = (() => {
       fileByKey(ckey, notPath) {
         const set = byKey.get(stringOf(ckey));
         if (!set) return void 0;
-        let found;
-        set.forEach((path) => {
-          if (found !== void 0) return;
-          const row = files.get(path);
-          if (path !== notPath && row && row.rev >= 0) found = { path, kind: row.kind, size: row.size, chunks: row.chunks };
+        const path = setFind(set, (candidate) => {
+          const row2 = files.get(candidate);
+          return candidate !== notPath && row2 !== void 0 && row2.rev >= 0;
         });
-        return found;
+        const row = path === void 0 ? void 0 : files.get(path);
+        return path === void 0 || row === void 0 ? void 0 : { path, kind: row.kind, size: row.size, chunks: row.chunks };
       },
       filePaths(from, to) {
         return arrayCopy(inRange(from, to));
@@ -2192,7 +2196,7 @@ var __nimbusResidentModule = (() => {
        */
       namespaceView(supervisor, device, cred) {
         namespace.setCred(cred);
-        const encoder2 = new TextEncoder();
+        const encoder3 = new TextEncoder();
         const typeOf = (kind) => kind === NS_DIR ? "directory" : kind === NS_LINK ? "symlink" : "file";
         const view = {
           device: Number(device),
@@ -2231,7 +2235,7 @@ var __nimbusResidentModule = (() => {
             }
             const cell = cells.get(k);
             if (cell === void 0 || typeof cell === "object" && "error" in cell) return void 0;
-            return typeof cell === "string" ? encoder2.encode(cell) : cell;
+            return typeof cell === "string" ? encoder3.encode(cell) : cell;
           },
           async fill(k, entry) {
             const cursor = coherence.cursor();
@@ -2362,7 +2366,7 @@ var __nimbusResidentModule = (() => {
     return reflectGet(supervisor, name);
   }
   var messageOf = (e) => {
-    const message = e !== null && (typeof e === "object" || typeof e === "function") ? ownField(e, "message") : void 0;
+    const message = e !== null && (typeof e === "object" || typeof e === "function") ? reflectGet(e, "message") : void 0;
     return stringOf(message || e);
   };
   function createTransport(coherence, admission, namespace, cells) {

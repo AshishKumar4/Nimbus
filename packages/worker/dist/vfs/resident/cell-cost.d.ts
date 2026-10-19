@@ -4,7 +4,12 @@
  * manager charges a launch's module map the same before it admits the launch
  * (manager.ts moduleMapStorageBytes).
  */
-/** The platform's UTF-8 measure, on the launch's captures after a program starts. */
+/**
+ * The platform's UTF-8 measure (@nimbus-sh/platform/utf8.js), its policy and
+ * its count, on the launch's captures: a fill measures after a program may
+ * have replaced String.prototype.charCodeAt. Kept apart from the platform's,
+ * which host hot paths call on their realm's methods.
+ */
 export declare function utf8Length(text: string): number;
 /** A row's allowance: what one row of 'file', 'chunk' or 'ns' is charged beside its payload. */
 export declare const RESIDENT_ROW_BYTES = 256;

@@ -39,8 +39,9 @@ function ownValue(record, key) {
 function method(supervisor, name) {
     return reflectGet(supervisor, name);
 }
+// An exception's message wherever it is defined (a DOMException's, a class's, is inherited).
 export const messageOf = (e) => {
-    const message = e !== null && (typeof e === 'object' || typeof e === 'function') ? ownField(e, 'message') : undefined;
+    const message = e !== null && (typeof e === 'object' || typeof e === 'function') ? reflectGet(e, 'message') : undefined;
     return stringOf(message || e);
 };
 export function createTransport(coherence, admission, namespace, cells) {

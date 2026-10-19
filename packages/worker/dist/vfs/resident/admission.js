@@ -12,7 +12,7 @@
  * to ask for more.
  */
 import { residentBytes, residentCellCost } from './cell-cost.js';
-import { arrayIsArray, arrayPush, arraySplice, mathMax, NumberOf, SafeList, SafeMap } from '@nimbus-sh/core/_shared/primordials.js';
+import { arrayIsArray, arrayPush, arrayShift, mathMax, NumberOf, SafeList, SafeMap } from '@nimbus-sh/core/_shared/primordials.js';
 export function createAdmission(coherence) {
     let cap = null;
     let facet = null;
@@ -82,9 +82,7 @@ export function createAdmission(coherence) {
             for (let idle = 0;;) {
                 const waiting = reserveQueue.length;
                 while (reserveQueue.length > 0 && holdRoom(reserveQueue[0].path, reserveQueue[0].bytes)) {
-                    const held = reserveQueue[0];
-                    arraySplice(reserveQueue, 0, 1);
-                    held.resolve(true);
+                    arrayShift(reserveQueue)?.resolve(true);
                 }
                 if (reserveQueue.length === 0)
                     return;
@@ -97,7 +95,10 @@ export function createAdmission(coherence) {
                     await askGrant(need);
                 }
                 if (cap === before) {
-                    const refused = arraySplice(reserveQueue, 0, reserveQueue.length);
+                    const refused = new SafeList();
+                    for (let i = 0; i < reserveQueue.length; i++)
+                        refused[i] = reserveQueue[i];
+                    reserveQueue.length = 0;
                     for (let i = 0; i < refused.length; i++)
                         refused[i].resolve(false);
                     return;

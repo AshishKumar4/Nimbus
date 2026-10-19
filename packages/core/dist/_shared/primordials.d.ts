@@ -237,4 +237,8 @@ export declare const typedArrayBuffer: (view: Uint8Array) => ArrayBufferLike;
 export declare const typedArrayByteOffset: (view: Uint8Array) => number;
 /** A backing buffer's length, whether ordinary or shared, through its own captured accessor. */
 export declare const arrayBufferByteLength: (buffer: ArrayBufferLike) => number;
+/** Array.prototype.shift: unlike splice, it makes no array, so it consults no species. */
+export declare const arrayShift: <T>(list: T[]) => T | undefined;
+/** The first member of `set` that `test` holds of, or undefined: a walk that stops there, on the Set iterator as the launch found it. */
+export declare function setFind<T>(set: ReadonlySet<T>, test: (value: T) => boolean): T | undefined;
 //# sourceMappingURL=primordials.d.ts.map

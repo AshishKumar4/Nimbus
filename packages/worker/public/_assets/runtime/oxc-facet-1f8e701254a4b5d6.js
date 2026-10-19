@@ -10282,6 +10282,9 @@ error: the Oxc transform crashed (${reason})`);
     const sharedLength = sharedGetter === void 0 ? void 0 : uncurryThis(sharedGetter);
     return (buffer) => buffer instanceof ArrayBufferConstructor || sharedLength === void 0 ? length(buffer) : sharedLength(buffer);
   })();
+  var arrayShift = uncurryThis(Array.prototype.shift);
+  var setValuesOf = uncurryThis(Set.prototype.values);
+  var setIteratorNext = uncurryThis(reflectGet(reflectGetPrototypeOf((  new Set()).values()) ?? {}, "next"));
 
   function extensionOf(path) {
     const base = stringSlice(path, stringLastIndexOf(path, "/") + 1);
