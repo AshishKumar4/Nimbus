@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// A process's waves, CPU per arm: files made and files rewritten, by a
+// A process's waves, CPU per arm: files made, and files rewritten, by a
 // process whose run is captured (SqliteVFS.captureRun: a promotable
 // one-shot's, whose first change of each key keeps the row it found) and by
 // one whose run is not. A baseline without captureRun writes the same waves
@@ -17,6 +17,7 @@ import { runPairedBenchmark } from './lib/paired-runner.mjs';
 const USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 const PID = 7;
 const BODY = new TextEncoder().encode('0123456789abcdef'.repeat(4));
+const NEW_BODY = new TextEncoder().encode('fedcba9876543210'.repeat(4));
 let committed = 0;
 
 /** A fresh database for each sample, with `rewrite` files there before the run. */
@@ -33,12 +34,12 @@ async function session({ 'vfs/sqlite-vfs.ts': { SqliteVFS }, 'runtime/process-fi
   return { engine, files: new ProcessFiles(engine), user: engine.as(USER) };
 }
 
-/** Waves of 100 writeFile ops by process PID: `made` new files, then each of `rewrite` old ones again. */
+/** Waves of 100 writeFile ops by process PID: `made` new files, then each of `rewrite` old ones with other bytes. */
 async function waves({ files, user }, made, rewrite) {
   const ops = [
     ...Array.from({ length: made }, (_, i) => `home/user/proj/new${i}`),
     ...Array.from({ length: rewrite }, (_, i) => `home/user/proj/old/${i}`),
-  ].map((path) => ({ type: 'call', call: { call: 'writeFile', path, mode: 0o644, data: BODY } }));
+  ].map((path) => ({ type: 'call', call: { call: 'writeFile', path, mode: 0o644, data: path.includes('/old/') ? NEW_BODY : BODY } }));
   for (let at = 0; at < ops.length; at += 100) {
     const group = ops.slice(at, at + 100);
     const answer = await files.waves.writeStream(user, encodeWriteBatchStream({ inodes: [], chunks: [], ops: group }), {
@@ -50,24 +51,25 @@ async function waves({ files, user }, made, rewrite) {
 }
 
 const WORK = {
-  captured: { capture: true },
-  uncaptured: { capture: false },
+  'made-captured': { capture: true, made: 1000, rewrite: 0 },
+  'made-uncaptured': { capture: false, made: 1000, rewrite: 0 },
+  'rewritten-captured': { capture: true, made: 0, rewrite: 400 },
+  'rewritten-uncaptured': { capture: false, made: 0, rewrite: 400 },
 };
 
 await runPairedBenchmark({
   source: CORE_CPU_SOURCES.source,
   async run({ short, cleanup, withArms, sample }) {
-    const made = short ? 50 : 1000;
-    const rewrite = short ? 20 : 400;
+    const scale = short ? 0.05 : 1;
     await withArms((from) => loadIsolatedCore(from, cleanup, {
       sources: CORE_CPU_SOURCES, modules: ['vfs/sqlite-vfs.ts', 'runtime/process-files.ts'],
     }), async (arms) => {
-      for (const [kind, { capture }] of Object.entries(WORK)) {
+      for (const [kind, { capture, made, rewrite }] of Object.entries(WORK)) {
         await sample(kind, arms, async (modules) => {
-          const s = await session(modules, rewrite);
+          const s = await session(modules, Math.ceil(rewrite * scale));
           // A baseline has no capture: it writes the same waves as they were.
           if (capture && typeof s.engine.captureRun === 'function') s.engine.captureRun(PID);
-          return cpuMs(() => waves(s, made, rewrite));
+          return cpuMs(() => waves(s, Math.ceil(made * scale), Math.ceil(rewrite * scale)));
         }, { pairs: 30, warm: 4, iterations: 1 });
       }
     });
