@@ -2772,19 +2772,21 @@ function __nimbusOwnAcknowledgement(path, work, generation) {
  * coming back, for nothing it reads.
  */
 function __nimbusReportedOwnAcknowledgements() {
-  const pending = [];
-  for (const [key, held] of __vfsOwnAcks) {
+  // Every barrier asks: by the SafeMap's and SafeSets' own forEach, after the program may have replaced the iterators.
+  const pending = new __nimbusLaunchCaptures.SafeList();
+  __vfsOwnAcks.forEach((held, key) => {
     const lease = __vfsOwnLeases[key];
-    if (__vfsParkedReports[key] === undefined && !(lease && lease.reported !== -1)) continue;
-    const parkedOver = lease === undefined && Object.prototype.hasOwnProperty.call(__vfsWrites, key);
-    for (const ack of held) {
-      if (parkedOver && ack.generation !== undefined && ack.generation !== __vfsWriteGenerations[key]) continue;
-      pending.push(ack.settled);
-    }
-  }
+    if (__vfsParkedReports[key] === undefined && !(lease && lease.reported !== -1)) return;
+    const parkedOver = lease === undefined && __nimbusLaunchCaptures.objectHasOwn(__vfsWrites, key);
+    held.forEach((ack) => {
+      if (parkedOver && ack.generation !== undefined && ack.generation !== __vfsWriteGenerations[key]) return;
+      pending[pending.length] = ack.settled;
+    });
+  });
   if (pending.length === 0) return null;
   __nimbusHurryVfs();
-  return Promise.all(pending);
+  // Each settles, never rejects.
+  return __nimbusLaunchCaptures.promiseSettled(pending);
 }
 
 /**
