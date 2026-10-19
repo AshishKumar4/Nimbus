@@ -10,6 +10,7 @@ import { encode, decode } from '../utils/encoding.js';
 import { errnoCodeOf, fsError, isVfsError, type FsError } from '../../../vfs/vfs-error.js';
 import { DIRENT_TYPES, direntTypeOfStat } from '../../../vfs/dirent-type.js';
 import { S_IFMT } from '../../../vfs/vfs.js';
+import { nameDec } from '../../../_shared/bytes.js';
 import { invalidArgType, invalidArgValue, nodeError, nodeSystemError } from '../../../_shared/node-error.js';
 import { fileURLToPath } from 'node:url';
 import {
@@ -139,7 +140,7 @@ interface StreamOptions {
 function pathText(p: string | URL | Uint8Array): string {
   if (typeof p === 'string') return p;
   // By shape, not by class: a program's URL or Buffer may be another realm's.
-  if (ArrayBuffer.isView(p)) return decode(p);
+  if (ArrayBuffer.isView(p)) return nameDec.decode(p);
   if (p.protocol !== 'file:') throw nodeError(TypeError, 'ERR_INVALID_URL_SCHEME', 'The URL must be of scheme file');
   return fileURLToPath(p.href);
 }
@@ -487,7 +488,8 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array, reachS
 
   /** readlink(2): the link's text in `encoding` (UTF-8 by default), or its bytes with `encoding: 'buffer'`. */
   function readlinkSync(path: string | URL | Uint8Array, options?: string | { encoding?: string | null } | null): string | Buffer {
-    const encoding = (typeof options === 'string' ? options : options?.encoding) ?? 'utf8';
+    // No encoding, or an empty one, is UTF-8, as Node takes it.
+    const encoding = (typeof options === 'string' ? options : options?.encoding) || 'utf8';
     if (encoding !== 'buffer' && !Buffer.isEncoding(encoding)) throw invalidArgValue('encoding', encoding, 'is invalid encoding');
     const text = vfs.readlink(resolvePath(cwd, path));
     if (encoding === 'buffer') return Buffer.from(text);

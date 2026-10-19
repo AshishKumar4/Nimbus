@@ -53,6 +53,8 @@ console.log("nothing", t(() => fs.readlinkSync("missing")));
 console.log("over", t(() => fs.symlinkSync("x", "d/f")), t(() => fs.symlinkSync("x", "top")));
 console.log("encoding", t(() => fs.readlinkSync("top", "hex")), t(() => fs.readlinkSync("top", { encoding: "base64" })), m(() => fs.readlinkSync("top", "bogus")));
 console.log("buffer path", t(() => fs.symlinkSync(Buffer.from("d/f"), Buffer.from("buf"))), t(() => fs.readlinkSync(Buffer.from("buf"))));
+console.log("byte order mark", t(() => fs.symlinkSync(Buffer.from("\ufeffd/f"), Buffer.from("\ufeffbom"))), JSON.stringify(fs.readlinkSync("\ufeffbom")), fs.readdirSync(".").includes("\ufeffbom"));
+console.log("empty encoding", t(() => fs.readlinkSync("top", "")), t(() => fs.readlinkSync("top", { encoding: "" })), t(() => fs.readlinkSync("top", { encoding: null })));
 const here = "file://" + process.cwd();
 console.log("file url", t(() => fs.symlinkSync(new URL("file:///tmp/a%20b"), new URL(here + "/u%20l"))), t(() => fs.readlinkSync("u l")), t(() => fs.readlinkSync(new URL(here + "/u%20l"))));
 console.log("other url", m(() => fs.symlinkSync("d/f", new URL("http://x/y"))), m(() => fs.readlinkSync(new URL("http://x/top"))));
