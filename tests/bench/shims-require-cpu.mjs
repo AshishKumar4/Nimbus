@@ -7,9 +7,8 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
-import { armTree, assertArmsInside, assertBundleInside, importBundle, repository } from './lib/isolated-core.mjs';
+import { armImports, armTree, assertArmsInside, assertBundleInside, importBundle, repository } from './lib/isolated-core.mjs';
 import { cpuMs, pairedKind, shuffled } from './lib/paired-cpu.mjs';
 
 const args = process.argv.slice(2);
@@ -57,9 +56,9 @@ async function arm(name, from) {
     conditions: ['workspace'], mainFields: ['module', 'main'], legalComments: 'none',
   };
   // The side's own captures plugin, where it has one (a side before it binds no captures).
-  const capturesPlugin = join(tree, 'scripts/lib/launch-captures-plugin.mjs');
-  const plugins = existsSync(capturesPlugin)
-    ? [await (await import(pathToFileURL(capturesPlugin).href)).launchCapturesPlugin('__nimbusLaunchCaptures', core)] : [];
+  const capturesPlugin = 'scripts/lib/launch-captures-plugin.mjs';
+  const plugins = existsSync(join(tree, capturesPlugin))
+    ? [await (await armImports(tree, [capturesPlugin]))[0].launchCapturesPlugin('__nimbusLaunchCaptures', core)] : [];
   const resident = await build({
     ...options, bundle: true, write: false, metafile: true, entryPoints: [join(tree, 'packages/worker/src/vfs/resident/index.ts')],
     format: 'iife', globalName: '__nimbusResidentModule', plugins,

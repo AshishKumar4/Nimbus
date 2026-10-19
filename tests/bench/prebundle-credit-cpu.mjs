@@ -4,10 +4,9 @@
 // budget and diag counters are its own and include owner-accounting cost.
 import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { resolve } from 'node:path';
 import { heapStats } from 'bun:jsc';
-import { armTree, assertArmsInside, repository } from './lib/isolated-core.mjs';
+import { armImports, armTree, assertArmsInside, repository } from './lib/isolated-core.mjs';
 import { cpuMs, pairedKind, shuffled } from './lib/paired-cpu.mjs';
 import { median } from '../../scripts/lib/statistics.mjs';
 
@@ -26,15 +25,14 @@ try {
   /** An arm: its side's tree (`from`), every module this bench drives with taken from it, budget and diag copies included. */
   const load = async (from, label) => {
     const tree = armTree(from, (dispose) => disposals.push(dispose));
-    const module = (path) => import(pathToFileURL(join(tree, path)).href);
-    const [browser, poolModule, budget, diag, manager, contracts, esbuildService, supervisor, ports, composition, host, facets, launches, named, bridge, assets] = await Promise.all([
+    const [browser, poolModule, budget, diag, manager, contracts, esbuildService, supervisor, ports, composition, host, facets, launches, named, bridge, assets] = await armImports(tree, [
       'packages/worker/src/npm/browser-prebundle.ts', 'packages/worker/src/facets/prebundle-pool.ts',
       'packages/platform/src/heavy-alloc-coord.ts', 'packages/platform/src/diag-counters.ts', 'packages/worker/src/facets/manager.ts',
       'packages/core/src/runtime/os-contracts.ts', 'packages/core/src/runtime/esbuild-service.ts', 'packages/core/src/runtime/session-process-supervisor.ts',
       'packages/core/src/runtime/port-registry.ts', 'packages/fabric/src/composition.ts', 'packages/worker/src/loaders/process-host.ts',
       'tests/unit/lib/facet-host-harness.mjs', 'tests/unit/lib/facet-launch-harness.mjs', 'tests/unit/lib/named-facet-platform.mjs',
       'tests/unit/lib/process-bridge.mjs', 'tests/unit/lib/staged-assets.mjs',
-    ].map(module));
+    ]);
     composition.adoptCtxExports({ SupervisorRPC: ({ props }) => ({ props }) });
     const { CRED_KERNEL } = contracts;
     const { EsbuildService } = esbuildService;

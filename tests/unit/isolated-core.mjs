@@ -3,12 +3,14 @@
 // isolated-core.mjs): every module of it, a workspace package's included, is
 // the arm's own copy (not the other side's, not another arm's, not the
 // harness's); third-party code is the harness's store, the same for every
-// arm; a side on another lockfile is refused; and once arms exist, a module
-// loaded from the harness's repository (outside its store) fails the bench,
-// however it is reached: an arm's import, a require, a third-party module's
-// own import, a bundle's lazy import, the harness itself; and so does the
-// bench's own loading of the harness's workspace code, before any arm; under
-// Bun and under node; and so does a bundle's input outside its arm's tree.
+// arm; a side on another lockfile is refused. The guard fails a bench whose
+// arm, while it is made, loads a module not its own (the harness's, another
+// arm's, an unrelated checkout's), however it is reached (an import, a
+// require, a third-party module's own import); which, once arms exist, loads
+// one that is no arm's (a bundle's lazy import, the harness's own); which
+// loads the harness's workspace code at all, before any arm too; and (node,
+// which names an import's importer) whose arm lazily imports another arm's.
+// Under Bun and under node; and a bundle's input outside its arm's tree.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -107,9 +109,23 @@ try {
   // A name the bundler cannot fold: what is loaded is only known when it runs.
   put(join(leaky, 'packages/b/src/lazy.mjs'), `export const later = () => import([${JSON.stringify(outside)}, 'lazy.mjs'].join('/'));`);
   for (const module of ['leak.mjs', 'required.cjs', 'bridged.mjs']) {
-    await assert.rejects(loadIsolatedCore(leaky, cleanup, { sources, modules: [module], harness }), /none of the harness repository's/, module);
+    await assert.rejects(loadIsolatedCore(leaky, cleanup, { sources, modules: [module], harness }), /while an arm is made, it loads only its own tree's modules/, module);
   }
   assertArmsInside();
+
+  // Another arm's module, or an unrelated checkout's, loaded while an arm is made; an unrelated one later.
+  const elsewhere = armTree(base, cleanup, { harness });
+  put(join(root, 'unrelated/x.mjs'), 'export const unrelated = true;');
+  put(join(root, 'unrelated/later.mjs'), 'export const unrelated = true;');
+  put(join(leaky, 'packages/b/src/cross.mjs'), `export * from ${JSON.stringify(join(elsewhere, 'packages/b/src/helper.mjs'))};`);
+  put(join(leaky, 'packages/b/src/unrelated.mjs'), `export * from ${JSON.stringify(join(root, 'unrelated/x.mjs'))};`);
+  put(join(leaky, 'packages/b/src/unrelated-later.mjs'), `export const later = () => import([${JSON.stringify(join(root, 'unrelated'))}, 'later.mjs'].join('/'));`);
+  for (const module of ['cross.mjs', 'unrelated.mjs']) {
+    await assert.rejects(loadIsolatedCore(leaky, cleanup, { sources, modules: [module], harness }), /while an arm is made, it loads only its own tree's modules/, module);
+  }
+  const unrelatedLater = (await loadIsolatedCore(leaky, cleanup, { sources, modules: ['unrelated-later.mjs'], harness }))['unrelated-later.mjs'];
+  await unrelatedLater.later();
+  assert.throws(() => assertArmsInside(), /unrelated\/later\.mjs/, 'a module that is no arm\'s, loaded later, is caught');
 
   // So does a bundle with an input outside it; one inside is imported, and what it loads later is watched.
   const bundled = await importBundle(tree, { entryPoints: [join(tree, 'packages/b/src/main.mjs')], format: 'esm', platform: 'neutral' }, join(root, 'bundle.mjs'));
@@ -124,18 +140,23 @@ try {
 
   // Under node, its resolve hook guards an arm.
   // `first`: a harness workspace module the bench loads itself, before any arm.
-  const script = (modules, first) => `
-    import { loadIsolatedCore } from ${JSON.stringify(pathToFileURL(join(import.meta.dirname, '../bench/lib/isolated-core.mjs')).href)};
+  // `cross`: the arm's module `later` lazily imports another arm's (made first) helper.
+  const script = (modules, first, cross = false) => `
+    import { armTree, assertArmsInside, loadIsolatedCore } from ${JSON.stringify(pathToFileURL(join(import.meta.dirname, '../bench/lib/isolated-core.mjs')).href)};
+    import { join } from 'node:path';
     const cleanups = [];
     ${first === undefined ? '' : `await import(${JSON.stringify(pathToFileURL(first).href)});`}
     try {
+      ${cross ? `globalThis.crossTarget = join(armTree(${JSON.stringify(base)}, (dispose) => cleanups.push(dispose), { harness: ${JSON.stringify(harness)} }), 'packages/b/src/helper.mjs');` : ''}
       const arm = await loadIsolatedCore(${JSON.stringify(leaky)}, (dispose) => cleanups.push(dispose), {
         sources: ${JSON.stringify(sources)}, modules: ${JSON.stringify(modules)}, harness: ${JSON.stringify(harness)},
       });
+      ${cross ? 'await Object.values(arm)[0].later(); assertArmsInside();' : ''}
       console.log(Object.values(arm)[0].version);
     } finally { for (const dispose of cleanups) dispose(); }
   `;
-  const node = (modules, first) => spawnSync('node', ['--input-type=module', '-e', script(modules, first)], { encoding: 'utf8' });
+  put(join(leaky, 'packages/b/src/cross-later.mjs'), "export const version = 'leaky'; export const later = () => import(globalThis.crossTarget);");
+  const node = (modules, first, cross) => spawnSync('node', ['--input-type=module', '-e', script(modules, first, cross)], { encoding: 'utf8' });
   const fine = node(['main.mjs']);
   assert.equal(fine.status, 0, fine.stderr);
   assert.equal(fine.stdout.trim(), 'leaky');
@@ -149,11 +170,15 @@ try {
     assert.notEqual(run.status, 0, runtime);
     assert.match(run.stderr, /no workspace package code of the harness's[\s\S]*packages\/a\/src\/mod\.mjs/, runtime);
   }
-  for (const module of ['leak.mjs', 'required.cjs', 'bridged.mjs']) {
+  for (const module of ['leak.mjs', 'required.cjs', 'bridged.mjs', 'cross.mjs', 'unrelated.mjs']) {
     const leaked = node([module]);
     assert.notEqual(leaked.status, 0, module);
-    assert.match(leaked.stderr, /none of the harness repository's/, module);
+    assert.match(leaked.stderr, /while an arm is made, it loads only its own tree's modules/, module);
   }
+  // Under node, an arm's lazy import of another arm's module is caught too (its importer is named).
+  const crossed = node(['cross-later.mjs'], undefined, true);
+  assert.notEqual(crossed.status, 0);
+  assert.match(crossed.stderr, /packages\/b\/src\/helper\.mjs, imported by [^,]*cross-later\.mjs, another arm's/);
 } finally {
   for (const dispose of cleanups.reverse()) dispose();
   rmSync(root, { recursive: true, force: true });

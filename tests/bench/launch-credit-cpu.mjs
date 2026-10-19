@@ -6,9 +6,8 @@
 // and every module and test harness it is driven with.
 import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { armTree, assertArmsInside, repository } from './lib/isolated-core.mjs';
+import { resolve } from 'node:path';
+import { armImports, armTree, assertArmsInside, repository } from './lib/isolated-core.mjs';
 import { cpuMs, pairedKind, shuffled } from './lib/paired-cpu.mjs';
 
 const option = (name) => {
@@ -41,13 +40,12 @@ try {
   /** An arm: its side's tree (`from`), every module this bench drives a launch with taken from it. */
   const load = async (from) => {
     const tree = armTree(from, (dispose) => disposals.push(dispose));
-    const at = (path) => import(pathToFileURL(join(tree, path)).href);
-    const [manager, supervisor, ports, budgets, composition, credit, host, facets, launches, bridge, assets] = await Promise.all([
+    const [manager, supervisor, ports, budgets, composition, credit, host, facets, launches, bridge, assets] = await armImports(tree, [
       'packages/worker/src/facets/manager.ts', 'packages/core/src/runtime/session-process-supervisor.ts', 'packages/core/src/runtime/port-registry.ts',
       'packages/fabric/src/budgets.ts', 'packages/fabric/src/composition.ts', 'packages/platform/src/heavy-alloc-coord.ts',
       'packages/worker/src/loaders/process-host.ts', 'tests/unit/lib/facet-host-harness.mjs', 'tests/unit/lib/facet-launch-harness.mjs',
       'tests/unit/lib/process-bridge.mjs', 'tests/unit/lib/staged-assets.mjs',
-    ].map(at));
+    ]);
     composition.adoptCtxExports({ SupervisorRPC: ({ props }) => ({ props }) });
     return {
       Manager: manager.FacetManager, supervisor, ports, budgets, credit, host, facets, launches, bridge, assets,
