@@ -29,6 +29,10 @@ const t = new Terminal(sid);
 await t.connect();
 await t.waitForPrompt(60_000);
 
+// What GitHub serves for HEAD, taken on either side of the clone: the branch moves.
+const remote = () => execFileSync('git', ['ls-remote', REPO, 'HEAD'], { encoding: 'utf8' }).split(/\s/)[0];
+const servedBefore = remote();
+
 // 1. The clone, bounded.
 const started = Date.now();
 const cloned = await t.run(`git clone --depth 1 ${REPO} repo`, CLONE_BOUND_MS + 60_000);
@@ -39,9 +43,9 @@ a.check(`the clone finishes within ${CLONE_BOUND_MS / 1000} s`, cloneMs < CLONE_
 
 // 2. It holds the commit GitHub serves (the branch moves: either side of the clone).
 const head = (stripAnsi((await t.run('cd repo && git rev-parse HEAD', 30_000)).output).match(/\b[0-9a-f]{40}\b/) ?? [''])[0];
-const remote = () => execFileSync('git', ['ls-remote', REPO, 'HEAD'], { encoding: 'utf8' }).split(/\s/)[0];
-const before = remote();
-a.check('HEAD is the commit GitHub serves for HEAD', head !== '' && (head === before || head === remote()), `head=${head} remote=${before}`);
+const servedAfter = remote();
+a.check('HEAD is the commit GitHub serves for HEAD', head !== '' && (head === servedBefore || head === servedAfter),
+  `head=${head} served before=${servedBefore} after=${servedAfter} cloneOutput=${JSON.stringify(clone.slice(-2000))}`);
 
 // 3. Files byte-equal to GitHub's at that commit.
 for (const path of SAMPLES) {
@@ -61,8 +65,8 @@ for (const path of SAMPLES) {
     STATUS_BOUND_MS)).output);
   const indexed = Number((out.match(/INDEXED=\s*(\d+)/) ?? [])[1]);
   const present = Number((out.match(/PRESENT=\s*(\d+)/) ?? [])[1]);
-  a.check('the index lists the tree (over 20,000 paths)', indexed > 20_000, out.slice(-200));
-  a.check('the worktree holds exactly the indexed files', present === indexed, `indexed ${indexed}, present ${present}`);
+  a.check('the index lists the tree (over 20,000 paths)', indexed > 20_000, `${out.slice(-200)} cloneOutput=${JSON.stringify(clone.slice(-2000))}`);
+  a.check('the worktree holds exactly the indexed files', present === indexed, `indexed ${indexed}, present ${present} cloneOutput=${JSON.stringify(clone.slice(-2000))}`);
 }
 
 // 5. git status is clean, bounded, and the session survives it.

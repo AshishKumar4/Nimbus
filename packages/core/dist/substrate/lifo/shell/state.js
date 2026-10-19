@@ -9,6 +9,8 @@ export function createShellState(env, cwd, jobTable) {
         options: { errexit: false, nounset: false, pipefail: false, posix: false },
         traps: new Map(),
         readonlyNames: new Set(),
+        exportedNames: new Set(Object.keys(env)),
+        declaredNames: new Set(),
         aliases: new Map(),
         jobTable,
     }, cwd);
@@ -25,6 +27,8 @@ export function forkShellState(parent) {
         options: { ...parent.options },
         traps: new Map(Array.from(parent.traps.entries()).filter(([, action]) => action === '')),
         readonlyNames: new Set(parent.readonlyNames),
+        exportedNames: new Set(parent.exportedNames),
+        declaredNames: new Set(parent.declaredNames),
         aliases: new Map(parent.aliases),
         jobTable: parent.jobTable.fork(),
     }, parent.getCwd());
@@ -48,6 +52,8 @@ export function snapshotShellState(state) {
         options: { ...state.options },
         traps: new Map(state.traps.entries()),
         readonlyNames: new Set(state.readonlyNames),
+        exportedNames: new Set(state.exportedNames),
+        declaredNames: new Set(state.declaredNames),
         aliases: new Map(state.aliases),
     };
 }
@@ -66,6 +72,12 @@ export function restoreShellState(state, frame) {
     state.readonlyNames.clear();
     for (const name of frame.readonlyNames)
         state.readonlyNames.add(name);
+    state.exportedNames.clear();
+    for (const name of frame.exportedNames)
+        state.exportedNames.add(name);
+    state.declaredNames.clear();
+    for (const name of frame.declaredNames)
+        state.declaredNames.add(name);
     replaceMap(state.aliases, frame.aliases);
 }
 function replaceMap(target, source) {

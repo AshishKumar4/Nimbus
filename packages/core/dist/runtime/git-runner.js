@@ -31,6 +31,7 @@
 import { installedPath } from './runtime-manifest.js';
 import { hostImage } from './process-files.js';
 import { nameDec } from '../_shared/bytes.js';
+import { warmFacetKeys } from './warm-facets.js';
 import { GIT_CALL_TASK } from './compiled-bodies.generated.js';
 import { CRED_KERNEL, GIT_WASI_ENV, gateSyncLaunch, requireVfsCred } from './os-contracts.js';
 import { normalizeVfsPath } from '../vfs/path.js';
@@ -44,14 +45,7 @@ const GIT_SYSTEM_CONFIG = 'share/git/gitconfig';
 const WARM_GIT_FACETS = 2;
 export function makeGitRunnerFactory(deps) {
     const fsmonitor = makeGitFsmonitor(deps.fsmonitorState);
-    /**
-     * Warm facets no git is running in. A key is never named twice, nor by
-     * another incarnation of the session: a facet one left running is not
-     * this one's to enter.
-     */
-    const idle = [];
-    const incarnation = crypto.randomUUID();
-    let named = 0;
+    const warmKeys = warmFacetKeys(deps.session, 'git', WARM_GIT_FACETS);
     return function gitRunnerFactory(manifest, installRoot, binName, binKind) {
         if (binKind === 'fsmonitor')
             return async (ctx) => {
@@ -114,7 +108,7 @@ export function makeGitRunnerFactory(deps) {
                 ctx.stderr.write(`${binName}: ${errorMessage(error)}\n`);
                 return 1;
             }
-            const warm = idle.pop() ?? `git-${incarnation}-${++named}`;
+            const warm = warmKeys.take();
             const facet = deps.facets.open({
                 tag: 'git-runner',
                 concurrency: 1,
@@ -146,8 +140,8 @@ export function makeGitRunnerFactory(deps) {
                     return (outcome = 1);
                 }
                 // A facet in which a syscall was abandoned may still be written by it: never another git's.
-                if (result.error === undefined && result.reusable === true && idle.length < WARM_GIT_FACETS)
-                    idle.push(warm);
+                if (result.error === undefined && result.reusable === true)
+                    warmKeys.give(warm);
                 const returned = Date.now();
                 if (ctx.env?.NIMBUS_WASI_FS_STATS === '1') {
                     // Milliseconds from the command's start: the host's clock, and the facet's where it moved.

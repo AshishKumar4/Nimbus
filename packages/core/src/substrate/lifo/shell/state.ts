@@ -37,6 +37,10 @@ export interface ShellState {
   readonly options: ShellOptions;
   readonly traps: TrapTable;
   readonly readonlyNames: Set<string>;
+  /** The variables with the export attribute: what came in the environment, and what `export` or `declare -x` marked. */
+  readonly exportedNames: Set<string>;
+  /** Variables declared with no value (`declare p`, `export p`): set or not, they exist until unset. */
+  readonly declaredNames: Set<string>;
   readonly aliases: Map<string, string>;
   readonly jobTable: JobTable;
 }
@@ -51,6 +55,8 @@ export function createShellState(env: Record<string, string>, cwd: string, jobTa
     options: { errexit: false, nounset: false, pipefail: false, posix: false },
     traps: new Map(),
     readonlyNames: new Set(),
+    exportedNames: new Set(Object.keys(env)),
+    declaredNames: new Set(),
     aliases: new Map(),
     jobTable,
   }, cwd);
@@ -68,6 +74,8 @@ export function forkShellState(parent: ShellState): ShellState {
     options: { ...parent.options },
     traps: new Map(Array.from(parent.traps.entries()).filter(([, action]) => action === '')),
     readonlyNames: new Set(parent.readonlyNames),
+    exportedNames: new Set(parent.exportedNames),
+    declaredNames: new Set(parent.declaredNames),
     aliases: new Map(parent.aliases),
     jobTable: parent.jobTable.fork(),
   }, parent.getCwd());
@@ -93,6 +101,8 @@ export interface ShellStateFrame {
   readonly options: ShellOptions;
   readonly traps: Map<string, string>;
   readonly readonlyNames: Set<string>;
+  readonly exportedNames: Set<string>;
+  readonly declaredNames: Set<string>;
   readonly aliases: Map<string, string>;
 }
 
@@ -104,6 +114,8 @@ export function snapshotShellState(state: ShellState): ShellStateFrame {
     options: { ...state.options },
     traps: new Map(state.traps.entries()),
     readonlyNames: new Set(state.readonlyNames),
+    exportedNames: new Set(state.exportedNames),
+    declaredNames: new Set(state.declaredNames),
     aliases: new Map(state.aliases),
   };
 }
@@ -119,6 +131,10 @@ export function restoreShellState(state: ShellState, frame: ShellStateFrame): vo
   for (const [signal, action] of frame.traps) state.traps.set(signal, action);
   state.readonlyNames.clear();
   for (const name of frame.readonlyNames) state.readonlyNames.add(name);
+  state.exportedNames.clear();
+  for (const name of frame.exportedNames) state.exportedNames.add(name);
+  state.declaredNames.clear();
+  for (const name of frame.declaredNames) state.declaredNames.add(name);
   replaceMap(state.aliases, frame.aliases);
 }
 
