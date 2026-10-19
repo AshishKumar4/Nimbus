@@ -717,9 +717,9 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       // Counted toward taking the destination's subtree, as any change there is.
       const grant = deciding(to);
       if (grant === undefined || client.held(from) === undefined) return false;
-      const known = bytesOf(from, source);
-      if (known === null) return false;
-      const bytes = known ?? stored;
+      const here = bytesOf(from, source);
+      if (here === null) return false;
+      const bytes = here ?? stored;
       if (bytes === undefined) return false;
       const known = target === null ? undefined : heldOf(target.dev, target.ino);
       // Another's file there, or one this process holds open or changes outside a grant, is the session's to copy over.
