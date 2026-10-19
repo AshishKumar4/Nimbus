@@ -18,6 +18,7 @@ import { DEFAULT_HOME } from '../../../constants.js';
 import { ExitSignal, type BuiltinExecutionContext, type BuiltinFn } from './interpreter.js';
 import { resolveJobSpec } from './jobs.js';
 import { evaluateTest } from './test-builtin.js';
+import { ParseError } from './parser.js';
 import { isVfsError, strerror } from '../../../vfs/vfs-error.js';
 import { statOrThrow } from '../../../vfs/vfs.js';
 import { runKill, type HostProcessSignals } from '../commands/system/kill.js';
@@ -670,10 +671,25 @@ async function builtinSource({ args, stderr, state, host, context }: BuiltinCall
   }
 
   const sourceArgs = args.slice(1);
-  return (await context.executeInline(
+  return (await runText(args[0], stderr, () => context.executeInline(
     content,
     sourceArgs.length > 0 ? { positionals: sourceArgs } : undefined,
-  ));
+  )));
+}
+
+/**
+ * Text eval or `.` runs: a syntax error in it (lines read before it have
+ * run) is its runner's status 2, said on its stderr as `name: message`, and
+ * the line the runner is in goes on, as in bash.
+ */
+async function runText(name: string, stderr: CommandOutputStream, run: () => Promise<number>): Promise<number> {
+  try {
+    return await run();
+  } catch (error) {
+    if (!(error instanceof ParseError)) throw error;
+    await stderr.write(`${name}: ${error.message}\n`);
+    return 2;
+  }
 }
 
 /**
@@ -688,7 +704,7 @@ async function builtinEval({ args, stderr, context }: BuiltinCall): Promise<numb
     (await stderr.write(`eval: ${first.slice(0, 2)}: invalid option\neval: usage: eval [arg ...]\n`));
     return 2;
   }
-  return (await context.executeInline((first === '--' ? args.slice(1) : args).join(' ')));
+  return (await runText('eval', stderr, () => context.executeInline((first === '--' ? args.slice(1) : args).join(' '))));
 }
 
 async function builtinAlias({ args, stdout, state }: BuiltinCall): Promise<number> {

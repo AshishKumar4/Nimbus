@@ -5,7 +5,10 @@
 // there is none; in a pipeline or a subshell it is that child's. It takes no
 // options: `--` ends them, any other is refused with status 2. In a script,
 // a status its text ended with is no special builtin's failure: it is
-// recoverable, as a sourced file's is. Before, the shell had no `eval`
+// recoverable, as a sourced file's is. A syntax error in its text, or in a
+// sourced file, is its status 2, said on its stderr, the lines of the text
+// read before it run and the rest of the line it is in going on (before, it
+// ended that line, said on the terminal). Before, the shell had no `eval`
 // ("eval: command not found"); a sourced file's `exit` ended only the file,
 // as an eval's or an alias's would have, and a sourced file's failing last
 // command ended a script. Each line runs as a session's line and as host
@@ -62,10 +65,20 @@ const CASES = [
   "( eval 'set -e; false; echo no' ); echo \"after $?\"",
   "x=$(eval 'set -e; false; echo no'); echo \"after $? [$x]\"",
   "{ eval 'set -e; false'; echo no; } & wait $!; echo \"bg $?\"",
+  "eval 'if' 2>/dev/null; echo \"st=$?\"",
+  "eval $'echo a\\nif' 2>/dev/null; echo \"st=$?\"",
+  "eval 'echo a; (echo b) (echo c)' 2>/dev/null; echo \"st=$?\"",
+  "f() { eval 'fi' 2>/dev/null; echo \"in=$?\"; }; f; echo \"out=$?\"",
+  "eval 'if' 2>/dev/null || echo recovered",
+  "x=$(eval 'fi' 2>&1); [ -n \"$x\" ] && echo has-message; y=$(eval 'if' 2>/dev/null); echo \"[$y] $?\"",
+  "printf 'echo side\\nif\\n' > bad.sh; . ./bad.sh 2>/dev/null; echo \"st=$?\"",
+  "printf 'echo s1; (echo a) (echo b)\\necho never\\n' > bad2.sh; . ./bad2.sh 2>/dev/null; echo \"st=$?\"",
+  "set -e; eval 'if' 2>/dev/null; echo after",
 ];
 
 /** Run as scripts: a special builtin's own failure ends one, its text's does not. */
 const SCRIPTS = [
+  "eval 'if' 2>/dev/null; echo \"st=$?\"\necho next",
   'eval false || echo recovered; echo after',
   'eval false; echo "st=$?"',
   'set -e; eval false || true; echo after',
