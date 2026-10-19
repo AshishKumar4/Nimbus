@@ -5,6 +5,14 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a dev server relaunched after a change could miss its start
+  (remix's took 198 s against a 180 s bound). Its module map was dropped
+  and made again three times, each time a file read of a running program
+  waited for credit as the map was made, though a worker was free for the
+  launch. A launch's map is now given up for running work only while the
+  launch waits for a worker. And a map that needs a little more than its
+  closure was sized for takes the rest when it is free, instead of
+  gathering its whole closure again.
 - Fixed: a program's launch could wait minutes (a `vite build` sat 5
   minutes before it ran) while a dependency pre-bundle in another session
   of the same isolate waited for a compiler. The pre-bundle reserved 28 MiB
