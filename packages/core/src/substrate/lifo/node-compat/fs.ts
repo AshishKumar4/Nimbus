@@ -463,8 +463,10 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array, reachS
     return toNodeStat(onDescriptor(fd, 'fstat', (id) => vfs.fstat(id)));
   }
 
+  /** Its length is checked before its descriptor (an int32 from 0), as Node's are. */
   function ftruncateSync(fd: number, len?: number | null): void {
     const length = lengthOf(len);
+    validateInt32(fd, 'fd', 0);
     onDescriptor(fd, 'ftruncate', (id) => vfs.ftruncate(id, length));
   }
 
@@ -625,9 +627,11 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array, reachS
     wrapCallback(() => truncateSync(path, length), callback);
   }
 
+  /** Its length, callback and descriptor are checked before anything is done, in that order, as Node's are. */
   function ftruncate(fd: number, lenOrCb?: number | null | Callback<void>, cb?: Callback<void>): void {
     const length = lengthOf(typeof lenOrCb === 'function' ? undefined : lenOrCb);
     const callback = callbackOf<void>(typeof lenOrCb === 'function' ? lenOrCb : cb);
+    validateInt32(fd, 'fd', 0);
     wrapCallback(() => ftruncateSync(fd, length), callback);
   }
 
@@ -834,19 +838,39 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array, reachS
     lchown: async (path: string | URL, uid: number, gid: number) => lchownSync(path, uid, gid),
     open: async (path: string | URL, flags?: string | number, mode?: number) => {
       const fd = openSync(path, flags, mode);
+      let closed = false;
+      // A closed handle refuses each call before its arguments, as Node's FileHandle does
+      // (its descriptor number may be another file's by then); closing it again is nothing.
+      const open = (syscall: string): void => {
+        if (closed) throw Object.assign(new Error('file closed'), { code: 'EBADF', syscall });
+      };
       return {
         fd,
-        close: async () => closeSync(fd),
-        read: async (buffer: Uint8Array, offset: number, length: number, position: number | null) => ({
-          bytesRead: readSync(fd, buffer, offset, length, position),
-          buffer,
-        }),
-        write: async (data: Uint8Array | string) => ({
-          bytesWritten: writeSync(fd, data),
-        }),
-        stat: async () => fstatSync(fd),
-        chown: async (uid: number, gid: number) => fchownSync(fd, uid, gid),
-        truncate: async (len?: number | null) => ftruncateSync(fd, len),
+        close: async () => {
+          if (closed) return;
+          closed = true;
+          closeSync(fd);
+        },
+        read: async (buffer: Uint8Array, offset: number, length: number, position: number | null) => {
+          open('read');
+          return { bytesRead: readSync(fd, buffer, offset, length, position), buffer };
+        },
+        write: async (data: Uint8Array | string) => {
+          open('write');
+          return { bytesWritten: writeSync(fd, data) };
+        },
+        stat: async () => {
+          open('fstat');
+          return fstatSync(fd);
+        },
+        chown: async (uid: number, gid: number) => {
+          open('fchown');
+          fchownSync(fd, uid, gid);
+        },
+        truncate: async (len?: number | null) => {
+          open('ftruncate');
+          ftruncateSync(fd, len);
+        },
       };
     },
     rm: async (path: string | URL, options?: { recursive?: boolean; force?: boolean }) => rmSync(path, options),

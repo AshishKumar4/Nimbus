@@ -90,6 +90,7 @@ fs.writeFileSync("z", "abc");
 const zd = fs.openSync("z", "r+");
 console.log("length", m(() => fs.truncateSync("z", "1")), m(() => fs.truncateSync("z", 1.5)), m(() => fs.truncateSync("z", null)), m(() => fs.truncateSync("z", 2 ** 53)), t(() => fs.truncateSync("missing", "1")), bytes("z"));
 console.log("length fd", m(() => fs.ftruncateSync(zd, "1")), m(() => fs.ftruncate(zd, 1.5, () => {})), m(() => fs.truncate("z", "1", () => {})), m(() => fs.truncate("z", null, () => {})), m(() => fs.ftruncate(zd, 0, null)), bytes("z"));
+console.log("descriptor", m(() => fs.ftruncate(-1, 0, () => {})), m(() => fs.ftruncate("x", 0, () => {})), m(() => fs.ftruncate(1.5, 0, () => {})), m(() => fs.ftruncateSync(-1, 0)), m(() => fs.ftruncateSync("x", 0)), m(() => fs.ftruncateSync(-1, "x")), bytes("z"));
 (async () => {
   console.log("cb", await run((cb) => fs.truncate("y", 4, cb)), bytes("y"));
   console.log("cb none", await run((cb) => fs.truncate("y", cb)), bytes("y"));
@@ -104,6 +105,9 @@ console.log("length fd", m(() => fs.ftruncateSync(zd, "1")), m(() => fs.ftruncat
   const handle = await fs.promises.open("z", "r+");
   console.log("handle length", await handle.truncate("1").catch((e) => e.code), await handle.truncate(2).then(() => bytes("z")));
   await handle.close();
+  const closed = (e) => e.code + " " + e.syscall + " " + e.message;
+  console.log("closed handle", await handle.truncate(null).catch(closed), await handle.truncate(1.5).catch(closed), await handle.truncate(1).catch(closed), bytes("z"));
+  console.log("closed handle", await handle.read(Buffer.alloc(1), 0, 1, 0).catch(closed), await handle.stat().catch(closed), await handle.close().then(() => "closed again"));
   fs.closeSync(zd);
 })();`;
 
