@@ -1778,9 +1778,11 @@ export function provisional(host: ProvisionalHost): Provisional {
       // The source as the session's copy reads it: a file it may read, no set-id bit (the session's to judge).
       if (source.type !== 'file' || (source.mode & 0o7000) !== 0 || !modeAllows(source, 4, host.cred)) return false;
       if (target !== null && target.type !== 'file') return false;
+      // A file these decisions hold is theirs to read (bytesOf): where they refuse it, the copy waits; another's bytes as
+      // the caller has them.
       const own = inodeAtNumber(source.dev, source.ino);
       const held = own === undefined ? undefined : bytesOf(own, 'copyfile', path);
-      const data = held !== undefined ? owned(held.bytes, held.size) : bytes;
+      const data = own === undefined ? bytes : held === undefined ? undefined : owned(held.bytes, held.size);
       if (data === undefined) return false;
       const umask = host.umask();
       const asked = copiedPermissions(source.mode, false);
