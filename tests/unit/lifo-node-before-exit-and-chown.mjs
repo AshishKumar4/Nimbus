@@ -33,7 +33,7 @@ console.log("lchown", t(() => fs.lchownSync("own.lnk", -1, -1)), mine("own.lnk",
 const fd = fs.openSync("own", "r"); console.log("fchown", t(() => fs.fchownSync(fd, -1, process.getgid())), t(() => fs.fchownSync(fd, 0, 0))); fs.closeSync(fd);
 console.log("missing", t(() => fs.chownSync("nope", -1, -1)));
 console.log("thrown", t(() => fs.chown("own", -2, 0, () => console.log("called back"))));
-// One after another: the callback's, then the promise's, then the handle's (their completions would race).
+// In turn: the callback form, then the promise form, then the handle (their completions would race).
 fs.chown("own", -1, -1, (e) => {
   console.log("cb", e && e.code);
   fs.promises.chown("own", 0, 0).catch((e) => console.log("promise", e.code))
