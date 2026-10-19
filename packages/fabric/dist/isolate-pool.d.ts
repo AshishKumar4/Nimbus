@@ -272,6 +272,22 @@ export interface LoaderWorkerModuleSourceOptions {
 /** Assemble the exact JavaScript module parsed by a dynamic loader worker. */
 export declare function assembleLoaderWorkerModuleSource(options: LoaderWorkerModuleSourceOptions): string;
 /**
+ * A facet call, as its Durable Object's pools made it: on a worker the
+ * loader built for it (`cold`: its code read, then compiled and its preamble
+ * run as the call began) or on a warm one, the time the loader's callback
+ * took to read its code, and the time the call took from its worker's hold
+ * to its answer, compile and preamble included when cold.
+ */
+export interface FacetCallTime {
+    tag: string;
+    cold: boolean;
+    loadMs: number;
+    callMs: number;
+    at: number;
+}
+/** The last facet calls `ctx`'s pools made, oldest first: what a launch's phases cost (`/api/_diag/session`). */
+export declare function recentFacetCalls(ctx: object): FacetCallTime[];
+/**
  * Nimbus-scoped parallel dispatch over `env.LOADER`. Tasks are pure
  * functions whose last argument is an `env` object containing the
  * forwarded bindings (default: `{ SUPERVISOR }`).
