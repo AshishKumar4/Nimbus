@@ -993,7 +993,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
     for (let step = walk.next(); ; ) {
       if (step.done) {
         if (step.value === null) throw fsError('ELOOP', 'path', path);
-        return '/' + step.value;
+        return step.value.spelling;
       }
       const lookup = step.value;
       step = walk.next('readlink' in lookup

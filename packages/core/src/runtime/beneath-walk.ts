@@ -27,6 +27,29 @@ export function fsError(
 
 /** One lookup a walk beneath a root asks of its filesystem: a stat that does not follow a link (null when absent), or a link's target. */
 export type BeneathLookup = { readonly stat: string } | { readonly readlink: string };
+
+/**
+ * What a walk reached: `reached`, the name it resolved to (normalized,
+ * relative to the namespace's root), and `spelling`, the name to hand the
+ * namespace for it (absolute). Where the walk handed names to a backend that
+ * resolves its own paths, with no link it followed after, the spelling is
+ * the name reached up to there, then the rest as written, so that backend
+ * walks it (CompositeVFS's Resolution.operand); else it is the reached name.
+ */
+export interface BeneathReached {
+  readonly reached: string;
+  readonly spelling: string;
+}
+
+/**
+ * Where a walk began handing names over (`base`, absolute, and the rest as
+ * written from there), as BeneathReached.spelling; `trailing`: the name the
+ * walk was given ends in a separator.
+ */
+export function handedSpelling(handoff: { base: string; rest: readonly string[] } | null, reached: string, trailing: boolean): string {
+  if (handoff === null) return '/' + reached;
+  return `${handoff.base === '/' ? '' : handoff.base}/${handoff.rest.join('/')}${trailing ? '/' : ''}`;
+}
 type BeneathAnswer = { type: string; mode?: number; uid?: number; gid?: number } | string | null;
 
 /**
@@ -47,18 +70,20 @@ type BeneathAnswer = { type: string; mode?: number; uid?: number; gid?: number }
  * included, and that backend answers for them. The one walk for every face: it yields
  * its lookups, which the synchronous bridge answers at once and a face over
  * asynchronous mounts awaits. `root` is normalized; the answer is the
- * resolved path, normalized.
+ * resolved path, normalized, and the spelling to hand the namespace
+ * (BeneathReached).
  */
 export function* walkBeneath(
   root: string, path: RuntimeFsPath, follow: boolean, cred: { uid: number; gid: number; groups: readonly number[] },
   handedOver: (path: string, to: string) => boolean,
-): Generator<BeneathLookup, string | null, BeneathAnswer> {
+): Generator<BeneathLookup, BeneathReached | null, BeneathAnswer> {
   const name = typeof path === 'string' ? path : path.path;
   if (root !== '') yield { stat: '/' + root };
   if (name.startsWith('/')) throw fsError('ENOTCAPABLE', 'path', path);
   const pending = name.split('/').filter(Boolean);
   const resolved = root === '' ? [] : root.split('/');
   let hops = 0;
+  let handoff: { base: string; rest: string[] } | null = null;
   while (pending.length > 0) {
     const segment = pending.shift()!;
     const dir = resolved.join('/');
@@ -78,6 +103,7 @@ export function* walkBeneath(
       continue;
     }
     if (handed) {
+      handoff ??= { base: '/' + dir, rest: [segment, ...pending] };
       resolved.push(segment);
       continue;
     }
@@ -97,8 +123,10 @@ export function* walkBeneath(
     if (target === null) throw fsError('ENOTCAPABLE', 'path', path);
     if (target.startsWith('/')) resolved.length = 0;
     pending.unshift(...target.split('/').filter(Boolean));
+    // A link followed after a handoff: the rest as written is no longer what is reached.
+    handoff = null;
   }
   const reached = resolved.join('/');
   if (root !== '' && reached !== root && !reached.startsWith(root + '/')) throw fsError('ENOTCAPABLE', 'path', path);
-  return reached;
+  return { reached, spelling: handedSpelling(handoff, reached, name.endsWith('/')) };
 }
