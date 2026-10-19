@@ -20,7 +20,7 @@ import { assertCandidateRounds, assertPaired, measurePaired, requirePairedTarget
 
 const a = makeAsserter('perf-regression/cold-start');
 const arms = requirePairedTargets('perf-regression/cold-start');
-console.log(`perf-regression/cold-start — baseline ${arms.a1.base}, ${arms.a2.base}; candidate ${arms.b.base}`);
+console.log(`perf-regression/cold-start — baseline ${arms.a1.base}, ${arms.a2.base}; candidate ${arms.b1.base}, ${arms.b2.base}`);
 
 // Resampling the rounds of a main-against-main run (2026-10-16) graded a
 // +300 ms boot red in 79% of draws at 15 rounds and 99% at 40, and the

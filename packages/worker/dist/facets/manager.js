@@ -4768,15 +4768,16 @@ export class FacetManager {
     }
     /**
      * The platform reset the host of a running process (ProcessHostLost): the
-     * process is over, as if killed (137), and says why. Its ports answer with
-     * the cause at once, and its restart policy decides what follows, as for
-     * any process that ends on its own (_onResidentTerminal).
+     * process is over, as if killed (137), and says why, on its stderr. Its
+     * ports answer with the cause at once, and its restart policy decides what
+     * follows, as for any process that ends on its own (_onResidentTerminal).
      */
     _endByHostLoss(pid, lost) {
         const entry = this.processes.get(pid);
         if (entry?.state !== 'running')
             return;
         console.warn(`[facet-manager] pid ${pid} ("${entry.command}") ended: ${lost.message}`);
+        this.processes.appendOutput(pid, 'stderr', `[nimbus] process ${pid} ended: ${lost.message}\n`);
         this.hostLosses.set(pid, lost);
         this._end(pid, { code: HOST_LOST_EXIT_CODE, cause: lost.message, portEnding: `"${entry.command}" (pid ${pid}) ended: ${lost.message}` });
     }
@@ -7622,6 +7623,31 @@ export class FacetManager {
         this._watchHost(pid, handle, spec.startContract === 'boot' && spec.journaled === true, controlFailure);
         return handle;
     }
+    /**
+     * A stop that ends process `pid` (one `resumed`, a promoted server's run
+     * again), unless it has ended: it exits 1, why on its stderr.
+     */
+    async _endByStop(pid, stop, resumed) {
+        if (this.processes.get(pid)?.state !== 'running')
+            return;
+        const message = stop.kind === 'diverged'
+            ? (resumed
+                ? 'node: this program listens as a server, so Nimbus ran it again as one, and it did not retrace '
+                    + `its run before up to its listen (${stop.why}), so it was ended.`
+                : `node: Nimbus ran this program again, and it did not retrace its run before (${stop.why}), so it was ended.`)
+            : `node: this program stopped (${stop.kind === 'stdin' ? 'at a synchronous read of stdin' : `at its ${stop.kind}`}) `
+                + 'after it had started, where Nimbus cannot run it again, so it was ended.';
+        try {
+            await this._deliverOutput(pid, 'stderr', new TextEncoder().encode(`${message}\n`));
+        }
+        catch {
+            // Its stderr refused it (a parent that closed the reader): its own log keeps why.
+            this.processes.appendOutput(pid, 'stderr', `${message}\n`);
+        }
+        finally {
+            this._end(pid, { code: 1, cause: message });
+        }
+    }
     /** A booted resident died without anyone ending it: it exits 1, its reason on its stderr. */
     _residentDied(pid, error) {
         if (this.processes.get(pid)?.state !== 'running')
@@ -8258,6 +8284,10 @@ export class FacetManager {
             let rerun = opts.resume ?? null;
             const stoppable = stdinWriter || opts.resume !== undefined;
             let stopNonce = crypto.randomUUID();
+            // Until it has booted, a stop is this launch's to answer (below); after,
+            // nothing runs it again, and a stop ends it, saying why: never a
+            // failure the launch and its host's watch both pass over.
+            let launching = true;
             try {
                 for (let stops = 0;; stops++) {
                     // Last gate before the facet exists. A launch now spans many turns, so
@@ -8274,7 +8304,18 @@ export class FacetManager {
                             // life; the server/watch runner returns once it is up.
                             startContract: opts.attachedTty ? 'lifetime' : 'boot',
                             journaled: true,
-                            ...(stoppable ? { controlFailure: (error) => stopRecordOf(error, launchingNonce, launchingRun) !== null } : {}),
+                            ...(stoppable ? {
+                                controlFailure: (error) => {
+                                    const stop = stopRecordOf(error, launchingNonce, launchingRun);
+                                    if (stop === null)
+                                        return false;
+                                    // Booted: a promoted server retraces on past its boot (stop-replay
+                                    // booted), where its launch waits on it no longer.
+                                    if (!launching)
+                                        this.ctx.waitUntil(this._endByStop(entry.pid, stop, opts.resume !== undefined));
+                                    return true;
+                                },
+                            } : {}),
                             startArgs: {
                                 pid: entry.pid, vfsCursor, dataPlan,
                                 ...(Object.keys(lazyReads).length > 0 ? { lazyReads } : {}),
@@ -8364,6 +8405,7 @@ export class FacetManager {
                         else {
                             await handle.booted();
                         }
+                        launching = false;
                         break;
                     }
                     catch (e) {
@@ -8386,10 +8428,7 @@ export class FacetManager {
                         handle = undefined;
                         this.portRegistry.unregisterByPid(entry.pid);
                         if (opts.resume && stop.kind === 'diverged') {
-                            const message = `node: this program listens as a server, so Nimbus ran it again as one, and it did not retrace `
-                                + `its run before up to its listen (${stop.why}), so it was ended.\n`;
-                            await this._deliverOutput(entry.pid, 'stderr', new TextEncoder().encode(message));
-                            this._end(entry.pid, { code: 1, cause: message.trimEnd() });
+                            await this._endByStop(entry.pid, stop, true);
                             return;
                         }
                         const waiting = new AbortController();

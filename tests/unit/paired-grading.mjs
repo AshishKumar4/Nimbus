@@ -1,12 +1,15 @@
 #!/usr/bin/env bun
 // tests/behavioral/_paired.mjs gradePaired: how a paired perf probe grades
-// the candidate against the baseline's two arms. Run on samples it is
+// the candidate's two arms against the baseline's two. Run on samples it is
 // given: the verdict must follow the candidate's shift, not one round's
-// luck, hold back when the baseline disagrees with itself as much as the
-// candidate differs, and be a function of its samples alone.
+// luck or one Preview's placement, hold back when either side disagrees
+// with itself as much as the candidate differs, and be a function of its
+// samples alone.
 
 import assert from 'node:assert/strict';
 import { gradePaired } from '../behavioral/_paired.mjs';
+import { pairedCpuVerdicts } from '../../scripts/ci/lib/paired-cpu.mjs';
+import { median } from '../../scripts/lib/statistics.mjs';
 
 /** A seeded normal source (Box-Muller over mulberry32), so every run draws the same samples. */
 function normals(seed) {
@@ -22,26 +25,26 @@ function normals(seed) {
 
 /**
  * `count` rounds around 600 ms, log-normal with spread `sigma`, half of it
- * shared by a round's three arms (one moment's conditions); the candidate
- * scaled by `factor`.
+ * shared by a round's four arms (one moment's conditions); the candidate's
+ * arms scaled by `factor`, and each arm by its Preview's `offset` (1: none).
  */
-function rounds({ count, factor, sigma = 0.25, seed }) {
+function rounds({ count, factor, sigma = 0.25, seed, offset = {} }) {
   const normal = normals(seed);
   const shared = Math.SQRT1_2;
   return Array.from({ length: count }, () => {
     const moment = normal();
-    const draw = () => 600 * Math.exp(sigma * (shared * moment + shared * normal()));
-    return { a1: draw(), a2: draw(), b: draw() * factor };
+    const draw = (arm) => 600 * Math.exp(sigma * (shared * moment + shared * normal())) * (offset[arm] ?? 1);
+    return { a1: draw('a1'), a2: draw('a2'), b1: draw('b1') * factor, b2: draw('b2') * factor };
   });
 }
 
 // The same three numbers on every arm: nothing to grade against.
 {
-  const same = [610, 580, 720, 640, 590, 605, 660, 700].map((ms) => ({ a1: ms, a2: ms, b: ms }));
+  const same = [610, 580, 720, 640, 590, 605, 660, 700].map((ms) => ({ a1: ms, a2: ms, b1: ms, b2: ms }));
   const grade = gradePaired(same);
   assert.equal(grade.slower, false);
   assert.equal(grade.ratio, 1);
-  assert.deepEqual(grade.medians, { a1: 625, a2: 625, b: 625 });
+  assert.deepEqual(grade.medians, { a1: 625, a2: 625, b1: 625, b2: 625 });
 }
 
 // A candidate 1.5x slower in every round, under mild noise, is slower.
@@ -55,12 +58,35 @@ function rounds({ count, factor, sigma = 0.25, seed }) {
 assert.equal(gradePaired(rounds({ count: 15, factor: 0.6, sigma: 0.1, seed: 12 })).slower, false);
 
 // The baseline disagreeing with itself (a1 twice a2 in every round) as much
-// as the candidate exceeds it: the shift is inside the A/A spread.
+// as the candidate exceeds it: the candidate is faster than a1, so not slower.
 {
-  const spread = [600, 640, 580, 700, 620, 660, 610, 590, 650, 630].map((ms) => ({ a1: ms * 2, a2: ms, b: ms * 1.8 }));
+  const spread = [600, 640, 580, 700, 620, 660, 610, 590, 650, 630].map((ms) => ({ a1: ms * 2, a2: ms, b1: ms * 1.8, b2: ms * 1.8 }));
   const grade = gradePaired(spread);
   assert.ok(grade.interval[0] > 1, JSON.stringify(grade));
   assert.equal(grade.slower, false, JSON.stringify(grade));
+}
+
+// One Preview behind the others for the whole run, the candidate's own
+// code unchanged: not slower, whichever arm it is. ruby-gem-require's
+// receipts had one arm 1.3-1.6x the others in 9 of 14 runs.
+for (const arm of ['a1', 'a2', 'b1', 'b2']) {
+  const grade = gradePaired(rounds({ count: 20, factor: 1, sigma: 0.1, seed: 21, offset: { [arm]: 1.5 } }));
+  assert.equal(grade.slower, false, `${arm} 1.5x behind: ${JSON.stringify(grade)}`);
+}
+
+// Both candidate Previews 1.3x slower: slower, and still when one Preview,
+// on either side, is also slow for where it landed. A slow candidate
+// Preview does not hide the shift its other Preview shows, and a slow
+// baseline Preview counts once: the shift over it is what is left of 1.3x.
+assert.equal(gradePaired(rounds({ count: 20, factor: 1.3, sigma: 0.1, seed: 22 })).slower, true);
+for (const [arm, by] of [['a1', 1.15], ['a2', 1.1], ['b1', 1.5], ['b2', 1.5]]) {
+  const grade = gradePaired(rounds({ count: 20, factor: 1.3, sigma: 0.1, seed: 23, offset: { [arm]: by } }));
+  assert.equal(grade.slower, true, `1.3x slower with ${arm} ${by}x behind: ${JSON.stringify(grade)}`);
+}
+{
+  const fixed = (a1, a2, b1, b2) => Array.from({ length: 15 }, (_, i) => ({ a1: a1 + (i % 5), a2: a2 + (i % 3), b1: b1 + (i % 4), b2: b2 + (i % 2) }));
+  assert.equal(gradePaired(fixed(600, 600, 1170, 780)).slower, true, 'a 1.3x code shift beside a 1.5x slow candidate Preview');
+  assert.equal(gradePaired(fixed(600, 720, 780, 780)).slower, true, 'a 1.3x code shift over a 1.2x slow baseline Preview');
 }
 
 // A verdict is a function of its samples: the same samples grade the same.
@@ -70,16 +96,67 @@ assert.equal(gradePaired(rounds({ count: 15, factor: 0.6, sigma: 0.1, seed: 12 }
 }
 
 // Over many seeded runs: a candidate that is the baseline is rarely called
-// slower, and a 1.5x slower one nearly always is. 15 rounds at a 0.25
-// log-spread; a Python port of this grader measured 2% and 96% there.
+// slower, also with one Preview of the four 1.5x behind the rest, and a
+// 1.5x slower one nearly always is. 15 rounds at a 0.25 log-spread.
 {
   const trials = 100;
-  const red = (factor, offset) => Array.from({ length: trials }, (_, i) => gradePaired(rounds({ count: 15, factor, seed: offset + i })).slower)
-    .filter(Boolean).length;
+  const red = (factor, seedFrom, slowArms = []) => Array.from({ length: trials }, (_, i) => gradePaired(rounds({
+    count: 15, factor, seed: seedFrom + i, offset: slowArms.length > 0 ? { [slowArms[i % slowArms.length]]: 1.5 } : {},
+  })).slower).filter(Boolean).length;
+  // A baseline Preview 1.5x slow for where it landed is slower than a 1.3x
+  // candidate: that run cannot tell the shift, and is not asked to.
   const nullRed = red(1, 1000);
+  const slowArmRed = red(1, 3000, ['a1', 'a2', 'b1', 'b2']);
   const slowRed = red(1.5, 5000);
-  assert.ok(nullRed <= 6, `${nullRed} of ${trials} A/A/A runs graded slower`);
-  assert.ok(slowRed >= 85, `${slowRed} of ${trials} 1.5x runs graded slower`);
+  const shiftRed = red(1.3, 7000);
+  const shiftSlowCandidateRed = red(1.3, 9000, ['b1', 'b2']);
+  console.log(`  rates over ${trials}: A/A/B/B ${nullRed}, one slow Preview ${slowArmRed}, 1.5x ${slowRed}, 1.3x ${shiftRed}, 1.3x with one slow candidate Preview ${shiftSlowCandidateRed}`);
+  assert.ok(nullRed <= 6, `${nullRed} of ${trials} A/A/B/B runs graded slower`);
+  assert.ok(slowArmRed <= 6, `${slowArmRed} of ${trials} runs with one slow Preview graded slower`);
+  assert.ok(slowRed >= 80, `${slowRed} of ${trials} 1.5x runs graded slower`);
+  assert.ok(shiftRed >= 50, `${shiftRed} of ${trials} 1.3x runs graded slower`);
+  assert.ok(shiftSlowCandidateRed >= shiftRed - 10, `${shiftSlowCandidateRed} of ${trials} 1.3x runs with one slow candidate Preview graded slower (${shiftRed} without)`);
+}
+
+function cpuRuns(samples) {
+  const result = {
+    kind: 'copy-cpu', samples,
+    medianA: median(samples.map(({ A1, A2 }) => (A1 + A2) / 2)),
+    medianB: median(samples.map(({ real }) => real)),
+    medianDelta: median(samples.map(({ real, A1, A2 }) => real - (A1 + A2) / 2)),
+    medianNullDelta: median(samples.map(({ null: copy, A1, A2 }) => copy - (A1 + A2) / 2)),
+  };
+  return Array.from({ length: 8 }, () => [{ ...result, samples: samples.map((sample) => ({ ...sample })) }]);
+}
+
+// Median subtraction is not paired subtraction. A baseline's changing cost
+// and one noisy copy sample cannot make the copies' median difference 10.
+{
+  const samples = [
+    { A1: 100, A2: 100, null: 100, real: 100 },
+    { A1: 200, A2: 200, null: 210, real: 210 },
+    { A1: 300, A2: 300, null: 300, real: 310 },
+  ];
+  const runs = cpuRuns(samples);
+  assert.equal(runs[0][0].medianDelta - runs[0][0].medianNullDelta, 10,
+    'the old difference-of-medians estimator falsely calls a copy slower');
+  assert.equal(median(samples.map((sample) => sample.real - sample.null)), 0);
+  const [verdict] = pairedCpuVerdicts(runs);
+  assert.equal(verdict.medianDelta, 0, JSON.stringify(verdict));
+  assert.deepEqual(verdict.ci95, [0, 0]);
+  assert.deepEqual(verdict.failures, []);
+  const drifted = cpuRuns(samples.map((sample, i) => ({ ...sample, A1: i * 1000, A2: i * 1000 })));
+  assert.equal(pairedCpuVerdicts(drifted)[0].medianDelta, verdict.medianDelta,
+    'the common A cancels inside every pair, before any median');
+}
+
+// Keeping the pairing cannot hide a genuine cost on every candidate sample.
+for (const shift of [-10, 0, 10]) {
+  const samples = [100, 200, 300].map((ms) => ({ A1: ms, A2: ms, null: ms + 5, real: ms + 5 + shift }));
+  const [verdict] = pairedCpuVerdicts(cpuRuns(samples));
+  assert.equal(verdict.medianDelta, shift);
+  assert.deepEqual(verdict.ci95, [shift, shift]);
+  assert.equal(verdict.failures.length > 0, shift > 0);
 }
 
 console.log('paired-grading: ok');
