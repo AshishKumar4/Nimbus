@@ -122,8 +122,11 @@ async function only(backend, expected, label, run) {
     () => vfs.rename('/pc/home/me/new/deep/x.txt', '/pc/home/me/m/x.txt'));
   await only(pc, ['unlink /home/me/m/x.txt'], 'unlink', () => vfs.unlink('/pc/home/me/m/x.txt'));
   assert.equal(backing.stat('/home/me/m/x.txt'), null);
-  assert.equal(await only(pc, ['stat /home/me/a/b'], 'realpath: one stat, links followed by the backend',
-    () => vfs.realpathAsync('/pc/home/me/a/./x/../b')), '/pc/home/me/a/b');
+  // Past a `..` the backend walks (it may follow a link first), realpath is the name as handed: it reads back the same entry.
+  assert.equal(await only(pc, ['stat /home/me/a/./x/../b'], 'realpath: one stat, links followed by the backend',
+    () => vfs.realpathAsync('/pc/home/me/a/./x/../b')), '/pc/home/me/a/./x/../b');
+  assert.equal(await only(pc, ['stat /home/me/a/./b'], 'realpath without a `..` is the lexical name',
+    () => vfs.realpathAsync('/pc/home/me/a/./b')), '/pc/home/me/a/b');
   await only(pc, ['stat /home/me/nope'], 'realpath of a missing name', () =>
     assert.rejects(vfs.realpathAsync('/pc/home/me/nope'), { code: 'ENOENT', syscall: 'realpath', path: '/pc/home/me/nope' }));
 
@@ -347,7 +350,8 @@ async function only(backend, expected, label, run) {
   assert.equal(backing.stat('/home/me/fs/new.txt'), null, 'a move across mounts removes the source');
   await ws.fs.move('/home/user/moved.txt', '/pc/home/me/fs/back.txt');
   assert.equal(dec.decode(backing.readFile('/home/me/fs/back.txt')), 'from ws.fs');
-  assert.equal(await ws.fs.realpath('/pc/home/me/a/../a/b'), '/pc/home/me/a/b');
+  assert.equal(await ws.fs.realpath('/pc/home/me/a/../a/b'), '/pc/home/me/a/../a/b');
+  assert.equal(await ws.fs.realpath('/pc/home/me/a/./b/'), '/pc/home/me/a/b');
 }
 
 // ── find on a network mount ─────────────────────────────────────────────────

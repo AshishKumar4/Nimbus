@@ -118,8 +118,14 @@ let steps = 0;
 for (const [index, testCase] of fixture.cases.entries()) {
   try {
     const backends = Object.fromEntries(Object.entries(testCase.backends).map(([name, spec]) => [name, build(spec)]));
-    const vfs = new CompositeVFS(backends.b0);
-    for (const mount of testCase.mounts) vfs.mount(mount.point, backends[mount.backend]);
+    // A flagged case: a mount, or the root, resolves its own paths (MountOptions.resolvesPaths). Its backend
+    // walks what it is handed as a kernel does (the model's backend-local walk): a composite over it that does not.
+    const walking = (backend) => new CompositeVFS(backend);
+    const vfs = testCase.rootResolvesPaths === true ? new CompositeVFS(walking(backends.b0), { resolvesPaths: true }) : new CompositeVFS(backends.b0);
+    for (const mount of testCase.mounts) {
+      const resolves = mount.resolvesPaths === true;
+      vfs.mount(mount.point, resolves ? walking(backends[mount.backend]) : backends[mount.backend], { resolvesPaths: resolves });
+    }
     for (const [at, step] of testCase.steps.entries()) {
       steps++;
       const got = await run(vfs.as(creds.get(step.as)), step);
