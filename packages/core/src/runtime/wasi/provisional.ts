@@ -363,7 +363,12 @@ export interface Provisional {
   symlink(key: string, path: string, target: string, row: ResidentEntry | null | undefined): boolean;
   rename(from: string, to: string, path: string, source: ResidentEntry | null | undefined, target: ResidentEntry | null | undefined): boolean;
   setattr(key: string, path: string, attrs: W7Attrs, row: ResidentEntry | null | undefined): boolean;
-  copyFile(to: string, path: string, source: ResidentEntry, bytes: Uint8Array | undefined, target: ResidentEntry | null, keepMode: boolean): boolean;
+  /**
+   * Copy the file `source` names at `from` to `to`, its bytes read only as
+   * these decisions read any (bytesOf for a file they hold, else the store's
+   * at `from`): where those are not here, false (the caller waits).
+   */
+  copyFile(from: string, to: string, path: string, source: ResidentEntry, target: ResidentEntry | null, keepMode: boolean): boolean;
   /** The bytes of the file `entry` names, where this process's are its content. */
   content(entry: ResidentEntry): Uint8Array | undefined;
   barrierBegun(): number;
@@ -1774,15 +1779,15 @@ export function provisional(host: ProvisionalHost): Provisional {
       return true;
     },
 
-    copyFile: (to, path, source, bytes, target, keepMode) => {
+    copyFile: (from, to, path, source, target, keepMode) => {
       // The source as the session's copy reads it: a file it may read, no set-id bit (the session's to judge).
       if (source.type !== 'file' || (source.mode & 0o7000) !== 0 || !modeAllows(source, 4, host.cred)) return false;
       if (target !== null && target.type !== 'file') return false;
-      // A file these decisions hold is theirs to read (bytesOf): where they refuse it, the copy waits; another's bytes as
-      // the caller has them.
+      // Read as any read here is: a file these decisions hold through them (bytesOf), any other as the store has it.
       const own = inodeAtNumber(source.dev, source.ino);
       const held = own === undefined ? undefined : bytesOf(own, 'copyfile', path);
-      const data = own === undefined ? bytes : held === undefined ? undefined : owned(held.bytes, held.size);
+      const stored = own === undefined ? host.content(from, source.revision) : undefined;
+      const data = held !== undefined ? owned(held.bytes, held.size) : stored !== undefined && stored.byteLength === source.size ? owned(stored) : undefined;
       if (data === undefined) return false;
       const umask = host.umask();
       const asked = copiedPermissions(source.mode, false);
