@@ -14,6 +14,18 @@ export const NS_MAX_HOPS = 40;
 const removed = (word) => objectHasOwn(word, 'absent');
 const linked = (word) => objectHasOwn(word, 'target');
 const moved = (word) => objectHasOwn(word, 'from');
+/**
+ * `word`, unless a barrier has since carried it to the table: a rename reads
+ * the row it moved (a link's at `link`, else at `from`), and once the table
+ * no longer holds that row, the delta that removed it put the entry at its
+ * new name, where the table's own row answers.
+ */
+function standing(t, word) {
+    if (word === undefined || !moved(word) || word.from === undefined)
+        return word;
+    const named = ownField(word, 'link');
+    return nsRowAt(t, typeof named === 'string' ? named : word.from) === undefined ? undefined : word;
+}
 /** The directory part of key `k`: '' at the top. */
 export function nsParent(k) {
     const i = stringLastIndexOf(k, '/');
@@ -105,7 +117,7 @@ export function walkNamespace(t, links, k, followLeaf, own, visit) {
             if (visit !== undefined && !visit(prefix))
                 return 'EACCES';
             const step = table === null ? null : table ? `${table}/${name}` : name;
-            const word = own === undefined ? undefined : own(prefix);
+            const word = own === undefined ? undefined : standing(t, own(prefix));
             let target;
             if (word !== undefined && removed(word)) {
                 return { path, table: null, row: undefined, own: word };
