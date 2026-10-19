@@ -927,6 +927,8 @@ function registerWasmRuntimes(deps: {
   // wasm-runner allocates pids for what it runs, off the SAME supervisor the
   // shell identity uses — the host's own when it supplied one.
   const processes = deps.processes;
+  // This workspace is the session its runtimes' warm facets belong to (warm-facets.ts).
+  const session = crypto.randomUUID();
 
   const wasmRunner = once(async (): Promise<Command> => {
     const [{ wasmRunnerSpec }, { buildRuntimeHandler }] = await Promise.all([
@@ -975,6 +977,7 @@ function registerWasmRuntimes(deps: {
       return makeGitRunnerFactory({
         facets: deps.facets, filesystem: deps.filesystem, processes,
         fsmonitorState: sqliteGitFsmonitorState(deps.sql, deps.filesystem.namespace),
+        session,
         ...contract,
       });
     })])),
