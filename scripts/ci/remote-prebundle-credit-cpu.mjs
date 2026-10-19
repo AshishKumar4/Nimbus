@@ -8,5 +8,6 @@ await remotePairedCpu({
     'worker/src/runtime/barrel-synthesizer.ts', 'worker/src/facets/prebundle-pool.ts',
     'worker/src/facets/build-facet.ts', 'worker/src/facets/manager.ts',
     'platform/src/heavy-alloc-coord.ts', 'platform/src/diag-counters.ts', 'core/src/runtime/prebundle-slice.ts'],
-  command: ['bun', 'tests/bench/prebundle-credit-cpu.mjs'],
+  engine: 'bun',
+  bench: 'tests/bench/prebundle-credit-cpu.mjs',
 });

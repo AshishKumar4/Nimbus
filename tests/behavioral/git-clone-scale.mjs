@@ -11,7 +11,7 @@
 
 import { execFileSync } from 'node:child_process';
 
-import { mintSession, Terminal, makeAsserter, stripAnsi } from './_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, hasOutputLine } from './_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('git-clone-scale');
@@ -75,7 +75,7 @@ for (const path of SAMPLES) {
     JSON.stringify(out.slice(-400)));
   a.check(`git status finishes within ${STATUS_BOUND_MS / 1000} s`, statusMs < STATUS_BOUND_MS, `${statusMs} ms`);
   const alive = stripAnsi((await t.run('echo STILL_HERE', 30_000)).output);
-  a.check('the session is still up after status', /STILL_HERE/.test(alive), JSON.stringify(alive.slice(-200)));
+  a.check('the session is still up after status', hasOutputLine(alive, 'STILL_HERE'), JSON.stringify(alive.slice(-200)));
 }
 
 await t.close();

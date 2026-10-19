@@ -17,7 +17,7 @@
 // the deterministic behavioral signal. A speedup ASSERTION is documented for
 // the parent to confirm from the bundleMs telemetry across many runs.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi, requestHeaders, BASE, deleteSession } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, requestHeaders, BASE, deleteSession, hasOutputLine } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('exec-performance/exec-bundle-cache');
@@ -46,7 +46,7 @@ try {
 
   await reset();
   const r1 = await t.run(CMD, 30_000);
-  a.check('first run printed', /cache-probe/.test(stripAnsi(r1.output)),
+  a.check('first run printed', hasOutputLine(r1.output, 'cache-probe'),
     `tail=${JSON.stringify(stripAnsi(r1.output).slice(-200))}`);
   const rec1 = await lastRecord();
 

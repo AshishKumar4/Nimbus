@@ -21,7 +21,7 @@
 //   - `npx esbuild --version` still runs and node_modules/.bin/esbuild exists;
 //   - package.json records `esbuild`, not the swap target.
 
-import { mintSession, deleteSession, Terminal, makeAsserter, heredocCommand, stripAnsi } from '../_driver.mjs';
+import { mintSession, deleteSession, Terminal, makeAsserter, heredocCommand, stripAnsi, hasOutputLine } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('runtime-primitives/npm-swap-alias-placement');
@@ -50,9 +50,9 @@ try {
     15_000,
   );
   const layoutOut = stripAnsi(layout.output);
-  a.check('node_modules/esbuild is the install directory', /LAYOUT_DECLARED=yes/.test(layoutOut), JSON.stringify(layoutOut.slice(-400)));
-  a.check('nothing lands under node_modules/esbuild-wasm', /LAYOUT_TARGET=absent/.test(layoutOut), JSON.stringify(layoutOut.slice(-400)));
-  a.check('node_modules/.bin/esbuild is linked', /BIN_LINK=yes/.test(layoutOut), JSON.stringify(layoutOut.slice(-400)));
+  a.check('node_modules/esbuild is the install directory', hasOutputLine(layoutOut, 'LAYOUT_DECLARED=yes'), JSON.stringify(layoutOut.slice(-400)));
+  a.check('nothing lands under node_modules/esbuild-wasm', hasOutputLine(layoutOut, 'LAYOUT_TARGET=absent'), JSON.stringify(layoutOut.slice(-400)));
+  a.check('node_modules/.bin/esbuild is linked', hasOutputLine(layoutOut, 'BIN_LINK=yes'), JSON.stringify(layoutOut.slice(-400)));
 
   const req = await t.run(
     'node -e "const e=require(\'esbuild\'); console.log(\'REQUIRE_VERSION=\'+e.version); console.log(\'REQUIRE_PKG=\'+require(\'esbuild/package.json\').name)"',

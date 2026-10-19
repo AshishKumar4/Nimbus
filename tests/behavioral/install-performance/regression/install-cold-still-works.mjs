@@ -10,7 +10,7 @@
 //   2. `nimbus install --list` reports python.
 //   3. `python -c "print(7)"` produces `7\n` (runtime works).
 
-import { mintSession, Terminal, makeAsserter, stripAnsi, BASE } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, BASE, hasOutputLine } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('install-performance/install-cold-still-works');
@@ -36,7 +36,7 @@ a.check('--list reports python', /python/.test(s2),
 // 3. Runtime functional.
 const { output: po } = await t.run('python -c "print(7)"', 30_000);
 const s3 = stripAnsi(po);
-a.check('python -c works post-install', /\b7\b/.test(s3),
+a.check('python -c works post-install', hasOutputLine(s3, '7'),
   `output=${JSON.stringify(s3.slice(-200))}`);
 
 await t.close();

@@ -7,5 +7,6 @@ await remotePairedCpu({
   name: 'remote-process-write-cpu',
   receipts: 'remote-process-write-cpu',
   baselineDir: '.ci-process-write-baseline',
-  command: ['bun', 'tests/bench/process-write-cpu.mjs'],
+  engine: 'bun',
+  bench: 'tests/bench/process-write-cpu.mjs',
 });

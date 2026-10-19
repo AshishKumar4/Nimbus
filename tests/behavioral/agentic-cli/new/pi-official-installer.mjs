@@ -12,6 +12,7 @@ import {
   stripAnsi,
   Terminal,
   sleep,
+  hasOutputLine,
 } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -123,7 +124,7 @@ try {
         + JSON.stringify(proc.output.slice(-1200)));
     const shellAfter = await t.run('echo SHELL_SURVIVED_PI_INSTALLER_TUI', 30_000);
     a.check('shell survives officially installed Pi TUI',
-      /SHELL_SURVIVED_PI_INSTALLER_TUI/.test(stripAnsi(shellAfter.output)),
+      hasOutputLine(shellAfter.output, 'SHELL_SURVIVED_PI_INSTALLER_TUI'),
       JSON.stringify(stripAnsi(shellAfter.output).slice(-600)));
     proc.signal('SIGTERM');
     try { await proc.waitFor(() => !!proc.exit, 15_000, 'Pi SIGTERM exit'); }

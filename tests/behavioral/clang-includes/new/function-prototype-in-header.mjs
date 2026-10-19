@@ -4,7 +4,7 @@
 // Validates the full multi-TU + shared-header workflow (the canonical
 // real-C user experience).
 
-import { mintSession, deleteSession, Terminal, makeAsserter, heredocCommand, stripAnsi } from '../../_driver.mjs';
+import { mintSession, deleteSession, Terminal, makeAsserter, heredocCommand, stripAnsi, hasOutputLine } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('clang-includes/new/function-prototype-in-header');
@@ -49,7 +49,7 @@ try {
   a.check('link onto existing dir exits nonzero', rd.exitCode > 0, JSON.stringify(out3.slice(-300)));
   a.check('link onto existing dir reports EISDIR', /EISDIR|is a directory|unable to open/i.test(out3), JSON.stringify(out3.slice(-300)));
   const rl = await t.run('test -d /home/user/example-app && test -f /home/user/example-app/package.json && echo DIR=intact || echo DIR=lost', 15_000);
-  a.check('seeded /home/user/example-app survives the refused link', /DIR=intact/.test(stripAnsi(rl.output)), JSON.stringify(stripAnsi(rl.output).slice(-200)));
+  a.check('seeded /home/user/example-app survives the refused link', hasOutputLine(rl.output, 'DIR=intact'), JSON.stringify(stripAnsi(rl.output).slice(-200)));
 
 } finally {
   await t.close();

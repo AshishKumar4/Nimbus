@@ -6,7 +6,7 @@
 // Synthetic preopen at '/home/user' strips → relative 'sub/../top.txt'.
 // Resolver canonicalize() handles '..' segments.
 
-import { mintSession, Terminal, makeAsserter, heredocCommand, stripAnsi } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, heredocCommand, stripAnsi, hasOutputLine } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('wasi-paths/new/abs-parent-traversal');
@@ -36,15 +36,15 @@ const compileOK = !/error:|Assertion failed/.test(stripAnsi(rc.output));
 a.check('clang compiles', compileOK, compileOK ? '' : JSON.stringify(stripAnsi(rc.output).slice(-400)));
 
 const rr = await t.run('/home/user/tr', 60_000);
-a.check('PROGRAM_OK printed', /PROGRAM_OK/.test(stripAnsi(rr.output)), JSON.stringify(stripAnsi(rr.output).slice(-200)));
+a.check('PROGRAM_OK printed', hasOutputLine(rr.output, 'PROGRAM_OK'), JSON.stringify(stripAnsi(rr.output).slice(-200)));
 a.check('exit code 0', rr.exitCode === 0, JSON.stringify(stripAnsi(rr.output).slice(-200)));
 
 const rExists = await t.run(`node -e "console.log(require('fs').existsSync('/home/user/traversal-top.txt') ? 'EXISTS' : 'ABSENT')"`, 15_000);
-a.check('/home/user/traversal-top.txt EXISTS (../ resolved)', /EXISTS/.test(stripAnsi(rExists.output)),
+a.check('/home/user/traversal-top.txt EXISTS (../ resolved)', hasOutputLine(rExists.output, 'EXISTS'),
   JSON.stringify(stripAnsi(rExists.output).slice(-200)));
 
 const rSub = await t.run(`node -e "console.log(require('fs').existsSync('/home/user/sub/traversal-top.txt') ? 'EXISTS' : 'ABSENT')"`, 15_000);
-a.check('/home/user/sub/traversal-top.txt ABSENT (../ properly consumed)', /ABSENT/.test(stripAnsi(rSub.output)),
+a.check('/home/user/sub/traversal-top.txt ABSENT (../ properly consumed)', hasOutputLine(rSub.output, 'ABSENT'),
   JSON.stringify(stripAnsi(rSub.output).slice(-200)));
 
 const rContent = await t.run('cat /home/user/traversal-top.txt', 10_000);

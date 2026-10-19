@@ -7,5 +7,6 @@ await remotePairedCpu({
   name: 'remote-vfs-lookup-cpu',
   receipts: 'remote-vfs-cpu',
   baselineDir: '.ci-vfs-baseline',
-  command: ['bun', 'tests/bench/vfs-lookup-cpu.mjs'],
+  engine: 'bun',
+  bench: 'tests/bench/vfs-lookup-cpu.mjs',
 });

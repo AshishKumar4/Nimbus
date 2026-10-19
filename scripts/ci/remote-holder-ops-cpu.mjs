@@ -7,5 +7,6 @@ await remotePairedCpu({
   name: 'remote-holder-ops-cpu',
   receipts: 'remote-holder-ops-cpu',
   baselineDir: '.ci-holder-ops-baseline',
-  command: ['bun', 'tests/bench/holder-ops-cpu.mjs'],
+  engine: 'bun',
+  bench: 'tests/bench/holder-ops-cpu.mjs',
 });
