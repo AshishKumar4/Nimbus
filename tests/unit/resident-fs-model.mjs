@@ -633,7 +633,7 @@ async function runSteps(steps, met, grants) {
     if (grants || fds.has(step.fd) || fds.has(step.fd2) || fds.has(step.fd3) || viewOf().names.has(step.name)) return;
     await deliver();
     // A file the session has there already (the view not caught up): its create is refused, not late.
-    if ((await errnoOf(() => direct.stat(path(step.name)).then((stat) => { if (stat !== null) throw Object.assign(new Error(), { code: 'EEXIST' }); }))) !== null) return;
+    if ((await Promise.resolve(direct.stat(path(step.name))).catch(() => null)) !== null) return;
     // Records from here on are the late ones: what the barrier below leaves pending.
     const mark = pending.length;
     let flushed = Promise.resolve(null);
