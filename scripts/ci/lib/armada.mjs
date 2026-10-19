@@ -176,8 +176,7 @@ export function armadaClient({ dir = process.env.ARMADA_DIR || ARMADA_DIR, repo 
  * each task's {out} text (null when it wrote none); throws when the job
  * could not be started.
  *
- * @param {{ repo: string, sha: string, files: string[], setup?: string | { name: string, text: string }, items: unknown[], command: string[], env?: Record<string, string>,
- *   label: string, pool?: number, timeout?: number, log?: (line: string) => void }} options
+ * @param {MapJob & { log?: (line: string) => void }} options
  */
 export async function mapOnArmada({ log = (line) => console.error(line), ...job }) {
   const armadaDir = armadaClient();
@@ -190,6 +189,12 @@ export async function mapOnArmada({ log = (line) => console.error(line), ...job 
   }
 }
 
+/**
+ * @typedef {{ repo: string, sha: string, files: string[], setup?: string | { name: string, text: string }, items: unknown[], command: string[], env?: Record<string, string>,
+ *   label: string, pool?: number, timeout?: number }} MapJob
+ * @param {string} armadaDir
+ * @param {MapJob & { log: (line: string) => void }} job
+ */
 async function mapCommit(armadaDir, { repo, sha, files, setup, items, command, env = {}, label, pool = items.length, timeout = 3600, log }) {
   const { connect } = await import(join(armadaDir, 'src', 'sdk.ts'));
   const { argvOf, cancelOnInterrupt, onCommit } = await import(join(armadaDir, 'src', 'ci.ts'));

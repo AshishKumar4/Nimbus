@@ -98,7 +98,7 @@ export async function readContainerStorage({ account, token, stateDir, signal, f
       if (answered.status === 404) continue;
       if (!answered.ok) throw new Error(`manifest ${digest} answered ${answered.status}`);
       const manifest = await answered.json();
-      const layers = [...(manifest.layers ?? []), ...(manifest.config ? [manifest.config] : [])].map((layer) => [layer.digest, layer.size ?? 0]);
+      const layers = [...(manifest.layers ?? []), ...(manifest.config ? [manifest.config] : [])].map(/** @returns {[string, number]} */ (layer) => [layer.digest, layer.size ?? 0]);
       cache.set(digest, { layers, instance: manifest.annotations?.['io.cloudflare.cloudchamber.deployment_id'] ?? null });
       servedBy.set(digest, repository);
       read += 1;
