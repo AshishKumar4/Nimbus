@@ -781,7 +781,7 @@ async function runSteps(steps, met, grants) {
     // An unrelated record of the process's: made, answered, retired.
     assert.equal(await errnoOf(() => sync.close(sync.open(`/${DIR}/unrelated`, { write: true, create: true, truncate: true }).id)), null, `${label}: an unrelated create`);
     ref.kernel.writeFile(`${DIR}/unrelated`, '');
-    await errnoOf(() => s.fs.flush());
+    await deliver();
     s.fs.inbound();
     await s.fs.stat(`/${DIR}`);
     const number = (id) => (typeof id === 'string' && id.startsWith('S') ? Number(id.slice(1)) : id);
