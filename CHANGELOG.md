@@ -16,11 +16,41 @@ published independently in the `@nimbus-sh` npm scope.
   other character outside the Basic Multilingual Plane at a chunk boundary
   read back with two replacement characters in place of it, from a
   process's resident store.
+- Fixed: the shell reads quoting as bash does wherever quoting decides what
+  a word is.
+  - A quoted reserved word is a command: `'if' true` runs a command named
+    `if`, and `then 'fi'` does not close an `if`. An unquoted `then`, `fi`,
+    `do`, `done`, `esac`, `}` or `]]` where a command begins is a syntax
+    error.
+  - A quoted `for` variable or function name is "not a valid identifier",
+    and so is a function name with `$` in it or one that is all digits.
+  - `'x=y'` and `x"="y` are commands, not assignments.
+  - `x='(a b)'` and `declare x='(a b)'` assign a string; only a written
+    `x=(a b)` makes an array.
+  - An alias expands only on an unquoted command word, before anything else
+    is expanded. Its arguments stay the words they were: `p 'a; echo b'`
+    passes one argument, and a redirection after an alias applies.
+  - A quoted `*`, `?`, `[`, `-` or `!` in a `case` pattern, on the right of
+    `[[ == ]]`, or in `${v#…}`, `${v%…}`, `${v/…}` or `${v^…}` matches only
+    itself. An unquoted `$p` there is a pattern.
+  - An unquoted expansion's `*` globs (`v='*.txt'; echo $v`).
+  - `${x:-'a b'}` is one word and is not globbed, and `"${x:-'a b'}"` keeps
+    its single quotes, as in bash.
+  - `${v/pat/rep}` and `${v//pat/rep}` replace the longest match (`${v/*/X}`
+    is `X`).
+  - A here-document inside `$(…)` may hold an unbalanced quote or `)`.
+  Before, these read a word's text after its quotes were gone.
 - Fixed: a launch whose program loads wasm or a native binding (rolldown's,
   in a remix dev server) no longer gathers its closure twice. Its build
   gave back the bytes its module map would need for them, then had to ask
   for them again, and when anything else was waiting it gathered the
   whole closure again. The build now keeps what its map will own.
+- Fixed: a Vite preview could crash on its first load with a SyntaxError
+  in a pre-bundled package (react-query, remark-parse, rehype-highlight,
+  react-dom), about once in 35 cold loads. The dev server answered a
+  module's first requests with clones of one response, and a clone's body
+  reached the browser with a 16 KiB block out of order. Each request now
+  gets a response of its own made from the module's text.
 - Fixed: a launch could wait forever in "prepare" (a vite dev server sat 5
   minutes) after a session that shared its isolate was deleted while it
   waited for the isolate's transient budget. The budget had handed that
