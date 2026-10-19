@@ -113,12 +113,13 @@ def discoverFrom (S : St) (P : Principal) (composed : Bool) (operand : Path) :
       | none => if top then .error "ENOENT" else .ok (prior ++ [{ base with vanished := true }])
       | some .dir =>
         let dir := { base with dir := true }
+        -- A mount point is not entered (rm --one-file-system): it stays, its rmdir EBUSY, nothing under it read or taken for gone.
+        let boundary := composed && S.mounts.any (fun mount => mount.point == q && mount.point != [] && live P mount)
         match fault (cfg m.backend).faults.readdir rp with
-        | some "ENOENT" => .ok (prior ++ [{ dir with vanished := true }])
+        | some "ENOENT" => if boundary then .ok (prior ++ [dir]) else .ok (prior ++ [{ dir with vanished := true }])
         | some code => .ok (prior ++ [{ dir with unread := some code }])
         | none =>
-          -- A mount point is not entered (rm --one-file-system): it stays, its rmdir EBUSY.
-          if composed && S.mounts.any (fun mount => mount.point == q && mount.point != [] && live P mount) then .ok (prior ++ [dir]) else
+          if boundary then .ok (prior ++ [dir]) else
           let plans := (namesAt current P composed operand q).foldl (fun result name => do
             let prior ← result
             discoverFrom S P composed operand n (q ++ [name])
