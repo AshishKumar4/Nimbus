@@ -1784,10 +1784,11 @@ export function provisional(host: ProvisionalHost): Provisional {
       if (source.type !== 'file' || (source.mode & 0o7000) !== 0 || !modeAllows(source, 4, host.cred)) return false;
       if (target !== null && target.type !== 'file') return false;
       // Read as any read here is: a file these decisions hold through them (bytesOf), any other as the store has it.
+      // Not copied here: openToWrite takes the one snapshot.
       const own = inodeAtNumber(source.dev, source.ino);
       const held = own === undefined ? undefined : bytesOf(own, 'copyfile', path);
       const stored = own === undefined ? host.content(from, source.revision) : undefined;
-      const data = held !== undefined ? owned(held.bytes, held.size) : stored !== undefined && stored.byteLength === source.size ? owned(stored) : undefined;
+      const data = held !== undefined ? held.bytes.subarray(0, held.size) : stored !== undefined && stored.byteLength === source.size ? stored : undefined;
       if (data === undefined) return false;
       const umask = host.umask();
       const asked = copiedPermissions(source.mode, false);
