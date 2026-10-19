@@ -1256,7 +1256,8 @@ export class Interpreter {
       writeFailed = await this.flushFds(fds, name);
       // Restore env from per-command assignments, but for a name the command declares
       // itself (`x=1 export x`, `x=1 readonly x`): that binding, value and attributes, stays.
-      const declares = DECLARING_BUILTINS.has(name) && !this.functions.has(name);
+      // (Printing them, `declare -p x`, declares nothing.)
+      const declares = DECLARING_BUILTINS.has(name) && !this.functions.has(name) && !args.some((arg) => /^-[^-]*p/.test(arg));
       for (const [variable, value] of saved) {
         if (declares && args.some((arg) => arg === variable || arg.startsWith(`${variable}=`))) continue;
         restoreVariable(this.config, variable, value);
