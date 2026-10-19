@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "4af83a6b5b567e5072f22f744c4a26c1c09df27e206d55316d0b838124b0da8a",
+  "fingerprint": "9441a64960c3d45e7e3c545349876388c153cda7b292db4f16b820544c8584a2",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1427,7 +1427,7 @@
     "packages/core/dist/workspace/workspace-fs.d.ts.map": "f49f660f791486dfdd4b4e942f671b784ed04475d89687d35e4e9139896c468f",
     "packages/core/dist/workspace/workspace-fs.js": "d2db021e8caec4e44977f5c57dada51035d14e82cee71671e9e1c3a7d0ebdb9e",
     "packages/core/package.json": "16eb1212c5867f617a62d40637da19c85aa2b1946651d09fd1a3e323aa18eb42",
-    "packages/core/scripts/check-runtime-packages.mjs": "858caa208a7d73c94a80137e425bb961fe16090488b9560bb3a7355da06285d3",
+    "packages/core/scripts/check-runtime-packages.mjs": "c4d52a511e663289a5d8a9c04bc30c94bee193621222c54d2735d0229685e291",
     "packages/core/scripts/compile-npm-libs.mjs": "29cc01ad8325c4bba53bb437d49acec07d95e71cc6506b7fed3f5c5214a36bff",
     "packages/core/scripts/gen-node-cli-options.mjs": "6c0b90900818a4cbef82fb639f9875d79c791cdc51887aa14d376dec1b651627",
     "packages/core/scripts/generate-filesystem-mirrors.mjs": "65ccc1af9242765d7293581224802fb49c5e4aa1b23684e566b005108277dd9e",
