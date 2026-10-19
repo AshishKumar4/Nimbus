@@ -106,15 +106,14 @@ scenarios['a floating awaited read finishes before a one-shot exits [node]'] = a
 };
 
 async function run(kind, schedule, parkSeed) {
-  const trace = [];
   try {
-    await runSchedule(kind, schedule, { parkSeed, trace });
+    await runSchedule(kind, schedule, { parkSeed });
   } catch (error) {
-    throw new Error(`${error.message}\n  schedule (${kind}${parkSeed === undefined ? '' : `, parked by seed ${parkSeed}`}):\n${trace.map((line) => `    ${line}`).join('\n')}`);
+    throw new Error(`${error.message} (${kind}${parkSeed === undefined ? '' : `, parked by seed ${parkSeed}`}; its steps are above)`);
   }
 }
 
-/** Whether `schedule` fails on `kind`, in a child of its own. */
+/** Whether `schedule` fails on `kind`, in a child of its own; null when it ran out of time (a hang is not shrunk). */
 function fails(kind, schedule, parkSeed) {
   const child = Bun.spawnSync({
     cmd: [realProcess.execPath, import.meta.path],
@@ -127,19 +126,19 @@ function fails(kind, schedule, parkSeed) {
     },
     stdout: 'pipe',
     stderr: 'pipe',
-    timeout: 60_000,
+    timeout: 30_000,
   });
-  return child.exitCode !== 0;
+  return child.exitCode === null ? null : child.exitCode !== 0;
 }
 
-/** The shortest schedule found, by dropping steps while it still fails (at most `tries` children). */
-function shrink(kind, schedule, parkSeed, tries = 40) {
+/** The shortest schedule found, by dropping steps while it still fails, within `budgetMs`. */
+function shrink(kind, schedule, parkSeed, budgetMs = 120_000) {
+  const until = Date.now() + budgetMs;
   let best = schedule;
-  for (let size = Math.ceil(best.length / 2); size >= 1 && tries > 0; size = Math.floor(size / 2)) {
-    for (let at = 0; at + size <= best.length && tries > 0;) {
+  for (let size = Math.ceil(best.length / 2); size >= 1 && Date.now() < until; size = Math.floor(size / 2)) {
+    for (let at = 0; at + size <= best.length && Date.now() < until;) {
       const candidate = [...best.slice(0, at), ...best.slice(at + size)];
-      tries--;
-      if (fails(kind, candidate, parkSeed)) best = candidate;
+      if (fails(kind, candidate, parkSeed) === true) best = candidate;
       else at += size;
     }
   }
@@ -154,6 +153,7 @@ if (realProcess.env.NIMBUS_RESIDENT_BODY_SCENARIO) {
     await runScenarios(import.meta.path, named, { gaps: GAPS });
   } catch (error) {
     for (const [, seed, kind] of String(error.message).matchAll(/seed (\d+) \[(\w+)\]/g)) {
+      if (fails(kind, generate(Number(seed)), Number(seed)) !== true) continue;
       const minimal = shrink(kind, generate(Number(seed)), Number(seed));
       realProcess.stdout.write(`  seed ${seed} [${kind}] shrinks to (parked by seed ${seed}):\n    ${JSON.stringify(minimal)}\n`);
     }

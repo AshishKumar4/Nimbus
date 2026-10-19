@@ -42,6 +42,7 @@
 import { APP, bootEngine, stat as normalized } from './guest-engines.mjs';
 import { scheduleTransport, KINDS } from './schedule-transport.mjs';
 import { sleep } from './resident-body.mjs';
+import { writeSync } from 'node:fs';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -208,6 +209,9 @@ function answers(op, answer, state, world) {
  * Finding naming the step where it does not.
  */
 export async function runSchedule(kind, schedule, { parkSeed, deadlineMs = 40_000, trace = [] } = {}) {
+  // Each line as it happens, on the test's own stderr: a child killed for a hang shows where it was.
+  const note = (line) => { trace.push(line); writeSync(2, `  | ${line}\n`); };
+  note(`boot ${kind}`);
   const lazy = kind === 'holder';
   const parkRandom = parkSeed === undefined ? null : prng(parkSeed);
   const transport = scheduleTransport({ park: parkRandom === null ? () => false : () => parkRandom() < 0.3 });
@@ -311,7 +315,7 @@ export async function runSchedule(kind, schedule, { parkSeed, deadlineMs = 40_00
     const domain = domainOf(step);
     if (changes.some((other) => other.done === null && overlaps(other.domain, domain))) return 'wait';
     const post = applied(world, step);
-    if (post === null) { trace.push(`  (step ${at} skipped: ${JSON.stringify(step)} is not valid now)`); return null; }
+    if (post === null) { note(`  (step ${at} skipped: ${JSON.stringify(step)} is not valid now)`); return null; }
     const record = { domain, post, begun: seq(), done: null, way, step };
     const finish = () => {
       // Its effect, on whatever else changed meanwhile (nothing it overlaps).
@@ -400,7 +404,7 @@ export async function runSchedule(kind, schedule, { parkSeed, deadlineMs = 40_00
 
   try {
     for (let at = 0; at < schedule.length; at++) {
-      trace.push(`${at}: ${JSON.stringify(schedule[at])}`);
+      note(`${at}: ${JSON.stringify(schedule[at])}`);
       for (let i = 0; i < deferred.length;) {
         const [was, s] = deferred[i];
         if (begin(was, s[0], s) === 'wait') i++;
@@ -412,6 +416,7 @@ export async function runSchedule(kind, schedule, { parkSeed, deadlineMs = 40_00
     }
     // Quiescence: every reply delivered, every call returned, the deferred asked, a last barrier landed.
     const end = schedule.length;
+    note('at rest: every reply delivered');
     transport.drain();
     await settle(end);
     while (deferred.length > 0) {
@@ -421,9 +426,11 @@ export async function runSchedule(kind, schedule, { parkSeed, deadlineMs = 40_00
     }
     if (readFailures.length > 0) throw readFailures[0];
     const arrived = seq();
-    await track(engine.input());
+    note('at rest: a last input');
+    track(engine.input());
     await settle(end);
     landed = arrived;
+    note('at rest: every name, both ways');
     if (kind === 'node') {
       await globalThis.__nimbusVfsResidencySettle?.();
       const ledger = [...(globalThis.__nimbusVfsResidencyMisses ?? [])].sort();
