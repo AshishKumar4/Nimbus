@@ -8,8 +8,13 @@ published independently in the `@nimbus-sh` npm scope.
 - Fixed: a syntax error in `eval`'s text, or in a file `.` runs, is that
   command's status 2, said on its stderr, and the rest of the line runs, as in
   bash: `eval 'if' 2>/dev/null || echo recovered` prints `recovered`. Lines
-  of the text before the error have run. Before, it ended the whole line, and
-  `2>/dev/null` did not hide its message.
+  of the text before the error have run. In an `sh` script (bash's POSIX mode,
+  also `--posix` and `set -o posix`), a syntax error before the text ran a
+  command ends the script, as a special builtin's own failure does. Before,
+  it ended the whole line, and `2>/dev/null` did not hide its message.
+- Fixed: a `bash` script goes on after a special builtin's own failure
+  (`. ./missing`, `eval -x`), as bash does outside POSIX mode; an `sh`
+  script still ends there. Before, every script ended.
 - Added: the shell's `[[ word =~ regex ]]`, as in bash 5.2. The regex is a
   POSIX extended regular expression as glibc compiles it. Its parentheses,
   and the blanks and `|` inside them, are its own; quoted characters match

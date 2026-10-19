@@ -12,6 +12,8 @@ export interface ShellOptions {
   errexit: boolean;
   nounset: boolean;
   pipefail: boolean;
+  /** bash's POSIX mode (`sh`, `--posix`, `set -o posix`): a script ends at a special builtin's own failure. */
+  posix: boolean;
 }
 
 export interface TrapTable {
@@ -46,7 +48,7 @@ export function createShellState(env: Record<string, string>, cwd: string, jobTa
   return withCwd({
     env: shellEnv,
     arrays: new Map(),
-    options: { errexit: false, nounset: false, pipefail: false },
+    options: { errexit: false, nounset: false, pipefail: false, posix: false },
     traps: new Map(),
     readonlyNames: new Set(),
     aliases: new Map(),

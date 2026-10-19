@@ -15,10 +15,9 @@ import { singleQuote } from '../../../_shared/shell-quote.js';
 import { isDecimalInteger, isShellIdentifier } from './names.js';
 import { assignArray, assignVariable } from './variables.js';
 import { DEFAULT_HOME } from '../../../constants.js';
-import { ExitSignal, type BuiltinExecutionContext, type BuiltinFn } from './interpreter.js';
+import { ExitSignal, TextSyntaxError, type BuiltinExecutionContext, type BuiltinFn } from './interpreter.js';
 import { resolveJobSpec } from './jobs.js';
 import { evaluateTest } from './test-builtin.js';
-import { ParseError } from './parser.js';
 import { isVfsError, strerror } from '../../../vfs/vfs-error.js';
 import { statOrThrow } from '../../../vfs/vfs.js';
 import { runKill, type HostProcessSignals } from '../commands/system/kill.js';
@@ -297,6 +296,7 @@ async function printShellOptions(state: ShellState, stdout: CommandOutputStream)
   (await stdout.write(`errexit         ${state.options.errexit ? 'on' : 'off'}\n`));
   (await stdout.write(`nounset         ${state.options.nounset ? 'on' : 'off'}\n`));
   (await stdout.write(`pipefail        ${state.options.pipefail ? 'on' : 'off'}\n`));
+  (await stdout.write(`posix           ${state.options.posix ? 'on' : 'off'}\n`));
 }
 
 function setShellOptionByName(state: ShellState, option: string, enabled: boolean): boolean {
@@ -309,6 +309,9 @@ function setShellOptionByName(state: ShellState, option: string, enabled: boolea
       return true;
     case 'pipefail':
       state.options.pipefail = enabled;
+      return true;
+    case 'posix':
+      state.options.posix = enabled;
       return true;
     default:
       return false;
@@ -686,7 +689,7 @@ async function runText(name: string, stderr: CommandOutputStream, run: () => Pro
   try {
     return await run();
   } catch (error) {
-    if (!(error instanceof ParseError)) throw error;
+    if (!(error instanceof TextSyntaxError)) throw error;
     await stderr.write(`${name}: ${error.message}\n`);
     return 2;
   }
