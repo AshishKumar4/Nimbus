@@ -93,6 +93,27 @@ const spawn = (ctx, pid, facet) => processes(ctx, env).spawn(
   console.log('  ✓ a release leaves the facet its successor runs in alone (ephemeral)');
 }
 
+// ── a journaled process, its name since given to a successor ────────────────
+// Its release drains its write log from its facet's store. Under a name a
+// newer process now runs in, no reader is started there (that would end the
+// successor): the log reads empty, and the successor runs on.
+{
+  const platform = platformFacets();
+  const ended = incarnation(platform);
+  const next = incarnation(platform);
+  const read = [];
+  const journal = { opened() {}, async drain(source) { read.push(await source.readAfter(0, 1 << 20)); } };
+  const before = processes(ended, env).spawn(disk, { doId: 'session', pid: 1000004, writerId: 'w1000004' },
+    { pid: 1000004, writerId: 'w1000004', startArgs: {}, boot: { kind: 'code', code: {} }, facet: { name: 'app-slot-3', durable: true }, journal });
+  await before.started;
+  const after = spawn(next, 2000004, { name: 'app-slot-3', durable: true });
+  const booted = await after.started;
+  await before.release();
+  assert.deepEqual(read, [[]], 'its log reads empty under a name it no longer holds');
+  assert.equal(platform.running('app-slot-3'), booted.instance, `the successor still runs: ${JSON.stringify(platform.ended)}`);
+  console.log('  ✓ a journaled release leaves a successor\'s facet alone');
+}
+
 // ── one incarnation: a name shared by two of its processes ──────────────────
 // A spawn never ends what its own incarnation runs under a name
 // (durable-facet-storage 5b): the second process shares the facet. The

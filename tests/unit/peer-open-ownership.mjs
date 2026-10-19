@@ -171,4 +171,17 @@ for (const code of [1000, 1005, 1006, 'error']) {
   await process.release();
   assert.ok(!t.world.liveFacets().includes(name), 'and its own release ends it');
 }
+// A cancel after the peer itself restarted, with nothing given the name
+// since: the facet the cancelled process left running is its own, and is
+// ended and deleted, though the peer's earlier life never released it.
+{
+  const t = setup(), host = t.open(), process = await host.open(t.params);
+  await process.started; await turns();
+  const placement = await peerPlacement(t.ctx, t.params.pid);
+  const peer = t.peers.get(placement.peerName);
+  const name = (await peer.peerHost.inspect(placement.workerKey)).facet;
+  peer.resetBy = new Error('the peer restarted');
+  await process.release();
+  assert.ok(!t.world.liveFacets().includes(name), `the cancelled process's facet ${name} is ended`);
+}
 console.log('peer-open-ownership: cancellation fences delayed opens and only live calls own stubs');
