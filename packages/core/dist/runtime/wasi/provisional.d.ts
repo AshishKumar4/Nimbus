@@ -222,12 +222,19 @@ export interface Provisional {
     /** `inode`'s cell goes (its name retired, nothing holds it): the Inode with it, but for what else holds it. */
     dropCell(inode: Inode): void;
     /**
-     * A rename a grant decided, `from` to `to`: every file reached beneath
-     * `from` (a grant's cell, or one these decisions hold, a descriptor's
-     * included) is reached at its name beneath `to` from now on, the name the
-     * view will have it at too. A cell that no name leads to stays where it is.
+     * A rename of `from` to `to` that is not theirs (a grant's, or the
+     * session's the caller awaits): every file reached beneath `from` (a
+     * grant's cell, or one these decisions hold, a descriptor's included) is
+     * reached at its name beneath `to` once it is made (`move`), the name the
+     * view will have it at too; a cell no name leads to stays where it is.
+     * What its names grow by is admitted now, before anything is done (ENOSPC
+     * where the budget has no room), and taken as they move; `cancel` gives it
+     * back where the rename is not made.
      */
-    moved(from: string, to: string): void;
+    planMove(from: string, to: string, path: string): {
+        move(): void;
+        cancel(): void;
+    };
     /**
      * No grant decides `inode` any more: its cell's bytes are its content
      * from now on, known (Inode.heldAt: the session's once what was decided is

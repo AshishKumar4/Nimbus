@@ -1299,6 +1299,8 @@ export function residentFilesystem(session, resident, delegation) {
     const byClient = (name, op) => {
         if (now)
             throw NOT_NOW;
+        // What the names of the files it moves grow by, admitted before anything is done.
+        const files = op.type === 'rename' ? holder.provisional.planMove(op.from, op.to, '/' + op.from) : undefined;
         delegated(name);
         // A name it changes: the files the process holds open at or under it write through first.
         if (op.type === 'rename')
@@ -1312,12 +1314,16 @@ export function residentFilesystem(session, resident, delegation) {
             if (op.type === 'rename') {
                 holder.superseded(op.from);
                 holder.superseded(op.to);
-                holder.provisional.moved(op.from, op.to);
+                files?.move();
             }
             else if (op.type === 'call' && (op.call.call === 'unlink' || op.call.call === 'rmdir'))
                 holder.superseded(op.call.path);
             owed++;
-        }, (error) => { owed++; throw error; });
+        }, (error) => {
+            files?.cancel();
+            owed++;
+            throw error;
+        });
     };
     const pathOf = (path) => (typeof path === 'string' ? path : path.path);
     // Changes by name a held subtree holds are decided here; any other is the session's, through the client.

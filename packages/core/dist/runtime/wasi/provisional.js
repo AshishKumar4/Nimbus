@@ -37,6 +37,8 @@ const RECORD_COST = 160;
 const INODE_COST = 320;
 /** What a string keeps: two bytes a code unit. */
 const stringCost = (text) => text.length * 2;
+/** What a buffer keeps alive: all of what it is a view of. */
+const retained = (bytes) => bytes?.buffer.byteLength ?? 0;
 /** The bytes an operation carries, which its record keeps until it retires. */
 const payloadOf = (op) => ('data' in op ? op.data.byteLength : 0);
 function parentKey(key) {
@@ -190,6 +192,7 @@ export function provisional(host) {
             const there = rowAt(inode.opened);
             if (there && there.dev === inode.dev && there.ino === inode.ino) {
                 inode.key = inode.origin = inode.opened;
+                fit(inode);
                 row = there;
                 found = true;
             }
@@ -233,8 +236,8 @@ export function provisional(host) {
     /** What `inode` keeps of the budget now: itself and its names, its baseline's and fold's buffers, its records and their bytes, its anchors, its credit. */
     const cost = (inode) => {
         let total = INODE_COST + stringCost(inode.key) + stringCost(inode.origin) + (inode.opened === undefined ? 0 : stringCost(inode.opened))
-            + (inode.row.target === null ? 0 : stringCost(inode.row.target)) + (inode.base?.bytes?.byteLength ?? 0) + (inode.state === inode.base ? 0 : inode.state?.bytes?.byteLength ?? 0)
-            + (inode.pin?.bytes.byteLength ?? 0) + inode.credit + inode.recordsCost;
+            + (inode.row.target === null ? 0 : stringCost(inode.row.target)) + retained(inode.base?.bytes) + (inode.state === inode.base ? 0 : retained(inode.state?.bytes))
+            + retained(inode.pin?.bytes) + inode.credit + inode.recordsCost;
         return total;
     };
     /** What a record keeps of the budget: itself and what its op carries (an extended one's room, as the state's bytes count theirs). */
@@ -260,7 +263,7 @@ export function provisional(host) {
     const projectedCost = (inode, ops) => {
         if (ops.length === 0)
             return cost(inode);
-        let baseBytes = inode.base === null ? 0 : inode.base.bytes?.byteLength ?? 0;
+        let baseBytes = inode.base === null ? 0 : retained(inode.base.bytes);
         let capacity = inode.state?.bytes?.byteLength ?? 0;
         let known = inode.state !== null && inode.state.bytes !== null;
         let size = inode.state?.size ?? inode.row.size;
@@ -274,7 +277,7 @@ export function provisional(host) {
             capacity = baseBytes;
             size = held?.byteLength ?? inode.row.size;
         }
-        let total = cost(inode) - (inode.base?.bytes?.byteLength ?? 0) - (inode.state?.bytes?.byteLength ?? 0) + baseBytes;
+        let total = cost(inode) - retained(inode.base?.bytes) - retained(inode.state?.bytes) + baseBytes;
         for (const op of ops) {
             if (op.kind === 'truncate' && op.size === 0)
                 known = true;
@@ -475,9 +478,12 @@ export function provisional(host) {
         for (const record of nameRecords)
             record.replay();
         touched.clear();
-        for (const inode of everyInode())
+        for (const inode of everyInode()) {
             if (inode.state !== null)
                 touched.add(inode);
+            // Its names are what the records left: what it keeps with them.
+            fit(inode);
+        }
         activity();
     };
     /**
@@ -664,6 +670,7 @@ export function provisional(host) {
             return;
         if (!inode.local && inode.dev === receipt.dev && inode.ino === receipt.ino) {
             inode.opened = key;
+            fit(inode);
             return;
         }
         const known = inodeAtNumber(receipt.dev, receipt.ino);
@@ -1054,13 +1061,29 @@ export function provisional(host) {
             fit(inode);
             release(inode);
         },
-        moved: (from, to) => {
-            for (const inode of everyInode()) {
-                if (inode.cell?.detached !== undefined || !within(inode.key, from))
-                    continue;
-                inode.key = inode.origin = to + inode.key.slice(from.length);
-                fit(inode);
-            }
+        planMove: (from, to, path) => {
+            const beneath = () => everyInode().filter((inode) => inode.cell?.detached === undefined && within(inode.key, from));
+            // Its name here and the view's both beneath `to`.
+            const growth = (inode) => 2 * stringCost(to + inode.key.slice(from.length)) - stringCost(inode.key) - stringCost(inode.origin);
+            let admitted = beneath().reduce((sum, inode) => sum + Math.max(0, growth(inode)), 0);
+            admit(admitted, 'rename', path);
+            return {
+                move: () => {
+                    for (const inode of beneath()) {
+                        const taken = Math.min(Math.max(0, growth(inode)), admitted);
+                        inode.reserved += taken;
+                        admitted -= taken;
+                        inode.key = inode.origin = to + inode.key.slice(from.length);
+                        fit(inode);
+                    }
+                    host.release(admitted);
+                    admitted = 0;
+                },
+                cancel: () => {
+                    host.release(admitted);
+                    admitted = 0;
+                },
+            };
         },
         unhold: (inode, entry) => {
             const cell = inode.cell;
@@ -1068,8 +1091,9 @@ export function provisional(host) {
                 return;
             setCell(inode, undefined);
             inode.row = { ...entry, size: cell.length };
-            // The cell's buffer is the baseline's own: no one else holds it now.
-            inode.base = { bytes: cell.bytes.subarray(0, cell.length), size: cell.length, mode: entry.mode, uid: entry.uid, gid: entry.gid, atime: entry.atime, mtime: entry.mtime, ctime: entry.ctime };
+            // The cell's bytes are the baseline's own (no one else holds them now), kept at their size: not the room a grant drew for more.
+            const bytes = cell.bytes.byteLength === cell.length && retained(cell.bytes) === cell.length ? cell.bytes : owned(cell.bytes, cell.length);
+            inode.base = { bytes, size: cell.length, mode: entry.mode, uid: entry.uid, gid: entry.gid, atime: entry.atime, mtime: entry.mtime, ctime: entry.ctime };
             // Its state is its baseline until something changes it here (unshared): no copy of bytes nothing may change.
             inode.state = inode.base;
             inode.heldAt = Infinity;
@@ -1417,14 +1441,26 @@ export function provisional(host) {
                 return true;
             if (writableParent(from, path, 'rename') === undefined || writableParent(to, path, 'rename') === undefined)
                 return false;
-            // A file it replaces keeps, for its descriptors, what it holds: admitted first, with the record and the Inode it moves.
+            // A file it replaces keeps, for its descriptors, what it holds: admitted first, with the record and the Inode it moves,
+            // and what the names beneath the source grow by: their names here now, and the view's once it has the rename (retire).
             host.drain();
             const known = layer.get(from) ?? inodeAtNumber(source.dev, source.ino);
             const moves = known === undefined ? INODE_COST + 2 * stringCost(from) + 2 * stringCost(to) : 2 * stringCost(to);
-            keepForDescriptors(target === null ? undefined : inodeAtNumber(target.dev, target.ino), nameCost([from, to]) + moves, 'rename', path);
+            const beneath = new Map();
+            for (const [key, value] of layer)
+                if (value !== null && key !== from && within(key, from))
+                    beneath.set(value, Math.max(0, stringCost(to + key.slice(from.length)) - stringCost(key)));
+            let viewGrowth = 0;
+            for (const inode of everyInode())
+                if (within(inode.origin, from))
+                    viewGrowth += Math.max(0, stringCost(to + inode.origin.slice(from.length)) - stringCost(inode.origin));
+            const names = nameCost([from, to]) + viewGrowth;
+            keepForDescriptors(target === null ? undefined : inodeAtNumber(target.dev, target.ino), names + moves + [...beneath.values()].reduce((sum, grows) => sum + grows, 0), 'rename', path);
             const moving = known ?? inodeAt(from, source);
             moving.reserved += moves;
-            loggedName({ type: 'rename', from, to }, [from, to], nameCost([from, to]), () => {
+            for (const [inode, grows] of beneath)
+                inode.reserved += grows;
+            loggedName({ type: 'rename', from, to }, [from, to], names, () => {
                 // What is beneath the source moves with it: names, never records.
                 for (const [key, value] of [...layer]) {
                     if (key === from || !within(key, from))
@@ -1445,12 +1481,17 @@ export function provisional(host) {
                 place(from, null);
                 place(to, moving);
             }, undefined, () => {
-                // The view has it moved: what was beneath the source starts beneath the destination.
-                for (const inode of everyInode())
-                    if (within(inode.origin, from))
-                        inode.origin = to + inode.origin.slice(from.length);
+                // The view has it moved: what was beneath the source starts beneath the destination (its growth the record's, given back first).
+                for (const inode of everyInode()) {
+                    if (!within(inode.origin, from))
+                        continue;
+                    inode.origin = to + inode.origin.slice(from.length);
+                    fit(inode);
+                }
             });
             fit(moving);
+            for (const inode of beneath.keys())
+                fit(inode);
             return true;
         },
         setattr: (key, path, attrs, row) => {
@@ -1513,8 +1554,9 @@ export function provisional(host) {
                 if (!record.answered || record.answeredAt >= begun)
                     return true;
                 record.keys.forEach((key, at) => host.settled(key, record.over[at]));
-                record.retired?.();
+                // What it kept goes back before what it leaves takes its share of it (a rename's names, grown beneath it).
                 host.release(record.cost);
+                record.retired?.();
                 return false;
             });
             if (kept.length < nameRecords.length) {
