@@ -521,7 +521,7 @@ async function builtinExit({ args, stderr, context }) {
         return 1;
     }
     if (args.length === 0) {
-        throw new ExitSignal(context.getLastExitCode());
+        throw new ExitSignal(context.exitStatus());
     }
     const status = parseShellExitStatus(args[0] ?? '');
     if (status === null) {
