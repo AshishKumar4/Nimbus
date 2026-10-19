@@ -157,7 +157,7 @@ interface InodeRecord {
     /** The inode it is of: the one its op reached at the session, once an open's answer says which (reconcile). */
     owner: Inode;
     /** The description it was made through, where one was: what an open's answer moves with it. */
-    readonly description: string | undefined;
+    readonly description?: string;
     answered: boolean;
     /** Barriers begun when it was answered: one begun after retires it. */
     answeredAt: number;
@@ -195,6 +195,8 @@ export interface Provisional {
     descriptorsOf(inode: Inode): Desc[];
     /** The Inodes a grant decides now (their cells). */
     cells(): Inode[];
+    /** A grant decides `inode` from now on: `cell` is its content. */
+    hold(inode: Inode, cell: HeldCell): void;
     /** `inode`'s cell goes (its name retired, nothing holds it): the Inode with it, but for what else holds it. */
     dropCell(inode: Inode): void;
     /**
