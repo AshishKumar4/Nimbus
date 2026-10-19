@@ -794,13 +794,30 @@ export function processFsClient(options) {
     /**
      * Give `grant` back: nothing more is decided under it from now, what was
      * (numbered from its range) is sent, then it is released, so no op names a
-     * number of a lease the session no longer holds.
+     * number of a lease the session no longer holds. Where what was decided
+     * there cannot be logged yet (freezing refused), it is not given back: it
+     * stays as it was (held, or closing for whoever set that), its bytes the
+     * runtime's, and the next flush (a sync, the settle at the run's end)
+     * reports the refusal (false). One close at a time: a second joins it.
      */
-    const close = async (grant) => {
+    const close = (grant) => {
+        if (grant.closed !== undefined)
+            return grant.closed;
+        const wasClosing = grant.closing;
         grant.closing = true;
-        options.freezing?.(grant.root);
-        await client.flush();
-        await end(grant);
+        try {
+            options.freezing?.(grant.root);
+        }
+        catch {
+            grant.closing = wasClosing;
+            return Promise.resolve(false);
+        }
+        grant.closed = (async () => {
+            await client.flush();
+            await end(grant);
+            return true;
+        })();
+        return grant.closed;
     };
     /** Release `grant` (its log already sent: close). */
     const end = async (grant) => {
@@ -983,7 +1000,9 @@ export function processFsClient(options) {
             // Its own grant of the same root among them: a renewal, with a range twice as large.
             const covered = live().filter((grant) => within(grant.root, target));
             if (covered.length > 0) {
-                await Promise.all(covered.map(close));
+                // One not given back stays held: no lease is taken over it.
+                if (!(await Promise.all(covered.map(close))).every(Boolean))
+                    return;
                 if (covered.some((grant) => grant.root !== target))
                     counters.widened++;
                 else

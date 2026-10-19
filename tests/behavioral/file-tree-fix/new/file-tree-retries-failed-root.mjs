@@ -11,6 +11,11 @@
 // session's file.
 // Red before: the tree recorded itself loaded whether or not its root had
 // loaded, so it never asked again and kept the error until Refresh.
+//
+// The failure stays shown until the root loads: filtering the tree, or the
+// editor opening a file (its default welcome page selects itself in the
+// tree), drew the unloaded root as "Empty", which reads as a session with
+// no files. That raced the probe's first check (2 of 51 runs).
 
 import { BASE, Terminal, deleteSession, makeAsserter, mintSession } from '../../_driver.mjs';
 import { launchBrowser, openPage } from '../../_runtime-behavioral-template.mjs';
@@ -79,6 +84,10 @@ try {
   const failed = await page.waitForFunction(() => /probe: the listing failed/.test(document.getElementById('treeBody')?.textContent ?? ''),
     { timeout: 60_000 }).then(() => true, () => false);
   a.check('the failed root listing is shown', failed, await page.$eval('#treeBody', (el) => el.textContent));
+  await page.type('#treeSearch', 'x');
+  await page.$eval('#treeSearch', (input) => { input.value = ''; input.dispatchEvent(new Event('input')); });
+  const kept = await page.$eval('#treeBody', (el) => el.textContent);
+  a.check('and stays shown as the tree is filtered, not drawn as an empty root', /probe: the listing failed/.test(kept), kept);
 
   await page.click('#btnAgent');
   await page.click('#btnEditor');

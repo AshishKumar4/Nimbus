@@ -41,6 +41,10 @@ published independently in the `@nimbus-sh` npm scope.
   once when the preview's frame took focus as it loaded. The shell ended a
   drag whenever its window lost focus; it now ends one only when the
   pointer is no longer held by the divider.
+- Fixed: when the file tree could not list the session's files, filtering
+  it or opening a file (the editor's welcome page opens one) replaced the
+  failure with "Empty", as if the session had no files. The failure now
+  stays shown until the files are listed.
 - Added: the shell's `[[ word =~ regex ]]`, as in bash 5.2. The regex is a
   POSIX extended regular expression as glibc compiles it. Its parentheses,
   and the blanks and `|` inside them, are its own; quoted characters match

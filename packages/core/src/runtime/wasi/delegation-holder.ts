@@ -370,12 +370,16 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
   /**
    * Log each file's latest bytes, in the order last written, under the name
    * it has now: whole, or where the log holds what it was up to an offset,
-   * from there (cut to its length first, where it shrank).
+   * from there (cut to its length first, where it shrank). `except`: one
+   * whose bytes go unlogged with it (a file being unlinked). Every decision
+   * drains first, before it decides anything: one the client refuses
+   * (ENOMEM) decides nothing.
    */
-  const drain = (): void => {
+  const drain = (except?: Inode): void => {
     if (dirty.size === 0) return;
     changes++;
     for (const inode of [...dirty]) {
+      if (inode === except) continue;
       const file = inode.cell!;
       const from = Math.min(file.changedFrom ?? 0, file.logged ?? 0);
       // A copy: the file's buffer keeps changing as the process writes. A
@@ -723,6 +727,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
           type: 'file', dev: store.device, ino, nlink: 1, size: 0, atime: stamp, mtime: stamp, ctime: stamp,
           mode: 0o100000 | (asked & ~umask), uid, gid, revision: 0, target: null,
         };
+        drain();
         // Its mode was decided under this umask: the session applies the same one, and its number.
         const file: HeldCell = { bytes: new Uint8Array(0), length: 0, mode: asked, made: ino, umask };
         // Room for what it is opened to be written with, before anything is decided (its number unused if not).
@@ -734,7 +739,6 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
         names.note(parentKey(key), nameOf(key), 'file');
         // Made here: the name exists from now on, in the log's order. Logged
         // with its bytes, before the next decision (drain), as one call.
-        drain();
         written(inode);
       } else if (!flags.truncate) {
         // An existing file opened to write, not emptied (O_CREAT without
@@ -882,6 +886,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       const stamp = now();
       const umask = mask ?? grant.umask;
       const perm = (mode & 0o777 & ~umask) | (setgid ? 0o2000 : 0);
+      drain();
       names.decide(key, {
         type: 'directory', dev: store.device, ino, nlink: 2, size: 0, atime: stamp, mtime: stamp, ctime: stamp,
         mode: 0o40000 | perm, uid, gid, revision: 0, target: null,
@@ -897,9 +902,10 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       if (current === undefined || current === null || current.type === 'directory') return false;
       if (deciding(key) === undefined) return false;
       if (writableParent(key, path, 'unlink') === undefined) return false;
+      const local = prov.inode(current.dev, current.ino);
+      drain(local?.cell !== undefined && local.key === key ? local : undefined);
       names.decide(key, null);
       names.note(parentKey(key), nameOf(key), null);
-      const local = prov.inode(current.dev, current.ino);
       if (local?.cell !== undefined && local.key === key) {
         const made = local.cell.made;
         // Its bytes go with it: nothing of them is logged, now or through a
@@ -965,6 +971,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
         throughAt([key]);
         if (provisionalActive && prov.touches(key)) return false;
       }
+      drain();
       const next = changedBy(current, attrs);
       names.decide(key, next);
       const local = prov.inode(current.dev, current.ino)?.cell;

@@ -928,4 +928,141 @@ async function caughtUp(s) {
   assert.equal(await withRecall(() => s.kernel.readFileString('home/user/st.log')), 'a;b;');
 }
 
+// ── A held file the client cannot take yet (past its synchronous cap), at a give-back ──
+// Given back idle, or renewed by a claim (its range nearly spent): the give-back waits and the file stays the
+// process's, with no promise left rejected for no one. The program is told: on its next fsync, at its next decision
+// (an open, which logs what was written before it first), or at the run's end (the settle, whose failure the run
+// reports, exiting non-zero) when nothing touches the file again. Red before: the drain's ENOMEM rejected the
+// give-back with no one to tell.
+for (const [route, told] of [['idle', 'fsync'], ['idle', 'settle'], ['renewal', 'open']]) {
+  const label = `${route}, told at its ${told}`;
+  const unhandled = [];
+  const record = (reason) => { unhandled.push(reason?.code ?? String(reason)); };
+  process.on('unhandledRejection', record);
+  // A grant with room for one file past the cap (64 MiB in a journal on the heap).
+  const s = session({ grantBytes: 128 * 1024 * 1024, ...(route === 'renewal' ? { grantInos: 8 } : {}) });
+  await s.fs.mkdir('/home/user/proj/cap', { mode: 0o755 });
+  const size = 65 * 1024 * 1024;
+  const big = await s.fs.open('/home/user/proj/cap/big', { write: true, create: true, truncate: true, mode: 0o644 });
+  await s.fs.write(big.id, null, new Uint8Array(size));
+  assert.equal(s.filesystem.delegations.size, 1, `${label}: held`);
+  if (route === 'idle') {
+    // Unused for its idle period (2 s): given back.
+    await new Promise((resolve) => setTimeout(resolve, 2_600));
+  } else {
+    // Each open takes a number, a quarter of the range left asks for the grant again (renewed), and logs what was
+    // written before it first: the program is told there.
+    const codes = [];
+    for (let index = 0; index < 8; index++) {
+      try {
+        const handle = await s.fs.open(`/home/user/proj/cap/f${index}`, { write: true, create: true, truncate: true, mode: 0o644 });
+        await s.fs.close(handle.id);
+        codes.push(null);
+      } catch (error) {
+        codes.push(error?.code ?? String(error));
+      }
+    }
+    assert.ok(codes.includes('ENOMEM') && codes.every((code) => code === 'ENOMEM' || code === null), `${label}: what the opens are told: ${codes}`);
+  }
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  process.off('unhandledRejection', record);
+  assert.deepEqual(unhandled, [], `${label}: a give-back rejected with no one to tell`);
+  // Still the process's, as it wrote it.
+  assert.equal((await s.fs.stat('/home/user/proj/cap/big')).size, size, `${label}: the file`);
+  if (told === 'fsync') {
+    const synced = await s.fs.fsync(big.id).then(() => null, (error) => error?.code);
+    assert.equal(synced, 'ENOMEM', `${label}: what the program's next fsync is told`);
+  }
+  const failures = await s.fs.settle();
+  assert.deepEqual(failures.map((failure) => failure.error?.code), ['ENOMEM'], `${label}: what the run's end reports`);
+  // The test's own end: the file shrunk to what the client takes, the run ends clean, nothing held.
+  await s.fs.ftruncate(big.id, 1);
+  await s.fs.close(big.id);
+  assert.deepEqual(await s.fs.settle(), [], `${label}: settled once it fits`);
+  assert.equal(s.filesystem.delegations.size, 0, `${label}: given back at the end`);
+}
+
+// ── A grant has one close at a time: a claim that widens over grants given back idle joins their closes ──
+// Seven subtrees given back idle, their closes waiting at the session; a held file elsewhere then grows past the
+// client's cap, and a claim widens over the seven. Its closes join theirs: none is held again (nothing decided
+// under a lease about to end). Red before: the claim's second freeze, refused, held them again.
+{
+  let gated = false;
+  let opened = Promise.withResolvers();
+  const s = session({ grantBytes: 128 * 1024 * 1024, gate: { then: (resolve, reject) => (gated ? opened.promise : Promise.resolve()).then(resolve, reject) } });
+  for (let index = 0; index < 7; index++) await create(s.fs, `/home/user/proj/d${index}/x`, 'x');
+  // Taken at its first change: the file made after is held.
+  await create(s.fs, '/home/user/other/first', 'f');
+  await s.fs.flush();
+  const big = await s.fs.open('/home/user/other/big', { write: true, create: true, truncate: true, mode: 0o644 });
+  await s.fs.write(big.id, null, enc.encode('b'));
+  await s.fs.flush();
+  assert.equal(s.filesystem.delegations.size, 8, 'eight subtrees held');
+  // The seven go idle (2 s); the other is kept in use (a file made there). Their closes wait at the session.
+  gated = true;
+  for (let tick = 0; tick < 5; tick++) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await create(s.fs, `/home/user/other/t${tick}`, 't');
+  }
+  // The other's held file grows past the cap; then a ninth subtree widens over the seven.
+  await s.fs.write(big.id, null, new Uint8Array(65 * 1024 * 1024));
+  const delegated = () => s.fs.stats().delegated.open ?? 0;
+  const ninth = create(s.fs, '/home/user/proj/d7/x', 'x').catch(() => null);
+  await Promise.resolve();
+  // Under one of the seven, being given back: the session's to decide, not this process's.
+  const before = delegated();
+  const after = (async () => {
+    const handle = await s.fs.open('/home/user/proj/d0/after', { write: true, create: true, truncate: true, mode: 0o644 });
+    await s.fs.close(handle.id);
+    return null;
+  })().catch((error) => error?.code ?? String(error));
+  assert.equal(delegated() - before, 1, 'a create under a grant being given back went to the session');
+  await s.fs.ftruncate(big.id, 1);
+  gated = false;
+  opened.resolve();
+  await ninth;
+  // What was written before it cannot be logged yet: the program is told, and nothing is made.
+  assert.equal(await after, 'ENOMEM', 'the create under the grant given back');
+  await s.fs.close(big.id);
+  assert.deepEqual(await s.fs.settle(), []);
+  assert.equal(s.filesystem.delegations.size, 0, 'everything given back');
+  assert.equal(s.kernel.exists('home/user/proj/d0/after'), false);
+}
+
+// ── A decision whose drain the client refuses (a held file past its synchronous cap) leaves nothing decided ──
+// The program is told (ENOMEM), and what it asked for is not done: no name made, none removed, no mode changed.
+// Red before: the name was decided before the drain refused, so it stayed though the call failed.
+{
+  const s = session({ grantBytes: 128 * 1024 * 1024 });
+  await s.fs.mkdir('/home/user/proj/dec', { mode: 0o755 });
+  await create(s.fs, '/home/user/proj/dec/kept', 'k');
+  const big = await s.fs.open('/home/user/proj/dec/big', { write: true, create: true, truncate: true, mode: 0o644 });
+  await s.fs.write(big.id, null, new Uint8Array(65 * 1024 * 1024));
+  const told = async (call) => {
+    try {
+      await call();
+      return null;
+    } catch (error) {
+      return error?.code ?? String(error);
+    }
+  };
+  const asked = {
+    create: () => s.fs.open('/home/user/proj/dec/new', { write: true, create: true, truncate: true, mode: 0o644 }),
+    mkdir: () => s.fs.mkdir('/home/user/proj/dec/sub', { mode: 0o755 }),
+    unlink: () => s.fs.unlink('/home/user/proj/dec/kept'),
+    chmod: () => s.fs.chmod('/home/user/proj/dec/kept', 0o600),
+  };
+  for (const [call, run] of Object.entries(asked)) assert.equal(await told(run), 'ENOMEM', `${call}: what the program is told`);
+  assert.equal(await s.fs.stat('/home/user/proj/dec/new'), null, 'a create refused made no name');
+  assert.equal(await s.fs.stat('/home/user/proj/dec/sub'), null, 'a mkdir refused made no name');
+  assert.equal((await s.fs.stat('/home/user/proj/dec/kept'))?.mode & 0o777, 0o644, 'an unlink and a chmod refused left the file as it was');
+  // The file shrunk to what the client takes: the run ends clean, and the session has none of what was refused.
+  await s.fs.ftruncate(big.id, 1);
+  await s.fs.close(big.id);
+  assert.deepEqual(await s.fs.settle(), []);
+  assert.equal(s.kernel.exists('home/user/proj/dec/new'), false);
+  assert.equal(s.kernel.exists('home/user/proj/dec/sub'), false);
+  assert.equal(s.kernel.stat('home/user/proj/dec/kept').mode & 0o777, 0o644);
+}
+
 console.log('wasi delegation holder: ok');
