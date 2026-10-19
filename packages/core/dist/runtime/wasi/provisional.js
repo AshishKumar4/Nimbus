@@ -422,33 +422,23 @@ export function provisional(host) {
     const loggedOn = (records, op) => {
         logged(op, (refused) => settleRecords(records, refused));
     };
-    /**
-     * `record`, a write or append whose entry `op` was folded into by the client,
-     * extended by it: its bytes after the record's, at the op's time. False where
-     * `op` does not continue it (the client folds only what does).
-     */
-    const extended = (record, op) => {
-        const was = record.op;
-        if (!('data' in was) || !('data' in op))
-            return false;
-        if (op.kind === 'append' ? was.kind !== 'append' : was.kind !== 'write' || op.offset !== was.offset + was.data.byteLength)
-            return false;
-        const before = was.data.byteLength;
-        const length = before + op.data.byteLength;
+    /** `record`, a write or append `data` continues (continued), extended by it at time `at`: its room grown by doubling. */
+    const extended = (record, data, at) => {
+        // The record's own op: changed where it is.
+        const op = record.op;
+        const before = op.data.byteLength;
+        const length = before + data.byteLength;
         const counted = recordCost(record);
         let room = record.room;
         if (room === undefined || room.byteLength < length) {
             const grown = new Uint8Array(Math.max(length, before * 2));
-            grown.set(was.data);
+            grown.set(op.data);
             record.room = room = grown;
         }
-        room.set(op.data, before);
-        // The record's own op: changed where it is.
-        const own = was;
-        own.data = room.subarray(0, length);
-        own.at = op.at;
+        room.set(data, before);
+        op.data = room.subarray(0, length);
+        op.at = at;
         record.owner.recordsCost += recordCost(record) - counted;
-        return true;
     };
     /** The overlay rebuilt: every name record still pending replayed over the view, in log order. */
     const replay = () => {
@@ -818,25 +808,22 @@ export function provisional(host) {
         admitOps(inode, [op], syscall, desc.path);
         ready(inode);
         host.drain();
-        // One record per entry the client keeps, as the session answers each entry once: a change it folds into the entry of this description's last extends that record.
-        const answer = host.client.submit(call, { acknowledged: true });
-        const last = desc.lastRecord;
-        if (answer === desc.lastAnswer && last !== null && !last.answered && last.gone !== true && last.owner === inode && extended(last, op)) {
-            inode.state = applyOp(inode.state, op);
-        }
-        else {
-            const record = recorded(inode, op, desc.description);
-            desc.lastRecord = record;
-            desc.lastAnswer = answer;
-            settles(answer, (refused) => settleRecords([record], refused));
-        }
+        recordedFor(desc, op, host.client.submit(call, { acknowledged: true }));
         fit(inode);
     };
+    /** `op` a record of its own, settled by `answer` (its client entry's): the one a write the client folds into that entry extends (continued). */
+    const recordedFor = (desc, op, answer) => {
+        const record = recorded(desc.inode, op, desc.description);
+        desc.lastRecord = record;
+        desc.lastAnswer = answer;
+        settles(answer, (refused) => settleRecords([record], refused));
+    };
     /**
-     * A write `desc`'s last change continues: the client folds it into that
-     * change's entry (copying its bytes, so the caller's are not kept) and its
-     * record extends. Admitted for what it adds: its bytes, and its state's room.
-     * False, nothing done, where it is a change of its own.
+     * A write `desc`'s last change continues, as the session answers each
+     * client entry once: the client folds it into that change's entry (copying
+     * its bytes, so the caller's are not kept) and the change's record extends.
+     * Admitted for what grows. False, nothing done, where the client would not
+     * fold it: a change of its own (contentOp).
      */
     const continued = (desc, start, bytes, at) => {
         const inode = desc.inode;
@@ -844,7 +831,7 @@ export function provisional(host) {
         if (last === null || last.answered || last.gone === true || last.owner !== inode || inode.cell !== undefined || inode.state === null)
             return false;
         const was = last.op;
-        if (start === undefined ? was.kind !== 'append' : was.kind !== 'write' || start !== was.offset + was.data.byteLength)
+        if (!('data' in was) || (start === undefined ? was.kind !== 'append' : was.kind !== 'write' || start !== was.offset + was.data.byteLength))
             return false;
         // What it adds is what grows: its record's room and its state's, each by doubling; most writes add nothing to admit.
         const state = inode.state;
@@ -865,14 +852,22 @@ export function provisional(host) {
         const call = { type: 'call', call: start === undefined
                 ? { call: 'append', path: inode.key, ...by(desc), data: bytes }
                 : { call: 'write', path: inode.key, ...by(desc), offset: start, data: bytes } };
-        // Not the change it continues (another came after it): any room taken is the general path's to count.
-        if (host.client.fold(call, { acknowledged: true }) === undefined)
+        // Not folded: any room taken is the general path's to count.
+        const answer = host.client.fold(call, { acknowledged: true });
+        if (answer === undefined)
             return false;
         const op = start === undefined ? { kind: 'append', data: bytes, at } : { kind: 'write', offset: start, data: bytes, at };
-        extended(last, op);
-        inode.state = applyOp(state, op);
-        if (growth > 0)
-            fit(inode);
+        if (answer === desc.lastAnswer) {
+            extended(last, bytes, at);
+            inode.state = applyOp(state, op);
+            if (growth > 0)
+                fit(inode);
+            return true;
+        }
+        // Folded into another entry than the change's: a record of its own, settled by that entry.
+        const data = owned(bytes);
+        recordedFor(desc, start === undefined ? { kind: 'append', data, at } : { kind: 'write', offset: start, data, at }, answer);
+        fit(inode);
         return true;
     };
     const judgeAttrs = (row, attrs, syscall, path) => {

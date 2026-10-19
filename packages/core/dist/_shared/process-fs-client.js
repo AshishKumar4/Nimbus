@@ -188,14 +188,6 @@ function extended(call, data, buffer) {
     const joined = buffer.subarray(0, size);
     return { op: { type: 'call', call: { ...call, data: joined } }, buffer, append: joined.subarray(call.data.byteLength) };
 }
-/**
- * `next` folded into `last`, the log's unsent tail, when it is the same
- * file's next bytes and nothing was logged between them: a whole write
- * replacing a whole write (its make, mode and number kept), an append
- * extending a write or an append, a positional write continuing one. As the
- * page cache folds them; null when it is not such a change, or the folded
- * bytes would pass a piece.
- */
 /** How `next` folds into `last`: its bytes replace last's, extend them, or (null) it does not fold. */
 function foldOf(last, next) {
     if (last.type !== 'call' || next.type !== 'call' || !('data' in last.call) || !('data' in next.call))
@@ -217,6 +209,14 @@ function foldOf(last, next) {
         return 'extends';
     return null;
 }
+/**
+ * `next` folded into `last`, the log's unsent tail, when it is the same
+ * file's next bytes and nothing was logged between them: a whole write
+ * replacing a whole write (its make, mode and number kept), an append
+ * extending a write or an append, a positional write continuing one. As the
+ * page cache folds them; null when it is not such a change, or the folded
+ * bytes would pass a piece.
+ */
 function folded(last, next, buffer) {
     const fold = foldOf(last, next);
     if (fold === null)
