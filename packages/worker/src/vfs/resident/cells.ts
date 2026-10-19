@@ -26,13 +26,22 @@ import { RESIDENT_ROW_BYTES, residentBytes, residentCellCost, textChunkEnds, typ
 import type { Coherence, Cursor } from './coherence.js';
 import { nsDescribes, prefixEnd, type Namespace } from './namespace.js';
 import { nsKey } from './namespace-lookup.js';
-import { SafeMap, SafeSet, stringSlice } from '@nimbus-sh/core/_shared/primordials.js';
+import {
+  arrayCopy, arrayIsArray, Error, mathCeil, mathMax, mathMin, newTextEncoder, NumberOf, objectCreate, objectHasOwn, ownField,
+  Proxy, reflectSetPrototypeOf, SafeList, SafeMap, SafeSet, stringOf, stringSlice, stringStartsWith, typedArrayBuffer, typedArrayByteLength,
+  textEncoderEncode, typedArrayByteOffset, typedArraySet, Uint8ArrayConstructor,
+} from '@nimbus-sh/core/_shared/primordials.js';
 import { RESIDENT_CHUNK_BYTES } from '../facet-resident-limits.js';
 import type { VfsAcquireResult } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { RK_BINARY, RK_DENIED, RK_OWN_WRITE, RK_TEXT, type ChunkRow, type FileHead, type ResidentTables } from './tables.js';
 
 /** An own write held in memory: the store had no room for it in its tables. */
 interface HeldCell { cell: ResidentCell; rev: number }
+
+/** A record's own data field, retaining the type its contract gives it. */
+function ownValue<T extends object, K extends keyof T>(record: T, key: K): T[K] | undefined {
+  return objectHasOwn(record, key) ? record[key] : undefined;
+}
 
 /** What one admitted delta did. */
 export interface Admitted {
@@ -107,14 +116,19 @@ export function createCells(
   const held = new SafeMap<string, HeldCell>();
   const unheld = new SafeSet<string>();
 
-  const cellSize = (cell: ResidentCell): number => (typeof cell === 'string' ? cell.length * 3 : residentBytes(cell).byteLength);
+  const cellSize = (cell: ResidentCell): number => (typeof cell === 'string' ? cell.length * 3 : typedArrayByteLength(residentBytes(cell)));
 
   // Bound at the store's creation, before the program runs: never a method it replaced.
-  const encodeText = TextEncoder.prototype.encode.bind(new TextEncoder());
+  const encoder = newTextEncoder();
+  const encodeText = (text: string): Uint8Array => textEncoderEncode(encoder, text);
 
-  const sameBytes = (a: Uint8Array, b: Uint8Array): boolean => {
-    if (a.byteLength !== b.byteLength) return false;
-    for (let i = 0; i < a.byteLength; i++) if (a[i] !== b[i]) return false;
+  // A bounded part of `b`, without a subarray's live constructor or species.
+  const sameBytes = (a: Uint8Array, b: Uint8Array, from = 0, to?: number): boolean => {
+    const size = typedArrayByteLength(b);
+    const start = mathMin(from, size);
+    const length = mathMax(0, (to === undefined ? size : mathMin(to, size)) - start);
+    if (typedArrayByteLength(a) !== length) return false;
+    for (let i = 0; i < length; i++) if (a[i] !== b[start + i]) return false;
     return true;
   };
 
@@ -124,22 +138,29 @@ export function createCells(
    * bytes), compared a stored chunk at a time. A denial is never a file's bytes.
    */
   const holds = (t: ResidentTables, path: string, incoming: ResidentCell | ArrayBuffer): boolean => {
-    if (typeof incoming === 'object' && 'error' in incoming) return false;
+    if (typeof incoming === 'object' && objectHasOwn(incoming, 'error')) return false;
     const found = t.fileHead(path);
     if (found === undefined) {
       const cell = held.get(path)?.cell;
-      if (cell === undefined || typeof cell === 'object' && 'error' in cell) return false;
+      if (cell === undefined || typeof cell === 'object' && objectHasOwn(cell, 'error')) return false;
       if (typeof cell === 'string' && typeof incoming === 'string') return cell === incoming;
       return sameBytes(typeof cell === 'string' ? encodeText(cell) : residentBytes(cell), typeof incoming === 'string' ? encodeText(incoming) : residentBytes(incoming));
     }
     if (found.kind === RK_DENIED) return false;
     // One chunk is read as `get` reads it; a file of several, in part order.
-    const rows = (): (ChunkRow | undefined)[] => (found.chunks === 1 ? [t.chunkFirst(path)] : t.chunkParts(path));
+    const rows = (): (ChunkRow | undefined)[] => {
+      if (found.chunks !== 1) return t.chunkParts(path);
+      const out = new SafeList<ChunkRow | undefined>();
+      out[out.length] = t.chunkFirst(path);
+      return out;
+    };
     if (found.kind === RK_TEXT && typeof incoming === 'string') {
       if (found.size !== incoming.length) return false;
       if (found.chunks === 1) return t.chunkFirst(path)?.txt === incoming;
       let at = 0;
-      for (const row of rows()) {
+      const parts = rows();
+      for (let i = 0; i < parts.length; i++) {
+        const row = parts[i];
         if (row === undefined) return false;
         const text = row.txt ?? '';
         if (stringSlice(incoming, at, at + text.length) !== text) return false;
@@ -148,17 +169,21 @@ export function createCells(
       return at === incoming.length;
     }
     const bytes = typeof incoming === 'string' ? encodeText(incoming) : residentBytes(incoming);
+    const size = typedArrayByteLength(bytes);
     // A text row's size is its UTF-16 length: each unit is 1 to 3 bytes of UTF-8.
-    if (found.kind === RK_BINARY ? found.size !== bytes.byteLength : bytes.byteLength < found.size || bytes.byteLength > 3 * found.size) return false;
+    if (found.kind === RK_BINARY ? found.size !== size : size < found.size || size > 3 * found.size) return false;
     // A text chunk never ends inside a surrogate pair (textChunkEnds): each encodes whole.
     let at = 0;
-    for (const row of rows()) {
+    const parts = rows();
+    for (let i = 0; i < parts.length; i++) {
+      const row = parts[i];
       if (row === undefined) return false;
       const part = found.kind === RK_TEXT ? encodeText(row.txt ?? '') : residentBytes(row.bin);
-      if (!sameBytes(part, bytes.subarray(at, at + part.byteLength))) return false;
-      at += part.byteLength;
+      const length = typedArrayByteLength(part);
+      if (!sameBytes(part, bytes, at, at + length)) return false;
+      at += length;
     }
-    return at === bytes.byteLength;
+    return at === size;
   };
 
   const forgetHeld = (path: string): void => {
@@ -175,11 +200,13 @@ export function createCells(
     const size = cellSize(cell);
     const limit = admission.heldLimit(FACET_OWN_WRITE_MEMORY_BYTES);
     if (size > limit) { unheld.add(path); return; }
-    while (admission.heldBytes + size > limit) {
-      const [oldest, old] = held.entries().next().value!;
-      held.delete(oldest);
-      admission.addHeld(-cellSize(old.cell));
-      unheld.add(oldest);
+    if (admission.heldBytes + size > limit) {
+      held.forEach((old, oldest) => {
+        if (admission.heldBytes + size <= limit) return;
+        held.delete(oldest);
+        admission.addHeld(-cellSize(old.cell));
+        unheld.add(oldest);
+      });
     }
     held.set(path, { cell, rev: RK_OWN_WRITE });
     admission.addHeld(size);
@@ -189,7 +216,7 @@ export function createCells(
 
   const dropDated = (): void => {
     coherence.tables('dropDated').dropDated();
-    for (const [path, cell] of [...held]) if (cell.rev !== RK_OWN_WRITE) forgetHeld(path);
+    held.forEach((cell, path) => { if (cell.rev !== RK_OWN_WRITE) forgetHeld(path); });
   };
 
   /**
@@ -208,52 +235,55 @@ export function createCells(
     admission.release(path);
     t.chunkDelete(path);
     const stamp = typeof rev === 'number' ? rev : RK_OWN_WRITE;
-    if (cell && typeof cell === 'object' && 'error' in cell && cell.error) {
+    if (cell && typeof cell === 'object' && ownField(cell, 'error')) {
       t.filePut(path, RK_DENIED, 0, 0, stamp, null);
       return true;
     }
     const isText = typeof cell === 'string';
     const kind = isText ? RK_TEXT : RK_BINARY;
     const body = isText ? cell : residentBytes(cell);
-    const size = typeof body === 'string' ? body.length : body.byteLength;
+    const size = typeof body === 'string' ? body.length : typedArrayByteLength(body);
     // Text is chunked on its encoded length, since the ceiling is on bytes and
     // a multi-byte string would otherwise cross it while measuring short.
     const ends = typeof body === 'string' ? textChunkEnds(body) : null;
-    const chunks = ends !== null ? ends.length : Math.max(1, Math.ceil(size / RESIDENT_CHUNK_BYTES));
+    const chunks = ends !== null ? ends.length : mathMax(1, mathCeil(size / RESIDENT_CHUNK_BYTES));
     // Not admitted: nothing is held for the path (its old bytes are gone above).
     if (!admission.fits(residentCellCost(cell), stamp !== RK_OWN_WRITE)) {
       t.fileDelete(path);
-      if (stamp === RK_OWN_WRITE) hold(path, cell as ResidentCell);
+      if (stamp === RK_OWN_WRITE) hold(path, body);
       return false;
     }
     for (let part = 0, from = 0; part < chunks; part++) {
       if (typeof body === 'string' && ends !== null) {
-        t.chunkAddText(path, part, stringSlice(body, from, ends[part]));
-        from = ends[part]!;
+        const end = ends[part];
+        t.chunkAddText(path, part, stringSlice(body, from, end));
+        from = end;
       } else if (typeof body !== 'string') {
         // Bytes are viewed, not copied: the table keeps what it is given as its own (tables.ts).
-        t.chunkAddBin(path, part, body.subarray(part * RESIDENT_CHUNK_BYTES, (part + 1) * RESIDENT_CHUNK_BYTES));
+        const start = part * RESIDENT_CHUNK_BYTES;
+        const slice = new Uint8ArrayConstructor(typedArrayBuffer(body), typedArrayByteOffset(body) + start, mathMin(RESIDENT_CHUNK_BYTES, size - start));
+        t.chunkAddBin(path, part, slice);
       }
     }
-    t.filePut(path, kind, size, chunks, stamp, stamp === RK_OWN_WRITE || ckey == null ? null : String(ckey));
+    t.filePut(path, kind, size, chunks, stamp, stamp === RK_OWN_WRITE || ckey == null ? null : stringOf(ckey));
     return true;
   };
 
   /** One chunk row, written as it arrives. The streaming filler's primitive. */
   const putChunk = (t: ResidentTables, path: string, part: number, bytes: Uint8Array): boolean => {
     if (part === 0) admission.release(path);
-    if (!admission.fits(Math.ceil(bytes.byteLength * 1.01) + RESIDENT_ROW_BYTES + 4096)) return false;
+    if (!admission.fits(mathCeil(typedArrayByteLength(bytes) * 1.01) + RESIDENT_ROW_BYTES + 4096)) return false;
     t.chunkSetBin(path, part, bytes);
     return true;
   };
 
   const admit = (result: VfsAcquireResult | null | undefined): Admitted => {
     const t = coherence.tables('admit');
-    const dropped: string[] = [];
-    const relist: string[] = [];
+    const dropped = new SafeList<string>();
+    const relist = new SafeList<string>();
     let kept = 0, pushed = 0;
-    const epoch = result && result.epoch != null ? String(result.epoch) : null;
-    const rev = result && result.rev != null ? Number(result.rev) : null;
+    const epoch = result && result.epoch != null ? stringOf(result.epoch) : null;
+    const rev = result && result.rev != null ? NumberOf(result.rev) : null;
     if (epoch === null || rev === null) {
       throw new Error(
         'Nimbus: fsAcquire returned no cursor; the resident store stays sealed '
@@ -267,8 +297,8 @@ export function createCells(
     // only moves forward, and only entries above it are applied.
     const at = coherence.cursor();
     const floor = at !== null && coherence.sealed() === null && at.epoch === epoch && !(result && result.poison) ? at.rev : null;
-    if (floor !== null && rev <= floor) {
-      return { dropped, kept, pushed: 0, relist, cursor: at!, stale: rev < floor };
+    if (at !== null && floor !== null && rev <= floor) {
+      return { dropped: arrayCopy(dropped), kept, pushed: 0, relist: arrayCopy(relist), cursor: at, stale: rev < floor };
     }
     // The namespace moves with the cursor or not at all: a delta without stats,
     // or a poison, leaves it describing a revision the cursor has left, so it
@@ -276,9 +306,15 @@ export function createCells(
     // An answer naming no path changes no name, with or without stats. One
     // that arrives while the namespace is not answering keeps why it is not.
     const nsOk = namespace.ok;
-    const followable = !!result && !result.poison
-      && (result.namespace === true || (Array.isArray(result.paths) && result.paths.length === 0))
-      && (!Array.isArray(result.paths) || result.paths.every((entry) => entry.stat === null || nsDescribes(entry.stat)));
+    const paths = result && arrayIsArray(result.paths) ? result.paths : null;
+    let followable = !!result && !result.poison
+      && (ownValue(result, 'namespace') === true || (paths !== null && paths.length === 0));
+    if (followable && paths !== null) {
+      for (let i = 0; i < paths.length; i++) {
+        const stat = ownValue(paths[i], 'stat');
+        if (stat !== null && !nsDescribes(stat)) { followable = false; break; }
+      }
+    }
     const namespaced = nsOk && followable;
     if (nsOk && !followable) {
       namespace.markReady(t, false, !result || result.poison ? "the session's change log was truncated past this process's cursor"
@@ -293,13 +329,15 @@ export function createCells(
       // revisions and keeps every row it can prove current; dropping the
       // store is what made a poison cost a whole filesystem.
       dropDated();
-    } else if (Array.isArray(result.paths)) {
-      for (const entry of result.paths) {
-        if (floor !== null && Number(entry.rev) <= floor) continue;
+    } else if (paths !== null) {
+      for (let i = 0; i < paths.length; i++) {
+        const entry = paths[i];
+        const entryRev = NumberOf(entry.rev);
+        if (floor !== null && entryRev <= floor) continue;
         const path = entry.path;
         if (namespaced && namespace.ready()) {
           const again = namespace.applyEntry(t, entry);
-          if (again !== null) relist.push(again);
+          if (again !== null) relist[relist.length] = again;
         }
         // A row at or above the reported revision already holds that mutation —
         // this facet's own write coming back, or bytes fetched after it; anything
@@ -312,64 +350,71 @@ export function createCells(
         // path, each judged the same way: something beneath it this facet may
         // not see changed, or the directory went, or who may enter it did. A
         // row there may be stale, or no longer this facet's to be served.
-        if (entry.subtree || entry.structural) {
+        const subtree = ownValue(entry, 'subtree');
+        const stat = ownValue(entry, 'stat');
+        if (subtree || ownValue(entry, 'structural')) {
           const end = prefixEnd(path + '/');
-          for (const row of t.fileRevsIn(path + '/', end)) {
+          const rows = t.fileRevsIn(path + '/', end);
+          for (let j = 0; j < rows.length; j++) {
+            const row = rows[j];
             const stamped = row.rev;
-            if (stamped === RK_OWN_WRITE || stamped >= Number(entry.rev)) continue;
+            if (stamped === RK_OWN_WRITE || stamped >= entryRev) continue;
             t.chunkDelete(row.path);
             t.fileDelete(row.path);
-            dropped.push(row.path);
+            dropped[dropped.length] = row.path;
           }
-          for (const [heldPath, heldCell] of [...held]) {
-            if (!heldPath.startsWith(path + '/') || heldCell.rev === RK_OWN_WRITE || heldCell.rev >= Number(entry.rev)) continue;
+          held.forEach((heldCell, heldPath) => {
+            if (!stringStartsWith(heldPath, path + '/') || heldCell.rev === RK_OWN_WRITE || heldCell.rev >= entryRev) return;
             forgetHeld(heldPath);
-          }
+          });
           // Names under it may have become hidden or visible without being
           // named: the namespace relists that subtree.
-          if (namespaced && entry.subtree && entry.stat && entry.stat.type === 'directory') relist.push(path);
+          if (namespaced && subtree && stat && stat.type === 'directory') relist[relist.length] = path;
         }
         let isHeld = false, stamped = 0, heldKey: string | null = null;
         const row = t.fileRevKey(path);
         if (row !== undefined) {
           isHeld = true; stamped = row.rev; heldKey = row.ckey;
         }
-        if (isHeld && (stamped === RK_OWN_WRITE || stamped >= Number(entry.rev))) { kept++; continue; }
+        if (isHeld && (stamped === RK_OWN_WRITE || stamped >= entryRev)) { kept++; continue; }
         // A cell held in memory (an own write the store had no room for) is
         // judged the same way; superseded, it goes, and the report's bytes, if
         // any, are held as the store can.
         const heldCell = held.get(path);
         if (heldCell !== undefined) {
-          if (heldCell.rev === RK_OWN_WRITE || heldCell.rev >= Number(entry.rev)) { kept++; continue; }
+          if (heldCell.rev === RK_OWN_WRITE || heldCell.rev >= entryRev) { kept++; continue; }
           forgetHeld(path);
         }
         // The same bytes under a newer revision (a chmod, a touch, a rewrite
         // with identical content): kept, and dated at the report, while the
         // report says this credential may still read them. A chmod or chown
         // that revoked the read drops them, and the session answers the read.
-        if (isHeld && heldKey !== null && entry.contentKey != null && heldKey === String(entry.contentKey) && namespace.readable(entry.stat)) {
-          t.fileSetRev(path, Number(entry.rev));
+        const contentKey = ownValue(entry, 'contentKey');
+        if (isHeld && heldKey !== null && contentKey != null && heldKey === stringOf(contentKey) && namespace.readable(stat)) {
+          t.fileSetRev(path, entryRev);
           kept++;
           continue;
         }
         // Pushed content: the file's bytes at the answer's revision, so dating
         // them at the path's own revision cannot be newer than they are.
-        if (entry.bytes != null && entry.stat && entry.stat.type === 'file') {
+        const bytes = ownValue(entry, 'bytes');
+        if (bytes != null && stat && stat.type === 'file') {
           // Bytes it holds already (no content key to say so): dated, never rewritten and lost at the cap.
-          if (isHeld && holds(t, path, residentBytes(entry.bytes))) { t.fileSetRev(path, Number(entry.rev)); kept++; continue; }
-          if (put(t, path, residentBytes(entry.bytes), Number(entry.rev), entry.contentKey)) pushed++;
-          else if (isHeld) dropped.push(path);
+          const incoming = residentBytes(bytes);
+          if (isHeld && holds(t, path, incoming)) { t.fileSetRev(path, entryRev); kept++; continue; }
+          if (put(t, path, incoming, entryRev, contentKey)) pushed++;
+          else if (isHeld) dropped[dropped.length] = path;
           continue;
         }
         if (!isHeld) continue;
         t.chunkDelete(path);
         t.fileDelete(path);
-        dropped.push(path);
+        dropped[dropped.length] = path;
       }
     }
     coherence.writeCursor(t, { epoch, rev });
     coherence.unseal();
-    return { dropped, kept, pushed, relist, cursor: { epoch, rev } };
+    return { dropped: arrayCopy(dropped), kept, pushed, relist: arrayCopy(relist), cursor: { epoch, rev } };
   };
 
   /**
@@ -399,7 +444,7 @@ export function createCells(
     if (found.chunks === 1) {
       const row = t.chunkFirst(path);
       if (row === undefined) return undefined;
-      return kind === RK_TEXT ? row.txt! : residentBytes(row.bin);
+      return kind === RK_TEXT ? row.txt ?? undefined : residentBytes(row.bin);
     }
     // Chunked: a file past the single-value ceiling. Reassembled here so callers
     // never learn the file was split.
@@ -407,17 +452,17 @@ export function createCells(
     if (rows.length === 0) return undefined;
     if (kind === RK_TEXT) {
       let text = '';
-      for (let i = 0; i < rows.length; i++) text += rows[i]?.txt ?? '';
+      for (let i = 0; i < rows.length; i++) text += rows[i].txt ?? '';
       return text;
     }
     let total = 0;
-    for (let i = 0; i < rows.length; i++) total += residentBytes(rows[i]?.bin).byteLength;
-    const out = new Uint8Array(total);
+    for (let i = 0; i < rows.length; i++) total += typedArrayByteLength(residentBytes(rows[i].bin));
+    const out = new Uint8ArrayConstructor(total);
     let offset = 0;
     for (let i = 0; i < rows.length; i++) {
-      const bytes = residentBytes(rows[i]?.bin);
-      out.set(bytes, offset);
-      offset += bytes.byteLength;
+      const bytes = residentBytes(rows[i].bin);
+      typedArraySet(out, bytes, offset);
+      offset += typedArrayByteLength(bytes);
     }
     return out;
   };
@@ -432,7 +477,8 @@ export function createCells(
 
   const keys = (): string[] => coherence.require().fileAllPaths();
 
-  const bundle = new Proxy(Object.create(null) as Record<string, unknown>, {
+  const target: Cells['bundle'] = objectCreate(null);
+  const handler: ProxyHandler<Cells['bundle']> = {
     get(_t, path) {
       if (typeof path !== 'string') return undefined;
       return get(path);
@@ -467,9 +513,15 @@ export function createCells(
       // such scan read 87 MiB and threw all of it away. A getter answers the
       // name question for free and still returns the bytes to anything that
       // genuinely reads the property.
-      return { configurable: true, enumerable: true, get() { return get(path); } };
+      const descriptor: PropertyDescriptor = objectCreate(null);
+      descriptor.configurable = true;
+      descriptor.enumerable = true;
+      descriptor.get = () => get(path);
+      return descriptor;
     },
-  });
+  };
+  reflectSetPrototypeOf(handler, null);
+  const bundle = new Proxy(target, handler);
 
   return {
     bundle,
@@ -509,7 +561,7 @@ export function createCells(
       const found = head(path);
       if (found !== undefined) return found.kind === RK_DENIED;
       const cell = held.get(path)?.cell;
-      return typeof cell === 'object' && cell !== null && !(cell instanceof Uint8Array) && typeof (cell as { error?: unknown }).error === 'string';
+      return typeof cell === 'object' && cell !== null && !(cell instanceof Uint8ArrayConstructor) && typeof ownField(cell, 'error') === 'string';
     },
     get,
     put,
@@ -526,7 +578,7 @@ export function createCells(
     putHead(t, path, kind, size, chunks, rev, ckey) {
       t.filePut(
         path, kind, size, chunks, typeof rev === 'number' ? rev : RK_OWN_WRITE,
-        typeof rev === 'number' && ckey != null ? String(ckey) : null,
+        typeof rev === 'number' && ckey != null ? stringOf(ckey) : null,
       );
     },
     /**
@@ -535,12 +587,12 @@ export function createCells(
      * no fetch is needed. Returns whether a source existed.
      */
     copyByKey(t, path, ckey, rev) {
-      const source = t.fileByKey(String(ckey), path);
+      const source = t.fileByKey(stringOf(ckey), path);
       if (source === undefined) return false;
       if (!admission.fits(source.size + (source.chunks + 1) * RESIDENT_ROW_BYTES)) return false;
       t.chunkDelete(path);
       t.chunkCopy(path, source.path);
-      t.filePut(path, source.kind, source.size, source.chunks, rev, String(ckey));
+      t.filePut(path, source.kind, source.size, source.chunks, rev, stringOf(ckey));
       return true;
     },
     delete: deleteCell,
@@ -646,7 +698,7 @@ export function createCells(
      * escaping — those are only wildcards to an operator this no longer uses.
      */
     keysUnder(prefix) {
-      const from = String(prefix);
+      const from = stringOf(prefix);
       return coherence.require().filePaths(from, prefixEnd(from));
     },
     /**
@@ -656,14 +708,18 @@ export function createCells(
      * over again.
      */
     hasUnder(prefix) {
-      const from = String(prefix);
+      const from = stringOf(prefix);
       return coherence.require().fileAny(from, prefixEnd(from));
     },
     storageMiss: (path) => unheld.has(path),
     dropHeld(all) {
-      for (const [path, cell] of [...held]) if (all || cell.rev !== RK_OWN_WRITE) forgetHeld(path);
+      held.forEach((cell, path) => { if (all || cell.rev !== RK_OWN_WRITE) forgetHeld(path); });
     },
-    heldRevisions: () => [...held].map(([path, cell]) => [path, cell.rev]),
+    heldRevisions() {
+      const out = new SafeList<[string, number]>();
+      held.forEach((cell, path) => { out[out.length] = [path, cell.rev]; });
+      return arrayCopy(out);
+    },
     forget: forgetHeld,
     /**
      * Drop every cell AND the cursor, and re-seal.
@@ -678,7 +734,7 @@ export function createCells(
     clear() {
       coherence.tables('clear').clear();
       // Held cells go with the rows, but for own writes still in flight.
-      for (const [path, cell] of [...held]) if (cell.rev !== RK_OWN_WRITE) forgetHeld(path);
+      held.forEach((cell, path) => { if (cell.rev !== RK_OWN_WRITE) forgetHeld(path); });
       namespace.clear();
       coherence.seal('the store was cleared');
     },

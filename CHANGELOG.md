@@ -5,6 +5,14 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a Node program that replaced `Array.prototype.push`, the array
+  iterator, `String.prototype.split` or `replace`, `RegExp.prototype.exec` or
+  `Set.prototype.has` can still import a module the launch did not hold, and
+  an error's stack still formats. import()'s fetch of the file, the resident
+  store it lands in, a missed module's read and the stack formatter now call
+  only what the launch captured before the program ran, as Node's loader does.
+  Before, the import failed with ERR_NIMBUS_PREFETCH_UNREADABLE or "not in this
+  launch's module map".
 - Fixed: a syntax error in `eval`'s text, or in a file `.` runs, is that
   command's status 2, said on its stderr, and the rest of the line runs, as in
   bash: `eval 'if' 2>/dev/null || echo recovered` prints `recovered`. Lines

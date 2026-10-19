@@ -15,7 +15,9 @@ export function sourceColumn(edits, column) {
     if (edits === undefined)
         return column;
     let delta = 0;
-    for (const [, at, length, text, call] of edits) {
+    // By index, not the array iterator: a stack is formatted after the program may have replaced it.
+    for (let i = 0; i < edits.length; i++) {
+        const at = edits[i][1], length = edits[i][2], text = edits[i][3], call = edits[i][4];
         const start = at + delta;
         if (column - 1 < start)
             break;

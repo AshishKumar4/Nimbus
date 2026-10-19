@@ -29,11 +29,15 @@
 import { namespaceRowBytes } from './cell-cost.js';
 import { namespaceAllows } from './permissions.js';
 import { NS_DIR, NS_FILE, NS_LINK } from './tables.js';
-import { SafeMap, SafeSet } from '@nimbus-sh/core/_shared/primordials.js';
-import { nsKey, nsParent, nsRowAt, nsSplit, walkNamespace } from './namespace-lookup.js';
+import { arrayCopy, dateNow, Error, NumberOf, numberIsInteger, objectAssign, objectHasOwn, ownField, SafeList, SafeMap, SafeSet, StringFromCharCode, stringCharCodeAt, stringLastIndexOf, stringOf, stringSlice, stringStartsWith, } from '@nimbus-sh/core/_shared/primordials.js';
+import { nsKey, nsName, nsParent, nsRowAt, walkNamespace } from './namespace-lookup.js';
 export { nsKey, nsRowAt, nsSplit } from './namespace-lookup.js';
 export function nsKindCode(type) {
     return type === 'directory' ? NS_DIR : type === 'symlink' ? NS_LINK : NS_FILE;
+}
+/** A record's own data field, retaining the type its contract gives it. */
+function ownValue(record, key) {
+    return objectHasOwn(record, key) ? record[key] : undefined;
 }
 /**
  * Whether a stat from the authority describes its name: a type, and the
@@ -44,14 +48,14 @@ export function nsKindCode(type) {
  * describe every name restores it.
  */
 export function nsDescribes(stat) {
-    const described = stat;
-    if (!described || typeof described.type !== 'string')
+    if (stat === null || (typeof stat !== 'object' && typeof stat !== 'function') || typeof ownField(stat, 'type') !== 'string')
         return false;
-    for (const field of ['mode', 'uid', 'gid']) {
-        if (described[field] === null || described[field] === undefined || !Number.isInteger(Number(described[field])))
-            return false;
-    }
-    return true;
+    const mode = ownField(stat, 'mode');
+    const uid = ownField(stat, 'uid');
+    const gid = ownField(stat, 'gid');
+    return mode !== null && mode !== undefined && numberIsInteger(NumberOf(mode))
+        && uid !== null && uid !== undefined && numberIsInteger(NumberOf(uid))
+        && gid !== null && gid !== undefined && numberIsInteger(NumberOf(gid));
 }
 /**
  * The exclusive upper bound of a prefix under the BINARY collation SQLite gives
@@ -65,9 +69,9 @@ export function nsDescribes(stat) {
  */
 export function prefixEnd(prefix) {
     for (let i = prefix.length - 1; i >= 0; i--) {
-        const code = prefix.charCodeAt(i);
+        const code = stringCharCodeAt(prefix, i);
         if (code < 0xffff)
-            return prefix.slice(0, i) + String.fromCharCode(code + 1);
+            return stringSlice(prefix, 0, i) + StringFromCharCode(code + 1);
     }
     return null;
 }
@@ -75,7 +79,7 @@ export function createNamespace(coherence, admission) {
     // The clock, taken as the store is made, before a run that can stop tapes
     // Date (stop-replay.ts): an own file's time is stamped when its write is
     // answered, which a run and its run again do at other moments.
-    const realNow = Date.now;
+    const realNow = dateNow;
     /** Paths of every symlink in the table: resolution walks only past these. */
     let links = new SafeSet();
     /**
@@ -100,11 +104,11 @@ export function createNamespace(coherence, admission) {
         t.metaSet('ns', isReady ? '1' : '0');
         ok = !!isReady;
         if (!isReady)
-            cause = String(why || 'a change it could not follow');
+            cause = stringOf(why || 'a change it could not follow');
     };
     const refuse = (t, why) => {
         markReady(t, false, why);
-        throw Object.assign(new Error(why), { code: 'ENOSPC' });
+        throw objectAssign(new Error(why), { code: 'ENOSPC' });
     };
     /**
      * The mount a lookup of `k` lands on unlisted: the mount point of the
@@ -133,10 +137,11 @@ export function createNamespace(coherence, admission) {
      * a note) keeps what the row says.
      */
     const put = (t, k, stat, rev, target, unlistedAt) => {
-        const [parent, name] = nsSplit(k);
+        const parent = nsParent(k);
+        const name = nsName(k);
         const kind = nsKindCode(stat.type);
         const mount = kind !== NS_DIR ? null : unlistedAt === undefined ? (unlisted.get(k) ?? null) : unlistedAt;
-        const stored = kind === NS_LINK ? String(target ?? '') : mount;
+        const stored = kind === NS_LINK ? stringOf(target ?? '') : mount;
         // A one-shot's heap holds the namespace within its one budget: a row that would not fit is not written.
         const heap = coherence.heap;
         if (heap !== null && admission.inHeap) {
@@ -144,7 +149,7 @@ export function createNamespace(coherence, admission) {
             if (refused !== null)
                 refuse(t, refused);
         }
-        t.nsPut(parent, name, kind, Number(stat.size) || 0, Number(stat.mode) || 0, Number(stat.uid) || 0, Number(stat.gid) || 0, Number(stat.atime) || 0, Number(stat.mtime) || 0, Number(stat.ctime) || 0, Number(stat.ino) || 0, Number(rev) || 0, stored, Number(stat.dev) || 0, Number(stat.nlink) || 1);
+        t.nsPut(parent, name, kind, NumberOf(stat.size) || 0, NumberOf(stat.mode) || 0, NumberOf(stat.uid) || 0, NumberOf(stat.gid) || 0, NumberOf(stat.atime) || 0, NumberOf(stat.mtime) || 0, NumberOf(stat.ctime) || 0, NumberOf(stat.ino) || 0, NumberOf(rev) || 0, stored, NumberOf(ownValue(stat, 'dev')) || 0, NumberOf(ownValue(stat, 'nlink')) || 1);
         if (kind === NS_LINK)
             links.add(k);
         else
@@ -162,16 +167,15 @@ export function createNamespace(coherence, admission) {
             return true;
         }
         catch (error) {
-            if (admission.inHeap && error?.code === 'ENOSPC')
+            if (admission.inHeap && error !== null && (typeof error === 'object' || typeof error === 'function') && ownField(error, 'code') === 'ENOSPC')
                 return false;
             throw error;
         }
     };
     const forgetListed = (dir) => {
         const prefix = dir === '' ? '' : dir + '/';
-        for (const done of [...listed])
-            if (done === dir || done.startsWith(prefix))
-                listed.delete(done);
+        listed.forEach((done) => { if (done === dir || stringStartsWith(done, prefix))
+            listed.delete(done); });
     };
     /** Delete everything beneath `k`, and `k` itself when `self`. */
     const deleteTree = (t, k, self) => {
@@ -189,20 +193,20 @@ export function createNamespace(coherence, admission) {
         t.nsDeleteChildren(k);
         t.nsDeleteParents(prefix, end);
         if (self) {
-            const [parent, name] = nsSplit(k);
+            const parent = nsParent(k);
+            const name = nsName(k);
             t.nsDelete(parent, name);
             links.delete(k);
             unlisted.delete(k);
         }
-        for (const link of links)
-            if (link.startsWith(prefix))
-                links.delete(link);
-        for (const dir of unlisted.keys())
-            if (dir.startsWith(prefix))
-                unlisted.delete(dir);
+        links.forEach((link) => { if (stringStartsWith(link, prefix))
+            links.delete(link); });
+        unlisted.forEach((_mount, dir) => { if (stringStartsWith(dir, prefix))
+            unlisted.delete(dir); });
     };
     const forget = (t, k) => {
-        const [parent, name] = nsSplit(k);
+        const parent = nsParent(k);
+        const name = nsName(k);
         t.nsDelete(parent, name);
         links.delete(k);
         unlisted.delete(k);
@@ -216,19 +220,31 @@ export function createNamespace(coherence, admission) {
             return false;
         return namespaceAllows(cred, row, 'directory', 1);
     };
-    const children = (k) => coherence.require().nsChildren(k)
-        .map((row) => ({ name: String(row.name), kind: Number(row.kind), mode: Number(row.mode) }));
+    const children = (k) => {
+        const rows = coherence.require().nsChildren(k);
+        const out = new SafeList();
+        for (let i = 0; i < rows.length; i++) {
+            const row = rows[i];
+            out[out.length] = { name: stringOf(row.name), kind: NumberOf(row.kind), mode: NumberOf(row.mode) };
+        }
+        // Public readers outside the loading path still use array methods and iteration.
+        return arrayCopy(out);
+    };
     return {
         bind(t) {
             links = new SafeSet();
-            for (const row of t.nsOfKind(NS_LINK)) {
-                const parent = String(row.parent);
-                links.add(parent ? parent + '/' + String(row.name) : String(row.name));
+            const linkRows = t.nsOfKind(NS_LINK);
+            for (let i = 0; i < linkRows.length; i++) {
+                const row = linkRows[i];
+                const parent = stringOf(row.parent);
+                links.add(parent ? parent + '/' + stringOf(row.name) : stringOf(row.name));
             }
             unlisted = new SafeMap();
-            for (const row of t.nsUnlisted()) {
-                const parent = String(row.parent);
-                unlisted.set(parent ? parent + '/' + String(row.name) : String(row.name), String(row.target));
+            const unlistedRows = t.nsUnlisted();
+            for (let i = 0; i < unlistedRows.length; i++) {
+                const row = unlistedRows[i];
+                const parent = stringOf(row.parent);
+                unlisted.set(parent ? parent + '/' + stringOf(row.name) : stringOf(row.name), stringOf(row.target));
             }
             ok = t.metaGet('ns') === '1';
         },
@@ -276,7 +292,7 @@ export function createNamespace(coherence, admission) {
             if (unlisted.size === 0)
                 return null;
             const found = lookup(k, followLeaf, own);
-            if (found === 'ELOOP' || found.own !== undefined || found.table === null)
+            if (found === 'ELOOP' || ownValue(found, 'own') !== undefined || found.table === null)
                 return null;
             if (found.row === undefined)
                 return unlistedOver(found.table, false);
@@ -293,7 +309,7 @@ export function createNamespace(coherence, admission) {
          * the mode and owner is no grant: the session is asked instead, and answers.
          */
         readable(stat) {
-            if (!stat || !Number.isInteger(Number(stat.mode)) || !Number.isInteger(Number(stat.uid)) || !Number.isInteger(Number(stat.gid)))
+            if (!stat || !numberIsInteger(NumberOf(ownValue(stat, 'mode'))) || !numberIsInteger(NumberOf(ownValue(stat, 'uid'))) || !numberIsInteger(NumberOf(ownValue(stat, 'gid'))))
                 return false;
             return namespaceAllows(cred, stat, 'file', 4);
         },
@@ -306,15 +322,16 @@ export function createNamespace(coherence, admission) {
             const k = nsKey(entry.path);
             if (k === '')
                 return null;
-            if (entry.stat === null) {
+            const stat = ownValue(entry, 'stat');
+            if (stat === null) {
                 deleteTree(t, k, true);
                 return null;
             }
             const before = nsRowAt(t, k);
-            if (!tryPut(t, k, entry.stat, entry.rev, entry.linkTarget))
+            if (stat === undefined || !tryPut(t, k, stat, entry.rev, ownValue(entry, 'linkTarget')))
                 return null;
             const after = nsRowAt(t, k);
-            if (after.kind !== NS_DIR) {
+            if (after === undefined || after.kind !== NS_DIR) {
                 deleteTree(t, k, false);
                 return null;
             }
@@ -331,47 +348,56 @@ export function createNamespace(coherence, admission) {
          * listing no longer names. Called once per enumeration, after its last page.
          */
         replace(t, entries) {
-            const names = new Set();
-            for (const entry of entries)
-                names.add(nsKey(entry.path));
+            const names = new SafeSet();
+            for (let i = 0; i < entries.length; i++)
+                names.add(nsKey(entries[i].path));
             // Remove stale rows before admitting replacements; do not transiently
             // charge both versions of a complete namespace against the fixed cap.
-            for (const row of t.nsKeys()) {
-                const parent = String(row.parent);
-                const k = parent ? parent + '/' + String(row.name) : String(row.name);
+            const rows = t.nsKeys();
+            for (let i = 0; i < rows.length; i++) {
+                const row = rows[i];
+                const parent = stringOf(row.parent);
+                const k = parent ? parent + '/' + stringOf(row.name) : stringOf(row.name);
                 if (!names.has(k))
                     forget(t, k);
             }
             // Free shrinking text before growing another surviving row; final-state
             // admission must not depend on alphabetical replacement order.
             if (admission.inHeap) {
-                for (const entry of entries) {
+                for (let i = 0; i < entries.length; i++) {
+                    const entry = entries[i];
                     const k = nsKey(entry.path);
                     if (!k)
                         continue;
-                    const [parent, name] = nsSplit(k);
+                    const parent = nsParent(k);
+                    const name = nsName(k);
                     const held = t.nsGet(parent, name);
-                    if (held && namespaceRowBytes(parent, name, held.target) > namespaceRowBytes(parent, name, entry.linkTarget ?? entry.unlisted)) {
-                        put(t, k, entry.stat, entry.rev, entry.linkTarget, entry.unlisted ?? null);
+                    const linkTarget = ownValue(entry, 'linkTarget');
+                    const unlistedAt = ownValue(entry, 'unlisted');
+                    if (held && namespaceRowBytes(parent, name, held.target) > namespaceRowBytes(parent, name, linkTarget ?? unlistedAt)) {
+                        put(t, k, entry.stat, entry.rev, linkTarget, unlistedAt ?? null);
                     }
                 }
             }
-            for (const entry of entries) {
+            for (let i = 0; i < entries.length; i++) {
+                const entry = entries[i];
                 const k = nsKey(entry.path);
                 if (k === '')
                     continue;
                 names.add(k);
                 const held = nsRowAt(t, k);
                 const s = entry.stat;
+                const linkTarget = ownValue(entry, 'linkTarget');
+                const unlistedAt = ownValue(entry, 'unlisted');
                 if (held !== undefined
-                    && held.kind === nsKindCode(s.type) && held.size === Number(s.size)
-                    && held.mode === Number(s.mode) && held.uid === Number(s.uid)
-                    && held.gid === Number(s.gid) && held.mtime === Number(s.mtime)
-                    && held.ctime === Number(s.ctime) && held.ino === Number(s.ino)
-                    && held.dev === (Number(s.dev) || 0) && held.rev === Number(entry.rev)
-                    && (held.target ?? null) === (entry.linkTarget ?? entry.unlisted ?? null))
+                    && held.kind === nsKindCode(s.type) && held.size === NumberOf(s.size)
+                    && held.mode === NumberOf(s.mode) && held.uid === NumberOf(s.uid)
+                    && held.gid === NumberOf(s.gid) && held.mtime === NumberOf(s.mtime)
+                    && held.ctime === NumberOf(s.ctime) && held.ino === NumberOf(s.ino)
+                    && held.dev === (NumberOf(s.dev) || 0) && held.rev === NumberOf(entry.rev)
+                    && (held.target ?? null) === (linkTarget ?? unlistedAt ?? null))
                     continue;
-                put(t, k, s, entry.rev, entry.linkTarget, entry.unlisted ?? null);
+                put(t, k, s, entry.rev, linkTarget, unlistedAt ?? null);
             }
         },
         /**
@@ -392,12 +418,12 @@ export function createNamespace(coherence, admission) {
             // A file the process created: its umask's mode, on the device of the
             // directory it is in, with one link, until the delta reports the
             // authority's own stat for it. A file it rewrote keeps its identity.
-            const slash = k.lastIndexOf('/');
-            const parent = held === undefined ? nsRowAt(t, slash < 0 ? '' : k.slice(0, slash)) : undefined;
+            const slash = stringLastIndexOf(k, '/');
+            const parent = held === undefined ? nsRowAt(t, slash < 0 ? '' : stringSlice(k, 0, slash)) : undefined;
             tryPut(t, k, {
-                type: 'file', size, mode: held ? held.mode : 0o100666 & ~Number(cred?.umask ?? 0o022),
-                uid: held ? held.uid : Number(cred?.uid ?? 0),
-                gid: held ? held.gid : Number(cred?.gid ?? 0),
+                type: 'file', size, mode: held ? held.mode : 0o100666 & ~NumberOf((cred === null ? undefined : ownValue(cred, 'umask')) ?? 0o022),
+                uid: held ? held.uid : NumberOf(cred === null ? 0 : cred.uid),
+                gid: held ? held.gid : NumberOf(cred === null ? 0 : cred.gid),
                 atime: now, mtime: now, ctime: now, ino: held ? held.ino : 0,
                 dev: held ? held.dev : parent?.dev, nlink: held ? held.nlink : 1,
             }, rev, null);
@@ -439,7 +465,7 @@ export function createNamespace(coherence, admission) {
             }
             if (!nsDescribes(stat))
                 return;
-            const target = stat.linkTarget ?? stat.target ?? null;
+            const target = ownValue(stat, 'linkTarget') ?? ownValue(stat, 'target') ?? null;
             if (stat.type === 'symlink' && target === null)
                 return;
             tryPut(t, k, stat, written ?? cursor.rev, target);
