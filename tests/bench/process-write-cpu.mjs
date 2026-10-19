@@ -4,7 +4,6 @@
 // opened, written once and closed. Independent module copies and databases
 // for main, main's null arm, and head.
 import assert from 'node:assert/strict';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { hostSqlite } from '../unit/lib/host-sqlite.mjs';
 import { cpuMs } from './lib/paired-cpu.mjs';
 import { CORE_CPU_SOURCES } from './lib/cpu-sources.mjs';
@@ -16,7 +15,7 @@ const PIECE = new TextEncoder().encode('0123456789abcdef'.repeat(4));
 let checksum = 0;
 
 /** A fresh database for each sample: what a sample writes would otherwise grow the next one's tree. */
-async function session({ 'vfs/sqlite-vfs.ts': { SqliteVFS }, 'runtime/process-files.ts': { ProcessFiles } }) {
+async function session({ 'vfs/sqlite-vfs.ts': { SqliteVFS }, 'runtime/process-files.ts': { ProcessFiles }, 'runtime/os-contracts.ts': { CRED_KERNEL } }) {
   const host = await hostSqlite();
   const engine = new SqliteVFS(host.sql, host.transactions);
   const kernel = engine.as(CRED_KERNEL);
@@ -47,7 +46,7 @@ const WORK = {
 await runPairedBenchmark({
   async run({ short, cleanup, withArms, sample }) {
     await withArms((from) => loadIsolatedCore(from, cleanup, {
-      sources: CORE_CPU_SOURCES, modules: ['vfs/sqlite-vfs.ts', 'runtime/process-files.ts'],
+      sources: CORE_CPU_SOURCES, modules: ['vfs/sqlite-vfs.ts', 'runtime/process-files.ts', 'runtime/os-contracts.ts'],
     }), async (arms) => {
       for (const [kind, work] of Object.entries(WORK)) {
         await sample(kind, arms, async (modules) => {

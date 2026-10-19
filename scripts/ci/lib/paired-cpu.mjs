@@ -87,8 +87,10 @@ const IMPORTS = /\b(?:import|export)\b[^'"`;]*?\bfrom\s*['"]([^'"]+)['"]|\bimpor
 
 /**
  * A paired bench's harness: `bench` (a path from `root`) and every file of
- * this repository's tests/ and scripts/ it imports, transitively (none of
- * packages/: that code is the revision's, each arm's own).
+ * this repository's tests/ and scripts/ it imports, transitively. Throws if
+ * one imports workspace package code (packages/): that code is each arm's
+ * own, taken from its tree (tests/bench/lib/isolated-core.mjs), never the
+ * harness's.
  */
 export function benchHarness(bench, root = SELF_ROOT) {
   const files = new Set();
@@ -101,6 +103,9 @@ export function benchHarness(bench, root = SELF_ROOT) {
       const specifier = match[1] ?? match[2] ?? match[3];
       if (!specifier.startsWith('.')) continue;
       const target = normalize(join(dirname(path), specifier));
+      if (target.startsWith('packages/')) {
+        throw new Error(`${path} imports ${specifier}: a paired bench's harness takes no workspace package code of its own; take it from the arm (loadIsolatedCore modules or helpers)`);
+      }
       if (/^(tests|scripts)\//.test(target) && existsSync(join(root, target))) pending.push(target);
     }
   }

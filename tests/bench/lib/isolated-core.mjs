@@ -8,12 +8,13 @@
 // harness), with the harness's installed node_modules laid over it: a
 // workspace package resolves to the arm's own copy (the install's links are
 // relative), a third-party one to the harness's store, the same for every arm
-// (and the same code, since the sides' lockfiles must match). Once the first
-// arm is made, the bench loads only arms' modules and third-party code: a
+// (and the same code, since the sides' lockfiles must match). The process
+// loads no workspace package code of the harness's at all, and once the first
+// arm is made, nothing of the harness repository's but third-party code: a
 // guard watches every module the process loads (Bun's module registry, node's
 // resolve hook), whoever loads it and however (an import, a require, a lazy
-// import from a bundle, a third-party module's own), and the bench fails if
-// one is the harness's repository's outside its store (assertArmsInside).
+// import from a bundle, a third-party module's own), and the bench fails on
+// one that breaks either (assertArmsInside).
 import assert from 'node:assert/strict';
 import {
   copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync,
@@ -100,25 +101,25 @@ function linkInstall(tree, harness) {
   }
 }
 
-/**
- * What the guard watches from the first arm on: the harness's repository and
- * its third-party store (realpaths, with a trailing separator), and, under
- * Bun, the modules loaded before (its registry, require.cache, holds every
- * module, of any kind, the process has loaded).
- */
-let watched = null;
-/** Under node: each file the process resolved a module to once watched. */
+/** Under node: each file the process resolved a module to, from this module's loading on. */
 const resolvedFiles = [];
-
 if (typeof Bun === 'undefined') {
   nodeModule.registerHooks({
     resolve(specifier, context, next) {
       const result = next(specifier, context);
-      if (watched !== null && result.url.startsWith('file:')) resolvedFiles.push(fileURLToPath(result.url));
+      if (result.url.startsWith('file:')) resolvedFiles.push(fileURLToPath(result.url));
       return result;
     },
   });
 }
+
+/**
+ * The harness the guard watches from the first arm on: its repository's root
+ * (a realpath, with a trailing separator), and where the modules loaded
+ * before that end (Bun's registry, require.cache, holds every module of any
+ * kind the process has loaded; node's, the resolutions recorded).
+ */
+let watched = null;
 
 function watch(harness) {
   const root = realpathSync(harness) + sep;
@@ -126,30 +127,40 @@ function watch(harness) {
     assert.equal(watched.root, root, 'one harness per process');
     return;
   }
-  watched = { root, store: realpathSync(join(harness, 'node_modules', '.bun')) + sep, before: typeof Bun === 'undefined' ? null : new Set(Object.keys(require.cache)) };
+  watched = { root, before: typeof Bun === 'undefined' ? resolvedFiles.length : new Set(Object.keys(require.cache)) };
 }
 
-/** Every file loaded as a module since the last look (realpaths). */
-function loadedSince() {
-  let files;
-  if (watched.before === null) {
-    files = resolvedFiles.splice(0);
-  } else {
-    files = Object.keys(require.cache).filter((path) => !watched.before.has(path));
-    for (const path of files) watched.before.add(path);
-  }
-  return [...new Set(files.filter((path) => path.startsWith('/')).map((path) => (existsSync(path) ? realpathSync(path) : path)))];
+/** Every file the process loaded as a module (realpaths), and those loaded since the first arm was made. */
+function loaded() {
+  const all = typeof Bun === 'undefined' ? [...resolvedFiles] : Object.keys(require.cache);
+  const since = typeof Bun === 'undefined' ? resolvedFiles.slice(watched.before) : all.filter((path) => !watched.before.has(path));
+  const real = (paths) => [...new Set(paths.filter((path) => path.startsWith('/')).map((path) => (existsSync(path) ? realpathSync(path) : path)))];
+  return { all: real(all), since: real(since) };
 }
+
+/** Each module the guard has already named (it names one once). */
+const reported = new Set();
+
+/** Third-party code: anything under a node_modules (the store, a package's own). */
+const thirdParty = (path) => path.includes(`${sep}node_modules${sep}`);
 
 /**
- * Throws, naming each, when some module loaded since the first arm was made
- * is the harness repository's, outside its third-party store: an arm's code
- * (or code it loaded) reached past its own tree.
+ * Throws, naming each it has not named before, when the process has loaded
+ * workspace package code of the harness repository's (its packages/, outside
+ * a node_modules), ever, or anything of the harness repository's but
+ * third-party code since the first arm was made: an arm's code, or the
+ * bench's, reached past an arm's tree.
  */
 export function assertArmsInside() {
   if (watched === null) return;
-  const outside = loadedSince().filter((path) => path.startsWith(watched.root) && !path.startsWith(watched.store));
-  assert.deepEqual(outside, [], "once its arms are made, a bench loads only their modules and third-party code, none of the harness repository's");
+  const { all, since } = loaded();
+  const packages = `${watched.root}packages${sep}`;
+  const outside = [...new Set([
+    ...all.filter((path) => path.startsWith(packages) && !thirdParty(path)),
+    ...since.filter((path) => path.startsWith(watched.root) && !thirdParty(path)),
+  ])].filter((path) => !reported.has(path));
+  for (const path of outside) reported.add(path);
+  assert.deepEqual(outside, [], "a bench loads no workspace package code of the harness's, and once its arms are made, none of the harness repository's but third-party code");
 }
 
 /**
@@ -163,7 +174,7 @@ export function assertBundleInside(tree, metafile, workingDir) {
     // Not a file: esbuild's stdin (named or not), or another namespace's.
     .filter((input) => !input.startsWith('<') && !input.includes(':') && existsSync(resolve(workingDir, input)))
     .map((input) => realpathSync(resolve(workingDir, input)))
-    .filter((at) => !at.startsWith(own) && !(watched !== null && at.startsWith(watched.store)));
+    .filter((at) => !at.startsWith(own) && !thirdParty(at));
   assert.deepEqual(outside, [], `every input of a bundle of ${tree} lies inside it`);
 }
 

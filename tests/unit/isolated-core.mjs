@@ -6,8 +6,9 @@
 // arm; a side on another lockfile is refused; and once arms exist, a module
 // loaded from the harness's repository (outside its store) fails the bench,
 // however it is reached: an arm's import, a require, a third-party module's
-// own import, a bundle's lazy import, the harness itself; under Bun and under
-// node; and so does a bundle's input outside its arm's tree.
+// own import, a bundle's lazy import, the harness itself; and so does the
+// bench's own loading of the harness's workspace code, before any arm; under
+// Bun and under node; and so does a bundle's input outside its arm's tree.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -122,9 +123,11 @@ try {
   assert.throws(() => assertArmsInside(), /packages\/a\/src\/lazy\.mjs/, "a bundle's lazy import is watched");
 
   // Under node, its resolve hook guards an arm.
-  const script = (modules) => `
+  // `first`: a harness workspace module the bench loads itself, before any arm.
+  const script = (modules, first) => `
     import { loadIsolatedCore } from ${JSON.stringify(pathToFileURL(join(import.meta.dirname, '../bench/lib/isolated-core.mjs')).href)};
     const cleanups = [];
+    ${first === undefined ? '' : `await import(${JSON.stringify(pathToFileURL(first).href)});`}
     try {
       const arm = await loadIsolatedCore(${JSON.stringify(leaky)}, (dispose) => cleanups.push(dispose), {
         sources: ${JSON.stringify(sources)}, modules: ${JSON.stringify(modules)}, harness: ${JSON.stringify(harness)},
@@ -132,10 +135,20 @@ try {
       console.log(Object.values(arm)[0].version);
     } finally { for (const dispose of cleanups) dispose(); }
   `;
-  const node = (modules) => spawnSync('node', ['--input-type=module', '-e', script(modules)], { encoding: 'utf8' });
+  const node = (modules, first) => spawnSync('node', ['--input-type=module', '-e', script(modules, first)], { encoding: 'utf8' });
   const fine = node(['main.mjs']);
   assert.equal(fine.status, 0, fine.stderr);
   assert.equal(fine.stdout.trim(), 'leaky');
+  // The bench's own harness workspace code, loaded before any arm, fails too, under both runtimes.
+  const first = join(harness, 'packages/a/src/mod.mjs');
+  const runtimes = {
+    node: node(['main.mjs'], first),
+    bun: spawnSync(process.execPath, ['-e', script(['main.mjs'], first)], { encoding: 'utf8', cwd: root }),
+  };
+  for (const [runtime, run] of Object.entries(runtimes)) {
+    assert.notEqual(run.status, 0, runtime);
+    assert.match(run.stderr, /no workspace package code of the harness's[\s\S]*packages\/a\/src\/mod\.mjs/, runtime);
+  }
   for (const module of ['leak.mjs', 'required.cjs', 'bridged.mjs']) {
     const leaked = node([module]);
     assert.notEqual(leaked.status, 0, module);

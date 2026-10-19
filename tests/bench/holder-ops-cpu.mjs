@@ -3,7 +3,6 @@
 // (its holder, store and process files), a fresh session per sample, and CPU
 // before its final settle.
 import assert from 'node:assert/strict';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { cpuMs } from './lib/paired-cpu.mjs';
 import { HOLDER_CPU_SOURCES } from './lib/cpu-sources.mjs';
 import { loadIsolatedCore } from './lib/isolated-core.mjs';
@@ -18,6 +17,7 @@ function session({
   'runtime/wasi/resident-filesystem.ts': { residentFilesystem: factory },
   'runtime/process-files.ts': { ProcessFiles },
   'vfs/sqlite-vfs.ts': { SqliteVFS },
+  'runtime/os-contracts.ts': { CRED_KERNEL },
   'tests/unit/lib/sqlite-vfs-test-harness.mjs': { createSqliteVfsTestHarness },
 }) {
   const harness = createSqliteVfsTestHarness();
@@ -175,7 +175,7 @@ const WORK = {
 await runPairedBenchmark({
   async run({ short, cleanup, withArms, sample }) {
     await withArms((from) => loadIsolatedCore(from, cleanup, {
-      sources: HOLDER_CPU_SOURCES, modules: ['runtime/wasi/resident-filesystem.ts', 'runtime/process-files.ts', 'vfs/sqlite-vfs.ts'],
+      sources: HOLDER_CPU_SOURCES, modules: ['runtime/wasi/resident-filesystem.ts', 'runtime/process-files.ts', 'vfs/sqlite-vfs.ts', 'runtime/os-contracts.ts'],
       helpers: ['tests/unit/lib/sqlite-vfs-test-harness.mjs'],
     }), async (arms) => {
       for (const [kind, work] of Object.entries(WORK)) {

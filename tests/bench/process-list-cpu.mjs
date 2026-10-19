@@ -1,7 +1,6 @@
 #!/usr/bin/env bun
 // Independent module copies and databases for main, main's null arm, and head.
 import assert from 'node:assert/strict';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { hostSqlite } from '../unit/lib/host-sqlite.mjs';
 import { cpuMs } from './lib/paired-cpu.mjs';
 import { CORE_CPU_SOURCES } from './lib/cpu-sources.mjs';
@@ -10,7 +9,7 @@ import { runPairedBenchmark } from './lib/paired-runner.mjs';
 
 let checksum = 0;
 
-async function make({ 'vfs/sqlite-vfs.ts': { SqliteVFS }, 'runtime/process-files.ts': { ProcessFiles } }, size) {
+async function make({ 'vfs/sqlite-vfs.ts': { SqliteVFS }, 'runtime/process-files.ts': { ProcessFiles }, 'runtime/os-contracts.ts': { CRED_KERNEL } }, size) {
   const host = await hostSqlite();
   const engine = new SqliteVFS(host.sql, host.transactions);
   const root = engine.as(CRED_KERNEL);
@@ -26,7 +25,7 @@ async function make({ 'vfs/sqlite-vfs.ts': { SqliteVFS }, 'runtime/process-files
   const bridge = files.bind({ pid: 71, cred: CRED_KERNEL });
   const page = bridge.list(null, 256);
   assert.equal(page instanceof Promise, false);
-  return { engine, root, files, bridge, writes: 0, nextPid: 72 };
+  return { engine, root, files, bridge, kernel: CRED_KERNEL, writes: 0, nextPid: 72 };
 }
 
 async function cpu(arm, kind, iterations) {
@@ -36,7 +35,7 @@ async function cpu(arm, kind, iterations) {
     for (let i = 0; i < iterations; i++) {
       if (kind === 'cold-first-list') {
         const pid = arm.nextPid++;
-        const bridge = arm.files.bind({ pid, cred: CRED_KERNEL });
+        const bridge = arm.files.bind({ pid, cred: arm.kernel });
         const page = bridge.list(null, 256);
         assert.equal(page instanceof Promise, false);
         checksum += page.entries.length;
@@ -59,7 +58,7 @@ await runPairedBenchmark({
   async run({ short, cleanup, withArms, sample }) {
     const count = (kind) => kind === 'cold-first-list' ? (short ? 2 : 20) : kind === 'first-list' ? (short ? 4 : 80) : (short ? 64 : 2000);
     await withArms((from) => loadIsolatedCore(from, cleanup, {
-      sources: CORE_CPU_SOURCES, modules: ['vfs/sqlite-vfs.ts', 'runtime/process-files.ts'],
+      sources: CORE_CPU_SOURCES, modules: ['vfs/sqlite-vfs.ts', 'runtime/process-files.ts', 'runtime/os-contracts.ts'],
     }), async (modules) => {
       for (const [label, size] of [['small', 64], ['large', 8192]]) {
         await withArms((loaded) => make(loaded, size), async (arms) => {

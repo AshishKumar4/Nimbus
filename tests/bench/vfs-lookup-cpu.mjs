@@ -1,7 +1,6 @@
 #!/usr/bin/env bun
 // One process's paired VFS workloads; the remote client grades independent runs.
 import assert from 'node:assert/strict';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { hostSqlite } from '../unit/lib/host-sqlite.mjs';
 import { cpuMs } from './lib/paired-cpu.mjs';
 import { CORE_CPU_SOURCES } from './lib/cpu-sources.mjs';
@@ -17,6 +16,7 @@ async function make({
   'vfs/sqlite-files.ts': { sqliteFiles: files, SqliteFiles: FilesClass },
   'runtime/process-files.ts': { ProcessFiles: Processes },
   'vfs/path.ts': { normalizeVfsPath: normalize },
+  'runtime/os-contracts.ts': { CRED_KERNEL },
 }, removedFiles) {
   const host = await hostSqlite();
   const engine = new Store(host.sql, host.transactions);
@@ -84,7 +84,7 @@ await runPairedBenchmark({
     const removedFiles = short ? 64 : 2000;
     await withArms(async (from) => make(await loadIsolatedCore(from, cleanup, {
       sources: CORE_CPU_SOURCES,
-      modules: ['vfs/sqlite-vfs.ts', 'vfs/composite.ts', 'vfs/sqlite-files.ts', 'runtime/process-files.ts', 'vfs/path.ts'],
+      modules: ['vfs/sqlite-vfs.ts', 'vfs/composite.ts', 'vfs/sqlite-files.ts', 'runtime/process-files.ts', 'vfs/path.ts', 'runtime/os-contracts.ts'],
     }), removedFiles), async (arms) => {
       for (const kind of ['normalize-spelled', 'store', 'namespace', 'namespace-walk', 'store-linked', 'store-pnpm-chain', 'store-dot', 'store-link-parent', 'store-dot-lease', 'process-view', 'process-linked', 'walked-removal']) {
         const leases = kind === 'store-dot-lease' ? Object.values(arms).map((arm) => [arm, arm.engine.acquireExclusiveMutation('lease')]) : [];

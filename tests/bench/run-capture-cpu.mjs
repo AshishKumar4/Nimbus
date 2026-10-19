@@ -6,7 +6,6 @@
 // uncaptured. Independent module copies and databases for main, main's null
 // arm, and head.
 import assert from 'node:assert/strict';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { hostSqlite } from '../unit/lib/host-sqlite.mjs';
 import { cpuMs } from './lib/paired-cpu.mjs';
 import { CORE_CPU_SOURCES } from './lib/cpu-sources.mjs';
@@ -21,7 +20,8 @@ let committed = 0;
 
 /** A fresh database for each sample, with `rewrite` files there before the run. */
 async function session({
-  'vfs/sqlite-vfs.ts': { SqliteVFS }, 'runtime/process-files.ts': { ProcessFiles }, 'packages/platform/src/w7-frame.ts': { encodeWriteBatchStream },
+  'vfs/sqlite-vfs.ts': { SqliteVFS }, 'runtime/process-files.ts': { ProcessFiles }, 'runtime/os-contracts.ts': { CRED_KERNEL },
+  'packages/platform/src/w7-frame.ts': { encodeWriteBatchStream },
 }, rewrite) {
   const host = await hostSqlite();
   const engine = new SqliteVFS(host.sql, host.transactions);
@@ -62,7 +62,7 @@ await runPairedBenchmark({
   async run({ short, cleanup, withArms, sample }) {
     const scale = short ? 0.05 : 1;
     await withArms((from) => loadIsolatedCore(from, cleanup, {
-      sources: CORE_CPU_SOURCES, modules: ['vfs/sqlite-vfs.ts', 'runtime/process-files.ts'], helpers: ['packages/platform/src/w7-frame.ts'],
+      sources: CORE_CPU_SOURCES, modules: ['vfs/sqlite-vfs.ts', 'runtime/process-files.ts', 'runtime/os-contracts.ts'], helpers: ['packages/platform/src/w7-frame.ts'],
     }), async (arms) => {
       for (const [kind, { capture, made, rewrite }] of Object.entries(WORK)) {
         await sample(kind, arms, async (modules) => {
