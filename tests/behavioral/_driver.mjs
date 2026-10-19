@@ -100,15 +100,18 @@ async function sessionRecord(sid, openedAt, base, headers) {
  * not yet running and the stage it waits at (_diag/session's `launch`), and
  * its process table. Evidence for the failure's message, never asserted.
  */
+/** `path` of the session `sid` on `base`, as JSON; or a string saying why it could not be read. */
+async function readSessionJson(sid, base, headers, path) {
+  try {
+    const r = await fetch(`${base}/s/${encodeURIComponent(sid)}${path}`, { headers, signal: AbortSignal.timeout(10_000) });
+    return r.ok ? await r.json() : `${path} answered ${r.status}`;
+  } catch (error) {
+    return `${path} unavailable (${error.message})`;
+  }
+}
+
 async function launchRecord(sid, base, headers) {
-  const read = async (path) => {
-    try {
-      const r = await fetch(`${base}/s/${encodeURIComponent(sid)}${path}`, { headers, signal: AbortSignal.timeout(10_000) });
-      return r.ok ? await r.json() : `${path} answered ${r.status}`;
-    } catch (error) {
-      return `${path} unavailable (${error.message})`;
-    }
-  };
+  const read = (path) => readSessionJson(sid, base, headers, path);
   const [session, processes] = await Promise.all([read('/api/_diag/session'), read('/api/processes')]);
   return `the session's launches: ${JSON.stringify(typeof session === 'string' ? session : session.launch)}; its processes: ${JSON.stringify(processes)}`;
 }
@@ -466,6 +469,16 @@ export class Terminal {
     await this.waitFor(() => submission.end !== null, timeoutMs, 'submitted shell batch');
     const elapsed = Date.now() - t0;
     return { elapsed, output: stripAnsi(this.stream.slice(submission.start, submission.end)), exitCode: submission.exitCode };
+  }
+
+  /**
+   * The session's last facet calls (/api/_diag/session's `launch.facetCalls`):
+   * what a launch's facets cost, cold or warm. A string saying why, when they
+   * could not be read.
+   */
+  async facetCalls() {
+    const session = await readSessionJson(this.sid, this.wsBase.replace(/^ws/, 'http'), this.wsOptions?.headers ?? requestHeaders({}, this.sid), '/api/_diag/session');
+    return typeof session === 'string' ? session : session.launch?.facetCalls ?? 'the session reported no facet calls';
   }
 
   /** Write `content` to `path` with a quoted heredoc (heredocCommand). */

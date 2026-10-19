@@ -448,6 +448,37 @@ function loadedIds(ctx: object): Set<string> {
 }
 
 /**
+ * A facet call, as its Durable Object's pools made it: on a worker the
+ * loader built for it (`cold`: its code read, then compiled and its preamble
+ * run as the call began) or on a warm one, the time the loader's callback
+ * took to read its code, and the time the call took from its worker's hold
+ * to its answer, compile and preamble included when cold.
+ */
+export interface FacetCallTime {
+  tag: string;
+  cold: boolean;
+  loadMs: number;
+  callMs: number;
+  at: number;
+}
+
+/** Each Durable Object's last FACET_CALLS_KEPT facet calls, oldest first. */
+const callsByCtx = new WeakMap<object, FacetCallTime[]>();
+const FACET_CALLS_KEPT = 16;
+
+/** The last facet calls `ctx`'s pools made, oldest first: what a launch's phases cost (`/api/_diag/session`). */
+export function recentFacetCalls(ctx: object): readonly FacetCallTime[] {
+  return callsByCtx.get(ctx) ?? [];
+}
+
+function noteFacetCall(ctx: object, call: FacetCallTime): void {
+  let calls = callsByCtx.get(ctx);
+  if (calls === undefined) callsByCtx.set(ctx, calls = []);
+  calls.push(call);
+  if (calls.length > FACET_CALLS_KEPT) calls.shift();
+}
+
+/**
  * A load's images' credit, taken before its worker and not yet used: running
  * work may reclaim it (the lock order) until the loader's callback takes it,
  * for the load may wait for a worker, and a worker the loader answers warm
@@ -925,8 +956,11 @@ export class IsolatePool {
       // dispatching here), the first dispatch is the launch's own worker.
       const endFetch = readmitted?.admitted ?? (this.claim ? undefined : claimAdmission(this.ctx)) ?? beginLoaderFetch(this.ctx, id, this.claim);
       held = endFetch;
+      const began = Date.now();
+      let loadMs: number | null = null;
       try {
         const stub = this.loader.get(id, async () => {
+          const loading = Date.now();
           const lease = imageBytes === 0 ? null : credit?.take() ?? tryAcquireSupervisorLoad(imageBytes,
             { owner: `facet '${this.tag}' images`, pid: this.writerPid, session: this.ctx.id?.toString() });
           if (imageBytes > 0 && lease === null) {
@@ -939,12 +973,15 @@ export class IsolatePool {
             return code;
           } finally {
             lease?.release();
+            loadMs = Date.now() - loading;
           }
         });
         const entrypoint = stub.getEntrypoint(undefined, { limits: facetLimits(this.facetKind) });
         // Direct property call, awaited by this frame — bracketed, never
         // wrapped. See beginLoaderFetch for the measured DO-poisoning hazard.
-        return await invoke(entrypoint, attempt);
+        const answer = await invoke(entrypoint, attempt);
+        noteFacetCall(this.ctx, { tag: this.tag, cold: loadMs !== null, loadMs: loadMs ?? 0, callMs: Date.now() - began, at: began });
+        return answer;
       } catch (err) {
         // The ledger learns a limit refusal from the hold it ends.
         endFetch(err);

@@ -76,12 +76,28 @@ async function timed(t, command, line) {
   return ms;
 }
 
+/**
+ * What the Ruby facet's last call cost, as the session recorded it: a cold
+ * worker's code read and its call (ruby+stdlib.wasm compiled, the VM booted
+ * and the program run), or a warm one's call (the program alone).
+ */
+async function rubyCall(t) {
+  const calls = await t.facetCalls();
+  if (typeof calls === 'string') return calls;
+  const call = calls.findLast((c) => c.tag === 'ruby-runner');
+  return call ? (call.cold ? `cold load ${call.loadMs} + call ${call.callMs} ms` : `warm call ${call.callMs} ms`) : 'no ruby call recorded';
+}
+
+let round = 0;
 const result = await measurePaired(arms, ROUNDS, async (target, arm) => {
+  // The arms of a round start together, a1 first: its round is theirs.
+  const at = arm === 'a1' ? ++round : round;
   const { t } = await ready(target, arm);
-  return {
-    'ruby launch': await timed(t, LAUNCH, 'LAUNCHED'),
-    'single-version gem require': await timed(t, REQUIRE, 'TOP=constant'),
-  };
+  const launch = await timed(t, LAUNCH, 'LAUNCHED');
+  const launchCall = await rubyCall(t);
+  const require = await timed(t, REQUIRE, 'TOP=constant');
+  console.log(`  round ${at} ${arm}: ruby launch ${Math.round(launch)} ms (${launchCall}); gem require ${Math.round(require)} ms (${await rubyCall(t)})`);
+  return { 'ruby launch': launch, 'single-version gem require': require };
 });
 
 for (const pending of sessions.values()) {
