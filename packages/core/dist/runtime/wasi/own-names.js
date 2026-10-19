@@ -64,6 +64,12 @@ export function ownNames(options) {
                 if (within(name, key))
                     forget(name);
         },
+        settled: (key) => {
+            if (!decided.has(key))
+                return false;
+            forget(key);
+            return true;
+        },
         note: (dir, name, type) => {
             if (type === null) {
                 added.get(dir)?.delete(name);

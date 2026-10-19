@@ -202,7 +202,7 @@ export function provisional(host) {
             if (!row || row.dev !== inode.dev || row.ino !== inode.ino)
                 continue;
             const held = inode.type === 'file' ? host.content(name, row) : undefined;
-            return { row, bytes: held !== undefined && held.byteLength === row.size ? held : undefined };
+            return { name, row, bytes: held !== undefined && held.byteLength === row.size ? held : undefined };
         }
         return undefined;
     };
@@ -965,10 +965,10 @@ export function provisional(host) {
         if (chmod !== undefined)
             ops.push({ kind: 'chmod', mode: chmod, at });
         // What older decisions left unlogged goes first, and with what this logs, must fit what the log holds unanswered.
-        host.drain();
-        host.client.fitsSync(bytes?.byteLength ?? 0, path);
         if (row !== null)
             probe(promotionNeed(row.dev, row.ino, (promoted) => projectedCost(promoted, ops) + openCredit(promoted, key) - promoted.reserved), 'open', path);
+        host.drain();
+        host.client.fitsSync(bytes?.byteLength ?? 0, path);
         const inode = row === null ? null : inodeAt(key, row);
         let credit;
         if (inode !== null) {
@@ -1361,8 +1361,8 @@ export function provisional(host) {
             if (writableParent(key, path, 'unlink') === undefined)
                 return false;
             // Its descriptors keep what it holds: its bytes, where only the view has them, admitted for their lifetime first.
-            host.drain();
             probe(promotionNeed(row.dev, row.ino, () => nameCost([key])), 'unlink', path);
+            host.drain();
             keepForDescriptors(take(row.dev, row.ino), nameCost([key]), 'unlink', path);
             loggedName({ type: 'call', call: { call: 'unlink', path: key } }, [key], nameCost([key]), () => place(key, null));
             return true;
@@ -1418,8 +1418,7 @@ export function provisional(host) {
             if (writableParent(from, path, 'rename') === undefined || writableParent(to, path, 'rename') === undefined)
                 return false;
             // A file it replaces keeps, for its descriptors, what it holds: admitted first, with the record and the Inode it moves.
-            host.drain();
-            // All it will admit, a file a grant holds alone among them priced as promoted, before it takes any (§11).
+            // All it will admit, a file a grant holds alone among them priced as promoted, before anything is done (§11).
             {
                 const borrowed = layer.get(from) ?? inodeAtNumber(source.dev, source.ino) ?? host.heldFile(source.dev, source.ino);
                 const more = nameCost([from, to]) + (borrowed === undefined ? INODE_COST + 2 * stringCost(from) + 2 * stringCost(to) : 2 * stringCost(to));
@@ -1429,6 +1428,7 @@ export function provisional(host) {
                     : host.heldFile(target.dev, target.ino) !== undefined ? promotionNeed(target.dev, target.ino, () => more) : more;
                 probe(sourceNeed + targetNeed, 'rename', path);
             }
+            host.drain();
             const known = layer.get(from) ?? take(source.dev, source.ino);
             const moves = known === undefined ? INODE_COST + 2 * stringCost(from) + 2 * stringCost(to) : 2 * stringCost(to);
             keepForDescriptors(target === null ? undefined : take(target.dev, target.ino), nameCost([from, to]) + moves, 'rename', path);
@@ -1470,10 +1470,10 @@ export function provisional(host) {
             if (row === null)
                 throw fsError('ENOENT', syscall, path);
             judgeAttrs(row, attrs, syscall, path);
-            host.drain();
             const op = attrOp(attrs, host.now());
             if (!layer.has(key))
                 probe(promotionNeed(row.dev, row.ino, (promoted) => projectedCost(promoted, [op]) - promoted.reserved), syscall, path);
+            host.drain();
             const inode = layer.get(key) ?? inodeAt(key, row);
             try {
                 admitOps(inode, [op], syscall, path);
@@ -1524,6 +1524,8 @@ export function provisional(host) {
             const kept = nameRecords.filter((record) => {
                 if (!record.answered || record.answeredAt >= begun)
                     return true;
+                for (const key of record.keys)
+                    host.settled(key);
                 record.retired?.();
                 host.release(record.cost);
                 return false;
@@ -1554,7 +1556,10 @@ export function provisional(host) {
                     if (inodeAtNumber(inode.dev, inode.ino) !== inode)
                         continue;
                 }
-                const seen = viewed(inode);
+                let seen = viewed(inode);
+                // What its retired records did is the view's: a grant's decision of its name, made before them, answers no more.
+                if (seen !== undefined && retired.length > 0 && host.settled(seen.name))
+                    seen = viewed(inode);
                 if (seen === undefined) {
                     // No name leads to it in the view: what it holds is what retired made of it, where its baseline's bytes can say so
                     // (else they stay records while a descriptor may still read them).

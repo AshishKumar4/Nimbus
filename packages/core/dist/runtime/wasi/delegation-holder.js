@@ -371,6 +371,7 @@ export function delegationHolder(options) {
                 total += inode.reserved;
             return total;
         },
+        settled: (key) => names.settled(key),
     });
     // The provisional decisions are the newest wherever they are pending: a held subtree decides nothing there (deciding).
     const composedEntry = (key) => {
@@ -969,12 +970,6 @@ export function delegationHolder(options) {
             const handle = heldDesc(handleId);
             if (handle === undefined) {
                 prov.fsetattr(handleId, change);
-                // A name its grant decides for the file shows the change made through its description, as the session will (one given back is the view's to say).
-                const inode = prov.descriptor(handleId).inode;
-                const named = names.current(inode.key);
-                if (named && named.ino === inode.ino) {
-                    decided.set(inode.key, changedBy(named, 'atime' in change ? { atime: timeAt(change.atime, named.atime, now()), mtime: timeAt(change.mtime, named.mtime, now()) } : change));
-                }
                 return false;
             }
             const inode = handle.inode;

@@ -27,6 +27,8 @@ export interface OwnNames {
     undecide(key: string): void;
     /** The session moved or removed the name `key`: what it decided at and under it goes, with what was noted there (its listing, a file's cell). */
     superseded(key: string): void;
+    /** A change of the process's own at `key`, made after its decision there, is the view's: the decision and what was noted of the name go; true where there was one. */
+    settled(key: string): boolean;
     /** Directory `dir` gained `name` (`type`), or lost it (null). */
     note(dir: string, name: string, type: RuntimeVfsDirEntry['type'] | null): void;
     /** A directory made at `key`: its names are the ones made in it. */

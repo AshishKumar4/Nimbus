@@ -73,6 +73,12 @@ export interface ProvisionalHost {
     heldFile(dev: number, ino: number): Inode | undefined;
     /** What the files a grant holds alone keep of the budget (their Inodes, outside the table). */
     heldCost(): number;
+    /**
+     * The view has what these decisions did at `key`: a grant's decision of
+     * the name, made before them (a grant decides nothing they touch), answers
+     * no more, the view's row does (OwnNames.settled); true where one did.
+     */
+    settled(key: string): boolean;
 }
 /**
  * A file's content while a grant decides it (the holder's): its bytes here,
