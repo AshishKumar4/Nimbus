@@ -10,7 +10,8 @@ published independently in the `@nimbus-sh` npm scope.
   and made again three times, each time a file read of a running program
   waited for credit as the map was made, though a worker was free for the
   launch. A launch's map is now given up for running work only while the
-  launch waits for a worker. And a map that needs a little more than its
+  launch waits for a worker, and a pre-bundle's prepared files only while
+  the pre-bundle waits. And a map that needs a little more than its
   closure was sized for takes the rest when it is free, instead of
   gathering its whole closure again.
 - Fixed: a program's launch could wait minutes (a `vite build` sat 5
