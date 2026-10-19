@@ -4,13 +4,13 @@
 // CommonJS resolver runtime/require-resolution.ts re-exports
 // createRequireResolver, and the package maps both select through), one run,
 // over an in-memory tree.
-// remote-module-resolution-cpu supplies the baseline's packages/core/src and
-// judges the runs together.
+// remote-module-resolution-cpu supplies the baseline's tree and judges the
+// runs together; each arm is bundled from its side's tree (isolated-core.mjs).
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { build } from 'esbuild';
+import { armTree, importBundle, repository } from './lib/isolated-core.mjs';
 import { cpuMs, pairedKind, shuffled } from './lib/paired-cpu.mjs';
 
 const args = process.argv.slice(2);
@@ -21,27 +21,24 @@ const option = (name) => {
 };
 const baseline = resolve(option('--baseline'));
 const output = option('--out');
-const core = new URL('../../packages/core/', import.meta.url).pathname;
-const head = join(core, 'src');
 const PAIRS = 30;
-const scratch = mkdtempSync(join(core, '.module-resolution-cpu-'));
+const scratch = mkdtempSync(join(tmpdir(), 'module-resolution-cpu-'));
+const disposals = [];
 let checksum = 0;
 const results = [];
 
-/** An arm: the resolvers from `dir`, bundled on their own, so no arm shares a module, or its JIT state, with another. */
-async function arm(name, dir) {
-  const bundled = await build({
+/** An arm: the resolvers from its side's tree (`from`), bundled on their own, so no arm shares a module, or its JIT state, with another. */
+async function arm(name, from) {
+  const tree = armTree(from, (dispose) => disposals.push(dispose));
+  const dir = join(tree, 'packages/core/src');
+  return importBundle(tree, {
     stdin: {
       contents: `export { createEsmResolver } from ${JSON.stringify(join(dir, '_shared/esm-resolver.ts'))};\n`
         + `export { createRequireResolver } from ${JSON.stringify(join(dir, 'runtime/require-resolution.ts'))};\n`,
       resolveDir: dir, loader: 'ts',
     },
-    bundle: true, write: false, format: 'esm', platform: 'neutral', target: 'esnext',
-    nodePaths: [join(core, 'node_modules')], mainFields: ['module', 'main'],
-  });
-  const file = join(scratch, `${name}.mjs`);
-  writeFileSync(file, bundled.outputFiles[0].text);
-  return import(pathToFileURL(file).href);
+    format: 'esm', platform: 'neutral', target: 'esnext', mainFields: ['module', 'main'],
+  }, join(scratch, `${name}.mjs`));
 }
 
 // The tree: an application whose package.json has `imports`, and 48
@@ -136,7 +133,7 @@ for (const kind of Object.keys(requires)) {
 }
 
 try {
-  const sources = { A: baseline, null: baseline, real: head };
+  const sources = { A: baseline, null: baseline, real: repository };
   const arms = {};
   for (const name of shuffled(Object.keys(sources))) arms[name] = await arm(name, sources[name]);
   // Each arm answers as the others do: the comparison is of the same work.
@@ -162,5 +159,6 @@ try {
   }
   assert.ok(checksum > 0);
 } finally {
+  for (const dispose of disposals) dispose();
   rmSync(scratch, { recursive: true, force: true });
 }

@@ -9,9 +9,9 @@
 // head), over a pnpm-like tree held in a heap store.
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { build } from 'esbuild';
+import { armTree, importBundle, repository } from './lib/isolated-core.mjs';
 import { cpuMs, pairedKind, shuffled } from './lib/paired-cpu.mjs';
 
 const args = process.argv.slice(2);
@@ -23,24 +23,21 @@ const option = (name) => {
 const short = args.includes('--short');
 const baseline = resolve(option('--baseline'));
 const output = option('--out');
-const worker = new URL('../../packages/worker/', import.meta.url).pathname;
-const head = join(worker, 'src');
+
 const PAIRS = short ? 3 : 30;
 const N = short ? 200 : 20_000;
-const scratch = mkdtempSync(join(worker, '.resident-read-cpu-'));
+const scratch = mkdtempSync(join(tmpdir(), 'resident-read-cpu-'));
+const disposals = [];
 let seen = 0;
 const results = [];
 
-/** An arm: the store from `dir`, bundled on its own, so no arm shares a module, or its JIT state, with another. */
-async function arm(name, dir) {
-  const bundled = await build({
-    entryPoints: [join(dir, 'vfs/resident/index.ts')],
-    bundle: true, write: false, format: 'esm', platform: 'neutral', target: 'esnext',
-    nodePaths: [join(worker, 'node_modules')], mainFields: ['module', 'main'], absWorkingDir: worker,
-  });
-  const file = join(scratch, `${name}.mjs`);
-  writeFileSync(file, bundled.outputFiles[0].text);
-  return import(pathToFileURL(file).href);
+/** An arm: the store from its side's tree (`from`), bundled on its own, so no arm shares a module, or its JIT state, with another. */
+async function arm(name, from) {
+  const tree = armTree(from, (dispose) => disposals.push(dispose));
+  return importBundle(tree, {
+    entryPoints: [join(tree, 'packages/worker/src/vfs/resident/index.ts')],
+    format: 'esm', platform: 'neutral', target: 'esnext', mainFields: ['module', 'main'], absWorkingDir: join(tree, 'packages/worker'),
+  }, join(scratch, `${name}.mjs`));
 }
 
 const CURSOR = { poison: false, paths: [], epoch: 'e1', rev: 7 };
@@ -83,7 +80,7 @@ const work = {
 };
 
 try {
-  const sources = { A: baseline, null: baseline, real: head };
+  const sources = { A: baseline, null: baseline, real: repository };
   const arms = {};
   for (const name of shuffled(Object.keys(sources))) arms[name] = storeOf(await arm(name, sources[name]));
   // Each arm answers as the baseline's does.
@@ -100,5 +97,6 @@ try {
   }
   assert.ok(seen > 0);
 } finally {
+  for (const dispose of disposals) dispose();
   rmSync(scratch, { recursive: true, force: true });
 }

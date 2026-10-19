@@ -79,7 +79,6 @@ async function runWork({ store, namespace, process, paths, packagePaths, chainPa
 }
 
 await runPairedBenchmark({
-  source: CORE_CPU_SOURCES.source,
   async run({ short, cleanup, withArms, sample }) {
     const iterations = short ? 120 : 24_000;
     const removedFiles = short ? 64 : 2000;

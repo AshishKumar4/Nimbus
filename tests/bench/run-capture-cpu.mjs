@@ -7,7 +7,6 @@
 // arm, and head.
 import assert from 'node:assert/strict';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { hostSqlite } from '../unit/lib/host-sqlite.mjs';
 import { cpuMs } from './lib/paired-cpu.mjs';
 import { CORE_CPU_SOURCES } from './lib/cpu-sources.mjs';
@@ -21,7 +20,9 @@ const NEW_BODY = new TextEncoder().encode('fedcba9876543210'.repeat(4));
 let committed = 0;
 
 /** A fresh database for each sample, with `rewrite` files there before the run. */
-async function session({ 'vfs/sqlite-vfs.ts': { SqliteVFS }, 'runtime/process-files.ts': { ProcessFiles } }, rewrite) {
+async function session({
+  'vfs/sqlite-vfs.ts': { SqliteVFS }, 'runtime/process-files.ts': { ProcessFiles }, 'packages/platform/src/w7-frame.ts': { encodeWriteBatchStream },
+}, rewrite) {
   const host = await hostSqlite();
   const engine = new SqliteVFS(host.sql, host.transactions);
   const kernel = engine.as(CRED_KERNEL);
@@ -31,11 +32,11 @@ async function session({ 'vfs/sqlite-vfs.ts': { SqliteVFS }, 'runtime/process-fi
   kernel.chown('home/user/proj', USER.uid, USER.gid);
   kernel.chown('home/user/proj/old', USER.uid, USER.gid);
   for (let i = 0; i < rewrite; i++) kernel.chown(`home/user/proj/old/${i}`, USER.uid, USER.gid);
-  return { engine, files: new ProcessFiles(engine), user: engine.as(USER) };
+  return { engine, files: new ProcessFiles(engine), user: engine.as(USER), encodeWriteBatchStream };
 }
 
 /** Waves of 100 writeFile ops by process PID: `made` new files, then each of `rewrite` old ones with other bytes. */
-async function waves({ files, user }, made, rewrite) {
+async function waves({ files, user, encodeWriteBatchStream }, made, rewrite) {
   const ops = [
     ...Array.from({ length: made }, (_, i) => `home/user/proj/new${i}`),
     ...Array.from({ length: rewrite }, (_, i) => `home/user/proj/old/${i}`),
@@ -58,11 +59,10 @@ const WORK = {
 };
 
 await runPairedBenchmark({
-  source: CORE_CPU_SOURCES.source,
   async run({ short, cleanup, withArms, sample }) {
     const scale = short ? 0.05 : 1;
     await withArms((from) => loadIsolatedCore(from, cleanup, {
-      sources: CORE_CPU_SOURCES, modules: ['vfs/sqlite-vfs.ts', 'runtime/process-files.ts'],
+      sources: CORE_CPU_SOURCES, modules: ['vfs/sqlite-vfs.ts', 'runtime/process-files.ts'], helpers: ['packages/platform/src/w7-frame.ts'],
     }), async (arms) => {
       for (const [kind, { capture, made, rewrite }] of Object.entries(WORK)) {
         await sample(kind, arms, async (modules) => {

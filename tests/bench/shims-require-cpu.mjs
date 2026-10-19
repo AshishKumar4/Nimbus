@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 // The guest's CommonJS require through the node shims, under V8. Each arm
-// bundles its own worker and core sources, including its resident store.
+// bundles its side's own tree (isolated-core.mjs), its resident store
+// included, with its own launch-captures plugin and shims test helper.
 // A sample starts with a fresh factory; only require calls are timed.
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
-import { launchCapturesPlugin } from '../../scripts/lib/launch-captures-plugin.mjs';
+import { armTree, assertBundleInside, importBundle, repository } from './lib/isolated-core.mjs';
 import { cpuMs, pairedKind, shuffled } from './lib/paired-cpu.mjs';
 
 const args = process.argv.slice(2);
@@ -19,10 +21,8 @@ const option = (name) => {
 const short = args.includes('--short');
 const baseline = resolve(option('--baseline'));
 const output = option('--out');
-const root = fileURLToPath(new URL('../../', import.meta.url));
-const packages = join(root, 'packages');
-const worker = join(packages, 'worker');
-const scratch = mkdtempSync(join(worker, '.shims-require-cpu-'));
+const scratch = mkdtempSync(join(tmpdir(), 'shims-require-cpu-'));
+const disposals = [];
 const PAIRS = short ? 3 : 30;
 const APP = '/home/user/app';
 const results = [];
@@ -33,30 +33,12 @@ Object.defineProperty(events, 'EventEmitterAsyncResource', {
   value: events.EventEmitterAsyncResource, writable: true, enumerable: true, configurable: true,
 });
 
-/** Every worker/core import, including the fixture helper's, comes from this arm's source tree. */
-function sourcePlugin(dir) {
-  return {
-    name: 'shims-require-arm-source',
-    setup(builder) {
-      builder.onResolve({ filter: /^@nimbus-sh\/core\// }, ({ path }) => ({
-        path: join(dir, 'core', 'src', path.slice('@nimbus-sh/core/'.length).replace(/\.js$/, '.ts')),
-      }));
-      builder.onResolve({ filter: /^\./ }, ({ path, resolveDir }) => {
-        const target = resolve(resolveDir, path);
-        for (const name of ['worker', 'core']) {
-          const source = join(packages, name, 'src') + '/';
-          if (target.startsWith(source)) return { path: join(dir, name, 'src', target.slice(source.length)).replace(/\.js$/, '.ts') };
-        }
-      });
-    },
-  };
-}
-
-function residentAssetPlugin(source) {
+/** The resident store's source, where the arm's shims test helper (`helper`) reads it. */
+function residentAssetPlugin(source, helper) {
   return {
     name: 'shims-require-resident-asset',
     setup(builder) {
-      builder.onResolve({ filter: /^node:fs$/ }, ({ importer }) => importer === join(root, 'tests/unit/lib/shims-namespace.mjs')
+      builder.onResolve({ filter: /^node:fs$/ }, ({ importer }) => importer === helper
         ? { path: 'resident', namespace: 'shims-require-resident' } : undefined);
       builder.onLoad({ filter: /.*/, namespace: 'shims-require-resident' }, () => ({
         contents: `export const readFileSync = () => ${JSON.stringify(source)};`, loader: 'js',
@@ -65,27 +47,33 @@ function residentAssetPlugin(source) {
   };
 }
 
-async function arm(name, dir) {
-  const core = join(dir, 'core');
+/** An arm: its side's tree (`from`) bundled on its own, every input inside it. */
+async function arm(name, from) {
+  const tree = armTree(from, (dispose) => disposals.push(dispose));
+  const core = join(tree, 'packages/core');
+  const helper = join(tree, 'tests/unit/lib/shims-namespace.mjs');
   const options = {
-    bundle: true, write: false, platform: 'node', target: 'esnext', absWorkingDir: root,
-    nodePaths: [join(worker, 'node_modules'), join(packages, 'core', 'node_modules'), join(root, 'node_modules')],
+    platform: 'node', target: 'esnext', absWorkingDir: tree,
     conditions: ['workspace'], mainFields: ['module', 'main'], legalComments: 'none',
   };
+  // The side's own captures plugin, where it has one (a side before it binds no captures).
+  const capturesPlugin = join(tree, 'scripts/lib/launch-captures-plugin.mjs');
+  const plugins = existsSync(capturesPlugin)
+    ? [await (await import(pathToFileURL(capturesPlugin).href)).launchCapturesPlugin('__nimbusLaunchCaptures', core)] : [];
   const resident = await build({
-    ...options, entryPoints: [join(dir, 'worker', 'src/vfs/resident/index.ts')],
-    format: 'iife', globalName: '__nimbusResidentModule',
-    plugins: [await launchCapturesPlugin('__nimbusLaunchCaptures', core), sourcePlugin(dir)],
+    ...options, bundle: true, write: false, metafile: true, entryPoints: [join(tree, 'packages/worker/src/vfs/resident/index.ts')],
+    format: 'iife', globalName: '__nimbusResidentModule', plugins,
   });
-  const bundled = await build({
-    ...options, format: 'esm', plugins: [sourcePlugin(dir), residentAssetPlugin(resident.outputFiles[0].text)],
+  assertBundleInside(tree, resident.metafile, tree);
+  const { createFactory } = await importBundle(tree, {
+    ...options, format: 'esm', plugins: [residentAssetPlugin(resident.outputFiles[0].text, helper)],
     stdin: {
-      resolveDir: root, sourcefile: `${name}-shims-require-arm.mjs`, loader: 'js',
+      resolveDir: tree, sourcefile: `${name}-shims-require-arm.mjs`, loader: 'js',
       contents: `
-import { generateShimsCode } from ${JSON.stringify(join(dir, 'worker/src/runtime/node-shims.ts'))};
+import { generateShimsCode } from ${JSON.stringify(join(tree, 'packages/worker/src/runtime/node-shims.ts'))};
 import { VFS_WRITE_LEDGER_SOURCE } from ${JSON.stringify(join(core, 'src/_shared/vfs-write-ledger.ts'))};
 import * as captures from ${JSON.stringify(join(core, 'src/_shared/primordials.ts'))};
-import { createShimsStorePrelude, declareNamespace } from ${JSON.stringify(join(root, 'tests/unit/lib/shims-namespace.mjs'))};
+import { createShimsStorePrelude, declareNamespace } from ${JSON.stringify(helper)};
 
 export function createFactory(residentSource) {
   const compileCell = globalThis.__nimbusTestCompileCell;
@@ -110,10 +98,7 @@ export function createFactory(residentSource) {
 }
 `,
     },
-  });
-  const file = join(scratch, `${name}.mjs`);
-  writeFileSync(file, bundled.outputFiles[0].text);
-  const { createFactory } = await import(pathToFileURL(file).href);
+  }, join(scratch, `${name}.mjs`));
   return createFactory(resident.outputFiles[0].text);
 }
 
@@ -162,7 +147,7 @@ const workloads = {
 };
 
 try {
-  const sources = { A: baseline, null: baseline, real: packages };
+  const sources = { A: baseline, null: baseline, real: repository };
   const arms = {};
   for (const name of shuffled(Object.keys(sources))) arms[name] = await arm(name, sources[name]);
   const cpu = async (factory, kind) => {
@@ -183,5 +168,6 @@ try {
     console.log(JSON.stringify(summary));
   }
 } finally {
+  for (const dispose of disposals) dispose();
   rmSync(scratch, { recursive: true, force: true });
 }

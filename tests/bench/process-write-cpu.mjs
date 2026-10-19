@@ -45,7 +45,6 @@ const WORK = {
 };
 
 await runPairedBenchmark({
-  source: CORE_CPU_SOURCES.source,
   async run({ short, cleanup, withArms, sample }) {
     await withArms((from) => loadIsolatedCore(from, cleanup, {
       sources: CORE_CPU_SOURCES, modules: ['vfs/sqlite-vfs.ts', 'runtime/process-files.ts'],

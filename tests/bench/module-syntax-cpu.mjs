@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 // Paired in-process CPU comparison, under V8, of Node's syntax detection as
 // the runtime answers it (core runtime/javascript-ast.ts containsModuleSyntax),
-// one run. remote-module-syntax-cpu supplies the baseline's
-// packages/core/src/runtime/javascript-ast.ts and judges the runs together.
+// one run. remote-module-syntax-cpu supplies the baseline's tree and judges
+// the runs together; each arm is bundled from its side's tree (isolated-core.mjs).
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { build } from 'esbuild';
+import { armTree, importBundle, repository } from './lib/isolated-core.mjs';
 import { cpuMs, pairedKind, shuffled } from './lib/paired-cpu.mjs';
 
 const args = process.argv.slice(2);
@@ -18,28 +18,24 @@ const option = (name) => {
 };
 const baseline = resolve(option('--baseline'));
 const output = option('--out');
-const core = new URL('../../packages/core/', import.meta.url).pathname;
-const head = join(core, 'src');
 const PAIRS = 30;
-const scratch = mkdtempSync(join(core, '.module-syntax-cpu-'));
+const scratch = mkdtempSync(join(tmpdir(), 'module-syntax-cpu-'));
+const disposals = [];
 let checksum = 0;
 const results = [];
 
-/** An arm: javascript-ast.ts from `dir`, bundled on its own (acorn with it), so no arm shares a module, or its JIT state, with another. */
-async function arm(name, dir) {
-  const bundled = await build({
-    entryPoints: [join(dir, 'runtime/javascript-ast.ts')], bundle: true, write: false, format: 'esm', platform: 'neutral', target: 'esnext',
-    nodePaths: [join(core, 'node_modules')], mainFields: ['module', 'main'],
-  });
-  const file = join(scratch, `${name}.mjs`);
-  writeFileSync(file, bundled.outputFiles[0].text);
-  return import(pathToFileURL(file).href);
+/** An arm: javascript-ast.ts from its side's tree (`from`), bundled on its own (acorn with it), so no arm shares a module, or its JIT state, with another. */
+async function arm(name, from) {
+  const tree = armTree(from, (dispose) => disposals.push(dispose));
+  return importBundle(tree, {
+    entryPoints: [join(tree, 'packages/core/src/runtime/javascript-ast.ts')], format: 'esm', platform: 'neutral', target: 'esnext', mainFields: ['module', 'main'],
+  }, join(scratch, `${name}.mjs`));
 }
 
 // A multi-MiB CommonJS bundle (TypeScript's compiler, with `import:` keys in
 // it); a CommonJS module whose objects name the import and export
 // conditions; an ES module's head of imports; eval-sized code.
-const typescript = readFileSync(join(core, 'node_modules/typescript/lib/typescript.js'), 'utf8');
+const typescript = readFileSync(join(repository, 'packages/core/node_modules/typescript/lib/typescript.js'), 'utf8');
 const conditions = `'use strict';\n${Array.from({ length: 4096 }, (_, i) => `exports.m${i} = { import: './esm/${i}.mjs', require: './cjs/${i}.js', default: { export: ${i} } };\nclass C${i} { export() { return ${i}; } static import() {} }\n`).join('')}`;
 const esModule = `${Array.from({ length: 512 }, (_, i) => `import { a${i} } from './m${i}.js';\n`).join('')}export const all = [${Array.from({ length: 512 }, (_, i) => `a${i}`).join(', ')}];\n`;
 const snippets = Array.from({ length: 256 }, (_, i) => i % 2 ? `console.log(require('node:path').sep, ${i})` : `const a = ${i}; { let b = a + 1; console.log(b) }`);
@@ -52,7 +48,7 @@ const work = {
 };
 
 try {
-  const sources = { A: baseline, null: baseline, real: head };
+  const sources = { A: baseline, null: baseline, real: repository };
   const arms = {};
   for (const name of shuffled(Object.keys(sources))) arms[name] = await arm(name, sources[name]);
   // Each arm answers as the others do: the comparison is of the same work.
@@ -73,5 +69,6 @@ try {
   }
   assert.ok(checksum > 0);
 } finally {
+  for (const dispose of disposals) dispose();
   rmSync(scratch, { recursive: true, force: true });
 }

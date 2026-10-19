@@ -2,18 +2,22 @@ import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
+import { assertArmsInside, repository } from './isolated-core.mjs';
 import { pairedKind, shuffled } from './paired-cpu.mjs';
 
-const repository = new URL('../../../', import.meta.url).pathname;
-export const benchmarkSource = (source) => resolve(repository, source);
-
-export async function runPairedBenchmark({ source, run }) {
+/**
+ * A paired bench's run: its arms each made from a side's tree (`from`, a
+ * repository root: `A` and `null` the baseline's, which --baseline names,
+ * `real` this one), every module an arm resolved checked at the end to lie
+ * inside its own (isolated-core.mjs).
+ */
+export async function runPairedBenchmark({ run }) {
   const { values } = parseArgs({
     options: { baseline: { type: 'string' }, out: { type: 'string' }, short: { type: 'boolean', default: false } },
   });
   assert.ok(values.baseline, '--baseline is required');
   assert.ok(values.out, '--out is required');
-  const sources = { A: resolve(values.baseline), null: resolve(values.baseline), real: benchmarkSource(source) };
+  const sources = { A: resolve(values.baseline), null: resolve(values.baseline), real: repository };
   const cleanups = [];
   const results = [];
   const context = {
@@ -41,6 +45,7 @@ export async function runPairedBenchmark({ source, run }) {
   try {
     await run(context);
     assert.ok(results.length > 0, 'the benchmark produced samples');
+    assertArmsInside();
   } finally {
     for (const dispose of cleanups.reverse()) await dispose();
   }

@@ -6,10 +6,7 @@ import { remotePairedCpu } from './lib/paired-cpu.mjs';
 await remotePairedCpu({
   name: 'remote-resident-read-cpu',
   receipts: 'remote-resident-read-cpu',
-  source: 'packages/worker/src',
-  directories: ['vfs/resident'],
-  files: ['vfs/facet-resident-limits.ts'],
-  baselineDir: 'packages/worker/.ci-resident-read-baseline',
+  baselineDir: '.ci-resident-read-baseline',
   engine: 'node',
   bench: 'tests/bench/resident-read-cpu.mjs',
 });

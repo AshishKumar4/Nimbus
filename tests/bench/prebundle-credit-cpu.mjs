@@ -1,36 +1,20 @@
 #!/usr/bin/env bun
 // Real supervisor preparation/admission/handoff, with fixed-cost compiler
-// answers. Independent budget/diag copies include owner-accounting cost.
+// answers. Each arm is its side's whole tree (isolated-core.mjs), so its
+// budget and diag counters are its own and include owner-accounting cost.
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync, rmSync } from 'node:fs';
-import { dirname, join, normalize, resolve } from 'node:path';
+import { writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { heapStats } from 'bun:jsc';
-import ts from 'typescript';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
-import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
-import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
-import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
-import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
-import { createFacetCtx, createFacetWorld } from '../unit/lib/facet-host-harness.mjs';
-import { launchSession } from '../unit/lib/facet-launch-harness.mjs';
-import { namedFacetPlatform } from '../unit/lib/named-facet-platform.mjs';
-import { processFiles } from '../unit/lib/process-bridge.mjs';
-import { stagedAssets } from '../unit/lib/staged-assets.mjs';
+import { armTree, assertArmsInside, repository } from './lib/isolated-core.mjs';
 import { cpuMs, pairedKind, shuffled } from './lib/paired-cpu.mjs';
 import { median } from '../../scripts/lib/statistics.mjs';
 
 const option = (name) => process.argv[process.argv.indexOf(name) + 1];
 const baseline = resolve(option('--baseline'));
 const output = option('--out');
-const packages = resolve(new URL('../../packages/', import.meta.url).pathname);
-const measured = new Set(['worker/src/npm/browser-prebundle.ts', 'worker/src/npm/pre-bundle-facet.ts',
-  'worker/src/runtime/barrel-synthesizer.ts', 'worker/src/facets/prebundle-pool.ts',
-  'worker/src/facets/build-facet.ts', 'worker/src/facets/manager.ts',
-  'platform/src/heavy-alloc-coord.ts', 'platform/src/diag-counters.ts', 'core/src/runtime/prebundle-slice.ts']);
-const fixtureRoots = [];
-adoptCtxExports({ SupervisorRPC: ({ props }) => ({ props }) });
+const disposals = [];
 const live = () => { Bun.gc(true); const stats = heapStats(); return stats.heapSize + stats.extraMemorySize; };
 const results = [];
 const singleIterations = 32;
@@ -39,46 +23,29 @@ const pairs = process.argv.includes('--short') ? 2 : 24;
 const warm = process.argv.includes('--short') ? 1 : 8;
 
 try {
+  /** An arm: its side's tree (`from`), every module this bench drives with taken from it, budget and diag copies included. */
   const load = async (from, label) => {
-    const fixture = mkdtempSync(join(packages, '.prebundle-cpu-'));
-    fixtureRoots.push(fixture);
-    const armSource = (text, file) => {
-      const tree = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-      const edits = [];
-      const visit = (node) => {
-        const literal = ts.isImportDeclaration(node) || ts.isExportDeclaration(node) ? node.moduleSpecifier
-          : ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword ? node.arguments[0] : undefined;
-        if (literal && ts.isStringLiteral(literal)) {
-          const specifier = literal.text;
-          const alias = /^@nimbus-sh\/(core|platform|fabric)\/(.+)\.js$/.exec(specifier);
-          const target = alias ? `${alias[1]}/src/${alias[2]}.ts`
-            : specifier.startsWith('.') ? normalize(join(dirname(file), specifier)).replace(/\.js$/, '.ts') : null;
-          if (target !== null) edits.push({ start: literal.getStart(tree), end: literal.getEnd(),
-            value: JSON.stringify(pathToFileURL(join(measured.has(target) ? fixture : packages, target)).href) });
-        }
-        ts.forEachChild(node, visit);
-      };
-      visit(tree);
-      for (const edit of edits.sort((a, b) => b.start - a.start)) text = text.slice(0, edit.start) + edit.value + text.slice(edit.end);
-      return text;
-    };
-    const mirror = (relative) => {
-      const destination = join(fixture, relative);
-      mkdirSync(destination, { recursive: true });
-      for (const entry of readdirSync(join(packages, relative), { withFileTypes: true })) {
-        const path = `${relative}/${entry.name}`;
-        const target = join(fixture, path);
-        if (entry.isDirectory() && [...measured].some((file) => file.startsWith(path + '/'))) mirror(path);
-        else if (measured.has(path)) writeFileSync(target, armSource(readFileSync(join(from, path), 'utf8'), path));
-        else symlinkSync(join(packages, path), target);
-      }
-    };
-    for (const name of ['worker', 'platform', 'core']) mirror(`${name}/src`);
-    const module = (path) => import(pathToFileURL(join(fixture, path)).href);
-    const [browser, poolModule, budget, diag, manager] = await Promise.all([
-      module('worker/src/npm/browser-prebundle.ts'), module('worker/src/facets/prebundle-pool.ts'),
-      module('platform/src/heavy-alloc-coord.ts'), module('platform/src/diag-counters.ts'), module('worker/src/facets/manager.ts'),
-    ]);
+    const tree = armTree(from, (dispose) => disposals.push(dispose));
+    const module = (path) => import(pathToFileURL(join(tree, path)).href);
+    const [browser, poolModule, budget, diag, manager, contracts, esbuildService, supervisor, ports, composition, host, facets, launches, named, bridge, assets] = await Promise.all([
+      'packages/worker/src/npm/browser-prebundle.ts', 'packages/worker/src/facets/prebundle-pool.ts',
+      'packages/platform/src/heavy-alloc-coord.ts', 'packages/platform/src/diag-counters.ts', 'packages/worker/src/facets/manager.ts',
+      'packages/core/src/runtime/os-contracts.ts', 'packages/core/src/runtime/esbuild-service.ts', 'packages/core/src/runtime/session-process-supervisor.ts',
+      'packages/core/src/runtime/port-registry.ts', 'packages/fabric/src/composition.ts', 'packages/worker/src/loaders/process-host.ts',
+      'tests/unit/lib/facet-host-harness.mjs', 'tests/unit/lib/facet-launch-harness.mjs', 'tests/unit/lib/named-facet-platform.mjs',
+      'tests/unit/lib/process-bridge.mjs', 'tests/unit/lib/staged-assets.mjs',
+    ].map(module));
+    composition.adoptCtxExports({ SupervisorRPC: ({ props }) => ({ props }) });
+    const { CRED_KERNEL } = contracts;
+    const { EsbuildService } = esbuildService;
+    const { SessionProcessSupervisor } = supervisor;
+    const { PortRegistry } = ports;
+    const { processHostFor } = host;
+    const { createFacetCtx, createFacetWorld } = facets;
+    const { launchSession } = launches;
+    const { namedFacetPlatform } = named;
+    const { processFiles } = bridge;
+    const { stagedAssets } = assets;
     const session = launchSession();
     const fs = session.vfs.as(CRED_KERNEL);
     const root = 'home/user/bench';
@@ -120,7 +87,8 @@ try {
     return arm;
   };
   const arms = {};
-  for (const label of shuffled(['A', 'null', 'real'])) arms[label] = await load(label === 'real' ? packages : baseline, label);
+  for (const label of shuffled(['A', 'null', 'real'])) arms[label] = await load(label === 'real' ? repository : baseline, label);
+  assertArmsInside();
   const measure = async (kind) => {
     const isBundle = kind.startsWith('prebundle');
     const iterations = isBundle ? bundleIterations : singleIterations;
@@ -164,4 +132,5 @@ try {
     assert.equal(arm.budget.readSupervisorAllocationBudget().current, 0);
     arm.stopObserver();
   }
-} finally { for (const fixture of fixtureRoots) rmSync(fixture, { recursive: true, force: true }); }
+  assertArmsInside();
+} finally { for (const dispose of disposals) dispose(); }

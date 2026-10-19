@@ -1,11 +1,9 @@
 #!/usr/bin/env bun
-// A resident's holder over a session double: independent measured modules,
-// a fresh session per sample, and CPU before its final settle.
+// A resident's holder over a session double: each arm its side's whole tree
+// (its holder, store and process files), a fresh session per sample, and CPU
+// before its final settle.
 import assert from 'node:assert/strict';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
-import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { createSqliteVfsTestHarness } from '../unit/lib/sqlite-vfs-test-harness.mjs';
 import { cpuMs } from './lib/paired-cpu.mjs';
 import { HOLDER_CPU_SOURCES } from './lib/cpu-sources.mjs';
 import { loadIsolatedCore } from './lib/isolated-core.mjs';
@@ -16,7 +14,12 @@ const TEN = new TextEncoder().encode('0123456789');
 const KB = new Uint8Array(1024);
 let checksum = 0;
 
-function session(factory) {
+function session({
+  'runtime/wasi/resident-filesystem.ts': { residentFilesystem: factory },
+  'runtime/process-files.ts': { ProcessFiles },
+  'vfs/sqlite-vfs.ts': { SqliteVFS },
+  'tests/unit/lib/sqlite-vfs-test-harness.mjs': { createSqliteVfsTestHarness },
+}) {
   const harness = createSqliteVfsTestHarness();
   const engine = new SqliteVFS(harness.sql, harness.ctx);
   const kernel = engine.as(CRED_KERNEL);
@@ -170,14 +173,14 @@ const WORK = {
 };
 
 await runPairedBenchmark({
-  source: HOLDER_CPU_SOURCES.source,
   async run({ short, cleanup, withArms, sample }) {
     await withArms((from) => loadIsolatedCore(from, cleanup, {
-      sources: HOLDER_CPU_SOURCES, modules: ['runtime/wasi/resident-filesystem.ts'],
+      sources: HOLDER_CPU_SOURCES, modules: ['runtime/wasi/resident-filesystem.ts', 'runtime/process-files.ts', 'vfs/sqlite-vfs.ts'],
+      helpers: ['tests/unit/lib/sqlite-vfs-test-harness.mjs'],
     }), async (arms) => {
       for (const [kind, work] of Object.entries(WORK)) {
-        await sample(kind, arms, async ({ 'runtime/wasi/resident-filesystem.ts': { residentFilesystem } }) => {
-          const s = session(residentFilesystem);
+        await sample(kind, arms, async (modules) => {
+          const s = session(modules);
           try {
             await held(s.fs);
             return await work(s.fs, short);

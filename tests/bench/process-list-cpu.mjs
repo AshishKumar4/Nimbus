@@ -56,7 +56,6 @@ async function cpu(arm, kind, iterations) {
 }
 
 await runPairedBenchmark({
-  source: CORE_CPU_SOURCES.source,
   async run({ short, cleanup, withArms, sample }) {
     const count = (kind) => kind === 'cold-first-list' ? (short ? 2 : 20) : kind === 'first-list' ? (short ? 4 : 80) : (short ? 64 : 2000);
     await withArms((from) => loadIsolatedCore(from, cleanup, {

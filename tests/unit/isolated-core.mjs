@@ -1,89 +1,122 @@
 #!/usr/bin/env bun
-// Measured files and directory trees belong to each arm, including names
-// present in only one revision. Everything else shares the candidate's copy.
+// Each arm of a paired bench runs its side's whole tree (tests/bench/lib/
+// isolated-core.mjs): every module of it, a workspace package's included, is
+// the arm's own copy (not the other side's, not another arm's, not the
+// harness's); third-party code is the harness's store, the same for every
+// arm; a side on another lockfile is refused; and a module that resolves
+// outside its arm's tree fails the bench, under Bun and under node, and in a
+// bundle of the arm.
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { loadIsolatedCore } from '../bench/lib/isolated-core.mjs';
+import { pathToFileURL } from 'node:url';
+import { armTree, assertArmsInside, importBundle, loadIsolatedCore } from '../bench/lib/isolated-core.mjs';
 
-const root = mkdtempSync(join(tmpdir(), 'isolated-core-'));
-const real = join(root, 'real');
-const base = join(root, 'base');
+const root = realpathSync(mkdtempSync(join(tmpdir(), 'isolated-core-')));
+const harness = join(root, 'harness');
+const base = join(harness, '.ci-base');
 const cleanups = [];
 const cleanup = (dispose) => cleanups.push(dispose);
-const put = (from, path, text) => {
-  const target = join(from, path);
-  mkdirSync(dirname(target), { recursive: true });
-  writeFileSync(target, text);
+const put = (path, text) => {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, text);
+};
+const link = (target, path) => {
+  mkdirSync(dirname(path), { recursive: true });
+  symlinkSync(target, path);
 };
 
+/** A repository's tree: workspace package `a`, and `b`, which imports it, a third-party `dep`, and a file of its own. */
+function side(at, version) {
+  put(join(at, 'bun.lock'), 'lockfile 1\n');
+  put(join(at, 'packages/a/package.json'), JSON.stringify({ name: '@x/a', exports: { './*.js': './src/*.mjs' } }));
+  put(join(at, 'packages/a/src/mod.mjs'), `export const version = '${version}'; export const token = {};`);
+  put(join(at, 'packages/b/package.json'), JSON.stringify({ name: '@x/b' }));
+  put(join(at, 'packages/b/src/helper.mjs'), `export const version = '${version}';`);
+  put(join(at, 'packages/b/src/main.mjs'), `
+    import * as a from '@x/a/mod.js';
+    import * as dep from 'dep';
+    import { version as helper } from './helper.mjs';
+    export const version = '${version}';
+    export const token = {};
+    export { a, dep, helper };
+  `);
+}
+
 try {
-  for (const [from, version, only] of [[real, 'real', 'provisional.mjs'], [base, 'base', 'own-names.mjs']]) {
-    put(from, 'support.mjs', `export const version = '${version}'; export const token = {};`);
-    put(from, '_shared/client.mjs', `
-      import { existsSync } from 'node:fs';
-      export const version = '${version}';
-      export const token = {};
-      export const added = existsSync(new URL('../added/only.mjs', import.meta.url));
-      export const removed = existsSync(new URL('../removed/only.mjs', import.meta.url));
-    `);
-    put(from, 'runtime/wasi/resident.mjs', `
-      import { readdirSync } from 'node:fs';
-      import * as client from '../../_shared/client.mjs';
-      import * as support from '../../support.mjs';
-      import { version } from './${only}';
-      export { client, support, version };
-      export const names = readdirSync(new URL('./', import.meta.url)).sort();
-    `);
-    put(from, `runtime/wasi/${only}`, `export const version = '${version}';`);
-    put(from, 'runtime/wasi/nested/child.mjs', `export const version = '${version}';`);
-    put(from, 'runtime/picked.mjs', `
-      import * as support from '../support.mjs';
-      export { support };
-      export const version = '${version}';
-      export const token = {};
-    `);
+  side(harness, 'real');
+  side(base, 'base');
+  // The harness's install: the store, and links as bun's isolated linker writes them (relative).
+  put(join(harness, 'node_modules/.bun/dep@1/node_modules/dep/package.json'), JSON.stringify({ name: 'dep', exports: './index.mjs' }));
+  put(join(harness, 'node_modules/.bun/dep@1/node_modules/dep/index.mjs'), 'export const token = {};');
+  link('.bun/dep@1/node_modules/dep', join(harness, 'node_modules/dep'));
+  link('../../../a', join(harness, 'packages/b/node_modules/@x/a'));
+  link('../../../node_modules/.bun/dep@1/node_modules/dep', join(harness, 'packages/b/node_modules/dep'));
+
+  const sources = { source: 'packages/b/src' };
+  const load = (from) => loadIsolatedCore(from, cleanup, { sources, modules: ['main.mjs'], harness });
+  const a = (await load(base))['main.mjs'];
+  const n = (await load(base))['main.mjs'];
+  const b = (await load(harness))['main.mjs'];
+  for (const [arm, version] of [[a, 'base'], [n, 'base'], [b, 'real']]) {
+    assert.equal(arm.version, version);
+    assert.equal(arm.helper, version, "a module's relative import is its side's");
+    assert.equal(arm.a.version, version, "a workspace package is its side's");
   }
-  put(real, 'added/only.mjs', 'export const present = true;');
-  put(base, 'removed/only.mjs', 'export const present = true;');
+  assert.notEqual(a.token, n.token, 'the two baseline arms are isolated');
+  assert.notEqual(a.a.token, n.a.token, "and so are their workspace packages");
+  assert.notEqual(a.token, b.token);
+  const own = await import(pathToFileURL(join(harness, 'packages/b/src/main.mjs')).href);
+  assert.notEqual(b.token, own.token, "the harness's own modules are not an arm's");
+  assert.equal(a.dep.token, b.dep.token, "third-party code is the harness's store, shared");
+  assert.equal(a.dep.token, n.dep.token);
 
-  const modules = ['runtime/wasi/resident.mjs', '_shared/client.mjs', 'runtime/wasi/nested/child.mjs'];
-  const sources = { source: real, directories: ['runtime/wasi', '_shared', 'added', 'removed'] };
-  const a = await loadIsolatedCore(base, cleanup, { sources, modules });
-  const n = await loadIsolatedCore(base, cleanup, { sources, modules });
-  const b = await loadIsolatedCore(real, cleanup, { sources, modules });
-  assert.deepEqual(Object.keys(a), modules);
-  for (const [arm, version, only] of [[a, 'base', 'own-names.mjs'], [n, 'base', 'own-names.mjs'], [b, 'real', 'provisional.mjs']]) {
-    const resident = arm[modules[0]];
-    assert.deepEqual(resident.names, ['nested', only, 'resident.mjs'].sort());
-    assert.equal(resident.version, version);
-    assert.equal(arm[modules[2]].version, version, 'directory selection is recursive');
-    assert.equal(resident.client, arm[modules[1]], 'imports resolve to the arm\'s measured modules');
-    assert.equal(resident.client.version, version);
-    assert.equal(resident.client.added, version === 'real');
-    assert.equal(resident.client.removed, version === 'base');
-    assert.equal(resident.support.version, 'real', 'unmeasured files come from the candidate');
-  }
-  assert.notEqual(a[modules[1]].token, n[modules[1]].token, 'the two baseline copies are isolated');
-  assert.notEqual(a[modules[1]].token, b[modules[1]].token);
-  assert.equal(a[modules[0]].support, b[modules[0]].support, 'unmeasured modules are shared');
+  // An arm's tree has no dot-directory of its side's (another side laid inside it).
+  const tree = armTree(harness, cleanup, { harness });
+  assert.equal(existsSync(join(tree, '.ci-base')), false);
+  assert.equal(existsSync(join(tree, 'packages/b/src/main.mjs')), true);
 
-  const listed = { sources: { source: real, files: ['runtime/picked.mjs'] }, modules: ['runtime/picked.mjs'] };
-  const fileA = (await loadIsolatedCore(base, cleanup, listed))['runtime/picked.mjs'];
-  const fileN = (await loadIsolatedCore(base, cleanup, listed))['runtime/picked.mjs'];
-  const fileB = (await loadIsolatedCore(real, cleanup, listed))['runtime/picked.mjs'];
-  assert.equal(fileA.version, 'base');
-  assert.equal(fileN.version, 'base');
-  assert.equal(fileB.version, 'real');
-  assert.notEqual(fileA.token, fileN.token);
-  assert.equal(fileA.support, fileB.support);
-  assert.equal(fileA.support.version, 'real');
+  // A side on another lockfile is refused: its third-party code would be the harness's.
+  const other = join(root, 'other');
+  side(other, 'other');
+  put(join(other, 'bun.lock'), 'lockfile 2\n');
+  assert.throws(() => armTree(other, cleanup, { harness }), /bun\.lock is not the harness's/);
 
-  const entire = await loadIsolatedCore(base, cleanup, { sources: { source: real }, modules });
-  assert.equal(entire[modules[0]].support.version, 'base', 'omitting selectors copies every source');
-  assert.equal(entire[modules[1]].added, false);
-  assert.equal(entire[modules[1]].removed, true);
+  // A module that resolves outside its arm's tree fails.
+  const leaky = join(root, 'leaky');
+  side(leaky, 'leaky');
+  put(join(leaky, 'packages/b/src/leak.mjs'), `export * from ${JSON.stringify(join(harness, 'packages/a/src/mod.mjs'))};`);
+  await assert.rejects(loadIsolatedCore(leaky, cleanup, { sources, modules: ['leak.mjs'], harness }),
+    /every module of an arm resolves inside its own tree/);
+  assertArmsInside();
+
+  // So does a bundle with an input outside it; one inside is imported.
+  const bundled = await importBundle(tree, { entryPoints: [join(tree, 'packages/b/src/main.mjs')], format: 'esm', platform: 'neutral' }, join(root, 'bundle.mjs'));
+  assert.equal(bundled.version, 'real');
+  const leakyTree = armTree(leaky, cleanup, { harness });
+  await assert.rejects(importBundle(leakyTree, { entryPoints: [join(leakyTree, 'packages/b/src/leak.mjs')], format: 'esm', platform: 'neutral' }, join(root, 'leak.mjs')),
+    /every input of a bundle/);
+
+  // Under node, its resolve hook guards an arm.
+  const script = (modules) => `
+    import { loadIsolatedCore } from ${JSON.stringify(pathToFileURL(join(import.meta.dirname, '../bench/lib/isolated-core.mjs')).href)};
+    const cleanups = [];
+    try {
+      const arm = await loadIsolatedCore(${JSON.stringify(leaky)}, (dispose) => cleanups.push(dispose), {
+        sources: ${JSON.stringify(sources)}, modules: ${JSON.stringify(modules)}, harness: ${JSON.stringify(harness)},
+      });
+      console.log(Object.values(arm)[0].version);
+    } finally { for (const dispose of cleanups) dispose(); }
+  `;
+  const node = (modules) => spawnSync('node', ['--input-type=module', '-e', script(modules)], { encoding: 'utf8' });
+  const fine = node(['main.mjs']);
+  assert.equal(fine.status, 0, fine.stderr);
+  assert.equal(fine.stdout.trim(), 'leaky');
+  const leaked = node(['leak.mjs']);
+  assert.notEqual(leaked.status, 0);
+  assert.match(leaked.stderr, /every module of an arm resolves inside its own tree/);
 } finally {
   for (const dispose of cleanups.reverse()) dispose();
   rmSync(root, { recursive: true, force: true });
