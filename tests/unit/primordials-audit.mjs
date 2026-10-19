@@ -63,6 +63,9 @@ const LIVE_AS_NODE = /\/\/ as Node's, live:/;
 const GUEST_LOADING = [
   ...['posix-path.ts', 'esm-resolver.ts', 'package-map.ts', 'node-error.ts', 'commonjs-resolver.ts', 'typescript-specifiers.ts']
     .map((file) => join(CORE, 'src/_shared', file)),
+  // The late graph's link and the wasm images a module names.
+  join(CORE, 'src/runtime/esm-late-link.ts'),
+  join(CORE, 'src/_shared/relative-wasm-paths.ts'),
   // The filesystem reads it makes: the resident namespace's walk.
   fileURLToPath(new URL('../../packages/worker/src/vfs/resident/namespace-lookup.ts', import.meta.url)),
 ];
