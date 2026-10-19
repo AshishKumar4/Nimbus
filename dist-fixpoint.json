@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "4f8e05774c35d0cc35698fd2292dd382c2d158c1df2bc45da817f2e597f31f91",
+  "fingerprint": "4f0cecfa9f3fa0d3086df83259d452e961b6ad98580b5417333a7b2427f40e6f",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -490,9 +490,9 @@
     "packages/core/dist/runtime/framework-detect.d.ts": "8557524a57836c34627d643f839005bcd15ea452f1fad52bc55f0d2e69209990",
     "packages/core/dist/runtime/framework-detect.d.ts.map": "8fdd1b460ea778e5fa2011ecc69391a24ef0b621f0519990fcb87b02e9d46623",
     "packages/core/dist/runtime/framework-detect.js": "b0bdad7cd40f1234aa8cf5c6db7afaebd7aec2c7f38d8a7d310f479050798170",
-    "packages/core/dist/runtime/fs-list-tree.d.ts": "52fcf6a906ae3b55e64dda94887a92db969b044fc4cff31ba3957254badec569",
-    "packages/core/dist/runtime/fs-list-tree.d.ts.map": "ad5d391f1d6173d2d8175fd247b778d42cae7aa353e6536d924478c80bfbeb6c",
-    "packages/core/dist/runtime/fs-list-tree.js": "c69334995d9a7d97da9d3cf4e24211ab06356c1976b2020100950cd8f2ad25f4",
+    "packages/core/dist/runtime/fs-list-tree.d.ts": "51cbcdfa6bed72c0e002c84652856ecfa3a09334b63645fa7736c29cf531ea29",
+    "packages/core/dist/runtime/fs-list-tree.d.ts.map": "d6bdd6bb7083fcf483bcd700a05d5c0919534c39ab3c83e7179bebcaca1fbaef",
+    "packages/core/dist/runtime/fs-list-tree.js": "77f28f33ce97b67a446deabf15b8f62ddfe9d8df231fb544895176e8fe8bc9ce",
     "packages/core/dist/runtime/git-facet-task.d.ts": "ca55bc567fc10c1990a6e7c9bd0157ce9df19f6d43ea9e89c4a907ffafd21f05",
     "packages/core/dist/runtime/git-facet-task.d.ts.map": "35b84eea57465f0a2a137c5b6880778807b8a483c8d0d26f708b2801720fcbea",
     "packages/core/dist/runtime/git-facet-task.js": "4bc32763ffe3a293435d65a0eaf0a2893bac5f0231a5110575e7081d0ee89aec",
@@ -1571,7 +1571,7 @@
     "packages/core/src/runtime/filesystem-mirrors.generated.ts": "e1ab1148e179d150a69eccac7fa235878f820008cb82ba8c1f150e9ecb80dd6a",
     "packages/core/src/runtime/filesystem-path.ts": "66dec7dc945d75e366430d36eab0b417f43559beaba144dc422c4cbc029a2c1e",
     "packages/core/src/runtime/framework-detect.ts": "9814a3a017015fe077f0a520683503e125db50a7e1e3b1cdb20c61b388817508",
-    "packages/core/src/runtime/fs-list-tree.ts": "5c2d7b68c2b97855811ee63c11e9a5a8bfe4a40c0a658ea6ead602d1115c09da",
+    "packages/core/src/runtime/fs-list-tree.ts": "f1d0c0e624e4af095e4a194b7dbeefecade27e9669a6b5c1685ef262e9602cda",
     "packages/core/src/runtime/git-facet-task.ts": "660152655713a065ca8a71ae48be4bc9969e463917a2b20ad18721aef2c989e7",
     "packages/core/src/runtime/git-fsmonitor.ts": "12335b27058d07d0ed8b3a226c0b6d9dd8f165009869bb81864bc2e3220d8b99",
     "packages/core/src/runtime/git-runner.ts": "de6294fa7bb2f28e1bc2722b468bbf6d5ab2dd6057ff9183f87d46f21accbda7",
