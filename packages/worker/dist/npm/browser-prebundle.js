@@ -209,8 +209,9 @@ function synthesizeEntry(ctx, fs, specifier, barrel) {
     }
     const entryPath = syntheticEntryPath(ctx.root, pkgName, synth.code);
     try {
-        // Named by its content: written by an earlier request for the same names, it is this entry already.
-        if (!ctx.vfs.exists(entryPath)) {
+        // Named by its content: one an earlier request wrote for the same names is
+        // this entry, unless something since replaced its bytes.
+        if (!ctx.vfs.exists(entryPath) || ctx.vfs.readFileString(entryPath) !== synth.code) {
             ctx.vfs.mkdir(entryPath.substring(0, entryPath.lastIndexOf('/')), { recursive: true });
             ctx.vfs.writeFile(entryPath, synth.code);
         }

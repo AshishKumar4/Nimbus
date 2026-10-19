@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "23bed021dc519bf9c0b589873a76eb249e8849381a5d336a88d678604582ef28",
+  "fingerprint": "a2f377f10d0d5b7e8ad83f83dba335391d2d8e722f89a8546910830d949d505c",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2600,8 +2600,8 @@
     "packages/worker/dist/npm/bin-links.d.ts.map": "0c44f9c0566e53727be93cac5979ef56323381f88966e2202e933033f292f56f",
     "packages/worker/dist/npm/bin-links.js": "d0a44fcfec26734ccbea6ab6555cd1034984134b4758189ce255e617ecf1dbf6",
     "packages/worker/dist/npm/browser-prebundle.d.ts": "ddf1de874328f387f221f862c0f6fdd18a2f7700ae25950796d367e84d84453c",
-    "packages/worker/dist/npm/browser-prebundle.d.ts.map": "4d703ee107b79265cc577f060a4095a0a87cfeefb726587a11b44b7356fa5985",
-    "packages/worker/dist/npm/browser-prebundle.js": "ec94666369d1ac61f7c11d539c57cbdf0d54fbe3e7425bdc44fc324beeef9bfa",
+    "packages/worker/dist/npm/browser-prebundle.d.ts.map": "c36a4dbe3833675d6f8728dac6dac07337c6ed9a2f6037ff68981cf49832b447",
+    "packages/worker/dist/npm/browser-prebundle.js": "0bb957e9a18ddf5338992958c883c4fa34d506b2c30860893cf487bc4e17a6f7",
     "packages/worker/dist/npm/cache-keys.d.ts": "7ad73b4b8d1da073742200a14c915bc43fe5104920c0a03dd49e8b158a314d4c",
     "packages/worker/dist/npm/cache-keys.d.ts.map": "6e10a54d97d39b733d351d12fb0be07af70d836c4498f7fbc6d8edfdce4dc80d",
     "packages/worker/dist/npm/cache-keys.js": "cc6d00023d9eb2e47a30e86d1118ac549f3504f10f1d98449e46c91fe8278bee",
@@ -3312,7 +3312,7 @@
     "packages/worker/src/napi-wasm-artifacts.generated.ts": "13275e8d0c3fc0885034e89e9712608029e663cad2729c53c2b5cbfb798bc37a",
     "packages/worker/src/node-shims-artifact.generated.ts": "2f520b21d00fd5d6e04b1b10498ec98a111c2d8a39a43f2eef781ab7b3d66ddb",
     "packages/worker/src/npm/bin-links.ts": "e86e6c19df0a997d71464931f2fdb9ce28592f7c37d8f254e4c0bbfb4a9d013e",
-    "packages/worker/src/npm/browser-prebundle.ts": "0aea0dd378505b3a5221b4e2a3ba75b7750d8b17ce19de3520985acc1451736e",
+    "packages/worker/src/npm/browser-prebundle.ts": "eb049b7d1459da5f2aff0e99423abbc267c553e879f4ce4fd0a29709488ba974",
     "packages/worker/src/npm/cache-keys.ts": "b3e8fc3ac7a98d381f3ec8efb072f54087b699e9f0a29b685a72e3871a1a6130",
     "packages/worker/src/npm/cache.ts": "1289f13a9f6ddaf593e906c8445bb436d884d1c88b5c2030f22304975cfff4c9",
     "packages/worker/src/npm/install-batch-facet.ts": "b8a0a4fe7d4415942c891228e0760345d4c0804b5fb89537da10fb9538d6b3b0",
