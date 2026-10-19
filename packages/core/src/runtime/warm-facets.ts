@@ -17,15 +17,29 @@ export interface WarmFacetKey {
   readonly name: string;
 }
 
+/**
+ * How a call on a warm facet ended, as its next process cares: the facet's
+ * own word that another process may run there (`reusable`, its WASI host's
+ * __wasiReusable and the runtime's own rules), the call's error, and
+ * whether its process was killed (the loader may still be running it).
+ */
+export interface WarmCallEnd {
+  readonly reusable?: boolean;
+  readonly error?: string;
+  readonly killed: boolean;
+}
+
 /** A runtime's warm facet keys in one session. */
 export interface WarmFacetKeys {
   /** An idle key, or a new one: the caller runs one process on it. */
   take(): WarmFacetKey;
   /**
-   * `key` back among the idle ones, after a call on it that ended clean.
-   * A key not given back is never used again, nor one past `kept` idle.
+   * `key` back among the idle ones when every call made on it (`ends`)
+   * left it fit for another process: the facet said so, the call ended
+   * without error, and its process was not killed. A key not given back is
+   * never used again, nor one past `kept` idle.
    */
-  give(key: WarmFacetKey): void;
+  give(key: WarmFacetKey, ...ends: readonly WarmCallEnd[]): void;
 }
 
 /**
@@ -40,8 +54,9 @@ export function warmFacetKeys(session: string, runtime: string, kept: number): W
   let named = 0;
   return {
     take: () => idle.pop() ?? { session, name: `${runtime}-${incarnation}-${++named}` },
-    give(key) {
+    give(key, ...ends) {
       if (key.session !== session) throw new Error(`warm ${runtime} facets: a key of another session was given back`);
+      if (!ends.every((end) => end.reusable === true && end.error === undefined && !end.killed)) return;
       if (idle.length < kept && !idle.includes(key)) idle.push(key);
     },
   };

@@ -43,7 +43,7 @@ import { statOrThrow } from '../vfs/vfs.js';
 import { openRuntimeStdio } from './runtime-stdio.js';
 import type { SessionProcessSupervisor } from './session-process-supervisor.js';
 import { errorText } from '../_shared/error-text.js';
-import { warmFacetKeys, type WarmFacetKey } from './warm-facets.js';
+import { warmFacetKeys, type WarmCallEnd, type WarmFacetKey } from './warm-facets.js';
 
 const CLANG_VERSION_FLAGS = new Set(['--version', '-v']);
 
@@ -177,7 +177,7 @@ export function makeClangRunnerFactory(deps: {
       // tool, which keeps the compiled image: the supervisor capability is the
       // call's, never the worker's (FacetSpec.warm), and each call
       // instantiates the tool afresh. A target's key goes back when every call
-      // on it ended clean and was not killed (dispatchClangFacet).
+      // on it left the worker fit for another (warm-facets.ts give).
       // A phase's target, opened when the phase first runs; null, said, when
       // its image cannot be opened. clang is opened only to compile and
       // wasm-ld only to link: a compile-only run, or one whose compile fails,
@@ -207,7 +207,7 @@ export function makeClangRunnerFactory(deps: {
             warm,
           }),
           warm,
-          reusable: true,
+          ends: [],
         };
         opened.push(target);
         return target;
@@ -353,7 +353,7 @@ export function makeClangRunnerFactory(deps: {
         return 0;
       } finally {
         for (const target of opened) {
-          if (target.reusable) warmKeys[target.primaryName].give(target.warm);
+          warmKeys[target.primaryName].give(target.warm, ...target.ends);
           target.facet.dispose();
         }
         if (scratchVfs) await vfs.remove(scratchVfs, { recursive: true, force: true });
@@ -586,10 +586,10 @@ interface ClangFacetTarget {
   primaryName: 'clang' | 'wasm-ld';
   pid: number;
   facet: ClangFacet;
-  /** Its worker's key, given back when {@link reusable}. */
+  /** Its worker's key, given back when every call on it left the worker fit for another. */
   warm: WarmFacetKey;
-  /** Every call on it so far ended clean, was not killed, and left the worker fit for another process. */
-  reusable: boolean;
+  /** How each call on it ended. */
+  ends: WarmCallEnd[];
 }
 
 /** A load made once, by the first call that wants it; one that failed is made again by the next. */
@@ -619,7 +619,7 @@ async function dispatchClangFacet(
       // Ctrl-C ends the facet too, where the host can.
       signal,
     });
-    target.reusable &&= result.reusable === true && result.error === undefined && !signal.aborted;
+    target.ends.push({ reusable: result.reusable, error: result.error, killed: signal.aborted });
     return {
       exitCode: result.exitCode,
       stdout: result.stdout || '',
@@ -628,7 +628,7 @@ async function dispatchClangFacet(
       fsStats: result.fsStats ?? null,
     };
   } catch (e: unknown) {
-    target.reusable = false;
+    target.ends.push({ reusable: false, killed: signal.aborted });
     // Killed: the tool ends as an interrupted one does.
     if (signal.aborted) return { exitCode: 130, stdout: '', stderr: '' };
     return {

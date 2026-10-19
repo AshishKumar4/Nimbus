@@ -453,8 +453,8 @@ export function makeCPythonRunnerFactory(deps: {
       let facet: import('./facet-host.js').Facet | null = null;
       // A warm worker of the session's keeps the compiled interpreter; each
       // process instantiates a fresh one in it (cpython-preamble.ts). Its key
-      // goes back only when the process ended clean, was not killed, and
-      // neither abandoned a syscall nor reached the network there.
+      // goes back when the process left the worker fit for another
+      // (warm-facets.ts give).
       const keys = wantsSci ? warmKeys.sci : warmKeys.plain;
       const warm = keys.take();
       try {
@@ -481,7 +481,7 @@ export function makeCPythonRunnerFactory(deps: {
         const result = await facet.submit(CPYTHON_RUN_TASK, facetArgs, {
           signal: stdio.signal,
         });
-        if (result.reusable === true && result.error === undefined && !stdio.signal.aborted) keys.give(warm);
+        keys.give(warm, { reusable: result.reusable, error: result.error, killed: stdio.signal.aborted });
         exitCode = result.error ? result.exitCode || 1 : result.exitCode;
         if (result.error) await ctx.stderr.write(`${binName}: ${result.error}\n`);
         return exitCode;
