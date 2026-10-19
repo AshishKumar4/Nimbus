@@ -314,7 +314,12 @@ export interface Provisional {
     symlink(key: string, path: string, target: string, row: ResidentEntry | null | undefined): boolean;
     rename(from: string, to: string, path: string, source: ResidentEntry | null | undefined, target: ResidentEntry | null | undefined): boolean;
     setattr(key: string, path: string, attrs: W7Attrs, row: ResidentEntry | null | undefined): boolean;
-    copyFile(to: string, path: string, source: ResidentEntry, bytes: Uint8Array | undefined, target: ResidentEntry | null, keepMode: boolean): boolean;
+    /**
+     * Copy the file `source` names at `from` to `to`, its bytes read only as
+     * these decisions read any (bytesOf for a file they hold, else the store's
+     * at `from`): where those are not here, false (the caller waits).
+     */
+    copyFile(from: string, to: string, path: string, source: ResidentEntry, target: ResidentEntry | null, keepMode: boolean): boolean;
     /** The bytes of the file `entry` names, where this process's are its content. */
     content(entry: ResidentEntry): Uint8Array | undefined;
     barrierBegun(): number;

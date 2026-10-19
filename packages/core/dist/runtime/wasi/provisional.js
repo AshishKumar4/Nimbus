@@ -1570,15 +1570,18 @@ export function provisional(host) {
             fit(inode);
             return true;
         },
-        copyFile: (to, path, source, bytes, target, keepMode) => {
+        copyFile: (from, to, path, source, target, keepMode) => {
             // The source as the session's copy reads it: a file it may read, no set-id bit (the session's to judge).
             if (source.type !== 'file' || (source.mode & 0o7000) !== 0 || !modeAllows(source, 4, host.cred))
                 return false;
             if (target !== null && target.type !== 'file')
                 return false;
+            // Read as any read here is: a file these decisions hold through them (bytesOf), any other as the store has it.
+            // Not copied here: openToWrite takes the one snapshot.
             const own = inodeAtNumber(source.dev, source.ino);
             const held = own === undefined ? undefined : bytesOf(own, 'copyfile', path);
-            const data = held !== undefined ? owned(held.bytes, held.size) : bytes;
+            const stored = own === undefined ? host.content(from, source.revision) : undefined;
+            const data = held !== undefined ? held.bytes.subarray(0, held.size) : stored !== undefined && stored.byteLength === source.size ? stored : undefined;
             if (data === undefined)
                 return false;
             const umask = host.umask();

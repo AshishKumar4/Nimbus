@@ -1473,11 +1473,6 @@ export function residentFilesystem(session, resident, delegation) {
         const entry = entryAt(key);
         return entry ? store.content(key, entry.revision) : undefined;
     };
-    /** The bytes this view holds of file `key` (at `entry`), as it stands. */
-    const residentContent = (key, entry) => {
-        const bytes = store.content(key, entry.revision);
-        return bytes !== undefined && bytes.byteLength === entry.size ? bytes : undefined;
-    };
     // A copy both of whose names a held subtree holds, its source's bytes the
     // holder's or ones the view vouches for: decided here; any other, and one
     // that preserves (cp -p's metadata, the session's to judge), the session's.
@@ -1496,7 +1491,7 @@ export function residentFilesystem(session, resident, delegation) {
             : now ? void provisionally(from, true, (source, row) => {
                 if (row === null)
                     throw fsError('ENOENT', 'copyfile', pathOf(from));
-                return provisionally(to, true, (target, there) => holder.provisional.copyFile(target, pathOf(to), row, residentContent(source, row), there, options?.keepMode === true));
+                return provisionally(to, true, (target, there) => holder.provisional.copyFile(source, target, pathOf(to), row, there, options?.keepMode === true));
             })
                 : bySessionCopy(from, to, options)));
     };
