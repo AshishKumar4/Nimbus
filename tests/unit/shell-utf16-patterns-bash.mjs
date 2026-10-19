@@ -5,13 +5,15 @@
 // by 😀 and never splits 😁, whose first unit is 😀's. Each line runs as a
 // session's line and as host bash's `bash -c` under C.UTF-8, in a directory
 // holding `ab` and `a😀`. Host bash is the oracle (stdout, status, stderr
-// without bash's line prefix).
+// without bash's line prefix, each as lossless text: a byte cut from a
+// character kept as the byte it is).
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
+import { decodeLossless } from '../../packages/core/src/substrate/lifo/utils/lossless-text.ts';
 import { hostSqlite } from './lib/host-sqlite.mjs';
 
 const CASES = [
@@ -40,9 +42,10 @@ for (const line of CASES) {
   const dir = mkdtempSync(join(tmpdir(), 'shell-utf16-'));
   try {
     for (const file of FILES) writeFileSync(join(dir, file), '');
-    const r = spawnSync('bash', ['--norc', '--noprofile', '-c', line], { cwd: dir, encoding: 'utf8', timeout: 10_000, env: { PATH: process.env.PATH, LC_ALL: 'C.UTF-8' } });
+    // Its bytes as the session keeps them: a byte that is no character as U+DC80 + byte (lossless text).
+    const r = spawnSync('bash', ['--norc', '--noprofile', '-c', line], { cwd: dir, timeout: 10_000, env: { PATH: process.env.PATH, LC_ALL: 'C.UTF-8' } });
     assert.equal(r.error, undefined, `bash ran ${JSON.stringify(line)}: ${r.error?.message}`);
-    want.push({ stdout: r.stdout, stderr: plainStderr(r.stderr), status: r.status });
+    want.push({ stdout: decodeLossless(r.stdout), stderr: plainStderr(decodeLossless(r.stderr)), status: r.status });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
