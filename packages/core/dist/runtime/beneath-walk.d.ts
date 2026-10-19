@@ -21,6 +21,27 @@ export type BeneathLookup = {
 } | {
     readonly readlink: string;
 };
+/**
+ * What a walk reached: `reached`, the name it resolved to (normalized,
+ * relative to the namespace's root), and `spelling`, the name to hand the
+ * namespace for it (absolute). Where the walk handed names to a backend that
+ * resolves its own paths, with no link it followed after, the spelling is
+ * the name reached up to there, then the rest as written, so that backend
+ * walks it (CompositeVFS's Resolution.operand); else it is the reached name.
+ */
+export interface BeneathReached {
+    readonly reached: string;
+    readonly spelling: string;
+}
+/**
+ * Where a walk began handing names over (`base`, absolute, and the rest as
+ * written from there), as BeneathReached.spelling; `trailing`: the name the
+ * walk was given ends in a separator.
+ */
+export declare function handedSpelling(handoff: {
+    base: string;
+    rest: readonly string[];
+} | null, reached: string, trailing: boolean): string;
 type BeneathAnswer = {
     type: string;
     mode?: number;
@@ -45,11 +66,12 @@ type BeneathAnswer = {
  * included, and that backend answers for them. The one walk for every face: it yields
  * its lookups, which the synchronous bridge answers at once and a face over
  * asynchronous mounts awaits. `root` is normalized; the answer is the
- * resolved path, normalized.
+ * resolved path, normalized, and the spelling to hand the namespace
+ * (BeneathReached).
  */
 export declare function walkBeneath(root: string, path: RuntimeFsPath, follow: boolean, cred: {
     uid: number;
     gid: number;
     groups: readonly number[];
-}, handedOver: (path: string, to: string) => boolean): Generator<BeneathLookup, string | null, BeneathAnswer>;
+}, handedOver: (path: string, to: string) => boolean): Generator<BeneathLookup, BeneathReached | null, BeneathAnswer>;
 //# sourceMappingURL=beneath-walk.d.ts.map

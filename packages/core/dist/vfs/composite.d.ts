@@ -629,8 +629,8 @@ export declare class CompositeVFS implements VFS {
      * it is on, that backend as this principal sees it, and the path the
      * backend is handed, so an embedder can call a backend's own extras. The
      * lookup is every operation's: root links on the way are followed (the
-     * last only with `follow`), and `..` inside a mount whose backend resolves
-     * its own paths is lexical. A mount absent for this principal (any mount
+     * last only with `follow`), and a mount whose backend resolves its own
+     * paths is handed the rest as written (Resolution.operand). A mount absent for this principal (any mount
      * on the path, rule 1) answers a null source, with its absentReason.
      * Rejects as the operation's lookup would: ENOENT, ENOTDIR, EACCES, ELOOP.
      * `creating`: the lookup of a write that makes its parents (writeFile's
@@ -747,7 +747,9 @@ export declare class CompositeVFS implements VFS {
     /**
      * `input` with every link the namespace follows resolved. Inside a mount
      * whose backend resolves its own paths the links are the backend's: the
-     * rest is spelled as given (normalized), and the one stat that proves it
+     * rest is its spelling (Resolution.spelling: past a `..` the backend walks,
+     * as handed to it, so it reads back the same entry; the backend's own
+     * canonical name may be hidden by a mount), and the one stat that proves it
      * is there follows them.
      */
     private realpathAt;
@@ -790,8 +792,6 @@ export declare class CompositeVFS implements VFS {
     get principal(): Principal;
     get sync(): CompositeSyncVFS;
     private resynthesize;
-    /** locate(path), its rel the rest as written where the lookup handed it to a mount that resolves its own paths (LookupTrace.verbatim). */
-    private located;
     /** The mount `path` (resolved, normalized) is on: the longest point at or above it. */
     private locate;
     private backend;
@@ -841,6 +841,22 @@ export declare class CompositeVFS implements VFS {
     /** `creating`: absent non-final components are allowed (mkdir -p makes them); a file among them is still ENOTDIR. */
     private resolve;
     /**
+     * What `holder`, a mount that resolves its own paths, is handed of
+     * `components` from `from` (the rest past its point): the rest as written,
+     * but for what the namespace owns on the way. A lexical cursor walks the
+     * rest; a raw cut marks where the handed text starts. `.`, `''` and a `..`
+     * from a name the backend owns move the cursor only (the backend walks
+     * them: `/m/missing/../f` is handed `/missing/../f`). A name the namespace
+     * owns (a nested mount point, a directory above one), and a `..` from one,
+     * move the cut past them, the position there rebased (`/m/n/../f`, n a
+     * mount, is handed `/f`). None when a `..` climbs past the point (the path
+     * is the namespace's, lexically), or the rest lands on the point, on a name
+     * the namespace owns, or in another mount.
+     */
+    private forwardedTail;
+    /** The route a backend call on `r` takes: its operand, past the point of a mount that resolves its own paths. */
+    private routeOf;
+    /**
      * The directory a backend holds at a path above a mount point, or null
      * when it holds none there (then the namespace makes one: EPOCH_STAT).
      * Held means literally: under a directory the backend holds, never through
@@ -874,10 +890,17 @@ export declare class CompositeVFS implements VFS {
     /**
      * An entry's identity in the namespace: st_dev is its mount's (the root
      * keeps its backend's), and a backend that numbers no inodes gets numbers
-     * here, per path, stable while it stays mounted.
+     * here, per path (`identity`: identityOf), stable while it stays mounted.
      */
     private identify;
-    /** `identify`, on the mount `path` was found on (a pin's, which may since have left its point). */
+    /**
+     * What `r`'s synthetic inode number is kept under: its namespace path, or,
+     * where its operand has a `..` (the backend walks it physically, so it may
+     * reach another file than the lexical name), the operand as handed. Two
+     * files never share a number; one reached by two such spellings may get two.
+     */
+    private identityOf;
+    /** `identify`, on the mount `identity` was found on (a pin's, which may since have left its point). */
     private identifyOn;
     private statAt;
     /**
@@ -886,6 +909,8 @@ export declare class CompositeVFS implements VFS {
      * gets a synthesized directory; one with no modes has the namespace's.
      */
     private mountPointStat;
+    /** statAt of what a lookup already found: its stat, its identity stamped. */
+    private statOf;
     /** The stat of a resolved namespace path, before its identity is stamped. */
     private statResolved;
     /** stat, with ENOENT/ENOTDIR from the backend read as "not there". */
@@ -894,7 +919,7 @@ export declare class CompositeVFS implements VFS {
     /** Mount points (and directories above live ones) directly in `dir` that this view reaches. */
     private liveNamesIn;
     private readdirAt;
-    /** readdir of a path already resolved in this namespace. */
+    /** readdir of a path already resolved in this namespace (`resolution`: that lookup, its operand the backend's). */
     private readdirOf;
     private emptyIfMissing;
     private onFile;
@@ -917,7 +942,9 @@ export declare class CompositeVFS implements VFS {
     /**
      * mkdir -p of a resolved namespace path, across mounts: each missing
      * component in the filesystem it lives on, each checked by the mutation
-     * guard right before it is made.
+     * guard right before it is made. `handed`: the path's operand on a mount
+     * that resolves its own paths (Resolution.operand), which that backend
+     * makes in one call, from the point on, whatever it spells.
      */
     private makeTree;
     private renameAt;
@@ -1001,7 +1028,8 @@ export declare class CompositeVFS implements VFS {
      * readdirStat of a directory already resolved in this namespace: the
      * directory is looked up once, and each entry's stat (when its listing
      * does not carry one) is one call to the backend that holds it, a few at
-     * a time.
+     * a time. `resolution`: the directory's lookup, whose operand its entries'
+     * extend (childOf).
      */
     private statEntries;
     mkdir(path: string, options?: {

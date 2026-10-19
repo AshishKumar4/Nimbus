@@ -287,7 +287,7 @@ export function residentFilesystem(session, resident, delegation) {
             crossed.length = 0;
         for (let step = walk.next();;) {
             if (step.done)
-                return step.value;
+                return step.value === null ? null : step.value.reached;
             const lookup = step.value;
             if ('readlink' in lookup) {
                 const entry = store.entry(keyOf(lookup.readlink));

@@ -176,6 +176,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     /** No process: its writes wait for their publication, so none is held. */
     published(): void;
     private pathArgument;
+    /** The walk component by component: the name reached and its spelling for the namespace (walkBeneath's BeneathReached). */
     private resolveDataPath;
     /**
      * A mounted (or composed) entry's link target, or null when it is not a
