@@ -8,7 +8,8 @@
 // and each group's ("" for one that took no part; empty on no match). Before,
 // lifo had no `=~` ("test: too many arguments"). Each line runs as a session's
 // line and as host bash's `bash -c` under C.UTF-8. Host bash is the oracle
-// (stdout, status, stderr without bash's line prefix).
+// (stdout, status, stderr without bash's line prefix; a syntax error's
+// stdout and status alone).
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -47,19 +48,25 @@ const CASES = [
   "[[ ab =~ (\\\na)b ]]; echo $?; [[ xyz =~ (y|yz)z? ]] && echo \"${BASH_REMATCH[0]}\"; [[ aa =~ a+? ]] && echo \"${BASH_REMATCH[0]}\"",
   "for r in '((a)\\2)' '((a)\\1)' '(a)(b\\2)' '(a(b)\\2)' '(a)|\\1' '(a)(b|\\1)' '(a|b)\\1' '((a)|b)\\2' '\\b*' '$*' '\\<*' '\\`*' '(^)*' 'a|*'; do [[ aab =~ $r ]]; echo \"$r $? ${BASH_REMATCH[0]-unset}\"; done",
   "for r in '[A-[.Z.]]' '[[.A.]-Z]' '[[.ab.]]' '[[=a=]-z]' '[a-[=c=]]' '[[.é.]]' '[[=é=]]' '[é-ë]' '[a-é]' '[é-]' '[[.-.]-z]' '[a-[.-.]]' '[[.].]]' '[[=a=]]' '[a-c-e]' '[%--]'; do [[ 'B-é]a' =~ $r ]]; echo \"$r $? ${BASH_REMATCH[0]-unset}\"; done",
-  "eval '[[ \"]]\" =~ ]] ]]' 2>/dev/null; echo $?; eval '[[ x =~ ]]' 2>/dev/null; echo $?; [[ \"]]a\" =~ ]]a ]]; echo $?; [[ \"]]\" =~ \"]]\" ]]; echo $?",
+  "[[ \"]]a\" =~ ]]a ]]; echo $?; [[ \"]]\" =~ \"]]\" ]]; echo $?",
+  // A syntax error ends bash's -c text: its stdout and status alone, bash's message quoting the line.
+  { line: "[[ \"]]\" =~ ]] ]]; echo $?", compare: "out" },
+  { line: "[[ x =~ ]]", compare: "out" },
 ];
 
 /** bash's diagnostic prefix: `bash: line 1: `, `bash: -c: line 1: `. */
 const plainStderr = (text) => text.replace(/^bash: (?:-c: )?(?:line \d+: )?/gm, '');
 
+const LINES = CASES.map((c) => (typeof c === 'string' ? { line: c, compare: 'all' } : c));
+const compared = (result, compare) => (compare === 'out' ? { stdout: result.stdout, status: result.status } : result);
+
 const want = [];
-for (const line of CASES) {
+for (const { line, compare } of LINES) {
   const dir = mkdtempSync(join(tmpdir(), 'shell-regex-'));
   try {
     const r = spawnSync('bash', ['--norc', '--noprofile', '-c', line], { cwd: dir, encoding: 'utf8', timeout: 10_000, env: { PATH: process.env.PATH, LC_ALL: 'C.UTF-8' } });
     assert.equal(r.error, undefined, `bash ran ${JSON.stringify(line)}: ${r.error?.message}`);
-    want.push({ stdout: r.stdout, stderr: plainStderr(r.stderr), status: r.status });
+    want.push(compared({ stdout: r.stdout, stderr: plainStderr(r.stderr), status: r.status }, compare));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -69,13 +76,13 @@ const { sql, transactions } = await hostSqlite();
 const ws = await NimbusWorkspace.create({ sql, transactions, generation: 1 });
 const failed = [];
 try {
-  for (const [i, line] of CASES.entries()) {
+  for (const [i, { line, compare }] of LINES.entries()) {
     const r = await ws.exec(line, { cwd: '/home/user' });
-    const ours = { stdout: r.stdout, stderr: r.stderr, status: r.exitCode };
+    const ours = compared({ stdout: r.stdout, stderr: r.stderr, status: r.exitCode }, compare);
     if (JSON.stringify(ours) !== JSON.stringify(want[i])) failed.push(`${JSON.stringify(line)}\n  bash: ${JSON.stringify(want[i])}\n  ours: ${JSON.stringify(ours)}`);
   }
 } finally {
   await ws.close();
 }
-console.log(`shell-regex-match-bash: ${CASES.length - failed.length} of ${CASES.length} lines as bash's`);
+console.log(`shell-regex-match-bash: ${LINES.length - failed.length} of ${LINES.length} lines as bash's`);
 assert.deepEqual(failed, [], `as bash:\n${failed.join('\n')}`);
