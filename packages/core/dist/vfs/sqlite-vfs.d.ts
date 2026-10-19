@@ -492,6 +492,9 @@ export declare class SqliteVFS {
     /** Runs whose changes are kept undoable (captureRun), by pid, and the rows they found, held. */
     private readonly runCaptures;
     private readonly capturedRefs;
+    /** The chunks and contents capturedRefs hold, counted: a write asks these, not every captured row (chunkUnshared). */
+    private readonly capturedChunks;
+    private readonly capturedContents;
     /** The process whose wave is committing (waveScope): its run, if one is captured, keeps what it changes. */
     private activeWriterPid;
     /**
@@ -1955,6 +1958,12 @@ export declare class SqliteVFS {
     private capturedBefores;
     /** Once its transaction committed at `gen`: `capture` keeps the rows it found first, held, and each key as the transaction left it. */
     private captureCommitted;
+    /** A rolled-back transaction's change to a capture, undone. */
+    private undoCapture;
+    /** Hold `before`'s content for a captured run, as a description holds what it opened. */
+    private holdCaptured;
+    /** Let go of `before`'s content: collectable once nothing else holds it. */
+    private releaseCaptured;
     /** `capture` can no longer be put back, for `why`: it keeps nothing more, and lets go of what it held. */
     private unrestorable;
     /** Let go of what `capture` held: collectable now, as a closed description's is. */
@@ -2426,6 +2435,8 @@ export declare class SqliteVFS {
      * observers have not let go of, and the rows captured runs found.
      */
     private pinningNodes;
+    /** The open descriptions and the write events observers hold: what pins content but a captured run's rows. */
+    private describedNodes;
     private transactionSync;
     /**
      * Commit one plan as one transaction and one generation.
