@@ -5,6 +5,10 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- CI: a paired CPU bench's arms each run their side's whole tree, every
+  module resolved inside it, and a bench fails if an arm resolves one outside.
+  Before, only a hand-kept list of modules was the baseline's, and the rest
+  were the head's for both arms.
 - Fixed: a Node program's `fs.statfs` reports the storage limit a session
   enforces (10,000,000,000 bytes, `DO_STORAGE_LIMIT_BYTES`) as its capacity.
   Before, it reported 10 GiB, 737,418,240 bytes more than a session can
