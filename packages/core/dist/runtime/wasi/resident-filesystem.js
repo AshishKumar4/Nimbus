@@ -1299,31 +1299,39 @@ export function residentFilesystem(session, resident, delegation) {
     const byClient = (name, op) => {
         if (now)
             throw NOT_NOW;
-        // What the names of the files it moves grow by, admitted before anything is done.
+        // What the names of the files it moves grow by, admitted before anything is done: pending until the session
+        // answers, and given back unless it made it.
         const files = op.type === 'rename' ? holder.provisional.planMove(op.from, op.to, '/' + op.from) : undefined;
-        delegated(name);
-        // A name it changes: the files the process holds open at or under it write through first.
-        if (op.type === 'rename')
-            holder.changing([op.from, op.to]);
-        else if (op.type === 'call' && (op.call.call === 'unlink' || op.call.call === 'rmdir'))
-            holder.changing([op.call.path]);
-        return holder.client.submit(op).then(() => {
-            // The session's answer supersedes the held names it changed, even
-            // while their grant remains held. Its rename moves the one registry's
-            // inodes too, as a rename decided under the grant does.
-            if (op.type === 'rename') {
-                holder.superseded(op.from);
-                holder.superseded(op.to);
-                files?.move();
+        return (async () => {
+            try {
+                delegated(name);
+                // A name it changes: the files the process holds open at or under it write through first.
+                if (op.type === 'rename')
+                    holder.changing([op.from, op.to]);
+                else if (op.type === 'call' && (op.call.call === 'unlink' || op.call.call === 'rmdir'))
+                    holder.changing([op.call.path]);
+                const answered = holder.client.submit(op);
+                try {
+                    await answered;
+                }
+                finally {
+                    owed++;
+                }
+                // The session's answer supersedes the held names it changed, even
+                // while their grant remains held. Its rename moves the one registry's
+                // inodes too, as a rename decided under the grant does.
+                if (op.type === 'rename') {
+                    holder.superseded(op.from);
+                    holder.superseded(op.to);
+                    files?.commit();
+                }
+                else if (op.type === 'call' && (op.call.call === 'unlink' || op.call.call === 'rmdir'))
+                    holder.superseded(op.call.path);
             }
-            else if (op.type === 'call' && (op.call.call === 'unlink' || op.call.call === 'rmdir'))
-                holder.superseded(op.call.path);
-            owed++;
-        }, (error) => {
-            files?.cancel();
-            owed++;
-            throw error;
-        });
+            finally {
+                files?.cancel();
+            }
+        })();
     };
     const pathOf = (path) => (typeof path === 'string' ? path : path.path);
     // Changes by name a held subtree holds are decided here; any other is the session's, through the client.

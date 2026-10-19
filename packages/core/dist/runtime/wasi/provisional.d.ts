@@ -82,6 +82,11 @@ export interface ProvisionalHost {
      */
     absorb(key: string, file: ResidentEntry): ResidentEntry | undefined;
 }
+/** A rename planned (Provisional.planMove): settled once, made (`commit`) or not (`cancel`); whichever comes second does nothing. */
+export interface MovePlan {
+    commit(): void;
+    cancel(): void;
+}
 /**
  * A file's content while a grant decides it (the holder's): its bytes here,
  * each change logged at the next decision, the flush or LINGER_MS, not
@@ -123,8 +128,6 @@ export interface Inode {
     origin: string;
     /** The name the session last opened it by (an open's answer): where the view will have it, a peer's rename since included. */
     opened?: string;
-    /** Merged into another (reconcile): every reference to it is to that one. */
-    mergedInto?: Inode;
     /** Its row: the view's as last read while nothing of the process's is pending on it, or what this process made it. */
     row: ResidentEntry;
     /**
@@ -162,6 +165,12 @@ export interface Inode {
      * until they are. Its own content stands until a barrier begun after (retire).
      */
     heldAt?: number;
+    /**
+     * Made by an open here not answered yet (local): that open's description,
+     * which names the file to the session until it has a number (W7Expected),
+     * kept open at the session until then.
+     */
+    made?: string;
     /** The grant's decision of its name its records fold over (its baseline's row), by name and generation: settled once they retire. */
     over?: {
         readonly key: string;
@@ -225,16 +234,13 @@ export interface Provisional {
      * A rename of `from` to `to` that is not theirs (a grant's, or the
      * session's the caller awaits): every file reached beneath `from` (a
      * grant's cell, or one these decisions hold, a descriptor's included) is
-     * reached at its name beneath `to` once it is made (`move`), the name the
-     * view will have it at too; a cell no name leads to stays where it is.
-     * What its names grow by is admitted now, before anything is done (ENOSPC
-     * where the budget has no room), and taken as they move; `cancel` gives it
-     * back where the rename is not made.
+     * reached at its name beneath `to` once it is made, the name the view will
+     * have it at too; a cell no name leads to stays where it is. Pending from
+     * now until it is settled: what the names beneath `from` grow by is kept
+     * from now on, admitted now for the files there (ENOSPC where the budget
+     * has no room, nothing done), and with each file made there meanwhile.
      */
-    planMove(from: string, to: string, path: string): {
-        move(): void;
-        cancel(): void;
-    };
+    planMove(from: string, to: string, path: string): MovePlan;
     /**
      * No grant decides `inode` any more: its cell's bytes are its content
      * from now on, known (Inode.heldAt: the session's once what was decided is

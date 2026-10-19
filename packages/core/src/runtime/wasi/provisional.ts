@@ -32,8 +32,8 @@ import type { ResidentEntry } from './resident-filesystem.js';
 import { fsError } from '../beneath-walk.js';
 import { chmodRefusal, chownRefusal, explicitTimes, modeAllows, utimesRefusal } from '../../vfs/posix-access.js';
 import { copiedPermissions, copyfileMode } from '../../vfs/vfs.js';
-import type { W7Attrs } from '@nimbus-sh/platform/w7-frame.js';
-import type { ProcessFsAnswer, ProcessFsClient, ProcessFsOp, ProcessFsReceipt } from '../../_shared/process-fs-client.js';
+import type { W7Attrs, W7Expected } from '@nimbus-sh/platform/w7-frame.js';
+import type { ProcessFsAnswer, ProcessFsClient, ProcessFsOp } from '../../_shared/process-fs-client.js';
 import { applyOp, copyState, foldOps, owned, type InodeOp, type InodeState } from './inode-fold.js';
 
 /** Where a provisional file's own numbers start: past any the session gives. */
@@ -115,6 +115,12 @@ export interface ProvisionalHost {
   absorb(key: string, file: ResidentEntry): ResidentEntry | undefined;
 }
 
+/** A rename planned (Provisional.planMove): settled once, made (`commit`) or not (`cancel`); whichever comes second does nothing. */
+export interface MovePlan {
+  commit(): void;
+  cancel(): void;
+}
+
 /**
  * A file's content while a grant decides it (the holder's): its bytes here,
  * each change logged at the next decision, the flush or LINGER_MS, not
@@ -157,8 +163,6 @@ export interface Inode {
   origin: string;
   /** The name the session last opened it by (an open's answer): where the view will have it, a peer's rename since included. */
   opened?: string;
-  /** Merged into another (reconcile): every reference to it is to that one. */
-  mergedInto?: Inode;
   /** Its row: the view's as last read while nothing of the process's is pending on it, or what this process made it. */
   row: ResidentEntry;
   /**
@@ -193,6 +197,12 @@ export interface Inode {
    * until they are. Its own content stands until a barrier begun after (retire).
    */
   heldAt?: number;
+  /**
+   * Made by an open here not answered yet (local): that open's description,
+   * which names the file to the session until it has a number (W7Expected),
+   * kept open at the session until then.
+   */
+  made?: string;
   /** The grant's decision of its name its records fold over (its baseline's row), by name and generation: settled once they retire. */
   over?: { readonly key: string; readonly generation: number };
 }
@@ -276,13 +286,13 @@ export interface Provisional {
    * A rename of `from` to `to` that is not theirs (a grant's, or the
    * session's the caller awaits): every file reached beneath `from` (a
    * grant's cell, or one these decisions hold, a descriptor's included) is
-   * reached at its name beneath `to` once it is made (`move`), the name the
-   * view will have it at too; a cell no name leads to stays where it is.
-   * What its names grow by is admitted now, before anything is done (ENOSPC
-   * where the budget has no room), and taken as they move; `cancel` gives it
-   * back where the rename is not made.
+   * reached at its name beneath `to` once it is made, the name the view will
+   * have it at too; a cell no name leads to stays where it is. Pending from
+   * now until it is settled: what the names beneath `from` grow by is kept
+   * from now on, admitted now for the files there (ENOSPC where the budget
+   * has no room, nothing done), and with each file made there meanwhile.
    */
-  planMove(from: string, to: string, path: string): { move(): void; cancel(): void };
+  planMove(from: string, to: string, path: string): MovePlan;
   /**
    * No grant decides `inode` any more: its cell's bytes are its content
    * from now on, known (Inode.heldAt: the session's once what was decided is
@@ -371,6 +381,15 @@ export function provisional(host: ProvisionalHost): Provisional {
   };
   /** Every Inode: a copy, so what visits may add or remove. */
   const everyInode = (): Inode[] => [...held, ...loose];
+  /** Renames planned and not yet settled (planMove). */
+  const pendingMoves = new Set<{ readonly from: string; readonly to: string }>();
+  /** What a name `key` (the view's `origin`) beneath a pending rename's source grows by once it is made: both beneath its destination. */
+  const pendingGrowth = (key: string, origin: string): number => {
+    if (pendingMoves.size === 0) return 0;
+    let total = 0;
+    for (const { from, to } of pendingMoves) if (within(key, from)) total += Math.max(0, 2 * stringCost(to + key.slice(from.length)) - stringCost(key) - stringCost(origin));
+    return total;
+  };
   /** Every descriptor of those files, held and provisional alike. */
   const descs = new Map<number, Desc>();
   /** Each answered session description's descriptor and the read access its open asked for. */
@@ -446,6 +465,19 @@ export function provisional(host: ProvisionalHost): Provisional {
     return made && made.local && !added.get(dir)?.has(nameOf(key)) ? null : undefined;
   };
 
+  /**
+   * What an op by name expects at it (W7Expected): the file `row` is, or
+   * none. One this process made that the session has not numbered yet is
+   * named by the description its open made it through (nothing for a
+   * directory or link made here: no description names those).
+   */
+  const expecting = (row: ResidentEntry | null): { expect?: W7Expected } => {
+    if (row === null) return { expect: null };
+    const inode = inodeAtNumber(row.dev, row.ino);
+    if (inode?.local !== true) return { expect: row.ino };
+    return inode.made === undefined ? {} : { expect: { made: inode.made } };
+  };
+
   /** The one Inode of the file `row` (at `key`) names. */
   const inodeAt = (key: string, row: ResidentEntry): Inode => {
     let inode = inodeAtNumber(row.dev, row.ino);
@@ -512,7 +544,7 @@ export function provisional(host: ProvisionalHost): Provisional {
 
   /** What `inode` keeps of the budget now: itself and its names, its baseline's and fold's buffers, its records and their bytes, its anchors, its credit. */
   const cost = (inode: Inode): number => {
-    let total = INODE_COST + stringCost(inode.key) + stringCost(inode.origin) + (inode.opened === undefined ? 0 : stringCost(inode.opened))
+    let total = INODE_COST + stringCost(inode.key) + stringCost(inode.origin) + (pendingMoves.size === 0 || inode.cell?.detached !== undefined ? 0 : pendingGrowth(inode.key, inode.origin)) + (inode.opened === undefined ? 0 : stringCost(inode.opened))
       + (inode.row.target === null ? 0 : stringCost(inode.row.target)) + retained(inode.base?.bytes) + (inode.state === inode.base ? 0 : retained(inode.state?.bytes))
       + retained(inode.pin?.bytes) + inode.credit + inode.recordsCost;
     return total;
@@ -686,13 +718,6 @@ export function provisional(host: ProvisionalHost): Provisional {
     );
   };
 
-  /** The Inode `inode` is now: itself, or the one it merged into (reconcile). */
-  const live = (inode: Inode): Inode => {
-    let at = inode;
-    while (at.mergedInto !== undefined) at = at.mergedInto;
-    return at;
-  };
-
   /** `inode`'s fold again from its baseline: what it is with the records it has now. */
   const refold = (inode: Inode): void => {
     if (inode.base === null) return;
@@ -814,7 +839,7 @@ export function provisional(host: ProvisionalHost): Provisional {
 
   /** `key` names `inode` from now on (null: nothing). */
   const place = (key: string, placed: Inode | null): void => {
-    const inode = placed === null ? null : live(placed);
+    const inode = placed;
     layer.set(key, inode);
     note(parentKey(key), nameOf(key), inode === null ? null : inode.type);
     if (inode !== null) {
@@ -862,7 +887,7 @@ export function provisional(host: ProvisionalHost): Provisional {
   };
 
   /** What a file, directory or link made at `key` keeps (made): admitted before it is. */
-  const madeCost = (key: string, target = ''): number => INODE_COST + 2 * stringCost(key) + stringCost(target);
+  const madeCost = (key: string, target = ''): number => INODE_COST + 2 * stringCost(key) + stringCost(target) + pendingGrowth(key, key);
 
   /**
    * The bytes the view holds of `inode`, kept for its descriptors once its
@@ -883,140 +908,33 @@ export function provisional(host: ProvisionalHost): Provisional {
     fit(inode);
   };
 
-  /** `records` are `target`'s from now on, in log order among its own; their old inodes fold again without them. */
-  const moveRecords = (records: readonly InodeRecord[], target: Inode): void => {
-    if (records.length === 0) return;
-    // They fold into its one content: a grant's cell is handed over first.
-    unheld(target);
-    const left = new Set<Inode>();
-    const leaving = new Map<Inode, Set<InodeRecord>>();
-    for (const record of records) {
-      const from = record.owner;
-      if (!record.gone) {
-        let mine = leaving.get(from);
-        if (mine === undefined) leaving.set(from, mine = new Set());
-        mine.add(record);
-      }
-      if (from !== target) left.add(from);
-      record.owner = target;
-      // What it keeps of the budget goes with it.
-      const kept = recordCost(record);
-      from.reserved -= kept;
-      target.reserved += kept;
-    }
-    for (const [from, mine] of leaving) dropRecords(from, mine);
-    for (const record of records) delete record.gone;
-    target.records = [...target.records, ...records].sort((a, b) => a.id - b.id);
-    for (const record of records) target.recordsCost += recordCost(record);
-    if (target.base === null) {
-      target.base = baseline(target);
-      touched.add(target);
-    }
-    refold(target);
-    fit(target);
-    for (const inode of left) {
-      refold(inode);
-      fit(inode);
-      release(inode);
-    }
-    activity();
-  };
-
-  /** The session's file an open's answer named that this process has no Inode for, as its receipt has it; reached by `like`'s name, which the view has as another's. */
-  const adopted = (receipt: ProcessFsReceipt, like: Inode): Inode => {
-    const row: ResidentEntry = {
-      type: 'file', dev: receipt.dev, ino: receipt.ino, nlink: 1, size: receipt.size,
-      atime: receipt.mtimeMs, mtime: receipt.mtimeMs, ctime: receipt.ctimeMs, mode: receipt.mode, uid: receipt.uid, gid: receipt.gid,
-      revision: receipt.revision ?? 0, target: null,
-    };
-    const inode: Inode = { dev: row.dev, ino: row.ino, type: 'file', key: like.key, origin: like.origin, row, base: null, state: null, records: NO_RECORDS, recordsCost: 0, unnamed: true, local: false, descs: 0, retained: NO_RETAINED, credit: 0, reserved: 0 };
-    addInode(inode);
-    return inode;
-  };
-
   /**
-   * An open's answer names the file the session opened (its receipt): what
-   * was made through its `description`, and its descriptors, are that
-   * file's. A file this process made is the session's numbered one from
-   * now on: rekeyed, its baseline the receipt's (the session may have had
-   * the name already), or merged into the Inode this process has for it,
-   * its records spliced in log order. A file it knew that the session's
-   * name no longer led to gives up to the one the session opened only what
-   * was made through this description.
+   * An open's answer: the file the session opened is the one the process
+   * decided it on (its open carried it: W7Expected; the session refuses one
+   * whose name led elsewhere), or the file it made, numbered now. A file
+   * this process made is the session's numbered one from now on: rekeyed,
+   * its baseline the receipt's.
    */
-  const reconcile = (inode: Inode, key: string, description: string, answer: ProcessFsAnswer | undefined, creating: boolean): void => {
+  const reconcile = (inode: Inode, key: string, answer: ProcessFsAnswer | undefined, creating: boolean): void => {
     const receipt = answer?.receipt;
     if (receipt === undefined) return;
-    if (!inode.local && inode.dev === receipt.dev && inode.ino === receipt.ino) {
-      inode.opened = key;
-      fit(inode);
-      return;
-    }
-    const known = inodeAtNumber(receipt.dev, receipt.ino);
+    inode.opened = key;
     if (creating && inode.local) {
       removeInode(inode);
       inode.local = false;
-      if (known === undefined) {
-        inode.opened = key;
-        inode.dev = receipt.dev;
-        inode.ino = receipt.ino;
-        inode.row = { ...inode.row, dev: receipt.dev, ino: receipt.ino, size: receipt.size, mode: receipt.mode, uid: receipt.uid, gid: receipt.gid };
-        addInode(inode);
-        // The receipt is the file as the open left it: what this process made of it folds over that.
-        inode.base = { bytes: receipt.size === 0 ? new Uint8Array(0) : null, size: receipt.size, mode: receipt.mode, uid: receipt.uid, gid: receipt.gid, atime: receipt.mtimeMs, mtime: receipt.mtimeMs, ctime: receipt.ctimeMs };
-        refold(inode);
-        fit(inode);
-        return;
-      }
-      inode.mergedInto = known;
-      known.opened = key;
-      for (const desc of descs.values()) if (desc.inode === inode) desc.inode = known;
-      known.descs += inode.descs;
-      inode.descs = 0;
-      if (inode.retained.length > 0) {
-        known.retained = [...known.retained, ...inode.retained];
-        inode.retained = NO_RETAINED;
-      }
-      for (const [key, value] of layer) if (value === inode) layer.set(key, known);
-      touched.delete(inode);
-      // Its records and what they keep go with them; the rest of its charge, at once, to the file it is.
-      moveRecords([...inode.records], known);
-      known.reserved += inode.reserved;
-      inode.reserved = 0;
-      fit(known);
-      return;
+      inode.dev = receipt.dev;
+      inode.ino = receipt.ino;
+      inode.row = { ...inode.row, dev: receipt.dev, ino: receipt.ino, size: receipt.size, mode: receipt.mode, uid: receipt.uid, gid: receipt.gid };
+      addInode(inode);
+      // The receipt is the file as the open left it: what this process made of it folds over that.
+      inode.base = { bytes: receipt.size === 0 ? new Uint8Array(0) : null, size: receipt.size, mode: receipt.mode, uid: receipt.uid, gid: receipt.gid, atime: receipt.mtimeMs, mtime: receipt.mtimeMs, ctime: receipt.ctimeMs };
+      refold(inode);
     }
-    let target = known;
-    if (target === undefined) {
-      // Paid from what its open set aside for this (credit): the file as its receipt has it, its bytes known where it is empty.
-      target = adopted(receipt, inode);
-      target.opened = key;
-      target.base = { bytes: receipt.size === 0 ? new Uint8Array(0) : null, size: receipt.size, mode: receipt.mode, uid: receipt.uid, gid: receipt.gid, atime: receipt.mtimeMs, mtime: receipt.mtimeMs, ctime: receipt.ctimeMs };
-      target.state = copyState(target.base);
-      touched.add(target);
-      target.reserved = cost(target);
-      inode.reserved -= target.reserved;
-    }
-    target.opened = key;
-    moveRecords(inode.records.filter((record) => record.description === description), target);
-    const kept = inode.retained.indexOf(description);
-    if (kept >= 0) {
-      inode.retained.splice(kept, 1);
-      target.retained = [...target.retained, description];
-    }
-    for (const desc of descs.values()) {
-      if (desc.description !== description || desc.inode !== inode) continue;
-      inode.descs--;
-      desc.inode = target;
-      target.descs++;
-    }
-    fit(target);
     fit(inode);
-    release(inode);
   };
 
-  /** What an open sets aside of the budget for its answer (reconcile): an Inode for the file the session opened, and the name it opened it by. */
-  const openCredit = (inode: Inode, key: string): number => INODE_COST + stringCost(inode.key) + stringCost(inode.origin) + 2 * stringCost(key);
+  /** What an open sets aside of the budget for its answer (reconcile): the name it opened its file by. */
+  const openCredit = (key: string): number => stringCost(key);
 
   /**
    * An open's answer, `credit` its open set aside: reconciled (reconcile),
@@ -1024,14 +942,32 @@ export function provisional(host: ProvisionalHost): Provisional {
    * need of the credit given back.
    */
   const openAnswered = (inode: Inode, key: string, description: string, credit: number, records: readonly InodeRecord[], creating: boolean, read: boolean) => (refused: boolean, answer: ProcessFsAnswer | undefined): void => {
-    const owner = live(inode);
-    owner.credit -= credit;
+    inode.credit -= credit;
     // The session's descriptor of the description: what reads its file once no name leads to it (sessionOf).
     if (!refused && answer?.receipt?.handle !== undefined) sessions.set(description, { handle: answer.receipt.handle, read });
-    if (!refused) reconcile(owner, key, description, answer, creating);
+    if (!refused) reconcile(inode, key, answer, creating);
+    // Numbered, or never made: its description names it no more, and goes once nothing holds it open; refused, the
+    // session never had it, so it is no file's anchor either.
+    if (inode.made === description) delete inode.made;
+    if (refused && inode.retained.includes(description)) {
+      inode.retained = inode.retained.filter((kept) => kept !== description);
+      sessions.delete(description);
+    }
+    closeRetained(inode);
     settleRecords(records, refused);
-    fit(live(inode));
-    release(live(inode));
+    fit(inode);
+    release(inode);
+  };
+
+  /** `inode`'s kept descriptions close once no descriptor of it is open and none names a file it made unnumbered (made). */
+  const closeRetained = (inode: Inode): void => {
+    if (inode.descs > 0 || inode.made !== undefined || inode.retained.length === 0) return;
+    const retained = inode.retained;
+    inode.retained = NO_RETAINED;
+    for (const description of retained) {
+      sessions.delete(description);
+      logged({ type: 'call', call: { call: 'close', path: inode.key, description } }, () => {});
+    }
   };
 
   /** A new descriptor of `inode` with its own rights; `description` its open at the session where it may write. */
@@ -1222,7 +1158,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     const inode = row === null ? null : inodeAt(key, row);
     let credit: number;
     if (inode !== null) {
-      credit = openCredit(inode, key);
+      credit = openCredit(key);
       try {
         admitOps(inode, ops, 'open', path, credit);
       } catch (error) {
@@ -1230,7 +1166,7 @@ export function provisional(host: ProvisionalHost): Provisional {
         throw error;
       }
     } else {
-      credit = INODE_COST + 4 * stringCost(key);
+      credit = openCredit(key);
       const written = bytes !== null && bytes.byteLength > 0 ? Math.max(bytes.byteLength, 4096) : 0;
       admit(madeCost(key) + nameCost([key]) + credit + written + ops.reduce((sum, op) => sum + RECORD_COST + payloadOf(op), 0), 'open', path);
     }
@@ -1247,11 +1183,15 @@ export function provisional(host: ProvisionalHost): Provisional {
         access: read ? 'readwrite' : 'write',
         ...(chmod === undefined ? {} : { fchmod: chmod }),
         description,
+        // The file it decided this on (none, for a file it makes): the session refuses it where the name leads elsewhere.
+        // One made exclusively needs none: the session's EEXIST refuses it first.
+        ...(flags.exclusive && row === null ? {} : expecting(row)),
       },
     };
     let target: Inode;
     if (row === null) {
       target = made(key, 'file', 0o100000 | (asked & ~umask), parent!);
+      target.made = description;
       // Admitted above with it: its records, its fold's buffer, and its open's credit.
       target.reserved += credit + (bytes !== null && bytes.byteLength > 0 ? Math.max(bytes.byteLength, 4096) : 0) + ops.reduce((sum, op) => sum + RECORD_COST + payloadOf(op), 0);
     } else {
@@ -1322,28 +1262,26 @@ export function provisional(host: ProvisionalHost): Provisional {
     },
 
     planMove: (from, to, path) => {
+      const plan = { from, to };
       const beneath = (): Inode[] => everyInode().filter((inode) => inode.cell?.detached === undefined && within(inode.key, from));
-      // Its name here and the view's both beneath `to`.
-      const growth = (inode: Inode): number => 2 * stringCost(to + inode.key.slice(from.length)) - stringCost(inode.key) - stringCost(inode.origin);
-      let admitted = beneath().reduce((sum, inode) => sum + Math.max(0, growth(inode)), 0);
-      admit(admitted, 'rename', path);
-      return {
-        move: () => {
-          for (const inode of beneath()) {
-            const taken = Math.min(Math.max(0, growth(inode)), admitted);
-            inode.reserved += taken;
-            admitted -= taken;
-            inode.key = inode.origin = to + inode.key.slice(from.length);
-            fit(inode);
-          }
-          host.release(admitted);
-          admitted = 0;
-        },
-        cancel: () => {
-          host.release(admitted);
-          admitted = 0;
-        },
+      // Pending from now: what each file beneath keeps grows by its names' growth, admitted at once.
+      pendingMoves.add(plan);
+      let need = 0;
+      for (const inode of beneath()) need += Math.max(0, cost(inode) - inode.reserved);
+      if (need > 0 && !host.reserve(need)) {
+        pendingMoves.delete(plan);
+        throw fsError('ENOSPC', 'rename', path);
+      }
+      for (const inode of beneath()) inode.reserved = Math.max(inode.reserved, cost(inode));
+      const settle = (made: boolean): void => {
+        if (!pendingMoves.has(plan)) return;
+        const files = beneath();
+        if (made) for (const inode of files) inode.key = inode.origin = to + inode.key.slice(from.length);
+        pendingMoves.delete(plan);
+        // Made, what each keeps is what it was charged; not, the growth goes back.
+        for (const inode of files) fit(inode);
       };
+      return { commit: () => settle(true), cancel: () => settle(false) };
     },
 
     unhold: (inode, entry) => {
@@ -1516,7 +1454,8 @@ export function provisional(host: ProvisionalHost): Provisional {
       host.drain();
       admitOps(inode, [op], syscall, desc.path);
       host.count(inode.key);
-      loggedOn([fold(inode, op, described)], { type: 'setattr', path: inode.key, attrs, ...(described === undefined ? {} : { description: described }) });
+      // Through its description; without one, by the name that leads to its file, which it expects there.
+      loggedOn([fold(inode, op, described)], { type: 'setattr', path: inode.key, attrs, ...(described === undefined ? expecting(entryOf(inode)) : { description: described }) });
       fit(inode);
     },
 
@@ -1531,19 +1470,13 @@ export function provisional(host: ProvisionalHost): Provisional {
       for (const other of descs.values()) if (other === desc) return;
       const inode = desc.inode;
       inode.descs--;
-      // Its description outlives it while another descriptor of the file stays open with none of its own (the file's anchor); the last closes it.
+      // Its description outlives it while another descriptor of the file stays open with none of its own (the file's anchor),
+      // or while it names a file it made that the session has not numbered (made); the last closes it, once answered.
       if (desc.description !== undefined) {
-        if (inode.descs > 0 && inode.retained.length === 0 && anchorOf(inode) === undefined) inode.retained = [desc.description];
+        if ((inode.descs > 0 && inode.retained.length === 0 && anchorOf(inode) === undefined) || desc.description === inode.made) inode.retained = [...inode.retained, desc.description];
         else logged({ type: 'call', call: { call: 'close', path: inode.key, description: desc.description } }, () => {});
       }
-      if (inode.descs === 0) {
-        const retained = inode.retained;
-        inode.retained = NO_RETAINED;
-        for (const description of retained) {
-          sessions.delete(description);
-          logged({ type: 'call', call: { call: 'close', path: inode.key, description } }, () => {});
-        }
-      }
+      closeRetained(inode);
       if (desc.description !== undefined && !inode.retained.includes(desc.description)) sessions.delete(desc.description);
       // A grant's file that lost its name goes with its last descriptor (POSIX: its last close).
       if (inode.descs === 0 && inode.cell?.detached !== undefined) setCell(inode, undefined);
@@ -1574,7 +1507,7 @@ export function provisional(host: ProvisionalHost): Provisional {
         const open: ProcessFsOp = { type: 'call', call: { call: 'open', path: inode.key, mode: entryOf(inode).mode & 0o7777, ...(flags.truncate ? { truncate: true as const } : {}), access: read ? 'readwrite' : 'write', description } };
         const records = flags.truncate ? [{ kind: 'truncate', size: 0, at: host.now() } as InodeOp] : [];
         host.drain();
-        const credit = openCredit(inode, inode.key);
+        const credit = openCredit(inode.key);
         admitOps(inode, records, 'open', desc.path, credit);
         inode.credit += credit;
         const made = records.map((op) => fold(inode, op, description));
@@ -1620,7 +1553,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       // Its descriptors keep what it holds: its bytes, where only the view has them, admitted for their lifetime first.
       host.drain();
       keepForDescriptors(inodeAtNumber(row.dev, row.ino), nameCost([key]), 'unlink', path);
-      loggedName({ type: 'call', call: { call: 'unlink', path: key } }, [key], nameCost([key]), () => place(key, null));
+      loggedName({ type: 'call', call: { call: 'unlink', path: key, ...expecting(row) } }, [key], nameCost([key]), () => place(key, null));
       return true;
     },
 
@@ -1634,7 +1567,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       if (writableParent(key, path, 'rmdir') === undefined) return false;
       host.drain();
       admit(nameCost([key]), 'rmdir', path);
-      loggedName({ type: 'call', call: { call: 'rmdir', path: key } }, [key], nameCost([key]), () => {
+      loggedName({ type: 'call', call: { call: 'rmdir', path: key, ...expecting(row) } }, [key], nameCost([key]), () => {
         place(key, null);
         added.delete(key);
         removed.delete(key);
@@ -1675,7 +1608,8 @@ export function provisional(host: ProvisionalHost): Provisional {
       const moving = known ?? inodeAt(from, source);
       moving.reserved += moves;
       for (const [inode, grows] of beneath) inode.reserved += grows;
-      loggedName({ type: 'rename', from, to }, [from, to], names, () => {
+      const { expect: expectTo } = expecting(target);
+      loggedName({ type: 'rename', from, to, ...expecting(source), ...(expectTo === undefined ? {} : { expectTo }) }, [from, to], names, () => {
         // What is beneath the source moves with it: names, never records.
         for (const [key, value] of [...layer]) {
           if (key === from || !within(key, from)) continue;
@@ -1717,7 +1651,7 @@ export function provisional(host: ProvisionalHost): Provisional {
         throw error;
       }
       host.count(key);
-      loggedOn([fold(inode, op)], { type: 'setattr', path: key, attrs });
+      loggedOn([fold(inode, op)], { type: 'setattr', path: key, attrs, ...expecting(row) });
       fit(inode);
       return true;
     },

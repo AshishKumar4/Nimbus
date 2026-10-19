@@ -247,7 +247,7 @@ var __nimbusProcessFsModule = (() => {
         case "rename":
           state.summary.pathCount++;
           state.summary.opCount++;
-          yield encodeMetadataRecord(RecordTag.Rename, { from: op.from, to: op.to }, state);
+          yield encodeMetadataRecord(RecordTag.Rename, { from: op.from, to: op.to, ...expectations(op, "rename") }, state);
           break;
         case "truncate":
           state.summary.pathCount++;
@@ -257,7 +257,7 @@ var __nimbusProcessFsModule = (() => {
         case "setattr":
           state.summary.pathCount++;
           state.summary.opCount++;
-          yield encodeMetadataRecord(RecordTag.SetAttr, { path: op.path, ...op.attrs, ...op.description === void 0 ? {} : { description: op.description } }, state);
+          yield encodeMetadataRecord(RecordTag.SetAttr, { path: op.path, ...op.attrs, ...op.description === void 0 ? {} : { description: op.description }, ...expectations(op, "setattr") }, state);
           break;
         case "call":
           state.summary.pathCount++;
@@ -450,7 +450,8 @@ var __nimbusProcessFsModule = (() => {
           return {
             kind: "rename",
             from: ownedPaths.claim(canonicalPath(op.from, "rename source")),
-            to: ownedPaths.claim(canonicalPath(op.to, "rename target"))
+            to: ownedPaths.claim(canonicalPath(op.to, "rename target")),
+            ...expectations(op, "rename")
           };
         case "truncate":
           return { kind: "truncate", path: ownedPaths.claim(canonicalPath(op.path, "truncate path")), size: safeInteger(op.size, "truncate size") };
@@ -459,7 +460,8 @@ var __nimbusProcessFsModule = (() => {
             kind: "setattr",
             path: ownedPaths.claim(canonicalPath(op.path, "setattr path")),
             attrs: parseAttrs(op.attrs, "setattr"),
-            ...op.description === void 0 ? {} : { description: descriptionId(op.description, "setattr description") }
+            ...op.description === void 0 ? {} : { description: descriptionId(op.description, "setattr description") },
+            ...expectations(op, "setattr")
           };
         case "call": {
           const call = op.call;
@@ -528,9 +530,9 @@ var __nimbusProcessFsModule = (() => {
       }
       case "unlink":
       case "rmdir":
-        if (keys !== "call,path")
+        if (keys !== "call,path" && keys !== "call,expect,path")
           break;
-        return { call: value.call, path: path(value.path, `${value.call} path`) };
+        return { call: value.call, path: path(value.path, `${value.call} path`), ...expectations(value, value.call) };
       case "symlink":
         if (keys !== "call,path,target" && keys !== "call,ino,path,target")
           break;
@@ -579,7 +581,7 @@ var __nimbusProcessFsModule = (() => {
       case "open": {
         const flags = ["create", "exclusive", "nofollow", "truncate"];
         let required = keys;
-        for (const flag of ["create", "description", "exclusive", "fchmod", "ino", "nofollow", "truncate", "umask"])
+        for (const flag of ["create", "description", "exclusive", "expect", "fchmod", "ino", "nofollow", "truncate", "umask"])
           required = required.replace(`,${flag}`, "");
         if (required !== "access,call,mode,path")
           break;
@@ -602,7 +604,8 @@ var __nimbusProcessFsModule = (() => {
           ...value.exclusive === true ? { exclusive: true } : {},
           ...value.nofollow === true ? { nofollow: true } : {},
           ...value.description === void 0 ? {} : { description: descriptionId(value.description, "open description") },
-          ...value.fchmod === void 0 ? {} : { fchmod: u32(value.fchmod, "open fchmod") }
+          ...value.fchmod === void 0 ? {} : { fchmod: u32(value.fchmod, "open fchmod") },
+          ...expectations(value, "open")
         };
       }
       case "lutimes":
@@ -636,6 +639,22 @@ var __nimbusProcessFsModule = (() => {
     if (ino < 2)
       throw new Error(`w7-frame: ${label} must be at least 2`);
     return ino;
+  }
+  function expectations(value, label) {
+    const expected = (field, name) => {
+      if (field === null)
+        return null;
+      if (isObject(field) && !Array.isArray(field)) {
+        if (Object.keys(field).join(",") !== "made")
+          throw new Error(`w7-frame: ${label} ${name} is a number, null or { made }`);
+        return { made: descriptionId(field.made, `${label} ${name} made`) };
+      }
+      return inodeNumber(field, `${label} ${name}`);
+    };
+    return {
+      ...value.expect === void 0 ? {} : { expect: expected(value.expect, "expect") },
+      ...value.expectTo === void 0 ? {} : { expectTo: expected(value.expectTo, "expectTo") }
+    };
   }
   function normalizeInode(inode) {
     canonicalPath(inode.path, "inode path");
@@ -790,6 +809,9 @@ var __nimbusProcessFsModule = (() => {
       offset += part.byteLength;
     }
     return output;
+  }
+  function isObject(value) {
+    return typeof value === "object" && value !== null;
   }
 
   function classifyMessage(msg) {

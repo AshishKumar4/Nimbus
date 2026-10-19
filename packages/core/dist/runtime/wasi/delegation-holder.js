@@ -789,27 +789,32 @@ export function delegationHolder(options) {
                 return true;
             if (writableParent(from, path, 'rename') === undefined || writableParent(to, path, 'rename') === undefined)
                 return false;
-            // What the names of its files grow by, admitted before anything is done.
+            // What the names of its files grow by, admitted before anything is done; not made, given back.
             const files = prov.planMove(from, to, path);
-            // What was written before the rename is logged under the name it had.
-            drain();
-            // What was decided under the source moves with it.
-            names.move(from, to);
-            names.decide(from, null);
-            names.decide(to, { ...source, ctime: now() });
-            names.note(parentKey(from), nameOf(from), null);
-            names.note(parentKey(to), nameOf(to), source.type);
-            // A file it replaces loses its name: its open descriptions keep its bytes.
-            if (target !== null) {
-                const replaced = prov.inode(target.dev, target.ino);
-                if (replaced?.cell !== undefined && replaced.key === to) {
-                    detach(replaced, target);
-                    if (replaced.descs === 0)
-                        prov.dropCell(replaced);
+            try {
+                // What was written before the rename is logged under the name it had.
+                drain();
+                // What was decided under the source moves with it.
+                names.move(from, to);
+                names.decide(from, null);
+                names.decide(to, { ...source, ctime: now() });
+                names.note(parentKey(from), nameOf(from), null);
+                names.note(parentKey(to), nameOf(to), source.type);
+                // A file it replaces loses its name: its open descriptions keep its bytes.
+                if (target !== null) {
+                    const replaced = prov.inode(target.dev, target.ino);
+                    if (replaced?.cell !== undefined && replaced.key === to) {
+                        detach(replaced, target);
+                        if (replaced.descs === 0)
+                            prov.dropCell(replaced);
+                    }
                 }
+                // Its files move with it: the name they are reached by, which the view will have.
+                files.commit();
             }
-            // Its files move with it: the name they are reached by, which the view will have.
-            files.move();
+            finally {
+                files.cancel();
+            }
             log({ type: 'rename', from, to });
             return true;
         },

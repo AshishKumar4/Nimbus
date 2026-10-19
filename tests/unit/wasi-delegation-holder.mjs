@@ -486,11 +486,11 @@ async function caughtUp(s) {
   assert.equal(dec.decode(s.kernel.readFile('home/user/other/to.txt')), 'Xbc');
 }
 
-// A file made here that the session's answer names as one this process
-// already has a descriptor of is that file (canonicalize): its unlink
-// refused, the creating open (O_TRUNC) emptied that file and wrote it, and
-// every descriptor of it reads what the session has. Red before: the
-// descriptor kept the old file's bytes beyond what was written.
+// A file made here, decided on the name being free (its unlink before it),
+// where the session still has the file it unlinked (the unlink refused):
+// the session refuses the creating open too (EEXIST, W7Expected), so
+// nothing of the file it would have reached changes, and every descriptor
+// of that file reads what the session has.
 {
   const { s, control, sync } = provisionalSession();
   await resident(s, 'same.txt', 'OLDOLDOLD');
@@ -503,10 +503,17 @@ async function caughtUp(s) {
   control.verdicts.push(true);
   control.open();
   await sent;
-  await s.fs.flush().catch(() => {});
-  assert.equal(dec.decode(s.kernel.readFile('home/user/other/same.txt')), 'NEW');
-  assert.equal(dec.decode(sync.readFile(other('same.txt'))), 'NEW');
-  assert.equal(dec.decode(sync.read(fd, 0, 16)), 'NEW', 'a descriptor of the file the session named kept bytes it no longer has');
+  // Each flush reports the next refusal: the unlink's, then the open's.
+  const reported = [];
+  for (let tries = 0; tries < 4; tries++) {
+    const code = await s.fs.flush().then(() => null, (error) => error?.code);
+    if (code === null) break;
+    reported.push(code);
+  }
+  assert.ok(reported.length > 0, 'the refusals reported');
+  assert.equal(dec.decode(s.kernel.readFile('home/user/other/same.txt')), 'OLDOLDOLD');
+  assert.equal(dec.decode(sync.readFile(other('same.txt'))), 'OLDOLDOLD');
+  assert.equal(dec.decode(sync.read(fd, 0, 16)), 'OLDOLDOLD', 'a descriptor of the file the session kept');
   assert.equal(Number(sync.fstat(fd).ino), s.kernel.stat('home/user/other/same.txt').ino);
   sync.close(fd);
 }

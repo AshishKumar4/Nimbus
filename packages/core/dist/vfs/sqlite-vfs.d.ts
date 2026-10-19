@@ -2289,6 +2289,13 @@ export declare class SqliteVFS {
     private wave;
     /** The storage one wave composes: each operation as its writer (`holds`, `pipeline`) or its caller (`origin`, its lease). */
     private waveScope;
+    /**
+     * A process decided `path`'s op on its own view of the name: the file it
+     * expected there (W7Expected; `followLeaf` as the op reaches it). Where
+     * the name leads elsewhere now, the op is refused before any effect, as
+     * W7Expected says: its decision was made on a row that turned out wrong.
+     */
+    private expectAt;
     /** A wave's op that lands here, applied by this filesystem's operation of that name: an open's or a data call's stat. */
     private applyWaveOp;
     /**

@@ -44,7 +44,7 @@
  * session refused is not asked for again.
  */
 
-import { encodeWriteBatch, type W7Attrs, type W7Call } from '@nimbus-sh/platform/w7-frame.js';
+import { encodeWriteBatch, type W7Attrs, type W7Call, type W7Expected } from '@nimbus-sh/platform/w7-frame.js';
 import type { ExclusiveMutationGrant, GrantCertificate, RecallKind } from '../runtime/os-contracts.js';
 import { WAVE_BYTES, WAVE_PATHS, WAVE_PATH_BYTES, openWaveEpoch, sendWaveAttempts, waveAttemptsOf, type WaveFence, type WaveTimers } from '@nimbus-sh/platform/wave-writer.js';
 import { WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
@@ -62,10 +62,11 @@ export { SYSCALL_VERDICTS };
 /** One mutation, as the session applies it: a call, or a rename, truncate or attribute change. */
 export type ProcessFsOp =
   | { type: 'call'; call: W7Call }
-  | { type: 'rename'; from: string; to: string }
+  /** `expect`, `expectTo`: the files the process decided it on at `from` and `to` (W7Expected). */
+  | { type: 'rename'; from: string; to: string; expect?: W7Expected; expectTo?: W7Expected }
   | { type: 'truncate'; path: string; size: number }
   /** `description`: fchmod, fchown or futimens through the process's open description of that id. */
-  | { type: 'setattr'; path: string; attrs: W7Attrs; description?: string };
+  | { type: 'setattr'; path: string; attrs: W7Attrs; description?: string; expect?: W7Expected };
 
 /** What the client asks of the session. */
 export interface ProcessFsSession {

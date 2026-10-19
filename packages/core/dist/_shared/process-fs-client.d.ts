@@ -43,7 +43,7 @@
  * (ProcessFiles' process view), so its waves name none. A subtree the
  * session refused is not asked for again.
  */
-import { type W7Attrs, type W7Call } from '@nimbus-sh/platform/w7-frame.js';
+import { type W7Attrs, type W7Call, type W7Expected } from '@nimbus-sh/platform/w7-frame.js';
 import type { ExclusiveMutationGrant, GrantCertificate, RecallKind } from '../runtime/os-contracts.js';
 import { type WaveFence, type WaveTimers } from '@nimbus-sh/platform/wave-writer.js';
 import { SYSCALL_VERDICTS } from '../vfs/vfs-error.js';
@@ -56,10 +56,14 @@ export { SYSCALL_VERDICTS };
 export type ProcessFsOp = {
     type: 'call';
     call: W7Call;
-} | {
+}
+/** `expect`, `expectTo`: the files the process decided it on at `from` and `to` (W7Expected). */
+ | {
     type: 'rename';
     from: string;
     to: string;
+    expect?: W7Expected;
+    expectTo?: W7Expected;
 } | {
     type: 'truncate';
     path: string;
@@ -71,6 +75,7 @@ export type ProcessFsOp = {
     path: string;
     attrs: W7Attrs;
     description?: string;
+    expect?: W7Expected;
 };
 /** What the client asks of the session. */
 export interface ProcessFsSession {

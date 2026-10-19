@@ -231,6 +231,13 @@ async function runSteps(steps, met, grants) {
       ?? [...fds.values()].find((other) => other !== opened && other.logs && (!read || other.read) && sameFile(other, opened));
   };
 
+  /**
+   * What an op by name expects at each of its names (W7Expected): the file
+   * the process's view has there (`reference`), or none. One it made that
+   * the session has not numbered (`L`) is the file its creating open reaches.
+   */
+  const expecting = (pairs) => pairs;
+
   /** The process's operation `step`, made synchronously: its local refusal, which the model predicts, or its effects. */
   const processStep = async (step, label) => {
     const now = viewOf();
@@ -271,7 +278,7 @@ async function runSteps(steps, met, grants) {
       }
       if (step.flags.truncate) records.push(add({ kind: 'truncate', ref: { opened }, size: 0 }));
       const flags = { write: true, read: step.flags.read, create: step.flags.create, exclusive: made && step.flags.exclusive, truncate: step.flags.truncate };
-      if (logs) undelivered.push({ records, logged: { opened, flags } });
+      if (logs) undelivered.push({ records, logged: { opened, flags, expect: made && step.flags.exclusive ? [] : expecting([[step.name, reference]]) } });
       opened.logs = logs;
       return;
     }
@@ -326,35 +333,35 @@ async function runSteps(steps, met, grants) {
       assert.equal(code, via === undefined && name === undefined ? 'ESTALE' : null, `${label}: ${step.op}`);
       if (code !== null) return;
       const attrs = times ? { atime: step.atime, mtime: step.mtime } : { mode: step.mode };
-      add(times ? { kind: 'times', ref: { opened }, mtime: step.mtime } : { kind: 'chmod', ref: { opened }, mode: step.mode }, { fsetattr: { via, name, attrs } });
+      add(times ? { kind: 'times', ref: { opened }, mtime: step.mtime } : { kind: 'chmod', ref: { opened }, mode: step.mode }, { fsetattr: { via, name, attrs }, expect: via === undefined ? expecting([[name, { opened }]]) : [] });
       return;
     }
     if (step.op === 'unlink') {
       const reference = now.names.get(step.name);
       const code = await errnoOf(() => sync.unlink(path(step.name)));
       assert.equal(code, reference === undefined ? 'ENOENT' : null, `${label}: unlink ${step.name}`);
-      if (code === null) add({ kind: 'name', name: step.name, ref: null }, { unlink: step.name });
+      if (code === null) add({ kind: 'name', name: step.name, ref: null }, { unlink: step.name, expect: expecting([[step.name, reference]]) });
       return;
     }
     if (step.op === 'rename') {
       const reference = now.names.get(step.from);
       const code = await errnoOf(() => sync.rename(path(step.from), path(step.to)));
       assert.equal(code, reference === undefined ? 'ENOENT' : null, `${label}: rename ${step.from} ${step.to}`);
-      if (code === null && step.from !== step.to) add({ kind: 'rename', from: step.from, to: step.to }, { rename: [step.from, step.to] });
+      if (code === null && step.from !== step.to) add({ kind: 'rename', from: step.from, to: step.to }, { rename: [step.from, step.to], expect: expecting([[step.from, reference], [step.to, now.names.get(step.to)]]) });
       return;
     }
     if (step.op === 'utimes') {
       const reference = now.names.get(step.name);
       const code = await errnoOf(() => sync.utimes(path(step.name), step.atime, step.mtime));
       assert.equal(code, reference === undefined ? 'ENOENT' : null, `${label}: utimes ${step.name}`);
-      if (code === null) add({ kind: 'times', ref: reference, mtime: step.mtime }, { utimes: [step.name, step.atime, step.mtime] });
+      if (code === null) add({ kind: 'times', ref: reference, mtime: step.mtime }, { utimes: [step.name, step.atime, step.mtime], expect: expecting([[step.name, reference]]) });
       return;
     }
     if (step.op === 'chmod') {
       const reference = now.names.get(step.name);
       const code = await errnoOf(() => sync.chmod(path(step.name), step.mode));
       assert.equal(code, reference === undefined ? 'ENOENT' : null, `${label}: chmod ${step.name}`);
-      if (code === null) add({ kind: 'chmod', ref: reference, mode: step.mode }, { chmod: [step.name, step.mode] });
+      if (code === null) add({ kind: 'chmod', ref: reference, mode: step.mode }, { chmod: [step.name, step.mode], expect: expecting([[step.name, reference]]) });
       return;
     }
     if (step.op === 'writeFile') {
@@ -374,7 +381,7 @@ async function runSteps(steps, met, grants) {
       }
       records.push(add({ kind: 'truncate', ref: { opened }, size: 0 }));
       const written = add({ kind: 'write', ref: { opened }, offset: 0, data });
-      undelivered.push({ records, record: written, logged: { opened, flags: { write: true, create: true, truncate: true }, write: { kind: 'write', offset: 0, data }, close: opened } });
+      undelivered.push({ records, record: written, logged: { opened, flags: { write: true, create: true, truncate: true }, write: { kind: 'write', offset: 0, data }, close: opened, expect: expecting([[step.name, reference]]) } });
     }
     if (step.op === 'copy') {
       const source = fileAt(step.from);
@@ -399,7 +406,7 @@ async function runSteps(steps, met, grants) {
       }
       records.push(add({ kind: 'truncate', ref: { opened }, size: 0 }));
       const written = add({ kind: 'write', ref: { opened }, offset: 0, data });
-      undelivered.push({ records, record: written, logged: { opened, flags: { write: true, create: true, truncate: true }, mode: source.mode & 0o777, write: { kind: 'write', offset: 0, data }, close: opened } });
+      undelivered.push({ records, record: written, logged: { opened, flags: { write: true, create: true, truncate: true }, mode: source.mode & 0o777, write: { kind: 'write', offset: 0, data }, close: opened, expect: expecting([[step.to, reference]]) } });
     }
   };
 
@@ -411,9 +418,26 @@ async function runSteps(steps, met, grants) {
     for (let tries = 0; tries < 4 && (await errnoOf(() => s.fs.flush())) !== null; tries++);
     control.held = true;
     control.opened = Promise.withResolvers();
+    /** Whether the reference leads any name an op expects (W7Expected) to another file than it expected: the session refuses it (ESTALE). */
+    const stale = async (expect) => {
+      for (const [name, reference] of expect ?? []) {
+        const id = reference === undefined ? null : resolve(reference);
+        // `L`: made by an open not delivered or refused; none where refused (its creating open reached nothing).
+        const want = id === null ? null : typeof id === 'number' ? id : String(id).startsWith('S') ? Number(String(id).slice(1)) : NaN;
+        let have = null;
+        try { have = (await direct.stat(path(name)))?.ino ?? null; } catch { /* absent */ }
+        if (have !== want) return true;
+      }
+      return false;
+    };
     for (const { record, records, logged } of undelivered) {
       let refused = false;
-      if (logged.unlink) refused = (await errnoOf(() => direct.unlink(path(logged.unlink)))) !== null;
+      if (await stale(logged.expect)) {
+        refused = true;
+        for (const made of records ?? []) made.refused = true;
+        if (logged.flags) (logged.opened ?? logged.close).refHandle = undefined;
+      }
+      else if (logged.unlink) refused = (await errnoOf(() => direct.unlink(path(logged.unlink)))) !== null;
       else if (logged.rename) refused = (await errnoOf(() => direct.rename(path(logged.rename[0]), path(logged.rename[1])))) !== null;
       else if (logged.chmod) refused = (await errnoOf(() => direct.chmod(path(logged.chmod[0]), logged.chmod[1]))) !== null;
       else if (logged.utimes) refused = (await errnoOf(() => direct.utimes(path(logged.utimes[0]), logged.utimes[1], logged.utimes[2]))) !== null;
@@ -573,10 +597,36 @@ async function runSteps(steps, met, grants) {
    * the view has not that place yet: never absent, nor another size or
    * mode. Then it is renamed back.
    */
-  const swapStep = async (label) => {
+  const swapStep = async (step, label) => {
     // The budget full for the rename alone (a squeeze before it): what the names beneath it grow by has no room.
     const full = squeezed;
     budget.limit = 1 << 30;
+    // Longer than its name: the names beneath it grow, which the budget admits first.
+    const aside = `${DIR}/swapped-aside`;
+    if (step.awaited) {
+      // Awaited (the session's, where no grant decides it), its answer held until delivered; a file opened beneath its
+      // source meanwhile, then the budget full for the answer: that file was admitted at its name to come.
+      await deliver();
+      const renaming = errnoOf(() => s.fs.rename(`/${dir}`, `/${aside}`));
+      const opened = [];
+      for (const name of NAMES) {
+        try { opened.push(sync.open(path(name), { read: true })); } catch { /* absent, or not here */ }
+      }
+      if (full) budget.limit = budget.used;
+      const code = await delivered(renaming);
+      budget.limit = 1 << 30;
+      assert.equal(budget.used, s.fs.stats().provisionalBytes + s.fs.stats().pinnedBytes, `${label}: answered, what is taken is what is kept`);
+      for (const handle of opened) sync.close(handle.id);
+      // Refused only for room, the budget full when it planned (a barrier it took first may plan it late).
+      assert.ok(code === null || (code === 'ENOSPC' && full), `${label}: the awaited rename ${code}`);
+      if (code !== null) {
+        await catchUp();
+        return;
+      }
+      assert.equal(await delivered(errnoOf(() => s.fs.rename(`/${aside}`, `/${dir}`))), null, `${label}: the awaited rename back`);
+      await catchUp();
+      return;
+    }
     await deliver();
     control.held = false;
     control.opened.resolve();
@@ -588,8 +638,6 @@ async function runSteps(steps, met, grants) {
     control.held = true;
     control.opened = Promise.withResolvers();
     assert.ok(landing !== undefined, `${label}: the barrier began`);
-    // Longer than its name: the names beneath it grow, which the budget admits first.
-    const aside = `${DIR}/swapped-aside`;
     if (full) budget.limit = budget.used;
     const code = await errnoOf(() => sync.rename(`/${dir}`, `/${aside}`));
     budget.limit = 1 << 30;
@@ -612,6 +660,14 @@ async function runSteps(steps, met, grants) {
     }
     assert.equal(await errnoOf(() => sync.rename(`/${aside}`, `/${dir}`)), null, `${label}: the rename back`);
     await catchUp();
+  };
+  /** `pending`, an awaited call whose answer waits for what the process sends: delivered until it settles (a barrier it took first may send it late). */
+  const delivered = async (pending) => {
+    let done = false;
+    const settled = pending.finally(() => { done = true; });
+    for (let tries = 0; tries < 20 && !done; tries++) await deliver();
+    assert.ok(done, 'an awaited call never answered');
+    return settled;
   };
   /** Each name's size and mode in `where` as a call that cannot wait sees them, or its errno. */
   const statsAt = (where) => Object.fromEntries(NAMES.map((name) => {
@@ -637,7 +693,7 @@ async function runSteps(steps, met, grants) {
       else if (step.op === 'catchUp') await catchUp();
       else if (step.op === 'peer') await peerStep(step);
       else if (step.op === 'readAsync') await readAsync(step, label);
-      else if (step.op === 'swap') await swapStep(label);
+      else if (step.op === 'swap') await swapStep(step, label);
       else await processStep(step, label);
     } catch (error) {
       if (error !== NO_SPACE) throw error;
@@ -675,6 +731,10 @@ async function runSteps(steps, met, grants) {
   await catchUp();
   await catchUp();
   await check('the end, drained');
+  // The session kept a description of the process's only while the process held it (a descriptor's, a file's
+  // anchor, or one naming a file it made until its open was answered): none, all closed and drained.
+  const kept = [...s.engine.sql.exec('SELECT id FROM vfs_wave_descriptions WHERE pid = 7')].length;
+  assert.equal(kept, 0, `the end: the session still keeps ${kept} descriptions of the process`);
   assert.equal(budget.used, 0, `the end: ${budget.used} bytes of the budget still taken after everything was drained`);
 }
 

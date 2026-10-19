@@ -20,7 +20,7 @@ function generator(seed) {
  * and squeezes (the budget full for the next step), from a stream of their
  * own; `swaps` adds, from another, renames of the names' directory to a
  * longer name and back while a barrier begun before them waits, some with
- * the budget full.
+ * the budget full; some awaited, a file opened beneath before the answer.
  */
 export function program(seed, length = 40, { wasi = false, copies = false, swaps = false } = {}) {
   const random = generator(seed);
@@ -66,7 +66,7 @@ export function program(seed, length = 40, { wasi = false, copies = false, swaps
         out.push({ op: 'copy', from, to });
       }
       // A swap with the budget full now and then: what the names beneath it grow by has no room.
-      if (swaps && swap() < 0.12) out.push(...(swap() < 0.3 ? [{ op: 'squeeze' }] : []), { op: 'swap' });
+      if (swaps && swap() < 0.12) out.push(...(swap() < 0.3 ? [{ op: 'squeeze' }] : []), { op: 'swap', awaited: swap() < 0.4 });
       return out;
     });
   }

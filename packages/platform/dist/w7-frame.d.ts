@@ -110,6 +110,20 @@ export declare function openAccessMask(call: {
     access: W7OpenAccess;
     truncate?: true;
 }): number;
+/**
+ * What a process decided a call on from its own view of the name: the file
+ * it expected there (its number on the session's filesystem), none (null),
+ * or the file its open of description `made` reached, for a file that open
+ * made and the process has no number of yet (it keeps that description
+ * open until it has). Where the name leads elsewhere now (a stale view: a
+ * peer replaced the name, or a link there leads to another file; or that
+ * open was refused), the session refuses the call before any effect:
+ * ENOENT where it expected a file, EEXIST where it expected none, EXDEV
+ * where the name leads to a mount.
+ */
+export type W7Expected = number | null | {
+    readonly made: string;
+};
 export type W7Call = 
 /**
  * `ino`, on a call that makes a name (writeFile, appendFile, mkdir,
@@ -179,9 +193,11 @@ export type W7Call =
 } | {
     call: 'unlink';
     path: string;
+    expect?: W7Expected;
 } | {
     call: 'rmdir';
     path: string;
+    expect?: W7Expected;
 } | {
     call: 'symlink';
     path: string;
@@ -255,6 +271,7 @@ export type W7Call =
     nofollow?: true;
     description?: string;
     fchmod?: number;
+    expect?: W7Expected;
 }
 /** close(2) of the session's open description `description` (an `open` call's). */
  | {
@@ -285,10 +302,14 @@ export type W7Op = {
     type: 'file';
     inode: BatchInodeEntry;
     source: AsyncIterable<Uint8Array>;
-} | {
+}
+/** `expect`, `expectTo`: the files the process expected at `from` and at `to` (W7Expected). */
+ | {
     type: 'rename';
     from: string;
     to: string;
+    expect?: W7Expected;
+    expectTo?: W7Expected;
 } | {
     type: 'truncate';
     path: string;
@@ -300,6 +321,7 @@ export type W7Op = {
     path: string;
     attrs: W7Attrs;
     description?: string;
+    expect?: W7Expected;
 } | {
     type: 'call';
     call: W7Call;
@@ -382,6 +404,8 @@ export type W7DecodedRecord = {
     type: 'rename';
     from: string;
     to: string;
+    expect?: W7Expected;
+    expectTo?: W7Expected;
 } | {
     type: 'truncate';
     path: string;
@@ -391,6 +415,7 @@ export type W7DecodedRecord = {
     path: string;
     attrs: W7Attrs;
     description?: string;
+    expect?: W7Expected;
 } | {
     type: 'call';
     call: W7PathCall;

@@ -17,7 +17,15 @@
  *     barrier its give-back waits on lands, stays;
  *   - a held directory renamed to a longer name, the budget full: what its
  *     files' names grow by is admitted first, or the rename is refused with
- *     nothing done; what is taken of the budget is always what is kept.
+ *     nothing done; what is taken of the budget is always what is kept;
+ *   - an awaited rename of a directory, a file opened beneath it before the
+ *     session answers, the budget full then: that file was admitted at its
+ *     name to come;
+ *   - a held rename whose drain the client refuses (past its synchronous
+ *     cap): nothing moved, and nothing of the budget kept for it;
+ *   - an open through a name the view has stale (a peer made it a link to
+ *     a held file) with O_TRUNC, the held file written before the answer:
+ *     the session refuses the open, so the held file keeps what was written.
  */
 
 import assert from 'node:assert/strict';
@@ -243,6 +251,100 @@ for (const [change, refusal] of [['open', null], ['rename', null], ['unlink', nu
   for (const handle of handles) sync.close(handle.id);
   await s.fs.settle();
   assert.equal(s.kernel.readFileString(`${longer.slice(1)}/f2`), 'f2', 'its files moved with it');
+}
+
+// ── An awaited rename, a file opened beneath its source before the session answers, the budget full then ──
+{
+  const budget = { used: 0, limit: 1 << 30 };
+  let gated = false;
+  const opened = Promise.withResolvers();
+  // No grant comes: the rename is the session's, awaited; its answer waits for the gate.
+  const s = session({
+    budget, view: {}, acquired: new Promise(() => {}),
+    gate: { then: (resolve, reject) => (gated ? opened.promise : Promise.resolve()).then(resolve, reject) },
+  });
+  const sync = s.fs.synchronous;
+  s.kernel.mkdir('home/user/other/d');
+  s.kernel.chown('home/user/other/d', 1000, 1000);
+  for (const name of ['f0', 'f1']) {
+    s.kernel.writeFile(`home/user/other/d/${name}`, name);
+    s.kernel.chown(`home/user/other/d/${name}`, 1000, 1000);
+  }
+  for (const name of ['f0', 'f1']) await s.fs.readFile(`/home/user/other/d/${name}`);
+  const kept = () => {
+    const stats = s.fs.stats();
+    return stats.provisionalBytes + stats.pinnedBytes;
+  };
+  const first = sync.open('/home/user/other/d/f0', { read: true });
+  gated = true;
+  const longer = '/home/user/other/d-renamed-to-a-much-longer-name';
+  const renaming = s.fs.rename('/home/user/other/d', longer);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const second = sync.open('/home/user/other/d/f1', { read: true });
+  assert.equal(budget.used, kept(), 'pending: what is taken is what is kept');
+  budget.limit = budget.used;
+  gated = false;
+  opened.resolve();
+  await renaming;
+  assert.equal(budget.used, kept(), 'answered with the budget full: what is taken is what is kept');
+  budget.limit = 1 << 30;
+  sync.close(first.id);
+  sync.close(second.id);
+  // No grant comes (its claim never answered): flushed, not settled.
+  await s.fs.flush();
+  assert.equal(s.kernel.readFileString(`${longer.slice(1)}/f1`), 'f1');
+}
+
+// ── A held rename whose drain the client refuses (past its cap on synchronous bytes) ──
+{
+  const budget = { used: 0, limit: 1 << 30 };
+  // A grant with room for a file past the client's cap (64 MiB on the heap).
+  const s = await holding({ budget, grantBytes: 128 * 1024 * 1024 });
+  const sync = s.fs.synchronous;
+  const kept = () => {
+    const stats = s.fs.stats();
+    return stats.provisionalBytes + stats.pinnedBytes;
+  };
+  await s.fs.mkdir('/home/user/proj/d');
+  const handle = await s.fs.open('/home/user/proj/d/f', { write: true, create: true, truncate: true, mode: 0o644 });
+  // Decided under the grant, not logged yet: the rename drains it first, and the client refuses it.
+  await s.fs.write(handle.id, null, new Uint8Array(65 * 1024 * 1024));
+  const longer = '/home/user/proj/d-renamed-to-a-much-longer-name';
+  const code = await errnoOf(() => sync.rename('/home/user/proj/d', longer));
+  assert.equal(code, 'ENOMEM', 'a rename whose drain the client refused');
+  assert.equal(budget.used, kept(), `refused (${code}): what is taken is what is kept`);
+  assert.ok(sync.stat('/home/user/proj/d/f') !== null && sync.stat(`${longer}/f`) === null, 'a refused rename moved nothing');
+  // Small again: what it gives back fits the cap.
+  await s.fs.ftruncate(handle.id, 1);
+  await errnoOf(() => s.fs.close(handle.id));
+}
+
+// ── An open through a name the view has stale, which a peer made a link to a held file, with O_TRUNC ──
+// (BoldCrane's sequence.) The held file is written through its own descriptor before the session answers the open.
+{
+  const s = await holding({
+    prepare: (kernel) => {
+      kernel.writeFile('tmp/q', 'other');
+      kernel.chown('tmp/q', 1000, 1000);
+    },
+  });
+  const sync = s.fs.synchronous;
+  const held = await s.fs.open('/home/user/proj/p', { read: true, write: true, create: true, truncate: true, mode: 0o644 });
+  await s.fs.write(held.id, null, enc.encode('AAAA'));
+  await s.fs.flush();
+  assert.equal((await s.fs.stat('/tmp/q')).size, 5, 'the view has q as the file it was');
+  // Outside the held subtree: no recall.
+  s.kernel.unlink('tmp/q');
+  s.kernel.symlink('/home/user/proj/p', 'tmp/q');
+  const stale = sync.open('/tmp/q', { write: true, truncate: true });
+  sync.write(held.id, 1, enc.encode('Z'));
+  await errnoOf(() => s.fs.flush());
+  assert.equal(await withRecall(() => s.kernel.readFileString('home/user/proj/p')), 'AZAA', 'an open decided on another file truncated the held one');
+  assert.equal(dec.decode(sync.read(held.id, 0, 64)), 'AZAA', 'what the held descriptor reads');
+  await errnoOf(() => s.fs.close(stale.id));
+  await s.fs.close(held.id);
+  await errnoOf(() => s.fs.settle());
+  assert.equal(await withRecall(() => s.kernel.readFileString('home/user/proj/p')), 'AZAA', 'settled');
 }
 
 console.log('ok - wasi-held-give-back');
