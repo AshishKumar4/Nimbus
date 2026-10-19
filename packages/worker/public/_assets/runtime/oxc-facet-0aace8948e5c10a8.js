@@ -10259,6 +10259,7 @@ error: the Oxc transform crashed (${reason})`);
   })();
   var ArrayBufferConstructor = ArrayBuffer;
   var TextEncoderOf = typeof TextEncoder === "function" ? TextEncoder : void 0;
+  var encode = TextEncoderOf === void 0 ? void 0 : uncurryThis(TextEncoderOf.prototype.encode);
   var encodeInto = TextEncoderOf === void 0 ? void 0 : uncurryThis(TextEncoderOf.prototype.encodeInto);
   var stringCodePointAt = uncurryThis(String.prototype.codePointAt);
   var typedArraySet = uncurryThis(Uint8Array.prototype.set);

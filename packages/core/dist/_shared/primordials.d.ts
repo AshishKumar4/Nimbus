@@ -228,6 +228,8 @@ export declare const Uint8ArrayConstructor: Uint8ArrayConstructor;
 export declare const ArrayBufferConstructor: ArrayBufferConstructor;
 /** A TextEncoder of the realm's. */
 export declare function newTextEncoder(): TextEncoder;
+/** `encoder.encode(text)`, by the realm's TextEncoder.prototype.encode. */
+export declare function textEncoderEncode(encoder: TextEncoder, text: string): Uint8Array;
 /** `encoder.encodeInto(text, destination)`, by the realm's TextEncoder.prototype.encodeInto. */
 export declare function textEncoderEncodeInto(encoder: TextEncoder, text: string, destination: Uint8Array): TextEncoderEncodeIntoResult;
 export declare const mathFloor: (x: number) => number;
