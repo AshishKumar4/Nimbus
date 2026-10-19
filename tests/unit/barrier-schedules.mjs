@@ -76,6 +76,14 @@ const FOUND = {
   'a name the process renamed into place can be renamed again at once': {
     schedule: [['own', 'rename', 'x/h', 'd/f'], ['settle'], ['sync', 'rename', 'd/f', 'd/e/g'], ['settle'], ['sync', 'stat', 'd/e/g'], ['own', 'readFile', 'd/e/g']],
   },
+  'a name the process renamed stays while a later rename of its waits on the session': {
+    schedule: [['sync', 'rename', 'd/e', 'x/e'], ['settle'], ['hold', 'wave'], ['sync', 'rename', 'x/h', 'd/n'], ['input'], ['settle'],
+      ['sync', 'stat', 'x/e'], ['sync', 'stat', 'd/n'], ['release', 'wave'], ['settle'], ['sync', 'stat', 'x/e'], ['sync', 'stat', 'd/n']],
+  },
+  'a name the process renamed into place stays once the session acknowledges it after a barrier reported it': {
+    schedule: [['hold', 'wave'], ['own', 'rename', 'x/h', 'd/f'], ['own', 'readFile', 'top'], ['settle'], ['release', 'wave'], ['settle'],
+      ['sync', 'stat', 'd/f'], ['sync', 'rename', 'd/f', 'd/e/g'], ['settle'], ['sync', 'stat', 'd/e/g']],
+  },
   'a file a call that cannot wait missed stays a miss until an awaited read answers it': {
     engines: ['node'],
     schedule: [['peer', 'write', 'new', 'not resident'], ['settle'], ['input'], ['settle'], ['sync', 'readFile', 'new'], ['own', 'stat', 'new'], ['settle']],
