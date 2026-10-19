@@ -11,7 +11,8 @@
 // as the commit's verdict. armada prints each part as it lands, then the
 // verdict, and keeps a report under ~/.local/state/armada/runs/.
 // Exit: 0, every row green; 1, a red row; 2, not graded (run it again).
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
 import { join } from 'node:path';
 import { armadaClient, armadaEnv, reportContainerStorage } from './lib/armada.mjs';
 
@@ -50,7 +51,9 @@ try {
 }
 await reportContainerStorage();
 const words = [...(flags.tier ? ['--tier', flags.tier] : []), ...(flags.only ? ['--only', flags.only] : [])];
-const ran = spawnSync('bun', [join(client, 'src', 'cli.ts'), 'run', sha, ...(words.length ? ['--', ...words] : [])], {
+// Not spawnSync: a storage read slower than its wait finishes during the run.
+const ran = spawn('bun', [join(client, 'src', 'cli.ts'), 'run', sha, ...(words.length ? ['--', ...words] : [])], {
   cwd: repo, stdio: 'inherit', env: armadaEnv(),
 });
-process.exit(ran.status ?? 2);
+const [status] = await once(ran, 'exit');
+process.exit(status ?? 2);
