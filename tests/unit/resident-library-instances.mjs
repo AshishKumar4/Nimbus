@@ -8,7 +8,7 @@ import { nodeFacetSources } from './lib/node-facet-sources.mjs';
 
 const text = nodeFacetSources('').residentStore;
 const library = /** @type {typeof import('../../packages/worker/src/vfs/resident/index.ts')} */ (
-  new Function('__nimbusLaunchCaptures', text + '\nreturn __nimbusResidentModule;')(globalThis.__nimbusTestLaunchCaptures)
+  new Function(text + '\nreturn __nimbusResidentModule;')()
 );
 const db = new Database(':memory:');
 const sql = {

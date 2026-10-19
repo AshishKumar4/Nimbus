@@ -21,8 +21,8 @@ export function runtimeModuleScope(path: string): [dir: string, ext: string] {
 }
 
 /** `items` as a list that inherits nothing. */
-function listOf(items: readonly unknown[]): SafeList<unknown> {
-  const out = new SafeList<unknown>();
+function listOf<T>(items: readonly T[]): SafeList<T | undefined> {
+  const out = new SafeList<T | undefined>();
   for (let i = 0; i < items.length; i++) out[i] = items[i];
   return out;
 }
@@ -35,7 +35,7 @@ export function runtimeCodeKeySource(entry: RuntimeCodeEntry): string {
   }
   if (entry.kind === 'expression') return JSONStringify(listOf(['expression', entry.code]));
   if (entry.kind === 'wasm') return JSONStringify(listOf(['wasm', entry.bytes]));
-  return JSONStringify(listOf([entry.kind, listOf(entry.params), entry.body]));
+  return JSONStringify(listOf<string | SafeList<string | undefined>>([entry.kind, listOf(entry.params), entry.body]));
 }
 
 /** Text, the retained path, and bounded bookkeeping overhead; data URLs hold the source twice. */

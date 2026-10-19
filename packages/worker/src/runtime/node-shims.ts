@@ -8329,8 +8329,9 @@ const __nimbusDecodeStringLiteral = ${DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE};
       }
     };
     // Made as each module's code origin is, after the program ran: through the launch's captures.
-    __nimbusDefine(routed, "name", __nimbusData(Native.name, false, false, false));
-    __nimbusDefine(routed, "length", __nimbusData(Native.length, false, false, false));
+    // A function's own name and length stay configurable, as the definitions they replace leave them.
+    __nimbusDefine(routed, "name", __nimbusData(Native.name, false, false, true));
+    __nimbusDefine(routed, "length", __nimbusData(Native.length, false, false, true));
     __nimbusDefine(routed, "prototype", __nimbusData(Native.prototype, false, false, false));
     __nimbusDefine(routed, "__nimbusNative", __nimbusData(Native, false, false, false));
     __nimbusDefine(routed, "toString", __nimbusData(() => __nimbusApply(nativeToString, Native, []), true, false, true));
@@ -12723,11 +12724,8 @@ function __nimbusPrepareModule(resolvedPath, evaluationKey, required, parent, es
     if (__nimbusEsmInstances.get(cacheKey) === mod) __nimbusEsmInstances.delete(cacheKey);
     const siblings = parent?.children;
     const at = __nimbusIsArray(siblings) ? __nimbusIndexOf(siblings, mod) : -1;
-    if (at !== -1) {
-      // splice(at, 1), by its own elements: no method or setter of Array.prototype.
-      for (let i = at; i < siblings.length - 1; i++) siblings[i] = siblings[i + 1];
-      siblings.length--;
-    }
+    // Node's own removal (ArrayPrototypeSplice), on the launch's capture.
+    if (at !== -1) __nimbusPrimordials.arraySplice(siblings, at, 1);
   };
 
   // JSON (Module._extensions[".json"])

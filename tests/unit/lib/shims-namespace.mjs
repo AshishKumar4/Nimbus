@@ -187,7 +187,7 @@ function __nimbusRegistryRequire(id) {
 `;
 
 /** Splice ahead of generateShimsCode() in a standalone shims factory. */
-export const SHIMS_STORE_PRELUDE = `\nconst __nimbusLaunchCaptures = globalThis.__nimbusTestLaunchCaptures;\n${RESIDENT_STORE}\nconst __resident = __nimbusResidentModule.createResidentStore({
+export const SHIMS_STORE_PRELUDE = `\n${RESIDENT_STORE}\nconst __resident = __nimbusResidentModule.createResidentStore({
   observeRead: (path) => {
     if (globalThis.__nimbusProfileStaged) globalThis.__nimbusProfileStaged.delete(path);
   },
