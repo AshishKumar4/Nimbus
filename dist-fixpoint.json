@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "7371d39951e1082523da68dbf9f9e43f7330ce0ee01d589508aa264a74255a48",
+  "fingerprint": "9d453375bc796cfd177f9fcb016dc1c856a07caca130dd6b2731905475fee6c5",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1414,7 +1414,7 @@
     "packages/core/dist/workspace/workspace-fs.d.ts": "fef4ebcd78bc89323bda05f7ad8ce786ccb682c49a4ed7bf92540efd764e5c50",
     "packages/core/dist/workspace/workspace-fs.d.ts.map": "bdb084d9f099ca3392fedb6cea2cc1d1740f0b57a559d4a26f7e437f0657ff94",
     "packages/core/dist/workspace/workspace-fs.js": "d2db021e8caec4e44977f5c57dada51035d14e82cee71671e9e1c3a7d0ebdb9e",
-    "packages/core/package.json": "16eb1212c5867f617a62d40637da19c85aa2b1946651d09fd1a3e323aa18eb42",
+    "packages/core/package.json": "329fa905718cc99bc15a3babe5dbb5974ea393643741f23f9b4fc3b99ae6b28c",
     "packages/core/scripts/check-runtime-packages.mjs": "4ab41b1b780d5d0138995fba418e11e2badd97ec302ae03d002820ef5e400eb5",
     "packages/core/scripts/compile-npm-libs.mjs": "29cc01ad8325c4bba53bb437d49acec07d95e71cc6506b7fed3f5c5214a36bff",
     "packages/core/scripts/gen-node-cli-options.mjs": "6c0b90900818a4cbef82fb639f9875d79c791cdc51887aa14d376dec1b651627",
@@ -2008,7 +2008,7 @@
     "packages/fabric/dist/ws-hibernation-config.js": "0f6d330d5581a10c888f38100de2650f9c3fde59948bc5977db12998e02fbfc0",
     "packages/fabric/examples/agent-core-adapter.ts": "29e9f6fb6d5b05adf0c5e18a4ef78bc97c4fe18fc70e3736a1915b9d2968d875",
     "packages/fabric/examples/connections-types.ts": "052d271692ad69876a15631b08bec84fd49deab5e46ddb3c34c6a52cab86511c",
-    "packages/fabric/package.json": "e70d0a1b02a5ffd5cdc3dffd8f7b99d40b63fdcfe15758633514ee3a22f2b79b",
+    "packages/fabric/package.json": "548f9fca8217614c3262542dc173051eda364faeffef0e3970463a099294ef3d",
     "packages/fabric/src/bindings.ts": "36dea42a030435eefa6895a8407ed99151975474f0e659b9d43539fb5a84fc30",
     "packages/fabric/src/budgets.ts": "dad90fda45362706dd04a50d6dc2a18b152acb5501b03bd006d01de6b8c3d433",
     "packages/fabric/src/compiled-bodies.generated.ts": "a34161fc66e796084b3db6508178fe1c7cc113e0e94dea9a8d3e9917dcc0b031",
