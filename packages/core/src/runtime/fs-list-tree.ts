@@ -11,8 +11,10 @@ const LIST_TREE_WALKS = 4;
  * revision (a walk whose pages are not all at one is walked again), and the
  * subtree whole. Past `maxEntries` it is refused (E2BIG), so the caller
  * lists it some other way rather than mistaking part of it for all of it.
- * A root that is not a directory is refused as readdir refuses it (ENOENT,
- * ENOTDIR): a walk that met nothing beneath it is no listing of it.
+ * The root is walked as it stands, never followed: one that is not a
+ * directory (missing, a file, a symlink) has nothing beneath it to walk, and
+ * is refused (ENOENT, ENOTDIR) rather than listed as an empty directory; the
+ * caller lists what a link leads to some other way.
  * The session's fsListTree (session/rpc.ts).
  */
 export async function subtreeListing(bridge: Pick<RuntimeFsBridge, 'list' | 'stat'>, root: string, maxEntries: number): Promise<VfsListTree> {
