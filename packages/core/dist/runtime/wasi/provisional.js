@@ -57,16 +57,18 @@ const NO_RETAINED = Object.freeze([]);
 export function provisional(host) {
     /** Every file this process has open or changed, one Inode each, by device and number. */
     const table = new Map();
-    /** The same Inodes by what holds them: a grant (its cell), or these decisions. What visits one kind visits only it. */
-    const held = new Set();
-    const loose = new Set();
+    /** The same Inodes, as one set: what visits every one visits only these (a file a grant holds alone is the holder's). */
+    const all = new Set();
+    /** The Inode of file (dev, ino) these decisions have: a borrow (a file a grant holds alone is not here; see take). */
     const inodeAtNumber = (dev, ino) => table.get(dev)?.get(ino);
+    /** The Inode of file (dev, ino), where anything of this process's has it: these decisions', else one a grant holds alone, promoted (ProvisionalHost.promote). */
+    const take = (dev, ino) => inodeAtNumber(dev, ino) ?? host.promote(dev, ino);
     const addInode = (inode) => {
         let numbers = table.get(inode.dev);
         if (numbers === undefined)
             table.set(inode.dev, numbers = new Map());
         numbers.set(inode.ino, inode);
-        (inode.cell === undefined ? loose : held).add(inode);
+        all.add(inode);
     };
     const removeInode = (inode) => {
         const numbers = table.get(inode.dev);
@@ -75,22 +77,10 @@ export function provisional(host) {
         numbers.delete(inode.ino);
         if (numbers.size === 0)
             table.delete(inode.dev);
-        held.delete(inode);
-        loose.delete(inode);
-    };
-    /** `inode`'s grant's cell from now on, or (undefined) none: a grant decides it, or no longer. */
-    const setCell = (inode, cell) => {
-        if (cell === undefined)
-            delete inode.cell;
-        else
-            inode.cell = cell;
-        if (inodeAtNumber(inode.dev, inode.ino) !== inode)
-            return;
-        (cell === undefined ? held : loose).delete(inode);
-        (cell === undefined ? loose : held).add(inode);
+        all.delete(inode);
     };
     /** Every Inode: a copy, so what visits may add or remove. */
-    const everyInode = () => [...held, ...loose];
+    const everyInode = () => [...all];
     /** Every descriptor of those files, held and provisional alike. */
     const descs = new Map();
     /** Each answered session description's descriptor and the read access its open asked for. */
@@ -144,7 +134,7 @@ export function provisional(host) {
         if (touched.size > 0) {
             const row = known !== undefined ? known : host.row(key);
             const changed = row ? inodeAtNumber(row.dev, row.ino) : undefined;
-            if (changed !== undefined && changed.state !== null && !changed.local && changed.cell === undefined
+            if (changed !== undefined && changed.state !== null && !changed.local
                 && changed.heldAt === undefined && changed.records.length === 0 && ![...layer.values()].includes(changed)) {
                 // A retained fold is only the fallback while no name leads to its inode.
                 // The view found it again (a peer's rename): its retired content is the view's.
@@ -168,7 +158,7 @@ export function provisional(host) {
     };
     /** The one Inode of the file `row` (at `key`) names. */
     const inodeAt = (key, row) => {
-        let inode = inodeAtNumber(row.dev, row.ino);
+        let inode = take(row.dev, row.ino);
         if (inode === undefined) {
             inode = { dev: row.dev, ino: row.ino, type: row.type, key, origin: key, row, base: null, state: null, records: NO_RECORDS, recordsCost: 0, unnamed: false, local: false, descs: 0, retained: NO_RETAINED, credit: 0, reserved: 0 };
             addInode(inode);
@@ -261,10 +251,8 @@ export function provisional(host) {
         let known = inode.state !== null && inode.state.bytes !== null;
         let size = inode.state?.size ?? inode.row.size;
         if (inode.base === null) {
-            // A grant's file: its cell's bytes are what the first record folds over (fold: unhold).
-            const seen = inode.local || inode.cell !== undefined ? undefined : viewed(inode);
-            const held = inode.cell !== undefined ? inode.cell.bytes.subarray(0, inode.cell.length)
-                : seen?.bytes ?? (inode.pin?.revision === (seen?.row.revision ?? inode.row.revision) ? inode.pin.bytes : undefined);
+            const seen = inode.local ? undefined : viewed(inode);
+            const held = seen?.bytes ?? (inode.pin?.revision === (seen?.row.revision ?? inode.row.revision) ? inode.pin.bytes : undefined);
             known = held !== undefined || inode.row.size === 0;
             baseBytes = held?.byteLength ?? 0;
             capacity = baseBytes;
@@ -324,9 +312,6 @@ export function provisional(host) {
     /** Fold `op` into `inode` (its baseline taken first): its record, kept until it retires; `description` the one it was made through. */
     /** `inode` ready for a change here: a grant's no longer (what that logs goes first), and its fold begun. */
     const ready = (inode) => {
-        // A grant's file changed here is no grant's from now on: one content, the fold.
-        if (inode.cell !== undefined)
-            host.unhold(inode);
         if (inode.base === null) {
             inode.base = baseline(inode);
             inode.state = copyState(inode.base);
@@ -352,7 +337,7 @@ export function provisional(host) {
     };
     /** `inode` has nothing pending, nothing open and no name here: it goes, and what it held goes back. */
     const release = (inode) => {
-        if (inode.records.length > 0 || inode.descs > 0 || inode.credit > 0 || inode.cell !== undefined)
+        if (inode.records.length > 0 || inode.descs > 0 || inode.credit > 0)
             return;
         for (const value of layer.values())
             if (value === inode)
@@ -662,7 +647,8 @@ export function provisional(host) {
             inode.opened = key;
             return;
         }
-        const known = inodeAtNumber(receipt.dev, receipt.ino);
+        // The file the session opened, whoever of this process's has it: a grant's alone is promoted first (take).
+        const known = take(receipt.dev, receipt.ino);
         if (creating && inode.local) {
             removeInode(inode);
             inode.local = false;
@@ -849,7 +835,7 @@ export function provisional(host) {
     const continued = (desc, start, bytes, at) => {
         const inode = desc.inode;
         const last = desc.lastRecord;
-        if (last === null || last.answered || last.gone === true || last.owner !== inode || inode.cell !== undefined || inode.state === null)
+        if (last === null || last.answered || last.gone === true || last.owner !== inode || inode.state === null)
             return false;
         const was = last.op;
         if (!('data' in was) || (start === undefined ? was.kind !== 'append' : was.kind !== 'write' || start !== was.offset + was.data.byteLength))
@@ -1018,24 +1004,19 @@ export function provisional(host) {
     };
     const provisional = {
         inode: inodeAtNumber,
-        inodeFor: (key, row) => {
-            const known = inodeAtNumber(row.dev, row.ino);
-            if (known !== undefined)
-                return known;
-            const inode = inodeAt(key, row);
+        shell: (key, row) => {
+            const inode = { dev: row.dev, ino: row.ino, type: row.type, key, origin: key, row, base: null, state: null, records: NO_RECORDS, recordsCost: 0, unnamed: false, local: false, descs: 0, retained: NO_RETAINED, credit: 0, reserved: 0 };
             const need = cost(inode);
-            if (!host.reserve(need)) {
-                removeInode(inode);
+            if (!host.reserve(need))
                 return undefined;
-            }
             inode.reserved = need;
             return inode;
         },
-        heldDescriptor: (inode, path, read, append) => {
-            const id = host.nextHandle();
-            descs.set(id, { inode, read, write: true, append, position: 0, path, lastRecord: null, lastAnswer: null });
-            inode.descs++;
-            return { id, path };
+        charge: (inode) => fit(inode),
+        adopt: (inode, handles) => {
+            addInode(inode);
+            for (const [id, desc] of handles)
+                descs.set(id, desc);
         },
         descriptor: (handleId) => descs.get(handleId),
         descriptorsOf: (inode) => {
@@ -1043,16 +1024,9 @@ export function provisional(host) {
                 return [];
             return [...new Set(descs.values())].filter((desc) => desc.inode === inode);
         },
-        cells: () => [...held],
-        hold: (inode, cell) => setCell(inode, cell),
-        dropCell: (inode) => {
-            setCell(inode, undefined);
-            fit(inode);
-            release(inode);
-        },
         moved: (from, to) => {
-            for (const inode of everyInode()) {
-                if (inode.cell?.detached !== undefined || !within(inode.key, from))
+            for (const inode of all) {
+                if (!within(inode.key, from))
                     continue;
                 inode.key = inode.origin = to + inode.key.slice(from.length);
                 fit(inode);
@@ -1062,7 +1036,7 @@ export function provisional(host) {
             const cell = inode.cell;
             if (cell === undefined)
                 return;
-            setCell(inode, undefined);
+            delete inode.cell;
             inode.row = { ...entry, size: cell.length };
             // The cell's buffer is the baseline's own: no one else holds it now.
             inode.base = { bytes: cell.bytes.subarray(0, cell.length), size: cell.length, mode: entry.mode, uid: entry.uid, gid: entry.gid, atime: entry.atime, mtime: entry.mtime, ctime: entry.ctime };
@@ -1075,13 +1049,13 @@ export function provisional(host) {
             activity();
         },
         answeredHeld: (root) => {
-            for (const inode of loose)
+            for (const inode of all)
                 if (inode.heldAt === Infinity && (within(inode.key, root) || within(inode.origin, root)))
                     inode.heldAt = barriers;
         },
         pending: (dev, ino) => {
             const inode = inodeAtNumber(dev, ino);
-            return inode !== undefined && (inode.cell !== undefined || inode.state !== null || inode.key !== inode.origin);
+            return inode !== undefined && (inode.state !== null || inode.key !== inode.origin);
         },
         sessionOf: (handleId, access) => {
             const desc = descs.get(handleId);
@@ -1096,8 +1070,8 @@ export function provisional(host) {
                 sessions.set(description, { handle, read });
         },
         kept: () => {
-            let total = 0;
-            for (const inode of everyInode())
+            let total = host.heldCost();
+            for (const inode of all)
                 total += cost(inode);
             for (const record of nameRecords)
                 total += record.cost;
@@ -1273,9 +1247,6 @@ export function provisional(host) {
             }
             if (desc.description !== undefined && !inode.retained.includes(desc.description))
                 sessions.delete(desc.description);
-            // A grant's file that lost its name goes with its last descriptor (POSIX: its last close).
-            if (inode.descs === 0 && inode.cell?.detached !== undefined)
-                setCell(inode, undefined);
             release(inode);
         },
         dup: (handleId) => {
@@ -1355,7 +1326,7 @@ export function provisional(host) {
                 return false;
             // Its descriptors keep what it holds: its bytes, where only the view has them, admitted for their lifetime first.
             host.drain();
-            keepForDescriptors(inodeAtNumber(row.dev, row.ino), nameCost([key]), 'unlink', path);
+            keepForDescriptors(take(row.dev, row.ino), nameCost([key]), 'unlink', path);
             loggedName({ type: 'call', call: { call: 'unlink', path: key } }, [key], nameCost([key]), () => place(key, null));
             return true;
         },
@@ -1411,9 +1382,9 @@ export function provisional(host) {
                 return false;
             // A file it replaces keeps, for its descriptors, what it holds: admitted first, with the record and the Inode it moves.
             host.drain();
-            const known = layer.get(from) ?? inodeAtNumber(source.dev, source.ino);
+            const known = layer.get(from) ?? take(source.dev, source.ino);
             const moves = known === undefined ? INODE_COST + 2 * stringCost(from) + 2 * stringCost(to) : 2 * stringCost(to);
-            keepForDescriptors(target === null ? undefined : inodeAtNumber(target.dev, target.ino), nameCost([from, to]) + moves, 'rename', path);
+            keepForDescriptors(target === null ? undefined : take(target.dev, target.ino), nameCost([from, to]) + moves, 'rename', path);
             const moving = known ?? inodeAt(from, source);
             moving.reserved += moves;
             loggedName({ type: 'rename', from, to }, [from, to], nameCost([from, to]), () => {
@@ -1513,7 +1484,7 @@ export function provisional(host) {
                 replay();
             }
             // A grant's decides it (held): one given back stands until a barrier begun after its decisions were answered.
-            for (const inode of [...loose]) {
+            for (const inode of [...all]) {
                 if (inode.heldAt !== undefined) {
                     if (inode.heldAt >= begun)
                         continue;

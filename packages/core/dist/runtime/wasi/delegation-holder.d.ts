@@ -36,7 +36,7 @@
  */
 import type { RuntimeFileHandle, RuntimeOpenFlags, RuntimeVfsDirEntry } from '../os-contracts.js';
 import type { ResidentEntry } from './resident-filesystem.js';
-import { type Provisional } from './provisional.js';
+import { type Desc, type Provisional } from './provisional.js';
 import type { W7Attrs } from '@nimbus-sh/platform/w7-frame.js';
 import { type ProcessFsClient, type ProcessFsJournal, type ProcessFsSession } from '../../_shared/process-fs-client.js';
 /** What the holder reads of the process's resident store (its own decisions aside). */
@@ -96,6 +96,14 @@ export interface DelegationHolder {
     children(key: string, base: RuntimeVfsDirEntry[] | undefined): RuntimeVfsDirEntry[] | undefined;
     /** The bytes of a file made or rewritten here. */
     content(entry: ResidentEntry): Uint8Array | undefined;
+    /**
+     * Whether file (dev, ino)'s bytes are this process's, not the view's: its
+     * provisional decisions' (Provisional.pending), or a grant's given back
+     * whose bytes no barrier begun after their answer has covered yet.
+     */
+    pendingFile(dev: number, ino: number): boolean;
+    /** Descriptor `handleId`, a grant's (its file's cell) or the provisional decisions'. */
+    descriptor(handleId: number): Desc | undefined;
     /** Whether `handleId` is one of the holder's own descriptors. */
     owns(handleId: number): boolean;
     /**

@@ -412,7 +412,7 @@ export function residentFilesystem(session, resident, delegation) {
             if (!found || found.type !== 'file' || found.size > READ_AHEAD_FILE_BYTES || store.content(sibling, found.revision) !== undefined)
                 continue;
             // What this process decided or changes is its own to read.
-            if (holder?.content(found) !== undefined || holder?.provisional.pending(found.dev, found.ino))
+            if (holder?.content(found) !== undefined || holder?.pendingFile(found.dev, found.ino))
                 continue;
             if (bytes + found.size > FS_READ_BATCH_REQUEST_BYTES || readAheadBytes + bytes + found.size > READ_AHEAD_PROCESS_BYTES)
                 break;
@@ -537,7 +537,7 @@ export function residentFilesystem(session, resident, delegation) {
         const decided = holder?.content(entry);
         if (decided !== undefined)
             return decided;
-        if (holder?.provisional.pending(entry.dev, entry.ino))
+        if (holder?.pendingFile(entry.dev, entry.ino))
             return undefined;
         const keep = (bytes) => (bytes === null || bytes === undefined || bytes.byteLength !== entry.size ? undefined : bytes);
         const held = store.content(key, entry.revision);
@@ -744,7 +744,7 @@ export function residentFilesystem(session, resident, delegation) {
         if (!modeAllows(entry, 4, store.cred))
             return null;
         // A file this process changed is the session's to read where its bytes are not known here (its changes are answered there first).
-        if (holder?.provisional.pending(entry.dev, entry.ino) || entry.revision !== stat.revision)
+        if (holder?.pendingFile(entry.dev, entry.ino) || entry.revision !== stat.revision)
             return null;
         const pinKey = `${identity(entry.dev, entry.ino)}:${entry.revision}`;
         const pinned = (pin) => {
@@ -961,7 +961,7 @@ export function residentFilesystem(session, resident, delegation) {
     const readOwn = (handleId, offset, length) => {
         // A grant's cell answers here. Its own description reads the live file;
         // a borrowed anchor is only needed once no name leads to this reader's file.
-        const desc = holder.provisional.descriptor(handleId);
+        const desc = holder.descriptor(handleId);
         if (!now && desc.inode.cell === undefined && holder.provisional.sessionOf(handleId, 'read') !== undefined
             && (desc.description !== undefined || holder.provisional.inodeOf(handleId) === undefined))
             return readByAnchor(handleId, offset, length);
@@ -1001,7 +1001,7 @@ export function residentFilesystem(session, resident, delegation) {
     };
     /** A read through the session's open description of `handleId`'s file (Provisional.sessionOf), at `offset` or the descriptor's position. */
     const readByAnchor = async (handleId, offset, length) => {
-        const desc = holder.provisional.descriptor(handleId);
+        const desc = holder.descriptor(handleId);
         if (!desc.read)
             throw fsError('EBADF', 'read', desc.path);
         const key = holder.keyOf(handleId);
@@ -1040,7 +1040,7 @@ export function residentFilesystem(session, resident, delegation) {
                         return DELEGATE;
                     counts.local++;
                     // Its access is the session's to judge at the open, as open(2) judges it: answered before it returns.
-                    const opening = holder.provisional.descriptor(opened.id)?.opening;
+                    const opening = holder.descriptor(opened.id)?.opening;
                     if (opening === undefined)
                         return heldOpen(opened);
                     return opening.then(() => heldOpen(opened), (error) => {
@@ -1084,7 +1084,7 @@ export function residentFilesystem(session, resident, delegation) {
         if (holder?.owns(handleId))
             return caughtUpFor(() => {
                 // As its open description at the session has it (its names, its size), as its reads are.
-                if (!now && holder.provisional.descriptor(handleId).inode.cell === undefined && holder.provisional.sessionOf(handleId) !== undefined)
+                if (!now && holder.descriptor(handleId).inode.cell === undefined && holder.provisional.sessionOf(handleId) !== undefined)
                     return statByAnchor(handleId);
                 counts.local++;
                 return statOf(holder.fstat(handleId));
@@ -1244,7 +1244,7 @@ export function residentFilesystem(session, resident, delegation) {
             const held = holder;
             if (!held?.owns(target.handle))
                 return Reflect.apply(bySessionReopen, fs, [target, flags, options]);
-            const desc = held.provisional.descriptor(target.handle);
+            const desc = held.descriptor(target.handle);
             const described = desc.inode.cell === undefined && (desc.description !== undefined || held.provisional.sessionOf(target.handle) !== undefined);
             const local = !now && described ? undefined : held.reopen(target.handle, flags);
             if (local !== undefined) {
