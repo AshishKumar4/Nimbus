@@ -282,3 +282,21 @@ export const objectDefineProperty = Object.defineProperty;
 export const arrayPush: <T>(list: T[], ...items: T[]) => number = uncurryThis(Array.prototype.push);
 export const arraySplice: <T>(list: T[], start: number, deleteCount: number) => T[] = uncurryThis(Array.prototype.splice);
 export const ObjectPrototypePropertyIsEnumerableOf: (object: object, key: PropertyKey) => boolean = uncurryThis(Object.prototype.propertyIsEnumerable);
+/** Once every promise in `list` has settled: Promise.allSettled's wait, without the list's iterator or the program's Promise.resolve and then. */
+export function promiseSettled<T>(list: ArrayLike<T>): Promise<void> {
+  return new PromiseConstructor<void>((resolve) => {
+    let left = list.length;
+    if (left === 0) { resolve(); return; }
+    const one = (): void => { if (--left === 0) resolve(); };
+    for (let i = 0; i < list.length; i++) reflectApply(PromisePrototypeThen, reflectApply(PromiseResolve, PromiseConstructor, [list[i]]), [one, one]);
+  });
+}
+/** Once every promise in `list` has fulfilled, or at the first rejection: Promise.all's wait, on the same captures. */
+export function promiseAll<T>(list: ArrayLike<T>): Promise<void> {
+  return new PromiseConstructor<void>((resolve, reject) => {
+    let left = list.length;
+    if (left === 0) { resolve(); return; }
+    const one = (): void => { if (--left === 0) resolve(); };
+    for (let i = 0; i < list.length; i++) reflectApply(PromisePrototypeThen, reflectApply(PromiseResolve, PromiseConstructor, [list[i]]), [one, reject]);
+  });
+}
