@@ -809,6 +809,46 @@ for (const [route, told] of [['idle', 'fsync'], ['idle', 'settle'], ['renewal', 
   assert.equal(s.filesystem.delegations.size, 0, `${label}: given back at the end`);
 }
 
+// ── A grant has one close at a time: a claim that widens over grants given back idle joins their closes ──
+// Seven subtrees given back idle, their closes waiting at the session; a held file elsewhere then grows past the
+// client's cap, and a claim widens over the seven. Its closes join theirs: none is held again (nothing decided
+// under a lease about to end). Red before: the claim's second freeze, refused, held them again.
+{
+  let gated = false;
+  let opened = Promise.withResolvers();
+  const s = session({ grantBytes: 128 * 1024 * 1024, gate: { then: (resolve, reject) => (gated ? opened.promise : Promise.resolve()).then(resolve, reject) } });
+  for (let index = 0; index < 7; index++) await create(s.fs, `/home/user/proj/d${index}/x`, 'x');
+  const big = await s.fs.open('/home/user/other/big', { write: true, create: true, truncate: true, mode: 0o644 });
+  await s.fs.write(big.id, null, enc.encode('b'));
+  await s.fs.flush();
+  assert.equal(s.filesystem.delegations.size, 8, 'eight subtrees held');
+  // The seven go idle (2 s); the other is kept in use. Their closes wait at the session.
+  gated = true;
+  for (let tick = 0; tick < 5; tick++) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await s.fs.write(big.id, 0, enc.encode('b'));
+  }
+  // The other's held file grows past the cap; then a ninth subtree widens over the seven.
+  await s.fs.write(big.id, null, new Uint8Array(65 * 1024 * 1024));
+  const delegated = () => s.fs.stats().delegated.open ?? 0;
+  const ninth = create(s.fs, '/home/user/proj/d7/x', 'x').catch(() => null);
+  await Promise.resolve();
+  // Under one of the seven, being given back: the session's to decide, not this process's.
+  const before = delegated();
+  const after = s.fs.open('/home/user/proj/d0/after', { write: true, create: true, truncate: true, mode: 0o644 }).then((handle) => s.fs.close(handle.id), () => null);
+  await Promise.resolve();
+  assert.equal(delegated() - before, 1, 'a create under a grant being given back went to the session');
+  await s.fs.ftruncate(big.id, 1);
+  gated = false;
+  opened.resolve();
+  await ninth;
+  await after;
+  await s.fs.close(big.id);
+  assert.deepEqual(await s.fs.settle(), []);
+  assert.equal(s.filesystem.delegations.size, 0, 'everything given back');
+  assert.equal(s.kernel.exists('home/user/proj/d0/after'), true);
+}
+
 // ── A decision whose drain the client refuses (a held file past its synchronous cap) leaves nothing decided ──
 // The program is told (ENOMEM), and what it asked for is not done: no name made, none removed, no mode changed.
 // Red before: the name was decided before the drain refused, so it stayed though the call failed.
