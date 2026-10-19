@@ -2454,10 +2454,11 @@
         if (e.pointerId === activePointer) finishDrag();
       }
 
-      // The window lost focus. While the handle still holds the pointer it is
-      // down and the drag goes on: a frame the shell loads can take focus on
-      // its own. Without the capture, a press elsewhere (in the preview's
-      // frame) took focus, so the button was released unheard: the drag is over.
+      // The window lost focus. A frame the shell loads can take it on its own
+      // during a drag: while the handle still captures the drag's pointer, the
+      // drag goes on, and its release or cancel, or a later move with no
+      // button down, ends it. Without the capture, a press elsewhere (in the
+      // preview's frame) took focus: the button was released unheard.
       function onBlur() {
         if (activeTarget && activePointer !== null && activeTarget.hasPointerCapture(activePointer)) return;
         finishDrag();

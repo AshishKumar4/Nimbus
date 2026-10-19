@@ -25,8 +25,10 @@ try {
   const handle = await grabHandle(page, '#treeResizeHandle');
   await handle.move(40, 0);
   const held = await readUntil(width, (now) => now > start + 20);
-  // The frame takes focus while the pointer is down: the window blurs.
+  // The frame takes focus while the pointer is down: the window blurs. The
+  // shell holds focus first, since a loading frame may have taken it already.
   const blurred = await page.evaluate(() => new Promise((resolve) => {
+    document.getElementById('treeSearch').focus();
     addEventListener('blur', () => resolve(true), { once: true });
     document.getElementById('preview-frame').focus();
     setTimeout(() => resolve(false), 2000);
