@@ -212,12 +212,13 @@ function holdersOf(facets) {
     return holders;
 }
 /**
- * Whether a process this incarnation (`ctx`) spawned holds `name`: then its
- * facet is that process's. A hold an ended incarnation left (a process whose
- * release never ran) is no process of this one.
+ * Whether a process other than `workerKey`'s holds `name`: then its facet is
+ * that process's. The process's own hold, which an ended incarnation never
+ * released, is its own facet still.
  */
-export function facetNameHeld(ctx, name) {
-    return holdersOf(facetContainer(ctx)).get(name)?.ctx === ctx;
+export function facetNameHeldByAnother(ctx, name, workerKey) {
+    const hold = holdersOf(facetContainer(ctx)).get(name);
+    return hold !== undefined && hold.workerKey !== workerKey;
 }
 const facetNames = new WeakMap();
 function facetOfPid(ctx) {
@@ -344,7 +345,7 @@ function spawnResident(ctx, env, disk, supervisor, params) {
     const book = slotBook(ctx);
     const ledger = sessionLedger(ctx);
     // This process's hold on `name`, until its release or a newer process's spawn.
-    const holding = { ctx };
+    const holding = { workerKey: params.workerKey };
     const holders = holdersOf(facets);
     const holds = () => holders.get(name) === holding;
     // A warm worker keeps the SUPERVISOR binding it was built with, and the

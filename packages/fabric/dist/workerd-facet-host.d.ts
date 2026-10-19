@@ -125,11 +125,11 @@ export declare const DURABLE_FACET_NAME_PREFIX = "app-slot-";
 /** The facet names this actor's session keeps for an undrained write log (process-fs-journal.ts). */
 export declare function reservedFacetNames(ctx: DurableObjectState): Set<string>;
 /**
- * Whether a process this incarnation (`ctx`) spawned holds `name`: then its
- * facet is that process's. A hold an ended incarnation left (a process whose
- * release never ran) is no process of this one.
+ * Whether a process other than `workerKey`'s holds `name`: then its facet is
+ * that process's. The process's own hold, which an ended incarnation never
+ * released, is its own facet still.
  */
-export declare function facetNameHeld(ctx: DurableObjectState, name: string): boolean;
+export declare function facetNameHeldByAnother(ctx: DurableObjectState, name: string, workerKey: string): boolean;
 /** The facet a running resident process `pid` lives in on this actor, for its storage ledger row. */
 export declare function residentFacetOf(ctx: DurableObjectState, pid: number): string | undefined;
 export declare function deleteFacetStorage(ctx: DurableObjectState, name: string): void;
