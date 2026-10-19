@@ -39,6 +39,14 @@ export type Resolved = {
     path: string;
     row: NsRow;
 } | 'ELOOP';
+/** A lookup or listing asked of the session, until its answer is installed or dropped (Namespace.learning). */
+export interface Learning {
+    /** Whether what the answer says of `k` may be installed: nothing admitted since it was asked is at or above `k`, and the table was not replaced. */
+    installs(k: string): boolean;
+    /** Whether the answer's listing of `dir` may be installed: as `installs`, and nothing admitted beneath it either. */
+    lists(dir: string): boolean;
+    end(): void;
+}
 export interface Namespace {
     bind(t: ResidentTables): void;
     setCred(cred: ResidentCred | null | undefined): void;
@@ -61,8 +69,8 @@ export interface Namespace {
     /** Why the namespace is not answering (meaningful only while ready() is false). */
     notReadyCause(): string;
     put(t: ResidentTables, k: string, stat: NsStat, rev: unknown, target?: string | null, unlisted?: string | null): void;
-    /** `listener` told of each row put, by its key, in the same turn (ResidentNamespace.onAdmitted): one, a later one replacing it. */
-    onPut(listener: ((k: string) => void) | null): void;
+    /** `listener` told of each row put, by its key and its file's number, in the same turn (ResidentNamespace.onAdmitted): one, a later one replacing it. */
+    onPut(listener: ((k: string, dev: number, ino: number) => void) | null): void;
     tryPut(t: ResidentTables, k: string, stat: NsStat, rev: unknown, target?: string | null, unlisted?: string | null): boolean;
     deleteTree(t: ResidentTables, k: string, self: boolean): void;
     /** Drop one row and what the table keeps of it in heap. */
@@ -101,7 +109,12 @@ export interface Namespace {
     listedAt(k: string): boolean;
     isListed(dir: string): boolean;
     markListed(dir: string): void;
-    forgetListed(dir: string): void;
+    /**
+     * A lookup or listing about to be asked of the session: a delta admitted
+     * before its answer lands is newer than the answer at every path it names,
+     * and beneath, so the answer installs nothing there, no row and no absence.
+     */
+    learning(): Learning;
 }
 export declare function nsKindCode(type: unknown): number;
 /**

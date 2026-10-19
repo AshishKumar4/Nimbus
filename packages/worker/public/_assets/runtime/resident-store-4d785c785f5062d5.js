@@ -60,7 +60,6 @@ var __nimbusResidentModule = (() => {
   // ../core/dist/constants.js
   var NODE_RELEASE = "22.22.3";
   var NODE_VERSION = `v${NODE_RELEASE}`;
-  var VFS_CAPACITY = 10 * 1024 * 1024 * 1024;
   var FS_READ_BATCH_PATH_LIMIT = 1024;
   var FS_READ_BATCH_REQUEST_BYTES = 4 * 1024 * 1024;
   var FS_LIST_PAGE_LIMIT = 8192;
@@ -1238,11 +1237,16 @@ var __nimbusResidentModule = (() => {
     let cause = "the process has not listed it yet";
     let lazy = false;
     const listed = new SafeSet();
+    let generation = 0;
+    const learnings = new SafeSet();
     const ready = () => ok && coherence.serving();
     const markReady = (t, isReady, why) => {
       t.metaSet("ns", isReady ? "1" : "0");
       ok = !!isReady;
-      if (!isReady) cause = stringOf(why || "a change it could not follow");
+      if (!isReady) {
+        cause = stringOf(why || "a change it could not follow");
+        generation++;
+      }
     };
     const refuse = (t, why) => {
       markReady(t, false, why);
@@ -1270,6 +1274,8 @@ var __nimbusResidentModule = (() => {
         const refused = admission.rowRefusal(heap.nsGrowth(parent, name, stored));
         if (refused !== null) refuse(t, refused);
       }
+      const ino = NumberOf(stat.ino) || 0;
+      const dev = NumberOf(ownValue(stat, "dev")) || 0;
       t.nsPut(
         parent,
         name,
@@ -1281,17 +1287,17 @@ var __nimbusResidentModule = (() => {
         NumberOf(stat.atime) || 0,
         NumberOf(stat.mtime) || 0,
         NumberOf(stat.ctime) || 0,
-        NumberOf(stat.ino) || 0,
+        ino,
         NumberOf(rev) || 0,
         stored,
-        NumberOf(ownValue(stat, "dev")) || 0,
+        dev,
         NumberOf(ownValue(stat, "nlink")) || 1
       );
       if (kind === NS_LINK) links.add(k);
       else links.delete(k);
       if (mount !== null) unlisted.set(k, mount);
       else unlisted.delete(k);
-      putListener?.(k);
+      putListener?.(k, dev, ino);
     };
     const tryPut = (t, k, stat, rev, target, unlistedAt) => {
       try {
@@ -1439,11 +1445,14 @@ var __nimbusResidentModule = (() => {
       },
       /**
        * Apply one delta entry that carries a stat. Returns a directory whose
-       * subtree must be relisted — one that just became searchable, whose
-       * descendants no delta names — or null.
+       * subtree an enumerated namespace must relist — one that just became
+       * searchable, whose descendants no delta names — or null.
        */
       applyEntry(t, entry) {
         const k = nsKey(entry.path);
+        learnings.forEach((asked) => {
+          asked.reported[asked.reported.length] = k;
+        });
         if (k === "") return null;
         const stat = ownValue(entry, "stat");
         if (stat === null) {
@@ -1459,6 +1468,10 @@ var __nimbusResidentModule = (() => {
         }
         const was = before !== void 0 && traversable(before);
         const now = traversable(after);
+        if (lazy) {
+          if (ownValue(entry, "structural") || ownValue(entry, "subtree") || was !== now) deleteTree(t, k, false);
+          return null;
+        }
         if (was && !now) deleteTree(t, k, false);
         if (!was && now && before !== void 0) return k;
         return null;
@@ -1468,6 +1481,7 @@ var __nimbusResidentModule = (() => {
        * listing no longer names. Called once per enumeration, after its last page.
        */
       replace(t, entries) {
+        generation++;
         const names = new SafeSet();
         for (let i = 0; i < entries.length; i++) names.add(nsKey(entries[i].path));
         const rows = t.nsKeys();
@@ -1571,6 +1585,7 @@ var __nimbusResidentModule = (() => {
         tryPut(t, k, stat, written ?? cursor.rev, target);
       },
       clear() {
+        generation++;
         links = new SafeSet();
         unlisted = new SafeMap();
         ok = false;
@@ -1579,6 +1594,7 @@ var __nimbusResidentModule = (() => {
         return lazy;
       },
       beginLazy() {
+        generation++;
         lazy = true;
         listed.clear();
         links = new SafeSet();
@@ -1596,8 +1612,24 @@ var __nimbusResidentModule = (() => {
       onPut(listener) {
         putListener = listener;
       },
-      /** Forget that `dir` and every directory beneath it are listed: a change no delta itemises may have moved their names. */
-      forgetListed
+      learning() {
+        const asked = { generation, reported: new SafeList() };
+        learnings.add(asked);
+        const named = (k, beneath) => {
+          for (let i = 0; i < asked.reported.length; i++) {
+            const at = asked.reported[i];
+            if (at === "" || at === k || stringStartsWith(k, at + "/") || beneath && (k === "" || stringStartsWith(at, k + "/"))) return true;
+          }
+          return false;
+        };
+        return {
+          installs: (k) => asked.generation === generation && !named(k, false),
+          lists: (dir) => asked.generation === generation && !named(dir, true),
+          end: () => {
+            learnings.delete(asked);
+          }
+        };
+      }
     };
   }
 
@@ -1800,7 +1832,7 @@ var __nimbusResidentModule = (() => {
               if (!stringStartsWith(heldPath, path + "/") || heldCell2.rev === RK_OWN_WRITE || heldCell2.rev >= entryRev) return;
               forgetHeld(heldPath);
             });
-            if (namespaced && subtree && stat && stat.type === "directory") relist[relist.length] = path;
+            if (namespaced && !namespace.lazy && subtree && stat && stat.type === "directory") relist[relist.length] = path;
           }
           let isHeld = false, stamped = 0, heldKey = null;
           const row = t.fileRevKey(path);
@@ -2355,10 +2387,7 @@ var __nimbusResidentModule = (() => {
           release: (bytes) => admission.unpin(bytes),
           // Each row as it is put, the process's (one listener: this view's process, a later one replacing it).
           onAdmitted(listener) {
-            namespace.onPut((k) => {
-              const entry = view.entry(k);
-              if (entry) listener(k, entry);
-            });
+            namespace.onPut(listener);
           }
         };
         return view;
@@ -2750,154 +2779,170 @@ var __nimbusResidentModule = (() => {
         requests[requests.length] = { path: "/" + last, offset: 0, length: contentBytes };
         requests[requests.length] = { path: "/" + last, lstat: true };
       }
-      let answers;
+      const learning = namespace.learning();
       try {
-        answers = await reflectApply(fsReadBatch, supervisor, [arrayCopy(requests)]);
-      } catch {
-        return false;
-      }
-      if (!arrayIsArray(answers) || answers.length !== requests.length) return false;
-      let reachedLast = false;
-      for (let i = 0; i < batch.length; i++) {
-        const answer = ownValue3(answers, i);
-        const stat = answer && ownValue3(answer, "stat");
-        if (!answer || ownValue3(answer, "error") || stat === null || stat === void 0 || !nsDescribes(stat)) break;
-        let target;
-        if (stat.type === "symlink") {
-          try {
-            const readlink = method(supervisor, "readlink");
-            if (typeof readlink !== "function") break;
-            target = await reflectApply(readlink, supervisor, ["/" + batch[i]]);
-          } catch {
-            break;
-          }
-          if (typeof target !== "string") break;
-        }
-        if (!namespace.tryPut(t, batch[i], stat, NumberOf(stat.revision) || 0, target)) return false;
-        if (i === batch.length - 1) reachedLast = true;
-        if (stat.type !== "directory") break;
-      }
-      if (withContent && reachedLast) {
-        const lastAnswer = ownValue3(answers, batch.length - 1);
-        const before = lastAnswer && ownValue3(lastAnswer, "stat");
-        const read = ownValue3(answers, batch.length);
-        const after = ownValue3(answers, batch.length + 1);
-        const content = read && !ownValue3(read, "error") && ownValue3(read, "bytes");
-        const bytes = content ? residentBytes(content) : null;
-        const size = bytes === null ? 0 : typedArrayByteLength(bytes);
-        const afterStat = after && !ownValue3(after, "error") ? ownValue3(after, "stat") : null;
-        if (before && before.type === "file" && bytes !== null && size === NumberOf(before.size) && afterStat && afterStat.type === "file" && NumberOf(afterStat.ino) === NumberOf(before.ino) && NumberOf(afterStat.revision) === NumberOf(before.revision) && await admission.ensureRoom(residentCellCost(bytes))) {
-          cells.fill(last, bytes, NumberOf(before.revision) || 0);
-        }
-      }
-      return true;
-    };
-    const listDirectory = async (supervisor, dir) => {
-      const readdir = supervisor ? method(supervisor, "readdir") : void 0;
-      const fsReadBatch = supervisor ? method(supervisor, "fsReadBatch") : void 0;
-      if (!supervisor || typeof readdir !== "function" || typeof fsReadBatch !== "function") return false;
-      const t = coherence.require();
-      let names;
-      try {
-        names = await reflectApply(readdir, supervisor, ["/" + dir]);
-      } catch {
-        return false;
-      }
-      if (!arrayIsArray(names)) return false;
-      const keys = new SafeList();
-      for (let i = 0; i < names.length; i++) keys[keys.length] = (dir === "" ? "" : dir + "/") + stringOf(names[i].name);
-      const stats = new SafeMap();
-      for (let i = 0; i < keys.length; i += BATCH_PATHS) {
-        const batch = new SafeList();
-        const requests = new SafeList();
-        for (let j = i, end = mathMin(keys.length, i + BATCH_PATHS); j < end; j++) {
-          batch[batch.length] = keys[j];
-          requests[requests.length] = { path: "/" + keys[j], lstat: true };
-        }
         let answers;
         try {
           answers = await reflectApply(fsReadBatch, supervisor, [arrayCopy(requests)]);
         } catch {
           return false;
         }
-        if (!arrayIsArray(answers) || answers.length !== batch.length) return false;
-        for (let j = 0; j < batch.length; j++) {
-          const answer = ownValue3(answers, j);
-          if (!answer || ownValue3(answer, "error")) return false;
-          const stat = ownValue3(answer, "stat");
-          if (stat === null || stat === void 0) continue;
-          if (!nsDescribes(stat)) return false;
-          stats.set(batch[j], stat);
+        if (!arrayIsArray(answers) || answers.length !== requests.length) return false;
+        let reachedLast = false;
+        for (let i = 0; i < batch.length; i++) {
+          const answer = ownValue3(answers, i);
+          const stat = answer && ownValue3(answer, "stat");
+          if (!answer || ownValue3(answer, "error") || stat === null || stat === void 0 || !nsDescribes(stat)) break;
+          let target;
+          if (stat.type === "symlink") {
+            try {
+              const readlink = method(supervisor, "readlink");
+              if (typeof readlink !== "function") break;
+              target = await reflectApply(readlink, supervisor, ["/" + batch[i]]);
+            } catch {
+              break;
+            }
+            if (typeof target !== "string") break;
+          }
+          if (!learning.installs(batch[i]) || !namespace.tryPut(t, batch[i], stat, NumberOf(stat.revision) || 0, target)) return false;
+          if (i === batch.length - 1) reachedLast = true;
+          if (stat.type !== "directory") break;
         }
+        if (withContent && reachedLast) {
+          const lastAnswer = ownValue3(answers, batch.length - 1);
+          const before = lastAnswer && ownValue3(lastAnswer, "stat");
+          const read = ownValue3(answers, batch.length);
+          const after = ownValue3(answers, batch.length + 1);
+          const content = read && !ownValue3(read, "error") && ownValue3(read, "bytes");
+          const bytes = content ? residentBytes(content) : null;
+          const size = bytes === null ? 0 : typedArrayByteLength(bytes);
+          const afterStat = after && !ownValue3(after, "error") ? ownValue3(after, "stat") : null;
+          if (before && before.type === "file" && bytes !== null && size === NumberOf(before.size) && afterStat && afterStat.type === "file" && NumberOf(afterStat.ino) === NumberOf(before.ino) && NumberOf(afterStat.revision) === NumberOf(before.revision) && await admission.ensureRoom(residentCellCost(bytes)) && learning.installs(last)) {
+            cells.fill(last, bytes, NumberOf(before.revision) || 0);
+          }
+        }
+        return true;
+      } finally {
+        learning.end();
       }
-      const statKeys = new SafeList();
-      stats.forEach((_stat, k) => {
-        statKeys[statKeys.length] = k;
-      });
-      const targets = new SafeMap();
-      for (let i = 0; i < statKeys.length; i++) {
-        const k = statKeys[i];
-        const stat = stats.get(k);
-        if (stat === void 0 || stat.type !== "symlink") continue;
-        let target;
+    };
+    const listDirectory = async (supervisor, dir) => {
+      const readdir = supervisor ? method(supervisor, "readdir") : void 0;
+      const fsReadBatch = supervisor ? method(supervisor, "fsReadBatch") : void 0;
+      if (!supervisor || typeof readdir !== "function" || typeof fsReadBatch !== "function") return false;
+      const t = coherence.require();
+      const learning = namespace.learning();
+      try {
+        let names;
         try {
-          const readlink = method(supervisor, "readlink");
-          if (typeof readlink !== "function") return false;
-          target = await reflectApply(readlink, supervisor, ["/" + k]);
+          names = await reflectApply(readdir, supervisor, ["/" + dir]);
         } catch {
           return false;
         }
-        if (typeof target !== "string") return false;
-        targets.set(k, target);
+        if (!arrayIsArray(names)) return false;
+        const keys = new SafeList();
+        for (let i = 0; i < names.length; i++) keys[keys.length] = (dir === "" ? "" : dir + "/") + stringOf(names[i].name);
+        const stats = new SafeMap();
+        for (let i = 0; i < keys.length; i += BATCH_PATHS) {
+          const batch = new SafeList();
+          const requests = new SafeList();
+          for (let j = i, end = mathMin(keys.length, i + BATCH_PATHS); j < end; j++) {
+            batch[batch.length] = keys[j];
+            requests[requests.length] = { path: "/" + keys[j], lstat: true };
+          }
+          let answers;
+          try {
+            answers = await reflectApply(fsReadBatch, supervisor, [arrayCopy(requests)]);
+          } catch {
+            return false;
+          }
+          if (!arrayIsArray(answers) || answers.length !== batch.length) return false;
+          for (let j = 0; j < batch.length; j++) {
+            const answer = ownValue3(answers, j);
+            if (!answer || ownValue3(answer, "error")) return false;
+            const stat = ownValue3(answer, "stat");
+            if (stat === null || stat === void 0) continue;
+            if (!nsDescribes(stat)) return false;
+            stats.set(batch[j], stat);
+          }
+        }
+        const statKeys = new SafeList();
+        stats.forEach((_stat, k) => {
+          statKeys[statKeys.length] = k;
+        });
+        const targets = new SafeMap();
+        for (let i = 0; i < statKeys.length; i++) {
+          const k = statKeys[i];
+          const stat = stats.get(k);
+          if (stat === void 0 || stat.type !== "symlink") continue;
+          let target;
+          try {
+            const readlink = method(supervisor, "readlink");
+            if (typeof readlink !== "function") return false;
+            target = await reflectApply(readlink, supervisor, ["/" + k]);
+          } catch {
+            return false;
+          }
+          if (typeof target !== "string") return false;
+          targets.set(k, target);
+        }
+        if (!learning.lists(dir)) return false;
+        const children = namespace.children(dir);
+        for (let i = 0; i < children.length; i++) {
+          const child = children[i];
+          const k = (dir === "" ? "" : dir + "/") + child.name;
+          if (!stats.has(k)) namespace.deleteTree(t, k, true);
+        }
+        for (let i = 0; i < statKeys.length; i++) {
+          const k = statKeys[i];
+          const stat = stats.get(k);
+          if (stat !== void 0 && !namespace.tryPut(t, k, stat, NumberOf(stat.revision) || 0, targets.get(k))) return false;
+        }
+        namespace.markListed(dir);
+        return true;
+      } finally {
+        learning.end();
       }
-      const children = namespace.children(dir);
-      for (let i = 0; i < children.length; i++) {
-        const child = children[i];
-        const k = (dir === "" ? "" : dir + "/") + child.name;
-        if (!stats.has(k)) namespace.deleteTree(t, k, true);
-      }
-      for (let i = 0; i < statKeys.length; i++) {
-        const k = statKeys[i];
-        const stat = stats.get(k);
-        if (stat !== void 0 && !namespace.tryPut(t, k, stat, NumberOf(stat.revision) || 0, targets.get(k))) return false;
-      }
-      namespace.markListed(dir);
-      return true;
     };
     const listSubtree = async (supervisor, dir) => {
       const fsListTree = supervisor ? method(supervisor, "fsListTree") : void 0;
       if (!supervisor || typeof fsListTree !== "function") return false;
       const t = coherence.require();
-      let tree;
+      const learning = namespace.learning();
       try {
-        tree = await reflectApply(fsListTree, supervisor, ["/" + dir, FS_LIST_TREE_MAX_ENTRIES]);
-      } catch {
-        return false;
-      }
-      if (!tree || !arrayIsArray(tree.entries)) return false;
-      const listed = new SafeList();
-      listed[listed.length] = dir;
-      const written = new SafeSet();
-      for (let i = 0; i < tree.entries.length; i++) {
-        const entry = tree.entries[i];
-        const k = nsKey(entry.path);
-        if (!entry.stat || !nsDescribes(entry.stat)) return false;
-        const unlisted = ownValue3(entry, "unlisted");
-        if (!namespace.tryPut(t, k, entry.stat, entry.rev, ownValue3(entry, "linkTarget"), unlisted ?? null)) return false;
-        written.add(k);
-        if (entry.kind === "directory" && !unlisted) listed[listed.length] = k;
-      }
-      for (let i = 0; i < listed.length; i++) {
-        const directory = listed[i];
-        const children = namespace.children(directory);
-        for (let j = 0; j < children.length; j++) {
-          const child = children[j];
-          const k = (directory === "" ? "" : directory + "/") + child.name;
-          if (!written.has(k)) namespace.deleteTree(t, k, true);
+        let tree;
+        try {
+          tree = await reflectApply(fsListTree, supervisor, ["/" + dir, FS_LIST_TREE_MAX_ENTRIES]);
+        } catch {
+          return false;
         }
+        if (!tree || !arrayIsArray(tree.entries) || !learning.lists(dir)) return false;
+        const listed = new SafeList();
+        listed[listed.length] = dir;
+        const written = new SafeSet();
+        for (let i = 0; i < tree.entries.length; i++) {
+          const entry = tree.entries[i];
+          const k = nsKey(entry.path);
+          if (!entry.stat || !nsDescribes(entry.stat)) return false;
+          const unlisted = ownValue3(entry, "unlisted");
+          if (!namespace.tryPut(t, k, entry.stat, entry.rev, ownValue3(entry, "linkTarget"), unlisted ?? null)) return false;
+          written.add(k);
+          if (entry.kind === "directory" && !unlisted) listed[listed.length] = k;
+        }
+        for (let i = 0; i < listed.length; i++) {
+          const directory = listed[i];
+          const children = namespace.children(directory);
+          for (let j = 0; j < children.length; j++) {
+            const child = children[j];
+            const k = (directory === "" ? "" : directory + "/") + child.name;
+            if (!written.has(k)) namespace.deleteTree(t, k, true);
+          }
+        }
+        for (let i = 0; i < listed.length; i++) namespace.markListed(listed[i]);
+        return true;
+      } finally {
+        learning.end();
       }
-      for (let i = 0; i < listed.length; i++) namespace.markListed(listed[i]);
-      return true;
     };
     return { relist, fetchFiles, enumerate, lookupKeys, listDirectory, listSubtree };
   }
@@ -2924,10 +2969,7 @@ var __nimbusResidentModule = (() => {
     const applyAcquire = async (supervisor, result) => {
       await admission.roomForPushed(result);
       const applied = cells.admit(result);
-      for (const dir of applied.relist) {
-        if (namespace.lazy) namespace.forgetListed(dir);
-        else await transport.relist(supervisor, dir);
-      }
+      for (const dir of applied.relist) await transport.relist(supervisor, dir);
       return applied;
     };
     const catchUp = async (supervisor, cursor) => {

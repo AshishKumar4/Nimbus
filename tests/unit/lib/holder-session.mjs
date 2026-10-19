@@ -63,7 +63,7 @@ export function session({ grantInos, journal, gate, refuse, view, acquired, gran
     const row = { entry: entryNow(key), content: !fetched && view.contentless?.() ? undefined : contentNow(key) };
     seen.set(key, row);
     if (row.entry) {
-      admitted?.(key, row.entry);
+      admitted?.(key, row.entry.dev, row.entry.ino);
       view.admitted?.();
     }
     return row;

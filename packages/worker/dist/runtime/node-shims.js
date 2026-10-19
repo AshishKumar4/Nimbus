@@ -6327,7 +6327,8 @@ const __fsMod = (() => {
 
   // ── statfs ──
   // Honest constants for the VFS: the block size is the SQLite chunk unit's
-  // page size, and blocks is the configured VFS capacity in those blocks.
+  // page size, and blocks is the session's storage limit (VFS_CAPACITY, the
+  // one the storage ledger enforces) in those blocks.
   // The supervisor surface exposes no usage counter, so bfree/bavail report
   // the whole capacity; the VFS has no inode table, so files/ffree are 0
   // (unknown, not "none"). \`type\` is 0: this is no kernel filesystem and

@@ -24,7 +24,6 @@ try {
   await verifyPublishedTarballs([prepared], { registry: 'https://registry.test', fetch: request, log: text => messages.push(text) });
   assert.match(messages[0], /unchanged/);
   assert.equal(readFileSync(join(root, 'calls'), 'utf8').trim(), 'packed', 'comparison never calls npm pack again');
-  assert.equal(Buffer.from(prepared.base64, 'base64').compare(readFileSync(prepared.path)), 0, 'the signing payload is the archive compared');
   await assert.rejects(verifyPublishedTarballs([prepared], {
     registry: 'https://registry.test', log() {}, fetch: async url => url.endsWith('/1.0.0')
       ? Response.json({ dist: { tarball: 'https://registry.test/archive' } })
@@ -36,4 +35,4 @@ try {
   process.env.PATH = before;
   rmSync(root, { recursive: true, force: true });
 }
-console.log('publish-tarballs: compare and signing use one prepared archive; changed bytes fail closed');
+console.log('publish-tarballs: the compare uses the one prepared archive; changed bytes fail closed');

@@ -250,7 +250,13 @@ export function residentFilesystem(session, resident, delegation) {
         });
         // Each row the view takes in reaches the file the process holds by that number, in the same turn.
         const decisions = holder.provisional;
-        resident.onAdmitted?.((key, entry) => decisions.admitted(key, entry));
+        resident.onAdmitted?.((key, dev, ino) => {
+            if (decisions.inode(dev, ino) === undefined)
+                return;
+            const entry = resident.entry(key);
+            if (entry)
+                decisions.admitted(key, entry);
+        });
         if (delegation.readDirectories)
             directoryPool = readDirectoryPool({
                 call: (request) => { delegated('readDirectories'); return begin(() => delegation.readDirectories(request)); }, store, client: holder.client,

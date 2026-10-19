@@ -47,6 +47,15 @@ export type NsStat = Pick<RuntimeVfsStat, 'type' | 'size' | 'mode' | 'uid' | 'gi
 
 export type Resolved = { path: string; row: NsRow } | 'ELOOP';
 
+/** A lookup or listing asked of the session, until its answer is installed or dropped (Namespace.learning). */
+export interface Learning {
+  /** Whether what the answer says of `k` may be installed: nothing admitted since it was asked is at or above `k`, and the table was not replaced. */
+  installs(k: string): boolean;
+  /** Whether the answer's listing of `dir` may be installed: as `installs`, and nothing admitted beneath it either. */
+  lists(dir: string): boolean;
+  end(): void;
+}
+
 export interface Namespace {
   bind(t: ResidentTables): void;
   setCred(cred: ResidentCred | null | undefined): void;
@@ -69,8 +78,8 @@ export interface Namespace {
   /** Why the namespace is not answering (meaningful only while ready() is false). */
   notReadyCause(): string;
   put(t: ResidentTables, k: string, stat: NsStat, rev: unknown, target?: string | null, unlisted?: string | null): void;
-  /** `listener` told of each row put, by its key, in the same turn (ResidentNamespace.onAdmitted): one, a later one replacing it. */
-  onPut(listener: ((k: string) => void) | null): void;
+  /** `listener` told of each row put, by its key and its file's number, in the same turn (ResidentNamespace.onAdmitted): one, a later one replacing it. */
+  onPut(listener: ((k: string, dev: number, ino: number) => void) | null): void;
   tryPut(t: ResidentTables, k: string, stat: NsStat, rev: unknown, target?: string | null, unlisted?: string | null): boolean;
   deleteTree(t: ResidentTables, k: string, self: boolean): void;
   /** Drop one row and what the table keeps of it in heap. */
@@ -102,7 +111,12 @@ export interface Namespace {
   listedAt(k: string): boolean;
   isListed(dir: string): boolean;
   markListed(dir: string): void;
-  forgetListed(dir: string): void;
+  /**
+   * A lookup or listing about to be asked of the session: a delta admitted
+   * before its answer lands is newer than the answer at every path it names,
+   * and beneath, so the answer installs nothing there, no row and no absence.
+   */
+  learning(): Learning;
 }
 
 export function nsKindCode(type: unknown): number {
@@ -158,7 +172,7 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
   /** Paths of every symlink in the table: resolution walks only past these. */
   let links = new SafeSet<string>();
   /** Told of each row put (onPut). */
-  let putListener: ((k: string) => void) | null = null;
+  let putListener: ((k: string, dev: number, ino: number) => void) | null = null;
   /**
    * Directories on a mount whose entries the listing did not name (the launch
    * did not name them, or they were past its bound), each to the mount point
@@ -176,13 +190,20 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
   let lazy = false;
   /** Directories (keys) every entry of which is a row: below them a missing row is an absent name. */
   const listed = new SafeSet<string>();
+  /** Moved whenever the table is replaced or stops answering: a learning asked before installs nothing. */
+  let generation = 0;
+  /** Each learning in flight, with every path an admitted delta named since it was asked. */
+  const learnings = new SafeSet<{ generation: number; reported: SafeList<string> }>();
 
   const ready = (): boolean => ok && coherence.serving();
 
   const markReady = (t: ResidentTables, isReady: boolean, why?: string): void => {
     t.metaSet('ns', isReady ? '1' : '0');
     ok = !!isReady;
-    if (!isReady) cause = stringOf(why || 'a change it could not follow');
+    if (!isReady) {
+      cause = stringOf(why || 'a change it could not follow');
+      generation++;
+    }
   };
 
   const refuse = (t: ResidentTables, why: string): never => {
@@ -226,15 +247,16 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
       const refused = admission.rowRefusal(heap.nsGrowth(parent, name, stored));
       if (refused !== null) refuse(t, refused);
     }
+    const ino = NumberOf(stat.ino) || 0;
+    const dev = NumberOf(ownValue(stat, 'dev')) || 0;
     t.nsPut(
       parent, name, kind, NumberOf(stat.size) || 0, NumberOf(stat.mode) || 0, NumberOf(stat.uid) || 0,
       NumberOf(stat.gid) || 0, NumberOf(stat.atime) || 0, NumberOf(stat.mtime) || 0, NumberOf(stat.ctime) || 0,
-      NumberOf(stat.ino) || 0, NumberOf(rev) || 0, stored,
-      NumberOf(ownValue(stat, 'dev')) || 0, NumberOf(ownValue(stat, 'nlink')) || 1,
+      ino, NumberOf(rev) || 0, stored, dev, NumberOf(ownValue(stat, 'nlink')) || 1,
     );
     if (kind === NS_LINK) links.add(k); else links.delete(k);
     if (mount !== null) unlisted.set(k, mount); else unlisted.delete(k);
-    putListener?.(k);
+    putListener?.(k, dev, ino);
   };
 
   // The authority operation may succeed while metadata cannot be cached.
@@ -392,11 +414,12 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
     },
     /**
      * Apply one delta entry that carries a stat. Returns a directory whose
-     * subtree must be relisted — one that just became searchable, whose
-     * descendants no delta names — or null.
+     * subtree an enumerated namespace must relist — one that just became
+     * searchable, whose descendants no delta names — or null.
      */
     applyEntry(t, entry) {
       const k = nsKey(entry.path);
+      learnings.forEach((asked) => { asked.reported[asked.reported.length] = k; });
       if (k === '') return null;
       const stat = ownValue(entry, 'stat');
       if (stat === null) { deleteTree(t, k, true); return null; }
@@ -406,6 +429,13 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
       if (after === undefined || after.kind !== NS_DIR) { deleteTree(t, k, false); return null; }
       const was = before !== undefined && traversable(before);
       const now = traversable(after);
+      // Listed on demand, a directory whose names moved without being named
+      // (replaced, renamed, its mode or owner changed) is unknown beneath:
+      // its names are looked up again.
+      if (lazy) {
+        if (ownValue(entry, 'structural') || ownValue(entry, 'subtree') || was !== now) deleteTree(t, k, false);
+        return null;
+      }
       if (was && !now) deleteTree(t, k, false);
       if (!was && now && before !== undefined) return k;
       return null;
@@ -415,6 +445,7 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
      * listing no longer names. Called once per enumeration, after its last page.
      */
     replace(t, entries) {
+      generation++;
       const names = new SafeSet<string>();
       for (let i = 0; i < entries.length; i++) names.add(nsKey(entries[i].path));
       // Remove stale rows before admitting replacements; do not transiently
@@ -525,12 +556,14 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
       tryPut(t, k, stat, written ?? cursor.rev, target);
     },
     clear() {
+      generation++;
       links = new SafeSet();
       unlisted = new SafeMap();
       ok = false;
     },
     get lazy() { return lazy; },
     beginLazy() {
+      generation++;
       lazy = true;
       listed.clear();
       links = new SafeSet();
@@ -542,7 +575,21 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
     onPut(listener) {
       putListener = listener;
     },
-    /** Forget that `dir` and every directory beneath it are listed: a change no delta itemises may have moved their names. */
-    forgetListed,
+    learning() {
+      const asked = { generation, reported: new SafeList<string>() };
+      learnings.add(asked);
+      const named = (k: string, beneath: boolean): boolean => {
+        for (let i = 0; i < asked.reported.length; i++) {
+          const at = asked.reported[i];
+          if (at === '' || at === k || stringStartsWith(k, at + '/') || (beneath && (k === '' || stringStartsWith(at, k + '/')))) return true;
+        }
+        return false;
+      };
+      return {
+        installs: (k) => asked.generation === generation && !named(k, false),
+        lists: (dir) => asked.generation === generation && !named(dir, true),
+        end: () => { learnings.delete(asked); },
+      };
+    },
   };
 }
