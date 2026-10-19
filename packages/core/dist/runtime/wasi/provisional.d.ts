@@ -215,7 +215,7 @@ export interface Provisional {
     unhold(inode: Inode, entry: ResidentEntry): void;
     /** What was decided under `root` is answered (its grant given back): its files are the session's after the next barrier. */
     answeredHeld(root: string): void;
-    /** Whether file (dev, ino)'s content and size are this process's here (a cell, or its fold), not the view's. */
+    /** Whether file (dev, ino)'s content and size are this process's here (a cell, its fold, or a name the view does not have it at yet), not what the view has at its name. */
     pending(dev: number, ino: number): boolean;
     /** The session descriptor of `handleId`'s own description, else its file's anchor. With `read`, only a description opened for reading. */
     sessionOf(handleId: number, access?: 'read'): number | undefined;

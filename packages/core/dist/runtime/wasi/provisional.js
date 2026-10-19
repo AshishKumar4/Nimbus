@@ -1081,7 +1081,7 @@ export function provisional(host) {
         },
         pending: (dev, ino) => {
             const inode = inodeAtNumber(dev, ino);
-            return inode !== undefined && (inode.cell !== undefined || inode.state !== null);
+            return inode !== undefined && (inode.cell !== undefined || inode.state !== null || inode.key !== inode.origin);
         },
         sessionOf: (handleId, access) => {
             const desc = descs.get(handleId);
@@ -1485,12 +1485,18 @@ export function provisional(host) {
             return openToWrite(to, path, { write: true, create: true, truncate: true, mode: asked, umask }, target, data, true, keepMode ? mode : undefined) !== undefined;
         },
         content: (entry) => {
-            if (touched.size === 0)
+            if (table.size === 0)
                 return undefined;
             const inode = inodeAtNumber(entry.dev, entry.ino);
-            if (inode === undefined || inode.state === null || inode.state.bytes === null)
+            if (inode === undefined)
                 return undefined;
-            return owned(inode.state.bytes, inode.state.size);
+            if (inode.state !== null)
+                return inode.state.bytes === null ? undefined : owned(inode.state.bytes, inode.state.size);
+            // Moved here by a rename the view does not have yet: its bytes are the view's at the name it has it at, not this name's.
+            if (inode.key === inode.origin)
+                return undefined;
+            const seen = viewed(inode);
+            return seen?.bytes === undefined ? undefined : owned(seen.bytes, seen.row.size);
         },
         barrierBegun: () => ++barriers,
         retire: (begun) => {
