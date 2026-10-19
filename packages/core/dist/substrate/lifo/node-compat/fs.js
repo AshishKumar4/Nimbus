@@ -9,7 +9,7 @@ import { S_IFMT } from '../../../vfs/vfs.js';
 import { nameDec } from '../../../_shared/bytes.js';
 import { invalidArgType, invalidArgValue, nodeError, nodeSystemError } from '../../../_shared/node-error.js';
 import { fileURLToPath } from 'node:url';
-import { O_ACCMODE, O_APPEND, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_RDONLY, O_RDWR, O_SYNC, O_TRUNC, O_WRONLY, nodeOwnerId, parseFileMode, stringToFlags, } from '../../../_shared/node-arguments.js';
+import { O_ACCMODE, O_APPEND, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_RDONLY, O_RDWR, O_SYNC, O_TRUNC, O_WRONLY, nodeOwnerId, parseFileMode, stringToFlags, validateInt32, } from '../../../_shared/node-arguments.js';
 /**
  * Node's Stats for a filesystem stat: its identity, links, owner, mode and
  * times as the filesystem has them (no birth time is kept: ctime stands in),
@@ -59,6 +59,10 @@ function pathText(p) {
 }
 function resolvePath(cwd, p) {
     return resolve(cwd, pathText(p));
+}
+/** A truncate length as Node takes one (validateInteger, a safe integer), a negative one 0; none is 0. */
+function lengthOf(len) {
+    return len === undefined ? 0 : Math.max(0, validateInt32(len, 'len', Number.MIN_SAFE_INTEGER, Number.MAX_SAFE_INTEGER));
 }
 /** Node's callback check (makeCallback): a callback that is not a function is ERR_INVALID_ARG_TYPE, thrown before any work. */
 function callbackOf(cb) {
@@ -298,6 +302,7 @@ export function createFs(vfs, cwd, stdin, reachStreams) {
     /**
      * truncate(2) as Node makes it: the file opened for writing (its errors
      * name open), cut or zero-extended to `len` (a negative one is 0), closed.
+     * The length is checked once the file is open, as Node's ftruncate checks it.
      * A descriptor in place of the path is ftruncate's (Node's DEP0081).
      */
     function truncateSync(path, len) {
@@ -307,7 +312,7 @@ export function createFs(vfs, cwd, stdin, reachStreams) {
         }
         const fd = vfs.open(resolvePath(cwd, path), openFlagsOf('r+', undefined));
         try {
-            vfs.ftruncate(fd, Math.max(0, len ?? 0));
+            vfs.ftruncate(fd, lengthOf(len));
         }
         finally {
             vfs.close(fd);
@@ -347,8 +352,8 @@ export function createFs(vfs, cwd, stdin, reachStreams) {
         return toNodeStat(onDescriptor(fd, 'fstat', (id) => vfs.fstat(id)));
     }
     function ftruncateSync(fd, len) {
-        // A negative length is 0, as Node clamps it.
-        onDescriptor(fd, 'ftruncate', (id) => vfs.ftruncate(id, Math.max(0, len ?? 0)));
+        const length = lengthOf(len);
+        onDescriptor(fd, 'ftruncate', (id) => vfs.ftruncate(id, length));
     }
     function fchownSync(fd, uid, gid) {
         const owner = nodeOwnerId(uid, 'uid');
@@ -366,8 +371,12 @@ export function createFs(vfs, cwd, stdin, reachStreams) {
     function symlinkSync(target, path, _type) {
         vfs.symlink(pathText(target), resolvePath(cwd, path));
     }
-    function linkSync(_existingPath, _newPath) {
-        // No-op
+    /**
+     * link(2), refused (ENOSYS) as the hosted node refuses it: the filesystem
+     * has no hard links, and a copy would claim an inode the names do not share.
+     */
+    function linkSync(existingPath, newPath) {
+        throw fsError('ENOSYS', 'link', pathText(existingPath), pathText(newPath));
     }
     /** readlink(2): the link's text in `encoding` (UTF-8 by default), or its bytes with `encoding: 'buffer'`. */
     function readlinkSync(path, options) {
@@ -466,10 +475,26 @@ export function createFs(vfs, cwd, stdin, reachStreams) {
         const options = typeof optionsOrCb === 'function' ? undefined : optionsOrCb;
         wrapCallback(() => readlinkSync(path, options), callback);
     }
+    function link(existingPath, newPath, cb) {
+        const callback = callbackOf(cb);
+        const from = pathText(existingPath);
+        const to = pathText(newPath);
+        wrapCallback(() => linkSync(from, to), callback);
+    }
+    /** Its length and callback are checked before anything is done, as Node's are. */
     function truncate(path, lenOrCb, cb) {
+        if (typeof path === 'number') {
+            ftruncate(path, lenOrCb, cb);
+            return;
+        }
+        const length = lengthOf(typeof lenOrCb === 'function' ? undefined : lenOrCb);
         const callback = callbackOf(typeof lenOrCb === 'function' ? lenOrCb : cb);
-        const len = typeof lenOrCb === 'function' ? undefined : lenOrCb ?? undefined;
-        wrapCallback(() => truncateSync(path, len), callback);
+        wrapCallback(() => truncateSync(path, length), callback);
+    }
+    function ftruncate(fd, lenOrCb, cb) {
+        const length = lengthOf(typeof lenOrCb === 'function' ? undefined : lenOrCb);
+        const callback = callbackOf(typeof lenOrCb === 'function' ? lenOrCb : cb);
+        wrapCallback(() => ftruncateSync(fd, length), callback);
     }
     function exists(path, cb) {
         queueMicrotask(() => {
@@ -668,6 +693,7 @@ export function createFs(vfs, cwd, stdin, reachStreams) {
             truncateSync(path, len);
         },
         symlink: async (target, path, type) => symlinkSync(target, path, type),
+        link: async (existingPath, newPath) => linkSync(existingPath, newPath),
         readlink: async (path, options) => readlinkSync(path, options),
         chmod: async (path, mode) => chmodSync(path, mode),
         chown: async (path, uid, gid) => chownSync(path, uid, gid),
@@ -757,8 +783,10 @@ export function createFs(vfs, cwd, stdin, reachStreams) {
         access,
         exists,
         symlink,
+        link,
         readlink,
         truncate,
+        ftruncate,
         open,
         close,
         read,
