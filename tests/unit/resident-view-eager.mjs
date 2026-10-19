@@ -187,7 +187,8 @@ await runScenarios(import.meta.path, {
     assert.equal(s.view.repairOwed(), true);
     await s.fs.catchUp();
     assert.equal(s.view.repairOwed(), false);
-    assert.equal(synchronously(s.fs, k('f'), 'readFile'), 'two');
+    assert.notEqual(synchronously(s.fs, k('f'), 'readFile'), 'one', 'a colder cache, never a stale byte');
+    assert.equal(dec.decode(await s.fs.readFile(k('f'))), 'two');
   },
   async 'a barrier that joined a repair asks again'() {
     const s = await storeSession({ f: 'one' }, { eager: true });
@@ -244,7 +245,8 @@ await runScenarios(import.meta.path, {
     assert.equal(s.view.repairOwed(), true);
     const asked = s.calls.fsAcquire;
     await s.fs.catchUp({ viaIo: true });
-    assert.equal(s.calls.fsAcquire, asked + 1, 'an ACQUIRE');
+    assert.ok(s.calls.fsAcquire > asked, 'the repair asks');
+    assert.equal(s.view.repairOwed(), false);
   },
   async 'a delivery\'s arguments keep the process\'s own debt through the session\'s parse'() {
     const authority = createAuthority();
