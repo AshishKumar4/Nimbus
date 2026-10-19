@@ -10,6 +10,8 @@ export interface ShellOptions {
     errexit: boolean;
     nounset: boolean;
     pipefail: boolean;
+    /** bash's POSIX mode (`sh`, `--posix`, `set -o posix`): a script ends at a special builtin's own failure. */
+    posix: boolean;
 }
 export interface TrapTable {
     get(signal: string): string | undefined;

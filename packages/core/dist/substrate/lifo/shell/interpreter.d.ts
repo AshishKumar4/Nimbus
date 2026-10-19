@@ -27,6 +27,9 @@ export declare class ExitSignal {
     exitCode: number;
     constructor(exitCode: number);
 }
+/** A syntax error in the text eval or `.` reads (not one met running it, a command substitution's): theirs to answer. */
+export declare class TextSyntaxError extends Error {
+}
 /**
  * A function call past the nesting bound (functionNestingLimit): the rest of
  * the line it is in is discarded (bash's jump_to_top_level(DISCARD)): a
@@ -177,6 +180,7 @@ export interface InterpreterConfig extends ShellState {
 export declare class Interpreter {
     private config;
     private lastExitCode;
+    private commandsRun;
     private functions;
     private persistentOutputFds;
     private persistentInputFds;

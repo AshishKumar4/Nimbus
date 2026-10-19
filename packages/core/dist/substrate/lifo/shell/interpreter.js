@@ -4,7 +4,7 @@ import { resolveContext } from '../commands/registry.js';
 import { syscallError } from '../../../vfs/vfs-error.js';
 import { execRefusal } from '../../../shell/exec-dispatch.js';
 import { withRecall } from '../../../vfs/recall.js';
-import { parseAssignment, ScriptLines } from './parser.js';
+import { parseAssignment, ParseError, ScriptLines } from './parser.js';
 import { expandWords, expandWord, expandPatternWord, evaluateSubscript, ExpansionError, } from './expander.js';
 import { evaluateDoubleBracketWords } from './test-builtin.js';
 import { isPipeEnd, PipeChannel } from './pipe.js';
@@ -51,6 +51,9 @@ export class ExitSignal {
     constructor(exitCode) {
         this.exitCode = exitCode;
     }
+}
+/** A syntax error in the text eval or `.` reads (not one met running it, a command substitution's): theirs to answer. */
+export class TextSyntaxError extends Error {
 }
 /**
  * A function call past the nesting bound (functionNestingLimit): the rest of
@@ -126,6 +129,8 @@ function exited(status) {
 export class Interpreter {
     config;
     lastExitCode = 0;
+    // Commands (words) run, for whether eval's or `.`'s text ran one before a syntax error in it.
+    commandsRun = 0;
     functions = new Map();
     persistentOutputFds = new Map();
     persistentInputFds = new Map();
@@ -794,6 +799,7 @@ export class Interpreter {
         let writeFailed = false;
         // eval's and `.`'s status is their text's once it runs: its failure is not theirs.
         let ranText = false;
+        this.commandsRun++;
         try {
             // Check for break/continue/return builtins
             if (name === 'break') {
@@ -851,7 +857,17 @@ export class Interpreter {
                                 setPositionals: (nextArgs) => this.writePositionals(builtinIo, nextArgs),
                                 executeInline: async (input, options) => {
                                     ranText = true;
-                                    return (await this.executeInline(input, builtinIo, options));
+                                    const before = this.commandsRun;
+                                    try {
+                                        return (await this.executeInline(input, builtinIo, options));
+                                    }
+                                    catch (error) {
+                                        // A syntax error before the text ran any command is the builtin's own
+                                        // failure, as bash's evalstring has it (fatal in a POSIX script).
+                                        if (error instanceof TextSyntaxError && this.commandsRun === before)
+                                            ranText = false;
+                                        throw error;
+                                    }
                                 },
                                 declareLocal: (name) => this.declareLocal(name),
                                 unsetFunction: (name) => this.functions.delete(name),
@@ -949,6 +965,7 @@ export class Interpreter {
             exitCode = 1;
         // `command` takes a special builtin's failure from fatal to an ordinary status (POSIX).
         const fatalSpecialBuiltin = io.scriptMode === true
+            && this.config.options.posix
             && exitCode !== 0
             && !viaCommand
             && !ranText
@@ -1152,7 +1169,21 @@ export class Interpreter {
         if (options.positionals !== undefined) {
             inlineIo.positionals = { args: [...options.positionals] };
         }
-        return (await this.executeLineWithIo(input, inlineIo, { readsLines: true, inline: true }));
+        const lines = this.linesOf(input);
+        // A syntax error in the text read here is the runner's (TextSyntaxError); one met running it is not.
+        const reader = {
+            nextLine: () => {
+                try {
+                    return lines.nextLine();
+                }
+                catch (error) {
+                    if (error instanceof ParseError)
+                        throw new TextSyntaxError(error.message);
+                    throw error;
+                }
+            },
+        };
+        return (await this.executeScriptWithIo(reader, inlineIo, { readsLines: true, inline: true }));
     }
     async executeLineWithIo(input, io, run = {}) {
         return (await this.executeScriptWithIo(this.linesOf(input), io, run));
