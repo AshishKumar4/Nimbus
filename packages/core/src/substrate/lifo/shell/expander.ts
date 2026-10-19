@@ -2,7 +2,7 @@ import type { WordPart } from './types.js';
 import { isShellIdentifier } from './names.js';
 import { DEFAULT_HOME } from '../../../constants.js';
 import type { ProcessView } from '../../../runtime/process-files.js';
-import { characterAt, characterBounds, escapeGlob, expandGlob, fixedMatchLength, shellMatch } from '../utils/glob.js';
+import { characterAt, characterBounds, escapeGlob, expandGlob, fixedMatchLength, shellMatcher } from '../utils/glob.js';
 import { readAnsiCQuote, readBalancedCommand, readBracedExpansion } from './lexer.js';
 import type { ShellOptions } from './state.js';
 
@@ -724,18 +724,20 @@ function characterCount(s: string): number {
 
 function trimPrefix(value: string, pattern: string, longest: boolean): string {
   const { count, at } = boundsOf(value);
+  const matches = shellMatcher(pattern, value);
   for (let k = 0; k < count; k++) {
     const i = at(longest ? count - 1 - k : k);
-    if (shellMatch(pattern, value.slice(0, i))) return value.slice(i);
+    if (matches(value.slice(0, i))) return value.slice(i);
   }
   return value;
 }
 
 function trimSuffix(value: string, pattern: string, longest: boolean): string {
   const { count, at } = boundsOf(value);
+  const matches = shellMatcher(pattern, value);
   for (let k = 0; k < count; k++) {
     const i = at(longest ? k : count - 1 - k);
-    if (shellMatch(pattern, value.slice(i))) return value.slice(0, i);
+    if (matches(value.slice(i))) return value.slice(0, i);
   }
   return value;
 }
@@ -773,16 +775,17 @@ function replaceAnchored(
   value: string, pattern: string, replacement: string, anchor: 'prefix' | 'suffix',
 ): string {
   const { count, at } = boundsOf(value);
+  const matches = shellMatcher(pattern, value);
   if (anchor === 'prefix') {
     for (let k = count - 1; k >= 0; k--) {
       const i = at(k);
-      if (shellMatch(pattern, value.slice(0, i))) return replacement + value.slice(i);
+      if (matches(value.slice(0, i))) return replacement + value.slice(i);
     }
     return value;
   }
   for (let k = 0; k < count; k++) {
     const i = at(k);
-    if (shellMatch(pattern, value.slice(i))) return value.slice(0, i) + replacement;
+    if (matches(value.slice(i))) return value.slice(0, i) + replacement;
   }
   return value;
 }
@@ -795,9 +798,10 @@ async function applyCase(
   const every = rest[1] === operator;
   const pattern = await expandParameterPattern(rest.slice(every ? 2 : 1), ctx);
   const convert = (c: string): string => (operator === '^' ? c.toUpperCase() : c.toLowerCase());
-  const matches = (c: string): boolean => pattern === '' || shellMatch(pattern, c);
 
   return (await mapParameter(ref, ctx, quoted, (value) => {
+    const matcher = shellMatcher(pattern, value);
+    const matches = (c: string): boolean => pattern === '' || matcher(c);
     if (!every) {
       const first = characterAt(value, 0);
       return value === '' || !matches(first) ? value : convert(first) + value.slice(first.length);
@@ -1028,18 +1032,18 @@ function splitGroup(
  * fixed length (`fixed`, fixedMatchLength) is tried at that length only.
  */
 function leftmostLongest(
-  val: string, bounds: { count: number; at: (k: number) => number }, pattern: string, from: number, fixed: number | null,
+  val: string, bounds: { count: number; at: (k: number) => number }, matches: (text: string) => boolean, from: number, fixed: number | null,
 ): [number, number] | null {
   const { count, at } = bounds;
   for (let s = from; s < count; s++) {
     const start = at(s);
     if (fixed !== null) {
       if (s + fixed >= count) return null;
-      if (shellMatch(pattern, val.slice(start, at(s + fixed)))) return [s, s + fixed];
+      if (matches(val.slice(start, at(s + fixed)))) return [s, s + fixed];
       continue;
     }
     for (let e = count - 1; e >= s; e--) {
-      if (shellMatch(pattern, val.slice(start, at(e)))) return [s, e];
+      if (matches(val.slice(start, at(e)))) return [s, e];
     }
   }
   return null;
@@ -1066,10 +1070,11 @@ function replaceMatches(val: string, pattern: string, replacement: string, all: 
   const bounds = boundsOf(val);
   const last = bounds.count - 1;
   const { at } = bounds;
+  const matches = shellMatcher(pattern, val);
   let out = '';
   let i = 0;
   for (;;) {
-    const match = leftmostLongest(val, bounds, pattern, i, fixed);
+    const match = leftmostLongest(val, bounds, matches, i, fixed);
     if (match === null) break;
     const [start, end] = match;
     out += val.slice(at(i), at(start)) + replacement;

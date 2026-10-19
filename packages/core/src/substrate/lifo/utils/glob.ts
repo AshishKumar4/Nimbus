@@ -1,7 +1,7 @@
 import type { ProcessView } from '../../../runtime/process-files.js';
 import { resolve } from './path.js';
 import { exists } from '../../../vfs/vfs.js';
-import { encodeLossless } from './lossless-text.js';
+import { encodeLossless, firstLosslessByte } from './lossless-text.js';
 
 /**
  * Match a glob pattern against a text string, as fnmatch(3) without flags:
@@ -21,6 +21,19 @@ export function globMatch(pattern: string, text: string): boolean {
  */
 export function shellMatch(pattern: string, text: string): boolean {
   return matchPattern(pattern, text, true);
+}
+
+/**
+ * shellMatch of `pattern` for many pieces of one `value` (a trim's or a
+ * substitution's candidates): whether it matches byte-wise is decided once,
+ * from the pattern and the whole value, not again for every piece.
+ */
+export function shellMatcher(pattern: string, value: string): (text: string) => boolean {
+  if (firstLosslessByte(value) !== -1 || firstLosslessByte(pattern) !== -1) {
+    const bytes = byteString(pattern);
+    return (text) => matchCharacters(bytes, byteString(text), true);
+  }
+  return (text) => matchCharacters(pattern, text, true);
 }
 
 /** The character (code point) at UTF-16 index `i` of `s`: a surrogate pair whole, anything else one unit. */
@@ -48,14 +61,11 @@ export function characterBounds(s: string): number[] {
  * bytes ($'\200' is in [a-😀], whose 😀 is four bytes; z is in $'[a-\377]').
  */
 function matchPattern(pattern: string, text: string, finalBackslash: boolean): boolean {
-  if (LOSSLESS_BYTE.test(text) || LOSSLESS_BYTE.test(pattern)) {
+  if (firstLosslessByte(text) !== -1 || firstLosslessByte(pattern) !== -1) {
     return matchCharacters(byteString(pattern), byteString(text), finalBackslash);
   }
   return matchCharacters(pattern, text, finalBackslash);
 }
-
-/** A byte lossless text keeps, U+DC80 + byte: a low surrogate no high one precedes (lossless-text firstLosslessByte). */
-const LOSSLESS_BYTE = /(?<![\uD800-\uDBFF])[\uDC80-\uDCFF]/;
 
 /** `text`'s bytes, each one character of a string. */
 function byteString(text: string): string {
