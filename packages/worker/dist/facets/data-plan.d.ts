@@ -84,6 +84,13 @@ export declare function planFacetData(source: DataPlanSource, input: DataPlanInp
 /** Whether a closure carries Tailwind's oxide scanner, whose reads cannot wait (the stylesheet-source rule). */
 export declare function carriesOxide(closure: Iterable<string>): boolean;
 /**
+ * The most files the stylesheet-source rule holds for one launch. A source
+ * can name a tree of any size (`@source "../.."`); past this, the walk stops
+ * and says so, and the files it did not reach are learned from the scanner's
+ * misses, as any file a launch did not plan.
+ */
+export declare const STYLESHEET_SOURCE_MAX_FILES = 5000;
+/**
  * The stylesheet-source rule, for a resident's plan and a one-shot's alike:
  * from `sheets`, through the `@import`s Tailwind inlines (a path's, not a
  * package's), each sheet where its links lead and read once, every `@source`
@@ -94,6 +101,10 @@ export declare function carriesOxide(closure: Iterable<string>): boolean;
  * returns are what the facet's barriers push: those, and wherever a link
  * below one leads; `read` is where it read, which a process's listing of a
  * mount that walks only what is named must be named.
+ *
+ * It holds a file under the package-data bound (PACKAGE_DATA_MAX_BYTES), and
+ * at most STYLESHEET_SOURCE_MAX_FILES of them: at that, `stopped` names the
+ * root it was walking.
  */
 export declare function planStylesheetSources(source: Pick<DataPlanSource, 'readText' | 'stat' | 'linkTarget' | 'readdir'>, input: {
     cwd: string;
@@ -104,5 +115,6 @@ export declare function planStylesheetSources(source: Pick<DataPlanSource, 'read
     roots: string[];
     files: DataPlanEntry[];
     read: string[];
+    stopped: string | null;
 }>;
 //# sourceMappingURL=data-plan.d.ts.map

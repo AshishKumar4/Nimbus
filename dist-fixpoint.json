@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "86dbb0c2c25490583224c60c3e58e5e69462e0e1e0c39cc261b163bfa5c85a2a",
+  "fingerprint": "e382448126728475f55ffcde0e86b5793489560b5ddca8e5347c279b5d158194",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2317,9 +2317,9 @@
     "packages/worker/dist/facets/compose.d.ts": "0d087e73f06743b2fd3ed13bbb3460e84e7b03e9e3b1ee0387ff013f1abdb927",
     "packages/worker/dist/facets/compose.d.ts.map": "f8d041ebe01ce47a4467bed41d25c063a26e5008f67b99d95ca46e934773ca8d",
     "packages/worker/dist/facets/compose.js": "6e5d4ec4e3ff0dafe425c4cf7e2d36b54c53b560818886d89fc9a3dc7a82b4e7",
-    "packages/worker/dist/facets/data-plan.d.ts": "6ac5cdf1e6074e7d3f8dde5cb247764e7f775af6b9174a98707a946fb45423a1",
-    "packages/worker/dist/facets/data-plan.d.ts.map": "be189b3dc0e59d2a1d26fc2aa75f10f02ac5ce7f4ad840972ccfd51f8e399227",
-    "packages/worker/dist/facets/data-plan.js": "cfad907f997fb2d4eff57d83cf21f38ba59de5deb933c896c7820dfda1001c56",
+    "packages/worker/dist/facets/data-plan.d.ts": "62471a270ca3773a839e5a425687c3fa143d0a1e369d4b6bfe0dece5d5eeabb5",
+    "packages/worker/dist/facets/data-plan.d.ts.map": "a5dc37ca9f931d0e5afcc77412de34a7ab83c0ab8cc33c39ac723b9fb48ae9e8",
+    "packages/worker/dist/facets/data-plan.js": "23bd8e7002f906f1f0351da8d62cb961d47bf11e187fb5f7912515c748d71677",
     "packages/worker/dist/facets/dev-stylesheet.d.ts": "9f9bdd5d4d22b80132ef13dd95754e14286fd3a1a1b4646d07fa49e2a1435a61",
     "packages/worker/dist/facets/dev-stylesheet.d.ts.map": "0dc6c12eb776ab136c9ea5e3fb8e5dae9137836c48011eabb9b862195868dadf",
     "packages/worker/dist/facets/dev-stylesheet.js": "3a793ebbf38d24ce9e2e164381a09d0e07db72ce5a7799f7da0f01acd6b3945b",
@@ -3220,7 +3220,7 @@
     "packages/worker/src/facets/build-facet.ts": "4e7276bcd8a071e47cbf563c6e42712f4216e46475488fed83977b095d41fd11",
     "packages/worker/src/facets/cirrus-real.ts": "b04599d15b8f40e373aa2769e5bd42d3364b963c649b0cd706fc1b200308a4ba",
     "packages/worker/src/facets/compose.ts": "247f9265997fd043a4f61a043dfd8d66905ef4abd31bdf382c1e48b8dd17db33",
-    "packages/worker/src/facets/data-plan.ts": "5eb479e5606e7d525b159bb80df45e13e77551df2eea470fb87a68d278d74686",
+    "packages/worker/src/facets/data-plan.ts": "aed08ae5fe5680430b310dd1544e3fb04b4540b7c8b61e3d853bdb42a94b3b86",
     "packages/worker/src/facets/dev-stylesheet.ts": "f3d0d28ee725eec8e6f4928d12e126973898582cb84eab0e22b0886bcaf240a4",
     "packages/worker/src/facets/durable-images.ts": "ab5e47caf349ad91f5b694a8b476ca30f0dae051fe55abbae1c597cdef7ec9c8",
     "packages/worker/src/facets/durable-slots.ts": "bdbe2a56483a438c3b9ad5394f8c2719ab3b9f254c16452ab520a6cf1ce7839d",
