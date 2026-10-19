@@ -157,7 +157,6 @@ registry.registerBuiltin('git-remote-https', remoteHelper);
 // Each runner key's build, on its own contract (GIT_RUNNER_CONTRACTS).
 for (const [key, contract] of Object.entries(GIT_RUNNER_CONTRACTS)) {
   let gitFactory: Promise<RunnerFactory> | null = null;
-  let rubyFactory: Promise<RubyRunnerFactory> | null = null;
   workspace.runtimes.registerRunner(
     key,
     (manifest, installRoot, binName, binKind) => {
@@ -253,6 +252,7 @@ for (const [key, { restartsWaits }] of Object.entries(CPYTHON_RUNNER_CONTRACTS))
 // REPL Stream A: wrap the one-shot factory so `ruby` with NO args
 // drops into an interactive REPL. The wrap is purely additive —
 // args-bearing invocations pass through to the existing handler.
+let rubyFactory: Promise<RubyRunnerFactory> | null = null;
 workspace.runtimes.registerRunner(
   'ruby-runner',
   (manifest, installRoot, binName, binKind) => async function rubyReplOrOneShot(ctx: any): Promise<number> {
