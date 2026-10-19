@@ -147,6 +147,8 @@ export interface ResidentAcquireArgs {
 export type ResidentReadLease = NonNullable<VfsAcquireResult['readLease']>;
 
 export interface ResidentBarrierOptions {
+  /** An answer the caller took itself (a directory batch's), applied as the barrier applies one. */
+  readonly answer?: VfsAcquireResult;
   /**
    * An answer a delivery carried, with the arguments it was asked with: it
    * stands in for asking when it answers from a cursor the store has reached,
@@ -160,6 +162,8 @@ export interface ResidentBarrierOptions {
 export interface ResidentBarrier {
   /** The store answers at the session's state as of this barrier. */
   readonly landed: boolean;
+  /** The answer (asked, delivered or given) was applied as it was: not started again from, nor repaired past. */
+  readonly applied?: boolean;
   /** The lease the answer granted, applied with it (vouched from now). */
   readonly readLease?: ResidentReadLease;
   /** The answer a delivery carried stood in for asking. */
@@ -503,7 +507,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     barrier: (options) => {
       const begun = holder?.barrierBegun();
       return begin(() => resident.barrier(options)).then((result) => {
-        const from = result.fromDelivery ? (options?.delivered?.args as { begin?: unknown } | undefined)?.begin : begun;
+        // A given answer was asked when its caller asked, not now: it retires nothing.
+        const from = options?.answer ? undefined : result.fromDelivery ? options?.delivered?.args.begin : begun;
         if (result.landed && typeof from === 'number') holder?.retire(from);
         return result;
       });

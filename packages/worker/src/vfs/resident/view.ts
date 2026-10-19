@@ -274,11 +274,13 @@ export function createView(
         const joined = [...refetching.values()].map((record) => record.done);
         let answer = first;
         let namespaceAsked = false;
+        let repaired = false;
         for (let joins = 0; ; joins++) {
           const joining = repairing !== null;
           const namespaceOwed = !namespaceAsked && !namespace.ready();
           const needsRepair = answer === null || answer.poison === true || repairOwed || namespaceOwed;
           if (!joining && !needsRepair) break;
+          repaired = true;
           if (namespaceOwed) namespaceAsked = true;
           await (joining ? repairing : repair(answer));
           if (!joining) {
@@ -302,7 +304,17 @@ export function createView(
         if (!namespace.ready()) return { landed: false };
         // What it held and the delta dropped, fetched again at its new revision, and every refetch it found in flight.
         await Promise.all([...refetch(applied.dropped), ...joined]);
-        return answer!.readLease ? { landed: true, readLease: answer!.readLease } : { landed: true };
+        return answer!.readLease ? { landed: true, applied: !repaired, readLease: answer!.readLease } : { landed: true, applied: !repaired };
+      };
+
+      /** The barrier on a namespace listed on demand: one it cannot apply starts it again from nothing. */
+      const lazily = async (answer: VfsAcquireResult | null): Promise<ResidentBarrier> => {
+        if (answer === null || answer.poison === true) return { landed: await restart(answer, false), applied: false };
+        await sync.applyAcquire(supervisor, answer);
+        // A lease vouches for the answer applied: not for a namespace started again from nothing.
+        const applied = namespace.ready();
+        const landed = await restart(answer, true);
+        return applied && answer.readLease ? { landed, applied, readLease: answer.readLease } : { landed, applied };
       };
 
       const view: ResidentNamespace = {
@@ -355,14 +367,10 @@ export function createView(
         acquireArgs: () => argsNow(),
         repairOwed: () => repairOwed,
         async barrier(options = {}) {
-          const answer = delivered(options.delivered) ?? await acquire(options.lease);
-          if (!namespace.lazy) return enumerated(answer, options.lease);
-          if (answer === null || answer.poison === true) return { landed: await restart(answer, false) };
-          await sync.applyAcquire(supervisor, answer);
-          // A lease vouches for the answer applied: not for a namespace started again from nothing.
-          const applied = namespace.ready();
-          const landed = await restart(answer, true);
-          return answer.readLease && applied ? { landed, readLease: answer.readLease } : { landed };
+          const standIn = options.answer === undefined ? delivered(options.delivered) : null;
+          const answer = options.answer !== undefined ? current(options.answer) : standIn ?? await acquire(options.lease);
+          const result = namespace.lazy ? await lazily(answer) : await enumerated(answer, options.lease);
+          return standIn === null ? result : { ...result, fromDelivery: true };
         },
         cursor: () => coherence.cursor(),
         reserve: (bytes) => admission.pin(bytes),
