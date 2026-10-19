@@ -53,7 +53,7 @@ import {
   RetryExhaustedError,
   TimeoutError,
 } from './vendor/errors.js';
-import type { FacetBindings, FacetImage } from '@nimbus-sh/core/runtime/facet-host.js';
+import { FACET_ERROR_KEY, type FacetBindings, type FacetImage } from '@nimbus-sh/core/runtime/facet-host.js';
 import {
   SupervisorLoadWaitError,
   acquireSupervisorLoad,
@@ -391,7 +391,7 @@ export function assembleLoaderWorkerModuleSource(
     '      // for a real fn failure, and aborts arrive as fetch rejections.',
     '      const failure = __nimbusTaskBodyError(err, request);',
     '      const message = failure instanceof Error && failure.message ? failure.message : String(failure);',
-    '      return Response.json({ __nimbusFacetError: message }, { status: 500 });',
+    `      return Response.json({ ${JSON.stringify(FACET_ERROR_KEY)}: message }, { status: 500 });`,
     '    }',
     '  }',
     '}',
