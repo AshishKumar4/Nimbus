@@ -21,8 +21,11 @@ function generator(seed) {
  * own; `swaps` adds, from another, renames of the names' directory to a
  * longer name and back while a barrier begun before them waits, some with
  * the budget full; some awaited, a file opened beneath before the answer.
+ * `late` adds, from another, a file made whose creating answer is late (the
+ * session made it, a peer moves it, the process opens it there first), and
+ * makes half the catch-ups thin (the view admits each name without bytes).
  */
-export function program(seed, length = 40, { wasi = false, copies = false, swaps = false } = {}) {
+export function program(seed, length = 40, { wasi = false, copies = false, swaps = false, late = false } = {}) {
   const random = generator(seed);
   const pick = (items) => items[Math.floor(random() * items.length)];
   const word = () => 'x'.repeat(1 + Math.floor(random() * 3)).replace(/x/g, () => pick(['p', 'q', 'r', 's']));
@@ -56,10 +59,17 @@ export function program(seed, length = 40, { wasi = false, copies = false, swaps
     // Keep the original stream intact: copies and squeezes have their own, and so do swaps.
     const extra = generator(seed ^ 0x636f7079);
     const swap = generator(seed ^ 0x73776170);
+    const lateness = generator(seed ^ 0x6c617465);
     return steps.flatMap((step) => {
       const out = [];
       if (extra() < 0.08) out.push({ op: 'squeeze' });
-      out.push(step);
+      out.push(late && step.op === 'catchUp' && lateness() < 0.5 ? { ...step, thin: true } : step);
+      if (late && lateness() < 0.08) {
+        const name = NAMES[Math.floor(lateness() * NAMES.length)];
+        const to = NAMES[(NAMES.indexOf(name) + 1 + Math.floor(lateness() * (NAMES.length - 1))) % NAMES.length];
+        const fd = Math.floor(lateness() * MAX_FDS);
+        out.push({ op: 'late', name, to, fd, fd2: (fd + 1 + Math.floor(lateness() * (MAX_FDS - 1))) % MAX_FDS, data: word() });
+      }
       if (extra() < 0.1) {
         const from = NAMES[Math.floor(extra() * NAMES.length)];
         const to = NAMES[(NAMES.indexOf(from) + 1 + Math.floor(extra() * (NAMES.length - 1))) % NAMES.length];

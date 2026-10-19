@@ -18,11 +18,14 @@ export const user = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
  * session at every call. `view.admitted` runs after each row it takes in is
  * told to the process. `view.forget()` true at a barrier: the view starts
  * anew there, knowing no name until one is looked up or its directory listed
- * again (as a resident's lazy store after a barrier it cannot apply). `acquired`: what the session's grant waits for. `grantBytes`: the
- * storage a grant reserves.
- * @param {{ grantInos?: number, journal?: any, gate?: PromiseLike<unknown>, refuse?: () => boolean, view?: { barrier?: () => unknown, forget?: () => boolean, admitted?: () => void }, acquired?: PromiseLike<unknown>, grantBytes?: number, budget?: { used: number, limit: number } }} [options]
+ * again (as a resident's lazy store after a barrier it cannot apply).
+ * `view.contentless()` true as it reads a row: the row without its bytes.
+ * `acquired`: what the session's grant waits for. `grantBytes`: the storage a
+ * grant reserves. `answering(result)`: what a wave's answer waits for once
+ * the session applied it.
+ * @param {{ grantInos?: number, journal?: any, gate?: PromiseLike<unknown>, refuse?: () => boolean, view?: { barrier?: () => unknown, forget?: () => boolean, admitted?: () => void, contentless?: () => boolean }, acquired?: PromiseLike<unknown>, grantBytes?: number, budget?: { used: number, limit: number }, answering?: (result: any) => PromiseLike<unknown> | undefined }} [options]
  */
-export function session({ grantInos, journal, gate, refuse, view, acquired, grantBytes, budget } = {}) {
+export function session({ grantInos, journal, gate, refuse, view, acquired, grantBytes, budget, answering } = {}) {
   const harness = createSqliteVfsTestHarness();
   const engine = new SqliteVFS(harness.sql, harness.ctx);
   const kernel = engine.as(CRED_KERNEL);
@@ -55,8 +58,9 @@ export function session({ grantInos, journal, gate, refuse, view, acquired, gran
   let cursor = cursorNow();
   /** The process's admission listener (ResidentNamespace.onAdmitted): told of each row the view takes in, as it does. */
   let admitted = null;
-  const admit = (key) => {
-    const row = { entry: entryNow(key), content: contentNow(key) };
+  const admit = (key, fetched = false) => {
+    // A row without its bytes (`view.contentless`): as a lazy store admits a name, its bytes fetched when read.
+    const row = { entry: entryNow(key), content: !fetched && view.contentless?.() ? undefined : contentNow(key) };
     seen.set(key, row);
     if (row.entry) {
       admitted?.(key, row.entry);
@@ -91,7 +95,8 @@ export function session({ grantInos, journal, gate, refuse, view, acquired, gran
     lookup: async (keys) => { for (const key of keys) known?.add(key); return true; },
     listTree: async () => false,
     content: (key) => (view ? viewed(key).content : contentNow(key)),
-    fill: async (key) => bridge.readFile('/' + key),
+    // Fetched, the view holds the name's bytes, with the row they are of (as a lazy store's fill).
+    fill: async (key) => (view ? admit(key, true).content : bridge.readFile('/' + key)),
     cursor: () => (view ? cursor : cursorNow()),
     barrier: async () => {
       if (!view) return true;
@@ -126,6 +131,8 @@ export function session({ grantInos, journal, gate, refuse, view, acquired, gran
       }
       const result = await bridge.writeStream(stream, owner === undefined ? {} : { mutationOwner: owner });
       waves.push(result);
+      // Applied, its answer held back while the test asks (`answering`, told what it was).
+      await answering?.(result);
       return result;
     },
     grants: {

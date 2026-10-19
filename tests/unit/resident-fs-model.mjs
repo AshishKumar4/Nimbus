@@ -108,9 +108,20 @@ async function runSteps(steps, met, grants) {
   let landing;
   /** Each admission's budget, checked once the call it came in finished: what is taken is what is kept. */
   const admissions = [];
+  /** While set, a barrier's view admits each name without its bytes (a thin catch-up). */
+  let thin = false;
+  /** While set, an applied wave that opened a file has its answer wait for it (a late answer); `parked` counts the waves waiting. */
+  let answers = null;
+  let parked = 0;
   const s = session({
     budget,
+    answering: (result) => {
+      if (answers === null || !(result.receipts?.length > 0)) return undefined;
+      parked++;
+      return answers.promise;
+    },
     view: {
+      contentless: () => thin,
       barrier: () => (pausing ? new Promise((resolve) => { landing = resolve; }) : undefined),
       admitted: () => queueMicrotask(() => {
         const stats = s.fs.stats();
@@ -202,7 +213,7 @@ async function runSteps(steps, met, grants) {
       const code = await errnoOf(() => { got = sync.read(opened.handle, 0, 1 << 12); });
       // Bytes the view does not hold: refused (EAGAIN), or ESTALE once no name leads to them. A descriptor
       // that never wrote reads the view's bytes, which the view may not hold yet (a grant's given back).
-      if ((code === 'EAGAIN' || code === 'ESTALE') && (file === undefined || file.bytes === null || (code === 'EAGAIN' && !opened.wrote))) continue;
+      if ((code === 'EAGAIN' || code === 'ESTALE') && (file === undefined || file.bytes === null || (code === 'EAGAIN' && (!opened.wrote || file.thin)))) continue;
       if (code === 'ESTALE' && unnamed.has(id)) continue;
       assert.equal(code, null, `${label}: fd ${fd} read ${code}`);
       if (file === undefined || file.bytes === null) continue;
@@ -400,8 +411,8 @@ async function runSteps(steps, met, grants) {
       if (source !== undefined && source.bytes === null) return;
       const expected = source === undefined ? 'ENOENT' : !(source.mode & 0o400) ? 'EACCES' : target !== undefined && !(target.mode & 0o200) ? 'EACCES' : null;
       const code = await errnoOf(() => sync.copyFile(path(step.from), path(step.to)));
-      // Bytes not here (a caller that cannot wait): refused, nothing made.
-      if (code === 'EAGAIN' && expected === null) return;
+      // Bytes not here (a caller that cannot wait; a thin catch-up's before any other refusal): refused, nothing made.
+      if (code === 'EAGAIN' && (expected === null || source?.thin === true)) return;
       assert.equal(code, expected, `${label}: copy ${step.from} ${step.to}`);
       if (code !== null) return;
       const data = source.bytes.slice();
@@ -427,6 +438,11 @@ async function runSteps(steps, met, grants) {
     for (let tries = 0; tries < 4 && (await errnoOf(() => s.fs.flush())) !== null; tries++);
     control.held = true;
     control.opened = Promise.withResolvers();
+    await emulate();
+  };
+
+  /** What the session applied since the last delivery, made on the reference directly, in order: each one it refuses, refused. */
+  const emulate = async () => {
     /** Whether the reference leads any name an op expects (W7Expected) to another file than it expected: the session refuses it (ESTALE). */
     const stale = async (expect) => {
       for (const [name, reference] of expect ?? []) {
@@ -568,26 +584,88 @@ async function runSteps(steps, met, grants) {
   };
 
   /** The view brought to the session's: what the process sent delivered, a barrier, every name read (the view holds what it read until a barrier reads it again). */
-  const catchUp = async () => {
+  /**
+   * A catch-up: what was sent delivered, a barrier, and each name read again.
+   * `thinly`: its barrier admits each name without its bytes (a lazy store's),
+   * so a read that cannot wait may be refused (EAGAIN) until they are fetched,
+   * never answered with another version's bytes.
+   */
+  const catchUp = async (thinly = false) => {
     await deliver();
+    thin = thinly;
     s.fs.inbound();
     await s.fs.stat(`/${dir}`);
     for (const name of NAMES) {
       await errnoOf(() => s.fs.stat(path(name)));
-      await errnoOf(() => s.fs.readFile(path(name)));
+      if (!thinly) await errnoOf(() => s.fs.readFile(path(name)));
     }
+    thin = false;
+    await admitView(thinly);
+    pending = [];
+  };
+
+  /** The model's view is the session's now (`thinly`: its bytes not held, what a read refused EAGAIN may say). */
+  const admitView = async (thinly) => {
     // A file a descriptor holds that no name leads to now keeps what the view had of it, by its session number.
     const before = viewOf();
     // `S<ino>`: the session's file the view had not admitted, by its number.
     const sessionNumber = (id) => (typeof id === 'string' && id.startsWith('S') ? Number(id.slice(1)) : id);
     const held = [...fds.values()].map((opened) => [sessionNumber(opened.session ?? resolve({ opened })), before.fileOf(resolve({ opened }))]);
     admitted = await snapshot();
-    pending = [];
+    if (thinly) for (const [id, file] of admitted.files) admitted.files.set(id, { ...file, thin: true });
     for (const [id, file] of held) {
       if (typeof id !== 'number' || admitted.files.has(id) || file === undefined) continue;
       admitted.files.set(id, file);
       unnamed.add(id);
     }
+  };
+
+  /**
+   * A file made here whose creating open's answer is late: the session makes
+   * it (its open alone in that wave), a peer moves it, the view admits it
+   * there, and the process opens it there before the answer names it to the
+   * process. Then the answer, and a write through the first descriptor: one
+   * file, which both read (§0.1).
+   */
+  const lateStep = async (step, label) => {
+    if (grants || fds.has(step.fd) || fds.has(step.fd2) || viewOf().names.has(step.name)) return;
+    await deliver();
+    // A file the session has there already (the view not caught up): its create is refused, not late.
+    if ((await errnoOf(() => direct.stat(path(step.name)).then((stat) => { if (stat !== null) throw Object.assign(new Error(), { code: 'EEXIST' }); }))) !== null) return;
+    // Records from here on are the late ones: what the barrier below leaves pending.
+    const mark = pending.length;
+    let flushed = Promise.resolve(null);
+    answers = Promise.withResolvers();
+    parked = 0;
+    try {
+      await processStep({ op: 'open', fd: step.fd, name: step.name, flags: { read: true, write: true, append: false, create: true, exclusive: false, truncate: false } }, label);
+      if (!fds.has(step.fd)) return;
+      // The session applies it; its answer waits.
+      control.held = false;
+      control.opened.resolve();
+      flushed = errnoOf(() => s.fs.flush());
+      for (let tries = 0; tries < 400 && parked === 0; tries++) await new Promise((resolve) => setTimeout(resolve, 2));
+      control.held = true;
+      control.opened = Promise.withResolvers();
+      assert.ok(parked > 0, `${label}: the session applied the create`);
+      await emulate();
+      await peerStep({ kind: 'rename', name: step.name, to: step.to });
+      // The view admits it at its new name; what the process made of it is not answered yet.
+      s.fs.inbound();
+      await s.fs.stat(`/${dir}`);
+      await errnoOf(() => s.fs.stat(path(step.to)));
+      await admitView(false);
+      pending = pending.slice(mark);
+      await processStep({ op: 'open', fd: step.fd2, name: step.to, flags: { read: true, write: true, append: false, create: false, exclusive: false, truncate: false } }, label);
+    } finally {
+      const late = answers;
+      answers = null;
+      late.resolve();
+    }
+    // What followed it reaches the session too.
+    await deliver();
+    await flushed;
+    await processStep({ op: 'write', fd: step.fd, offset: 0, data: step.data }, label);
   };
   if (dir !== DIR) {
     // Made by the process, at a change that takes the subtree above it.
@@ -699,7 +777,8 @@ async function runSteps(steps, met, grants) {
     if (squeezed) budget.limit = budget.used;
     try {
       if (step.op === 'deliver') await deliver();
-      else if (step.op === 'catchUp') await catchUp();
+      else if (step.op === 'catchUp') await catchUp(step.thin === true);
+      else if (step.op === 'late') await lateStep(step, label);
       else if (step.op === 'peer') await peerStep(step);
       else if (step.op === 'readAsync') await readAsync(step, label);
       else if (step.op === 'swap') await swapStep(step, label);
@@ -997,16 +1076,35 @@ const FOUND = [
     { op: 'peer', kind: 'unlink', name: 'b', to: 'b', data: 'rq', mode: 420 },
     { op: 'unlink', name: 'b' },
   ] },
+  // The process's own bytes answered, a peer's write, then a thin catch-up: the descriptor reads the peer's or EAGAIN.
+  { name: 'own bytes answered, a peer write, a thin catch-up', grants: false, steps: [
+    { op: 'writeFile', name: 'a', data: 'pq' },
+    { op: 'catchUp' },
+    { op: 'open', fd: 0, name: 'a', flags: { read: true, write: true, append: false, create: false, exclusive: false, truncate: false } },
+    { op: 'write', fd: 0, offset: 0, data: 'sss' },
+    { op: 'deliver' },
+    { op: 'peer', kind: 'write', name: 'a', to: 'a', data: 'rrrrr', mode: 420 },
+    { op: 'catchUp', thin: true },
+  ] },
+  // A file made here, its creating answer late, moved by a peer and opened there first: one owner.
+  { name: 'a late creating answer, the file moved by a peer and opened there', grants: false, steps: [
+    { op: 'late', name: 'a', to: 'b', fd: 0, fd2: 1, data: 'pqrs' },
+  ] },
 ];
 for (const found of FOUND) {
   const failure = await run(found.steps, found.grants).then(() => null, (error) => error);
   if (failure !== null && failure.known !== true) failures.set(`found: ${found.name}`, { seeds: [0], reason: failure, minimal: found.steps, grants: found.grants });
 }
 // Each seed twice: as it is, and with swaps (half of those granted).
-for (const [seed, swaps] of [...seeds.map((seed) => [seed, false]), ...seeds.slice(0, Math.ceil(seeds.length / 3)).map((seed) => [seed, true])]) {
-  const steps = program(seed, 40, { copies: true, swaps });
+// Each seed as it is; a third with swaps (half of those granted), and a quarter with late answers and thin catch-ups (none granted).
+for (const [seed, shape] of [
+  ...seeds.map((seed) => [seed, 'plain']),
+  ...seeds.slice(0, Math.ceil(seeds.length / 3)).map((seed) => [seed, 'swaps']),
+  ...seeds.slice(0, Math.ceil(seeds.length / 4)).map((seed) => [seed, 'late']),
+]) {
+  const steps = program(seed, 40, { copies: true, swaps: shape === 'swaps', late: shape === 'late' });
   // A third of the programs run with the session granting the subtree the process changes.
-  const grants = swaps ? seed % 2 === 0 : seed % 3 === 0;
+  const grants = shape === 'swaps' ? seed % 2 === 0 : shape === 'plain' && seed % 3 === 0;
   const failure = await run(steps, grants).then(() => null, (error) => error);
   if (failure === null) continue;
   if (failure.known === true) {
