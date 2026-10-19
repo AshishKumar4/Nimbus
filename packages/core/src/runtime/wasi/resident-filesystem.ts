@@ -415,10 +415,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     get cred() { return resident.cred; },
     ready: () => resident.ready(),
     // What this process decided in a subtree it holds is what it sees there.
-    entry: (key) => {
-      const own = holder?.entry(key);
-      return own !== undefined ? own : resident.entry(key);
-    },
+    entry: (key) => (holder === null ? resident.entry(key) : holder.entry(key)),
     children: (key) => (holder === null ? resident.children(key) : holder.children(key, resident.children(key))),
     list: (key) => begin(() => resident.list(key)),
     lookup: (keys, content) => begin(() => resident.lookup(keys, content)),

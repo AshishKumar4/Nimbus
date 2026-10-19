@@ -276,8 +276,8 @@ export interface Provisional {
   touches(key: string): boolean;
   /** fcntl(F_SETFL) of a descriptor: O_APPEND is its writes' to keep. */
   setStatus(handleId: number, status: { append?: boolean }): void;
-  /** This process's provisional word on `key`: an entry, null (no name), or undefined (none). */
-  entry(key: string): ResidentEntry | null | undefined;
+  /** This process's provisional word on `key`: an entry, null (no name), or undefined (none). `row`: the host's row there (ProvisionalHost.row), where the caller has it. */
+  entry(key: string, row?: ResidentEntry | null): ResidentEntry | null | undefined;
   children(key: string, base: RuntimeVfsDirEntry[] | undefined): RuntimeVfsDirEntry[] | undefined;
   /** An open of `key` (resolved; `row` what it names, null for nothing): a descriptor, undefined where it is not made here. */
   open(key: string, path: string, flags: RuntimeOpenFlags, row: ResidentEntry | null, awaited?: boolean): RuntimeFileHandle | undefined;
@@ -388,7 +388,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       : { ...row, size: s.size, mode: s.mode, uid: s.uid, gid: s.gid, atime: s.atime, mtime: s.mtime, ctime: s.ctime, nlink };
   };
 
-  const provisionalEntry = (key: string): ResidentEntry | null | undefined => {
+  const provisionalEntry = (key: string, known?: ResidentEntry | null): ResidentEntry | null | undefined => {
     if (layer.size === 0 && touched.size === 0) return undefined;
     if (layer.has(key)) {
       const inode = layer.get(key)!;
@@ -396,7 +396,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     }
     // A file whose content this process changed, at any name the view has it at.
     if (touched.size > 0) {
-      const row = host.row(key);
+      const row = known !== undefined ? known : host.row(key);
       const changed = row ? inodeAtNumber(row.dev, row.ino) : undefined;
       if (changed !== undefined && changed.state !== null && !changed.local && changed.cell === undefined
         && changed.heldAt === undefined && changed.records.length === 0 && ![...layer.values()].includes(changed)) {

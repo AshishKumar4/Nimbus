@@ -103,7 +103,7 @@ export interface DelegationHolder {
   readonly client: ProcessFsClient;
   /** What a caller that cannot wait decides where no held subtree does: its descriptors are the holder's too (owns). */
   readonly provisional: Provisional;
-  /** What the process decided is at `key`: an entry, null (removed), or undefined (nothing decided). */
+  /** What the process sees at `key`: its own word (its provisional decisions', then its grants'), else the store's; undefined where neither knows. */
   entry(key: string): ResidentEntry | null | undefined;
   /** The names in `key`, as `base` lists them with what the process decided there. */
   children(key: string, base: RuntimeVfsDirEntry[] | undefined): RuntimeVfsDirEntry[] | undefined;
@@ -472,9 +472,11 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
   });
 
   // The provisional decisions are the newest wherever they are pending: a held subtree decides nothing there (deciding).
+  /** entryOf, with the provisional decisions' word first: the row asked of the store once, for both. */
   const composedEntry = (key: string): ResidentEntry | null | undefined => {
-    const mine = prov.entry(key);
-    return mine !== undefined ? mine : names.entry(key);
+    const row = entryOf(key);
+    const mine = prov.entry(key, row);
+    return mine !== undefined ? mine : row;
   };
   const composedChildren = (key: string, base: RuntimeVfsDirEntry[] | undefined): RuntimeVfsDirEntry[] | undefined => prov.children(key, names.children(key, base));
   const composedContent = (entry: ResidentEntry): Uint8Array | undefined => prov.content(entry) ?? heldContent(entry);
@@ -587,7 +589,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     provisional: prov,
 
     // Composed with the provisional decisions while the process sees any (ProvisionalHost.active).
-    entry: (key) => (provisionalActive ? composedEntry(key) : names.entry(key)),
+    entry: (key) => (provisionalActive ? composedEntry(key) : entryOf(key)),
 
     children: (key, base) => (provisionalActive ? composedChildren(key, base) : names.children(key, base)),
 
