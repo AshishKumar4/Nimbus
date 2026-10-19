@@ -885,6 +885,31 @@ function __nimbusListOf(collection) {
   collection.forEach((_value, key) => { out[out.length] = key; });
   return out;
 }
+/**
+ * builtins.url.pathToFileURL(path).href, as the loader names a module: its
+ * characters encoded as that shim encodes them ('%', the backslash, and the
+ * line and tab controls), on the launch's captures, then the URL made with
+ * its captured constructor (newURL), its pathname set and href read live, as
+ * Node's own are (package-map.ts).
+ */
+function __nimbusFileHref(path) {
+  const input = String(path);
+  let resolved = __pathMod.resolve(input);
+  if (__pathEndsWith(input, "/") && !__pathEndsWith(resolved, "/")) resolved += "/";
+  let encoded = "";
+  let from = 0;
+  for (let i = 0; i < resolved.length; i++) {
+    const c = __pathCharCodeAt(resolved, i);
+    const escape = c === 37 ? "%25" : c === 92 ? "%5C" : c === 10 ? "%0A" : c === 13 ? "%0D" : c === 9 ? "%09" : null;
+    if (escape === null) continue;
+    encoded += __pathSlice(resolved, from, i) + escape;
+    from = i + 1;
+  }
+  encoded = from === 0 ? resolved : encoded + __pathSlice(resolved, from);
+  const url = __nimbusPrimordials.newURL("file:///");
+  url.pathname = encoded;
+  return url.href;
+}
 /** Each promise of \`list\` settled, however it settles: Promise.allSettled, without the array iterator. */
 function __nimbusSettled(list) {
   return new __NimbusPromise((resolve) => {
@@ -1763,7 +1788,7 @@ const __fsMod = (() => {
    * the file. Sharing one set let the second repair be swallowed by the
    * first, and the read never became answerable.
    */
-  const _faulted = new Set();
+  const _faulted = new __NimbusSafeSet();
   function _faultOnce(kind, k) {
     const token = kind + ":" + k;
     if (_faulted.has(token)) return false;
@@ -1788,7 +1813,7 @@ const __fsMod = (() => {
    * issuing, so it would hand back the bytes the program had just parked and
    * report the path as one that was there all along.
    */
-  const _observedAbsent = new Set();
+  const _observedAbsent = new __NimbusSafeSet();
 
   // The miss is the access the program made; the fault-in reads, and so
   // holds, the file the links on it name by that file's own name.
@@ -1833,9 +1858,9 @@ const __fsMod = (() => {
    * to want: an isolate torn down mid-fetch leaves the repair undone, and the
    * cost of not doing so is one read the program was going to need anyway.
    */
-  const _repairOf = new Map();
+  const _repairOf = new __NimbusSafeMap();
   const _FAULT_ATTEMPTS = 4;
-  const _faultAttempts = new Map();
+  const _faultAttempts = new __NimbusSafeMap();
   function _faultIn(k) {
     if (!_supervisor()) return;
     const speculation = _speculation();
@@ -1863,7 +1888,7 @@ const __fsMod = (() => {
         const landed = (__vfsBundle && k in __vfsBundle) || _observedAbsent.has(k);
         if (!landed && attempt < _FAULT_ATTEMPTS) _faulted.delete("content:" + k);
       });
-      _repairs.push(repair);
+      _repairs[_repairs.length] = repair;
       _repairOf.set(k, repair);
       if (speculation) { speculation.repairs[speculation.repairs.length] = repair; speculation.issued.add(k); }
     } catch { /* the fill is speculative */ }
@@ -1941,7 +1966,7 @@ const __fsMod = (() => {
    * retired. Published on globalThis because the runner that reports is
    * outside this closure, the same way the resumption barriers are.
    */
-  const _repairs = [];
+  const _repairs = new __PathList();
   globalThis.__nimbusVfsResidencySettle = async () => {
     // One boundary listing can move the boundary a level deeper rather than
     // settle the question outright, and which directory to ask for next is
@@ -1952,7 +1977,10 @@ const __fsMod = (() => {
     // ledger have finitely many components.
     for (;;) {
       while (_repairs.length > 0) {
-        await Promise.allSettled(_repairs.splice(0));
+        const batch = new __PathList();
+        for (let i = 0; i < _repairs.length; i++) batch[i] = _repairs[i];
+        _repairs.length = 0;
+        await __nimbusSettled(batch);
       }
       _settleProvenAbsences();
       if (_repairs.length === 0) return;
@@ -8302,12 +8330,13 @@ const __nimbusDecodeStringLiteral = ${DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE};
         }
       }
     };
-    Object.defineProperty(routed, "name", { value: Native.name });
-    Object.defineProperty(routed, "length", { value: Native.length });
-    Object.defineProperty(routed, "prototype", { value: Native.prototype, writable: false });
-    Object.defineProperty(routed, "__nimbusNative", { value: Native });
-    Object.defineProperty(routed, "toString", { value: () => Reflect.apply(nativeToString, Native, []), configurable: true, writable: true });
-    Object.setPrototypeOf(routed, Object.getPrototypeOf(Native));
+    // Made as each module's code origin is, after the program ran: through the launch's captures.
+    __nimbusDefine(routed, "name", __nimbusData(Native.name, false, false, false));
+    __nimbusDefine(routed, "length", __nimbusData(Native.length, false, false, false));
+    __nimbusDefine(routed, "prototype", __nimbusData(Native.prototype, false, false, false));
+    __nimbusDefine(routed, "__nimbusNative", __nimbusData(Native, false, false, false));
+    __nimbusDefine(routed, "toString", __nimbusData(() => __nimbusApply(nativeToString, Native, []), true, false, true));
+    __nimbusPrimordials.reflectSetPrototypeOf(routed, __nimbusPrimordials.reflectGetPrototypeOf(Native));
     return routed;
   };
   const nativeFunction = Function.__nimbusNative ?? Function;
@@ -12603,7 +12632,7 @@ const __requireResolver = createRequireResolver({
 // under file:///bundle/, never at the file's own path. dirname and filename
 // name the file, without the URL's query or fragment.
 // \`main\`: whether the module is the program's entry, as Node 22's import.meta.main.
-function __nimbusFileImportMeta(filename, url = builtins.url.pathToFileURL(filename).href, main = false) {
+function __nimbusFileImportMeta(filename, url = __nimbusFileHref(filename), main = false) {
   // Made over nothing, so each assignment meets no setter a program put on Object.prototype.
   const meta = __nimbusObjectCreate(null);
   meta.dirname = __pathMod.dirname(filename);
@@ -12731,7 +12760,7 @@ function __nimbusPrepareModule(resolvedPath, evaluationKey, required, parent, es
   const __prevModulePath = globalThis.__currentModulePath;
   globalThis.__currentModulePath = resolvedPath;
   const moduleUrl = __pathStartsWith(evaluationKey, "file:")
-    ? evaluationKey : builtins.url.pathToFileURL("/" + resolvedPath).href;
+    ? evaluationKey : __nimbusFileHref("/" + resolvedPath);
   __nimbusDefine(mod, "__nimbusImportMeta", __nimbusData(__nimbusFileImportMeta("/" + resolvedPath, moduleUrl), false, false, false));
   try {
     __nimbusLoadsTypeScript(normalizedPath);
@@ -13729,7 +13758,7 @@ function __nimbusInterpretedRecord(state) {
   }
   const late = __nimbusLateOf();
   const importer = state.data ? undefined : mod;
-  const parentUrl = state.data ? moduleUrl : builtins.url.pathToFileURL(state.filename).href;
+  const parentUrl = state.data ? moduleUrl : __nimbusFileHref(state.filename);
   const requests = __nimbusModuleRequestsOf(cell);
   // Each request's index in \`requested\`, by its specifier and type (the plan may replace a staged module's placeholder there).
   const targets = new __NimbusSafeMap();
@@ -14166,7 +14195,7 @@ function __nimbusModuleRequests(path, text, javaScript = false, goal = undefined
 // __requireFrom for an interpreted ES module); require() as require does.
 function __nimbusRequestTarget(kind, specifier, importer) {
   if (kind === "dynamic" || kind === "static") {
-    const resolution = __esmResolver.resolveSync(specifier, builtins.url.pathToFileURL("/" + importer).href);
+    const resolution = __esmResolver.resolveSync(specifier, __nimbusFileHref("/" + importer));
     return resolution && resolution.path ? resolution.path : null;
   }
   if (__nimbusBuiltinId(specifier) !== null || __nimbusFacetProvidedPackages.has(specifier)) return null;
@@ -14300,7 +14329,7 @@ async function __nimbusPreload() {
   for (const specifier of __nimbusNodeCommandLine?.require ?? []) __requireFrom(String(specifier), fromDir, preload);
   const imports = __nimbusNodeCommandLine?.import ?? [];
   if (imports.length === 0) return;
-  const parentUrl = builtins.url.pathToFileURL("/" + fromDir + "/").href;
+  const parentUrl = __nimbusFileHref("/" + fromDir + "/");
   for (const specifier of imports) await globalThis.__nimbusDynamicImport(parentUrl, String(specifier));
 }
 
