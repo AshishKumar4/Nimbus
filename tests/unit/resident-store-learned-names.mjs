@@ -10,6 +10,9 @@
  * - nor does either stand in for what a peer's rename put at the name, or
  *   hide a name a rename brought into the directory; nor a tree listing's;
  *   nor one asked before the namespace started again;
+ * - a listing is of a directory as it was at one moment: one whose names and
+ *   stats straddle a peer's rename is not installed, nor is a directory a
+ *   peer moved away listed as an empty one;
  * - a name the store learned under a directory a peer replaced is not
  *   served once the barrier admitted the replacement, on either engine.
  *
@@ -190,6 +193,24 @@ const scenarios = {
     await first;
     notServed(s.fs, k('d/f'), 'what a call that cannot wait reads of the removed file');
     assert.equal(await s.fs.stat(k('d/f')), null, 'the removed file');
+  },
+  async 'a listing whose names and stats straddle a peer\'s rename installs nothing'() {
+    const s = await session({ d: null, 'd/f': 'f', 'd/g': 'g' });
+    assert.equal((await s.fs.stat(k('d'))).type, 'directory');
+    const asked = s.hold('readdir');
+    const listing = s.view.list(`${ROOT}/d`);
+    await asked();
+    await s.kernel.rename(k('d/g'), k('d/h'));
+    s.release('readdir');
+    assert.equal(await listing, false, 'its names were the directory\'s before the rename, its stats after');
+    assert.deepEqual((await s.fs.readdir(k('d'))).map((entry) => entry.name).sort(), ['f', 'h'], 'the directory');
+  },
+  async 'a tree listing of a directory a peer moved away is not an empty directory'() {
+    const s = await session({ d: null, 'd/f': 'f' });
+    assert.equal((await s.fs.stat(k('d'))).type, 'directory');
+    await s.kernel.rename(k('d'), k('z'));
+    assert.equal(await s.view.listTree(`${ROOT}/d`), false, 'nothing is listed at a name that is not there');
+    await assert.rejects(async () => s.fs.readdir(k('d')), (error) => error.code === 'ENOENT', 'the directory');
   },
   async 'a learned name under a directory a peer made unsearchable is refused after the barrier'() {
     const s = await session({ d: null, 'd/f': 'f', other: 'o' });
