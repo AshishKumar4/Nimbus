@@ -88,16 +88,12 @@ class CreditLane {
   }
 
   /**
-   * Whether an ask ahead waits for credit that is not free beside what the
-   * turns woken before it are taking: what reclaiming more would be for.
+   * Whether the asks ahead want more than is free: what reclaiming more is
+   * for. Each holds its bytes once its turn is taken, so they are counted
+   * together, a turn woken and not yet taken included.
    */
   get aheadStarved(): boolean {
-    let promised = this.current;
-    for (const waiter of this.ahead) {
-      if (waiter.state === 'woken') { promised += waiter.bytes; continue; }
-      return promised + waiter.bytes > this.capacity;
-    }
-    return false;
+    return this.ahead.reduce((wanted, waiter) => wanted + waiter.bytes, this.current) > this.capacity;
   }
 
   /** Granted now, or null: an ask ahead waits only for asks ahead of it, any other for every ask queued. */
