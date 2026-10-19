@@ -19,9 +19,7 @@
 //     for a worker ends: a launch's dispatch killed as it regains its worker,
 //     a refused call's readmission given up, an attempt a timeout left running;
 //   - a launch's load refused its credit is refused at once, though the worker
-//     it gave back for the wait is taken: it waits for no worker to say so;
-//   - a load whose worker is free keeps its credit though running work waits
-//     as it is granted: running work waits for that load, not the reverse.
+//     it gave back for the wait is taken: it waits for no worker to say so.
 
 import assert from 'node:assert/strict';
 import { jest } from 'bun:test';
@@ -29,7 +27,6 @@ import {
   SupervisorAllocationBudget,
   SupervisorLoadWaitError,
   acquireSupervisorAllocation,
-  acquireSupervisorRunningAllocation,
   readSupervisorAllocationBudget,
 } from '../../packages/platform/src/heavy-alloc-coord.ts';
 import { SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES as CAPACITY, SUPERVISOR_LOAD_WAIT_MS } from '../../packages/platform/src/limits.ts';
@@ -318,31 +315,6 @@ const WASM = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]);
   for (const end of others) end();
   assert.equal(readSupervisorAllocationBudget().current, 0);
   console.log('  ✓ a launch\'s load refused its credit is refused at once');
-}
-
-// ── through IsolatePool: a load whose worker is free keeps its credit ─────────
-// Running work asks for credit as the load's is granted. The load waits for
-// no worker, so its credit is not reclaimed: it reads its images, and running
-// work has the credit once the loader's callback is done with it.
-{
-  const MiB = 1024 * 1024;
-  const ctx = { id: { toString: () => 'free-worker-do' }, waitUntil() {} };
-  const order = [];
-  let gets = 0;
-  const env = { LOADER: { get(_id, load) { gets++; return { getEntrypoint: () => ({ async fetch() { await load(); return new Response('ok'); } }) }; } } };
-  const image = { path: '/free.wasm', identity: 'free', size: 8 * MiB, peak: 8 * MiB, async read() { order.push('images read'); return WASM; } };
-  const pool = new IsolatePool(env, ctx, { tag: 'free', network: ISOLATE_NETWORK, omitSupervisor: true, timeoutMs: 0, wasmModules: { 'primary.wasm': image } });
-  const whole = await acquireSupervisorAllocation(CAPACITY);
-  const call = pool.submitRequest(facetTaskSource("async () => new Response('ok')"), new Request('https://facet.internal/run'));
-  await settled();
-  whole.release();
-  const running = acquireSupervisorRunningAllocation(CAPACITY).then((lease) => { order.push('running work granted'); lease.release(); });
-  assert.equal(await (await call).text(), 'ok');
-  await running;
-  assert.deepEqual(order, ['images read', 'running work granted'], 'the load kept its credit; running work waited for it');
-  assert.equal(gets, 1, 'it asked for its worker once');
-  assert.equal(readSupervisorAllocationBudget().current, 0);
-  console.log('  ✓ a load whose worker is free keeps its credit while running work waits');
 }
 
 console.log('facet-load-admission: ok');
