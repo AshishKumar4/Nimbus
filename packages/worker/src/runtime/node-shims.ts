@@ -871,7 +871,7 @@ const __nimbusProcessExitPromise = new Promise((resolve) => {
 const {
   stringSlice: __pathSlice, stringIndexOf: __pathIndexOf, stringStartsWith: __pathStartsWith,
   stringCharCodeAt: __pathCharCodeAt, arrayJoin: __pathJoin, SafeList: __PathList, SafeMap: __NimbusSafeMap,
-  decodeURIComponentOf: __pathDecodeURIComponent,
+  decodeURIComponentOf: __pathDecodeURIComponent, stringLastIndexOf: __pathLastIndexOf, stringToLowerCase: __pathToLowerCase,
 } = __nimbusPrimordials;
 /** \`text\`'s names, what lies between its slashes, empty ones dropped. */
 function __vfsNames(text) {
@@ -1073,7 +1073,7 @@ const __fsMod = (() => {
   // A file's content as the string an \`encoding\` option asks for: UTF-8
   // text, or its bytes in base64, hex, latin1, … (Buffer#toString).
   function _decodeAs(v, encoding) {
-    const name = String(encoding).toLowerCase();
+    const name = __pathToLowerCase(String(encoding));
     if (name === "utf8" || name === "utf-8") return _asString(v);
     return __BufferMod.from(_isBytes(v) ? v : _asString(v)).toString(encoding);
   }
@@ -1435,8 +1435,8 @@ const __fsMod = (() => {
     // A name under one that is not a directory is not searched (link_path_walk's ENOTDIR comes first): the call answers it.
     const visit = (name) => {
       if (guarded && !client.guards(name)) guarded = false;
-      const slash = name.lastIndexOf("/");
-      const dir = _entry(slash < 0 ? "" : name.slice(0, slash), true);
+      const slash = __pathLastIndexOf(name, "/");
+      const dir = _entry(slash < 0 ? "" : __pathSlice(name, 0, slash), true);
       return dir === undefined || dir.type !== "directory" || _modeAllows(dir, 1);
     };
     const found = __resident.namespace.lookup(k, follow, _ownEntries === 0 ? undefined : _nsWord, visit);
@@ -2210,12 +2210,13 @@ const __fsMod = (() => {
   /** The device of the nearest directory above \`k\` the namespace holds. */
   function _nsDeviceAbove(k) {
     if (!_nsActive()) return undefined;
-    const parent = k.slice(0, Math.max(0, k.lastIndexOf("/")));
+    const last = __pathLastIndexOf(k, "/");
+    const parent = last > 0 ? __pathSlice(k, 0, last) : "";
     let dev = _nsDevices.get(parent);
     if (dev === undefined) {
       dev = null;
-      for (let i = k.lastIndexOf("/"); ; i = k.lastIndexOf("/", i - 1)) {
-        const found = _nsResolve(i > 0 ? k.slice(0, i) : "", true);
+      for (let i = last; ; i = __pathLastIndexOf(k, "/", i - 1)) {
+        const found = _nsResolve(i > 0 ? __pathSlice(k, 0, i) : "", true);
         if (found && found !== "ELOOP" && Number(found.row.dev) > 0) { dev = Number(found.row.dev); break; }
         if (i <= 0) break;
       }
