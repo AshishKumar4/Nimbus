@@ -162,6 +162,27 @@ export interface Facet {
   dispose(): void;
 }
 
+/** The key a request-shaped task's failure travels under, in the 500 its pool answers with. */
+export const FACET_ERROR_KEY = '__nimbusFacetError';
+
+/**
+ * Set on what a request-shaped task throws when its own request body does
+ * not parse: the entry it came through (task-body-error.ts) names the body.
+ * A task compiled to run in a facet names it as this literal.
+ */
+export const TASK_BODY_FAILED = 'nimbusTaskBodyFailed';
+
+/**
+ * A request-shaped task's answer: its JSON, or its failure thrown with the
+ * message its pool answered with.
+ */
+export async function facetAnswer(response: Response): Promise<unknown> {
+  const body: unknown = await response.json();
+  if (response.ok) return body;
+  const message: unknown = typeof body === 'object' && body !== null ? Reflect.get(body, FACET_ERROR_KEY) : undefined;
+  throw new Error(typeof message === 'string' ? message : `the facet's task failed: HTTP ${response.status}`);
+}
+
 export interface FacetHost {
   /**
    * Whether a guest in this host can be SUSPENDED in the middle of a syscall.

@@ -1,6 +1,6 @@
 import { isShellIdentifier } from './names.js';
 import { DEFAULT_HOME } from '../../../constants.js';
-import { escapeGlob, expandGlob, fixedMatchLength, shellMatch } from '../utils/glob.js';
+import { characterAt, characterBounds, characterWidth, escapeGlob, expandGlob, fixedMatchLength, shellMatch, shellUnits } from '../utils/glob.js';
 import { readAnsiCQuote, readBalancedCommand, readBracedExpansion } from './lexer.js';
 /**
  * A parameter expansion that aborts the command it belongs to: `set -u` on an
@@ -400,7 +400,7 @@ function valuePiece(text, quoted) {
  */
 function listPieces(values, star, ctx, quoted) {
     if (star)
-        return [valuePiece(values.join((ctx.env['IFS'] ?? ' ').slice(0, 1)), quoted)];
+        return [valuePiece(values.join(characterAt(ctx.env['IFS'] ?? ' ', 0)), quoted)];
     const pieces = [];
     for (const value of values) {
         if (pieces.length > 0)
@@ -421,7 +421,7 @@ async function expandBraced(inner, ctx, quoted) {
             const resolved = await resolveParameter(parameter, ctx);
             const length = resolved.kind === 'list'
                 ? resolved.values.length
-                : requireSet(parameter.name, resolved.value, ctx).length;
+                : characterCount(requireSet(parameter.name, resolved.value, ctx));
             return [valuePiece(String(length), quoted)];
         }
     }
@@ -575,31 +575,56 @@ async function applyTrim(ref, rest, ctx, quoted) {
         ? trimPrefix(value, pattern, longest)
         : trimSuffix(value, pattern, longest)));
 }
-function trimPrefix(value, pattern, longest) {
-    const bounds = longest
-        ? range(value.length, -1, -1)
-        : range(0, value.length + 1, 1);
-    for (const i of bounds) {
-        if (shellMatch(pattern, value.slice(0, i)))
-            return value.slice(i);
-    }
-    return value;
+/**
+ * Where `s`'s characters begin, and its end: index `k` of them is `at(k)`,
+ * `count` of them. A value with no surrogate is its UTF-16 indices, read
+ * without making the list.
+ */
+function boundsOf(s) {
+    if (!SURROGATE.test(s))
+        return { count: s.length + 1, at: (k) => k };
+    const bounds = characterBounds(s);
+    return { count: bounds.length, at: (k) => bounds[k] ?? s.length };
 }
-function trimSuffix(value, pattern, longest) {
-    const bounds = longest
-        ? range(0, value.length + 1, 1)
-        : range(value.length, -1, -1);
-    for (const i of bounds) {
-        if (shellMatch(pattern, value.slice(i)))
-            return value.slice(0, i);
-    }
-    return value;
+const SURROGATE = /[\uD800-\uDFFF]/;
+/** The last IFS split on, and its characters: every word's split asks, and IFS seldom changes. */
+let lastIfs = null;
+function ifsCharacters(ifs) {
+    // A string's iterator yields its code points: a pair whole, a lone surrogate alone.
+    if (lastIfs?.ifs !== ifs)
+        lastIfs = { ifs, characters: new Set(ifs) };
+    return lastIfs.characters;
 }
-function range(from, to, step) {
-    const out = [];
-    for (let i = from; step > 0 ? i < to : i > to; i += step)
-        out.push(i);
-    return out;
+/** How many characters (code points) `s` holds: `${#x}`. */
+function characterCount(s) {
+    let count = 0;
+    for (let i = 0; i < s.length; i += characterAt(s, i).length)
+        count++;
+    return count;
+}
+// Trims and substitutions cut a value only between its characters (code
+// points), as bash does in a UTF-8 locale: never inside a surrogate pair.
+// Each works in shellUnits: characters, or bytes when the value or the
+// pattern holds a byte that is no character, its result decoded back.
+function trimPrefix(text, pattern, longest) {
+    const { value, matches, decode } = shellUnits(pattern, text);
+    const { count, at } = boundsOf(value);
+    for (let k = 0; k < count; k++) {
+        const i = at(longest ? count - 1 - k : k);
+        if (matches(value.slice(0, i)))
+            return decode(value.slice(i));
+    }
+    return text;
+}
+function trimSuffix(text, pattern, longest) {
+    const { value, matches, decode } = shellUnits(pattern, text);
+    const { count, at } = boundsOf(value);
+    for (let k = 0; k < count; k++) {
+        const i = at(longest ? k : count - 1 - k);
+        if (matches(value.slice(i)))
+            return decode(value.slice(0, i));
+    }
+    return text;
 }
 /** `${p/pat/rep}` `${p//pat/rep}` `${p/#pat/rep}` `${p/%pat/rep}` */
 async function applySubstitution(ref, rest, ctx, quoted) {
@@ -629,19 +654,23 @@ function unescapedSlash(text) {
     }
     return -1;
 }
-function replaceAnchored(value, pattern, replacement, anchor) {
+function replaceAnchored(text, pattern, replacement, anchor) {
+    const { value, matches, encode, decode } = shellUnits(pattern, text);
+    const { count, at } = boundsOf(value);
     if (anchor === 'prefix') {
-        for (let i = value.length; i >= 0; i--) {
-            if (shellMatch(pattern, value.slice(0, i)))
-                return replacement + value.slice(i);
+        for (let k = count - 1; k >= 0; k--) {
+            const i = at(k);
+            if (matches(value.slice(0, i)))
+                return decode(encode(replacement) + value.slice(i));
         }
-        return value;
+        return text;
     }
-    for (let i = 0; i <= value.length; i++) {
-        if (shellMatch(pattern, value.slice(i)))
-            return value.slice(0, i) + replacement;
+    for (let k = 0; k < count; k++) {
+        const i = at(k);
+        if (matches(value.slice(i)))
+            return decode(value.slice(0, i) + encode(replacement));
     }
-    return value;
+    return text;
 }
 /** `${p^pat}` `${p^^pat}` `${p,pat}` `${p,,pat}` -- case conversion. */
 async function applyCase(ref, rest, ctx, quoted) {
@@ -652,7 +681,8 @@ async function applyCase(ref, rest, ctx, quoted) {
     const matches = (c) => pattern === '' || shellMatch(pattern, c);
     return (await mapParameter(ref, ctx, quoted, (value) => {
         if (!every) {
-            return value === '' || !matches(value[0]) ? value : convert(value[0]) + value.slice(1);
+            const first = characterAt(value, 0);
+            return value === '' || !matches(first) ? value : convert(first) + value.slice(first.length);
         }
         return [...value].map((c) => (matches(c) ? convert(c) : c)).join('');
     }));
@@ -671,7 +701,7 @@ function parameterPieces(parameter, ctx, quoted) {
 }
 function scalarOf(parameter, ctx) {
     if (parameter.kind === 'list')
-        return parameter.values.join((ctx.env['IFS'] ?? ' ').slice(0, 1));
+        return parameter.values.join(characterAt(ctx.env['IFS'] ?? ' ', 0));
     return parameter.value ?? '';
 }
 /** The word inside `${p:-word}`, `${p#pattern}` and friends, expanded with quote removal, as pieces. */
@@ -799,30 +829,39 @@ function splitGroup(text, eligible, quoted, literal, ifs) {
     };
     if (ifs === '')
         return keep([field(0, text.length)]);
-    const isDelimiter = (i) => eligible[i] && ifs.includes(text[i]);
-    const isWhitespace = (i) => IFS_WHITESPACE.includes(text[i]);
+    // IFS's characters, and the text's, are code points: 😀 in IFS splits at 😀 only, never at half of 😁.
+    const isDelimiter = (i) => {
+        if (eligible[i] !== true)
+            return false;
+        const unit = text.charCodeAt(i);
+        // A surrogate is half of a character, or a byte kept as one: never matched by half of IFS's.
+        return unit < 0xd800 || unit > 0xdfff ? ifs.includes(text.charAt(i)) : ifsCharacters(ifs).has(characterAt(text, i));
+    };
+    const isWhitespace = (i) => IFS_WHITESPACE.includes(text.charAt(i));
+    const next = (i) => i + characterWidth(text, i);
+    const previous = (i) => (i >= 2 && characterWidth(text, i - 2) === 2 ? i - 2 : i - 1);
     let start = 0;
     let end = text.length;
     while (start < end && isDelimiter(start) && isWhitespace(start))
-        start++;
-    while (end > start && isDelimiter(end - 1) && isWhitespace(end - 1))
-        end--;
+        start = next(start);
+    while (end > start && isDelimiter(previous(end)) && isWhitespace(previous(end)))
+        end = previous(end);
     const fields = [];
     let from = start;
     let i = start;
     while (i < end) {
         if (!isDelimiter(i)) {
-            i++;
+            i = next(i);
             continue;
         }
         const until = i;
         // One delimiter: a run of IFS whitespace around at most one other IFS char.
         while (i < end && isDelimiter(i) && isWhitespace(i))
-            i++;
+            i = next(i);
         if (i < end && isDelimiter(i) && !isWhitespace(i))
-            i++;
+            i = next(i);
         while (i < end && isDelimiter(i) && isWhitespace(i))
-            i++;
+            i = next(i);
         fields.push(field(from, until));
         from = i;
         // A word ending in a delimiter has no trailing empty field.
@@ -838,18 +877,20 @@ function splitGroup(text, eligible, quoted, literal, ifs) {
  * there (bash's match_pattern, MATCH_ANY): [start, end], or null. A pattern of
  * fixed length (`fixed`, fixedMatchLength) is tried at that length only.
  */
-function leftmostLongest(val, pattern, from, fixed) {
-    for (let start = from; start <= val.length; start++) {
+function leftmostLongest(val, bounds, matches, from, fixed) {
+    const { count, at } = bounds;
+    for (let s = from; s < count; s++) {
+        const start = at(s);
         if (fixed !== null) {
-            if (start + fixed > val.length)
+            if (s + fixed >= count)
                 return null;
-            if (shellMatch(pattern, val.slice(start, start + fixed)))
-                return [start, start + fixed];
+            if (matches(val.slice(start, at(s + fixed))))
+                return [s, s + fixed];
             continue;
         }
-        for (let end = val.length; end >= start; end--) {
-            if (shellMatch(pattern, val.slice(start, end)))
-                return [start, end];
+        for (let e = count - 1; e >= s; e--) {
+            if (matches(val.slice(start, at(e))))
+                return [s, e];
         }
     }
     return null;
@@ -866,29 +907,38 @@ function replaceAll(val, pattern, replacement) {
  * nothing; an empty match keeps the character after it, and ends the search
  * at the end of the value.
  */
-function replaceMatches(val, pattern, replacement, all) {
+function replaceMatches(text, pattern, replacement, all) {
     if (pattern === '')
-        return val;
-    const fixed = fixedMatchLength(pattern);
+        return text;
+    const units = shellUnits(pattern, text);
+    const val = units.value;
+    const { matches } = units;
+    // Its length in the same units as the value's bounds.
+    const fixed = fixedMatchLength(units.pattern);
+    const encoded = units.encode(replacement);
+    // Matches start and end between characters: indices into the value's character bounds.
+    const bounds = boundsOf(val);
+    const last = bounds.count - 1;
+    const { at } = bounds;
     let out = '';
     let i = 0;
     for (;;) {
-        const match = leftmostLongest(val, pattern, i, fixed);
+        const match = leftmostLongest(val, bounds, matches, i, fixed);
         if (match === null)
             break;
         const [start, end] = match;
-        out += val.slice(i, start) + replacement;
+        out += val.slice(at(i), at(start)) + encoded;
         i = end;
         if (start === end) {
-            if (start >= val.length)
+            if (start >= last)
                 break;
-            out += val[start];
+            out += val.slice(at(start), at(start + 1));
             i = start + 1;
         }
-        if (!all || i >= val.length)
+        if (!all || i >= last)
             break;
     }
-    return out + val.slice(i);
+    return units.decode(out + val.slice(at(i)));
 }
 // ─── Arithmetic evaluator ───
 function evaluateArithmetic(expr, env, positionals) {

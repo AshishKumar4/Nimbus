@@ -30,7 +30,13 @@ export async function bashRequestStep(request, bindings) {
             error: 'bash-runner preamble missing (__bashStep not in scope)',
         });
     }
-    return Response.json(await step(await request.json(), bindings.SUPERVISOR));
+    // A body that does not parse is marked for the entry to name (TASK_BODY_FAILED).
+    const args = await request.json().catch((error) => {
+        if (error instanceof Error)
+            Reflect.set(error, 'nimbusTaskBodyFailed', true);
+        throw error;
+    });
+    return Response.json(await step(args, bindings.SUPERVISOR));
 }
 /**
  * Facet-side entry, compiled as a task expression at build time. The

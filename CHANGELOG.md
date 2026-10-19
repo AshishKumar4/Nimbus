@@ -28,6 +28,11 @@ published independently in the `@nimbus-sh` npm scope.
   other character outside the Basic Multilingual Plane at a chunk boundary
   read back with two replacement characters in place of it, from a
   process's resident store.
+- Fixed: the shell's patterns, trims, substitutions, `${#x}` and IFS count
+  characters, as bash does in a UTF-8 locale, not UTF-16 units. `${x%?}` of
+  😀 leaves nothing rather than half of it, `?` and `case 😀 in ?)` match it
+  whole, `${#x}` is 1, and IFS=😀 joins and splits by 😀 without splitting
+  😁. Before, these could leave a lone surrogate in a value.
 - Fixed: the shell reads quoting as bash does wherever quoting decides what
   a word is.
   - A quoted reserved word is a command: `'if' true` runs a command named
@@ -52,6 +57,10 @@ published independently in the `@nimbus-sh` npm scope.
     is `X`).
   - A here-document inside `$(…)` may hold an unbalanced quote or `)`.
   Before, these read a word's text after its quotes were gone.
+- Fixed: a bash step that failed inside its facet said only "facet returned
+  an invalid payload"; it now says what the step failed with, as a python
+  step already did. And a step or process whose request body reaches its
+  facet unreadable now says that the body did not parse, and its length.
 - Fixed: a launch whose program loads wasm or a native binding (rolldown's,
   in a remix dev server) no longer gathers its closure twice. Its build
   gave back the bytes its module map would need for them, then had to ask
