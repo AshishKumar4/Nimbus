@@ -2298,7 +2298,7 @@ const __fsMod = (() => {
   }
   // Parked cells that are not the file's whole content (an append to a file
   // this view never held): by generation, as the cell is.
-  const _parkedPartial = new Map();
+  const _parkedPartial = new __NimbusSafeMap();
   // What dates an own mutation's cell (__nimbusEndOwnMutation): a logged
   // op's mutation receipt, or what a call made in its place answered.
   function _receiptOf(answer) {
@@ -2490,7 +2490,7 @@ const __fsMod = (() => {
    * or a poison is judged only by what is reported after it began. Sharing the
    * earlier read's record condemned the read issued to replace it.
    */
-  const _fillReports = new Map();
+  const _fillReports = new __NimbusSafeMap();
 
   /**
    * Begin a live read of \`k\`: the cursor it is issued under — every mutation
@@ -2502,7 +2502,7 @@ const __fsMod = (() => {
     const fill = { k, rev: _cursor.rev, reported: -1 };
     let live = _fillReports.get(k);
     if (!live) {
-      live = new Set();
+      live = new __NimbusSafeSet();
       _fillReports.set(k, live);
     }
     live.add(fill);
@@ -2754,7 +2754,7 @@ const __fsMod = (() => {
    * eviction and a refetch, never a stale byte.
    */
   function _settleSkippedReports(ownAtStart, repaired) {
-    const reports = new Map();
+    const reports = new __NimbusSafeMap();
     if (repaired && repaired.cursor && repaired.reconciled && Array.isArray(repaired.own)) {
       for (const entry of repaired.own) reports.set(entry.path, entry.rev);
     } else {
@@ -3119,7 +3119,7 @@ const __fsMod = (() => {
    * ticket that read installs under — the cursor it was issued at, and the
    * reports noted against it since.
    */
-  const _refetching = new Map();
+  const _refetching = new __NimbusSafeMap();
 
   /**
    * Read \`k\` live and install it, behind the barrier just taken. Settles
