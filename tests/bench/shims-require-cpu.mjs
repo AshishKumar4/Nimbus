@@ -27,6 +27,12 @@ const PAIRS = short ? 3 : 30;
 const APP = '/home/user/app';
 const results = [];
 
+// Node exposes this as a getter; the shims front workerd's writable export.
+const events = process.getBuiltinModule('events');
+Object.defineProperty(events, 'EventEmitterAsyncResource', {
+  value: events.EventEmitterAsyncResource, writable: true, enumerable: true, configurable: true,
+});
+
 /** Every worker/core import, including the fixture helper's, comes from this arm's source tree. */
 function sourcePlugin(dir) {
   return {
@@ -46,6 +52,19 @@ function sourcePlugin(dir) {
   };
 }
 
+function residentAssetPlugin(source) {
+  return {
+    name: 'shims-require-resident-asset',
+    setup(builder) {
+      builder.onResolve({ filter: /^node:fs$/ }, ({ importer }) => importer === join(root, 'tests/unit/lib/shims-namespace.mjs')
+        ? { path: 'resident', namespace: 'shims-require-resident' } : undefined);
+      builder.onLoad({ filter: /.*/, namespace: 'shims-require-resident' }, () => ({
+        contents: `export const readFileSync = () => ${JSON.stringify(source)};`, loader: 'js',
+      }));
+    },
+  };
+}
+
 async function arm(name, dir) {
   const core = join(dir, 'core');
   const options = {
@@ -59,7 +78,7 @@ async function arm(name, dir) {
     plugins: [await launchCapturesPlugin('__nimbusLaunchCaptures', core), sourcePlugin(dir)],
   });
   const bundled = await build({
-    ...options, format: 'esm', plugins: [sourcePlugin(dir)],
+    ...options, format: 'esm', plugins: [sourcePlugin(dir), residentAssetPlugin(resident.outputFiles[0].text)],
     stdin: {
       resolveDir: root, sourcefile: `${name}-shims-require-arm.mjs`, loader: 'js',
       contents: `
@@ -72,7 +91,7 @@ export function createFactory(residentSource) {
   const compileCell = globalThis.__nimbusTestCompileCell;
   const nodeLib = globalThis.__nimbusTestNodeLib;
   const factory = new Function(
-    '__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
+    '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
     '"use strict";const __compiledModules=new Map();const __compileFailures=new Map();'
       + VFS_WRITE_LEDGER_SOURCE + '\\n' + createShimsStorePrelude(residentSource) + generateShimsCode()
       + '\\n;return builtins.module.createRequire(dirname + "/");\\n//# sourceURL=shims-require-${name}.js',
@@ -84,7 +103,7 @@ export function createFactory(residentSource) {
     globalThis.__nimbusTestNodeLib = nodeLib;
     declareNamespace();
     return factory(
-      { ...bundle }, {}, {}, null,
+      { ...bundle }, {}, null,
       { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, dir, [], {}, dir + '/main.js', dir,
     );
   };
