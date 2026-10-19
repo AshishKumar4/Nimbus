@@ -860,7 +860,7 @@ const {
   objectFreeze: __nimbusFreeze, objectPreventExtensions: __nimbusPreventExtensions, objectKeys: __nimbusKeys,
   arrayIsArray: __nimbusIsArray, arrayIndexOf: __nimbusIndexOf, arraySort: __nimbusSort, JSONParse: __nimbusJsonParse,
   mapGet: __nimbusMapGet, MapConstructor: __NimbusMap, reflectApply: __nimbusApply,
-  promiseSettled: __nimbusSettled, promiseAll: __nimbusAll,
+  promiseSettled: __nimbusSettled, promiseAll: __nimbusAll, PromiseConstructor: __NimbusPromise, arrayCopy: __nimbusArrayCopy,
 } = __nimbusPrimordials;
 /** A SafeSet's or a SafeMap's members (keys), in order, as a SafeList: never their iterator. */
 function __nimbusListOf(collection) {
@@ -3601,7 +3601,8 @@ const __fsMod = (() => {
       batch = null;
     }
     if (!batch) {
-      batch = { supervisor, requests: [], settlers: [], bytes: 0 };
+      // SafeLists: a fill's chunked read reaches them after the program may have replaced Array.prototype.push.
+      batch = { supervisor, requests: new __PathList(), settlers: new __PathList(), bytes: 0 };
       _openReadBatch = batch;
       queueMicrotask(() => {
         // A batch a bound closed was flushed then; sending it here too would
@@ -3612,19 +3613,22 @@ const __fsMod = (() => {
       });
     }
     batch.bytes += bytes;
-    batch.requests.push(request);
-    const settler = Promise.withResolvers();
-    batch.settlers.push(settler);
-    return settler.promise;
+    batch.requests[batch.requests.length] = request;
+    let settler;
+    const promise = new __NimbusPromise((resolve, reject) => { settler = { resolve, reject }; });
+    batch.settlers[batch.settlers.length] = settler;
+    return promise;
   }
 
   async function _flushReadBatch(batch) {
     // A read round trip is one that carries a range; a batch of learns
     // (lstat requests) is metadata, which the read count leaves out.
-    if (batch.requests.some((request) => request.lstat !== true)) globalThis.__nimbusFsRpcReads++;
+    for (let i = 0; i < batch.requests.length; i++) {
+      if (batch.requests[i].lstat !== true) { globalThis.__nimbusFsRpcReads++; break; }
+    }
     try {
       const entries = await __nimbusUseRpcResult(
-        batch.supervisor.fsReadBatch(batch.requests), (r) => r,
+        batch.supervisor.fsReadBatch(__nimbusArrayCopy(batch.requests)), (r) => r,
       );
       for (let i = 0; i < batch.settlers.length; i++) {
         const entry = entries[i];
@@ -3637,7 +3641,7 @@ const __fsMod = (() => {
         }
       }
     } catch (error) {
-      for (const settler of batch.settlers) settler.reject(error);
+      for (let i = 0; i < batch.settlers.length; i++) batch.settlers[i].reject(error);
     }
   }
 

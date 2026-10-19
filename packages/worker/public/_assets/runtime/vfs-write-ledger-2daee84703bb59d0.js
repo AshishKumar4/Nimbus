@@ -2680,15 +2680,19 @@ function __nimbusAncestorTails(path) {
  * whether the write landed. No per-call-site flag can express that, because
  * both cases arrive through the same call site.
  */
+// A promise's then, as the launch found it: a fill's stat is queued here after the program may have replaced Promise.prototype.then.
+function __nimbusVfsThen(promise, onFulfilled, onRejected) {
+  return __nimbusLaunchCaptures.reflectApply(__nimbusLaunchCaptures.PromisePrototypeThen, promise, [onFulfilled, onRejected]);
+}
 function __nimbusQueueVfsMutation(path, mutation, retainFailure = true) {
   const key = __nimbusVfsPathKey(path);
-  const previous = __vfsMutationTails.get(key) || Promise.resolve();
+  const previous = __vfsMutationTails.get(key) || __nimbusLaunchCaptures.reflectApply(__nimbusLaunchCaptures.PromiseResolve, __nimbusLaunchCaptures.PromiseConstructor, []);
   // Every queued mutation is ordered behind the structural mutations
   // pending for its ancestors — one place, so a flushed write, an fd write
   // and a queued mkdir all obey the same rule without each site knowing it.
   const tails = __nimbusAncestorTails(key);
-  const ancestors = tails.length === 0 ? Promise.resolve() : __nimbusLaunchCaptures.promiseSettled(tails);
-  const result = previous.then(() => ancestors).then(mutation);
+  const ancestors = __nimbusLaunchCaptures.promiseSettled(tails);
+  const result = __nimbusVfsThen(__nimbusVfsThen(previous, () => ancestors), mutation);
   __nimbusPendingVfsMutations.add(result);
   // A failed mutation rejects its own caller but must not poison later writes
   // for the same path or become an unhandled queue-cleanup rejection.
@@ -2699,7 +2703,7 @@ function __nimbusQueueVfsMutation(path, mutation, retainFailure = true) {
       __vfsMutationTails.delete(key);
     }
   };
-  tail = result.then(clearTail, (error) => {
+  tail = __nimbusVfsThen(result, clearTail, (error) => {
     if (retainFailure
         && __nimbusIsDurabilityFailure(error)
         && !__nimbusHasPendingVfsMutationFailure) {
