@@ -11,11 +11,15 @@ export interface VariableStore {
     readonly env: Record<string, string>;
     readonly arrays: Map<string, (string | undefined)[]>;
     readonly readonlyNames: ReadonlySet<string>;
+    readonly exportedNames: Set<string>;
+    readonly declaredNames: Set<string>;
 }
-/** A variable's complete binding: its scalar value, or its array, or neither. */
+/** A variable's complete binding: its scalar value, or its array, or neither; its export mark; whether it is declared with no value. */
 export interface SavedVariable {
     readonly scalar: string | undefined;
     readonly array: (string | undefined)[] | undefined;
+    readonly exported: boolean;
+    readonly declared: boolean;
 }
 /** A variable dictionary: prototype names are ordinary variable names too. */
 export declare function cloneEnv(source: Readonly<Record<string, string>>): Record<string, string>;
@@ -27,7 +31,12 @@ export declare function assignArray(store: VariableStore, name: string, values: 
 export declare function arrayFor(store: VariableStore, name: string): (string | undefined)[];
 /** One variable's whole binding, so a scope can put it back exactly. */
 export declare function saveVariable(store: VariableStore, name: string): SavedVariable;
-export declare function restoreVariable(store: VariableStore, name: string, saved: SavedVariable): void;
+/**
+ * `name` bound again as `saved` holds it. `attributes`: its export mark and
+ * declaredness too (a local's, at its function's return); a command's prefix
+ * assignment gives back only its value (`x=1 export x` exports x).
+ */
+export declare function restoreVariable(store: VariableStore, name: string, saved: SavedVariable, attributes?: boolean): void;
 /** A copy of `arrays` whose arrays are copies too: what a subshell or a saved shell state holds. */
 export declare function cloneArrays(arrays: ReadonlyMap<string, (string | undefined)[]>): Map<string, (string | undefined)[]>;
 //# sourceMappingURL=variables.d.ts.map

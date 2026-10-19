@@ -182,41 +182,8 @@ export function withSecretsFile(secrets, fn) {
 // For what wrangler has no command for: reading a Preview and its latest
 // deployment back, and provisioning a Preview parent Worker.
 
-const CF_API = 'https://api.cloudflare.com/client/v4';
-
-/**
- * A token for the REST API: CLOUDFLARE_API_TOKEN when set (CI), otherwise
- * the one wrangler's own login holds (`wrangler auth token --json`).
- */
-export function apiToken({ cwd, account }) {
-  if (process.env.CLOUDFLARE_API_TOKEN) return process.env.CLOUDFLARE_API_TOKEN;
-  const out = wrangle(WRANGLER, ['auth', 'token', '--json'], { cwd, account });
-  const token = JSON.parse(out.stdout).token;
-  if (typeof token !== 'string' || !token) throw new Error('wrangler auth token --json printed no token');
-  return token;
-}
-
-/**
- * One API call under the account. Answers `{ ok, status, result, errors }`;
- * a transport failure throws.
- */
-export async function cfApi(path, { account, token, method = 'GET', body, contentType = 'application/json', signal }) {
-  const response = await fetch(`${CF_API}/accounts/${account}${path}`, {
-    method,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      ...(body === undefined ? {} : { 'Content-Type': contentType }),
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-    signal,
-  });
-  const json = await response.json().catch((error) => {
-    if (signal?.aborted) throw signal.reason ?? error;
-    return {};
-  });
-  signal?.throwIfAborted();
-  return { ok: response.ok && json.success === true, status: response.status, result: json.result ?? null, errors: json.errors ?? [] };
-}
+/** The REST API: its token, and one call under the account (cloudflare-api.mjs). */
+export { cfApi, cloudflareApiToken as apiToken } from '../../scripts/ci/lib/cloudflare-api.mjs';
 
 // ── Sessions ─────────────────────────────────────────────────────────
 

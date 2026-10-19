@@ -12,7 +12,28 @@ published independently in the `@nimbus-sh` npm scope.
   earlier process left. A worker is used again only after a process that
   ended clean and never reached JavaScript (`require "js"`); a session keeps
   at most two idle.
-
+- Fixed: a WASI program (python, ruby, clang, bash) could see a file
+  another process had deleted. A lookup or listing it asked before the
+  delete, answered after it, put the name back. A name under a directory
+  another process replaced was also still served. Now a lookup or listing
+  that a later change overtook adds nothing, and a replaced directory's
+  names are looked up again.
+- Fixed: a Node program's `fs.statfs` reports the storage limit a session
+  enforces (10,000,000,000 bytes, `DO_STORAGE_LIMIT_BYTES`) as its capacity.
+  Before, it reported 10 GiB, 737,418,240 bytes more than a session can
+  store. `VFS_CAPACITY` is now that limit.
+- Added: before each armada run, the CI client says how much the account's
+  container registry holds, what has changed since the last run and who
+  holds the most, and warns when the total grew 10 GB or more since the
+  last run. The registry holds every armada environment snapshot and every
+  container image, and the account's storage is limited.
+- Added: `declare -p` (and `typeset -p`, `local -p`) prints each named
+  variable as bash does, as a declaration it reads back: `declare -- x="1"`,
+  `declare -a a=([0]="a" [5]="z")`, `declare -rx w="5"`, a control
+  character as `$'…'`; an unset name is `declare: NAME: not found`, status 1.
+  `export` marks a name exported (`export -n` unmarks it, `export -p` lists
+  them), as `declare -x` does, and `unset` drops the mark. Before, `declare
+  -p` was an invalid option.
 - Changed (core): the resident filesystem decides what a caller that
   cannot wait changes outside a subtree the process holds (its
   `synchronous` view). Such a change is answered at once, logged through
@@ -36,23 +57,6 @@ published independently in the `@nimbus-sh` npm scope.
 - Fixed: `utimes`/`futimes` with `'now'` (or an omitted time) by a file's
   owner now succeeds when the owner lacks write permission, as
   utimensat(2) allows. Before, it was refused `EACCES`.
-- Fixed (data loss, since core 0.19): a recursive removal no longer enters a
-  mount point. `CompositeVFS.removeRecursive`, and so the shell's `rm -r`, the
-  SDK's `files.delete`, npm's and git's removals and a guest's `fs.rm`, keeps
-  the mount point and everything under it, reports it EBUSY in the result's
-  failures, and removes the rest, as GNU `rm --one-file-system` does. Before,
-  `rm -r` of a directory holding a mount deleted what the mount held (Kinu
-  ask 60: a connected machine's files).
-- Added: `MountOptions.removalCrosses`. A mount that sets it is crossed by a
-  recursive removal from above, as Linux's `rm -r` crosses one.
-- Fixed: the shell's `rm -r /` is refused, as GNU's `--preserve-root` (the
-  default; `--no-preserve-root` lifts it). `--one-file-system` is taken.
-- Fixed: when the platform ended a session's activation and kept its
-  facets, a durable application the next activation launched again (an
-  embedder's `spawnWorker` with `durable`) could fail its first start
-  with "resident process released": the earlier process's release ended
-  the facet its successor had just started in. A release now ends,
-  drains and deletes only a facet whose name is still its own.
 - Fixed: a Node program that replaced `Array.prototype.push`, the array
   iterator, `String.prototype.split` or `replace`, `RegExp.prototype.exec` or
   `Set.prototype.has` can still import a module the launch did not hold, and
@@ -116,6 +120,29 @@ published independently in the `@nimbus-sh` npm scope.
   held this way; past that, a launch says where it stopped, and the rest
   are learned from what the scanner misses.
 
+## 2026-10-19 (patch): core 0.24.1, fabric 0.19.1 (every other package unchanged from the 2026-10-19 release)
+
+- Fixed (data loss, since core 0.19): a recursive removal no longer enters a
+  mount point. `CompositeVFS.removeRecursive`, and so the shell's `rm -r`, the
+  SDK's `files.delete`, npm's and git's removals and a guest's `fs.rm`, keeps
+  the mount point and everything under it, reports it EBUSY in the result's
+  failures, and removes the rest, as GNU `rm --one-file-system` does. Before,
+  `rm -r` of a directory holding a mount deleted what the mount held (Kinu
+  ask 60: a connected machine's files).
+- Added: `MountOptions.removalCrosses`. A mount that sets it is crossed by a
+  recursive removal from above, as Linux's `rm -r` crosses one.
+- Fixed: the shell's `rm -r /` is refused, as GNU's `--preserve-root` (the
+  default; `--no-preserve-root` lifts it). `--one-file-system` is taken.
+- Fixed: when the platform ended a session's activation and kept its
+  facets, a durable application the next activation launched again (an
+  embedder's `spawnWorker` with `durable`) could fail its first start
+  with "resident process released": the earlier process's release ended
+  the facet its successor had just started in. A release now ends,
+  drains and deletes only a facet whose name is still its own. The bug
+  needs an ended activation's code to keep running against the shared
+  facets, which an embedder's harness can do and workerd's own abort does
+  not.
+
 ## 2026-10-19: platform 0.13.0, core 0.24.0, fabric 0.19.0, worker 0.22.0, sdk 0.18.0, react 0.4.0, config 0.3.2, cli 0.2.9, loom 0.3.2, create-nimbus-app 0.2.5 (runtimes unchanged: runtime-bash 5.2.37-7, runtime-cpython 3.13.14-3, runtime-git 2.53.0-1)
 
 - Fixed: the shell's patterns, trims, substitutions, `${#x}` and IFS count
@@ -135,11 +162,6 @@ published independently in the `@nimbus-sh` npm scope.
   read back with two replacement characters in place of it, from a
   process's resident store.
 
-- Fixed: the shell's patterns, trims, substitutions, `${#x}` and IFS count
-  characters, as bash does in a UTF-8 locale, not UTF-16 units. `${x%?}` of
-  😀 leaves nothing rather than half of it, `?` and `case 😀 in ?)` match it
-  whole, `${#x}` is 1, and IFS=😀 joins and splits by 😀 without splitting
-  😁. Before, these could leave a lone surrogate in a value.
 - Fixed: the shell reads quoting as bash does wherever quoting decides what
   a word is.
   - A quoted reserved word is a command: `'if' true` runs a command named

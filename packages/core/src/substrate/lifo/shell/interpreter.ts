@@ -146,6 +146,12 @@ export interface BuiltinExecutionContext {
   executeInline(input: string, options?: InlineExecutionOptions): Promise<number>;
   /** Bind a name to the running function. False outside one, where it is an error. */
   declareLocal(name: string): boolean;
+  /** The names the running function has bound (`local`), in order; null outside a function. */
+  localNames(): readonly string[] | null;
+  /** Whether `name` is a function of the shell running the builtin. */
+  isFunction(name: string): boolean;
+  /** Keep `name`'s command-prefix binding, value and attributes, past the command: the builtin declared it (bash's tempenv promotion, `x=1 export x`). */
+  promote(name: string): void;
   /** Remove a function from the shell running the builtin (a child shell's own, after a fork); false when none is defined. */
   unsetFunction(name: string): boolean;
   /** The state of the shell running the builtin: a child shell's own, after a fork. */
@@ -1056,193 +1062,209 @@ export class Interpreter {
     if (viaCommand) [name, ...args] = args[0] === '--' ? args.slice(1) : args;
     if (io.dispatched?.shell === this) io.dispatched.last = this.functions.has(name) && !viaCommand ? null : name;
 
-    // Apply per-command assignments (temporary env)
+    // Apply per-command assignments (temporary env, exported for the command, as bash's tempenv is).
+    // Each is restored, value and attributes, however the command ends, unless the builtin
+    // run declared it (BuiltinExecutionContext.promote: `x=1 export x` keeps x).
     const saved = new Map<string, SavedVariable>();
-    for (const assign of cmd.assignments) {
-      if (!saved.has(assign.name)) saved.set(assign.name, saveVariable(this.config, assign.name));
-      if (!await this.applyAssignment(assign, expandCtx)) {
-        (await (io.stderr ?? this.terminalSink(io)).write(`${assign.name}: readonly variable\n`));
-        return 1;
-      }
-    }
-
-    // Set up stdout/stderr (per-execution io target, then the terminal sink)
-    let stdout: CommandOutputStream = io.stdout ?? this.terminalSink(io);
-    let stderr: CommandOutputStream = io.stderr ?? this.terminalSink(io);
-    let stdin: CommandInputStream | undefined = io.stdin;
-    const fds = this.createCommandFds(stdout, stderr, stdin, io);
-    try {
-      await this.applyRedirections(cmd.redirections, fds, expandCtx, io, io.terminalStdin);
-    } catch (error) {
-      const redirStderr = fds.outputFds.get(2) ?? stderr;
-      (await redirStderr.write(error instanceof RedirectionOpenError
-        ? redirectionDiagnostic(error)
-        : `${error instanceof Error ? error.message : String(error)}\n`));
-      await this.flushFds(fds);
-      this.lastExitCode = 1;
-      return 1;
-    }
-    stdout = fds.outputFds.get(1) ?? this.createNullWriter();
-    stderr = fds.outputFds.get(2) ?? this.createNullWriter();
-    stdin = fds.inputFds.get(0);
-
-    // If no stdin from pipe or redirect, fall back to terminal stdin (the
-    // foreground job's: a background job's fd 0 never falls back to it)
-    if (!stdin && io.terminalStdin && !io.background) {
-      stdin = io.terminalStdin;
-    }
-
+    const promoted = new Set<string>();
+    const restorePrefix = (): void => {
+      for (const [variable, value] of saved) if (!promoted.has(variable)) restoreVariable(this.config, variable, value);
+    };
     let exitCode: number;
     let writeFailed = false;
     // eval's and `.`'s status is their text's once it runs: its failure is not theirs.
     let ranText = false;
-
+    // The prefix bindings' lifetime: however the command ends, an expansion's throw included.
     try {
-      // Check for break/continue/return builtins
-      if (name === 'break') {
-        const levels = args[0] ? parseInt(args[0], 10) : 1;
-        throw new BreakSignal(levels);
+      for (const assign of cmd.assignments) {
+        if (!saved.has(assign.name)) saved.set(assign.name, saveVariable(this.config, assign.name));
+        if (!await this.applyAssignment(assign, expandCtx)) {
+          (await (io.stderr ?? this.terminalSink(io)).write(`${assign.name}: readonly variable\n`));
+          return 1;
+        }
+        this.config.exportedNames.add(assign.name);
       }
-      if (name === 'continue') {
-        const levels = args[0] ? parseInt(args[0], 10) : 1;
-        throw new ContinueSignal(levels);
+
+      // Set up stdout/stderr (per-execution io target, then the terminal sink)
+      let stdout: CommandOutputStream = io.stdout ?? this.terminalSink(io);
+      let stderr: CommandOutputStream = io.stderr ?? this.terminalSink(io);
+      let stdin: CommandInputStream | undefined = io.stdin;
+      const fds = this.createCommandFds(stdout, stderr, stdin, io);
+      try {
+        await this.applyRedirections(cmd.redirections, fds, expandCtx, io, io.terminalStdin);
+      } catch (error) {
+        const redirStderr = fds.outputFds.get(2) ?? stderr;
+        (await redirStderr.write(error instanceof RedirectionOpenError
+          ? redirectionDiagnostic(error)
+          : `${error instanceof Error ? error.message : String(error)}\n`));
+        await this.flushFds(fds);
+        this.lastExitCode = 1;
+        return 1;
       }
-      if (name === 'return') {
-        const code = args[0] ? parseInt(args[0], 10) : this.lastExitCode;
-        throw new ReturnSignal(code);
+      stdout = fds.outputFds.get(1) ?? this.createNullWriter();
+      stderr = fds.outputFds.get(2) ?? this.createNullWriter();
+      stdin = fds.inputFds.get(0);
+
+      // If no stdin from pipe or redirect, fall back to terminal stdin (the
+      // foreground job's: a background job's fd 0 never falls back to it)
+      if (!stdin && io.terminalStdin && !io.background) {
+        stdin = io.terminalStdin;
       }
-      if (name === 'exec' && args.length === 0) {
-        await this.persistFdState(fds);
-        exitCode = 0;
-      } else {
-        // Check functions
-        const funcBody = replacesShell || viaCommand ? undefined : this.functions.get(name);
-        if (funcBody) {
-          if (this.localFrames.length >= this.functionNestingLimit()) {
-            // On the call's own stderr, its redirections applied, with the depth reached, as bash writes it.
-            (await stderr.write(`${name}: maximum function nesting level exceeded (${this.localFrames.length})\n`));
-            throw new FunctionNestingSignal();
-          }
-          exitCode = await this.executeFunction(funcBody, args, this.createIoFromFds(io, fds));
+
+
+      try {
+        // Check for break/continue/return builtins
+        if (name === 'break') {
+          const levels = args[0] ? parseInt(args[0], 10) : 1;
+          throw new BreakSignal(levels);
+        }
+        if (name === 'continue') {
+          const levels = args[0] ? parseInt(args[0], 10) : 1;
+          throw new ContinueSignal(levels);
+        }
+        if (name === 'return') {
+          const code = args[0] ? parseInt(args[0], 10) : this.lastExitCode;
+          throw new ReturnSignal(code);
+        }
+        if (name === 'exec' && args.length === 0) {
+          await this.persistFdState(fds);
+          exitCode = 0;
         } else {
-          // Check builtins
-          const builtin = this.config.builtins.get(name);
-          if (builtin) {
-            const builtinIo = this.createIoFromFds(io, fds);
-            // A builtin is work of the shell's own (a `sleep`, a `read`, a
-            // `wait`), never an await of a child; its thread lends it its unit.
-            const endWork = io.workThread ? io.workThread.beginWork() : io.commandIdentity?.beginWork?.();
-            try {
-              exitCode = await builtin(args, stdout, stderr, stdin, {
-                vfs: builtinIo.vfs ?? this.config.vfs,
-                cwd: this.config.getCwd(),
-                stdin,
-                stdout,
-                stderr,
-                terminalStdin: io.terminalStdin,
-                terminalFds: {
-                  stdin: fds.terminalInputFds.has(0),
-                  stdout: fds.terminalOutputFds.has(1),
-                  stderr: fds.terminalOutputFds.has(2),
-                },
-                scriptMode: io.scriptMode,
-                ...(arrayElements === undefined || name !== commandWordText(cmd) ? {} : { arrayElements }),
-                isFdTerminal: (fd) => this.isFdTerminal(fds, fd),
-                getPositionals: () => this.readPositionals(builtinIo),
-                setPositionals: (nextArgs) => this.writePositionals(builtinIo, nextArgs),
-                executeInline: async (input, options) => {
-                  ranText = true;
-                  try {
-                    return (await this.executeInline(input, builtinIo, options));
-                  } catch (error) {
-                    // A syntax error while eval or `.` is still the builtin last dispatched (no
-                    // other command of the text has been, or one was, an eval or `.`) is the
-                    // builtin's own failure, as bash's evalstring has it: fatal in a POSIX script.
-                    const last = io.dispatched?.last;
-                    if (error instanceof TextSyntaxError && (last === 'eval' || last === '.' || last === 'source')) ranText = false;
-                    throw error;
-                  }
-                },
-            declareLocal: (name) => this.declareLocal(name),
-            unsetFunction: (name) => this.functions.delete(name),
-            shell: this.config,
-            interactive: io.interactive,
-            getLastExitCode: () => this.lastExitCode,
-            exitStatus: () => this.trapEntryStatus ?? this.lastExitCode,
-            identity: () => {
-              if (!io.commandIdentity) throw new Error('shell command identity is unavailable');
-              return io.commandIdentity;
-            },
-              });
-            } catch (error) {
-              // A write the store or a device refused fails the builtin, as it
-              // fails a registered command (runCommand): its message on its
-              // stderr, status 1. A broken pipe and the shell's signals pass.
-              if (!isRefusedWrite(error)) throw error;
-              try {
-                await stderr.write(`${name}: ${error instanceof Error ? error.message : String(error)}\n`);
-              } catch {
-                // Its stderr may be what refused; the status still says so.
-              }
-              exitCode = 1;
-            } finally {
-              endWork?.();
+          // Check functions
+          const funcBody = replacesShell || viaCommand ? undefined : this.functions.get(name);
+          if (funcBody) {
+            if (this.localFrames.length >= this.functionNestingLimit()) {
+              // On the call's own stderr, its redirections applied, with the depth reached, as bash writes it.
+              (await stderr.write(`${name}: maximum function nesting level exceeded (${this.localFrames.length})\n`));
+              throw new FunctionNestingSignal();
             }
+            exitCode = await this.executeFunction(funcBody, args, this.createIoFromFds(io, fds));
           } else {
-            // Check registry; a bare name not registered is searched for on the
-            // PATH this command runs with, a `PATH=x cmd` prefix included.
-            const command = await this.config.registry.resolve(name, resolveContext(this.config.getCwd(), this.config.env, io.vfs ?? this.config.vfs));
-            if (!command) {
-              (await stderr.write(`${name}: command not found\n`));
-              exitCode = 127;
-            } else {
-              const identity = io.commandIdentity;
-              if (!identity) throw new Error('shell command identity is unavailable');
-              // A command is a unit of the process's work; one that runs a
-              // program as a child of its own counts that as its await. Its
-              // thread lends it its unit while it runs.
-              const endWork = io.workThread ? io.workThread.beginWork() : identity.beginWork?.();
-              let ended: ChildExit;
-              let tookSignals = false;
+            // Check builtins
+            const builtin = this.config.builtins.get(name);
+            if (builtin) {
+              const builtinIo = this.createIoFromFds(io, fds);
+              // A builtin is work of the shell's own (a `sleep`, a `read`, a
+              // `wait`), never an await of a child; its thread lends it its unit.
+              const endWork = io.workThread ? io.workThread.beginWork() : io.commandIdentity?.beginWork?.();
               try {
-                ended = await this.runCommand(command, name, args, {
-                  takesSignals: () => { tookSignals = true; },
-                  commandContext: io.commandContext,
-                  identity,
+                exitCode = await builtin(args, stdout, stderr, stdin, {
+                  vfs: builtinIo.vfs ?? this.config.vfs,
                   cwd: this.config.getCwd(),
-                  env: { ...this.config.env },
-                  vfs: io.vfs ?? this.config.vfs,
+                  stdin,
                   stdout,
                   stderr,
-                  stdin,
-                  // The terminal whose modes it may set: the foreground job's.
-                  terminalStdin: io.background ? undefined : io.terminalStdin,
-                  isFdTerminal: (fd: number) => this.isFdTerminal(fds, fd),
-                  isFdPipe: (fd: number) => isPipeEnd(fds.outputFds.get(fd) ?? fds.inputFds.get(fd)),
-                  signal: io.signal ?? this.config.getAbortSignal?.() ?? new AbortController().signal,
-                  runAs: io.runAs,
-                  shellBuiltin: BASH_BUILTINS.has(name),
+                  terminalStdin: io.terminalStdin,
+                  terminalFds: {
+                    stdin: fds.terminalInputFds.has(0),
+                    stdout: fds.terminalOutputFds.has(1),
+                    stderr: fds.terminalOutputFds.has(2),
+                  },
+                  scriptMode: io.scriptMode,
+                  ...(arrayElements === undefined || name !== commandWordText(cmd) ? {} : { arrayElements }),
+                  isFdTerminal: (fd) => this.isFdTerminal(fds, fd),
+                  getPositionals: () => this.readPositionals(builtinIo),
+                  setPositionals: (nextArgs) => this.writePositionals(builtinIo, nextArgs),
+                  executeInline: async (input, options) => {
+                    ranText = true;
+                    try {
+                      return (await this.executeInline(input, builtinIo, options));
+                    } catch (error) {
+                      // A syntax error while eval or `.` is still the builtin last dispatched (no
+                      // other command of the text has been, or one was, an eval or `.`) is the
+                      // builtin's own failure, as bash's evalstring has it: fatal in a POSIX script.
+                      const last = io.dispatched?.last;
+                      if (error instanceof TextSyntaxError && (last === 'eval' || last === '.' || last === 'source')) ranText = false;
+                      throw error;
+                    }
+                  },
+              declareLocal: (name) => this.declareLocal(name),
+              localNames: () => {
+                const frame = this.localFrames[this.localFrames.length - 1];
+                return frame === undefined ? null : Array.from(frame.keys());
+              },
+              isFunction: (name) => this.functions.has(name),
+              promote: (variable) => { promoted.add(variable); },
+              unsetFunction: (name) => this.functions.delete(name),
+              shell: this.config,
+              interactive: io.interactive,
+              getLastExitCode: () => this.lastExitCode,
+              exitStatus: () => this.trapEntryStatus ?? this.lastExitCode,
+              identity: () => {
+                if (!io.commandIdentity) throw new Error('shell command identity is unavailable');
+                return io.commandIdentity;
+              },
                 });
+              } catch (error) {
+                // A write the store or a device refused fails the builtin, as it
+                // fails a registered command (runCommand): its message on its
+                // stderr, status 1. A broken pipe and the shell's signals pass.
+                if (!isRefusedWrite(error)) throw error;
+                try {
+                  await stderr.write(`${name}: ${error instanceof Error ? error.message : String(error)}\n`);
+                } catch {
+                  // Its stderr may be what refused; the status still says so.
+                }
+                exitCode = 1;
               } finally {
                 endWork?.();
               }
-              exitCode = ended.status;
+            } else {
+              // Check registry; a bare name not registered is searched for on the
+              // PATH this command runs with, a `PATH=x cmd` prefix included.
+              const command = await this.config.registry.resolve(name, resolveContext(this.config.getCwd(), this.config.env, io.vfs ?? this.config.vfs));
+              if (!command) {
+                (await stderr.write(`${name}: command not found\n`));
+                exitCode = 127;
+              } else {
+                const identity = io.commandIdentity;
+                if (!identity) throw new Error('shell command identity is unavailable');
+                // A command is a unit of the process's work; one that runs a
+                // program as a child of its own counts that as its await. Its
+                // thread lends it its unit while it runs.
+                const endWork = io.workThread ? io.workThread.beginWork() : identity.beginWork?.();
+                let ended: ChildExit;
+                let tookSignals = false;
+                try {
+                  ended = await this.runCommand(command, name, args, {
+                    takesSignals: () => { tookSignals = true; },
+                    commandContext: io.commandContext,
+                    identity,
+                    cwd: this.config.getCwd(),
+                    env: { ...this.config.env },
+                    vfs: io.vfs ?? this.config.vfs,
+                    stdout,
+                    stderr,
+                    stdin,
+                    // The terminal whose modes it may set: the foreground job's.
+                    terminalStdin: io.background ? undefined : io.terminalStdin,
+                    isFdTerminal: (fd: number) => this.isFdTerminal(fds, fd),
+                    isFdPipe: (fd: number) => isPipeEnd(fds.outputFds.get(fd) ?? fds.inputFds.get(fd)),
+                    signal: io.signal ?? this.config.getAbortSignal?.() ?? new AbortController().signal,
+                    runAs: io.runAs,
+                    shellBuiltin: BASH_BUILTINS.has(name),
+                  });
+                } finally {
+                  endWork?.();
+                }
+                exitCode = ended.status;
 
-              // A signalled command reports the SIGNAL's status, not whatever
-              // code it returned on its way out: `sleep` observes only that
-              // ctx.signal aborted, and cannot tell SIGINT (130) from
-              // SIGQUIT (131). The shell holds the reason, so it decides.
-              const signalledCode = this.abortExitCode(io);
-              // A program that took the signal itself ends as it decided (git dies of it, or handles it).
-              if (signalledCode !== null && !tookSignals) exitCode = signalledCode;
+                // A signalled command reports the SIGNAL's status, not whatever
+                // code it returned on its way out: `sleep` observes only that
+                // ctx.signal aborted, and cannot tell SIGINT (130) from
+                // SIGQUIT (131). The shell holds the reason, so it decides.
+                const signalledCode = this.abortExitCode(io);
+                // A program that took the signal itself ends as it decided (git dies of it, or handles it).
+                if (signalledCode !== null && !tookSignals) exitCode = signalledCode;
+              }
             }
           }
         }
+      } finally {
+        writeFailed = await this.flushFds(fds, name);
       }
     } finally {
-      writeFailed = await this.flushFds(fds, name);
-      // Restore env from per-command assignments
-      for (const [name, value] of saved) restoreVariable(this.config, name, value);
+      restorePrefix();
     }
     if (writeFailed && exitCode === 0) exitCode = 1;
 

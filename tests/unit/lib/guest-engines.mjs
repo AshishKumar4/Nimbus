@@ -267,6 +267,12 @@ export async function bootEngine(kind, { seed } = {}) {
     stall: () => { stalled = Promise.withResolvers(); },
     release: async () => { const was = stalled; stalled = null; was?.resolve(); await sleep(0); },
     failListings: (fails) => { listingFails = fails; },
+    /** Input from outside the process arrived, and its barrier has landed: Node's resumption barrier; the holder's owed one, taken by its next awaited call. */
+    input: async () => {
+      if (kind === 'node') return globalThis.__nimbusVfsAcquireBarrier();
+      fs.inbound();
+      await fs.stat(APP);
+    },
     /** Whether the session has given this process `path`'s subtree (a grant it has not given back). */
     held: (path) => {
       const key = path.replace(/^\/+/, '');
