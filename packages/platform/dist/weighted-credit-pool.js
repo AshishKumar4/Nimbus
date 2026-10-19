@@ -8,6 +8,42 @@
  */
 export const CREDIT_TURN_MS = 1000;
 /**
+ * An ask queued in a lane. `waiting` for its turn; `woken` to it at
+ * `wokenAt`, its credit free for it to take; `lapsed` when the turn passed
+ * untaken (out of the queue, back in at the end if it ever takes); `done`
+ * once it took its credit, left, or was aborted.
+ */
+class Turn {
+    lane;
+    bytes;
+    signal;
+    ahead;
+    state = 'waiting';
+    wokenAt = 0;
+    /** Its wait for the turn it is queued for, resolved as it is woken or aborted. */
+    turn;
+    wake = () => { };
+    /** Its look at the line every CREDIT_TURN_MS while it is queued. */
+    recheck = undefined;
+    constructor(lane, bytes, signal, ahead) {
+        this.lane = lane;
+        this.bytes = bytes;
+        this.signal = signal;
+        this.ahead = ahead;
+        this.turn = this.arm();
+    }
+    /** A fresh wait for its turn. */
+    arm() {
+        this.state = 'waiting';
+        this.turn = new Promise((resolve) => { this.wake = resolve; });
+        return this.turn;
+    }
+    woken() { return this.turn; }
+    take() { return this.lane.take(this); }
+    leave() { this.lane.leave(this); }
+    handleEvent() { this.lane.abandon(this); }
+}
+/**
  * One byte capacity and its queues: FIFO, but for asks `ahead` of it (a
  * running program's), which are served first, FIFO among themselves.
  */
@@ -47,17 +83,17 @@ class CreditLane {
     acquireAhead(bytes, signal) {
         return this.wait(bytes, signal, true);
     }
-    async wait(bytes, signal, ahead) {
+    wait(bytes, signal, ahead) {
         if (signal?.aborted)
-            throw abortError(signal);
+            return Promise.reject(abortError(signal));
         const immediate = this.tryAcquire(bytes, ahead);
-        if (immediate)
-            return immediate;
-        const turn = this.queue(bytes, signal, ahead);
+        return immediate ? Promise.resolve(immediate) : this.takeInTurn(this.queue(bytes, signal, ahead), signal);
+    }
+    async takeInTurn(turn, signal) {
         try {
             for (;;) {
-                await turn.woken();
-                const lease = turn.take();
+                await turn.turn;
+                const lease = this.take(turn);
                 if (lease)
                     return lease;
                 if (signal?.aborted)
@@ -65,106 +101,94 @@ class CreditLane {
             }
         }
         finally {
-            turn.leave();
+            this.leave(turn);
         }
     }
     /**
      * A place at the end of the queue for `bytes` (ahead of every ordinary ask,
      * if `ahead`). While it is queued it looks at the line again every
      * CREDIT_TURN_MS, so a turn another waiter never took lapses even when
-     * nothing else touches the lane.
+     * nothing else touches the lane. Asked with a signal already aborted, it
+     * is done at once, as it would be on the abort.
      */
     queue(bytes, signal, ahead) {
-        const queue = ahead ? this.ahead : this.waiters;
-        const waiter = { bytes, state: 'waiting', wokenAt: 0, turn: Promise.resolve(), wake: () => { }, refuse: () => { } };
-        let recheck;
-        const arm = () => {
-            waiter.state = 'waiting';
-            waiter.turn = new Promise((resolve, reject) => { waiter.wake = resolve; waiter.refuse = reject; });
-            // Refused with no one waiting on it (a turn never observed), it is no unhandled rejection.
-            waiter.turn.catch(() => { });
-        };
-        const place = () => {
-            arm();
-            queue.push(waiter);
-            if (recheck !== undefined)
-                return;
-            const timer = setInterval(() => {
-                if (waiter.state === 'waiting' || waiter.state === 'woken')
-                    this.drain();
-                else {
-                    clearInterval(timer);
-                    recheck = undefined;
-                }
-            }, CREDIT_TURN_MS);
-            recheck = timer;
-        };
-        const remove = () => {
-            const index = queue.indexOf(waiter);
-            if (index >= 0)
-                queue.splice(index, 1);
-        };
-        const listen = (aborted) => {
-            const onAbort = () => {
-                if (waiter.state === 'done')
-                    return;
-                remove();
-                waiter.state = 'done';
-                waiter.refuse(abortError(aborted));
-                this.drain();
-            };
-            aborted.addEventListener('abort', onAbort, { once: true });
-            return { onAbort, unlisten: () => aborted.removeEventListener('abort', onAbort) };
-        };
-        const listening = signal ? listen(signal) : null;
-        place();
-        // Asked with a signal already aborted, it leaves at once, as it would on the abort.
+        const turn = new Turn(this, bytes, signal, ahead);
+        signal?.addEventListener('abort', turn, { once: true });
+        this.place(turn);
         if (signal?.aborted)
-            listening?.onAbort();
+            this.abandon(turn);
         else
             this.drain();
-        return {
-            woken: () => waiter.turn,
-            take: () => {
-                if (waiter.state === 'done')
-                    return null;
-                const now = Date.now();
-                // Taken past its turn: the turn passed, as if a look at the line had seen it first.
-                if (waiter.state === 'woken' && now - waiter.wokenAt >= CREDIT_TURN_MS) {
-                    remove();
-                    waiter.state = 'lapsed';
-                    this.drain(now);
-                }
-                if (waiter.state === 'lapsed') {
-                    place();
-                    this.drain(now);
-                    return null;
-                }
-                // Its turn, its credit still free, and no running ask before an ordinary one: its own now.
-                if (waiter.state === 'woken' && this.current + bytes <= this.capacity && (ahead || this.ahead.length === 0)) {
-                    remove();
-                    waiter.state = 'done';
-                    const lease = this.grant(bytes);
-                    this.drain(now);
-                    return lease;
-                }
-                // Not its turn yet, or no longer room: it waits again, in its place.
-                if (waiter.state === 'woken')
-                    arm();
-                return null;
-            },
-            leave: () => {
-                listening?.unlisten();
-                if (recheck !== undefined)
-                    clearInterval(recheck);
-                recheck = undefined;
-                if (waiter.state !== 'done') {
-                    remove();
-                    waiter.state = 'done';
-                }
+        return turn;
+    }
+    place(turn) {
+        (turn.ahead ? this.ahead : this.waiters).push(turn);
+        if (turn.recheck !== undefined)
+            return;
+        const timer = setInterval(() => {
+            if (turn.state === 'waiting' || turn.state === 'woken')
                 this.drain();
-            },
-        };
+            else {
+                clearInterval(timer);
+                turn.recheck = undefined;
+            }
+        }, CREDIT_TURN_MS);
+        turn.recheck = timer;
+    }
+    remove(turn) {
+        const queue = turn.ahead ? this.ahead : this.waiters;
+        const index = queue.indexOf(turn);
+        if (index >= 0)
+            queue.splice(index, 1);
+    }
+    /** Its signal aborted: it is done, its wait ends, and the next turn may come. */
+    abandon(turn) {
+        if (turn.state === 'done')
+            return;
+        this.remove(turn);
+        turn.state = 'done';
+        turn.wake();
+        this.drain();
+    }
+    take(turn) {
+        if (turn.state === 'done')
+            return null;
+        const now = Date.now();
+        // Taken past its turn: the turn passed, as if a look at the line had seen it first.
+        if (turn.state === 'woken' && now - turn.wokenAt >= CREDIT_TURN_MS) {
+            this.remove(turn);
+            turn.state = 'lapsed';
+            this.drain(now);
+        }
+        if (turn.state === 'lapsed') {
+            turn.arm();
+            this.place(turn);
+            this.drain(now);
+            return null;
+        }
+        // Its turn, its credit still free, and no running ask before an ordinary one: its own now.
+        if (turn.state === 'woken' && this.current + turn.bytes <= this.capacity && (turn.ahead || this.ahead.length === 0)) {
+            this.remove(turn);
+            turn.state = 'done';
+            const lease = this.grant(turn.bytes);
+            this.drain(now);
+            return lease;
+        }
+        // Not its turn yet, or no longer room: it waits again, in its place.
+        if (turn.state === 'woken')
+            turn.arm();
+        return null;
+    }
+    leave(turn) {
+        turn.signal?.removeEventListener('abort', turn);
+        if (turn.recheck !== undefined)
+            clearInterval(turn.recheck);
+        turn.recheck = undefined;
+        if (turn.state !== 'done') {
+            this.remove(turn);
+            turn.state = 'done';
+        }
+        this.drain();
     }
     grant(bytes) {
         this.current += bytes;

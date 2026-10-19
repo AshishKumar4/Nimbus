@@ -40,8 +40,8 @@ export declare const CREDIT_TURN_MS = 1000;
 /**
  * A place in a lane's queue. `woken` resolves when its turn comes; `take`,
  * called from the waiter's own continuation, holds the credit then, or
- * answers null when the turn lapsed or the credit no longer fits, and the
- * place waits again. `leave` gives up the place.
+ * answers null when the turn lapsed, the credit no longer fits, or it was
+ * aborted, and the place waits again. `leave` gives up the place.
  */
 export interface CreditTurn {
     woken(): Promise<void>;
