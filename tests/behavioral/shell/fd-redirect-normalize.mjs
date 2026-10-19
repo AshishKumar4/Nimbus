@@ -23,7 +23,7 @@ try {
     const stripped = stripAnsi(output);
     a.check(
       '`echo hello 2>&1` runs without parse error',
-      /hello/.test(stripped) && !/Expected.*but got/.test(stripped),
+      hasOutputLine(stripped, 'hello') && !/Expected.*but got/.test(stripped),
       `tail: ${JSON.stringify(stripped.slice(-200))}`,
     );
   }
@@ -33,7 +33,7 @@ try {
     const stripped = stripAnsi(output);
     a.check(
       '`echo X 2>&1 | cat` pipeline runs without parse error',
-      /world/.test(stripped) && !/Expected.*but got/.test(stripped),
+      hasOutputLine(stripped, 'world') && !/Expected.*but got/.test(stripped),
       `tail: ${JSON.stringify(stripped.slice(-200))}`,
     );
   }
@@ -43,7 +43,7 @@ try {
     const stripped = stripAnsi(output);
     a.check(
       '`echo X >&2` writes through duplicated stderr',
-      /to-stderr/.test(stripped) && !/Expected.*but got/.test(stripped),
+      hasOutputLine(stripped, 'to-stderr') && !/Expected.*but got/.test(stripped),
       `tail: ${JSON.stringify(stripped.slice(-200))}`,
     );
   }
@@ -53,7 +53,7 @@ try {
     const stripped = stripAnsi(output);
     a.check(
       '`echo X 1>&2` uses explicit stdout fd duplication',
-      /explicit-fd/.test(stripped) && !/Expected.*but got/.test(stripped),
+      hasOutputLine(stripped, 'explicit-fd') && !/Expected.*but got/.test(stripped),
       `tail: ${JSON.stringify(stripped.slice(-200))}`,
     );
   }
@@ -73,7 +73,7 @@ try {
     const stripped = stripAnsi(output);
     a.check(
       "single-quoted '2>&1' literal is preserved",
-      /2>&1 literal/.test(stripped),
+      hasOutputLine(stripped, '2>&1 literal'),
       `tail: ${JSON.stringify(stripped.slice(-200))}`,
     );
   }

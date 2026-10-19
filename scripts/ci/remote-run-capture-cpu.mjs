@@ -7,5 +7,6 @@ await remotePairedCpu({
   name: 'remote-run-capture-cpu',
   receipts: 'remote-run-capture-cpu',
   baselineDir: '.ci-run-capture-baseline',
-  command: ['bun', 'tests/bench/run-capture-cpu.mjs'],
+  engine: 'bun',
+  bench: 'tests/bench/run-capture-cpu.mjs',
 });

@@ -1887,7 +1887,8 @@ ${VFS_CURSOR_SEED_SOURCE}
     // synchronously, fetched when that import() runs (node-shims.ts
     // __nimbusStageImport; the planner's lazyReadsByTarget).
     globalThis.__nimbusLazyReads = new Map(Object.entries((__startArgs && __startArgs.lazyReads) || {}));
-    __nimbusProfileStaged = new Set((__startArgs && __startArgs.profileStaged) || []);
+    // A SafeSet (the launch's captures): every read strikes one off, after a program may have replaced Set.prototype.delete.
+    __nimbusProfileStaged = new __nimbusLaunchCaptures.SafeSet((__startArgs && __startArgs.profileStaged) || []);
     __resident.sync.setPushRoots([_cwd || "/home/user", "/tmp"]);
     // Bring the store to the authority's current state before the program's
     // first instruction. This is what makes a first synchronous read of an

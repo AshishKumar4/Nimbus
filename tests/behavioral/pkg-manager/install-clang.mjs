@@ -13,7 +13,7 @@
 // failing everywhere even though the install was correct. Discover the
 // installed version dynamically and assert on its layout.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi } from '../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, hasOutputLine } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('pkg-manager/install-clang');
@@ -58,7 +58,7 @@ const RUNTIME_DIR = `/usr/lib/nimbus/clang/${installedVersion}`;
 {
   const { output } = await t.run(`ls ${RUNTIME_DIR}/bin/clang`, 15_000);
   const stripped = stripAnsi(output);
-  const matched = stripped.includes(`/usr/lib/nimbus/clang/${installedVersion}/bin/clang`)
+  const matched = hasOutputLine(stripped, `${RUNTIME_DIR}/bin/clang`)
     && !/ENOENT|No such|cannot access|not found/i.test(stripped);
   a.check('installed bin/clang exists at expected path', matched,
     matched ? '' : `output=${JSON.stringify(stripped.slice(-200))}`);

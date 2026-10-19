@@ -13,7 +13,7 @@
 // esbuild's own stdout behavior, and that the next heavy command runs on the
 // same live session instead of a reset one.
 
-import { mintSession, deleteSession, Terminal, makeAsserter, stripAnsi } from '../../_driver.mjs';
+import { mintSession, deleteSession, Terminal, makeAsserter, stripAnsi, outputLines } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('esbuild/new/esbuild-cli-react-bundle');
@@ -42,7 +42,7 @@ try {
   const build = await t.run('cd /home/user/app && esbuild src/main.jsx --bundle --outfile=dist/bundle.js', 180_000);
   const buildOut = stripAnsi(build.output);
   a.check('the React bundle builds', build.exitCode === 0, JSON.stringify(buildOut.slice(-600)));
-  a.check('esbuild reports the output relative to the cwd', /dist\/bundle\.js/.test(buildOut), JSON.stringify(buildOut.slice(-600)));
+  a.check('esbuild reports the output relative to the cwd', outputLines(buildOut).some((line) => /^dist\/bundle\.js\s/.test(line)), JSON.stringify(buildOut.slice(-600)));
 
   // A file the shell user just created is the reference for who that user is.
   const owner = stripAnsi((await t.run("touch /home/user/app/.mine && stat -c 'OWNER=%u SIZE=%s' /home/user/app/dist/bundle.js && stat -c 'USER=%u' /home/user/app/.mine", 15_000)).output);

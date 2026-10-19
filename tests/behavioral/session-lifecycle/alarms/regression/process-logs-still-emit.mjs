@@ -11,7 +11,7 @@
 // would notice the absence of expected stderr output or the exit-
 // dump line that normally trails a non-zero exit.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi, BASE } from '../../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, BASE, hasOutputLine } from '../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('session-lifecycle/alarms/process-logs-still-emit');
@@ -29,7 +29,7 @@ await t.waitForPrompt(30_000);
 //   - the shell's $? after `false` must be non-zero (typically 1)
 const { output: o1 } = await t.run('echo marker-stdout && false', 10_000);
 const s1 = stripAnsi(o1);
-a.check('stdout marker reaches terminal', /marker-stdout/.test(s1),
+a.check('stdout marker reaches terminal', hasOutputLine(s1, 'marker-stdout'),
   `output=${JSON.stringify(s1.slice(-200))}`);
 
 const { output: o2 } = await t.run('echo "rc=$?"', 10_000);
@@ -41,7 +41,7 @@ a.check('non-zero exit code captured by shell $?',
 // stderr + zero-exit. Verify stderr also reaches the terminal.
 const { output: o3 } = await t.run('echo "stderr-marker" 1>&2', 10_000);
 const s3 = stripAnsi(o3);
-a.check('stderr marker reaches terminal', /stderr-marker/.test(s3),
+a.check('stderr marker reaches terminal', hasOutputLine(s3, 'stderr-marker'),
   `output=${JSON.stringify(s3.slice(-200))}`);
 
 await t.close();
