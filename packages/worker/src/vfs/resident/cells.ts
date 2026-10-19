@@ -109,13 +109,20 @@ export function createCells(
 
   const cellSize = (cell: ResidentCell): number => (typeof cell === 'string' ? cell.length * 3 : residentBytes(cell).byteLength);
 
-  /** Whether `held` is `incoming`: the same text, or the same bytes. A denial is never a read's bytes. */
+  // Bound at the store's creation, before the program runs: never a method it replaced.
+  const encodeText = TextEncoder.prototype.encode.bind(new TextEncoder());
+
+  /**
+   * Whether `held` is `incoming`: the same bytes, held as text or as bytes
+   * (a sync fill holds text, an async read returns bytes). A denial is never
+   * a read's bytes.
+   */
   const sameCell = (held: ResidentCell | undefined, incoming: ResidentCell | ArrayBuffer): boolean => {
     if (held === undefined || typeof held === 'object' && 'error' in held) return false;
-    if (typeof held === 'string' || typeof incoming === 'string') return held === incoming;
     if (typeof incoming === 'object' && 'error' in incoming) return false;
-    const a = residentBytes(held);
-    const b = residentBytes(incoming);
+    if (typeof held === 'string' && typeof incoming === 'string') return held === incoming;
+    const a = typeof held === 'string' ? encodeText(held) : residentBytes(held);
+    const b = typeof incoming === 'string' ? encodeText(incoming) : residentBytes(incoming);
     if (a.byteLength !== b.byteLength) return false;
     for (let i = 0; i < a.byteLength; i++) if (a[i] !== b[i]) return false;
     return true;
