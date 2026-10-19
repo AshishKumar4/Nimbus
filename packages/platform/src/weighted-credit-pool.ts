@@ -189,17 +189,16 @@ class CreditLane {
 
   take(turn: Turn): ResizableCreditLease | null {
     if (turn.state === 'done') return null;
-    const now = Date.now();
     // Taken past its turn: the turn passed, as if a look at the line had seen it first.
-    if (turn.state === 'woken' && now - turn.wokenAt >= CREDIT_TURN_MS) {
+    if (turn.state === 'woken' && Date.now() - turn.wokenAt >= CREDIT_TURN_MS) {
       this.remove(turn);
       turn.state = 'lapsed';
-      this.drain(now);
+      this.drain();
     }
     if (turn.state === 'lapsed') {
       turn.arm();
       this.place(turn);
-      this.drain(now);
+      this.drain();
       return null;
     }
     // Its turn, its credit still free, and no running ask before an ordinary one: its own now.
@@ -207,7 +206,7 @@ class CreditLane {
       this.remove(turn);
       turn.state = 'done';
       const lease = this.grant(turn.bytes);
-      this.drain(now);
+      this.drain();
       return lease;
     }
     // Not its turn yet, or no longer room: it waits again, in its place.
@@ -286,10 +285,11 @@ class CreditLane {
    * one whose continuation never runs holds nothing. A woken turn holds its
    * queue until it is taken or lapses (CREDIT_TURN_MS), one turn at a time.
    */
-  private drain(now = Date.now()): void {
+  private drain(now?: number): void {
     for (const queue of [this.ahead, this.waiters]) {
       for (let waiter = queue[0]; waiter !== undefined; waiter = queue[0]) {
         if (waiter.state === 'woken') {
+          now ??= Date.now();
           if (now - waiter.wokenAt < CREDIT_TURN_MS) return;
           // Never taken: its continuation is gone, or late and back at the end of the line if it ever takes.
           queue.shift();
@@ -298,7 +298,7 @@ class CreditLane {
         }
         if (this.current + waiter.bytes > this.capacity) return;
         waiter.state = 'woken';
-        waiter.wokenAt = now;
+        waiter.wokenAt = now ?? Date.now();
         waiter.wake();
         return;
       }
