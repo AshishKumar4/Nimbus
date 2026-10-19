@@ -209,15 +209,17 @@ export class Interpreter {
         this.lastExitCode = exitCode;
     }
     async executeScript(script, terminalStdin) {
-        return (await this.executeScriptWithIo(script, this.createTerminalIo(terminalStdin), true));
+        return (await this.executeScriptWithIo(script, this.createTerminalIo(terminalStdin), { readsLines: true }));
     }
     /**
      * Runs `script`'s lists. As lines a shell reads (`readsLines`: its own,
      * a sourced file's, a trap's; not an alias's text, which is part of the
      * line it is in), a line a nested call discards ends, and the next runs
      * with $? 1, in a shell that is no child: a child's ends (finishChild).
+     * Text run `inline` (eval's, a sourced file's, an alias's) leaves an `exit`,
+     * and an end by `set -e` or a fatal error, to the shell that runs it.
      */
-    async executeScriptWithIo(script, io, readsLines = false) {
+    async executeScriptWithIo(script, io, { readsLines = false, inline = false } = {}) {
         let exitCode = 0;
         try {
             for (let i = 0; i < script.lists.length; i++) {
@@ -236,10 +238,7 @@ export class Interpreter {
             }
         }
         catch (error) {
-            if (error instanceof ErrexitSignal) {
-                exitCode = error.exitCode;
-            }
-            else if (error instanceof ExitSignal) {
+            if ((error instanceof ErrexitSignal || error instanceof ExitSignal) && !inline) {
                 exitCode = error.exitCode;
             }
             else {
@@ -279,7 +278,7 @@ export class Interpreter {
         try {
             const tokens = lex(input);
             const script = parse(tokens);
-            const exitCode = await this.executeScriptWithIo(script, io, true);
+            const exitCode = await this.executeScriptWithIo(script, io, { readsLines: true });
             return await this.runExitTrap(exitCode, io, options?.runExitTrap === true);
         }
         catch (e) {
@@ -740,7 +739,7 @@ export class Interpreter {
                 aliasesExpanding.add(name);
                 const script = parse(lex(expandedLine));
                 markAliasText(script.lists, aliasesExpanding);
-                return (await this.executeScriptWithIo(script, io));
+                return (await this.executeScriptWithIo(script, io, { inline: true }));
             }
         }
         // Apply per-command assignments (temporary env)
@@ -780,6 +779,8 @@ export class Interpreter {
         }
         let exitCode;
         let writeFailed = false;
+        // eval's and `.`'s status is their text's once it runs: its failure is not theirs.
+        let ranText = false;
         try {
             // Check for break/continue/return builtins
             if (name === 'break') {
@@ -834,7 +835,10 @@ export class Interpreter {
                                 isFdTerminal: (fd) => this.isFdTerminal(fds, fd),
                                 getPositionals: () => this.readPositionals(builtinIo),
                                 setPositionals: (nextArgs) => this.writePositionals(builtinIo, nextArgs),
-                                executeInline: async (input, options) => (await this.executeInline(input, builtinIo, options)),
+                                executeInline: async (input, options) => {
+                                    ranText = true;
+                                    return (await this.executeInline(input, builtinIo, options));
+                                },
                                 declareLocal: (name) => this.declareLocal(name),
                                 unsetFunction: (name) => this.functions.delete(name),
                                 shell: this.config,
@@ -932,6 +936,7 @@ export class Interpreter {
         const fatalSpecialBuiltin = io.scriptMode === true
             && exitCode !== 0
             && !viaCommand
+            && !ranText
             && isFatalSpecialBuiltin(name);
         this.lastExitCode = exitCode;
         if (fatalSpecialBuiltin)
@@ -1132,12 +1137,12 @@ export class Interpreter {
         if (options.positionals !== undefined) {
             inlineIo.positionals = { args: [...options.positionals] };
         }
-        return (await this.executeLineWithIo(input, inlineIo, true));
+        return (await this.executeLineWithIo(input, inlineIo, { readsLines: true, inline: true }));
     }
-    async executeLineWithIo(input, io, readsLines = false) {
+    async executeLineWithIo(input, io, run = {}) {
         const tokens = lex(input);
         const script = parse(tokens);
-        return (await this.executeScriptWithIo(script, io, readsLines));
+        return (await this.executeScriptWithIo(script, io, run));
     }
     /**
      * A child shell's run and end: it holds the files its io inherited while it
@@ -1156,8 +1161,8 @@ export class Interpreter {
                 exitCode = await run();
             }
             catch (e) {
-                // An `exit` inside it ends only it; so does a call past the nesting bound.
-                if (!(e instanceof ExitSignal) && !(e instanceof FunctionNestingSignal))
+                // An `exit` inside it ends only it; so do `set -e` and a fatal error, and a call past the nesting bound.
+                if (!(e instanceof ExitSignal) && !(e instanceof ErrexitSignal) && !(e instanceof FunctionNestingSignal))
                     throw e;
                 exitCode = e.exitCode;
             }
@@ -1177,7 +1182,7 @@ export class Interpreter {
         this.lastExitCode = exitCode;
         this.exitTrapDepth++;
         try {
-            await this.executeLineWithIo(action, io, true);
+            await this.executeLineWithIo(action, io, { readsLines: true });
         }
         catch (e) {
             // A call past the nesting bound ends the action, a child shell's too; the status stays (bash 5.2).

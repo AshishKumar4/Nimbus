@@ -45,7 +45,7 @@ import { assertCandidateRounds, assertPaired, measurePaired, requirePairedTarget
 
 const a = makeAsserter('perf-regression/install-warm');
 const arms = requirePairedTargets('perf-regression/install-warm');
-console.log(`perf-regression/install-warm — baseline ${arms.a1.base}, ${arms.a2.base}; candidate ${arms.b.base}`);
+console.log(`perf-regression/install-warm — baseline ${arms.a1.base}, ${arms.a2.base}; candidate ${arms.b1.base}, ${arms.b2.base}`);
 
 const ROUNDS = 16;
 const WARM_RUNS = 5;

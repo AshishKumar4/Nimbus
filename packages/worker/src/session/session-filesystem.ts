@@ -29,7 +29,7 @@ export class SessionFilesystem {
   private readonly unsubscribe: () => void;
   private ops: SessionSupervisorOps | null = null;
 
-  constructor(readonly engine: SqliteVFS, private readonly host: SessionFilesystemHost) {
+  constructor(readonly engine: SqliteVFS, private readonly host: SessionFilesystemHost, private readonly session?: string) {
     this.authority = new ProcessFiles(engine, {
       // A delegation's holder that did not answer a recall in time is stopped
       // (SIGKILL): its later writes are refused already (its lease ended), and
@@ -72,7 +72,7 @@ export class SessionFilesystem {
    * Made on first use.
    */
   supervisorOps(): SessionSupervisorOps {
-    return this.ops ??= buildSessionSupervisorOps(this.host);
+    return this.ops ??= buildSessionSupervisorOps(this.host, undefined, undefined, this.session);
   }
 
   /** Close a live pid's descriptors for a run that starts in place of another. */

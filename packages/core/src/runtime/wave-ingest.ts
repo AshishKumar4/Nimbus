@@ -527,8 +527,8 @@ export class WaveIngest {
       try {
         // A running facet's wave: running work, never held up by a launch that is not running (the lock order).
         supervisorLease = await awaitCredit(
-          () => tryAcquireSupervisorRunningAllocation(byteLength),
-          () => acquireSupervisorRunningAllocation(byteLength, abort),
+          () => tryAcquireSupervisorRunningAllocation(byteLength, { owner: 'filesystem write wave', pid: options.sequence?.pid }),
+          () => acquireSupervisorRunningAllocation(byteLength, abort, { owner: 'filesystem write wave', pid: options.sequence?.pid }),
         );
       } catch (error) {
         writeLease.release();

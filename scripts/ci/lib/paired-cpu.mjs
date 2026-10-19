@@ -12,15 +12,17 @@ import { median, medianInterval } from '../../lib/statistics.mjs';
 
 /**
  * Each kind over `runs` (each run's results, as the bench wrote them): the
- * median of the runs' branch delta less their null delta (a second copy of
- * the baseline, paired with the same A), its bootstrap interval, and the
+ * median of each run's paired branch-minus-null differences (a second copy
+ * of the baseline), its bootstrap interval, and the
  * spread of the runs' null deltas, the A/A. The bar is no detectable loss: a
  * kind fails only when its interval lies wholly above 0.
  */
 export function pairedCpuVerdicts(runs) {
   return (runs[0] ?? []).map(({ kind }) => {
     const of = runs.map((results) => results.find((result) => result.kind === kind));
-    const deltas = of.map((result) => result.medianDelta - result.medianNullDelta);
+    // Cancel the common A inside each pair, not after two independent medians:
+    // median(real - A) - median(null - A) need not equal median(real - null).
+    const deltas = of.map((result) => median(result.samples.map((sample) => sample.real - sample.null)));
     const aa = of.map((result) => result.medianNullDelta);
     const ci95 = medianInterval(deltas);
     const aaSpread = [Math.min(...aa), Math.max(...aa)];

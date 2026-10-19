@@ -15,49 +15,161 @@
  * holds a slice.
  */
 import { PRE_BUNDLE_CONCURRENCY } from '@nimbus-sh/platform/limits.js';
+import { acquireSupervisorAllocation, acquireSupervisorRunningAllocation, tryAcquireSupervisorAllocation, tryAcquireSupervisorRunningAllocation, reclaimableSupervisorAllocation, type SupervisorAllocationLease, type SupervisorAllocationOwner } from '@nimbus-sh/platform/heavy-alloc-coord.js';
+import { runningLaunchAdmission, suspendHeldAdmission } from '@nimbus-sh/fabric/budgets.js';
+import { prebundleSliceBytes } from '@nimbus-sh/core/runtime/prebundle-slice.js';
 import type { PrebundleResult, PrebundleSpec } from '../npm/pre-bundle-facet.js';
-import { buildFacetPrebundler, loadBuildFacet } from './build-facet.js';
+import { BuildFacetResetError, buildFacetPrebundler } from './build-facet.js';
+
+/** A worker takes a prepared slice only at dispatch, never while its slot is queued. */
+export interface PrebundleTask {
+  readonly specifier: string;
+  readonly signal?: AbortSignal;
+  readonly bytes: number;
+  readonly owner?: SupervisorAllocationOwner;
+  readonly running?: boolean;
+  prepare(): PrebundleSpec;
+}
+export interface PrebundleDispatch {
+  readonly specifier: string;
+  readonly signal?: AbortSignal;
+  take(): PrebundleSpec;
+  transferred(): void;
+}
+class PrebundleCreditUnavailable extends Error {
+  constructor(readonly bytes: number) { super(`prebundle needs ${bytes} bytes of supervisor credit`); }
+}
 
 /** What both pre-bundling pipelines call. */
 export interface BundlePool {
-  prebundle(spec: PrebundleSpec): Promise<PrebundleResult>;
+  prebundle(task: PrebundleTask): Promise<PrebundleResult>;
 }
 
 /** What a pre-bundling pipeline receives from its host. */
 export interface BundlePoolProvider {
+  readonly session?: string;
   /** The session's pool, its facet loaded. */
-  acquire(): Promise<BundlePool>;
+  acquire(signal?: AbortSignal): Promise<BundlePool>;
 }
 
 export class PrebundlePool implements BundlePoolProvider {
-  private readonly pool: BundlePool;
   /** Pre-bundles waiting for a slot, oldest first; a finishing one hands its slot to the next. */
-  private readonly waiting: Array<() => void> = [];
+  private readonly waiting: Array<{ admit(): void; cancel(): void }> = [];
   private running = 0;
 
   constructor(
     private readonly env: unknown,
     private readonly ctx: DurableObjectState,
-  ) {
-    const prebundle = buildFacetPrebundler(ctx, env);
-    this.pool = {
-      prebundle: async (spec) => {
-        if (this.running < PRE_BUNDLE_CONCURRENCY) this.running++;
-        else await new Promise<void>((resolve) => this.waiting.push(resolve));
-        try {
-          return await prebundle(spec);
-        } finally {
-          const next = this.waiting.shift();
-          if (next) next();
-          else this.running--;
+  ) {}
+
+  get session(): string { return this.ctx.id.toString(); }
+
+  async acquire(signal?: AbortSignal): Promise<BundlePool> {
+    let prebundle = await buildFacetPrebundler(this.ctx, this.env, signal);
+    return { prebundle: async (task) => {
+      for (let attempt = 0; ; attempt++) {
+        try { return await this.dispatch(task, prebundle); }
+        catch (error) {
+          if (!(error instanceof BuildFacetResetError)) throw error;
+          if (attempt > 0) throw new BuildFacetResetError(task.specifier, error.reason);
+          console.warn(`[build-facet] the build facet was reset pre-bundling ${task.specifier} (${error.reason}); preparing it once more on a fresh facet`);
+          prebundle = await buildFacetPrebundler(this.ctx, this.env, task.signal);
         }
-      },
-    };
+      }
+    } };
   }
 
-  async acquire(): Promise<BundlePool> {
-    await loadBuildFacet(this.ctx, this.env);
-    return this.pool;
+  private async dispatch(task: PrebundleTask, run: (task: PrebundleDispatch) => Promise<PrebundleResult>): Promise<PrebundleResult> {
+    const owner: SupervisorAllocationOwner = { owner: `prebundle '${task.specifier}'`, ...task.owner,
+      session: task.owner?.session ?? this.session, attribution: 'preBundleSliceBytes' };
+    let creditFirst = false;
+    let resume: ReturnType<typeof suspendHeldAdmission>;
+    for (;;) {
+      const reclaimed = new AbortController();
+      const signal = task.signal ? AbortSignal.any([task.signal, reclaimed.signal]) : reclaimed.signal;
+      let lease: SupervisorAllocationLease | null = null;
+      let payload: PrebundleSpec | null = null;
+      let unregister = () => {};
+      let slot = false;
+      const transferred = () => {
+        unregister();
+        unregister = () => {};
+        payload = null;
+        lease?.release();
+        lease = null;
+      };
+      const prepare = () => {
+        signal.throwIfAborted();
+        if (lease === null) {
+          lease = (task.running || runningLaunchAdmission(this.ctx) ? tryAcquireSupervisorRunningAllocation : tryAcquireSupervisorAllocation)(Math.max(1, task.bytes), owner);
+          if (lease === null) throw new PrebundleCreditUnavailable(task.bytes);
+        }
+        payload = task.prepare();
+        const bytes = Math.max(1, prebundleSliceBytes(payload.slice));
+        if (bytes > lease.bytes) throw new Error('prebundle slice exceeded its stat-sized allocation');
+        lease.shrinkTo(bytes);
+      };
+      const leaveSlot = () => {
+        if (!slot) return;
+        slot = false;
+        const next = this.waiting.shift();
+        if (next) next.admit();
+        else this.running--;
+      };
+      try {
+        if (creditFirst) {
+          resume ??= suspendHeldAdmission(this.ctx);
+          const running = task.running || runningLaunchAdmission(this.ctx);
+          lease = await (running ? acquireSupervisorRunningAllocation : acquireSupervisorAllocation)(Math.max(1, task.bytes), signal, owner);
+          prepare();
+          unregister = reclaimableSupervisorAllocation(() => {
+            transferred();
+            reclaimed.abort(new Error('the parked prebundle slice was reclaimed for running work'));
+          });
+          await resume?.(signal);
+          resume = undefined;
+        }
+        await this.waitForSlot(signal);
+        slot = true;
+        return await run({ specifier: task.specifier, signal, transferred, take: () => {
+          signal.throwIfAborted();
+          unregister();
+          unregister = () => {};
+          if (payload === null) prepare();
+          if (payload === null) throw new Error('prebundle prepared no payload');
+          const taken = payload;
+          payload = null;
+          return taken;
+        } });
+      } catch (error) {
+        transferred();
+        leaveSlot();
+        if (error instanceof PrebundleCreditUnavailable || (reclaimed.signal.aborted && !task.signal?.aborted)) {
+          // One credit-first retry avoids repeated slot/credit bounces; its parked payload is reclaimable.
+          creditFirst = true;
+          continue;
+        }
+        if (resume !== undefined && !task.signal?.aborted) { await resume(task.signal); resume = undefined; }
+        throw error;
+      } finally { transferred(); leaveSlot(); }
+    }
+  }
+
+  private waitForSlot(signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
+    if (this.running < PRE_BUNDLE_CONCURRENCY) { this.running++; return Promise.resolve(); }
+    return new Promise((resolve, reject) => {
+      const waiter = {
+        admit: () => { signal?.removeEventListener('abort', waiter.cancel); resolve(); },
+        cancel: () => {
+          const index = this.waiting.indexOf(waiter);
+          if (index >= 0) this.waiting.splice(index, 1);
+          reject(signal?.reason);
+        },
+      };
+      this.waiting.push(waiter);
+      signal?.addEventListener('abort', waiter.cancel, { once: true });
+    });
   }
 
   /** The build facet is the Durable Object's, not the pool's: nothing to release. */

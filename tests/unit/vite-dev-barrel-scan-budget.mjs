@@ -83,7 +83,7 @@ try {
   const { BuildFacet } = await freshFacetClass();
   const facet = new BuildFacet({ id: { toString: () => 'vite-dev-barrel-scan-budget' } }, {});
   const entries = [];
-  const pool = { prebundle: (spec) => (entries.push(spec.entryPath), facet.prebundle(spec)) };
+  const pool = { prebundle: (task) => { const spec = task.prepare(); entries.push(spec.entryPath); return facet.prebundle(spec); } };
   const server = new ViteDevServer({
     vfs, cred: CRED_KERNEL, esbuild: new EsbuildService(undefined, { engine: esbuildEngine }), root, sql: harness.sql,
     onHmrMessage() {}, basePath: '/preview', port: 5173, bundlePool: { acquire: async () => pool },

@@ -87,6 +87,7 @@ export function buildSessionSupervisorOps(
   host: SessionSupervisorHost,
   store?: SupervisorOpBridgeStore,
   methods?: SupervisorOpHost,
+  session?: string,
 ): SessionSupervisorOps {
   host.ensureSqliteFs();
   const vfs = host.sqliteFs;
@@ -113,7 +114,7 @@ export function buildSessionSupervisorOps(
     ])),
     bridge: store,
     // Every native read holds a lease for the payload it can answer with.
-    readLease: withReadAllocation,
+    readLease: (bytes, read, pid) => withReadAllocation(bytes, read, pid, session),
     extend,
     deliveries: host.supervisorDeliveries,
     ...(host.waveTurn === undefined ? {} : { turn: () => host.waveTurn!() }),

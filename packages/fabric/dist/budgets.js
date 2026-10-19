@@ -713,6 +713,11 @@ export function suspendHeldAdmission(ctx) {
         return undefined;
     return suspendLaunchAdmission(ctx);
 }
+/** Whether this frame is a running, claimed launch, not a preparation's reserved worker. */
+export function runningLaunchAdmission(ctx) {
+    const admission = launchAdmission.getStore();
+    return admission?.ctx === ctx && admission.end !== undefined && admission.claimed && !admission.closed;
+}
 export function claimAdmission(ctx, pid) {
     const admission = launchAdmission.getStore();
     if (admission?.ctx !== ctx || admission.end === undefined || admission.claimed)
@@ -744,14 +749,15 @@ function claimed(admission, runner) {
  * a launch whose admission is given back while it prepares again).
  * End the hold from the caller's own `finally`, as beginLoaderFetch's.
  */
-export async function beginHelperFetch(ctx, workerKey) {
+export async function beginHelperFetch(ctx, workerKey, signal) {
+    signal?.throwIfAborted();
     const admitted = beginAdmittedFetch(ctx);
     if (admitted !== undefined)
         return admitted;
     const admission = launchAdmission.getStore();
     const preparing = launchPreparation.getStore();
     const process = admission?.ctx === ctx ? admission.process : preparing?.ctx === ctx ? preparing.process : undefined;
-    return beginLoaderFetchWhenFree(ctx, workerKey, process === undefined ? {} : { process });
+    return beginLoaderFetchWhenFree(ctx, workerKey, { ...(process === undefined ? {} : { process }), signal });
 }
 /**
  * Distinct Dynamic Workers this actor may still put in flight: the limit
