@@ -6,12 +6,11 @@
 // are teed for their retries, the primitive whose response bodies reached
 // the browser with a 16 KiB block out of order; every task reads its body as
 // JSON, so such a body fails there, and the failure names the body. Any
-// other failure of the task is left as it was, and the callers' reader of a
-// pool's answer (facetAnswer) throws what the task failed with.
+// other failure of the task is left as it was. A pool answers a task's
+// failure as a 500 with its message under __nimbusFacetError.
 
 import assert from 'node:assert/strict';
 import { bashRequestStep } from '../../packages/core/src/runtime/facet-tasks.ts';
-import { facetAnswer } from '../../packages/core/src/runtime/facet-host.ts';
 import { pythonReplStepRequestFn } from '../../packages/worker/src/runtime/repl-facet-tasks.ts';
 import { assembleLoaderWorkerModuleSource } from '../../packages/fabric/src/isolate-pool.ts';
 import { importModuleSet } from './lib/module-map-bundle.mjs';
@@ -31,10 +30,14 @@ assert.equal(moved.length, sent.length);
 const parse = await request(moved).json().then(() => null, (error) => error.message);
 const named = (failure) => typeof failure === 'string' && failure.endsWith(parse) && failure !== parse && failure.includes(String(sent.length));
 
-/** A pool's entry for `fn`, as IsolatePool generates it; its answer read as the callers read it. */
+/** A pool's entry for `fn`, as IsolatePool generates it: what it answers a body with. */
 async function pooled(fn) {
   const { default: Entry } = await importModuleSet({ 'worker.js': assembleLoaderWorkerModuleSource({ fnSource: fn.toString(), hasBindings: true }) }, 'worker.js');
-  return (body) => new Entry({}, {}).fetch(request(body)).then(facetAnswer).then((value) => ({ value }), (error) => ({ failure: error.message }));
+  return async (body) => {
+    const response = await new Entry({}, {}).fetch(request(body));
+    const answer = await response.json();
+    return response.ok ? { value: answer } : { failure: answer.__nimbusFacetError };
+  };
 }
 
 // ── a bash step ──────────────────────────────────────────────────────────
