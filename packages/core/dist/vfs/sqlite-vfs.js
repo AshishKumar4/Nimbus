@@ -836,6 +836,8 @@ export class SqliteVFS {
      * held at once, so a later plan of the transaction meets them.
      */
     captureUndo = null;
+    /** The keys the committing transaction kept first (captureFirst): what its failure lets go of. */
+    captureFresh = [];
     /** The embedder transaction running (publishedTransaction), by serial: 0 outside one. */
     captureTransaction = 0;
     captureTransactions = 0;
@@ -6962,53 +6964,59 @@ export class SqliteVFS {
         return capture !== undefined && capture.unrestorable === null && !capture.keys.has(key);
     }
     /**
-     * The keys `plan` changes that `capture` does not keep yet, each with the
-     * row there before the transaction (a copy: a resident row is replaced
-     * as it changes), or null. Read inside the transaction, before it writes.
+     * Keep, in `capture`, each key `plan` changes that it does not keep yet,
+     * with the row there before the transaction (a copy: a resident row is
+     * replaced as it changes), or none. Called inside the transaction at `gen`,
+     * before it writes; a key kept here is let go if the transaction fails
+     * (captureFresh), and, inside an embedder transaction, if that one rolls
+     * back (captureUndo).
      */
-    capturedBefores(capture, plan, prior, deletedPrior, touched) {
-        const taken = new Map();
-        const { keys } = capture;
+    captureFirst(capture, plan, prior, deletedPrior, touched, gen) {
+        this.captureFresh.length = 0;
         for (const entry of plan.deletes) {
-            if (keys.has(entry.path) || taken.has(entry.path))
-                continue;
-            const row = deletedPrior.get(entry.path) ?? this.loadInode(entry.path);
-            taken.set(entry.path, row === undefined ? null : { ...row });
+            if (!capture.keys.has(entry.path))
+                this.captureKey(capture, entry.path, deletedPrior.get(entry.path) ?? this.loadInode(entry.path), gen);
         }
         for (let index = 0; index < plan.inodes.length; index++) {
             const entry = plan.inodes[index];
-            if (entry === undefined || entry.detached || keys.has(entry.path) || taken.has(entry.path))
-                continue;
-            const row = prior[index];
-            taken.set(entry.path, row === undefined ? null : { ...row });
+            if (entry !== undefined && !entry.detached && !capture.keys.has(entry.path))
+                this.captureKey(capture, entry.path, prior[index], gen);
         }
         for (const path of touched) {
-            if (keys.has(path) || taken.has(path))
-                continue;
-            const row = this.inodes.peek(path) ?? this.loadInode(path);
-            taken.set(path, row === undefined ? null : { ...row });
+            if (!capture.keys.has(path))
+                this.captureKey(capture, path, this.inodes.peek(path) ?? this.loadInode(path), gen);
         }
-        return taken;
     }
-    /** Once its transaction committed at `gen`: `capture` keeps the rows it found first, held, and each key as the transaction left it. */
-    captureCommitted(capture, taken, plan, touched, gen) {
-        // Past the bound inside an embedder transaction that then rolls back, it stays past it.
-        if (capture.keys.size + taken.size > RUN_CAPTURE_MAX_KEYS) {
+    /** Keep `key` in `capture`, as `row` held it before (none: undefined); past the bound, the capture can no longer be put back. */
+    captureKey(capture, key, row, gen) {
+        if (capture.unrestorable !== null)
+            return;
+        if (capture.keys.size >= RUN_CAPTURE_MAX_KEYS) {
             this.unrestorable(capture, `it changed more than ${RUN_CAPTURE_MAX_KEYS} files and directories`);
             return;
         }
-        const undo = this.captureUndo;
+        const before = row === undefined ? null : { inode: { ...row }, path: null, closed: false };
+        if (before !== null)
+            this.holdCaptured(before);
         const tx = this.captureTransaction;
-        for (const [key, row] of taken) {
-            const before = row === null ? null : { inode: row, path: null, closed: false };
-            if (before !== null)
-                this.holdCaptured(before);
-            const kept = {
-                capture, key, before, written: false, gen, present: true, keptIn: tx, movedIn: tx, movedGen: gen, movedPresent: true, movedWritten: false,
-            };
-            capture.keys.set(key, kept);
-            undo?.push(kept);
-        }
+        const kept = {
+            capture, key, before, written: false, gen, present: true, keptIn: tx, movedIn: tx, movedGen: gen, movedPresent: true, movedWritten: false,
+        };
+        capture.keys.set(key, kept);
+        this.captureFresh.push(kept);
+        this.captureUndo?.push(kept);
+    }
+    /** `kept`, kept by a transaction that did not commit, let go. */
+    uncapture(kept) {
+        if (kept.capture.keys.get(kept.key) !== kept)
+            return;
+        kept.capture.keys.delete(kept.key);
+        if (kept.before !== null)
+            this.releaseCaptured(kept.before);
+    }
+    /** Once its transaction committed at `gen`: each key `capture` keeps as the transaction left it. */
+    captureCommitted(capture, plan, touched, gen) {
+        this.captureFresh.length = 0;
         for (const path of touched)
             this.captureLeft(capture, path, gen, false, true);
         for (const entry of plan.deletes)
@@ -7043,9 +7051,7 @@ export class SqliteVFS {
             kept.written = kept.movedWritten;
             return;
         }
-        kept.capture.keys.delete(kept.key);
-        if (kept.before !== null)
-            this.releaseCaptured(kept.before);
+        this.uncapture(kept);
     }
     /** Hold `before`'s content for a captured run, as a description holds what it opened. */
     holdCaptured(before) {
@@ -10060,7 +10066,7 @@ export class SqliteVFS {
             deletedPrior.set(entry.path, entry.prior);
         const touched = this.entryChangedDirectories(plan, prior, deletedPaths);
         const capture = this.activeWriterPid === null ? undefined : this.runCaptures.get(this.activeWriterPid);
-        let taken = null;
+        let capturing = false;
         if (this.sharedDirectories.size > 0) {
             for (const entry of plan.deletes)
                 this.revokeSharedDirectories(entry.path);
@@ -10102,8 +10108,10 @@ export class SqliteVFS {
                     this.recordBeforeImages([...plan.inodes.filter((entry) => !entry.detached).map((entry) => entry.path), ...deletedPaths, ...touched], gen, pinGen);
                 }
                 // What a captured run changes here first, as it stands before this transaction.
-                if (capture !== undefined && capture.unrestorable === null)
-                    taken = this.capturedBefores(capture, plan, prior, deletedPrior, touched);
+                if (capture !== undefined && capture.unrestorable === null) {
+                    capturing = true;
+                    this.captureFirst(capture, plan, prior, deletedPrior, touched, gen);
+                }
                 const x = {
                     plan, gen, committedAt, queue,
                     next: { ino: nextIno, chunk: nextChunk, content: nextContent },
@@ -10126,11 +10134,15 @@ export class SqliteVFS {
         catch (error) {
             for (const staging of created)
                 staging.id = 0;
+            // What it kept first is no run's: the transaction did not commit.
+            if (capturing)
+                for (const kept of this.captureFresh)
+                    this.uncapture(kept);
             throw error;
         }
         this._gen = gen;
-        if (capture !== undefined && taken !== null)
-            this.captureCommitted(capture, taken, plan, touched, gen);
+        if (capture !== undefined && capturing && capture.unrestorable === null)
+            this.captureCommitted(capture, plan, touched, gen);
         // Deletions first, as the transaction ran them: a path it removed and
         // wrote again holds the row.
         for (const entry of plan.deletes)

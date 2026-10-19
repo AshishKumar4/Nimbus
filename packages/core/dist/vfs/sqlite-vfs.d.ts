@@ -503,6 +503,8 @@ export declare class SqliteVFS {
      * held at once, so a later plan of the transaction meets them.
      */
     private captureUndo;
+    /** The keys the committing transaction kept first (captureFirst): what its failure lets go of. */
+    private readonly captureFresh;
     /** The embedder transaction running (publishedTransaction), by serial: 0 outside one. */
     private captureTransaction;
     private captureTransactions;
@@ -1954,12 +1956,19 @@ export declare class SqliteVFS {
     /** The committing run's capture has yet to keep `key`: what stands there must outlive the write, never be edited in place. */
     private capturesFirst;
     /**
-     * The keys `plan` changes that `capture` does not keep yet, each with the
-     * row there before the transaction (a copy: a resident row is replaced
-     * as it changes), or null. Read inside the transaction, before it writes.
+     * Keep, in `capture`, each key `plan` changes that it does not keep yet,
+     * with the row there before the transaction (a copy: a resident row is
+     * replaced as it changes), or none. Called inside the transaction at `gen`,
+     * before it writes; a key kept here is let go if the transaction fails
+     * (captureFresh), and, inside an embedder transaction, if that one rolls
+     * back (captureUndo).
      */
-    private capturedBefores;
-    /** Once its transaction committed at `gen`: `capture` keeps the rows it found first, held, and each key as the transaction left it. */
+    private captureFirst;
+    /** Keep `key` in `capture`, as `row` held it before (none: undefined); past the bound, the capture can no longer be put back. */
+    private captureKey;
+    /** `kept`, kept by a transaction that did not commit, let go. */
+    private uncapture;
+    /** Once its transaction committed at `gen`: each key `capture` keeps as the transaction left it. */
     private captureCommitted;
     /** Key `key` of `capture` as the transaction committing at `gen` left it: its state before kept, once a transaction, for a rollback. */
     private captureLeft;
