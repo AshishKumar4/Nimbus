@@ -58,7 +58,7 @@ export function chownRefusal(entry, uid, gid, cred) {
     const owner = cred.uid === entry.uid;
     if (uid !== null && (uid !== entry.uid || !owner))
         return 'EPERM';
-    if (gid !== null && (!owner || (gid !== entry.gid && !cred.groups.includes(gid))))
+    if (gid !== null && (!owner || (gid !== entry.gid && !arrayIncludes(cred.groups, gid))))
         return 'EPERM';
     return null;
 }
