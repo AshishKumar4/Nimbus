@@ -38,6 +38,13 @@ const CASES = [
   "[[ a-b =~ [a-]+ ]] && echo \"${BASH_REMATCH[0]}\"; [[ 'x]y' =~ []x]+ ]] && echo \"${BASH_REMATCH[0]}\"; [[ 'a\\b' =~ [\\]b ]] && echo \"${BASH_REMATCH[0]}\"",
   "r='([0-9]+)\\.([0-9]+)'; [[ v12.34 =~ $r ]] && echo \"${BASH_REMATCH[1]} ${BASH_REMATCH[2]}\"; [[ ab =~ \"(\" ]] || echo q",
   "[[ AB =~ [[:lower:]] ]] || echo nolower; [[ ' ' =~ [[:space:]] ]] && echo sp; [[ 9 =~ ^[[:digit:][:alpha:]]$ ]] && echo dg; [[ - =~ [[:punct:]] ]] && echo pu",
+  "[[ =~ ]]; echo $?; [[ -n =~ ]]; echo $?; [[ a == =~ ]]; echo $?; [[ =~ == =~ ]]; echo $?",
+  "[[ (a =~ a) ]]; echo $?; [[ (a =~ b) ]]; echo $?; [[ ! (a =~ b) && (b =~ ^b$) ]]; echo $?",
+  "[[ '#a' =~ (#a) ]]; echo $?; [[ 'a\tb' =~ (a\tb) ]]; echo $?; [[ 'a b' =~ (a\tb) ]]; echo $?",
+  "r='(a)\\10'; [[ aa0 =~ $r ]]; echo $?; r='[a-b-c]'; [[ a =~ $r ]]; echo $?; r='(a\\1)'; [[ a =~ $r ]]; echo $?",
+  "b=$'\\xff'; [[ $b =~ . ]]; echo $?; [[ $b =~ [^a] ]]; echo $?; [[ $b =~ $b ]]; echo $?",
+  "BASH_REMATCH=(old); readonly BASH_REMATCH; [[ ab =~ (a) && b =~ x ]]; printf '%s <%s>\\n' \"$?\" \"${BASH_REMATCH[0]}\"",
+  "[[ ab =~ (\\\na)b ]]; echo $?; [[ xyz =~ (y|yz)z? ]] && echo \"${BASH_REMATCH[0]}\"; [[ aa =~ a+? ]] && echo \"${BASH_REMATCH[0]}\"",
 ];
 
 /** bash's diagnostic prefix: `bash: line 1: `, `bash: -c: line 1: `. */

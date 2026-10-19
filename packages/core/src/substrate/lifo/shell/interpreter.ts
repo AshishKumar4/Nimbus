@@ -1,5 +1,4 @@
 import type {
-  ScriptNode,
   ListNode,
   PipelineNode,
   SimpleCommandNode,
@@ -15,7 +14,6 @@ import type {
   RedirectionNode,
   AssignmentNode,
   WordPart,
-  Token,
 } from './types.js';
 import { TokenKind } from './types.js';
 import { ProcessView, bindProcessView } from '../../../runtime/process-files.js';
@@ -34,8 +32,7 @@ import type { VfsCred } from '../../../runtime/os-contracts.js';
 import { syscallError } from '../../../vfs/vfs-error.js';
 import { execRefusal } from '../../../shell/exec-dispatch.js';
 import { withRecall } from '../../../vfs/recall.js';
-import { lex, lexText } from './lexer.js';
-import { parse, parseAssignment, ParseError } from './parser.js';
+import { parseAssignment, ScriptLines } from './parser.js';
 import {
   expandWords, expandWord, expandPatternWord, evaluateSubscript, ExpansionError,
   type ExpandContext, type CapturedCommand,
@@ -262,48 +259,6 @@ function isDeclarationWord(word: readonly WordPart[]): boolean {
   return text === 'declare' || text === 'typeset' || text === 'local';
 }
 
-/** Marks every simple command of `lists`, read from an alias's text, with the aliases it was read within. */
-function markAliasText(lists: readonly ListNode[], aliasesExpanding: ReadonlySet<string>): void {
-  for (const list of lists) {
-    for (const entry of list.entries) {
-      for (const command of entry.pipeline.commands) markAliasCommand(command, aliasesExpanding);
-    }
-  }
-}
-
-function markAliasCommand(command: CompoundCommandNode, aliasesExpanding: ReadonlySet<string>): void {
-  switch (command.type) {
-    case 'simple_command':
-      command.aliasesExpanding = aliasesExpanding;
-      return;
-    case 'if':
-      for (const clause of command.clauses) {
-        markAliasText(clause.condition, aliasesExpanding);
-        markAliasText(clause.body, aliasesExpanding);
-      }
-      if (command.elseBody !== null) markAliasText(command.elseBody, aliasesExpanding);
-      return;
-    case 'while':
-    case 'until':
-      markAliasText(command.condition, aliasesExpanding);
-      markAliasText(command.body, aliasesExpanding);
-      return;
-    case 'for':
-    case 'group':
-    case 'subshell':
-      markAliasText(command.body, aliasesExpanding);
-      return;
-    case 'case':
-      for (const item of command.items) markAliasText(item.body, aliasesExpanding);
-      return;
-    case 'function_def':
-      markAliasCommand(command.body, aliasesExpanding);
-      return;
-    case 'double_bracket':
-      return;
-  }
-}
-
 function terminalStdinFd(io: ExecutionIo, stdin = io.stdin): boolean {
   return io.terminalFds?.stdin ?? ((!stdin || stdin === io.terminalStdin) && Boolean(io.terminalStdin));
 }
@@ -473,8 +428,9 @@ export class Interpreter {
     this.lastExitCode = exitCode;
   }
 
-  async executeScript(script: ScriptNode, terminalStdin?: TerminalInputStream): Promise<number> {
-    return (await this.executeScriptWithIo(script, this.createTerminalIo(terminalStdin), { readsLines: true }));
+  /** `input`'s lines, read as they run: the aliases defined when each is read are expanded in it. */
+  private linesOf(input: string): ScriptLines {
+    return new ScriptLines(input, { aliases: (name) => this.config.aliases.get(name) });
   }
 
   /**
@@ -486,21 +442,24 @@ export class Interpreter {
    * and an end by `set -e` or a fatal error, to the shell that runs it.
    */
   private async executeScriptWithIo(
-    script: ScriptNode,
+    lines: { nextLine(): readonly ListNode[] | null },
     io: ExecutionIo,
     { readsLines = false, inline = false }: ScriptRun = {},
   ): Promise<number> {
     let exitCode = 0;
     try {
-      for (let i = 0; i < script.lists.length; i++) {
-        try {
-          exitCode = await this.executeList(script.lists[i], io);
-        } catch (error) {
-          if (!(error instanceof FunctionNestingSignal) || !readsLines || this.child) throw error;
-          exitCode = error.exitCode;
-          this.lastExitCode = exitCode;
-          this.setPipestatus([exitCode]);
-          while (i < script.lists.length - 1 && script.lists[i].endsLine !== true) i++;
+      for (let line = lines.nextLine(); line !== null; line = lines.nextLine()) {
+        for (const list of line) {
+          try {
+            exitCode = await this.executeList(list, io);
+          } catch (error) {
+            if (!(error instanceof FunctionNestingSignal) || !readsLines || this.child) throw error;
+            exitCode = error.exitCode;
+            this.lastExitCode = exitCode;
+            this.setPipestatus([exitCode]);
+            // The rest of its line is not run.
+            break;
+          }
         }
       }
     } catch (error) {
@@ -554,9 +513,7 @@ export class Interpreter {
     const beginWork = io.commandIdentity?.beginWork?.bind(io.commandIdentity);
     if (beginWork) io.workThread = new WorkThread(beginWork);
     try {
-      const tokens = lex(input);
-      const script = parse(tokens);
-      const exitCode = await this.executeScriptWithIo(script, io, { readsLines: true });
+      const exitCode = await this.executeScriptWithIo(this.linesOf(input), io, { readsLines: true });
       return await this.runExitTrap(exitCode, io, options?.runExitTrap === true);
     } catch (e) {
       if (e instanceof BreakSignal || e instanceof ContinueSignal || e instanceof ReturnSignal) {
@@ -848,7 +805,11 @@ export class Interpreter {
         {
           cwd: this.config.getCwd(),
           isFdTerminal: (fd) => this.isFdTerminal(fds, fd),
-          setRematch: (values) => { assignArray(this.config, 'BASH_REMATCH', values); },
+          // A new BASH_REMATCH, as bash 5.2 makes one: whatever the old one was, readonly too, it is gone.
+          setRematch: (values) => {
+            this.config.readonlyNames.delete('BASH_REMATCH');
+            assignArray(this.config, 'BASH_REMATCH', values);
+          },
         },
       )));
       this.lastExitCode = exitCode;
@@ -1019,66 +980,6 @@ export class Interpreter {
     return exitCode;
   }
 
-  /**
-   * `cmd` with its command word's alias expanded, as bash's reader expands one:
-   * on the word as written, unquoted and before any expansion (`'p'` and `$c`
-   * are no alias). The alias's text is read as tokens in the word's place, and
-   * the command's other words follow as the words they are, never read again
-   * as text. Its assignments go before the first command that text makes, and
-   * its redirections after the last; before a compound command they are a
-   * syntax error, as bash's grammar has it. A text that ends in a comment takes
-   * the command's words and redirections written after it into it (the rest of
-   * the line, in bash; here, the rest of the command). An alias whose text ends in a
-   * blank has the next word checked too. None of the text's commands expands
-   * those aliases, or the ones this command was read within, again. Null when
-   * the word is no alias.
-   */
-  private aliasExpansion(cmd: SimpleCommandNode): ScriptNode | null {
-    const aliases = this.config.aliases;
-    if (aliases.size === 0) return null;
-    const expanding = new Set(cmd.aliasesExpanding);
-    const tokens: Token[] = [];
-    let used = 0;
-    let commented = false;
-    for (;;) {
-      const word = cmd.words[used];
-      const name = word === undefined ? null : literalWordText(word);
-      const value = name === null || expanding.has(name) ? undefined : aliases.get(name);
-      if (name === null || value === undefined) break;
-      expanding.add(name);
-      const lexed = lexText(value);
-      for (const token of lexed.tokens) if (token.kind !== TokenKind.EOF) tokens.push(token);
-      used++;
-      commented = lexed.endsInComment;
-      if (commented || !/[ \t\n]$/.test(value)) break;
-    }
-    if (used === 0) return null;
-    if (!commented) {
-      for (const parts of cmd.words.slice(used)) tokens.push({ kind: TokenKind.Word, value: parts.map((part) => part.text).join(''), pos: 0, parts });
-    }
-    tokens.push({ kind: TokenKind.EOF, value: '', pos: 0 });
-    const script = parse(tokens);
-    markAliasText(script.lists, expanding);
-    const commands = script.lists.flatMap((list) => list.entries.flatMap((entry) => entry.pipeline.commands));
-    const first = commands[0];
-    const last = commands.at(-1);
-    const [assignment] = cmd.assignments;
-    if (assignment !== undefined && first !== undefined && first.type !== 'simple_command') {
-      // bash reads the assignment before the text: what it says of that.
-      const head = `${assignment.name}=`;
-      parse([{ kind: TokenKind.Word, value: head, pos: 0, parts: [{ text: head, quoted: 'none' }] }, ...tokens]);
-      throw new ParseError(`syntax error near unexpected token \`${tokens[0]?.value ?? ''}'`, 0);
-    }
-    if (assignment !== undefined) {
-      if (first?.type === 'simple_command') first.assignments.unshift(...cmd.assignments);
-      else script.lists.unshift({ type: 'list', entries: [{ pipeline: { type: 'pipeline', negated: false, commands: [{ type: 'simple_command', assignments: cmd.assignments, words: [], redirections: [] }] }, connector: null }], background: false });
-    }
-    // A comment takes the redirections written after the last alias word, not those before it.
-    const kept = commented ? cmd.redirections.filter((redirection) => (redirection.wordsBefore ?? 0) < used) : cmd.redirections;
-    if (kept.length > 0 && last !== undefined && last.type !== 'function_def') last.redirections.push(...kept);
-    return script;
-  }
-
   private async executeSimpleCommand(
     cmd: SimpleCommandNode,
     io: ExecutionIo,
@@ -1089,9 +990,6 @@ export class Interpreter {
       pid: io.commandIdentity.pid, cred: io.commandIdentity.cred, signal: io.signal,
     }) };
 
-    // An alias: read as bash's reader does, on the command word as written.
-    const aliased = this.aliasExpansion(cmd);
-    if (aliased !== null) return (await this.executeScriptWithIo(aliased, io, { inline: true }));
 
     const expandCtx = this.createExpandContext(io);
 
@@ -1537,9 +1435,7 @@ export class Interpreter {
   }
 
   private async executeLineWithIo(input: string, io: ExecutionIo, run: ScriptRun = {}): Promise<number> {
-    const tokens = lex(input);
-    const script = parse(tokens);
-    return (await this.executeScriptWithIo(script, io, run));
+    return (await this.executeScriptWithIo(this.linesOf(input), io, run));
   }
 
   /**

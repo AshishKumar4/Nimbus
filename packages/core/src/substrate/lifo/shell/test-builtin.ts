@@ -3,7 +3,8 @@ import type { ProcessStat } from '../../../runtime/process-files.js';
 import type { CommandOutputStream } from '../commands/types.js';
 import type { WordPart } from './types.js';
 import { expandPatternWord, expandRegexWord, type ExpandContext } from './expander.js';
-import { compileExtended, execExtended, RegexSyntaxError, type ExtendedRegex } from './posix-regex.js';
+import { compileRegcomp, execLongest, PosixRegexSyntax, type CompiledRegex } from '../utils/posix-regex.js';
+import { BINARY_OPERATORS, UNARY_OPERATORS } from './conditional-operators.js';
 import { shellMatch } from '../utils/glob.js';
 import { resolve } from '../utils/path.js';
 import { S_IFCHR, S_IFMT } from '../../../vfs/vfs.js';
@@ -279,29 +280,18 @@ const INTEGER_COMPARISONS: Record<string, ((a: number, b: number) => boolean) | 
   '-ge': (a, b) => a >= b,
 };
 
-const BINARY_OPERATORS: Record<string, true> = {
-  '=': true, '==': true, '!=': true, '<': true, '>': true,
-  '-eq': true, '-ne': true, '-lt': true, '-le': true, '-gt': true, '-ge': true,
-};
-
-// POSIX unary primaries; -h and -L are the same symlink test.
-const UNARY_OPERATORS: Record<string, true> = {
-  '-b': true, '-c': true, '-d': true, '-e': true, '-f': true, '-g': true, '-h': true, '-k': true, '-L': true,
-  '-n': true, '-p': true, '-r': true, '-s': true, '-S': true, '-t': true, '-u': true, '-w': true, '-x': true, '-z': true,
-};
-
 /** `[[ value =~ ere ]]`: whether it matches, BASH_REMATCH set to what it matched; a regex glibc refuses is status 2. */
 function regexMatches(value: string, ere: string, context: TestContext | undefined): boolean {
-  const match = execExtended(compiledOrRefused(ere), value);
+  const match = execLongest(compiledOrRefused(ere), value);
   context?.setRematch?.(match ?? []);
   return match !== null;
 }
 
-function compiledOrRefused(ere: string): ExtendedRegex {
+function compiledOrRefused(ere: string): CompiledRegex {
   try {
-    return compileExtended(ere);
+    return compileRegcomp(ere);
   } catch (e) {
-    if (e instanceof RegexSyntaxError) throw new RegexRefused(`invalid regular expression \`${ere}': ${e.message}`);
+    if (e instanceof PosixRegexSyntax) throw new RegexRefused(`invalid regular expression \`${ere}': ${e.message}`);
     throw e;
   }
 }
