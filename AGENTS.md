@@ -346,6 +346,15 @@ One unit file is `remote-unit --only <file>`; one probe is `remote-probes
 --only <probe>`. A bench or profile is committed and run through
 `remote-unit --only` or `mapOnArmada` (`scripts/ci/lib/armada.mjs`).
 
+A paired CPU bench (`scripts/ci/lib/paired-cpu.mjs`) grades code on the
+engine that runs it in production. Hot paths in guest code (what the node
+shims, the resident store and the loader run in a process facet) are
+graded on V8, as workerd runs them: their bench runs under `node`, and
+each arm is bundled on its own (`tests/bench/module-resolution-cpu.mjs`,
+`resident-read-cpu.mjs`). Under bun, a capture called as Node's
+primordials call one (`uncurryThis`) costs 4–5× a live method call. Under
+V8 it costs the same. A bun run of such a bench is context, not the gate.
+
 A red-first test of a hang or runaway bug bounds itself: it runs the
 failing path in a child with a timeout, so red is a clean failure.
 
