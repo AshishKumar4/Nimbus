@@ -150,7 +150,7 @@ export function makeClangRunnerFactory(deps) {
             // tool, which keeps the compiled image: the supervisor capability is the
             // call's, never the worker's (FacetSpec.warm), and each call
             // instantiates the tool afresh. A target's key goes back when every call
-            // on it ended clean and was not killed (dispatchClangFacet).
+            // on it left the worker fit for another (warm-facets.ts give).
             // A phase's target, opened when the phase first runs; null, said, when
             // its image cannot be opened. clang is opened only to compile and
             // wasm-ld only to link: a compile-only run, or one whose compile fails,
@@ -181,7 +181,7 @@ export function makeClangRunnerFactory(deps) {
                         warm,
                     }),
                     warm,
-                    reusable: true,
+                    ends: [],
                 };
                 opened.push(target);
                 return target;
@@ -331,8 +331,7 @@ export function makeClangRunnerFactory(deps) {
                 }
                 finally {
                     for (const target of opened) {
-                        if (target.reusable)
-                            warmKeys[target.primaryName].give(target.warm);
+                        warmKeys[target.primaryName].give(target.warm, ...target.ends);
                         target.facet.dispose();
                     }
                     if (scratchVfs)
@@ -592,7 +591,7 @@ async function dispatchClangFacet(target, args, signal) {
             // Ctrl-C ends the facet too, where the host can.
             signal,
         });
-        target.reusable &&= result.reusable === true && result.error === undefined && !signal.aborted;
+        target.ends.push({ reusable: result.reusable, error: result.error, killed: signal.aborted });
         return {
             exitCode: result.exitCode,
             stdout: result.stdout || '',
@@ -602,7 +601,7 @@ async function dispatchClangFacet(target, args, signal) {
         };
     }
     catch (e) {
-        target.reusable = false;
+        target.ends.push({ reusable: false, killed: signal.aborted });
         // Killed: the tool ends as an interrupted one does.
         if (signal.aborted)
             return { exitCode: 130, stdout: '', stderr: '' };
