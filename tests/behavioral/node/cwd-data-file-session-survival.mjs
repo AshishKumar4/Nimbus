@@ -25,6 +25,7 @@ import {
   mintSession,
   stripAnsi,
   Terminal,
+  hasOutputLine,
 } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -54,7 +55,7 @@ try {
   for (const n of [1, 2]) {
     const out = stripAnsi((await t.run(`node -e 'console.log("TRIVIAL${n}")'`, 45_000)).output);
     a.check(`a trivial node run still answers with a 20 MiB file in the cwd (run ${n})`,
-      new RegExp(`TRIVIAL${n}`).test(out),
+      hasOutputLine(out, `TRIVIAL${n}`),
       JSON.stringify(out.slice(-300)));
   }
 
@@ -62,7 +63,7 @@ try {
   // silently — no echo, no prompt, socket open.
   const alive = stripAnsi((await t.run('echo SHELL_STILL_ANSWERS', 30_000)).output);
   a.check('the shell still answers after the run',
-    /SHELL_STILL_ANSWERS/.test(alive),
+    hasOutputLine(alive, 'SHELL_STILL_ANSWERS'),
     JSON.stringify(alive.slice(-300)));
 } catch (e) {
   a.check('the session survived the run', false, e?.message || String(e));

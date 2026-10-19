@@ -21,7 +21,7 @@
 // (run inside Node, not workerd, where instantiate(bytes) is allowed).
 // 70 bytes including the `name` custom section.
 
-import { mintSession, Terminal, stripAnsi, BASE, tailLines } from '../_driver.mjs';
+import { mintSession, Terminal, stripAnsi, BASE, tailLines, hasOutputLine } from '../_driver.mjs';
 import { ADD_WASM_B64, writeWasm } from './_fixtures.mjs';
 
 const sid = await mintSession();
@@ -40,7 +40,7 @@ await writeWasm(t, 'add.wasm', ADD_WASM_B64);
 // inside facets returns 0 for fresh writes — see the multi-runtime
 // wave's notes on facet-vs-supervisor VFS split).
 const lsResult = await t.run('ls add.wasm', 5_000);
-const fixtureOk = /\badd\.wasm\b/.test(stripAnsi(lsResult.output));
+const fixtureOk = hasOutputLine(lsResult.output, 'add.wasm');
 
 // ── A: --version smoke ──
 const versionResult = await t.run('wasm-runner --version', 15_000);

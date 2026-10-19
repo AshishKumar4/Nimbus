@@ -4,6 +4,7 @@ import { hashSource } from '@nimbus-sh/fabric/vendor/serialize.js';
 import { FacetCallDeadlineError, loadHelperFacet } from './helper-facet.js';
 import { ROLLDOWN_FACET_ASSET_PATH, ROLLDOWN_FACET_BUILD_ID, ROLLDOWN_FACET_SHA256 } from '../rolldown-facet-artifact.generated.js';
 import { fetchStagedText, stagedAsset } from '../runtime/staged-source.js';
+import { untilAborted } from '@nimbus-sh/core/runtime/wave-contracts.js';
 import { NAPI_WASM_LOADER, NAPI_WASM_TRAMPOLINE, fetchStagedBindingAsset, stagedBinding, } from '../runtime/staged-bindings.js';
 import { OWN_ROLLDOWN_VERSION } from '../napi-wasm-artifacts.generated.js';
 // The build of the rolldown Nimbus itself depends on, whose JavaScript the facet bundles.
@@ -233,15 +234,25 @@ function abortFacet(ctx, facet) {
  * worker, anything else waits its turn. Counted on the facet from the start,
  * so a retirement while it waits does not abort the facet under it.
  */
-async function beginCall(ctx, facet) {
+async function beginCall(ctx, facet, signal, onWait) {
     facet.calls++;
-    const endFetch = await beginHelperFetch(ctx, generationId(facet.generation));
-    return () => {
-        endFetch();
+    const finished = () => {
         facet.calls--;
         if (facet.retired && facet.calls === 0)
             abortFacet(ctx, facet);
     };
+    try {
+        const endFetch = await beginHelperFetch(ctx, generationId(facet.generation), signal, onWait);
+        if (signal?.aborted) {
+            endFetch();
+            signal.throwIfAborted();
+        }
+        return () => { endFetch(); finished(); };
+    }
+    catch (error) {
+        finished();
+        throw error;
+    }
 }
 /**
  * Loads the Durable Object's build facet ahead of its first build: the staged
@@ -320,10 +331,12 @@ function retireGeneration(ctx, facet) {
 export class BuildFacetResetError extends Error {
     specifier;
     reason;
-    constructor(specifier, reason) {
-        super(`Nimbus's build facet was reset twice while pre-bundling ${specifier} (${reason})`);
+    attempts;
+    constructor(specifier, reason, attempts = 2) {
+        super(`Nimbus's build facet was reset${attempts === 1 ? '' : ' twice'} while pre-bundling ${specifier} (${reason})`);
         this.specifier = specifier;
         this.reason = reason;
+        this.attempts = attempts;
         this.name = 'BuildFacetResetError';
     }
 }
@@ -340,34 +353,56 @@ const messageOf = (error) => (error instanceof Error ? error.message : String(er
  * once more on a fresh facet, logged. A second throw is a
  * BuildFacetResetError naming the package and why; a facet that never
  * loaded is the load's own error, not retried.
+ *
+ * The isolate moves to a new generation when any Durable Object's binding
+ * outgrows its mark. A pre-bundle that has not begun then begins on the new
+ * one: nothing of it ran, so it is no reset. Its slice, if it holds one, is
+ * given back first, and taken again once the new facet is warm.
  */
-export function buildFacetPrebundler(ctx, env) {
-    /** One call: its answer, or what it threw (`reset`: the call itself, on a loaded facet). */
-    const once = async (spec) => {
+export async function buildFacetPrebundler(ctx, env, signal) {
+    signal?.throwIfAborted();
+    // The warmed generation, loaded before any slice is held; a task whose generation moved warms the next one, holding none.
+    const warmed = async (abort) => {
         const facet = sharedBuildFacet(ctx, env);
-        const endCall = await beginCall(ctx, facet);
+        facet.warmed ??= warm(ctx, facet);
+        await untilAborted(facet.warmed, abort);
+        return { facet, stub: await untilAborted(facet.stub, abort) };
+    };
+    let current = await warmed(signal);
+    return async (task) => {
+        while (current.facet.retired || current.facet.generation !== generation) {
+            task.transferred();
+            current = await warmed(task.signal);
+        }
+        const { facet, stub } = current;
+        const endCall = await beginCall(ctx, facet, task.signal, task.waiting);
         let result;
         try {
-            const stub = await facet.stub;
+            task.signal?.throwIfAborted();
+            let spec = task.take();
             try {
-                result = await stub.prebundle(spec);
+                let pending;
+                try {
+                    pending = stub.prebundle(spec);
+                }
+                finally {
+                    spec = undefined;
+                    task.transferred();
+                }
+                result = await pending;
             }
             catch (error) {
                 forgetBuildFacet(ctx, facet);
-                // A call past its deadline aborted the facet already; the same pre-bundle would wait as long again.
                 if (error instanceof FacetCallDeadlineError)
                     throw error;
                 if (!facet.crashed)
-                    throw Object.assign(new Error(messageOf(error)), { reset: true });
+                    throw new BuildFacetResetError(task.specifier, messageOf(error), 1);
                 const message = messageOf(error);
-                result = { specifier: spec.specifier, ok: false, esmCode: '', errorText: `Nimbus's bundler crashed: ${message}`, elapsed: 0, warnings: [], crashed: { stackExhausted: false, message } };
+                result = { specifier: task.specifier, ok: false, esmCode: '', errorText: `Nimbus's bundler crashed: ${message}`, elapsed: 0, warnings: [], crashed: { stackExhausted: false, message } };
             }
         }
-        catch (error) {
-            forgetBuildFacet(ctx, facet);
-            throw error;
-        }
         finally {
+            task.transferred();
             endCall();
         }
         const { crashed, retire, ...answer } = result;
@@ -375,29 +410,9 @@ export function buildFacetPrebundler(ctx, env) {
             retireGeneration(ctx, facet);
         if (crashed) {
             retireCrashed(ctx, facet);
-            console.warn(`[build-facet] rolldown's binding died pre-bundling ${spec.specifier} (${crashed.message})`);
+            console.warn(`[build-facet] rolldown's binding died pre-bundling ${task.specifier} (${crashed.message})`);
         }
         return answer;
-    };
-    const wasReset = (error) => Reflect.get(Object(error), 'reset') === true;
-    return async (spec) => {
-        try {
-            return await once(spec);
-        }
-        catch (error) {
-            if (!wasReset(error))
-                throw error;
-            console.warn(`[build-facet] the build facet was reset pre-bundling ${spec.specifier} (${messageOf(error)}); pre-bundling it once more on a fresh one`);
-        }
-        try {
-            return await once(spec);
-        }
-        catch (error) {
-            if (!wasReset(error))
-                throw error;
-            console.warn(`[build-facet] the build facet was reset again pre-bundling ${spec.specifier} (${messageOf(error)}); giving up`);
-            throw new BuildFacetResetError(spec.specifier, messageOf(error));
-        }
     };
 }
 /**

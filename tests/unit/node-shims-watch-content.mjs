@@ -13,7 +13,7 @@ const bundle = new Proxy({}, {
 });
 const ticks = [];
 const fs = new Function('__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname', 'setInterval', 'clearInterval',
-  '"use strict";' + nodeFacetSources('').residentStore + generateShimsCode() + '\nreturn builtins.fs;')(
+  '"use strict"; const __nimbusLaunchCaptures = globalThis.__nimbusTestLaunchCaptures;' + nodeFacetSources('').residentStore + generateShimsCode() + '\nreturn builtins.fs;')(
   bundle, {}, {}, null, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
   '/home/user', [], {}, '/home/user/main.js', '/home/user',
   (callback) => { ticks.push(callback); return ticks.length; }, () => {},

@@ -12,7 +12,7 @@
 // discover the installed version dynamically from `install --list` so
 // the probe stays version-agnostic and survives future swaps.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi, sleep } from '../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, sleep, hasOutputLine } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('pkg-manager/persist-across-restart');
@@ -42,7 +42,7 @@ const RUNTIME_DIR = `/usr/lib/nimbus/clang/${version}`;
 
 const { output: lsOutBefore } = await t.run(`ls ${RUNTIME_DIR}/bin/clang 2>&1`, 10_000);
 const lsStrippedBefore = stripAnsi(lsOutBefore);
-const beforePresent = lsStrippedBefore.includes(`/usr/lib/nimbus/clang/${version}/bin/clang`)
+const beforePresent = hasOutputLine(lsStrippedBefore, `${RUNTIME_DIR}/bin/clang`)
   && !/ENOENT|No such/i.test(lsStrippedBefore);
 a.check('bin/clang exists before restart', beforePresent,
   beforePresent ? '' : `output=${JSON.stringify(lsStrippedBefore.slice(-200))}`);
@@ -64,7 +64,7 @@ await t.waitForPrompt(30_000);
 {
   const { output } = await t.run(`ls ${RUNTIME_DIR}/bin/clang 2>&1`, 10_000);
   const stripped = stripAnsi(output);
-  const present = stripped.includes(`/usr/lib/nimbus/clang/${version}/bin/clang`)
+  const present = hasOutputLine(stripped, `${RUNTIME_DIR}/bin/clang`)
     && !/ENOENT|No such/i.test(stripped);
   a.check('bin/clang still exists after WS reconnect', present,
     present ? '' : `output=${JSON.stringify(stripped.slice(-200))}`);

@@ -13,7 +13,7 @@
 //   'https://github.com': terminal prompts disabled"; a pull, 1. Nothing is
 //   left where a clone failed.
 
-import { BASE, makeAsserter, mintSession, deleteSession, Terminal, stripAnsi } from './_driver.mjs';
+import { BASE, makeAsserter, mintSession, deleteSession, Terminal, stripAnsi, hasOutputLine } from './_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 
@@ -39,7 +39,7 @@ try {
   a.check('exits 128', unresolved.code === 128, unresolved.out.slice(-400));
   a.check('with git\'s "unable to access"', unresolved.out.includes("fatal: unable to access 'https://example.invalid/r.git/': "), unresolved.out.slice(-400));
   const left = await step('nothing left of it', 'test ! -e /home/user/r && echo GONE');
-  a.check('nothing is left where it failed', /GONE/.test(left.out), left.out.slice(-200));
+  a.check('nothing is left where it failed', hasOutputLine(left.out, 'GONE'), left.out.slice(-200));
 
   const missing = await step('clone of a GitHub repository that does not exist', 'git clone https://github.com/nimbus-probe-no-such-owner/no-such-repo.git');
   a.check('exits 128', missing.code === 128, missing.out.slice(-400));

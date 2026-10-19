@@ -17,7 +17,7 @@
 //
 // Black-box surfaces only. NO _diag.
 
-import { mintSession, Terminal, makeAsserter, BASE } from './_driver.mjs';
+import { mintSession, Terminal, makeAsserter, BASE, hasOutputLine } from './_driver.mjs';
 import {
   launchBrowser, openPage, previewServed,
   RUNTIME_ERROR_MARKERS, bodyTextHasErrorMarker,
@@ -37,7 +37,7 @@ await t.waitForPrompt(60_000);
 // Step 1: cd into the seeded app.
 {
   const r = await t.run('cd /home/user/example-app && pwd', 10_000);
-  a.check('cd /home/user/example-app succeeds', /\/home\/user\/example-app/.test(r.output), r.output.slice(-200));
+  a.check('cd /home/user/example-app succeeds', hasOutputLine(r.output, '/home/user/example-app'), r.output.slice(-200));
 }
 
 // Step 2: npm install.

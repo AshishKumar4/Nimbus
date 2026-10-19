@@ -146,6 +146,8 @@ export interface BuiltinExecutionContext {
   /** The state of the shell running the builtin: a child shell's own, after a fork. */
   shell: ShellState;
   getLastExitCode(): number;
+  /** The status a bare `exit` ends the shell with: the last command's, or in a trap's action the one before the trap (POSIX). */
+  exitStatus(): number;
   /** The process the builtin runs as: a kill's caller, a wait's waiter. */
   identity(): Pick<CommandIdentity, 'pid' | 'cred'>;
 }
@@ -344,6 +346,12 @@ type PositionalFrame = {
   args: string[];
 };
 
+/** How a script's lists are run (executeScriptWithIo). */
+type ScriptRun = {
+  readsLines?: boolean;
+  inline?: boolean;
+};
+
 
 /** A shell's state, and what every shell of the interactive one shares. */
 export interface InterpreterConfig extends ShellState {
@@ -377,6 +385,8 @@ export class Interpreter {
   private persistentInputHandles = new Map<number, OpenFile>();
   private errexitSuppressionDepth = 0;
   private exitTrapDepth = 0;
+  /** While the EXIT trap's action runs: the status the shell was ending with, a bare `exit`'s there. */
+  private trapEntryStatus: number | null = null;
   /** One frame per running function call, holding the bindings `local` shadowed. */
   private localFrames: Array<Map<string, SavedVariable>> = [];
   /** A child shell (fork): a discarded line ends it (finishChild). */
@@ -419,6 +429,19 @@ export class Interpreter {
     return child;
   }
 
+  /**
+   * `child`, forked for a substitution or a simple command (a pipeline's
+   * element, a job), runs inside the EXIT trap's action still: a bare `exit`
+   * there ends with the trap's entry status, and an EXIT trap set there does
+   * not run. bash keeps running_trap for these, and clears it in the
+   * subshell of a compound command, `( … )` among them.
+   */
+  private inTrapAction(child: Interpreter): Interpreter {
+    child.trapEntryStatus = this.trapEntryStatus;
+    child.exitTrapDepth = this.exitTrapDepth;
+    return child;
+  }
+
   getLastExitCode(): number {
     return this.lastExitCode;
   }
@@ -428,7 +451,7 @@ export class Interpreter {
   }
 
   async executeScript(script: ScriptNode, terminalStdin?: TerminalInputStream): Promise<number> {
-    return (await this.executeScriptWithIo(script, this.createTerminalIo(terminalStdin), true));
+    return (await this.executeScriptWithIo(script, this.createTerminalIo(terminalStdin), { readsLines: true }));
   }
 
   /**
@@ -436,8 +459,14 @@ export class Interpreter {
    * a sourced file's, a trap's; not an alias's text, which is part of the
    * line it is in), a line a nested call discards ends, and the next runs
    * with $? 1, in a shell that is no child: a child's ends (finishChild).
+   * Text run `inline` (eval's, a sourced file's, an alias's) leaves an `exit`,
+   * and an end by `set -e` or a fatal error, to the shell that runs it.
    */
-  private async executeScriptWithIo(script: ScriptNode, io: ExecutionIo, readsLines = false): Promise<number> {
+  private async executeScriptWithIo(
+    script: ScriptNode,
+    io: ExecutionIo,
+    { readsLines = false, inline = false }: ScriptRun = {},
+  ): Promise<number> {
     let exitCode = 0;
     try {
       for (let i = 0; i < script.lists.length; i++) {
@@ -452,9 +481,7 @@ export class Interpreter {
         }
       }
     } catch (error) {
-      if (error instanceof ErrexitSignal) {
-        exitCode = error.exitCode;
-      } else if (error instanceof ExitSignal) {
+      if ((error instanceof ErrexitSignal || error instanceof ExitSignal) && !inline) {
         exitCode = error.exitCode;
       } else {
         throw error;
@@ -506,7 +533,7 @@ export class Interpreter {
     try {
       const tokens = lex(input);
       const script = parse(tokens);
-      const exitCode = await this.executeScriptWithIo(script, io, true);
+      const exitCode = await this.executeScriptWithIo(script, io, { readsLines: true });
       return await this.runExitTrap(exitCode, io, options?.runExitTrap === true);
     } catch (e) {
       if (e instanceof BreakSignal || e instanceof ContinueSignal || e instanceof ReturnSignal) {
@@ -552,7 +579,12 @@ export class Interpreter {
 
       // A job is a process of its own, as a fork makes one: its commands run
       // as it, on its own thread of work, until a kill of it stops them.
-      const child = this.fork();
+      // A job that is one pipeline goes on in the trap's action, as its simple elements do (a pipeline of
+      // several decides per element); an and-or list or a compound command does not.
+      const [only] = list.entries;
+      const commands = list.entries.length === 1 ? only?.pipeline.commands ?? [] : [];
+      const inAction = commands.length > 1 || commands[0]?.type === 'simple_command';
+      const child = inAction ? this.inTrapAction(this.fork()) : this.fork();
       const job = this.config.jobTable.start(
         { command: this.getListCommandText(list), cwd: this.config.getCwd(), parent },
         async ({ identity, signal }) => {
@@ -690,7 +722,7 @@ export class Interpreter {
         // Each element is a thread of its own, which the pipeline's waits on.
         cmdIo.workThread = io.workThread?.fork();
         // Each element runs in a child shell (bash forks every one).
-        const element = this.fork();
+        const element = cmd.type === 'simple_command' ? this.inTrapAction(this.fork()) : this.fork();
         const cmdPromise = (async (): Promise<number> => {
           try {
             return await element.finishChild(async () => (await element.executeCommand(cmd, cmdIo)), cmdIo);
@@ -1008,7 +1040,7 @@ export class Interpreter {
         aliasesExpanding.add(name);
         const script = parse(lex(expandedLine));
         markAliasText(script.lists, aliasesExpanding);
-        return (await this.executeScriptWithIo(script, io));
+        return (await this.executeScriptWithIo(script, io, { inline: true }));
       }
     }
 
@@ -1050,6 +1082,8 @@ export class Interpreter {
 
     let exitCode: number;
     let writeFailed = false;
+    // eval's and `.`'s status is their text's once it runs: its failure is not theirs.
+    let ranText = false;
 
     try {
       // Check for break/continue/return builtins
@@ -1103,12 +1137,16 @@ export class Interpreter {
                 isFdTerminal: (fd) => this.isFdTerminal(fds, fd),
                 getPositionals: () => this.readPositionals(builtinIo),
                 setPositionals: (nextArgs) => this.writePositionals(builtinIo, nextArgs),
-                executeInline: async (input, options) => (await this.executeInline(input, builtinIo, options)),
+                executeInline: async (input, options) => {
+                  ranText = true;
+                  return (await this.executeInline(input, builtinIo, options));
+                },
             declareLocal: (name) => this.declareLocal(name),
             unsetFunction: (name) => this.functions.delete(name),
             shell: this.config,
             interactive: io.interactive,
             getLastExitCode: () => this.lastExitCode,
+            exitStatus: () => this.trapEntryStatus ?? this.lastExitCode,
             identity: () => {
               if (!io.commandIdentity) throw new Error('shell command identity is unavailable');
               return io.commandIdentity;
@@ -1190,6 +1228,7 @@ export class Interpreter {
     const fatalSpecialBuiltin = io.scriptMode === true
       && exitCode !== 0
       && !viaCommand
+      && !ranText
       && isFatalSpecialBuiltin(name);
     this.lastExitCode = exitCode;
     if (fatalSpecialBuiltin) throw new ErrexitSignal(exitCode);
@@ -1376,7 +1415,7 @@ export class Interpreter {
     captureIo.stdout = capture.stream;
     captureIo.positionals = this.forkPositionals(io);
     // $( ) runs in a child shell.
-    const child = this.fork();
+    const child = this.inTrapAction(this.fork());
     const exitCode = await child.finishChild(async () => (await child.executeLineWithIo(input, captureIo)), captureIo);
     capture.end();
 
@@ -1392,13 +1431,13 @@ export class Interpreter {
     if (options.positionals !== undefined) {
       inlineIo.positionals = { args: [...options.positionals] };
     }
-    return (await this.executeLineWithIo(input, inlineIo, true));
+    return (await this.executeLineWithIo(input, inlineIo, { readsLines: true, inline: true }));
   }
 
-  private async executeLineWithIo(input: string, io: ExecutionIo, readsLines = false): Promise<number> {
+  private async executeLineWithIo(input: string, io: ExecutionIo, run: ScriptRun = {}): Promise<number> {
     const tokens = lex(input);
     const script = parse(tokens);
-    return (await this.executeScriptWithIo(script, io, readsLines));
+    return (await this.executeScriptWithIo(script, io, run));
   }
 
   /**
@@ -1416,8 +1455,8 @@ export class Interpreter {
       try {
         exitCode = await run();
       } catch (e) {
-        // An `exit` inside it ends only it; so does a call past the nesting bound.
-        if (!(e instanceof ExitSignal) && !(e instanceof FunctionNestingSignal)) throw e;
+        // An `exit` inside it ends only it; so do `set -e` and a fatal error, and a call past the nesting bound.
+        if (!(e instanceof ExitSignal) && !(e instanceof ErrexitSignal) && !(e instanceof FunctionNestingSignal)) throw e;
         exitCode = e.exitCode;
       }
       return (await this.runExitTrap(exitCode, io, true));
@@ -1432,16 +1471,21 @@ export class Interpreter {
     if (action === undefined) return exitCode;
 
     const savedLastExitCode = this.lastExitCode;
+    const savedTrapEntryStatus = this.trapEntryStatus;
     this.lastExitCode = exitCode;
+    this.trapEntryStatus = exitCode;
     this.exitTrapDepth++;
     try {
-      await this.executeLineWithIo(action, io, true);
+      // Run as the shell's own text: an `exit` in it, or an end by `set -e`, is the shell's status.
+      await this.executeLineWithIo(action, io, { readsLines: true, inline: true });
     } catch (e) {
+      if (e instanceof ExitSignal || e instanceof ErrexitSignal) return e.exitCode;
       // A call past the nesting bound ends the action, a child shell's too; the status stays (bash 5.2).
       if (!(e instanceof FunctionNestingSignal)) throw e;
     } finally {
       this.exitTrapDepth--;
       this.lastExitCode = savedLastExitCode;
+      this.trapEntryStatus = savedTrapEntryStatus;
     }
     return exitCode;
   }

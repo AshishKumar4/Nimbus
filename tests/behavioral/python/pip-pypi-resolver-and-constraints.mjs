@@ -2,7 +2,7 @@
 // python/pip-pypi-resolver-and-constraints — pip resolves PyPI pure wheels
 // with dependency metadata, constraints, markers, and persistent imports.
 
-import { heredocCommand, makeAsserter, mintSession, stripAnsi, Terminal } from '../_driver.mjs';
+import { heredocCommand, makeAsserter, mintSession, stripAnsi, Terminal, termBody, outputLines } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 
@@ -41,7 +41,7 @@ await t.run(heredocCommand('constraints.txt', 'packaging==24.2\n'), 10_000);
 
 {
   const { output } = await t.run('pip install requests', 360_000);
-  const clean = stripAnsi(output);
+  const clean = termBody(output);
   a.check('pip resolves transitive pure-wheel dependencies from PyPI',
     /Successfully installed/.test(clean)
       && /requests/.test(clean)
@@ -55,7 +55,7 @@ await t.run(heredocCommand('constraints.txt', 'packaging==24.2\n'), 10_000);
   const { output } = await t.run('python -c "import certifi, charset_normalizer, idna, requests, urllib3; print(\'REQUESTS_OK=\' + requests.__version__)"', 120_000);
   const clean = stripAnsi(output);
   a.check('requests and transitive dependencies import later',
-    /REQUESTS_OK=/.test(clean),
+    outputLines(clean).some((line) => line.startsWith('REQUESTS_OK=')),
     JSON.stringify(clean.slice(-1200)));
 }
 

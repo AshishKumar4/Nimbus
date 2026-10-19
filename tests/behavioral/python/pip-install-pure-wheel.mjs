@@ -2,7 +2,7 @@
 // python/pip-install-pure-wheel — pip installs a Pyodide-compatible pure
 // Python wheel and the installed package imports in a later Python command.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi } from '../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, hasOutputLine } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const label = 'python/pip-install-pure-wheel';
@@ -29,7 +29,7 @@ await t.run('nimbus install python', 180_000);
   const { output } = await t.run('test -f /home/user/.nimbus-python/site-packages/packaging/__init__.py && echo PERSISTED', 20_000);
   const stripped = stripAnsi(output);
   a.check('installed wheel files persist in the Nimbus VFS',
-    /PERSISTED/.test(stripped),
+    hasOutputLine(stripped, 'PERSISTED'),
     JSON.stringify(stripped.slice(-500)));
 }
 

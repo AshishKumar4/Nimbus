@@ -44,7 +44,8 @@ const hear = (sink) => (msg) => {
 };
 const bundlePool = {
   acquire: async () => ({
-    prebundle: async (spec) => {
+    prebundle: async (task) => {
+      const spec = task.prepare();
       await held;
       return { specifier: spec.specifier, ok: false, esmCode: '', errorText: 'held', elapsed: 0, warnings: [] };
     },

@@ -33,38 +33,15 @@ import type { Coherence } from './coherence.js';
 import { namespaceAllows, type ModeMeta, type ResidentCred } from './permissions.js';
 import type { RuntimeVfsStat, VfsInvalidatedPath, VfsListEntry } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { NS_DIR, NS_FILE, NS_LINK, type NsRow, type ResidentTables } from './tables.js';
-import { rootClampedSegments } from '@nimbus-sh/platform/lexical-path.js';
+import { SafeMap, SafeSet } from '@nimbus-sh/core/_shared/primordials.js';
+import { nsKey, nsParent, nsRowAt, nsSplit, walkNamespace, type Lookup, type OwnView } from './namespace-lookup.js';
+
+export { nsKey, nsRowAt, nsSplit, type Lookup, type OwnView, type OwnWord } from './namespace-lookup.js';
 
 /** What a row is made from: a stat the session reported, or one the process's own write stands in with until it does. */
 export type NsStat = Pick<RuntimeVfsStat, 'type' | 'size' | 'mode' | 'uid' | 'gid' | 'atime' | 'mtime' | 'ctime' | 'ino'>
   & Partial<Pick<RuntimeVfsStat, 'dev' | 'nlink' | 'revision'>>;
 
-/** Symlink hops before a resolution is ELOOP, as Linux's MAXSYMLINKS. */
-const NS_MAX_HOPS = 40;
-
-/**
- * What the process's own effects say of a name, ahead of the table (the
- * shims' overlay): it removed it (`absent`); it made a symlink there
- * (`target`); it renamed the table's entry at `from` to it (`from` undefined:
- * a moved link that resolves to nothing; `link`: the moved entry is a symlink,
- * whose own row is at that key); or it made a directory or file there
- * (`made`; `hide`: rows the table holds beneath it are not this directory's).
- */
-export type OwnWord =
-  | { readonly absent: true }
-  | { readonly target: string }
-  | { readonly from: string | undefined; readonly link?: string }
-  | { readonly made: 'directory' | 'file'; readonly hide?: boolean };
-/** The process's word on a name (by the name the walk reached), or undefined. */
-export type OwnView = (k: string) => OwnWord | undefined;
-
-/**
- * Where a walk lands: the name reached (the process's own naming, links
- * followed), where the table holds it (`table`, null where no row of the
- * table's can be: under a directory the process made, or at its own entry),
- * the table's row there, and the process's own word on the name.
- */
-export interface Lookup { path: string; table: string | null; row: NsRow | undefined; own?: OwnWord }
 export type Resolved = { path: string; row: NsRow } | 'ELOOP';
 
 export interface Namespace {
@@ -123,18 +100,8 @@ export interface Namespace {
   forgetListed(dir: string): void;
 }
 
-export function nsSplit(k: string): [string, string] {
-  const i = k.lastIndexOf('/');
-  return i < 0 ? ['', k] : [k.slice(0, i), k.slice(i + 1)];
-}
-
 export function nsKindCode(type: unknown): number {
   return type === 'directory' ? NS_DIR : type === 'symlink' ? NS_LINK : NS_FILE;
-}
-
-/** A path as the namespace keys it: no leading '/'. */
-export function nsKey(path: unknown): string {
-  return String(path).replace(/^\/+/, '');
 }
 
 /**
@@ -172,34 +139,20 @@ export function prefixEnd(prefix: string): string | null {
   return null;
 }
 
-/** The row at exactly `k` (no symlink resolution), or undefined. */
-export function nsRowAt(t: ResidentTables, k: string): NsRow | undefined {
-  if (k === '') {
-    return { kind: NS_DIR, size: 0, mode: 0o40755, uid: 0, gid: 0, atime: 0, mtime: 0, ctime: 0, ino: 1, rev: 0, target: null, dev: 0, nlink: 1 };
-  }
-  const [parent, name] = nsSplit(k);
-  return t.nsGet(parent, name);
-}
-
-function joinTarget(linkPath: string, target: unknown): string {
-  const text = String(target);
-  return rootClampedSegments(text, text.startsWith('/') ? [] : nsSplit(linkPath)[0].split('/').filter(Boolean)).join('/');
-}
-
 export function createNamespace(coherence: Coherence, admission: Admission): Namespace {
   // The clock, taken as the store is made, before a run that can stop tapes
   // Date (stop-replay.ts): an own file's time is stamped when its write is
   // answered, which a run and its run again do at other moments.
   const realNow = Date.now;
   /** Paths of every symlink in the table: resolution walks only past these. */
-  let links = new Set<string>();
+  let links = new SafeSet<string>();
   /**
    * Directories on a mount whose entries the listing did not name (the launch
    * did not name them, or they were past its bound), each to the mount point
    * it is on. A name at or under one is not known absent, only not listed.
    * Held in the row's `target`, which a directory has no other use for.
    */
-  let unlisted = new Map<string, string>();
+  let unlisted = new SafeMap<string, string>();
   /** The credential names are judged traversable for. */
   let cred: ResidentCred | null = null;
   /** The persisted 'ns' flag, mirrored in heap because every stat asks it. */
@@ -209,7 +162,7 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
   /** Whether this store lists on demand (beginLazy) rather than enumerating. */
   let lazy = false;
   /** Directories (keys) every entry of which is a row: below them a missing row is an absent name. */
-  const listed = new Set<string>();
+  const listed = new SafeSet<string>();
 
   const ready = (): boolean => ok && coherence.serving();
 
@@ -234,7 +187,7 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
   const unlistedOver = (k: string, self: boolean): string | null => {
     if (unlisted.size === 0) return null;
     const t = coherence.require();
-    for (let at = self ? k : nsSplit(k)[0]; at !== ''; at = nsSplit(at)[0]) {
+    for (let at = self ? k : nsParent(k); at !== ''; at = nsParent(at)) {
       const mount = unlisted.get(at);
       if (mount !== undefined) return mount;
       const row = nsRowAt(t, at);
@@ -290,8 +243,8 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
     if (lazy) forgetListed(k);
     if (k === '') {
       t.nsClear();
-      links = new Set();
-      unlisted = new Map();
+      links = new SafeSet();
+      unlisted = new SafeMap();
       return;
     }
     const prefix = k + '/';
@@ -326,57 +279,7 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
   function lookup(k: string, followLeaf: boolean, own?: OwnView): Lookup | 'ELOOP';
   function lookup(k: string, followLeaf: boolean, own: OwnView | undefined, visit: (name: string) => boolean): Lookup | 'ELOOP' | 'EACCES';
   function lookup(k: string, followLeaf: boolean, own?: OwnView, visit?: (name: string) => boolean): Lookup | 'ELOOP' | 'EACCES' {
-    const t = coherence.require();
-    if (own === undefined && links.size === 0 && visit === undefined) return { path: k, table: k, row: nsRowAt(t, k) };
-    let path = k;
-    walk: for (let hops = 0; hops <= NS_MAX_HOPS; hops++) {
-      const segs = path === '' ? [] : path.split('/');
-      let table: string | null = '';
-      for (let i = 1; i <= segs.length; i++) {
-        const prefix = segs.slice(0, i).join('/');
-        if (visit !== undefined && !visit(prefix)) return 'EACCES';
-        const leaf = i === segs.length;
-        const step: string | null = table === null ? null : table ? table + '/' + segs[i - 1] : segs[i - 1];
-        const word = own?.(prefix);
-        let target: unknown;
-        if (word !== undefined && 'absent' in word) {
-          return { path, table: null, row: undefined, own: word };
-        } else if (word !== undefined && 'target' in word) {
-          if (leaf && !followLeaf) return { path, table: null, row: undefined, own: word };
-          target = word.target;
-        } else if (word !== undefined && 'from' in word) {
-          if (word.link !== undefined && leaf && !followLeaf) {
-            const at = nsRowAt(t, word.link) !== undefined ? word.link : prefix;
-            return { path, table: at, row: nsRowAt(t, at), own: word };
-          }
-          if (word.from === undefined) return { path, table: null, row: undefined, own: { absent: true } };
-          if (word.link !== undefined) target = '/' + word.from;
-          else {
-            table = word.from;
-            if (leaf) return { path, table, row: nsRowAt(t, table), own: word };
-            continue;
-          }
-        } else if (word !== undefined) {
-          // Its own entry is where the table will hold it.
-          table = word.hide ? null : prefix;
-          if (leaf) return { path, table: prefix, row: nsRowAt(t, prefix), own: word };
-          continue;
-        } else {
-          if (step === null) return { path, table: null, row: undefined };
-          table = step;
-          if (!links.has(step) || (leaf && !followLeaf)) continue;
-          const row = nsRowAt(t, step);
-          if (!row || row.kind !== NS_LINK) continue;
-          target = row.target;
-        }
-        const rest = segs.slice(i).join('/');
-        const joined = joinTarget(prefix, target);
-        path = rest ? (joined ? joined + '/' + rest : rest) : joined;
-        continue walk;
-      }
-      return { path, table, row: table === null ? undefined : nsRowAt(t, table) };
-    }
-    return 'ELOOP';
+    return walkNamespace(coherence.require(), links, k, followLeaf, own, visit);
   }
 
   /** Whether the credential may search directory `row` (POSIX x). */
@@ -390,12 +293,12 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
 
   return {
     bind(t) {
-      links = new Set();
+      links = new SafeSet();
       for (const row of t.nsOfKind(NS_LINK)) {
         const parent = String(row.parent);
         links.add(parent ? parent + '/' + String(row.name) : String(row.name));
       }
-      unlisted = new Map();
+      unlisted = new SafeMap();
       for (const row of t.nsUnlisted()) {
         const parent = String(row.parent);
         unlisted.set(parent ? parent + '/' + String(row.name) : String(row.name), String(row.target));
@@ -583,18 +486,18 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
       tryPut(t, k, stat, written ?? cursor.rev, target);
     },
     clear() {
-      links = new Set();
-      unlisted = new Map();
+      links = new SafeSet();
+      unlisted = new SafeMap();
       ok = false;
     },
     get lazy() { return lazy; },
     beginLazy() {
       lazy = true;
       listed.clear();
-      links = new Set();
-      unlisted = new Map();
+      links = new SafeSet();
+      unlisted = new SafeMap();
     },
-    listedAt(k) { return listed.has(nsSplit(k)[0]); },
+    listedAt(k) { return listed.has(nsParent(k)); },
     isListed(dir) { return listed.has(dir); },
     markListed(dir) { listed.add(dir); },
     /** Forget that `dir` and every directory beneath it are listed: a change no delta itemises may have moved their names. */

@@ -35,7 +35,8 @@ try {
   // moving back without a press resizes nothing, and the next press starts a drag.
   // The app preview shows the frame; the welcome Markdown preview hides it.
   await page.waitForSelector('#previewTabs .preview-tab.markdown', { timeout: 30_000 });
-  await page.click('#previewTabs .preview-tab:not(.markdown)');
+  // The strip re-renders as tabs come and go: a locator finds the tab again rather than click a replaced one.
+  await page.locator('#previewTabs .preview-tab:not(.markdown)').click();
   const frame = await (await page.waitForSelector('#preview-frame', { visible: true, timeout: 15_000 })).boundingBox();
   const again = await grabHandle(page, '#treeResizeHandle');
   await page.evaluate(() => {

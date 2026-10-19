@@ -13,7 +13,7 @@
 // asserted on every run by clang-state/new/concurrent-compiles-one-session,
 // whose compiles share one isolate by construction.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi, heredocCommand } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, heredocCommand, hasOutputLine } from '../../_driver.mjs';
 import { atOnce, isolateOf } from '../../_at-once.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -67,7 +67,7 @@ if (pair) {
     } catch (error) {
       answered = String(error?.message ?? error);
     }
-    a.check('the co-tenant\'s shell still answers', answered.includes('NEIGHBOUR_ALIVE'), JSON.stringify(answered.slice(-300)));
+    a.check('the co-tenant\'s shell still answers', hasOutputLine(answered, 'NEIGHBOUR_ALIVE'), JSON.stringify(answered.slice(-300)));
     const after = await isolateOf(neighbour.sid).catch((error) => `unreadable: ${error.message}`);
     a.check('the co-tenant is still in the isolate it started in (no reset)', after === compiler.isolate, `before ${compiler.isolate}, after ${after}`);
   }

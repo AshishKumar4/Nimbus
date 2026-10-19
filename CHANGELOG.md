@@ -5,9 +5,59 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+
+- Fixed: a launch could wait forever in "prepare" (a vite dev server sat 5
+  minutes) after a session that shared its isolate was deleted while it
+  waited for the isolate's transient budget. The budget had handed that
+  session its share, which workerd never let it receive, so the share was
+  held for good. A waiter now takes its share itself when its turn comes;
+  a turn not taken within a second passes to the next waiter.
+- Fixed: a dev server relaunched after a change could miss its start
+  (remix's took 198 s against a 180 s bound). Its module map was dropped
+  and made again three times, each time a file read of a running program
+  waited for credit as the map was made, though a worker was free for the
+  launch. A launch's map is now given up for running work only while the
+  launch waits for a worker, and a pre-bundle's prepared files only while
+  the pre-bundle waits. And a map that needs a little more than its
+  closure was sized for takes the rest when it is free, instead of
+  gathering its whole closure again.
+- Fixed: a Vite preview could crash with "the package changed while its
+  prebundle was being prepared" though nothing in the package changed.
+  Every request for a barrel package (date-fns, say) wrote its synthetic
+  entry file again, and a request still waiting saw that rewrite as a
+  change. The entry is now named by its content and written once, so
+  requests for the same imports share it and others never touch it.
+- Fixed: a Vite preview could crash with "Nimbus's build facet was reset
+  twice while pre-bundling …" when another session on the same isolate
+  built something large. The sessions share the bundler, which is
+  replaced once it grows past its mark, and every other session's waiting
+  pre-bundles failed then and were tried once more. A pre-bundle that has
+  not begun now begins on the new bundler.
+- Fixed: a program that writes files before it listens as a server, as `react-router dev` (Vite) does from two tasks at once, is no longer ended when its run again writes them in another order. The run again starts from what the first run started from: every file and directory the first run made, changed or removed is put back first, and the run again's changes are its own. If another process changed one of those files meanwhile, or the run changed more than 4096, nothing is put back. The program is run again from its start instead, prints again what it printed, and says why in one line. A program that waited for a marker it wrote itself now serves on its run again instead of ending. Before, the run again had to make the same changes in the same order as the first run, so these programs were ended with "it changed the filesystem otherwise than the run before it".
+- Fixed: a process that ends now says why on its stderr. A run again that stops after it has booted (it did not retrace its run, say) ends with status 1 and its reason. Before, its facet was released while the session showed it running, with no exit and no output. A process whose host the platform reset says so too.
 - Fixed: shell function nesting is bounded. A call past the bound is refused with `f: maximum function nesting level exceeded (N)`, and the rest of its line is discarded, as bash 5.2 does with FUNCNEST set. The shell goes on with the next line, its own or a sourced file's, with `$?` 1; a subshell, command substitution, pipeline element or background job ends with 1; a trap's action ends. The bound is FUNCNEST when it is a number above 0, otherwise 1000, and never more than 1000. Before, a function that called itself ran until the session's heap was gone (bash with no FUNCNEST segfaults).
+- Fixed: in the shell, an `exit` in the EXIT trap's action is the shell's status, as in bash: `trap 'exit 5' EXIT; exit 1` ends with 5. So is an end by `set -e` there. A bare `exit` there ends with the status the shell was ending with. Before, the action's `exit` ended only the action, and the status was always the one before the trap.
+- Changed: a paired CPU bench names the engine it is graded on (`engine`, `node` for the guest's code, which workerd runs on V8) and the engines its bench runs on. `--engine bun|node` runs it on another of those, as context: the receipt names the engine, and only a run on the graded engine is graded. An engine its bench cannot run on is refused before anything is sent to armada.
+- Changed: a paired perf probe red on one set of Previews is run again on a fresh set of four, and is red only when it is red on both. Each candidate Preview is graded against the mean of the two baseline Previews: against each one alone, a real +46% cold start was found on only half the sets. A paired CPU bench's slower kind is measured again on a second set of runs, and is slower only when both find it slower: 95% per kind finds about one slower kind in two runs of a dozen that are not.
+- Fixed: a program's launch could wait minutes (a `vite build` sat 5
+  minutes before it ran) while a dependency pre-bundle in another session
+  of the same isolate waited for a compiler. The pre-bundle reserved 28 MiB
+  of the isolate's transient budget before it read anything and kept it
+  while it waited. It now reserves what its files take, once a compiler is
+  ready for them, and gives it back as the compiler takes them.
+- Changed: a launch that waits 10 seconds at one stage logs who holds the
+  isolate's transient budget and who waits for it, and so does the
+  session's launch diagnosis. Dev servers' launches log it too.
+- Added: the shell's `eval`. It runs its arguments, joined by spaces, in the current shell, as bash does: assignments, `cd`, functions and aliases persist; `return`, `break` and `exit` act in the calling shell; the status is the last command's, 0 for nothing. A leading `--` ends its options and any other option is refused with status 2. In a script, a failing status from the text is recoverable (`eval false || echo recovered`), and so is a sourced file's: `. ./f.sh` whose last command failed no longer ends the script. Before, `eval` was "command not found".
+- Changed: the paired perf probes measure the candidate on two Previews
+  beside the baseline's two, and grade it slower only when each of its
+  Previews is slower than the mean of the baseline's two. One Preview can run
+  slower than another of the same code for a whole run (ruby launch had
+  one of three 300-500 ms behind in 9 of 14 runs), and with one candidate
+  Preview that read as a regression whenever it was the candidate's.
 - Fixed: a hosted node program that replaces a built-in its module resolution calls (`String.prototype.startsWith`, `Array.prototype.push`, `JSON.parse`, `Map.prototype.get`, `%GeneratorPrototype%.next` and the like) still resolves `import`, `import()`, `import.meta.resolve`, `require.resolve` and `require` specifiers, and gets Node's errors for them, as Node's loader does on its primordials. A package.json's fields are its own: an `Object.prototype.main` or `.exports` a program adds no longer changes how a package resolves. A URL's members are read as Node reads them, so a replaced `URL.prototype.pathname` breaks resolution as it breaks Node's. Loading itself is the remaining work (design-guest-loader-primordials, heads 3 and 4).
 - Fixed: in the shell, a command word read from an alias's own text is not expanded as that alias again, as in bash. `alias ls='ls -l'`, `alias q=q`, two aliases that name each other, and an alias whose text runs its own name in a list, group, subshell or a function it defines now run that name as a command. A command substitution or a function defined elsewhere still expands it, as bash does. Before, an alias that named itself expanded without end until the session ran out of memory.
+- Changed: a probe run's baseline checkouts and the releases it uploads to its throwaways live in one directory beside the checkout that runs it, and go when the run ends. A run that was killed left them behind (each baseline checkout about 1 GB, and 600 releases had piled up); the next run now deletes them, and nothing of a run still going.
 - Fixed: a program that writes files before it listens, as Vite's config
   load does, serves. When its listen makes it a server, Nimbus runs it again
   and checks that run against the first. That check failed for two reasons.
@@ -17,7 +67,6 @@ published independently in the `@nimbus-sh` npm scope.
   readings meant for the program, so its `Date.now()` named a file
   otherwise. Now the found directory counts as made again, and Nimbus reads
   the clock itself. `react-router dev` gets past its relaunch.
-
 - Fixed: Tailwind CSS v4 works again. Its scanner, `@tailwindcss/oxide`
   4.3.3, runs from Nimbus's staged threadless build, so `@tailwindcss/vite`,
   `@tailwindcss/postcss` and `@tailwindcss/cli` install and serve. A Vite
@@ -82,7 +131,6 @@ published independently in the `@nimbus-sh` npm scope.
   timeout of every command, as documented; a `runCommand` without its own
   `timeout` used to run with no deadline. `getInfo` reports that timeout,
   or 0 when none is configured, in place of a fixed 300000.
-
 - Fixed: with two versions of a gem installed, `require` now picks the
   version host Ruby does. A bare `require "a"` loads the highest version.
   A gem whose dependency requires `a < 2` gets a 1.x. Requiring both
@@ -93,6 +141,7 @@ published independently in the `@nimbus-sh` npm scope.
   the load path as before, at no added cost. A gem's executable runs the
   version RubyGems activates, as host Ruby's binstub does, including the
   wrappers an earlier Nimbus wrote into a persisted home.
+
 ## 2026-10-17: platform 0.12.0, core 0.23.0, fabric 0.18.0, worker 0.21.0, sdk 0.17.0, cli 0.2.8, loom 0.3.1, react 0.3.3, create-nimbus-app 0.2.4, runtime-bash 5.2.37-7, runtime-cpython 3.13.14-3, runtime-git 2.53.0-1 (config 0.3.1 unchanged)
 
 The 2026-10-14 and 2026-10-15 versions reached production but were never published to npm; these carry their changes too. The runtimes need core 0.23.0: it is the first core that registers bash-runner@6, cpython-runner@3 and git-runner@2.

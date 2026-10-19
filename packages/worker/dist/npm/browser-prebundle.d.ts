@@ -16,9 +16,11 @@
  */
 import { type EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { SupervisorAllocationOwner } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import type { BundlePoolProvider } from '../facets/prebundle-pool.js';
 import { type ProjectImports, type SourceParser } from '../runtime/barrel-synthesizer.js';
 import type { NpmCache } from './cache.js';
+import { type PrebundleReadFs } from './pre-bundle-facet.js';
 /** Who builds, where, and what it may read. */
 export interface PrebundleContext {
     /** The principal's view: what it may read is what a bundle may be built from and served to it. */
@@ -35,6 +37,10 @@ export interface PrebundleContext {
      * builds only in the facet.
      */
     serviceFallback: boolean;
+    signal?: AbortSignal;
+    owner?: Omit<SupervisorAllocationOwner, 'owner' | 'attribution'>;
+    /** On-demand requests of an already running server use running-work credit. */
+    running?: boolean;
 }
 /** A barrel package imported whole: bundled from an entry of the names the project imports. */
 export interface BarrelInput {
@@ -116,8 +122,7 @@ export type PrebundleOutcome<T> =
 /**
  * Build `specifier`'s bundle for a request with `barrel`, store it when the
  * manifests it was built from are still current, and give it to `serve`
- * while the slice's allocation is still held (the response is made beside
- * nothing else that claimed the same headroom).
+ * after its input slice has been handed to the facet and dropped here.
  */
 export declare function buildPrebundle<T>(ctx: PrebundleContext, specifier: string, barrel: BarrelInput | null, serve: (esmCode: string) => T): Promise<PrebundleOutcome<T>>;
 /** Packages that run in Vite's server, never in a browser: the installer does not warm them. */
@@ -133,5 +138,5 @@ export declare function isServerToolPackage(pkgName: string): boolean;
  *   4. the package's index.
  * Paths are normalized: a nested package.json may point out of its directory.
  */
-export declare function resolvePrebundleEntry(vfs: CredentialedVfs, root: string, specifier: string): string | null;
+export declare function resolvePrebundleEntry(vfs: PrebundleReadFs, root: string, specifier: string): string | null;
 //# sourceMappingURL=browser-prebundle.d.ts.map

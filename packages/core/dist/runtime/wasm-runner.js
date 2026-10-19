@@ -170,7 +170,7 @@ export function makeWasmRunner(deps) {
                     // build line rather than a trap deep inside libc.
                     threadsInfo: inspectWasmThreads(bytes),
                 };
-            });
+            }, { owner: `wasm-runner inspect '${opts.filename}'`, pid: opts.invokerPid });
         }
         catch (e) {
             // Killed while it waited its turn: it ends as an interrupted run does.

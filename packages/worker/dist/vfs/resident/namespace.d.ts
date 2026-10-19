@@ -31,41 +31,10 @@ import type { Coherence } from './coherence.js';
 import { type ModeMeta, type ResidentCred } from './permissions.js';
 import type { RuntimeVfsStat, VfsInvalidatedPath, VfsListEntry } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type NsRow, type ResidentTables } from './tables.js';
+import { type Lookup, type OwnView } from './namespace-lookup.js';
+export { nsKey, nsRowAt, nsSplit, type Lookup, type OwnView, type OwnWord } from './namespace-lookup.js';
 /** What a row is made from: a stat the session reported, or one the process's own write stands in with until it does. */
 export type NsStat = Pick<RuntimeVfsStat, 'type' | 'size' | 'mode' | 'uid' | 'gid' | 'atime' | 'mtime' | 'ctime' | 'ino'> & Partial<Pick<RuntimeVfsStat, 'dev' | 'nlink' | 'revision'>>;
-/**
- * What the process's own effects say of a name, ahead of the table (the
- * shims' overlay): it removed it (`absent`); it made a symlink there
- * (`target`); it renamed the table's entry at `from` to it (`from` undefined:
- * a moved link that resolves to nothing; `link`: the moved entry is a symlink,
- * whose own row is at that key); or it made a directory or file there
- * (`made`; `hide`: rows the table holds beneath it are not this directory's).
- */
-export type OwnWord = {
-    readonly absent: true;
-} | {
-    readonly target: string;
-} | {
-    readonly from: string | undefined;
-    readonly link?: string;
-} | {
-    readonly made: 'directory' | 'file';
-    readonly hide?: boolean;
-};
-/** The process's word on a name (by the name the walk reached), or undefined. */
-export type OwnView = (k: string) => OwnWord | undefined;
-/**
- * Where a walk lands: the name reached (the process's own naming, links
- * followed), where the table holds it (`table`, null where no row of the
- * table's can be: under a directory the process made, or at its own entry),
- * the table's row there, and the process's own word on the name.
- */
-export interface Lookup {
-    path: string;
-    table: string | null;
-    row: NsRow | undefined;
-    own?: OwnWord;
-}
 export type Resolved = {
     path: string;
     row: NsRow;
@@ -132,10 +101,7 @@ export interface Namespace {
     markListed(dir: string): void;
     forgetListed(dir: string): void;
 }
-export declare function nsSplit(k: string): [string, string];
 export declare function nsKindCode(type: unknown): number;
-/** A path as the namespace keys it: no leading '/'. */
-export declare function nsKey(path: unknown): string;
 /**
  * Whether a stat from the authority describes its name: a type, and the
  * mode, owner and group every permission check reads. One without them is
@@ -156,7 +122,5 @@ export declare function nsDescribes(stat: unknown): stat is Pick<RuntimeVfsStat,
  * around the surrogate range, which no path segment separator lives in.
  */
 export declare function prefixEnd(prefix: string): string | null;
-/** The row at exactly `k` (no symlink resolution), or undefined. */
-export declare function nsRowAt(t: ResidentTables, k: string): NsRow | undefined;
 export declare function createNamespace(coherence: Coherence, admission: Admission): Namespace;
 //# sourceMappingURL=namespace.d.ts.map

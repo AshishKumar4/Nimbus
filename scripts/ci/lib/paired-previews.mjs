@@ -1,20 +1,20 @@
-// The three Previews a run's paired perf probes measure
-// (tests/behavioral/_paired.mjs): a1 and a2 of the baseline commit, b of the
-// candidate, each a fresh throwaway built on CI and uploaded from here as
+// The four Previews a run's paired perf probes measure
+// (tests/behavioral/_paired.mjs): a1 and a2 of the baseline commit, b1 and b2
+// of the candidate, each a fresh throwaway built on CI and uploaded from here as
 // remote-probes --deploy uploads one. An upload reads its app's config from
 // a checkout at the release's own commit (uploadConfig), so a commit this
-// worktree is not at is uploaded from a detached worktree of it, made for
-// this run and removed after it.
+// worktree is not at is uploaded from a detached worktree of it, made in the
+// run's own directory (lib/run-dir.mjs) and removed with it. Every process
+// started here holds that directory's lock while it runs.
 import { spawn, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { ARMS } from '../../../tests/behavioral/_paired.mjs';
+import { ARMS, BASELINE_ARMS } from '../../../tests/behavioral/_paired.mjs';
 import { INSTALL } from '../../install-deps.mjs';
-import { NIMBUS_STATE } from './state-dir.mjs';
 
-const git = (cwd, args) => {
-  const done = spawnSync('git', args, { cwd, encoding: 'utf8' });
+/** @param {string} cwd @param {string[]} args @param {import('node:child_process').StdioOptions} [stdio] */
+const git = (cwd, args, stdio = ['ignore', 'pipe', 'pipe']) => {
+  const done = spawnSync('git', args, { cwd, encoding: 'utf8', stdio });
   if (done.status !== 0) throw new Error(`git ${args[0]} failed: ${(done.stderr || done.error?.message || '').trim()}`);
   return done.stdout.trim();
 };
@@ -24,14 +24,14 @@ const running = new Set();
 /** Set by `halt`: from then on `run` starts nothing. */
 let halted = false;
 
-/** Run `args` in `cwd`; resolves to its stdout, rejects naming the command and its stderr's tail. */
-function run(cwd, command, args) {
+/** Run `args` in `cwd` with `stdio`; resolves to its stdout, rejects naming the command and its stderr's tail. */
+function run(cwd, command, args, stdio) {
   return new Promise((resolve, reject) => {
     if (halted) {
       reject(new Error(`halted before ${command} ${args.slice(0, 3).join(' ')} could start`));
       return;
     }
-    const child = spawn(command, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+    const child = spawn(command, args, { cwd, stdio, detached: true });
     running.add(child);
     child.on('close', () => running.delete(child));
     let stdout = '';
@@ -50,14 +50,20 @@ export function defaultBaseline(repo, sha) {
 }
 
 /**
- * The arms of one run in `repo`. Everything `standUp` makes is recorded as
- * it is made, so `teardown` (synchronous, for an 'exit' listener as well as
- * the run's end) deletes it whatever ended the run.
+ * The arms of one run in `repo`, its checkouts made in the run's own
+ * directory (`runDir`, lib/run-dir.mjs). Everything `standUp` makes is
+ * recorded as it is made, so `teardown` (synchronous, for an 'exit' listener
+ * as well as the run's end) deletes it whatever ended the run.
  */
-export function pairedPreviews({ repo, log = (line) => console.error(line) }) {
+export function pairedPreviews({ repo, runDir, log = (line) => console.error(line) }) {
+  const piped = runDir.stdio(['ignore', 'pipe', 'pipe']);
   const runId = randomBytes(3).toString('hex');
+  /** Which set of Previews this is: the first, or a fresh one stood up after it (replace). */
+  let set = 1;
   const worktrees = [];
   const previews = [];
+  /** Previews of an earlier set that could not be taken down, each with the command that finishes it. */
+  const notTakenDown = [];
   const arms = {};
   let left = null;
   /** A clean checkout at `commit`: this one when it is there, else a detached worktree with dependencies installed. */
@@ -65,36 +71,40 @@ export function pairedPreviews({ repo, log = (line) => console.error(line) }) {
   const checkoutAt = (commit) => {
     if (git(repo, ['rev-parse', 'HEAD']) === commit) return Promise.resolve(repo);
     if (!checkouts.has(commit)) {
-      const dir = join(NIMBUS_STATE, 'paired', `${runId}-${commit.slice(0, 12)}`);
-      mkdirSync(join(NIMBUS_STATE, 'paired'), { recursive: true });
-      git(repo, ['worktree', 'add', '--detach', dir, commit]);
-      worktrees.push(dir);
-      checkouts.set(commit, run(dir, 'bun', INSTALL.split(' ').slice(1)).then(() => dir));
+      const checkout = join(runDir.dir, `checkout-${commit.slice(0, 12)}`);
+      git(repo, ['worktree', 'add', '--detach', checkout, commit], piped);
+      worktrees.push(checkout);
+      checkouts.set(commit, run(checkout, 'bun', INSTALL.split(' ').slice(1), piped).then(() => checkout));
     }
     return checkouts.get(commit);
   };
   const throwaway = (args, arm) => ['tests/behavioral/_throwaway-target.mjs', ...args, '--name', arms[arm].name];
   /** The deployment `arm` serves now, read by this checkout's script (an older baseline's has no `version`). */
-  const version = async (arm) => (await run(repo, 'bun', throwaway(['version'], arm))).trim();
+  const version = async (arm) => (await run(repo, 'bun', throwaway(['version'], arm), piped)).trim();
   const receipts = {};
+  /** Take down each of `which`, from its checkout; returns what could not be, each with the command that finishes it. */
+  const takeDown = (which) => which.flatMap(({ name, checkout }) => {
+    const down = spawnSync('bun', ['tests/behavioral/_throwaway-target.mjs', 'down', '--name', name], { cwd: checkout, encoding: 'utf8', stdio: piped });
+    return down.status === 0 ? [] : [`Preview ${name}: finish with (cd ${checkout} && bun tests/behavioral/_throwaway-target.mjs down --name ${name})`];
+  });
   /** The stand-up while it runs, so `halt` waits for it to unwind. */
   let standing = Promise.resolve();
   /** Upload each arm; see standUp. */
   const upload = async ({ baseline, candidate, releases }) => {
     // Imported once remote-probes has checked the install: the record path lives beside the deploy code.
     const { readState, throwawayStatePath } = await import('../../../tests/behavioral/_deploy-target.mjs');
-    const commit = { a1: baseline, a2: baseline, b: candidate };
+    const commit = Object.fromEntries(ARMS.map((arm) => [arm, BASELINE_ARMS.includes(arm) ? baseline : candidate]));
     const groups = new Map();
     for (const arm of ARMS) {
       const checkout = await checkoutAt(commit[arm]);
-      arms[arm] = { name: `pp-${runId}-${arm}`, checkout };
+      arms[arm] = { name: set === 1 ? `pp-${runId}-${arm}` : `pp-${runId}-${set}-${arm}`, checkout };
       groups.set(checkout, [...(groups.get(checkout) ?? []), arm]);
     }
     const settled = await Promise.allSettled([...groups.values()].map(async (group) => {
       for (const arm of group) {
         previews.push(arms[arm]);
         log(`paired: ${arm} is ${commit[arm].slice(0, 12)} on throwaway ${arms[arm].name}`);
-        await run(arms[arm].checkout, 'bun', [...throwaway(['up', '--bundle', releases[commit[arm]]], arm)]);
+        await run(arms[arm].checkout, 'bun', [...throwaway(['up', '--bundle', releases[commit[arm]]], arm)], piped);
         receipts[arm] = readState(throwawayStatePath(arms[arm].checkout, arms[arm].name))?.versionId;
         if (!receipts[arm]) throw new Error(`${arms[arm].name}'s upload recorded no deployment in ${arms[arm].checkout}`);
       }
@@ -104,7 +114,7 @@ export function pairedPreviews({ repo, log = (line) => console.error(line) }) {
 
   return {
     /**
-     * Upload `releases[baseline]` as a1 and a2 and `releases[candidate]` as b.
+     * Upload `releases[baseline]` as a1 and a2 and `releases[candidate]` as b1 and b2.
      * One upload at a time per checkout (they share its .wrangler state), the
      * two checkouts at once; every upload settles before a failure is thrown.
      */
@@ -112,10 +122,20 @@ export function pairedPreviews({ repo, log = (line) => console.error(line) }) {
       standing = upload(options);
       return standing;
     },
+    /**
+     * Take this set of Previews down and stand up a fresh one from the same
+     * checkouts and releases: where a Preview lands is drawn again.
+     */
+    replace(options) {
+      notTakenDown.push(...takeDown(previews.splice(0)));
+      set++;
+      standing = upload(options);
+      return standing;
+    },
     /** Each arm's { base, token }, a token minted now to live `ttlMs`. */
     async credentials(ttlMs) {
       return Object.fromEntries(await Promise.all(ARMS.map(async (arm) => [arm,
-        JSON.parse(await run(arms[arm].checkout, 'bun', [...throwaway(['token', '--json', '--ttl-ms', String(ttlMs)], arm)]))])));
+        JSON.parse(await run(arms[arm].checkout, 'bun', [...throwaway(['token', '--json', '--ttl-ms', String(ttlMs)], arm)], piped))])));
     },
     /** The deployment each arm's upload made (its record's versionId): what every job must find. */
     receipts() {
@@ -147,11 +167,7 @@ export function pairedPreviews({ repo, log = (line) => console.error(line) }) {
     /** Delete every Preview and worktree made here, once; returns what could not be, each with the command that finishes it. */
     teardown() {
       if (left) return left;
-      left = [];
-      for (const { name, checkout } of previews) {
-        const down = spawnSync('bun', ['tests/behavioral/_throwaway-target.mjs', 'down', '--name', name], { cwd: checkout, encoding: 'utf8' });
-        if (down.status !== 0) left.push(`Preview ${name}: finish with (cd ${checkout} && bun tests/behavioral/_throwaway-target.mjs down --name ${name})`);
-      }
+      left = [...notTakenDown, ...takeDown(previews)];
       for (const dir of worktrees) {
         if (left.some((line) => line.includes(dir))) continue;
         try { git(repo, ['worktree', 'remove', '--force', dir]); } catch (error) { left.push(`worktree ${dir}: ${error.message}`); }

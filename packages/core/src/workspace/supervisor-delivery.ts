@@ -562,6 +562,20 @@ export class SupervisorDeliveries {
     if (active !== undefined) await Promise.allSettled([...active]);
   }
 
+  /**
+   * Retire every write-wave epoch of process `pid`, as retireWaveWriter
+   * retires one: answered once every wave of them being applied has
+   * settled. A run that stopped then has nothing of its own left to land
+   * after what is done next with its process (a promotion's restore).
+   */
+  async retireWaveWriters(pid: number): Promise<void> {
+    const prefix = `${pid}:`;
+    // An epoch retired already may still be applying a wave: waited for too.
+    const writers = new Set<string>();
+    for (const key of [...this.waveEpochs.keys(), ...this.activeWaves.keys()]) if (key.startsWith(prefix)) writers.add(key.slice(prefix.length));
+    await Promise.all([...writers].map((writer) => this.retireWaveWriter(pid, writer)));
+  }
+
   /** `applying` is a wave of process `pid`'s epoch `writer` being applied: a retirement of the epoch waits for it. */
   applyingWave<T>(pid: number, writer: string, applying: Promise<T>): Promise<T> {
     const key = `${pid}:${writer}`;

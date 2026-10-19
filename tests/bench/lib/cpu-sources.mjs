@@ -9,3 +9,8 @@ export const HOLDER_CPU_SOURCES = {
 };
 
 export const PLATFORM_CPU_SOURCES = { source: 'packages/platform/src' };
+
+export const LIFO_SHELL_CPU_SOURCES = {
+  source: 'packages/core/src',
+  directories: ['substrate/lifo/shell'],
+};

@@ -42,9 +42,10 @@
 // graded against a baseline measured in the same run, not a fixed bound.
 // When the selection has one, this builds the baseline (--baseline, default
 // the commit's merge-base with origin/main) beside the candidate, stands up
-// three fresh throwaways (lib/paired-previews.mjs: two of the baseline, one
+// four fresh throwaways (lib/paired-previews.mjs: two of the baseline, two
 // of the candidate), runs those probes in a task of their own beside the
-// parts, and deletes the throwaways when the run ends.
+// parts, and deletes the throwaways when the run ends. A paired probe red
+// there is run again on a fresh set of four, and is red only if red on both.
 //
 // A red row whose session socket closed 1006 (the run's session ledger) or
 // that shows E_NIMBUS_DO_OVERLOADED is attributed from the platform's own
@@ -69,6 +70,7 @@ import { mapOnArmada } from './lib/armada.mjs';
 import { assertInstalled } from './lib/installed.mjs';
 import { defaultBaseline, pairedPreviews } from './lib/paired-previews.mjs';
 import { OBSERVABILITY_TOKEN_FILE, attributeRow, describeAttribution, regradable, showsResetSymptom, telemetry } from './lib/reset-attribution.mjs';
+import { openRunDir } from './lib/run-dir.mjs';
 import { NIMBUS_STATE } from './lib/state-dir.mjs';
 import { writeScreenshots } from './lib/probe-screenshots.mjs';
 
@@ -157,6 +159,8 @@ const onArmada = async (job) => {
 };
 
 let arms = null;
+/** This run's own directory (lib/run-dir.mjs), opened when it fetches a release. */
+let runDir = null;
 /** The deployment each throwaway this run grades must serve throughout: its upload's, or the target's when this run did not upload it. */
 const expected = {};
 let status = 0;
@@ -164,13 +168,26 @@ try {
   // Minting and deploying run the target scripts, which parse wrangler configs.
   if (!hosted) assertInstalled(repo, 'remote-probes');
   if (flags.deploy && git(repo, ['rev-parse', 'HEAD']) !== sha) throw new Error(`--deploy deploys this worktree's HEAD, and ${sha.slice(0, 12)} is not it`);
+  // The arms this run stands up are this checkout's (_paired.mjs); the probes that measure them run at the commit.
+  if (paired.length > 0 && spawnSync('git', ['diff', '--quiet', sha, 'HEAD', '--', 'tests/behavioral/_paired.mjs'], { cwd: repo }).status !== 0) {
+    throw new Error(`the paired probes at ${sha.slice(0, 12)} take other arms than this checkout stands up (tests/behavioral/_paired.mjs differs): probe it from a checkout of ${sha.slice(0, 12)}, or --skip ${paired.join(',')}`);
+  }
   const baseline = paired.length === 0 ? null
     : flags.baseline ? git(repo, ['rev-parse', '--verify', `${flags.baseline}^{commit}`]) : defaultBaseline(repo, sha);
   // Every release this run uploads, built at once and settled together: the
-  // candidate's for --deploy or the paired arm b, the baseline's for a1 and a2.
+  // candidate's for --deploy or the paired arms b1 and b2, the baseline's for a1 and a2.
+  // They, and the baseline's checkout, are this run's alone: kept in its own directory under RUNS, deleted when it ends.
   const commits = [...new Set([...(flags.deploy || baseline ? [sha] : []), ...(baseline ? [baseline] : [])])];
+  if (commits.length > 0) {
+    runDir = openRunDir(repo);
+    process.on('exit', () => {
+      // A Preview its checkout could not take down is finished from that checkout: then the directory stays.
+      const left = arms?.teardown() ?? [];
+      for (const line of [...left, ...(left.length > 0 ? runDir.keep() : runDir.close())]) console.error(`remote-probes: LEFT BEHIND ${line}`);
+    });
+  }
   const { fetchRelease } = await import('./lib/release.mjs');
-  const built = await Promise.allSettled(commits.map((commit) => fetchRelease({ repo, sha: commit, targets: ['apps/probe'] })));
+  const built = await Promise.allSettled(commits.map((commit) => fetchRelease({ repo, sha: commit, targets: ['apps/probe'], into: join(runDir.dir, 'releases') })));
   const releases = {};
   for (const [i, outcome] of built.entries()) {
     if (outcome.status === 'rejected') throw outcome.reason;
@@ -179,8 +196,8 @@ try {
   signals(true);
   if (flags.deploy) {
     // Its exports (a token among them) are not wanted: probes get their own, below.
-    const up = spawnSync('bun', ['tests/behavioral/_throwaway-target.mjs', 'up', '--name', flags.deploy, '--bundle', releases[sha]], { cwd: repo, stdio: ['ignore', 'ignore', 'inherit'] });
-    if (up.status !== 0) throw new Error(`the upload of the release to ${flags.deploy} failed (exit ${up.status}); the release is in ${releases[sha]}`);
+    const up = spawnSync('bun', ['tests/behavioral/_throwaway-target.mjs', 'up', '--name', flags.deploy, '--bundle', releases[sha]], { cwd: repo, stdio: runDir.stdio(['ignore', 'ignore', 'inherit']) });
+    if (up.status !== 0) throw new Error(`the upload of the release to ${flags.deploy} failed (exit ${up.status})`);
   }
   // A target this run uploaded must serve that upload (its record's versionId); one it did not, what it serves now.
   if (throwaway !== undefined) {
@@ -189,14 +206,11 @@ try {
   }
   if (baseline) {
     console.error(`remote-probes: ${paired.join(', ')} graded against ${baseline.slice(0, 12)}${baseline === sha ? ' (the candidate itself)' : ''}`);
-    arms = pairedPreviews({ repo });
-    process.on('exit', () => {
-      for (const line of arms.teardown()) console.error(`remote-probes: LEFT BEHIND ${line}`);
-    });
+    arms = pairedPreviews({ repo, runDir });
     await arms.standUp({ baseline, candidate: sha, releases });
     for (const [arm, id] of Object.entries(arms.receipts())) expected[`arm ${arm}`] = id;
   }
-  status = await probeRun();
+  status = await probeRun({ baseline, releases });
 } catch (error) {
   console.error(`remote-probes: NOT GRADED — ${error.message}`);
   status = 2;
@@ -236,8 +250,12 @@ async function credentials() {
   return { base, token, arms: arms ? await arms.credentials(TOKEN_TTL_MS) : null, startBy };
 }
 
-/** The suite against the target, and its verdict kept; resolves to the run's exit status. */
-async function probeRun() {
+/**
+ * The suite against the target, and its verdict kept; resolves to the run's
+ * exit status. `baseline` and `releases` stand up a fresh set of paired
+ * Previews to confirm a paired red on.
+ */
+async function probeRun({ baseline, releases }) {
   const secrets = [];
   const scrub = (text) => secrets.reduce((scrubbed, secret) => scrubbed.replaceAll(secret, '[NIMBUS_PROBE_TOKEN]'), text);
   /** Map `list` on armada with credentials of its own; every token it carries is scrubbed from what this prints and keeps. */
@@ -317,6 +335,34 @@ async function probeRun() {
       });
     } catch (error) {
       problems.push(`the regrade could not run: ${scrub(error.message)}`);
+    }
+  }
+
+  // A paired probe red on one set of Previews is run again on a fresh set,
+  // and is red only if red on both: a set can land slow as a whole, and
+  // where it landed is drawn again; a slower candidate is slower on both.
+  const pairedRed = tasks.flatMap((task) => (task.rows ?? []).filter((row) => row.exitCode === 1 && !row.regraded
+    && PAIRED_PROBES.some((probe) => row.name === `tests/behavioral/${probe}.mjs`)));
+  if (arms && pairedRed.length > 0) {
+    const probes = [...new Set(pairedRed.map((row) => row.name.replace(/^tests\/behavioral\//, '').replace(/\.mjs$/, '')))];
+    const confirm = [{ task: 'paired perf on fresh Previews', part: '1/1', only: probes.join(','), skip: '', jobs: 1 }];
+    try {
+      await arms.replace({ baseline, candidate: sha, releases });
+      for (const [arm, id] of Object.entries(arms.receipts())) expected[`arm ${arm}`] = id;
+      const again = await mapItems(confirm, `remote-probes ${sha.slice(0, 12)} paired confirmation`);
+      problems.push(...again.moved);
+      const [rerun] = readTasks(confirm, again.mapped, scrub);
+      tasks.push(rerun);
+      for (const row of pairedRed) {
+        const second = rerun.rows?.find((other) => other.name === row.name);
+        if (second?.exitCode === 0) {
+          row.regraded = { task: confirm[0].task, evidence: ['red on one set of Previews and green on a fresh set: where they landed, not the code'] };
+          console.log(`REGRADED ${row.name}: red on one set of Previews, green on a fresh set`);
+        } else if (second?.exitCode === 1) console.log(`CONFIRMED ${row.name}: red on two sets of Previews`);
+        else console.log(`UNCONFIRMED ${row.name}: the fresh set ${second ? `did not grade it (exit ${second.exitCode})` : 'has no row of it'}`);
+      }
+    } catch (error) {
+      problems.push(`the paired confirmation could not run: ${scrub(error.message)}`);
     }
   }
 

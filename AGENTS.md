@@ -346,6 +346,15 @@ One unit file is `remote-unit --only <file>`; one probe is `remote-probes
 --only <probe>`. A bench or profile is committed and run through
 `remote-unit --only` or `mapOnArmada` (`scripts/ci/lib/armada.mjs`).
 
+A paired CPU bench (`scripts/ci/lib/paired-cpu.mjs`) grades code on the
+engine that runs it in production. Hot paths in guest code (what the node
+shims, the resident store and the loader run in a process facet) are
+graded on V8, as workerd runs them: their bench runs under `node`, and
+each arm is bundled on its own (`tests/bench/module-resolution-cpu.mjs`,
+`resident-read-cpu.mjs`). Under bun, a capture called as Node's
+primordials call one (`uncurryThis`) costs 4–5× a live method call. Under
+V8 it costs the same. A bun run of such a bench is context, not the gate.
+
 A red-first test of a hang or runaway bug bounds itself: it runs the
 failing path in a child with a timeout, so red is a clean failure.
 
@@ -406,10 +415,14 @@ again.
   against a baseline measured in the same run. When the selection has one,
   `remote-probes` builds the baseline (`--baseline <commit>`, default the
   merge-base with origin/main; `release.mjs staging` passes the commit
-  production serves) beside the candidate, stands up three fresh
-  throwaways (two of the baseline, one of the candidate), runs those probes
-  in a task of their own and deletes the throwaways at the end. Run by
-  hand without them, a paired probe exits 2.
+  production serves) beside the candidate, stands up four fresh
+  throwaways (two of the baseline, two of the candidate), runs those probes
+  in a task of their own and deletes the throwaways at the end. Each
+  candidate throwaway is graded against the mean of the two baseline ones,
+  and a probe is red on a set only when both are slower: one Preview can
+  run slower than another of the same code for a whole run. A red set is
+  confirmed on four fresh throwaways, and the probe is red only when that
+  set is red too. Run by hand without them, a paired probe exits 2.
 - A red row whose session socket closed 1006 (the session ledger records
   it) or that shows `E_NIMBUS_DO_OVERLOADED` is attributed from Workers Logs
   and traces by the exact error on each session's object

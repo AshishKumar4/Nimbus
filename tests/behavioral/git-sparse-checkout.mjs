@@ -10,7 +10,7 @@
 //   the worktree stays clean throughout; `disable` of a small repository
 //   brings every file back. Each step's wall time is printed.
 
-import { BASE, makeAsserter, mintSession, deleteSession, Terminal, stripAnsi } from './_driver.mjs';
+import { BASE, makeAsserter, mintSession, deleteSession, Terminal, stripAnsi, hasOutputLine } from './_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 
@@ -41,7 +41,7 @@ try {
   const set = await step('sparse-checkout set src/vs/base/common', 'git sparse-checkout set src/vs/base/common');
   a.check('set succeeds', set.ok, set.out.slice(-400));
   const written = await step('count the files written', 'find src -type f | wc -l; ls src/vs/base/common/strings.ts');
-  a.check('the cone\'s files are written, nothing else of src', /strings\.ts/.test(written.out) && !/No such file/.test(written.out), written.out.slice(-300));
+  a.check('the cone\'s files are written, nothing else of src', hasOutputLine(written.out, 'src/vs/base/common/strings.ts') && !/No such file/.test(written.out), written.out.slice(-300));
   const listed = await step('sparse-checkout list', 'git sparse-checkout list');
   a.check('list names the cone', /^src\/vs\/base\/common$/m.test(listed.out), listed.out.slice(-300));
   const clean = await step('status after set', 'git status --porcelain | wc -l');
@@ -50,13 +50,13 @@ try {
   const added = await step('sparse-checkout add src/vs/base/browser', 'git sparse-checkout add src/vs/base/browser && git sparse-checkout list');
   a.check('add widens the cone', added.ok && /^src\/vs\/base\/browser$/m.test(added.out) && /^src\/vs\/base\/common$/m.test(added.out), added.out.slice(-300));
   const still = await step('status after add', 'git status --porcelain | wc -l; test -f src/vs/base/browser/dom.ts && echo HAS_DOM');
-  a.check('the added directory is written, the worktree clean', /^0$/m.test(still.out) && /HAS_DOM/.test(still.out), still.out.slice(-200));
+  a.check('the added directory is written, the worktree clean', /^0$/m.test(still.out) && hasOutputLine(still.out, 'HAS_DOM'), still.out.slice(-200));
 
   // disable, on a small repository: every file back.
   const small = await step('clone --sparse express', 'cd /home/user && git clone --sparse --filter=blob:none https://github.com/expressjs/express ex && cd ex');
   a.check('a second sparse clone succeeds', small.ok, small.out.slice(-300));
   const disabled = await step('sparse-checkout disable', 'git sparse-checkout disable && test -f lib/express.js && echo HAS_LIB && git status --porcelain | wc -l');
-  a.check('disable brings every file back, clean', disabled.ok && /HAS_LIB/.test(disabled.out) && /^0$/m.test(disabled.out), disabled.out.slice(-300));
+  a.check('disable brings every file back, clean', disabled.ok && hasOutputLine(disabled.out, 'HAS_LIB') && /^0$/m.test(disabled.out), disabled.out.slice(-300));
   const off = await step('list after disable', 'git sparse-checkout list');
   a.check('the worktree is not sparse after disable', /this worktree is not sparse/.test(off.out), off.out.slice(-200));
 } finally {
