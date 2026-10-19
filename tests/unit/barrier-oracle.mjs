@@ -91,4 +91,28 @@ const done = (model, step) => model.finish(model.begin(step));
   assert.ok(!model.readable('top', model.seq(), model.seq()), 'a file it may not read');
 }
 
+{
+  // The process's own changes land in the order it made them: a later one shows only with every earlier one it overlaps.
+  const model = createModel();
+  const from = model.seq();
+  model.begin(['own', 'rename', 'top', 'new']);
+  model.begin(['own', 'write', 'new', 'rewritten']);
+  const to = model.seq();
+  assert.ok(model.admits('readdir', '', ['d', 'top', 'x'], from, to), 'neither landed');
+  assert.ok(model.admits('readdir', '', ['d', 'new', 'x'], from, to), 'the rename landed');
+  assert.ok(!model.admits('readdir', '', ['d', 'new', 'top', 'x'], from, to), 'never the write without the rename it follows');
+  assert.ok(model.admits('readFile', 'new', 'rewritten', from, to));
+  assert.ok(model.admits('readFile', 'new', 't0000000', from, to), 'the rename alone');
+}
+{
+  // A change the process decides when it calls it is shown, decided, to its own calls that cannot wait.
+  const model = createModel();
+  model.begin(['own', 'rename', 'x/h', 'd/n']);
+  const now = model.seq();
+  assert.ok(model.admits('stat', 'd/n', null, now, now), 'to a reader that cannot know it');
+  assert.ok(!model.admits('stat', 'd/n', null, now, now, true), 'not to the process that decided it');
+  assert.ok(model.admits('stat', 'd/n', file(3), now, now, true));
+  assert.ok(!model.admits('stat', 'x/h', file(3), now, now, true));
+}
+
 console.log('barrier-oracle: ok');

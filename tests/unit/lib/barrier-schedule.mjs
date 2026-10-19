@@ -12,6 +12,8 @@
  *   ['input']              input arrives: the process's barrier, left in flight;
  *   ['hold', kind, skip?]  the next reply of `kind` (after `skip` more) waits (KINDS);
  *   ['release', kind?]     the oldest parked reply (of `kind`) is delivered;
+ *   ['stall'], ['unstall'] the process's waves wait before they reach the
+ *                          session (a parked reply has reached it), or go on;
  *   ['settle']             wait until nothing moves without a release;
  *   ['poison']             the next ACQUIRE is answered with a poison.
  * Reads are stat, readFile and readdir; changes write, unlink, mkdir, rmdir,
@@ -27,7 +29,9 @@
  *     whose barrier landed, or the process's own last change of it,
  *     whichever is later, and no later than the answer; or one a change in
  *     flight then leaves. Node's awaited read takes its own barrier: its
- *     answer is no earlier than the call. A process listed on demand may
+ *     answer is no earlier than the call. Node decides a structural change
+ *     (rename, unlink, mkdir, rmdir, chmod) when it is called, awaited or
+ *     not: its call that cannot wait shows every one it has begun. A process listed on demand may
  *     refuse a call that cannot wait (EAGAIN); one whose names are all
  *     listed may not, except for bytes it does not hold, while a listing is
  *     in flight, or while a poison has stopped its namespace.
@@ -42,9 +46,11 @@
  * engine shows the store's own total, and its accounting is the budget's
  * own tests' (resident-fs-model).
  *
- * Two changes whose names overlap are never in flight together, so each
- * change's effect is the model's at its start; one that would overlap waits
- * for the step after the other returns. The process's own changes reach the
+ * A change from outside the process is never in flight with one whose names
+ * it overlaps: it waits for the step after the other returns, so its effect
+ * is the model's at its start. The process's own changes are in flight
+ * together in program order: each is the model's as its earlier ones leave
+ * it, and lands after every earlier one it overlaps. The process's own changes reach the
  * session when something leaves the process (publish): a peer's change of
  * names the process changed since waits for that first. The process never
  * decides a change of names a peer changed since its last input landed: it
@@ -75,6 +81,8 @@ const FILE_MODES = [0o644, 0o600, 0o640];
 const DIR_MODES = [0o755, 0o750, 0o700];
 const FILE_MODE = 0o644;
 const DIR_MODE = 0o755;
+/** The changes a process decides when it calls them (node-shims' structural calls, and chmod). */
+const DECIDED = Object.freeze(['rename', 'unlink', 'mkdir', 'rmdir', 'chmod']);
 /** The process's user and group, and the session user's: what owns everything not root's. */
 const USER = 1000;
 
@@ -231,7 +239,8 @@ export function generate(seed, steps = 40) {
       if (made !== null) schedule.push([way, ...made]);
     } else if (r < 0.72) schedule.push(['input']);
     else if (r < 0.86) schedule.push(random() < 0.5 ? ['release'] : ['release', pick(Object.values(KINDS))]);
-    else if (r < 0.94) schedule.push(['hold', pick(Object.values(KINDS))]);
+    else if (r < 0.91) schedule.push(['hold', pick(Object.values(KINDS))]);
+    else if (r < 0.94) schedule.push([random() < 0.5 ? 'stall' : 'unstall']);
     else if (r < 0.985) schedule.push(['settle']);
     else schedule.push(['poison']);
   }
@@ -304,9 +313,11 @@ function answers(op, rel, answer, world) {
 export function createModel() {
   let world = seedWorld();
   const history = [world];
-  /** Every change begun: its names, the world it leaves (and, a write of the process's, the one it passes through), the states it began and returned at. */
+  /** Every change begun, in program order: its names, whether it is the process's own, the world it leaves (and, a write of the process's, the one it passes through), the states it began and landed at. */
   const changes = [];
   const seq = () => history.length - 1;
+  /** Whether `later` (the process's own) must land after `earlier`: an own change before it whose names it overlaps. */
+  const after = (earlier, later) => earlier !== later && earlier.own && later.own && changes.indexOf(earlier) < changes.indexOf(later) && overlaps(earlier.domain, later.domain);
   /**
    * Every world `rel` may have been seen in between states `from` and `to`:
    * at each state, the recorded world with any of the changes then in flight
@@ -315,16 +326,21 @@ export function createModel() {
    * overlap, so any of them may have landed first; only four are laid, a
    * schedule rarely having more.
    */
-  const worldsSeen = (rel, from, to) => {
+  const worldsSeen = (rel, from, to, decided = false) => {
     const touching = changes.filter((change) => change.domain.some((root) => under(rel, root) || under(root, rel)));
     const worlds = [];
     for (let i = from; i <= to; i++) {
-      let at = [history[i]];
-      for (const change of touching.filter((c) => c.begun <= i && (c.done === null || c.done > i)).slice(0, 4)) {
-        const effects = change.partial === null ? [change.post] : [change.post, change.partial];
-        at = at.flatMap((w) => [w, ...effects.map((effect) => laid(w, change.domain, effect))]);
+      const flying = touching.filter((c) => c.begun <= i && (c.done === null || c.done > i)).slice(0, 4);
+      // Each change in flight: not landed (null), landed, or (a write) passing through; one of the process's own only once every earlier one it overlaps has landed.
+      let choices = [[]];
+      for (const change of flying) {
+        const effects = decided && change.decides ? [change.post] : [null, change.post, ...(change.partial === null ? [] : [change.partial])];
+        choices = choices.flatMap((chosen) => effects.map((effect) => [...chosen, effect]));
       }
-      worlds.push(...at);
+      for (const chosen of choices) {
+        if (flying.some((later, j) => chosen[j] !== null && flying.some((earlier, k) => k < j && after(earlier, later) && chosen[k] !== earlier.post))) continue;
+        worlds.push(flying.reduce((world, change, j) => (chosen[j] === null ? world : laid(world, change.domain, chosen[j])), history[i]));
+      }
     }
     return worlds;
   };
@@ -332,29 +348,45 @@ export function createModel() {
     get world() { return world; },
     seq,
     worldsSeen,
-    /** Whether a change overlapping `domain` is in flight. */
-    busy: (domain) => changes.some((change) => change.done === null && overlaps(change.domain, domain)),
-    /** `step` begun now: its record, or null where the model says it would fail. */
+    /** Whether `step` must wait: a change in flight overlaps it, other than (for one of the process's own) its own earlier ones. */
+    busy: (step) => changes.some((change) => change.done === null && overlaps(change.domain, domainOf(step)) && (outside(step[0]) || !change.own)),
+    /** `step` begun now, as the process's own changes in flight leave the model for one of its own: its record, or null where it would fail. */
     begin(step) {
-      const post = applied(world, step);
-      if (post === null) return null;
       const [way, op, a] = step;
+      const own = !outside(way);
+      const base = own ? changes.filter((c) => c.own && c.done === null).reduce((w, c) => laid(w, c.domain, c.post), world) : world;
+      const post = applied(base, step);
+      if (post === null) return null;
       // A write the process makes is an open that truncates, then the bytes: while it is in flight, the file may be empty.
       const partial = way === 'own' && op === 'write' ? new Map([...post, [a, { ...post.get(a), content: '' }]]) : null;
-      const record = { domain: domainOf(step), post, partial, begun: seq(), done: null };
+      const decides = own && DECIDED.includes(op);
+      const record = { domain: domainOf(step), own, decides, post, partial, begun: seq(), done: null, landing: null };
       changes.push(record);
       return record;
     },
-    /** `record` returned: its effect, on whatever else changed meanwhile (nothing it overlaps). */
-    finish(record) {
-      world = laid(world, record.domain, record.post);
-      history.push(world);
-      record.done = seq();
+    /** `record` returned: it lands (`landed` told) once every earlier own change it overlaps has, its effect on whatever else changed meanwhile. */
+    finish(record, landed = () => {}) {
+      record.landing = landed;
+      for (let moved = true; moved;) {
+        moved = false;
+        for (const change of changes) {
+          if (change.done !== null || change.landing === null || changes.some((earlier) => earlier.done === null && after(earlier, change))) continue;
+          world = laid(world, change.domain, change.post);
+          history.push(world);
+          change.done = seq();
+          const told = change.landing;
+          change.landing = null;
+          told();
+          moved = true;
+        }
+      }
     },
     /** `record` was refused: it changed nothing. */
     drop(record) { changes.splice(changes.indexOf(record), 1); },
-    /** Whether `answer` (of read `op` of `rel`) is one the session's files gave between states `from` and `to`. */
-    admits: (op, rel, answer, from, to) => worldsSeen(rel, from, to).some((w) => answers(op, rel, answer, w)),
+    /** Whether `answer` (of read `op` of `rel`) is one the session's files gave between states `from` and `to` (`decided`: with every structural change of the process's own in flight shown). */
+    admits: (op, rel, answer, from, to, decided = false) => worldsSeen(rel, from, to, decided).some((w) => answers(op, rel, answer, w)),
+    /** The state the latest structural change of the process's own in flight at or about `rel` began at, or 0. */
+    decidedSince: (rel) => Math.max(0, ...changes.filter((c) => c.done === null && c.decides && c.domain.some((root) => under(rel, root) || under(root, rel))).map((c) => c.begun)),
     /** Whether a world between `from` and `to` holds, at `rel`, a file the process may read: what a refusal of its bytes (EAGAIN) can be about. */
     readable: (rel, from, to) => worldsSeen(rel, from, to).some((w) => unreachable(w, rel) === null && w.get(rel)?.type === 'file' && (bits(w.get(rel)) & 4) !== 0),
   };
@@ -411,6 +443,8 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
   const missed = new Set();
   /** Wrong answers and refused changes found in flight, thrown at the next step. */
   const failures = [];
+  /** The process's waves wait before they reach the session (['stall']). */
+  let stalled = false;
   /** The names of the process's changes that returned and have not been published since. */
   let unpublished = [];
   /** Each peer change that returned, and as the model stood then: what the process may not know of before its next input lands. */
@@ -422,9 +456,10 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
     if (answer?.code === 'EAGAIN' && way === 'sync' && refusable(op, rel, from, to)) return;
     if (gaps.refusedAsDirectory && way === 'sync' && answer?.code === 'EISDIR' && model.worldsSeen(rel, from, to).some((world) => world.get(rel)?.type === 'dir')) return;
     if (gaps.absentWhileRelisted && way === 'sync' && answer === null && transport.inFlight('listing') > 0) return;
-    if (model.admits(op, rel, answer, from, to)) return;
+    const decided = kind === 'node' && way === 'sync';
+    if (model.admits(op, rel, answer, from, to, decided)) return;
     const shown = answer?.code ?? (answer && typeof answer === 'object' && !Array.isArray(answer) ? `${answer.type} ${(answer.mode & 0o777).toString(8)} size ${answer.size}` : JSON.stringify(answer));
-    const held = [...new Set(model.worldsSeen(rel, from, to).map((world) => (op === 'readdir' && world.get(rel)?.type === 'dir' ? `[${childrenOf(world, rel)}]` : describe(world.get(rel)))))];
+    const held = [...new Set(model.worldsSeen(rel, from, to, decided).map((world) => (op === 'readdir' && world.get(rel)?.type === 'dir' ? `[${childrenOf(world, rel)}]` : describe(world.get(rel)))))];
     throw new Finding(`${way} ${op} ${rel || '.'} answered ${shown}; the session held ${held.join(' | ')} (states ${from}..${to})`, at);
   };
 
@@ -463,10 +498,10 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
     return fs[op](abs(a));
   };
 
-  /** A change begun now, as the model stands: 'wait' while one overlapping it is in flight; null when it cannot be asked at all. */
+  /** A change begun now, as the model stands: 'wait' while one it may not overlap is in flight; null when it cannot be asked at all. */
   const begin = (at, way, step) => {
     const domain = domainOf(step);
-    if (model.busy(domain)) return 'wait';
+    if (model.busy(step)) return 'wait';
     if (!outside(way) && peerAt.some(({ done, domain: theirs }) => done > landed && overlaps(theirs, [...domain, ...domain.map(parentOf)]))) {
       note(`  (step ${at} skipped: a peer changed its names since the process's last input)`);
       return null;
@@ -474,14 +509,13 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
     const record = model.begin(step);
     if (record === null) { note(`  (step ${at} skipped: ${JSON.stringify(step)} is not valid now)`); return null; }
     const publishes = outside(way) && overlaps(unpublished, domain) ? unpublished : null;
-    const finish = () => {
-      model.finish(record);
+    const finish = () => model.finish(record, () => {
       if (outside(way)) peerAt.push({ done: seq(), domain });
       else {
         if (way === 'sync' || !gaps.unshownAwaitedChange) for (const root of domain) ownAt.set(root, seq());
         unpublished = [...unpublished, ...domain];
       }
-    };
+    });
     if (way === 'sync') {
       try {
         change(way, step);
@@ -517,7 +551,7 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
       await sleep(5);
       if (progress() !== seen) { seen = progress(); quietSince = Date.now(); continue; }
       if (Date.now() - quietSince < quietMs) continue;
-      if (transport.parked().length === 0) {
+      if (transport.parked().length === 0 && !stalled) {
         await sleep(1_000);
         if (progress() === seen && inflight.size > 0) throw new Finding(`deadlock: ${inflight.size} call(s) pending, every reply delivered, nothing moving`, at);
         continue;
@@ -533,13 +567,16 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
     if (what === 'release') { transport.release(s[1]); return sleep(0); }
     if (what === 'settle') return settle(at);
     if (what === 'poison') return transport.poison();
+    if (what === 'stall') { stalled = true; return engine.stall(); }
+    if (what === 'unstall') { stalled = false; return engine.release(); }
     if (what === 'input') {
       const arrived = seq();
       return void track(engine.input().then(() => { landed = Math.max(landed, arrived); poisoned = false; }));
     }
     const [way, op, rel] = s;
     if (op === 'stat' || op === 'readFile' || op === 'readdir') {
-      const bound = Math.max(landed, ...[...ownAt].filter(([root]) => under(rel, root) || under(root, rel)).map(([, i]) => i));
+      const bound = Math.max(landed, kind === 'node' && way === 'sync' ? model.decidedSince(rel) : 0,
+        ...[...ownAt].filter(([root]) => under(rel, root) || under(root, rel)).map(([, i]) => i));
       if (way === 'sync') {
         const answer = await read(way, op, rel);
         if (op === 'readFile' && answer?.code === 'EAGAIN') missed.add(rel);
@@ -570,6 +607,8 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
     // Quiescence: every reply delivered, every call returned, the deferred asked, a last barrier landed.
     const end = schedule.length;
     note('at rest: every reply delivered');
+    stalled = false;
+    await engine.release();
     transport.drain();
     await settle(end);
     while (deferred.length > 0) {

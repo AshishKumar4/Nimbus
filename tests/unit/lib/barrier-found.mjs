@@ -80,6 +80,10 @@ const FOUND = {
     schedule: [['hold', 'wave'], ['own', 'rename', 'x/h', 'd/f'], ['own', 'readFile', 'top'], ['settle'], ['release', 'wave'], ['settle'],
       ['sync', 'stat', 'd/f'], ['sync', 'rename', 'd/f', 'd/e/g'], ['settle'], ['sync', 'stat', 'd/e/g']],
   },
+  'a file renamed in a directory then renamed with it shows at its last name while the first rename lands alone': {
+    schedule: [['own', 'stat', 'd/f'], ['settle'], ['hold', 'wave'], ['own', 'rename', 'd/f', 'd/n'], ['settle'], ['stall'], ['own', 'rename', 'd', 'z'],
+      ['input'], ['settle'], ['sync', 'stat', 'z/n'], ['sync', 'stat', 'd/n'], ['unstall'], ['release', 'wave'], ['settle'], ['sync', 'stat', 'z/n']],
+  },
   'a file a call that cannot wait missed stays a miss until an awaited read answers it': {
     engines: ['node'],
     schedule: [['peer', 'write', 'new', 'not resident'], ['settle'], ['input'], ['settle'], ['sync', 'readFile', 'new'], ['own', 'stat', 'new'], ['settle']],
@@ -141,6 +145,35 @@ for (const kind of ENGINES) {
     await Promise.all([first, second]);
     assert.equal((await engine.stat(`${APP}/top`)).ino, moved, 'the last name, once both landed');
     assert.equal(await engine.stat(`${APP}/mid`), null);
+  };
+}
+
+for (const kind of ENGINES) {
+  scenarios[`a file renamed in a directory then renamed with it is found once the first rename lands alone [${kind}]`] = async () => {
+    const transport = scheduleTransport();
+    const engine = await bootEngine(kind, {
+      seed: (authority) => {
+        authority.kfs.mkdir('home/user/app/d', { mode: 0o755 });
+        authority.kfs.writeFile('home/user/app/d/f', 'moved');
+      },
+      supervise: transport.supervise,
+      stdin: kind === 'node',
+    });
+    const moved = (await engine.stat(`${APP}/d/f`)).ino;
+    // The file's rename reaches the session and its answer waits; its directory's does not reach it.
+    transport.hold('wave');
+    const first = engine.fs.rename(`${APP}/d/f`, `${APP}/d/n`);
+    await until(() => transport.parked().length > 0, 'the file\'s rename sent');
+    engine.stall();
+    const second = engine.fs.rename(`${APP}/d`, `${APP}/x`);
+    await sleep(50);
+    await engine.input();
+    const seen = (() => { try { return engine.sync.stat(`${APP}/x/n`); } catch (error) { return error?.code; } })();
+    assert.ok((kind === 'holder' && seen === 'EAGAIN') || Number(seen?.ino) === moved, `the file under its directory's new name, once a barrier landed its own rename alone: ${JSON.stringify(seen)}`);
+    await engine.release();
+    transport.drain();
+    await Promise.all([first, second]);
+    assert.equal((await engine.stat(`${APP}/x/n`)).ino, moved, 'once both landed');
   };
 }
 
