@@ -14,13 +14,20 @@
  *   its arguments were built;
  * - a fill a delta outdated while it was asked installs nothing;
  * - the arguments a delivery answers carry the process's own debt through
- *   the session's parse.
+ *   the session's parse;
+ * - a directory a mount left unlisted, and one a lookup or listing learned,
+ *   is not whole until a listing of it named its entries;
+ * - a barrier that cannot apply its answer repairs the store: from its
+ *   floor, or by listing again and fetching only what changed; one that
+ *   cannot list serves no old bytes, and stays owed;
+ * - under a trusted read lease, input alone takes no barrier; the process's
+ *   own change at the session, or a repair owed, does.
  */
 
 import assert from 'node:assert/strict';
 import * as rpc from '../../packages/worker/src/session/rpc.ts';
 import { createAuthority, runScenarios, sleep } from './lib/resident-body.mjs';
-import { k, storeSession } from './lib/store-session.mjs';
+import { ROOT, k, storeSession } from './lib/store-session.mjs';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -114,6 +121,122 @@ await runScenarios(import.meta.path, {
     s.release('fsReadBatch');
     await read;
     assert.notEqual(synchronously(s.fs, k('f'), 'readFile'), 'one!', 'never the bytes the delta outdated');
+  },
+  async 'a name under a directory a mount left unlisted is unknown until the directory is listed'() {
+    const s = await storeSession({ m: null, 'm/f': 'f', 'm/d': null, 'm/d/x': 'x' }, { eager: true, unlisted: ['m'] });
+    assert.equal(synchronously(s.fs, k('m/f')), 'EAGAIN', 'a name the mount holds');
+    assert.equal(synchronously(s.fs, k('m/nope')), 'EAGAIN', 'nor an absence there');
+    assert.equal((await s.fs.stat(k('m/f'))).size, 1, 'an awaited stat looks it up');
+    assert.equal(synchronously(s.fs, k('m/nope')), 'EAGAIN', 'a lookup lists nothing');
+    assert.deepEqual((await s.fs.readdir(k('m'))).map((entry) => entry.name).sort(), ['d', 'f']);
+    assert.equal(synchronously(s.fs, k('m/nope')), null, 'once listed, a name it did not name is absent');
+    assert.equal(synchronously(s.fs, k('m/d/x')), 'EAGAIN', 'a directory its listing learned is not whole');
+    assert.equal(await s.view.list(`${ROOT}/m`), true);
+    assert.equal(synchronously(s.fs, k('m/d/x')), 'EAGAIN', 'nor after another listing of its parent');
+    assert.deepEqual((await s.fs.readdir(k('m/d'))).map((entry) => entry.name), ['x']);
+    assert.equal(synchronously(s.fs, k('m/d/nope')), null, 'until it is listed itself');
+  },
+  async 'a directory a lookup learned under a mount is not whole'() {
+    const s = await storeSession({ m: null, 'm/d': null, 'm/d/x': 'x' }, { eager: true, unlisted: ['m'] });
+    assert.equal((await s.fs.stat(k('m/d/x'))).size, 1);
+    assert.equal(synchronously(s.fs, k('m/d/nope')), 'EAGAIN');
+    assert.equal(synchronously(s.fs, k('m/nope')), 'EAGAIN');
+  },
+  async 'a barrier with no answer repairs from the store\'s floor, listing nothing'() {
+    const s = await storeSession({ f: 'one' }, { eager: true });
+    await s.kernel.writeFile(k('g'), enc.encode('g'));
+    const listings = s.calls.fsList ?? 0;
+    s.fail('fsAcquire');
+    assert.equal(await s.fs.catchUp(), true);
+    assert.equal(s.calls.fsList ?? 0, listings, 'no listing');
+    assert.equal(s.view.repairOwed(), false);
+    assert.equal(synchronously(s.fs, k('g')).size, 1);
+  },
+  async 'a poison repairs by listing again, fetching only what changed'() {
+    const s = await storeSession({ f: 'one', g: 'two' }, { eager: true });
+    assert.equal(dec.decode(await s.fs.readFile(k('f'))), 'one');
+    assert.equal(dec.decode(await s.fs.readFile(k('g'))), 'two');
+    await s.kernel.writeFile(k('g'), enc.encode('TWO'));
+    const before = s.reads.length;
+    s.poison();
+    assert.equal(await s.fs.catchUp(), true);
+    const read = s.reads.slice(before).flat();
+    assert.ok(read.includes(`/${ROOT}/g`), 'the changed file is fetched');
+    assert.ok(!read.includes(`/${ROOT}/f`), 'the unchanged one is not');
+    assert.equal(synchronously(s.fs, k('g'), 'readFile'), 'TWO');
+    assert.equal(synchronously(s.fs, k('f'), 'readFile'), 'one');
+  },
+  async 'a repair that cannot list serves no old bytes, and stays owed until one can'() {
+    const s = await storeSession({ f: 'one' }, { eager: true });
+    assert.equal(dec.decode(await s.fs.readFile(k('f'))), 'one');
+    await s.kernel.writeFile(k('f'), enc.encode('two'));
+    s.poison();
+    s.fail('fsList');
+    await s.fs.catchUp();
+    assert.notEqual(synchronously(s.fs, k('f'), 'readFile'), 'one', 'never the old bytes');
+    assert.equal(s.view.repairOwed(), true);
+    assert.equal(await s.fs.catchUp(), true);
+    assert.equal(s.view.repairOwed(), false);
+    assert.equal(synchronously(s.fs, k('f'), 'readFile'), 'two');
+  },
+  async 'a barrier that joined a repair asks again'() {
+    const s = await storeSession({ f: 'one' }, { eager: true });
+    s.poison();
+    const listing = s.hold('fsList');
+    const first = s.fs.catchUp();
+    await listing();
+    await s.kernel.writeFile(k('g'), enc.encode('g'));
+    s.fs.inbound();
+    const asked = s.calls.fsAcquire;
+    const second = s.view.barrier();
+    await sleep(20);
+    s.release('fsList');
+    await Promise.all([first, second]);
+    assert.ok(s.calls.fsAcquire > asked, 'the joiner asked after the repair');
+    assert.equal(synchronously(s.fs, k('g')).size, 1);
+  },
+  async 'a fill asked before a poison installs nothing'() {
+    const s = await storeSession({ f: 'one!', other: 'o' }, { eager: true });
+    const asked = s.hold('fsReadBatch');
+    const read = s.fs.readFile(k('f'));
+    await asked();
+    await s.kernel.writeFile(k('f'), enc.encode('two!!'));
+    s.poison();
+    await s.fs.catchUp();
+    s.release('fsReadBatch');
+    await read;
+    assert.notEqual(synchronously(s.fs, k('f'), 'readFile'), 'one!', 'never the bytes from before the repair');
+  },
+  async 'under a trusted read lease, input alone takes no barrier'() {
+    const s = await storeSession({ f: 'one' }, { eager: true, delegated: true });
+    assert.equal(await s.fs.catchUp(), true);
+    const asked = s.calls.fsAcquire;
+    s.fs.inbound();
+    assert.equal(await s.fs.catchUp({ viaIo: true }), true);
+    assert.equal(s.calls.fsAcquire, asked, 'no ACQUIRE');
+    assert.equal(s.fs.stats().leasedBarriers, 1);
+  },
+  async 'under a trusted read lease, the process\'s own change at the session takes the barrier'() {
+    const s = await storeSession({ f: 'one' }, { eager: true, delegated: true });
+    assert.equal(await s.fs.catchUp(), true);
+    await s.fs.chmod(k('f'), 0o600);
+    const asked = s.calls.fsAcquire;
+    s.fs.inbound();
+    assert.equal(await s.fs.catchUp({ viaIo: true }), true);
+    assert.equal(s.calls.fsAcquire, asked + 1, 'an ACQUIRE');
+    assert.equal(synchronously(s.fs, k('f')).mode & 0o777, 0o600);
+  },
+  async 'under a trusted read lease, a repair owed takes the barrier'() {
+    const s = await storeSession({ f: 'one' }, { eager: true, delegated: true });
+    assert.equal(await s.fs.catchUp(), true);
+    s.poison();
+    s.fail('fsList');
+    await s.fs.catchUp();
+    assert.equal(s.view.repairOwed(), true);
+    const asked = s.calls.fsAcquire;
+    s.fs.inbound();
+    await s.fs.catchUp({ viaIo: true });
+    assert.equal(s.calls.fsAcquire, asked + 1, 'an ACQUIRE');
   },
   async 'a delivery\'s arguments keep the process\'s own debt through the session\'s parse'() {
     const authority = createAuthority();

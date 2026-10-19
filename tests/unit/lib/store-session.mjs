@@ -26,9 +26,17 @@ export const k = (p) => `/${ROOT}/${p}`;
  * A session with `tree` (path → content, or null for a directory) under the
  * user's home, and the resident filesystem over a store: listed on demand,
  * as a WASI process has it, or (`eager`) enumerated at boot, as Node's is.
- * `calls` counts each supervisor call by name.
+ * `unlisted` names directories a mount left unlisted, as a composite lists
+ * them (composite.ts): marked, their entries not in the session's listing.
+ * `calls` counts each supervisor call by name; `reads` is each lstat batch's
+ * paths and each read's. `delegated`: the process is a delegation's holder
+ * (its waves and grants through the same session), which asks a read lease
+ * with each barrier; it takes no subtree, so each change it makes is one
+ * outside a grant.
+ * @param {Record<string, string | null>} tree
+ * @param {{ eager?: boolean, unlisted?: string[], delegated?: boolean }} [options]
  */
-export async function storeSession(tree, { eager = false } = {}) {
+export async function storeSession(tree, { eager = false, unlisted = [], delegated = false } = {}) {
   const harness = createSqliteVfsTestHarness();
   const engine = new SqliteVFS(harness.sql, harness.ctx);
   const files = new ProcessFiles(engine);
@@ -42,10 +50,15 @@ export async function storeSession(tree, { eager = false } = {}) {
     await kernel.chown(k(path), 1000, 1000);
   }
   const holds = new Set();
+  const failing = new Set();
   const parked = [];
+  /** @type {Record<string, number>} */
   const calls = {};
+  /** @type {string[][]} */
+  const reads = [];
   const answered = async (name, compute) => {
     calls[name] = (calls[name] ?? 0) + 1;
+    if (failing.delete(name)) throw new Error('Network connection lost.');
     const answer = await compute();
     if (!holds.delete(name)) return answer;
     const release = Promise.withResolvers();
@@ -53,16 +66,28 @@ export async function storeSession(tree, { eager = false } = {}) {
     await release.promise;
     return answer;
   };
+  const mounts = unlisted.map((dir) => `${ROOT}/${dir}`);
+  /** The session's listing page, as a composite lists a mount it was not asked to walk. */
+  const listed = (page) => (mounts.length === 0 ? page : {
+    ...page,
+    entries: page.entries
+      .filter((entry) => !mounts.some((mount) => entry.path.startsWith(`${mount}/`)))
+      .map((entry) => (mounts.includes(entry.path) ? { ...entry, unlisted: `/${entry.path}` } : entry)),
+  });
   let poisonNext = false;
+  /** @type {any} */
   const supervisor = {
     // A poison is the session's answer to an ACQUIRE from no cursor.
-    fsAcquire: (...args) => answered('fsAcquire', () => (poisonNext ? (poisonNext = false, authority.acquire(null, 0, { namespace: true })) : authority.acquire(...args))),
-    fsList: (...args) => answered('fsList', () => authority.list(...args)),
+    fsAcquire: (epoch, cursor, options) => answered('fsAcquire', () => (poisonNext
+      ? (poisonNext = false, authority.acquire(null, 0, { namespace: true }))
+      : authority.acquire(epoch, cursor, options))),
+    fsList: (after, limit) => answered('fsList', async () => listed(await authority.list(after, limit))),
     readdir: (path) => answered('readdir', () => authority.readdir(path)),
     readlink: (path) => authority.readlink(path),
     fsListTree: (root, maxEntries) => answered('fsListTree', () => subtreeListing(authority, root, maxEntries)),
     stat: (path, options) => authority.stat(path, options),
     fsReadBatch: (requests) => answered('fsReadBatch', async () => {
+      reads.push(requests.map((request) => request.path));
       const out = [];
       for (const request of requests) {
         try {
@@ -85,7 +110,21 @@ export async function storeSession(tree, { eager = false } = {}) {
   }
   const device = (await authority.stat('/')).dev;
   const view = store.view.namespaceView(supervisor, device, USER);
-  const fs = residentFilesystem(authority, view);
+  const fs = residentFilesystem(authority, view, delegated ? {
+    session: {
+      openWriter: async () => null,
+      writeBatchStream: async (stream, _fence, owner) => authority.writeStream(stream, owner === undefined ? {} : { mutationOwner: owner }),
+      grants: {
+        acquire: async (path, delegate) => authority.acquireExclusiveMutation(path, { delegate }),
+        release: async (owner) => { authority.releaseExclusiveMutation(owner); },
+        awaitRecall: (owner, waitMs) => authority.awaitRecall(owner, waitMs),
+        recalled: async (owner, kind) => { authority.recalled(owner, kind); },
+      },
+    },
+    grantAfter: Number.MAX_SAFE_INTEGER,
+    readLeases: () => true,
+    isHomeRoot: (key) => key === ROOT,
+  } : undefined);
   return {
     kernel,
     authority,
@@ -93,8 +132,11 @@ export async function storeSession(tree, { eager = false } = {}) {
     view,
     fs,
     calls,
+    reads,
     /** The next barrier is answered with a poison. */
     poison() { poisonNext = true; },
+    /** The next call of `name` fails, as a dropped connection does. */
+    fail(name) { failing.add(name); },
     /** Park the next reply of `name`; the returned wait resolves once something asked it. */
     hold(name) {
       holds.add(name);
@@ -106,4 +148,3 @@ export async function storeSession(tree, { eager = false } = {}) {
     release(name) { parked.splice(parked.findIndex((p) => p.name === name), 1)[0].release(); },
   };
 }
-
