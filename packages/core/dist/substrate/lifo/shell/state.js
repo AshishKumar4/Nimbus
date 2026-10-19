@@ -6,7 +6,7 @@ export function createShellState(env, cwd, jobTable) {
     return withCwd({
         env: shellEnv,
         arrays: new Map(),
-        options: { errexit: false, nounset: false, pipefail: false },
+        options: { errexit: false, nounset: false, pipefail: false, posix: false },
         traps: new Map(),
         readonlyNames: new Set(),
         aliases: new Map(),

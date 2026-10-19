@@ -25,6 +25,7 @@ import { exitCodeForAbortSignal } from '../substrate/lifo/shell/signals.js';
 import { BASH_STEP_TASK, BASH_REQUEST_TASK } from './compiled-bodies.generated.js';
 import { installedPath } from './runtime-manifest.js';
 import { hostImage, withHostView } from './process-files.js';
+import { facetAnswer } from './facet-host.js';
 import { z } from 'zod';
 import { BASH_RUNNER_BODY_SRC } from './bash-runner.generated.js';
 import { BASH_RUNNER, CRED_KERNEL, gateSyncLaunch, requireVfsCred } from './os-contracts.js';
@@ -127,7 +128,7 @@ export async function createBashFacetSession(deps) {
                         body: JSON.stringify(args),
                         signal,
                     }));
-                    raw = await response.json();
+                    raw = await facetAnswer(response);
                 }
                 else {
                     raw = await facet.submit(BASH_STEP_TASK, args, { signal });

@@ -1,14 +1,66 @@
-import { type Token } from './types.js';
+import { TokenKind, type Token } from './types.js';
+/** Every token of `input`, read at once. */
 export declare function lex(input: string): Token[];
+/** Text a reader reads: the input, or an alias's text read in place of its name (`alias`; `blank`: it ends in a blank). */
+interface Frame {
+    readonly input: string;
+    at: number;
+    readonly alias: string | null;
+    readonly blank: boolean;
+}
 /**
- * The tokens of `input`, and whether it ends inside a comment, which takes the
- * rest of its line: what would follow it there is no word (an alias whose text
- * ends in `#…`).
+ * Where a reader is between tokens: the text it reads at each depth, and the
+ * here-documents whose bodies follow its next newline (the first
+ * `pendingCount` of `pending`, which a line's words only add to).
  */
-export declare function lexText(input: string): {
-    tokens: Token[];
-    endsInComment: boolean;
-};
+export interface ReaderMark {
+    readonly frames: readonly Frame[];
+    readonly pending: readonly HeredocDelimiter[];
+    readonly pendingCount: number;
+    readonly operator: TokenKind.Heredoc | TokenKind.HeredocStripTabs | null;
+    readonly checkNext: boolean;
+}
+/**
+ * The shell's reader: `input`'s tokens a batch at a time (a token, or a
+ * newline and the here-document bodies it opens), as its parser asks for
+ * them, so that the parser can go back to where a token began and read a
+ * word there in a mode of its own (the regular expression after `=~`), or
+ * read an alias's text in place of a word (pushAlias), as bash's reader
+ * does: a comment in that text takes the rest of the line it is read in.
+ */
+export declare class TokenReader {
+    private frames;
+    private pending;
+    private operator;
+    private checkNext;
+    constructor(input: string);
+    mark(): ReaderMark;
+    reset(mark: ReaderMark): void;
+    /** Read `alias`'s text `value` next, in place of its name: none of its words, or the next one's after it, is `alias` again until it is read. */
+    pushAlias(alias: string, value: string): void;
+    /** The text being read: an alias's ends where its text does, and the text it was read in goes on. */
+    private get frame();
+    /** The aliases whose text is being read: their names expand nothing read now. */
+    private aliasesInUse;
+    /** The next batch: a token, or a newline and the here-document bodies it opens; at the input's end, EOF. */
+    next(): Token[];
+    private read;
+    /**
+     * The word after `=~`, as bash's reader reads a regular expression: up to a
+     * blank or an operator, except that its parentheses nest and, inside them,
+     * blanks, newlines, `#` and operators are its own, and `|` is its own
+     * anywhere. A `)` outside them ends it, for the conditional to read. Inside
+     * them, it goes on past the end of an alias's text into the text the alias
+     * was read in, with a blank between unless the alias's text ended in one or
+     * in an operator's character (bash's reader gives that blank). Null when no
+     * word begins here (a comment, a newline, an operator); `unclosed` when the
+     * input ends inside its parentheses.
+     */
+    readRegexWord(): {
+        token: Token;
+        unclosed: boolean;
+    } | null;
+}
 export type ContinuationState = 'single' | 'double' | 'backslash';
 /**
  * How `input` leaves the lexer at end of input: inside an unclosed single or
@@ -18,6 +70,11 @@ export type ContinuationState = 'single' | 'double' | 'backslash';
  * Comments are skipped exactly where lex() treats `#` as one.
  */
 export declare function continuationState(input: string): ContinuationState | null;
+type HeredocDelimiter = {
+    delimiter: string;
+    quoted: boolean;
+    stripTabs: boolean;
+};
 /** Whether `line` ends a here-document opened with `delimiter` (`stripTabs`: by `<<-`, whose lines lose their leading tabs). */
 export declare function endsHeredoc(line: string, heredoc: {
     readonly delimiter: string;
@@ -52,4 +109,5 @@ export declare function readAnsiCQuote(input: string, pos: number): {
     text: string;
     end: number;
 };
+export {};
 //# sourceMappingURL=lexer.d.ts.map

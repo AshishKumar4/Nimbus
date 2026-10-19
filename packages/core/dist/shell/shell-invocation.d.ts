@@ -3,6 +3,7 @@ export type ShellInvocationOptions = {
     errexit?: boolean;
     nounset?: boolean;
     pipefail?: boolean;
+    posix?: boolean;
 };
 export type ShellInvocation = {
     kind: 'command';

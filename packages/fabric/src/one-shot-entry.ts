@@ -1,3 +1,5 @@
+import { TASK_BODY_ERROR_SOURCE } from './task-body-error.js';
+
 /**
  * one-shot-entry.ts — how a one-shot program its host builds is entered: by
  * `run`, from that host (runOneShot), with the host's capability. A staged
@@ -27,13 +29,14 @@ export function enteredByRun<C extends { mainModule: string; modules: Record<str
 function entrySource(mainModule: string): string {
   return `import { WorkerEntrypoint } from "cloudflare:workers";
 import program from ${JSON.stringify(`./${mainModule}`)};
+${TASK_BODY_ERROR_SOURCE}
 export default class extends WorkerEntrypoint {
   async run(request, supervisor, ended) {
     ended().then((reason) => { if (reason !== null) this.ctx.abort(reason); }, () => {});
     try {
       return await program.fetch(request, { ...this.env, SUPERVISOR: supervisor }, this.ctx);
     } catch (error) {
-      throw Object.assign(error instanceof Error ? error : new Error(String(error)), { ${RUN_ENTERED}: true });
+      throw Object.assign(__nimbusTaskBodyError(error instanceof Error ? error : new Error(String(error)), request), { ${RUN_ENTERED}: true });
     }
   }
 }

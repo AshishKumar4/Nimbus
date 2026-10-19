@@ -3,7 +3,7 @@
 // rule, over a namespace — and what it leaves out.
 
 import assert from 'node:assert/strict';
-import { linkTargetOf, planFacetData, PACKAGE_DATA_MAX_BYTES } from '../../packages/worker/src/facets/data-plan.ts';
+import { linkTargetOf, planFacetData, planStylesheetSources, PACKAGE_DATA_MAX_BYTES, STYLESHEET_SOURCE_MAX_FILES } from '../../packages/worker/src/facets/data-plan.ts';
 import { findStaticFsReferences } from '../../packages/core/src/runtime/static-fs-refs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles, ProcessView } from '../../packages/core/src/runtime/process-files.ts';
@@ -32,7 +32,31 @@ function namespace(files) {
       ? { entries: entries.slice(0, 40), next: entries.length > 40 ? entries[39].path : null }
       : { entries: entries.slice(40), next: null },
     readText: async (p) => all.get(p.replace(/^\/+/, ''))?.text ?? null,
-    stat: async (p) => { const e = all.get(p.replace(/^\/+/, '')); return e ? { kind: e.kind, size: e.size } : null; },
+    // As a lookup resolves a path: through every link on it.
+    stat: async (p) => {
+      let segs = p.replace(/^\/+/, '').split('/');
+      for (let i = 1, hops = 0; i <= segs.length; i++) {
+        const e = all.get(segs.slice(0, i).join('/'));
+        if (e?.kind !== 'symlink') continue;
+        if (++hops > 40) return null;
+        const base = e.target.startsWith('/') ? [] : segs.slice(0, i - 1);
+        const resolved = [];
+        for (const seg of [...base, ...e.target.split('/'), ...segs.slice(i)]) {
+          if (seg === '' || seg === '.') continue;
+          if (seg === '..') resolved.pop(); else resolved.push(seg);
+        }
+        segs = resolved;
+        i = 0;
+      }
+      const e = all.get(segs.join('/'));
+      return e ? { kind: e.kind, size: e.size } : null;
+    },
+    readdir: async (p) => {
+      const dir = p.replace(/^\/+/, '');
+      if (dir !== '' && all.get(dir)?.kind !== 'directory') return null;
+      const prefix = dir === '' ? '' : dir + '/';
+      return entries.filter((e) => e.path.startsWith(prefix) && e.path !== dir && !e.path.slice(prefix.length).includes('/'));
+    },
     linkLookups: 0,
     async linkTarget(p) {
       this.linkLookups++;
@@ -387,5 +411,228 @@ assert.equal(noTs.rules.typescript.files, 0);
   await files.releaseProcess(8);
   harness.db.close();
 }
+
+// A process carrying Tailwind's oxide holds the sources its stylesheets name
+// outside the working tree, through their relative imports: the scanner's
+// reads cannot wait. A glob holds its directory prefix; `not` and inline()
+// name nothing to hold. Without oxide, no stylesheet is read.
+{
+  const tree = {
+    'home/user/app/package.json': '{"name":"app"}',
+    'home/user/app/src/index.css': '@import "tailwindcss";\n@source "./local";\n@source inline("underline");\n@import "../../theme/theme.css";\n@import url("../../unused/unused.css");',
+    'home/user/theme/theme.css': '@source "../shared";\n@source "../{kit,app}/**/*.tsx";\n@source not "../ignored";\n@source "/home/user/app/../linked/**";\n@source "../shared/.next/templates";\n@source "../quoted\'s";\n@source "../range/{1..1001}.tsx";\n@media screen { @import "./deeper.css"; }',
+    'home/user/theme/deeper.css': '@source "../deep/*.tsx";',
+    'home/user/unused/unused.css': '@source "../never";',
+    'home/user/deep/Deep.tsx': 'd',
+    'home/user/never/Never.tsx': 'n',
+    'home/user/real-linked/L.tsx': 'l',
+    'home/user/linked': { kind: 'symlink', size: 0, target: '/home/user/real-linked' },
+    'home/user/shared/.next/cache.js': 'c',
+    'home/user/shared/.next/templates/Card.tsx': 't',
+    'home/user/shared/.cache': { kind: 'symlink', size: 0, target: '/home/user/srv-cache' },
+    'home/user/srv-cache/c.js': 'c',
+    'home/user/shared/widgets': { kind: 'symlink', size: 0, target: '/home/user/srv-widgets' },
+    'home/user/srv-widgets/Old.tsx': 'w',
+    "home/user/quoted's/Q.tsx": 'q',
+    'home/user/range/1001.tsx': 'r',
+    'home/user/range/1002.tsx': 'r',
+    'home/user/app/src/local/a.tsx': 'x',
+    'home/user/shared/Card.tsx': '<div class="bg-teal-700" />',
+    'home/user/shared/node_modules/dep/index.js': 'x',
+    'home/user/kit/ui/Button.tsx': 'y',
+    'home/user/ignored/Thing.tsx': 'z',
+    'home/user/app/node_modules/@tailwindcss/oxide/package.json': '{"name":"@tailwindcss/oxide"}',
+    'home/user/app/node_modules/@tailwindcss/oxide/index.js': 'module.exports = {}',
+  };
+  const ns = namespace(tree);
+  let listed = 0;
+  for (let after = null; ;) { const page = await ns.list(after); listed += page.entries.length; if (page.next === null) break; after = page.next; }
+  const reads = [];
+  const readText = ns.readText;
+  ns.readText = async (p) => { reads.push(p); return readText(p); };
+  const oxide = ['home/user/app/node_modules/@tailwindcss/oxide/index.js'];
+  const withOxide = await planFacetData(ns, { cwd: '/home/user/app', home: '/home/user', closure: oxide, refs: [] });
+  const held = new Set(withOxide.paths);
+  assert.ok(held.has('home/user/shared/Card.tsx'), 'a source outside the working tree is held, from a sheet outside it that an import after an @source names');
+  assert.ok(held.has('home/user/kit/ui/Button.tsx'), 'each brace alternative holds its directory prefix');
+  assert.ok(held.has('home/user/deep/Deep.tsx'), 'an import nested in a rule is followed, as Tailwind inlines it');
+  assert.ok(held.has('home/user/real-linked/L.tsx'), 'an absolute source with dot segments, through a link, holds its target');
+  assert.ok(!held.has('home/user/never/Never.tsx'), 'an @import url() is not followed');
+  assert.ok(!held.has('home/user/ignored/Thing.tsx'), '`@source not` holds nothing');
+  assert.ok(!held.has('home/user/shared/node_modules/dep/index.js'), 'a source\'s dependencies are not held');
+  assert.ok(!held.has('home/user/shared/.next/cache.js'), 'nor its caches: the project rule\'s exclusions');
+  assert.ok(held.has('home/user/shared/.next/templates/Card.tsx'), 'a root named below an excluded directory of another root holds its files');
+  assert.ok(!held.has('home/user/srv-cache/c.js'), 'an excluded name is excluded through a link, by its name below the root');
+  assert.ok(held.has('home/user/srv-widgets/Old.tsx') && withOxide.sourceRoots.includes('/home/user/srv-widgets'), 'a directory a link leads to out of the roots is held, and pushed');
+  assert.ok(held.has("home/user/quoted's/Q.tsx"), 'a quote is a filename character');
+  assert.ok(held.has('home/user/range/1001.tsx') && !held.has('home/user/range/1002.tsx'), 'a range of any length expands, to the files it names');
+  assert.deepEqual(withOxide.sourceRoots.slice(0, 4), ['/home/user/shared', '/home/user/kit', '/home/user/real-linked', '/home/user/shared/.next/templates'], 'the plan names the roots outside the tree, for the barriers to push');
+  assert.ok(withOxide.sourceRoots.includes("/home/user/quoted's") && withOxide.sourceRoots.includes('/home/user/range/1001.tsx') && withOxide.sourceRoots.includes('/home/user/deep'));
+  assert.equal(withOxide.rules['stylesheet-source'].files, 8);
+  assert.equal(withOxide.names, listed, 'the namespace is counted once, however many walks');
+  const without = await planFacetData(ns, { cwd: '/home/user/app', home: '/home/user', closure: [], refs: [] });
+  assert.ok(!new Set(without.paths).has('home/user/shared/Card.tsx'), 'without oxide, the source is not held');
+  assert.deepEqual(without.sourceRoots, []);
+  assert.deepEqual(reads.filter((p) => p.endsWith('.css')).sort(), ['home/user/app/src/index.css', 'home/user/theme/deeper.css', 'home/user/theme/theme.css'], 'only an oxide process reads the stylesheets, each once');
+  // A one-shot, which lists no namespace, applies the same rule from the sheets its bundle holds.
+  const direct = await planStylesheetSources(ns, { cwd: '/home/user/app', home: '/home/user', sheets: ['home/user/app/src/index.css'] });
+  assert.deepEqual(direct.files.map((f) => f.path).sort(), withOxide.paths.filter((p) => !p.startsWith('home/user/app/') && !p.startsWith('home/user/theme/')).sort(), 'a one-shot holds the same files, from its stylesheets alone');
+  assert.deepEqual(direct.roots, withOxide.sourceRoots);
+}
+
+// A source can name a tree of any size, or as many files: the rule holds at
+// most STYLESHEET_SOURCE_MAX_FILES files, each under the package-data bound,
+// and returns where it stopped, for the launch to say so. The rest are
+// learned from the scanner's misses.
+{
+  const tree = {
+    'home/user/app/src/index.css': '@import "tailwindcss";\n@source "../..";',
+    'home/user/aaa/small.tsx': 'held',
+    'home/user/aab/huge.tsx': big(PACKAGE_DATA_MAX_BYTES),
+  };
+  for (let i = 0; i < STYLESHEET_SOURCE_MAX_FILES + 50; i++) tree[`home/user/big/f${String(i).padStart(5, '0')}.tsx`] = 'x';
+  const ns = namespace(tree);
+  const found = await planStylesheetSources(ns, { cwd: '/home/user/app', home: '/home/user', sheets: ['home/user/app/src/index.css'] });
+  const held = new Set(found.files.map((f) => f.path));
+  assert.equal(found.files.length, STYLESHEET_SOURCE_MAX_FILES, 'the walk holds no more than the bound');
+  assert.ok(held.has('home/user/aaa/small.tsx'), 'a file under the bounds is held');
+  assert.ok(!held.has('home/user/aab/huge.tsx'), 'a file over the package-data bound is not');
+  assert.equal(found.stopped, '/home/user', 'it names where it stopped');
+  const planned = await planFacetData(ns, { cwd: '/home/user/app', home: '/home/user', closure: ['home/user/app/node_modules/@tailwindcss/oxide/index.js'], refs: [] });
+  assert.equal(planned.sourcesStopped, '/home/user', 'a resident\'s plan carries where it stopped');
+
+  // Files a source names one by one count toward the same bound.
+  const named = { 'home/user/app/src/index.css': `@import "tailwindcss";\n@source "../../each/{0..${STYLESHEET_SOURCE_MAX_FILES + 49}}.tsx";` };
+  for (let i = 0; i < STYLESHEET_SOURCE_MAX_FILES + 50; i++) named[`home/user/each/${i}.tsx`] = 'x';
+  const byName = await planStylesheetSources(namespace(named), { cwd: '/home/user/app', home: '/home/user', sheets: ['home/user/app/src/index.css'] });
+  assert.equal(byName.files.length, STYLESHEET_SOURCE_MAX_FILES, 'files named one by one are bounded too');
+  assert.ok(byName.stopped !== null, 'and say where they stopped');
+}
+
+// The project's stylesheets behind its links are its stylesheets: a sheet
+// is where its links lead, which what it names is relative to, as Tailwind
+// resolves it, and it is read once however many names lead to it.
+{
+  const tree = {
+    'home/user/app/package.json': '{"name":"app"}',
+    'home/user/app/src/index.css': { kind: 'symlink', size: 0, target: '/srv/theme/index.css' },
+    'srv/theme/index.css': '@source "../components";',
+    'srv/components/A.tsx': 'a',
+    'home/user/app/styles': { kind: 'symlink', size: 0, target: '/srv/kit' },
+    'srv/kit/kit.css': '@source "../kit-src";',
+    'srv/kit-src/B.tsx': 'b',
+    'home/user/app/src/main.css': '@import "../../theme/alias.css";\n@import "/srv/design/theme.css";',
+    'home/user/theme/alias.css': { kind: 'symlink', size: 0, target: '/srv/design/theme.css' },
+    'srv/design/theme.css': '@source "./components";',
+    'srv/design/components/C.tsx': 'c',
+    'home/user/theme/components/Wrong.tsx': 'w',
+    'home/user/app/node_modules/@tailwindcss/oxide/package.json': '{"name":"@tailwindcss/oxide"}',
+    'home/user/app/node_modules/@tailwindcss/oxide/index.js': 'module.exports = {}',
+  };
+  const ns = namespace(tree);
+  const reads = [];
+  const readText = ns.readText;
+  ns.readText = async (p) => { reads.push(p); return readText(p); };
+  const plan = await planFacetData(ns, { cwd: '/home/user/app', home: '/home/user', closure: ['home/user/app/node_modules/@tailwindcss/oxide/index.js'], refs: [] });
+  const held = new Set(plan.paths);
+  assert.ok(held.has('srv/components/A.tsx'), 'a project stylesheet that is a link names its sources from where it leads');
+  assert.ok(held.has('srv/kit-src/B.tsx'), 'and one in a linked project directory');
+  assert.ok(held.has('srv/design/components/C.tsx'), 'an imported sheet behind a link names its sources from where it is');
+  assert.ok(!held.has('home/user/theme/components/Wrong.tsx'), 'not from where the link is');
+  assert.equal(reads.filter((p) => p === 'srv/design/theme.css').length, 1, 'a sheet two names lead to is read once');
+}
+
+// A directory's exclusions are of the name it is walked under: the order of
+// the @source directives does not change what is held.
+{
+  const tree = {
+    'home/user/.cache/widgets/Card.tsx': 'c',
+    'home/user/shared/widgets': { kind: 'symlink', size: 0, target: '/home/user/.cache/widgets' },
+    'home/user/shared/S.tsx': 's',
+    'home/user/app/a.css': '@source "/home/user/.cache/widgets";\n@source "/home/user/shared";',
+    'home/user/app/b.css': '@source "/home/user/shared";\n@source "/home/user/.cache/widgets";',
+  };
+  const ns = namespace(tree);
+  for (const sheet of ['home/user/app/a.css', 'home/user/app/b.css']) {
+    const found = await planStylesheetSources(ns, { cwd: '/home/user/app', home: '/home/user', sheets: [sheet] });
+    assert.deepEqual(found.files.map((f) => f.path).sort(), ['home/user/.cache/widgets/Card.tsx', 'home/user/shared/S.tsx'],
+      `${sheet}: a directory a root leaves out is walked under another root's name for it`);
+  }
+}
+
+// A source on a mount the process's listing walks only where its launch
+// names: the plan names where it read there, so the listing the process
+// boots from holds what the plan holds, and the plan counts the names that
+// adds. The source may be the mount, a directory above it, a file on it, or
+// a directory below its root, whose listing brings its parents' entries.
+async function mountedSource(label, sheet, mounts, sqlite, held) {
+  const harness = createSqliteVfsTestHarness();
+  const files = new ProcessFiles(new SqliteVFS(harness.sql, harness.ctx));
+  const text = (value) => new TextEncoder().encode(value);
+  const kernel = files.bind({ pid: 8, cred: CRED_KERNEL });
+  const write = async (path, value) => {
+    await kernel.mkdir(path.slice(0, path.lastIndexOf('/')), { recursive: true });
+    await kernel.writeFile(path, text(value));
+  };
+  await write('/home/user/app/src/index.css', sheet);
+  await write('/home/user/app/node_modules/@tailwindcss/oxide/index.js', 'module.exports = {}');
+  for (const [path, value] of Object.entries(sqlite)) await write(path, value);
+  for (const [point, tree] of Object.entries(mounts)) {
+    const device = new MemoryVFS();
+    for (const [path, value] of Object.entries(tree)) {
+      device.mkdir(path.slice(0, path.lastIndexOf('/')) || '/', { recursive: true });
+      device.writeFile(path, text(value));
+    }
+    await kernel.mkdir(point, { recursive: true });
+    files.vfs.mount(point, device);
+  }
+  const binding = { pid: 7, cred: CRED_KERNEL };
+  const bridge = files.bind(binding);
+  const view = new ProcessView(bridge);
+  files.nameLaunch(binding, () => ['/home/user/app']);
+  const listing = async () => {
+    const out = [];
+    for (let after = null; ;) {
+      const page = await bridge.list(after, 500);
+      out.push(...page.entries.map((entry) => entry.path));
+      if (page.next === null) return out;
+      after = page.next;
+    }
+  };
+  const plan = await planFacetData({
+    list: async (after) => bridge.list(after, 500),
+    readText: async (path) => view.readFileString(path).catch(() => null),
+    linkTarget: (path) => linkTargetOf(bridge, path),
+    stat: async (path) => { const st = await view.stat(path).catch(() => null); return st && { kind: st.type, size: st.size }; },
+    readdir: async (dir) => {
+      const entries = await Promise.resolve(bridge.readdir('/' + dir)).catch(() => null);
+      if (entries === null) return null;
+      return Promise.all(entries.map(async ({ name, type }) => {
+        const path = dir === '' ? name : `${dir}/${name}`;
+        const st = type === 'file' ? await view.stat(path).catch(() => null) : null;
+        return { path, kind: type, size: st?.size ?? 0 };
+      }));
+    },
+  }, {
+    cwd: '/home/user/app', home: '/home/user', refs: [],
+    closure: ['home/user/app/node_modules/@tailwindcss/oxide/index.js'],
+    nameSources: (read) => files.nameLaunch(binding, () => read),
+  });
+  const booted = await listing();
+  for (const path of held) {
+    assert.ok(plan.paths.includes(path), `${label}: the mount's source ${path} is held: ${JSON.stringify(plan.paths)}`);
+    assert.ok(booted.includes(path), `${label}: and the listing the process boots from holds it`);
+  }
+  assert.equal(plan.names, booted.length, `${label}: the plan counts the names that listing holds`);
+  await files.releaseProcess(7);
+  await files.releaseProcess(8);
+  harness.db.close();
+}
+await mountedSource('the mount', '@source "/shared-ui";', { '/shared-ui': { '/ui/Card.tsx': 'c' } }, {}, ['shared-ui/ui/Card.tsx']);
+await mountedSource('a directory above it', '@source "/shared";', { '/shared/ui': { '/Card.tsx': 'c' } },
+  { '/shared/S.tsx': 's' }, ['shared/ui/Card.tsx', 'shared/S.tsx']);
+await mountedSource('a file on it', '@source "/files/Card.tsx";', { '/files': { '/Card.tsx': 'c', '/Other.tsx': 'o', '/sub/X.tsx': 'x' } }, {}, ['files/Card.tsx']);
+await mountedSource('a directory below its root', '@source "/kit/ui/buttons";',
+  { '/kit': { '/ui/buttons/B.tsx': 'b', '/ui/cards/C.tsx': 'c', '/top.txt': 't' } }, {}, ['kit/ui/buttons/B.tsx']);
 
 console.log('data-plan: ok');

@@ -1,4 +1,4 @@
-import type { ScriptNode, CompoundCommandNode } from './types.js';
+import type { CompoundCommandNode } from './types.js';
 import { ProcessView } from '../../../runtime/process-files.js';
 import type { NimbusFilesystemAuthority } from '../../../runtime/os-contracts.js';
 import { type CommandRegistry } from '../commands/registry.js';
@@ -26,6 +26,9 @@ export declare class ErrexitSignal {
 export declare class ExitSignal {
     exitCode: number;
     constructor(exitCode: number);
+}
+/** A syntax error in the text eval or `.` reads (not one met running it, a command substitution's): theirs to answer. */
+export declare class TextSyntaxError extends Error {
 }
 /**
  * A function call past the nesting bound (functionNestingLimit): the rest of
@@ -106,6 +109,18 @@ type ExecutionIo = {
      */
     background?: boolean;
     scriptMode?: boolean;
+    /**
+     * The command word this shell's text last dispatched (null for a
+     * function's call), before its redirections: bash's this_shell_builtin,
+     * which decides whether a syntax error in eval's or `.`'s text is theirs
+     * (evalstring). One per line a shell reads (a nested bash or sh has its
+     * own), and only that shell's dispatches count: a child's (a subshell's, a
+     * substitution's, a pipeline's) are another process's.
+     */
+    dispatched?: {
+        readonly shell: Interpreter;
+        last: string | null;
+    };
     signal?: AbortSignal;
     positionals?: PositionalFrame;
     /** Host-supplied fields merged into each command's CommandContext. */
@@ -215,7 +230,8 @@ export declare class Interpreter {
     private inTrapAction;
     getLastExitCode(): number;
     setLastExitCode(exitCode: number): void;
-    executeScript(script: ScriptNode, terminalStdin?: TerminalInputStream): Promise<number>;
+    /** `input`'s lines, read as they run: the aliases defined when each is read are expanded in it. */
+    private linesOf;
     /**
      * Runs `script`'s lists. As lines a shell reads (`readsLines`: its own,
      * a sourced file's, a trap's; not an alias's text, which is part of the
@@ -262,21 +278,6 @@ export declare class Interpreter {
     private executeGroup;
     private executeSubshell;
     private executeCompoundList;
-    /**
-     * `cmd` with its command word's alias expanded, as bash's reader expands one:
-     * on the word as written, unquoted and before any expansion (`'p'` and `$c`
-     * are no alias). The alias's text is read as tokens in the word's place, and
-     * the command's other words follow as the words they are, never read again
-     * as text. Its assignments go before the first command that text makes, and
-     * its redirections after the last; before a compound command they are a
-     * syntax error, as bash's grammar has it. A text that ends in a comment takes
-     * the command's words and redirections written after it into it (the rest of
-     * the line, in bash; here, the rest of the command). An alias whose text ends in a
-     * blank has the next word checked too. None of the text's commands expands
-     * those aliases, or the ones this command was read within, again. Null when
-     * the word is no alias.
-     */
-    private aliasExpansion;
     private executeSimpleCommand;
     /**
      * execvp(3) of `argv`: argv[0] is found as a program is found (the

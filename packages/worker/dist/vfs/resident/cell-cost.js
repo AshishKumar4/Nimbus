@@ -7,6 +7,7 @@
 import { LEDGER_ROW_BYTES } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { RESIDENT_CHUNK_BYTES } from '../facet-resident-limits.js';
+import { stringCharCodeAt } from '@nimbus-sh/core/_shared/primordials.js';
 export { utf8Length };
 /** A row's allowance: what one row of 'file', 'chunk' or 'ns' is charged beside its payload. */
 export const RESIDENT_ROW_BYTES = LEDGER_ROW_BYTES;
@@ -17,6 +18,26 @@ export function residentBytes(value) {
         return new Uint8Array(value);
     return new Uint8Array(0);
 }
+/** The most UTF-16 units a chunk of text holds: its UTF-8 at most a chunk's bytes. */
+const TEXT_CHUNK_UNITS = Math.floor(RESIDENT_CHUNK_BYTES / 3);
+/**
+ * Where text's chunks end: at most TEXT_CHUNK_UNITS each, never inside a
+ * surrogate pair. SQLite keeps text as UTF-8, where half of a pair is not a
+ * character: stored apart, both halves came back as U+FFFD.
+ */
+export function textChunkEnds(text) {
+    const ends = [];
+    let at = 0;
+    do {
+        let end = Math.min(text.length, at + TEXT_CHUNK_UNITS);
+        const last = stringCharCodeAt(text, end - 1);
+        if (end < text.length && last >= 0xd800 && last <= 0xdbff)
+            end--;
+        ends.push(end);
+        at = end;
+    } while (at < text.length);
+    return ends;
+}
 /**
  * What holding a cell costs the database: its bytes (a text cell's UTF-8
  * length) on overflow pages (1% over, for page headers and the b-tree pages
@@ -24,10 +45,9 @@ export function residentBytes(value) {
  */
 export function residentCellCost(cell) {
     const isText = typeof cell === 'string';
-    const size = isText ? cell.length : residentBytes(cell).byteLength;
-    const limit = isText ? Math.floor(RESIDENT_CHUNK_BYTES / 3) : RESIDENT_CHUNK_BYTES;
-    const chunks = Math.max(1, Math.ceil(size / limit));
-    return Math.ceil((isText ? utf8Length(cell) : size) * 1.01) + (chunks + 1) * RESIDENT_ROW_BYTES + 4096;
+    const size = isText ? utf8Length(cell) : residentBytes(cell).byteLength;
+    const chunks = isText ? textChunkEnds(cell).length : Math.max(1, Math.ceil(size / RESIDENT_CHUNK_BYTES));
+    return Math.ceil(size * 1.01) + (chunks + 1) * RESIDENT_ROW_BYTES + 4096;
 }
 /**
  * At most what holding a file of `size` bytes costs, read as bytes or as
@@ -35,7 +55,8 @@ export function residentCellCost(cell) {
  * bytes have not arrived yet asks room for.
  */
 export function residentFileCost(size) {
-    const chunks = Math.max(1, Math.ceil(size / Math.floor(RESIDENT_CHUNK_BYTES / 3)));
+    // A text chunk ends a unit early rather than inside a pair (textChunkEnds).
+    const chunks = Math.max(1, Math.ceil(size / (TEXT_CHUNK_UNITS - 1)));
     return Math.ceil(size * 1.01) + (chunks + 1) * RESIDENT_ROW_BYTES + 4096;
 }
 /**

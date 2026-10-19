@@ -5,6 +5,8 @@ export interface DataPlanEntry {
     kind: string;
     size: number;
     linkTarget?: string;
+    /** A directory on a mount whose entries the listing does not name (RuntimeVfsListEntry.unlisted): its mount point. */
+    unlisted?: string;
 }
 export interface DataPlanSource {
     /** One page of the namespace in path order; `next === null` ends it. */
@@ -25,6 +27,8 @@ export interface DataPlanSource {
         kind: string;
         size: number;
     } | null>;
+    /** The entries directly in a directory, a symlink's kind 'symlink' and unfollowed, or null when it is none. */
+    readdir(dir: string): Promise<DataPlanEntry[] | null>;
 }
 export interface DataPlanInput {
     cwd: string;
@@ -40,8 +44,15 @@ export interface DataPlanInput {
     conditions?: readonly string[];
     /** Called with the bytes of each listed page, to pace a long walk. */
     spend?: (units: number) => Promise<void>;
+    /**
+     * Name what the stylesheet sources' walk read (planStylesheetSources'
+     * `read`) where the process's listing walks mounts
+     * (NimbusFilesystemAuthority.nameLaunch), as its launch's own names are,
+     * so that its listing at boot holds what the plan holds.
+     */
+    nameSources?: (read: readonly string[]) => void;
 }
-export type DataPlanRule = 'package-json' | 'project' | 'convention' | 'package-data' | 'home' | 'typescript' | 'static' | 'entries' | 'learned';
+export type DataPlanRule = 'package-json' | 'project' | 'convention' | 'package-data' | 'home' | 'typescript' | 'static' | 'entries' | 'learned' | 'stylesheet-source';
 export interface DataPlan {
     paths: string[];
     bytes: number;
@@ -49,6 +60,12 @@ export interface DataPlan {
         files: number;
         bytes: number;
     }>;
+    /** The stylesheet sources outside the working tree it planned (stylesheet-source), as absolute paths. */
+    sourceRoots: string[];
+    /** Where the stylesheet-source walk stopped at its bound (planStylesheetSources' `stopped`), or null. */
+    sourcesStopped: string | null;
+    /** The names the namespace listed, once however many walks the plan took: what a store holding it holds a row for. */
+    names: number;
 }
 /** Package data this size or larger is a bundle or a binary, not configuration. */
 export declare const PACKAGE_DATA_MAX_BYTES: number;
@@ -66,4 +83,41 @@ export declare function linkTargetOf(fs: Pick<RuntimeFsBridge, 'readlink' | 'lin
  * The plan for one launch. Walks the namespace once, in pages.
  */
 export declare function planFacetData(source: DataPlanSource, input: DataPlanInput): Promise<DataPlan>;
+/** Whether a closure carries Tailwind's oxide scanner, whose reads cannot wait (the stylesheet-source rule). */
+export declare function carriesOxide(closure: Iterable<string>): boolean;
+/**
+ * The most files the stylesheet-source rule holds for one launch. A source
+ * can name a tree of any size (`@source "../.."`); past this, the walk stops
+ * and says so, and the files it did not reach are learned from the scanner's
+ * misses, as any file a launch did not plan.
+ */
+export declare const STYLESHEET_SOURCE_MAX_FILES = 5000;
+/**
+ * The stylesheet-source rule, for a resident's plan and a one-shot's alike:
+ * from `sheets`, through the `@import`s Tailwind inlines (a path's, not a
+ * package's), each sheet where its links lead and read once, every `@source`
+ * outside the working tree `cwd`, each brace alternative's directory prefix
+ * taken whole, through its links; and the files under those roots, walked a
+ * directory at a time with the project rule's exclusions, which are of a path
+ * as it is named below its root, whatever a link makes of it. The roots it
+ * returns are what the facet's barriers push: those, and wherever a link
+ * below one leads; `read` is where it read, which a process's listing of a
+ * mount that walks only what is named must be named.
+ *
+ * It holds a file under the package-data bound (PACKAGE_DATA_MAX_BYTES), and
+ * at most STYLESHEET_SOURCE_MAX_FILES of them, whether a source names the
+ * file or a directory above it: at that, `stopped` names the root it was
+ * walking, for the launch to say so on the process's stderr.
+ */
+export declare function planStylesheetSources(source: Pick<DataPlanSource, 'readText' | 'stat' | 'linkTarget' | 'readdir'>, input: {
+    cwd: string;
+    home: string;
+    sheets: Iterable<string>;
+    spend?: (units: number) => Promise<void> | void;
+}): Promise<{
+    roots: string[];
+    files: DataPlanEntry[];
+    read: string[];
+    stopped: string | null;
+}>;
 //# sourceMappingURL=data-plan.d.ts.map
