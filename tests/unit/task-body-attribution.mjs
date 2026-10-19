@@ -14,7 +14,6 @@ import { bashRequestStep } from '../../packages/core/src/runtime/facet-tasks.ts'
 import { facetAnswer } from '../../packages/core/src/runtime/facet-host.ts';
 import { pythonReplStepRequestFn } from '../../packages/worker/src/runtime/repl-facet-tasks.ts';
 import { assembleLoaderWorkerModuleSource } from '../../packages/fabric/src/isolate-pool.ts';
-import { enteredByRun } from '../../packages/fabric/src/one-shot-entry.ts';
 import { importModuleSet } from './lib/module-map-bundle.mjs';
 import { createAuthority } from './lib/resident-body.mjs';
 import { adoptSessionSupervisor, oneShotManager, runnerLoader } from './lib/one-shot-runner.mjs';
@@ -75,8 +74,8 @@ async function pooled(fn) {
   authority.kfs.mkdir('/home/user/task-body');
   const launched = await manager.exec('process.stdout.write("ran")', { cwd: '/home/user/task-body', captureOutput: true });
   assert.equal(launched.stdout, 'ran', launched.stderr);
-  const entered = enteredByRun(program);
-  const { default: Entry } = await importModuleSet(entered.modules, entered.mainModule);
+  // The code the host loads is entered by run already (enteredByRun); this imports its entry, not the program.
+  const { default: Entry } = await importModuleSet(program.modules, program.mainModule);
   const failure = await new Entry({ abort() {} }, {}).run(request(moved), null, () => new Promise(() => {})).then(() => null, (error) => error.message);
   assert.ok(named(failure), `a run body that does not parse is named: ${failure}`);
   console.log('  ✓ a process\'s run');
