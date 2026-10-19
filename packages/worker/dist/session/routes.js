@@ -29,6 +29,7 @@ import { sanitizeUntrustedRequest } from '@nimbus-sh/core/_shared/untrusted-requ
 import { matchLogsPath, handleLogsWebSocketRequest, handleProcessesListRequest, } from '../runtime/process-logs-api.js';
 import { readDiagCounters } from '@nimbus-sh/platform/diag-counters.js';
 import { readSupervisorAllocationBudget } from '@nimbus-sh/platform/heavy-alloc-coord.js';
+import { recentFacetCalls } from '@nimbus-sh/fabric/isolate-pool.js';
 import { readIsolateId } from './diag.js';
 import { getFailures, getLastRpcFrame, getLastFacetId, getRecoveryEvents, recordRecoveryEvent, resetRecoveryEvents, } from '@nimbus-sh/platform/oom-discriminator.js';
 import { LRU_MAX_ENTRIES } from '@nimbus-sh/core/constants.js';
@@ -214,6 +215,8 @@ async function launchDiagnosis(self) {
         ledger: { inFlight: ledger.inFlightWorkers, waiters: ledger.waiters, pauseMs: ledger.pauseMs },
         // The isolate's transient budget a launch's preparation is admitted on: shared with the sessions beside this one.
         budget: readSupervisorAllocationBudget(),
+        // What its last facet calls cost: a cold worker's code read, compile and preamble, or a warm one's run.
+        facetCalls: recentFacetCalls(self.ctx),
     };
 }
 async function parseJsonBody(request, schema) {
