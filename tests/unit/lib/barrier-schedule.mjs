@@ -253,7 +253,10 @@ export async function runSchedule(kind, schedule, { parkSeed, deadlineMs = 40_00
     const states = [];
     for (let i = from; i <= to; i++) states.push(history[i].get(rel));
     for (const change of changes) {
-      if (change.begun <= to && (change.done === null || change.done >= from) && change.domain.some((root) => under(rel, root))) states.push(change.post.get(rel));
+      if (change.begun <= to && (change.done === null || change.done >= from) && change.domain.some((root) => under(rel, root))) {
+        states.push(change.post.get(rel));
+        if (change.partial?.has(rel)) states.push(change.partial.get(rel));
+      }
     }
     return states;
   };
@@ -319,7 +322,9 @@ export async function runSchedule(kind, schedule, { parkSeed, deadlineMs = 40_00
     if (changes.some((other) => other.done === null && overlaps(other.domain, domain))) return 'wait';
     const post = applied(world, step);
     if (post === null) { note(`  (step ${at} skipped: ${JSON.stringify(step)} is not valid now)`); return null; }
-    const record = { domain, post, begun: seq(), done: null, way, step };
+    // A write the process makes is an open that truncates, then the bytes: while it is in flight, the file may be empty.
+    const partial = way === 'own' && step[1] === 'write' ? new Map([[step[2], { type: 'file', content: '', mode: world.get(step[2])?.mode ?? FILE_MODE }]]) : null;
+    const record = { domain, post, partial, begun: seq(), done: null, way, step };
     const finish = () => {
       // Its effect, on whatever else changed meanwhile (nothing it overlaps).
       const next = new Map(world);

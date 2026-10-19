@@ -5,10 +5,9 @@
  * replies are timed against a peer's changes and the process's own
  * (lib/barrier-schedule.mjs says what each answer may be).
  *
- * FOUND: each schedule a review found an engine wrong on, named for what
- * it shows. Seeds: schedules drawn from a seed, each reply parked at random;
- * NIMBUS_BARRIER_SEEDS=n runs n of them on each engine. A seed that fails is
- * shrunk (one child per try) and printed as a schedule to add to FOUND.
+ * Each schedule here is one a review found an engine wrong on, named for
+ * what it shows (barrier-schedules-seeded.mjs draws them at random, and
+ * prints what it finds to be added here).
  *
  * Each schedule runs in its own child (runScenarios), bounded by its steps,
  * a wall budget, and the child's own timeout.
@@ -17,11 +16,8 @@
 import assert from 'node:assert/strict';
 import { createAuthority, facetSupervisor, launchResident, runScenarios, sleep, until } from './lib/resident-body.mjs';
 import { ENGINES } from './lib/guest-engines.mjs';
-import { generate, runSchedule } from './lib/barrier-schedule.mjs';
+import { runSchedule } from './lib/barrier-schedule.mjs';
 import { scheduleTransport, supervisedFacet } from './lib/schedule-transport.mjs';
-
-const realProcess = globalThis.process;
-const SEEDS = Number(realProcess.env.NIMBUS_BARRIER_SEEDS ?? 6);
 
 /** `engines`: where it applies (both, unless named). */
 const FOUND = {
@@ -84,11 +80,6 @@ const scenarios = {};
 for (const [name, { schedule, engines = ENGINES }] of Object.entries(FOUND)) {
   for (const kind of engines) scenarios[`${name} [${kind}]`] = () => run(kind, schedule);
 }
-for (let seed = 1; seed <= SEEDS; seed++) {
-  for (const kind of ENGINES) scenarios[`seed ${seed} [${kind}]`] = () => run(kind, generate(seed), seed);
-}
-// A schedule given whole, as the shrinker tries one.
-scenarios.explicit = () => run(realProcess.env.NIMBUS_BARRIER_KIND, JSON.parse(realProcess.env.NIMBUS_BARRIER_SCHEDULE), Number(realProcess.env.NIMBUS_BARRIER_PARK) || undefined);
 
 scenarios['a floating awaited read finishes before a one-shot exits [node]'] = async () => {
   const authority = createAuthority(undefined, { sequenced: true });
@@ -112,58 +103,12 @@ scenarios['a floating awaited read finishes before a one-shot exits [node]'] = a
   assert.equal(handle.log.exit.code, 0);
 };
 
-async function run(kind, schedule, parkSeed) {
+async function run(kind, schedule) {
   try {
-    await runSchedule(kind, schedule, { parkSeed });
+    await runSchedule(kind, schedule);
   } catch (error) {
-    throw new Error(`${error.message} (${kind}${parkSeed === undefined ? '' : `, parked by seed ${parkSeed}`}; its steps are above)`);
+    throw new Error(`${error.message} (${kind}; its steps are above)`);
   }
 }
 
-/** Whether `schedule` fails on `kind`, in a child of its own; null when it ran out of time (a hang is not shrunk). */
-function fails(kind, schedule, parkSeed) {
-  const child = Bun.spawnSync({
-    cmd: [realProcess.execPath, import.meta.path],
-    env: {
-      ...realProcess.env,
-      NIMBUS_RESIDENT_BODY_SCENARIO: 'explicit',
-      NIMBUS_BARRIER_KIND: kind,
-      NIMBUS_BARRIER_SCHEDULE: JSON.stringify(schedule),
-      NIMBUS_BARRIER_PARK: String(parkSeed ?? ''),
-    },
-    stdout: 'pipe',
-    stderr: 'pipe',
-    timeout: 30_000,
-  });
-  return child.exitCode === null ? null : child.exitCode !== 0;
-}
-
-/** The shortest schedule found, by dropping steps while it still fails, within `budgetMs`. */
-function shrink(kind, schedule, parkSeed, budgetMs = 120_000) {
-  const until = Date.now() + budgetMs;
-  let best = schedule;
-  for (let size = Math.ceil(best.length / 2); size >= 1 && Date.now() < until; size = Math.floor(size / 2)) {
-    for (let at = 0; at + size <= best.length && Date.now() < until;) {
-      const candidate = [...best.slice(0, at), ...best.slice(at + size)];
-      if (fails(kind, candidate, parkSeed) === true) best = candidate;
-      else at += size;
-    }
-  }
-  return best;
-}
-
-if (realProcess.env.NIMBUS_RESIDENT_BODY_SCENARIO) {
-  await runScenarios(import.meta.path, scenarios);
-} else {
-  const { explicit: _explicit, ...named } = scenarios;
-  try {
-    await runScenarios(import.meta.path, named, { gaps: GAPS });
-  } catch (error) {
-    for (const [, seed, kind] of String(error.message).matchAll(/seed (\d+) \[(\w+)\]/g)) {
-      if (fails(kind, generate(Number(seed)), Number(seed)) !== true) continue;
-      const minimal = shrink(kind, generate(Number(seed)), Number(seed));
-      realProcess.stdout.write(`  seed ${seed} [${kind}] shrinks to (parked by seed ${seed}):\n    ${JSON.stringify(minimal)}\n`);
-    }
-    throw error;
-  }
-}
+await runScenarios(import.meta.path, scenarios, { gaps: GAPS });
