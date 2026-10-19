@@ -24,10 +24,11 @@ export const KINDS = Object.freeze({
 });
 
 /**
- * @param {{ park?: (kind: string, name: string) => boolean }} [options] `park`
- *   decides, for each call no `hold` names, whether its reply waits for a release.
+ * @param {{ park?: (kind: string, name: string) => boolean, note?: (line: string) => void }} [options]
+ *   `park` decides, for each call no `hold` names, whether its reply waits
+ *   for a release; `note` is told of each call, park and delivery.
  */
-export function scheduleTransport({ park = () => false } = {}) {
+export function scheduleTransport({ park = () => false, note = () => {} } = {}) {
   /** @type {{ id: number, kind: string, name: string, deliver: () => void }[]} */
   const parked = [];
   /** Per kind, the replies to wait for: each the count of that kind's calls still to let through first. */
@@ -58,11 +59,15 @@ export function scheduleTransport({ park = () => false } = {}) {
       asked = [null, 0, ...args.slice(2)];
     }
     const settled = await Promise.resolve(call(asked)).then((value) => ({ value }), (error) => ({ error }));
+    const shown = `${name}(${JSON.stringify(asked).slice(1, -1).slice(0, 120)}) → ${'error' in settled ? `error ${settled.error?.code ?? settled.error?.message}` : JSON.stringify(settled.value)?.slice(0, 160)}`;
     if (waits(kind, name)) {
       const { promise, resolve } = Promise.withResolvers();
-      parked.push({ id: ++ids, kind, name, deliver: resolve });
+      const id = ++ids;
+      parked.push({ id, kind, name, deliver: resolve });
+      note(`    #${id} parked: ${shown}`);
       await promise;
-    }
+      note(`    #${id} delivered`);
+    } else note(`    ${shown}`);
     counts.delivered++;
     if ('error' in settled) throw settled.error;
     return settled.value;

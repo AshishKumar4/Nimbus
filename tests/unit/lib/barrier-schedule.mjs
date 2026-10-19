@@ -246,7 +246,7 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps = {}, de
   // Replies park at random once the process is up: its boot waits on replies no step releases.
   const parkRandom = parkSeed === undefined ? null : prng(parkSeed);
   let booted = false;
-  const transport = scheduleTransport({ park: () => booted && parkRandom !== null && parkRandom() < 0.3 });
+  const transport = scheduleTransport({ park: () => booted && parkRandom !== null && parkRandom() < 0.3, note: (line) => { if (booted) note(line); } });
   const engine = await bootEngine(kind, {
     seed: (authority) => {
       for (const [rel, content] of Object.entries(SEED_TREE)) {
