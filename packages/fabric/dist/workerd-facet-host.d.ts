@@ -124,6 +124,8 @@ export declare function residentFacetName(slot: number): string;
 export declare const DURABLE_FACET_NAME_PREFIX = "app-slot-";
 /** The facet names this actor's session keeps for an undrained write log (process-fs-journal.ts). */
 export declare function reservedFacetNames(ctx: DurableObjectState): Set<string>;
+/** Whether a process this actor's facets were given `name` to still holds it: then its facet is that process's. */
+export declare function facetNameHeld(ctx: DurableObjectState, name: string): boolean;
 /** The facet a running resident process `pid` lives in on this actor, for its storage ledger row. */
 export declare function residentFacetOf(ctx: DurableObjectState, pid: number): string | undefined;
 export declare function deleteFacetStorage(ctx: DurableObjectState, name: string): void;
@@ -187,7 +189,14 @@ export declare class Processes {
  * the same SQLite. The name is aborted first: a get with a new class of a
  * facet still running (a previous incarnation's) would reset this object.
  */
-export declare function facetJournal(ctx: DurableObjectState, env: JournalReaderEnv, name: string): ProcessFsJournalSource;
+/**
+ * `name`'s write log, read by a reader started under the name. `holds`, if
+ * given, says the name is still its process's: a name a newer process has
+ * been given is that process's facet, never opened for a reader, and the
+ * log reads empty here (the newer process's store keeps it, for the
+ * session's next drain of the name).
+ */
+export declare function facetJournal(ctx: DurableObjectState, env: JournalReaderEnv, name: string, holds?: () => boolean): ProcessFsJournalSource;
 /** What facetJournal loads its reader with: the Worker Loader's unkeyed load. */
 export interface JournalReaderEnv {
     LOADER?: {
