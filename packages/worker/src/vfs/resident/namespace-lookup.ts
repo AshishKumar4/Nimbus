@@ -43,6 +43,18 @@ const removed = (word: OwnWord): word is { readonly absent: true } => objectHasO
 const linked = (word: OwnWord): word is { readonly target: string } => objectHasOwn(word, 'target');
 const moved = (word: OwnWord): word is { readonly from: string | undefined; readonly link?: string } => objectHasOwn(word, 'from');
 
+/**
+ * `word`, unless a barrier has since carried it to the table: a rename reads
+ * the row it moved (a link's at `link`, else at `from`), and once the table
+ * no longer holds that row, the delta that removed it put the entry at its
+ * new name, where the table's own row answers.
+ */
+function standing(t: ResidentTables, word: OwnWord | undefined): OwnWord | undefined {
+  if (word === undefined || !moved(word) || word.from === undefined) return word;
+  const named = ownField(word, 'link');
+  return nsRowAt(t, typeof named === 'string' ? named : word.from) === undefined ? undefined : word;
+}
+
 /** The directory part of key `k`: '' at the top. */
 export function nsParent(k: string): string {
   const i = stringLastIndexOf(k, '/');
@@ -137,7 +149,7 @@ export function walkNamespace(
       start = stop + 1;
       if (visit !== undefined && !visit(prefix)) return 'EACCES';
       const step: string | null = table === null ? null : table ? `${table}/${name}` : name;
-      const word = own === undefined ? undefined : own(prefix);
+      const word = own === undefined ? undefined : standing(t, own(prefix));
       let target: unknown;
       if (word !== undefined && removed(word)) {
         return { path, table: null, row: undefined, own: word };
