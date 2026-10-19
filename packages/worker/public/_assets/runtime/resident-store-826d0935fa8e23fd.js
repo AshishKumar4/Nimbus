@@ -1486,6 +1486,16 @@ var __nimbusResidentModule = (() => {
     const held = new SafeMap();
     const unheld = new SafeSet();
     const cellSize = (cell) => typeof cell === "string" ? cell.length * 3 : residentBytes(cell).byteLength;
+    const sameCell = (held2, incoming) => {
+      if (held2 === void 0 || typeof held2 === "object" && "error" in held2) return false;
+      if (typeof held2 === "string" || typeof incoming === "string") return held2 === incoming;
+      if (typeof incoming === "object" && "error" in incoming) return false;
+      const a = residentBytes(held2);
+      const b = residentBytes(incoming);
+      if (a.byteLength !== b.byteLength) return false;
+      for (let i = 0; i < a.byteLength; i++) if (a[i] !== b[i]) return false;
+      return true;
+    };
     const forgetHeld = (path) => {
       const cell = held.get(path);
       if (cell !== void 0) {
@@ -1639,6 +1649,9 @@ var __nimbusResidentModule = (() => {
     };
     const get = (path) => {
       if (observeRead !== null) observeRead(nsKey(path));
+      return cellOf(path);
+    };
+    const cellOf = (path) => {
       const found = head(path);
       if (found === void 0) {
         const cell = held.get(path);
@@ -1855,6 +1868,11 @@ var __nimbusResidentModule = (() => {
         if (dated !== void 0 && (dated === RK_OWN_WRITE || dated > rev)) return false;
         const heldCell = held.get(path);
         if (heldCell !== void 0 && (heldCell.rev === RK_OWN_WRITE || heldCell.rev > rev)) return false;
+        if (sameCell(cellOf(path), cell)) {
+          if (dated !== void 0) t.fileSetRev(path, rev);
+          else if (heldCell !== void 0) heldCell.rev = rev;
+          return true;
+        }
         return put(t, path, cell, rev);
       },
       /** Every held path. Backs the Object.keys / for-in scans in the shims. */

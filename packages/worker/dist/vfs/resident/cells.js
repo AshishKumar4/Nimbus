@@ -36,6 +36,23 @@ export function createCells(coherence, admission, namespace, observeRead) {
     const held = new SafeMap();
     const unheld = new SafeSet();
     const cellSize = (cell) => (typeof cell === 'string' ? cell.length * 3 : residentBytes(cell).byteLength);
+    /** Whether `held` is `incoming`: the same text, or the same bytes. A denial is never a read's bytes. */
+    const sameCell = (held, incoming) => {
+        if (held === undefined || typeof held === 'object' && 'error' in held)
+            return false;
+        if (typeof held === 'string' || typeof incoming === 'string')
+            return held === incoming;
+        if (typeof incoming === 'object' && 'error' in incoming)
+            return false;
+        const a = residentBytes(held);
+        const b = residentBytes(incoming);
+        if (a.byteLength !== b.byteLength)
+            return false;
+        for (let i = 0; i < a.byteLength; i++)
+            if (a[i] !== b[i])
+                return false;
+        return true;
+    };
     const forgetHeld = (path) => {
         const cell = held.get(path);
         if (cell !== undefined) {
@@ -274,6 +291,10 @@ export function createCells(coherence, admission, namespace, observeRead) {
     const get = (path) => {
         if (observeRead !== null)
             observeRead(nsKey(path));
+        return cellOf(path);
+    };
+    /** The cell held for `path`, as `get` reads it, unobserved. */
+    const cellOf = (path) => {
         const found = head(path);
         if (found === undefined) {
             const cell = held.get(path);
@@ -513,6 +534,16 @@ export function createCells(coherence, admission, namespace, observeRead) {
             const heldCell = held.get(path);
             if (heldCell !== undefined && (heldCell.rev === RK_OWN_WRITE || heldCell.rev > rev))
                 return false;
+            // Bytes the store holds already are its own: the read dates them, and
+            // rewriting them could only lose them, refused at the store's cap (a dev
+            // server rereads its sources asynchronously, every one it serves).
+            if (sameCell(cellOf(path), cell)) {
+                if (dated !== undefined)
+                    t.fileSetRev(path, rev);
+                else if (heldCell !== undefined)
+                    heldCell.rev = rev;
+                return true;
+            }
             return put(t, path, cell, rev);
         },
         /** Every held path. Backs the Object.keys / for-in scans in the shims. */
