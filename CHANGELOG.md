@@ -23,6 +23,14 @@ published independently in the `@nimbus-sh` npm scope.
   another process replaced was also still served. Now a lookup or listing
   that a later change overtook adds nothing, and a replaced directory's
   names are looked up again.
+- Fixed: a WASI program (python, ruby, clang, bash) could see a stale name
+  after another process changed it. A lookup or listing asked before the
+  change and answered after it could put back a deleted file, keep the old
+  file where another process renamed a new one onto the name, or hide a
+  name another process added. A name under a directory another process
+  replaced, renamed, or gave a new mode or owner was also still served.
+  Now a lookup or listing that a later change overtook adds nothing, and
+  that directory's names are looked up again.
 - Fixed: a Node program's `fs.statfs` reports the storage limit a session
   enforces (10,000,000,000 bytes, `DO_STORAGE_LIMIT_BYTES`) as its capacity.
   Before, it reported 10 GiB, 737,418,240 bytes more than a session can
@@ -39,6 +47,20 @@ published independently in the `@nimbus-sh` npm scope.
   `export` marks a name exported (`export -n` unmarks it, `export -p` lists
   them), as `declare -x` does, and `unset` drops the mark. Before, `declare
   -p` was an invalid option.
+- Changed (release): npm packages are published by a GitHub Actions workflow
+  through npm trusted publishing (OIDC), and no npm token exists. Once
+  production is green, `scripts/ci/promote.mjs` pushes the tag
+  `npm/<sha12>`. The workflow packs that commit with every publish gate
+  (`scripts/ci/publish-pack.mjs`) and publishes each version npm lacks, the
+  runtimes first (`scripts/ci/npm-publish.mjs`). It replaces the armada pack
+  (`remote-publish.mjs`) and the web-login script (`publish-web.sh`).
+  `release.mjs staging` runs the same pack on CI and refuses a release npm
+  would refuse. Each runtime package is built, packed and published with the
+  release that needs it. clang's upstream is pinned to a commit, and its files
+  and Ruby's tarball to their sha256. A tag `npm-dry-run/<sha12>` runs the
+  pack and `npm publish --dry-run` on GitHub's runner.
+  `bun scripts/npm-trust.mjs` links the packages to the workflow, once.
+
 - Changed (core): the resident filesystem decides what a caller that
   cannot wait changes outside a subtree the process holds (its
   `synchronous` view). Such a change is answered at once, logged through

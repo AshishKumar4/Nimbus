@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * check-runtime-packages.mjs — the `prepublishOnly` gate of core, the worker
- * and the CLI.
+ * and the CLI, and publish-pack.mjs's over the runtimes it packed.
  *
  * A core release names runner keys (BASH_RUNNER and friends), and a runtime
  * package on npm names the runner it was built for. The worker's runtime specs
@@ -28,9 +28,8 @@
  */
 
 import { createHash } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
-import { createReadStream, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { createGunzip } from 'node:zlib';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -40,20 +39,24 @@ const WORKER = fileURLToPath(new URL('../../worker/', import.meta.url));
 
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
-export const publishCommand = (dir) =>
-  `cd ${dir} && npm publish --tag latest --access public --auth-type=web`;
+/** How a runtime reaches npm: with the release, from the publish workflow. */
+export const PUBLISH_FIX = 'the publish workflow (.github/workflows/publish.yml) publishes it with the release: '
+  + 'scripts/ci/publish-pack.mjs packs every runtime this tree builds, and npm-publish.mjs publishes each version npm lacks';
 
 /**
  * The verdict on one runtime package. `registry.packument(name)` answers the
  * registry document or null for an unknown package;
  * `registry.manifestSha256(versionRecord)` the sha256 of `package/manifest.json`
  * in that version's tarball. `runThroughCore(dir)` throws when the core
- * refuses the package. Returns the problems, each with its fix.
+ * refuses the package. `tarball`, when given, is that build packed for
+ * publishing: it is what runs through core, and a version npm lacks is no
+ * problem, since the release publishes it. Returns the problems, each with
+ * its fix.
  */
 export async function checkRuntimePackage({ name, version, dir, registry, runThroughCore, tarball }) {
   const problems = [];
   const built = sha256(readFileSync(join(dir, 'manifest.json')));
-  const archive = tarball ? await unpackRuntime(tarball) : null;
+  const archive = tarball ? unpackRuntime(tarball) : null;
 
   try {
     try {
@@ -71,13 +74,12 @@ export async function checkRuntimePackage({ name, version, dir, registry, runThr
       if (pkg.name !== name || pkg.version !== version) problems.push({ problem: `${tarball} is not ${name}@${version}`, fix: 'pack the runtime built by this commit' });
       const packed = sha256(readFileSync(join(archive.dir, 'manifest.json')));
       if (packed !== built) problems.push({ problem: `${tarball} carries manifest.json sha256 ${packed}; this tree builds ${built}`, fix: 'pack the runtime built by this commit' });
-      return problems;
     }
 
     const packument = await registry.packument(name);
     const record = packument?.versions?.[version];
     if (!record) {
-      problems.push({ problem: `${name}@${version} is not on the registry`, fix: publishCommand(dir) });
+      if (!archive) problems.push({ problem: `${name}@${version} is not on the registry`, fix: PUBLISH_FIX });
       return problems;
     }
     const published = await registry.manifestSha256(record);
@@ -100,17 +102,14 @@ export async function checkRuntimePackage({ name, version, dir, registry, runThr
   }
 }
 
-async function unpackRuntime(tarball) {
+/**
+ * `tarball` unpacked whole, by tar: a runtime's blobs run past the 20 MB a
+ * workspace's own tarball reader keeps (clang's compiler is 31 MB).
+ */
+function unpackRuntime(tarball) {
   const dir = mkdtempSync(join(tmpdir(), 'nimbus-runtime-tarball-'));
   try {
-    const tar = async function* () {
-      for await (const chunk of createReadStream(tarball).pipe(createGunzip())) yield new Uint8Array(chunk);
-    };
-    for await (const entry of streamPackageEntries(tar())) {
-      const path = join(dir, entry.name);
-      mkdirSync(join(path, '..'), { recursive: true });
-      writeFileSync(path, entry.data);
-    }
+    execFileSync('tar', ['-xzf', tarball, '-C', dir, '--strip-components=1'], { stdio: ['ignore', 'ignore', 'pipe'] });
     return { dir };
   } catch (error) {
     rmSync(dir, { recursive: true, force: true });
@@ -180,16 +179,16 @@ export async function runThroughCore(dir) {
 /**
  * The verdict on every runtime package of `specs` (npmRuntimeSpecs): each
  * built into a directory under `root` by `build(spec, dir)` (an error's
- * text when it fails) and checked (checkRuntimePackage). `prepared`: a
- * runtime the caller built already, at `dir`, and packed into `tarball`
- * (publish-pack's signing artifact): its directory is that build, and the
- * tarball is what is checked, its manifest against the directory's.
+ * text when it fails) and checked (checkRuntimePackage). `prepared`: the
+ * runtimes the caller built already, each at `dir` and packed into
+ * `tarball` (publish-pack's): its directory is that build, and the tarball
+ * is what is checked, its manifest against the directory's.
  */
-export async function checkRuntimePackages({ specs, registry, root, build, prepared }) {
+export async function checkRuntimePackages({ specs, registry, root, build, prepared = [] }) {
   const verdicts = [];
   for (const spec of specs) {
     const { runtime, version, name, npmVersion } = spec;
-    const own = prepared?.runtime === runtime ? prepared : null;
+    const own = prepared.find((each) => each.runtime === runtime) ?? null;
     const dir = own?.dir ?? join(root, name.split('/').pop());
     const failure = own ? null : build(spec, dir);
     const problems = failure === null
@@ -210,9 +209,9 @@ function buildRuntimePackage({ runtime, version }, dir) {
 
 async function main() {
   const args = process.argv.slice(2);
-  const usage = 'usage: check-runtime-packages.mjs [--runtime-tarball <CPython tgz> --runtime-dir <its package directory>]';
-  if (args.length !== 0 && (args.length !== 4 || args[0] !== '--runtime-tarball' || args[2] !== '--runtime-dir')) throw new Error(usage);
-  const prepared = args.length === 0 ? undefined : { runtime: 'cpython', tarball: args[1], dir: args[3] };
+  const usage = 'usage: check-runtime-packages.mjs [--prepared <JSON file: [{ runtime, tarball, dir }]>]';
+  if (args.length !== 0 && (args.length !== 2 || args[0] !== '--prepared')) throw new Error(usage);
+  const prepared = args.length === 0 ? [] : JSON.parse(readFileSync(args[1], 'utf8'));
   const { npmRuntimeSpecs } = await import('../../worker/scripts/runtime-specs.mjs');
   const root = mkdtempSync(join(tmpdir(), 'nimbus-runtime-release-'));
   // A check that throws is a failure too: say where its packages were kept, as a FAIL does.

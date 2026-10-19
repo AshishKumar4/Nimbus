@@ -12,7 +12,9 @@
 //   1. CI builds the release (scripts/ci/lib/release.mjs): the dist gate,
 //      the demo's assets, and the modules of apps/probe and of
 //      apps/hosted-demo for env.staging and env.production, which must be
-//      the same bytes.
+//      the same bytes. Beside it, CI packs its npm release with every
+//      publish gate (scripts/ci/publish-pack.mjs, as the publish workflow
+//      does after production); a release npm would refuse stops here.
 //   2. This machine uploads it, as built, to nimbus-probe-staging and
 //      nimbus-staging (tests/behavioral/_staging-target.mjs up --release),
 //      after deploy-isolation's preflight, verifies each version id, and
@@ -106,7 +108,7 @@ assertInstalled(repo, 'release');
 }
 
 // Imported once the install is known to be here: the upload path parses wrangler configs through it.
-const { fetchRelease, productionCommit, releaseDigest } = await import('./lib/release.mjs');
+const { fetchRelease, packNpmRelease, productionCommit, releaseDigest } = await import('./lib/release.mjs');
 const { hostedWorkerName } = await import('../deploy-isolation.mjs');
 const { holdLease } = await import('./lib/lease.mjs');
 
@@ -120,11 +122,21 @@ try {
 
 let dir;
 let release;
+let packed;
 try {
-  ({ dir, release } = await fetchRelease({ repo, sha, targets: ['apps/probe', 'apps/hosted-demo:staging', 'apps/hosted-demo:production'] }));
+  [{ dir, release }, packed] = await Promise.all([
+    fetchRelease({ repo, sha, targets: ['apps/probe', 'apps/hosted-demo:staging', 'apps/hosted-demo:production'] }),
+    packNpmRelease({ repo, sha }),
+  ]);
 } catch (error) {
   notGraded(error.message);
 }
+const refused = packed.filter((row) => row.exitCode !== 0);
+if (refused.length > 0) {
+  console.log(`release: npm would refuse this release (scripts/ci/publish-pack.mjs):\n${refused.map((row) => `${row.name} exit ${row.exitCode}\n${row.output.trimEnd().split('\n').slice(-40).join('\n')}`).join('\n')}`);
+  process.exit(1);
+}
+console.log(`release: the npm release packs, every publish gate green (${packed.map((row) => `${row.name} ${Math.round(row.seconds)} s`).join(', ')})`);
 
 // The staging lease, from the upload through the matrix: no other lane's
 // upload lands while this matrix grades this release (scripts/ci/lib/lease.mjs).
