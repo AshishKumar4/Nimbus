@@ -12859,9 +12859,9 @@ function __nimbusAdvise(e, resolvedPath) {
  * Returns the resolved VFS path, or null.
  */
 function __resolveFrom(id, fromDir, parentFile) {
-  const found = __requireResolver.resolveSync(id, "/" + String(fromDir).replace(/^\\/+/, ""), typeof parentFile === "string" ? { parent: parentFile } : undefined);
+  const found = __requireResolver.resolveSync(id, "/" + __vfsKey(String(fromDir)), typeof parentFile === "string" ? { parent: parentFile } : undefined);
   if (!found) return null;
-  return found.builtin ? "node:" + found.builtin : found.path.replace(/^\\/+/, "");
+  return found.builtin ? "node:" + found.builtin : __vfsKey(found.path);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -12888,7 +12888,8 @@ const __esmResolver = createEsmResolver({
   // Node's builtins, and the packages the process provides in place of any
   // installed copy (builtins.undici), which load as builtins do.
   isBuiltin(specifier) {
-    return __nimbusBuiltinId(specifier) !== null || __nimbusFacetProvidedPackages.has(specifier.replace(/^node:/, ""));
+    return __nimbusBuiltinId(specifier) !== null
+      || __nimbusFacetProvidedPackages.has(__pathStartsWith(specifier, "node:") ? __pathSlice(specifier, 5) : specifier);
   },
   cjsResolve: __nimbusCjsResolve,
 }, { conditions: __nimbusConditions, stripTypes: !__nimbusTypeScriptAsJavaScript, cwd: () => __processMod.cwd() });
@@ -14347,9 +14348,9 @@ function __nimbusEntryOutcome(result) {
 // Node's import.meta.resolve, synchronous as in Node: the URL a specifier
 // names, even for a file or directory that will not load.
 globalThis.__nimbusImportMetaResolve = function __nimbusImportMetaResolve(specifier, parentUrl) {
-  const parent = typeof parentUrl === "string" && parentUrl.startsWith("file:")
+  const parent = typeof parentUrl === "string" && __pathStartsWith(parentUrl, "file:")
     ? parentUrl
-    : "file:///" + String(globalThis.__currentModulePath || "[eval]").replace(/^\\/+/, "");
+    : "file:///" + __vfsKey(String(globalThis.__currentModulePath || "[eval]"));
   return __esmResolver.metaResolveSync(String(specifier), parent);
 };
 
