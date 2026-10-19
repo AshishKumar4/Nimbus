@@ -1875,6 +1875,12 @@ export declare class FacetManager {
     private _w5RecordTermination;
     private _ensureOneShotShare;
     private _oneShotMemberBytes;
+    /**
+     * `prepared`'s map, parked for its worker: `reclaimable` lets running work
+     * reclaim it, and is called only if the launch has to wait for one. A
+     * launch whose worker is free takes it and loads, and running work waits
+     * for that load as it waits for any running work's credit.
+     */
     private _parkOneShotMap;
     /** Generate before waiting for a worker, keeping only the map's retained share until the load takes it. */
     private _prepareOneShotCode;

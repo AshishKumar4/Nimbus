@@ -86,6 +86,21 @@ class CreditLane {
                 leasedBytes = nextBytes;
                 this.drain();
             },
+            tryGrowTo: (nextBytes) => {
+                if (released) {
+                    throw new Error('cannot grow a released weighted credit lease');
+                }
+                if (!Number.isSafeInteger(nextBytes) || nextBytes < leasedBytes || nextBytes > this.capacity) {
+                    throw new RangeError(`weighted credit lease can only grow to a safe integer from ${leasedBytes} to ${this.capacity}: ${nextBytes}`);
+                }
+                // Never ahead of a queued ask, as an ordinary tryAcquire.
+                if (this.ahead.length > 0 || this.waiters.length > 0 || this.current + nextBytes - leasedBytes > this.capacity)
+                    return false;
+                this.current += nextBytes - leasedBytes;
+                this.peak = Math.max(this.peak, this.current);
+                leasedBytes = nextBytes;
+                return true;
+            },
             release: () => {
                 if (released)
                     return;

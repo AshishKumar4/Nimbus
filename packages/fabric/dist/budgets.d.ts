@@ -190,7 +190,8 @@ export declare function beginLoaderFetch(ctx: object, workerKey: string, claim?:
  * `signal` abandons the wait: it rejects with the signal's reason and holds
  * nothing. A wait outlives nothing on its own: bound it with a signal when
  * room may never come (a resident process holds its worker for as long as
- * it runs).
+ * it runs). `onWait` is called once, as the call queues, when it is not let
+ * in at once.
  *
  * `process` is the process the wait is for, and the ones it descends from;
  * the hold it is let in on is that process's. When every worker of a full
@@ -207,6 +208,7 @@ export declare function beginLoaderFetchWhenFree(ctx: object, workerKey: string,
     signal?: AbortSignal;
     claim?: DynamicWorkerClaim;
     process?: LedgerProcess;
+    onWait?: () => void;
 }): Promise<EndLoaderFetch>;
 /**
  * How long one call waits, in all, on the ledger after the platform first
@@ -252,19 +254,21 @@ export declare function withLaunchPreparation<T>(ctx: object, process: LedgerPro
  * its next run. (A helper call its program makes later, over RPC, is not in that
  * context: a worker more, it waits its turn.) `signal` abandons the wait; a
  * wait no release can satisfy is refused with {@link DynamicWorkerDeadlockError}.
+ * `onWait` is called if the launch has to wait for its worker, as it queues.
  */
-export declare function withLaunchAdmission<T>(ctx: object, process: LedgerProcess, signal: AbortSignal | undefined, body: () => Promise<T>): Promise<T>;
+export declare function withLaunchAdmission<T>(ctx: object, process: LedgerProcess, signal: AbortSignal | undefined, body: () => Promise<T>, onWait?: () => void): Promise<T>;
 /**
  * A program that stopped has no Worker in flight: give back its launch's
  * admission before waiting on input. Its nested run hold must already have
  * ended. The returned resume waits on the ledger with the same process,
- * fairly and abortably, before the caller does any replay preparation.
+ * fairly and abortably, before the caller does any replay preparation;
+ * `onWait` is called if it has to wait, as it queues.
  * Calling resume twice joins one readmission, never takes two holds. If the
  * process ends instead, the launch's finally finds nothing held.
  * Undefined outside a launch admission (a shell's one-shot owns only its
  * run hold, which has already ended), or outside `pid`'s when one is named.
  */
-export declare function suspendLaunchAdmission(ctx: object, pid?: number): ((signal?: AbortSignal) => Promise<void>) | undefined;
+export declare function suspendLaunchAdmission(ctx: object, pid?: number): ((signal?: AbortSignal, onWait?: () => void) => Promise<void>) | undefined;
 /**
  * Within an admitted launch on `ctx`'s ledger, a hold on that launch's own
  * worker for a helper's call made in its preparation: holds on one key nest

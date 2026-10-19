@@ -3794,6 +3794,10 @@ function admissionOf(admitted, queued) {
             if (!released)
                 lease.shrinkTo(retained);
         },
+        grow(bytes) {
+            const wanted = Math.min(SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES, bytes);
+            return !released && (wanted <= lease.bytes || lease.tryGrowTo(wanted));
+        },
         reclaimable(reclaim) {
             if (released)
                 return () => { };
@@ -6389,7 +6393,7 @@ export class FacetManager {
                     let brokeredGranted = false;
                     try {
                         if (brokered) {
-                            await brokered(parked.signal);
+                            await brokered(parked.signal, parked.reclaimable);
                             brokeredGranted = true;
                             parked.unregister();
                         }
@@ -6397,7 +6401,7 @@ export class FacetManager {
                             parked.unregister();
                             parked.signal.throwIfAborted();
                             return run();
-                        });
+                        }, parked.reclaimable);
                     }
                     catch (error) {
                         if (!parked.reclaimed || abortController.signal.aborted)
@@ -6519,7 +6523,7 @@ export class FacetManager {
                             const parked = this._parkOneShotMap(entry.pid, prepared, abortController.signal);
                             let granted = false;
                             try {
-                                await resumeAdmission?.(parked.signal);
+                                await resumeAdmission?.(parked.signal, parked.reclaimable);
                                 granted = true;
                                 parked.unregister();
                                 parked.signal.throwIfAborted();
@@ -7007,13 +7011,9 @@ export class FacetManager {
         const admission = this.buildAdmissions.get(pid);
         if (admission === undefined)
             throw new Error(`Nimbus: the module map for pid ${pid} has no share of the credit`);
-        if (admission.held() >= need)
-            return;
-        const replacement = tryAdmitPrefetch(need, true, this._allocationOwner(pid));
-        if (replacement === null)
+        // What it lacks beside what it holds, or back to its build for the whole: it never waits holding its sources.
+        if (!admission.grow(need))
             throw new OneShotAllocationNeeded(need);
-        this.buildAdmissions.set(pid, replacement);
-        admission.release();
     }
     async _oneShotMemberBytes(entry, images, bindings) {
         let bytes = 0;
@@ -7037,17 +7037,26 @@ export class FacetManager {
         }
         return { owned: bytes, wire };
     }
+    /**
+     * `prepared`'s map, parked for its worker: `reclaimable` lets running work
+     * reclaim it, and is called only if the launch has to wait for one. A
+     * launch whose worker is free takes it and loads, and running work waits
+     * for that load as it waits for any running work's credit.
+     */
     _parkOneShotMap(pid, prepared, signal) {
         const reclaimed = new AbortController();
-        const unregister = this.buildAdmissions.get(pid)?.reclaimable(() => {
-            prepared.discard();
-            this._releaseBuildAdmission(pid);
-            reclaimed.abort(new Error(`Nimbus: the parked module map for pid ${pid} was reclaimed for running work`));
-        }) ?? (() => { });
+        let unregister = () => { };
         return {
             signal: AbortSignal.any([signal, reclaimed.signal]),
             get reclaimed() { return reclaimed.signal.aborted; },
-            unregister,
+            reclaimable: () => {
+                unregister = this.buildAdmissions.get(pid)?.reclaimable(() => {
+                    prepared.discard();
+                    this._releaseBuildAdmission(pid);
+                    reclaimed.abort(new Error(`Nimbus: the parked module map for pid ${pid} was reclaimed for running work`));
+                }) ?? (() => { });
+            },
+            unregister: () => unregister(),
         };
     }
     /** Generate before waiting for a worker, keeping only the map's retained share until the load takes it. */

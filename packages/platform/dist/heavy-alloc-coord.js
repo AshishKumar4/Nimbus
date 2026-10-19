@@ -221,6 +221,7 @@ export class SupervisorAllocationBudget {
             shrinkTo: (nextBytes) => {
                 credit.shrinkTo(nextBytes);
             },
+            tryGrowTo: (nextBytes) => credit.tryGrowTo(nextBytes),
             attribute: (attribution) => { if (!released)
                 holder.owner = { ...holder.owner, attribution }; },
             release: () => {
