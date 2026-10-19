@@ -18,7 +18,8 @@
 // import()'s fill of a file the launch did not hold (Array.prototype.push,
 // String.prototype.split and replace, RegExp.prototype.exec, the array
 // iterator), a missed module's read (Set.prototype.has) and the stack of an
-// error it formats (the array iterator) still did: 7 of 71 refused.
+// error it formats (the array iterator) still did: 7 of 71 refused; and until
+// 4c, a fill read in ranges batched on Array.prototype.push and some.
 
 import { matchNodeInWorkerd } from './lib/node-differential.mjs';
 
@@ -41,13 +42,15 @@ const BUILTINS = [
   ...['decodeURIComponent', 'encodeURIComponent', 'decodeURI', 'encodeURI'].map((key) => [key, 'globalThis', key]),
 ];
 
+// A package module past one 64 KiB read, so import()'s fetch of it reads in ranges.
+const PAD = `/* ${'x'.repeat(70 * 1024)} */\n`;
 const files = {};
 const lines = [];
 BUILTINS.forEach(([label, owner, key], n) => {
   files[`m${n}/main/esm/index.mjs`] = `export const v = 'e${n}';\nexport function probe() { return new Error('p').stack; }\n`;
   files[`m${n}/c.cjs`] = `exports.v = 'c${n}';\n`;
   files[`node_modules/pkg${n}/package.json`] = JSON.stringify({ name: `pkg${n}`, exports: { '.': { import: './esm/i.mjs', require: './cjs/i.cjs' } } });
-  files[`node_modules/pkg${n}/esm/i.mjs`] = `export const v = 'p${n}';\n`;
+  files[`node_modules/pkg${n}/esm/i.mjs`] = `export const v = 'p${n}';\n${PAD}`;
   files[`node_modules/pkg${n}/cjs/i.cjs`] = `exports.v = 'r${n}';\n`;
   const keyText = typeof key === 'symbol' ? `Symbol.${key.description.slice('Symbol.'.length)}` : JSON.stringify(key);
   lines.push(`  [${JSON.stringify(label)}, ${owner}, ${keyText}, ${n}],`);
