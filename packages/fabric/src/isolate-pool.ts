@@ -389,8 +389,8 @@ export function assembleLoaderWorkerModuleSource(
     '      // Fail loud inside the response so an abort of the transport is',
     '      // not conflated with a guest exception: the caller sees 500 only',
     '      // for a real fn failure, and aborts arrive as fetch rejections.',
-    '      const failure = __nimbusTaskBodyError(err, request);
-      const message = failure instanceof Error && failure.message ? failure.message : String(failure);',
+    '      const failure = __nimbusTaskBodyError(err, request);',
+    '      const message = failure instanceof Error && failure.message ? failure.message : String(failure);',
     '      return Response.json({ __nimbusFacetError: message }, { status: 500 });',
     '    }',
     '  }',
