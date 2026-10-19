@@ -198,7 +198,8 @@ try {
   put(join(leaky, 'packages/b/src/reuse-node.mjs'), `export * from ${JSON.stringify(join(root, 'unrelated/preloaded.mjs'))}; export const version = 'leaky';`);
   const reused = node(['reuse-node.mjs'], join(root, 'unrelated/preloaded.mjs'));
   assert.notEqual(reused.status, 0);
-  assert.match(reused.stderr, /unrelated\/preloaded\.mjs, imported by [^,]*reuse-node\.mjs, not its arm's own/);
+  // (node's hook sees the reuse as a resolution made while the arm is made.)
+  assert.match(reused.stderr, /unrelated\/preloaded\.mjs, (imported by [^,]*reuse-node\.mjs, not its arm's own|loaded while making the arm)/);
   // And a shared store module that holds an arm's module.
   const storeScript = `
     import { armImports, armTree } from ${JSON.stringify(pathToFileURL(join(import.meta.dirname, '../bench/lib/isolated-core.mjs')).href)};
