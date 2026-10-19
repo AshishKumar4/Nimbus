@@ -13,13 +13,15 @@ export interface VariableStore {
   readonly arrays: Map<string, (string | undefined)[]>;
   readonly readonlyNames: ReadonlySet<string>;
   readonly exportedNames: Set<string>;
+  readonly declaredNames: Set<string>;
 }
 
-/** A variable's complete binding: its scalar value, or its array, or neither; and its export mark. */
+/** A variable's complete binding: its scalar value, or its array, or neither; its export mark; whether it is declared with no value. */
 export interface SavedVariable {
   readonly scalar: string | undefined;
   readonly array: (string | undefined)[] | undefined;
   readonly exported: boolean;
+  readonly declared: boolean;
 }
 
 /** A variable dictionary: prototype names are ordinary variable names too. */
@@ -60,16 +62,24 @@ export function arrayFor(store: VariableStore, name: string): (string | undefine
 
 /** One variable's whole binding, so a scope can put it back exactly. */
 export function saveVariable(store: VariableStore, name: string): SavedVariable {
-  return { scalar: store.env[name], array: store.arrays.get(name), exported: store.exportedNames.has(name) };
+  return { scalar: store.env[name], array: store.arrays.get(name), exported: store.exportedNames.has(name), declared: store.declaredNames.has(name) };
 }
 
-export function restoreVariable(store: VariableStore, name: string, saved: SavedVariable): void {
+/**
+ * `name` bound again as `saved` holds it. `attributes`: its export mark and
+ * declaredness too (a local's, at its function's return); a command's prefix
+ * assignment gives back only its value (`x=1 export x` exports x).
+ */
+export function restoreVariable(store: VariableStore, name: string, saved: SavedVariable, attributes = true): void {
   if (saved.array === undefined) store.arrays.delete(name);
   else store.arrays.set(name, saved.array);
   if (saved.scalar === undefined) delete store.env[name];
   else store.env[name] = saved.scalar;
+  if (!attributes) return;
   if (saved.exported) store.exportedNames.add(name);
   else store.exportedNames.delete(name);
+  if (saved.declared) store.declaredNames.add(name);
+  else store.declaredNames.delete(name);
 }
 
 /** A copy of `arrays` whose arrays are copies too: what a subshell or a saved shell state holds. */

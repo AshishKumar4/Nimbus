@@ -1251,7 +1251,7 @@ export class Interpreter {
     } finally {
       writeFailed = await this.flushFds(fds, name);
       // Restore env from per-command assignments
-      for (const [name, value] of saved) restoreVariable(this.config, name, value);
+      for (const [name, value] of saved) restoreVariable(this.config, name, value, false);
     }
     if (writeFailed && exitCode === 0) exitCode = 1;
 

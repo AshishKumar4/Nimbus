@@ -53,6 +53,12 @@ const CASES = [
   "a=(); a[1000000000]=z; declare -p a",
   "f() { local y=2; local -p x; echo $?; local -p; }; x=1; f",
   "x=1; local -p x; echo $?",
+  "x=$'\\377a\\001'; declare -p x; s=$(declare -p x); unset x; eval \"$s\"; [[ $x == $'\\377a\\001' ]] && echo same",
+  "x=1; x=1 export x; declare -p x; y=2; y=2 declare -x y; declare -p y",
+  "declare p; declare -p p; export q; export -n q; declare -p q",
+  "f() { local p; declare -p | grep -E ' p$'; }; f",
+  "f() { local z=1 a=2; local -p; }; f; g() { local plain=1 marked=2; export marked; local -xp; }; g",
+  "f() { :; }; export -f f=value; echo $?",
 ];
 
 /** bash's diagnostic prefix: `bash: line 1: `, `bash: -c: line 1: `, and in a function 5.2's `environment: line 1: `. */

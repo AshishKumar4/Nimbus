@@ -11,6 +11,7 @@ import type { CommandInputStream, CommandOutputStream } from '../commands/types.
 import { resolve } from '../utils/path.js';
 import { echoOutput } from '../utils/backslash-escapes.js';
 import { writeLossless } from '../utils/bytes-io.js';
+import { encodeLossless } from '../utils/lossless-text.js';
 import { singleQuote } from '../../../_shared/shell-quote.js';
 import { isDecimalInteger, isShellIdentifier } from './names.js';
 import { assignArray, assignVariable } from './variables.js';
@@ -165,16 +166,17 @@ async function builtinExport({ args, stdout, stderr, state, context }: BuiltinCa
     return 0;
   }
   for (const arg of names) {
-    const eqIdx = arg.indexOf('=');
-    const key = eqIdx === -1 ? arg : arg.slice(0, eqIdx);
     if (functions) {
       // A function is marked for children this shell does not give functions to: only its name is checked.
-      if (!context.isFunction(key)) {
-        (await stderr.write(`export: ${key}: not a function\n`));
+      if (!context.isFunction(arg)) {
+        (await stderr.write(`export: ${arg}: not a function\n`));
         exitCode = 1;
       }
       continue;
     }
+    const eqIdx = arg.indexOf('=');
+    const key = eqIdx === -1 ? arg : arg.slice(0, eqIdx);
+    if (eqIdx === -1 && !Object.hasOwn(state.env, key) && !state.arrays.has(key)) state.declaredNames.add(key);
     // A refused assignment (a readonly name) still takes the attribute, as bash's does.
     if (eqIdx !== -1 && !(await assignEnv(state, key, arg.slice(eqIdx + 1), stderr))) exitCode = 1;
     if (unexport) state.exportedNames.delete(key);
@@ -196,7 +198,7 @@ function declarationOf(state: ShellState, name: string, local = false): string |
   const exported = state.exportedNames.has(name);
   // A name with an attribute and no value (`export p`), or the running function's
   // `local p`, is declared, unset: its name alone.
-  if (array === undefined && scalar === undefined && !readonly && !exported && !local) return null;
+  if (array === undefined && scalar === undefined && !readonly && !exported && !local && !state.declaredNames.has(name)) return null;
   const flags = `${array === undefined ? '' : 'a'}${readonly ? 'r' : ''}${exported ? 'x' : ''}`;
   const head = `declare ${flags === '' ? '--' : `-${flags}`} ${name}`;
   if (array === undefined) return scalar === undefined ? head : `${head}=${declareQuote(scalar)}`;
@@ -209,12 +211,14 @@ function declarationOf(state: ShellState, name: string, local = false): string |
   return `${head}=(${elements.join(' ')})`;
 }
 
-/** Every variable `declare -p` lists, in byte order: the set ones, and those declared with an attribute and no value. */
-function declaredNames(state: ShellState): string[] {
+/** Every variable `declare -p` lists, in byte order: the set ones, those declared with no value, and the running function's `locals`. */
+function declaredNames(state: ShellState, locals: readonly string[]): string[] {
   const names = new Set(Object.keys(state.env).filter(isShellIdentifier));
   for (const name of state.arrays.keys()) names.add(name);
   for (const name of state.exportedNames) names.add(name);
   for (const name of state.readonlyNames) names.add(name);
+  for (const name of state.declaredNames) names.add(name);
+  for (const name of locals) names.add(name);
   return Array.from(names).filter(isShellIdentifier).sort();
 }
 
@@ -222,7 +226,8 @@ function declaredNames(state: ShellState): string[] {
  * A value as bash's `declare -p` quotes it (print_var_value): in double
  * quotes, `"`, `$`, backquote and backslash escaped; or, holding a character
  * that does not print, as $'…' (ansic_quote): \a \b \E \f \n \r \t \v, `'` and
- * `\` escaped, any other such character as its UTF-8 bytes in octal.
+ * `\` escaped, any other such character as its bytes in octal (a byte that
+ * is no UTF-8, held as a lone surrogate, as itself: encodeLossless).
  */
 function declareQuote(value: string): string {
   if (!NONPRINTING.test(value)) return `"${value.replace(/["$`\\]/g, '\\$&')}"`;
@@ -231,7 +236,7 @@ function declareQuote(value: string): string {
     const named = ANSIC_ESCAPES.get(char);
     if (named !== undefined) out += `\\${named}`;
     else if (char === "'" || char === '\\') out += `\\${char}`;
-    else if (NONPRINTING.test(char)) for (const byte of UTF8.encode(char)) out += `\\${byte.toString(8).padStart(3, '0')}`;
+    else if (NONPRINTING.test(char)) for (const byte of encodeLossless(char)) out += `\\${byte.toString(8).padStart(3, '0')}`;
     else out += char;
   }
   return `${out}'`;
@@ -239,7 +244,6 @@ function declareQuote(value: string): string {
 
 /** What iswprint refuses under C.UTF-8: controls, line and paragraph separators, unassigned code points, lone surrogates. */
 const NONPRINTING = /[\p{Cc}\p{Zl}\p{Zp}\p{Cn}\p{Cs}]/u;
-const UTF8 = new TextEncoder();
 
 const ANSIC_ESCAPES: ReadonlyMap<string, string> = new Map([
   ['\x07', 'a'], ['\b', 'b'], ['\x1b', 'E'], ['\f', 'f'], ['\n', 'n'], ['\r', 'r'], ['\t', 't'], ['\v', 'v'],
@@ -578,6 +582,7 @@ async function builtinUnset({ args, stderr, state, context }: BuiltinCall): Prom
       delete state.env[name];
       state.arrays.delete(name);
       state.exportedNames.delete(name);
+      state.declaredNames.delete(name);
       continue;
     }
     const array = state.arrays.get(name);
@@ -634,7 +639,10 @@ async function builtinDeclare(verb: 'local' | 'declare' | 'typeset', { args, std
     const named = args.slice(first);
     const selected = (name: string): boolean => (!arrayFlag && !readonlyFlag && !exportFlag)
       || (arrayFlag && state.arrays.has(name)) || (readonlyFlag && state.readonlyNames.has(name)) || (exportFlag && state.exportedNames.has(name));
-    const listed = named.length > 0 ? named : (verb === 'local' && locals !== null ? locals : declaredNames(state)).filter(selected);
+    // A nameless `local -p` is every local of the function, sorted, whatever is selected (bash's show_local_var_attributes).
+    const listed = named.length > 0 ? named
+      : verb === 'local' && locals !== null ? [...locals].sort()
+      : declaredNames(state, locals ?? []).filter(selected);
     for (const name of listed) {
       const local = locals !== null && locals.includes(name);
       const declared = verb === 'local' && !local ? null : declarationOf(state, name, local);
@@ -668,6 +676,7 @@ async function builtinDeclare(verb: 'local' | 'declare' | 'typeset', { args, std
     }
 
     if (eq !== -1 && !(await assignDeclared(state, name, context.arrayElements?.get(index) ?? arg.slice(eq + 1), stderr))) exitCode = 1;
+    if (eq === -1 && verb !== 'local' && !Object.hasOwn(state.env, name) && !state.arrays.has(name)) state.declaredNames.add(name);
     if (readonlyFlag) state.readonlyNames.add(name);
     if (exportFlag) state.exportedNames.add(name);
   }
