@@ -29,6 +29,7 @@ import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js
 import { supervisorEntrypoint } from './composition.js';
 import { infrastructureSupervisorProps, supervisorLoaderKey, mintProcessSupervisor } from './supervisor-props.js';
 import { applyFacetLimits, facetCallDeadlineMs, facetLimits, facetLoaderKey } from './facet-limits.js';
+import { holdThreadWatch } from './thread-stalls.js';
 import { unsettledEnd } from '@nimbus-sh/core/_shared/process-fs-client.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { hashSource } from './vendor/serialize.js';
@@ -591,6 +592,7 @@ export class IsolatePool {
                 held = endFetch;
                 const began = Date.now();
                 let loadMs = null;
+                const watched = holdThreadWatch(this.ctx, `facet ${this.tag}`);
                 try {
                     const stub = this.loader.get(id, async () => {
                         const loading = Date.now();
@@ -631,6 +633,7 @@ export class IsolatePool {
                     throw new ExecutionError(String(err));
                 }
                 finally {
+                    watched();
                     endFetch();
                 }
             }
