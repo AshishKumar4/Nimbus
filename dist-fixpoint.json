@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "9441a64960c3d45e7e3c545349876388c153cda7b292db4f16b820544c8584a2",
+  "fingerprint": "41a7d9f25e9030b0086df6ee296bb95490239f00f55bd4a39829545b025335d4",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -3214,7 +3214,7 @@
     "packages/worker/scripts/resolve-package-dir.mjs": "c4b7f84d185c498e4b9279d1556c4ef6c922856abda8a3a3c5d632bcb2977e95",
     "packages/worker/scripts/rolldown-facet/entry.mjs": "3696ed018a524682b2eb13d0b6244ff662b209073ae2e3b9c094ca3ff4337ac6",
     "packages/worker/scripts/rolldown-facet/shims.mjs": "cc790a0a7af7360f198b301b4f2d8e42848edf1788e9ccbd62335dbd0d41de9e",
-    "packages/worker/scripts/runtime-specs.mjs": "0357d3c57f8dc9945fca36a09e4fc9a557e7918d2de7220c60b8b0be9480fbb4",
+    "packages/worker/scripts/runtime-specs.mjs": "80063db38973562138ba9d44c42173a6967247a0721a361e9a4bf5d8976e42e4",
     "packages/worker/scripts/rust-build-env.mjs": "bee2b7ee81ac5975df573df583b6b67dc176e4491fadcb43c4f3bbc2e81f73d4",
     "packages/worker/scripts/stage-asset.mjs": "2187cb40e0491884adea0ae5deb543205f431e995a4e1e3a726d93d4e1173929",
     "packages/worker/src/_shared/nimbus-debug.ts": "f7bae81c22f6931e64c503ef4afa5db071a876c83341d1e09be8dc5d9141ac77",
