@@ -193,7 +193,7 @@ async function runSteps(steps, met, grants) {
       const code = await errnoOf(() => { got = sync.read(opened.handle, 0, 1 << 12); });
       // Bytes the view does not hold: refused (EAGAIN), or ESTALE once no name leads to them. A descriptor
       // that never wrote reads the view's bytes, which the view may not hold yet (a grant's given back).
-      if ((code === 'EAGAIN' || code === 'ESTALE') && (file === undefined || file.bytes === null || (code === 'EAGAIN' && !opened.write))) continue;
+      if ((code === 'EAGAIN' || code === 'ESTALE') && (file === undefined || file.bytes === null || (code === 'EAGAIN' && !opened.wrote))) continue;
       if (code === 'ESTALE' && unnamed.has(id)) continue;
       assert.equal(code, null, `${label}: fd ${fd} read ${code}`);
       if (file === undefined || file.bytes === null) continue;
@@ -304,6 +304,7 @@ async function runSteps(steps, met, grants) {
         const at = step.offset ?? opened.position;
         const effect = opened.append ? { kind: 'append', ref: { opened }, data } : { kind: 'write', ref: { opened }, offset: at, data };
         if (!opened.append && step.offset === null) opened.position = at + data.length;
+        opened.wrote = true;
         add(effect, { opened, write: effect });
         return;
       }
@@ -311,6 +312,7 @@ async function runSteps(steps, met, grants) {
         const code = await errnoOf(() => sync.ftruncate(opened.handle, step.size));
         if (!opened.write) { assert.ok(code !== null, `${label}: ftruncate by a read-only fd answered`); return; }
         assert.equal(code, null, `${label}: ftruncate`);
+        opened.wrote = true;
         add({ kind: 'truncate', ref: { opened }, size: step.size }, { opened, truncate: step.size });
         return;
       }
