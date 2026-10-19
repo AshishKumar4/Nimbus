@@ -76,6 +76,35 @@ function collatedRange(lo: string, hi: string): string {
   return members;
 }
 
+/**
+ * A bracket expression's member at `i`: a character (a backslash is one) or
+ * a collating symbol naming one, which may end a range; or an equivalence
+ * class or a named class, which may not. regcomp, as glibc's under C.UTF-8,
+ * takes only an ASCII character's symbol or equivalence class (the other
+ * dialects take each character of a longer one).
+ */
+function bracketMember(p: string, i: number, regcomp: boolean): { char: string; end: number } | { members: string; end: number } {
+  const kind = p[i] === '[' ? p[i + 1] : undefined;
+  if (kind === ':' || kind === '=' || kind === '.') {
+    const close = p.indexOf(`${kind}]`, i + 2);
+    if (close === -1) throw new PosixRegexSyntax('Unmatched [, [^, [:, [., or [=');
+    const name = p.slice(i + 2, close);
+    const end = close + 2;
+    if (kind === ':') {
+      const cls = Object.hasOwn(CLASSES, name) ? CLASSES[name] : undefined;
+      if (cls === undefined) throw new PosixRegexSyntax('Invalid character class name');
+      return { members: cls, end };
+    }
+    if (regcomp && !/^[\0-\x7f]$/.test(name)) throw new PosixRegexSyntax('Invalid collation character');
+    const chars = [...name];
+    const [only] = chars;
+    if (kind === '.' && chars.length === 1 && only !== undefined) return { char: only, end };
+    return { members: chars.map((c) => literal(c, true)).join(''), end };
+  }
+  const char = String.fromCodePoint(p.codePointAt(i) ?? 0);
+  return { char, end: i + char.length };
+}
+
 /** A POSIX bracket expression starting at `i` (after '['): its JS class and where it ends. */
 function bracket(p: string, i: number, collating = false, regcomp = false): { source: string; end: number } {
   let out = '[';
@@ -84,54 +113,37 @@ function bracket(p: string, i: number, collating = false, regcomp = false): { so
   // glibc: an expression that ends at its `[` (or `[^`) is no bracket at all.
   if (regcomp && i >= p.length) throw new PosixRegexSyntax('Invalid regular expression');
   let first = true;
-  // regcomp: the end of the range just read, after which a dash may only be last.
+  // regcomp: a range just ended, after which a dash may only be last.
   let rangeEnded = false;
   for (;;) {
     if (i >= p.length) throw new PosixRegexSyntax('Unmatched [, [^, [:, [., or [=');
-    const ch = p[i];
-    if (ch === ']' && !first) return { source: out + (negated ? INVALID_BYTES : '') + ']', end: i + 1 };
+    if (p[i] === ']' && !first) return { source: out + (negated ? INVALID_BYTES : '') + ']', end: i + 1 };
     first = false;
-    if (ch === '[' && (p[i + 1] === ':' || p[i + 1] === '=' || p[i + 1] === '.')) {
-      const kind = p[i + 1];
-      const close = p.indexOf(`${kind}]`, i + 2);
-      if (close === -1) throw new PosixRegexSyntax('Unmatched [, [^, [:, [., or [=');
-      const name = p.slice(i + 2, close);
-      if (kind === ':') {
-        const cls = Object.hasOwn(CLASSES, name) ? CLASSES[name] : undefined;
-        if (cls === undefined) throw new PosixRegexSyntax('Invalid character class name');
-        // A class cannot end or begin a range (glibc).
-        if (regcomp && p[close + 2] === '-' && p[close + 3] !== undefined && p[close + 3] !== ']') throw new PosixRegexSyntax('Invalid range end');
-        out += cls;
-      } else {
-        out += [...name].map((c) => literal(c, true)).join('');
+    const member = bracketMember(p, i, regcomp);
+    i = member.end;
+    // A range: a dash after a member, not the expression's last.
+    if (p[i] === '-' && i + 1 < p.length && p[i + 1] !== ']') {
+      const hi = bracketMember(p, i + 1, regcomp);
+      // A class neither begins nor ends a range (glibc).
+      if (!('char' in member) || !('char' in hi)) throw new PosixRegexSyntax('Invalid range end');
+      if (regcomp) {
+        const lo = member.char.codePointAt(0) ?? 0, high = hi.char.codePointAt(0) ?? 0;
+        // C.UTF-8 orders no character past ASCII for a range.
+        if (lo > 0x7f || high > 0x7f) throw new PosixRegexSyntax('Invalid collation character');
+        if (lo > high) throw new PosixRegexSyntax('Invalid range end');
       }
-      i = close + 2;
-      rangeEnded = false;
+      out += `${literal(member.char, true)}-${literal(hi.char, true)}`;
+      // sed's glibc takes a range between letters by collation; regcomp's, for the shell, by code point.
+      if (collating && /[a-z]/.test(member.char) === /[a-z]/.test(hi.char) && /^[A-Za-z]$/.test(member.char) && /^[A-Za-z]$/.test(hi.char)) {
+        out += collatedRange(member.char, hi.char);
+      }
+      i = hi.end;
+      rangeEnded = true;
       continue;
     }
-    // A range keeps its dash; any other character is taken literally.
-    if (ch === '-' && !first && p[i + 1] !== ']' && out.length > 1 && out !== '[^') {
-      if (regcomp && rangeEnded) throw new PosixRegexSyntax('Invalid range end');
-      // The characters on either side, a surrogate pair whole.
-      const loStart = i >= 2 && /[\uDC00-\uDFFF]/.test(p[i - 1]) && /[\uD800-\uDBFF]/.test(p[i - 2]) ? i - 2 : i - 1;
-      const lo = p.slice(loStart, i), hi = String.fromCodePoint(p.codePointAt(i + 1) ?? 0);
-      if (regcomp) {
-        if (p[i + 1] === '[' && (p[i + 2] === ':' || p[i + 2] === '=' || p[i + 2] === '.')) throw new PosixRegexSyntax('Invalid range end');
-        if ((lo.codePointAt(0) ?? 0) > (hi.codePointAt(0) ?? 0)) throw new PosixRegexSyntax('Invalid range end');
-        out += `-${literal(hi, true)}`;
-        i += 1 + hi.length;
-        rangeEnded = true;
-        continue;
-      }
-      out += '-';
-      if (collating && /[a-z]/.test(lo) === /[a-z]/.test(hi) && /[A-Za-z]/.test(lo) && /[A-Za-z]/.test(hi)) {
-        out += literal(hi, true) + collatedRange(lo, hi);
-        i += 2;
-        continue;
-      }
-    } else out += literal(ch, true);
+    if (regcomp && rangeEnded && 'char' in member && member.char === '-' && p[i] !== ']') throw new PosixRegexSyntax('Invalid range end');
+    out += 'char' in member ? literal(member.char, true) : member.members;
     rangeEnded = false;
-    i++;
   }
 }
 
@@ -147,9 +159,16 @@ export function translateDetailed(p: string, options: TranslateOptions): Transla
   let out = '';
   // Where an operator would have nothing to apply to (so it is literal, or for regcomp an error), and open groups.
   let atStart = true;
-  const open: number[] = [];
+  // Each open group: where its `(` is in `out`, its number, and (regcomp) the groups closed when it opened and in its alternatives before this one.
+  const open: { at: number; group: number; before: number; alternatives: number }[] = [];
   let groups = 0;
+  // regcomp: the groups a back reference may name (bit n: group n), those closed in this alternative or before the alternation it is in, as glibc's.
   let closed = 0;
+  const alternative = (): void => {
+    const group = open.at(-1);
+    if (group !== undefined) group.alternatives |= closed;
+    closed = group?.before ?? 0;
+  };
   let ambiguous = false;
   // Where the atom a quantifier applies to begins in `out` (-1: none), and whether it is quantified already.
   let atom = -1;
@@ -166,6 +185,8 @@ export function translateDetailed(p: string, options: TranslateOptions): Transla
   // A quantifier after a quantifier applies to both, as GNU's: JavaScript would read `+?` as lazy, `**` as an error.
   const quantify = (quantifier: string): void => {
     if (atom === -1) {
+      // regcomp repeats no anchor: glibc refuses `\\b*` as it does `^*`.
+      if (regcomp) nothingToRepeat();
       out += quantifier;
       return;
     }
@@ -178,18 +199,18 @@ export function translateDetailed(p: string, options: TranslateOptions): Transla
     throw new PosixRegexSyntax('Invalid preceding regular expression');
   };
   const openGroup = (): void => {
-    open.push(out.length);
     groups++;
+    open.push({ at: out.length, group: groups, before: closed, alternatives: 0 });
     out += '(';
     atom = -1;
     atStart = true;
   };
   const closeGroup = (): void => {
-    const at = open.pop();
-    if (at === undefined) return;
-    closed++;
+    const group = open.pop();
+    if (group === undefined) return;
+    closed |= group.alternatives | (group.group <= 9 ? 1 << group.group : 0);
     out += ')';
-    atom = at;
+    atom = group.at;
     quantified = false;
   };
   for (let i = 0; i < p.length;) {
@@ -206,7 +227,7 @@ export function translateDetailed(p: string, options: TranslateOptions): Transla
         closeGroup();
         continue;
       }
-      if (!extended && next === '|') { anchor('|'); ambiguous = true; atStart = true; continue; }
+      if (!extended && next === '|') { alternative(); anchor('|'); ambiguous = true; atStart = true; continue; }
       if (!extended && (next === '+' || next === '?')) {
         if (start) emit(literal(next));
         else quantify(next);
@@ -231,7 +252,7 @@ export function translateDetailed(p: string, options: TranslateOptions): Transla
       }
       if (/[1-9]/.test(next)) {
         // regcomp refers only to a group already closed.
-        if (Number(next) > (regcomp ? closed : groups)) throw new PosixRegexSyntax('Invalid back reference');
+        if (regcomp ? (closed & (1 << Number(next))) === 0 : Number(next) > groups) throw new PosixRegexSyntax('Invalid back reference');
         ambiguous = true;
         // Delimited: a digit after it is a character, never part of a two-digit reference.
         emit(`(?:\\${next})`);
@@ -286,7 +307,7 @@ export function translateDetailed(p: string, options: TranslateOptions): Transla
         closeGroup();
         continue;
       }
-      if (ch === '|') { anchor('|'); ambiguous = true; atStart = true; continue; }
+      if (ch === '|') { alternative(); anchor('|'); ambiguous = true; atStart = true; continue; }
       if (ch === '+' || ch === '?') {
         if (start && regcomp) nothingToRepeat();
         if (start) emit(literal(ch));

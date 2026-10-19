@@ -150,7 +150,7 @@ class Parser {
       const mark = this.reader.mark();
       const batch = this.reader.next();
       this.marks[this.tokens.length] = mark;
-      this.tokens.push(...batch);
+      for (const token of batch) this.tokens.push(token);
     }
   }
 
@@ -224,7 +224,7 @@ class Parser {
 
   parseScript(): ScriptNode {
     const lists: ListNode[] = [];
-    for (let line = this.nextLine(); line !== null; line = this.nextLine()) lists.push(...line);
+    for (let line = this.nextLine(); line !== null; line = this.nextLine()) for (const list of line) lists.push(list);
     return { type: 'script', lists };
   }
 
@@ -237,6 +237,7 @@ class Parser {
       const prevPos = this.pos;
       const list = this.parseList();
       lists.push(list);
+      this.requireListEnd(list, () => false);
       // Its separators: a newline ends the line (read no further, so the next line is read after this one runs).
       let newline = this.consumeHeredocBodies();
       while (!newline && (this.peek().kind === TokenKind.Semi || this.peek().kind === TokenKind.Newline)) {
@@ -254,6 +255,18 @@ class Parser {
       list.endsLine = newline || this.isAtEnd();
       if (list.endsLine) return lists;
     }
+  }
+
+  /**
+   * After a list: a separator, or what ends what encloses it (`ends`), comes
+   * next, unless it runs in the background, as bash's grammar has it; any
+   * other token there is a syntax error (`x=1 (echo)`, `echo a (b)`).
+   */
+  private requireListEnd(list: ListNode, ends: (token: Token) => boolean): void {
+    const token = this.peek();
+    const kind = token.kind;
+    if (list.background || kind === TokenKind.Semi || kind === TokenKind.Newline || kind === TokenKind.EOF || ends(token)) return;
+    throw new ParseError(`syntax error near unexpected token \`${token.value}'`, token.pos);
   }
 
   private skipSeparators(): void {
@@ -401,7 +414,8 @@ class Parser {
   private parseRegexWord(inGroup: boolean): WordPart[] {
     this.rereadFromHere();
     const regex = this.reader.readRegexWord();
-    if (regex === null) throw new ParseError('unexpected argument to conditional binary operator', this.peek().pos);
+    // Nothing there, or the conditional's own `]]`: no operand.
+    if (regex === null || unquotedLiteral(regex.token) === ']]') throw new ParseError('unexpected argument to conditional binary operator', this.peek().pos);
     if (regex.unclosed) throw new ParseError("unexpected EOF while looking for matching `)'", regex.token.pos);
     this.tokens.push(regex.token);
     this.marks.push(undefined);
@@ -437,7 +451,12 @@ class Parser {
       }
       if (t.kind === TokenKind.EOF) break;
 
-      lists.push(this.parseList());
+      const list = this.parseList();
+      lists.push(list);
+      this.requireListEnd(list, (token) => {
+        const ending = unquotedLiteral(token);
+        return (ending !== null && terminators.includes(ending)) || (token.kind === TokenKind.RParen && terminators.includes(')'));
+      });
       this.consumeHeredocBodies();
       this.skipSeparators();
       if (this.pos === prevPos) {
@@ -573,7 +592,9 @@ class Parser {
         if (t.kind === TokenKind.DoubleSemi) break;
         if (isUnquotedLiteralWord(t, 'esac')) break;
         if (t.kind === TokenKind.EOF) break;
-        body.push(this.parseList());
+        const list = this.parseList();
+        body.push(list);
+        this.requireListEnd(list, (token) => token.kind === TokenKind.DoubleSemi || isUnquotedLiteralWord(token, 'esac'));
         this.skipSeparators();
         if (this.pos === prevPos) {
           throw new ParseError(

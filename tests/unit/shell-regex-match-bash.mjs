@@ -45,6 +45,9 @@ const CASES = [
   "b=$'\\xff'; [[ $b =~ . ]]; echo $?; [[ $b =~ [^a] ]]; echo $?; [[ $b =~ $b ]]; echo $?",
   "BASH_REMATCH=(old); readonly BASH_REMATCH; [[ ab =~ (a) && b =~ x ]]; printf '%s <%s>\\n' \"$?\" \"${BASH_REMATCH[0]}\"",
   "[[ ab =~ (\\\na)b ]]; echo $?; [[ xyz =~ (y|yz)z? ]] && echo \"${BASH_REMATCH[0]}\"; [[ aa =~ a+? ]] && echo \"${BASH_REMATCH[0]}\"",
+  "for r in '((a)\\2)' '((a)\\1)' '(a)(b\\2)' '(a(b)\\2)' '(a)|\\1' '(a)(b|\\1)' '(a|b)\\1' '((a)|b)\\2' '\\b*' '$*' '\\<*' '\\`*' '(^)*' 'a|*'; do [[ aab =~ $r ]]; echo \"$r $? ${BASH_REMATCH[0]-unset}\"; done",
+  "for r in '[A-[.Z.]]' '[[.A.]-Z]' '[[.ab.]]' '[[=a=]-z]' '[a-[=c=]]' '[[.é.]]' '[[=é=]]' '[é-ë]' '[a-é]' '[é-]' '[[.-.]-z]' '[a-[.-.]]' '[[.].]]' '[[=a=]]' '[a-c-e]' '[%--]'; do [[ 'B-é]a' =~ $r ]]; echo \"$r $? ${BASH_REMATCH[0]-unset}\"; done",
+  "eval '[[ \"]]\" =~ ]] ]]' 2>/dev/null; echo $?; eval '[[ x =~ ]]' 2>/dev/null; echo $?; [[ \"]]a\" =~ ]]a ]]; echo $?; [[ \"]]\" =~ \"]]\" ]]; echo $?",
 ];
 
 /** bash's diagnostic prefix: `bash: line 1: `, `bash: -c: line 1: `. */

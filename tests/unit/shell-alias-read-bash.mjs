@@ -4,9 +4,11 @@
 // (a syntax error in it runs none of it, one in a later line leaves the
 // earlier ones run); an alias defined on a line is expanded only from the
 // next; an alias's text is read in place of its word, before reserved
-// words, so it may open what the line closes (`begin echo in; fi`) and a
-// comment in it takes the rest of the line; a function keeps the aliases it
-// was read with. Before, the whole text was parsed first and an alias was
+// words, so it may open what the line closes (`begin echo in; fi`), a
+// comment in it takes the rest of the line, and a regular expression read
+// on past its end has bash's blank there; a command after a prefix's
+// assignments is no compound command (`x=1 (echo)` is a syntax error); a
+// function keeps the aliases it was read with. Before, the whole text was parsed first and an alias was
 // expanded when its command ran. Each line runs as a session's line and as
 // host bash's `bash -O expand_aliases -c`. Host bash is the oracle (stdout,
 // status, and stderr without bash's line prefix; a syntax error's stdout
@@ -37,6 +39,10 @@ const CASES = [
   { line: "alias p='printf hi #'\n>/dev/null p ignored\necho after", compare: "all" },
   { line: "alias n='echo n'\nx=$(n)\necho \"$x\"; eval 'alias m=\"echo m\"\nm'", compare: "all" },
   { line: "cat <<EOF; echo after\nbody\nEOF\necho next", compare: "all" },
+  { line: "alias s='(echo hi)'\nx=1 s\necho after", compare: "out" },
+  { line: "echo a\n(echo b) (echo c)\necho never", compare: "out" },
+  { line: "alias r='[[ x =~ '\nr x ]]; echo $?", compare: "all" },
+  { line: "alias r='[[ \"x \" =~ (x'\nr) ]]; echo \"$? <${BASH_REMATCH[0]}>\"\nr ) ]]; echo \"$? <${BASH_REMATCH[0]}>\"\nalias r='[[ \" x\" =~ (a|'\nr x) ]]; echo \"$? <${BASH_REMATCH[0]}>\"", compare: "all" },
 ];
 
 /** bash's diagnostic prefix: `bash: line 1: `, `bash: -c: line 1: `. */

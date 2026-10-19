@@ -6,9 +6,10 @@ export function lex(input: string): Token[] {
   const reader = new TokenReader(input);
   const tokens: Token[] = [];
   for (;;) {
-    const batch = reader.next();
-    tokens.push(...batch);
-    if (batch.some((token) => token.kind === TokenKind.EOF)) return tokens;
+    for (const token of reader.next()) {
+      tokens.push(token);
+      if (token.kind === TokenKind.EOF) return tokens;
+    }
   }
 }
 
@@ -20,10 +21,15 @@ interface Frame {
   readonly blank: boolean;
 }
 
-/** Where a reader is between tokens: the text it reads at each depth, and the here-documents whose bodies follow its next newline. */
+/**
+ * Where a reader is between tokens: the text it reads at each depth, and the
+ * here-documents whose bodies follow its next newline (the first
+ * `pendingCount` of `pending`, which a line's words only add to).
+ */
 export interface ReaderMark {
   readonly frames: readonly Frame[];
   readonly pending: readonly HeredocDelimiter[];
+  readonly pendingCount: number;
   readonly operator: TokenKind.Heredoc | TokenKind.HeredocStripTabs | null;
   readonly checkNext: boolean;
 }
@@ -48,12 +54,12 @@ export class TokenReader {
   }
 
   mark(): ReaderMark {
-    return { frames: this.frames.map((frame) => ({ ...frame })), pending: [...this.pending], operator: this.operator, checkNext: this.checkNext };
+    return { frames: this.frames.map((frame) => ({ ...frame })), pending: this.pending, pendingCount: this.pending.length, operator: this.operator, checkNext: this.checkNext };
   }
 
   reset(mark: ReaderMark): void {
     this.frames = mark.frames.map((frame) => ({ ...frame }));
-    this.pending = [...mark.pending];
+    this.pending = mark.pending.slice(0, mark.pendingCount);
     this.operator = mark.operator;
     this.checkNext = mark.checkNext;
   }
@@ -115,7 +121,7 @@ export class TokenReader {
         frame.at++;
         if (this.pending.length > 0) {
           const bodies = readHeredocBodies(input, frame.at, this.pending);
-          batch.push(...bodies.tokens);
+          for (const body of bodies.tokens) batch.push(body);
           frame.at = bodies.end;
           this.pending = [];
         }
@@ -168,22 +174,48 @@ export class TokenReader {
    * The word after `=~`, as bash's reader reads a regular expression: up to a
    * blank or an operator, except that its parentheses nest and, inside them,
    * blanks, newlines, `#` and operators are its own, and `|` is its own
-   * anywhere. A `)` outside them ends it, for the conditional to read. Null
-   * when no word begins here (a comment, a newline, an operator); `unclosed`
-   * when the input ends inside its parentheses.
+   * anywhere. A `)` outside them ends it, for the conditional to read. Inside
+   * them, it goes on past the end of an alias's text into the text the alias
+   * was read in, with a blank between unless the alias's text ended in one or
+   * in an operator's character (bash's reader gives that blank). Null when no
+   * word begins here (a comment, a newline, an operator); `unclosed` when the
+   * input ends inside its parentheses.
    */
   readRegexWord(): { token: Token; unclosed: boolean } | null {
-    const frame = this.frame;
-    const input = frame.input;
-    while (input[frame.at] === ' ' || input[frame.at] === '\t' || (input[frame.at] === '\\' && input[frame.at + 1] === '\n')) {
-      frame.at += input[frame.at] === '\\' ? 2 : 1;
+    // Blanks and line continuations before it, past the end of an alias's text.
+    let frame = this.frame;
+    for (;;) {
+      const text = frame.input;
+      while (text[frame.at] === ' ' || text[frame.at] === '\t' || (text[frame.at] === '\\' && text[frame.at + 1] === '\n')) {
+        frame.at += text[frame.at] === '\\' ? 2 : 1;
+      }
+      if (frame.at < text.length || this.frames.length === 1) break;
+      frame = this.frame;
     }
+    let input = frame.input;
     const pos = frame.at;
     if (pos >= input.length || input[pos] === '#') return null;
     const parts: WordPart[] = [];
     let depth = 0;
     let i = pos;
-    while (i < input.length) {
+    // Its text as written, read up to `i` in `input` from `from`.
+    let source = '';
+    let from = pos;
+    for (;;) {
+      if (i >= input.length) {
+        if (depth === 0 || this.frames.length === 1) break;
+        source += input.slice(from, i);
+        if (input !== '' && !/[ \t\n\\|&;()<>]$/.test(input)) {
+          parts.push({ text: ' ', quoted: 'none' });
+          source += ' ';
+        }
+        frame.at = i;
+        frame = this.frame;
+        input = frame.input;
+        i = frame.at;
+        from = i;
+        continue;
+      }
       const ch = input[i];
       if (ch === '\\' && input[i + 1] === '\n') {
         i += 2;
@@ -206,10 +238,12 @@ export class TokenReader {
       parts.push(...(word.token.parts ?? [{ text: word.token.value, quoted: 'none' }]));
       i = word.end;
     }
-    if (i === pos) return null;
+    if (parts.length === 0) return null;
     frame.at = i;
+    // It is the word after an alias whose text ended in a blank, if one did.
+    this.checkNext = false;
     return {
-      token: { kind: TokenKind.Word, value: parts.map((part) => part.text).join(''), pos, parts, source: input.slice(pos, i) },
+      token: { kind: TokenKind.Word, value: parts.map((part) => part.text).join(''), pos, parts, source: source + input.slice(from, i) },
       unclosed: depth > 0,
     };
   }
