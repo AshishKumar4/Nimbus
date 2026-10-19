@@ -228,11 +228,11 @@ export function heapTables() {
     // here after a program may have replaced Map.prototype.get.
     const files = new SafeMap();
     const chunks = new SafeMap();
-    const meta = new Map();
+    const meta = new SafeMap();
     const ns = new SafeMap();
-    const byKey = new Map();
+    const byKey = new SafeMap();
     // Pages by "path\0rev\0part".
-    const pages = new Map();
+    const pages = new SafeMap();
     const pageKey = (path, rev, part) => path + '\u0000' + rev + '\u0000' + part;
     let sorted = null;
     let used = 0;
