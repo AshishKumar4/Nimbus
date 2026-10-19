@@ -304,6 +304,8 @@ export async function bootEngine(kind, { seed, supervise = {}, stdin = false } =
       const key = path.replace(/^\/+/, '');
       return [...grants.values()].some((root) => key === root || key.startsWith(`${root}/`));
     },
+    /** Something leaves the process: what it wrote reaches the session first (Node's release barrier; the holder's flush). */
+    publish: async () => (kind === 'node' ? globalThis.__nimbusVfsReleaseBarrier() : fs.flush()),
     /** Write files in `dir` until the session gives the process its subtree, as a program that writes there often does. */
     async hold(dir) {
       await fs.mkdir(dir, { recursive: true, mode: 0o755 });

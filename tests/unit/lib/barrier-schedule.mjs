@@ -18,13 +18,14 @@
  * What each answer may be is judged against a model of the session's
  * files: every state each name has had (a peer's change once it returned,
  * the process's once its call did), in order.
- *   - An awaited answer is a state its name had while the call was in
- *     flight, or the one a change in flight then leaves.
- *   - An answer that cannot wait is a state its name had no earlier than the
- *     last input whose barrier landed, or the process's own last change of
- *     it, whichever is later. A process listed on demand may refuse it
- *     (EAGAIN); one whose names are all listed may not, except for bytes it
- *     does not hold, or while a poison has stopped its namespace.
+ *   - An answer is a state its name had no earlier than the last input
+ *     whose barrier landed, or the process's own last change of it,
+ *     whichever is later, and no later than the answer; or one a change in
+ *     flight then leaves. Node's awaited read takes its own barrier: its
+ *     answer is no earlier than the call. A process listed on demand may
+ *     refuse a call that cannot wait (EAGAIN); one whose names are all
+ *     listed may not, except for bytes it does not hold, or while a poison
+ *     has stopped its namespace.
  *   - Once every reply is delivered, an awaited call still pending with
  *     nothing moving is a deadlock.
  *   - At the end, every reply delivered and a last barrier landed, each name
@@ -34,7 +35,11 @@
  *     awaited read of which has answered since, that are still there.
  * Two changes whose names overlap are never in flight together, so each
  * change's effect is the model's at its start; one that would overlap waits
- * for the step after the other returns.
+ * for the step after the other returns. The process's own changes reach the
+ * session when something leaves the process (publish): a peer's change of
+ * names the process changed since waits for that first. The process never
+ * decides a change of names a peer changed since its last input landed: it
+ * cannot know of them, and the session may refuse what it decides.
  *
  * Directory note: under tests/unit/lib/ so the suite does not run it as a test.
  */
@@ -186,8 +191,17 @@ class Finding extends Error {
 
 const describe = (state) => (state === undefined ? 'absent' : state.type === 'file' ? `file ${JSON.stringify(state.content)} ${state.mode.toString(8)}` : `dir ${state.mode.toString(8)}`);
 
-/** Whether `answer` (of read `op`) is what `state` says. */
-function answers(op, answer, state, world) {
+/** `world` with `effect` (a world a change leaves) laid over the names under `domain`. */
+function laid(world, domain, effect) {
+  const next = new Map(world);
+  for (const rel of world.keys()) if (domain.some((root) => under(rel, root))) next.delete(rel);
+  for (const [rel, state] of effect) if (domain.some((root) => under(rel, root))) next.set(rel, state);
+  return next;
+}
+
+/** Whether `answer` (of read `op` of `rel`) is what `world` says. */
+function answers(op, rel, answer, world) {
+  const state = world.get(rel);
   if (op === 'stat') {
     if (state === undefined) return answer === null;
     if (answer === null || answer.type !== (state.type === 'dir' ? 'directory' : 'file') || (answer.mode & 0o777) !== state.mode) return false;
@@ -200,7 +214,7 @@ function answers(op, answer, state, world) {
   }
   if (state === undefined) return answer?.code === 'ENOENT';
   if (state.type !== 'dir') return answer?.code === 'ENOTDIR';
-  return Array.isArray(answer) && answer.join('/') === childrenOf(world, '').join('/');
+  return Array.isArray(answer) && answer.join('/') === childrenOf(world, rel).join('/');
 }
 
 /**
@@ -248,38 +262,34 @@ export async function runSchedule(kind, schedule, { parkSeed, deadlineMs = 40_00
   const deferred = [];
   /** Files whose bytes a call that cannot wait was refused, and no awaited read answered since (Node's misses). */
   const missed = new Set();
+  /** The names of the process's changes that returned and have not been published since. */
+  let unpublished = [];
+  /** Each peer change that returned, and as the model stood then: what the process may not know of before its next input lands. */
+  const peerAt = [];
 
-  const statesOf = (rel, from, to) => {
-    const states = [];
-    for (let i = from; i <= to; i++) states.push(history[i].get(rel));
-    for (const change of changes) {
-      if (change.begun <= to && (change.done === null || change.done >= from) && change.domain.some((root) => under(rel, root))) {
-        states.push(change.post.get(rel));
-        if (change.partial?.has(rel)) states.push(change.partial.get(rel));
-      }
+  /**
+   * Every world `rel` may have been seen in between states `from` and `to`:
+   * each recorded one, with any of the changes in flight then that touch
+   * `rel` laid over it, each as it ends or (a write) as it begins. Changes
+   * in flight together never overlap, so any of them may have landed first.
+   */
+  const worldsSeen = (rel, from, to) => {
+    const flying = changes.filter((change) => change.begun <= to && (change.done === null || change.done >= from)
+      && change.domain.some((root) => under(rel, root) || under(root, rel)));
+    let worlds = history.slice(from, to + 1);
+    for (const change of flying.slice(0, 4)) {
+      const effects = change.partial === null ? [change.post] : [change.post, change.partial];
+      worlds = worlds.flatMap((world) => [world, ...effects.map((effect) => laid(world, change.domain, effect))]);
     }
-    return states;
-  };
-  const worldAt = (state, rel, i) => {
-    // A listing's children, as the world `i` that `state` came from holds them.
-    const view = new Map();
-    for (const [name, value] of history[i]) if (under(name, rel)) view.set(rel === '' ? name : name.slice(rel.length + 1) || '', value);
-    return view;
+    return worlds;
   };
   const judge = (at, way, op, rel, answer, from, to) => {
     if (answer?.code === 'EAGAIN' && way === 'sync' && (lazy || poisoned || op === 'readFile')) return;
-    if (op === 'readdir') {
-      for (let i = from; i <= to; i++) if (answers(op, answer, history[i].get(rel), worldAt(null, rel, i))) return;
-      for (const change of changes) {
-        if (change.begun <= to && (change.done === null || change.done >= from) && change.domain.some((root) => under(rel, root) || under(root, rel))) {
-          const view = new Map();
-          for (const [name, value] of change.post) if (under(name, rel)) view.set(rel === '' ? name : name.slice(rel.length + 1) || '', value);
-          if (answers(op, answer, change.post.get(rel), view)) return;
-        }
-      }
-    } else if (statesOf(rel, from, to).some((state) => answers(op, answer, state, null))) return;
+    const worlds = worldsSeen(rel, from, to);
+    if (worlds.some((world) => answers(op, rel, answer, world))) return;
     const shown = answer?.code ?? (answer && typeof answer === 'object' && !Array.isArray(answer) ? `${answer.type} ${(answer.mode & 0o777).toString(8)} size ${answer.size}` : JSON.stringify(answer));
-    throw new Finding(`${way} ${op} ${rel || '.'} answered ${shown}; the session held ${statesOf(rel, from, to).map(describe).join(' | ') || 'nothing'} (states ${from}..${to})`, at);
+    const held = [...new Set(worlds.map((world) => (op === 'readdir' && world.get(rel)?.type === 'dir' ? `[${childrenOf(world, rel)}]` : describe(world.get(rel)))))];
+    throw new Finding(`${way} ${op} ${rel || '.'} answered ${shown}; the session held ${held.join(' | ')} (states ${from}..${to})`, at);
   };
 
   const read = async (way, op, rel) => {
@@ -322,18 +332,24 @@ export async function runSchedule(kind, schedule, { parkSeed, deadlineMs = 40_00
     if (changes.some((other) => other.done === null && overlaps(other.domain, domain))) return 'wait';
     const post = applied(world, step);
     if (post === null) { note(`  (step ${at} skipped: ${JSON.stringify(step)} is not valid now)`); return null; }
+    if (way !== 'peer' && peerAt.some(({ done, domain: theirs }) => done > landed && overlaps(theirs, [...domain, ...domain.map(parentOf)]))) {
+      note(`  (step ${at} skipped: a peer changed its names since the process's last input)`);
+      return null;
+    }
+    const publishes = way === 'peer' && overlaps(unpublished, domain) ? unpublished : null;
     // A write the process makes is an open that truncates, then the bytes: while it is in flight, the file may be empty.
-    const partial = way === 'own' && step[1] === 'write' ? new Map([[step[2], { type: 'file', content: '', mode: world.get(step[2])?.mode ?? FILE_MODE }]]) : null;
+    const partial = way === 'own' && step[1] === 'write' ? new Map([...post, [step[2], { type: 'file', content: '', mode: world.get(step[2])?.mode ?? FILE_MODE }]]) : null;
     const record = { domain, post, partial, begun: seq(), done: null, way, step };
     const finish = () => {
       // Its effect, on whatever else changed meanwhile (nothing it overlaps).
-      const next = new Map(world);
-      for (const rel of world.keys()) if (domain.some((root) => under(rel, root))) next.delete(rel);
-      for (const [rel, state] of post) if (domain.some((root) => under(rel, root))) next.set(rel, state);
-      world = next;
+      world = laid(world, domain, post);
       history.push(world);
       record.done = seq();
-      if (way !== 'peer') for (const root of domain) ownAt.set(root, seq());
+      if (way === 'peer') peerAt.push({ done: seq(), domain });
+      else {
+        for (const root of domain) ownAt.set(root, seq());
+        unpublished = [...unpublished, ...domain];
+      }
     };
     changes.push(record);
     if (way === 'sync') {
@@ -347,7 +363,8 @@ export async function runSchedule(kind, schedule, { parkSeed, deadlineMs = 40_00
       finish();
       return null;
     }
-    const work = Promise.resolve().then(() => change(way, step)).then(finish, (error) => {
+    const published = publishes === null ? Promise.resolve() : engine.publish().then(() => { unpublished = unpublished.filter((root) => !publishes.includes(root)); });
+    const work = published.then(() => change(way, step)).then(finish, (error) => {
       record.done = seq();
       record.failed = new Finding(`${way} ${step[1]} ${step.slice(2).join(' ')} failed: ${error?.code ?? error?.message ?? error}`, at);
     });
@@ -392,13 +409,13 @@ export async function runSchedule(kind, schedule, { parkSeed, deadlineMs = 40_00
     }
     const [way, op, rel] = s;
     if (op === 'stat' || op === 'readFile' || op === 'readdir') {
+      const bound = Math.max(landed, ...[...ownAt].filter(([root]) => under(rel, root) || under(root, rel)).map(([, i]) => i));
       if (way === 'sync') {
-        const bound = Math.max(landed, ...[...ownAt].filter(([root]) => under(rel, root) || under(root, rel)).map(([, i]) => i));
         const answer = await read(way, op, rel);
         if (op === 'readFile' && answer?.code === 'EAGAIN') missed.add(rel);
         return judge(at, way, op, rel, answer, bound, seq());
       }
-      const from = seq();
+      const from = kind === 'node' ? seq() : bound;
       return void track(read(way, op, rel).then((answer) => {
         judge(at, way, op, rel, answer, from, seq());
         if (op === 'readFile' && typeof answer === 'string') missed.delete(rel);
@@ -434,8 +451,8 @@ export async function runSchedule(kind, schedule, { parkSeed, deadlineMs = 40_00
     }
     if (readFailures.length > 0) throw readFailures[0];
     const arrived = seq();
-    note('at rest: a last input');
-    track(engine.input());
+    note('at rest: what the process wrote published, and a last input');
+    track(engine.publish().then(() => engine.input()));
     await settle(end);
     landed = arrived;
     note('at rest: every name, both ways');
@@ -451,14 +468,14 @@ export async function runSchedule(kind, schedule, { parkSeed, deadlineMs = 40_00
         for (const op of ['stat', state?.type === 'dir' ? 'readdir' : 'readFile']) {
           const answer = await read(way, op, rel);
           if (answer?.code === 'EAGAIN' && way === 'sync' && (lazy || op === 'readFile')) continue;
-          if (op === 'readdir' ? !answers(op, answer, state, worldAt(null, rel, seq())) : !answers(op, answer, state, null)) {
-            throw new Finding(`at rest, ${way} ${op} ${rel || '.'} answered ${JSON.stringify(answer)}; the session holds ${describe(state)}`, end);
+          if (!answers(op, rel, answer, world)) {
+            throw new Finding(`at rest, ${way} ${op} ${rel || '.'} answered ${JSON.stringify(answer)}; the model holds ${describe(state)}`, end);
           }
         }
       }
       // What the session holds is what the model says: nothing the process wrote was lost.
       const held = normalized(await engine.peerStat(abs(rel), { followSymlinks: false }).catch(() => null));
-      if (!answers('stat', held, state, null)) throw new Finding(`at rest, the session holds ${JSON.stringify(held)} at ${rel || '.'}; the model says ${describe(state)}`, end);
+      if (!answers('stat', rel, held, world)) throw new Finding(`at rest, the session holds ${JSON.stringify(held)} at ${rel || '.'}; the model says ${describe(state)}`, end);
     }
   } finally {
     transport.drain();
