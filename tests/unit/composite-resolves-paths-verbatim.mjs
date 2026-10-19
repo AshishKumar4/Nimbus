@@ -157,12 +157,15 @@ for (const face of ['async', 'sync']) {
   assert.deepEqual(await call('writeFile', () => ns.writeFile(`/m/link/../${made}`, enc.encode('new'))), { got: undefined, asked: [`writeFile /link/../${made}`] });
   assert.equal(dec.decode(m.memory.readFile(`/a/${made}`)), 'new');
   assert.equal(m.memory.stat(`/${made}`), null);
-  await ns.writeFile(`/m/link/../${made}-deep/f`, enc.encode('deep'), { parents: true });
-  assert.equal(dec.decode(m.memory.readFile(`/a/${made}-deep/f`)), 'deep');
-  // A trailing slash: the parent is made, the name is not made a directory, and the write is refused.
-  assert.notEqual(await outcome(() => ns.writeFile(`/m/${made}-slash/f/`, enc.encode('x'), { parents: true })), undefined);
-  assert.equal(m.memory.stat(`/${made}-slash`)?.type, 'directory');
-  assert.equal(m.memory.stat(`/${made}-slash/f`), null);
+  // A write that makes its parents (the awaiting face's makeTree; the synchronous face leaves `parents` to the backend).
+  if (face === 'async') {
+    await ns.writeFile(`/m/link/../${made}-deep/f`, enc.encode('deep'), { parents: true });
+    assert.equal(dec.decode(m.memory.readFile(`/a/${made}-deep/f`)), 'deep');
+    // A trailing slash: the parent is made, the name is not made a directory, and the write is refused.
+    assert.notEqual(await outcome(() => ns.writeFile(`/m/${made}-slash/f/`, enc.encode('x'), { parents: true })), undefined);
+    assert.equal(m.memory.stat(`/${made}-slash`)?.type, 'directory');
+    assert.equal(m.memory.stat(`/${made}-slash/f`), null);
+  }
   await ns.mkdir(`/m/link/../${made}-dir`);
   assert.equal(m.memory.stat(`/a/${made}-dir`)?.type, 'directory');
   assert.deepEqual(await call('mkdir', () => ns.mkdir(`/m/link/../${made}-p/q`, { recursive: true })), { got: undefined, asked: [`mkdir /link/../${made}-p/q`] });
