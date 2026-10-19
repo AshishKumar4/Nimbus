@@ -588,6 +588,49 @@ const metKnown = [];
  * only where no name led to it, so a read that could not wait was EAGAIN.
  */
 const FOUND = [
+  // A grant ends (a peer's change recalls it) with descriptors open on files it decided: they read and write on, and their names read what was written.
+  { name: 'grant ends with descriptors open on held files', grants: true, steps: [
+    { op: 'open', fd: 0, name: 'a', flags: { read: true, write: true, append: false, create: true, exclusive: false, truncate: true } },
+    { op: 'write', fd: 0, offset: null, data: 'xy' },
+    { op: 'open', fd: 1, name: 'b', flags: { read: true, write: true, append: false, create: true, exclusive: false, truncate: true } },
+    { op: 'write', fd: 1, offset: null, data: 'q' },
+    { op: 'peer', kind: 'write', name: 'c', to: 'c', data: 'pp', mode: 420 },
+    { op: 'readAsync', fd: 0 },
+    { op: 'write', fd: 0, offset: null, data: 'z' },
+    { op: 'close', fd: 1 },
+    { op: 'catchUp' },
+    { op: 'close', fd: 0 },
+  ] },
+  // A held file renamed, the grant given back, renamed again: by name and by descriptor it is one file.
+  { name: 'held file renamed across a give-back', grants: true, steps: [
+    { op: 'open', fd: 0, name: 'a', flags: { read: true, write: true, append: false, create: true, exclusive: false, truncate: true } },
+    { op: 'write', fd: 0, offset: null, data: 'ab' },
+    { op: 'rename', from: 'a', to: 'b' },
+    { op: 'peer', kind: 'write', name: 'c', to: 'c', data: 'pp', mode: 420 },
+    { op: 'rename', from: 'b', to: 'a' },
+    { op: 'write', fd: 0, offset: null, data: 'c' },
+    { op: 'readAsync', fd: 0 },
+    { op: 'catchUp' },
+  ] },
+  // A need appears mid-grant: a file a grant decides, open, replaced by a rename of a name the provisional decisions hold.
+  { name: 'a provisional rename replaces a held file with a descriptor open', grants: true, steps: [
+    { op: 'writeFile', name: 'a', data: 'rp' },
+    { op: 'open', fd: 0, name: 'b', flags: { read: true, write: true, append: false, create: true, exclusive: false, truncate: true } },
+    { op: 'write', fd: 0, offset: null, data: 'bb' },
+    { op: 'rename', from: 'a', to: 'b' },
+    { op: 'write', fd: 0, offset: null, data: 'x' },
+    { op: 'readAsync', fd: 0 },
+    { op: 'close', fd: 0 },
+    { op: 'catchUp' },
+  ] },
+  // Held files with no descriptor at a give-back: read now, their bytes or EAGAIN, never another file's.
+  { name: 'held files with no descriptor at a give-back, read now', grants: true, steps: [
+    { op: 'writeFile', name: 'a', data: 'xy' },
+    { op: 'writeFile', name: 'b', data: 'pq' },
+    { op: 'peer', kind: 'write', name: 'c', to: 'c', data: 'zz', mode: 420 },
+    { op: 'writeFile', name: 'a', data: 'w' },
+    { op: 'catchUp' },
+  ] },
   // A file renamed, without a grant, over a name a peer wrote: a read of the new name that cannot wait reads the file moved there, never the peer's bytes.
   { name: 'renamed over a peer\'s file, read now', grants: false, steps: [
     { op: 'peer', kind: 'write', name: 'b', to: 'c', data: 'pp', mode: 292 },
