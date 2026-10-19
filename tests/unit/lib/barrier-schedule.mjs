@@ -7,13 +7,18 @@
  *   ['own', op, ...args]   the process's awaited call, left in flight;
  *   ['sync', op, ...args]  its call that cannot wait, answered at once;
  *   ['peer', op, ...args]  a change from outside the process, left in flight;
+ *   ['root', op, ...args]  the same, as root (chown and chmod: a directory
+ *                          the process may no longer search, or now may);
  *   ['input']              input arrives: the process's barrier, left in flight;
  *   ['hold', kind, skip?]  the next reply of `kind` (after `skip` more) waits (KINDS);
  *   ['release', kind?]     the oldest parked reply (of `kind`) is delivered;
  *   ['settle']             wait until nothing moves without a release;
  *   ['poison']             the next ACQUIRE is answered with a poison.
  * Reads are stat, readFile and readdir; changes write, unlink, mkdir, rmdir,
- * rename and chmod, of names under the process's project (UNIVERSE).
+ * rename, chmod and (root) chown, of names under the process's project
+ * (UNIVERSE), judged with the process's credential: a name beneath a
+ * directory it may not search is EACCES to it, as is a directory it may not
+ * read listed or a file it may not read read.
  *
  * What each answer may be is judged against a model of the session's
  * files: every state each name has had (a peer's change once it returned,
@@ -24,8 +29,8 @@
  *     flight then leaves. Node's awaited read takes its own barrier: its
  *     answer is no earlier than the call. A process listed on demand may
  *     refuse a call that cannot wait (EAGAIN); one whose names are all
- *     listed may not, except for bytes it does not hold, or while a poison
- *     has stopped its namespace.
+ *     listed may not, except for bytes it does not hold, while a listing is
+ *     in flight, or while a poison has stopped its namespace.
  *   - Once every reply is delivered, an awaited call still pending with
  *     nothing moving is a deadlock.
  *   - At the end, every reply delivered and a last barrier landed, each name
@@ -48,6 +53,7 @@ import { APP, bootEngine, stat as normalized } from './guest-engines.mjs';
 import { scheduleTransport, KINDS } from './schedule-transport.mjs';
 import { sleep } from './resident-body.mjs';
 import { writeSync } from 'node:fs';
+import { CRED_KERNEL } from '../../../packages/core/src/runtime/os-contracts.ts';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -65,20 +71,42 @@ const FILE_MODES = [0o644, 0o600, 0o640];
 const DIR_MODES = [0o755, 0o750, 0o700];
 const FILE_MODE = 0o644;
 const DIR_MODE = 0o755;
+/** The process's user and group, and the session user's: what owns everything not root's. */
+const USER = 1000;
 
 const parentOf = (rel) => (rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')) : '');
 const under = (rel, root) => rel === root || root === '' || rel.startsWith(`${root}/`);
 const abs = (rel) => (rel === '' ? APP : `${APP}/${rel}`);
 const key = (rel) => abs(rel).slice(1);
 
+const dirState = (mode = DIR_MODE) => ({ type: 'dir', mode, uid: USER, gid: USER });
+const fileState = (content, mode = FILE_MODE) => ({ type: 'file', content, mode, uid: USER, gid: USER });
+
 /** The model: each name's state; '' (the project directory) always a directory. */
 function seedWorld() {
-  const world = new Map([['', { type: 'dir', mode: DIR_MODE }]]);
-  for (const [rel, content] of Object.entries(SEED_TREE)) {
-    world.set(rel, content === null ? { type: 'dir', mode: DIR_MODE } : { type: 'file', content, mode: FILE_MODE });
-  }
+  const world = new Map([['', dirState()]]);
+  for (const [rel, content] of Object.entries(SEED_TREE)) world.set(rel, content === null ? dirState() : fileState(content));
   return world;
 }
+
+/** The permission bits `state` gives the process. */
+const bits = (state) => (state.mode >> (state.uid === USER ? 6 : state.gid === USER ? 3 : 0)) & 7;
+
+/** Why the process cannot reach `rel` (a directory above it missing, not one, or not searchable to it), or null. */
+function unreachable(world, rel) {
+  if (rel === '') return null;
+  const parts = rel.split('/');
+  for (let i = 0; i < parts.length; i++) {
+    const at = world.get(parts.slice(0, i).join('/'));
+    if (at === undefined) return 'ENOENT';
+    if (at.type !== 'dir') return 'ENOTDIR';
+    if ((bits(at) & 1) === 0) return 'EACCES';
+  }
+  return null;
+}
+
+/** Whether the process may make or remove a name in `dir`'s directory: it reaches it, and may write and search it. */
+const mayChangeIn = (world, rel) => unreachable(world, rel) === null && world.get(parentOf(rel))?.type === 'dir' && (bits(world.get(parentOf(rel))) & 3) === 3;
 
 const childrenOf = (world, dir) => [...world.keys()].filter((rel) => rel !== '' && parentOf(rel) === dir).map((rel) => rel.slice(dir === '' ? 0 : dir.length + 1)).sort();
 
@@ -88,36 +116,46 @@ function domainOf(step) {
   return op === 'rename' ? [a, b] : [a];
 }
 const overlaps = (x, y) => x.some((p) => y.some((q) => under(p, q) || under(q, p)));
+/** Whether a change is made outside the process (a peer's, or root's). */
+const outside = (way) => way === 'peer' || way === 'root';
 
-/** `change` applied to `world`, or null when it would fail there (so a schedule never asks it). */
-function applied(world, [, op, a, b]) {
+/** `change` applied to `world` (by `way`: root is not judged), or null when it would fail there (so a schedule never asks it). */
+function applied(world, [way, op, a, b]) {
+  const root = way === 'root';
   const at = world.get(a);
   const parent = world.get(parentOf(a));
   const next = new Map(world);
+  if (!root && unreachable(world, a) !== null) return null;
   switch (op) {
     case 'write':
       if (parent?.type !== 'dir' || at?.type === 'dir') return null;
-      next.set(a, { type: 'file', content: b, mode: at?.mode ?? FILE_MODE });
+      if (!root && (at === undefined ? !mayChangeIn(world, a) : (bits(at) & 2) === 0)) return null;
+      next.set(a, at === undefined ? fileState(b) : { ...at, content: b });
       return next;
     case 'unlink':
-      if (at?.type !== 'file') return null;
+      if (at?.type !== 'file' || (!root && !mayChangeIn(world, a))) return null;
       next.delete(a);
       return next;
     case 'mkdir':
-      if (parent?.type !== 'dir' || at !== undefined) return null;
-      next.set(a, { type: 'dir', mode: DIR_MODE });
+      if (parent?.type !== 'dir' || at !== undefined || (!root && !mayChangeIn(world, a))) return null;
+      next.set(a, dirState());
       return next;
     case 'rmdir':
-      if (at?.type !== 'dir' || a === '' || childrenOf(world, a).length > 0) return null;
+      if (at?.type !== 'dir' || a === '' || childrenOf(world, a).length > 0 || (!root && !mayChangeIn(world, a))) return null;
       next.delete(a);
       return next;
     case 'chmod':
-      if (at === undefined) return null;
+      if (at === undefined || a === '' || (!root && at.uid !== USER)) return null;
       next.set(a, { ...at, mode: b });
+      return next;
+    case 'chown':
+      if (at === undefined || a === '' || !root) return null;
+      next.set(a, { ...at, uid: b, gid: b });
       return next;
     case 'rename': {
       const to = world.get(b);
       if (at === undefined || a === '' || a === b || under(b, a) || world.get(parentOf(b))?.type !== 'dir') return null;
+      if (!root && (!mayChangeIn(world, a) || !mayChangeIn(world, b))) return null;
       if (to !== undefined && (to.type !== at.type || (to.type === 'dir' && childrenOf(world, b).length > 0))) return null;
       for (const rel of world.keys()) if (under(rel, b)) next.delete(rel);
       for (const [rel, state] of world) {
@@ -151,8 +189,15 @@ export function generate(seed, steps = 40) {
   let world = seedWorld();
   const schedule = [];
   let content = 0;
-  const change = () => {
+  const change = (way) => {
     for (let tries = 0; tries < 20; tries++) {
+      if (way === 'root') {
+        const dir = pick(UNIVERSE.dirs);
+        const candidate = random() < 0.5 ? ['chown', dir, pick([0, USER])] : ['chmod', dir, pick([0o700, 0o711, 0o750, 0o755])];
+        const next = applied(world, ['root', ...candidate]);
+        if (next !== null) { world = next; return candidate; }
+        continue;
+      }
       const op = pick(['write', 'write', 'unlink', 'mkdir', 'rmdir', 'rename', 'rename', 'chmod']);
       const isFile = (rel) => world.get(rel)?.type === 'file';
       const candidate = op === 'write' ? [op, pick(UNIVERSE.files), `c${seed}.${++content}`]
@@ -160,7 +205,7 @@ export function generate(seed, steps = 40) {
           : op === 'mkdir' || op === 'rmdir' ? [op, pick(UNIVERSE.dirs)]
             : op === 'chmod' ? (() => { const rel = pick(NAMES); return [op, rel, pick(isFile(rel) ? FILE_MODES : DIR_MODES)]; })()
               : (() => { const from = pick(NAMES); return [op, from, pick(isFile(from) ? UNIVERSE.files : UNIVERSE.dirs)]; })();
-      const next = applied(world, ['', ...candidate]);
+      const next = applied(world, [way, ...candidate]);
       if (next !== null) { world = next; return candidate; }
     }
     return null;
@@ -170,8 +215,9 @@ export function generate(seed, steps = 40) {
     if (r < 0.22) schedule.push(['own', pick(['stat', 'stat', 'readFile', 'readdir']), pick(NAMES)]);
     else if (r < 0.40) schedule.push(['sync', pick(['stat', 'stat', 'readFile', 'readdir']), pick(NAMES)]);
     else if (r < 0.62) {
-      const made = change();
-      if (made !== null) schedule.push([pick(['own', 'own', 'peer', 'peer', 'sync']), ...made]);
+      const way = pick(['own', 'own', 'peer', 'peer', 'sync', 'root']);
+      const made = change(way);
+      if (made !== null) schedule.push([way, ...made]);
     } else if (r < 0.72) schedule.push(['input']);
     else if (r < 0.86) schedule.push(random() < 0.5 ? ['release'] : ['release', pick(Object.values(KINDS))]);
     else if (r < 0.94) schedule.push(['hold', pick(Object.values(KINDS))]);
@@ -203,7 +249,8 @@ class Finding extends Error {
   }
 }
 
-const describe = (state) => (state === undefined ? 'absent' : state.type === 'file' ? `file ${JSON.stringify(state.content)} ${state.mode.toString(8)}` : `dir ${state.mode.toString(8)}`);
+const describe = (state) => (state === undefined ? 'absent'
+  : `${state.type === 'file' ? `file ${JSON.stringify(state.content)}` : 'dir'} ${state.mode.toString(8)}${state.uid === USER ? '' : ` uid ${state.uid}`}`);
 
 /** `world` with `effect` (a world a change leaves) laid over the names under `domain`. */
 function laid(world, domain, effect) {
@@ -213,12 +260,15 @@ function laid(world, domain, effect) {
   return next;
 }
 
-/** Whether `answer` (of read `op` of `rel`) is what `world` says. */
+/** Whether `answer` (of read `op` of `rel`) is what `world` says to the process. */
 function answers(op, rel, answer, world) {
+  const blocked = unreachable(world, rel);
+  if (blocked !== null) return op === 'stat' && blocked === 'ENOENT' ? answer === null : answer?.code === blocked;
   const state = world.get(rel);
+  if (state !== undefined && op !== 'stat' && (bits(state) & 4) === 0) return answer?.code === 'EACCES';
   if (op === 'stat') {
     if (state === undefined) return answer === null;
-    if (answer === null || answer.type !== (state.type === 'dir' ? 'directory' : 'file') || (answer.mode & 0o777) !== state.mode) return false;
+    if (answer === null || answer.type !== (state.type === 'dir' ? 'directory' : 'file') || (answer.mode & 0o777) !== state.mode || answer.uid !== state.uid) return false;
     return state.type !== 'file' || answer.size === enc.encode(state.content).byteLength;
   }
   if (op === 'readFile') {
@@ -300,7 +350,8 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps = {}, de
     return worlds;
   };
   const judge = (at, way, op, rel, answer, from, to) => {
-    if (answer?.code === 'EAGAIN' && way === 'sync' && (lazy || poisoned || op === 'readFile')) return;
+    // A namespace relisting a directory answers what is under it as unknown until the listing lands.
+    if (answer?.code === 'EAGAIN' && way === 'sync' && (lazy || poisoned || op === 'readFile' || transport.inFlight('listing') > 0)) return;
     if (gaps.readdirIsDirectory && way === 'sync' && op === 'readdir' && answer?.code === 'EISDIR') return;
     const worlds = worldsSeen(rel, from, to);
     if (worlds.some((world) => answers(op, rel, answer, world))) return;
@@ -327,9 +378,10 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps = {}, de
 
   /** The change as `way` makes it: a promise, but for a call that cannot wait, which answers or throws now. */
   const change = (way, [, op, a, b]) => {
-    const fs = way === 'sync' ? engine.sync : way === 'peer' ? null : engine.fs;
-    if (way === 'peer') {
-      const peer = engine.authority.peer;
+    const fs = way === 'sync' ? engine.sync : engine.fs;
+    if (outside(way)) {
+      const peer = way === 'root' ? engine.authority.peerAs(CRED_KERNEL) : engine.authority.peer;
+      if (op === 'chown') return peer.chown(key(a), b, b);
       if (op === 'write') return peer.writeFile(key(a), b);
       if (op === 'mkdir') return peer.mkdir(key(a), { mode: DIR_MODE });
       if (op === 'rename') return peer.rename(key(a), key(b));
@@ -349,11 +401,11 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps = {}, de
     if (changes.some((other) => other.done === null && overlaps(other.domain, domain))) return 'wait';
     const post = applied(world, step);
     if (post === null) { note(`  (step ${at} skipped: ${JSON.stringify(step)} is not valid now)`); return null; }
-    if (way !== 'peer' && peerAt.some(({ done, domain: theirs }) => done > landed && overlaps(theirs, [...domain, ...domain.map(parentOf)]))) {
+    if (!outside(way) && peerAt.some(({ done, domain: theirs }) => done > landed && overlaps(theirs, [...domain, ...domain.map(parentOf)]))) {
       note(`  (step ${at} skipped: a peer changed its names since the process's last input)`);
       return null;
     }
-    const publishes = way === 'peer' && overlaps(unpublished, domain) ? unpublished : null;
+    const publishes = outside(way) && overlaps(unpublished, domain) ? unpublished : null;
     // A write the process makes is an open that truncates, then the bytes: while it is in flight, the file may be empty.
     const partial = way === 'own' && step[1] === 'write' ? new Map([...post, [step[2], { type: 'file', content: '', mode: world.get(step[2])?.mode ?? FILE_MODE }]]) : null;
     const record = { domain, post, partial, begun: seq(), done: null, way, step };
@@ -362,7 +414,7 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps = {}, de
       world = laid(world, domain, post);
       history.push(world);
       record.done = seq();
-      if (way === 'peer') peerAt.push({ done: seq(), domain });
+      if (outside(way)) peerAt.push({ done: seq(), domain });
       else {
         if (way === 'sync' || !gaps.unshownAwaitedChange) for (const root of domain) ownAt.set(root, seq());
         unpublished = [...unpublished, ...domain];

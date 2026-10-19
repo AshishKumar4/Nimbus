@@ -37,6 +37,8 @@ export function scheduleTransport({ park = () => false, note = () => {} } = {}) 
   let poisonNext = false;
   /** Replies delivered, and calls asked, so far: what a schedule's progress check reads. */
   const counts = { asked: 0, delivered: 0 };
+  /** Calls asked and not yet answered, by kind. */
+  const open = new Map();
 
   const waits = (kind, name) => {
     const holds = held.get(kind) ?? [];
@@ -53,6 +55,7 @@ export function scheduleTransport({ park = () => false, note = () => {} } = {}) 
   const supervise = (name) => async (call, args) => {
     const kind = KINDS[name];
     counts.asked++;
+    open.set(kind, (open.get(kind) ?? 0) + 1);
     let asked = args;
     if (poisonNext && name === 'fsAcquire') {
       poisonNext = false;
@@ -69,6 +72,7 @@ export function scheduleTransport({ park = () => false, note = () => {} } = {}) 
       note(`    #${id} delivered`);
     } else note(`    ${shown}`);
     counts.delivered++;
+    open.set(kind, open.get(kind) - 1);
     if ('error' in settled) throw settled.error;
     return settled.value;
   };
@@ -80,6 +84,8 @@ export function scheduleTransport({ park = () => false, note = () => {} } = {}) 
     hold(kind, skip = 0) { held.set(kind, [...(held.get(kind) ?? []), skip]); },
     /** The next ACQUIRE is asked from no cursor: the session answers it with a poison at its own cursor. */
     poison() { poisonNext = true; },
+    /** Calls of `kind` asked and not yet answered. */
+    inFlight: (kind) => open.get(kind) ?? 0,
     /** Replies waiting, oldest first. */
     parked: () => parked.map(({ id, kind, name }) => ({ id, kind, name })),
     /** Deliver the parked reply `id` (or the oldest of `kind`). False when there is none. */

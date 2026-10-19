@@ -67,6 +67,12 @@ const FOUND = {
   'a directory a call that cannot wait has not listed is not refused as a directory': {
     schedule: [['own', 'stat', 'd'], ['settle'], ['sync', 'readdir', 'd'], ['sync', 'readdir', 'x']],
   },
+  'a directory the process may search again shows nothing stale while it is relisted': {
+    schedule: [['own', 'readdir', 'd/e'], ['own', 'stat', 'd/e/g'], ['settle'], ['root', 'chown', 'd', 0], ['root', 'chmod', 'd', 0o700], ['settle'],
+      ['input'], ['settle'], ['sync', 'stat', 'd/e/g'], ['peer', 'write', 'x/h', 'while closed'], ['root', 'chmod', 'd', 0o755], ['settle'],
+      ['hold', 'listing'], ['input'], ['settle'], ['sync', 'stat', 'd/e/g'], ['sync', 'readdir', 'd/e'], ['sync', 'stat', 'd/f'],
+      ['release', 'listing'], ['settle'], ['sync', 'stat', 'd/e/g'], ['sync', 'readdir', 'd/e']],
+  },
   'a file a call that cannot wait missed stays a miss until an awaited read answers it': {
     engines: ['node'],
     schedule: [['peer', 'write', 'new', 'not resident'], ['settle'], ['input'], ['settle'], ['sync', 'readFile', 'new'], ['own', 'stat', 'new'], ['settle']],
