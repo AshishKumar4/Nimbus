@@ -38,9 +38,11 @@ export const APP = '/home/user/app';
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
-/** A process that only lends its `fs` to the test, and stays up. */
+/** A process that only lends its `fs` to the test, and stays up; attached to its input, it counts the bytes that arrive. */
 const NODE_PROGRAM = `
 globalThis.__engineFs = require("fs");
+globalThis.__engineInputs = 0;
+if (process.env.NIMBUS_CP_CHILD_PID) process.stdin.on("data", (chunk) => { globalThis.__engineInputs += chunk.length; });
 require("http").createServer((q, s) => s.end("up")).listen(3000);
 `;
 
@@ -190,22 +192,29 @@ export const answeredAtOnce = (work) => Promise.race([Promise.resolve(work).then
 /**
  * A process on engine `kind` over a new session, its project at APP. `seed`
  * makes what the session holds before the process starts (authority).
+ * `supervise` wraps the facet's supervisor calls it names: each is called
+ * with the call as the session answers it (`call(args)`) and its arguments,
+ * and answers in its place (schedule-transport.mjs). `stdin`: Node's
+ * process is attached to the session's input store, and its input (`input`)
+ * is a keystroke, delivered with the ACQUIRE the session computes for it.
  * @param {string} kind
- * @param {{ seed?: (authority: any) => void }} [options]
+ * @param {{ seed?: (authority: any) => void, supervise?: Record<string, (call: (args: any[]) => Promise<any>, args: any[]) => Promise<any>>, stdin?: boolean }} [options]
  */
-export async function bootEngine(kind, { seed } = {}) {
+export async function bootEngine(kind, { seed, supervise = {}, stdin = false } = {}) {
   if (!ENGINES.includes(kind)) throw new Error(`no engine ${kind}`);
   const authority = createAuthority(undefined, { sequenced: true });
   authority.kfs.mkdir('home/user/app', { recursive: true, mode: 0o755 });
   seed?.(authority);
   let stalled = null;
   let waves = 0;
+  /** Bytes of input sent the process: each input's own, whatever chunks they arrive in. */
+  let inputs = 0;
   /** Waves sent and not yet answered. */
   let unanswered = 0;
   let listingFails = false;
   const grants = new Map();
   let forward;
-  const handle = facetSupervisor(authority, {
+  const own = {
     writeBatchStream: async (...args) => {
       waves++;
       unanswered++;
@@ -229,14 +238,23 @@ export async function bootEngine(kind, { seed } = {}) {
       if (listingFails) throw new Error('Network connection lost.');
       return forward('fsList', args);
     },
-  });
+  };
+  for (const [name, wrap] of Object.entries(supervise)) {
+    const base = own[name] ?? ((...args) => forward(name, args));
+    own[name] = (...args) => wrap((asked) => base(...asked), args);
+  }
+  const handle = facetSupervisor(authority, own);
   forward = handle.forward;
   // The facet's own store, where the process logs what it sends (process-fs-journal.ts).
   const sql = facetSql();
   let fs;
   let sync;
   if (kind === 'node') {
-    await launchResident({ authority, program: NODE_PROGRAM, env: { SUPERVISOR: handle.supervisor }, sql, cursor: authority.cursor(), cwd: APP });
+    if (stdin) authority.host.processes.openInput(handle.log.pid);
+    await launchResident({
+      authority, program: NODE_PROGRAM, env: { SUPERVISOR: handle.supervisor }, sql, cursor: authority.cursor(), cwd: APP,
+      processEnv: stdin ? { NIMBUS_CP_CHILD_PID: String(handle.log.pid) } : {},
+    });
     await until(() => globalThis.__engineFs !== undefined, 'the process lends its fs');
     fs = nodeBridge(globalThis.__engineFs);
     sync = nodeSyncBridge(globalThis.__engineFs);
@@ -264,11 +282,21 @@ export async function bootEngine(kind, { seed } = {}) {
     journal: () => sqlJournal(sql),
     /** Waves sent so far. */
     waves: () => waves,
-    stall: () => { stalled = Promise.withResolvers(); },
+    stall: () => { stalled ??= Promise.withResolvers(); },
     release: async () => { const was = stalled; stalled = null; was?.resolve(); await sleep(0); },
     failListings: (fails) => { listingFails = fails; },
-    /** Input from outside the process arrived, and its barrier has landed: Node's resumption barrier; the holder's owed one, taken by its next awaited call. */
+    /**
+     * Input from outside the process arrived, and its barrier has landed:
+     * Node's keystroke, once its handler ran (attached), else its resumption
+     * barrier; the holder's owed one, taken by its next awaited call.
+     */
     input: async () => {
+      if (kind === 'node' && stdin) {
+        const handled = ++inputs;
+        authority.host.processes.writeInput(handle.log.pid, 'x');
+        while (globalThis.__engineInputs < handled) await sleep(2);
+        return undefined;
+      }
       if (kind === 'node') return globalThis.__nimbusVfsAcquireBarrier();
       fs.inbound();
       await fs.stat(APP);
@@ -278,6 +306,8 @@ export async function bootEngine(kind, { seed } = {}) {
       const key = path.replace(/^\/+/, '');
       return [...grants.values()].some((root) => key === root || key.startsWith(`${root}/`));
     },
+    /** Something leaves the process: what it wrote reaches the session first (Node's release barrier; the holder's flush). */
+    publish: async () => (kind === 'node' ? globalThis.__nimbusVfsReleaseBarrier() : fs.flush()),
     /** Write files in `dir` until the session gives the process its subtree, as a program that writes there often does. */
     async hold(dir) {
       await fs.mkdir(dir, { recursive: true, mode: 0o755 });

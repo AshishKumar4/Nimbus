@@ -7,7 +7,7 @@
  * reads files on its primordials.
  */
 import {
-  arrayJoin, objectHasOwn, ownField, SafeList, type SafeSet, stringCharCodeAt, stringIndexOf, stringLastIndexOf, stringOf, stringSlice,
+  arrayIsArray, arrayJoin, objectHasOwn, ownField, SafeList, type SafeSet, stringCharCodeAt, stringIndexOf, stringLastIndexOf, stringOf, stringSlice,
 } from '@nimbus-sh/core/_shared/primordials.js';
 import { NS_DIR, NS_LINK, type NsRow, type ResidentTables } from './tables.js';
 
@@ -19,13 +19,15 @@ export const NS_MAX_HOPS = 40;
  * shims' overlay): it removed it (`absent`); it made a symlink there
  * (`target`); it renamed the table's entry at `from` to it (`from` undefined:
  * a moved link that resolves to nothing; `link`: the moved entry is a symlink,
- * whose own row is at that key); or it made a directory or file there
- * (`made`; `hide`: rows the table holds beneath it are not this directory's).
+ * whose own row is at that key; `ino`, `dev`: the entry moved; `via`: names
+ * an earlier rename of it, not yet landed, left it under); or it made a
+ * directory or file there (`made`; `hide`: rows the table holds beneath it
+ * are not this directory's).
  */
 export type OwnWord =
   | { readonly absent: true }
   | { readonly target: string }
-  | { readonly from: string | undefined; readonly link?: string }
+  | { readonly from: string | undefined; readonly link?: string; readonly ino?: number; readonly dev?: number; readonly via?: readonly string[] }
   | { readonly made: 'directory' | 'file'; readonly hide?: boolean };
 /** The process's word on a name (by the name the walk reached), or undefined. */
 export type OwnView = (k: string) => OwnWord | undefined;
@@ -42,6 +44,39 @@ export interface Lookup { path: string; table: string | null; row: NsRow | undef
 const removed = (word: OwnWord): word is { readonly absent: true } => objectHasOwn(word, 'absent');
 const linked = (word: OwnWord): word is { readonly target: string } => objectHasOwn(word, 'target');
 const moved = (word: OwnWord): word is { readonly from: string | undefined; readonly link?: string } => objectHasOwn(word, 'from');
+
+/**
+ * A rename's word, as the table now holds the entry it moved. A barrier can
+ * carry the rename (or an earlier one of the entry, `via`) to the table
+ * before the word retires: the word stands while the table holds the entry
+ * where the word reads it (a link's own row at `link`, else at `from`); once
+ * the name holds it (at `step`, where the table keeps the name the walk
+ * reached, an outer rename's mapping applied), the table's row there
+ * answers; where an earlier rename left it, the word reads it there. A word
+ * that names no entry stands.
+ */
+function standing(t: ResidentTables, step: string | null, word: OwnWord | undefined): OwnWord | undefined {
+  if (word === undefined || !moved(word) || word.from === undefined) return word;
+  const ino = ownField(word, 'ino');
+  if (typeof ino !== 'number') return word;
+  const dev = ownField(word, 'dev');
+  const named = ownField(word, 'link');
+  const link = typeof named === 'string' ? named : undefined;
+  const holds = (k: string): boolean => {
+    const row = nsRowAt(t, k);
+    return row !== undefined && row.ino === ino && (typeof dev !== 'number' || row.dev === dev);
+  };
+  if (holds(link ?? word.from)) return word;
+  if (step !== null && holds(step)) return undefined;
+  const via = ownField(word, 'via');
+  if (arrayIsArray(via)) {
+    for (let i = 0; i < via.length; i++) {
+      const at = stringOf(via[i]);
+      if (holds(at)) return link === undefined ? { from: at } : { from: word.from, link: at };
+    }
+  }
+  return word;
+}
 
 /** The directory part of key `k`: '' at the top. */
 export function nsParent(k: string): string {
@@ -137,7 +172,7 @@ export function walkNamespace(
       start = stop + 1;
       if (visit !== undefined && !visit(prefix)) return 'EACCES';
       const step: string | null = table === null ? null : table ? `${table}/${name}` : name;
-      const word = own === undefined ? undefined : own(prefix);
+      const word: OwnWord | undefined = own === undefined ? undefined : standing(t, step, own(prefix));
       let target: unknown;
       if (word !== undefined && removed(word)) {
         return { path, table: null, row: undefined, own: word };
@@ -148,8 +183,9 @@ export function walkNamespace(
         const named = ownField(word, 'link');
         const link = typeof named === 'string' ? named : undefined;
         if (link !== undefined && leaf && !followLeaf) {
-          const at = nsRowAt(t, link) !== undefined ? link : prefix;
-          return { path, table: at, row: nsRowAt(t, at), own: word };
+          // The link's own row, or once a barrier moved it, the name's where the table keeps it.
+          const at = nsRowAt(t, link) !== undefined ? link : step;
+          return { path, table: at, row: at === null ? undefined : nsRowAt(t, at), own: word };
         }
         if (word.from === undefined) return { path, table: null, row: undefined, own: { absent: true } };
         if (link !== undefined) target = `/${word.from}`;

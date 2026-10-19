@@ -5,6 +5,19 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a Node program could be told a file, directory or link it had
+  just renamed was not there (`fs.statSync` ENOENT, and renaming it again
+  refused) when input arrived while the rename was still on its way to the
+  session: the program's own record of the rename read the old name, which
+  the input's catch-up had already moved. The renamed entry is now found
+  wherever the catch-up put it, also when the program renamed it again, or
+  renamed its directory, before the first rename was answered.
+- Fixed: a WASI program (python, ruby, clang, bash) listing a directory
+  while another process changed it could be shown a listing the directory
+  never had: a directory moved away listed as empty, or a renamed file
+  missing from the directory it was renamed within. A listing is now of the
+  directory as it stood at one moment, or the session is asked instead; a
+  file or a missing name is no longer listed as an empty directory.
 - Changed: a `ruby` one-shot (`ruby -e`, `gem --version`, `bundle --version`
   and the like) runs on one of its session's warm Ruby workers, which keep
   ruby+stdlib.wasm compiled, instead of loading it into a new worker every
