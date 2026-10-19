@@ -12,12 +12,14 @@
 // which names an import's importer) whose arm lazily imports another arm's;
 // and whose arm reuses a module another arm (or checkout) loaded first, or
 // reaches a shared store module that holds one (under Bun, read from the
-// module graph's sources). Under Bun and under node; and a bundle's input
-// outside its arm's tree.
+// module graph's sources: a require resolved as one, a computed import's
+// target's own imports included). Under Bun and under node; and a bundle's
+// input outside its arm's tree.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { armImports, armTree, assertArmsInside, importBundle, loadIsolatedCore } from '../bench/lib/isolated-core.mjs';
@@ -136,6 +138,26 @@ try {
   put(join(leaky, 'packages/b/src/reuse.mjs'), `export * from ${JSON.stringify(join(elsewhere, 'packages/b/src/preloaded.mjs'))};`);
   await assert.rejects(loadIsolatedCore(leaky, cleanup, { sources, modules: ['reuse.mjs'], harness }), /preloaded\.mjs, imported by [^,]*reuse\.mjs, not its arm's own/);
   assert.ok(preloaded.token);
+
+  // Under Bun, a require is audited as Bun resolves it (its package's require condition): one whose
+  // require target is another arm's module, already loaded, is caught.
+  const conditional = armTree(leaky, cleanup, { harness });
+  put(join(elsewhere, 'packages/b/src/required-target.cjs'), 'exports.token = {};');
+  createRequire(import.meta.url)(join(elsewhere, 'packages/b/src/required-target.cjs'));
+  put(join(conditional, 'packages/c/package.json'), JSON.stringify({ name: '@x/c', exports: { import: './i.mjs', require: './r.cjs' } }));
+  put(join(conditional, 'packages/c/i.mjs'), 'export const inside = true;');
+  symlinkSync(join(elsewhere, 'packages/b/src/required-target.cjs'), join(conditional, 'packages/c/r.cjs'));
+  link('../../../c', join(conditional, 'packages/b/node_modules/@x/c'));
+  put(join(conditional, 'packages/b/src/conditional.cjs'), "module.exports = require('@x/c');");
+  await assert.rejects(armImports(conditional, ['packages/b/src/conditional.cjs']), /required-target\.cjs, imported by [^,]*conditional\.cjs, not its arm's own/);
+
+  // Under Bun, a module newly loaded by a computed import is audited too: its own import of a reused module is caught.
+  const computed = armTree(leaky, cleanup, { harness });
+  put(join(elsewhere, 'packages/b/src/computed-target.mjs'), 'export const token = {};');
+  await import(pathToFileURL(join(elsewhere, 'packages/b/src/computed-target.mjs')).href);
+  put(join(computed, 'packages/b/src/computed-helper.mjs'), `export * from ${JSON.stringify(join(elsewhere, 'packages/b/src/computed-target.mjs'))};`);
+  put(join(computed, 'packages/b/src/computed.mjs'), "export const helper = await import(['./', 'computed-helper.mjs'].join(''));");
+  await assert.rejects(armImports(computed, ['packages/b/src/computed.mjs']), /computed-target\.mjs, imported by [^,]*computed-helper\.mjs, not its arm's own/);
 
   // A shared store module that holds an arm's module would give it to every arm: caught when an arm reaches it.
   const capturing = armTree(leaky, cleanup, { harness });

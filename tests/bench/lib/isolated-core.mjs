@@ -198,11 +198,12 @@ function staticEdges(entries) {
     } catch {
       continue;
     }
-    for (const { path: specifier } of imports) {
+    for (const { kind, path: specifier } of imports) {
       if (nodeModule.isBuiltin(specifier) || specifier.startsWith('bun:')) continue;
       let at;
       try {
-        at = real(Bun.resolveSync(specifier, dirname(file)));
+        // A require is resolved as one (its package's require condition), an import as one.
+        at = real(Bun.resolveSync(specifier, dirname(file), !kind.startsWith('require')));
       } catch {
         // Not resolvable from here (an optional dependency's guarded require): nothing loaded.
         continue;
@@ -247,8 +248,9 @@ function offences(found, what) {
 function assertOwnLoads(tree, from, entries) {
   const own = realpathSync(tree) + sep;
   const loads = loadedSince(from);
-  // Under Bun, the edges its source spells (a module already loaded, reused, is no new load).
-  const edges = typeof Bun === 'undefined' ? loads.filter(([parent]) => parent !== null) : staticEdges(entries.map(real));
+  // Under Bun, the edges their sources spell, from the entries and every module newly loaded (a computed import's
+  // target included): a module already loaded, reused, is no new load.
+  const edges = typeof Bun === 'undefined' ? loads.filter(([parent]) => parent !== null) : staticEdges([...entries.map(real), ...loads.map(([, path]) => path)]);
   offences([
     ...loads.filter(([, path]) => ownerOf(path) !== own && !inStore(path)).map(([, path]) => [path, `${path}, loaded while making the arm ${own}`]),
     ...foreignEdges(edges),
@@ -272,7 +274,7 @@ export function assertArmsInside() {
   offences([
     ...ever.filter(([, path]) => path.startsWith(packages) && !inStore(path)).map(([, path]) => [path, path]),
     ...since.filter(([, path]) => ownerOf(path) === null && !inStore(path)).map(([, path]) => [path, path]),
-    ...foreignEdges(since.filter(([parent]) => parent !== null)),
+    ...foreignEdges(typeof Bun === 'undefined' ? since.filter(([parent]) => parent !== null) : staticEdges(since.map(([, path]) => path))),
   ], "a bench loads no workspace package code of the harness's, and once its arms are made, nothing but its arms' own modules (each arm its own) and the harness's third-party store, none of the harness repository's");
 }
 
