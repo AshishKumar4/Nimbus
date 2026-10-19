@@ -3,7 +3,8 @@
 // runs it): what module loading asks of a process's namespace and cells
 // (worker vfs/resident namespace-lookup.ts, tables.ts, cells.ts). A key's
 // row; a walk of a deep path with symlinks in the table (the walk proper,
-// not the one-lookup shortcut); a walk through a link; a file's bytes. Each
+// not the one-lookup shortcut); a walk through a link; a file's bytes; an
+// asynchronous read's write-through of bytes the store holds already. Each
 // arm is the store bundled on its own from its tree (main, main's null arm,
 // head), over a pnpm-like tree held in a heap store.
 import assert from 'node:assert/strict';
@@ -45,6 +46,7 @@ async function arm(name, dir) {
 const CURSOR = { poison: false, paths: [], epoch: 'e1', rev: 7 };
 const STAT = (type, size = 0) => ({ type, size, mode: type === 'directory' ? 0o40755 : type === 'symlink' ? 0o120777 : 0o100644, uid: 1000, gid: 1000, atime: 0, mtime: 0, ctime: 0, ino: 1 });
 const FILE = (i) => `home/user/app/node_modules/.pnpm/p${i}/node_modules/p${i}/lib/index.js`;
+const TEXT = Array.from({ length: 96 }, (_, i) => `module.exports = ${i};\n`);
 
 /** A store holding a pnpm-like tree: 96 packages, each `.pnpm/p<i>/node_modules/p<i>/lib/index.js`, linked from `node_modules/p<i>`. */
 function storeOf({ createResidentStore }) {
@@ -63,7 +65,7 @@ function storeOf({ createResidentStore }) {
   const t = store.coherence.require();
   store.namespace.replace(t, entries);
   store.namespace.markReady(t, true);
-  for (let i = 0; i < 96; i++) store.cells.fill(FILE(i), `module.exports = ${i};\n`, 7);
+  for (let i = 0; i < 96; i++) store.cells.fill(FILE(i), TEXT[i], 7);
   return store;
 }
 
@@ -77,6 +79,7 @@ const work = {
     }
   },
   bytes: (store) => { for (let i = 0; i < N; i++) seen += String(store.bundle[FILE(i % 96)]).length; },
+  reread: (store) => { for (let i = 0; i < N; i++) seen += store.cells.fill(FILE(i % 96), TEXT[i % 96], 7) ? 1 : 0; },
 };
 
 try {
