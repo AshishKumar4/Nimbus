@@ -329,11 +329,26 @@ export function provisional(host) {
             inode.state = copyState(inode.base);
     };
     /** Fold `op` into `inode` (its baseline taken first): its record, kept until it retires; `description` the one it was made through. */
+    /**
+     * A grant's file, about to change by anything but its grant, is no
+     * grant's from now on: one live content, the fold over its cell's bytes
+     * (Provisional.unhold). One a name leads to is the holder's to hand over
+     * (what it decided logged, its descriptions opened at the session by that
+     * name); one no name leads to is opened by none, and its descriptors write
+     * through a description the session has of it (by).
+     */
+    const unheld = (inode) => {
+        const cell = inode.cell;
+        if (cell === undefined)
+            return;
+        if (cell.detached === undefined)
+            host.unhold(inode);
+        else
+            provisional.unhold(inode, cell.detached);
+    };
     /** `inode` ready for a change here: a grant's no longer (what that logs goes first), and its fold begun. */
     const ready = (inode) => {
-        // A grant's file changed here is no grant's from now on: one content, the fold.
-        if (inode.cell !== undefined)
-            host.unhold(inode);
+        unheld(inode);
         if (inode.base === null) {
             inode.base = baseline(inode);
             inode.state = copyState(inode.base);
@@ -605,6 +620,8 @@ export function provisional(host) {
     const moveRecords = (records, target) => {
         if (records.length === 0)
             return;
+        // They fold into its one content: a grant's cell is handed over first.
+        unheld(target);
         const left = new Set();
         const leaving = new Map();
         for (const record of records) {
@@ -823,8 +840,11 @@ export function provisional(host) {
                 return desc.description;
         return undefined;
     };
-    /** What a descriptor's call names its file by: its description, else its number. */
-    const by = (desc) => (desc.description !== undefined ? { description: desc.description } : { ino: desc.inode.ino });
+    /** What a descriptor's call names its file by: its description, else one the session has of its file (anchorOf), else its number. */
+    const by = (desc) => {
+        const description = desc.description ?? anchorOf(desc.inode);
+        return description !== undefined ? { description } : { ino: desc.inode.ino };
+    };
     /**
      * A content operation by a descriptor, judged then made: its file still
      * its own (or retained), its logged bytes under the client's cap, what it
