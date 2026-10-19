@@ -116,12 +116,14 @@ export interface ResidentNamespace {
   release(bytes: number): void;
   /**
    * `listener` is told of each row the view takes in (a barrier's or an
-   * answer's delta, a listing, a lookup), as `entry` at `key`, synchronously
-   * within the admission: in the same turn the view holds the row, before
-   * any caller can read it, so whoever holds a file by its number has its
-   * row and name as the view does, never one behind.
+   * answer's delta, a listing, a lookup), by its key and its file's number
+   * (`dev`, `ino`, as `entry` has them), synchronously within the admission:
+   * in the same turn the view holds the row, before any caller can read it,
+   * so whoever holds a file by its number has its row and name as the view
+   * does, never one behind. It reads the row (`entry`) only for a number it
+   * holds.
    */
-  onAdmitted?(listener: (key: string, entry: ResidentEntry) => void): void;
+  onAdmitted?(listener: (key: string, dev: number, ino: number) => void): void;
 }
 
 /** A file's bytes, kept for a descriptor's lifetime: `release` when it closes. */
@@ -489,7 +491,11 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     });
     // Each row the view takes in reaches the file the process holds by that number, in the same turn.
     const decisions = holder.provisional;
-    resident.onAdmitted?.((key, entry) => decisions.admitted(key, entry));
+    resident.onAdmitted?.((key, dev, ino) => {
+      if (decisions.inode(dev, ino) === undefined) return;
+      const entry = resident.entry(key);
+      if (entry) decisions.admitted(key, entry);
+    });
     if (delegation.readDirectories) directoryPool = readDirectoryPool({
       call: (request) => { delegated('readDirectories'); return begin(() => delegation.readDirectories!(request)); }, store, client: holder.client,
       before: async () => { if (holder?.pending()) await holder.send(); },
