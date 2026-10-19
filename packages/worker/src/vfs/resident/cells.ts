@@ -147,12 +147,25 @@ export function createCells(
     // A text row's size is its UTF-16 length: each unit is 1 to 3 bytes of UTF-8.
     if (found.kind === RK_BINARY ? found.size !== bytes.byteLength : bytes.byteLength < found.size || bytes.byteLength > 3 * found.size) return false;
     let at = 0;
-    for (const row of t.chunkParts(path)) {
-      const part = found.kind === RK_TEXT ? encodeText(row.txt ?? '') : residentBytes(row.bin);
+    // Text is chunked by UTF-16 units, so a pair can straddle two chunks: its
+    // high half is carried into the next one, to be encoded whole.
+    let carry = '';
+    const matches = (part: Uint8Array): boolean => {
       if (!sameBytes(part, bytes.subarray(at, at + part.byteLength))) return false;
       at += part.byteLength;
+      return true;
+    };
+    for (const row of t.chunkParts(path)) {
+      if (found.kind !== RK_TEXT) {
+        if (!matches(residentBytes(row.bin))) return false;
+        continue;
+      }
+      const text = carry + (row.txt ?? '');
+      const last = text.charCodeAt(text.length - 1);
+      carry = last >= 0xd800 && last <= 0xdbff ? text.slice(-1) : '';
+      if (!matches(encodeText(carry === '' ? text : text.slice(0, -1)))) return false;
     }
-    return at === bytes.byteLength;
+    return (carry === '' || matches(encodeText(carry))) && at === bytes.byteLength;
   };
 
   const forgetHeld = (path: string): void => {

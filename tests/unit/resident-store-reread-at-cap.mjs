@@ -20,6 +20,8 @@ const FILES = {
   'home/user/app/src/App.tsx': 'export const App = () => <div className="text-red-500">naïve 日本語</div>;\n'.repeat(30),
   // More text than one chunk holds.
   'home/user/app/src/big.ts': `export const big = ${JSON.stringify('é'.repeat(RESIDENT_CHUNK_BYTES))};\n`,
+  // A surrogate pair straddling two chunks of text.
+  'home/user/app/src/emoji.txt': 'a'.repeat(Math.floor(RESIDENT_CHUNK_BYTES / 3) - 1) + '😀z',
   // More bytes than one chunk holds.
   'home/user/app/public/blob.bin': Uint8Array.from({ length: RESIDENT_CHUNK_BYTES * 2 + 17 }, (_, i) => (i * 31) & 255),
 };
