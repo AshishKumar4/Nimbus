@@ -113,12 +113,14 @@ function bracket(p: string, i: number, collating = false, regcomp = false): { so
   // glibc: an expression that ends at its `[` (or `[^`) is no bracket at all.
   if (regcomp && i >= p.length) throw new PosixRegexSyntax('Invalid regular expression');
   let first = true;
-  // regcomp: a range just ended, after which a dash may only be last.
+  // A range just ended.
   let rangeEnded = false;
   for (;;) {
     if (i >= p.length) throw new PosixRegexSyntax('Unmatched [, [^, [:, [., or [=');
     if (p[i] === ']' && !first) return { source: out + (negated ? INVALID_BYTES : '') + ']', end: i + 1 };
     first = false;
+    // regcomp: a dash written just after a range is only the expression's last character.
+    if (regcomp && rangeEnded && p[i] === '-' && p[i + 1] !== ']') throw new PosixRegexSyntax('Invalid range end');
     const member = bracketMember(p, i, regcomp);
     i = member.end;
     // A range: a dash after a member, not the expression's last.
@@ -141,7 +143,6 @@ function bracket(p: string, i: number, collating = false, regcomp = false): { so
       rangeEnded = true;
       continue;
     }
-    if (regcomp && rangeEnded && 'char' in member && member.char === '-' && p[i] !== ']') throw new PosixRegexSyntax('Invalid range end');
     out += 'char' in member ? literal(member.char, true) : member.members;
     rangeEnded = false;
   }
