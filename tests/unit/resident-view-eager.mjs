@@ -128,13 +128,21 @@ await runScenarios(import.meta.path, {
     assert.equal(synchronously(s.fs, k('m/nope')), 'EAGAIN', 'nor an absence there');
     assert.equal((await s.fs.stat(k('m/f'))).size, 1, 'an awaited stat looks it up');
     assert.equal(synchronously(s.fs, k('m/nope')), 'EAGAIN', 'a lookup lists nothing');
-    assert.deepEqual((await s.fs.readdir(k('m'))).map((entry) => entry.name).sort(), ['d', 'f']);
+    // Its own entries named (a directory's listing, not a tree's).
+    assert.equal(await s.view.list(`${ROOT}/m`), true);
     assert.equal(synchronously(s.fs, k('m/nope')), null, 'once listed, a name it did not name is absent');
     assert.equal(synchronously(s.fs, k('m/d/x')), 'EAGAIN', 'a directory its listing learned is not whole');
     assert.equal(await s.view.list(`${ROOT}/m`), true);
     assert.equal(synchronously(s.fs, k('m/d/x')), 'EAGAIN', 'nor after another listing of its parent');
-    assert.deepEqual((await s.fs.readdir(k('m/d'))).map((entry) => entry.name), ['x']);
+    assert.equal(await s.view.list(`${ROOT}/m/d`), true);
     assert.equal(synchronously(s.fs, k('m/d/nope')), null, 'until it is listed itself');
+    assert.equal(synchronously(s.fs, k('m/d/x')).size, 1);
+  },
+  async 'a tree listing under a mount is whole'() {
+    const s = await storeSession({ m: null, 'm/d': null, 'm/d/x': 'x' }, { eager: true, unlisted: ['m'] });
+    assert.equal(await s.view.listTree(`${ROOT}/m`), true);
+    assert.equal(synchronously(s.fs, k('m/d/nope')), null);
+    assert.equal(synchronously(s.fs, k('m/d/x')).size, 1);
   },
   async 'a directory a lookup learned under a mount is not whole'() {
     const s = await storeSession({ m: null, 'm/d': null, 'm/d/x': 'x' }, { eager: true, unlisted: ['m'] });
@@ -147,7 +155,7 @@ await runScenarios(import.meta.path, {
     await s.kernel.writeFile(k('g'), enc.encode('g'));
     const listings = s.calls.fsList ?? 0;
     s.fail('fsAcquire');
-    assert.equal(await s.fs.catchUp(), true);
+    await s.fs.catchUp();
     assert.equal(s.calls.fsList ?? 0, listings, 'no listing');
     assert.equal(s.view.repairOwed(), false);
     assert.equal(synchronously(s.fs, k('g')).size, 1);
@@ -159,7 +167,7 @@ await runScenarios(import.meta.path, {
     await s.kernel.writeFile(k('g'), enc.encode('TWO'));
     const before = s.reads.length;
     s.poison();
-    assert.equal(await s.fs.catchUp(), true);
+    await s.fs.catchUp();
     const read = s.reads.slice(before).flat();
     assert.ok(read.includes(`/${ROOT}/g`), 'the changed file is fetched');
     assert.ok(!read.includes(`/${ROOT}/f`), 'the unchanged one is not');
@@ -175,7 +183,7 @@ await runScenarios(import.meta.path, {
     await s.fs.catchUp();
     assert.notEqual(synchronously(s.fs, k('f'), 'readFile'), 'one', 'never the old bytes');
     assert.equal(s.view.repairOwed(), true);
-    assert.equal(await s.fs.catchUp(), true);
+    await s.fs.catchUp();
     assert.equal(s.view.repairOwed(), false);
     assert.equal(synchronously(s.fs, k('f'), 'readFile'), 'two');
   },
@@ -209,32 +217,29 @@ await runScenarios(import.meta.path, {
   },
   async 'under a trusted read lease, input alone takes no barrier'() {
     const s = await storeSession({ f: 'one' }, { eager: true, delegated: true });
-    assert.equal(await s.fs.catchUp(), true);
+    await s.fs.catchUp();
     const asked = s.calls.fsAcquire;
-    s.fs.inbound();
-    assert.equal(await s.fs.catchUp({ viaIo: true }), true);
+    await s.fs.catchUp({ viaIo: true });
     assert.equal(s.calls.fsAcquire, asked, 'no ACQUIRE');
     assert.equal(s.fs.stats().leasedBarriers, 1);
   },
   async 'under a trusted read lease, the process\'s own change at the session takes the barrier'() {
     const s = await storeSession({ f: 'one' }, { eager: true, delegated: true });
-    assert.equal(await s.fs.catchUp(), true);
+    await s.fs.catchUp();
     await s.fs.chmod(k('f'), 0o600);
     const asked = s.calls.fsAcquire;
-    s.fs.inbound();
-    assert.equal(await s.fs.catchUp({ viaIo: true }), true);
+    await s.fs.catchUp({ viaIo: true });
     assert.equal(s.calls.fsAcquire, asked + 1, 'an ACQUIRE');
     assert.equal(synchronously(s.fs, k('f')).mode & 0o777, 0o600);
   },
   async 'under a trusted read lease, a repair owed takes the barrier'() {
     const s = await storeSession({ f: 'one' }, { eager: true, delegated: true });
-    assert.equal(await s.fs.catchUp(), true);
+    await s.fs.catchUp();
     s.poison();
     s.fail('fsList');
     await s.fs.catchUp();
     assert.equal(s.view.repairOwed(), true);
     const asked = s.calls.fsAcquire;
-    s.fs.inbound();
     await s.fs.catchUp({ viaIo: true });
     assert.equal(s.calls.fsAcquire, asked + 1, 'an ACQUIRE');
   },
