@@ -5,6 +5,7 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Changed: a paired CPU bench names the engine it is graded on (`engine`, `node` for the guest's code, which workerd runs on V8) and the engines its bench runs on. `--engine bun|node` runs it on another of those, as context: the receipt names the engine, and only a run on the graded engine is graded. An engine its bench cannot run on is refused before anything is sent to armada.
 - Changed: a paired perf probe red on one set of Previews is run again on a fresh set of four, and is red only when it is red on both. Each candidate Preview is graded against the mean of the two baseline Previews: against each one alone, a real +46% cold start was found on only half the sets. A paired CPU bench's slower kind is measured again on a second set of runs, and is slower only when both find it slower: 95% per kind finds about one slower kind in two runs of a dozen that are not.
 - Fixed: a program's launch could wait minutes (a `vite build` sat 5
   minutes before it ran) while a dependency pre-bundle in another session

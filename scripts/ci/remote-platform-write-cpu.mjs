@@ -10,5 +10,7 @@ await remotePairedCpu({
   receipts: 'remote-platform-cpu',
   baselineDir: '.ci-platform-baseline',
   engine: 'node',
+  // Its arms are bundled on their own (esbuild): bun runs it too, for context.
+  engines: ['node', 'bun'],
   bench: 'tests/bench/platform-write-cpu.mjs',
 });

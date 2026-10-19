@@ -49,6 +49,39 @@ export function confirmedVerdicts(verdicts, again) {
   });
 }
 
+/**
+ * How a paired CPU bench runs from its command line (`argv`: `<baseline>
+ * [<revision>] [--short] [--engine node|bun]`): the engine it runs on, its
+ * own (`engine`, the one it is graded on) unless `--engine` names another of
+ * `engines` (those its bench can run on), and each run's command. An error
+ * names what is wrong, before anything is sent to armada.
+ */
+export function pairedCpuPlan(argv, { name, engine: graded, engines = [graded], bench, baselineDir }) {
+  const { values, positionals } = parseArgs({ args: argv, options: { short: { type: 'boolean', default: false }, engine: { type: 'string' } }, allowPositionals: true });
+  const [baseline, revision = 'HEAD'] = positionals;
+  if (!baseline || positionals.length > 2) return { error: `usage: ${name}.mjs <baseline> [<revision>] [--short] [--engine ${engines.join('|')}]` };
+  const engine = values.engine ?? graded;
+  if (!engines.includes(engine)) return { error: `${name}: its bench runs on ${engines.join(' or ')}, not ${engine}` };
+  return {
+    baseline, revision, engine, short: values.short,
+    // Graded only on its own engine, and not when short.
+    graded: engine === graded && !values.short,
+    command: [engine, bench, '--baseline', baselineDir, '--out', '{out}', ...(values.short ? ['--short'] : [])],
+  };
+}
+
+/**
+ * Whether the bench passes, from its sets of runs (`sets`, each armada's
+ * outcomes and the results each run wrote) and its verdicts: every run of
+ * every set finished and measured every kind, and no kind is slower.
+ */
+export function pairedCpuPasses(sets, verdicts, runsPerSet) {
+  const measuredAll = sets.every(({ results }) => results.length === runsPerSet)
+    && sets.every(({ verdicts: graded }) => graded.every((verdict) => verdict.runs === runsPerSet));
+  const finished = sets.every(({ outcomes }) => outcomes.every((outcome) => outcome.kind === 'exited' && outcome.exitCode === 0));
+  return measuredAll && finished && verdicts.every((verdict) => verdict.failures.length === 0);
+}
+
 const git = (...args) => {
   const result = spawnSync('git', args, { encoding: 'utf8', maxBuffer: 1 << 26 });
   if (result.status !== 0) throw new Error(result.stderr);
@@ -68,18 +101,17 @@ const git = (...args) => {
  * 0 only when every run finished and no kind is slower.
  * `--short` runs two small workload smoke checks without grading performance.
  *
- * @param {{ name: string, receipts: string, source: string, baselineDir: string, files?: string[], directories?: string[], engine: 'node' | 'bun', bench: string }} bench
+ * @param {{ name: string, receipts: string, source: string, baselineDir: string, files?: string[], directories?: string[], engine: 'node' | 'bun', engines?: ('node' | 'bun')[], bench: string }} bench
  */
-export async function remotePairedCpu({ name, receipts, source, baselineDir, files, directories, engine: graded, bench }) {
-  const { values, positionals } = parseArgs({ options: { short: { type: 'boolean', default: false }, engine: { type: 'string' } }, allowPositionals: true });
-  const engine = values.engine ?? graded;
-  if (engine !== 'node' && engine !== 'bun') throw new Error(`${name}: --engine is node or bun, not ${engine}`);
-  const RUNS = values.short ? 2 : 8;
-  const [baseline, revision = 'HEAD'] = positionals;
-  if (!baseline || positionals.length > 2) throw new Error(`usage: ${name}.mjs <baseline> [<revision>] [--short]`);
+export async function remotePairedCpu(bench) {
+  const { name, receipts, source, baselineDir, files, directories, engine: graded } = bench;
+  const plan = pairedCpuPlan(process.argv.slice(2), bench);
+  if ('error' in plan) throw new Error(plan.error);
+  const { engine, short } = plan;
+  const RUNS = short ? 2 : 8;
   const repo = git('rev-parse', '--show-toplevel').trim();
-  const sha = git('rev-parse', `${revision}^{commit}`).trim();
-  const base = git('rev-parse', `${baseline}^{commit}`).trim();
+  const sha = git('rev-parse', `${plan.revision}^{commit}`).trim();
+  const base = git('rev-parse', `${plan.baseline}^{commit}`).trim();
   const names = [...new Set([
     ...(files ?? []),
     ...(directories !== undefined || files === undefined
@@ -90,29 +122,27 @@ export async function remotePairedCpu({ name, receipts, source, baselineDir, fil
   const runSet = (label) => mapOnArmada({
     repo, sha: measured, files: [], items: Array.from({ length: RUNS }, (_, i) => i + 1), pool: RUNS, timeout: 1200,
     label: `${name} ${sha.slice(0, 12)} ${engine}${label}`,
-    command: [engine, bench, '--baseline', baselineDir, '--out', '{out}', ...(values.short ? ['--short'] : [])],
+    command: plan.command,
   });
   const resultsOf = (set) => set.outputs.filter((output) => output !== null).map((output) => JSON.parse(output));
   const run = await runSet('');
   const runs = resultsOf(run);
-  const first = values.short ? [] : pairedCpuVerdicts(runs);
+  const first = short ? [] : pairedCpuVerdicts(runs);
   // A slower kind is measured again, on a second set of runs, before it is called slower.
   const confirmation = first.some((verdict) => verdict.failures.length > 0) ? await runSet(' confirmation') : null;
   const again = confirmation ? pairedCpuVerdicts(resultsOf(confirmation)) : [];
   const verdicts = confirmation ? confirmedVerdicts(first, again) : first;
   const directory = join(NIMBUS_STATE, receipts);
   mkdirSync(directory, { recursive: true });
-  const receipt = join(directory, `${values.short ? 'short-' : ''}${sha.slice(0, 12)}-${run.jobId}.json`);
-  writeFileSync(receipt, `${JSON.stringify({ baseline: base, head: sha, engine, graded: engine === graded, short: values.short, performanceGraded: !values.short && engine === graded, verdicts, ...run, ...(confirmation ? { confirmation } : {}) }, null, 2)}\n`);
+  const receipt = join(directory, `${short ? 'short-' : ''}${sha.slice(0, 12)}-${run.jobId}.json`);
+  writeFileSync(receipt, `${JSON.stringify({ baseline: base, head: sha, engine, gradedEngine: graded, short, performanceGraded: plan.graded, verdicts, ...run, ...(confirmation ? { confirmation } : {}) }, null, 2)}\n`);
   console.log(`receipt: ${receipt}`);
-  const sets = [run, ...(confirmation ? [confirmation] : [])];
+  const sets = [{ ...run, results: runs, verdicts: first }, ...(confirmation ? [{ ...confirmation, results: resultsOf(confirmation), verdicts: again }] : [])];
   for (const set of sets) for (const outcome of set.outcomes) if (outcome.kind !== 'exited' || outcome.exitCode !== 0) console.log(outcome.tail);
   for (const verdict of verdicts) console.log(JSON.stringify(verdict));
   // A kind that some run of either set did not measure fails the bench: fewer runs pass nothing.
-  const partial = [...first, ...again].filter((verdict) => verdict.runs !== RUNS);
-  for (const verdict of partial) console.log(`incomplete: ${verdict.kind} was measured in ${verdict.runs} of ${RUNS} runs of a set`);
-  const complete = partial.length === 0 && sets.every((set) => resultsOf(set).length === RUNS && set.outcomes.every((outcome) => outcome.kind === 'exited' && outcome.exitCode === 0));
-  if (values.short) console.log(`short smoke: ${runs.length}/${RUNS} runs completed; performance is not graded`);
+  for (const verdict of [...first, ...again]) if (verdict.runs !== RUNS) console.log(`incomplete: ${verdict.kind} was measured in ${verdict.runs} of ${RUNS} runs of a set`);
+  if (short) console.log(`short smoke: ${runs.length}/${RUNS} runs completed; performance is not graded`);
   if (engine !== graded) console.log(`${engine}: context only; ${name} is graded on ${graded}`);
-  process.exit(complete && verdicts.every((verdict) => verdict.failures.length === 0) ? 0 : 1);
+  process.exit(pairedCpuPasses(sets, verdicts, RUNS) ? 0 : 1);
 }

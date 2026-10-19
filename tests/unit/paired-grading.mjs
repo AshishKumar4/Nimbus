@@ -7,7 +7,7 @@
 
 import assert from 'node:assert/strict';
 import { gradePaired } from '../behavioral/_paired.mjs';
-import { confirmedVerdicts, pairedCpuVerdicts } from '../../scripts/ci/lib/paired-cpu.mjs';
+import { confirmedVerdicts, pairedCpuPasses, pairedCpuPlan, pairedCpuVerdicts } from '../../scripts/ci/lib/paired-cpu.mjs';
 import { median } from '../../scripts/lib/statistics.mjs';
 import { pairedRounds, seeded } from './lib/paired-samples.mjs';
 
@@ -132,6 +132,47 @@ for (const shift of [-10, 0, 10]) {
   const other = { ...runs[1][0], kind: 'other-cpu' };
   const verdicts = pairedCpuVerdicts([runs[0], [...runs[1], other], ...runs.slice(2)]);
   assert.deepEqual(verdicts.map(({ kind, runs: measured }) => [kind, measured]), [['copy-cpu', 8], ['other-cpu', 1]]);
+}
+
+// A bench runs on the engine it is graded on, or, with --engine, another its
+// bench can run on, as context: never graded. One it cannot run on is refused
+// before anything is sent.
+{
+  const bench = { name: 'remote-x-cpu', engine: 'node', engines: ['node', 'bun'], bench: 'tests/bench/x-cpu.mjs', baselineDir: '.ci-x' };
+  const own = pairedCpuPlan(['main'], bench);
+  assert.deepEqual(own, {
+    baseline: 'main', revision: 'HEAD', engine: 'node', short: false, graded: true,
+    command: ['node', 'tests/bench/x-cpu.mjs', '--baseline', '.ci-x', '--out', '{out}'],
+  });
+  const other = pairedCpuPlan(['main', 'head', '--engine', 'bun'], bench);
+  assert.equal(other.engine, 'bun');
+  assert.equal(other.graded, false, 'another engine is context, not graded');
+  assert.deepEqual(other.command.slice(0, 2), ['bun', 'tests/bench/x-cpu.mjs']);
+  const short = pairedCpuPlan(['main', '--short'], bench);
+  assert.equal(short.graded, false, 'a short run is not graded');
+  assert.equal(short.command.at(-1), '--short');
+  assert.match(pairedCpuPlan(['main', '--engine', 'deno'], bench).error, /runs on node or bun, not deno/);
+  const bunOnly = { ...bench, engine: 'bun', engines: undefined };
+  assert.match(pairedCpuPlan(['main', '--engine', 'node'], bunOnly).error, /its bench runs on bun, not node/, 'a bench names the engines it runs on: its own alone by default');
+  assert.match(pairedCpuPlan([], bench).error, /^usage: remote-x-cpu\.mjs <baseline> \[<revision>\] \[--short\] \[--engine node\|bun\]$/);
+  assert.match(pairedCpuPlan(['a', 'b', 'c'], bench).error, /^usage:/);
+}
+
+// It passes only when every run of every set finished and measured every
+// kind, and no kind is slower: a confirmation set that missed a kind or a
+// run is never green.
+{
+  const ok = { kind: 'exited', exitCode: 0 };
+  const verdict = (runs, failures = []) => ({ kind: 'k', runs, failures });
+  const set = (results, verdicts, outcomes = [ok, ok]) => ({ results, verdicts, outcomes });
+  assert.equal(pairedCpuPasses([set([1, 2], [verdict(2)])], [verdict(2)], 2), true);
+  assert.equal(pairedCpuPasses([set([1, 2], [verdict(2, ['slower'])])], [verdict(2, ['slower'])], 2), false, 'a slower kind fails it');
+  assert.equal(pairedCpuPasses([set([1], [verdict(1)])], [verdict(1)], 2), false, 'a run that wrote nothing fails it');
+  assert.equal(pairedCpuPasses([set([1, 2], [verdict(2)], [ok, { kind: 'exited', exitCode: 1 }])], [verdict(2)], 2), false, 'a run that failed fails it');
+  const cleared = verdict(2);
+  assert.equal(pairedCpuPasses([set([1, 2], [verdict(2, ['slower'])]), set([1, 2], [verdict(1)])], [cleared], 2), false, 'a confirmation that missed a kind in a run fails it');
+  assert.equal(pairedCpuPasses([set([1, 2], [verdict(2, ['slower'])]), set([1, 2], [verdict(2)])], [cleared], 2), true, 'cleared by a full confirmation, it passes');
+  assert.equal(pairedCpuPasses([set([1, 2], [])], [], 2), true, 'a short smoke passes when every run finished');
 }
 
 console.log('paired-grading: ok');

@@ -9,5 +9,7 @@ await remotePairedCpu({
   source: 'packages/core/src',
   baselineDir: 'packages/core/.ci-resolution-baseline',
   engine: 'node',
+  // Its arms are bundled on their own (esbuild): bun runs it too, for context.
+  engines: ['node', 'bun'],
   bench: 'tests/bench/module-resolution-cpu.mjs',
 });
