@@ -123,8 +123,13 @@ const overlaps = (x, y) => x.some((p) => y.some((q) => under(p, q) || under(q, p
 /** Whether a change is made outside the process (a peer's, or root's). */
 const outside = (way) => way === 'peer' || way === 'root';
 
-/** `change` applied to `world` (by `way`: root is not judged), or null when it would fail there (so a schedule never asks it). */
-function applied(world, [way, op, a, b]) {
+/**
+ * `change` applied to `world` (by `way`: root is not judged), or null when it would fail there (so a schedule never asks it).
+ * @param {Map<string, any>} world
+ * @param {any[]} change
+ */
+function applied(world, change) {
+  const [way, op, a, b] = change;
   const root = way === 'root';
   const at = world.get(a);
   const parent = world.get(parentOf(a));
@@ -253,7 +258,6 @@ export const KNOWN_GAPS = Object.freeze({
 class Finding extends Error {
   constructor(message, at) {
     super(`step ${at}: ${message}`);
-    this.at = at;
   }
 }
 
@@ -296,14 +300,16 @@ function answers(op, rel, answer, world) {
  * Run `schedule` on engine `kind` (bootEngine) with a seeded parking policy
  * (`parkSeed`, or none: only `hold` parks), letting pass what `knownGaps`
  * (KNOWN_GAPS[kind]) names. Resolves when it holds; throws a Finding naming
- * the step where it does not.
+ * the step where it does not. Each step, call and park is written to stderr
+ * as it happens: a child killed for a hang shows where it was.
+ * @param {string} kind
+ * @param {any[][]} schedule
+ * @param {{ parkSeed?: number, knownGaps?: Record<string, boolean>, deadlineMs?: number }} [options]
  */
-export async function runSchedule(kind, schedule, { parkSeed, knownGaps = {}, deadlineMs = 40_000, trace = [] } = {}) {
-  // Each line as it happens, on the test's own stderr: a child killed for a hang shows where it was.
-  const note = (line) => { trace.push(line); writeSync(2, `  | ${line}\n`); };
+export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = {}, deadlineMs = 40_000 } = {}) {
+  const note = (line) => { writeSync(2, `  | ${line}\n`); };
   note(`boot ${kind}`);
   const lazy = kind === 'holder';
-  const gaps = knownGaps;
   // Replies park at random once the process is up: its boot waits on replies no step releases.
   const parkRandom = parkSeed === undefined ? null : prng(parkSeed);
   let booted = false;
@@ -325,7 +331,7 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps = {}, de
   let world = seedWorld();
   const history = [world];
   const seq = () => history.length - 1;
-  /** Changes in flight, and every change ever begun: { domain, post, begun, done }. */
+  /** Every change begun: its names, the world it leaves (and, a write, the one it passes through), the states it began and returned at. */
   const changes = [];
   /** Calls in flight: settled when their promise does. */
   const inflight = new Set();
@@ -339,6 +345,8 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps = {}, de
   const deferred = [];
   /** Files whose bytes a call that cannot wait was refused, and no awaited read answered since (Node's misses). */
   const missed = new Set();
+  /** Awaited reads whose answer was wrong, thrown at the next step. */
+  const readFailures = [];
   /** The names of the process's changes that returned and have not been published since. */
   let unpublished = [];
   /** Each peer change that returned, and as the model stood then: what the process may not know of before its next input lands. */
@@ -348,7 +356,8 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps = {}, de
    * Every world `rel` may have been seen in between states `from` and `to`:
    * each recorded one, with any of the changes in flight then that touch
    * `rel` laid over it, each as it ends or (a write) as it begins. Changes
-   * in flight together never overlap, so any of them may have landed first.
+   * in flight together never overlap, so any of them may have landed first;
+   * a schedule rarely has more than four in flight, and only four are laid.
    */
   const worldsSeen = (rel, from, to) => {
     const flying = changes.filter((change) => change.begun <= to && (change.done === null || change.done >= from)
@@ -507,7 +516,6 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps = {}, de
     if (begun === 'wait') deferred.push([at, s]);
     return undefined;
   };
-  const readFailures = [];
 
   try {
     for (let at = 0; at < schedule.length; at++) {
