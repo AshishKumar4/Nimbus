@@ -5,7 +5,7 @@
  * derived from (tx bounds, the RPC envelope, supervisor budgets) live in
  * `@nimbus-sh/platform/limits.js`.
  */
-import { MAX_RPC_SAFE_PAYLOAD_BYTES, ONE_SHOT_MODULE_MAP_MAX_BYTES } from '@nimbus-sh/platform/limits.js';
+import { DO_STORAGE_LIMIT_BYTES, MAX_RPC_SAFE_PAYLOAD_BYTES, ONE_SHOT_MODULE_MAP_MAX_BYTES } from '@nimbus-sh/platform/limits.js';
 // Published-surface forwarding: @nimbus-sh/core@0.5.0 exports these from
 // this module and real consumers import them here (Proteus merge-back.ts
 // pulls CHUNK_SIZE and the MAX_TX_* set). The platform split moved the
@@ -77,7 +77,8 @@ export const OPENCODE_VERSION = '1.16.2';
 // platform limits — see @nimbus-sh/platform/limits.js.
 export const LRU_MAX_ENTRIES = 512; // 512 × 64KB = 32MB hot cache
 export const BATCH_SIZE = 64; // rows per batch INSERT
-export const VFS_CAPACITY = 10 * 1024 * 1024 * 1024; // 10 GB
+/** The storage a session holds: the limit it enforces (DO_STORAGE_LIMIT_BYTES), which statfs reports. */
+export const VFS_CAPACITY = DO_STORAGE_LIMIT_BYTES;
 // Inode metadata held in memory. SQLite holds every inode and indexes it by
 // path and by parent, so this is a cache, not the tree: at ~214 B per inode in
 // V8 and 260-330 B in JSC, a whole 1M-file tree would need ~214 MB of a 128 MB

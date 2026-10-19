@@ -13,6 +13,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { cfApi } from './cloudflare-api.mjs';
 
 /** The token with Workers Observability access; wrangler's OAuth login gets 403 on the telemetry API. */
 export const OBSERVABILITY_TOKEN_FILE = process.env.NIMBUS_OBSERVABILITY_TOKEN_FILE || join(homedir(), '.config', 'nimbus', 'cf-observability-token');
@@ -62,11 +63,9 @@ export function telemetry({ account, tokenFile = OBSERVABILITY_TOKEN_FILE, reque
         parameters: { filters: filters.map(([key, value, operation = 'eq', type = 'string']) => ({ key, operation, type, value })), filterCombination: 'and',
           ...(needle ? { needle: { value: needle, isRegex: false, matchCase: true } } : {}) },
       };
-      const response = await request(`https://api.cloudflare.com/client/v4/accounts/${account}/workers/observability/telemetry/query`, {
-        method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(60_000),
-      });
-      if (!response.ok) throw new Error(`telemetry query answered ${response.status}`);
-      return (await response.json()).result?.events?.events ?? [];
+      const answered = await cfApi('/workers/observability/telemetry/query', { account, token, method: 'POST', body, signal: AbortSignal.timeout(60_000), fetch: request });
+      if (!answered.ok) throw new Error(`telemetry query answered ${answered.status}`);
+      return answered.result?.events?.events ?? [];
     },
   };
 }

@@ -59,6 +59,12 @@ export interface BuiltinExecutionContext {
     executeInline(input: string, options?: InlineExecutionOptions): Promise<number>;
     /** Bind a name to the running function. False outside one, where it is an error. */
     declareLocal(name: string): boolean;
+    /** The names the running function has bound (`local`), in order; null outside a function. */
+    localNames(): readonly string[] | null;
+    /** Whether `name` is a function of the shell running the builtin. */
+    isFunction(name: string): boolean;
+    /** Keep `name`'s command-prefix binding, value and attributes, past the command: the builtin declared it (bash's tempenv promotion, `x=1 export x`). */
+    promote(name: string): void;
     /** Remove a function from the shell running the builtin (a child shell's own, after a fork); false when none is defined. */
     unsetFunction(name: string): boolean;
     /** The state of the shell running the builtin: a child shell's own, after a fork. */

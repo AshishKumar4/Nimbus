@@ -60,7 +60,6 @@ var __nimbusResidentModule = (() => {
   // ../core/dist/constants.js
   var NODE_RELEASE = "22.22.3";
   var NODE_VERSION = `v${NODE_RELEASE}`;
-  var VFS_CAPACITY = 10 * 1024 * 1024 * 1024;
   var FS_READ_BATCH_PATH_LIMIT = 1024;
   var FS_READ_BATCH_REQUEST_BYTES = 4 * 1024 * 1024;
   var FS_LIST_PAGE_LIMIT = 8192;

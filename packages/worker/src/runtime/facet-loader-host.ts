@@ -15,6 +15,7 @@
  */
 import { requireNetwork, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { Facet, FacetHost, FacetSpec } from '@nimbus-sh/core/runtime/facet-host.js';
+import { warmFacetScope } from '@nimbus-sh/core/runtime/warm-facets.js';
 import type { FacetManager } from '../facets/manager.js';
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
@@ -49,7 +50,7 @@ export function loaderFacetHost(env: unknown, ctx: DurableObjectState, network: 
         supervisorPid: spec.syscalls?.pid,
         processSupervisor: spec.syscalls ? supervisorBindingProps(ctx, spec.syscalls.pid, { writerId: crypto.randomUUID(), network }) : undefined,
         cacheScope: spec.reuse,
-        scope: spec.warm,
+        scope: spec.warm === undefined ? undefined : warmFacetScope(spec.warm),
         supervisorPerCall: spec.warm !== undefined,
         network,
       });
