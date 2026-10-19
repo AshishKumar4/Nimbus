@@ -102,7 +102,8 @@ const GAPS = {
     shows: 'answered EISDIR',
   },
   'a directory the process may search again shows nothing stale while it is relisted [node]': {
-    lacks: 'B2: a relist answers what is under its directory as unknown until it lands (the cutover\'s relist fence)',
+    lacks: 'B2: a relist answers what is under its directory as unknown until it lands (the cutover\'s relist fence); '
+      + 'meanwhile a call that cannot wait sees a false ENOENT for a name the session holds there',
     shows: 'answered null',
   },
 };

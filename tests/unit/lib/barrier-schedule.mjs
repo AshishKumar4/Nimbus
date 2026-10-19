@@ -38,6 +38,10 @@
  *     the model says (no write lost). Node's ledger of program misses holds
  *     exactly the files a call that cannot wait was refused the bytes of, no
  *     awaited read of which has answered since, that are still there.
+ * What the store keeps against its budget is not judged here: neither
+ * engine shows the store's own total, and its accounting is the budget's
+ * own tests' (resident-fs-model).
+ *
  * Two changes whose names overlap are never in flight together, so each
  * change's effect is the model's at its start; one that would overlap waits
  * for the step after the other returns. The process's own changes reach the
