@@ -324,34 +324,43 @@ await runScenarios(fileURLToPath(import.meta.url), {
 
   // A map that needs more than the share its closure was fitted to takes
   // what it lacks beside that share when it is free, and keeps the closure
-  // it gathered: a closure no cache keeps is gathered once.
+  // it gathered: a closure no cache keeps is read as often as the same
+  // closure's whose map fits its share.
   async shortfallBesideItsShare() {
     const authority = createAuthority();
     adoptSessionSupervisor(authority.host, () => {});
     const { manager } = session(authority, 'shortfall');
     const files = processFiles(authority.rawVfs);
     const bind = files.bind.bind(files);
-    let gathered = 0;
+    const reads = new Map();
     files.bind = (binding) => new Proxy(bind(binding), {
       get(target, name) {
         const value = Reflect.get(target, name);
         if (name !== 'readFile' || typeof value !== 'function') return value;
         return (path, ...rest) => {
-          if (String(path).endsWith('/big.js')) gathered++;
+          reads.set(String(path), (reads.get(String(path)) ?? 0) + 1);
           return Reflect.apply(value, target, [path, ...rest]);
         };
       },
     });
     manager.setVfs(authority.rawVfs, files);
-    const cwd = '/home/user/shortfall';
-    authority.kfs.mkdir(cwd);
-    authority.kfs.writeFile(`${cwd}/big.js`, `module.exports = "big";\n// ${'x'.repeat(11 * 1024 * 1024)}\n`);
-    authority.kfs.writeFile(`${cwd}/image.wasm`, wasmImage(4 * 1024 * 1024));
-    authority.kfs.writeFile(`${cwd}/cell.js`, 'require("fs").readFileSync(require("path").join(__dirname, "image.wasm")); module.exports = require("./big.js");');
-    ran(await manager.exec('process.stdout.write(require("./cell.js"))', {
-      cwd, dirname: cwd, filename: `${cwd}/run.js`, captureOutput: true,
-    }), 'big');
-    assert.equal(gathered, 1, `the closure is gathered once, not again for its map's shortfall (read ${gathered} times)`);
+    /** Runs a closure over `big.js` in `dir`, beside a 4 MiB wasm member if `member`: how often big.js was read. */
+    const launch = async (dir, member) => {
+      const cwd = `/home/user/${dir}`;
+      authority.kfs.mkdir(cwd);
+      authority.kfs.writeFile(`${cwd}/big.js`, `module.exports = "big";\n// ${'x'.repeat(11 * 1024 * 1024)}\n`);
+      if (member) authority.kfs.writeFile(`${cwd}/image.wasm`, wasmImage(4 * 1024 * 1024));
+      const wasm = member ? 'require("fs").readFileSync(require("path").join(__dirname, "image.wasm")); ' : '';
+      authority.kfs.writeFile(`${cwd}/cell.js`, `${wasm}module.exports = require("./big.js");`);
+      ran(await manager.exec('process.stdout.write(require("./cell.js"))', {
+        cwd, dirname: cwd, filename: `${cwd}/run.js`, captureOutput: true,
+      }), 'big');
+      return [...reads].filter(([path]) => path.endsWith(`/${dir}/big.js`)).reduce((sum, [, count]) => sum + count, 0);
+    };
+    const fits = await launch('fits', false);
+    const short = await launch('short', true);
+    assert.ok(fits > 0, 'the closure is read');
+    assert.equal(short, fits, `the closure is gathered once, not again for its map's shortfall (${short} reads, ${fits} where the map fits)`);
     drained();
   },
 
