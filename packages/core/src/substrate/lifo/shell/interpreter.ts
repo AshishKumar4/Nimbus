@@ -146,6 +146,10 @@ export interface BuiltinExecutionContext {
   executeInline(input: string, options?: InlineExecutionOptions): Promise<number>;
   /** Bind a name to the running function. False outside one, where it is an error. */
   declareLocal(name: string): boolean;
+  /** The names the running function has bound (`local`), in order; null outside a function. */
+  localNames(): readonly string[] | null;
+  /** Whether `name` is a function of the shell running the builtin. */
+  isFunction(name: string): boolean;
   /** Remove a function from the shell running the builtin (a child shell's own, after a fork); false when none is defined. */
   unsetFunction(name: string): boolean;
   /** The state of the shell running the builtin: a child shell's own, after a fork. */
@@ -1164,6 +1168,11 @@ export class Interpreter {
                   }
                 },
             declareLocal: (name) => this.declareLocal(name),
+            localNames: () => {
+              const frame = this.localFrames[this.localFrames.length - 1];
+              return frame === undefined ? null : Array.from(frame.keys());
+            },
+            isFunction: (name) => this.functions.has(name),
             unsetFunction: (name) => this.functions.delete(name),
             shell: this.config,
             interactive: io.interactive,

@@ -3,9 +3,15 @@
 // named variable as a declaration bash reads back, its attributes (a array,
 // r readonly, x exported; `--` for none) and its value in double quotes with
 // `"`, `$`, backquote and backslash escaped, or as $'…' when it holds a
-// control character; an array as ([i]="v" …), holes skipped; an unset name is
-// `declare: NAME: not found`, status 1. `export` marks a name exported (`-n`
-// unmarks it), as `declare -x` does, and `unset` drops the mark. Before, lifo
+// character that does not print (its UTF-8 bytes in octal); an array as
+// ([i]="v" …), holes skipped, however high its last index; a name declared
+// with an attribute and no value (or the running function's local) as its
+// name alone; an unset name is `declare: NAME: not found`, status 1. With -a,
+// -r or -x and no names, the variables with any of them; `local -p`, the
+// running function's own. Its output read back (eval) is the variable again.
+// `export` marks a name exported (`-n` unmarks it; a readonly name too), as
+// `declare -x` does, `unset` drops the mark, and a local's mark is its own,
+// the caller's back after the call; `export -f` takes only functions. Before, lifo
 // said `declare: -p: invalid option` (status 2) and kept no export mark
 // (ticket-lifo-declare-print). Each line runs as a session's line and as host
 // bash's `bash -c` under C.UTF-8. Host bash is the oracle (stdout, status,
@@ -31,10 +37,22 @@ const CASES = [
   "f() { local l=3; local -p l; typeset -p l; }; f",
   "declare -rx w=5; declare -p w",
   "u=1; unset u; declare -p u; echo $?",
-  "export 1x=2; echo $?",
   "x='it'\"'\"'s $HOME `pwd` \\\\'; declare -p x",
   "x=1 y=2; declare -p x y",
   "declare -x d=4; env | grep '^d='; declare -p d",
+  "x=1; s=$(declare -p x); unset x; eval \"$s\"; echo $x; declare -p x",
+  "declare x=1 -r; x=2; echo $x",
+  "x=outer; f() { local x=inner; export x; declare -p x; }; f; declare -p x",
+  "export x=g; f() { local x; export -n x; declare -p x; }; f; declare -p x",
+  "export x=g; f() { local x=l; declare -p x; }; f; declare -p x",
+  "export p; declare -p p; readonly r2; declare -p r2; export -p | grep -E ' (p|r2)$'",
+  "plain=1; export marked=2; a=(v); declare -xp | grep -E 'plain|marked|a='; declare -ap | grep -E 'plain|marked| a='; declare -rp | grep -E 'plain|marked| a='",
+  "x=1; export -f x; echo $?; declare -p x; f() { :; }; export -f f; echo $?",
+  "readonly r=1; export r=2; echo $?; declare -p r",
+  "x=$'\\u0085\\u2028\\u200b\\u00e9!\\x7f\\e'; declare -p x",
+  "a=(); a[1000000000]=z; declare -p a",
+  "f() { local y=2; local -p x; echo $?; local -p; }; x=1; f",
+  "x=1; local -p x; echo $?",
 ];
 
 /** bash's diagnostic prefix: `bash: line 1: `, `bash: -c: line 1: `. */

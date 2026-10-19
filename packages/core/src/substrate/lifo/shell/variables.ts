@@ -12,12 +12,14 @@ export interface VariableStore {
   readonly env: Record<string, string>;
   readonly arrays: Map<string, (string | undefined)[]>;
   readonly readonlyNames: ReadonlySet<string>;
+  readonly exportedNames: Set<string>;
 }
 
-/** A variable's complete binding: its scalar value, or its array, or neither. */
+/** A variable's complete binding: its scalar value, or its array, or neither; and its export mark. */
 export interface SavedVariable {
   readonly scalar: string | undefined;
   readonly array: (string | undefined)[] | undefined;
+  readonly exported: boolean;
 }
 
 /** A variable dictionary: prototype names are ordinary variable names too. */
@@ -58,7 +60,7 @@ export function arrayFor(store: VariableStore, name: string): (string | undefine
 
 /** One variable's whole binding, so a scope can put it back exactly. */
 export function saveVariable(store: VariableStore, name: string): SavedVariable {
-  return { scalar: store.env[name], array: store.arrays.get(name) };
+  return { scalar: store.env[name], array: store.arrays.get(name), exported: store.exportedNames.has(name) };
 }
 
 export function restoreVariable(store: VariableStore, name: string, saved: SavedVariable): void {
@@ -66,6 +68,8 @@ export function restoreVariable(store: VariableStore, name: string, saved: Saved
   else store.arrays.set(name, saved.array);
   if (saved.scalar === undefined) delete store.env[name];
   else store.env[name] = saved.scalar;
+  if (saved.exported) store.exportedNames.add(name);
+  else store.exportedNames.delete(name);
 }
 
 /** A copy of `arrays` whose arrays are copies too: what a subshell or a saved shell state holds. */
