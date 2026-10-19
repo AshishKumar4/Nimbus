@@ -579,14 +579,6 @@ function extended(call: DataCall, data: Uint8Array, buffer: Uint8Array | null): 
   return { op: { type: 'call', call: { ...call, data: joined } }, buffer, append: joined.subarray(call.data.byteLength) };
 }
 
-/**
- * `next` folded into `last`, the log's unsent tail, when it is the same
- * file's next bytes and nothing was logged between them: a whole write
- * replacing a whole write (its make, mode and number kept), an append
- * extending a write or an append, a positional write continuing one. As the
- * page cache folds them; null when it is not such a change, or the folded
- * bytes would pass a piece.
- */
 /** How `next` folds into `last`: its bytes replace last's, extend them, or (null) it does not fold. */
 function foldOf(last: ProcessFsOp, next: ProcessFsOp): 'replaces' | 'extends' | null {
   if (last.type !== 'call' || next.type !== 'call' || !('data' in last.call) || !('data' in next.call)) return null;
@@ -603,6 +595,14 @@ function foldOf(last: ProcessFsOp, next: ProcessFsOp): 'replaces' | 'extends' | 
   return null;
 }
 
+/**
+ * `next` folded into `last`, the log's unsent tail, when it is the same
+ * file's next bytes and nothing was logged between them: a whole write
+ * replacing a whole write (its make, mode and number kept), an append
+ * extending a write or an append, a positional write continuing one. As the
+ * page cache folds them; null when it is not such a change, or the folded
+ * bytes would pass a piece.
+ */
 function folded(last: ProcessFsOp, next: ProcessFsOp, buffer: Uint8Array | null): { op: ProcessFsOp; buffer: Uint8Array | null; append?: Uint8Array } | null {
   const fold = foldOf(last, next);
   if (fold === null) return null;
