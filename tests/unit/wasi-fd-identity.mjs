@@ -17,7 +17,9 @@
  *     admits the row without bytes: the descriptor reads the peer's version
  *     or EAGAIN, never its own bytes stamped as the peer's;
  *   - a file made here whose creating answer is late, renamed by a peer and
- *     opened at the new name the view admitted: one owner, one content.
+ *     opened at the new name the view admitted: one owner, one content; and
+ *     opened twice before that answer: both answers settle on that owner,
+ *     and nothing is kept once all is closed and the view has it.
  */
 
 import assert from 'node:assert/strict';
@@ -120,6 +122,14 @@ async function resident(s, name, text) {
   await s.fs.stat(longer);
   assert.equal(budget.used, kept(), 'the budget full: what is taken is what is kept');
   assert.equal(await errnoOf(() => sync.fstat(fd)), 'EAGAIN', 'a file whose move was not kept: as where the view cannot say');
+  // An unrelated name record settles (made, answered, retired): replayed, its names as they were, it is still lost.
+  budget.limit = 1 << 30;
+  sync.close(sync.open(`/${OTHER}/unrelated`, { write: true, create: true }).id);
+  budget.limit = budget.used;
+  await s.fs.flush();
+  s.fs.inbound();
+  await s.fs.readdir(`/${OTHER}`);
+  assert.equal(await errnoOf(() => sync.fstat(fd)), 'EAGAIN', 'still lost once an unrelated record settled');
   budget.limit = 1 << 30;
   s.fs.inbound();
   await s.fs.stat(longer);
@@ -177,6 +187,44 @@ async function resident(s, name, text) {
   sync.close(there);
   await s.fs.flush();
   assert.equal(s.kernel.readFileString(`${OTHER}/q`), 'XYne', 'the session\'s');
+}
+
+// ── A file made here opened twice before its creating answer; a peer moves it; the view admits it; it is opened there ──
+// Both answers settle on the one owner: once every descriptor is closed and a barrier covers them, nothing is kept.
+{
+  let holding = null;
+  const budget = { used: 0, limit: 1 << 30 };
+  const s = session({ view: {}, acquired: refusing, budget, answering: () => holding?.promise });
+  const sync = s.fs.synchronous;
+  const kept = () => {
+    const stats = s.fs.stats();
+    return stats.provisionalBytes + stats.pinnedBytes;
+  };
+  await resident(s, 'warm', 'w');
+  holding = Promise.withResolvers();
+  const made = sync.open(`/${OTHER}/p`, { read: true, write: true, create: true, mode: 0o644 }).id;
+  const again = sync.open(`/${OTHER}/p`, { read: true, write: true }).id;
+  sync.write(again, 0, enc.encode('mine'));
+  const sent = s.fs.flush().catch(() => {});
+  for (let tries = 0; tries < 400 && !s.kernel.exists(`${OTHER}/p`); tries++) await new Promise((resolve) => setTimeout(resolve, 5));
+  s.kernel.rename(`${OTHER}/p`, `${OTHER}/q`);
+  s.fs.inbound();
+  await s.fs.stat(`/${OTHER}/q`);
+  const there = sync.open(`/${OTHER}/q`, { read: true, write: true }).id;
+  holding.resolve();
+  holding = null;
+  await sent;
+  await s.fs.flush();
+  sync.write(made, 0, enc.encode('XY'));
+  assert.equal(dec.decode(sync.read(again, 0, 64)), 'XYne', 'the second descriptor of the made file');
+  assert.equal(dec.decode(sync.read(there, 0, 64)), 'XYne', 'the descriptor opened at the new name');
+  for (const fd of [made, again, there]) sync.close(fd);
+  await s.fs.flush();
+  s.fs.inbound();
+  await s.fs.readdir(`/${OTHER}`);
+  assert.equal(budget.used, kept(), 'what is taken is what is kept');
+  assert.equal(s.fs.stats().provisionalBytes, 0, 'nothing kept once all is closed and the view has it');
+  assert.equal(s.kernel.readFileString(`${OTHER}/q`), 'XYne');
 }
 
 console.log('ok - wasi-fd-identity');
