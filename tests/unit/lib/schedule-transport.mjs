@@ -24,11 +24,12 @@ export const KINDS = Object.freeze({
 });
 
 /**
- * @param {{ park?: (kind: string, name: string) => boolean, note?: (line: string) => void }} [options]
+ * @param {{ park?: (kind: string, name: string) => boolean, note?: (line: string) => void, poisoned?: () => void }} [options]
  *   `park` decides, for each call no `hold` names, whether its reply waits
- *   for a release; `note` is told of each call, park and delivery.
+ *   for a release; `note` is told of each call, park and delivery;
+ *   `poisoned`, of a poison asked.
  */
-export function scheduleTransport({ park = () => false, note = () => {} } = {}) {
+export function scheduleTransport({ park = () => false, note = () => {}, poisoned = () => {} } = {}) {
   /** @type {{ id: number, kind: string, name: string, deliver: () => void }[]} */
   const parked = [];
   /** Per kind, the replies to wait for: each the count of that kind's calls still to let through first. */
@@ -57,9 +58,11 @@ export function scheduleTransport({ park = () => false, note = () => {} } = {}) 
     counts.asked++;
     open.set(kind, (open.get(kind) ?? 0) + 1);
     let asked = args;
+    // Only a barrier's own ACQUIRE: a delivered or combined one that is a poison is refused, and asked again (node-shims _deliveredAnswer).
     if (poisonNext && name === 'fsAcquire') {
       poisonNext = false;
       asked = [null, 0, ...args.slice(2)];
+      poisoned();
     }
     const settled = await Promise.resolve(call(asked)).then((value) => ({ value }), (error) => ({ error }));
     const shown = `${name}(${JSON.stringify(asked).slice(1, -1).slice(0, 120)}) → ${'error' in settled ? `error ${settled.error?.code ?? settled.error?.message}` : JSON.stringify(settled.value)?.slice(0, 160)}`;
@@ -82,7 +85,7 @@ export function scheduleTransport({ park = () => false, note = () => {} } = {}) 
     supervise: Object.fromEntries(Object.keys(KINDS).map((name) => [name, supervise(name)])),
     /** Park a reply of `kind`: the next, or the one after `skip` more go through. */
     hold(kind, skip = 0) { held.set(kind, [...(held.get(kind) ?? []), skip]); },
-    /** The next ACQUIRE is asked from no cursor: the session answers it with a poison at its own cursor. */
+    /** The next barrier's ACQUIRE is asked from no cursor: the session answers it with a poison at its own cursor (`poisoned` told when it is asked). */
     poison() { poisonNext = true; },
     /** Calls of `kind` asked and not yet answered. */
     inFlight: (kind) => open.get(kind) ?? 0,

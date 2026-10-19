@@ -297,6 +297,70 @@ function answers(op, rel, answer, world) {
 }
 
 /**
+ * The model a schedule is judged against: the session's files, every state
+ * they have had (state i: after i changes returned), and every change begun.
+ * runSchedule drives it; a test drives it with no engine (barrier-oracle.mjs).
+ */
+export function createModel() {
+  let world = seedWorld();
+  const history = [world];
+  /** Every change begun: its names, the world it leaves (and, a write of the process's, the one it passes through), the states it began and returned at. */
+  const changes = [];
+  const seq = () => history.length - 1;
+  /**
+   * Every world `rel` may have been seen in between states `from` and `to`:
+   * at each state, the recorded world with any of the changes then in flight
+   * (begun by it, not yet returned) that touch `rel` laid over it, each as it
+   * ends or (a write) as it begins. Changes in flight together never
+   * overlap, so any of them may have landed first; only four are laid, a
+   * schedule rarely having more.
+   */
+  const worldsSeen = (rel, from, to) => {
+    const touching = changes.filter((change) => change.domain.some((root) => under(rel, root) || under(root, rel)));
+    const worlds = [];
+    for (let i = from; i <= to; i++) {
+      let at = [history[i]];
+      for (const change of touching.filter((c) => c.begun <= i && (c.done === null || c.done > i)).slice(0, 4)) {
+        const effects = change.partial === null ? [change.post] : [change.post, change.partial];
+        at = at.flatMap((w) => [w, ...effects.map((effect) => laid(w, change.domain, effect))]);
+      }
+      worlds.push(...at);
+    }
+    return worlds;
+  };
+  return {
+    get world() { return world; },
+    seq,
+    worldsSeen,
+    /** Whether a change overlapping `domain` is in flight. */
+    busy: (domain) => changes.some((change) => change.done === null && overlaps(change.domain, domain)),
+    /** `step` begun now: its record, or null where the model says it would fail. */
+    begin(step) {
+      const post = applied(world, step);
+      if (post === null) return null;
+      const [way, op, a] = step;
+      // A write the process makes is an open that truncates, then the bytes: while it is in flight, the file may be empty.
+      const partial = way === 'own' && op === 'write' ? new Map([...post, [a, { ...post.get(a), content: '' }]]) : null;
+      const record = { domain: domainOf(step), post, partial, begun: seq(), done: null };
+      changes.push(record);
+      return record;
+    },
+    /** `record` returned: its effect, on whatever else changed meanwhile (nothing it overlaps). */
+    finish(record) {
+      world = laid(world, record.domain, record.post);
+      history.push(world);
+      record.done = seq();
+    },
+    /** `record` was refused: it changed nothing. */
+    drop(record) { changes.splice(changes.indexOf(record), 1); },
+    /** Whether `answer` (of read `op` of `rel`) is one the session's files gave between states `from` and `to`. */
+    admits: (op, rel, answer, from, to) => worldsSeen(rel, from, to).some((w) => answers(op, rel, answer, w)),
+    /** Whether a world between `from` and `to` holds, at `rel`, a file the process may read: what a refusal of its bytes (EAGAIN) can be about. */
+    readable: (rel, from, to) => worldsSeen(rel, from, to).some((w) => unreachable(w, rel) === null && w.get(rel)?.type === 'file' && (bits(w.get(rel)) & 4) !== 0),
+  };
+}
+
+/**
  * Run `schedule` on engine `kind` (bootEngine) with a seeded parking policy
  * (`parkSeed`, or none: only `hold` parks), letting pass what `knownGaps`
  * (KNOWN_GAPS[kind]) names. Resolves when it holds; throws a Finding naming
@@ -310,10 +374,16 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
   const note = (line) => { writeSync(2, `  | ${line}\n`); };
   note(`boot ${kind}`);
   const lazy = kind === 'holder';
+  /** A poison the session answered, and no input landed since: a namespace that is not answering may refuse. */
+  let poisoned = false;
   // Replies park at random once the process is up: its boot waits on replies no step releases.
   const parkRandom = parkSeed === undefined ? null : prng(parkSeed);
   let booted = false;
-  const transport = scheduleTransport({ park: () => booted && parkRandom !== null && parkRandom() < 0.3, note: (line) => { if (booted) note(line); } });
+  const transport = scheduleTransport({
+    park: () => booted && parkRandom !== null && parkRandom() < 0.3,
+    note: (line) => { if (booted) note(line); },
+    poisoned: () => { poisoned = true; },
+  });
   const engine = await bootEngine(kind, {
     seed: (authority) => {
       for (const [rel, content] of Object.entries(SEED_TREE)) {
@@ -327,12 +397,8 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
   booted = true;
   const deadline = Date.now() + deadlineMs;
 
-  // The model, and every state it has had: history[i] is the world after i changes returned.
-  let world = seedWorld();
-  const history = [world];
-  const seq = () => history.length - 1;
-  /** Every change begun: its names, the world it leaves (and, a write, the one it passes through), the states it began and returned at. */
-  const changes = [];
+  const model = createModel();
+  const seq = model.seq;
   /** Calls in flight: settled when their promise does. */
   const inflight = new Set();
   let completions = 0;
@@ -340,44 +406,25 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
   let landed = 0;
   /** Each name's own last change, as the model stood when it returned. */
   const ownAt = new Map();
-  /** A poison asked and no input landed since: a namespace that is not answering may refuse. */
-  let poisoned = false;
   const deferred = [];
   /** Files whose bytes a call that cannot wait was refused, and no awaited read answered since (Node's misses). */
   const missed = new Set();
-  /** Awaited reads whose answer was wrong, thrown at the next step. */
-  const readFailures = [];
+  /** Wrong answers and refused changes found in flight, thrown at the next step. */
+  const failures = [];
   /** The names of the process's changes that returned and have not been published since. */
   let unpublished = [];
   /** Each peer change that returned, and as the model stood then: what the process may not know of before its next input lands. */
   const peerAt = [];
 
-  /**
-   * Every world `rel` may have been seen in between states `from` and `to`:
-   * each recorded one, with any of the changes in flight then that touch
-   * `rel` laid over it, each as it ends or (a write) as it begins. Changes
-   * in flight together never overlap, so any of them may have landed first;
-   * a schedule rarely has more than four in flight, and only four are laid.
-   */
-  const worldsSeen = (rel, from, to) => {
-    const flying = changes.filter((change) => change.begun <= to && (change.done === null || change.done >= from)
-      && change.domain.some((root) => under(rel, root) || under(root, rel)));
-    let worlds = history.slice(from, to + 1);
-    for (const change of flying.slice(0, 4)) {
-      const effects = change.partial === null ? [change.post] : [change.post, change.partial];
-      worlds = worlds.flatMap((world) => [world, ...effects.map((effect) => laid(world, change.domain, effect))]);
-    }
-    return worlds;
-  };
+  /** Whether a call that cannot wait may be refused (EAGAIN): a view listed on demand, a namespace a poison stopped or a listing is moving, or bytes it does not hold of a file it may read. */
+  const refusable = (op, rel, from, to) => lazy || poisoned || transport.inFlight('listing') > 0 || (op === 'readFile' && model.readable(rel, from, to));
   const judge = (at, way, op, rel, answer, from, to) => {
-    // A namespace relisting a directory answers what is under it as unknown until the listing lands.
-    if (answer?.code === 'EAGAIN' && way === 'sync' && (lazy || poisoned || op === 'readFile' || transport.inFlight('listing') > 0)) return;
-    if (gaps.refusedAsDirectory && way === 'sync' && answer?.code === 'EISDIR' && worldsSeen(rel, from, to).some((world) => world.get(rel)?.type === 'dir')) return;
+    if (answer?.code === 'EAGAIN' && way === 'sync' && refusable(op, rel, from, to)) return;
+    if (gaps.refusedAsDirectory && way === 'sync' && answer?.code === 'EISDIR' && model.worldsSeen(rel, from, to).some((world) => world.get(rel)?.type === 'dir')) return;
     if (gaps.absentWhileRelisted && way === 'sync' && answer === null && transport.inFlight('listing') > 0) return;
-    const worlds = worldsSeen(rel, from, to);
-    if (worlds.some((world) => answers(op, rel, answer, world))) return;
+    if (model.admits(op, rel, answer, from, to)) return;
     const shown = answer?.code ?? (answer && typeof answer === 'object' && !Array.isArray(answer) ? `${answer.type} ${(answer.mode & 0o777).toString(8)} size ${answer.size}` : JSON.stringify(answer));
-    const held = [...new Set(worlds.map((world) => (op === 'readdir' && world.get(rel)?.type === 'dir' ? `[${childrenOf(world, rel)}]` : describe(world.get(rel)))))];
+    const held = [...new Set(model.worldsSeen(rel, from, to).map((world) => (op === 'readdir' && world.get(rel)?.type === 'dir' ? `[${childrenOf(world, rel)}]` : describe(world.get(rel)))))];
     throw new Finding(`${way} ${op} ${rel || '.'} answered ${shown}; the session held ${held.join(' | ')} (states ${from}..${to})`, at);
   };
 
@@ -416,50 +463,42 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
     return fs[op](abs(a));
   };
 
-  /** A change begun now, as the model stands: `null` when it cannot be asked yet (overlapping one in flight) or at all. */
+  /** A change begun now, as the model stands: 'wait' while one overlapping it is in flight; null when it cannot be asked at all. */
   const begin = (at, way, step) => {
     const domain = domainOf(step);
-    if (changes.some((other) => other.done === null && overlaps(other.domain, domain))) return 'wait';
-    const post = applied(world, step);
-    if (post === null) { note(`  (step ${at} skipped: ${JSON.stringify(step)} is not valid now)`); return null; }
+    if (model.busy(domain)) return 'wait';
     if (!outside(way) && peerAt.some(({ done, domain: theirs }) => done > landed && overlaps(theirs, [...domain, ...domain.map(parentOf)]))) {
       note(`  (step ${at} skipped: a peer changed its names since the process's last input)`);
       return null;
     }
+    const record = model.begin(step);
+    if (record === null) { note(`  (step ${at} skipped: ${JSON.stringify(step)} is not valid now)`); return null; }
     const publishes = outside(way) && overlaps(unpublished, domain) ? unpublished : null;
-    // A write the process makes is an open that truncates, then the bytes: while it is in flight, the file may be empty.
-    const partial = way === 'own' && step[1] === 'write' ? new Map([...post, [step[2], { ...post.get(step[2]), content: '' }]]) : null;
-    const record = { domain, post, partial, begun: seq(), done: null, way, step };
     const finish = () => {
-      // Its effect, on whatever else changed meanwhile (nothing it overlaps).
-      world = laid(world, domain, post);
-      history.push(world);
-      record.done = seq();
+      model.finish(record);
       if (outside(way)) peerAt.push({ done: seq(), domain });
       else {
         if (way === 'sync' || !gaps.unshownAwaitedChange) for (const root of domain) ownAt.set(root, seq());
         unpublished = [...unpublished, ...domain];
       }
     };
-    changes.push(record);
     if (way === 'sync') {
       try {
         change(way, step);
       } catch (error) {
-        changes.splice(changes.indexOf(record), 1);
+        model.drop(record);
         if (error?.code === 'EAGAIN' && (lazy || poisoned)) return null;
-        if (error?.code === 'EISDIR' && gaps.refusedAsDirectory && domain.some((rel) => world.get(rel)?.type === 'dir')) return null;
+        if (error?.code === 'EISDIR' && gaps.refusedAsDirectory && domain.some((rel) => model.world.get(rel)?.type === 'dir')) return null;
         throw new Finding(`sync ${step[1]} ${step.slice(2).join(' ')} failed: ${error?.code ?? error?.message ?? error}`, at);
       }
       finish();
       return null;
     }
     const published = publishes === null ? Promise.resolve() : engine.publish().then(() => { unpublished = unpublished.filter((root) => !publishes.includes(root)); });
-    const work = published.then(() => change(way, step)).then(finish, (error) => {
-      record.done = seq();
-      record.failed = new Finding(`${way} ${step[1]} ${step.slice(2).join(' ')} failed: ${error?.code ?? error?.message ?? error}`, at);
-    });
-    return track(work);
+    return track(published.then(() => change(way, step)).then(finish, (error) => {
+      model.drop(record);
+      failures.push(new Finding(`${way} ${step[1]} ${step.slice(2).join(' ')} failed: ${error?.code ?? error?.message ?? error}`, at));
+    }));
   };
 
   const track = (work) => {
@@ -485,7 +524,7 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
       }
       return;
     }
-    for (const record of changes) if (record.failed) throw record.failed;
+    if (failures.length > 0) throw failures[0];
   };
 
   const step = async (at, s) => {
@@ -493,7 +532,7 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
     if (what === 'hold') return transport.hold(s[1], s[2]);
     if (what === 'release') { transport.release(s[1]); return sleep(0); }
     if (what === 'settle') return settle(at);
-    if (what === 'poison') { transport.poison(); poisoned = true; return undefined; }
+    if (what === 'poison') return transport.poison();
     if (what === 'input') {
       const arrived = seq();
       return void track(engine.input().then(() => { landed = Math.max(landed, arrived); poisoned = false; }));
@@ -510,10 +549,9 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
       return void track(read(way, op, rel).then((answer) => {
         judge(at, way, op, rel, answer, from, seq());
         if (op === 'readFile' && typeof answer === 'string') missed.delete(rel);
-      }).catch((error) => { readFailures.push(error); }));
+      }).catch((error) => { failures.push(error); }));
     }
-    const begun = begin(at, way, s);
-    if (begun === 'wait') deferred.push([at, s]);
+    if (begin(at, way, s) === 'wait') deferred.push([at, s]);
     return undefined;
   };
 
@@ -527,7 +565,7 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
       }
       await step(at, schedule[at]);
       await sleep(1);
-      if (readFailures.length > 0) throw readFailures[0];
+      if (failures.length > 0) throw failures[0];
     }
     // Quiescence: every reply delivered, every call returned, the deferred asked, a last barrier landed.
     const end = schedule.length;
@@ -539,13 +577,13 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
       if (begin(was, s[0], s) === 'wait') deferred.push([was, s]);
       await settle(end);
     }
-    if (readFailures.length > 0) throw readFailures[0];
     const arrived = seq();
     note('at rest: what the process wrote published, and a last input');
     track(engine.publish().then(() => engine.input()));
     await settle(end);
     landed = arrived;
     note('at rest: every name, both ways');
+    const world = model.world;
     if (kind === 'node') {
       await globalThis.__nimbusVfsResidencySettle?.();
       const ledger = [...(globalThis.__nimbusVfsResidencyMisses ?? [])].sort();
@@ -557,7 +595,7 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
       for (const way of ['own', 'sync']) {
         for (const op of ['stat', state?.type === 'dir' ? 'readdir' : 'readFile']) {
           const answer = await read(way, op, rel);
-          if (answer?.code === 'EAGAIN' && way === 'sync' && (lazy || op === 'readFile')) continue;
+          if (answer?.code === 'EAGAIN' && way === 'sync' && (lazy || (op === 'readFile' && model.readable(rel, seq(), seq())))) continue;
           if (answer?.code === 'EISDIR' && way === 'sync' && gaps.refusedAsDirectory && state?.type === 'dir') continue;
           if (!answers(op, rel, answer, world)) {
             throw new Finding(`at rest, ${way} ${op} ${rel || '.'} answered ${JSON.stringify(answer)}; the model holds ${describe(state)}`, end);

@@ -38,11 +38,11 @@ export const APP = '/home/user/app';
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
-/** A process that only lends its `fs` to the test, and stays up; attached to its input, it counts what arrives. */
+/** A process that only lends its `fs` to the test, and stays up; attached to its input, it counts the bytes that arrive. */
 const NODE_PROGRAM = `
 globalThis.__engineFs = require("fs");
 globalThis.__engineInputs = 0;
-if (process.env.NIMBUS_CP_CHILD_PID) process.stdin.on("data", () => { globalThis.__engineInputs++; });
+if (process.env.NIMBUS_CP_CHILD_PID) process.stdin.on("data", (chunk) => { globalThis.__engineInputs += chunk.length; });
 require("http").createServer((q, s) => s.end("up")).listen(3000);
 `;
 
@@ -207,6 +207,8 @@ export async function bootEngine(kind, { seed, supervise = {}, stdin = false } =
   seed?.(authority);
   let stalled = null;
   let waves = 0;
+  /** Bytes of input sent the process: each input's own, whatever chunks they arrive in. */
+  let inputs = 0;
   /** Waves sent and not yet answered. */
   let unanswered = 0;
   let listingFails = false;
@@ -290,7 +292,7 @@ export async function bootEngine(kind, { seed, supervise = {}, stdin = false } =
      */
     input: async () => {
       if (kind === 'node' && stdin) {
-        const handled = globalThis.__engineInputs + 1;
+        const handled = ++inputs;
         authority.host.processes.writeInput(handle.log.pid, 'x');
         while (globalThis.__engineInputs < handled) await sleep(2);
         return undefined;

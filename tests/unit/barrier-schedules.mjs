@@ -15,7 +15,7 @@
 
 import assert from 'node:assert/strict';
 import { createAuthority, facetSupervisor, launchResident, runScenarios, sleep, until } from './lib/resident-body.mjs';
-import { ENGINES } from './lib/guest-engines.mjs';
+import { APP, ENGINES, bootEngine } from './lib/guest-engines.mjs';
 import { runSchedule } from './lib/barrier-schedule.mjs';
 import { scheduleTransport, supervisedFacet } from './lib/schedule-transport.mjs';
 
@@ -111,6 +111,37 @@ const GAPS = {
 const scenarios = {};
 for (const [name, { schedule, engines = ENGINES }] of Object.entries(FOUND)) {
   for (const kind of engines) scenarios[`${name} [${kind}]`] = () => run(kind, schedule);
+}
+
+for (const kind of ENGINES) {
+  scenarios[`a chain of renames whose first lands alone keeps the moved file at its last name [${kind}]`] = async () => {
+    const transport = scheduleTransport();
+    const engine = await bootEngine(kind, {
+      seed: (authority) => {
+        authority.kfs.mkdir('home/user/app/x', { mode: 0o755 });
+        authority.kfs.writeFile('home/user/app/x/h', 'moved');
+        authority.kfs.writeFile('home/user/app/top', 'replaced');
+      },
+      supervise: transport.supervise,
+      stdin: kind === 'node',
+    });
+    const moved = (await engine.stat(`${APP}/x/h`)).ino;
+    // The first rename reaches the session and its answer waits; the second does not reach it.
+    transport.hold('wave');
+    const first = engine.fs.rename(`${APP}/x/h`, `${APP}/mid`);
+    await until(() => transport.parked().length > 0, 'the first rename sent');
+    engine.stall();
+    const second = engine.fs.rename(`${APP}/mid`, `${APP}/top`);
+    await sleep(50);
+    await engine.input();
+    const seen = (() => { try { return engine.sync.stat(`${APP}/top`); } catch (error) { return error?.code; } })();
+    assert.ok((kind === 'holder' && seen === 'EAGAIN') || Number(seen?.ino) === moved, `the last name, once a barrier landed the first rename alone: ${JSON.stringify(seen)}`);
+    await engine.release();
+    transport.drain();
+    await Promise.all([first, second]);
+    assert.equal((await engine.stat(`${APP}/top`)).ino, moved, 'the last name, once both landed');
+    assert.equal(await engine.stat(`${APP}/mid`), null);
+  };
 }
 
 scenarios['a floating awaited read finishes before a one-shot exits [node]'] = async () => {
