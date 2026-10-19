@@ -797,6 +797,37 @@ const FOUND = [
     { op: 'catchUp' },
     { op: 'rename', from: 'b', to: 'a' },
   ] },
+  { name: 'a name a grant removed, made again through the provisional decisions', grants: true, steps: [
+    { op: 'open', fd: 0, name: 'c', flags: { read: true, write: true, append: false, create: true, exclusive: false, truncate: false } },
+    { op: 'close', fd: 0 },
+    { op: 'peer', kind: 'rename', name: 'c', to: 'a', data: 'qr', mode: 420 },
+    { op: 'open', fd: 1, name: 'b', flags: { read: false, write: true, append: false, create: true, exclusive: false, truncate: false } },
+    { op: 'catchUp' },
+    { op: 'unlink', name: 'a' },
+    { op: 'open', fd: 0, name: 'a', flags: { read: true, write: true, append: true, create: true, exclusive: false, truncate: false } },
+    { op: 'catchUp' },
+  ] },
+  { name: 'a file a grant renamed, emptied through the provisional decisions as a descriptor of it is open', grants: true, steps: [
+    { op: 'open', fd: 1, name: 'b', flags: { read: false, write: true, append: true, create: true, exclusive: false, truncate: true } },
+    { op: 'catchUp' },
+    { op: 'rename', from: 'b', to: 'c' },
+    { op: 'writeFile', name: 'c', data: 'qsq' },
+    { op: 'catchUp' },
+  ] },
+  { name: 'a write through the provisional decisions to a file a grant renamed', grants: true, steps: [
+    { op: 'open', fd: 1, name: 'b', flags: { read: false, write: true, append: true, create: true, exclusive: false, truncate: true } },
+    { op: 'catchUp' },
+    { op: 'rename', from: 'b', to: 'c' },
+    { op: 'write', fd: 1, offset: null, data: 'qsq' },
+    { op: 'catchUp' },
+  ] },
+  { name: 'a write through the provisional decisions to a file a grant changed the mode of', grants: true, steps: [
+    { op: 'open', fd: 1, name: 'b', flags: { read: false, write: true, append: true, create: true, exclusive: false, truncate: true } },
+    { op: 'catchUp' },
+    { op: 'chmod', name: 'b', mode: 0o600 },
+    { op: 'write', fd: 1, offset: null, data: 'qsq' },
+    { op: 'catchUp' },
+  ] },
 ];
 for (const found of FOUND) {
   const failure = await run(found.steps, found.grants).then(() => null, (error) => error);

@@ -103,6 +103,12 @@ export interface ProvisionalHost {
   heldFile(dev: number, ino: number): Inode | undefined;
   /** What the files a grant holds alone keep of the budget (their Inodes, outside the table). */
   heldCost(): number;
+  /**
+   * The view has what these decisions did at `key`: a grant's decision of
+   * the name, made before them (a grant decides nothing they touch), answers
+   * no more, the view's row does (OwnNames.settled); true where one did.
+   */
+  settled(key: string): boolean;
 }
 
 /**
@@ -463,13 +469,13 @@ export function provisional(host: ProvisionalHost): Provisional {
    * (origin), where that name still leads to it: never another file's that
    * a name came to lead to since. Its row refreshed from there.
    */
-  const viewed = (inode: Inode): { row: ResidentEntry; bytes: Uint8Array | undefined } | undefined => {
+  const viewed = (inode: Inode): { name: string; row: ResidentEntry; bytes: Uint8Array | undefined } | undefined => {
     for (const name of [inode.origin, inode.opened, inode.key]) {
       if (name === undefined) continue;
       const row = host.row(name);
       if (!row || row.dev !== inode.dev || row.ino !== inode.ino) continue;
       const held = inode.type === 'file' ? host.content(name, row) : undefined;
-      return { row, bytes: held !== undefined && held.byteLength === row.size ? held : undefined };
+      return { name, row, bytes: held !== undefined && held.byteLength === row.size ? held : undefined };
     }
     return undefined;
   };
@@ -1699,6 +1705,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       // A name record answered before the barrier began is the view's now; one under a held subtree waits for it to be given back.
       const kept = nameRecords.filter((record) => {
         if (!record.answered || record.answeredAt >= begun) return true;
+        for (const key of record.keys) host.settled(key);
         record.retired?.();
         host.release(record.cost);
         return false;
@@ -1726,7 +1733,9 @@ export function provisional(host: ProvisionalHost): Provisional {
           release(inode);
           if (inodeAtNumber(inode.dev, inode.ino) !== inode) continue;
         }
-        const seen = viewed(inode);
+        let seen = viewed(inode);
+        // What its retired records did is the view's: a grant's decision of its name, made before them, answers no more.
+        if (seen !== undefined && retired.length > 0 && host.settled(seen.name)) seen = viewed(inode);
         if (seen === undefined) {
           // No name leads to it in the view: what it holds is what retired made of it, where its baseline's bytes can say so
           // (else they stay records while a descriptor may still read them).
