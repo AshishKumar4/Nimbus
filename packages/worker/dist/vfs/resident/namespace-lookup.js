@@ -6,7 +6,7 @@
  * primordials.ts; design-guest-loader-primordials.md §3.5), as Node's loader
  * reads files on its primordials.
  */
-import { arrayJoin, objectHasOwn, ownField, SafeList, stringCharCodeAt, stringIndexOf, stringLastIndexOf, stringOf, stringSlice, } from '@nimbus-sh/core/_shared/primordials.js';
+import { arrayIsArray, arrayJoin, objectHasOwn, ownField, SafeList, stringCharCodeAt, stringIndexOf, stringLastIndexOf, stringOf, stringSlice, } from '@nimbus-sh/core/_shared/primordials.js';
 import { NS_DIR, NS_LINK } from './tables.js';
 /** Symlink hops before a resolution is ELOOP, as Linux's MAXSYMLINKS. */
 export const NS_MAX_HOPS = 40;
@@ -15,16 +15,39 @@ const removed = (word) => objectHasOwn(word, 'absent');
 const linked = (word) => objectHasOwn(word, 'target');
 const moved = (word) => objectHasOwn(word, 'from');
 /**
- * `word`, unless a barrier has since carried it to the table: a rename reads
- * the row it moved (a link's at `link`, else at `from`), and once the table
- * no longer holds that row, the delta that removed it put the entry at its
- * new name, where the table's own row answers.
+ * A rename's word, as the table now holds the entry it moved. A barrier can
+ * carry the rename (or an earlier one of the entry, `via`) to the table
+ * before the word retires: the word stands while the table holds the entry
+ * where the word reads it (a link's own row at `link`, else at `from`); once
+ * the name itself holds it, the table's row there answers; where an earlier
+ * rename left it, the word reads it there. A word that names no entry stands.
  */
-function standing(t, word) {
+function standing(t, name, word) {
     if (word === undefined || !moved(word) || word.from === undefined)
         return word;
+    const ino = ownField(word, 'ino');
+    if (typeof ino !== 'number')
+        return word;
+    const dev = ownField(word, 'dev');
     const named = ownField(word, 'link');
-    return nsRowAt(t, typeof named === 'string' ? named : word.from) === undefined ? undefined : word;
+    const link = typeof named === 'string' ? named : undefined;
+    const holds = (k) => {
+        const row = nsRowAt(t, k);
+        return row !== undefined && row.ino === ino && (typeof dev !== 'number' || row.dev === dev);
+    };
+    if (holds(link ?? word.from))
+        return word;
+    if (holds(name))
+        return undefined;
+    const via = ownField(word, 'via');
+    if (arrayIsArray(via)) {
+        for (let i = 0; i < via.length; i++) {
+            const at = stringOf(via[i]);
+            if (holds(at))
+                return link === undefined ? { from: at } : { from: word.from, link: at };
+        }
+    }
+    return word;
 }
 /** The directory part of key `k`: '' at the top. */
 export function nsParent(k) {
@@ -117,7 +140,7 @@ export function walkNamespace(t, links, k, followLeaf, own, visit) {
             if (visit !== undefined && !visit(prefix))
                 return 'EACCES';
             const step = table === null ? null : table ? `${table}/${name}` : name;
-            const word = own === undefined ? undefined : standing(t, own(prefix));
+            const word = own === undefined ? undefined : standing(t, prefix, own(prefix));
             let target;
             if (word !== undefined && removed(word)) {
                 return { path, table: null, row: undefined, own: word };

@@ -1109,10 +1109,27 @@ var __nimbusResidentModule = (() => {
   var removed = (word) => objectHasOwn(word, "absent");
   var linked = (word) => objectHasOwn(word, "target");
   var moved = (word) => objectHasOwn(word, "from");
-  function standing(t, word) {
+  function standing(t, name, word) {
     if (word === void 0 || !moved(word) || word.from === void 0) return word;
+    const ino = ownField(word, "ino");
+    if (typeof ino !== "number") return word;
+    const dev = ownField(word, "dev");
     const named = ownField(word, "link");
-    return nsRowAt(t, typeof named === "string" ? named : word.from) === void 0 ? void 0 : word;
+    const link = typeof named === "string" ? named : void 0;
+    const holds = (k) => {
+      const row = nsRowAt(t, k);
+      return row !== void 0 && row.ino === ino && (typeof dev !== "number" || row.dev === dev);
+    };
+    if (holds(link ?? word.from)) return word;
+    if (holds(name)) return void 0;
+    const via = ownField(word, "via");
+    if (arrayIsArray(via)) {
+      for (let i = 0; i < via.length; i++) {
+        const at = stringOf(via[i]);
+        if (holds(at)) return link === void 0 ? { from: at } : { from: word.from, link: at };
+      }
+    }
+    return word;
   }
   function nsParent(k) {
     const i = stringLastIndexOf(k, "/");
@@ -1168,7 +1185,7 @@ var __nimbusResidentModule = (() => {
         start = stop + 1;
         if (visit !== void 0 && !visit(prefix)) return "EACCES";
         const step = table === null ? null : table ? `${table}/${name}` : name;
-        const word = own === void 0 ? void 0 : standing(t, own(prefix));
+        const word = own === void 0 ? void 0 : standing(t, prefix, own(prefix));
         let target;
         if (word !== void 0 && removed(word)) {
           return { path, table: null, row: void 0, own: word };

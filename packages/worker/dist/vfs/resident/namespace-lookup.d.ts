@@ -15,8 +15,10 @@ export declare const NS_MAX_HOPS = 40;
  * shims' overlay): it removed it (`absent`); it made a symlink there
  * (`target`); it renamed the table's entry at `from` to it (`from` undefined:
  * a moved link that resolves to nothing; `link`: the moved entry is a symlink,
- * whose own row is at that key); or it made a directory or file there
- * (`made`; `hide`: rows the table holds beneath it are not this directory's).
+ * whose own row is at that key; `ino`, `dev`: the entry moved; `via`: names
+ * an earlier rename of it, not yet landed, left it under); or it made a
+ * directory or file there (`made`; `hide`: rows the table holds beneath it
+ * are not this directory's).
  */
 export type OwnWord = {
     readonly absent: true;
@@ -25,6 +27,9 @@ export type OwnWord = {
 } | {
     readonly from: string | undefined;
     readonly link?: string;
+    readonly ino?: number;
+    readonly dev?: number;
+    readonly via?: readonly string[];
 } | {
     readonly made: 'directory' | 'file';
     readonly hide?: boolean;
