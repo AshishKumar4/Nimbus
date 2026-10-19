@@ -1,7 +1,7 @@
 import type { ProcessView } from '../../../runtime/process-files.js';
 import { resolve } from './path.js';
 import { exists } from '../../../vfs/vfs.js';
-import { encodeLossless, firstLosslessByte } from './lossless-text.js';
+import { encodeLossless } from './lossless-text.js';
 
 /**
  * Match a glob pattern against a text string, as fnmatch(3) without flags:
@@ -48,11 +48,14 @@ export function characterBounds(s: string): number[] {
  * bytes ($'\200' is in [a-😀], whose 😀 is four bytes; z is in $'[a-\377]').
  */
 function matchPattern(pattern: string, text: string, finalBackslash: boolean): boolean {
-  if (firstLosslessByte(text) !== -1 || firstLosslessByte(pattern) !== -1) {
+  if (LOSSLESS_BYTE.test(text) || LOSSLESS_BYTE.test(pattern)) {
     return matchCharacters(byteString(pattern), byteString(text), finalBackslash);
   }
   return matchCharacters(pattern, text, finalBackslash);
 }
+
+/** A byte lossless text keeps, U+DC80 + byte: a low surrogate no high one precedes (lossless-text firstLosslessByte). */
+const LOSSLESS_BYTE = /(?<![\uD800-\uDBFF])[\uDC80-\uDCFF]/;
 
 /** `text`'s bytes, each one character of a string. */
 function byteString(text: string): string {
