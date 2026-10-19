@@ -131,20 +131,38 @@ function loadedIds(ctx) {
         loadedByCtx.set(ctx, ids = new Set());
     return ids;
 }
-/** Each Durable Object's last FACET_CALLS_KEPT facet calls, oldest first. */
 const callsByCtx = new WeakMap();
 const FACET_CALLS_KEPT = 16;
 /** The last facet calls `ctx`'s pools made, oldest first: what a launch's phases cost (`/api/_diag/session`). */
 export function recentFacetCalls(ctx) {
-    return callsByCtx.get(ctx) ?? [];
+    const ring = callsByCtx.get(ctx);
+    if (ring === undefined)
+        return [];
+    const first = (ring.next - ring.count + FACET_CALLS_KEPT) % FACET_CALLS_KEPT;
+    const calls = [];
+    for (let i = 0; i < ring.count; i++) {
+        const slot = ring.slots[(first + i) % FACET_CALLS_KEPT];
+        if (slot !== undefined)
+            calls.push({ ...slot });
+    }
+    return calls;
 }
-function noteFacetCall(ctx, call) {
-    let calls = callsByCtx.get(ctx);
-    if (calls === undefined)
-        callsByCtx.set(ctx, calls = []);
-    calls.push(call);
-    if (calls.length > FACET_CALLS_KEPT)
-        calls.shift();
+function noteFacetCall(ctx, tag, loadMs, began) {
+    let ring = callsByCtx.get(ctx);
+    if (ring === undefined) {
+        ring = { slots: Array.from({ length: FACET_CALLS_KEPT }, () => ({ tag: '', cold: false, loadMs: 0, callMs: 0, at: 0 })), next: 0, count: 0 };
+        callsByCtx.set(ctx, ring);
+    }
+    const slot = ring.slots[ring.next];
+    if (slot === undefined)
+        return;
+    slot.tag = tag;
+    slot.cold = loadMs !== null;
+    slot.loadMs = loadMs ?? 0;
+    slot.callMs = Date.now() - began;
+    slot.at = began;
+    ring.next = (ring.next + 1) % FACET_CALLS_KEPT;
+    ring.count = Math.min(FACET_CALLS_KEPT, ring.count + 1);
 }
 function loadCredit(lease) {
     let held = lease;
@@ -596,7 +614,7 @@ export class IsolatePool {
                     // Direct property call, awaited by this frame — bracketed, never
                     // wrapped. See beginLoaderFetch for the measured DO-poisoning hazard.
                     const answer = await invoke(entrypoint, attempt);
-                    noteFacetCall(this.ctx, { tag: this.tag, cold: loadMs !== null, loadMs: loadMs ?? 0, callMs: Date.now() - began, at: began });
+                    noteFacetCall(this.ctx, this.tag, loadMs, began);
                     return answer;
                 }
                 catch (err) {

@@ -286,7 +286,7 @@ export interface FacetCallTime {
     at: number;
 }
 /** The last facet calls `ctx`'s pools made, oldest first: what a launch's phases cost (`/api/_diag/session`). */
-export declare function recentFacetCalls(ctx: object): readonly FacetCallTime[];
+export declare function recentFacetCalls(ctx: object): FacetCallTime[];
 /**
  * Nimbus-scoped parallel dispatch over `env.LOADER`. Tasks are pure
  * functions whose last argument is an `env` object containing the

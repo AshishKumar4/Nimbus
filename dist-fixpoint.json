@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "6b0829ee4d8a4d5c99631089e2bfb115c5e9646cb3368077112043be29a5635b",
+  "fingerprint": "978a5b3f16c108aac2cc95b9c5195dcdd4768951acdd5c03cc4b96e955cf8b84",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1944,9 +1944,9 @@
     "packages/fabric/dist/inner-storage-env.d.ts": "a94cc1730563062f7910ec5c0a1bb9deaed6e76107e56975e46852d9724a8177",
     "packages/fabric/dist/inner-storage-env.d.ts.map": "f5420093eee6da96ec6ae05bb82cdb4bad945600be9697f78e1a1d9419b22a9a",
     "packages/fabric/dist/inner-storage-env.js": "1c232c3ce7bbbfe8d7df5e1b3117c458b28e9e426ea882ebcd18240313a835cb",
-    "packages/fabric/dist/isolate-pool.d.ts": "26a85142989a73ef4382879bae0656f56a2bfe8ddb5e166133dd622ecc5100f3",
-    "packages/fabric/dist/isolate-pool.d.ts.map": "782eb0c0800637f30082d81820bff24a056e94054fef5ed85c0823fb265c1d4b",
-    "packages/fabric/dist/isolate-pool.js": "02f2ac651c02e84ca4c8bc75da1b23dc7d5c71166fddc440a93b6a3652113e37",
+    "packages/fabric/dist/isolate-pool.d.ts": "80d98754e72fb74228e80b201a919f27fa4f4b6e1da220437ce8d8820b680e15",
+    "packages/fabric/dist/isolate-pool.d.ts.map": "b7a3e1d043d4dac53bda8059c3f8162125ef249a4040dad10635c0a87040a031",
+    "packages/fabric/dist/isolate-pool.js": "6e40d2b4a1404374b2cd8bc23111829fe629cc3f4d0ce431332e30e0e2046629",
     "packages/fabric/dist/journal.d.ts": "515eb0576ed8e1770af653faa8ac02d93c5e205645e136947b3a2b143d6aecca",
     "packages/fabric/dist/journal.d.ts.map": "3a7fc30ff56aef2921d10e20c8b7d75dee0112ef35b4a2018738d05d4ff40e84",
     "packages/fabric/dist/journal.js": "55a38796538871c0a6a01d9b283ad8f7b82bbf7d0addd2dcd493a22546e7d665",
@@ -2034,7 +2034,7 @@
     "packages/fabric/src/inner-do-registry.ts": "c0d8a50f03689ba62d1e1ff7e2fc099ba9580cc712c8fc2b148c38a34b3ebf62",
     "packages/fabric/src/inner-env.ts": "b719e2f673c3afbd7465f2cc77fcf225bc449c83e345577c4a235d50b9548551",
     "packages/fabric/src/inner-storage-env.ts": "6f6b7fdd345dbc279f9c765baa5dfbbd831f63ea12640c996d0cbd06da0fae5b",
-    "packages/fabric/src/isolate-pool.ts": "0ac17310861ae589f10b1779b62c056b8f2e43c140b0460654169813fb4ce56d",
+    "packages/fabric/src/isolate-pool.ts": "f886c2f46a63900ee3d6cdc28b1c328bc83f42f08e257d116d68ca33dc3dd8fc",
     "packages/fabric/src/journal.ts": "c3bf520e0396361a0cc8357e42ae28c03289846f36b1e084e4721478d63d1134",
     "packages/fabric/src/jsg-int.ts": "4304b6ce0bfbd03818c8ec58cbb16e5c6d90987d6d2533989d8fd610f3694022",
     "packages/fabric/src/loader-heap.ts": "2c692dc267af8f05a2e51ea9b31a490d7e4901ae172da989dcc27f2feeed2094",
