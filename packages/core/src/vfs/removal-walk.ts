@@ -11,6 +11,9 @@
  * vanished, which is no failure: with `keepVanishedAncestors` the
  * directories holding it stay, as GNU leaves them, otherwise they go. A
  * directory that could not be read reports that refusal, not its rmdir's.
+ * A directory the walk does not cross (a mount point, as GNU rm
+ * --one-file-system keeps out of one) is neither read nor removed: it stays,
+ * with what holds it, and is reported EBUSY.
  */
 
 import { VfsError, isVfsError, syscallError } from './vfs-error.js';
@@ -25,6 +28,8 @@ export interface RemovalSteps {
   readdir(r: string): Awaitable<readonly { name: string }[]>;
   /** Remove `r` (rmdir when `dir`, else unlink); a throw is that call's refusal. */
   remove(r: string, dir: boolean): Awaitable<void>;
+  /** Whether the walk may enter directory `r`: false for one it must keep out of (a mount point). */
+  crosses?(r: string): boolean;
 }
 
 export interface RemovalWalk {
@@ -87,6 +92,11 @@ export function walkRemoval(steps: RemovalSteps, walk: RemovalWalk): Awaitable<V
     }
     const entry: { rel: string; dir: boolean; unread?: VfsError } = { rel: r, dir: stat.type === 'directory' };
     if (stat.type !== 'directory') { order.push(entry); return undefined; }
+    if (steps.crosses !== undefined && !steps.crosses(r)) {
+      keepWithAncestors(r);
+      failures.push({ path: at(r), error: syscallError('EBUSY', 'rm', at(r)) });
+      return undefined;
+    }
     const failed = (cause: unknown): void => {
       const error = errorOf(r, 'scandir', asError(cause));
       if (error.code === 'ENOENT') missing(r);
