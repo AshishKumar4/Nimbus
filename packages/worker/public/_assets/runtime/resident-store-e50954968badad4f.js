@@ -149,7 +149,7 @@ var __nimbusResidentModule = (() => {
     let available = null;
     const reservations = new SafeMap();
     let reservedBytes = 0;
-    const reserveQueue = [];
+    const reserveQueue = new SafeList();
     let reserveServing = false;
     const tablesBytes = () => coherence.tables("a storage measure").bytes();
     const dbBytes = () => tablesBytes() + (inHeap ? heldBytes + namespaceOverlayBytes + namespaceReserveBytes + pinnedBytes : 0);
@@ -168,18 +168,21 @@ var __nimbusResidentModule = (() => {
         for (let idle = 0; ; ) {
           const waiting = reserveQueue.length;
           while (reserveQueue.length > 0 && holdRoom(reserveQueue[0].path, reserveQueue[0].bytes)) {
-            reserveQueue.shift().resolve(true);
+            const held = reserveQueue[0];
+            arraySplice(reserveQueue, 0, 1);
+            held.resolve(true);
           }
           if (reserveQueue.length === 0) return;
           idle = reserveQueue.length < waiting ? 0 : idle + 1;
           const before = cap;
           if (idle <= 8) {
             let need = 0;
-            for (const reservation of reserveQueue) need += reservation.bytes;
+            for (let i = 0; i < reserveQueue.length; i++) need += reserveQueue[i].bytes;
             await askGrant(need);
           }
           if (cap === before) {
-            for (const reservation of reserveQueue.splice(0)) reservation.resolve(false);
+            const refused = arraySplice(reserveQueue, 0, reserveQueue.length);
+            for (let i = 0; i < refused.length; i++) refused[i].resolve(false);
             return;
           }
         }
@@ -200,7 +203,7 @@ var __nimbusResidentModule = (() => {
       if (grantAsk) {
         return grantAsk.then(() => dbBytes() + reservedBytes + bytes <= cap || askGrant(bytes));
       }
-      const want = Math.max(0, dbBytes() + reservedBytes + bytes - cap);
+      const want = mathMax(0, dbBytes() + reservedBytes + bytes - cap);
       const named = facet;
       grantAsk = (async () => {
         try {
@@ -260,7 +263,7 @@ var __nimbusResidentModule = (() => {
         return true;
       },
       unpin(bytes) {
-        pinnedBytes = Math.max(0, pinnedBytes - bytes);
+        pinnedBytes = mathMax(0, pinnedBytes - bytes);
       },
       get heldBytes() {
         return heldBytes;
@@ -269,7 +272,7 @@ var __nimbusResidentModule = (() => {
         heldBytes += bytes;
       },
       heldLimit(maxBytes) {
-        return inHeap ? Math.max(0, Number(cap) - tablesBytes() - namespaceOverlayBytes - namespaceReserveBytes) : maxBytes;
+        return inHeap ? mathMax(0, NumberOf(cap) - tablesBytes() - namespaceOverlayBytes - namespaceReserveBytes) : maxBytes;
       },
       namespaceRefusal(bytes) {
         return refusal(dbBytes() + bytes);
@@ -292,7 +295,7 @@ var __nimbusResidentModule = (() => {
         if (cap === null) return Promise.resolve(true);
         if (reserveQueue.length === 0 && holdRoom(path, bytes)) return Promise.resolve(true);
         return new Promise((resolve) => {
-          reserveQueue.push({ path, bytes, resolve });
+          arrayPush(reserveQueue, { path, bytes, resolve });
           void serveReserves();
         });
       },
@@ -302,9 +305,11 @@ var __nimbusResidentModule = (() => {
       /** Room for what an ACQUIRE answer pushes, asked for before it is applied. */
       async roomForPushed(result) {
         const answer = result;
-        if (cap === null || !answer || !Array.isArray(answer.paths)) return;
+        if (cap === null || !answer || !arrayIsArray(answer.paths)) return;
+        const paths = answer.paths;
         let bytes = 0;
-        for (const entry of answer.paths) {
+        for (let i = 0; i < paths.length; i++) {
+          const entry = paths[i];
           if (entry && entry.bytes != null) bytes += residentCellCost(residentBytes(entry.bytes));
         }
         if (bytes > 0) await ensureRoom(bytes);
