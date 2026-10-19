@@ -24,10 +24,12 @@
  *     the loader's answer), which Node's namespace leaves out.
  *
  * The helpers are source text a launch's runtime compiles for its
- * interpreter (ESM_MODULE_HELPERS, commonjs-cell.ts). They reach Object,
- * and Symbol.toStringTag (AsyncFunction.prototype's one own symbol),
- * through literals. The exports object is tagged `Module`, as Node's
- * namespace is, so a call on it reads `Module.f` in a stack.
+ * interpreter (ESM_MODULE_HELPERS, commonjs-cell.ts), made from the launch's
+ * captures (`P`, core _shared/primordials.ts): the interpreter is made when
+ * a program first produces code, after it may have replaced Object's
+ * statics, and each descriptor inherits nothing. The exports object is
+ * tagged `Module`, as Node's namespace is, so a call on it reads `Module.f`
+ * in a stack.
  *
  * The interpreter runs this module after a program may have replaced
  * built-ins, so it names none (tests/unit/primordials-audit.mjs), and
@@ -55,8 +57,12 @@ export declare const ESM_CONFLICTS_HELPER = "(require) => require(\"\", \"nimbus
 export declare const ESM_STATIC_IMPORT = "nimbus:static-import";
 /** A static import's namespace: the link's require, told the request is an import, with its `type` attribute (or null). */
 export declare const ESM_LOAD_HELPER = "(require, source, type) => require(source, \"nimbus:static-import\", type)";
-/** The helpers as an object literal's source: what a launch compiles for its interpreter (interpreter/modules.ts ModuleHelpers). */
-export declare const ESM_MODULE_HELPERS = "{ exports: (() => { const O = ({}).constructor; const tag = O.getOwnPropertySymbols(O.getPrototypeOf(async () => {}))[0]; return (exports) => { O.defineProperty(exports, \"__esModule\", { value: true, configurable: true }); O.defineProperty(exports, tag, { value: \"Module\" }); return (name, get) => O.defineProperty(exports, name, { enumerable: true, configurable: false, get }); }; })(), star: (exports, define, m, omitted) => { for (const k in m) { if (k === \"default\" || ({}).propertyIsEnumerable.call(exports, k)) continue; let left = false; for (let i = 0; omitted && i < omitted.length; i++) if (omitted[i] === k) left = true; if (!left) define(k, () => m[k]); } }, conflicts: (require) => require(\"\", \"nimbus:star-conflicts\"), load: (require, source, type) => require(source, \"nimbus:static-import\", type) }";
+/**
+ * The helpers' source: a function of the launch's captures (`P`) that makes
+ * them, what a launch compiles and calls for its interpreter
+ * (interpreter/modules.ts ModuleHelpers).
+ */
+export declare const ESM_MODULE_HELPERS = "((P) => ({ exports: ((exports) => { P.objectDefineProperty(exports, \"__esModule\", { __proto__: null, value: true, configurable: true }); P.objectDefineProperty(exports, P.symbolToStringTag, { __proto__: null, value: \"Module\" }); return (name, get) => P.objectDefineProperty(exports, name, { __proto__: null, enumerable: true, configurable: false, get }); }), star: (exports, define, m, omitted) => { for (const k in m) { if (k === \"default\" || P.ObjectPrototypePropertyIsEnumerableOf(exports, k)) continue; let left = false; for (let i = 0; omitted && i < omitted.length; i++) if (omitted[i] === k) left = true; if (!left) define(k, () => m[k]); } }, conflicts: (require) => require(\"\", \"nimbus:star-conflicts\"), load: (require, source, type) => require(source, \"nimbus:static-import\", type) }))";
 /**
  * One name an import binds: the module's namespace, or one of its exports
  * by name (`default` included, which `import d from` binds too). A string

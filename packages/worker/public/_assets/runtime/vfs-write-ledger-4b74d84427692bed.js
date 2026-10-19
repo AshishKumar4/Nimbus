@@ -1376,7 +1376,10 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
     return within(key, grant.root) ? "held" : within(grant.root, key) ? "above" : void 0;
   }
   function within(key, root) {
-    return root === "" || key === root || key.startsWith(`${root}/`);
+    if (root === "" || key === root) return true;
+    if (key.length <= root.length || key[root.length] !== "/") return false;
+    for (let i = 0; i < root.length; i++) if (key[i] !== root[i]) return false;
+    return true;
   }
   function commonAncestor(left, right) {
     const a = left.split("/");
@@ -2036,7 +2039,12 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         return found;
       },
       guards(key) {
-        return escaped === null && grants.some((grant) => standingOf(grant, key) !== void 0);
+        if (escaped !== null) return false;
+        for (let i = 0; i < grants.length; i++) {
+          const grant = grants[i];
+          if (grant !== void 0 && standingOf(grant, key) !== void 0) return true;
+        }
+        return false;
       },
       pending() {
         return queue.length > 0 || inFlight !== null;
@@ -2379,15 +2387,18 @@ const __vfsWrites = new Proxy(Object.create(null), {
   },
 });
 
-const __vfsMutationTails = new Map();
-const __nimbusPendingVfsMutations = new Set();
+// The launch's SafeMap and SafeSet: a mutation's settle and a read's
+// acknowledgement reach these after the program may have replaced Map's and
+// Set's methods.
+const __vfsMutationTails = new __nimbusLaunchCaptures.SafeMap();
+const __nimbusPendingVfsMutations = new __nimbusLaunchCaptures.SafeSet();
 let __nimbusPendingVfsMutationFailure;
 let __nimbusHasPendingVfsMutationFailure = false;
-const __vfsWriteClaims = new Map();
+const __vfsWriteClaims = new __nimbusLaunchCaptures.SafeMap();
 // Per path: this facet's own writes and mutations the authority has been
 // asked to apply whose acknowledgement is not adjudicated yet
 // (__nimbusOwnAcknowledgement). Each entry settles, never rejects.
-const __vfsOwnAcks = new Map();
+const __vfsOwnAcks = new __nimbusLaunchCaptures.SafeMap();
 // What a logged change answers when the parked cell is not the file's
 // whole content (an append to a file the process never held): retired by
 // eviction, never stamped. And what one answers when the session refused it.
@@ -2718,7 +2729,7 @@ function __nimbusOwnAcknowledgement(path, work, generation) {
   const ack = { settled: acked.then(() => undefined, () => undefined), generation };
   let held = __vfsOwnAcks.get(key);
   if (!held) {
-    held = new Set();
+    held = new __nimbusLaunchCaptures.SafeSet();
     __vfsOwnAcks.set(key, held);
   }
   held.add(ack);

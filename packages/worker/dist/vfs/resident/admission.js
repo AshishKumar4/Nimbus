@@ -12,6 +12,7 @@
  * to ask for more.
  */
 import { residentBytes, residentCellCost } from './cell-cost.js';
+import { SafeMap } from '@nimbus-sh/core/_shared/primordials.js';
 export function createAdmission(coherence) {
     let cap = null;
     let facet = null;
@@ -37,7 +38,8 @@ export function createAdmission(coherence) {
      * alone went to whichever of a batch of fills landed first, and the rest
      * were refused.
      */
-    const reservations = new Map();
+    // A SafeMap: a fill's settle releases its reservation, after the program may have replaced Map's methods.
+    const reservations = new SafeMap();
     let reservedBytes = 0;
     /**
      * Reservations waiting for room, in the order they were asked for. Room that

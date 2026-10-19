@@ -750,9 +750,11 @@ return globalThis.Go;
     ...FILESYSTEM_ANSWERED_RPC_METHODS,
     ...NODE_SHIM_RPC_METHODS
   ];
-  var ANSWERED = new Set(SUPERVISOR_ANSWERED_METHODS);
+  var ANSWERED = {};
+  Reflect.setPrototypeOf(ANSWERED, null);
+  for (const name of SUPERVISOR_ANSWERED_METHODS) ANSWERED[name] = true;
   function isSupervisorAnsweredMethod(name) {
-    return typeof name === "string" && ANSWERED.has(name);
+    return typeof name === "string" && ANSWERED[name] === true;
   }
   function isAnsweringStub(supervisor) {
     return typeof Reflect.get(supervisor, "answer") === "function";

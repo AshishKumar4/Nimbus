@@ -36,7 +36,7 @@ export async function buildInterpreterFiles() {
   writeFileSync(opsFile, ops);
   // Imported here, not above: node loads this module too, and the helpers' module is TypeScript.
   const { ESM_MODULE_HELPERS } = await import('../../../packages/core/src/runtime/esm-interop.ts');
-  writeFileSync(join(dir, MODULE_HELPERS_FILE), `module.exports = ${ESM_MODULE_HELPERS};\n`);
+  writeFileSync(join(dir, MODULE_HELPERS_FILE), `module.exports = ${ESM_MODULE_HELPERS}(require(${JSON.stringify(`./${PRIMORDIALS_FILE}`)}));\n`);
   return { dir, primordialsFile, parserFile, interpreterFile, opsFile };
 }
 
