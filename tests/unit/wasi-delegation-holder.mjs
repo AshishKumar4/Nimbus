@@ -809,4 +809,40 @@ for (const [route, told] of [['idle', 'fsync'], ['idle', 'settle'], ['renewal', 
   assert.equal(s.filesystem.delegations.size, 0, `${label}: given back at the end`);
 }
 
+// ── A decision whose drain the client refuses (a held file past its synchronous cap) leaves nothing decided ──
+// The program is told (ENOMEM), and what it asked for is not done: no name made, none removed, no mode changed.
+// Red before: the name was decided before the drain refused, so it stayed though the call failed.
+{
+  const s = session({ grantBytes: 128 * 1024 * 1024 });
+  await s.fs.mkdir('/home/user/proj/dec', { mode: 0o755 });
+  await create(s.fs, '/home/user/proj/dec/kept', 'k');
+  const big = await s.fs.open('/home/user/proj/dec/big', { write: true, create: true, truncate: true, mode: 0o644 });
+  await s.fs.write(big.id, null, new Uint8Array(65 * 1024 * 1024));
+  const told = async (call) => {
+    try {
+      await call();
+      return null;
+    } catch (error) {
+      return error?.code ?? String(error);
+    }
+  };
+  const asked = {
+    create: () => s.fs.open('/home/user/proj/dec/new', { write: true, create: true, truncate: true, mode: 0o644 }),
+    mkdir: () => s.fs.mkdir('/home/user/proj/dec/sub', { mode: 0o755 }),
+    unlink: () => s.fs.unlink('/home/user/proj/dec/kept'),
+    chmod: () => s.fs.chmod('/home/user/proj/dec/kept', 0o600),
+  };
+  for (const [call, run] of Object.entries(asked)) assert.equal(await told(run), 'ENOMEM', `${call}: what the program is told`);
+  assert.equal(await s.fs.stat('/home/user/proj/dec/new'), null, 'a create refused made no name');
+  assert.equal(await s.fs.stat('/home/user/proj/dec/sub'), null, 'a mkdir refused made no name');
+  assert.equal((await s.fs.stat('/home/user/proj/dec/kept'))?.mode & 0o777, 0o644, 'an unlink and a chmod refused left the file as it was');
+  // The file shrunk to what the client takes: the run ends clean, and the session has none of what was refused.
+  await s.fs.ftruncate(big.id, 1);
+  await s.fs.close(big.id);
+  assert.deepEqual(await s.fs.settle(), []);
+  assert.equal(s.kernel.exists('home/user/proj/dec/new'), false);
+  assert.equal(s.kernel.exists('home/user/proj/dec/sub'), false);
+  assert.equal(s.kernel.stat('home/user/proj/dec/kept').mode & 0o777, 0o644);
+}
+
 console.log('wasi delegation holder: ok');
