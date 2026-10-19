@@ -113,7 +113,7 @@ export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array
     realpathSync: ((path: string | URL) => string) & {
         native: (path: string | URL) => string;
     };
-    truncateSync: (path: string | URL | number, len?: number) => void;
+    truncateSync: (path: string | URL | Uint8Array | number, len?: number) => void;
     openSync: (path: string | URL, flags?: string | number | null, mode?: number) => number;
     closeSync: (fd: number) => void;
     readSync: (fd: number, buffer: Uint8Array, offset?: number, length?: number, position?: number | null) => number;
@@ -122,9 +122,9 @@ export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array
     ftruncateSync: (fd: number, len?: number) => void;
     fsyncSync: (fd: number) => void;
     fdatasyncSync: (fd: number) => void;
-    symlinkSync: (target: string | URL, path: string | URL, _type?: string | null) => void;
+    symlinkSync: (target: string | URL | Uint8Array, path: string | URL | Uint8Array, _type?: string | null) => void;
     linkSync: (_existingPath: string, _newPath: string) => void;
-    readlinkSync: (path: string | URL, options?: string | {
+    readlinkSync: (path: string | URL | Uint8Array, options?: string | {
         encoding?: string | null;
     } | null) => string | Buffer;
     readFile: (path: string | URL, optionsOrCb: string | {
@@ -150,11 +150,11 @@ export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array
     rename: (oldPath: string | URL, newPath: string | URL, cb: Callback<void>) => void;
     access: (path: string | URL, modeOrCb: number | Callback<void>, cb?: Callback<void>) => void;
     exists: (path: string | URL, cb: (exists: boolean) => void) => void;
-    symlink: (target: string | URL, path: string | URL, typeOrCb: string | null | undefined | Callback<void>, cb?: Callback<void>) => void;
-    readlink: (path: string | URL, optionsOrCb: string | {
+    symlink: (target: string | URL | Uint8Array, path: string | URL | Uint8Array, ...rest: Array<string | null | undefined | Callback<void>>) => void;
+    readlink: (path: string | URL | Uint8Array, optionsOrCb: string | {
         encoding?: string | null;
     } | null | undefined | Callback<string | Buffer>, cb?: Callback<string | Buffer>) => void;
-    truncate: (path: string | URL | number, lenOrCb: number | null | undefined | Callback<void>, cb?: Callback<void>) => void;
+    truncate: (path: string | URL | Uint8Array | number, lenOrCb: number | null | undefined | Callback<void>, cb?: Callback<void>) => void;
     open: (path: string | URL, flagsOrCb: string | number | Callback<number>, modeOrCb?: number | Callback<number>, cb?: Callback<number>) => void;
     close: (fd: number, cb: Callback<void>) => void;
     read: (fd: number, buffer: Uint8Array, offset: number, length: number, position: number | null, cb: ReadCallback) => void;
@@ -291,9 +291,9 @@ export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array
         copyFile: (src: string | URL, dest: string | URL) => Promise<void>;
         access: (path: string | URL, mode?: number) => Promise<void>;
         realpath: (path: string | URL) => Promise<string>;
-        truncate: (path: string | URL, len?: number) => Promise<void>;
-        symlink: (target: string | URL, path: string | URL, type?: string | null) => Promise<void>;
-        readlink: (path: string | URL, options?: string | {
+        truncate: (path: string | URL | Uint8Array, len?: number) => Promise<void>;
+        symlink: (target: string | URL | Uint8Array, path: string | URL | Uint8Array, type?: string | null) => Promise<void>;
+        readlink: (path: string | URL | Uint8Array, options?: string | {
             encoding?: string | null;
         } | null) => Promise<string | Buffer>;
         chmod: (path: string | URL, mode: number | string) => Promise<void>;
