@@ -145,7 +145,7 @@ const scenarios = {
     assert.equal(await s.fs.stat(k('d/f')), null, 'the removed file');
   },
   async 'a late listing never brings back a file a barrier saw removed'() {
-    const s = await lateLearning({ d: null, 'd/f': 'f', 'd/g': 'g', other: 'o' }, (s) => s.fs.readdir(k('d')));
+    const s = await lateLearning({ d: null, 'd/f': 'f', 'd/g': 'g', other: 'o' }, (s) => s.view.list(`${ROOT}/d`));
     notServed(s.fs, k('d/f'), 'what a call that cannot wait reads of the removed file');
     assert.equal(await s.fs.stat(k('d/f')), null, 'the removed file');
     assert.deepEqual((await s.fs.readdir(k('d'))).map((entry) => entry.name).sort(), ['g'], 'the directory');
@@ -161,7 +161,7 @@ const scenarios = {
     await renamedOnto(s, 'd/f');
   },
   async 'a late listing never hides a name a peer renamed into the directory'() {
-    const s = await lateLearning({ d: null, 'd/f': 'f', 'd/n': 'n', other: 'o' }, (s) => s.fs.readdir(k('d')),
+    const s = await lateLearning({ d: null, 'd/f': 'f', 'd/n': 'n', other: 'o' }, (s) => s.view.list(`${ROOT}/d`),
       { change: (kernel) => kernel.rename(k('d/n'), k('d/e')) });
     const moved = (await s.kernel.stat(k('d/e'))).ino;
     const seen = synchronously(s.fs, k('d/e'));
