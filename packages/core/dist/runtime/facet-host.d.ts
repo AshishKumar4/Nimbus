@@ -154,6 +154,19 @@ export interface Facet {
     /** Idempotent. The scope and everything it holds are dropped. */
     dispose(): void;
 }
+/** The key a request-shaped task's failure travels under, in the 500 its pool answers with. */
+export declare const FACET_ERROR_KEY = "__nimbusFacetError";
+/**
+ * Set on what a request-shaped task throws when its own request body does
+ * not parse: the entry it came through (task-body-error.ts) names the body.
+ * A task compiled to run in a facet names it as this literal.
+ */
+export declare const TASK_BODY_FAILED = "nimbusTaskBodyFailed";
+/**
+ * A request-shaped task's answer: its JSON, or its failure thrown with the
+ * message its pool answered with.
+ */
+export declare function facetAnswer(response: Response): Promise<unknown>;
 export interface FacetHost {
     /**
      * Whether a guest in this host can be SUSPENDED in the middle of a syscall.
