@@ -65,7 +65,7 @@ export async function readUntil(read, done, timeoutMs = 10_000) {
         value = await Promise.race([read(signal), stalled]);
       } catch (error) {
         // The deadline's own abort ending a read: the wait ends as at the deadline, with the value before it.
-        if (reads > 0 && error === signal.reason) return last;
+        if (reads > 0 && signal.aborted && error === signal.reason) return last;
         throw error;
       }
       if (done(value) || signal.aborted) return value;

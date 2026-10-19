@@ -56,6 +56,13 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   console.log('  ✓ a read failing for its own reason fails the wait');
 }
 
+// A read rejected with no reason before the deadline fails the wait, as any read failing does.
+{
+  let reads = 0;
+  await assert.rejects(readUntil(() => (++reads === 1 ? Promise.resolve('before') : Promise.reject()), () => false, 5000), (error) => error === undefined);
+  console.log('  ✓ a read rejected with no reason fails the wait');
+}
+
 // The condition met: the wait ends at once with the value that met it.
 {
   let reads = 0;
