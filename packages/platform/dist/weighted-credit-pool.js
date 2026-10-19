@@ -114,11 +114,15 @@ class CreditLane {
                 this.drain();
             };
             aborted.addEventListener('abort', onAbort, { once: true });
-            return () => aborted.removeEventListener('abort', onAbort);
+            return { onAbort, unlisten: () => aborted.removeEventListener('abort', onAbort) };
         };
-        const unlisten = signal ? listen(signal) : () => { };
+        const listening = signal ? listen(signal) : null;
         place();
-        this.drain();
+        // Asked with a signal already aborted, it leaves at once, as it would on the abort.
+        if (signal?.aborted)
+            listening?.onAbort();
+        else
+            this.drain();
         return {
             woken: () => waiter.turn,
             take: () => {
@@ -150,7 +154,7 @@ class CreditLane {
                 return null;
             },
             leave: () => {
-                unlisten();
+                listening?.unlisten();
                 if (recheck !== undefined)
                     clearInterval(recheck);
                 recheck = undefined;
