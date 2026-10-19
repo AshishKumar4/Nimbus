@@ -31,7 +31,7 @@
 import { parse } from 'acorn';
 import { build, transform } from 'esbuild';
 import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import { primordialAcorn } from './acorn-primordials.mjs';
 import { resolvePackageDir } from './resolve-package-dir.mjs';
@@ -70,6 +70,13 @@ function asCommonJs(esm, label) {
       const request = JSON.stringify(node.source.value);
       if (node.source.value === `./${PRIMORDIALS_FILE}` && node.specifiers.length === 1 && only.type === 'ImportNamespaceSpecifier') {
         edits.push({ start: node.start, end: node.end, text: `const ${only.local.name} = require(${request});` });
+      } else if (label === 'esm-late' && node.source.value === `./${PRIMORDIALS_FILE}`) {
+        const fields = [];
+        for (const s of node.specifiers) {
+          if (s.type !== 'ImportSpecifier' || s.imported.type !== 'Identifier') throw new Error(`[interpreter-bundle] the esm-late imports the primordials by a ${s.type}`);
+          fields.push(`${s.imported.name}: ${s.local.name}`);
+        }
+        edits.push({ start: node.start, end: node.end, text: `const { ${fields.join(', ')} } = require(${request});` });
       } else if (label === 'interpreter' && node.source.value === `./${PARSER_FILE}`) {
         // Read once, as the parser's exports are a plain object it never changes.
         const fields = [];
@@ -154,7 +161,22 @@ export async function bundleInterpreter({ start }) {
     throw new Error('[interpreter-bundle] core src/interpreter/host-ops.ts has no HOST_OPS_SOURCE');
   }
   // The late graph's link and Node's CommonJS lexer (core runtime/esm-late-link.ts): a module of its own.
-  const esmLate = await build({ ...common, entryPoints: [join(src, '../runtime/esm-late-link.ts')], format: 'esm' });
+  const esmLate = await build({
+    ...common,
+    entryPoints: [join(src, '../runtime/esm-late-link.ts')],
+    format: 'esm',
+    plugins: [{
+      name: 'late-primordials',
+      setup(b) {
+        b.onResolve({ filter: /primordials\.(?:js|ts)$/ }, (args) => {
+          const path = args.path.startsWith('.') ? resolve(args.resolveDir, args.path) : args.path;
+          if (/(^|[\\/])_shared[\\/]primordials\.(?:js|ts)$/.test(path)) return { path: `./${PRIMORDIALS_FILE}`, external: true };
+        });
+      },
+    }],
+  });
+  const lateCaptures = Object.keys(esmLate.metafile.inputs).filter((path) => /(^|[\\/])_shared[\\/]primordials\.ts$/.test(path));
+  if (lateCaptures.length !== 0) throw new Error(`[interpreter-bundle] esm-late bundles the primordials (${lateCaptures.join(', ')}); it requires the launch's`);
   const parserCommonJs = asCommonJs(parserModule.outputFiles[0].text, 'parser');
   const interpreterCommonJs = asCommonJs(interpreter.outputFiles[0].text, 'interpreter');
   const unexported = interpreterCommonJs.imports.filter((name) => !parserCommonJs.exports.includes(name));

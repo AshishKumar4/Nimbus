@@ -95,6 +95,7 @@ export const numberIsInteger = Number.isInteger;
 export const objectIs = Object.is;
 export const objectIsExtensible = Object.isExtensible;
 export const mathAbs = Math.abs;
+export const mathMin = Math.min;
 /**
  * Error.captureStackTrace as the runtime has it before any program code:
  * V8's (none where the engine has none), or the one the launch's cell
