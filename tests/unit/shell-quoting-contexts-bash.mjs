@@ -92,7 +92,7 @@ const CONTEXTS = [
     // ExtremeCat's review: a long substitution, an empty quoted operand, a quoted tilde, an alias's comment,
     // assignments before a compound alias, a final backslash, arithmetic beside braces, a cwd with a
     // backslash, declaration arrays, and line continuations.
-    "v=$(printf '%010000d' 0); v=\${v//0/1}; printf '%s\\n' \"\${#v}\"",
+    "v=0; for i in 1 2 3 4 5 6 7 8 9 10 11 12 13; do v=$v$v; done; v=\${v//0/1}; printf '%s %s\\n' \"\${#v}\" \"\${v//1/}\"",
     "unset u; set -- \"\${u:-}\"; printf '%s\\n' \"$#\"; u=yes; set -- \"\${u:+}\"; printf '%s\\n' \"$#\"",
     "HOME='*.txt'; printf '<%s>' ~ ~/x; echo",
     "alias p='printf \"<%s>\\n\" kept #'\np ignored\necho next",
