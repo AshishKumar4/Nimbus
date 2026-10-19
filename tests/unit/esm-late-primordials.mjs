@@ -86,10 +86,14 @@ const host = {
   requests(_path, text) { reads++; return analyses[text]; },
 };
 function exercise() {
+  const facadeRow = host.row('commonjs', 'common.cjs');
+  const facadeRead = stringify(captures.JSONParse(host.rowBindings()));
   const order = lateLink.linkLateGraph(host, 'root.mjs', 'file:///root.mjs', true);
   const conflicts = lateLink.starConflicts(host, 'file:///root.mjs');
   const names = lateLink.namespaceNames(host, 'file:///root.mjs');
-  const commonjs = lateLink.commonJsNames(host, 'common.cjs');
+  let commonjs;
+  try { commonjs = lateLink.commonJsNames(host, 'common.cjs'); }
+  catch (error) { throw new Failure('commonjs row ' + facadeRow + ', facades ' + facadeRead, { cause: error }); }
   const beforeAdoption = reads;
   lateLink.linkAdopted(host, 1, 'bridge.mjs', 'file:///bridge.mjs');
   const adoptedOnce = beforeAdoption === reads;
@@ -152,6 +156,7 @@ for (const replaced of [false, true]) {
   late.runInContext(context);
   assert.ok(requests > beforeLate, 'esm-late requires the already evaluated captures');
   run.runInContext(context);
+  console.log(replaced ? 'replaced' : 'baseline', context.outcome);
   answers.push(JSON.parse(context.outcome));
 }
 assert.deepEqual(answers[1], answers[0], 'late loading, linking and wasm paths answer alike after replacement');
