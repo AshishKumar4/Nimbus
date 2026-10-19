@@ -270,8 +270,8 @@ export declare class Interpreter {
      * as text. Its assignments go before the first command that text makes, and
      * its redirections after the last; before a compound command they are a
      * syntax error, as bash's grammar has it. A text that ends in a comment takes
-     * the command's other words and redirections into it (the rest of the line,
-     * in bash; here, the rest of the command). An alias whose text ends in a
+     * the command's words and redirections written after it into it (the rest of
+     * the line, in bash; here, the rest of the command). An alias whose text ends in a
      * blank has the next word checked too. None of the text's commands expands
      * those aliases, or the ones this command was read within, again. Null when
      * the word is no alias.

@@ -1,10 +1,14 @@
 import { type Token } from './types.js';
 export declare function lex(input: string): Token[];
 /**
- * Whether `text` ends inside a comment, which takes the rest of its line: what
- * would follow it there is no word (an alias whose text ends in `#…`).
+ * The tokens of `input`, and whether it ends inside a comment, which takes the
+ * rest of its line: what would follow it there is no word (an alias whose text
+ * ends in `#…`).
  */
-export declare function endsInComment(text: string): boolean;
+export declare function lexText(input: string): {
+    tokens: Token[];
+    endsInComment: boolean;
+};
 export type ContinuationState = 'single' | 'double' | 'backslash';
 /**
  * How `input` leaves the lexer at end of input: inside an unclosed single or

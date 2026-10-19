@@ -399,7 +399,10 @@ class Parser {
             const token = this.peek();
             // Check for redirections
             if (this.isRedirectOperator(token.kind)) {
-                redirections.push(this.parseRedirection());
+                // The node itself: a here-document's body is filled into it when the parser reaches it.
+                const redirection = this.parseRedirection();
+                redirection.wordsBefore = words.length;
+                redirections.push(redirection);
                 continue;
             }
             // Check for word tokens
