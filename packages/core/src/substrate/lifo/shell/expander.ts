@@ -2,7 +2,7 @@ import type { WordPart } from './types.js';
 import { isShellIdentifier } from './names.js';
 import { DEFAULT_HOME } from '../../../constants.js';
 import type { ProcessView } from '../../../runtime/process-files.js';
-import { escapeGlob, expandGlob, globMatch } from '../utils/glob.js';
+import { escapeGlob, expandGlob, fixedMatchLength, shellMatch } from '../utils/glob.js';
 import { readAnsiCQuote, readBalancedCommand, readBracedExpansion } from './lexer.js';
 import type { ShellOptions } from './state.js';
 
@@ -283,19 +283,20 @@ async function expandParts(parts: WordPart[], ctx: ExpandContext): Promise<Piece
       continue;
     }
 
-    pieces.push(...await expandText(tildeExpanded(part.text, ctx, pieces), ctx, false));
+    const home = tildeHome(part.text, ctx, pieces);
+    // The home directory a tilde names is as if quoted: never split, never a pattern.
+    if (home !== null) pieces.push({ kind: 'text', text: home, split: false, literal: true });
+    pieces.push(...await expandText(home === null ? part.text : part.text.slice(1), ctx, false));
   }
 
   return pieces;
 }
 
-function tildeExpanded(text: string, ctx: ExpandContext, preceding: readonly Piece[]): string {
+/** The home directory a leading `~` or `~/` of a word's first text names, or null. */
+function tildeHome(text: string, ctx: ExpandContext, preceding: readonly Piece[]): string | null {
   const atWordStart = !preceding.some((p) => p.kind === 'break' || p.text !== '');
-  if (!atWordStart || !text.startsWith('~')) return text;
-  const home = ctx.env['HOME'] ?? DEFAULT_HOME;
-  if (text === '~') return home;
-  if (text.startsWith('~/')) return home + text.slice(1);
-  return text;
+  if (!atWordStart || !(text === '~' || text.startsWith('~/'))) return null;
+  return ctx.env['HOME'] ?? DEFAULT_HOME;
 }
 
 async function expandCommandSubstitution(command: string, ctx: ExpandContext): Promise<string> {
@@ -625,6 +626,8 @@ async function applyDefault(
 async function operandPieces(word: string, ctx: ExpandContext, quoted: boolean): Promise<Piece[]> {
   const mode = ctx.hereDocument === true ? 'heredoc' : quoted ? 'double' : 'word';
   const pieces = await expandParameterWord(word, ctx, mode);
+  // An empty word inside double quotes is still the quoted empty field ("${u:-}").
+  if (quoted && pieces.length === 0) return [valuePiece('', true)];
   if (quoted) return pieces.map((piece) => (piece.kind === 'break' ? piece : { ...piece, split: false, literal: true }));
   return pieces.map((piece) => (piece.kind === 'break' || piece.literal ? piece : { ...piece, split: true }));
 }
@@ -692,7 +695,7 @@ function trimPrefix(value: string, pattern: string, longest: boolean): string {
     ? range(value.length, -1, -1)
     : range(0, value.length + 1, 1);
   for (const i of bounds) {
-    if (globMatch(pattern, value.slice(0, i))) return value.slice(i);
+    if (shellMatch(pattern, value.slice(0, i))) return value.slice(i);
   }
   return value;
 }
@@ -702,7 +705,7 @@ function trimSuffix(value: string, pattern: string, longest: boolean): string {
     ? range(0, value.length + 1, 1)
     : range(value.length, -1, -1);
   for (const i of bounds) {
-    if (globMatch(pattern, value.slice(i))) return value.slice(0, i);
+    if (shellMatch(pattern, value.slice(i))) return value.slice(0, i);
   }
   return value;
 }
@@ -747,12 +750,12 @@ function replaceAnchored(
 ): string {
   if (anchor === 'prefix') {
     for (let i = value.length; i >= 0; i--) {
-      if (globMatch(pattern, value.slice(0, i))) return replacement + value.slice(i);
+      if (shellMatch(pattern, value.slice(0, i))) return replacement + value.slice(i);
     }
     return value;
   }
   for (let i = 0; i <= value.length; i++) {
-    if (globMatch(pattern, value.slice(i))) return value.slice(0, i) + replacement;
+    if (shellMatch(pattern, value.slice(i))) return value.slice(0, i) + replacement;
   }
   return value;
 }
@@ -765,7 +768,7 @@ async function applyCase(
   const every = rest[1] === operator;
   const pattern = await expandParameterPattern(rest.slice(every ? 2 : 1), ctx);
   const convert = (c: string): string => (operator === '^' ? c.toUpperCase() : c.toLowerCase());
-  const matches = (c: string): boolean => pattern === '' || globMatch(pattern, c);
+  const matches = (c: string): boolean => pattern === '' || shellMatch(pattern, c);
 
   return (await mapParameter(ref, ctx, quoted, (value) => {
     if (!every) {
@@ -983,11 +986,20 @@ function splitGroup(
 
 // ─── Pattern replacement ───
 
-/** The leftmost match of `pattern` in `val` at `from` or after, the longest there (bash's match_pattern, MATCH_ANY): [start, end], or null. */
-function leftmostLongest(val: string, pattern: string, from: number): [number, number] | null {
+/**
+ * The leftmost match of `pattern` in `val` at `from` or after, the longest
+ * there (bash's match_pattern, MATCH_ANY): [start, end], or null. A pattern of
+ * fixed length (`fixed`, fixedMatchLength) is tried at that length only.
+ */
+function leftmostLongest(val: string, pattern: string, from: number, fixed: number | null): [number, number] | null {
   for (let start = from; start <= val.length; start++) {
+    if (fixed !== null) {
+      if (start + fixed > val.length) return null;
+      if (shellMatch(pattern, val.slice(start, start + fixed))) return [start, start + fixed];
+      continue;
+    }
     for (let end = val.length; end >= start; end--) {
-      if (globMatch(pattern, val.slice(start, end))) return [start, end];
+      if (shellMatch(pattern, val.slice(start, end))) return [start, end];
     }
   }
   return null;
@@ -1009,10 +1021,11 @@ function replaceAll(val: string, pattern: string, replacement: string): string {
  */
 function replaceMatches(val: string, pattern: string, replacement: string, all: boolean): string {
   if (pattern === '') return val;
+  const fixed = fixedMatchLength(pattern);
   let out = '';
   let i = 0;
   for (;;) {
-    const match = leftmostLongest(val, pattern, i);
+    const match = leftmostLongest(val, pattern, i, fixed);
     if (match === null) break;
     const [start, end] = match;
     out += val.slice(i, start) + replacement;

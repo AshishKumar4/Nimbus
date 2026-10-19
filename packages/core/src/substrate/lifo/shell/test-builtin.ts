@@ -3,7 +3,7 @@ import type { ProcessStat } from '../../../runtime/process-files.js';
 import type { CommandOutputStream } from '../commands/types.js';
 import type { WordPart } from './types.js';
 import { expandPatternWord, type ExpandContext } from './expander.js';
-import { globMatch } from '../utils/glob.js';
+import { shellMatch } from '../utils/glob.js';
 import { resolve } from '../utils/path.js';
 import { S_IFCHR, S_IFMT } from '../../../vfs/vfs.js';
 import { lstatOrThrow, statOrThrow } from '../../../vfs/vfs.js';
@@ -319,7 +319,7 @@ function isAndOperator(value: string | undefined, mode: TestMode): boolean {
 
 function stringCompare(left: TestArg, right: TestArg, mode: TestMode): boolean {
   if (mode === 'double-bracket' && right.pattern !== undefined) {
-    return globMatch(right.pattern, left.value);
+    return shellMatch(right.pattern, left.value);
   }
   return left.value === right.value;
 }

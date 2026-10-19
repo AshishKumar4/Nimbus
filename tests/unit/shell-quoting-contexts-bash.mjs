@@ -89,6 +89,19 @@ const CONTEXTS = [
     "unset x; printf '<%s>' \${x:-a$'\\t'b} \${x:-$'*'} \${x:-a b}; echo",
     "printf '<%s>' \"$(cat <<EOF\nit's\nEOF\n)\"; echo",
     "printf '<%s>' \"$(cat <<EOF\n$'a\\'\nEOF\n)\"; echo",
+    // ExtremeCat's review: a long substitution, an empty quoted operand, a quoted tilde, an alias's comment,
+    // assignments before a compound alias, a final backslash, arithmetic beside braces, a cwd with a
+    // backslash, declaration arrays, and line continuations.
+    "v=$(printf '%010000d' 0); v=\${v//0/1}; printf '%s\\n' \"\${#v}\"",
+    "unset u; set -- \"\${u:-}\"; printf '%s\\n' \"$#\"; u=yes; set -- \"\${u:+}\"; printf '%s\\n' \"$#\"",
+    "HOME='*.txt'; printf '<%s>' ~ ~/x; echo",
+    "alias p='printf \"<%s>\\n\" kept #'\np ignored\necho next",
+    "alias c='{ :; }'\nx=changed c\necho \"x=[$x]\"",
+    "p='\\'; [[ $p == $p ]]; echo $?; case '\\' in $p) echo c;; esac",
+    "echo $((1 << 3\n)){a,b}",
+    "mkdir 'a\\b' && cd 'a\\b' && touch x.txt && printf '<%s>' *.txt; echo",
+    "v='x y'; a=(\"$v\"); declare b=(\"$v\" z); printf '<%s>' \"\${a[@]}\" - \"\${b[@]}\"; echo",
+    "printf '<%s>' a\\\nb \"c\\\nd\" 'e\\\nf'; echo\necho x | \\\n  { cat; }\n\\\necho g",
     // \`<<\` in arithmetic shifts; it opens no here-document.
     "printf '<%s>' \"$(echo $(( 1 << 3 ))\necho after)\"; echo",
     "printf '<%s>' \"$(cat <<-EOF\n\tit's\n\tEOF\necho after)\"; echo",
