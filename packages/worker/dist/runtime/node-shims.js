@@ -12896,12 +12896,12 @@ function __nimbusTranslation(resolution) {
   const known = __nimbusTranslations.get(resolution.url);
   if (known !== undefined) return known;
   const names = resolution.format === "json" ? [] : __nimbusCommonJsNames(__vfsKey(resolution.path));
-  const known = new __NimbusSafeSet();
-  known.add("default");
-  for (let i = 0; i < names.length; i++) known.add(names[i]);
+  const named = new __NimbusSafeSet();
+  named.add("default");
+  for (let i = 0; i < names.length; i++) named.add(names[i]);
   let read = () => undefined;
   const translation = {
-    namespace: __esmNamespaceOf(known, (name) => read(name)),
+    namespace: __esmNamespaceOf(named, (name) => read(name)),
     filled: false,
     fill(exports) {
       if (translation.filled) return;
