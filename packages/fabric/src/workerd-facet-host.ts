@@ -947,13 +947,10 @@ async function untilEnded<T>(signal: AbortSignal, start: (ended: () => Promise<s
  * read through the journal reader class the facet is opened with now, over
  * the same SQLite. The name is aborted first: a get with a new class of a
  * facet still running (a previous incarnation's) would reset this object.
- */
-/**
- * `name`'s write log, read by a reader started under the name. `holds`, if
- * given, says the name is still its process's: a name a newer process has
- * been given is that process's facet, never opened for a reader, and the
- * log reads empty here (the newer process's store keeps it, for the
- * session's next drain of the name).
+ * `holds`, if given, says the name is still its process's: a name a newer
+ * process has been given is that process's facet, never opened for a
+ * reader, and the log reads empty here (the newer process's store keeps it,
+ * for the session's next drain of the name).
  */
 export function facetJournal(ctx: DurableObjectState, env: JournalReaderEnv, name: string, holds: () => boolean = () => true): ProcessFsJournalSource {
   const loader = env.LOADER;
