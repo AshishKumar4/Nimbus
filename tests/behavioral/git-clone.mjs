@@ -69,7 +69,8 @@ let bigCloneOutput = '';
 try {
   const r = await t.run(`git clone ${BIG_REPO} cloned-nimbus; echo "clone exit $?"`, 180_000);
   bigCloneOutput = r.output;
-  bigOk = /Cloning into|Receiving objects/.test(r.output) && !/clone failed/.test(r.output);
+  // A failed clone fails on its exit status, not only on what it printed.
+  bigOk = /\bclone exit 0\b/.test(r.output) && /Cloning into|Receiving objects/.test(r.output) && !/clone failed/.test(r.output);
   const r2 = await t.run('ls -1 cloned-nimbus | wc -l', 30_000);
   const m = r2.output.match(/(\d+)/g);
   if (m && m.length > 0) bigFileCount = parseInt(m[m.length - 1], 10);
