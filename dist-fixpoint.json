@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "d4536007b24585059e26637fa2d579e27eda4ae0d3660ea21223f84be3b10347",
+  "fingerprint": "4af83a6b5b567e5072f22f744c4a26c1c09df27e206d55316d0b838124b0da8a",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1427,7 +1427,7 @@
     "packages/core/dist/workspace/workspace-fs.d.ts.map": "f49f660f791486dfdd4b4e942f671b784ed04475d89687d35e4e9139896c468f",
     "packages/core/dist/workspace/workspace-fs.js": "d2db021e8caec4e44977f5c57dada51035d14e82cee71671e9e1c3a7d0ebdb9e",
     "packages/core/package.json": "16eb1212c5867f617a62d40637da19c85aa2b1946651d09fd1a3e323aa18eb42",
-    "packages/core/scripts/check-runtime-packages.mjs": "4ab41b1b780d5d0138995fba418e11e2badd97ec302ae03d002820ef5e400eb5",
+    "packages/core/scripts/check-runtime-packages.mjs": "858caa208a7d73c94a80137e425bb961fe16090488b9560bb3a7355da06285d3",
     "packages/core/scripts/compile-npm-libs.mjs": "29cc01ad8325c4bba53bb437d49acec07d95e71cc6506b7fed3f5c5214a36bff",
     "packages/core/scripts/gen-node-cli-options.mjs": "6c0b90900818a4cbef82fb639f9875d79c791cdc51887aa14d376dec1b651627",
     "packages/core/scripts/generate-filesystem-mirrors.mjs": "65ccc1af9242765d7293581224802fb49c5e4aa1b23684e566b005108277dd9e",
@@ -3151,7 +3151,7 @@
     "packages/worker/scripts/bundle-plugin-react.mjs": "950ad771c2a436e2936bffd8036f871adb1bf3790f27d2a50b2e647f0dadaaf7",
     "packages/worker/scripts/bundle-preview-isolation.mjs": "e03f5c8e3b7d1bb2b9cf5dfc04a3a9371b3e98f5219bc96325483ef195e0b262",
     "packages/worker/scripts/bundle-real-vite.mjs": "69089a5cae91d1fbea96982cdf6467bdfcad7d3f961fb966c1162734e4b1b616",
-    "packages/worker/scripts/bundle-runtime.mjs": "fb45608e7a9e630c2c2e46905f9cd596593b0fad8d17b47905b2a910e29c96da",
+    "packages/worker/scripts/bundle-runtime.mjs": "68138c1876eb6f378bebbac9bb995be46793700149b5cbb13e53845e7a61ef5a",
     "packages/worker/scripts/bundle-sqlite-wasm.mjs": "4b022a57c81375ad5e03743979dc93f23c955585a78f7f97150f1f1275c96ffd",
     "packages/worker/scripts/bundle-tailwind-play.mjs": "bd59ae32270946f6c3d0624a929ac8e551602a543a3a928ae3e0d40331c8ef3e",
     "packages/worker/scripts/cf-git-patch.mjs": "f4539f526a13bd975e0120c92074597178dcac014f7880a9ed454a07aab98675",
@@ -3214,7 +3214,7 @@
     "packages/worker/scripts/resolve-package-dir.mjs": "c4b7f84d185c498e4b9279d1556c4ef6c922856abda8a3a3c5d632bcb2977e95",
     "packages/worker/scripts/rolldown-facet/entry.mjs": "3696ed018a524682b2eb13d0b6244ff662b209073ae2e3b9c094ca3ff4337ac6",
     "packages/worker/scripts/rolldown-facet/shims.mjs": "cc790a0a7af7360f198b301b4f2d8e42848edf1788e9ccbd62335dbd0d41de9e",
-    "packages/worker/scripts/runtime-specs.mjs": "482f58bda7cbaae5ca6e31793ccbbd6e7633779858a743867215e28e090ef2b1",
+    "packages/worker/scripts/runtime-specs.mjs": "0357d3c57f8dc9945fca36a09e4fc9a557e7918d2de7220c60b8b0be9480fbb4",
     "packages/worker/scripts/rust-build-env.mjs": "bee2b7ee81ac5975df573df583b6b67dc176e4491fadcb43c4f3bbc2e81f73d4",
     "packages/worker/scripts/stage-asset.mjs": "2187cb40e0491884adea0ae5deb543205f431e995a4e1e3a726d93d4e1173929",
     "packages/worker/src/_shared/nimbus-debug.ts": "f7bae81c22f6931e64c503ef4afa5db071a876c83341d1e09be8dc5d9141ac77",
