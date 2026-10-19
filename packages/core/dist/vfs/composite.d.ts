@@ -131,6 +131,15 @@ export interface MountOptions {
      * `resolvedByBackend` and hands such a path over whole too.
      */
     resolvesPaths?: boolean;
+    /**
+     * A recursive removal from above (rm -r of a directory holding the mount
+     * point) enters the mount and removes what it holds, as Linux's rm -r
+     * does. Without it, a removal keeps out of the mount, as GNU rm
+     * --one-file-system does: the mount point and everything under it stay,
+     * reported EBUSY, and the rest of the tree is removed. A mount is often
+     * storage that is not the session's (another machine, a user's files).
+     */
+    removalCrosses?: boolean;
 }
 /** Options shared by `route` and `mutationRoute`. */
 export interface VfsRouteOptions {

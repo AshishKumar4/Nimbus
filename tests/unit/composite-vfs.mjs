@@ -154,10 +154,10 @@ const cases = {
     assert.equal(await code(vfs.rmdir('/pc')), 'EBUSY');
     assert.equal(await code(vfs.rename('/pc', '/elsewhere')), 'EBUSY');
     const removal = await vfs.removeRecursive('/pc');
-    assert.deepEqual(removal.removed, ['/pc/a']);
+    assert.deepEqual(removal.removed, []);
     assert.deepEqual(removal.kept, ['/pc']);
     assert.deepEqual(removal.failures.map(({ path, error }) => [path, error.code]), [['/pc', 'EBUSY']]);
-    assert.equal(await vfs.stat('/pc/a'), null, 'recursive removal enters the mount but keeps its root');
+    assert.notEqual(await vfs.stat('/pc/a'), null, 'a recursive removal keeps out of the mount (MountOptions.removalCrosses)');
     assert.equal(await code(vfs.mkdir('/pc')), 'EBUSY');
     assert.equal(await code(vfs.mkdir('/pc', { recursive: true })), 'ok');
     assert.equal(await code(vfs.writeFile('/pc', bytes('x'))), 'EBUSY');

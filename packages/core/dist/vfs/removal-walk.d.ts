@@ -11,6 +11,9 @@
  * vanished, which is no failure: with `keepVanishedAncestors` the
  * directories holding it stay, as GNU leaves them, otherwise they go. A
  * directory that could not be read reports that refusal, not its rmdir's.
+ * A directory the walk does not cross (a mount point, as GNU rm
+ * --one-file-system keeps out of one) is neither read nor removed: it stays,
+ * with what holds it, and is reported EBUSY.
  */
 import { type Awaitable, type VfsRemoval, type VfsStat } from './vfs.js';
 /** What the walk does to the tree, on paths of the walk's own (`rel` and below). */
@@ -23,6 +26,8 @@ export interface RemovalSteps {
     }[]>;
     /** Remove `r` (rmdir when `dir`, else unlink); a throw is that call's refusal. */
     remove(r: string, dir: boolean): Awaitable<void>;
+    /** Whether the walk may enter directory `r`: false for one it must keep out of (a mount point). */
+    crosses?(r: string): boolean;
 }
 export interface RemovalWalk {
     /** The operand, on the steps' paths. */

@@ -191,6 +191,15 @@ export interface MountOptions {
    * `resolvedByBackend` and hands such a path over whole too.
    */
   resolvesPaths?: boolean;
+  /**
+   * A recursive removal from above (rm -r of a directory holding the mount
+   * point) enters the mount and removes what it holds, as Linux's rm -r
+   * does. Without it, a removal keeps out of the mount, as GNU rm
+   * --one-file-system does: the mount point and everything under it stay,
+   * reported EBUSY, and the rest of the tree is removed. A mount is often
+   * storage that is not the session's (another machine, a user's files).
+   */
+  removalCrosses?: boolean;
 }
 
 /** Options shared by `route` and `mutationRoute`. */
@@ -3374,6 +3383,12 @@ export class CompositeVFS implements VFS {
             (backend, backendRel, named) => removeOn(backend, backendRel, dir, this.locate(named).mount, named), { told: null, recursiveEntry: true }),
           () => undefined,
         ),
+        // A mount point is entered only by a mount that asks to be (MountOptions.removalCrosses).
+        crosses: (r) => {
+          const point = at(r);
+          const held = point === ROOT_POINT ? undefined : this.table.mounts.get(point);
+          return held === undefined || held.options.removalCrosses === true;
+        },
       }
       : {
         lstat: (r) => { this.check?.(); return ops.stat(r, { follow: false }); },
