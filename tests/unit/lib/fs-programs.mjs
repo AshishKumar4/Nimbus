@@ -68,7 +68,9 @@ export function program(seed, length = 40, { wasi = false, copies = false, swaps
         const name = NAMES[Math.floor(lateness() * NAMES.length)];
         const to = NAMES[(NAMES.indexOf(name) + 1 + Math.floor(lateness() * (NAMES.length - 1))) % NAMES.length];
         const fd = Math.floor(lateness() * MAX_FDS);
-        out.push({ op: 'late', name, to, fd, fd2: (fd + 1 + Math.floor(lateness() * (MAX_FDS - 1))) % MAX_FDS, data: word() });
+        const fd2 = (fd + 1 + Math.floor(lateness() * (MAX_FDS - 1))) % MAX_FDS;
+        // A third descriptor opens the made name again after the move, before the answer (MAX_FDS is 3).
+        out.push({ op: 'late', name, to, fd, fd2, fd3: 3 - fd - fd2, data: word() });
       }
       if (extra() < 0.1) {
         const from = NAMES[Math.floor(extra() * NAMES.length)];
@@ -77,6 +79,8 @@ export function program(seed, length = 40, { wasi = false, copies = false, swaps
       }
       // A swap with the budget full now and then: what the names beneath it grow by has no room.
       if (swaps && swap() < 0.12) out.push(...(swap() < 0.3 ? [{ op: 'squeeze' }] : []), { op: 'swap', awaited: swap() < 0.4 });
+      // A peer moving the names' directory to a longer name and back, the budget full as the view takes in the move.
+      if (swaps && swap() < 0.05) out.push({ op: 'peerMove' });
       return out;
     });
   }
