@@ -795,7 +795,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       const spelled = 'root' in path ? path.root : this.descriptors.path(path.directory);
       const root = normalizeVfsPath(spelled);
       // A mounted directory's own name (as written past a `..` its backend walks) is where lookups beneath it start.
-      const rootSpelling = 'root' in path || this.descriptors.description(path.directory).mounted !== true ? '/' + root : spelled;
+      const rootSpelling = 'root' in path || !this.descriptors.mounted(path.directory) ? '/' + root : spelled;
       const walk = walkBeneath(root, path, followSymlinks, this.vfs.cred, (name, to) => this.namespace?.resolvedByBackend(name, '/' + root, to) === true, rootSpelling);
       for (let step = walk.next(); ; ) {
         if (step.done) return step.value;
@@ -1019,7 +1019,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   /** The name a descriptor's later lookups start from: a mounted description's own (HeldFile.name: as written past a `..` its backend walks), else its SQLite name. */
   descriptorPath(handleId: number): string {
     const path = this.descriptors.path(handleId);
-    return this.descriptors.description(handleId).mounted === true ? path : '/' + normalizeVfsPath(path);
+    return this.descriptors.mounted(handleId) ? path : '/' + normalizeVfsPath(path);
   }
 
   fstat(handleId: number): RuntimeVfsStat { return syncValue(this.descriptors.fstat(handleId)); }

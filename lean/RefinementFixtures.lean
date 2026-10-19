@@ -62,7 +62,9 @@ def perm : List Json :=
      (kernel, .readFile, ["m", "n", "f", ""]),
      (kernel, .readFile, ["m", "n", "..", "f"])],
    permCase rootOperandTrace [0, 1, 2]
-    [(kernel, .readFile, ["missing", "..", "f"]),
+    [(kernel, .readFile, ["..", "missing", "..", "f"]),
+     (kernel, .readFile, ["..", "f"]),
+     (kernel, .readFile, ["missing", "..", "f"]),
      (kernel, .readFile, ["f", ""]), (kernel, .readFile, ["f", "."]),
      (kernel, .readFile, [".", "f"]), (kernel, .readFile, ["", "f"]),
      (kernel, .readFile, ["link", "..", "f"]),

@@ -493,7 +493,8 @@ structure TailScan where
 
 /-- Design §3: `pos` is the lexical cursor; `cut` and `raw` remember the saved
     position and untouched suffix. Only namespace-owned names and a `..` leaving
-    one move the cut. An escape past the point invalidates the whole operand. -/
+    one move the cut. An escape past a non-root point invalidates the operand;
+    at the resolving root, `..` clamps in place and stays in the raw suffix. -/
 def scanTail (S : St) (point : Path) : Path → Path → List String → List String → TailScan
   | pos, cut, raw, [] =>
     if pos == point || structural S.mounts pos || (ownerOf S.mounts pos).point != point then {}
@@ -501,7 +502,9 @@ def scanTail (S : St) (point : Path) : Path → Path → List String → List St
   | pos, cut, raw, x :: rs =>
     if x = "" ∨ x = "." then scanTail S point pos cut raw rs
     else if x = ".." then
-      if pos == point || !point.isPrefixOf pos then ⟨none, true⟩
+      if pos == point then
+        if point.isEmpty then scanTail S point pos cut raw rs else ⟨none, true⟩
+      else if !point.isPrefixOf pos then ⟨none, true⟩
       else if structural S.mounts pos then scanTail S point pos.dropLast pos.dropLast rs rs
       else scanTail S point pos.dropLast cut raw rs
     else
@@ -516,18 +519,23 @@ def forwardedTail (S : St) (done : Path) (raw : List String) : TailScan :=
 /-- Capturing does not change component ownership or the namespace walk. Once a
     scan has found an operand, later backend-owned steps cannot shorten its raw
     prefix. A namespace-followed link starts a new scan. An escaped point stays
-    lexical until a fresh visit to that point restarts its suffix scan. -/
+    lexical until a fresh named entry to that point (or a link expansion) restarts
+    its suffix scan. Cursor equality after a clamped `..` is not a fresh entry. -/
 structure Capture where
   operand : Option Operand := none
   escaped : List Path := []
 
 def captureTail (S : St) (done : Path) (raw : List String) (cap : Capture) : Capture :=
   let point := (ownerOf S.mounts done).point
-  let cap := if done == point then { cap with escaped := cap.escaped.filter (· != point) } else cap
   if cap.operand.isSome || point ∈ cap.escaped then cap
   else
     let scanned := forwardedTail S done raw
     ⟨scanned.operand, if scanned.escaped then point :: cap.escaped else cap.escaped⟩
+
+/-- Called only after taking an ordinary name, not after a lexical no-op/pop. -/
+def enterCapture (S : St) (q : Path) (cap : Capture) : Capture :=
+  let point := (ownerOf S.mounts q).point
+  if q == point then { cap with escaped := cap.escaped.filter (· != point) } else cap
 
 /-- Linux path walk in the caller's namespace; in a path its backend resolves,
     lexical (the backend answers for the rest). -/
@@ -570,7 +578,7 @@ def walkResolution (S : St) (c : Cred) (follow : Bool) :
     if handed S done x rs then
       if x = "" ∨ x = "." then walkResolution S c follow n h done rs cap
       else if x = ".." then walkResolution S c follow n h done.dropLast rs cap
-      else walkResolution S c follow n h (done ++ [x]) rs cap
+      else walkResolution S c follow n h (done ++ [x]) rs (enterCapture S (done ++ [x]) cap)
     else if !grants c (metaAt S done) 1 then .error "EACCES"
     else if x = "" ∨ x = "." then walkResolution S c follow n h done rs cap
     else if x = ".." then walkResolution S c follow n h done.dropLast rs cap
@@ -584,8 +592,8 @@ def walkResolution (S : St) (c : Cred) (follow : Bool) :
         else match linkComps S q a t with
           | none => .error "ENOTCAPABLE"
           | some l => walkResolution S c follow n (h - 1)
-              (if (S.hands q || a) = true then [] else done) (l ++ rs) { cap with operand := none }
-      | some (.dir, _) => walkResolution S c follow n h q rs cap
+              (if (S.hands q || a) = true then [] else done) (l ++ rs) {}
+      | some (.dir, _) => walkResolution S c follow n h q rs (enterCapture S q cap)
       | some (.file _, _) => if rs = [] then .ok ⟨q, cap.operand⟩ else .error "ENOTDIR"
 
 def resolveResolution (S : St) (c : Cred) (follow : Bool) (raw : List String) : Except String Resolution :=
@@ -1137,9 +1145,19 @@ private theorem the_resolution_keeps_its_operand :
       .ok (some ⟨["m", "n"], ["f"]⟩) ∧
     (resolveResolution rootOperandTrace kernel true ["", "f"]).map Resolution.operand =
       .ok (some ⟨[], ["", "f"]⟩) ∧
+    (resolveResolution rootOperandTrace kernel true ["..", "missing", "..", "f"]).map Resolution.operand =
+      .ok (some ⟨[], ["..", "missing", "..", "f"]⟩) ∧
+    (resolveResolution rootOperandTrace kernel true ["..", "f"]).map Resolution.operand =
+      .ok (some ⟨[], ["..", "f"]⟩) ∧
     (resolveResolution operandTrace kernel true ["m", "..", "m", "missing", "..", "f"]).map Resolution.operand =
       .ok (some ⟨["m"], ["missing", "..", "f"]⟩) := by
-  exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
+  exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
+
+private theorem capture_restarts_only_on_entry :
+    (captureTail operandTrace ["m"] ["f"] { escaped := [["m"]] }).operand = none ∧
+    (captureTail operandTrace ["m"] ["f"]
+      (enterCapture operandTrace ["m"] { escaped := [["m"]] })).operand = some ⟨["m"], ["f"]⟩ := by
+  decide
 
 /-- Namespace ownership stays lexical, while the operand's backend-local walk
     observes missing/non-directory components and the physical parent of a link. -/
@@ -1154,6 +1172,8 @@ private theorem resolving_backends_walk_physically :
     (cOp operandTrace kernel .readFile ["m", "missing", "..", "n", "f"]).1 = .bytes 4 ∧
     (cOp operandTrace kernel .readFile ["m", "n", "..", "..", "x"]).1 = .bytes 99 ∧
     (cOp rootOperandTrace kernel .readFile ["link", "..", "f"]).1 = .bytes 2 ∧
+    (cOp rootOperandTrace kernel .readFile ["..", "missing", "..", "f"]).1 = .err "ENOENT" ∧
+    (cOp rootOperandTrace kernel .readFile ["..", "f"]).1 = .bytes 1 ∧
     (cOp rootOperandTrace kernel .readFile ["missing", "..", "f"]).1 = .err "ENOENT" := by
   decide
 

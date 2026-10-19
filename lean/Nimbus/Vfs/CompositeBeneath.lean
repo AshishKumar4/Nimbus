@@ -123,7 +123,7 @@ def walkBResolution (S : St) (c : Cred) (follow : Bool) (R : Path) :
       if x = "" ∨ x = "." then walkBResolution S c follow R n h done rs cap
       else if x = ".." then
         if done = R then .error "ENOTCAPABLE" else walkBResolution S c follow R n h done.dropLast rs cap
-      else walkBResolution S c follow R n h (done ++ [x]) rs cap
+      else walkBResolution S c follow R n h (done ++ [x]) rs (enterCapture S (done ++ [x]) cap)
     else if !grants c (metaAt S done) 1 then .error "EACCES"
     else if x = "" ∨ x = "." then walkBResolution S c follow R n h done rs cap
     else if x = ".." then
@@ -138,8 +138,8 @@ def walkBResolution (S : St) (c : Cred) (follow : Bool) (R : Path) :
         else match linkComps S q a t with
           | none => .error "ENOTCAPABLE"
           | some l => walkBResolution S c follow R n (h - 1)
-              (if (S.hands q || a) = true then [] else done) (l ++ rs) { cap with operand := none }
-      | some (.dir, _) => walkBResolution S c follow R n h q rs cap
+              (if (S.hands q || a) = true then [] else done) (l ++ rs) {}
+      | some (.dir, _) => walkBResolution S c follow R n h q rs (enterCapture S q cap)
       | some (.file _, _) => if rs = [] then .ok ⟨q, cap.operand⟩ else .error "ENOTDIR"
 
 private theorem walkBResolution_path (S : St) (c : Cred) (f : Bool) (R : Path) :
