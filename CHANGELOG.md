@@ -21,6 +21,12 @@ published independently in the `@nimbus-sh` npm scope.
   the pre-bundle waits. And a map that needs a little more than its
   closure was sized for takes the rest when it is free, instead of
   gathering its whole closure again.
+- Fixed: a Vite preview could crash with "the package changed while its
+  prebundle was being prepared" though nothing in the package changed.
+  Every request for a barrel package (date-fns, say) wrote its synthetic
+  entry file again, and a request still waiting saw that rewrite as a
+  change. The entry is now named by its content and written once, so
+  requests for the same imports share it and others never touch it.
 - Fixed: a program that writes files before it listens as a server, as `react-router dev` (Vite) does from two tasks at once, is no longer ended when its run again writes them in another order. The run again starts from what the first run started from: every file and directory the first run made, changed or removed is put back first, and the run again's changes are its own. If another process changed one of those files meanwhile, or the run changed more than 4096, nothing is put back. The program is run again from its start instead, prints again what it printed, and says why in one line. A program that waited for a marker it wrote itself now serves on its run again instead of ending. Before, the run again had to make the same changes in the same order as the first run, so these programs were ended with "it changed the filesystem otherwise than the run before it".
 - Fixed: a process that ends now says why on its stderr. A run again that stops after it has booted (it did not retrace its run, say) ends with status 1 and its reason. Before, its facet was released while the session showed it running, with no exit and no output. A process whose host the platform reset says so too.
 - Fixed: shell function nesting is bounded. A call past the bound is refused with `f: maximum function nesting level exceeded (N)`, and the rest of its line is discarded, as bash 5.2 does with FUNCNEST set. The shell goes on with the next line, its own or a sourced file's, with `$?` 1; a subshell, command substitution, pipeline element or background job ends with 1; a trap's action ends. The bound is FUNCNEST when it is a number above 0, otherwise 1000, and never more than 1000. Before, a function that called itself ran until the session's heap was gone (bash with no FUNCNEST segfaults).

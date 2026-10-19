@@ -53,6 +53,7 @@
  * dynamically-referenced icon."
  */
 
+import { createHash } from 'node:crypto';
 import { recallOf } from '@nimbus-sh/core/vfs/recall.js';
 import type { PrebundleReadFs } from '../npm/pre-bundle-facet.js';
 import { packageNameFromSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
@@ -643,16 +644,20 @@ function normalizeJoin(dir: string, rel: string): string {
 }
 
 /**
- * VFS path where synthetic entries are written. Lives under the
+ * VFS path where a synthetic entry of `code` is written. Lives under the
  * project's node_modules in a Nimbus-private namespace so package
- * managers don't collide with real package directories.
+ * managers don't collide with real package directories, and is named by
+ * its content: requests for the same names share one file, which is never
+ * rewritten, and requests for other names never write over it, so a
+ * prebundle's plan sees its entry change only if its own bytes did.
  *
- * Format: <projDir>/node_modules/.nimbus-synthetic/<safeName>.entry.js
+ * Format: <projDir>/node_modules/.nimbus-synthetic/<safeName>.<digest>.entry.js
  *
  * Safe name = pkgName with '@' and '/' replaced by '__' so scoped
  * packages produce a valid filesystem path.
  */
-export function syntheticEntryPath(projDir: string, pkgName: string): string {
+export function syntheticEntryPath(projDir: string, pkgName: string, code: string): string {
   const safe = pkgName.replace(/[@/]/g, '__');
-  return projDir + '/node_modules/.nimbus-synthetic/' + safe + '.entry.js';
+  const digest = createHash('sha256').update(code).digest('hex').slice(0, 16);
+  return `${projDir}/node_modules/.nimbus-synthetic/${safe}.${digest}.entry.js`;
 }
