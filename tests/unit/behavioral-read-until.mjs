@@ -12,15 +12,18 @@ import { readUntil } from '../behavioral/_driver.mjs';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// A deadline that falls during a quick read: the wait ends with that read's value.
-for (let i = 0; i < 30; i++) {
+// A deadline that falls during a read: the read still answers the wait.
+{
   let reads = 0;
-  // Each read takes 20 ms, so the 300 ms deadline falls mid-read on some runs and between reads on others.
-  const value = await readUntil(async () => { await sleep(20); return ++reads; }, () => false, 300 + i * 7);
-  assert.equal(typeof value, 'number', `run ${i}: the wait ends with a value`);
-  assert.ok(value >= 1, `run ${i}: at least one read`);
+  const value = await readUntil((signal) => {
+    reads++;
+    if (reads === 1) return Promise.resolve('before');
+    // In flight at the deadline, it answers 50 ms after it.
+    return new Promise((resolve) => signal.addEventListener('abort', () => setTimeout(() => resolve('in flight'), 50), { once: true }));
+  }, () => false, 300);
+  assert.equal(value, 'in flight');
+  console.log('  ✓ a read in flight at the deadline answers the wait');
 }
-console.log('  ✓ a condition that never holds ends with the last value, wherever the deadline falls');
 
 // A read that never answers stalls the wait, and it says so.
 {
@@ -40,6 +43,17 @@ console.log('  ✓ a condition that never holds ends with the last value, wherev
   }), () => false, 300);
   assert.equal(value, 'first');
   console.log('  ✓ a read the deadline aborts ends the wait with the value before it');
+}
+
+// A read that fails for its own reason after the deadline fails the wait.
+{
+  let reads = 0;
+  await assert.rejects(readUntil((signal) => {
+    reads++;
+    if (reads === 1) return Promise.resolve('before');
+    return new Promise((_, reject) => signal.addEventListener('abort', () => reject(new Error('the page went away')), { once: true }));
+  }, () => false, 300), /the page went away/);
+  console.log('  ✓ a read failing for its own reason fails the wait');
 }
 
 // The condition met: the wait ends at once with the value that met it.
