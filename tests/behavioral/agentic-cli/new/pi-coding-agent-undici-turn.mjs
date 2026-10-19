@@ -16,12 +16,15 @@
 import {
   connectProcessTerminal,
   deleteSession,
+  fetchPort,
   heredocCommand,
   makeAsserter,
   mintSession,
-  sleep,
+  readUntil,
   stripAnsi,
   Terminal,
+  hasOutputLine,
+  outputLines,
 } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -92,7 +95,10 @@ try {
   const boot = stripAnsi((await t.run('node /home/user/mock-provider.js', 90_000)).output);
   a.check('in-session model server is listening',
     /LISTENING 7411|facet started \(long-running\)/.test(boot), JSON.stringify(boot.slice(-600)));
-  await sleep(3000);
+  // Ready once it serves its model list on its port.
+  const serving = (r) => r.status === 200 && r.body.includes('mock-1');
+  const models = await readUntil((signal) => fetchPort(sid, 7411, 'v1/models', { signal }), serving, 30_000);
+  a.check('in-session model server serves its model list', serving(models), `status=${models.status} body=${models.body.slice(0, 200)}`);
 
   await t.run('mkdir -p /home/user/.pi/agent', 30_000);
   await t.run(heredocCommand('/home/user/.pi/agent/models.json', modelsJson), 30_000);
@@ -106,9 +112,9 @@ try {
   if (pid > 0) {
     const proc = await connectProcessTerminal(sid, pid);
     // A turn that never lands is the failure this probe exists to catch, so
-    // the timeout is recorded as one rather than aborting the run.
-    await proc.waitFor((out) => out.includes(REPLY), 240_000, 'pi turn output').catch(() => {});
-    turn = `${launch}\n${proc.output}`;
+    // the timeout is recorded with the turn rather than aborting the run.
+    const missed = await proc.waitFor((out) => out.includes(REPLY), 240_000, 'pi turn output').then(() => '', (error) => `\n${error.message}`);
+    turn = `${launch}\n${proc.output}${missed}`;
     try { proc.ws.close(); } catch { /* probe teardown */ }
   }
 
@@ -121,7 +127,7 @@ try {
   const shadow = stripAnsi((await t.run(
     "grep -l 'Nimbus' $(find / -path '*/node_modules/undici/index.js' 2>/dev/null) 2>/dev/null; echo SCANNED", 90_000)).output);
   a.check('no undici on disk was shadowed with a stub',
-    /SCANNED/.test(shadow) && !/node_modules\/undici\/index\.js\s*$/m.test(shadow.split('SCANNED')[0]),
+    hasOutputLine(shadow, 'SCANNED') && !outputLines(shadow).slice(0, outputLines(shadow).indexOf('SCANNED')).some((line) => line.endsWith('node_modules/undici/index.js')),
     JSON.stringify(shadow.slice(-900)));
 } finally {
   await t.close();

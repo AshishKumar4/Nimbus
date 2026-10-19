@@ -1,29 +1,14 @@
 /**
- * vfs/path.ts — Canonical VFS path normalization.
- *
- * Replaces three near-duplicate implementations that lived in
- * git/commands.ts, esbuild-service.ts, and require-resolver.ts. The
- * git version had a defensive bounds check (`out.length > 0`
- * before pop) that the others lacked — that safer behavior is the one
- * preserved here.
- *
- * Facet-isolate code-string copies (for example git/network-facet.ts,
- * pre-bundle-facet, and node-shims generated/runtime strings) cannot import
- * this module and must keep their inline implementations; those copies are
- * documented as justified.
- *
- * Semantics:
- *   - Strip empty segments (collapses `//` runs)
- *   - Drop `.` segments
- *   - Pop on `..`, but only if there's something to pop (won't escape root)
- *   - Returns slash-joined string with NO leading/trailing slash, suitable
- *     for direct VFS lookup keys
+ * vfs/path.ts — Canonical VFS path normalization: a path as the store's key,
+ * its names reduced by the one root-clamped lexical reduction
+ * (rootClampedSegments) with no leading or trailing slash.
  *
  * Examples:
  *   normalizeVfsPath('/foo/./bar/../baz') -> 'foo/baz'
  *   normalizeVfsPath('/foo//bar/')         -> 'foo/bar'
  *   normalizeVfsPath('../escape')          -> 'escape'  (bounded; doesn't go negative)
  */
+import { rootClampedSegments } from '@nimbus-sh/platform/lexical-path.js';
 /**
  * A spelling normalizeVfsPath would change beyond one leading slash: a
  * trailing slash, an empty segment, or a `.`/`..` segment.
@@ -40,7 +25,7 @@ export function normalizeVfsPath(p) {
     const plain = plainVfsPath(text);
     if (plain !== null)
         return plain;
-    return normalizedSegments(text, false);
+    return rootClampedSegments(text).join('/');
 }
 /** Dot-only spellings may use indexed lookup; parents and trailing directory checks must be walked. */
 let recentLookup = null;
@@ -57,25 +42,22 @@ export function normalizeVfsLookupPath(path) {
         recentLookup = matched;
         return matched.key;
     }
-    const key = normalizedSegments(path, true);
+    const key = lookupKey(path);
     priorLookup = recentLookup;
     recentLookup = { path, key };
     return key;
 }
-function normalizedSegments(path, lookup) {
+/** A path's indexed-lookup key: null when a parent or a directory-sensitive ending must be walked instead. */
+function lookupKey(path) {
     const segments = path.split('/');
     const leaf = segments[segments.length - 1];
-    if (lookup && (leaf === '' || leaf === '.'))
+    if (leaf === '' || leaf === '.')
         return null;
     const out = [];
-    // `..` at the root stays at the root, as POSIX resolves `/..`.
     for (const seg of segments) {
-        if (seg === '..') {
-            if (lookup)
-                return null;
-            out.pop();
-        }
-        else if (seg !== '.' && seg !== '')
+        if (seg === '..')
+            return null;
+        if (seg !== '.' && seg !== '')
             out.push(seg);
     }
     return out.join('/');

@@ -66,6 +66,8 @@ export interface EsmMissing {
   readonly message: string;
   /** The URL Node's resolution error carries (a module or directory not found). */
   readonly url?: string;
+  /** Its cause, a URL parser's ERR_INVALID_URL (ERR_UNSUPPORTED_RESOLVE_REQUEST's): the specifier and the base it would not parse against. */
+  readonly invalidUrl?: { readonly input: string; readonly base: string };
 }
 
 /** What a launch stages for its ES modules. */
@@ -123,7 +125,14 @@ function refusal(error: unknown): EsmMissing {
   const failure = error instanceof Error ? error : new Error(String(error));
   const code = Reflect.get(failure, 'code');
   const url = Reflect.get(failure, 'url');
-  return { name: failure.name, code: typeof code === 'string' ? code : '', message: failure.message, ...(typeof url === 'string' ? { url } : {}) };
+  const cause: unknown = Reflect.get(failure, 'cause');
+  const input = cause instanceof Error && Reflect.get(cause, 'code') === 'ERR_INVALID_URL' ? Reflect.get(cause, 'input') : undefined;
+  const base = cause instanceof Error ? Reflect.get(cause, 'base') : undefined;
+  return {
+    name: failure.name, code: typeof code === 'string' ? code : '', message: failure.message,
+    ...(typeof url === 'string' ? { url } : {}),
+    ...(typeof input === 'string' && typeof base === 'string' ? { invalidUrl: { input, base } } : {}),
+  };
 }
 
 /**
@@ -134,7 +143,7 @@ function refusal(error: unknown): EsmMissing {
 export async function stageEsModules(
   fs: EsmStageFs,
   cells: ReadonlyMap<string, { readonly code: string; readonly sites: ImportSites }>,
-  { conditions, cwd, isCode, gate, scope = 'node', stripsTypes = false, typeScript = true }: {
+  { conditions, cwd, isCode, gate, emitted, scope = 'node', stripsTypes = false, typeScript = true }: {
     /** Node strips TypeScript's types (node-cli.ts typeScriptStripOptions): it refuses TypeScript under node_modules. */
     stripsTypes?: boolean;
     /** A TypeScript file has a format (EsmResolverOptions.stripTypes): not under `--no-experimental-strip-types`. */
@@ -147,6 +156,8 @@ export async function stageEsModules(
     isCode(key: string): boolean;
     /** Whether the registry needs each module gated: workerd (native-esm.ts). */
     gate: boolean;
+    /** A member's text as it becomes known, before the next filesystem question. */
+    emitted?(path: string, text: string): void;
   },
 ): Promise<EsmStage> {
   const started = Date.now();
@@ -155,6 +166,7 @@ export async function stageEsModules(
     [ESM_HOST_MODULE]: ESM_HOST_SOURCE,
     [ESM_META_MODULE]: metaModuleSource(gate),
   };
+  if (emitted) for (const [path, text] of Object.entries(members)) emitted(path, text);
   const missing: EsmMissing[] = [];
   // A cell's id is its place among `cells`: the table's first rows, its targets filled as it is staged.
   const targetIds: number[][] = [];
@@ -176,7 +188,9 @@ export async function stageEsModules(
       const row: EsmModuleRow = [kind, key];
       const name = esmRowName(row, id);
       table.push(row);
-      members[name] = source(id, name);
+      const text = source(id, name);
+      emitted?.(name, text);
+      members[name] = text;
       bindings[id] = ['default', ...exported];
       ids.set(`${kind}:${key}`, id);
     }
@@ -281,6 +295,8 @@ export async function stageEsModules(
       const exported = (FACET_PROVIDED_PACKAGES.includes(builtin) ? PROVIDED_PACKAGE_EXPORTS[builtin] : NODE_BUILTIN_EXPORTS[builtin]) ?? [];
       return member('builtin', builtin, exported, (id, name) => builtinFacadeModule(name, id, exported));
     }
+    // A data: URL's module is the runtime's to make (node-shims' data loader), as an import of it at runtime is.
+    if (resolution.format === 'data') throw notStaged(resolution.url, resolution.url);
     if (resolution.path === undefined) throw new Error(`Nimbus: ${resolution.url} has no file to stage`);
     // A query's or fragment's module is an instance of its own (Node keys
     // modules by URL), which a row by path cannot be: the importer's graph
@@ -333,14 +349,14 @@ export async function stageEsModules(
       try {
         // A provided package by its bare name is the process's own, never an installed copy.
         const resolution = FACET_PROVIDED_PACKAGES.includes(site.specifier)
-          ? { url: site.specifier, format: 'builtin' as const, builtin: site.specifier }
+          ? { url: site.specifier, path: undefined, format: 'builtin' as const, builtin: site.specifier }
           : await resolver.resolve(site.specifier, parentUrl.href).catch(async (error: unknown) => {
             // Bun's resolution probes what Node's refuses (a `.js` naming its `.ts`, an extensionless path).
             const probed = scope === 'bun' ? await requireResolve(site.specifier, parentUrl.pathname) : null;
             if (probed === null) throw error;
             const url = new URL('file://');
             url.pathname = probed;
-            return { url: url.href, path: probed, format: cells.has(stripLeadingSlashes(probed)) ? 'module' as const : 'commonjs' as const };
+            return { url: url.href, path: probed, builtin: undefined, format: cells.has(stripLeadingSlashes(probed)) ? 'module' as const : 'commonjs' as const };
           });
         const row = await target(resolution, site.attributes);
         rowTargets.push(row);
@@ -348,7 +364,12 @@ export async function stageEsModules(
       } catch (error) {
         rowTargets.push(-2 - missing.length);
         targets.push(`${ESM_MISSING_DIR}${missing.length}.js`);
-        missing.push(refusal(error));
+        // A file the launch's files lack, the program may write before the
+        // import: its importer's graph is the interpreter's, which resolves it
+        // then, as Node's loader does, and fails as Node's if it is missing still.
+        const url = Reflect.get(Object(error), 'url');
+        const later = Reflect.get(Object(error), 'code') === 'ERR_MODULE_NOT_FOUND' && typeof url === 'string' && url.startsWith('file:');
+        missing.push(refusal(later ? notStaged(new URL(url).pathname, url) : error));
       }
     }
     targetNames.push(targets);
@@ -379,11 +400,13 @@ export async function stageEsModules(
   const modules = new Map<string, StagedEsModule>();
   id = 0;
   for (const [key, { code, sites }] of cells) {
-    modules.set(key, stageEsModule(code, sites, {
+    const staged = stageEsModule(code, sites, {
       id, name: commonJsCellModuleName(key), targets: targetNames[id]!,
       ...(hoisted[id]!.length > 0 ? { hoisted: hoisted[id] } : {}),
       ...(sites.commonJsNames ? { commonJsNames: sites.commonJsNames } : {}),
-    }));
+    });
+    emitted?.(key, staged.text);
+    modules.set(key, staged);
     id++;
   }
   for (let row = 0; row < table.length; row++) bindings[row] ??= null;

@@ -24,7 +24,7 @@
 // exactly why it went unnoticed.
 
 import {
-  mintSession, Terminal, makeAsserter, stripAnsi, sleep, requestHeaders, BASE,
+  mintSession, Terminal, makeAsserter, stripAnsi, sleep, requestHeaders, BASE, hasOutputLine, outputLines,
 } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -128,7 +128,7 @@ const marked = (marker, then, bound) => [
     'setTimeout(()=>{},8000);',
   ].join('');
   await t.run(`node -e '${program}' &`, 20_000);
-  await sleep(2000);
+  // read() polls for the file for about 5 s, inside the writer's 8 s life.
   const seen = await read(path);
   a.check(
     'another process reads a synchronous write while the writing process is still running',
@@ -191,7 +191,7 @@ const marked = (marker, then, bound) => [
   );
   a.check(
     'a relayed socket either connects or reports why — it never silently does nothing',
-    /WS_OPEN|WS_ERROR/.test(out),
+    hasOutputLine(out, 'WS_OPEN') || outputLines(out).some((line) => line.startsWith('WS_ERROR[')),
     `tail: ${JSON.stringify(out.slice(-500))}`,
   );
 }

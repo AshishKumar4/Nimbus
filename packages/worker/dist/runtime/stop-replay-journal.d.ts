@@ -36,7 +36,7 @@ export declare class ReplayJournal {
     /** Why the current run cannot be replayed: the first thing it did outside itself, or a bound. */
     private disqualified;
     private bodies;
-    /** Protocol replies are also digested; their replay is owned by the input/output tapes. */
+    /** Protocol replies are bounded here; their replay is owned by the input/output tapes. */
     private protocolReplies;
     diverged: string | null;
     private expected;

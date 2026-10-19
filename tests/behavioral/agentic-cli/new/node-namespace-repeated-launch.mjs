@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // Repeated launches after warming a 2MiB CommonJS fixture.
-import { mintSession, Terminal, makeAsserter, deleteSession, heredocCommand, termBody } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, deleteSession, heredocCommand, termBody, outputLines } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const label = 'agentic-cli/new/node-namespace-repeated-launch';
@@ -39,7 +39,7 @@ try {
     const started = Date.now();
     const out = termBody((await terminal.run('cd /home/user/bench && for i in $(seq 50); do echo NODE_NS_ITER=$i; node -e 1; done; echo NAMESPACE_LOOP_RC=$?', 180_000)).output);
     let iteration = 0;
-    for (const line of out.split('\n')) {
+    for (const line of outputLines(out)) {
       const marker = /NODE_NS_ITER=(\d+)/.exec(line);
       if (marker) iteration = Number(marker[1]);
       if (/the process was not started/.test(line)) console.log(`LOOP${n} ITER${iteration}: ${line}`);

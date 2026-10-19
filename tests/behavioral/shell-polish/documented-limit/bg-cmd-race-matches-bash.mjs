@@ -28,7 +28,7 @@
 // Category: R (runtime-behavioral) — documents the intentional race.
 //           Test passes when output DOES land within a bounded window.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi, sleep } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, sleep, hasOutputLine } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('shell-polish/bg-cmd-race-matches-bash');
@@ -44,13 +44,13 @@ await t.waitForPrompt(60_000);
 //    just assert both appear within a bounded window.
 {
   t.reset();
-  t.cmd('echo bg-race-marker-7842 &');
+  t.cmd("printf '\\nbg-race-marker-7842\\n' &");
   // Wait for the job notice, bash's `[1] PID`.
   await t.waitFor((b) => /^\[1\] \d+\r?$/m.test(b), 5_000, 'bg banner');
   // Now poll for the actual output up to 3s.
   let sawOutput = false;
   for (let i = 0; i < 30; i++) {
-    if (/\bbg-race-marker-7842\b/.test(stripAnsi(t.buf))) { sawOutput = true; break; }
+    if (hasOutputLine(t.buf, 'bg-race-marker-7842')) { sawOutput = true; break; }
     await sleep(100);
   }
   a.check('naked cmd & emits the [1] PID job notice', /^\[1\] \d+\r?$/m.test(stripAnsi(t.buf)),
@@ -66,7 +66,7 @@ await t.waitForPrompt(60_000);
   await t.run('echo flush-marker', 5_000);
   const r = await t.run('echo wait-marker-9156 & wait', 10_000);
   const out = stripAnsi(r.output);
-  const has = out.split(/\r?\n/).some((l) => l.trim() === 'wait-marker-9156');
+  const has = hasOutputLine(r.output, 'wait-marker-9156');
   a.check('cmd & wait emits stdout deterministically before next prompt', has,
     has ? '' : JSON.stringify(out.slice(-400)));
 }
@@ -75,7 +75,7 @@ await t.waitForPrompt(60_000);
 {
   const r = await t.run('wait; echo "wait-done=$?"', 10_000);
   const out = stripAnsi(r.output);
-  const has = out.split(/\r?\n/).some((l) => l.trim() === 'wait-done=0');
+  const has = hasOutputLine(r.output, 'wait-done=0');
   a.check('bare `wait` (no jobs) exits 0', has,
     has ? '' : JSON.stringify(out.slice(-400)));
 }

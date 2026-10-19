@@ -17,19 +17,51 @@
  * (fast — direct VFS access) and ships the entire `{path → bytes}` slice as
  * part of the spec; the bundler reads from that in-memory map.
  */
-import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import type { ResolvedPackage } from './resolver.js';
+import type { CredentialedVfs, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { SliceEntry } from '@nimbus-sh/core/runtime/prebundle-slice.js';
 export type { PrebundleResult, PrebundleSpec, SlicedDir, SlicedFile, SliceEntry } from '@nimbus-sh/core/runtime/prebundle-slice.js';
-export declare function buildSliceForSpecifierWithCap(vfs: CredentialedVfs, specifier: string, nmDir: string, capBytes: number): {
+export type PrebundleReadFs = Pick<CredentialedVfs, 'exists' | 'isDirectory' | 'access' | 'readdir' | 'readFile' | 'readFileString'> & {
+    stat(path: string): Readonly<VfsStat>;
+    revision(): number;
+};
+/** Only consulted answers guard a plan: sibling package/synthetic writes are not inputs. */
+export declare class PrebundleInputs {
+    private readonly vfs;
+    readonly fs: PrebundleReadFs;
+    private readonly checks;
+    private readonly stats;
+    private checkedRevision;
+    constructor(vfs: PrebundleReadFs);
+    private remember;
+    private file;
+    current(): boolean;
+}
+export interface SlicePlanEntry {
+    path: string;
+    slicePath: string;
+    isDir: boolean;
+    size: number;
+}
+export interface PrebundleSlicePlan {
+    inputs: PrebundleInputs;
+    entries: SlicePlanEntry[];
+    totalBytes: number;
+    allocationBytes: number;
+}
+export declare class PrebundlePlanChanged extends Error {
+    constructor();
+}
+export declare function buildSliceForSpecifierWithCap(vfs: PrebundleReadFs, specifier: string, nmDir: string, capBytes: number): {
     slice: SliceEntry[];
     totalBytes: number;
 } | null;
-/**
- * Choose the externals list for a specifier, exported so the supervisor
- * can compute the same value when building the spec without re-pulling
- * the helper from esbuild-service.ts on the call site.
- */
-export declare function externalsForSpecifier(specifier: string): string[];
-export type _ResolvedPackage = ResolvedPackage;
+/** Discover names and sizes without retaining a slice; metadata parsing owns only its current input. */
+export declare function planSliceForSpecifierWithCap(vfs: PrebundleReadFs, specifier: string, nmDir: string, capBytes: number, inputs?: PrebundleInputs): PrebundleSlicePlan | null;
+/** A discovered scoped graph, including the same directories its old slice carried. */
+export declare function planSliceFromPaths(vfs: PrebundleReadFs, paths: ReadonlyArray<{
+    path: string;
+    isDir: boolean;
+}>, capBytes: number, inputs?: PrebundleInputs): PrebundleSlicePlan | null;
+/** Synchronous and admitted by its caller: no parser/RPC wait can retain a partial slice. */
+export declare function materializePrebundleSlice(vfs: PrebundleReadFs, plan: PrebundleSlicePlan): SliceEntry[];
 //# sourceMappingURL=pre-bundle-facet.d.ts.map

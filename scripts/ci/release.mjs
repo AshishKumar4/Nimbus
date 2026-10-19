@@ -20,6 +20,8 @@
 //      waitForTarget and waitForVersion: the edge serves the old version for
 //      a while after a deploy).
 //   3. The staging matrix, from containers (scripts/ci/remote-probes.mjs),
+//      its paired perf probes measured against the commit production serves
+//      (the latest green promotion recorded here),
 //      graded row by row (scripts/ci/lib/matrix.mjs): green only if every
 //      red row is a probe the user deferred (tests/behavioral/_deferred.mjs)
 //      and every deferred probe ran and failed; user-excluded probes skip this matrix:
@@ -104,8 +106,17 @@ assertInstalled(repo, 'release');
 }
 
 // Imported once the install is known to be here: the upload path parses wrangler configs through it.
-const { fetchRelease, releaseDigest } = await import('./lib/release.mjs');
+const { fetchRelease, productionCommit, releaseDigest } = await import('./lib/release.mjs');
+const { hostedWorkerName } = await import('../deploy-isolation.mjs');
 const { holdLease } = await import('./lib/lease.mjs');
+
+// The paired perf probes grade this release against what production serves (remote-probes --baseline).
+let production;
+try {
+  production = productionCommit();
+} catch (error) {
+  notGraded(error.message);
+}
 
 let dir;
 let release;
@@ -164,8 +175,8 @@ function probes(args) {
 let exit = 0;
 if (!flags['no-matrix']) {
   const repeat = flags.repeat ?? REPEATED.join(',');
-  const suite = probes(matrixProbeArgs(DEFERRED, { repeat, times: flags.times ?? '5' }));
-  const demo = staged.versions['nimbus-staging']?.base;
+  const suite = probes([...matrixProbeArgs(DEFERRED, { repeat, times: flags.times ?? '5' }), '--baseline', production]);
+  const demo = staged.versions[hostedWorkerName(repo, 'staging')]?.base;
   const hosted = demo ? probes(['--target', `hosted:${new URL(demo).origin}`, '--only', HOSTED_DEMO_CHECKS.join(','), '--parts', '1', '--jobs', String(HOSTED_DEMO_CHECKS.length)])
     : { exitCode: 2, verdict: null };
   // Graded row by row against the user's deferrals (lib/matrix.mjs): green

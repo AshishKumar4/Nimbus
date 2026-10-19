@@ -27,12 +27,12 @@
  * catch-and-continue around loader failures.
  */
 
-import type { RuntimeManifest } from './runtime-manifest.js';
+import { installedPath, type RuntimeManifest } from './runtime-manifest.js';
 import { CLANG_CALL_TASK } from './compiled-bodies.generated.js';
 import { type ProcessView, withHostView } from './process-files.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
-import type { Facet, FacetHost } from './facet-host.js';
-import type { ClangFacetResult } from './facet-tasks.js';
+import type { Facet, FacetImage, FacetSpec, FacetSubmitOptions } from './facet-host.js';
+import type { ClangFacetResult, clangFacetCall } from './facet-tasks.js';
 import { CRED_KERNEL, gateSyncLaunch, requireVfsCred, WASM32_WASI_NIMBUS_ABI, type NimbusFilesystemAuthority, type VfsCred } from './os-contracts.js';
 import { normalizeVfsPath, resolveVfsPath } from '../vfs/path.js';
 import { hasLeadingCliFlag } from './cli-flags.js';
@@ -46,36 +46,31 @@ import { errorText } from '../_shared/error-text.js';
 
 const CLANG_VERSION_FLAGS = new Set(['--version', '-v']);
 
+/**
+ * What the runner uses of a facet: the clang call, and its disposal. Every
+ * FacetHost's facets are these.
+ */
+export interface ClangFacet extends Pick<Facet, 'dispose'> {
+  submit(task: typeof CLANG_CALL_TASK, args: Parameters<typeof clangFacetCall>[0], options?: FacetSubmitOptions): Promise<ClangFacetResult>;
+}
+
 /** Build the runner factory. Closes over the facet host and the filesystem authority. */
 export function makeClangRunnerFactory(deps: {
-  facets: FacetHost;
+  facets: { open(spec: FacetSpec): ClangFacet };
   filesystem: NimbusFilesystemAuthority;
   processes: SessionProcessSupervisor;
 }): (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) =>
     Command {
 
   return function clangRunnerFactory(manifest, installRoot, binName, binKind) {
-    const findFile = (rel: string): string | null => {
-      const entry = manifest.files.find((f) => f.path === rel);
-      return entry ? `${installRoot}/${entry.path}` : null;
-    };
-
-    const clangVfsPath   = findFile('bin/clang');
-    const lldVfsPath     = findFile('bin/wasm-ld');
-    const sysrootVfsPath = findFile('share/clang/sysroot.tar');
+    const clangVfsPath   = installedPath(manifest, installRoot, 'bin/clang');
+    const lldVfsPath     = installedPath(manifest, installRoot, 'bin/wasm-ld');
+    const sysrootVfsPath = installedPath(manifest, installRoot, 'share/clang/sysroot.tar');
     // Guest-visible: the toolchain is handed this as an absolute path.
     const sysrootDir = `/${normalizeVfsPath(`${installRoot}/${SYSROOT_DIR_REL}`)}`;
-    // Each made once, by the first run that needs it, and again by the next
-    // after a failure. clang is read only to compile and wasm-ld only to
-    // link: a compile-only run, or one whose compile fails, never reads the
-    // linker. The images are read uncached: one-shot bulk reads of large
-    // blobs (clang 31 MiB, wasm-ld 18.5 MiB, sysroot 9.3 MiB) routed through
-    // the LRU content cache would evict the user's hot working set and pin
-    // the chunks in the DO heap for the session, tipping heavy sessions into
-    // an OOM reset mid-compile.
+    // Made once, by the first run that needs it, and again by the next after
+    // a failure.
     const sysroot = lazily<void>();
-    const clangImage = lazily<ArrayBuffer>();
-    const lldImage = lazily<ArrayBuffer>();
 
     // Installed toolchain blobs are supervisor-owned artifacts, so they are read
     // through a kernel host lease that lives exactly as long as one invocation.
@@ -170,15 +165,18 @@ export function makeClangRunnerFactory(deps: {
       // Opened per invocation, not cached: the supervisor capability is bound
       // to this process's pid when the facet opens, so one held across calls
       // would hand every later caller the first caller's credential.
-      // A phase's target, opened when the phase first runs, its image read
-      // then; null, said, when the image cannot be read.
+      // A phase's target, opened when the phase first runs; null, said, when
+      // its image cannot be opened. clang is opened only to compile and
+      // wasm-ld only to link: a compile-only run, or one whose compile fails,
+      // never opens the linker. The images (clang 31 MiB, wasm-ld 18.5 MiB)
+      // are opened, not read: the host reads one, uncached, for its facet's
+      // load alone (FacetImage), so the session holds neither between loads
+      // and never both at once.
       const opened: ClangFacetTarget[] = [];
       const openTarget = async (primaryName: 'clang' | 'wasm-ld'): Promise<ClangFacetTarget | null> => {
-        let image: ArrayBuffer;
+        let image: FacetImage;
         try {
-          image = primaryName === 'clang'
-            ? await clangImage(() => runtimeVfs.readArrayBufferUncached(clangVfsPath))
-            : await lldImage(() => runtimeVfs.readArrayBufferUncached(lldVfsPath));
+          image = await runtimeVfs.image(primaryName === 'clang' ? clangVfsPath : lldVfsPath);
         } catch (e: unknown) {
           ctx.stderr.write(`${binName}: ${primaryName} runtime warm-up failed: ${errorText(e)}\n`);
           return null;
@@ -567,7 +565,7 @@ interface ClangFacetArgs {
 interface ClangFacetTarget {
   primaryName: 'clang' | 'wasm-ld';
   pid: number;
-  facet: Facet;
+  facet: ClangFacet;
 }
 
 /** A load made once, by the first call that wants it; one that failed is made again by the next. */

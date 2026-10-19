@@ -10,6 +10,9 @@
  * that cannot be a real object, and past it a JS number silently loses bits.
  */
 
+import { createHash } from 'node:crypto';
+import { HEX_BYTE } from '@nimbus-sh/platform/hex.js';
+
 export const PACK_HEADER_BYTES = 12;
 export const PACK_TRAILER_BYTES = 20;
 export const OID_BYTES = 20;
@@ -247,11 +250,15 @@ export function objectIdPrefix(type: GitObjectType, size: number): Uint8Array {
   return OBJECT_HEADER_ENCODER.encode(type + ' ' + size + '\0');
 }
 
-const HEX = Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, '0'));
+/** An object's id: SHA-1 of its prefix and its bytes. */
+export function objectHash(type: GitObjectType, data: Uint8Array): Uint8Array {
+  return createHash('sha1').update(objectIdPrefix(type, data.byteLength)).update(data).digest();
+}
 
+/** The object id at `at` in `oid` (an id alone, or one inside a tree, an index or a pack), as hex. */
 export function oidToHex(oid: Uint8Array, at = 0): string {
   let hex = '';
-  for (let i = at; i < at + OID_BYTES; i++) hex += HEX[oid[i]];
+  for (let i = at; i < at + OID_BYTES; i++) hex += HEX_BYTE[oid[i]];
   return hex;
 }
 
@@ -259,6 +266,11 @@ const OID_HEX_PATTERN = /^[0-9a-f]{40}$/;
 
 export function oidFromHex(hex: string): Uint8Array {
   if (!OID_HEX_PATTERN.test(hex)) throw new PackFormatError('invalid object id ' + JSON.stringify(hex));
+  return oidBytes(hex);
+}
+
+/** The bytes of `hex`, an object id known to be 40 lowercase hex digits (oidFromHex checks one). */
+export function oidBytes(hex: string): Uint8Array {
   const oid = new Uint8Array(OID_BYTES);
   for (let i = 0; i < OID_BYTES; i++) oid[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
   return oid;

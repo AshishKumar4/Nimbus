@@ -33,6 +33,7 @@
 // (parsing package-lock.json). See _shared/install-phase.ts for full
 // semantics documentation.
 import type { InstallPhase } from './install-phase.js';
+import { readSupervisorAllocationAttribution, type AllocationAttribution, type SupervisorAllocationLease } from './heavy-alloc-coord.js';
 
 export interface DiagCounters {
   /** Top-level install phase. */
@@ -62,13 +63,22 @@ export interface DiagCounters {
    * `buildPrefetchBundle` accumulates raw VFS file contents into an in-heap
    * bundle object, and used to do so with nothing observing it: the estimator
    * read 9.4 MiB while those bytes were resetting the DO. Each build now takes
-   * an `acquireSupervisorAllocation` lease for the budget it may use and bumps
-   * this alongside it, so the reservation is ATTRIBUTED to the bundle path
-   * rather than landing in `unattributedReservationBytes`.
+   * an `acquireSupervisorAllocation` lease for the budget it may use, counted
+   * here while it is held (attributeAllocation), so the reservation is
+   * ATTRIBUTED to the bundle path rather than landing in
+   * `unattributedReservationBytes`.
    *
    * Surfaced as `breakdown.prefetchBundleBytes`. Back to zero between builds.
    */
   prefetchBundleBytes: number;
+  /**
+   * Bytes the slices of pre-bundles in flight hold: each build's lease
+   * (browser-prebundle.ts), counted while it is held (attributeAllocation),
+   * after it shrinks to the slice it walked.
+   *
+   * Surfaced as `breakdown.preBundleSliceBytes`. Back to zero between builds.
+   */
+  preBundleSliceBytes: number;
   /**
    * Bytes retained by the FacetManager's prefetch-bundle LRU right now.
    *
@@ -145,10 +155,9 @@ export interface DiagCounters {
   };
 }
 
-const _counters: DiagCounters = {
+const _counters: Omit<DiagCounters, 'prefetchBundleBytes' | 'preBundleSliceBytes'> = {
   installPhase: 'idle',
   inFlightRpcPayloadBytes: 0,
-  prefetchBundleBytes: 0,
   prefetchCacheBytes: 0,
   supervisorAnsweredBytes: 0,
   installFacet: {
@@ -174,7 +183,7 @@ const _counters: DiagCounters = {
 
 /** Read a snapshot — caller-side mutations don't affect the singleton. */
 export function readDiagCounters(): DiagCounters {
-  return { ..._counters };
+  return { ..._counters, ...readSupervisorAllocationAttribution() };
 }
 
 /** Count `bytes` the session answered a process's supervisor call with. */
@@ -229,24 +238,16 @@ export function rpcPayloadEnd(bytes: number): void {
   }
 }
 
-/**
- * Track an in-flight prefetch-bundle build. Call with the byte reservation the
- * build took from the supervisor allocation budget, and pair with
- * `prefetchBundleEnd` in the matching `finally` so it returns to zero whether
- * the build succeeded or threw.
- */
-export function prefetchBundleStart(bytes: number): void {
-  const n = Number(bytes);
-  if (!Number.isFinite(n) || n <= 0) return;
-  _counters.prefetchBundleBytes += n;
-}
+/** The counters that name the live allocation leases of one owner. */
+export type AllocationOwner = AllocationAttribution;
 
-/** Release an in-flight prefetch-bundle reservation. Floors at 0. */
-export function prefetchBundleEnd(bytes: number): void {
-  const n = Number(bytes);
-  if (!Number.isFinite(n) || n <= 0) return;
-  _counters.prefetchBundleBytes -= n;
-  if (_counters.prefetchBundleBytes < 0) _counters.prefetchBundleBytes = 0;
+/**
+ * Attribution belongs to the budget's actual lease. The public gauges are
+ * derived from its holders, never maintained in a second counter registry.
+ */
+export function attributeAllocation(owner: AllocationOwner, lease: SupervisorAllocationLease): SupervisorAllocationLease {
+  lease.attribute(owner);
+  return lease;
 }
 
 /**

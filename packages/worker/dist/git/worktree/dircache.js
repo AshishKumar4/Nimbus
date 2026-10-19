@@ -10,11 +10,13 @@
  * written by one ordered merge of the old entries' bytes with the new ones,
  * which are themselves held as bytes (NewEntries), straight into the file.
  */
+import { nameDec } from '@nimbus-sh/core/_shared/bytes.js';
 import { createHash } from 'node:crypto';
-import { oidFromHex, oidToHex } from '../pack/format.js';
+import { objectHash, oidFromHex, oidToHex } from '../pack/format.js';
 import { CacheTree } from './cachetree.js';
 import { UnsupportedGitOperation } from '../routing.js';
 import { errnoCodeOf, isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
+import { compareUtf8 as comparePaths } from '@nimbus-sh/platform/utf8.js';
 export const S_IFMT = 0o170000;
 export const S_IFREG = 0o100000;
 export const S_IFLNK = 0o120000;
@@ -34,7 +36,6 @@ const VALID = 0x8000;
 const SKIP_WORKTREE = 0x4000;
 const INTENT_TO_ADD = 0x2000;
 const encoder = new TextEncoder();
-const decoder = new TextDecoder();
 /** git's name order: the bytes of the path. */
 export function compareBytes(a, b) {
     const n = Math.min(a.length, b.length);
@@ -47,26 +48,12 @@ export function compareBytes(a, b) {
 export function decodePath(bytes) {
     for (let i = 0; i < bytes.length; i++) {
         if (bytes[i] >= 0x80)
-            return decoder.decode(bytes);
+            return nameDec.decode(bytes);
     }
     return String.fromCharCode.apply(null, bytes);
 }
-/** git's order of two paths as strings: their UTF-8 bytes, which is code point order rather than UTF-16's. */
-export function comparePaths(a, b) {
-    for (let i = 0; i < a.length && i < b.length; i++) {
-        let x = a.charCodeAt(i);
-        let y = b.charCodeAt(i);
-        if (x === y)
-            continue;
-        // Surrogates (astral code points) sort above the rest of the BMP.
-        if (x >= 0xd800)
-            x = x >= 0xe000 ? x - 0x800 : x + 0x2000;
-        if (y >= 0xd800)
-            y = y >= 0xe000 ? y - 0x800 : y + 0x2000;
-        return x - y;
-    }
-    return a.length - b.length;
-}
+/** git's order of two paths as strings: their UTF-8 bytes (platform utf8.ts compareUtf8). */
+export { comparePaths };
 /** An entry's length in version 2/3 layout: the name and 1-8 NULs to a multiple of 8. */
 function paddedLength(extended, nameLength) {
     return (FIXED_BYTES + (extended ? 2 : 0) + nameLength + 8) & ~7;
@@ -90,9 +77,9 @@ function encodeVarint(value) {
     }
     return out;
 }
-/** An object's id: SHA-1 of `<type> <size>\0` and the bytes. */
+/** An object's id, in hex: SHA-1 of `<type> <size>\0` and the bytes. */
 export function objectId(type, data) {
-    return oidToHex(createHash('sha1').update(encoder.encode(`${type} ${data.length}\0`)).update(data).digest());
+    return oidToHex(objectHash(type, data));
 }
 export class IndexFormatError extends Error {
     detail;

@@ -18,21 +18,12 @@ import { Database } from 'bun:sqlite';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { PACKAGE_ABI_POLICY, lookupReject } from '../../packages/worker/src/facets/wasm-swap-registry.ts';
-import { kernelInstaller, makeFanoutEnv } from './npm-fanout-test-env.mjs';
+import { kernelInstaller, makeFanoutEnv } from './lib/npm-fanout-test-env.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+import { npmRegistry } from './lib/npm-registry.mjs';
 
 const PROJ = 'app';
 const NM = `${PROJ}/node_modules`;
-
-function resolvedResult(name, version, overrides = {}) {
-  return {
-    pkg: {
-      name, version, tarballUrl: `https://registry.invalid/${name}-${version}.tgz`, integrity: 'sha512-fixture',
-      dependencies: {}, exports: null, main: 'index.js', module: '', bin: {}, ...overrides,
-    },
-    cacheWrites: [], messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
-  };
-}
 
 function makeInstaller(pkgJson, resultFor) {
   const harness = createSqliteVfsTestHarness(new Database(':memory:'));
@@ -74,7 +65,11 @@ function makeInstaller(pkgJson, resultFor) {
       name: 'cloned', dependencies: { react: '^19.0.0', 'react-dom': '^19.0.0' },
       devDependencies: { typescript: '^5.4.0', '@types/node': '^22.0.0', eslint: '^9.0.0', prettier: '^3.0.0', wrangler: '^4.0.0' },
     },
-    (name) => resolvedResult(name, '1.0.0', name === 'typescript' ? { bin: { tsc: 'bin/tsc', tsserver: 'bin/tsserver' } } : {}),
+    npmRegistry({
+      react: { '19.0.0': {} }, 'react-dom': { '19.0.0': {} },
+      typescript: { '5.4.0': { bin: { tsc: 'bin/tsc', tsserver: 'bin/tsserver' } } },
+      '@types/node': { '22.0.0': {} }, eslint: { '9.0.0': {} }, prettier: { '3.0.0': {} }, wrangler: { '4.0.0': {} },
+    }).resultFor,
   );
   const result = await installer.install(PROJ);
   const output = log.join('\n');
@@ -94,7 +89,8 @@ function makeInstaller(pkgJson, resultFor) {
 // the package has no Workers-compatible build — and prints one advisory note naming
 // the reason. Nothing aborts; the exit stays 0.
 {
-  const { installer, log, root } = makeInstaller({ name: 'x', dependencies: { a: '1', b: '1', c: '1', d: '1', e: '1', f: '1' } }, (name) => resolvedResult(name, '1.0.0'));
+  const { resultFor } = npmRegistry(Object.fromEntries(['a', 'b', 'c', 'd', 'e', 'f', 'sharp'].map((name) => [name, { '1.0.0': {} }])));
+  const { installer, log, root } = makeInstaller({ name: 'x', dependencies: { a: '1', b: '1', c: '1', d: '1', e: '1', f: '1' } }, resultFor);
   const result = await installer.install(PROJ, { packages: ['sharp'] });
   const output = log.join('\n');
   assert.deepEqual(result.failed, [], `a listed package does not fail (failed=${JSON.stringify(result.failed)})`);

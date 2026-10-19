@@ -10,6 +10,8 @@ import {
   mintSession,
   stripAnsi,
   Terminal,
+  hasOutputLine,
+  termBody,
 } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -39,7 +41,7 @@ try {
   const help = await t.run('pi --help', 60_000);
   const helpOut = stripAnsi(help.output);
   a.check('pi --help exits as a short command',
-    /usage|options|commands|pi/i.test(helpOut) && !/\[facet started \(long-running\)/.test(helpOut),
+    /usage|options|commands|\bpi\b/i.test(termBody(help.output)) && !/\[facet started \(long-running\)/.test(helpOut),
     JSON.stringify(helpOut.slice(-1000)));
 
   const launch = await t.run('pi', 60_000);
@@ -92,7 +94,7 @@ try {
     // process terminal alone.
     const shellAfter = await t.run('echo SHELL_SURVIVED_LAUNCH', 30_000);
     a.check('the shell survives launching the TUI',
-      /SHELL_SURVIVED_LAUNCH/.test(stripAnsi(shellAfter.output)),
+      hasOutputLine(shellAfter.output, 'SHELL_SURVIVED_LAUNCH'),
       JSON.stringify(stripAnsi(shellAfter.output).slice(-600)));
 
     proc.resize(100, 31);

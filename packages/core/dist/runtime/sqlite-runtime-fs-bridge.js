@@ -7,6 +7,7 @@ import { abandon, andThen, isCharacterDevice, isPromise, readDeclaredSource, rea
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
 import { fsError, MAX_LINK_HOPS, walkBeneath } from './beneath-walk.js';
 import { modeAllows } from '../vfs/posix-access.js';
+import { sameFileVersion } from './os-contracts.js';
 export { fsError, walkBeneath } from './beneath-walk.js';
 export class SqliteRuntimeFsBridge {
     rawVfs;
@@ -149,6 +150,13 @@ export class SqliteRuntimeFsBridge {
             if (located === null || located.absent)
                 return null;
             try {
+                if (options.contentKey !== undefined) {
+                    // Checked in the read's own turn: the bytes read are the bytes the key names.
+                    if (located.mount)
+                        throw fsError('ENOTSUP', 'read', path);
+                    if (this.vfs.contentKey(located.path) !== options.contentKey)
+                        throw fsError('ESTALE', 'read', path);
+                }
                 if (options.maxBytes !== undefined) {
                     // A bounded whole read is SQLite's alone, where the size check and
                     // the read are one turn: a mount's stat and read are two calls, and
@@ -167,7 +175,10 @@ export class SqliteRuntimeFsBridge {
                         ? this.vfs.readFileUncached(located.path)
                         : this.vfs.readFile(located.path);
                 }
-                return this.processView(located, options.followSymlinks !== false) ?? located.mount.readFile(located.path);
+                const bytes = this.processView(located, options.followSymlinks !== false) ?? located.mount.readFile(located.path);
+                // An uncached read hands back bytes of its own, as SQLite's does: a
+                // mount's may be the very bytes it keeps.
+                return options.cached === false && bytes !== null ? bytes.slice() : bytes;
             }
             catch (error) {
                 if (hasErrorCode(error, 'ENOENT'))
@@ -236,7 +247,12 @@ export class SqliteRuntimeFsBridge {
             const located = this.locate(path, options.followSymlinks !== false);
             if (located === null)
                 return null;
+            // Stat and read in one synchronous step: nothing comes between them.
+            if (options.expectedFile !== undefined && !sameFileVersion(this.stat(path, { followSymlinks: options.followSymlinks }), options.expectedFile)) {
+                throw fsError('ESTALE', 'read', path);
+            }
             if (located.mount) {
+                // The engine's revisions name no mounted file.
                 if (options.expectedEpoch !== undefined)
                     throw fsError('ESTALE', 'read', path);
                 const mount = located.mount;
@@ -622,6 +638,18 @@ export class SqliteRuntimeFsBridge {
             throw fsError('ELOOP', 'revision', path);
         return located.mount ? 0 : this.vfs.revision(located.path);
     }
+    contentKey(path) {
+        return called({ syscall: 'open', path }, () => {
+            const located = this.locate(path, true);
+            if (located === null)
+                throw fsError('ELOOP', 'open', path);
+            if (located.absent)
+                throw fsError('ENOENT', 'open', path);
+            if (located.mount)
+                throw fsError('ENOTSUP', 'open', path);
+            return this.vfs.contentKey(located.path);
+        });
+    }
     acquire(epoch, cursor, options) {
         return this.vfs.acquire(epoch, cursor, options);
     }
@@ -674,11 +702,11 @@ export class SqliteRuntimeFsBridge {
                 throw callError('ELOOP', call);
             const target = this.locateMutation(to, true, call);
             if (!source.mount && !target.mount) {
-                this.vfs.copyFile(source.path, target.path, { keepMode: options?.keepMode });
+                this.vfs.copyFile(source.path, target.path, { keepMode: options?.keepMode, preserve: options?.preserve });
                 return;
             }
             // Across filesystems, the namespace's copy, from the file the source leads to (a backend that resolves its own paths follows it there).
-            this.mounted.copy(source.mount ? source.path : '/' + source.path, target.mount ? target.path : '/' + target.path, { follow: true, keepMode: options?.keepMode });
+            this.mounted.copy(source.mount ? source.path : '/' + source.path, target.mount ? target.path : '/' + target.path, { follow: true, keepMode: options?.keepMode, preserve: options?.preserve });
         });
     }
     copyTree(from, to, options) {

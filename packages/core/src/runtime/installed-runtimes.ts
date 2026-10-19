@@ -253,22 +253,41 @@ export async function rehydrateInstalledRuntimesView(
   const bins: string[] = [];
   for (const { root, manifest } of await listInstalledManifestsView(vfs)) {
     if (!await runtimePayloadIntact(vfs, root, manifest)) continue;
-    const handlers = new Map<string, Command>();
-    for (const ep of runtimeEntrypoints(manifest)) {
-      const factory = runnerFor(ep.runner);
-      if (!factory) continue; // runner not registered yet — skip
-      const handler = await factory(manifest, root, ep.binName, ep.kind);
-      registry.register(ep.binName, handler);
-      handlers.set(ep.binName, handler);
-      bins.push(ep.binName);
-    }
+    const { handlers, registered } = await bindRuntimeCommands(registry, runnerFor, root, manifest);
+    bins.push(...registered);
     await bound?.(root, manifest, handlers);
   }
   return { count: bins.length, bins };
 }
 
-export async function listInstalledRuntimes(vfs: SqliteVFS): Promise<RuntimeSummary[]> {
-  return (await listInstalledManifests(vfs)).map(({ root, manifest }) => ({
+/**
+ * Registers the commands of the runtime `manifest` describes, installed at
+ * `root`: each entrypoint's handler, made by its runner's factory; one whose
+ * runner is not registered yet is left out. Its handlers, by name (a name
+ * registered twice, the last), and each name as it was registered.
+ */
+export async function bindRuntimeCommands(
+  registry: MinShellRegistry,
+  runnerFor: RunnerLookup,
+  root: string,
+  manifest: RuntimeManifest,
+): Promise<{ handlers: Map<string, Command>; registered: string[] }> {
+  const handlers = new Map<string, Command>();
+  const registered: string[] = [];
+  for (const ep of runtimeEntrypoints(manifest)) {
+    const factory = runnerFor(ep.runner);
+    if (!factory) continue;
+    const handler = await factory(manifest, root, ep.binName, ep.kind);
+    registry.register(ep.binName, handler);
+    handlers.set(ep.binName, handler);
+    registered.push(ep.binName);
+  }
+  return { handlers, registered };
+}
+
+/** The installed runtime at `root`, as `runtime list` shows it. */
+export function runtimeSummary(root: string, manifest: RuntimeManifest): RuntimeSummary {
+  return {
     name: manifest.name,
     version: manifest.version,
     root,
@@ -276,5 +295,9 @@ export async function listInstalledRuntimes(vfs: SqliteVFS): Promise<RuntimeSumm
     bins: runtimeEntrypoints(manifest).map((e) => e.binName),
     sizeBytes: manifest.files.reduce((a, f) => a + f.size, 0),
     license: manifest.license,
-  }));
+  };
+}
+
+export async function listInstalledRuntimes(vfs: SqliteVFS): Promise<RuntimeSummary[]> {
+  return (await listInstalledManifests(vfs)).map(({ root, manifest }) => runtimeSummary(root, manifest));
 }

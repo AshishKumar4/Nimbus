@@ -32,7 +32,7 @@ import { PromisorFetchError, fetchMissingObjects } from './promisor.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 import { errnoCodeOf, fsError, isVfsError, strerror } from '@nimbus-sh/core/vfs/vfs-error.js';
-import { dec, enc } from '@nimbus-sh/core/_shared/bytes.js';
+import { dec, enc, nameDec } from '@nimbus-sh/core/_shared/bytes.js';
 import {
   DEFAULT_CONTEXT,
   DEFAULT_RENAME_SCORE,
@@ -888,7 +888,7 @@ async function writeBinary(stream: OutputStream, bin: string): Promise<void> {
   if (!bin) return;
   const bytes = bytesFromBinary(bin);
   if (stream.writeBytes) await stream.writeBytes(bytes);
-  else await stream.write(dec.decode(bytes));
+  else await stream.write(nameDec.decode(bytes));
 }
 
 // ── Staging ──────────────────────────────────────────────────────────────
@@ -2443,7 +2443,7 @@ async function checkoutPaths(
       const file = `${root}/${path}`;
       const { data } = await wrepo.store.read(oid);
       if (mode === 0o120000) {
-        await writer.symlink(dec.decode(data), file);
+        await writer.symlink(nameDec.decode(data), file);
       } else {
         const fileMode = mode === 0o100755 ? 0o755 : 0o644;
         await writer.writeFile(file, data, fileMode);

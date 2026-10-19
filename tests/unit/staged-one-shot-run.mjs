@@ -8,9 +8,10 @@
 import assert from 'node:assert/strict';
 import { importWorkerBundle } from './lib/worker-bundle.mjs';
 
-const { NimbusLoadedEntrypoint, composeFabric } = await importWorkerBundle({
+const { NimbusLoadedEntrypoint, adoptCtxExports, composeFabric, processHostFor } = await importWorkerBundle({
   'packages/fabric/src/bindings.ts': ['NimbusLoadedEntrypoint'],
-  'packages/fabric/src/composition.ts': ['composeFabric'],
+  'packages/fabric/src/composition.ts': ['adoptCtxExports', 'composeFabric'],
+  'packages/worker/src/loaders/process-host.ts': ['processHostFor'],
 });
 
 const assembled = [];
@@ -25,6 +26,7 @@ composeFabric({
 const loads = [];
 const fetches = [];
 const env = { LOADER: {
+  load() { throw new Error('a staged run is loaded in its hop, never in its host'); },
   get(key, callback) {
     const code = callback();
     loads.push({ key, code });
@@ -61,5 +63,29 @@ assert.equal(fetches.length, 1);
 assert.equal(await fetches[0].text(), '{}');
 run.abort(new Error('killed'));
 assert.equal(fetches[0].signal.aborted, true, 'the run\'s end reaches the program\'s request through the hop');
+
+// From its host: a staged run's SUPERVISOR is minted in the hop from the
+// props its host opened the run with, so it carries that run.
+{
+  const mint = ({ props }) => ({ binding: props });
+  adoptCtxExports({
+    SupervisorRPC: mint,
+    NimbusLoadedEntrypoint: ({ props }) => Object.assign(Object.create(NimbusLoadedEntrypoint.prototype), {
+      ctx: { props, exports: { SupervisorRPC: mint }, waitUntil() {} },
+      env,
+    }),
+  });
+  const host = processHostFor({ id: { toString: () => 'staged-host' }, waitUntil() {} }, env, () => { throw new Error('a one-shot reads no disk'); });
+  const writerId = crypto.randomUUID();
+  const exit = await host.runOnce({
+    pid: 9, writerId, onWriterActivated() {},
+    request: new Request('http://run.local/', { method: 'POST', body: '{}' }),
+    code: async () => ({ stage: { argv: ['opencode', 'run'] } }),
+  }, async (answer) => answer.headers.get('x-exit'));
+  assert.equal(exit, '0');
+  const { binding } = (await loads.at(-1).code).env.SUPERVISOR;
+  assert.deepEqual({ bindingKind: binding.bindingKind, writerId: binding.writerId, pid: binding.pid, doId: binding.doId },
+    { bindingKind: 'process', writerId, pid: 9, doId: 'staged-host' }, 'the staged program\'s SUPERVISOR is the run its host opened');
+}
 
 console.log('staged-one-shot-run: ok');

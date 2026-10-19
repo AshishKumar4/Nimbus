@@ -66,6 +66,8 @@ import {
   appendTextPart,
   interruptRunningTools,
   isInterruptedMessage,
+  legacyToolResult,
+  storedMessageParts,
   textFromParts,
   upsertStoredMessage,
   upsertToolPart,
@@ -729,10 +731,10 @@ function buildModelMessages(messages: StoredMessage[]): ModelMessage[] {
       continue;
     }
     if (message.role === 'tool') {
-      const payload = parseLegacyToolPayload(message);
+      const result = legacyToolResult(message);
       modelMessages.push({
         role: 'assistant',
-        content: `Tool ${payload.tool || message.name || 'tool'} result:\n${safeJsonStringify(payload.output ?? message.content)}`,
+        content: `Tool ${result.toolName} result:\n${safeJsonStringify(result.output)}`,
       });
     }
   }
@@ -897,7 +899,7 @@ function recordToolEvent(
 }
 
 function appendAssistantModelMessages(modelMessages: ModelMessage[], message: StoredMessage): void {
-  const parts = normalizeMessageParts(message);
+  const parts = storedMessageParts(message);
   if (parts.length === 0) {
     if (message.content) modelMessages.push({ role: 'assistant', content: message.content });
     return;
@@ -947,24 +949,10 @@ function appendAssistantModelMessages(modelMessages: ModelMessage[], message: St
   flush();
 }
 
-function normalizeMessageParts(message: StoredMessage): StoredTurnPart[] {
-  if (Array.isArray(message.parts)) return message.parts.filter((part) => part && typeof part === 'object');
-  if (message.role !== 'assistant' || !message.content) return [];
-  return [{ type: 'text', text: message.content }];
-}
-
 function toToolModelOutput(value: unknown, error: boolean): unknown {
   if (error) return { type: 'error-text', value: stringifyError(value) };
   if (typeof value === 'string') return { type: 'text', value };
   return { type: 'json', value: value === undefined ? null : value };
-}
-
-function parseLegacyToolPayload(message: StoredMessage): { tool?: string; input?: unknown; output?: unknown } {
-  try {
-    const parsed = JSON.parse(message.content || '{}');
-    if (parsed && typeof parsed === 'object') return parsed;
-  } catch {}
-  return { tool: message.name || 'tool', output: message.content || '' };
 }
 
 function isToolOutputFailure(output: unknown): boolean {

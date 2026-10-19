@@ -4,7 +4,7 @@
 // Probe: assert the diag schema includes the live writeStream retention
 // fields and a real install drives them above 0 at some point.
 
-import { mintSession, Terminal, sleep, stripAnsi, BASE } from '../_driver.mjs';
+import { mintSession, Terminal, stripAnsi, BASE } from '../_driver.mjs';
 import { diagMemory, fmtBytes } from './_diag.mjs';
 import assert from 'node:assert/strict';
 
@@ -24,8 +24,7 @@ console.log(`[N3] schema fields present: ${schemaHasFields} (writeStreamSpoolByt
 // non-zero across many input-gate turns.
 const t = new Terminal(sid);
 await t.connect();
-await sleep(2_000);
-await t.waitForPrompt(15_000).catch(() => {});
+await t.waitForPrompt(15_000);
 
 const samples = [];
 let sampling = true;

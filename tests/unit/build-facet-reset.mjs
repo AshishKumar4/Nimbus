@@ -11,6 +11,9 @@
 //   - one reset: the retry answers, one warning says so;
 //   - two resets: BuildFacetResetError, naming the package and the reason;
 //   - a facet that cannot load is that error, not retried;
+//   - another session's binding outgrowing its mark moves the isolate to a
+//     new generation: this session's pre-bundles not yet begun run on it,
+//     neither failed nor retried, however many times the isolate moves;
 //   - the dev server, its pool failing so: the module it serves links against
 //     what the project imports (an ESM package, a CommonJS one, a package
 //     re-exporting with `export *`, one with a key no export name can be,
@@ -29,7 +32,9 @@ import { createRequire } from 'node:module';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { BuildFacetResetError, buildFacetPrebundler } from '../../packages/worker/src/facets/build-facet.ts';
+import { BuildFacetResetError } from '../../packages/worker/src/facets/build-facet.ts';
+import { PrebundlePool } from '../../packages/worker/src/facets/prebundle-pool.ts';
+import { prebundleSliceBytes } from '../../packages/core/src/runtime/prebundle-slice.ts';
 import { ViteDevServer } from '../../packages/worker/src/facets/vite-dev-server.ts';
 import { durableObject, freshFacetClass, memories, releaseBuildFacetHarness } from './lib/build-facet-harness.mjs';
 import { esbuildEngine, stopEsbuildEngine } from './lib/esbuild-engine.mjs';
@@ -59,6 +64,11 @@ const spec = (tag) => {
 };
 
 /** `console.warn`'s lines while `run` runs. */
+async function prebundle(ctx, env, input) {
+  const pool = await new PrebundlePool(env, ctx).acquire();
+  return pool.prebundle({ specifier: input.specifier, bytes: prebundleSliceBytes(input.slice), prepare: () => structuredClone(input) });
+}
+
 async function warnings(run) {
   const warn = console.warn;
   const lines = [];
@@ -98,14 +108,14 @@ try {
   {
     const { ctx, env, counts } = resettingHost(1);
     const bindings = memories.length;
-    const { value, lines } = await warnings(() => buildFacetPrebundler(ctx, env)(spec('once')));
+    const { value, lines } = await warnings(() => prebundle(ctx, env, spec('once')));
     check('a pre-bundle reset once is pre-bundled again, and answers', value.value?.ok === true && value.value.esmCode.includes('"once"'), JSON.stringify(value.error?.message ?? value.value).slice(0, 300));
     check('the retry is logged, naming the package and the reset', lines.length === 1 && lines[0].includes('pkg') && lines[0].includes(RESET) && /once more/.test(lines[0]), JSON.stringify(lines));
-    check('on a new actor, from a fresh evaluation, with a binding of its own', counts.facetInstances === 2 && counts.loaderGets === 2 && memories.length === bindings + 1, `${counts.facetInstances} actors, ${counts.loaderGets} loads, ${memories.length - bindings} bindings`);
+    check('on a new actor, from a fresh evaluation, with a binding of its own', counts.facetInstances === 2 && counts.loaderGets === 2 && memories.length === bindings + 2, `${counts.facetInstances} actors, ${counts.loaderGets} loads, ${memories.length - bindings} bindings`);
   }
   {
     const { ctx, env, counts } = resettingHost(2);
-    const { value } = await warnings(() => buildFacetPrebundler(ctx, env)(spec('twice')));
+    const { value } = await warnings(() => prebundle(ctx, env, spec('twice')));
     const error = value.error;
     check('a pre-bundle reset twice fails with BuildFacetResetError', error instanceof BuildFacetResetError, String(error ?? JSON.stringify(value.value)).slice(0, 300));
     check('its message names the package and the reason', /build facet was reset twice while pre-bundling pkg/.test(error?.message ?? '') && (error?.message ?? '').includes(RESET), error?.message);
@@ -113,8 +123,66 @@ try {
   }
   {
     const { ctx, env } = durableObject(null, async () => { throw new Error('the staged parts are corrupt'); });
-    const { value, lines } = await warnings(() => buildFacetPrebundler(ctx, env)(spec('load')));
+    const { value, lines } = await warnings(() => prebundle(ctx, env, spec('load')));
     check('a facet that cannot load is the load\'s error, not retried', /staged parts are corrupt/.test(value.error?.message ?? '') && !(value.error instanceof BuildFacetResetError) && lines.length === 0, `${value.error?.message}; ${JSON.stringify(lines)}`);
+  }
+
+  // ── Another session outgrows the isolate's binding ─────────────────────
+  // Every Durable Object in the isolate shares the binding, so one whose
+  // pre-bundle outgrows it moves them all to a new generation. A pre-bundle
+  // of another object that has not begun is no reset: it runs on the new one.
+  {
+    const outgrowing = durableObject(null, async () => {
+      const { BuildFacet: Fresh } = await freshFacetClass();
+      return class extends Fresh {
+        async prebundle(s) { return { ...(await super.prebundle(s)), retire: true }; }
+      };
+    });
+    const other = durableObject(null, async () => (await freshFacetClass()).BuildFacet);
+    const pool = await new PrebundlePool(other.env, other.ctx).acquire();
+    const queued = (tag) => pool.prebundle({ specifier: 'pkg', bytes: prebundleSliceBytes(spec(tag).slice), prepare: () => structuredClone(spec(tag)) });
+    const results = [];
+    const { value, lines } = await warnings(async () => {
+      for (let round = 0; round < 3; round++) {
+        await prebundle(outgrowing.ctx, outgrowing.env, spec(`outgrown-${round}`));
+        results.push(await queued(`moved-${round}`).then((value) => value, (error) => ({ error: String(error?.message ?? error) })));
+      }
+    });
+    check('a pre-bundle not begun when another session outgrew the binding runs on the next generation',
+      value.error === undefined && results.length === 3 && results.every((r, i) => r.ok === true && r.esmCode.includes(`moved-${i}`)),
+      String(value.error?.message ?? JSON.stringify(results)).slice(0, 400));
+    check('and is no reset: nothing is retried or logged', lines.length === 0, JSON.stringify(lines));
+  }
+  // The isolate moves again while the waiting pre-bundle warms the generation it moved to.
+  {
+    const outgrowing = durableObject(null, async () => {
+      const { BuildFacet: Fresh } = await freshFacetClass();
+      return class extends Fresh {
+        async prebundle(s) { return { ...(await super.prebundle(s)), retire: true }; }
+      };
+    });
+    let warms = 0;
+    let moveOnWarm = false;
+    const other = durableObject(null, async () => {
+      const { BuildFacet: Fresh } = await freshFacetClass();
+      return class extends Fresh {
+        async warm() {
+          await super.warm();
+          warms++;
+          if (!moveOnWarm) return;
+          moveOnWarm = false;
+          await prebundle(outgrowing.ctx, outgrowing.env, spec('outgrown-while-warming'));
+        }
+      };
+    });
+    const pool = await new PrebundlePool(other.env, other.ctx).acquire();
+    const { value, lines } = await warnings(async () => {
+      await prebundle(outgrowing.ctx, outgrowing.env, spec('outgrown-first'));
+      moveOnWarm = true;
+      return pool.prebundle({ specifier: 'pkg', bytes: prebundleSliceBytes(spec('moved-twice').slice), prepare: () => structuredClone(spec('moved-twice')) });
+    });
+    check('a pre-bundle whose isolate moves twice before it begins, once as it warms, runs on the last generation', value.value?.ok === true && value.value.esmCode.includes('moved-twice'), String(value.error?.message ?? JSON.stringify(value.value)).slice(0, 300));
+    check('having warmed each generation it moved to, and logged nothing', warms === 3 && lines.length === 0, `${warms} warms; ${JSON.stringify(lines)}`);
   }
 
   // ── The dev server, its pool reset twice ───────────────────────────────

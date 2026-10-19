@@ -116,12 +116,11 @@ const { buildNimbusWranglerConfig, defineNimbusConfig, NIMBUS_REQUIRED_ALIASES }
     name: 'a',
     extraAliases: { 'my-shim': 'my-shim-impl' },
   });
-  a.check('crc-32 alias present (required)', c.alias['crc-32'] === 'crc-32');
-  a.check('clean-git-ref alias present (required)',
-    c.alias['clean-git-ref'] === 'clean-git-ref/lib/index.js');
+  a.check('diff alias present (required: the worker imports jsdiff by bare name)', c.alias.diff === 'diff');
+  a.check('no alias for a dependency Git bundles', ['clean-git-ref', 'crc-32', 'sha.js', 'pako', 'simple-get'].every((name) => !(name in c.alias)));
   a.check('extra alias merged', c.alias['my-shim'] === 'my-shim-impl');
-  a.check('NIMBUS_REQUIRED_ALIASES has 12 entries',
-    Object.keys(NIMBUS_REQUIRED_ALIASES).length === 12);
+  a.check('NIMBUS_REQUIRED_ALIASES is diff alone',
+    JSON.stringify(NIMBUS_REQUIRED_ALIASES) === JSON.stringify({ diff: 'diff' }));
 }
 
 // 7. Missing name throws.

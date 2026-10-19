@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generateEntrypointCode } from '../../packages/worker/src/facets/manager.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
+import './lib/launch-captures.mjs';
 import { nodeFacetSources } from './lib/node-facet-sources.mjs';
 import { generatedModuleSet, writeModuleSet } from './lib/module-map-bundle.mjs';
 import { createAuthority } from './lib/resident-body.mjs';

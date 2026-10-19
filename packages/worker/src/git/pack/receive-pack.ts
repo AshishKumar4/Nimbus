@@ -10,7 +10,7 @@
  */
 import { PackFormatError } from './format.js';
 import { discover, type Advertisement, type UploadPackOptions } from './upload-pack.js';
-import { gitHttpHeaders, gitHttpRemote, UploadPackError } from './transport.js';
+import { agentCapability, gitHttpHeaders, gitHttpRemote, UploadPackError } from './transport.js';
 import { PktReader, pktLine, text } from './pkt-line.js';
 import { answeredFailure, transportFailure } from './remote-failure.js';
 
@@ -61,7 +61,7 @@ function pushCapabilities(advertised: Set<string>, request: ReceivePackRequest):
     capabilities.push('push-options');
   }
   if (advertised.has('ofs-delta')) capabilities.push('ofs-delta');
-  capabilities.push('agent=git/nimbus');
+  capabilities.push(...agentCapability(advertised));
   return capabilities;
 }
 

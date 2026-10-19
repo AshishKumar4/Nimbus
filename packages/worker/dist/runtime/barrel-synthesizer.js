@@ -52,6 +52,8 @@
  * sees a clear remediation: "add a static import for the
  * dynamically-referenced icon."
  */
+import { createHash } from 'node:crypto';
+import { recallOf } from '@nimbus-sh/core/vfs/recall.js';
 import { packageNameFromSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
 import { importedSpecifiers, maskSourceForImports, UndecidableSourceError } from '@nimbus-sh/core/runtime/comment-strip.js';
 import { BUNDLER_IMPORT_CONDITIONS } from '@nimbus-sh/core/runtime/bundler-resolution.js';
@@ -273,7 +275,9 @@ function lexedImportView(source, path) {
  */
 async function parsedImportView(source, path, parse) {
     // The transform's output holds no JSX: read it as a `.ts` file is read.
-    return maskSourceForImports(await parse(path, source), path.replace(/\.[^./]*$/, '') + '.ts');
+    const parsed = parse(path, source);
+    source = '';
+    return maskSourceForImports(await parsed, path.replace(/\.[^./]*$/, '') + '.ts');
 }
 export function buildSyntheticEntry(vfs, nmDir, pkgName, names) {
     if (names.size === 0)
@@ -409,30 +413,9 @@ export function buildSyntheticEntry(vfs, nmDir, pkgName, names) {
         referencedFiles,
     };
 }
-/**
- * Build a SCOPED slice for a synthetic-entry bundle: include only
- * the files the synthetic entry directly references (+ their
- * transitive imports walked via static analysis), plus the package
- * root's `package.json` (esbuild's resolver reads it for exports/main
- * fields). This bypasses the standard `walkDir` over the whole
- * package, which for icon-libraries with thousands of files can
- * exceed the 28 MiB slice cap.
- *
- * Caller still appends the synthetic entry file itself to the slice
- * (we don't include it here because it lives in a synthetic
- * directory the caller already manages).
- *
- * Returns the list of `SliceEntry`-shaped objects to push into the
- * existing slice, plus the total bytes added (for cap-tracking).
- *
- * `transitiveCap`: how many files we'll walk in total. Bounded so a
- * pathological barrel-of-barrels can't blow the cap. Default 800,
- * which empirically covers icon-libraries with up to ~400 imported
- * icons (each pulling 1-2 transitive shared utility files).
- */
-export async function buildScopedSliceForSynthetic(vfs, nmDir, pkgName, referencedFiles, parse, transitiveCap = 800) {
+/** Discovery retains paths, not a partial slice, while the parser owns its current source. */
+export async function discoverScopedSliceForSynthetic(vfs, nmDir, pkgName, referencedFiles, parse, transitiveCap = 800) {
     const entries = [];
-    let totalBytes = 0;
     const visited = new Set();
     const dirSet = new Set();
     const pkgRoot = nmDir + '/' + pkgName;
@@ -440,7 +423,7 @@ export async function buildScopedSliceForSynthetic(vfs, nmDir, pkgName, referenc
         if (dirSet.has(d) || !d)
             return;
         dirSet.add(d);
-        entries.push({ path: '/' + d.replace(/^\/+/, ''), isDir: true });
+        entries.push({ path: d, isDir: true });
     };
     // Always include the package root + its package.json. esbuild's
     // resolver reads package.json for sideEffects, exports, main, etc.
@@ -448,12 +431,14 @@ export async function buildScopedSliceForSynthetic(vfs, nmDir, pkgName, referenc
     const pkgJsonPath = pkgRoot + '/package.json';
     if (vfs.exists(pkgJsonPath) && !vfs.isDirectory(pkgJsonPath)) {
         try {
-            const bytes = vfs.readFile(pkgJsonPath);
-            entries.push({ path: '/' + pkgJsonPath.replace(/^\/+/, ''), bytes, isDir: false });
-            totalBytes += bytes.length + pkgJsonPath.length;
+            vfs.access(pkgJsonPath, 4);
+            entries.push({ path: pkgJsonPath, isDir: false });
             visited.add(pkgJsonPath);
         }
-        catch { }
+        catch (error) {
+            if (recallOf(error) !== null)
+                throw error;
+        }
     }
     // Walker: BFS over referenced files + their relative imports.
     const queue = [...referencedFiles];
@@ -464,22 +449,28 @@ export async function buildScopedSliceForSynthetic(vfs, nmDir, pkgName, referenc
         visited.add(filePath);
         if (!vfs.exists(filePath) || vfs.isDirectory(filePath))
             continue;
-        let bytes;
+        let source;
         try {
-            bytes = vfs.readFile(filePath);
+            source = vfs.readFileString(filePath);
         }
-        catch {
+        catch (error) {
+            if (recallOf(error) !== null)
+                throw error;
             continue;
         }
         // Track parent dirs so esbuild's plugin's dirSet has them.
         const slash = filePath.lastIndexOf('/');
         if (slash > 0)
             addDir(filePath.substring(0, slash));
-        entries.push({ path: '/' + filePath.replace(/^\/+/, ''), bytes, isDir: false });
-        totalBytes += bytes.length + filePath.length;
+        entries.push({ path: filePath, isDir: false });
         // Queue the relative imports, read by the project scan's grammar.
-        const source = new TextDecoder().decode(bytes);
-        const view = lexedImportView(source, filePath) ?? await parsedImportView(source, filePath, parse);
+        let view = lexedImportView(source, filePath);
+        if (view === null) {
+            const parsed = parsedImportView(source, filePath, parse);
+            source = '';
+            view = await parsed;
+        }
+        source = '';
         for (const rel of importedSpecifiers(view)) {
             if (!rel.startsWith('./') && !rel.startsWith('../'))
                 continue;
@@ -500,7 +491,7 @@ export async function buildScopedSliceForSynthetic(vfs, nmDir, pkgName, referenc
             }
         }
     }
-    return { entries, totalBytes };
+    return entries;
 }
 /**
  * Each top-level statement of the module `source`, as it is parsed, none of
@@ -584,16 +575,20 @@ function normalizeJoin(dir, rel) {
     return (dir.startsWith('/') ? '/' : '') + normalizeVfsPath(`${dir}/${rel}`);
 }
 /**
- * VFS path where synthetic entries are written. Lives under the
+ * VFS path where a synthetic entry of `code` is written. Lives under the
  * project's node_modules in a Nimbus-private namespace so package
- * managers don't collide with real package directories.
+ * managers don't collide with real package directories, and is named by
+ * its content: requests for the same names share one file, which is never
+ * rewritten, and requests for other names never write over it, so a
+ * prebundle's plan sees its entry change only if its own bytes did.
  *
- * Format: <projDir>/node_modules/.nimbus-synthetic/<safeName>.entry.js
+ * Format: <projDir>/node_modules/.nimbus-synthetic/<safeName>.<digest>.entry.js
  *
  * Safe name = pkgName with '@' and '/' replaced by '__' so scoped
  * packages produce a valid filesystem path.
  */
-export function syntheticEntryPath(projDir, pkgName) {
+export function syntheticEntryPath(projDir, pkgName, code) {
     const safe = pkgName.replace(/[@/]/g, '__');
-    return projDir + '/node_modules/.nimbus-synthetic/' + safe + '.entry.js';
+    const digest = createHash('sha256').update(code).digest('hex').slice(0, 16);
+    return `${projDir}/node_modules/.nimbus-synthetic/${safe}.${digest}.entry.js`;
 }

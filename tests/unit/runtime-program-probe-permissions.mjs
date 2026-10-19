@@ -8,7 +8,7 @@ import { makeRubyRunnerFactory } from '../../packages/core/src/runtime/ruby-runn
 import { makeWasmRunner } from '../../packages/core/src/runtime/wasm-runner.ts';
 import { ProcessView } from '../../packages/core/src/runtime/process-files.ts';
 import { registerShellEntrypointCommands } from '../../packages/core/src/shell/shell-entrypoints.ts';
-import { SESSION_USER, installedRuntime, runtimeContext } from './lib/runtime-session.mjs';
+import { SESSION_USER, installedRuntime, manifestFile, runtimeContext } from './lib/runtime-session.mjs';
 
 
 // The probe is refused before any program is compiled, so a facet host that
@@ -48,9 +48,10 @@ function invocationVfs(filesystem) {
   }, 'home/user/locked/tool.py');
   const run = makeCPythonRunnerFactory({ facets: unreachableFacets, network: ISOLATE_NETWORK })(
     {
+      version: '3.13.14-3',
       files: [
-        { path: 'share/cpython/python.wasm' },
-        { path: 'lib/python313.zip' },
+        manifestFile('share/cpython/python.wasm', new Uint8Array([0])),
+        manifestFile('lib/python313.zip', new Uint8Array()),
       ],
     },
     '/runtime/python',
@@ -68,7 +69,7 @@ function invocationVfs(filesystem) {
     '/runtime/ruby/share/ruby/ruby+stdlib.wasm': new Uint8Array([0]),
   }, 'home/user/locked/tool.rb');
   const run = await makeRubyRunnerFactory({ facets: unreachableFacets, filesystem, getHome: () => '/home/user', network: ISOLATE_NETWORK })(
-    { files: [{ path: 'share/ruby/ruby+stdlib.wasm' }] },
+    { files: [manifestFile('share/ruby/ruby+stdlib.wasm', new Uint8Array([0]))] },
     '/runtime/ruby',
     'ruby',
     undefined,

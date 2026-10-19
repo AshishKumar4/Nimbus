@@ -409,6 +409,28 @@ export function assertCredentialHeld({ name, statePath, hasSecret, provisioned, 
   );
 }
 
+/** Every throwaway's name starts so (_throwaway-target.mjs), so a stray one is obvious. */
+export const THROWAWAY_PREFIX = 'nimbus-tw-';
+
+/** A throwaway's full name, given with or without its prefix. */
+export function throwawayName(name) {
+  return name.startsWith(THROWAWAY_PREFIX) ? name : `${THROWAWAY_PREFIX}${name}`;
+}
+
+/** Where checkout `root` keeps its throwaways' records (gitignored; _throwaway-target.mjs STATE). */
+export function throwawayStateDir(root) {
+  return join(root, '.wrangler', 'throwaway-targets');
+}
+
+/**
+ * The record checkout `root` keeps for throwaway `name` (with or without
+ * its prefix): `up` writes the secret, the URL and the deployment it
+ * uploaded (`versionId`) there.
+ */
+export function throwawayStatePath(root, name) {
+  return join(throwawayStateDir(root), `${throwawayName(name)}.json`);
+}
+
 export function readState(path) {
   try {
     return JSON.parse(readFileSync(path, 'utf8'));

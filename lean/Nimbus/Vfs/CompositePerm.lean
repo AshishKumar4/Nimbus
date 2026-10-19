@@ -52,6 +52,8 @@
   and EXDEV (in `Composite`); ACLs; exec permission on files; umask other than 022.
 -/
 
+import Nimbus.Vfs.MountSelection
+
 namespace Nimbus.Vfs.CompositePerm
 
 abbrev Path := List String
@@ -378,7 +380,7 @@ structure St where
   within : Path := []
 
 def ownerOf (ms : List Mnt) (p : Path) : Mnt :=
-  ms.foldl (fun best m => if m.point.isPrefixOf p && best.point.length < m.point.length then m else best) ⟨[], 0⟩
+  MountSelection.select (·.point) ms p ⟨[], 0⟩
 
 def rel (ms : List Mnt) (p : Path) : Path := p.drop (ownerOf ms p).point.length
 

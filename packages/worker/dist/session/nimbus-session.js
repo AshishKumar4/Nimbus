@@ -75,6 +75,7 @@ import { encodeExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 import * as _diag from './diag.js';
 import { ServedReads } from '../facets/read-profile.js';
 import { CloneRecovery, bridgeCleanupFs } from '../git/clone-job.js';
+import { nimbusDebugEnabled } from '../_shared/nimbus-debug.js';
 /** The ops whose non-null answer is a file's content served to a process. */
 const SERVED_READ_OPS = new Set(['readFile', 'readFileBytes', 'fsReadRange', 'fsReadRangeUncached']);
 // Re-exports preserved for callers that import from nimbus-session
@@ -383,22 +384,14 @@ export class NimbusSession extends CloudflareDurableObject {
     _diagPeakAt = 0;
     _diagSampleCount = 0;
     /**
-     * Fix 5: toggled by env NIMBUS_DEBUG=1 (checked each call; cheap enough).
+     * Fix 5: toggled by env NIMBUS_DEBUG ('1' or 'true'; checked each call, cheap enough).
      * When true: spawn banners and exit traces are unconditional (not just
      * long-running facets), RPC envelope errors are surfaced to the terminal
      * with a [rpc-error] prefix, and the exit trace includes duration_ms.
-     *
-     * The flag is derived from `this.env.NIMBUS_DEBUG` — the binding comes
-     * from wrangler's var declaration or a test harness.
+     * Read as the hosted runtime and the facet manager read it (nimbusDebugEnabled).
      */
     get nimbusDebug() {
-        try {
-            const e = this.env;
-            return e?.NIMBUS_DEBUG === '1' || e?.NIMBUS_DEBUG === 'true';
-        }
-        catch {
-            return false;
-        }
+        return nimbusDebugEnabled(this.env);
     }
     // ── W12 — DO read replicas state ────────────────────────────────────
     /**
@@ -765,7 +758,6 @@ export class NimbusSession extends CloudflareDurableObject {
     servedReads = new ServedReads();
     async _rpcReadFile(path, pid, cred) { return _rpc._rpcReadFile(this, path, pid, cred); }
     async _rpcReadFileBytes(path, pid, cred) { return _rpc._rpcReadFileBytes(this, path, pid, cred); }
-    async _rpcInnerDoFetch(req) { return _rpc._rpcInnerDoFetch(this, req); }
     async _rpcInnerDoCall(req) { return _rpc._rpcInnerDoCall(this, req); }
     async _rpcKvCall(target, call, cred) { return _rpc._rpcKvCall(this, target, call, cred); }
     async _rpcR2Call(target, call, cred) { return _rpc._rpcR2Call(this, target, call, cred); }
@@ -1038,7 +1030,7 @@ export class NimbusSession extends CloudflareDurableObject {
         if (this.filesystem)
             return this.filesystem;
         const engine = new SqliteVFS(this.ctx.storage.sql, this.ctx);
-        const filesystem = this.filesystem = new SessionFilesystem(engine, this);
+        const filesystem = this.filesystem = new SessionFilesystem(engine, this, this.ctx.id.toString());
         // W5 Lever 5: rehydrate the OOM ring from storage (best-effort).
         // Survives DO hibernation; lets cf-tail-style forensics include
         // pre-hibernate failures. Fail-soft on garbage / missing — the
@@ -1288,4 +1280,4 @@ export class NimbusSession extends CloudflareDurableObject {
 // ── W10 Inner-Worker + assets binding shims live in the fabric.
 // ── Re-exported here under their public names so src/index.ts's wrangler
 // ── entry-graph reachability is preserved.
-export { NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, NimbusDOStub, NimbusKVNamespace, NimbusD1Binding, NimbusR2Bucket, } from '@nimbus-sh/fabric/bindings.js';
+export { NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, NimbusKVNamespace, NimbusD1Binding, NimbusR2Bucket, } from '@nimbus-sh/fabric/bindings.js';

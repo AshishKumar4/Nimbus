@@ -23,6 +23,7 @@
 // before its factory instead, and the namespace is seeded from a listing of
 // it, with its real stats, as a launch's is.
 
+import './launch-captures.mjs';
 import { CRED_KERNEL } from '../../../packages/core/src/runtime/os-contracts.ts';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -34,6 +35,7 @@ import { moduleImporterUrl } from '../../../packages/core/src/_shared/module-imp
 
 const PUBLIC = fileURLToPath(new URL('../../../packages/worker/public', import.meta.url));
 const RESIDENT_STORE = readFileSync(join(PUBLIC, RESIDENT_STORE_ENTRY), 'utf8');
+
 
 const SEED = `
 ;(function __nimbusTestSeedNamespace() {
@@ -141,9 +143,15 @@ function __nimbusModuleCell(key) {
   }
   return __nimbusTestCells.get(key);
 }
-// Its cells are the store's text: none is an ES module a launch lowered.
+// Its cells are the store's text: none is an ES module a launch lowered, nor has an ES module's link.
 function __nimbusModuleCellIsEsModule() {
   return false;
+}
+function __nimbusModuleLink() {
+  return null;
+}
+function __nimbusModuleRequestsOf() {
+  return null;
 }
 // No runtime code is staged in a standalone factory.
 function __nimbusRuntimeModule(path) {
@@ -178,12 +186,17 @@ function __nimbusRegistryRequire(id) {
 }
 `;
 
-/** Splice ahead of generateShimsCode() in a standalone shims factory. */
-export const SHIMS_STORE_PRELUDE = `\n${RESIDENT_STORE}\nconst __resident = __nimbusResidentModule.createResidentStore({
+/** The standalone factory's prelude over its own resident store bundle. */
+export function createShimsStorePrelude(residentSource) {
+  return `\n${residentSource}\nconst __resident = __nimbusResidentModule.createResidentStore({
   observeRead: (path) => {
     if (globalThis.__nimbusProfileStaged) globalThis.__nimbusProfileStaged.delete(path);
   },
 });\n${SEED}\n${MODULE_CELLS}\n${RUNTIME_MODULES}\n`;
+}
+
+/** Splice ahead of generateShimsCode() in a standalone shims factory. */
+export const SHIMS_STORE_PRELUDE = createShimsStorePrelude(RESIDENT_STORE);
 
 /**
  * List a test authority (a SqliteVFS) as the session would for a launch, into

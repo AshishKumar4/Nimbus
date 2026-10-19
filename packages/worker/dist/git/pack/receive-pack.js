@@ -10,7 +10,7 @@
  */
 import { PackFormatError } from './format.js';
 import { discover } from './upload-pack.js';
-import { gitHttpHeaders, gitHttpRemote, UploadPackError } from './transport.js';
+import { agentCapability, gitHttpHeaders, gitHttpRemote, UploadPackError } from './transport.js';
 import { PktReader, pktLine, text } from './pkt-line.js';
 import { answeredFailure, transportFailure } from './remote-failure.js';
 const ZERO = /^0+$/;
@@ -43,7 +43,7 @@ function pushCapabilities(advertised, request) {
     }
     if (advertised.has('ofs-delta'))
         capabilities.push('ofs-delta');
-    capabilities.push('agent=git/nimbus');
+    capabilities.push(...agentCapability(advertised));
     return capabilities;
 }
 /** The request's body: the commands and options as pkt-lines, then the pack, as it comes. */

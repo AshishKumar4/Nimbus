@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createFacetCtx, createFacetWorld, createPeerNamespace } from './facet-host-harness.mjs';
+import { createFacetCtx, createFacetWorld, createPeerNamespace } from './lib/facet-host-harness.mjs';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { HOSTED_WATCH_HEADER } from '../../packages/fabric/src/peer-host.ts';

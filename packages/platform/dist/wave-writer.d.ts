@@ -192,7 +192,6 @@ export declare class WaveWriter<Meta = undefined> {
     private ownedPathBytes;
     private pin;
     private inFlight;
-    private cutQueue;
     private sequence;
     private failure;
     /** Owners (records' `meta`) whose records a failed wave carried. */
@@ -277,7 +276,13 @@ export declare class WaveWriter<Meta = undefined> {
     private tally;
     private hasBuffered;
     private ownPath;
-    /** collectDirectoryPaths' chain from `path` upward, to the first directory already owned. */
+    /**
+     * The directories a wave publishes for something at or below `dir`:
+     * `dir` and each one above it, deepest first, up to the writer's root
+     * (included) and inside its worktree root.
+     */
+    private chain;
+    /** The chain from `path` upward, to the first directory already owned. */
     private walkChain;
     /**
      * Send what is buffered when a removal of `path` is pending in it: a wave
@@ -292,11 +297,11 @@ export declare class WaveWriter<Meta = undefined> {
     private drop;
     private cutIfFull;
     /**
-     * Send the buffered wave once the one in flight has published. Cuts are
-     * serialised, so at most one wave is in flight and one buffers.
+     * Send the buffered wave once the one in flight has published. Only a
+     * mutation cuts, and mutations run one at a time, so at most one wave is
+     * in flight and one buffers.
      */
     private cut;
-    private cutNow;
     /**
      * How a wave of `bytes` content crosses: an attempt's stream, made anew
      * for each attempt.

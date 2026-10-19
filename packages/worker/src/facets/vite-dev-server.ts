@@ -69,6 +69,8 @@ import {
   TAILWIND_PLAY_VERSION,
 } from '../tailwind-play.generated.js';
 import { recallOf, withRecall } from '@nimbus-sh/core/vfs/recall.js';
+import { staticExtension, staticMimeType, staticMimeTypes } from '@nimbus-sh/fabric/static-mime.js';
+import { rootClampedSegments } from '@nimbus-sh/platform/lexical-path.js';
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -203,10 +205,8 @@ const ERROR_OVERLAY_CLIENT = `<script>(()=>{const s=(m)=>{let o=document.getElem
 
 // ── MIME types ───────────────────────────────────────────────────────────
 
-const MIME_TYPES: Record<string, string> = {
-  '.html': 'text/html; charset=utf-8',
-  '.js': 'application/javascript; charset=utf-8',
-  '.mjs': 'application/javascript; charset=utf-8',
+/** The shared static vocabulary, with what the dev server also serves. */
+const MIME_TYPES = staticMimeTypes({
   '.cjs': 'application/javascript; charset=utf-8',
   '.ts': 'application/javascript; charset=utf-8',
   '.tsx': 'application/javascript; charset=utf-8',
@@ -219,28 +219,14 @@ const MIME_TYPES: Record<string, string> = {
   // resolver correctness problem. At least the MIME is right.
   '.vue': 'application/javascript; charset=utf-8',
   '.svelte': 'application/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
-  '.svg': 'image/svg+xml',
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.gif': 'image/gif',
-  '.ico': 'image/x-icon',
-  '.webp': 'image/webp',
-  '.woff': 'font/woff',
-  '.woff2': 'font/woff2',
   '.ttf': 'font/ttf',
   '.otf': 'font/otf',
-  '.txt': 'text/plain; charset=utf-8',
   '.md': 'text/plain; charset=utf-8',
-  '.wasm': 'application/wasm',
-  '.map': 'application/json; charset=utf-8',
   '.mp4': 'video/mp4',
   '.webm': 'video/webm',
   '.mp3': 'audio/mpeg',
   '.pdf': 'application/pdf',
-};
+});
 
 /** File extensions that should be treated as static assets when imported from JS */
 const ASSET_EXTS = new Set([
@@ -335,7 +321,7 @@ export function rewriteExternalRequires(code: string, basePath: string): string 
  * Cloudflare Workers runtime disallows string-to-code generation outside of
  * module initialization.
  *
- * The names are the CJS scan's Vite policy over the entire bundled text:
+ * The names are the CJS scan's (runtime/cjs-export-names.ts) over the entire bundled text:
  * `exports.NAME =`, `exports["NAME"] =`, `module.exports.NAME =`, every
  * `Object.defineProperty(exports, "NAME", ...)`, and every key of a
  * `module.exports = { ... }` literal whatever its value.
@@ -395,7 +381,7 @@ export function synthesizeCjsNamedExports(code: string): string {
 
 /**
  * The names a CJS bundle source exports that can be ES named exports:
- * runtime/cjs-export-names.ts's scan under its Vite policy (every key a
+ * runtime/cjs-export-names.ts's scan (every key a
  * module may put on module.exports, anywhere in the text: CJS exports appear
  * throughout __commonJS wrappers; real Vite reads any named import off the
  * default, so a name missed here is an import that fails), less `default`
@@ -403,7 +389,7 @@ export function synthesizeCjsNamedExports(code: string): string {
  * ES identifier.
  */
 function extractCjsExportNames(code: string): string[] {
-  return scanCjsExports(code, 'vite').names.filter(n =>
+  return scanCjsExports(code).names.filter(n =>
     /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(n) &&
     n !== 'default' &&
     !RESERVED_ES_KEYWORDS.has(n),
@@ -417,6 +403,18 @@ function extractCjsExportNames(code: string): string[] {
  * module lacking a name the importer asks for would fail to link with "does
  * not provide an export named ..." and never run.
  */
+/** A module the cold path served: its text and how, from which each consumer's Response is made. */
+interface ServedModule {
+  body: string;
+  status: number;
+  headers: Record<string, string>;
+}
+
+/** A Response of `module`'s own: one per consumer, never a clone of another's. */
+function moduleResponse(module: ServedModule): Response {
+  return new Response(module.body, { status: module.status, headers: module.headers });
+}
+
 export function failingModule(diag: string, names: Iterable<string>): string {
   const escaped = JSON.stringify(diag);
   // A string export name must be well-formed Unicode (a lone surrogate is a
@@ -453,8 +451,8 @@ const EXPORT_SCAN: ScanBudget = { files: 64, fileBytes: 1024 * 1024, totalBytes:
 /**
  * The names the module at `entry` exports, as far as its source and the
  * relative modules it re-exports say: ESM `export`s (es-module-lexer), or
- * for a module without them, CommonJS's (cjs-export-names under the Vite
- * policy). Best effort, and bounded (EXPORT_SCAN): what cannot be read,
+ * for a module without them, CommonJS's (cjs-export-names). Best effort,
+ * and bounded (EXPORT_SCAN): what cannot be read,
  * resolved or afforded adds nothing.
  */
 function moduleExportNames(vfs: CredentialedVfs, entry: string): Set<string> {
@@ -508,7 +506,7 @@ function moduleExportNames(vfs: CredentialedVfs, entry: string): Set<string> {
       }
     } catch { /* not ESM: the CommonJS scan below */ }
     if (esm) continue;
-    const cjs = scanCjsExports(source, 'vite');
+    const cjs = scanCjsExports(source);
     for (const name of cjs.names) names.add(name);
     for (const specifier of cjs.reexports) {
       const target = specifier.startsWith('.') ? resolveRelative(path, specifier) : null;
@@ -1385,13 +1383,14 @@ export class ViteDevServer {
   private readonly bundlePool: BundlePoolProvider | null;
   /** What this server's pre-bundles are built and served as (npm/browser-prebundle.ts). */
   private readonly prebundle: PrebundleContext;
+  private prebundleAbort = new AbortController();
   /**
    * In-flight on-demand-bundle coalescing map. When the browser fires
    * multiple parallel requests for the same /preview/@modules/<spec>
    * (which happens on first preview load — every imported module
    * resolves concurrently), we want exactly ONE bundle attempt per
-   * spec. The map holds the in-flight Promise<Response> keyed by
-   * cacheKey; subsequent fetches return the same promise. Entry is
+   * spec. The map holds the in-flight module (ServedModule) keyed by
+   * cacheKey; subsequent fetches wait on the same promise. Entry is
    * deleted when the promise settles so repeat-after-cache-expiry
    * goes through the cold path again.
    *
@@ -1401,7 +1400,7 @@ export class ViteDevServer {
    * peak heap during page-load = N × slice_size + baseline, which
    * crashes the supervisor for N≥3 on a busy isolate.
    */
-  private pendingBundles = new Map<string, Promise<Response>>();
+  private pendingBundles = new Map<string, Promise<ServedModule>>();
 
   /**
    * process diagnostics support: the supervisor's per-PID log store. When set
@@ -1457,6 +1456,8 @@ export class ViteDevServer {
     this.prebundle = {
       vfs: this.vfs, root: this.root, cache: this.npmCache, pool: this.bundlePool,
       parse: transformParser(this.esbuild), esbuild: this.esbuild, serviceFallback: true,
+      signal: this.prebundleAbort.signal, running: true,
+      owner: { pid: opts.pid ?? undefined, session: this.ctx?.id?.toString() },
     };
     // Merge user defines with standard Vite defines.
     // process.env.NODE_ENV is set explicitly so bundled CJS packages (like React's
@@ -1557,6 +1558,10 @@ export class ViteDevServer {
   /** Start the dev server (subscribe to VFS events for HMR). */
   start(): void {
     if (this.running) return;
+    if (this.prebundleAbort.signal.aborted) {
+      this.prebundleAbort = new AbortController();
+      this.prebundle.signal = this.prebundleAbort.signal;
+    }
     this.running = true;
     this.moduleCache.clear();
     for (const message of this.viteEsbuild.unread) this.warnOnce(message);
@@ -1569,6 +1574,8 @@ export class ViteDevServer {
 
   /** Stop the dev server. */
   stop(): void {
+    this.prebundleAbort.abort(new Error('the dev server stopped'));
+    this.pendingBundles.clear();
     this.running = false;
     if (this.unsubVfs) { this.unsubVfs(); this.unsubVfs = null; }
     this.moduleCache.clear();
@@ -1794,13 +1801,8 @@ export class ViteDevServer {
   }
 
   /** Normalize and sanitize a preview pathname to prevent traversal. */
-  private sanitizePath(pathname: string): string | null {
-    const segments = pathname.split('/').reduce((acc: string[], seg) => {
-      if (seg === '..') acc.pop();
-      else if (seg !== '.' && seg !== '') acc.push(seg);
-      return acc;
-    }, []);
-    return '/' + segments.join('/');
+  private sanitizePath(pathname: string): string {
+    return '/' + rootClampedSegments(pathname).join('/');
   }
 
   /**
@@ -1841,11 +1843,7 @@ export class ViteDevServer {
   }
 
   private async _handleRequestInner(request: Request, pathname: string, base: string): Promise<Response> {
-    const safePath = this.sanitizePath(pathname);
-    if (!safePath) {
-      return new Response('400 Bad Request', { status: 400 });
-    }
-    pathname = safePath;
+    pathname = this.sanitizePath(pathname);
 
     // Strip query parameters for path resolution, keep for logic
     const queryIdx = pathname.indexOf('?');
@@ -1908,10 +1906,9 @@ export class ViteDevServer {
       // public/ directory — serve static assets as-is
       const publicPath = this.root + '/public' + pathname;
       if (this.vfs.exists(publicPath) && !this.vfs.isDirectory(publicPath)) {
-        const ext = pathname.includes('.') ? '.' + pathname.split('.').pop()!.toLowerCase() : '';
         const data = this.vfs.readFile(publicPath);
         return new Response(data, {
-          headers: { ...headers, 'Content-Type': MIME_TYPES[ext] || 'application/octet-stream' },
+          headers: { ...headers, 'Content-Type': staticMimeType(MIME_TYPES, staticExtension(pathname)) },
         });
       }
 
@@ -2071,34 +2068,32 @@ export class ViteDevServer {
     // ── Cold path coalescing ──────────────────────────────────────
     // Multiple parallel browser requests for the same module are
     // common on first preview load; coalesce so exactly ONE bundle
-    // attempt runs per spec. Across DIFFERENT specs, the build leases
-    // its slice bytes from the shared supervisor allocation budget, so
-    // it queues behind every other heavy owner in this isolate (the
-    // installer's warming included) instead of stacking slices beside
-    // them. See `pendingBundles`.
+    // attempt runs per spec. Across DIFFERENT specs, a ready pool consumer
+    // leases the slice while it gathers and hands it off, never while it
+    // waits for a slot or the compiler's answer. See `pendingBundles`.
     //
-    // The shared promise resolves to a Response nobody consumes
-    // directly: a Response body is readable once, so every coalesced
-    // consumer — the initiator included — takes its own clone.
+    // The shared promise resolves to the module's text, and every
+    // consumer, the initiator included, gets a Response of its own made
+    // from it. Not a clone: a cloned (teed) body streamed out of the
+    // Durable Object reached the browser with a 16 KiB chunk out of order
+    // (markflow on fresh deploys, about 1 run in 35), and the module
+    // failed to parse.
     const inflight = this.pendingBundles.get(cacheKey);
-    if (inflight) return inflight.then((response) => response.clone());
+    if (inflight) return inflight.then(moduleResponse);
     const coldPromise = this.serveModuleCold(specifier, headers, base, barrel);
     this.pendingBundles.set(cacheKey, coldPromise);
     // Drop the coalescing entry once settled. Subsequent requests
     // for the same spec will hit the moduleCache (set inside the
     // cold path) on the hot path, not re-enter the slow path.
-    coldPromise.then(
-      () => this.pendingBundles.delete(cacheKey),
-      () => this.pendingBundles.delete(cacheKey),
-    );
-    return coldPromise.then((response) => response.clone());
+    const finished = () => { if (this.pendingBundles.get(cacheKey) === coldPromise) this.pendingBundles.delete(cacheKey); };
+    coldPromise.then(finished, finished);
+    return coldPromise.then(moduleResponse);
   }
 
   /**
    * Cold path of serveModule: the specifier's bundle built on demand
    * (npm/browser-prebundle.ts buildPrebundle: a synthetic entry for a
-   * barrel), its Response made while the build's slice allocation is still
-   * held; a module that says why when there is none. NO CDN fallback (100%
+   * barrel); a module that says why when there is none. NO CDN fallback (100%
    * edge contract).
    */
   private async serveModuleCold(
@@ -2106,14 +2101,14 @@ export class ViteDevServer {
     headers: Record<string, string>,
     base: string,
     barrel: BarrelInput | null,
-  ): Promise<Response> {
+  ): Promise<ServedModule> {
     const JS_CT = 'application/javascript; charset=utf-8';
     const cacheKey = this.ck(base, `@modules/${specifier}`);
     const generation = this.configGeneration;
-    const outcome = await buildPrebundle(this.prebundle, specifier, barrel, (bundled) => {
+    const outcome = await buildPrebundle(this.prebundle, specifier, barrel, (bundled): ServedModule => {
       const code = this.servablePrebundle(bundled, base);
       this.cacheModule(generation, cacheKey, { code, timestamp: Date.now(), inputHash: barrel?.inputHash ?? '' });
-      return new Response(code, { headers: { ...headers, 'Content-Type': JS_CT } });
+      return { body: code, status: 200, headers: { ...headers, 'Content-Type': JS_CT } };
     });
     if (outcome.kind === 'built') {
       if (outcome.changed) this.log('warn', `[vite-dev] ${specifier} changed while it was bundled: served, not cached`);
@@ -2125,10 +2120,11 @@ export class ViteDevServer {
     // dev server's log, not as an opaque 500 in the network panel.
     if (outcome.kind === 'refused' && outcome.status !== 'native') {
       this.log('error', `[vite-dev] ${outcome.message}`);
-      return new Response(failingModule(outcome.message, outcome.names), {
+      return {
+        body: failingModule(outcome.message, outcome.names),
         status: 200,
         headers: { ...headers, 'Content-Type': JS_CT, 'X-Nimbus-Bundle-Status': outcome.status },
-      });
+      };
     }
     const failure = outcome.kind === 'unresolved' ? 'its entry module could not be resolved in node_modules' : outcome.message;
     if (outcome.kind !== 'unresolved') this.log('error', `[vite-dev] bundle failed for ${specifier}: ${failure}`);
@@ -2165,9 +2161,7 @@ export class ViteDevServer {
         `export const __nimbus_optional_dep_stub = true;\n`;
       // Cache so repeated transitive references don't re-walk + re-warn.
       this.cacheModule(generation, cacheKey, { code: stubCode, timestamp: Date.now() });
-      return new Response(stubCode, {
-        headers: { ...headers, 'Content-Type': JS_CT },
-      });
+      return { body: stubCode, status: 200, headers: { ...headers, 'Content-Type': JS_CT } };
     }
     const diag =
       `[vite-dev] cannot serve /preview/@modules/${specifier}: ` +
@@ -2187,7 +2181,8 @@ export class ViteDevServer {
         for (const name of scan.namedImports.get(pkgName) ?? []) names.add(name);
       } catch { /* the package's own exports above */ }
     }
-    return new Response(failingModule(diag, names), {
+    return {
+      body: failingModule(diag, names),
       status: 200,
       headers: {
         ...headers,
@@ -2195,7 +2190,7 @@ export class ViteDevServer {
         'Cache-Control': 'no-store',
         'X-Nimbus-Bundle-Status': 'bundle-failed',
       },
-    });
+    };
   }
 
   // ── File serving ──────────────────────────────────────────────────────
@@ -2378,16 +2373,8 @@ export class ViteDevServer {
       }
     }
 
-    // Extract extension using slash-aware dot detection. Naive `split('.').pop()`
-    // returns garbage for paths with dotted directories like `/src/v1.0/App`
-    // (would produce `ext = '.0/app'`). We only accept a dot that occurs AFTER
-    // the final slash and has at least one character after it.
-    const pExtLastSlash = pathname.lastIndexOf('/');
-    const pExtLastDot = pathname.lastIndexOf('.');
-    const ext = (pExtLastDot > pExtLastSlash && pExtLastDot < pathname.length - 1)
-      ? pathname.substring(pExtLastDot).toLowerCase()
-      : '';
-    const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+    const ext = staticExtension(pathname);
+    const contentType = staticMimeType(MIME_TYPES, ext);
 
     // Every HTML page gets the dev head, as Vite's transformIndexHtml gives
     // every page of a multi-page app; only the root index.html takes a <base>.

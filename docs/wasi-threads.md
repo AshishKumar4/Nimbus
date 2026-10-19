@@ -92,8 +92,9 @@ error.
 - **128 threads.** Each one is an instance plus a stack in shared memory. Past
   the cap `pthread_create` returns `EAGAIN`.
 - **Emscripten pthreads are not supported.** That model needs a Web Worker pool
-  and `Atomics.wait`, neither of which exists here. Python (Pyodide) is an
-  Emscripten build, so this does not give Python threads.
+  and `Atomics.wait`, neither of which exists here. Python is a wasm32-wasi
+  build linked with wasi-libc's single-threaded pthread stubs, so this does
+  not give Python threads either.
 
 ## Platform facts
 

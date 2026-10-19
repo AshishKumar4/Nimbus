@@ -8,12 +8,10 @@
 // Exit: 0, built and verified, byte-identical; 1, build/verify failed or
 // differing artifacts written or saved; 2, not graded.
 import { spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { mapOnArmada } from './lib/armada.mjs';
-import { extract, FILES_MARK, keepArchive, keptAs, splitArchive, writeRefusal } from './lib/remote-artifacts.mjs';
+import { compareArtifacts, extract, FILES_MARK, keepArchive, keptAs, splitArchive, writeRefusal } from './lib/remote-artifacts.mjs';
 
 const DIR = 'packages/worker/wasm/git';
 const LIBC = 'packages/worker/wasm/nimbus-libc';
@@ -27,7 +25,6 @@ const git = (args, options = {}) => {
   if (done.status !== 0) throw new Error(`git ${args[0]} failed: ${(done.stderr || '').toString().trim()}`);
   return done.stdout;
 };
-const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
 const argv = process.argv.slice(2);
 if (argv.length > 1 || argv.some((arg) => arg.startsWith('--'))) {
@@ -110,20 +107,13 @@ if (task.verify !== 'ok') finish(1, `built in ${task.seconds} s, and verify fail
 if (archive === null) notGraded(`built and verified, but no artifacts came back (job ${run.jobId})`);
 
 verdict.archive = `${stem}.tar.xz`;
-const unpacked = mkdtempSync(join(tmpdir(), 'remote-git-build-'));
+let differing;
 try {
   keepArchive(verdict.archive, archive);
-  extract(unpacked, verdict.archive, ARTIFACTS);
-  verdict.artifacts = Object.fromEntries(ARTIFACTS.map((path) => {
-    const shown = spawnSync('git', ['-C', repo, 'show', `${sha}:${path}`], { maxBuffer: 256 * 1024 * 1024 });
-    return [path, { built: digest(readFileSync(join(unpacked, path))), committed: shown.status === 0 ? digest(shown.stdout) : null }];
-  }));
+  ({ artifacts: verdict.artifacts, differing } = compareArtifacts(repo, sha, verdict.archive, ARTIFACTS));
 } catch (error) {
   notGraded(`the artifacts that came back cannot be read (job ${run.jobId}): ${error.message}`);
-} finally {
-  rmSync(unpacked, { recursive: true, force: true });
 }
-const differing = ARTIFACTS.filter((path) => verdict.artifacts[path].built !== verdict.artifacts[path].committed);
 for (const path of ARTIFACTS) {
   const { built, committed } = verdict.artifacts[path];
   console.log(`${built === committed ? 'same     ' : 'different'} ${path} ${built}${built === committed ? '' : ` (the commit's: ${committed ?? 'none'})`}`);

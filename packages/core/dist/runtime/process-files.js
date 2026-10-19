@@ -30,7 +30,7 @@ import { isVfsError, syscallError, toVfsError } from '../vfs/vfs-error.js';
 import { normalizeVfsPath } from '../vfs/path.js';
 import { abandon, andThen, readDeclaredSource, readRangeOrWhole, readText } from '../vfs/vfs.js';
 import { formatProcMounts } from '../shell/mount-commands.js';
-import { CRED_KERNEL, isVfsCred, requireVfsCred, } from './os-contracts.js';
+import { sameFileVersion, CRED_KERNEL, isVfsCred, requireVfsCred, } from './os-contracts.js';
 import { fsError, SqliteRuntimeFsBridge, walkBeneath } from './sqlite-runtime-fs-bridge.js';
 import { modeAllows } from '../vfs/posix-access.js';
 import { closeDescriptions, closeScopeSignal, createDescriptorScope, Descriptors, openFlags, processView, reportLost, scopeSignal, settleHeldAt } from './descriptors.js';
@@ -163,6 +163,7 @@ class GuardedProcessBridge {
     symlink(target, path) { this.guard(); return this.target.symlink(target, path); }
     fsync(handleId) { this.guard(); return this.target.fsync(handleId); }
     revision(path) { this.guard(); return this.target.revision(path); }
+    contentKey(path) { this.guard(); return this.reading(() => this.target.contentKey(path)); }
     acquire(epoch, cursor, options) {
         this.guard();
         return this.withReadLease(this.target.acquire(epoch, cursor, options), options);
@@ -392,7 +393,7 @@ export class ProcessFiles {
     createListing(pid) {
         let listing = this.listings.get(pid);
         if (listing === undefined) {
-            listing = { named: new Set(), table: null, held: null };
+            listing = { named: new Set(), table: null, sqliteGeneration: null, held: null };
             this.listings.set(pid, listing);
         }
         return listing;
@@ -603,25 +604,34 @@ export class ProcessFiles {
         this.bound.delete(pid);
         const scope = this.processes.get(pid);
         this.processes.delete(pid);
-        this.retireWriter(pid);
-        if (!scope || scope.closed)
-            return { lost: [] };
         const lost = [];
-        for (const [id, opened] of scope.handles) {
-            if (opened.node.mounted && opened.node.pendingBytes() > 0)
-                lost.push(id);
-            // Dropped unflushed; a description another process still holds stays open, and a mount's
-            // file its backend holds open is closed with nothing written (MountedFileDescription.discard).
-            if (--opened.refs === 0 && opened.node.mounted) {
-                const { node } = opened;
-                abandon({ close: () => node.discard() });
+        try {
+            if (scope && !scope.closed) {
+                for (const [id, opened] of scope.handles) {
+                    if (opened.node.mounted && opened.node.pendingBytes() > 0)
+                        lost.push(id);
+                    // Dropped unflushed; a description another process still holds stays open.
+                    if (--opened.refs > 0)
+                        continue;
+                    const { node } = opened;
+                    // A mount's file its backend holds open is closed with nothing written
+                    // (MountedFileDescription.discard); the engine's is closed, so it pins
+                    // nothing (an unlinked file's content): what was written through it,
+                    // held appends included, is the file's already.
+                    abandon(node.mounted ? { close: () => node.discard() } : node);
+                }
+                scope.handles.clear();
+                scope.held.clear();
+                scope.waveDescriptions.clear();
+                closeScopeSignal(scope);
+                this.stopSubscriptions(scope);
             }
         }
-        scope.handles.clear();
-        scope.held.clear();
-        scope.waveDescriptions.clear();
-        closeScopeSignal(scope);
-        this.stopSubscriptions(scope);
+        finally {
+            // Its delegations end once its descriptions are closed, as closeProcess
+            // orders it: a held append is written under them, not recalled from it.
+            this.retireWriter(pid);
+        }
         return { lost };
     }
     /** The mounts `cred` sees, root first: what df, mount and `/proc/mounts` list. */
@@ -728,9 +738,9 @@ function underKernelMount(path) {
     const end = path.indexOf('/', 1);
     return KERNEL_MOUNT_POINTS[end === -1 ? path : path.slice(0, end)] === true;
 }
-/** Whether `view` shows a mount an embedder made: only then is a process's listing more than SQLite's. */
+/** Whether the table declares an embedder mount, including one whose source is absent. */
 function mountsBeyondSqlite(view) {
-    return view.mounts().some((mount) => isEmbedderMount(mount.point));
+    return view.someMountPoint(isEmbedderMount);
 }
 class AwaitingProcessBridge {
     parts;
@@ -765,6 +775,11 @@ class AwaitingProcessBridge {
     get synchronous() { return this.bridge; }
     gateLaunch(named) { return this.bridge.gateLaunch(named); }
     revision(path) { return this.bridge.revision(path); }
+    contentKey(path) {
+        return this.either([path], () => this.bridge.contentKey(path), async () => {
+            throw syscallError('ENOTSUP', 'open', await this.path(path));
+        });
+    }
     /** The process's namespace's changes at `path` and under it (CompositeVFS.watchChanges), named as its listings name them; stopped with its scope. */
     subscribe(path, listener, options) {
         this.authority();
@@ -809,10 +824,12 @@ class AwaitingProcessBridge {
      */
     list(after, limit) {
         if (!mountsBeyondSqlite(this.namespace)) {
-            // A listing of SQLite alone from the start begins at no mount table.
-            const listing = after === null || after === undefined ? this.listing(false) : undefined;
-            if (listing)
+            // A later mount must invalidate this SQLite-only listing too.
+            const listing = after === null || after === undefined ? this.listing(true) : undefined;
+            if (listing) {
                 listing.table = null;
+                listing.sqliteGeneration = this.namespace.mountGeneration();
+            }
             return this.bridge.list(after, limit);
         }
         this.authority();
@@ -830,8 +847,10 @@ class AwaitingProcessBridge {
         // Read before the page, as SqliteVFS.list reads its cursor (VfsListPage).
         const position = feed.position();
         const root = position.feeds['/'];
-        if (after === null && listing)
+        if (after === null && listing) {
             listing.table = position.table;
+            listing.sqliteGeneration = null;
+        }
         const page = feed.list(after === null ? null : `/${after}`, want, walk);
         // SQLite measured its own entries when it listed them; each is measured
         // here under the path the process sees, which only re-encodes that path.
@@ -861,6 +880,10 @@ class AwaitingProcessBridge {
      */
     acquire(epoch, cursor, options) {
         const listing = this.listing(false);
+        if (listing && listing.sqliteGeneration !== null) {
+            // Even a mount/unmount ABA relists once: a generation change is conservative.
+            return this.bridge.acquire(listing.sqliteGeneration === this.namespace.mountGeneration() ? epoch : null, cursor, options);
+        }
         if (!mountsBeyondSqlite(this.namespace) && (listing?.table ?? null) === null)
             return this.bridge.acquire(epoch, cursor, options);
         this.authority();
@@ -972,14 +995,29 @@ class AwaitingProcessBridge {
             // Only SQLite bounds a whole read (SqliteRuntimeFsBridge.readFile): a mount answers EFBIG, unread.
             if (options?.maxBytes !== undefined)
                 throw syscallError('EFBIG', 'read', name);
-            return (await this.viewed(name, follow)) ?? this.namespace.readFile(name);
+            // Nor does a mount keep content keys to read by.
+            if (options?.contentKey !== undefined)
+                throw syscallError('ENOTSUP', 'read', name);
+            const bytes = (await this.viewed(name, follow)) ?? (await this.namespace.readFile(name));
+            // An uncached read hands back bytes of its own, as SqliteRuntimeFsBridge's does.
+            return options?.cached === false ? bytes.slice() : bytes;
         }));
     }
     readRange(path, offset, length, options) {
         return this.either([path], () => this.bridge.readRange(path, offset, length, options), () => this.absent(async () => {
+            // A mounted file, as the synchronous bridge judges one: the engine's revisions name none, and
+            // a listing's stat is checked before the read and after it, which an await comes between.
+            if (options?.expectedEpoch !== undefined)
+                throw fsError('ESTALE', 'read', path);
+            const expected = options?.expectedFile;
+            if (expected !== undefined && !sameFileVersion(await this.stat(path), expected))
+                throw fsError('ESTALE', 'read', path);
             const name = await this.path(path);
             const view = await this.viewed(name, true);
-            return view ? view.slice(offset, offset + length) : readRangeOrWhole(this.namespace, name, offset, length);
+            const bytes = await (view ? view.slice(offset, offset + length) : readRangeOrWhole(this.namespace, name, offset, length));
+            if (expected !== undefined && !sameFileVersion(await this.stat(path), expected))
+                throw fsError('ESTALE', 'read', path);
+            return bytes;
         }));
     }
     /** A mounted file as this process sees it, its held writes applied (processView); undefined when it holds none for it. */
@@ -1108,7 +1146,7 @@ class AwaitingProcessBridge {
         });
     }
     copyFile(from, to, options) {
-        return this.either([from, to], () => this.bridge.copyFile(from, to, options), async () => this.namespace.copy((await this.path(from)), (await this.path(to)), { follow: true, keepMode: options?.keepMode }));
+        return this.either([from, to], () => this.bridge.copyFile(from, to, options), async () => this.namespace.copy((await this.path(from)), (await this.path(to)), { follow: true, keepMode: options?.keepMode, preserve: options?.preserve }));
     }
     copyTree(from, to, options) {
         return this.either([from, to], () => this.bridge.copyTree(from, to, options), async () => this.namespace.copy(await this.path(from, options?.follow === true), await this.path(to), { recursive: true, preserve: options?.preserve, follow: options?.follow }));
@@ -1428,7 +1466,7 @@ export class ProcessView {
         return await this.call(options?.recursive ? 'cp' : 'copyfile', from, async () => {
             if (options?.recursive)
                 return await this.fs.copyTree(from, to, { preserve: options.preserve, follow: options.follow });
-            await this.fs.copyFile(from, to, { keepMode: options?.keepMode });
+            await this.fs.copyFile(from, to, { keepMode: options?.keepMode, preserve: options?.preserve });
             return 1;
         }, to);
     }
@@ -1441,24 +1479,29 @@ export class ProcessView {
             await this.fs.utimes(path, 'now', 'now');
         });
     }
-    /** The file's bytes read around the session's content cache, re-checked for a change mid-read. */
-    async readFileUncached(path) {
-        return new Uint8Array(await this.readArrayBufferUncached(path));
-    }
-    /** {@link readFileUncached} as the ArrayBuffer a wasm module map takes, so a runtime image is held once.
-     *
-     * One whole-file read through the normal credentialed namespace view, with
-     * the LRU bypassed: the image is read once for a facet's module map, never
-     * re-read from this isolate. One read is also one coherent image on every
-     * backend — no ranges to version against each other, no capability to
-     * probe. A caller mutating the returned buffer cannot disturb the store:
-     * the uncached path hands back its own buffer.
+    /**
+     * The file's bytes read around the session's content cache, re-checked for
+     * a change mid-read: one whole-file read, so one coherent copy on every
+     * backend, held once, and the caller's own: the read's buffer, never copied
+     * again here. `maxBytes` as readFile's.
      */
-    async readArrayBufferUncached(path) {
-        const bytes = await this.call('open', path, () => this.fs.readFile(path, { cached: false }));
+    async readFileUncached(path, options) {
+        const bytes = await this.call('open', path, () => this.fs.readFile(path, { cached: false, maxBytes: options?.maxBytes, contentKey: options?.contentKey }));
         if (bytes === null)
             throw syscallError('ENOENT', 'open', path);
-        return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+        return bytes;
+    }
+    /** The file's content key (RuntimeFsBridge.contentKey): equal keys, equal bytes; ENOTSUP where the filesystem keeps none. */
+    async contentKey(path) {
+        const { fs } = this;
+        const contentKey = fs.contentKey;
+        if (contentKey === undefined)
+            throw syscallError('ENOTSUP', 'open', path);
+        return await this.call('open', path, () => contentKey(path));
+    }
+    /** `path` as a wasm image a facet loads, read through this view when the host builds the facet (openFacetImage). */
+    async image(path) {
+        return await openFacetImage((use) => use(this), path);
     }
     /**
      * rm: a file, or with `recursive` a tree, whole or not at all; `force`
@@ -1639,6 +1682,49 @@ export async function withOpenFiles(view, use, failed) {
             }
         }
     }
+}
+/**
+ * `path` as a wasm image a facet loads ({@link FacetImage}), each access made
+ * through a view `through` hands for its duration: its content key and size
+ * now, and its bytes only when the host builds the facet. The key is the
+ * store's own record of the bytes (RuntimeFsBridge.contentKey), so the
+ * image's identity, the key with the size, names the same bytes in every
+ * session and store, and nothing is hashed. A read takes only the bytes the
+ * key names, bounded at the size opened, both checked in the read's own turn,
+ * and of exactly that size: whatever happened to the file, a facet loads
+ * those bytes or none (ESTALE, EFBIG). A mount keeps no content keys, so an
+ * image there is refused (ENOTSUP).
+ */
+async function openFacetImage(through, path) {
+    const { key, size } = await through(async (view) => {
+        const opened = await view.stat(path);
+        if (opened === null)
+            throw syscallError('ENOENT', 'open', path);
+        if (opened.type !== 'file')
+            throw syscallError('EISDIR', 'open', path);
+        return { key: await view.contentKey(path), size: opened.size };
+    });
+    return {
+        path,
+        // A key and its length: a small file's key hashes its bytes and a large one's its chunk list, so only the two together name one set of bytes.
+        identity: `content:${key}:${size}`,
+        size,
+        peak: size,
+        read: () => through(async (view) => {
+            const bytes = await view.readFileUncached(path, { contentKey: key, maxBytes: size });
+            if (bytes.byteLength !== size)
+                throw syscallError('ESTALE', 'open', path);
+            return bytes;
+        }),
+    };
+}
+/**
+ * `path` as a wasm image a facet loads, read as `cred` through a host view
+ * of its own at every load: for a facet that outlives the view it was opened
+ * from (a shell's bash, a git that leaves its facet warm, a REPL).
+ */
+export async function hostImage(authority, cred, path) {
+    return await openFacetImage((use) => withHostView(authority, cred, use), path);
 }
 function vfsStatOf(stat) {
     return {

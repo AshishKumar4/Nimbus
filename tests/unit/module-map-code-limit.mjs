@@ -24,7 +24,7 @@ import {
   createCtxExports,
   createFacetCtx,
   createFacetWorld,
-} from './facet-host-harness.mjs';
+} from './lib/facet-host-harness.mjs';
 import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 
 const MIB = 1024 * 1024;
@@ -146,18 +146,23 @@ adoptCtxExports(createCtxExports(() => { throw new Error('no disk'); }));
   );
 }
 
-// ── the pool seam: an over-ceiling wasm payload fails naming the module ─────
+// ── the pool seam: an over-ceiling wasm image fails naming the module, unread ─
 {
+  let reads = 0;
+  const giant = { path: '/giant.wasm', identity: 'giant', size: DYNAMIC_WORKER_CODE_LIMIT_BYTES, peak: DYNAMIC_WORKER_CODE_LIMIT_BYTES, async read() { reads++; return new Uint8Array(0); } };
+  let loads = 0;
   const pool = new IsolatePool(
-    { LOADER: { get: () => ({ getEntrypoint: () => ({ async execute() { return 'ran'; } }) }) } },
+    { LOADER: { get: () => { loads++; return { getEntrypoint: () => ({ async execute() { return 'ran'; } }) }; } } },
     { id: { toString: () => 'pool-ceiling-id' } },
-    { network: ISOLATE_NETWORK, omitSupervisor: true, wasmModules: { 'giant.wasm': new ArrayBuffer(DYNAMIC_WORKER_CODE_LIMIT_BYTES) } },
+    { network: ISOLATE_NETWORK, omitSupervisor: true, wasmModules: { 'giant.wasm': giant } },
   );
   await assert.rejects(
     pool.submit(facetTaskSource("(value) => value"), 'payload'),
     /'giant\.wasm'/,
-    "the pool's assembled map is under the same ceiling check",
+    "the pool's map is under the same ceiling check",
   );
+  assert.equal(reads, 0, 'a map that can never load is refused before its image is read');
+  assert.equal(loads, 0, 'and before the loader is asked for it');
   pool.dispose();
 }
 

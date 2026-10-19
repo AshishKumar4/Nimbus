@@ -12,7 +12,7 @@ export async function opencodeInputs(root = REPO) {
   const recipe = 'packages/worker/scripts/opencode';
   const patches = (await fs.readdir(path.join(root, recipe))).filter(name => name.endsWith('.patch'));
   const files = await digestInputs(root, [
-    `${recipe}/build-node.ts`, `${recipe}/bundle-patches.ts`, `${recipe}/inputs.mjs`, `${recipe}/stubs`,
+    `${recipe}/build-node.ts`, `${recipe}/bundle-patches.ts`, `${recipe}/inputs.mjs`, `${recipe}/models-catalog.mjs`, `${recipe}/stubs`,
     ...patches.map(name => `${recipe}/${name}`),
     'packages/worker/scripts/artifact-inputs.mjs',
     'packages/worker/scripts/stage-asset.mjs',

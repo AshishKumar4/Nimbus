@@ -435,9 +435,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
             cpu: Array.isArray(v.cpu) ? v.cpu : undefined,
             libc: Array.isArray(v.libc) ? v.libc : undefined,
             ...(isEngines(v.engines) ? { engines: v.engines } : {}),
-            exports: v.exports ?? null,
             main: v.main || '',
-            module: v.module || '',
             bin,
         };
         // Staged-artifact rewrite: native-launcher packages install as their
@@ -456,6 +454,6 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
         return native;
     // 5. Stage the cache write: the registry package's, under its name, the
     //    one key a record has (an alias's lockfile entry names it too).
-    cacheWrites.push(registryRecord({ ...pkg, name: request.registryName }, Date.now()));
+    cacheWrites.push(registryRecord({ ...pkg, name: request.registryName }));
     return native ?? out(pkg, bytes, packumentSource);
 };

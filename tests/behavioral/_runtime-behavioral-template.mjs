@@ -35,7 +35,7 @@
 import puppeteer from 'puppeteer-core';
 import { existsSync } from 'node:fs';
 import { allocateProfileDir, releaseProfileDir } from './_probe-browser.mjs';
-import { mintSession, attachPathFor, probeTarget, Terminal, sleep, stripAnsi, BASE } from './_driver.mjs';
+import { mintSession, attachPathFor, probeTarget, readUntil, requestHeaders, Terminal, sleep, stripAnsi, writeFileViaShell, BASE } from './_driver.mjs';
 import { startDevCommand } from './_dev-start.mjs';
 
 export { BASE, mintSession, sleep, stripAnsi };
@@ -139,6 +139,34 @@ export function waitForSessionTerminalText(page, pattern, timeout = 30_000) {
   return page.waitForFunction(sessionTerminalInPage, { timeout }, pattern.source);
 }
 
+/**
+ * Press the mouse on the centre of `selector` (a pane's resize handle) and
+ * hold it. Resolves to { x, y, move(dx, dy), release() }: where it
+ * pressed; `move` drags to that offset from there, still held, so a probe
+ * can read the panes mid-drag; `release` lets go.
+ */
+export async function grabHandle(page, selector) {
+  const box = await (await page.waitForSelector(selector, { visible: true, timeout: 30_000 })).boundingBox();
+  const x = box.x + box.width / 2;
+  const y = box.y + box.height / 2;
+  await page.mouse.move(x, y);
+  // What a press there would hit: the handle, or what covers or replaced it since it was measured.
+  const hit = await page.evaluate(({ selector, x, y }) => {
+    const at = document.elementFromPoint(x, y);
+    const handle = document.querySelector(selector);
+    if (at === handle) return null;
+    return { at: at ? `${at.tagName.toLowerCase()}#${at.id}.${[...at.classList].join('.')}` : null, handle: handle && JSON.stringify(handle.getBoundingClientRect()) };
+  }, { selector, x, y });
+  if (hit) throw new Error(`${selector} measured at ${JSON.stringify(box)} is not what a press at (${x}, ${y}) hits: ${JSON.stringify(hit)}`);
+  await page.mouse.down();
+  return {
+    x,
+    y,
+    move: (dx, dy) => page.mouse.move(x + dx, y + dy, { steps: 10 }),
+    release: () => page.mouse.up(),
+  };
+}
+
 export async function applyProbeCookies(page, base = BASE, sid) {
   // Bearers belong to the target's transport, never to every request a page
   // might make (including cross-origin navigation/iframes). Attach exchanges
@@ -226,13 +254,65 @@ export async function exchangeAttachCookie(page, sid) {
   }
 }
 
+/** `url` with no credentials, query or fragment: an http(s) URL's origin and path, any other only its scheme. */
+function shownUrl(url) {
+  if (!URL.canParse(url)) return '(not a URL)';
+  const at = new URL(url);
+  return at.protocol === 'http:' || at.protocol === 'https:' ? `${at.origin}${at.pathname}` : `${at.protocol}…`;
+}
+
+/**
+ * Print every navigation of `page`'s top document that a page starts (a
+ * script, a meta or header refresh, a frame, cross-site ones and theirs
+ * included, navigating the top), with why and when: a probe's own goto
+ * starts none. Evidence for a probe that finds its page replaced; it never
+ * fails one.
+ */
+async function reportPageNavigations(page) {
+  const since = performance.now();
+  const cdp = await page.createCDPSession();
+  const top = (await cdp.send('Page.getFrameTree')).frameTree.frame.id;
+  const report = ({ frameId, reason, url, disposition }) => {
+    if (frameId !== top) return;
+    console.log(`  [page] the page navigated itself (${reason}, ${disposition}) to ${shownUrl(url)} at +${Math.round(performance.now() - since)} ms`);
+  };
+  // A cross-site frame runs in a process of its own: its requests are its own target's, and so are its frames'.
+  const watch = async (session) => {
+    session.on('Page.frameRequestedNavigation', report);
+    session.on('Target.attachedToTarget', ({ sessionId }) => {
+      const frame = session.connection()?.session(sessionId);
+      if (frame) watch(frame).catch(() => {});
+    });
+    await session.send('Page.enable');
+    await session.send('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: false, flatten: true, filter: [{ type: 'iframe', exclude: false }, { exclude: true }] });
+  };
+  await watch(cdp);
+}
+
 export async function openPage(browser, sid, opts = {}) {
   const page = await browser.newPage();
   await applyProbeCookies(page, BASE, sid);
   await exchangeAttachCookie(page, sid);
+  await reportPageNavigations(page);
   const consoleMessages = [];
   const pageErrors = [];
+  /**
+   * Every pre-bundled module the page received, by path: how many responses
+   * came, and the last one's status, headers and text (what it evaluated),
+   * the text a promise of its body or of why it could not be read.
+   */
+  const receivedModules = new Map();
 
+  page.on('response', (response) => {
+    const path = new URL(response.url()).pathname;
+    if (!path.includes('/@modules/')) return;
+    receivedModules.set(path, {
+      responses: (receivedModules.get(path)?.responses ?? 0) + 1,
+      status: response.status(),
+      headers: response.headers(),
+      text: response.text().then((text) => ({ text }), (error) => ({ error: String(error) })),
+    });
+  });
   page.on('console', (msg) => {
     consoleMessages.push({
       type: msg.type(),
@@ -321,25 +401,7 @@ export async function openPage(browser, sid, opts = {}) {
       await page.click(selector, opts.clickOpts || {});
     },
 
-    /** Type into a focused input. */
-    async type(selector, text, delay = 0) {
-      await page.waitForSelector(selector, { timeout: 15_000 });
-      await page.type(selector, text, { delay });
-    },
-
-    /** Programmatic navigation inside the SPA (calls history.pushState
-     *  and dispatches popstate so React-Router etc. respond). Use this
-     *  when a click target isn't readily available — same effect on
-     *  the runtime as a real click on a `<Link to="/x" />`. */
-    async pushHistory(path) {
-      await page.evaluate((p) => {
-        window.history.pushState({}, '', p);
-        window.dispatchEvent(new PopStateEvent('popstate'));
-      }, path);
-    },
-
-    /** Sum the page errors + console error messages into a single
-     *  list — useful for `assertNoRuntimeErrors`. */
+    /** The page errors and console error messages, in one list. */
     collectErrors() {
       const errors = [];
       for (const e of pageErrors) errors.push({ kind: 'pageerror', ...e });
@@ -351,33 +413,87 @@ export async function openPage(browser, sid, opts = {}) {
       return errors;
     },
 
-    /** Hard assertion: no `pageerror` and no console.error fired
-     *  during the probe's lifetime. Returns the error list when
-     *  triggered (for inspection); throws otherwise. */
-    assertNoRuntimeErrors(filter = () => true) {
-      const errors = this.collectErrors().filter(filter);
-      if (errors.length > 0) {
-        const summary = errors.slice(0, 5).map((e) =>
-          `[${e.kind}] ${e.message || e.text || ''}`).join('\n');
-        throw new Error(`runtime errors observed (${errors.length}):\n${summary}`);
-      }
-      return errors;
-    },
-
     /** Get the current page URL. */
     async currentUrl() {
       return page.url();
     },
 
-    /** Take a screenshot for diagnostic capture. Returns base64 string. */
-    async screenshotB64() {
-      return await page.screenshot({ encoding: 'base64', fullPage: true });
+    /**
+     * Evidence for a module the page could not evaluate: for the first
+     * "… @ /s/<sid>/…/@modules/<name>:<line>" in `text` (the dev server's
+     * crash overlay), the lines around <line> of that module as the page
+     * received it, and whether it is served the same now: lengths, and the
+     * first offset at which the two differ. Null when `text` names none.
+     */
+    async servedModuleExcerpt(text) {
+      const at = /@ (\/s\/[^\s:]+\/@modules\/[^\s:]+):(\d+)/.exec(text);
+      if (!at) return null;
+      const [, path, named] = at;
+      const line = Number(named);
+      const got = receivedModules.get(path) ?? null;
+      const body = got === null ? null : await got.text;
+      const received = body?.text ?? null;
+      const now = await page.evaluate(async (path) => {
+        try {
+          const response = await fetch(path, { cache: 'no-store' });
+          return { status: response.status, bundleStatus: response.headers.get('x-nimbus-bundle-status'), text: await response.text() };
+        } catch (error) {
+          return { error: String(error) };
+        }
+      }, path).catch((error) => ({ error: String(error) }));
+      const excerpt = (body) => {
+        const lines = body.split('\n');
+        const from = Math.max(1, line - 5);
+        return {
+          length: body.length,
+          lineOffset: lines.slice(0, line - 1).reduce((sum, text) => sum + text.length + 1, 0),
+          lines: lines.slice(from - 1, line + 5).map((text, i) => `${from + i}: ${text.slice(0, 240)}`),
+        };
+      };
+      const firstDifference = (a, b) => {
+        const end = Math.min(a.length, b.length);
+        for (let i = 0; i < end; i++) if (a.charCodeAt(i) !== b.charCodeAt(i)) return i;
+        return a.length === b.length ? null : end;
+      };
+      // Where each 4 KiB block of what the page received sits in what is served now (-1: nowhere): a permutation or a substitution.
+      const blockMap = (got, served) => {
+        const map = [];
+        for (let at = 0; at < got.length; at += 4096) {
+          const block = got.slice(at, at + 4096);
+          map.push(served.startsWith(block, at) ? at : served.indexOf(block));
+        }
+        return map.map((found, i) => (found === i * 4096 ? '=' : `${i * 4096}<-${found}`)).filter((entry) => entry !== '=');
+      };
+      return {
+        path, line,
+        received: got === null ? null : {
+          responses: got.responses, status: got.status, headers: got.headers,
+          ...(received === null ? { error: body?.error ?? null } : excerpt(received)),
+        },
+        now: 'text' in now ? { status: now.status, bundleStatus: now.bundleStatus, ...excerpt(now.text) } : now,
+        firstDifference: received !== null && 'text' in now ? firstDifference(received, now.text) : null,
+        movedBlocks: received !== null && 'text' in now ? blockMap(received, now.text) : null,
+      };
     },
 
     async close() {
       try { await page.close(); } catch { /* best-effort */ }
     },
   };
+}
+
+/**
+ * Wait, at most `timeoutMs`, until the session's preview is the dev
+ * server's page rather than the placeholder /preview/ answers while none
+ * is up: the dev server mounts the project's index.html under the preview
+ * path. Throws with the last answer when it never is.
+ */
+export async function previewServed(sid, timeoutMs = 30_000) {
+  const mounted = new RegExp(`<base href="/s/${sid}/preview/`);
+  const page = (signal) => fetch(`${BASE}/s/${sid}/preview/`, { headers: requestHeaders({}, sid), signal })
+    .then((response) => response.text(), (error) => `unreachable: ${error.message}`);
+  const last = await readUntil(page, (text) => mounted.test(text), timeoutMs);
+  if (!mounted.test(last)) throw new Error(`the dev server did not serve /s/${sid}/preview/ within ${timeoutMs} ms; it answered ${JSON.stringify(last.slice(0, 200))}`);
 }
 
 /**
@@ -406,7 +522,6 @@ export async function scaffoldAndStartVite(sid, opts) {
 
   const t = new Terminal(sid);
   await t.connect();
-  await sleep(2_000);
   await t.waitForPrompt(60_000);
 
   await t.run(`mkdir -p /home/user/${opts.workdir}`, 10_000);
@@ -420,11 +535,7 @@ export async function scaffoldAndStartVite(sid, opts) {
     if (lastSlash > '/home/user'.length) {
       await t.run(`mkdir -p ${abs.substring(0, lastSlash)}`, 10_000);
     }
-    const b64 = Buffer.from(content, 'utf8').toString('base64');
-    await t.run(
-      `node -e "require('fs').writeFileSync('${abs}', Buffer.from('${b64}','base64').toString('utf8'))"`,
-      30_000,
-    );
+    await writeFileViaShell((command) => t.run(command, 30_000), abs, content);
   }
 
   // Install
@@ -432,9 +543,7 @@ export async function scaffoldAndStartVite(sid, opts) {
   const installTail = stripAnsi(installR.output).split(/\r?\n/).slice(-6).join('\n');
   const { ready: viteReady } = await startDevCommand({ terminal: t, cwd: `/home/user/${opts.workdir}`, command: devCmd,
     ready: text => devReadyMarkers.some(marker => text.includes(marker)), budgetMs: devReadyTimeoutMs });
-  // Bounded settle time so the port-registry registration completes
-  // before the iframe loads. NOT a retry — a single bounded yield.
-  await sleep(2_000);
+  if (viteReady) await previewServed(sid);
 
   return { terminal: t, viteReady, installTail };
 }
@@ -477,7 +586,6 @@ export async function cloneAndStartVite(sid, opts) {
 
   const t = new Terminal(sid);
   await t.connect();
-  await sleep(2_000);
   await t.waitForPrompt(60_000);
 
   await t.run('cd /home/user', 10_000);
@@ -515,8 +623,7 @@ export async function cloneAndStartVite(sid, opts) {
   const installTail = stripAnsi(installR.output).split(/\r?\n/).slice(-12).join('\n');
   const { ready: viteReady } = await startDevCommand({ terminal: t, cwd: `/home/user/${opts.workdir}`, command: devCmd,
     ready: text => devReadyMarkers.some(marker => text.includes(marker)), budgetMs: devReadyTimeoutMs });
-  // Bounded settle so port-registry registration completes.
-  await sleep(3_000);
+  if (viteReady) await previewServed(sid);
 
   return { terminal: t, viteReady, installTail, cloneOk: true, cloneTail };
 }

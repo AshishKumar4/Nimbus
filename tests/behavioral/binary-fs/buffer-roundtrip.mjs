@@ -8,7 +8,7 @@
 // the small fixed-byte probes might miss (e.g. valid 2/3/4-byte
 // UTF-8 sequences that survive but aren't bit-equal).
 
-import { mintSession, Terminal, sleep, stripAnsi, BASE } from '../_driver.mjs';
+import { mintSession, Terminal, stripAnsi, BASE, writeFileViaShell } from '../_driver.mjs';
 import { createHash } from 'node:crypto';
 
 const sid = await mintSession();
@@ -16,7 +16,6 @@ console.log(`[binary-fs buffer-roundtrip] sid=${sid} BASE=${BASE}`);
 
 const t = new Terminal(sid);
 await t.connect();
-await sleep(2_000);
 await t.waitForPrompt(60_000);
 
 await t.run('mkdir -p /home/user/bf-rt', 10_000);
@@ -60,11 +59,7 @@ const back = fs.readFileSync('rt.bin');
 console.log('len:', back.length);
 console.log('hash:', crypto.createHash('sha256').update(back).digest('hex'));
 `;
-const scriptB64 = Buffer.from(script, 'utf8').toString('base64');
-await t.run(
-  `node -e "require('fs').writeFileSync('rt.js', Buffer.from('${scriptB64}','base64').toString('utf8'))"`,
-  15_000,
-);
+await writeFileViaShell((command) => t.run(command, 15_000), 'rt.js', script);
 const r = await t.run('node rt.js', 30_000);
 const out = stripAnsi(r.output);
 const observedLen = Number((out.match(/len:\s*(\d+)/) || [])[1]);

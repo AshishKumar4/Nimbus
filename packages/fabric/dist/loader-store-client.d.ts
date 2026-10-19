@@ -1,4 +1,4 @@
-import type { ModuleContent } from '@nimbus-sh/platform/worker-code.js';
+import { type ModuleContent } from '@nimbus-sh/platform/worker-code.js';
 import type { HostRoute } from './composition.js';
 /** Where a binding's loaded Workers are kept: its session, and the owner its build minted. */
 export interface LoaderStoreRef {

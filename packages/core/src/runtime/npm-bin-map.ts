@@ -1,3 +1,6 @@
+import { normalizeVfsPath } from '../vfs/path.js';
+import { rootClampedSegments } from '@nimbus-sh/platform/lexical-path.js';
+
 /**
  * A package's `bin` field as npm installs it (npm-normalize-package-bin).
  *
@@ -40,14 +43,13 @@ export function npmBinMap(packageName: string, bin: unknown): Map<string, string
 
 /** `path.posix.join('/', target)` without its leading slash, as npm takes a target; null for the package root itself. */
 function withinPackage(target: string): string | null {
-  const slashed = target.replace(/\\/g, '/');
-  const out: string[] = [];
-  for (const segment of slashed.split('/')) {
-    if (segment === '..') out.pop();
-    else if (segment !== '.' && segment !== '') out.push(segment);
-  }
-  if (out.length === 0) return null;
-  return out.join('/') + (slashed.endsWith('/') ? '/' : '');
+  return insidePackage(target.replace(/\\/g, '/')) || null;
+}
+
+/** `slashed` resolved inside the package root, a trailing slash kept; '' for the root. */
+function insidePackage(slashed: string): string {
+  const out = rootClampedSegments(slashed);
+  return out.length === 0 ? '' : out.join('/') + (slashed.endsWith('/') ? '/' : '');
 }
 
 /**
@@ -93,14 +95,7 @@ export function normalizePackageJsonBin(pkg: Record<string, unknown>): void {
 
 /** @npmcli/package-json secureAndUnixifyPath: `ref` inside the package, `\` and `:` as `/`; '' for its root. */
 function securedPath(ref: string): string {
-  const unixified = ref.replace(/[\\:]/g, '/');
-  const out: string[] = [];
-  for (const segment of unixified.split('/')) {
-    if (segment === '..') out.pop();
-    else if (segment !== '.' && segment !== '') out.push(segment);
-  }
-  if (out.length === 0) return '';
-  return out.join('/') + (unixified.endsWith('/') ? '/' : '');
+  return insidePackage(ref.replace(/[\\:]/g, '/'));
 }
 
 /** Node's path.posix.basename; a non-string throws as Node's does. */
@@ -108,4 +103,18 @@ function posixBasename(path: unknown): string {
   if (typeof path !== 'string') throw new TypeError(`The "path" argument must be of type string. Received ${path === null ? 'null' : typeof path}`);
   const trimmed = path.replace(/\/+$/, '');
   return trimmed.slice(trimmed.lastIndexOf('/') + 1);
+}
+
+/**
+ * The file a bin is linked as: a Node script in `shimDir` that runs
+ * `target`, named relative to it as npm's .bin symlinks are, so a tree
+ * moved whole (a staged install renamed into place) still runs.
+ */
+export function npmBinShim(shimDir: string, target: string): string {
+  const from = normalizeVfsPath(shimDir).split('/').filter(Boolean);
+  const to = normalizeVfsPath(target).split('/').filter(Boolean);
+  let common = 0;
+  while (common < from.length && common < to.length - 1 && from[common] === to[common]) common++;
+  const rel = [...from.slice(common).map(() => '..'), ...to.slice(common)].join('/');
+  return `#!/usr/bin/env node\nrequire(${JSON.stringify(rel.startsWith('../') ? rel : `./${rel}`)});\n`;
 }

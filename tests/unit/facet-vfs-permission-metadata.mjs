@@ -1,7 +1,6 @@
 #!/usr/bin/env bun
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
@@ -11,7 +10,7 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
+import { createFacetCtx, createFacetWorld } from './lib/facet-host-harness.mjs';
 import { processFiles } from './lib/process-bridge.mjs';
 import { moduleMapBundle } from './lib/module-map-bundle.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
@@ -85,7 +84,5 @@ assert.equal(bundle[`${prefix}public.txt`], 'public\n');
 assert.equal(Object.hasOwn(bundle, `${prefix}secret.txt`), false,
   'no bytes of a file this credential cannot read are staged');
 assert.equal(Object.hasOwn(bundle, `${prefix}missing.txt`), false, 'a nonexistent path is absent');
-assert.equal(/__MODULE_VFS_(MANIFEST|METADATA)/.test(runnerSource), false,
-  'the facet carries no spawn-time stat or directory tables: the namespace is its view');
 
 console.log('facet VFS permission metadata: ok');

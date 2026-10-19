@@ -1,15 +1,15 @@
 #!/usr/bin/env bun
-// file-tree/panel/new/file-tree-folder-expands — folder click triggers
-// lazy fs-list and the response shape supports per-folder rendering.
-//
-// We don't run a real browser; we exercise the underlying contract:
-//   - fs-list non-recursive on /home/user returns at least one
-//     directory entry (the starter project has app/, projects/, .config/)
-//   - fs-list non-recursive on THAT subdirectory returns children
-//   - The reqId echo (editor hotfix) works for both calls
+// file-tree/panel/new/file-tree-folder-expands — the lazy fs-list a
+// folder click lists with (a directory at the root, its children, the
+// reqId echoed), and, in a real Chrome, clicking a folder: its children
+// show, a second click hides them, and a child opens in the editor. Its icon
+// follows its expansion, after a reload that restores it too (red before:
+// the icon was the expansion when the folder was first seen).
 
 import WebSocket from 'ws';
-import { mintSession, WS_BASE, makeAsserter, sleep, wsHeaders, requestHeaders } from '../../../_driver.mjs';
+import { mintSession, deleteSession, BASE, WS_BASE, makeAsserter, sleep, wsHeaders, requestHeaders } from '../../../_driver.mjs';
+import { launchBrowser, openPage } from '../../../_runtime-behavioral-template.mjs';
+import { Nimbus } from '../../../../../packages/sdk/src/index.ts';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('file-tree/panel/new/file-tree-folder-expands');
@@ -54,17 +54,49 @@ if (dirEntry) {
     `reqId=${subRes?.reqId}`);
 }
 
-// Probe 3: HTML wiring — clicking a folder triggers loadFolder().
-const r = await fetch(`${process.env.BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders({}, sid) });
-const html = await r.text();
-a.check('handleNodeClick toggles expanded state for directories',
-  /handleNodeClick[\s\S]{0,400}type\s*===\s*['"]directory['"][\s\S]{0,200}expanded\.add/.test(html) ||
-  /handleNodeClick[\s\S]{0,400}directory[\s\S]{0,200}expanded/.test(html),
-  `folder-click wiring missing`);
-a.check('handleNodeClick lazy-loads folder children',
-  /handleNodeClick[\s\S]{0,500}loadFolder/.test(html),
-  `lazy loadFolder wiring missing`);
-
 ws.close();
+
+const box = Nimbus.connect({ endpoint: BASE, headers: () => requestHeaders({}, sid) }).sandbox(sid);
+const folder = '/home/user/expand-dir';
+const child = `${folder}/child.txt`;
+await box.files.mkdir(folder);
+await box.files.write(child, 'inside the folder\n');
+const browser = await launchBrowser();
+try {
+  const { page, pageErrors } = await openPage(browser, sid);
+  await page.goto(`${BASE}/s/${sid}/`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+  await page.waitForFunction(() => window.__nimbusMonacoEditor, { timeout: 60_000 });
+  const row = (path) => `.tree-node[data-path="${path}"]`;
+  // A folder's icon is its expansion's: open while its children show, closed while they do not.
+  const icon = (path) => page.$eval(`${row(path)} .tree-icon`, (el) => el.textContent);
+  await page.waitForSelector(row(folder), { visible: true, timeout: 30_000 });
+  a.check('a closed folder shows a closed icon', await icon(folder) === '📁', await icon(folder));
+  await page.locator(row(folder)).click();
+  await page.waitForSelector(row(child), { visible: true, timeout: 30_000 });
+  a.check('clicking a folder lists its children', true);
+  a.check('an expanded folder shows an open icon', await icon(folder) === '📂', await icon(folder));
+  await page.locator(row(folder)).click();
+  await page.waitForSelector(row(child), { hidden: true, timeout: 10_000 });
+  a.check('clicking it again hides them', true);
+  a.check('collapsed again, it shows a closed icon', await icon(folder) === '📁', await icon(folder));
+  await page.locator(row(folder)).click();
+  await page.waitForSelector(row(child), { visible: true, timeout: 30_000 });
+  // Reloaded with the folder expanded (the tree keeps that), it opens open and collapses closed.
+  await page.reload({ waitUntil: 'domcontentloaded', timeout: 60_000 });
+  await page.waitForSelector(row(child), { visible: true, timeout: 60_000 });
+  a.check('a folder restored expanded shows an open icon', await icon(folder) === '📂', await icon(folder));
+  await page.locator(row(folder)).click();
+  await page.waitForSelector(row(child), { hidden: true, timeout: 10_000 });
+  a.check('collapsed after a restore, it shows a closed icon', await icon(folder) === '📁', await icon(folder));
+  await page.waitForFunction(() => window.__nimbusMonacoEditor, { timeout: 60_000 });
+  await page.locator(row(folder)).click();
+  await page.locator(row(child)).click();
+  await page.waitForFunction((text) => window.__nimbusMonacoEditor.getValue() === text, { timeout: 30_000 }, 'inside the folder\n');
+  a.check('a child of a reopened folder opens in the editor', true);
+  a.check('no page errors', pageErrors.length === 0, JSON.stringify(pageErrors));
+} finally {
+  await browser.close();
+  await deleteSession(sid);
+}
 const sum = a.summary();
 process.exit(sum.fail > 0 ? 1 : 0);

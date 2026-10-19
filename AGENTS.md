@@ -110,8 +110,14 @@ memory limit under either host: measured 2026-09-22 on staging, a
 facet-hosted process allocating 215 MB of heap objects was killed with
 "Worker exceeded memory limit" while its own session and a second session
 kept their terminals and were not reset. What resets a session is the
-session's own work: the launch-time bundle build, and a wasm engine's
-memory, which only grows. That is why every session-side transform runs in
+work done in its own isolate, which it shares, with its memory limit, with
+the other sessions the platform places there: the launch-time bundle build,
+a wasm engine's memory, which only grows, and what a facet's load holds.
+A facet's wasm images are read by path in the loader's cache-miss callback,
+and the load is admitted on the isolate's transient budget before its worker
+(`acquireSupervisorLoad`), so loads that would overlap take turns
+(measured 2026-10-16: three clang compiles at once reset the isolate
+before, at 239 MiB). That is why every session-side transform runs in
 the loader-backed transform facet on Nimbus's Oxc build
 (`packages/worker/scripts/oxc-wasm`, whose memory starts at 4.25 MiB), and
 every `EsbuildService.build()` in the build facet on rolldown's staged
@@ -127,6 +133,20 @@ unrecognised value is refused rather than defaulted. Flip it on a target with
 and read back where a process actually landed in the process log: every
 probe target, each throwaway included, is deployed with `NIMBUS_DEBUG=1`
 (`PROBE_TARGET_VARS` in `tests/behavioral/_deploy-target.mjs`).
+
+Lock order: supervisor credit, then a Dynamic Worker. Nothing waits for
+credit (SupervisorAllocationBudget acquire or acquireLoad, or growing a
+lease) while it holds a worker's fetch hold (beginLoaderFetch,
+claimAdmission, readmitRefused). While it holds one, it may give credit
+back, shrink it, or take credit without waiting (tryAcquire). Running work
+is the one exception, and comes first. Credit a running process needs (its
+write waves and the session RPCs it makes, through acquireRunning) overtakes
+every queued ask. When nothing else frees it, it reclaims parked launches'
+retained maps, oldest parked first: each is dropped, its launch is sent back
+to prepare, and the map is rebuilt at that launch's turn. Otherwise it waits
+only for credit other running work holds. A facet's load is not running
+work.
+The runtime spec's "Launch lock order" section says how each holder keeps it.
 
 The Runtime OS target and honest support matrix are tracked in
 `docs/architecture/nimbus-os-runtime-spec.md`. Keep docs and UI claims within
@@ -213,7 +233,7 @@ Current runtime substrate:
 
 | Runtime | Bins | Notes |
 |---|---|---|
-| `python` | `python`, `python3`, `pip`, `pip3` | Pyodide / CPython 3.13. `pip` is alpha but ABI-aware: PyPI pure wheels, requirements, constraints, extras, markers, local pure wheels, curated pure source artifacts, and declared Pyodide startup-module package artifacts are supported. Request-time extension-module loading is blocked by Workers and must not be used. |
+| `python` | `python`, `python3`, `pip`, `pip3` | CPython 3.13 for wasm32-wasi. `pip` is alpha but ABI-aware: PyPI pure wheels, requirements, constraints, extras, markers, local pure wheels and curated pure source artifacts are supported. wasm32-wasi has no dlopen, so a compiled package works only linked into the interpreter (numpy and MarkupSafe, in python-sci); other extension wheels are refused with an ABI diagnostic. Request-time extension-module loading is blocked by Workers and must not be used. |
 | `ruby` | `ruby`, `ruby3`, `gem`, `bundle`, `bundler` | ruby.wasm / Ruby 3.3. Pure Ruby gems, simple Bundler Gemfiles, gem bins, Rack/WEBrick-style preview, and native-gem unsupported diagnostics are implemented; full Bundler parity and native Ruby extensions need a Nimbus ABI path. |
 | `clang` | `clang`, `wasm-ld` | LLVM 8 to Nimbus' `wasm32-wasi-nimbus` ABI. |
 | `node`, `bun` | `node`, `bun`, `npm`, `npx` | Cloudflare workerd `nodejs_compat` and Nimbus shims, not upstream native binaries. |
@@ -326,6 +346,15 @@ One unit file is `remote-unit --only <file>`; one probe is `remote-probes
 --only <probe>`. A bench or profile is committed and run through
 `remote-unit --only` or `mapOnArmada` (`scripts/ci/lib/armada.mjs`).
 
+A paired CPU bench (`scripts/ci/lib/paired-cpu.mjs`) grades code on the
+engine that runs it in production. Hot paths in guest code (what the node
+shims, the resident store and the loader run in a process facet) are
+graded on V8, as workerd runs them: their bench runs under `node`, and
+each arm is bundled on its own (`tests/bench/module-resolution-cpu.mjs`,
+`resident-read-cpu.mjs`). Under bun, a capture called as Node's
+primordials call one (`uncurryThis`) costs 4–5× a live method call. Under
+V8 it costs the same. A bun run of such a bench is context, not the gate.
+
 A red-first test of a hang or runaway bug bounds itself: it runs the
 failing path in a child with a timeout, so red is a clean failure.
 
@@ -381,6 +410,29 @@ again.
   job's environment. A task that starts too late for the token is not
   graded. No output contains the token. The suite runs in 4 parts of 4
   probes at a time, with Chromium, and checks the session ledger.
+- The perf probes in `PAIRED_PROBES` (`tests/behavioral/_paired.mjs`:
+  cold-start, first-paint, install-warm, clone-fast) grade the candidate
+  against a baseline measured in the same run. When the selection has one,
+  `remote-probes` builds the baseline (`--baseline <commit>`, default the
+  merge-base with origin/main; `release.mjs staging` passes the commit
+  production serves) beside the candidate, stands up four fresh
+  throwaways (two of the baseline, two of the candidate), runs those probes
+  in a task of their own and deletes the throwaways at the end. Each
+  candidate throwaway is graded against the mean of the two baseline ones,
+  and a probe is red on a set only when both are slower: one Preview can
+  run slower than another of the same code for a whole run. A red set is
+  confirmed on four fresh throwaways, and the probe is red only when that
+  set is red too. Run by hand without them, a paired probe exits 2.
+- A red row whose session socket closed 1006 (the session ledger records
+  it) or that shows `E_NIMBUS_DO_OVERLOADED` is attributed from Workers Logs
+  and traces by the exact error on each session's object
+  (`scripts/ci/lib/reset-attribution.mjs`, with the observability token in
+  `~/.config/nimbus/cf-observability-token`). It is rerun once, and the
+  rerun grades it, only when the probe reached its summary, every failed
+  check is the driver's 1006 close error naming a dropped session, and each
+  such session shows "Internal error in Durable Object storage caused object
+  to be reset" and nothing else. An isolate memory reset is Nimbus's
+  own memory and stays red.
 - `--deploy` builds the bundle in a container (the dist gate, then
   `wrangler deploy --dry-run`) and uploads it from this machine with your
   wrangler login. The upload is not a build. No Cloudflare credential goes

@@ -18,7 +18,7 @@
 //   (a scoped path URL needs the session credential; a public host form does
 //   not, and is exercised only when a suffix is set).
 
-import { BASE, AUTH_TOKEN, makeAsserter, mintSession, deleteSession, Terminal, heredocCommand, requestHeaders, sleep } from '../_driver.mjs';
+import { BASE, AUTH_TOKEN, makeAsserter, mintSession, deleteSession, Terminal, heredocCommand, requestHeaders, sleep, outputLines } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const SUFFIX = process.env.NIMBUS_PREVIEW_HOST_SUFFIX ?? null;
@@ -54,7 +54,7 @@ async function poll(url, needle, budgetMs, path = '') {
   }
   return { ok: false, last };
 }
-const firstUrl = (output) => output.split('\n').map((l) => l.trim()).find((l) => /^https?:\/\//.test(l)) ?? '';
+const firstUrl = (output) => outputLines(output).find((l) => /^https?:\/\//.test(l)) ?? '';
 
 let t = null;
 try {

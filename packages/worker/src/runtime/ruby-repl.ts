@@ -31,7 +31,9 @@ import type { ReplAdapter, ReplPushResult } from './repl-session.js';
 import { ReplSession } from './repl-session.js';
 import { buildRubyPreamble } from '@nimbus-sh/core/runtime/ruby-runner.js';
 import { CRED_KERNEL, type NimbusFilesystemAuthority, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { withHostView } from '@nimbus-sh/core/runtime/process-files.js';
+import { hostImage } from '@nimbus-sh/core/runtime/process-files.js';
+import type { FacetImage } from '@nimbus-sh/core/runtime/facet-host.js';
+import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { exists } from '@nimbus-sh/core/vfs/vfs.js';
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
 import { RUBY_REPL_TASK } from '../loaders/compiled-bodies.generated.js';
@@ -65,7 +67,8 @@ export interface RubyReplDeps {
 class RubyReplAdapter implements ReplAdapter {
   private pool: IsolatePool | null = null;
   private deps: RubyReplDeps;
-  private wasmBytesAB: ArrayBuffer | null = null;
+  /** The interpreter, opened, not read: the host reads it for each load of the prompt's facet alone (FacetImage). */
+  private image: FacetImage | null = null;
 
   ps1: string = 'irb> ';
   ps2: string = 'irb* ';
@@ -188,12 +191,12 @@ class RubyReplAdapter implements ReplAdapter {
     if (this.pool) return;
     const { installRoot, facetMgr } = this.deps;
     const wasmPath = `${installRoot}/share/ruby/ruby+stdlib.wasm`;
-    this.wasmBytesAB = await withHostView(this.deps.authority, CRED_KERNEL, async (vfs) => {
-      if (!(await vfs.exists(wasmPath))) {
-        throw new Error(`ruby+stdlib.wasm missing at ${wasmPath} (run 'nimbus install ruby')`);
-      }
-      return vfs.readArrayBufferUncached(wasmPath);
-    });
+    try {
+      this.image = await hostImage(this.deps.authority, CRED_KERNEL, wasmPath);
+    } catch (error) {
+      if (!isVfsError(error, 'ENOENT')) throw error;
+      throw new Error(`ruby+stdlib.wasm missing at ${wasmPath} (run 'nimbus install ruby')`);
+    }
 
     // The one canonical Ruby facet preamble. A hand-rolled copy here once
     // drifted (it lacked the language-prelude const __rubyRun requires, so
@@ -215,12 +218,12 @@ class RubyReplAdapter implements ReplAdapter {
   }
 
   private async submitFacetFn(userCode: string): Promise<RubyReplFacetResult> {
-    const { pool, wasmBytesAB } = this;
-    if (!pool || !wasmBytesAB) throw new Error('Ruby REPL is not initialized');
+    const { pool, image } = this;
+    if (!pool || !image) throw new Error('Ruby REPL is not initialized');
     const { home, cwd, binName, cred } = this.deps;
     const step: RubyReplStep = { userCode, home, cwd, binName, supervisorPid: this.deps.pid, cred };
     return await pool.submit(RUBY_REPL_TASK, step, {
-      wasmModules: { 'ruby+stdlib.wasm': wasmBytesAB },
+      wasmModules: { 'ruby+stdlib.wasm': image },
     });
   }
 }

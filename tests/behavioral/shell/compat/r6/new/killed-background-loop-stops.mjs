@@ -8,6 +8,8 @@ import {
   mintSession,
   stripAnsi,
   Terminal,
+  hasOutputLine,
+  outputLines,
 } from '../../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -33,17 +35,20 @@ try {
   ].join('; ');
   const result = await t.run(command, 12_000);
   const output = stripAnsi(result.output);
+  const lines = outputLines(output);
+  const afterKillIndex = lines.indexOf('AFTER_KILL');
+  const doneIndex = lines.indexOf('DONE');
 
   a.check('background loop produced output before kill',
-    /SPIN/.test(output),
+    hasOutputLine(output, 'SPIN'),
     JSON.stringify(output));
   a.check('command continued after wait',
-    /AFTER_KILL[\s\S]*DONE/.test(output),
+    afterKillIndex >= 0 && doneIndex > afterKillIndex,
     JSON.stringify(output));
 
-  const afterKill = output.slice(output.lastIndexOf('AFTER_KILL'));
+  const afterKill = lines.slice(afterKillIndex);
   a.check('background loop stopped after kill and wait',
-    !/SPIN/.test(afterKill),
+    afterKillIndex >= 0 && !afterKill.includes('SPIN'),
     JSON.stringify(afterKill));
 } finally {
   await t.close();

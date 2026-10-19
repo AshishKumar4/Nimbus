@@ -150,6 +150,7 @@ import { encodeExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 import * as _diag from './diag.js';
 import { ServedReads } from '../facets/read-profile.js';
 import { CloneRecovery, bridgeCleanupFs } from '../git/clone-job.js';
+import { nimbusDebugEnabled } from '../_shared/nimbus-debug.js';
 
 /** The ops whose non-null answer is a file's content served to a process. */
 const SERVED_READ_OPS: ReadonlySet<string> = new Set(['readFile', 'readFileBytes', 'fsReadRange', 'fsReadRangeUncached']);
@@ -489,19 +490,14 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
   _diagSampleCount: number = 0;
 
   /**
-   * Fix 5: toggled by env NIMBUS_DEBUG=1 (checked each call; cheap enough).
+   * Fix 5: toggled by env NIMBUS_DEBUG ('1' or 'true'; checked each call, cheap enough).
    * When true: spawn banners and exit traces are unconditional (not just
    * long-running facets), RPC envelope errors are surfaced to the terminal
    * with a [rpc-error] prefix, and the exit trace includes duration_ms.
-   *
-   * The flag is derived from `this.env.NIMBUS_DEBUG` — the binding comes
-   * from wrangler's var declaration or a test harness.
+   * Read as the hosted runtime and the facet manager read it (nimbusDebugEnabled).
    */
   get nimbusDebug(): boolean {
-    try {
-      const e = this.env as any;
-      return e?.NIMBUS_DEBUG === '1' || e?.NIMBUS_DEBUG === 'true';
-    } catch { return false; }
+    return nimbusDebugEnabled(this.env);
   }
 
   // ── W12 — DO read replicas state ────────────────────────────────────
@@ -893,7 +889,6 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
 
   async _rpcReadFile(path: string, pid?: number, cred?: VfsCred): Promise<string | null> { return _rpc._rpcReadFile(this as any, path, pid, cred); }
   async _rpcReadFileBytes(path: string, pid?: number, cred?: VfsCred): Promise<Uint8Array | null> { return _rpc._rpcReadFileBytes(this as any, path, pid, cred); }
-  async _rpcInnerDoFetch(req: any): Promise<any> { return _rpc._rpcInnerDoFetch(this as any, req); }
   async _rpcInnerDoCall(req: any): Promise<unknown> { return _rpc._rpcInnerDoCall(this as any, req); }
   async _rpcKvCall(target: { root: string; store: string }, call: KvCall, cred?: VfsCred) { return _rpc._rpcKvCall(this, target, call, cred); }
   async _rpcR2Call(target: { root: string; store: string }, call: R2Call, cred?: VfsCred) { return _rpc._rpcR2Call(this, target, call, cred); }
@@ -1197,7 +1192,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
   private openFilesystem(): SessionFilesystem {
     if (this.filesystem) return this.filesystem;
     const engine = new SqliteVFS(this.ctx.storage.sql, this.ctx);
-    const filesystem = this.filesystem = new SessionFilesystem(engine, this);
+    const filesystem = this.filesystem = new SessionFilesystem(engine, this, this.ctx.id.toString());
     // W5 Lever 5: rehydrate the OOM ring from storage (best-effort).
     // Survives DO hibernation; lets cf-tail-style forensics include
     // pre-hibernate failures. Fail-soft on garbage / missing — the
@@ -1474,7 +1469,6 @@ export {
   NimbusLoadedWorker,
   NimbusLoadedEntrypoint,
   NimbusDurableObjectNamespace,
-  NimbusDOStub,
   NimbusKVNamespace,
   NimbusD1Binding,
   NimbusR2Bucket,

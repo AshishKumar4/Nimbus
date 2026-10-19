@@ -35,7 +35,6 @@ import {
   NimbusLoadedWorker,
   NimbusLoadedEntrypoint,
   NimbusDurableObjectNamespace,
-  NimbusDOStub,
   CirrusHmrRPC,
   NimbusD1Database,
   NimbusKVNamespace,
@@ -55,7 +54,6 @@ export {
   NimbusLoadedWorker,
   NimbusLoadedEntrypoint,
   NimbusDurableObjectNamespace,
-  NimbusDOStub,
   CirrusHmrRPC,
   NimbusD1Database,
   NimbusKVNamespace,
@@ -97,15 +95,7 @@ export default createNimbusHandler({
     "binding": "ASSETS",
     "run_worker_first": ["/api/*", "/s/*", "/new"]
   },
-  "alias": {
-    "clean-git-ref": "clean-git-ref/lib/index.js",
-    "is-git-ref-name-valid": "is-git-ref-name-valid/index.js",
-    "crc-32": "crc-32",
-    "sha.js": "sha.js",
-    "pako": "pako", "pify": "pify", "diff": "diff", "diff3": "diff3",
-    "ignore": "ignore", "readable-stream": "readable-stream",
-    "simple-get": "simple-get", "minimisted": "minimisted"
-  },
+  "alias": { "diff": "diff" },
   "durable_objects": {
     "bindings": [{ "name": "NIMBUS_SESSION", "class_name": "NimbusSession" }]
   },

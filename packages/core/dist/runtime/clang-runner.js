@@ -26,6 +26,7 @@
  * Dispatch stays direct: no sleeps, no caller-side retries, and no
  * catch-and-continue around loader failures.
  */
+import { installedPath } from './runtime-manifest.js';
 import { CLANG_CALL_TASK } from './compiled-bodies.generated.js';
 import { withHostView } from './process-files.js';
 import { CRED_KERNEL, gateSyncLaunch, requireVfsCred, WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
@@ -41,26 +42,14 @@ const CLANG_VERSION_FLAGS = new Set(['--version', '-v']);
 /** Build the runner factory. Closes over the facet host and the filesystem authority. */
 export function makeClangRunnerFactory(deps) {
     return function clangRunnerFactory(manifest, installRoot, binName, binKind) {
-        const findFile = (rel) => {
-            const entry = manifest.files.find((f) => f.path === rel);
-            return entry ? `${installRoot}/${entry.path}` : null;
-        };
-        const clangVfsPath = findFile('bin/clang');
-        const lldVfsPath = findFile('bin/wasm-ld');
-        const sysrootVfsPath = findFile('share/clang/sysroot.tar');
+        const clangVfsPath = installedPath(manifest, installRoot, 'bin/clang');
+        const lldVfsPath = installedPath(manifest, installRoot, 'bin/wasm-ld');
+        const sysrootVfsPath = installedPath(manifest, installRoot, 'share/clang/sysroot.tar');
         // Guest-visible: the toolchain is handed this as an absolute path.
         const sysrootDir = `/${normalizeVfsPath(`${installRoot}/${SYSROOT_DIR_REL}`)}`;
-        // Each made once, by the first run that needs it, and again by the next
-        // after a failure. clang is read only to compile and wasm-ld only to
-        // link: a compile-only run, or one whose compile fails, never reads the
-        // linker. The images are read uncached: one-shot bulk reads of large
-        // blobs (clang 31 MiB, wasm-ld 18.5 MiB, sysroot 9.3 MiB) routed through
-        // the LRU content cache would evict the user's hot working set and pin
-        // the chunks in the DO heap for the session, tipping heavy sessions into
-        // an OOM reset mid-compile.
+        // Made once, by the first run that needs it, and again by the next after
+        // a failure.
         const sysroot = lazily();
-        const clangImage = lazily();
-        const lldImage = lazily();
         // Installed toolchain blobs are supervisor-owned artifacts, so they are read
         // through a kernel host lease that lives exactly as long as one invocation.
         return function clangBinHandler(ctx) {
@@ -153,15 +142,18 @@ export function makeClangRunnerFactory(deps) {
             // Opened per invocation, not cached: the supervisor capability is bound
             // to this process's pid when the facet opens, so one held across calls
             // would hand every later caller the first caller's credential.
-            // A phase's target, opened when the phase first runs, its image read
-            // then; null, said, when the image cannot be read.
+            // A phase's target, opened when the phase first runs; null, said, when
+            // its image cannot be opened. clang is opened only to compile and
+            // wasm-ld only to link: a compile-only run, or one whose compile fails,
+            // never opens the linker. The images (clang 31 MiB, wasm-ld 18.5 MiB)
+            // are opened, not read: the host reads one, uncached, for its facet's
+            // load alone (FacetImage), so the session holds neither between loads
+            // and never both at once.
             const opened = [];
             const openTarget = async (primaryName) => {
                 let image;
                 try {
-                    image = primaryName === 'clang'
-                        ? await clangImage(() => runtimeVfs.readArrayBufferUncached(clangVfsPath))
-                        : await lldImage(() => runtimeVfs.readArrayBufferUncached(lldVfsPath));
+                    image = await runtimeVfs.image(primaryName === 'clang' ? clangVfsPath : lldVfsPath);
                 }
                 catch (e) {
                     ctx.stderr.write(`${binName}: ${primaryName} runtime warm-up failed: ${errorText(e)}\n`);

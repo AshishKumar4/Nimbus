@@ -23,6 +23,7 @@
  */
 import { parse, tokenizer, tokTypes } from 'acorn';
 import { full } from 'acorn-walk';
+import { rootClampedSegments } from '@nimbus-sh/platform/lexical-path.js';
 import { calleeName } from './javascript-ast.js';
 const PATH_MODULES = new Set(['path', 'node:path', 'path/posix', 'node:path/posix']);
 /** Calls whose first argument is a path the call reads, stats or lists. */
@@ -74,16 +75,7 @@ function parseAny(source) {
     return null;
 }
 function normalize(path) {
-    const out = [];
-    for (const seg of path.split('/')) {
-        if (seg === '' || seg === '.')
-            continue;
-        if (seg === '..')
-            out.pop();
-        else
-            out.push(seg);
-    }
-    return '/' + out.join('/');
+    return '/' + rootClampedSegments(path).join('/');
 }
 function dirnameOf(path) {
     const n = normalize(path);

@@ -10,13 +10,12 @@ import { resolveContext, type CommandRegistry } from '../commands/registry.js';
 import type { CommandInputStream, CommandOutputStream } from '../commands/types.js';
 import { resolve } from '../utils/path.js';
 import { echoOutput } from '../utils/backslash-escapes.js';
+import { writeLossless } from '../utils/bytes-io.js';
 import { singleQuote } from '../../../_shared/shell-quote.js';
 import { isDecimalInteger, isShellIdentifier } from './names.js';
 import { assignArray, assignVariable } from './variables.js';
 import { DEFAULT_HOME } from '../../../constants.js';
 import { ExitSignal, type BuiltinExecutionContext, type BuiltinFn } from './interpreter.js';
-import { lex } from './lexer.js';
-import { TokenKind } from './types.js';
 import { resolveJobSpec } from './jobs.js';
 import { evaluateTest } from './test-builtin.js';
 import { isVfsError, strerror } from '../../../vfs/vfs-error.js';
@@ -76,6 +75,7 @@ const BUILTINS: Record<string, (call: BuiltinCall) => Promise<number>> = {
   history: builtinHistory,
   source: builtinSource,
   '.': builtinSource,
+  eval: builtinEval,
   alias: builtinAlias,
   unalias: builtinUnalias,
   test: ({ args, stderr, context }) => evaluateTest(args, context.vfs, stderr, context),
@@ -128,7 +128,7 @@ async function builtinPwd({ stdout, state }: BuiltinCall): Promise<number> {
 }
 
 async function builtinEcho({ args, stdout }: BuiltinCall): Promise<number> {
-  (await stdout.write(echoOutput(args)));
+  await writeLossless(stdout, echoOutput(args));
   return 0;
 }
 
@@ -503,7 +503,7 @@ async function builtinDeclare(verb: 'local' | 'declare' | 'typeset', { args, std
   let global = false;
   let exitCode = 0;
 
-  for (const arg of args) {
+  for (const [index, arg] of args.entries()) {
     if (arg.startsWith('-') && arg.length > 1 && !arg.includes('=')) {
       for (const flag of arg.slice(1)) {
         if (flag === 'r') readonlyFlag = true;
@@ -530,26 +530,19 @@ async function builtinDeclare(verb: 'local' | 'declare' | 'typeset', { args, std
       return 1;
     }
 
-    if (eq !== -1 && !(await assignDeclared(state, name, arg.slice(eq + 1), stderr))) exitCode = 1;
+    if (eq !== -1 && !(await assignDeclared(state, name, context.arrayElements?.get(index) ?? arg.slice(eq + 1), stderr))) exitCode = 1;
     if (readonlyFlag) state.readonlyNames.add(name);
   }
   return exitCode;
 }
 
-/** The right-hand side of a declaration: `(word …)` is an array literal. */
-async function assignDeclared(state: ShellState, name: string, text: string, stderr: CommandOutputStream): Promise<boolean> {
+/** The right-hand side of a declaration: a string, or an array assignment's elements (BuiltinExecutionContext.arrayElements). */
+async function assignDeclared(state: ShellState, name: string, value: string | readonly string[], stderr: CommandOutputStream): Promise<boolean> {
   if (state.readonlyNames.has(name)) {
     (await stderr.write(`${name}: readonly variable\n`));
     return false;
   }
-  if (text.startsWith('(') && text.endsWith(')')) {
-    const elements: string[] = [];
-    for (const token of lex(text.slice(1, -1))) {
-      if (token.kind === TokenKind.Word) elements.push(unquoteWord(token));
-    }
-    return assignArray(state, name, elements);
-  }
-  return assignVariable(state, name, text);
+  return typeof value === 'string' ? assignVariable(state, name, value) : assignArray(state, name, value);
 }
 
 async function assignEnv(state: ShellState, name: string, value: string, stderr: CommandOutputStream): Promise<boolean> {
@@ -565,7 +558,7 @@ async function builtinExit({ args, stderr, context }: BuiltinCall): Promise<numb
   }
 
   if (args.length === 0) {
-    throw new ExitSignal(context.getLastExitCode());
+    throw new ExitSignal(context.exitStatus());
   }
 
   const status = parseShellExitStatus(args[0] ?? '');
@@ -681,6 +674,21 @@ async function builtinSource({ args, stderr, state, host, context }: BuiltinCall
     content,
     sourceArgs.length > 0 ? { positionals: sourceArgs } : undefined,
   ));
+}
+
+/**
+ * eval: its arguments, joined by spaces, run in this shell, as `source` runs
+ * a file's (its `return`, `break` and `exit` are this shell's); its status
+ * the last command's, 0 where there is none. It takes no options: a leading
+ * `--` ends them, and any other is refused.
+ */
+async function builtinEval({ args, stderr, context }: BuiltinCall): Promise<number> {
+  const [first] = args;
+  if (first !== undefined && first.startsWith('-') && first !== '-' && first !== '--') {
+    (await stderr.write(`eval: ${first.slice(0, 2)}: invalid option\neval: usage: eval [arg ...]\n`));
+    return 2;
+  }
+  return (await context.executeInline((first === '--' ? args.slice(1) : args).join(' ')));
 }
 
 async function builtinAlias({ args, stdout, state }: BuiltinCall): Promise<number> {
@@ -822,11 +830,6 @@ function splitWhitespaceFields(line: string): string[] {
   }
   if (current.length > 0) fields.push(current);
   return fields;
-}
-
-/** A lexed word's text with its quoting removed, the way expansion leaves it. */
-function unquoteWord(token: { value: string; parts?: Array<{ text: string }> }): string {
-  return token.parts === undefined ? token.value : token.parts.map((p) => p.text).join('');
 }
 
 function isSetOptionCluster(arg: string): boolean {

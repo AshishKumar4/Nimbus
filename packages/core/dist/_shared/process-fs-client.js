@@ -95,6 +95,8 @@ export function unsettledNoteOf(error) {
 }
 /** A data call's bytes per op: a larger one is sent as its first piece, then writes at offsets. */
 const DATA_PIECE_BYTES = WAVE_BYTES;
+const FOLD_BUFFER = Symbol('process-fs-fold-buffer');
+const FOLD_WAITERS = Symbol('process-fs-fold-waiters');
 /** The most subtrees one process holds at once; past it, two are widened to their common ancestor. */
 export const MAX_DELEGATIONS_PER_PROCESS = 8;
 /** Mutations in a subtree before the client takes it. */
@@ -137,8 +139,17 @@ function standingOf(grant, key) {
         return undefined;
     return within(key, grant.root) ? 'held' : within(grant.root, key) ? 'above' : undefined;
 }
+// A walk asks this of each name it reaches, after the program may have
+// replaced String.prototype.startsWith: compared by index, no method asked.
 function within(key, root) {
-    return root === '' || key === root || key.startsWith(`${root}/`);
+    if (root === '' || key === root)
+        return true;
+    if (key.length <= root.length || key[root.length] !== '/')
+        return false;
+    for (let i = 0; i < root.length; i++)
+        if (key[i] !== root[i])
+            return false;
+    return true;
 }
 function commonAncestor(left, right) {
     const a = left.split('/');
@@ -177,6 +188,33 @@ function isProcessGone(error) {
 function descriptionOf(call) {
     return 'description' in call ? call.description : undefined;
 }
+function startFoldWaiters(entry) {
+    const resolves = [entry.resolve];
+    const rejects = [entry.reject];
+    const waiters = { resolves, rejects };
+    entry[FOLD_WAITERS] = waiters;
+    entry.resolve = (answer) => {
+        for (const resolve of resolves)
+            resolve(answer);
+        resolves.length = rejects.length = 0;
+    };
+    entry.reject = (error) => {
+        for (const reject of rejects)
+            reject(error);
+        resolves.length = rejects.length = 0;
+    };
+    return waiters;
+}
+function extended(call, data, buffer) {
+    const size = call.data.byteLength + data.byteLength;
+    if (buffer === null || buffer.byteLength < size) {
+        buffer = new Uint8Array(Math.min(DATA_PIECE_BYTES, Math.max(size, (buffer?.byteLength ?? call.data.byteLength) * 2)));
+        buffer.set(call.data);
+    }
+    buffer.set(data, call.data.byteLength);
+    const joined = buffer.subarray(0, size);
+    return { op: { type: 'call', call: { ...call, data: joined } }, buffer, append: joined.subarray(call.data.byteLength) };
+}
 /**
  * `next` folded into `last`, the log's unsent tail, when it is the same
  * file's next bytes and nothing was logged between them: a whole write
@@ -185,7 +223,7 @@ function descriptionOf(call) {
  * page cache folds them; null when it is not such a change, or the folded
  * bytes would pass a piece.
  */
-function folded(last, next) {
+function folded(last, next, buffer) {
     if (last.type !== 'call' || next.type !== 'call' || !('data' in last.call) || !('data' in next.call))
         return null;
     const a = last.call;
@@ -194,24 +232,18 @@ function folded(last, next) {
     if (a.path !== b.path || descriptionOf(a) !== descriptionOf(b) || a.data.byteLength + b.data.byteLength > DATA_PIECE_BYTES)
         return null;
     const inoOf = (call) => ('ino' in call ? call.ino : undefined);
-    const join = (left, right) => {
-        const out = new Uint8Array(left.byteLength + right.byteLength);
-        out.set(left, 0);
-        out.set(right, left.byteLength);
-        return out;
-    };
     if (b.call === 'writeFile' && inoOf(b) === undefined && (a.call === 'writeFile' || a.call === 'appendFile')) {
         // The last write's file is made (or kept) by the first: its make wins, the bytes are the last's.
-        return { type: 'call', call: { ...a, call: 'writeFile', data: b.data } };
+        return { op: { type: 'call', call: { ...a, call: 'writeFile', data: b.data } }, buffer: null };
     }
     if (b.call === 'appendFile' && inoOf(b) === undefined && (a.call === 'writeFile' || a.call === 'appendFile')) {
-        return { type: 'call', call: { ...a, data: join(a.data, b.data) } };
+        return extended(a, b.data, buffer);
     }
     if (b.call === 'append' && a.call === 'append' && inoOf(a) === inoOf(b)) {
-        return { type: 'call', call: { ...a, data: join(a.data, b.data) } };
+        return extended(a, b.data, buffer);
     }
     if (b.call === 'write' && a.call === 'write' && inoOf(a) === inoOf(b) && a.offset + a.data.byteLength === b.offset) {
-        return { type: 'call', call: { ...a, data: join(a.data, b.data) } };
+        return extended(a, b.data, buffer);
     }
     return null;
 }
@@ -451,6 +483,8 @@ export function processFsClient(options) {
                 if (entry.op !== null) {
                     heapBytes -= entry.bytes;
                     entry.op = null;
+                    if (entry[FOLD_BUFFER] !== undefined)
+                        entry[FOLD_BUFFER] = undefined;
                 }
             bytes = await encodeWriteBatch({ inodes: [], chunks: [], ops });
             // Numbered once, under the epoch they are first sent under; a re-send keeps them.
@@ -602,6 +636,8 @@ export function processFsClient(options) {
             if (entry.op !== null) {
                 heapBytes -= entry.bytes;
                 entry.op = null;
+                if (entry[FOLD_BUFFER] !== undefined)
+                    entry[FOLD_BUFFER] = undefined;
             }
             fail(entry, 'ESRCH', processGone.message);
         }
@@ -618,6 +654,8 @@ export function processFsClient(options) {
             if (entry.op !== null) {
                 heapBytes -= entry.bytes;
                 entry.op = null;
+                if (entry[FOLD_BUFFER] !== undefined)
+                    entry[FOLD_BUFFER] = undefined;
             }
             fail(entry, 'EIO', refusal.message);
         }
@@ -989,7 +1027,14 @@ export function processFsClient(options) {
             return found;
         },
         guards(key) {
-            return escaped === null && grants.some((grant) => standingOf(grant, key) !== undefined);
+            if (escaped !== null)
+                return false;
+            for (let i = 0; i < grants.length; i++) {
+                const grant = grants[i];
+                if (grant !== undefined && standingOf(grant, key) !== undefined)
+                    return true;
+            }
+            return false;
         },
         pending() {
             return queue.length > 0 || inFlight !== null;
@@ -1016,13 +1061,15 @@ export function processFsClient(options) {
             // The same file's next bytes, right after its last unsent change: folded into it.
             const tail = queue[queue.length - 1];
             // (The queue holds only unsent changes; one sent and back for a re-send is numbered.)
-            const merged = parts.length === 1 && tail !== undefined && tail.seq === 0 && tail.op !== null && tail.acknowledged === acknowledged
-                ? folded(tail.op, parts[0]) : null;
+            const merged = parts.length === 1 && tail !== undefined && tail.paths[0] === named[0] && tail.seq === 0 && tail.op !== null && tail.acknowledged === acknowledged
+                ? folded(tail.op, parts[0], tail[FOLD_BUFFER] ?? null) : null;
             if (merged !== null && tail !== undefined) {
-                const mergedBytes = merged.type === 'call' && 'data' in merged.call ? merged.call.data.byteLength : 0;
-                journal.replace(tail.jid, merged);
+                const mergedBytes = merged.op.type === 'call' && 'data' in merged.op.call ? merged.op.call.data.byteLength : 0;
+                journal.replace(tail.jid, merged.op, merged.append);
                 const grown = mergedBytes - tail.bytes;
-                tail.op = merged;
+                tail.op = merged.op;
+                if (merged.buffer !== null || tail[FOLD_BUFFER] !== undefined)
+                    tail[FOLD_BUFFER] = merged.buffer ?? undefined;
                 tail.bytes = mergedBytes;
                 // Someone waits on the fold now: what lingered goes.
                 if (tail.lingers && !lingers) {
@@ -1036,10 +1083,9 @@ export function processFsClient(options) {
                 counters.ops++;
                 counters.folded++;
                 const answer = new Promise((resolve, reject) => {
-                    const resolveTail = tail.resolve;
-                    const rejectTail = tail.reject;
-                    tail.resolve = (answered) => { resolveTail(answered); resolve(answered); };
-                    tail.reject = (error) => { rejectTail(error); reject(error); };
+                    const waiters = tail[FOLD_WAITERS] ?? startFoldWaiters(tail);
+                    waiters.resolves.push(resolve);
+                    waiters.rejects.push(reject);
                 });
                 if (acknowledged)
                     answer.catch(() => { });

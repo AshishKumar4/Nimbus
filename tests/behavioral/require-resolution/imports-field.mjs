@@ -27,14 +27,13 @@
 //   5. wild-chalk: chalk@5's source/index.js loads (uses #ansi-styles + #supports-color)
 //   6. wild-astro-progress: npm create astro@latest advances past chalk error
 
-import { Terminal, mintSession, sleep, makeAsserter, BASE } from '../_driver.mjs';
+import { Terminal, mintSession, makeAsserter, BASE } from '../_driver.mjs';
 
 const sid = await mintSession();
 console.log(`[require-resolution/imports-field] sid=${sid} BASE=${BASE}`);
 
 const t = new Terminal(sid);
 await t.connect();
-await sleep(2_000);
 await t.waitForPrompt(60_000);
 
 const A = makeAsserter('require-resolution/imports-field');

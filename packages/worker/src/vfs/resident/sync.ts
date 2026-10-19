@@ -23,14 +23,14 @@
  * over — measured past the DO CPU limit at pi scale. See `synchronize`.
  */
 
-import type { VfsAcquireResult } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { RuntimeFileVersion, VfsAcquireResult } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { Admission } from './admission.js';
 import type { Admitted, Cells } from './cells.js';
 import { residentCellCost, type ResidentCell } from './cell-cost.js';
 import type { Coherence, Cursor } from './coherence.js';
 import { nsDescribes, nsKey, nsRowAt, type Namespace } from './namespace.js';
 import type { ResidentSupervisor } from './supervisor.js';
-import { NS_FILE, RK_OWN_WRITE } from './tables.js';
+import { NS_FILE, RK_OWN_WRITE, type NsRow } from './tables.js';
 import { messageOf, type FillReport, type Transport, type WantedFile } from './transport.js';
 
 /** Dependencies and VCS state: written in bulk, read through the module map or not at all. */
@@ -151,7 +151,7 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
     for (const path of applied.dropped) {
       const found = namespace.resolve(path, false);
       if (!found || found === 'ELOOP' || found.row.kind !== NS_FILE) continue;
-      refetch.push({ path, size: found.row.size, rev: found.row.rev, epoch: applied.cursor.epoch });
+      refetch.push({ path, size: found.row.size, rev: found.row.rev, epoch: applied.cursor.epoch, version: versionOf(found.row) });
     }
     if (refetch.length > 0) await transport.fetchFiles(supervisor, refetch);
     return applied.cursor;
@@ -551,7 +551,7 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
         if (cells.has(path)) continue;
         const row = nsRowAt(t, path);
         if (row === undefined || row.kind !== NS_FILE) continue;
-        fetch.push({ path, size: row.size, rev: row.rev, epoch: cursor.epoch, ckey: null });
+        fetch.push({ path, size: row.size, rev: row.rev, epoch: cursor.epoch, ckey: null, version: versionOf(row) });
       }
       return transport.fetchFiles(supervisor, fetch);
     },
@@ -576,4 +576,13 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
         + (failure || namespace.notReadyCause()) + ')';
     },
   };
+}
+
+/**
+ * The file a namespace row names, as a read of an undated one (rev 0) checks
+ * it (transport.ts WantedFile): its stat's identity and times, and no
+ * revision, which the row keeps none of for a mount's file.
+ */
+function versionOf(row: NsRow): RuntimeFileVersion {
+  return { dev: row.dev, ino: row.ino, size: row.size, mtime: row.mtime, ctime: row.ctime, revision: row.rev };
 }

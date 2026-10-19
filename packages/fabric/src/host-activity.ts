@@ -1,4 +1,5 @@
 import type { WorkerCode } from '@nimbus-sh/platform/worker-code.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 
 /** A host-loss watch exists only while somebody owns work on this actor. */
 export interface HostActivityLease {
@@ -347,7 +348,7 @@ const RESIDENT_SIGNAL_FLAGS = [['enable_request_signal', 'disable_request_signal
  * is `mainModule`: part of what the map's ceiling holds beside its own text.
  */
 export function hostAdapterBytes(mainModule: string): number {
-  return new TextEncoder().encode(hostAdapter(mainModule, crypto.randomUUID())).byteLength;
+  return utf8Length(hostAdapter(mainModule, crypto.randomUUID()));
 }
 
 function hostAdapter(mainModule: string, capability: string): string {

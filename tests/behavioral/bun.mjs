@@ -14,7 +14,7 @@
 //   8. a path-shaped target never consults package.json scripts.
 //   9. not-found reports bun's own two messages, by target shape.
 
-import { mintSession, Terminal, makeAsserter, sleep, heredocCommand } from './_driver.mjs';
+import { mintSession, Terminal, makeAsserter, sleep, heredocCommand, outputLines } from './_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('bun');
@@ -24,13 +24,13 @@ const sid = await mintSession();
 console.log(`SID: ${sid}`);
 const t = new Terminal(sid);
 await t.connect();
-await sleep(2_000);
+await t.waitForPrompt(60_000);
 await t.run('mkdir -p /home/user/bun-probe && cd /home/user/bun-probe', 10_000);
 
 // 1. bun --version
 {
   const r = await t.run('bun --version', 30_000);
-  const lines = r.output.split('\n').map((l) => l.replace(/\r/g, ''));
+  const lines = outputLines(r.output);
   const hasVersion = lines.some((l) => /^\d+\.\d+\.\d+/.test(l) && !l.startsWith('user@'));
   a.check('bun --version returns a semver', hasVersion, r.output.slice(-200));
 }
@@ -39,7 +39,7 @@ await t.run('mkdir -p /home/user/bun-probe && cd /home/user/bun-probe', 10_000);
 {
   const tag = 'BUN_E_OUT_' + Math.random().toString(36).slice(2, 8);
   const r = await t.run(`bun -e 'console.log("${tag}")'`, 30_000);
-  const lines = r.output.split('\n').map((l) => l.replace(/\r/g, ''));
+  const lines = outputLines(r.output);
   const seenInOutput = lines.some((l) => l.includes(tag) && !l.startsWith('user@') && !l.includes('bun -e'));
   a.check('bun -e prints output', seenInOutput, r.output.slice(-200));
 }
@@ -50,7 +50,7 @@ await t.run('mkdir -p /home/user/bun-probe && cd /home/user/bun-probe', 10_000);
   const scriptJs = `console.log('${tag}'); console.log('argv:', JSON.stringify(process.argv));`;
   await t.run(heredocCommand('/home/user/bun-probe/probe.js', scriptJs), 15_000);
   const r = await t.run('bun /home/user/bun-probe/probe.js arg1 arg2', 30_000);
-  const lines = r.output.split('\n').map((l) => l.replace(/\r/g, ''));
+  const lines = outputLines(r.output);
   const seen = lines.some((l) => l.includes(tag) && !l.startsWith('user@'));
   a.check('bun script.js runs a file from the VFS', seen, r.output.slice(-200));
 }
@@ -107,7 +107,7 @@ await t.waitForPrompt(SERVER_TTL_MS + 10_000);
   const pkgJson = `{"name":"bp","version":"0.0.0","scripts":{"hello":"node -e \\"console.log('${tag}')\\""}}`;
   await t.run(heredocCommand('/home/user/bun-probe/package.json', pkgJson), 10_000);
   const r = await t.run('bun run hello', 30_000);
-  const lines = r.output.split('\n').map((l) => l.replace(/\r/g, ''));
+  const lines = outputLines(r.output);
   const seen = lines.some((l) => l.includes(tag) && !l.startsWith('user@') && !l.includes('hello'));
   a.check('bun run <script> executes package.json scripts', seen, r.output.slice(-300));
 }

@@ -27,8 +27,20 @@ export declare class ExitSignal {
     exitCode: number;
     constructor(exitCode: number);
 }
+/**
+ * A function call past the nesting bound (functionNestingLimit): the rest of
+ * the line it is in is discarded (bash's jump_to_top_level(DISCARD)): a
+ * shell goes on with the next line it reads, its own or a `source`d file's
+ * or a trap's, with $? 1; a child shell (subshell, substitution, pipeline
+ * element, job) ends with 1. Neither `||`, `if` nor a loop goes on.
+ */
+export declare class FunctionNestingSignal {
+    readonly exitCode = 1;
+}
 export interface BuiltinExecutionContext {
     interactive?: boolean;
+    /** A declaration builtin's arguments written as array assignments, `name=(…)`, by index: their elements, each expanded as a word. */
+    arrayElements?: ReadonlyMap<number, readonly string[]>;
     vfs: ProcessView;
     /** The working directory a builtin resolves its relative path operands against. */
     cwd: string;
@@ -49,6 +61,8 @@ export interface BuiltinExecutionContext {
     /** The state of the shell running the builtin: a child shell's own, after a fork. */
     shell: ShellState;
     getLastExitCode(): number;
+    /** The status a bare `exit` ends the shell with: the last command's, or in a trap's action the one before the trap (POSIX). */
+    exitStatus(): number;
     /** The process the builtin runs as: a kill's caller, a wait's waiter. */
     identity(): Pick<CommandIdentity, 'pid' | 'cred'>;
 }
@@ -173,8 +187,12 @@ export declare class Interpreter {
     private persistentInputHandles;
     private errexitSuppressionDepth;
     private exitTrapDepth;
+    /** While the EXIT trap's action runs: the status the shell was ending with, a bare `exit`'s there. */
+    private trapEntryStatus;
     /** One frame per running function call, holding the bindings `local` shadowed. */
     private localFrames;
+    /** A child shell (fork): a discarded line ends it (finishChild). */
+    private child;
     constructor(config: InterpreterConfig);
     /** The functions this shell defines, for a run whose own definitions must not outlast it (restoreFunctions). */
     saveFunctions(): FunctionTable;
@@ -187,9 +205,25 @@ export declare class Interpreter {
      * EXIT trap when it finishes (`finishChild`).
      */
     fork(): Interpreter;
+    /**
+     * `child`, forked for a substitution or a simple command (a pipeline's
+     * element, a job), runs inside the EXIT trap's action still: a bare `exit`
+     * there ends with the trap's entry status, and an EXIT trap set there does
+     * not run. bash keeps running_trap for these, and clears it in the
+     * subshell of a compound command, `( … )` among them.
+     */
+    private inTrapAction;
     getLastExitCode(): number;
     setLastExitCode(exitCode: number): void;
     executeScript(script: ScriptNode, terminalStdin?: TerminalInputStream): Promise<number>;
+    /**
+     * Runs `script`'s lists. As lines a shell reads (`readsLines`: its own,
+     * a sourced file's, a trap's; not an alias's text, which is part of the
+     * line it is in), a line a nested call discards ends, and the next runs
+     * with $? 1, in a shell that is no child: a child's ends (finishChild).
+     * Text run `inline` (eval's, a sourced file's, an alias's) leaves an `exit`,
+     * and an end by `set -e` or a fatal error, to the shell that runs it.
+     */
     private executeScriptWithIo;
     executeLine(input: string, terminalStdin?: TerminalInputStream, options?: {
         runExitTrap?: boolean;
@@ -228,6 +262,21 @@ export declare class Interpreter {
     private executeGroup;
     private executeSubshell;
     private executeCompoundList;
+    /**
+     * `cmd` with its command word's alias expanded, as bash's reader expands one:
+     * on the word as written, unquoted and before any expansion (`'p'` and `$c`
+     * are no alias). The alias's text is read as tokens in the word's place, and
+     * the command's other words follow as the words they are, never read again
+     * as text. Its assignments go before the first command that text makes, and
+     * its redirections after the last; before a compound command they are a
+     * syntax error, as bash's grammar has it. A text that ends in a comment takes
+     * the command's words and redirections written after it into it (the rest of
+     * the line, in bash; here, the rest of the command). An alias whose text ends in a
+     * blank has the next word checked too. None of the text's commands expands
+     * those aliases, or the ones this command was read within, again. Null when
+     * the word is no alias.
+     */
+    private aliasExpansion;
     private executeSimpleCommand;
     /**
      * execvp(3) of `argv`: argv[0] is found as a program is found (the
@@ -250,6 +299,14 @@ export declare class Interpreter {
      * Returns false when the name is readonly, which the caller reports.
      */
     private applyAssignment;
+    /** Bash's PIPESTATUS: `statuses`, its array alone. */
+    private setPipestatus;
+    /**
+     * How many function calls may be running at once: FUNCNEST where it is a
+     * number above 0, as bash reads it at each call (a `local FUNCNEST` included),
+     * but never past MAX_FUNCTION_NESTING, which applies where it is not.
+     */
+    private functionNestingLimit;
     private executeFunction;
     /**
      * Bind a name to the running function, unset, so an assignment to it does

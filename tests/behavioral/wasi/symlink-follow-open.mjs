@@ -10,7 +10,8 @@
 // → "real.txt", opens "lnk" with follow=on, reads 3 bytes, echoes them
 // to stdout. Expected: "OK\\n" in output.
 
-import { openWasiProbe, tailLines } from './_harness.mjs';
+import { tailLines } from '../_driver.mjs';
+import { openWasiProbe } from './_harness.mjs';
 
 const probe = await openWasiProbe('wasi/symlink-follow-open', { dir: '/home/user/sb', fixture: 'symlink-follow-open', as: 'sfo.wasm' });
 const { t } = probe;

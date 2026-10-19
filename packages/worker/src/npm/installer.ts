@@ -38,12 +38,9 @@ import { LruMap } from '@nimbus-sh/core/_shared/lru-map.js';
 import { handKernelArtifact, projectFs, type ProjectFs } from '../runtime/project-fs.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { NpmCache, type LockfileEntry, type RecordSource } from './cache.js';
+import type { ResolvedPackage, PackagePlacement } from './resolver.js';
 import {
-  hoistPlacements,
-  type ResolvedPackage, type HoistPlan, type PackagePlacement,
-} from './resolver.js';
-import {
-  bundledNames, canonicalTreePath, holdTree, lockRootMatches, namedPackages, packageJsonDocument, parentPlacement, placementName, projectRoots, readPackageJson, saveNamed,
+  bundledNames, canonicalTreePath, depthOf, holdTree, lockRootMatches, namedPackages, packageJsonDocument, parentPlacement, placementName, projectRoots, readPackageJson, saveNamed,
   type NamedPackage, type ProjectManifest, type TreeRoot,
 } from '@nimbus-sh/core/_shared/npm-tree.js';
 import { planTree, type InstalledPackage, type OmitTypes, type PlanOptions, type TreePlan, type TreeResolution } from '@nimbus-sh/core/_shared/npm-arborist/plan.js';
@@ -68,7 +65,7 @@ import type { NpmInstallSpec } from '@nimbus-sh/core/substrate/lifo/commands/sys
 import { createWaveWriter } from '@nimbus-sh/platform/wave-writer.js';
 import type { BundlePoolProvider } from '../facets/prebundle-pool.js';
 import { Fanout, type FanoutRoute } from '@nimbus-sh/fabric/fanout.js';
-import { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE, WAVE_WRITER_PREAMBLE } from '../loaders/generated-workers.js';
+import { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE, WAVE_WRITER_PREAMBLE } from '../loaders/workers.generated.js';
 import type { FacetPackageSpec } from './install-facet.js';
 import {
   type InstallBatchSpec,
@@ -117,20 +114,7 @@ import {
 
 // ── Types ───────────────────────────────────────────────────────────────
 
-import type { InstallPhase } from '@nimbus-sh/platform/install-phase.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
-
-export interface InstallProgress {
-  phase: InstallPhase;
-  resolved: number;
-  totalToResolve: number;
-  fetched: number;
-  totalToFetch: number;
-  written: number;
-  totalToWrite: number;
-  cachedHits: number;
-  elapsed: number;
-}
 
 /**
  * The one engine's plan (core _shared/npm-arborist), the tree's one model through
@@ -211,6 +195,11 @@ function lockRevision(lockfile: ReadonlyMap<string, LockfileEntry>, source: Reco
     revision += `${at}\0${entry.registryName || entry.name}\0${entry.resolvedVer}\0${entry.integrity}\n`;
   }
   return revision;
+}
+
+/** The packages of `placements` at the root of node_modules, by placement. */
+function rootPackages(placements: readonly PackagePlacement[]): Map<string, ResolvedPackage> {
+  return new Map(placements.filter(({ placement }) => depthOf(placement) === 1).map(({ placement, pkg }) => [placement, pkg]));
 }
 
 /** Where a batch's receipts go in its install root (FacetPackageSpec.receipt), until it has read them back. */
@@ -432,13 +421,14 @@ export class NpmInstaller {
     // with --omit=dev, what only devDependencies reach.
     phaseStart = Date.now();
     setInstallPhase('hoist');
-    const resolved = new Map<string, ResolvedPackage>();
-    const nested = new Map<string, ResolvedPackage>();
-    for (const [at, node] of plan.nodes) {
-      if (plan.skipped.has(at) || plan.omits(at, omit)) continue;
-      (at.includes('/node_modules/') ? nested : resolved).set(at, node.pkg);
-    }
-    const hoistPlan: HoistPlan = { root: resolved, nested };
+    /** The plan's placements still to install, root packages first: what it holds but has left out or omits. */
+    const installing = (): PackagePlacement[] => {
+      const kept: PackagePlacement[] = [];
+      for (const [placement, node] of plan.nodes) {
+        if (!plan.skipped.has(placement) && !plan.omits(placement, omit)) kept.push({ placement, pkg: node.pkg });
+      }
+      return [...kept.filter(({ placement }) => depthOf(placement) === 1), ...kept.filter(({ placement }) => depthOf(placement) > 1)];
+    };
     phases['hoist'] = Date.now() - phaseStart;
 
     // A placement that cannot be installed fails the install where it is
@@ -447,6 +437,7 @@ export class NpmInstaller {
     const leftOut: string[] = [];
     const failedAt = new Set<string>();
     const cannotInstall = (target: PackagePlacement, reason: string): void => {
+      const skippedBefore = new Set(plan.skipped);
       const set = plan.fail(target.placement, reason);
       if (set === null) {
         failed.push(`${target.pkg.name}@${target.pkg.version}`);
@@ -456,14 +447,14 @@ export class NpmInstaller {
       }
       log(`[resolve-fanout] [skip] ${target.pkg.name} — optional: ${reason}`);
       for (const at of set) {
-        if (!resolved.delete(at) && !nested.delete(at)) continue;
+        if (skippedBefore.has(at) || plan.omits(at, omit)) continue;
         installedAt.delete(at);
         leftOut.push(at);
       }
     };
     // Resolved metadata with no tarball cannot be installed: dropping it
     // left the package absent from node_modules and both outcome lists.
-    for (const target of hoistPlacements(hoistPlan)) {
+    for (const target of installing()) {
       if (!target.pkg.tarballUrl) cannotInstall(target, 'resolved metadata carries no tarball URL');
     }
     if (failed.length > 0) {
@@ -494,7 +485,7 @@ export class NpmInstaller {
       } catch { return undefined; }
     };
 
-    for (const target of hoistPlacements(hoistPlan)) {
+    for (const target of installing()) {
       const { pkg } = target;
       // Already installed at the placement: that version, and (where the
       // lockfile records it) the same package, an alias's target included.
@@ -562,7 +553,7 @@ export class NpmInstaller {
     // longer needs), and npm removes it on install, with what an optional
     // failure left out. An install a required failure stopped removes nothing.
     const pruned = failed.length === 0
-      ? await withRecall(() => this.pruneExtraneous([...(lockfile?.keys() ?? [])].filter(inScope).concat(leftOut), hoistPlan, nmDir, project, log))
+      ? await withRecall(() => this.pruneExtraneous([...(lockfile?.keys() ?? [])].filter(inScope).concat(leftOut), installing(), nmDir, project, log))
       : 0;
 
     // ── Phase 6: Link bins ──────────────────────────────────────────
@@ -571,7 +562,7 @@ export class NpmInstaller {
     // The tree is the whole project's, so its root packages' bins are all of
     // them, but those of a package that failed.
     // Linking a bin again links it as before: repeatable, so it waits for a delegation it meets.
-    const linked = failedAt.size === 0 ? resolved : new Map([...resolved].filter(([at]) => !failedAt.has(at)));
+    const linked = rootPackages(installing().filter(({ placement }) => !failedAt.has(placement)));
     // A global install's bins join those of the prefix's other packages.
     const manifestPath = npmBinManifestPath(nmDir);
     const keptBins = opts.global && await project.exists(manifestPath)
@@ -586,7 +577,7 @@ export class NpmInstaller {
     // what this install published over it.
     if (failed.length > 0) this.writeLockfile(projDir, published, nmDir, lockfile, opts.fromLockfile ? null : lockfile);
     else if (!usedLockfile || pruned > 0) {
-      const placements = hoistPlacements(hoistPlan);
+      const placements = installing();
       const written = this.writeLockfile(projDir, placements, nmDir, lockfile, opts.global ? new Map([...lockfile ?? []].filter(([at]) => !inScope(at))) : null);
       // npm ci's packages are the lock's, not the registry records' an install reads.
       if (!opts.global && !opts.fromLockfile) this.installedTrees.set(projDir, { revision: lockRevision(written, { registry, network: network.id }), installed: placements.map(({ placement, pkg }) => ({ at: placement, pkg })) });
@@ -634,7 +625,7 @@ export class NpmInstaller {
       // through this invocation's `log`, which turns to the console once the
       // command has returned, so a late line never lands on the redrawn
       // prompt or in another install's output.
-      void withRecall(() => this.prebundleUsedModules(engineDir, resolved, this.store.as(opts.cred), log))
+      void withRecall(() => this.prebundleUsedModules(engineDir, rootPackages(installing()), this.store.as(opts.cred), log, opts.pid, opts.signal))
         .catch((e: unknown) => log(`pre-bundle skipped: ${errorText(e)}`));
       phases['bundle'] = Date.now() - phaseStart;
     }
@@ -651,7 +642,8 @@ export class NpmInstaller {
         'nothing removed, package.json unchanged',
       );
     } else {
-      const nestedNote = hoistPlan.nested.size > 0 ? ` (${hoistPlan.nested.size} nested)` : '';
+      const nested = installing().filter(({ placement }) => depthOf(placement) > 1).length;
+      const nestedNote = nested > 0 ? ` (${nested} nested)` : '';
       log(`Done! ${installed.length} packages${nestedNote}, ${totalFiles} files in ${(elapsed / 1000).toFixed(1)}s`);
       // npm's own summary line, unstyled: the styled one the command site
       // prints carries a colour prefix that no log parser matches. Carried
@@ -1597,13 +1589,13 @@ export class NpmInstaller {
    */
   private async pruneExtraneous(
     previous: readonly string[],
-    plan: HoistPlan,
+    installing: readonly PackagePlacement[],
     nmDir: string,
     project: ProjectFs,
     log: (msg: string) => void,
   ): Promise<number> {
-    const kept = new Set(hoistPlacements(plan).map(({ placement }) => placement));
-    const removed = await this.removePlacements([...new Set(previous)].filter((placement) => !kept.has(placement)), plan, nmDir, project);
+    const kept = new Set(installing.map(({ placement }) => placement));
+    const removed = await this.removePlacements([...new Set(previous)].filter((placement) => !kept.has(placement)), installing, nmDir, project);
     if (removed.length > 0) log(`removed ${removed.length} extraneous ${removed.length === 1 ? 'package' : 'packages'}: ${removed.join(', ')}`);
     return removed.length;
   }
@@ -1611,9 +1603,9 @@ export class NpmInstaller {
   /**
    * Remove `placements`, with the bins they linked, as the invoking
    * principal; a placement inside another removed one goes with it, and a
-   * bin a package of `plan` links stays. Answers the placements removed.
+   * bin a root package of `installing` links stays. Answers the placements removed.
    */
-  private async removePlacements(placements: string[], plan: HoistPlan, nmDir: string, project: ProjectFs): Promise<string[]> {
+  private async removePlacements(placements: string[], installing: readonly PackagePlacement[], nmDir: string, project: ProjectFs): Promise<string[]> {
     const extraneous = [...placements].sort();
     if (extraneous.length === 0) return [];
     const removed: string[] = [];
@@ -1635,7 +1627,7 @@ export class NpmInstaller {
       : null;
     for (const [name, bin] of Object.entries(manifest?.bins ?? {})) if (removed.includes(bin.packageName)) unlinked.add(name);
     // Unless a package that stays links the same name.
-    for (const pkg of plan.root.values()) for (const entry of packageBinEntries(pkg, nmDir)) unlinked.delete(entry.name);
+    for (const pkg of rootPackages(installing).values()) for (const entry of packageBinEntries(pkg, nmDir)) unlinked.delete(entry.name);
     for (const name of unlinked) {
       const shim = `${nmDir}/.bin/${name}`;
       if (await project.exists(shim)) await project.unlink(shim);
@@ -1730,9 +1722,7 @@ export class NpmInstaller {
         cpu: platform.cpu,
         libc: platform.libc,
         ...(isEngines(manifest.engines) ? { engines: manifest.engines } : {}),
-        exports: null,
         main: '',
-        module: '',
         bin: typeof entry.bin === 'string' ? { [folderName]: entry.bin } : stringRecord(entry.bin),
       };
       const platformReject = policyNativePlatformReject(PACKAGE_ABI_POLICY, platform);
@@ -1802,7 +1792,6 @@ export class NpmInstaller {
         registryName: pkg.registryName ?? pkg.name,
         resolvedVer: pkg.version,
         integrity: pkg.integrity,
-        depsJson: JSON.stringify(pkg.dependencies),
         hoistedPath: nmDir + '/' + placement,
       });
     }
@@ -1943,12 +1932,15 @@ export class NpmInstaller {
     installed: Map<string, ResolvedPackage>,
     fs: CredentialedVfs,
     progress: (msg: string) => void,
+    pid: number,
+    signal?: AbortSignal,
   ): Promise<void> {
     // Built in the session's build facet: a caller without esbuild (whose
     // parser scans the project) or without the pool does not warm.
     if (!this.esbuild || !this.bundlePool) return;
     const ctx: PrebundleContext = {
       vfs: fs, root: projDir, cache: this.cache, pool: this.bundlePool, parse: transformParser(this.esbuild), esbuild: this.esbuild, serviceFallback: false,
+      signal, owner: { pid, session: this.ctx?.id?.toString() },
     };
     const scan = await scanProject(ctx);
     if (scan.unread !== null) {

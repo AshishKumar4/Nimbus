@@ -31,6 +31,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { afterTurn } from '@nimbus-sh/core/_shared/after-turn.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { hostWasmIdentity } from './host-wasm.js';
 import { withResolvers } from './turn-budget.js';
 
@@ -113,9 +114,10 @@ interface Waiter {
 }
 
 interface LoaderLedger {
-  /** Loader id → open holds on it, under a claim or not. A key is present only while held. */
-  inFlight: Map<string, number>;
-  /** Loader id → the process each open hold on it is for; null for a hold no process owns. */
+  /**
+   * Loader id → the process each open hold on it is for, under a claim or
+   * not; null for a hold no process owns. A key is present only while held.
+   */
   holders: Map<string, Array<number | null>>;
   /** Process → its open holds: a process with none is not a holder whose state matters. */
   processHolds: Map<number, number>;
@@ -164,7 +166,7 @@ function ledger(ctx: object): LoaderLedger {
   let entry = ledgers.get(ctx);
   if (!entry) {
     entry = {
-      inFlight: new Map(), holders: new Map(), processHolds: new Map(), news: new Map(), graph: undefined, outside: new Map(),
+      holders: new Map(), processHolds: new Map(), news: new Map(), graph: undefined, outside: new Map(),
       schedule: decideOnALaterTurn, deciding: false,
       turnDelays: [], decisionDelays: [], turnProbePending: false,
       claims: new Set(), peak: 0, readmitted: 0,
@@ -183,7 +185,7 @@ function inUse(entry: LoaderLedger): number {
     count += Math.max(claim.width, claim.keys.size);
     for (const key of claim.keys.keys()) covered.add(key);
   }
-  for (const key of entry.inFlight.keys()) if (!covered.has(key)) count++;
+  for (const key of entry.holders.keys()) if (!covered.has(key)) count++;
   return count;
 }
 
@@ -208,7 +210,6 @@ function count(map: Map<string, number>, key: string, by: 1 | -1): void {
 
 /** Take one hold, for process `holder` if it is one's; the caller admits waiters after. */
 function hold(entry: LoaderLedger, workerKey: string, claim: ClaimEntry | undefined, holder: number | null): EndLoaderFetch {
-  count(entry.inFlight, workerKey, 1);
   if (claim) count(claim.keys, workerKey, 1);
   const holders = entry.holders.get(workerKey) ?? [];
   holders.push(holder);
@@ -220,7 +221,6 @@ function hold(entry: LoaderLedger, workerKey: string, claim: ClaimEntry | undefi
   const end: EndLoaderFetch = (failure) => {
     if (ended) return;
     ended = true;
-    count(entry.inFlight, workerKey, -1);
     if (claim) count(claim.keys, workerKey, -1);
     holders.splice(holders.indexOf(holder), 1);
     if (holders.length === 0) entry.holders.delete(workerKey);
@@ -275,7 +275,7 @@ function refused(entry: LoaderLedger, epoch: number): void {
 function admissible(entry: LoaderLedger, waiter: Waiter): boolean {
   // Requests to a worker already in flight count once, even while paused;
   // a call the platform refused waits the pause out all the same.
-  if (entry.inFlight.has(waiter.key) && !(waiter.refused && entry.pauseMs > 0)) return true;
+  if (entry.holders.has(waiter.key) && !(waiter.refused && entry.pauseMs > 0)) return true;
   if (entry.pauseMs > 0) return false;
   if (waiter.claim && entry.claims.has(waiter.claim) && waiter.claim.keys.size < waiter.claim.width) return true;
   return inUse(entry) < DO_DYNAMIC_WORKER_LIMIT;
@@ -292,7 +292,7 @@ function admitWaiters(entry: LoaderLedger): void {
   for (let i = 0; i < entry.waiters.length;) {
     const waiter = entry.waiters[i];
     if (!admissible(entry, waiter)) { i++; continue; }
-    const joins = entry.inFlight.has(waiter.key);
+    const joins = entry.holders.has(waiter.key);
     entry.waiters.splice(i, 1);
     waiter.admit(hold(entry, waiter.key, waiter.claim, waiter.process?.pid ?? null));
     if (!joins) i = 0;
@@ -619,7 +619,8 @@ export function beginLoaderFetch(ctx: object, workerKey: string, claim?: Dynamic
  * `signal` abandons the wait: it rejects with the signal's reason and holds
  * nothing. A wait outlives nothing on its own: bound it with a signal when
  * room may never come (a resident process holds its worker for as long as
- * it runs).
+ * it runs). `onWait` is called once, as the call queues, when it is not let
+ * in at once.
  *
  * `process` is the process the wait is for, and the ones it descends from;
  * the hold it is let in on is that process's. When every worker of a full
@@ -635,9 +636,9 @@ export function beginLoaderFetch(ctx: object, workerKey: string, claim?: Dynamic
 export function beginLoaderFetchWhenFree(
   ctx: object,
   workerKey: string,
-  options: { signal?: AbortSignal; claim?: DynamicWorkerClaim; process?: LedgerProcess } = {},
+  options: { signal?: AbortSignal; claim?: DynamicWorkerClaim; process?: LedgerProcess; onWait?: () => void } = {},
 ): Promise<EndLoaderFetch> {
-  return queue(ledger(ctx), workerKey, claimOf(ctx, options.claim), options.process, false, options.signal);
+  return queue(ledger(ctx), workerKey, claimOf(ctx, options.claim), options.process, false, options.signal, options.onWait);
 }
 
 /** Wait on `entry` for a hold of `key`, in the order asked: see {@link beginLoaderFetchWhenFree}. */
@@ -648,6 +649,7 @@ function queue(
   process: LedgerProcess | undefined,
   refused: boolean,
   signal: AbortSignal | undefined,
+  onWait?: () => void,
 ): Promise<EndLoaderFetch> {
   const { promise, resolve, reject } = withResolvers<EndLoaderFetch>();
   if (signal?.aborted) {
@@ -677,6 +679,7 @@ function queue(
   entry.waiters.push(waiter);
   signal?.addEventListener('abort', abandon, { once: true });
   admitWaiters(entry);
+  if (entry.waiters.includes(waiter)) onWait?.();
   return promise;
 }
 
@@ -784,17 +787,19 @@ export function withLaunchPreparation<T>(ctx: object, process: LedgerProcess, bo
  * its next run. (A helper call its program makes later, over RPC, is not in that
  * context: a worker more, it waits its turn.) `signal` abandons the wait; a
  * wait no release can satisfy is refused with {@link DynamicWorkerDeadlockError}.
+ * `onWait` is called if the launch has to wait for its worker, as it queues.
  */
 export async function withLaunchAdmission<T>(
   ctx: object,
   process: LedgerProcess,
   signal: AbortSignal | undefined,
   body: () => Promise<T>,
+  onWait?: () => void,
 ): Promise<T> {
   // Already this process's launch (a broker admitted the child it runs): the one admission.
   const current = launchAdmission.getStore();
   if (current?.ctx === ctx && current.process.pid === process.pid && !current.closed) return body();
-  const end = await beginLoaderFetchWhenFree(ctx, launchWorkerKey(process.pid), { signal, process });
+  const end = await beginLoaderFetchWhenFree(ctx, launchWorkerKey(process.pid), { signal, process, onWait });
   const admission: Admission = { ctx, process, end, claimed: false, closed: false };
   try {
     return await launchAdmission.run(admission, body);
@@ -809,13 +814,14 @@ export async function withLaunchAdmission<T>(
  * A program that stopped has no Worker in flight: give back its launch's
  * admission before waiting on input. Its nested run hold must already have
  * ended. The returned resume waits on the ledger with the same process,
- * fairly and abortably, before the caller does any replay preparation.
+ * fairly and abortably, before the caller does any replay preparation;
+ * `onWait` is called if it has to wait, as it queues.
  * Calling resume twice joins one readmission, never takes two holds. If the
  * process ends instead, the launch's finally finds nothing held.
  * Undefined outside a launch admission (a shell's one-shot owns only its
  * run hold, which has already ended), or outside `pid`'s when one is named.
  */
-export function suspendLaunchAdmission(ctx: object, pid?: number): ((signal?: AbortSignal) => Promise<void>) | undefined {
+export function suspendLaunchAdmission(ctx: object, pid?: number): ((signal?: AbortSignal, onWait?: () => void) => Promise<void>) | undefined {
   const admission = launchAdmission.getStore();
   if (admission?.ctx !== ctx || (pid !== undefined && admission.process.pid !== pid)) return undefined;
   if (admission.claimed || admission.end === undefined || admission.closed) {
@@ -825,9 +831,9 @@ export function suspendLaunchAdmission(ctx: object, pid?: number): ((signal?: Ab
   admission.end = undefined;
   end();
   let resumed: Promise<void> | undefined;
-  return (signal) => resumed ??= (async () => {
+  return (signal, onWait) => resumed ??= (async () => {
     if (admission.closed) throw new Error('Nimbus: a finished launch cannot regain its admission');
-    const hold = await beginLoaderFetchWhenFree(ctx, launchWorkerKey(admission.process.pid), { signal, process: admission.process });
+    const hold = await beginLoaderFetchWhenFree(ctx, launchWorkerKey(admission.process.pid), { signal, process: admission.process, onWait });
     // A kill may arrive after admission but before this continuation runs.
     if (signal?.aborted || admission.closed) {
       hold();
@@ -835,7 +841,10 @@ export function suspendLaunchAdmission(ctx: object, pid?: number): ((signal?: Ab
       throw new Error('Nimbus: a finished launch cannot regain its admission');
     }
     admission.end = hold;
-  })();
+  })().catch((error) => {
+    resumed = undefined;
+    throw error;
+  });
 }
 
 /**
@@ -860,6 +869,23 @@ export function beginAdmittedFetch(ctx: object): EndLoaderFetch | undefined {
  * ledger. The hold counts for `pid` too, the process whose state says
  * whether the worker can be given back (see setProcessBlocked).
  */
+/**
+ * suspendLaunchAdmission where the current launch's admission holds its worker
+ * unclaimed, so a wait for credit inside it holds no worker (the lock order:
+ * credit, then a worker); undefined where it holds none to give back.
+ */
+export function suspendHeldAdmission(ctx: object): ((signal?: AbortSignal, onWait?: () => void) => Promise<void>) | undefined {
+  const admission = launchAdmission.getStore();
+  if (admission?.ctx !== ctx || admission.end === undefined || admission.claimed || admission.closed) return undefined;
+  return suspendLaunchAdmission(ctx);
+}
+
+/** Whether this frame is a running, claimed launch, not a preparation's reserved worker. */
+export function runningLaunchAdmission(ctx: object): boolean {
+  const admission = launchAdmission.getStore();
+  return admission?.ctx === ctx && admission.end !== undefined && admission.claimed && !admission.closed;
+}
+
 export function claimAdmission(ctx: object, pid?: number): EndLoaderFetch | undefined {
   const admission = launchAdmission.getStore();
   if (admission?.ctx !== ctx || admission.end === undefined || admission.claimed) return undefined;
@@ -889,14 +915,16 @@ function claimed(admission: Admission, runner: EndLoaderFetch): EndLoaderFetch {
  * flight, as the process whose preparation it is (withLaunchPreparation, or
  * a launch whose admission is given back while it prepares again).
  * End the hold from the caller's own `finally`, as beginLoaderFetch's.
+ * `onWait` is called if it has to wait, as it queues.
  */
-export async function beginHelperFetch(ctx: object, workerKey: string): Promise<EndLoaderFetch> {
+export async function beginHelperFetch(ctx: object, workerKey: string, signal?: AbortSignal, onWait?: () => void): Promise<EndLoaderFetch> {
+  signal?.throwIfAborted();
   const admitted = beginAdmittedFetch(ctx);
   if (admitted !== undefined) return admitted;
   const admission = launchAdmission.getStore();
   const preparing = launchPreparation.getStore();
   const process = admission?.ctx === ctx ? admission.process : preparing?.ctx === ctx ? preparing.process : undefined;
-  return beginLoaderFetchWhenFree(ctx, workerKey, process === undefined ? {} : { process });
+  return beginLoaderFetchWhenFree(ctx, workerKey, { ...(process === undefined ? {} : { process }), signal, onWait });
 }
 
 /**
@@ -977,7 +1005,7 @@ export function loaderLedgerStats(ctx: object, probeTurn = false): {
       decisionP50Ms: percentile(decisions, .5), decisionP95Ms: percentile(decisions, .95),
     },
     limit: DO_DYNAMIC_WORKER_LIMIT,
-    inFlightWorkers: [...entry.inFlight.keys()],
+    inFlightWorkers: [...entry.holders.keys()],
     holders: Object.fromEntries([...entry.holders].map(([key, owners]) => [key, [...owners]])),
     waiters: entry.waiters.map((w) => ({ key: w.key, pid: w.process?.pid })),
     news: Object.fromEntries([...entry.news].map(([pid, news]) => [pid, { ...news }])),
@@ -1007,8 +1035,8 @@ export function withDynamicWorkerCapNamed<E>(ctx: object, error: E): E | Error {
   const entry = ledger(ctx);
   const platform = error instanceof Error ? error.message : String(error);
   return new Error(
-    `${platform} — this Durable Object had ${entry.inFlight.size} distinct dynamic worker(s) in flight `
-      + `(${[...entry.inFlight.keys()].join(', ') || 'none recorded'}) and ${claimedWidth(entry)} claimed by fan-outs, `
+    `${platform} — this Durable Object had ${entry.holders.size} distinct dynamic worker(s) in flight `
+      + `(${[...entry.holders.keys()].join(', ') || 'none recorded'}) and ${claimedWidth(entry)} claimed by fan-outs, `
       + `against a limit of ${DO_DYNAMIC_WORKER_LIMIT}; peak ${entry.peak}`,
     { cause: error },
   );
@@ -1064,19 +1092,22 @@ export const DYNAMIC_WORKER_CODE_LIMIT_BYTES = 67_108_864;
  * text the generators emit and undercount otherwise; the platform's own
  * refusal still backstops the exotic case, because this check exists to name
  * members, not to be the ceiling. Over it: exact UTF-8 sizes, computed only
- * then, sorted so the biggest lever is first.
+ * then, sorted so the biggest lever is first. `unread` are members not read
+ * yet (a facet's wasm images, by the size they were opened at), so a map that
+ * can never load is refused before its images are read.
  */
-export function assertModuleMapWithinCodeLimit(modules: Record<string, unknown>): void {
+export function assertModuleMapWithinCodeLimit(modules: Record<string, unknown>, unread: Record<string, number> = {}): void {
   let estimate = 0;
   for (const content of Object.values(modules)) {
-    estimate += memberBytes(content, null);
+    estimate += memberBytes(content, false);
   }
+  for (const bytes of Object.values(unread)) estimate += bytes;
   if (estimate <= DYNAMIC_WORKER_CODE_LIMIT_BYTES) return;
 
-  const encoder = new TextEncoder();
-  const sized = Object.entries(modules)
-    .map(([name, content]) => ({ name, bytes: memberBytes(content, encoder) }))
-    .sort((a, b) => b.bytes - a.bytes);
+  const sized = [
+    ...Object.entries(modules).map(([name, content]) => ({ name, bytes: memberBytes(content, true) })),
+    ...Object.entries(unread).map(([name, bytes]) => ({ name, bytes })),
+  ].sort((a, b) => b.bytes - a.bytes);
   const total = sized.reduce((sum, member) => sum + member.bytes, 0);
   const top = sized.slice(0, 5)
     .map(({ name, bytes }) => `'${name}' (${bytes.toLocaleString('en-US')} bytes)`)
@@ -1091,14 +1122,13 @@ export function assertModuleMapWithinCodeLimit(modules: Record<string, unknown>)
 /**
  * Bytes one module-map member carries, across the loader's content kinds
  * (plain string, `{ js | cjs | py | text }`, `{ wasm | data }`, a bare
- * WebAssembly.Module). With an encoder, text is measured exactly; without
- * one, by code-unit length. A compiled module counts the wire size its host
+ * WebAssembly.Module). `exact` measures text in UTF-8 bytes; otherwise
+ * by code-unit length. A compiled module counts the wire size its host
  * described (host-wasm.ts); one nobody described counts nothing here and is
  * left to the platform's own refusal, as the text undercount is.
  */
-function memberBytes(content: unknown, encoder: TextEncoder | null): number {
-  const textBytes = (text: string): number =>
-    encoder ? encoder.encode(text).byteLength : text.length;
+function memberBytes(content: unknown, exact: boolean): number {
+  const textBytes = (text: string): number => (exact ? utf8Length(text) : text.length);
   if (typeof content === 'string') return textBytes(content);
   if (content instanceof WebAssembly.Module) return hostWasmIdentity(content)?.bytes ?? 0;
   if (content !== null && typeof content === 'object') {

@@ -19,6 +19,7 @@ import { WaveIngest } from './wave-ingest.js';
 import { Hydrator, type HydratorOptions } from './hydration.js';
 import { Delegations, type DelegationRevoked } from './delegations.js';
 import type { OutputGate } from './output-gate.js';
+import type { FacetImage } from './facet-host.js';
 import { CompositeVFS } from '../vfs/composite.js';
 import { ProcVFS } from '../vfs/proc-vfs.js';
 import type { VFS, VfsCopyOptions, VfsDirent, VfsRemoval, VfsStat } from '../vfs/vfs.js';
@@ -217,7 +218,7 @@ export declare const R_OK = 4;
  */
 /** A bridge's calls as a view that can wait makes them (ProcessView): each a promise, made again after a recall. */
 type RecallingBridge = {
-    [K in keyof RuntimeFsBridge]: RuntimeFsBridge[K] extends (...args: infer A) => infer R ? (...args: A) => Promise<Awaited<R>> : never;
+    [K in keyof RuntimeFsBridge]: NonNullable<RuntimeFsBridge[K]> extends (...args: infer A) => infer R ? (...args: A) => Promise<Awaited<R>> : never;
 };
 export declare class ProcessView implements VFS {
     /** The bridge itself: what a runtime hands a guest as its syscall surface. */
@@ -292,18 +293,20 @@ export declare class ProcessView implements VFS {
     copy(from: string, to: string, options?: VfsCopyOptions): Promise<number>;
     /** Create the file if absent, and set its times to now (touch). */
     touch(path: string): Promise<void>;
-    /** The file's bytes read around the session's content cache, re-checked for a change mid-read. */
-    readFileUncached(path: string): Promise<Uint8Array>;
-    /** {@link readFileUncached} as the ArrayBuffer a wasm module map takes, so a runtime image is held once.
-     *
-     * One whole-file read through the normal credentialed namespace view, with
-     * the LRU bypassed: the image is read once for a facet's module map, never
-     * re-read from this isolate. One read is also one coherent image on every
-     * backend — no ranges to version against each other, no capability to
-     * probe. A caller mutating the returned buffer cannot disturb the store:
-     * the uncached path hands back its own buffer.
+    /**
+     * The file's bytes read around the session's content cache, re-checked for
+     * a change mid-read: one whole-file read, so one coherent copy on every
+     * backend, held once, and the caller's own: the read's buffer, never copied
+     * again here. `maxBytes` as readFile's.
      */
-    readArrayBufferUncached(path: string): Promise<ArrayBuffer>;
+    readFileUncached(path: string, options?: {
+        maxBytes?: number;
+        contentKey?: string;
+    }): Promise<Uint8Array>;
+    /** The file's content key (RuntimeFsBridge.contentKey): equal keys, equal bytes; ENOTSUP where the filesystem keeps none. */
+    contentKey(path: string): Promise<string>;
+    /** `path` as a wasm image a facet loads, read through this view when the host builds the facet (openFacetImage). */
+    image(path: string): Promise<FacetImage>;
     /**
      * rm: a file, or with `recursive` a tree, whole or not at all; `force`
      * makes a missing path no error.
@@ -375,6 +378,12 @@ export type OpenFile = (path: string, flags: RuntimeOpenFlags) => Promise<Proces
  * the same, also when `failed` throws.
  */
 export declare function withOpenFiles<T>(view: ProcessView, use: (open: OpenFile) => Promise<T>, failed: (file: ProcessFile, error: unknown) => Promise<void>): Promise<T>;
+/**
+ * `path` as a wasm image a facet loads, read as `cred` through a host view
+ * of its own at every load: for a facet that outlives the view it was opened
+ * from (a shell's bash, a git that leaves its facet warm, a REPL).
+ */
+export declare function hostImage(authority: NimbusFilesystemAuthority, cred: Readonly<VfsCred>, path: string): Promise<FacetImage>;
 /** A process's stat: everything stat(2) answers, which the bridge always has. */
 export interface ProcessStat extends VfsStat {
     mode: number;

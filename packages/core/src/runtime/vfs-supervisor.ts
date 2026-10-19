@@ -44,10 +44,15 @@ export const SUPERVISOR_ANSWERED_METHODS: readonly SupervisorAnsweredMethod[] = 
   ...NODE_SHIM_RPC_METHODS,
 ];
 
-const ANSWERED = new Set<string>(SUPERVISOR_ANSWERED_METHODS);
+// A table that inherits nothing, made as the module loads: a guest's every
+// supervisor call asks it, after its program may have replaced
+// Set.prototype.has (or put a name on Object.prototype).
+const ANSWERED: Partial<Record<string, true>> = {};
+Reflect.setPrototypeOf(ANSWERED, null);
+for (const name of SUPERVISOR_ANSWERED_METHODS) ANSWERED[name] = true;
 
 export function isSupervisorAnsweredMethod(name: unknown): name is SupervisorAnsweredMethod {
-  return typeof name === 'string' && ANSWERED.has(name);
+  return typeof name === 'string' && ANSWERED[name] === true;
 }
 
 /** What `answer` resolves with: the call's own value, or the refusal it was. */

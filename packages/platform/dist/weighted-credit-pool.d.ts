@@ -4,6 +4,11 @@ export interface CreditLease {
 }
 export interface ResizableCreditLease extends CreditLease {
     shrinkTo(bytes: number): void;
+    /**
+     * Holds `bytes` in all if the rest can be granted now, in its own lane, as
+     * tryAcquire would grant it; else holds what it held and answers false.
+     */
+    tryGrowTo(bytes: number): boolean;
 }
 export interface WeightedCreditPoolStats {
     readonly current: number;
@@ -22,6 +27,26 @@ export interface WeightedCreditPoolOptions {
      * while it works.
      */
     readonly reserve?: number;
+}
+/**
+ * How long a waiter woken to its turn keeps it for its own continuation to
+ * take the credit. workerd cancels the continuations of a request that has
+ * completed or been canceled when another request's code resolves its
+ * promise (the cross-request promise rule, on by date since 2024-10-14), so
+ * a waiter whose request is gone is woken and never takes: its turn lapses
+ * and the next waiter's comes. A live continuation takes it in far less.
+ */
+export declare const CREDIT_TURN_MS = 1000;
+/**
+ * A place in a lane's queue. `woken` resolves when its turn comes; `take`,
+ * called from the waiter's own continuation, holds the credit then, or
+ * answers null when the turn lapsed, the credit no longer fits, or it was
+ * aborted, and the place waits again. `leave` gives up the place.
+ */
+export interface CreditTurn {
+    woken(): Promise<void>;
+    take(): ResizableCreditLease | null;
+    leave(): void;
 }
 /**
  * FIFO byte-credit pool shared by concurrent allocation owners.
@@ -55,6 +80,24 @@ export declare class WeightedCreditPool {
     get stats(): WeightedCreditPoolStats;
     private isSmall;
     tryAcquire(bytes: number): ResizableCreditLease | null;
+    /**
+     * A running program's ask (SupervisorAllocationBudget.acquireRunning),
+     * ahead of every ordinary ask: granted now if it fits beside what is held,
+     * whatever is queued (a small one in its reserve too), or else as soon as
+     * it fits in the shared capacity, the credit running work and reclaims
+     * free. It never waits on the reserve, which neither frees.
+     */
+    acquireAhead(bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease>;
+    /** Whether a running program's ask (acquireAhead) waits for credit no woken turn is taking (CreditLane.aheadStarved). */
+    get aheadStarved(): boolean;
+    /** acquireAhead's credit now, or null. */
+    tryAcquireAhead(bytes: number): ResizableCreditLease | null;
+    /**
+     * A place in line for `bytes`, in the lane it would wait in, for a caller
+     * that takes its turn itself (CreditTurn): what acquire does once nothing
+     * is free.
+     */
+    queue(bytes: number, signal?: AbortSignal): CreditTurn;
     acquire(bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease>;
     private validateRequest;
 }

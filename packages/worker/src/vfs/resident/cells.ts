@@ -22,12 +22,14 @@
 
 import { FACET_OWN_WRITE_MEMORY_BYTES } from '@nimbus-sh/platform/limits.js';
 import type { Admission } from './admission.js';
-import { RESIDENT_ROW_BYTES, residentBytes, residentCellCost, type ResidentCell } from './cell-cost.js';
+import { RESIDENT_ROW_BYTES, residentBytes, residentCellCost, textChunkEnds, type ResidentCell } from './cell-cost.js';
 import type { Coherence, Cursor } from './coherence.js';
 import { nsDescribes, prefixEnd, type Namespace } from './namespace.js';
+import { nsKey } from './namespace-lookup.js';
+import { SafeMap, SafeSet, stringSlice } from '@nimbus-sh/core/_shared/primordials.js';
 import { RESIDENT_CHUNK_BYTES } from '../facet-resident-limits.js';
 import type { VfsAcquireResult } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { RK_BINARY, RK_DENIED, RK_OWN_WRITE, RK_TEXT, type FileHead, type ResidentTables } from './tables.js';
+import { RK_BINARY, RK_DENIED, RK_OWN_WRITE, RK_TEXT, type ChunkRow, type FileHead, type ResidentTables } from './tables.js';
 
 /** An own write held in memory: the store had no room for it in its tables. */
 interface HeldCell { cell: ResidentCell; rev: number }
@@ -102,10 +104,62 @@ export function createCells(
   // its write-back is acknowledged, then the write's revision) and judged by
   // every report like one. A path it could not keep either is remembered by
   // name only, so a miss on it says why.
-  const held = new Map<string, HeldCell>();
-  const unheld = new Set<string>();
+  const held = new SafeMap<string, HeldCell>();
+  const unheld = new SafeSet<string>();
 
   const cellSize = (cell: ResidentCell): number => (typeof cell === 'string' ? cell.length * 3 : residentBytes(cell).byteLength);
+
+  // Bound at the store's creation, before the program runs: never a method it replaced.
+  const encodeText = TextEncoder.prototype.encode.bind(new TextEncoder());
+
+  const sameBytes = (a: Uint8Array, b: Uint8Array): boolean => {
+    if (a.byteLength !== b.byteLength) return false;
+    for (let i = 0; i < a.byteLength; i++) if (a[i] !== b[i]) return false;
+    return true;
+  };
+
+  /**
+   * Whether the store holds `incoming` for `path` already: the same bytes,
+   * held as text or as bytes (a sync fill holds text, an async read returns
+   * bytes), compared a stored chunk at a time. A denial is never a file's bytes.
+   */
+  const holds = (t: ResidentTables, path: string, incoming: ResidentCell | ArrayBuffer): boolean => {
+    if (typeof incoming === 'object' && 'error' in incoming) return false;
+    const found = t.fileHead(path);
+    if (found === undefined) {
+      const cell = held.get(path)?.cell;
+      if (cell === undefined || typeof cell === 'object' && 'error' in cell) return false;
+      if (typeof cell === 'string' && typeof incoming === 'string') return cell === incoming;
+      return sameBytes(typeof cell === 'string' ? encodeText(cell) : residentBytes(cell), typeof incoming === 'string' ? encodeText(incoming) : residentBytes(incoming));
+    }
+    if (found.kind === RK_DENIED) return false;
+    // One chunk is read as `get` reads it; a file of several, in part order.
+    const rows = (): (ChunkRow | undefined)[] => (found.chunks === 1 ? [t.chunkFirst(path)] : t.chunkParts(path));
+    if (found.kind === RK_TEXT && typeof incoming === 'string') {
+      if (found.size !== incoming.length) return false;
+      if (found.chunks === 1) return t.chunkFirst(path)?.txt === incoming;
+      let at = 0;
+      for (const row of rows()) {
+        if (row === undefined) return false;
+        const text = row.txt ?? '';
+        if (stringSlice(incoming, at, at + text.length) !== text) return false;
+        at += text.length;
+      }
+      return at === incoming.length;
+    }
+    const bytes = typeof incoming === 'string' ? encodeText(incoming) : residentBytes(incoming);
+    // A text row's size is its UTF-16 length: each unit is 1 to 3 bytes of UTF-8.
+    if (found.kind === RK_BINARY ? found.size !== bytes.byteLength : bytes.byteLength < found.size || bytes.byteLength > 3 * found.size) return false;
+    // A text chunk never ends inside a surrogate pair (textChunkEnds): each encodes whole.
+    let at = 0;
+    for (const row of rows()) {
+      if (row === undefined) return false;
+      const part = found.kind === RK_TEXT ? encodeText(row.txt ?? '') : residentBytes(row.bin);
+      if (!sameBytes(part, bytes.subarray(at, at + part.byteLength))) return false;
+      at += part.byteLength;
+    }
+    return at === bytes.byteLength;
+  };
 
   const forgetHeld = (path: string): void => {
     const cell = held.get(path);
@@ -161,22 +215,25 @@ export function createCells(
     const isText = typeof cell === 'string';
     const kind = isText ? RK_TEXT : RK_BINARY;
     const body = isText ? cell : residentBytes(cell);
-    const size = isText ? body.length : (body as Uint8Array).byteLength;
-    // Chunk on the encoded length for text, since the ceiling is on bytes and a
-    // multi-byte string would otherwise cross it while measuring short.
-    const limit = isText ? Math.floor(RESIDENT_CHUNK_BYTES / 3) : RESIDENT_CHUNK_BYTES;
-    const chunks = Math.max(1, Math.ceil(size / limit));
+    const size = typeof body === 'string' ? body.length : body.byteLength;
+    // Text is chunked on its encoded length, since the ceiling is on bytes and
+    // a multi-byte string would otherwise cross it while measuring short.
+    const ends = typeof body === 'string' ? textChunkEnds(body) : null;
+    const chunks = ends !== null ? ends.length : Math.max(1, Math.ceil(size / RESIDENT_CHUNK_BYTES));
     // Not admitted: nothing is held for the path (its old bytes are gone above).
     if (!admission.fits(residentCellCost(cell), stamp !== RK_OWN_WRITE)) {
       t.fileDelete(path);
       if (stamp === RK_OWN_WRITE) hold(path, cell as ResidentCell);
       return false;
     }
-    for (let part = 0; part < chunks; part++) {
-      // Bytes are viewed, not copied: the table keeps what it is given as its own (tables.ts).
-      const slice = typeof body === 'string' ? body.slice(part * limit, (part + 1) * limit) : body.subarray(part * limit, (part + 1) * limit);
-      if (typeof slice === 'string') t.chunkAddText(path, part, slice);
-      else t.chunkAddBin(path, part, slice);
+    for (let part = 0, from = 0; part < chunks; part++) {
+      if (typeof body === 'string' && ends !== null) {
+        t.chunkAddText(path, part, stringSlice(body, from, ends[part]));
+        from = ends[part]!;
+      } else if (typeof body !== 'string') {
+        // Bytes are viewed, not copied: the table keeps what it is given as its own (tables.ts).
+        t.chunkAddBin(path, part, body.subarray(part * RESIDENT_CHUNK_BYTES, (part + 1) * RESIDENT_CHUNK_BYTES));
+      }
     }
     t.filePut(path, kind, size, chunks, stamp, stamp === RK_OWN_WRITE || ckey == null ? null : String(ckey));
     return true;
@@ -298,6 +355,8 @@ export function createCells(
         // Pushed content: the file's bytes at the answer's revision, so dating
         // them at the path's own revision cannot be newer than they are.
         if (entry.bytes != null && entry.stat && entry.stat.type === 'file') {
+          // Bytes it holds already (no content key to say so): dated, never rewritten and lost at the cap.
+          if (isHeld && holds(t, path, residentBytes(entry.bytes))) { t.fileSetRev(path, Number(entry.rev)); kept++; continue; }
           if (put(t, path, residentBytes(entry.bytes), Number(entry.rev), entry.contentKey)) pushed++;
           else if (isHeld) dropped.push(path);
           continue;
@@ -321,8 +380,11 @@ export function createCells(
    * Uint8Array, or an { error: "EACCES" } denial — or undefined for a cell that
    * is not held.
    */
+  // A read of a module's file, as of any other: through the launch's
+  // captures only (SafeMap, its own loops), never a built-in the program
+  // may have replaced.
   const get = (path: string): ResidentCell | undefined => {
-    if (observeRead !== null) observeRead(path.replace(/^\/+/, ''));
+    if (observeRead !== null) observeRead(nsKey(path));
     const found = head(path);
     if (found === undefined) {
       const cell = held.get(path);
@@ -341,16 +403,22 @@ export function createCells(
     }
     // Chunked: a file past the single-value ceiling. Reassembled here so callers
     // never learn the file was split.
+    const rows = t.chunkParts(path);
+    if (rows.length === 0) return undefined;
     if (kind === RK_TEXT) {
-      const parts = t.chunkParts(path).map((row) => row.txt!);
-      return parts.length === 0 ? undefined : parts.join('');
+      let text = '';
+      for (let i = 0; i < rows.length; i++) text += rows[i]?.txt ?? '';
+      return text;
     }
-    const parts = t.chunkParts(path).map((row) => residentBytes(row.bin));
-    if (parts.length === 0) return undefined;
-    const total = parts.reduce((n, p) => n + p.byteLength, 0);
+    let total = 0;
+    for (let i = 0; i < rows.length; i++) total += residentBytes(rows[i]?.bin).byteLength;
     const out = new Uint8Array(total);
     let offset = 0;
-    for (const p of parts) { out.set(p, offset); offset += p.byteLength; }
+    for (let i = 0; i < rows.length; i++) {
+      const bytes = residentBytes(rows[i]?.bin);
+      out.set(bytes, offset);
+      offset += bytes.byteLength;
+    }
     return out;
   };
 
@@ -545,6 +613,14 @@ export function createCells(
       if (dated !== undefined && (dated === RK_OWN_WRITE || dated > rev)) return false;
       const heldCell = held.get(path);
       if (heldCell !== undefined && (heldCell.rev === RK_OWN_WRITE || heldCell.rev > rev)) return false;
+      // Bytes the store holds already are its own: the read dates them, and
+      // rewriting them could only lose them, refused at the store's cap (a dev
+      // server rereads its sources asynchronously, every one it serves).
+      if (holds(t, path, cell)) {
+        if (dated !== undefined) t.fileSetRev(path, rev);
+        else if (heldCell !== undefined) heldCell.rev = rev;
+        return true;
+      }
       return put(t, path, cell, rev);
     },
     /** Every held path. Backs the Object.keys / for-in scans in the shims. */

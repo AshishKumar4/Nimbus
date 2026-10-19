@@ -37,7 +37,7 @@
 //   must FAIL. A probe with only a passing arm is the failure mode that has
 //   bitten this project repeatedly, and it bit this probe on its first run.
 
-import { mintSession, Terminal, sleep, BASE, makeAsserter, deleteSession } from '../_driver.mjs';
+import { mintSession, Terminal, BASE, makeAsserter, deleteSession, writeFileViaShell, outputLines } from '../_driver.mjs';
 
 /** Outside /home/user, and past the bundle's byte cap. */
 const DIR = '/opt/appdata/locale/deep';
@@ -52,7 +52,6 @@ console.log(`[sync-fs first-sync-read] sid=${sid} BASE=${BASE}`);
 
 const t = new Terminal(sid);
 await t.connect();
-await sleep(2_000);
 await t.waitForPrompt(60_000);
 
 // ── Put the file where nothing will stage it ────────────────────────────────
@@ -66,7 +65,10 @@ await t.run(
 const listed = (await t.run(`ls -l ${UNTOUCHED}`, 30_000)).output;
 a.check(
   `the ${SIZE}-byte fixture exists in the session filesystem`,
-  listed.includes('never-required.dat') && listed.includes(String(SIZE)),
+  outputLines(listed).some((line) => {
+    const fields = line.split(/\s+/);
+    return fields.length === 9 && /^-\S+$/.test(fields[0]) && fields[4] === String(SIZE) && fields[8] === UNTOUCHED;
+  }),
   listed.trim().slice(-200),
 );
 
@@ -88,10 +90,7 @@ console.log(line);
 http.createServer((_q, s) => { s.setHeader('content-type','text/plain'); s.end(line); }).listen(3000);
 `;
 
-await t.run(
-  `node -e "require('fs').writeFileSync('/home/user/reader.js', Buffer.from('${Buffer.from(PROGRAM, 'utf8').toString('base64')}','base64').toString('utf8'))"`,
-  30_000,
-);
+await writeFileViaShell((command) => t.run(command, 30_000), '/home/user/reader.js', PROGRAM);
 
 const out = (await t.run('node /home/user/reader.js', 120_000)).output;
 console.log(`  program said: ${out.trim().split('\n').filter(Boolean).slice(-3).join(' | ').slice(0, 300)}`);

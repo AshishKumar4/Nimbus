@@ -29,7 +29,7 @@
 // install, we DID record an L3 lookup (hit or miss), proving the L3
 // path is not unconditionally bypassed.
 
-import { mintSession, Terminal, sleep, makeAsserter, BASE, requestHeaders } from '../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, BASE, requestHeaders } from '../_driver.mjs';
 
 const A = makeAsserter('cache-observability/large-tarball-bypass');
 
@@ -38,7 +38,6 @@ console.log(`[large-tarball-bypass] sid=${sid} BASE=${BASE}`);
 
 const t = new Terminal(sid);
 await t.connect();
-await sleep(1_500);
 await t.waitForPrompt(15_000);
 
 // Reset + verify schema completeness.

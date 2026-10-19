@@ -768,12 +768,4 @@ export class R2CacheClient {
             return false;
         }
     }
-    /** Lightweight feature-detection for callers that want to log path. */
-    hasTarballBucket() {
-        return this.tarballBucket !== null;
-    }
-    /** Lightweight feature-detection for callers that want to log path. */
-    hasPackumentBucket() {
-        return this.packumentBucket !== null;
-    }
 }

@@ -536,9 +536,15 @@ const listened = guest(`
   console.log(JSON.stringify({ stopped }));
 `);
 assert.equal(listened.stopped.kind, 'listen', 'its first listen stops it');
-assert.equal(listened.stopped.tape.writes.length, 1);
-assert.match(listened.stopped.tape.writes[0], /^writeFile home\/user\/out\.txt [0-9a-f]{16}$/, 'each change it made is recorded: its call, its path and a digest');
+assert.equal(listened.stopped.tape.writes, undefined, 'its changes are no part of its tape: the session puts them back (SqliteVFS.restoreRun)');
 assert.notEqual(stopRecordOf(new Error(STOP_RECORD_PREFIX + NONCE + ' ' + JSON.stringify(listened.stopped)), NONCE, 1), null, 'a listen stop is a record the session believes');
+// Run from its start past a run that stopped, unretraced: its output and its stops are that next run's.
+assert.equal(guest(`
+  sr.begin({ replay: null, abort, captured: false, nonce: NONCE, promote: true, run: 2 });
+  sr.arm(false);
+  aborts(() => sr.listen());
+  console.log(JSON.stringify({ stopped }));
+`).stopped.run, 2);
 // Something outside itself before its listen: it cannot run on as a server, and says so where it listens.
 assert.match(guest(`
   sr.begin({ replay: null, abort, captured: false, nonce: NONCE, promote: true });
@@ -564,7 +570,8 @@ assert.deepEqual(guest(`
   sr.listen();
   console.log(JSON.stringify({ stopped }));
 `), { stopped: null });
-// Its run again: the same changes, then the listen is its boundary, past which it serves.
+// Its run again, from what the run started from: its changes are its own,
+// then the listen is its boundary, past which it serves.
 const listenReplay = (changes) => guest(`
   sr.begin({ replay: { run: 2, tape: ${JSON.stringify(listened.stopped.tape)}, listen: true, prefix: { stdout: ${JSON.stringify(b64('starting\n'))}, stderr: '' } }, abort, captured: false, nonce: NONCE });
   sr.arm(false);
@@ -580,21 +587,33 @@ const listenReplay = (changes) => guest(`
   console.log(JSON.stringify({ stopped, echoed, early, after }));
 `);
 const retraced = listenReplay(`sr.mutation(${WRITE});`);
-assert.equal(retraced.stopped, null, 'the same changes, in order: it passes its listen');
+assert.equal(retraced.stopped, null, 'the same changes: it passes its listen');
 assert.equal(retraced.echoed, null, 'what the run before printed is checked, not shown again');
 assert.equal(retraced.early, '', 'it may finish booting before it reaches its listen');
 assert.equal(retraced.after, 9, 'past its listen its output is its own');
+// Two tasks that wrote in the other order, or wrote otherwise, or not at all: its own changes.
+const reordered = listenReplay(`
+    sr.mutation({ type: 'call', call: { call: 'writeFile', path: 'home/user/.vite-temp/config.mjs', data: enc('c'), mode: 0o644 } });
+    sr.mutation(${WRITE});`);
+assert.equal(reordered.stopped, null, 'changes in another order: it passes its listen');
+assert.equal(reordered.after, 9);
 const rewritten = listenReplay(`sr.mutation({ type: 'call', call: { call: 'writeFile', path: 'home/user/out.txt', data: enc('two'), mode: 0o644 } });`);
-assert.equal(rewritten.stopped.kind, 'diverged');
-assert.match(rewritten.stopped.why, /changed the filesystem otherwise than the run before it: writeFile home\/user\/out\.txt/);
+assert.equal(rewritten.stopped, null, 'a change otherwise: it passes its listen');
 // Run again, it ends without reaching its listen: said at its end.
 assert.match(guest(`
   sr.begin({ replay: { run: 2, tape: ${JSON.stringify(listened.stopped.tape)}, listen: true, prefix: { stdout: '', stderr: '' } }, abort, captured: false, nonce: NONCE });
   sr.arm(false);
   console.log(JSON.stringify({ ended: sr.finish() }));
 `).ended, /ended before it listened, where the run before it listened/);
-const skipped = listenReplay('');
-assert.equal(skipped.stopped.kind, 'diverged');
-assert.match(skipped.stopped.why, /by its listen it had changed the filesystem 0 times, where the run before it had 1/);
+assert.equal(listenReplay('').stopped, null, 'no change: it passes its listen');
+// An append keeps it from listening as a server.
+assert.match(guest(`
+  sr.begin({ replay: null, abort, captured: false, nonce: NONCE, promote: true });
+  sr.arm(false);
+  sr.mutation({ type: 'call', call: { call: 'appendFile', path: 'home/user/log', data: enc('x'), mode: 0o644 } });
+  let thrown = null;
+  try { sr.listen(); } catch (e) { thrown = e.message; }
+  console.log(JSON.stringify({ thrown }));
+`).thrown, /before it listened it appended to home\/user\/log, which a second run would append again/);
 
-console.log('stop-replay: the gate, the account, the journal, the record, the channel and the guest replay a stopped run, and refuse one that does not retrace it; a promotable run stops at its first listen and its run again retraces its changes');
+console.log('stop-replay: the gate, the account, the journal, the record, the channel and the guest replay a stopped run, and refuse one that does not retrace it; a promotable run stops at its first listen and its run again makes its own changes');

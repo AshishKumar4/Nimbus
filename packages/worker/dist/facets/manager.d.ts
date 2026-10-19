@@ -229,7 +229,7 @@ export declare function entryEsModuleKey(filename: string | undefined, cwd: stri
  * names the entry's module, and so its stack frames; with `cwd` it is the
  * entry's importer (entryImporterUrl).
  */
-export declare function generateEntrypointCode(userCode: string, vfsState: FacetVfsState, usesSqlite: boolean, sources: NodeFacetSources, wasmImports?: readonly FacetWasmImport[], filename?: string, cwd?: string, esModule?: boolean, preamble?: string): Promise<GeneratedNodeFacetCode>;
+export declare function generateEntrypointCode(userCode: string, vfsState: FacetVfsState, usesSqlite: boolean, sources: NodeFacetSources, wasmImports?: readonly FacetWasmImport[], filename?: string, cwd?: string, esModule?: boolean, preamble?: string, check?: boolean): Promise<GeneratedNodeFacetCode>;
 /** One wasm image the generated main module imports from the module map. */
 export interface FacetWasmImport {
     /** The module-map name the boot spec carries the image under. */
@@ -364,6 +364,8 @@ interface FacetVfsState {
      * under the ceiling on the map lowers its bound from (_rebuildUnderCeiling).
      */
     rawBytes?: number;
+    /** This state's last one-shot map's owned bytes; a cache hit takes that share before generating it again. */
+    oneShotMapBytes?: number;
     /** Diagnostics: how the build's transforms were answered. */
     transforms?: BundleCellTransformStats;
     /**
@@ -1028,6 +1030,10 @@ export interface ResidentSpawnOptions {
     resume?: StoppedRunNext;
     /** Its stdin, given whole (exec's `stdin`): a promoted one-shot's, given again. */
     stdin?: string;
+    /** Its `< file`, read from the start: a promoted one-shot's, run again from its start unretraced (_promote). */
+    stdinFile?: NonNullable<ExecLaunchOpts['stdinFile']>;
+    /** The run its output is tagged with, past one that stopped: a promoted one-shot's, run again from its start unretraced. */
+    run?: number;
     /**
      * Its launcher writes its stdin and ends it, and does not wait for the
      * boot (RuntimeRunOpts.stdinWriter): the boot may stop at a synchronous
@@ -1186,7 +1192,10 @@ export declare class FacetManager {
      * journal recovery rides the first pump.
      */
     private readonly launchPump;
-    /** One-shot launches not yet running, by pid: the stage each is at and since when (launchState). */
+    /**
+     * One-shot launches not yet running, by pid: the stage each is at and since
+     * when (launchState), and the check that reports one stalled at a stage.
+     */
     private readonly launching;
     private readonly launchTasks;
     private launchesClosed;
@@ -1236,9 +1245,10 @@ export declare class FacetManager {
      * its build's, held from the build until its module map is generated, or
      * for a state it did not build its map's (_holdMapShare); either taken
      * before it holds a worker. What it built is live until then, and no
-     * other build runs beside it beyond what the budget holds. Given back once
-     * the map is made (_generateUnderCeiling), kept for a rebuild under the
-     * ceiling, and given back as its launch ends however it ends.
+     * other build runs beside it beyond what the budget holds. A one-shot keeps
+     * only its map's retained share while parked, until the loader takes it;
+     * other maps give it back once generated (_generateUnderCeiling). Kept for
+     * a rebuild under the ceiling, and given back as its launch ends however it ends.
      */
     private readonly buildAdmissions;
     private _releaseBuildAdmission;
@@ -1325,9 +1335,9 @@ export declare class FacetManager {
     private _watchLifetime;
     /**
      * The platform reset the host of a running process (ProcessHostLost): the
-     * process is over, as if killed (137), and says why. Its ports answer with
-     * the cause at once, and its restart policy decides what follows, as for
-     * any process that ends on its own (_onResidentTerminal).
+     * process is over, as if killed (137), and says why, on its stderr. Its
+     * ports answer with the cause at once, and its restart policy decides what
+     * follows, as for any process that ends on its own (_onResidentTerminal).
      */
     private _endByHostLoss;
     /**
@@ -1778,7 +1788,16 @@ export declare class FacetManager {
         /** The bin it runs: learned a server when it runs on as one (_promote). */
         server?: ServerIdentity;
     }): Promise<FacetExecResult>;
-    /** The one-shot launches not yet running (their stage and its age) and the launches waiting for a turn. */
+    /**
+     * `entry`'s launch is at `stage` from now, until its run is entered or it
+     * is killed (`signal`). One that waits LAUNCH_STALL_MS at a stage logs one
+     * line naming it, with the ledger's, the pacer's and the supervisor
+     * budget's state, and no more after that.
+     */
+    private _launchStage;
+    /** `pid`'s launch is over: its run was entered, or it ended before it could be. */
+    private _launchEnded;
+    /** Launches not yet running (their stage and its age) and the launches waiting for a turn. */
     launchState(now?: number): {
         launches: Array<{
             pid: number;
@@ -1792,10 +1811,11 @@ export declare class FacetManager {
     };
     /**
      * A one-shot that stopped at its first listen (stop-replay.ts listen) runs
-     * on as a resident, the same process: the resident replays the run up to
-     * that listen, checked against it, then listens and serves. What the
-     * one-shot printed is shown once; the resident prints it again only to be
-     * checked (the prefix).
+     * on as a resident, the same process: the resident starts from what the
+     * run started from (what the run changed put back, SqliteVFS.restoreRun),
+     * replays the run's draws and output up to that listen, then listens and
+     * serves. What the one-shot printed is shown once; the resident prints it
+     * again only to be checked (the prefix).
      */
     /**
      * A file's identity as the process sees it: which file, and its version;
@@ -1858,6 +1878,17 @@ export declare class FacetManager {
      * always maps to rpc_timeout regardless of message.
      */
     private _w5RecordTermination;
+    private _ensureOneShotShare;
+    private _oneShotMemberBytes;
+    /**
+     * `prepared`'s map, parked for its worker: `reclaimable` lets running work
+     * reclaim it, and is called only if the launch has to wait for one. A
+     * launch whose worker is free takes it and loads, and running work waits
+     * for that load as it waits for any running work's credit.
+     */
+    private _parkOneShotMap;
+    /** Generate before waiting for a worker, keeping only the map's retained share until the load takes it. */
+    private _prepareOneShotCode;
     private _execViaLoader;
     /**
      * Run a staged-artifact bundle (currently opencode) as an ESM mainModule.
@@ -1983,6 +2014,7 @@ export declare class FacetManager {
     private _launchEnds;
     /** The launches holding the supervisor's credit, or null where some of it is held by other work (another session's, a write wave). */
     private _creditHolders;
+    private _allocationOwner;
     /**
      * A launch's share of the credit for the module map it makes from `state`
      * (another launch's build, the cache's), taken before it holds a worker:
@@ -1996,6 +2028,11 @@ export declare class FacetManager {
      * decides anything about where a program runs.
      */
     private _startResidentProcess;
+    /**
+     * A stop that ends process `pid` (one `resumed`, a promoted server's run
+     * again), unless it has ended: it exits 1, why on its stderr.
+     */
+    private _endByStop;
     /** A booted resident died without anyone ending it: it exits 1, its reason on its stderr. */
     private _residentDied;
     private _activateProcessVfsWriter;

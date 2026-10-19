@@ -23,31 +23,26 @@
 // where some indirection rebinds `process`. Probe asserts that EVERY
 // path correctly flushes and surfaces the code.
 
-import { mintSession, Terminal, sleep, BASE } from '../_driver.mjs';
+import { mintSession, Terminal, BASE, writeFileViaShell, hasOutputLine } from '../_driver.mjs';
 
 const sid = await mintSession();
 console.log(`[G1] sid=${sid} BASE=${BASE}`);
 
 const t = new Terminal(sid);
 await t.connect();
-await sleep(2_000);
-await t.waitForPrompt(15_000).catch(() => {});
+await t.waitForPrompt(15_000);
 
 await t.run('mkdir -p /home/user/g1-probe', 5_000);
 await t.run('cd /home/user/g1-probe', 5_000);
 
 // ── Test 1: node -e + process.exit(7) ──
 const e1 = await t.run('node -e "console.log(\'a-marker\'); process.exit(7);"', 30_000);
-const t1Out = /a-marker/.test(e1.output);
+const t1Out = hasOutputLine(e1.output, 'a-marker');
 const t1Code = e1.exitCode === 7;
 
 // ── Test 2: node script.js + process.exit(13) ──
 const code = "console.log('b-marker'); process.exit(13);";
-const codeB64 = Buffer.from(code, 'utf8').toString('base64');
-await t.run(
-  `node -e "require('fs').writeFileSync('exit13.js', Buffer.from('${codeB64}','base64').toString('utf8'))"`,
-  10_000,
-);
+await writeFileViaShell((command) => t.run(command, 10_000), 'exit13.js', code);
 const e2 = await t.run('node exit13.js', 30_000);
 const t2Out = /b-marker/.test(e2.output);
 const t2Code = e2.exitCode === 13;
@@ -61,18 +56,14 @@ const t2Code = e2.exitCode === 13;
 // shim parsing layer. Asserts that THAT layer doesn't drop stdout.
 await t.run('mkdir -p node_modules/.bin', 5_000);
 const cliCode = '#!/usr/bin/env node\nconsole.log("c-marker"); process.exit(21);\n';
-const cliCodeB64 = Buffer.from(cliCode, 'utf8').toString('base64');
-await t.run(
-  `node -e "require('fs').writeFileSync('node_modules/.bin/exit21cli', Buffer.from('${cliCodeB64}','base64').toString('utf8'))"`,
-  10_000,
-);
+await writeFileViaShell((command) => t.run(command, 10_000), 'node_modules/.bin/exit21cli', cliCode);
 const e3 = await t.run('exit21cli', 30_000);
 const t3Out = /c-marker/.test(e3.output);
 const t3Code = e3.exitCode === 21;
 
 // ── Test 4: process.exit(0) — success-path flush ──
 const e4 = await t.run("node -e \"console.log('d-marker'); process.exit(0);\"", 30_000);
-const t4Out = /d-marker/.test(e4.output);
+const t4Out = hasOutputLine(e4.output, 'd-marker');
 const t4Code = e4.exitCode === 0;
 
 // ── Test 5: stdout written via process.stdout.write (NOT console.log) ──
@@ -80,7 +71,7 @@ const t4Code = e4.exitCode === 0;
 // Some libs go straight to process.stdout.write. Asserts that the
 // stdout-write shim chain also flushes before exit.
 const e5 = await t.run("node -e \"process.stdout.write('e-marker\\n'); process.exit(2);\"", 30_000);
-const t5Out = /e-marker/.test(e5.output);
+const t5Out = hasOutputLine(e5.output, 'e-marker');
 const t5Code = e5.exitCode === 2;
 
 await t.close();

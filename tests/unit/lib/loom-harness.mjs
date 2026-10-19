@@ -17,6 +17,7 @@
 
 import { plugin } from 'bun';
 import { Database } from 'bun:sqlite';
+import { memoryStorage } from './do-storage.mjs';
 
 plugin({
   name: 'cloudflare-workers-virtual',
@@ -106,17 +107,7 @@ export function createActorCtx({ name = 'test-actor', backing = createBacking(),
           return db.query(query).all(...params);
         },
       },
-      async get(key) { return kv.get(key); },
-      async put(key, value) { kv.set(key, value); },
-      async delete(key) { return kv.delete(key); },
-      async list({ prefix }) {
-        const found = new Map();
-        for (const [key, value] of kv) {
-          if (key.startsWith(prefix)) found.set(key, value);
-        }
-        return found;
-      },
-      async sync() {},
+      ...memoryStorage({ rows: kv }),
       setAlarm(at) { alarms.push(at); },
     },
     async blockConcurrencyWhile(fn) { return fn(); },

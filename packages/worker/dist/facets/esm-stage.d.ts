@@ -42,6 +42,11 @@ export interface EsmMissing {
     readonly message: string;
     /** The URL Node's resolution error carries (a module or directory not found). */
     readonly url?: string;
+    /** Its cause, a URL parser's ERR_INVALID_URL (ERR_UNSUPPORTED_RESOLVE_REQUEST's): the specifier and the base it would not parse against. */
+    readonly invalidUrl?: {
+        readonly input: string;
+        readonly base: string;
+    };
 }
 /** What a launch stages for its ES modules. */
 export interface EsmStage {
@@ -84,7 +89,7 @@ export interface EsmStageFs {
 export declare function stageEsModules(fs: EsmStageFs, cells: ReadonlyMap<string, {
     readonly code: string;
     readonly sites: ImportSites;
-}>, { conditions, cwd, isCode, gate, scope, stripsTypes, typeScript }: {
+}>, { conditions, cwd, isCode, gate, emitted, scope, stripsTypes, typeScript }: {
     /** Node strips TypeScript's types (node-cli.ts typeScriptStripOptions): it refuses TypeScript under node_modules. */
     stripsTypes?: boolean;
     /** A TypeScript file has a format (EsmResolverOptions.stripTypes): not under `--no-experimental-strip-types`. */
@@ -97,5 +102,7 @@ export declare function stageEsModules(fs: EsmStageFs, cells: ReadonlyMap<string
     isCode(key: string): boolean;
     /** Whether the registry needs each module gated: workerd (native-esm.ts). */
     gate: boolean;
+    /** A member's text as it becomes known, before the next filesystem question. */
+    emitted?(path: string, text: string): void;
 }): Promise<EsmStage>;
 //# sourceMappingURL=esm-stage.d.ts.map

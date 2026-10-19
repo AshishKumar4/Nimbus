@@ -155,11 +155,14 @@ export function closeScopeSignal(scope: DescriptorScope): void {
  * the failure as its cause (EIO where it carries no code: an abort, a dropped
  * call). Node's close reports a deferred write's failure the same way.
  */
-function lastClose(node: Description, admit?: Authority): Awaitable<void> {
+function lastClose({ node, handle }: Opened, admit?: Authority): Awaitable<void> {
   const lost = (error: unknown): never => {
     const code = error && typeof error === 'object' && 'code' in error && typeof error.code === 'string' ? error.code : 'EIO';
     const reason = error instanceof Error ? error.message : String(error);
-    throw fsError(code, 'close', node.path(), undefined, { detail: `its buffered writes are lost (${reason})`, cause: error });
+    // Named as it is now while the description says; a closed one (an engine description's failed close is) by its open's name.
+    let name: string;
+    try { name = node.path(); } catch { name = handle.path; }
+    throw fsError(code, 'close', name, undefined, { detail: `its buffered writes are lost (${reason})`, cause: error });
   };
   try {
     const closed = node.mounted ? node.close(admit) : node.close();
@@ -216,7 +219,7 @@ export function closeDescriptions(scope: DescriptorScope): Awaitable<unknown[]> 
     if (--opened.refs !== 0) continue;
     opened.handle.closed = true;
     try {
-      const closed = lastClose(opened.node);
+      const closed = lastClose(opened);
       if (isPromise(closed)) closing.push(closed.catch((error: unknown) => { lost.push(error); }));
     } catch (error) {
       lost.push(error);
@@ -363,7 +366,7 @@ export class Descriptors {
     this.scope.handles.delete(id);
     if (--opened.refs !== 0) return;
     opened.handle.closed = true;
-    return lastClose(opened.node, this.owned);
+    return lastClose(opened, this.owned);
   }
 
   /**

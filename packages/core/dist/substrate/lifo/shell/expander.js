@@ -1,7 +1,7 @@
 import { isShellIdentifier } from './names.js';
 import { DEFAULT_HOME } from '../../../constants.js';
-import { expandGlob, globMatch } from '../utils/glob.js';
-import { readBalancedCommand, readBracedExpansion } from './lexer.js';
+import { escapeGlob, expandGlob, fixedMatchLength, shellMatch } from '../utils/glob.js';
+import { readAnsiCQuote, readBalancedCommand, readBracedExpansion } from './lexer.js';
 /**
  * A parameter expansion that aborts the command it belongs to: `set -u` on an
  * unset parameter, or an explicit `${var:?message}`.
@@ -17,18 +17,38 @@ export async function expandWords(words, ctx) {
     const results = [];
     for (const word of words) {
         for (const braceExpandedWord of expandBraceWord(word)) {
-            const fields = splitFields(await expandParts(braceExpandedWord, ctx), ifsOf(ctx));
-            // Glob expansion only for unquoted parts
-            if (hasUnquotedGlob(braceExpandedWord)) {
-                for (const field of fields)
-                    results.push(...await expandGlob(field, ctx.cwd, ctx.vfs));
-            }
-            else {
-                results.push(...fields);
+            // Each field globbed as a pattern whose quoted characters match only
+            // themselves: an unquoted expansion's `*` globs, a quoted one's does not.
+            for (const field of splitFields(await expandParts(braceExpandedWord, ctx), ifsOf(ctx))) {
+                if (field.pattern === null)
+                    results.push(field.text);
+                else
+                    results.push(...await expandGlob(field.pattern, field.text, ctx.cwd, ctx.vfs));
             }
         }
     }
     return results;
+}
+/**
+ * A pattern word (a case pattern, `[[ ]]`'s right-hand side) expanded, as its
+ * value and as the pattern globMatch reads: each character that came from
+ * quotes, a quoted part or a quoted expansion, escaped so it matches only
+ * itself, and an unquoted expansion's characters left as pattern characters.
+ */
+export async function expandPatternWord(parts, ctx) {
+    const pieces = await expandParts(parts, ctx);
+    return { value: joinPieces(pieces), pattern: patternOf(pieces) };
+}
+/** `pieces` as a pattern: quoted characters escaped (escapeGlob). */
+function patternOf(pieces) {
+    let pattern = '';
+    for (const piece of pieces) {
+        if (piece.kind === 'break')
+            pattern += ' ';
+        else
+            pattern += piece.literal ? escapeGlob(piece.text) : piece.text;
+    }
+    return pattern;
 }
 /**
  * Expand a single word (e.g., for redirect targets and assignments).
@@ -182,20 +202,20 @@ async function expandParts(parts, ctx) {
                 pieces.push(...await expandText(part.text, ctx, true));
             continue;
         }
-        pieces.push(...await expandText(tildeExpanded(part.text, ctx, pieces), ctx, false));
+        const home = tildeHome(part.text, ctx, pieces);
+        // The home directory a tilde names is as if quoted: never split, never a pattern.
+        if (home !== null)
+            pieces.push({ kind: 'text', text: home, split: false, literal: true });
+        pieces.push(...await expandText(home === null ? part.text : part.text.slice(1), ctx, false));
     }
     return pieces;
 }
-function tildeExpanded(text, ctx, preceding) {
+/** The home directory a leading `~` or `~/` of a word's first text names, or null. */
+function tildeHome(text, ctx, preceding) {
     const atWordStart = !preceding.some((p) => p.kind === 'break' || p.text !== '');
-    if (!atWordStart || !text.startsWith('~'))
-        return text;
-    const home = ctx.env['HOME'] ?? DEFAULT_HOME;
-    if (text === '~')
-        return home;
-    if (text.startsWith('~/'))
-        return home + text.slice(1);
-    return text;
+    if (!atWordStart || !(text === '~' || text.startsWith('~/')))
+        return null;
+    return ctx.env['HOME'] ?? DEFAULT_HOME;
 }
 async function expandCommandSubstitution(command, ctx) {
     if (!ctx.executeCapture)
@@ -333,7 +353,7 @@ async function resolveParameter(ref, ctx) {
 }
 /** A subscript is an arithmetic expression; a negative index counts from the end. */
 export async function evaluateSubscript(subscript, length, ctx) {
-    const expanded = await expandParameterWord(subscript, ctx);
+    const expanded = joinPieces(await expandParameterWord(subscript, ctx, 'word'));
     if (expanded.trim() === '')
         return 0;
     const index = evaluateArithmetic(expanded, ctx.env, ctx.positionals);
@@ -469,19 +489,38 @@ async function applyDefault(ref, operator, colon, word, ctx, quoted) {
         ? parameter.values.length > 0
         : parameter.value !== undefined && (!colon || parameter.value !== '');
     if (operator === '+') {
-        return [valuePiece(set ? await expandParameterWord(word, ctx) : '', quoted)];
+        return set ? await operandPieces(word, ctx, quoted) : [valuePiece('', quoted)];
     }
     if (set)
         return parameterPieces(parameter, ctx, quoted);
-    const value = await expandParameterWord(word, ctx);
+    const pieces = await operandPieces(word, ctx, quoted);
+    const value = joinPieces(pieces);
     if (operator === '?') {
         throw new ExpansionError(`${ref.name}: ${value || 'parameter null or not set'}`);
     }
     if (operator === '=' && ref.subscript === undefined
         && isShellIdentifier(ref.name)) {
         ctx.env[ref.name] = value;
+        // What `=` gives is the value assigned, split and globbed as an expansion's is.
+        return [valuePiece(value, quoted)];
     }
-    return [valuePiece(value, quoted)];
+    return pieces;
+}
+/**
+ * A `-` or `+` word's expansion as the value it gives: inside double quotes
+ * all of it is quoted; outside them its quoted characters stay one field and
+ * match only themselves, and the rest, its plain text too, is split and
+ * globbed as an expansion's result is (bash's parameter_brace_expand_rhs).
+ */
+async function operandPieces(word, ctx, quoted) {
+    const mode = ctx.hereDocument === true ? 'heredoc' : quoted ? 'double' : 'word';
+    const pieces = await expandParameterWord(word, ctx, mode);
+    // An empty word inside double quotes is still the quoted empty field ("${u:-}").
+    if (quoted && pieces.length === 0)
+        return [valuePiece('', true)];
+    if (quoted)
+        return pieces.map((piece) => (piece.kind === 'break' ? piece : { ...piece, split: false, literal: true }));
+    return pieces.map((piece) => (piece.kind === 'break' || piece.literal ? piece : { ...piece, split: true }));
 }
 /** `${p:offset}` and `${p:offset:length}` -- substring, or a slice of `$@`/`$*`. */
 async function applySlice(ref, spec, ctx, quoted) {
@@ -510,7 +549,7 @@ function sliceRange(values, offset, length) {
     return values.slice(start, Math.max(start, end));
 }
 async function evaluateSliceIndex(text, ctx) {
-    const expanded = await expandParameterWord(text, ctx);
+    const expanded = joinPieces(await expandParameterWord(text, ctx, 'word'));
     if (expanded.trim() === '')
         return 0;
     return evaluateArithmetic(expanded, ctx.env, ctx.positionals);
@@ -531,7 +570,7 @@ function topLevelColon(spec) {
 async function applyTrim(ref, rest, ctx, quoted) {
     const operator = rest[0];
     const longest = rest[1] === operator;
-    const pattern = await expandParameterWord(rest.slice(longest ? 2 : 1), ctx);
+    const pattern = await expandParameterPattern(rest.slice(longest ? 2 : 1), ctx);
     return (await mapParameter(ref, ctx, quoted, (value) => operator === '#'
         ? trimPrefix(value, pattern, longest)
         : trimSuffix(value, pattern, longest)));
@@ -541,7 +580,7 @@ function trimPrefix(value, pattern, longest) {
         ? range(value.length, -1, -1)
         : range(0, value.length + 1, 1);
     for (const i of bounds) {
-        if (globMatch(pattern, value.slice(0, i)))
+        if (shellMatch(pattern, value.slice(0, i)))
             return value.slice(i);
     }
     return value;
@@ -551,7 +590,7 @@ function trimSuffix(value, pattern, longest) {
         ? range(0, value.length + 1, 1)
         : range(value.length, -1, -1);
     for (const i of bounds) {
-        if (globMatch(pattern, value.slice(i)))
+        if (shellMatch(pattern, value.slice(i)))
             return value.slice(0, i);
     }
     return value;
@@ -567,8 +606,8 @@ async function applySubstitution(ref, rest, ctx, quoted) {
     const mode = rest[0] === '/' ? 'all' : rest[0] === '#' ? 'prefix' : rest[0] === '%' ? 'suffix' : 'first';
     const body = mode === 'first' ? rest : rest.slice(1);
     const cut = unescapedSlash(body);
-    const pattern = await expandParameterWord(cut === -1 ? body : body.slice(0, cut), ctx);
-    const replacement = cut === -1 ? '' : await expandParameterWord(body.slice(cut + 1), ctx);
+    const pattern = await expandParameterPattern(cut === -1 ? body : body.slice(0, cut), ctx);
+    const replacement = cut === -1 ? '' : joinPieces(await expandParameterWord(body.slice(cut + 1), ctx, 'word'));
     return (await mapParameter(ref, ctx, quoted, (value) => {
         if (mode === 'all')
             return replaceAll(value, pattern, replacement);
@@ -593,13 +632,13 @@ function unescapedSlash(text) {
 function replaceAnchored(value, pattern, replacement, anchor) {
     if (anchor === 'prefix') {
         for (let i = value.length; i >= 0; i--) {
-            if (globMatch(pattern, value.slice(0, i)))
+            if (shellMatch(pattern, value.slice(0, i)))
                 return replacement + value.slice(i);
         }
         return value;
     }
     for (let i = 0; i <= value.length; i++) {
-        if (globMatch(pattern, value.slice(i)))
+        if (shellMatch(pattern, value.slice(i)))
             return value.slice(0, i) + replacement;
     }
     return value;
@@ -608,9 +647,9 @@ function replaceAnchored(value, pattern, replacement, anchor) {
 async function applyCase(ref, rest, ctx, quoted) {
     const operator = rest[0];
     const every = rest[1] === operator;
-    const pattern = await expandParameterWord(rest.slice(every ? 2 : 1), ctx);
+    const pattern = await expandParameterPattern(rest.slice(every ? 2 : 1), ctx);
     const convert = (c) => (operator === '^' ? c.toUpperCase() : c.toLowerCase());
-    const matches = (c) => pattern === '' || globMatch(pattern, c);
+    const matches = (c) => pattern === '' || shellMatch(pattern, c);
     return (await mapParameter(ref, ctx, quoted, (value) => {
         if (!every) {
             return value === '' || !matches(value[0]) ? value : convert(value[0]) + value.slice(1);
@@ -635,16 +674,19 @@ function scalarOf(parameter, ctx) {
         return parameter.values.join((ctx.env['IFS'] ?? ' ').slice(0, 1));
     return parameter.value ?? '';
 }
-/**
- * The word inside `${p:-word}`, `${p#pattern}` and friends is itself expanded,
- * with quote removal, before it is used.
- */
-async function expandParameterWord(word, ctx) {
+/** The word inside `${p:-word}`, `${p#pattern}` and friends, expanded with quote removal, as pieces. */
+async function expandParameterWord(word, ctx, mode) {
     if (word === '')
-        return '';
-    return joinPieces(await expandParts(parameterWordParts(word), ctx));
+        return [];
+    return (await expandParts(parameterWordParts(word, mode), ctx));
 }
-function parameterWordParts(word) {
+/** A pattern operand (`#`, `%`, `/`, `^`, `,`): its quoting read as a word's anywhere, its quoted characters escaped. */
+async function expandParameterPattern(word, ctx) {
+    return patternOf(await expandParameterWord(word, ctx, 'word'));
+}
+/** The operand word's parts, quoted as `mode` reads them. */
+function parameterWordParts(word, mode) {
+    const plain = mode !== 'word';
     const parts = [];
     let text = '';
     const flush = () => {
@@ -656,13 +698,26 @@ function parameterWordParts(word) {
     let i = 0;
     while (i < word.length) {
         const ch = word[i];
-        if (ch === '\\' && i + 1 < word.length) {
+        // In double-quoted text a backslash quotes only $, `, ", itself and a newline (not ", in a here-document); before anything else it is text.
+        if (ch === '\\' && i + 1 < word.length && (!plain || (mode === 'double' ? '$`"\\\n' : '$`\\\n').includes(word[i + 1]))) {
             flush();
             parts.push({ text: word[i + 1], quoted: 'single' });
             i += 2;
             continue;
         }
-        if (ch === "'" || ch === '"') {
+        if (ch === '$' && word[i + 1] === '$') {
+            text += '$$';
+            i += 2;
+            continue;
+        }
+        if (mode !== 'heredoc' && ch === '$' && word[i + 1] === "'") {
+            flush();
+            const quoted = readAnsiCQuote(word, i);
+            parts.push({ text: quoted.text, quoted: 'single' });
+            i = quoted.end;
+            continue;
+        }
+        if ((ch === "'" && !plain) || ch === '"') {
             const end = word.indexOf(ch, i + 1);
             const close = end === -1 ? word.length : end;
             flush();
@@ -689,22 +744,19 @@ function ifsOf(ctx) {
 function joinPieces(pieces) {
     return pieces.map((p) => (p.kind === 'break' ? ' ' : p.text)).join('');
 }
-/**
- * Cut the expanded word into fields on IFS. Only characters that came out of
- * an unquoted expansion are eligible delimiters, so literal text keeps its
- * IFS characters, and `"$@"` boundaries split regardless of IFS.
- */
 function splitFields(pieces, ifs) {
     const fields = [];
     let text = '';
     let eligible = [];
+    let quoted = [];
     let literal = false;
     let started = false;
     const flush = () => {
         if (started)
-            fields.push(...splitGroup(text, eligible, literal, ifs));
+            fields.push(...splitGroup(text, eligible, quoted, literal, ifs));
         text = '';
         eligible = [];
+        quoted = [];
         literal = false;
         started = false;
     };
@@ -717,16 +769,36 @@ function splitFields(pieces, ifs) {
         if (piece.literal)
             literal = true;
         text += piece.text;
-        for (let i = 0; i < piece.text.length; i++)
+        for (let i = 0; i < piece.text.length; i++) {
             eligible.push(piece.split);
+            quoted.push(piece.literal);
+        }
     }
     flush();
     return fields;
 }
-function splitGroup(text, eligible, literal, ifs) {
-    const keep = (fields) => (fields.length === 1 && fields[0] === '' && !literal ? [] : fields);
+function splitGroup(text, eligible, quoted, literal, ifs) {
+    const keep = (fields) => (fields.length === 1 && fields[0]?.text === '' && !literal ? [] : fields);
+    const field = (start, end) => {
+        const value = text.slice(start, end);
+        let globs = false;
+        for (let i = start; i < end && !globs; i++)
+            globs = !quoted[i] && (text[i] === '*' || text[i] === '?' || text[i] === '[');
+        if (!globs)
+            return { text: value, pattern: null };
+        // The pattern, run by run: a quoted run escaped whole.
+        let pattern = '';
+        for (let i = start; i < end;) {
+            let j = i + 1;
+            while (j < end && quoted[j] === quoted[i])
+                j++;
+            pattern += quoted[i] ? escapeGlob(text.slice(i, j)) : text.slice(i, j);
+            i = j;
+        }
+        return { text: value, pattern };
+    };
     if (ifs === '')
-        return keep([text]);
+        return keep([field(0, text.length)]);
     const isDelimiter = (i) => eligible[i] && ifs.includes(text[i]);
     const isWhitespace = (i) => IFS_WHITESPACE.includes(text[i]);
     let start = 0;
@@ -736,14 +808,14 @@ function splitGroup(text, eligible, literal, ifs) {
     while (end > start && isDelimiter(end - 1) && isWhitespace(end - 1))
         end--;
     const fields = [];
-    let current = '';
+    let from = start;
     let i = start;
     while (i < end) {
         if (!isDelimiter(i)) {
-            current += text[i];
             i++;
             continue;
         }
+        const until = i;
         // One delimiter: a run of IFS whitespace around at most one other IFS char.
         while (i < end && isDelimiter(i) && isWhitespace(i))
             i++;
@@ -751,58 +823,72 @@ function splitGroup(text, eligible, literal, ifs) {
             i++;
         while (i < end && isDelimiter(i) && isWhitespace(i))
             i++;
-        fields.push(current);
-        current = '';
+        fields.push(field(from, until));
+        from = i;
         // A word ending in a delimiter has no trailing empty field.
         if (i >= end)
             return keep(fields);
     }
-    fields.push(current);
+    fields.push(field(from, end));
     return keep(fields);
 }
 // ─── Pattern replacement ───
-function replaceFirst(val, pattern, replacement) {
-    for (let i = 0; i < val.length; i++) {
-        for (let j = i + 1; j <= val.length; j++) {
-            if (globMatch(pattern, val.slice(i, j))) {
-                return val.slice(0, i) + replacement + val.slice(j);
-            }
+/**
+ * The leftmost match of `pattern` in `val` at `from` or after, the longest
+ * there (bash's match_pattern, MATCH_ANY): [start, end], or null. A pattern of
+ * fixed length (`fixed`, fixedMatchLength) is tried at that length only.
+ */
+function leftmostLongest(val, pattern, from, fixed) {
+    for (let start = from; start <= val.length; start++) {
+        if (fixed !== null) {
+            if (start + fixed > val.length)
+                return null;
+            if (shellMatch(pattern, val.slice(start, start + fixed)))
+                return [start, start + fixed];
+            continue;
+        }
+        for (let end = val.length; end >= start; end--) {
+            if (shellMatch(pattern, val.slice(start, end)))
+                return [start, end];
         }
     }
-    return val;
+    return null;
+}
+function replaceFirst(val, pattern, replacement) {
+    return replaceMatches(val, pattern, replacement, false);
 }
 function replaceAll(val, pattern, replacement) {
-    let result = '';
-    let i = 0;
-    while (i < val.length) {
-        let matched = false;
-        for (let j = i + 1; j <= val.length; j++) {
-            if (globMatch(pattern, val.slice(i, j))) {
-                result += replacement;
-                i = j;
-                matched = true;
-                break;
-            }
-        }
-        if (!matched) {
-            result += val[i];
-            i++;
-        }
-    }
-    return result;
+    return replaceMatches(val, pattern, replacement, true);
 }
-function hasUnquotedGlob(parts) {
-    // Check if any unquoted part contains glob characters
-    for (const part of parts) {
-        if (part.commandSubstitution !== undefined)
-            continue;
-        if (part.quoted === 'none') {
-            if (part.text.includes('*') || part.text.includes('?') || part.text.includes('[')) {
-                return true;
-            }
+/**
+ * `${v/pat/rep}` (`all`: `${v//pat/rep}`), as bash's pat_subst: each match the
+ * leftmost and longest from where the last ended; an empty pattern replaces
+ * nothing; an empty match keeps the character after it, and ends the search
+ * at the end of the value.
+ */
+function replaceMatches(val, pattern, replacement, all) {
+    if (pattern === '')
+        return val;
+    const fixed = fixedMatchLength(pattern);
+    let out = '';
+    let i = 0;
+    for (;;) {
+        const match = leftmostLongest(val, pattern, i, fixed);
+        if (match === null)
+            break;
+        const [start, end] = match;
+        out += val.slice(i, start) + replacement;
+        i = end;
+        if (start === end) {
+            if (start >= val.length)
+                break;
+            out += val[start];
+            i = start + 1;
         }
+        if (!all || i >= val.length)
+            break;
     }
-    return false;
+    return out + val.slice(i);
 }
 // ─── Arithmetic evaluator ───
 function evaluateArithmetic(expr, env, positionals) {

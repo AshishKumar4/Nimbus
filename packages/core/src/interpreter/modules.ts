@@ -10,13 +10,46 @@
  * helpers the launch compiled from esm-interop.ts's text (InterpreterHost).
  */
 import type { Code } from './code.js';
-import { reflectApply, resume, resumeThrowing, withElement } from './intrinsics.js';
+import { SafeWeakMap, promiseReject, reflectApply, resume, resumeThrowing, withElement } from './intrinsics.js';
 import type { HostOperators, NativeFunction } from './host-ops.js';
 import { type Env, ROOT_ENV } from './runtime.js';
 import { type StackInfo, initializeStack, popStack, pushStack, stampStack, suspendedStack } from './stack.js';
 
 /** A module cell: Node's CommonJS wrapper function. */
 export type ModuleCell = (exports: unknown, require: unknown, module: unknown, filename: unknown, dirname: unknown) => unknown;
+
+/**
+ * An ES module cell's ExecuteModule, once it is linked: its body, answering
+ * undefined, or (top-level await) the promise of its completion.
+ */
+export type ModuleExecution = () => unknown;
+
+/**
+ * An ES module cell's InitializeEnvironment (runtime/esm-graph.ts): its
+ * frame made, its function declarations hoisted, its exports published, its
+ * imports bound (each request through the require it is given) and its
+ * `export *`s copied, none of its body run; answers its ExecuteModule.
+ */
+export type ModuleLink = (exports: unknown, require: unknown, module: unknown, filename: unknown, dirname: unknown) => ModuleExecution;
+
+/** A static import an ES module's link requires, in source order: its specifier and its `type` attribute. */
+export interface ModuleLinkRequest {
+  readonly source: string;
+  readonly type: string | null;
+}
+
+/** Each ES module cell's link and its requests, by the cell. */
+const links = new SafeWeakMap<ModuleCell, { readonly link: ModuleLink; readonly requests: readonly ModuleLinkRequest[] }>();
+
+/** The link of `cell`, an ES module's cell; null for any other. */
+export function moduleLink(cell: ModuleCell): ModuleLink | null {
+  return links.get(cell)?.link ?? null;
+}
+
+/** The static imports `cell`'s link requires, in the order it requires them; null for a cell that is no ES module's. */
+export function moduleLinkRequests(cell: ModuleCell): readonly ModuleLinkRequest[] | null {
+  return links.get(cell)?.requests ?? null;
+}
 
 /** esm-interop.ts's helpers, compiled from their text (ESM_MODULE_HELPERS). */
 export interface ModuleHelpers {
@@ -58,12 +91,16 @@ export interface ModulePlan {
   readonly body: Code;
 }
 
-/** The wrapper function that runs `plan`. */
+/**
+ * The wrapper function that runs `plan`: its link, then its execution, as
+ * one call (a module whose body suspends rejecting for a failure linking
+ * it, rather than throwing); its link alone is moduleLink's.
+ */
 export function moduleCell(plan: ModulePlan, ops: HostOperators, helpers: ModuleHelpers): ModuleCell {
   const { frame, exportsSlot, requireSlot, moduleSlot, filenameSlot, dirnameSlot, instantiate, body } = plan;
   const bs = body.s;
   const bg = body.g;
-  return (exportsArg, requireArg, moduleArg, filename, dirname) => {
+  const linkModule: ModuleLink = (exportsArg, requireArg, moduleArg, filename, dirname) => {
     const env = withElement(frame, 0, ROOT_ENV);
     env[exportsSlot] = exportsArg;
     env[requireSlot] = requireArg;
@@ -77,25 +114,37 @@ export function moduleCell(plan: ModulePlan, ops: HostOperators, helpers: Module
     // imports this module back (a cycle) finds its function declarations
     // made, as a module's linking provides, and its exports published (link).
     if (instantiate !== null) instantiate(env);
-    // The module is linked where the body runs: a module that suspends
-    // (top-level await) rejects for a failure linking it, rather than
-    // throwing.
-    if (bg === null) {
-      const previous = pushStack(env);
+    const previous = pushStack(env);
+    try {
+      link(plan, env, requireArg, helpers, exportsObject, define);
+    } catch (error) {
+      stampStack(error);
+      throw error;
+    } finally { popStack(previous); }
+    if (bg !== null) return () => drive(env, bg);
+    return () => {
+      const before = pushStack(env);
       try {
-        link(plan, env, requireArg, helpers, exportsObject, define);
         bs(env);
         return undefined;
       } catch (error) {
         stampStack(error);
         throw error;
-      } finally { popStack(previous); }
-    }
-    return drive(env, () => {
-      link(plan, env, requireArg, helpers, exportsObject, define);
-      return bg(env);
-    });
+      } finally { popStack(before); }
+    };
   };
+  const cell: ModuleCell = (exportsArg, requireArg, moduleArg, filename, dirname) => {
+    if (bg === null) return linkModule(exportsArg, requireArg, moduleArg, filename, dirname)();
+    let execute: ModuleExecution;
+    try {
+      execute = linkModule(exportsArg, requireArg, moduleArg, filename, dirname);
+    } catch (error) {
+      return promiseReject(error);
+    }
+    return execute();
+  };
+  links.set(cell, { link: linkModule, requests: plan.requests });
+  return cell;
 }
 
 /**
@@ -121,13 +170,13 @@ function link(plan: ModulePlan, env: Env, requireArg: unknown, helpers: ModuleHe
   for (let i = 0; i < stars.length; i++) reflectApply(helpers.star, undefined, [exportsObject, define, env[stars[i]], omitted]);
 }
 
-/** Runs a module body's generator, made by `start`, as an async function would: one await per yielded value. */
-async function drive(env: Env, start: () => Generator<unknown, unknown, unknown>): Promise<unknown> {
+/** Runs a module body's generator, made by `start` of its frame, as an async function would: one await per yielded value. */
+async function drive(env: Env, start: (env: Env) => Generator<unknown, unknown, unknown>): Promise<unknown> {
   let it: Generator<unknown, unknown, unknown>;
   let r: IteratorResult<unknown, unknown>;
   let previous = pushStack(env);
   try {
-    it = start();
+    it = start(env);
     r = resume(it, undefined);
   } catch (error) {
     stampStack(error);

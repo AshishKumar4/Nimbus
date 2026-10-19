@@ -9,10 +9,10 @@
  * with its namespace as the router; a filesystem without one ingests with none.
  */
 
-import { acquireSupervisorAllocation, tryAcquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
+import { acquireSupervisorRunningAllocation, tryAcquireSupervisorRunningAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { decodeWriteBatchStream, encodeWriteBatchStream, openAccessRights, type BatchInodeEntry, type BatchWritePayload, type W7DataCall, type W7DecodedRecord } from '@nimbus-sh/platform/w7-frame.js';
 import type { CreditLease } from '@nimbus-sh/platform/weighted-credit-pool.js';
-import { concatBytes } from '../_shared/bytes.js';
+import { concatBytes, nameDec } from '../_shared/bytes.js';
 import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 import { SYSCALL_VERDICTS, errnoCodeOf, vfsError, type VfsErrorCode } from '../vfs/vfs-error.js';
 import { parentKey } from '../vfs/path.js';
@@ -525,9 +525,10 @@ export class WaveIngest {
       );
       let supervisorLease: CreditLease;
       try {
+        // A running facet's wave: running work, never held up by a launch that is not running (the lock order).
         supervisorLease = await awaitCredit(
-          () => tryAcquireSupervisorAllocation(byteLength),
-          () => acquireSupervisorAllocation(byteLength, abort),
+          () => tryAcquireSupervisorRunningAllocation(byteLength, { owner: 'filesystem write wave', pid: options.sequence?.pid }),
+          () => acquireSupervisorRunningAllocation(byteLength, abort, { owner: 'filesystem write wave', pid: options.sequence?.pid }),
         );
       } catch (error) {
         writeLease.release();
@@ -1037,8 +1038,13 @@ export class WaveIngest {
       at.placedHere(kind, named, path, route.epoch);
       return null;
     };
-    /** Refuse a record an earlier attempt may have applied; note this one. */
-    const reached = (): void => {
+    /**
+     * Refuse a record an earlier attempt may have applied; note this one.
+     * `changed`: the name it changes on the mount, which a captured run
+     * cannot put back (WaveScope.landsElsewhere).
+     */
+    const reached = (changed: string | null): void => {
+      if (changed !== null) scope.landsElsewhere(changed);
       if (at.reach === undefined) return;
       if (at.index <= at.reach.prior) {
         throw vfsError('EIO', `record ${at.index}`, 'outcome unknown: an earlier attempt of this wave may have applied this mounted record, which cannot be applied twice');
@@ -1053,7 +1059,7 @@ export class WaveIngest {
         if (placed === null) return false;
         at.setPhase('publish');
         await at.settleBefore();
-        reached();
+        reached(placed);
         await backend(router.apply({ type: 'delete', path: placed }, cred, at.guard, owner));
         at.committed(null, 0);
         return true;
@@ -1063,7 +1069,7 @@ export class WaveIngest {
         if (placed === null) return false;
         at.setPhase('publish');
         await at.settleBefore();
-        reached();
+        reached(placed);
         // A directory has no receipt, here as in a group.
         await backend(router.apply({ type: 'directory', path: placed, mode: record.inode.mode }, cred, at.guard, owner));
         at.committed(null, 0);
@@ -1078,7 +1084,7 @@ export class WaveIngest {
           if (descriptions?.mounted(call.description) === undefined) return false;
           at.setPhase('publish');
           await at.settleBefore();
-          reached();
+          reached(null);
           await backend(Promise.resolve(descriptions.close(call.description)));
           scope.forgetDescription(call.description);
           at.committed(null, 0);
@@ -1091,7 +1097,7 @@ export class WaveIngest {
           if (described === undefined) return false;
           at.setPhase('publish');
           await at.settleBefore();
-          reached();
+          reached(call.path);
           await backend(Promise.resolve(described.truncate(call.size, at.guard)));
           at.committed(null, 0);
           return true;
@@ -1112,7 +1118,7 @@ export class WaveIngest {
           if (router.placement(to) === null && router.placement(from) === null) return false;
           at.setPhase('publish');
           await at.settleBefore();
-          reached();
+          reached(to);
           await backend(router.apply({ type: 'call', call: { call: 'copyFile', path: to, from } }, cred, at.guard, owner));
           at.committed(null, 0);
           return true;
@@ -1125,7 +1131,7 @@ export class WaveIngest {
         if (placed === null) return false;
         at.setPhase('publish');
         await at.settleBefore();
-        reached();
+        reached(call.call !== 'open' || openAccessRights(call.access).write || call.create === true || call.truncate === true || call.fchmod !== undefined ? placed : null);
         // Made under the umask the process made it with, as on this filesystem (W7Call umask).
         const as = withUmask(cred, 'umask' in call ? call.umask : undefined);
         if (call.call === 'open') {
@@ -1158,7 +1164,7 @@ export class WaveIngest {
         }
         at.setPhase('publish');
         await at.settleBefore();
-        reached();
+        reached(to);
         await backend(router.apply({ type: 'rename', from, to }, cred, at.guard, owner));
         at.committed(null, 0);
         return true;
@@ -1171,7 +1177,7 @@ export class WaveIngest {
         if (placed === null) return false;
         at.setPhase('publish');
         await at.settleBefore();
-        reached();
+        reached(placed);
         await backend(router.apply(record.type === 'truncate' ? { type: 'truncate', path: placed, size: record.size } : { type: 'setattr', path: placed, attrs: record.attrs }, cred, at.guard, owner));
         at.committed(null, 0);
         return true;
@@ -1222,7 +1228,7 @@ export class WaveIngest {
         at.setPhase('publish');
         try {
           await at.settleBefore();
-          reached();
+          reached(file.named);
           const bytes = concatBytes(file.held.map((chunk) => chunk.data));
           const node = file.described;
           if (node !== undefined) {
@@ -1233,7 +1239,7 @@ export class WaveIngest {
           const stat = await backend(router.apply(file.call !== undefined
             ? { type: 'data-call', call: file.call, path: file.placed, mode: file.mode, bytes, ...(file.offset === undefined ? {} : { offset: file.offset }) }
             : file.link
-            ? { type: 'symlink', path: file.placed, target: new TextDecoder().decode(bytes), slot: `${at.waveId}-${file.index}` }
+            ? { type: 'symlink', path: file.placed, target: nameDec.decode(bytes), slot: `${at.waveId}-${file.index}` }
             : { type: 'file', path: file.placed, mode: file.mode, bytes }, withUmask(cred, file.umask), at.guard, owner));
           at.committed(stat === null ? null : { path: file.named, ...stat }, bytes.byteLength);
         } finally {

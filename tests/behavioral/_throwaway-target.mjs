@@ -53,6 +53,7 @@
 //           (_deploy-target.mjs PROBE_TARGET_VARS), as staging is
 //   token   [--name <n>] [--ttl-ms <ms>] [--json]   → the token, or JSON {base, token}
 //   session [--name <n>] [--ttl-ms <ms>]   → JSON {base, sessionId, token}
+//   version [--name <n>]                   → the id of the deployment the Preview serves
 //   down    [--name <n>] | --all
 //   list    every Preview under the parent, and which ones this checkout holds
 //
@@ -96,6 +97,9 @@ const {
   readState,
   requireAccountPin,
   TargetNotReadyError,
+  throwawayName,
+  throwawayStateDir,
+  throwawayStatePath,
   waitForTarget,
   withSecretsFile,
   wrangle,
@@ -107,10 +111,8 @@ const { uploadConfig } = await import('../../scripts/ci/lib/release.mjs');
 const PROBE_APP = join(ROOT, 'apps', 'probe');
 /** Machine state: every Preview this machine deleted, until its hostname stops answering. */
 const DELETED_PATH = join(MACHINE_STATE_DIR, 'deleted-previews.json');
-const STATE_DIR = join(ROOT, '.wrangler', 'throwaway-targets');
+const STATE_DIR = throwawayStateDir(ROOT);
 
-/** Throwaways are always `<prefix><suffix>` so a stray one is obvious. */
-const NAME_PREFIX = 'nimbus-tw-';
 const DEFAULT_TTL_MS = 3 * 60 * 60 * 1000;
 
 /**
@@ -139,7 +141,7 @@ const flags = parseFlags(rest);
  */
 const varOverrides = [...PROBE_TARGET_VARS, ...rest.flatMap((arg, i) => (arg === '--var' && rest[i + 1] ? ['--var', rest[i + 1]] : []))];
 
-const COMMANDS = { up, token, session, down, list };
+const COMMANDS = { up, token, session, version, down, list };
 const run = COMMANDS[command];
 if (!run) {
   console.error(`usage: bun tests/behavioral/_throwaway-target.mjs <${Object.keys(COMMANDS).join('|')}> [flags]`);
@@ -161,7 +163,7 @@ async function up() {
   }
   const bundle = uploadConfig(flags.bundle, 'apps/probe', { root: ROOT, preview: true, log });
   const account = requireAccountPin();
-  const name = flags.name ? qualify(flags.name) : `${NAME_PREFIX}${randomSuffix()}`;
+  const name = throwawayName(flags.name || randomSuffix());
   const preview = previewName(name);
 
   // Redeploying a throwaway under a name it already has is routine — a
@@ -238,6 +240,19 @@ async function token() {
   const state = requireState(resolveName());
   const jwt = await mintProbeToken(state.secret, ttlMs());
   process.stdout.write(flags.json ? `${JSON.stringify({ base: state.base, token: jwt })}\n` : jwt);
+}
+
+/**
+ * The deployment the Preview serves now: remote-probes reads it before and
+ * after a job, and grades only a job it did not change under. It needs no
+ * record here, so it reads a throwaway another checkout stood up.
+ */
+async function version() {
+  const name = resolveName();
+  const account = requireAccountPin();
+  const latest = await latestDeployment({ account, token: apiToken({ cwd: PROBE_APP, account }), preview: readState(statePath(name))?.preview ?? previewName(name) });
+  if (!latest?.id) throw new Error(`${name} serves no deployment`);
+  process.stdout.write(`${latest.id}\n`);
 }
 
 async function session() {
@@ -384,21 +399,31 @@ async function deployPreview({ account, token, preview, secret, before, config }
     printed = JSON.parse(stdout.slice(stdout.indexOf('{')));
   } catch { /* reported below */ }
   const deploymentId = printed?.deployment?.id ?? null;
+  // Read until the API serves the upload or 30 s have passed. A read the
+  // deadline cuts off is no answer: the wait ends with what was last read.
   const settleBy = Date.now() + 30_000;
   const signal = AbortSignal.timeout(Math.max(1, settleBy - Date.now()));
-  let latest = await latestDeployment({ account, token, preview, signal });
-  while (deploymentId && latest?.id !== deploymentId && Date.now() < settleBy) {
-    await delay(Math.min(500, Math.max(1, settleBy - Date.now())), undefined, { signal });
-    latest = await latestDeployment({ account, token, preview, signal });
+  let latest;
+  for (;;) {
+    try {
+      latest = await latestDeployment({ account, token, preview, signal });
+    } catch (error) {
+      if (!signal.aborted) throw error;
+      break;
+    }
+    if (!deploymentId || latest?.id === deploymentId || Date.now() >= settleBy) break;
+    await delay(Math.min(500, Math.max(1, settleBy - Date.now())));
   }
   const after = latest?.id ?? null;
   if (!deploymentId || after !== deploymentId || after === (before?.id ?? null)) {
     process.stderr.write(`${stdout}${result.stderr || ''}`);
     const detail = !deploymentId
       ? '`wrangler preview` reported no deployment id'
-      : after !== deploymentId
-        ? `the API serves ${after} as the latest deployment, not ${deploymentId}`
-        : `the latest deployment is still ${after} — nothing was deployed`;
+      : latest === undefined
+        ? 'the API answered no read of its latest deployment within 30 s of the upload'
+        : after !== deploymentId
+          ? `30 s after the upload, the API serves ${after ?? 'no deployment'} as the latest, not ${deploymentId}`
+          : `the latest deployment is still ${after} — nothing was deployed`;
     throw new Error(`Preview ${preview} of ${PREVIEW_PARENT} did not land: ${detail}; wrangler exited ${result.status}`);
   }
   const base = workersDevUrlOf(printed.preview?.urls);
@@ -475,7 +500,7 @@ async function waitForHostnameGone(base) {
 // ── State ────────────────────────────────────────────────────────────
 
 function statePath(name) {
-  return join(STATE_DIR, `${name}.json`);
+  return throwawayStatePath(ROOT, name);
 }
 
 function requireState(name) {
@@ -493,7 +518,7 @@ function listStateNames() {
 }
 
 function resolveName() {
-  if (flags.name) return qualify(flags.name);
+  if (flags.name) return throwawayName(flags.name);
   const names = listStateNames();
   if (names.length === 1) return names[0];
   if (names.length === 0) throw new Error('no throwaway target recorded — run `up` first');
@@ -502,9 +527,6 @@ function resolveName() {
 
 // ── Small helpers ────────────────────────────────────────────────────
 
-function qualify(name) {
-  return name.startsWith(NAME_PREFIX) ? name : `${NAME_PREFIX}${name}`;
-}
 
 function randomSuffix() {
   return crypto.randomUUID().slice(0, 8);

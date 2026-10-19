@@ -52,6 +52,7 @@ import type { RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { StaticFsRefs } from '@nimbus-sh/core/runtime/static-fs-refs.js';
 import { parseSheet, sheetSources, sheetStringImports } from '@nimbus-sh/core/runtime/css-syntax.js';
 import braces from 'braces';
+import { rootClampedSegments } from '@nimbus-sh/platform/lexical-path.js';
 
 export interface DataPlanEntry {
   path: string;
@@ -191,13 +192,9 @@ function excludedBelow(home: string, dir: string, k: string): boolean {
   return excludedDir(home, dir, parentOf(k));
 }
 
+/** `rel` under the key `base`, taken as it is; a leading slash in `rel` does not reset it. */
 function joinKey(base: string, rel: string): string {
-  const out = base ? base.split('/') : [];
-  for (const seg of rel.split('/')) {
-    if (seg === '' || seg === '.') continue;
-    if (seg === '..') out.pop(); else out.push(seg);
-  }
-  return out.join('/');
+  return rootClampedSegments(rel, base ? base.split('/') : []).join('/');
 }
 
 /**

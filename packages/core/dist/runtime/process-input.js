@@ -1,7 +1,8 @@
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 export const PROCESS_INPUT_MAX_QUEUED_BYTES = 256 * 1024;
 export const PROCESS_INPUT_READ_MAX_BYTES = 64 * 1024;
 const encoder = new TextEncoder();
-const inputBytes = (data) => typeof data === 'string' ? encoder.encode(data).length : data.length;
+const inputBytes = (data) => typeof data === 'string' ? utf8Length(data) : data.length;
 function isValidPid(pid) {
     return Number.isSafeInteger(pid) && pid > 0;
 }

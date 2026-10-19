@@ -139,7 +139,7 @@ export async function createFacetSession(work, { realGit = false, asUser = false
 
   const tempDir = mkdtempSync(join(work, 'facet-'));
   writeFileSync(join(tempDir, 'git-network-worker.mjs'), assembleGitNetworkFacetSource());
-  writeFileSync(join(tempDir, 'git-bundle.js'), realGit ? stagedGitBundle() : 'export const git = {}; export const gitHttp = {};');
+  writeFileSync(join(tempDir, 'git-bundle.js'), realGit ? stagedGitBundle() : 'export const git = {};');
   const facet = await import(pathToFileURL(join(tempDir, 'git-network-worker.mjs')).href);
   // Work a command leaves running after it answers (a full clone's
   // changed-path filters): `settled()` waits for all of it. The DO's

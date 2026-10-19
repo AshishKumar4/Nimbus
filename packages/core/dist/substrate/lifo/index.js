@@ -10,7 +10,7 @@ export { createWatchCommand } from './commands/system/watch.js';
 export { createHelpCommand } from './commands/system/help.js';
 export { createNodeCommand } from './commands/system/node.js';
 export { createCurlCommand } from './commands/net/curl.js';
-export { createLifoPkgCommand, rehydrateGlobalPackages } from './commands/system/lifo.js';
+export { createLifoPkgCommand, rehydrateLifoPackages } from './commands/system/lifo.js';
 export { createNpmCommand } from './commands/system/npm.js';
 // Shell
 export { Shell } from './shell/Shell.js';

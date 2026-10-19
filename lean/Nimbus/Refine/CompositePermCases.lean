@@ -156,7 +156,7 @@ def genOp (v : Nat) : Gen Op := do
   else if k < 9 then return .mkdir
   else return .unlink
 
-def genCase : Gen (Option Json) := do
+def genWorld : Gen (Option (St × List Nat)) := do
   let mut ms : List Mnt := []
   let mut bid := 1
   for pt in points do
@@ -174,8 +174,12 @@ def genCase : Gen (Option Json) := do
     bks := bks ++ [(m.bk, ← genBackend ((← below 3) != 0) ((← below 5) + 1) 20)]
   let get (l : List (Nat × Backend)) (k : Nat) : Backend :=
     ((l.find? (·.1 == k)).map (·.2)).getD (memory [])
-  let mut S : St := { mounts := ms, bks := get bks }
-  let S0 := S
+  return some ({ mounts := ms, bks := get bks }, bks.map (·.1))
+
+def genCase : Gen (Option Json) := do
+  let some (S0, ks) ← genWorld | return none
+  let ms := S0.mounts
+  let mut S := S0
   let mut steps : Array Json := #[]
   let n := (← below 10) + 6
   for i in [0:n] do
@@ -197,7 +201,6 @@ def genCase : Gen (Option Json) := do
       let (o, S') := cOp S c op p
       S := S'
       steps := steps.push (opJson c op p o)
-  let ks := bks.map (·.1)
   return some (.obj [("mounts", .arr (ms.map fun m => .obj [("point", .str (key m.point)), ("backend", .str s!"b{m.bk}")])),
     ("backends", .obj (ks.map fun k => (s!"b{k}", backendJson (S0.bks k)))),
     ("steps", .arr steps.toList),

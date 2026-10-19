@@ -5,7 +5,7 @@
 // that lasts to the next line, a file written and read back. `exit()<enter>`
 // → exit code 0 + shell prompt returns.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi, sleep } from '../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, sleep, hasOutputLine } from '../_driver.mjs';
 import { pushLine } from './_push.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -38,11 +38,8 @@ try {
 }
 
 // Send `print("hi")<enter>`.
-t.reset();
-t.cmd('print("hi")');
-await t.waitFor((b) => /\bhi\b/m.test(b), 15_000, 'print("hi") output');
-const out1 = stripAnsi(t.buf);
-const hasHi = /\bhi\b/m.test(out1);
+const out1 = await pushLine(t, 'print("hi")');
+const hasHi = hasOutputLine(out1, 'hi');
 a.check('print("hi") prints "hi" in REPL', hasHi,
   hasHi ? '' : JSON.stringify(out1.slice(-200)));
 

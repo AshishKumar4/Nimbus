@@ -16,12 +16,11 @@
  * via the stub).
  *
  * Per DEFECT-D1: ctx is taken via `(self as any).ctx` cast where needed
- * (rpcInnerDoFetch uses self.ctx.id and self.ctx.facets). The InitHost-style escape applies because
+ * (_rpcInnerDoCall uses self.ctx.id and self.ctx.facets). The InitHost-style escape applies because
  * these ~3 sites would each need ctx threaded through; cast at boundary
  * is acceptable per plan §IX recommendation 1.
  */
 import { type SessionFileStat } from '@nimbus-sh/core/runtime/session-protocol.js';
-import type { InnerDoFetchAnswer } from '@nimbus-sh/fabric/bindings.js';
 import type { D1QueryResponse, D1QuerySql, KvCall, R2Call } from '@nimbus-sh/fabric/inner-storage-env.js';
 import type { RuntimeVfsStat } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type FanoutShardOptions } from '@nimbus-sh/fabric/fanout.js';
@@ -51,7 +50,7 @@ type ProcessRpcHost = Pick<NimbusSession, 'processes'>;
 type ReportRpcHost = ProcessRpcHost & Pick<NimbusSession, 'facetManager'>;
 type ExitRpcHost = ReportRpcHost & Pick<NimbusSession, 'terminal' | 'shell' | 'webSocketRelay' | 'supervisorDeliveries' | 'servedReads' | '_emitExitDump' | 'nimbusDebug' | 'childProcessManager'>;
 export declare function checkedReadPayloadBytes(bytes: number): number;
-export declare function withReadAllocation<T>(bytes: number, read: () => Promise<T>): Promise<T>;
+export declare function withReadAllocation<T>(bytes: number, read: () => Promise<T>, pid?: number, session?: string): Promise<T>;
 /**
  * `files.readFile` — the read with the supervisor's allocation lease.
  * The body lives in `buildSessionSupervisorOps`'s `readFile` override so
@@ -64,25 +63,6 @@ export declare function _rpcReadFile(self: RpcHost, path: string, pid?: number, 
  * round-tripping through readFile (string) would corrupt bytes.
  */
 export declare function _rpcReadFileBytes(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<Uint8Array | null>;
-/**
- * Phase-3 inner-DO fetch dispatcher. Called by NimbusDOStub.fetch()
- * from the inner Worker via the env.NIMBUS_SESSION loopback. We
- * resolve the inner DO class from the module-level registry (keyed
- * by <thisDoId>:<bindingName>), use ctx.facets.get with the inner's
- * id string as the facet id, and forward the serialized Request.
- *
- * All steps run in THIS RPC method's context, so no cross-request
- * I/O boundaries are crossed — the ctx.facets stub and its fetch()
- * are both created here.
- */
-export declare function _rpcInnerDoFetch(self: RpcHost, req: {
-    bindingName: string;
-    id: string;
-    method: string;
-    url: string;
-    headers: [string, string][];
-    body: ArrayBuffer | null;
-}): Promise<InnerDoFetchAnswer>;
 /**
  * A member of the inner Worker's Durable Object, as a stub's caller reaches
  * it on Cloudflare (NimbusDurableObjectNamespace.callOn and getOn): the names
@@ -172,6 +152,14 @@ declare const FsReadBatchArgsSchema: z.ZodArray<z.ZodUnion<readonly [z.ZodObject
     length: z.ZodNumber;
     expectedEpoch: z.ZodOptional<z.ZodString>;
     expectedRevision: z.ZodOptional<z.ZodNumber>;
+    expectedFile: z.ZodOptional<z.ZodObject<{
+        dev: z.ZodNumber;
+        ino: z.ZodNumber;
+        size: z.ZodNumber;
+        mtime: z.ZodNumber;
+        ctime: z.ZodNumber;
+        revision: z.ZodNumber;
+    }, z.core.$strip>>;
 }, z.core.$strip>]>>;
 /**
  * One request in a batch read: a range, whose `length` bounds what it may

@@ -13,7 +13,7 @@
 // Reduced to 6 packages by default to keep wall-clock under 12 min;
 // override with NIMBUS_COHORT=full to run the top-30.
 
-import { hasOutputLine, mintSession, Terminal, makeAsserter, sleep } from './_driver.mjs';
+import { hasOutputLine, mintSession, Terminal, makeAsserter } from './_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('property-cohort');
@@ -46,7 +46,7 @@ for (const pkg of COHORT) {
   const sid = await mintSession();
   const t = new Terminal(sid);
   await t.connect();
-  await sleep(1_500);
+  await t.waitForPrompt(60_000);
   let outcome = 'crashed';
   let elapsed = 0;
   let detail = '';

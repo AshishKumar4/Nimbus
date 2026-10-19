@@ -1,7 +1,8 @@
 import type { EsbuildBuildHost } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import type { WorkerCode } from '@nimbus-sh/fabric/vendor/types.js';
 import { type StagedSourceEnv } from '../runtime/staged-source.js';
-import type { PrebundleResult, PrebundleSpec } from '@nimbus-sh/core/runtime/prebundle-slice.js';
+import type { PrebundleResult } from '@nimbus-sh/core/runtime/prebundle-slice.js';
+import type { PrebundleDispatch } from './prebundle-pool.js';
 export declare const BUILD_FACET_WORKER_ID: string;
 /** The staged parts of the build facet, each verified against its pinned digest. */
 export interface BuildFacetParts {
@@ -38,7 +39,8 @@ export declare function rolldownBuildHost(ctx: DurableObjectState, env: unknown,
 export declare class BuildFacetResetError extends Error {
     readonly specifier: string;
     readonly reason: string;
-    constructor(specifier: string, reason: string);
+    readonly attempts: number;
+    constructor(specifier: string, reason: string, attempts?: number);
 }
 /**
  * Pre-bundles one npm specifier from its slice in the Durable Object's build
@@ -52,8 +54,13 @@ export declare class BuildFacetResetError extends Error {
  * once more on a fresh facet, logged. A second throw is a
  * BuildFacetResetError naming the package and why; a facet that never
  * loaded is the load's own error, not retried.
+ *
+ * The isolate moves to a new generation when any Durable Object's binding
+ * outgrows its mark. A pre-bundle that has not begun then begins on the new
+ * one: nothing of it ran, so it is no reset. Its slice, if it holds one, is
+ * given back first, and taken again once the new facet is warm.
  */
-export declare function buildFacetPrebundler(ctx: DurableObjectState, env: unknown): (spec: PrebundleSpec) => Promise<PrebundleResult>;
+export declare function buildFacetPrebundler(ctx: DurableObjectState, env: unknown, signal?: AbortSignal): Promise<(task: PrebundleDispatch) => Promise<PrebundleResult>>;
 /**
  * Loads the Durable Object's build facet and waits for it: the staged parts
  * fetched and verified, the binding instantiated. What prewarmBuildFacet

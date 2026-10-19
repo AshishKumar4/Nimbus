@@ -9,6 +9,8 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { registerHooks } from 'node:module';
 import { join } from 'node:path';
 
+import { hookFunctionConstructors } from './constructor-hooks.mjs';
+
 const dir = process.env.NIMBUS_CAPTURE_DIR;
 mkdirSync(join(dir, 'functions'), { recursive: true });
 mkdirSync(join(dir, 'modules'), { recursive: true });
@@ -17,21 +19,10 @@ const record = (sub, value) => {
   writeFileSync(join(dir, sub, `${createHash('sha256').update(text).digest('hex').slice(0, 16)}.json`), text);
 };
 
-const kinds = [
-  ['function', Function],
-  ['async', Object.getPrototypeOf(async function () {}).constructor],
-  ['generator', Object.getPrototypeOf(function* () {}).constructor],
-  ['asyncGenerator', Object.getPrototypeOf(async function* () {}).constructor],
-];
-for (const [kind, Native] of kinds) {
-  const recording = function (...args) {
-    record('functions', { kind, params: args.slice(0, -1).map(String), body: args.length ? String(args[args.length - 1]) : '' });
-    return new.target ? Reflect.construct(Native, args, new.target) : Reflect.apply(Native, undefined, args);
-  };
-  Object.defineProperty(recording, 'prototype', { value: Native.prototype });
-  Object.defineProperty(Native.prototype, 'constructor', { value: recording, writable: true, configurable: true });
-  if (kind === 'function') globalThis.Function = recording;
-}
+hookFunctionConstructors(({ kind, params, body, native }) => {
+  record('functions', { kind, params, body });
+  return native;
+});
 
 registerHooks({
   load(url, context, nextLoad) {

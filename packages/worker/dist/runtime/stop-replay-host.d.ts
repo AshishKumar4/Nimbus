@@ -1,6 +1,6 @@
 import { type StopRecord } from './stop-replay-contracts.js';
+/** A tape's bytes from their base64: none for an absent or empty entry. */
 export declare function decodeBase64(text: string | undefined): Uint8Array;
-export declare function encodeBase64(bytes: Uint8Array): string;
 /**
  * The stop record `error` carries for run `run` of a launch whose nonce is
  * `nonce`, or null when it carries none: any other error, a record of another
@@ -25,6 +25,13 @@ export declare class ReplayOutputGate {
     private shown;
     /** More than REPLAY_PREFIX_MAX_BYTES was shown on a stream: no run after a stop can be checked. */
     over: boolean;
+    /** `run`: the run whose output it delivers first (a run from its start after one that stopped). */
+    constructor(run?: number);
+    /**
+     * Run `run` starts over from its start, unchecked: all it prints is
+     * delivered from its first byte, and an earlier run's late chunk is not.
+     */
+    restart(run: number): void;
     /** A run strayed: nothing more it prints is delivered. */
     close(): void;
     /** The part of a chunk not yet delivered. */

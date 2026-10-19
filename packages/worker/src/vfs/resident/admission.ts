@@ -15,6 +15,7 @@
 import { residentBytes, residentCellCost } from './cell-cost.js';
 import type { Coherence } from './coherence.js';
 import type { ResidentSupervisor } from './supervisor.js';
+import { SafeMap } from '@nimbus-sh/core/_shared/primordials.js';
 
 export interface Admission {
   /** Whether the store is a one-shot's heap rather than a facet's SQLite. */
@@ -83,7 +84,8 @@ export function createAdmission(coherence: Coherence): Admission {
    * alone went to whichever of a batch of fills landed first, and the rest
    * were refused.
    */
-  const reservations = new Map<string, number>();
+  // A SafeMap: a fill's settle releases its reservation, after the program may have replaced Map's methods.
+  const reservations = new SafeMap<string, number>();
   let reservedBytes = 0;
 
   /**

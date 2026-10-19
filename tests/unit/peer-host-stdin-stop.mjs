@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { stopRecordOf } from '../../packages/worker/src/runtime/stop-replay-host.ts';
-import { createFacetWorld, createProcessHost, PROCESS_HOST_MODES } from './facet-host-harness.mjs';
+import { createFacetWorld, createProcessHost, PROCESS_HOST_MODES } from './lib/facet-host-harness.mjs';
 
 adoptCtxExports({ SupervisorRPC: (options) => ({ props: options.props }) });
 const nonce = '324d1c69-6e5c-47c0-8a85-0b5dc9801e5c';

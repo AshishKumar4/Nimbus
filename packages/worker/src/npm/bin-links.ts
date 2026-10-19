@@ -1,6 +1,6 @@
 import { projectEntryType, type ProjectFs } from '../runtime/project-fs.js';
 import { normalizeVfsPath, resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
-import { npmBinMap, npmBinName } from '@nimbus-sh/core/runtime/npm-bin-map.js';
+import { npmBinMap, npmBinName, npmBinShim } from '@nimbus-sh/core/runtime/npm-bin-map.js';
 import type { ResolvedPackage } from './resolver.js';
 import { STAGED_ARTIFACT_BIN_PREFIX } from '../facets/wasm-swap-registry.js';
 import { z } from 'zod/v4';
@@ -31,18 +31,20 @@ export function parseNpmBinManifest(text: string): NpmBinManifest | null {
 export const NPM_BIN_MANIFEST_VERSION = 1;
 export const NPM_BIN_MANIFEST_NAME = '.nimbus-bin-map.json';
 
-export interface NpmBinEntry {
-  name: string;
-  packageName: string;
-  packageVersion: string;
-  packagePath: string;
-  targetPath: string;
-}
+const NpmBinEntrySchema = z.object({
+  name: z.string().refine((name) => npmBinName(name) === name),
+  packageName: z.string().min(1),
+  packageVersion: z.string(),
+  packagePath: z.string().min(1),
+  targetPath: z.string().min(1),
+});
+export type NpmBinEntry = z.output<typeof NpmBinEntrySchema>;
 
-export interface NpmBinManifest {
-  version: typeof NPM_BIN_MANIFEST_VERSION;
-  bins: Record<string, NpmBinEntry>;
-}
+const NpmBinManifestSchema = z.object({
+  version: z.literal(NPM_BIN_MANIFEST_VERSION),
+  bins: z.record(z.string(), NpmBinEntrySchema),
+}).refine((manifest) => Object.entries(manifest.bins).every(([key, entry]) => key === entry.name));
+export type NpmBinManifest = z.output<typeof NpmBinManifestSchema>;
 
 export interface NpmBinResolution extends NpmBinEntry {
   shimPath: string;
@@ -58,31 +60,13 @@ type WritableVfsLike = VfsLike & Pick<ProjectFs, 'mkdir' | 'writeFile' | 'chmod'
 /** What validating a bin's target reads. */
 type BinTargetFs = Pick<VfsLike, 'exists' | 'isDirectory'>;
 
-interface PackageJsonLike {
-  name: string;
-  version?: string;
-  /** Read by npmBinMap, which takes what npm takes (a string, a map, an array) and drops the rest. */
-  bin?: unknown;
-}
-
-const NpmBinEntrySchema: z.ZodType<NpmBinEntry> = z.object({
-  name: z.string().refine((name) => npmBinName(name) === name),
-  packageName: z.string().min(1),
-  packageVersion: z.string(),
-  packagePath: z.string().min(1),
-  targetPath: z.string().min(1),
-});
-
-const NpmBinManifestSchema: z.ZodType<NpmBinManifest> = z.object({
-  version: z.literal(NPM_BIN_MANIFEST_VERSION),
-  bins: z.record(z.string(), NpmBinEntrySchema),
-}).refine((manifest) => Object.entries(manifest.bins).every(([key, entry]) => key === entry.name));
-
-const PackageJsonSchema: z.ZodType<PackageJsonLike> = z.object({
+const PackageJsonSchema = z.object({
   name: z.string().min(1),
   version: z.string().optional(),
   bin: z.unknown().optional(),
 }).passthrough();
+/** A package.json as bins are read from it: its `bin` is npmBinMap's to read, which takes what npm takes (a string, a map, an array) and drops the rest. */
+type PackageJsonLike = z.output<typeof PackageJsonSchema>;
 
 export function npmBinDirPath(nodeModulesPath: string): string {
   return normalizeVfsPath(`${nodeModulesPath}/.bin`);
@@ -105,18 +89,7 @@ export function createNpmBinShim(entry: NpmBinEntry, shimDir: string): string {
     // the bin manifest. The shim body is only a marker for PATH discovery.
     return `#!/usr/bin/env node\n// nimbus staged artifact: ${entry.targetPath}\n`;
   }
-  // Relative to the shim, as npm's .bin symlinks are, so a node_modules
-  // tree that is moved (a staged install renamed into place) still runs.
-  return `#!/usr/bin/env node\nrequire(${JSON.stringify(relativeRequest(shimDir, entry.targetPath))});\n`;
-}
-
-function relativeRequest(fromDir: string, target: string): string {
-  const from = normalizeVfsPath(fromDir).split('/').filter(Boolean);
-  const to = normalizeVfsPath(target).split('/').filter(Boolean);
-  let common = 0;
-  while (common < from.length && common < to.length - 1 && from[common] === to[common]) common++;
-  const rel = [...from.slice(common).map(() => '..'), ...to.slice(common)].join('/');
-  return rel.startsWith('../') ? rel : `./${rel}`;
+  return npmBinShim(shimDir, entry.targetPath);
 }
 
 export function packageBinEntries(pkg: ResolvedPackage, nodeModulesPath: string): NpmBinEntry[] {

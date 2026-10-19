@@ -145,6 +145,15 @@ export function readNimbusCookie(request: Request, name: string): string | null 
   return null;
 }
 
+/**
+ * A var of a Worker's env, as the OAuth configuration readers take one:
+ * trimmed, and '' when it is unset or not a string.
+ */
+export function envString(env: Record<string, unknown>, key: string): string {
+  const value = env?.[key];
+  return typeof value === 'string' ? value.trim() : '';
+}
+
 export function isNimbusCloudflareAccountId(value: string): boolean {
   if (value.length < 16 || value.length > 64) return false;
   for (let i = 0; i < value.length; i++) {

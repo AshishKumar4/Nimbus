@@ -9,13 +9,13 @@ import { SupervisorRPC } from '../../../packages/worker/src/session/supervisor-r
 import { ProcessSupervisor } from '../../../packages/worker/src/session/process-supervisor.ts';
 import { HostedSession } from '../../../packages/worker/src/hosted/session.ts';
 import {
-  NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusAssetsRPC, NimbusDurableObjectNamespace, NimbusDOStub,
+  NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusAssetsRPC, NimbusDurableObjectNamespace,
   NimbusKVNamespace, NimbusD1Binding, NimbusR2Bucket,
 } from '../../../packages/fabric/src/bindings.ts';
 import { NimbusFsJournalReader } from '../../../packages/core/src/_shared/process-fs-journal-reader.ts';
 
 export {
-  CirrusHmrRPC, SupervisorRPC, NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusAssetsRPC, NimbusDurableObjectNamespace, NimbusDOStub,
+  CirrusHmrRPC, SupervisorRPC, NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusAssetsRPC, NimbusDurableObjectNamespace,
   NimbusKVNamespace, NimbusD1Binding, NimbusR2Bucket, NimbusFsJournalReader,
 };
 
@@ -131,11 +131,9 @@ async function held(kind: string, id: DurableObjectId, env: Env, exports: Export
     // A wrangler-dev guest's assets binding, minted for a run-as server (nimbus-wrangler.ts).
     case 'NimbusAssetsRPC':
       return exports.NimbusAssetsRPC({ props: { vfsRoot: 'home/run-as/site', assetsDir: 'public', doId: id.toString(), cred: RUN_AS } });
-    // A wrangler-dev guest's Durable Object namespace binding, and a stub it hands back.
+    // A wrangler-dev guest's Durable Object namespace binding.
     case 'NimbusDurableObjectNamespace':
       return exports.NimbusDurableObjectNamespace({ props: { bindingName: 'COUNTER', supervisorDoId: id.toString() } });
-    case 'NimbusDOStub':
-      return exports.NimbusDOStub({ props: { bindingName: 'COUNTER', supervisorDoId: id.toString(), id: 'room' } });
     // A wrangler-dev guest's KV, D1 and R2 bindings, each minted for one store (nimbus-wrangler.ts).
     case 'NimbusKVNamespace':
       return exports.NimbusKVNamespace({ props: { doId: id.toString(), root: 'home/run-as/app', store: 'KV', cred: RUN_AS } });

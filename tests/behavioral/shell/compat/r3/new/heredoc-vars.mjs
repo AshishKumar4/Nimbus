@@ -8,7 +8,7 @@
 // Heredoc input is collected by the terminal wrapper and executed by
 // the shell substrate, where unquoted heredoc bodies expand variables.
 
-import { deleteSession, mintSession, Terminal, makeAsserter, sleep, termBody } from '../../../../_driver.mjs';
+import { deleteSession, mintSession, Terminal, makeAsserter, termBody } from '../../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('shell/compat/r3/new/heredoc-vars');
@@ -22,13 +22,7 @@ await t.waitForPrompt(60_000);
 
 await t.run('export VARFOO=replaced', 3_000);
 await t.run('rm -rf /tmp/hd1.txt', 2_000);
-t.reset();
-t.cmd('cat > /tmp/hd1.txt <<EOF');
-await sleep(1_500);
-t.cmd('val=$VARFOO');
-await sleep(1_500);
-t.cmd('EOF');
-await sleep(3_000);
+await t.run('cat > /tmp/hd1.txt <<EOF\nval=$VARFOO\nEOF', 10_000);
 const r1 = await t.run('cat /tmp/hd1.txt', 5_000);
 a.check(
   'unquoted heredoc (file) expands $VARFOO → replaced',
@@ -37,13 +31,7 @@ a.check(
 );
 
 await t.run('rm -rf /tmp/hd2.txt', 2_000);
-t.reset();
-t.cmd("cat > /tmp/hd2.txt <<'EOF'");
-await sleep(1_500);
-t.cmd('val=$VARFOO');
-await sleep(1_500);
-t.cmd('EOF');
-await sleep(3_000);
+await t.run("cat > /tmp/hd2.txt <<'EOF'\nval=$VARFOO\nEOF", 10_000);
 const r2 = await t.run('cat /tmp/hd2.txt', 5_000);
 a.check(
   "<<'EOF' (file) preserves literal $VARFOO (no expansion)",
@@ -52,13 +40,7 @@ a.check(
 );
 
 await t.run('rm -rf /tmp/hd3.txt', 2_000);
-t.reset();
-t.cmd('cat > /tmp/hd3.txt <<EOF');
-await sleep(1_500);
-t.cmd('val=${VARFOO}-suffix');
-await sleep(1_500);
-t.cmd('EOF');
-await sleep(3_000);
+await t.run('cat > /tmp/hd3.txt <<EOF\nval=${VARFOO}-suffix\nEOF', 10_000);
 const r3 = await t.run('cat /tmp/hd3.txt', 5_000);
 a.check(
   '${VARFOO}-suffix form expands inside unquoted heredoc',

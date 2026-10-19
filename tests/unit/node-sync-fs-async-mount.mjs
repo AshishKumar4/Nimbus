@@ -36,7 +36,7 @@ import { createSupervisorBridgeStore, SUPERVISOR_OP_ROUTES } from '../../package
 import { buildSessionSupervisorOps } from '../../packages/worker/src/session/supervisor-op.ts';
 import { createResidentStore } from '../../packages/worker/src/vfs/resident/index.ts';
 import * as rpc from '../../packages/worker/src/session/rpc.ts';
-import { createFacetCtx, createFacetWorld, createProcessFacetCtx } from './facet-host-harness.mjs';
+import { createFacetCtx, createFacetWorld, createProcessFacetCtx } from './lib/facet-host-harness.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { attachSupervisorOps } from './lib/session-supervisor-ops.mjs';
 import { importModuleSet } from './lib/module-map-bundle.mjs';

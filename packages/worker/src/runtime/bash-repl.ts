@@ -2,8 +2,7 @@ import type { FacetManager } from '../facets/manager.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
 import type { Shell } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
 import { formatShellPrompt } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
-import { CRED_KERNEL, type VfsCred, type RuntimeFsBridge, type NimbusFilesystemAuthority } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { withHostView } from '@nimbus-sh/core/runtime/process-files.js';
+import type { VfsCred, RuntimeFsBridge, NimbusFilesystemAuthority } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { RuntimeManifest } from '@nimbus-sh/core/runtime/runtime-manifest.js';
 import { createBashFacetSession, type BashFacetSession } from '@nimbus-sh/core/runtime/bash-runner.js';
 import { facetHostForManager } from './facet-loader-host.js';
@@ -36,8 +35,6 @@ class BashReplAdapter implements ReplAdapter {
   private readonly ps2Sentinel = `__NIMBUS_BASH_PS2_${crypto.randomUUID()}__`;
   private session: BashFacetSession | null = null;
   private incompleteSource: string | null = null;
-  private pendingStdout = '';
-  private pendingStderr = '';
   private active: { controller: AbortController; done: Promise<ReplPushResult> } | null = null;
 
   readonly ps2 = '> ';
@@ -92,8 +89,6 @@ class BashReplAdapter implements ReplAdapter {
     const session = this.session;
     this.session = null;
     this.incompleteSource = null;
-    this.pendingStdout = '';
-    this.pendingStderr = '';
     await session?.close();
   }
 
@@ -108,9 +103,9 @@ class BashReplAdapter implements ReplAdapter {
 
   private async ensureSession(signal: AbortSignal): Promise<ReplPushResult | null> {
     if (this.session) return null;
-    this.session = await withHostView(this.deps.authority, CRED_KERNEL, (artifacts) => createBashFacetSession({
+    this.session = await createBashFacetSession({
       facets: facetHostForManager(this.deps.facetMgr),
-      artifacts,
+      authority: this.deps.authority,
       filesystem: this.deps.filesystem,
       pid: this.deps.pid,
       processes: this.deps.processes,
@@ -129,18 +124,15 @@ class BashReplAdapter implements ReplAdapter {
       stdinTty: true,
       outputControls: [{ key: 'ps1', prefix: this.ps1Sentinel }, { key: 'ps2', prefix: this.ps2Sentinel }],
       signal,
-    }));
+    });
 
     const initial = this.session.initial;
     if (initial.state !== 'need-input') return this.consumeSlice(initial, '');
-    const prompt = this.takePrompt(initial);
-    this.pendingStdout += initial.stdout;
-    this.pendingStderr += prompt.stderr;
-    if (prompt.kind === 'ps1') return null;
+    if (this.promptKind(initial) === 'ps1') return null;
     return {
       kind: 'exit',
       exitCode: 1,
-      ...this.takeOutput(`bash: interactive boot did not reach PS1\n`),
+      stderr: 'bash: interactive boot did not reach PS1\n',
     };
   }
 
@@ -151,16 +143,13 @@ class BashReplAdapter implements ReplAdapter {
   }
 
   private consumeSlice(slice: BashSlice, source: string): ReplPushResult {
-    const prompt = this.takePrompt(slice);
-    this.pendingStdout += slice.stdout;
-    this.pendingStderr += prompt.stderr;
+    const prompt = this.promptKind(slice);
 
     if (slice.state === 'exited') {
       this.incompleteSource = null;
       return {
         kind: 'exit',
         exitCode: slice.exitCode,
-        ...this.takeOutput(),
       };
     }
     if (slice.state === 'error') {
@@ -168,54 +157,32 @@ class BashReplAdapter implements ReplAdapter {
       return {
         kind: 'exit',
         exitCode: slice.exitCode || 1,
-        ...this.takeOutput(`bash: ${slice.error || 'facet error'}\n`),
+        stderr: `bash: ${slice.error || 'facet error'}\n`,
       };
     }
-    if (prompt.kind === 'ps2') {
+    if (prompt === 'ps2') {
       this.incompleteSource = source;
       return { kind: 'incomplete' };
     }
-    if (prompt.kind === 'ps1') {
+    if (prompt === 'ps1') {
       this.incompleteSource = null;
-      return { kind: 'output', ...this.takeOutput() };
+      return { kind: 'output', stdout: '', stderr: '' };
     }
     return {
       kind: 'exit',
       exitCode: 1,
-      ...this.takeOutput('bash: interactive command did not reach a prompt\n'),
+      stderr: 'bash: interactive command did not reach a prompt\n',
     };
   }
 
-  private takePrompt(slice: BashSlice): {
-    kind: 'ps1' | 'ps2' | null;
-    stderr: string;
-  } {
+  private promptKind(slice: BashSlice): 'ps1' | 'ps2' | null {
     if (slice.control?.ps1 !== undefined) {
-      return {
-        kind: 'ps1',
-        stderr: '',
-      };
+      return 'ps1';
     }
     if (slice.control?.ps2 !== undefined) {
-      return {
-        kind: 'ps2',
-        stderr: '',
-      };
+      return 'ps2';
     }
-    return { kind: null, stderr: '' };
-  }
-
-  private takeOutput(extraStderr = ''): {
-    stdout: string;
-    stderr: string;
-  } {
-    const output = {
-      stdout: this.pendingStdout,
-      stderr: this.pendingStderr + extraStderr,
-    };
-    this.pendingStdout = '';
-    this.pendingStderr = '';
-    return output;
+    return null;
   }
 }
 

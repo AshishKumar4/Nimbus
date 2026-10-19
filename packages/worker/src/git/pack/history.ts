@@ -27,11 +27,11 @@
 import { GRAPH_RECORDS_DIR, commitRecord } from './commit-graph.js';
 import { decodeBatch, MODE_GITLINK, MODE_TREE } from './plan.js';
 import { TreeEntries } from './tree-object.js';
-import { OID_BYTES, oidToHex, PackFormatError } from './format.js';
+import { OID_BYTES, oidBytes, oidToHex, PackFormatError } from './format.js';
+import { concatBytes, nameDec } from '@nimbus-sh/core/_shared/bytes.js';
 import {
   STAGE_DIR,
   commitTree,
-  concat,
   join,
   readRange,
   resumePack,
@@ -85,7 +85,6 @@ export interface HistoryStepResult {
   tagsFound?: string[];
 }
 
-const decoder = new TextDecoder();
 
 function transport(context: CloneContext): UploadPackOptions {
   return { url: context.url, auth: context.auth, fetch: context.fetch, onProgress: context.onProgress };
@@ -111,7 +110,7 @@ class ListWriter {
     if (this.size === 0 || this.refused) return [];
     const bytes = this.size;
     if (this.dir !== STAGE_DIR) await writer.directory(this.dir);
-    await writer.file(this.dir + '/' + name, 0o644, concat(this.parts));
+    await writer.file(this.dir + '/' + name, 0o644, concatBytes(this.parts));
     return [{ name, bytes }];
   }
 }
@@ -121,7 +120,7 @@ function lister(kind: HistoryKind, list: ListWriter, graph: ListWriter): StorePa
   if (kind === 'commits') {
     return (object) => {
       if (object.type !== 'commit') return;
-      list.add(hexBytes(commitTree(object.data, oidToHex(object.oid))));
+      list.add(oidBytes(commitTree(object.data, oidToHex(object.oid))));
       try {
         graph.add(commitRecord(object.oid, object.data));
       } catch (error) {
@@ -152,12 +151,6 @@ function lister(kind: HistoryKind, list: ListWriter, graph: ListWriter): StorePa
     };
   }
   return undefined;
-}
-
-function hexBytes(hex: string): Uint8Array {
-  const out = new Uint8Array(OID_BYTES);
-  for (let i = 0; i < OID_BYTES; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-  return out;
 }
 
 async function settle(
@@ -362,14 +355,14 @@ export async function historyPlan(
   const table = new BlobTable();
   for (const file of request.present) {
     const bytes = await readRange(context.supervisor, join(context.dir, STAGE_DIR + '/' + file.name), 0, file.bytes);
-    for (const oid of decodeBatch(bytes).keys()) table.add(hexBytes(oid), 0, null);
+    for (const oid of decodeBatch(bytes).keys()) table.add(oidBytes(oid), 0, null);
   }
   for (const file of request.lists) {
     const bytes = await readRange(context.supervisor, join(context.dir, STAGE_DIR + '/' + file.name), 0, file.bytes);
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     for (let at = 0; at < bytes.byteLength;) {
       const length = view.getUint16(at + OID_BYTES);
-      table.add(bytes, at, decoder.decode(bytes.subarray(at + OID_BYTES + 2, at + OID_BYTES + 2 + length)));
+      table.add(bytes, at, nameDec.decode(bytes.subarray(at + OID_BYTES + 2, at + OID_BYTES + 2 + length)));
       at += OID_BYTES + 2 + length;
     }
   }

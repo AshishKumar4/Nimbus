@@ -13,7 +13,7 @@
 // literals of the entry code and bundled JS sources
 // (STATIC_ABSOLUTE_LITERALS) that name VFS files, within budget.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi, sleep } from '../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, sleep, hasOutputLine } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('node/readfile-abs-path');
@@ -65,7 +65,7 @@ const r3 = await t.run(
 const out3 = stripAnsi(r3.output);
 a.check(
   'existsSync(<absolute-path>) returns true for shell-written file',
-  /\bYES\b/.test(out3) && !/\bNO\b/.test(out3.split('\n').find(l => /^(YES|NO)$/.test(l)) || ''),
+  hasOutputLine(out3, 'YES') && !hasOutputLine(out3, 'NO'),
   `tail: ${JSON.stringify(out3.slice(-300))}`,
 );
 

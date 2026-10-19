@@ -64,4 +64,10 @@ export declare const OPENCODE_YOGA_WASM: string | null;
  * when the artifact is unstaged.
  */
 export declare const OPENCODE_CHUNKS_PACK: string | null;
+/**
+ * Where each chunk's source is in the pack: the byte range [start, end) of
+ * its JSON string literal, decoded one chunk at a time. Null when the
+ * artifact is unstaged.
+ */
+export declare const OPENCODE_CHUNK_RANGES: Readonly<Record<string, readonly [number, number]>> | null;
 //# sourceMappingURL=opencode-artifact.generated.d.ts.map

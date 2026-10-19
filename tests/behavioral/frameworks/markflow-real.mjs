@@ -48,7 +48,7 @@
 
 import {
   launchBrowser, cloneAndStartVite, openPage,
-  mintSession, sleep, BASE,
+  mintSession, BASE,
   RUNTIME_ERROR_MARKERS, bodyTextHasErrorMarker,
 } from '../_runtime-behavioral-template.mjs';
 
@@ -101,6 +101,8 @@ let editorText = '';
 let editorPresent = null;
 let urlAfterClick = '';
 let runtimeErrors = [];
+/** The module the crash overlay names, as served after the crash (servedModuleExcerpt). */
+let crashedModule = null;
 let consoleSummary = [];
 
 if (cloneOk) {
@@ -160,8 +162,9 @@ if (cloneOk) {
     // EditorPage; on a buggy build the page errors during
     // TextareaAutosize hydration.
     if (clickSucceeded) {
-      // Bounded settle for client-side route change.
-      await sleep(2_500);
+      // The client-side route change renders the editor's textarea, or fails within 15 s.
+      await ctx.page.waitForSelector('textarea', { timeout: 15_000 })
+        .catch((e) => consoleSummary.push(`no textarea rendered within 15 s: ${e.message}`));
 
       // Re-read body and DOM state.
       editorText = await ctx.getBodyText().catch(() => '');
@@ -189,6 +192,7 @@ if (cloneOk) {
 
     urlAfterClick = await ctx.currentUrl();
     runtimeErrors = ctx.collectErrors();
+    crashedModule = await ctx.servedModuleExcerpt(editorText) ?? await ctx.servedModuleExcerpt(homeText);
     consoleSummary = consoleSummary.concat(
       ctx.consoleMessages.slice(0, 40).map((m) => ({
         type: m.type,
@@ -227,6 +231,7 @@ const findings = {
     location: e.location || null,
   })),
   consoleHead: consoleSummary.slice(0, 20),
+  crashedModule,
 };
 console.log(JSON.stringify(findings, null, 2));
 

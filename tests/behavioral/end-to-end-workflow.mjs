@@ -17,9 +17,9 @@
 //
 // Black-box surfaces only. NO _diag.
 
-import { mintSession, Terminal, makeAsserter, sleep, BASE } from './_driver.mjs';
+import { mintSession, Terminal, makeAsserter, BASE, hasOutputLine } from './_driver.mjs';
 import {
-  launchBrowser, openPage,
+  launchBrowser, openPage, previewServed,
   RUNTIME_ERROR_MARKERS, bodyTextHasErrorMarker,
 } from './_runtime-behavioral-template.mjs';
 
@@ -32,13 +32,12 @@ console.log(`SID: ${sid}`);
 
 const t = new Terminal(sid);
 await t.connect();
-await sleep(2_500);
 await t.waitForPrompt(60_000);
 
 // Step 1: cd into the seeded app.
 {
   const r = await t.run('cd /home/user/example-app && pwd', 10_000);
-  a.check('cd /home/user/example-app succeeds', /\/home\/user\/example-app/.test(r.output), r.output.slice(-200));
+  a.check('cd /home/user/example-app succeeds', hasOutputLine(r.output, '/home/user/example-app'), r.output.slice(-200));
 }
 
 // Step 2: npm install.
@@ -76,9 +75,8 @@ let homeText = '';
 let runtimeErrors = [];
 
 if (viteReady) {
-  // Bounded settle for port-registry registration (matches pattern
-  // used in scaffoldAndStartVite helper).
-  await sleep(2_000);
+  const unserved = await previewServed(sid).then(() => '', (error) => error.message);
+  a.check('the dev server serves the preview', unserved === '', unserved);
 
   console.log('[end-to-end-workflow] launching headless Chrome...');
   const browser = await launchBrowser();

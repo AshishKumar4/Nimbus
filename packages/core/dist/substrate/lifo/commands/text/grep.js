@@ -4,9 +4,11 @@ import { globMatch as fnmatch } from '../../utils/glob.js';
 import { PosixRegexSyntax, WORD, translate, literal } from '../../utils/posix-regex.js';
 import { enc } from '../../../../_shared/bytes.js';
 import { getopt } from '../../utils/args.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 class GrepUsage extends Error {
 }
-const utf8 = new TextDecoder('utf-8');
+// A record's bytes as GNU grep matches them, a leading U+FEFF among them.
+const utf8 = new TextDecoder('utf-8', { ignoreBOM: true });
 const utf8Strict = new TextDecoder('utf-8', { fatal: true });
 /** GNU's read size: a NUL anywhere in what one read brings makes that read binary. */
 const BUFFER = 98304;
@@ -481,7 +483,7 @@ export async function runGrep(ctx) {
                             }
                             if (o.contextGiven && o.groupSeparator !== null && anyPrinted && lineNo > lastPrinted + 1)
                                 emit(`${o.groupSeparator}\n`);
-                            head(lineNo, at + enc.encode(line.slice(0, m.start)).length, ':');
+                            head(lineNo, at + utf8Length(line.slice(0, m.start)), ':');
                             emit(text);
                             emit(Uint8Array.of(eol));
                             lastPrinted = lineNo;

@@ -27,8 +27,9 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { kernelInstaller } from './npm-fanout-test-env.mjs';
+import { kernelInstaller, makeFanoutEnv } from './lib/npm-fanout-test-env.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+import { npmRegistry } from './lib/npm-registry.mjs';
 
 const harness = createSqliteVfsTestHarness(new Database(':memory:'));
 const vfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -47,22 +48,8 @@ root.writeFile('app/src/main.js', [
   `console.log(x, ${subpaths.join(', ')});`,
 ].join('\n') + '\n');
 
-const resolved = {
-  pkg: {
-    name: 'pkg', version: '1.0.0', tarballUrl: 'https://registry.invalid/pkg-1.0.0.tgz', integrity: 'sha512-fixture',
-    dependencies: {}, exports: null, main: 'index.js', module: '', bin: {},
-  },
-  cacheWrites: [], messages: [], events: [],
-  packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [],
-};
-const env = {
-  LOADER: { get() { return { getEntrypoint: () => ({ execute: async () => resolved }) }; } },
-  NIMBUS_SESSION: {
-    idFromName: (name) => ({ toString: () => name, name }),
-    idFromString: (id) => ({ toString: () => id, name: id }),
-    get: () => ({ supervisorOp: async (envelope) => ({ results: envelope.args[1].map(() => ({ ok: true, value: resolved })) }) }),
-  },
-};
+const { resultFor } = npmRegistry({ 'pkg': { '1.0.0': {} } });
+const env = makeFanoutEnv({ root, NM: 'app/node_modules', resultFor });
 
 /** ctx.storage.deleteAll, as the session's destroy calls it: every table goes. */
 const deleteAll = () => {
@@ -75,7 +62,8 @@ const bundled = [];
 let dropped = 0;
 const bundlePool = {
   acquire: async () => ({
-    prebundle: async (spec) => {
+    prebundle: async (task) => {
+      const spec = task.prepare();
       bundled.push(spec.specifier);
       // The client destroys the session while this one is in flight.
       if (bundled.length === 1) dropped = deleteAll();
@@ -157,7 +145,8 @@ assert.match(lines, /Pre-bundle complete: 0\/0 succeeded, 5 stopped/, lines);
     esbuild: new EsbuildService(undefined, {}),
     bundlePool: {
       acquire: async () => ({
-        prebundle: async (spec) => {
+        prebundle: async (task) => {
+          const spec = task.prepare();
           sent.push(spec.specifier);
           return { specifier: spec.specifier, ok: true, esmCode: 'export const x = 1;', elapsed: 0, warnings: [] };
         },
@@ -165,6 +154,7 @@ assert.match(lines, /Pre-bundle complete: 0\/0 succeeded, 5 stopped/, lines);
     },
   });
   const said = [];
+  const resolved = await resultFor('pkg', { range: '1.0.0' });
   await installer.prebundleUsedModules('app', new Map([['pkg', resolved.pkg]]), user, (msg) => said.push(msg));
   const lines = said.join('\n');
   assert.ok(!/stopped|is gone/.test(lines), `a node_modules that cannot be listed is not gone:\n${lines}`);

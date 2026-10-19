@@ -13,35 +13,18 @@ import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { pickPackumentVersion } from '../../packages/core/src/_shared/npm-semver.ts';
-import { parseRegistryRequest } from '../../packages/core/src/_shared/npm-spec.ts';
-import { registryRecord } from '../../packages/worker/src/npm/registry-record.ts';
-import { kernelInstaller, makeFanoutEnv } from './npm-fanout-test-env.mjs';
+import { npmRegistry } from './lib/npm-registry.mjs';
+import { kernelInstaller, makeFanoutEnv } from './lib/npm-fanout-test-env.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const REGISTRY = {
-  'real-a': { '1.0.0': { d: '^1.0.0' } },
+  'real-a': { '1.0.0': { dependencies: { d: '^1.0.0' } } },
   'real-b': { '1.0.0': {} },
   d: { '1.0.0': {}, '2.0.0': {} },
 };
+const registry = npmRegistry(REGISTRY);
 const asked = [];
-
-// The resolve task as the facet answers it: the package under the name it
-// installs as, its record under the registry package it is.
-function resolveTask(name, spec) {
-  const { registryName, range } = parseRegistryRequest(name, spec.range);
-  asked.push(`${name}@${spec.range}`);
-  const versions = REGISTRY[registryName];
-  const names = Object.keys(versions);
-  const version = pickPackumentVersion(versions, { latest: names.at(-1) }, range);
-  const empty = { messages: [], events: [], packumentBytesDecoded: 0, packumentSource: 'network', cacheStatEvents: [] };
-  if (!version) return { ...empty, cacheWrites: [], pkg: null, error: { type: 'unresolved', reason: `no ${registryName}@${range}` } };
-  const pkg = {
-    name, registryName, version, tarballUrl: `https://registry.invalid/${registryName}-${version}.tgz`, integrity: `sha512-${registryName}${version}`,
-    dependencies: versions[version], exports: null, main: 'index.js', module: '', bin: {},
-  };
-  return { ...empty, pkg, cacheWrites: [registryRecord({ ...pkg, name: registryName }, Date.now())] };
-}
+const resultFor = (name, spec) => { asked.push(`${name}@${spec.range}`); return registry.resultFor(name, spec); };
 
 const harness = createSqliteVfsTestHarness(new Database(':memory:'));
 const vfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -51,7 +34,7 @@ for (const dir of ['a', 'b']) {
   root.writeFile(`${dir}/package.json`, JSON.stringify({ name: dir, version: '1.0.0' }));
 }
 const env = makeFanoutEnv({
-  root, NM: 'a/node_modules', resultFor: resolveTask,
+  root, NM: 'a/node_modules', resultFor,
   manifestFor: (p) => ({ name: p.tarballUrl.match(/registry\.invalid\/(.+)-\d/)[1], version: p.version }),
 });
 const ctx = { id: { toString: () => 'coordinator-do-id' }, storage: harness.ctx.storage };

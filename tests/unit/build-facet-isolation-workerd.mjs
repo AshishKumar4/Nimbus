@@ -36,19 +36,15 @@
 // trouble, and workerd logs no cross-object I/O.
 
 import assert from 'node:assert/strict';
-import net from 'node:net';
-import { spawn } from 'node:child_process';
-import { createRequire } from 'node:module';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { build } from 'esbuild';
 import { wranglerNodeBuiltins } from './lib/wrangler-node-builtins.mjs';
+import { servePlainWorkerd } from './lib/plain-workerd.mjs';
 
 const REPO = resolve(import.meta.dirname, '../..');
 const DEADLINE_MS = 120_000;
 
-const dir = mkdtempSync(join(tmpdir(), 'nimbus-build-facet-isolation-'));
 // The facet's own count of its lanes, calls in flight and binding memory,
 // read after a collection (workerd runs with --expose-gc).
 const FACET_CLASS = "  'export class BuildFacet extends DurableObject {',\n";
@@ -77,19 +73,11 @@ const bundled = await build({
     },
   }],
 });
-writeFileSync(join(dir, 'main.js'), bundled.outputFiles[0].text);
-
-const require = createRequire(import.meta.url);
-const workerd = createRequire(require.resolve('wrangler/package.json'))('workerd').default;
-const free = net.createServer();
-const listening = Promise.withResolvers();
-free.listen(0, '127.0.0.1', listening.resolve);
-await listening.promise;
-const port = free.address().port;
-const closed = Promise.withResolvers();
-free.close(closed.resolve);
-await closed.promise;
-writeFileSync(join(dir, 'config.capnp'), `using Workerd = import "/workerd/workerd.capnp";
+const served = await servePlainWorkerd({
+  name: 'build-facet-isolation',
+  files: { 'main.js': bundled.outputFiles[0].text },
+  readyPath: '/ready',
+  config: ({ port }) => `using Workerd = import "/workerd/workerd.capnp";
 const config :Workerd.Config = (
   services = [
     (name = "main", worker = (
@@ -107,16 +95,13 @@ const config :Workerd.Config = (
   ],
   sockets = [(name = "http", address = "127.0.0.1:${port}", http = (), service = "main")],
   v8Flags = ["--expose-gc"],
-);`);
-const child = spawn(workerd, ['serve', 'config.capnp', '--experimental'], { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'] });
-let logs = '';
-child.stdout.on('data', (d) => { logs += d; });
-child.stderr.on('data', (d) => { logs += d; });
+);`,
+});
 
 /** `object`'s `method`(...args), answered within `deadline` ms. */
 async function call(object, method, args, deadline = DEADLINE_MS) {
   const query = new URLSearchParams({ object, method, args: JSON.stringify(args) });
-  const response = await fetch(`http://127.0.0.1:${port}/call?${query}`, { signal: AbortSignal.timeout(deadline) });
+  const response = await fetch(`${served.base}/call?${query}`, { signal: AbortSignal.timeout(deadline) });
   return response.json();
 }
 const sleep = (ms) => {
@@ -133,15 +118,6 @@ function expectOk(name, results) {
 }
 
 try {
-  for (const until = Date.now() + 30_000; ;) {
-    try {
-      await fetch(`http://127.0.0.1:${port}/ready`);
-      break;
-    } catch {}
-    if (child.exitCode !== null || Date.now() > until) throw new Error(`workerd did not start:\n${logs}`);
-    await sleep(50);
-  }
-
   // ── One object reset mid-build, fifty times ───────────────────────────
   // First, on a fresh binding: what a reset build leaves shows as growth.
   {
@@ -160,7 +136,7 @@ try {
     if (finished > 0) failures.push(`${finished} of ${resets} builds finished before their reset`);
     expectOk('the object reset fifty times builds again', [await call('resets', 'build', ['rs-after', 50])]);
     const after = await call('resets-observer', 'facetStats', []);
-    const rss = Number(readFileSync(`/proc/${child.pid}/status`, 'utf8').match(/VmRSS:\s+(\d+)/)?.[1] ?? NaN) / 1024;
+    const rss = Number(readFileSync(`/proc/${served.pid}/status`, 'utf8').match(/VmRSS:\s+(\d+)/)?.[1] ?? NaN) / 1024;
     const mib = (bytes) => (bytes / 1048576).toFixed(1);
     console.log(`  facet before: ${JSON.stringify(before)}; every 10 resets: lanes ${readings.map((r) => r.lanes)}, calls ${readings.map((r) => r.inFlight)}, MiB ${readings.map((r) => mib(r.memory))}; after its next build: ${JSON.stringify(after)}; workerd RSS ${rss.toFixed(0)} MiB`);
     const flat = readings.every((r) => r.lanes <= 1 && r.inFlight <= 1) && after.lanes === 0 && after.inFlight === 0;
@@ -255,7 +231,7 @@ try {
     expectOk('four objects pre-bundle three times each, at once', results.flat());
   }
 
-  if (/Cannot perform I\/O on behalf of a different Durable Object/.test(logs)) failures.push('workerd logged I/O on behalf of a different Durable Object');
+  if (/Cannot perform I\/O on behalf of a different Durable Object/.test(served.logs())) failures.push('workerd logged I/O on behalf of a different Durable Object');
 
   // ── What lanes rest on, with a real plugin RPC ────────────────────────
   {
@@ -279,8 +255,7 @@ try {
     if (!refused) failures.push(`the direct call from another object: ${JSON.stringify(direct)}`);
   }
 } finally {
-  child.kill('SIGTERM');
-  rmSync(dir, { recursive: true, force: true });
+  await served.stop();
 }
 
 assert.equal(failures.length, 0, `${failures.length} failures:\n  ${failures.join('\n  ')}`);

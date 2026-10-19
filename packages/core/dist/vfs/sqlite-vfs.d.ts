@@ -275,6 +275,7 @@ export interface CredentialedVfs {
     rename(oldPath: string, newPath: string): void;
     copyFile(src: string, dest: string, options?: {
         keepMode?: boolean;
+        preserve?: boolean;
     }): VfsStat & {
         from: {
             path: string;
@@ -365,9 +366,10 @@ export interface CredentialedVfs {
     readonly epoch: string;
 }
 export declare const INODE_ROWS_PER_SQL_EXEC: number;
+/** Storage keys a run's changes are kept undoable for (captureRun): past them, it cannot be put back. */
+export declare const RUN_CAPTURE_MAX_KEYS = 4096;
 type TransactionLimit = 'blobBytes' | 'logicalRows' | 'sqlExecs';
 type TransactionSource = 'strict-batch' | 'range-mutation' | 'content-stage' | 'content-publish' | 'content-gc';
-type TransactionLimitMode = 'bounded';
 interface TransactionPlanMetrics {
     blobBytes: number;
     logicalRows: number;
@@ -436,6 +438,12 @@ export interface VfsDiffEntry {
     change: 'added' | 'removed' | 'modified';
     type: VfsInodeKind;
 }
+/** What putting a run's changes back did (SqliteVFS.restoreRun): how many keys, or why it did nothing. */
+export type RunRestore = {
+    restored: number;
+} | {
+    refused: string;
+};
 export interface SqliteVfsOptions {
     /**
      * Inodes held in memory; defaults to INODE_CACHE_MAX_ENTRIES. SQLite holds
@@ -481,6 +489,25 @@ export declare class SqliteVFS {
      */
     private readonly writeObservers;
     private readonly observedRefs;
+    /** Runs whose changes are kept undoable (captureRun), by pid, and the rows they found, held. */
+    private readonly runCaptures;
+    private readonly capturedRefs;
+    /** The chunks and contents capturedRefs hold, counted: a write asks these, not every captured row (chunkUnshared). */
+    private readonly capturedChunks;
+    private readonly capturedContents;
+    /** The process whose wave is committing (waveScope): its run, if one is captured, keeps what it changes. */
+    private activeWriterPid;
+    /**
+     * Inside an embedder transaction (publishedTransaction): how to undo what
+     * captured runs kept of it, should it roll back. Kept at once, its rows
+     * held at once, so a later plan of the transaction meets them.
+     */
+    private captureUndo;
+    /** The keys the committing transaction kept first (captureFirst): what its failure lets go of. */
+    private readonly captureFresh;
+    /** The embedder transaction running (publishedTransaction), by serial: 0 outside one. */
+    private captureTransaction;
+    private captureTransactions;
     /** Whose call is running: the principal its write events name (a view's, re-entered by work it defers). */
     private activeOrigin;
     /**
@@ -654,12 +681,7 @@ export declare class SqliteVFS {
     private _transactionPeakLogicalRows;
     private _transactionPeakSqlExecs;
     private _transactionPeakAffectedPaths;
-    private _boundedTransactionPeakBlobBytes;
-    private _boundedTransactionPeakLogicalRows;
-    private _boundedTransactionPeakSqlExecs;
     private _lastTransaction;
-    private _overLimitFileCount;
-    private _lastOverLimitFile;
     private _cacheHits;
     private _cacheMisses;
     private _evictions;
@@ -1503,8 +1525,9 @@ export declare class SqliteVFS {
     /**
      * The content key of an inode's bytes: sha256 of them up to CHUNK_SIZE,
      * else the digest of the manifest's ordered chunk hashes. An in-place edit
-     * clears a manifest's digest; it is recomputed here and stored unless
-     * another content already holds it.
+     * clears a manifest's digest; it is recomputed here once per edit and
+     * remembered (contentKeyMemo, dropped by the next edit), never written: a
+     * lookup is a read, and the store may be open read-only.
      */
     private contentKeyOf;
     private manifestDigest;
@@ -1661,6 +1684,15 @@ export declare class SqliteVFS {
     private list;
     private acquire;
     private readdir;
+    /**
+     * readdir(2) as the live tree and a snapshot answer it (`tree`, and
+     * `entries` of a directory's key there): the entries of the directory the
+     * name resolves to, the one the permission is checked on (through a link,
+     * its target's), sorted by UTF-16 code unit. Callers that walk a listing
+     * (the prefetch closure walk among them) rely on a stable order; SQLite's
+     * byte order differs from it for names outside the Basic Multilingual Plane.
+     */
+    private readdirIn;
     private unlink;
     private rmdir;
     /** What unlink(2) of `path` by `cred` removes, once it may: it refuses as unlink does. */
@@ -1747,10 +1779,13 @@ export declare class SqliteVFS {
      * source's permission bits less the copier's umask, as cp(1) makes it; a
      * file there keeps its own mode. With \`keepMode\` (copyfile), the copy has
      * copyfileMode's bits, a file there too, set in this one write as chmod
-     * judges it (modeChange). Answers the copy's stat, the key it wrote
-     * (\`landed\`, the destination's links followed), and the file copied: its
-     * key and the revision of the version this write read (its row's
-     * generation then), which nothing after the read moves.
+     * judges it (modeChange). With \`preserve\` (cp -p), as a tree copy's
+     * entries (planCopyTree): the source's permission bits, a file there too,
+     * set as chmod judges it, its times, and its owner when root copies.
+     * Answers the copy's stat, the key it wrote (\`landed\`, the destination's
+     * links followed), and the file copied: its key and the revision of the
+     * version this write read (its row's generation then), which nothing
+     * after the read moves.
      */
     private copyFile;
     /**
@@ -1858,8 +1893,6 @@ export declare class SqliteVFS {
      * UTF-16 code units and would place U+10000 before U+E000.
      */
     private pageAt;
-    /** SQLite's `ORDER BY path` (UTF-8 bytes) for JS strings: keyset cursors compare in this order. */
-    private static comparePaths;
     /**
      * A read-only view of snapshot `name` for `cred`: the same methods, the
      * same permission checks and symlink resolution, over the tree the
@@ -1868,8 +1901,9 @@ export declare class SqliteVFS {
      */
     at(name: string, cred?: VfsCred): CredentialedVfs;
     /**
-     * Restore the live tree (or `subtree`) to snapshot `name`, in bounded
-     * transactions of RESTORE_PAGE_ROWS paths. Every path changed since the
+     * Restore the live tree (or `subtree`) to snapshot `name`, in pages of
+     * RESTORE_PAGE_ROWS paths read, each written in the transactions the shared
+     * budget admits. Every path changed since the
      * snapshot is replaced by the row the snapshot saw, or removed if the
      * snapshot did not have it; every path the snapshot had and the live tree
      * lost comes back. It is an ordinary write: new generations, revisions,
@@ -1898,8 +1932,56 @@ export declare class SqliteVFS {
     /** The restore job for (name, subtree): the one a reset or a cold chunk stopped, or a new one. */
     private restoreJob;
     private runRestore;
+    /** `past` as a row written again: its identity, attributes and content by reference; its ctime and generation the writing transaction's. */
+    private restoredRow;
     /** The history row covering generation `g` at `path`, if any. */
     private historyAt;
+    /** Keep what process `pid`'s waves change, from now on, undoable (restoreRun). */
+    captureRun(pid: number): void;
+    /** Stop keeping process `pid`'s changes, and let go of the rows they held. */
+    releaseRun(pid: number): void;
+    /**
+     * Put each storage key process `pid` changed since captureRun back as the
+     * run found it, its row or no row, and stop keeping them. An ordinary write:
+     * new generations, events, before-images for a snapshot. It changes
+     * nothing, and says why, when it cannot put all of them back: they were
+     * not kept, or not all of them (past RUN_CAPTURE_MAX_KEYS), or another
+     * writer changed one since the run last did, or holds it.
+     */
+    restoreRun(pid: number): RunRestore;
+    /** The generation of `key`'s tombstone, the removal that left it absent; undefined once pruned. */
+    private tombstoneGen;
+    /** `run` as process `pid`'s wave commit (null: no process's), whose run a capture may keep. */
+    private asWriterPid;
+    /** The committing run's capture has yet to keep `key`: what stands there must outlive the write, never be edited in place. */
+    private capturesFirst;
+    /**
+     * Keep, in `capture`, each key `plan` changes that it does not keep yet,
+     * with the row there before the transaction (a copy: a resident row is
+     * replaced as it changes), or none. Called inside the transaction at `gen`,
+     * before it writes; a key kept here is let go if the transaction fails
+     * (captureFresh), and, inside an embedder transaction, if that one rolls
+     * back (captureUndo).
+     */
+    private captureFirst;
+    /** Keep `key` in `capture`, as `row` held it before (none: undefined); past the bound, the capture can no longer be put back. */
+    private captureKey;
+    /** `kept`, kept by a transaction that did not commit, let go. */
+    private uncapture;
+    /** Once its transaction committed at `gen`: each key `capture` keeps as the transaction left it. */
+    private captureCommitted;
+    /** Key `key` of `capture` as the transaction committing at `gen` left it: its state before kept, once a transaction, for a rollback. */
+    private captureLeft;
+    /** A rolled-back transaction's change to a capture, undone. */
+    private undoCapture;
+    /** Hold `before`'s content for a captured run, as a description holds what it opened. */
+    private holdCaptured;
+    /** Let go of `before`'s content: collectable once nothing else holds it. */
+    private releaseCaptured;
+    /** `capture` can no longer be put back, for `why`: it keeps nothing more, and lets go of what it held. */
+    private unrestorable;
+    /** Let go of what `capture` held: collectable now, as a closed description's is. */
+    private unpinCapture;
     /**
      * Drop snapshot `name`: its row and pin_gen in one transaction, then the
      * history rows no remaining snapshot covers, a page per transaction, each
@@ -2322,8 +2404,9 @@ export declare class SqliteVFS {
      *
      * Rollback discards the cached chunks and inodes and unloads the counters,
      * so every later read answers from SQLite, which is back at the committed
-     * state; open descriptions return to the rows they described before.
-     * No inode snapshot or undo log is retained. Recovery failure is surfaced
+     * state; open descriptions return to the rows they described before (a
+     * detached file's, which has none, to its fields as they were), and the
+     * shared roots to those registered before. No undo log is retained. Recovery failure is surfaced
      * with both errors; the embedder must discard this VFS in that case.
      */
     withTransaction<T>(callback: () => T): T;
@@ -2361,8 +2444,13 @@ export declare class SqliteVFS {
     observeWrites(observer: (event: VfsWriteEvent) => void | Promise<void>): () => void;
     /** The event observers are handed for a committed mutation at `key`, its content held until they are done. */
     private writeEvent;
-    /** Every description holding content: the open ones, and the write events observers have not let go of. */
+    /**
+     * Every description holding content: the open ones, the write events
+     * observers have not let go of, and the rows captured runs found.
+     */
     private pinningNodes;
+    /** The open descriptions and the write events observers hold: what pins content but a captured run's rows. */
+    private describedNodes;
     private transactionSync;
     /**
      * Commit one plan as one transaction and one generation.
@@ -2392,6 +2480,7 @@ export declare class SqliteVFS {
     private touchDirectoryRows;
     /** The cache and the publication learn what touchDirectoryRows committed. */
     private touchedDirectoriesCommitted;
+    /** `onCommit` runs in the transaction, as its last write, given the generation it commits. */
     private executeTransactionPlan;
     /** A plan's deletions: rows, tombstones, and the content a dereferencing delete lets go of. */
     private applyPlanDeletes;
@@ -2505,7 +2594,6 @@ export declare class SqliteVFS {
     private legacyJanitorPage;
     private runContentMaintenanceSafely;
     private metricsOnlyPlan;
-    private recordOverLimitFile;
     private recordDuration;
     private currentRetainedWriteBytes;
     /** Best-effort process.memoryUsage().heapUsed; 0 in DO contexts. */
@@ -2711,8 +2799,8 @@ export declare class SqliteVFS {
                     sqlExecs: number;
                 };
                 last: {
+                    limitMode: "bounded";
                     source: TransactionSource;
-                    limitMode: TransactionLimitMode;
                     blobBytes: number;
                     logicalRows: number;
                     sqlExecs: number;
@@ -2720,10 +2808,7 @@ export declare class SqliteVFS {
                 } | null;
                 overLimitFiles: {
                     count: number;
-                    last: (TransactionPlanMetrics & {
-                        path: string;
-                        limit: TransactionLimit;
-                    }) | null;
+                    last: null;
                 };
             };
         };

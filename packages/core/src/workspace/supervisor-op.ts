@@ -130,7 +130,7 @@ export interface SupervisorOpDeps {
    * memory budget holds a lease for the payload while it is produced. Absent,
    * reads are unaccounted, which is an in-process workspace's whole budget.
    */
-  readonly readLease?: <T>(bytes: number, read: () => Promise<T>) => Promise<T>;
+  readonly readLease?: <T>(bytes: number, read: () => Promise<T>, pid?: number) => Promise<T>;
   readonly extend?: Partial<Record<SupervisorOpName, SupervisorOpHandler>>;
   /**
    * The instance's receipts for mutations delivered exactly once
@@ -348,7 +348,6 @@ export const SUPERVISOR_OP_ROUTES: Readonly<Record<Exclude<SupervisorOpName, Nat
   cpWait: { method: '_rpcCpWait', args: [0,1,2,'pid',3] },
   cpNextSignal: { method: '_rpcCpNextSignal', args: ['pid',0] },
   cpBlocked: { method: '_rpcCpBlocked', args: ['pid',0] },
-  innerDoFetch: { method: '_rpcInnerDoFetch', args: [0] },
   innerDoCall: { method: '_rpcInnerDoCall', args: [0] },
   // A wrangler-dev Worker's storage bindings: each names its own store, and a
   // KV or R2 store is files, read and written as the host call's credential.
@@ -383,7 +382,7 @@ async function readWholeFile(e: SupervisorOpEnvelope, t: SupervisorOpTools, path
   const fs = fsFor(e, t);
   const stat = await fs.stat(path);
   if (!stat) return null;
-  return readHydrating(t.hydrated, () => t.readLease(stat.size, () => Promise.resolve(fs.readFile(path))));
+  return readHydrating(t.hydrated, () => t.readLease(stat.size, () => Promise.resolve(fs.readFile(path)), e.pid));
 }
 
 /** A range read, leased for what the range can return rather than what it asks. */
@@ -392,7 +391,7 @@ async function readRange(e: SupervisorOpEnvelope, t: SupervisorOpTools, options:
   const path = stringArg(e, 0), offset = numberArg(e, 1), length = numberArg(e, 2);
   const stat = await fs.stat(path);
   const available = stat ? Math.max(0, Math.min(length, stat.size - offset)) : 0;
-  return readHydrating(t.hydrated, () => t.readLease(available, () => Promise.resolve(fs.readRange(path, offset, length, options))));
+  return readHydrating(t.hydrated, () => t.readLease(available, () => Promise.resolve(fs.readRange(path, offset, length, options)), e.pid));
 }
 
 /**
@@ -415,7 +414,7 @@ const NATIVE_OPS = {
   fsReadDirectories: (e, t) => readDirectoryBatch(fsFor(e, t), e.args?.[0]),
   fsRead: (e, t) => {
     const length = numberArg(e, 2);
-    return readHydrating(t.hydrated, () => t.readLease(length, () => Promise.resolve(fsFor(e, t).read(numberArg(e, 0), nullableNumberArg(e, 1), length))));
+    return readHydrating(t.hydrated, () => t.readLease(length, () => Promise.resolve(fsFor(e, t).read(numberArg(e, 0), nullableNumberArg(e, 1), length)), e.pid));
   },
   fsWrite: (e, t) => fsFor(e, t).write(numberArg(e, 0), nullableNumberArg(e, 1), bytesArg(e, 2)),
   fsClose: (e, t) => fsFor(e, t).close(numberArg(e, 0)),
@@ -437,7 +436,7 @@ const NATIVE_OPS = {
     report: z.boolean().optional(),
     keepVanishedAncestors: z.boolean().optional(),
   }).optional().parse(e.args?.[1]))),
-  fsCopyFile: (e, t) => fsFor(e, t).copyFile(FsPath.parse(e.args?.[0]), FsPath.parse(e.args?.[1]), z.object({ keepMode: z.boolean().optional() }).optional().parse(e.args?.[2])),
+  fsCopyFile: (e, t) => fsFor(e, t).copyFile(FsPath.parse(e.args?.[0]), FsPath.parse(e.args?.[1]), z.object({ keepMode: z.boolean().optional(), preserve: z.boolean().optional() }).optional().parse(e.args?.[2])),
   fsCopyTree: (e, t) => fsFor(e, t).copyTree(FsPath.parse(e.args?.[0]), FsPath.parse(e.args?.[1]), z.object({ preserve: z.boolean().optional(), follow: z.boolean().optional() }).optional().parse(e.args?.[2])),
   fsAcquireExclusiveMutation: (e, t) => fsFor(e, t).acquireExclusiveMutation(FsPath.parse(e.args?.[0]), z.object({
     includeMissingAncestors: z.boolean().optional(),

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import './lib/workerd-fixed-length-stream.mjs';
-import { createFacetWorld, createFacetCtx, createPeerNamespace } from './facet-host-harness.mjs';
+import { createFacetWorld, createFacetCtx, createPeerNamespace } from './lib/facet-host-harness.mjs';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { hostActivity, HOST_INCARNATION_HEADER } from '../../packages/fabric/src/host-activity.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';

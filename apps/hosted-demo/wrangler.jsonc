@@ -17,18 +17,7 @@
     "run_worker_first": true
   },
   "alias": {
-    "clean-git-ref": "./node_modules/@nimbus-sh/worker/node_modules/clean-git-ref/lib/index.js",
-    "is-git-ref-name-valid": "./node_modules/@nimbus-sh/worker/node_modules/is-git-ref-name-valid/index.js",
-    "crc-32": "./node_modules/@nimbus-sh/worker/node_modules/crc-32",
-    "sha.js": "./node_modules/@nimbus-sh/worker/node_modules/sha.js",
-    "pako": "./node_modules/@nimbus-sh/worker/node_modules/pako",
-    "pify": "./node_modules/@nimbus-sh/worker/node_modules/pify",
-    "diff": "./node_modules/@nimbus-sh/worker/node_modules/diff",
-    "diff3": "./node_modules/@nimbus-sh/worker/node_modules/diff3",
-    "ignore": "./node_modules/@nimbus-sh/worker/node_modules/ignore",
-    "readable-stream": "./node_modules/@nimbus-sh/worker/node_modules/readable-stream",
-    "simple-get": "./node_modules/@nimbus-sh/worker/node_modules/simple-get",
-    "minimisted": "./node_modules/@nimbus-sh/worker/node_modules/minimisted"
+    "diff": "./node_modules/@nimbus-sh/worker/node_modules/diff"
   },
   "durable_objects": {
     "bindings": [
@@ -79,7 +68,7 @@
     "mode": "smart"
   },
   "vars": {
-    "NIMBUS_RUNTIME_CATALOG_SHA256": "f9af572378b6a540efa18d9067930427bd08a090ae35dca521910870519000f6",
+    "NIMBUS_RUNTIME_CATALOG_SHA256": "6219228c6d471932af08fb62640b3879af94c5c96120e0f5cfb6fe14636a4c90",
     "NIMBUS_AGENT_MODEL": "@cf/zai-org/glm-5.2",
     "NIMBUS_AGENT_GATEWAY_ID": "default",
     "NIMBUS_CF_OAUTH_CLIENT_ID": "d83b17ca04594b7860f66ab64c9e1ffc",
@@ -132,7 +121,7 @@
   "env": {
     "staging": {
       "vars": {
-        "NIMBUS_RUNTIME_CATALOG_SHA256": "f9af572378b6a540efa18d9067930427bd08a090ae35dca521910870519000f6",
+        "NIMBUS_RUNTIME_CATALOG_SHA256": "6219228c6d471932af08fb62640b3879af94c5c96120e0f5cfb6fe14636a4c90",
         "NIMBUS_AGENT_MODEL": "@cf/zai-org/glm-5.2",
         "NIMBUS_AGENT_GATEWAY_ID": "default",
         "NIMBUS_CF_OAUTH_CLIENT_ID": "d83b17ca04594b7860f66ab64c9e1ffc",
@@ -211,7 +200,7 @@
     },
     "production": {
       "vars": {
-        "NIMBUS_RUNTIME_CATALOG_SHA256": "f9af572378b6a540efa18d9067930427bd08a090ae35dca521910870519000f6",
+        "NIMBUS_RUNTIME_CATALOG_SHA256": "6219228c6d471932af08fb62640b3879af94c5c96120e0f5cfb6fe14636a4c90",
         "NIMBUS_AGENT_MODEL": "@cf/zai-org/glm-5.2",
         "NIMBUS_AGENT_GATEWAY_ID": "default",
         "NIMBUS_CF_OAUTH_CLIENT_ID": "d83b17ca04594b7860f66ab64c9e1ffc",

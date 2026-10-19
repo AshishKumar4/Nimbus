@@ -14,7 +14,10 @@ import type {
   SubshellNode,
   RedirectionNode,
   AssignmentNode,
+  WordPart,
+  Token,
 } from './types.js';
+import { TokenKind } from './types.js';
 import { ProcessView, bindProcessView } from '../../../runtime/process-files.js';
 import type { NimbusFilesystemAuthority } from '../../../runtime/os-contracts.js';
 import { resolveContext, type CommandRegistry } from '../commands/registry.js';
@@ -31,10 +34,10 @@ import type { VfsCred } from '../../../runtime/os-contracts.js';
 import { syscallError } from '../../../vfs/vfs-error.js';
 import { execRefusal } from '../../../shell/exec-dispatch.js';
 import { withRecall } from '../../../vfs/recall.js';
-import { lex } from './lexer.js';
-import { parse } from './parser.js';
+import { lex, lexText } from './lexer.js';
+import { parse, parseAssignment, ParseError } from './parser.js';
 import {
-  expandWords, expandWord, evaluateSubscript, ExpansionError,
+  expandWords, expandWord, expandPatternWord, evaluateSubscript, ExpansionError,
   type ExpandContext, type CapturedCommand,
 } from './expander.js';
 import { evaluateDoubleBracketWords } from './test-builtin.js';
@@ -45,7 +48,7 @@ import { exitCodeForAbortSignal, KILLED_BY_SIGPIPE } from './signals.js';
 import { isBrokenPipe, isRefusedWrite, textCapture } from '../utils/bytes-io.js';
 import { resolve } from '../utils/path.js';
 import { encode } from '../utils/encoding.js';
-import { globMatch } from '../utils/glob.js';
+import { shellMatch } from '../utils/glob.js';
 import { staticStdinReader } from '../../../shell/stdin-adapter.js';
 import { BASH_BUILTINS } from './bash-builtins.js';
 import { isDecimalInteger } from './names.js';
@@ -75,6 +78,29 @@ export class ExitSignal {
   constructor(public exitCode: number) {}
 }
 
+/**
+ * A function call past the nesting bound (functionNestingLimit): the rest of
+ * the line it is in is discarded (bash's jump_to_top_level(DISCARD)): a
+ * shell goes on with the next line it reads, its own or a `source`d file's
+ * or a trap's, with $? 1; a child shell (subshell, substitution, pipeline
+ * element, job) ends with 1. Neither `||`, `if` nor a loop goes on.
+ */
+export class FunctionNestingSignal {
+  readonly exitCode = 1;
+}
+
+/**
+ * The deepest shell functions nest where FUNCNEST does not lower it. Bash
+ * has no bound then, and recurses until its stack is gone (a segfault); a
+ * call holds about 9 KiB of the session's heap (8.6 KiB measured at 6000
+ * levels), so a runaway function ends here, with bash's message, long
+ * before the heap does.
+ */
+const MAX_FUNCTION_NESTING = 1000;
+
+/** FUNCNEST as bash reads it (legal_number): a decimal integer, signed, blanks around it. */
+const FUNCNEST_NUMBER = /^\s*[+-]?\d+\s*$/;
+
 class RedirectionOpenError extends Error {
   constructor(
     readonly target: string,
@@ -103,6 +129,8 @@ function redirectionDiagnostic(error: RedirectionOpenError): string {
 
 export interface BuiltinExecutionContext {
   interactive?: boolean;
+  /** A declaration builtin's arguments written as array assignments, `name=(…)`, by index: their elements, each expanded as a word. */
+  arrayElements?: ReadonlyMap<number, readonly string[]>;
   vfs: ProcessView;
   /** The working directory a builtin resolves its relative path operands against. */
   cwd: string;
@@ -123,6 +151,8 @@ export interface BuiltinExecutionContext {
   /** The state of the shell running the builtin: a child shell's own, after a fork. */
   shell: ShellState;
   getLastExitCode(): number;
+  /** The status a bare `exit` ends the shell with: the last command's, or in a trap's action the one before the trap (POSIX). */
+  exitStatus(): number;
   /** The process the builtin runs as: a kill's caller, a wait's waiter. */
   identity(): Pick<CommandIdentity, 'pid' | 'cred'>;
 }
@@ -214,6 +244,66 @@ type ExecutionIo = {
   openFiles?: ReadonlyMap<CommandInputStream | CommandOutputStream, OpenFile>;
 };
 
+/** The command word as written when it is one unquoted part with no substitution in it: the text an alias or a declaration builtin is named by. */
+function literalWordText(word: readonly WordPart[]): string | null {
+  const [only] = word;
+  return word.length === 1 && only !== undefined && only.quoted === 'none' && only.commandSubstitution === undefined
+    && !only.text.includes('$') && !only.text.includes('`') ? only.text : null;
+}
+
+function commandWordText(cmd: SimpleCommandNode): string | null {
+  const [word] = cmd.words;
+  return word === undefined ? null : literalWordText(word);
+}
+
+/** A declaration builtin's name, written unquoted: its compound array assignments are arrays. */
+function isDeclarationWord(word: readonly WordPart[]): boolean {
+  const text = literalWordText(word);
+  return text === 'declare' || text === 'typeset' || text === 'local';
+}
+
+/** Marks every simple command of `lists`, read from an alias's text, with the aliases it was read within. */
+function markAliasText(lists: readonly ListNode[], aliasesExpanding: ReadonlySet<string>): void {
+  for (const list of lists) {
+    for (const entry of list.entries) {
+      for (const command of entry.pipeline.commands) markAliasCommand(command, aliasesExpanding);
+    }
+  }
+}
+
+function markAliasCommand(command: CompoundCommandNode, aliasesExpanding: ReadonlySet<string>): void {
+  switch (command.type) {
+    case 'simple_command':
+      command.aliasesExpanding = aliasesExpanding;
+      return;
+    case 'if':
+      for (const clause of command.clauses) {
+        markAliasText(clause.condition, aliasesExpanding);
+        markAliasText(clause.body, aliasesExpanding);
+      }
+      if (command.elseBody !== null) markAliasText(command.elseBody, aliasesExpanding);
+      return;
+    case 'while':
+    case 'until':
+      markAliasText(command.condition, aliasesExpanding);
+      markAliasText(command.body, aliasesExpanding);
+      return;
+    case 'for':
+    case 'group':
+    case 'subshell':
+      markAliasText(command.body, aliasesExpanding);
+      return;
+    case 'case':
+      for (const item of command.items) markAliasText(item.body, aliasesExpanding);
+      return;
+    case 'function_def':
+      markAliasCommand(command.body, aliasesExpanding);
+      return;
+    case 'double_bracket':
+      return;
+  }
+}
+
 function terminalStdinFd(io: ExecutionIo, stdin = io.stdin): boolean {
   return io.terminalFds?.stdin ?? ((!stdin || stdin === io.terminalStdin) && Boolean(io.terminalStdin));
 }
@@ -279,6 +369,12 @@ type PositionalFrame = {
   args: string[];
 };
 
+/** How a script's lists are run (executeScriptWithIo). */
+type ScriptRun = {
+  readsLines?: boolean;
+  inline?: boolean;
+};
+
 
 /** A shell's state, and what every shell of the interactive one shares. */
 export interface InterpreterConfig extends ShellState {
@@ -312,8 +408,12 @@ export class Interpreter {
   private persistentInputHandles = new Map<number, OpenFile>();
   private errexitSuppressionDepth = 0;
   private exitTrapDepth = 0;
+  /** While the EXIT trap's action runs: the status the shell was ending with, a bare `exit`'s there. */
+  private trapEntryStatus: number | null = null;
   /** One frame per running function call, holding the bindings `local` shadowed. */
   private localFrames: Array<Map<string, SavedVariable>> = [];
+  /** A child shell (fork): a discarded line ends it (finishChild). */
+  private child = false;
 
   constructor(config: InterpreterConfig) {
     this.config = config;
@@ -337,6 +437,7 @@ export class Interpreter {
    */
   fork(): Interpreter {
     const child = new Interpreter({ ...this.config, ...forkShellState(this.config) });
+    child.child = true;
     child.lastExitCode = this.lastExitCode;
     child.functions = new Map(this.functions);
     child.persistentOutputFds = new Map(this.persistentOutputFds);
@@ -351,6 +452,19 @@ export class Interpreter {
     return child;
   }
 
+  /**
+   * `child`, forked for a substitution or a simple command (a pipeline's
+   * element, a job), runs inside the EXIT trap's action still: a bare `exit`
+   * there ends with the trap's entry status, and an EXIT trap set there does
+   * not run. bash keeps running_trap for these, and clears it in the
+   * subshell of a compound command, `( … )` among them.
+   */
+  private inTrapAction(child: Interpreter): Interpreter {
+    child.trapEntryStatus = this.trapEntryStatus;
+    child.exitTrapDepth = this.exitTrapDepth;
+    return child;
+  }
+
   getLastExitCode(): number {
     return this.lastExitCode;
   }
@@ -360,19 +474,37 @@ export class Interpreter {
   }
 
   async executeScript(script: ScriptNode, terminalStdin?: TerminalInputStream): Promise<number> {
-    return (await this.executeScriptWithIo(script, this.createTerminalIo(terminalStdin)));
+    return (await this.executeScriptWithIo(script, this.createTerminalIo(terminalStdin), { readsLines: true }));
   }
 
-  private async executeScriptWithIo(script: ScriptNode, io: ExecutionIo): Promise<number> {
+  /**
+   * Runs `script`'s lists. As lines a shell reads (`readsLines`: its own,
+   * a sourced file's, a trap's; not an alias's text, which is part of the
+   * line it is in), a line a nested call discards ends, and the next runs
+   * with $? 1, in a shell that is no child: a child's ends (finishChild).
+   * Text run `inline` (eval's, a sourced file's, an alias's) leaves an `exit`,
+   * and an end by `set -e` or a fatal error, to the shell that runs it.
+   */
+  private async executeScriptWithIo(
+    script: ScriptNode,
+    io: ExecutionIo,
+    { readsLines = false, inline = false }: ScriptRun = {},
+  ): Promise<number> {
     let exitCode = 0;
     try {
-      for (const list of script.lists) {
-        exitCode = await this.executeList(list, io);
+      for (let i = 0; i < script.lists.length; i++) {
+        try {
+          exitCode = await this.executeList(script.lists[i], io);
+        } catch (error) {
+          if (!(error instanceof FunctionNestingSignal) || !readsLines || this.child) throw error;
+          exitCode = error.exitCode;
+          this.lastExitCode = exitCode;
+          this.setPipestatus([exitCode]);
+          while (i < script.lists.length - 1 && script.lists[i].endsLine !== true) i++;
+        }
       }
     } catch (error) {
-      if (error instanceof ErrexitSignal) {
-        exitCode = error.exitCode;
-      } else if (error instanceof ExitSignal) {
+      if ((error instanceof ErrexitSignal || error instanceof ExitSignal) && !inline) {
         exitCode = error.exitCode;
       } else {
         throw error;
@@ -424,7 +556,7 @@ export class Interpreter {
     try {
       const tokens = lex(input);
       const script = parse(tokens);
-      const exitCode = await this.executeScriptWithIo(script, io);
+      const exitCode = await this.executeScriptWithIo(script, io, { readsLines: true });
       return await this.runExitTrap(exitCode, io, options?.runExitTrap === true);
     } catch (e) {
       if (e instanceof BreakSignal || e instanceof ContinueSignal || e instanceof ReturnSignal) {
@@ -470,7 +602,12 @@ export class Interpreter {
 
       // A job is a process of its own, as a fork makes one: its commands run
       // as it, on its own thread of work, until a kill of it stops them.
-      const child = this.fork();
+      // A job that is one pipeline goes on in the trap's action, as its simple elements do (a pipeline of
+      // several decides per element); an and-or list or a compound command does not.
+      const [only] = list.entries;
+      const commands = list.entries.length === 1 ? only?.pipeline.commands ?? [] : [];
+      const inAction = commands.length > 1 || commands[0]?.type === 'simple_command';
+      const child = inAction ? this.inTrapAction(this.fork()) : this.fork();
       const job = this.config.jobTable.start(
         { command: this.getListCommandText(list), cwd: this.config.getCwd(), parent },
         async ({ identity, signal }) => {
@@ -553,8 +690,7 @@ export class Interpreter {
       ({ exitCode, statuses } = await this.executePipelineCommands(commands, io));
     }
     // Every element's status, as bash's PIPESTATUS (before `!` negates the pipeline's).
-    this.config.arrays.set('PIPESTATUS', statuses.map(String));
-    delete this.config.env.PIPESTATUS;
+    this.setPipestatus(statuses);
 
     if (pipeline.negated) {
       exitCode = exitCode === 0 ? 1 : 0;
@@ -609,7 +745,7 @@ export class Interpreter {
         // Each element is a thread of its own, which the pipeline's waits on.
         cmdIo.workThread = io.workThread?.fork();
         // Each element runs in a child shell (bash forks every one).
-        const element = this.fork();
+        const element = cmd.type === 'simple_command' ? this.inTrapAction(this.fork()) : this.fork();
         const cmdPromise = (async (): Promise<number> => {
           try {
             return await element.finishChild(async () => (await element.executeCommand(cmd, cmdIo)), cmdIo);
@@ -673,7 +809,7 @@ export class Interpreter {
       case 'subshell':
         return (await this.executeSubshell(cmd, io));
       case 'function_def':
-        return (await this.executeFunctionDef(cmd));
+        return (await this.executeFunctionDef(cmd, io));
     }
   }
 
@@ -730,6 +866,11 @@ export class Interpreter {
 
   private async executeFor(node: ForNode, io: ExecutionIo): Promise<number> {
     return (await this.executeWithRedirections(node.redirections, io, async (redirIo) => {
+      // Its variable is not a name (bash's check_identifier): said, and the loop not run.
+      if (node.variableError !== undefined) {
+        (await (redirIo.stderr ?? this.terminalSink(redirIo)).write(`${node.variableError}\n`));
+        return 1;
+      }
       const expandCtx = this.createExpandContext(redirIo);
       let exitCode = 0;
 
@@ -810,8 +951,8 @@ export class Interpreter {
 
       for (const item of node.items) {
         for (const pattern of item.patterns) {
-          const patternValue = await expandWord(pattern, expandCtx);
-          if (globMatch(patternValue, wordValue)) {
+          // Its quoted characters match only themselves.
+          if (shellMatch((await expandPatternWord(pattern, expandCtx)).pattern, wordValue)) {
             exitCode = await this.executeCompoundList(item.body, redirIo);
             this.lastExitCode = exitCode;
             return exitCode;
@@ -824,7 +965,11 @@ export class Interpreter {
     }));
   }
 
-  private async executeFunctionDef(node: FunctionDefNode): Promise<number> {
+  private async executeFunctionDef(node: FunctionDefNode, io: ExecutionIo): Promise<number> {
+    if (node.nameError !== undefined) {
+      (await (io.stderr ?? this.terminalSink(io)).write(`${node.nameError}\n`));
+      return 1;
+    }
     this.functions.set(node.name, node.body);
     return 0;
   }
@@ -870,6 +1015,66 @@ export class Interpreter {
     return exitCode;
   }
 
+  /**
+   * `cmd` with its command word's alias expanded, as bash's reader expands one:
+   * on the word as written, unquoted and before any expansion (`'p'` and `$c`
+   * are no alias). The alias's text is read as tokens in the word's place, and
+   * the command's other words follow as the words they are, never read again
+   * as text. Its assignments go before the first command that text makes, and
+   * its redirections after the last; before a compound command they are a
+   * syntax error, as bash's grammar has it. A text that ends in a comment takes
+   * the command's words and redirections written after it into it (the rest of
+   * the line, in bash; here, the rest of the command). An alias whose text ends in a
+   * blank has the next word checked too. None of the text's commands expands
+   * those aliases, or the ones this command was read within, again. Null when
+   * the word is no alias.
+   */
+  private aliasExpansion(cmd: SimpleCommandNode): ScriptNode | null {
+    const aliases = this.config.aliases;
+    if (aliases.size === 0) return null;
+    const expanding = new Set(cmd.aliasesExpanding);
+    const tokens: Token[] = [];
+    let used = 0;
+    let commented = false;
+    for (;;) {
+      const word = cmd.words[used];
+      const name = word === undefined ? null : literalWordText(word);
+      const value = name === null || expanding.has(name) ? undefined : aliases.get(name);
+      if (name === null || value === undefined) break;
+      expanding.add(name);
+      const lexed = lexText(value);
+      for (const token of lexed.tokens) if (token.kind !== TokenKind.EOF) tokens.push(token);
+      used++;
+      commented = lexed.endsInComment;
+      if (commented || !/[ \t\n]$/.test(value)) break;
+    }
+    if (used === 0) return null;
+    if (!commented) {
+      for (const parts of cmd.words.slice(used)) tokens.push({ kind: TokenKind.Word, value: parts.map((part) => part.text).join(''), pos: 0, parts });
+    }
+    tokens.push({ kind: TokenKind.EOF, value: '', pos: 0 });
+    const script = parse(tokens);
+    markAliasText(script.lists, expanding);
+    const commands = script.lists.flatMap((list) => list.entries.flatMap((entry) => entry.pipeline.commands));
+    const first = commands[0];
+    const last = commands.at(-1);
+    const [assignment] = cmd.assignments;
+    if (assignment !== undefined && first !== undefined && first.type !== 'simple_command') {
+      // bash reads the assignment before the text: what it says of that.
+      const head = `${assignment.name}=`;
+      parse([{ kind: TokenKind.Word, value: head, pos: 0, parts: [{ text: head, quoted: 'none' }] }, ...tokens]);
+      throw new ParseError(`syntax error near unexpected token \`${tokens[0]?.value ?? ''}'`, 0);
+    }
+    if (assignment !== undefined) {
+      if (first?.type === 'simple_command') first.assignments.unshift(...cmd.assignments);
+      else script.lists.unshift({ type: 'list', entries: [{ pipeline: { type: 'pipeline', negated: false, commands: [{ type: 'simple_command', assignments: cmd.assignments, words: [], redirections: [] }] }, connector: null }], background: false });
+    }
+    // A comment takes the redirections written after the last alias word, not those before it.
+    const kept = commented ? cmd.redirections.filter((redirection) => (redirection.wordsBefore ?? 0) < used) : cmd.redirections;
+    if (kept.length > 0 && last !== undefined && last.type !== 'function_def') last.redirections.push(...kept);
+    return script;
+  }
+
   private async executeSimpleCommand(
     cmd: SimpleCommandNode,
     io: ExecutionIo,
@@ -880,10 +1085,32 @@ export class Interpreter {
       pid: io.commandIdentity.pid, cred: io.commandIdentity.cred, signal: io.signal,
     }) };
 
+    // An alias: read as bash's reader does, on the command word as written.
+    const aliased = this.aliasExpansion(cmd);
+    if (aliased !== null) return (await this.executeScriptWithIo(aliased, io, { inline: true }));
+
     const expandCtx = this.createExpandContext(io);
 
-    // Expand words
-    const expandedArgs = await expandWords(cmd.words, expandCtx);
+    // Expand words. A declaration builtin's (declare, typeset, local) array
+    // assignments, `b=("$v" z)`, are read as an assignment's are (parseAssignment):
+    // each element expanded as a word, and the argument only names the array.
+    let arrayElements: Map<number, readonly string[]> | undefined;
+    let expandedArgs: string[];
+    const [commandWord] = cmd.words;
+    if (commandWord !== undefined && isDeclarationWord(commandWord)) {
+      expandedArgs = [];
+      for (const [index, parts] of cmd.words.entries()) {
+        const assignment = index === 0 ? null : parseAssignment({ kind: TokenKind.Word, value: parts.map((part) => part.text).join(''), pos: 0, parts });
+        if (assignment?.elements !== undefined && assignment.subscript === undefined && assignment.append !== true) {
+          (arrayElements ??= new Map()).set(expandedArgs.length - 1, await expandWords(assignment.elements, expandCtx));
+          expandedArgs.push(`${assignment.name}=`);
+        } else {
+          expandedArgs.push(...await expandWords([parts], expandCtx));
+        }
+      }
+    } else {
+      expandedArgs = await expandWords(cmd.words, expandCtx);
+    }
     if (expandedArgs.length === 0 && cmd.assignments.length > 0) {
       // Bare assignment -- set env vars
       for (const assign of cmd.assignments) {
@@ -913,17 +1140,6 @@ export class Interpreter {
     const viaCommand = name === 'command' && !replacesShell && !this.functions.has(name) && !this.config.aliases.has(name)
       && args.length > 0 && (args[0] === '--' ? args.length > 1 : !args[0].startsWith('-'));
     if (viaCommand) [name, ...args] = args[0] === '--' ? args.slice(1) : args;
-
-    // Check alias expansion
-    const aliases = replacesShell || viaCommand ? undefined : this.config.aliases;
-    if (aliases) {
-      const aliasValue = aliases.get(name);
-      if (aliasValue !== undefined) {
-        // Rebuild the command line with the alias expanded
-        const expandedLine = aliasValue + (args.length > 0 ? ' ' + args.join(' ') : '');
-        return (await this.executeLineWithIo(expandedLine, io));
-      }
-    }
 
     // Apply per-command assignments (temporary env)
     const saved = new Map<string, SavedVariable>();
@@ -963,6 +1179,8 @@ export class Interpreter {
 
     let exitCode: number;
     let writeFailed = false;
+    // eval's and `.`'s status is their text's once it runs: its failure is not theirs.
+    let ranText = false;
 
     try {
       // Check for break/continue/return builtins
@@ -985,6 +1203,11 @@ export class Interpreter {
         // Check functions
         const funcBody = replacesShell || viaCommand ? undefined : this.functions.get(name);
         if (funcBody) {
+          if (this.localFrames.length >= this.functionNestingLimit()) {
+            // On the call's own stderr, its redirections applied, with the depth reached, as bash writes it.
+            (await stderr.write(`${name}: maximum function nesting level exceeded (${this.localFrames.length})\n`));
+            throw new FunctionNestingSignal();
+          }
           exitCode = await this.executeFunction(funcBody, args, this.createIoFromFds(io, fds));
         } else {
           // Check builtins
@@ -1008,15 +1231,20 @@ export class Interpreter {
                   stderr: fds.terminalOutputFds.has(2),
                 },
                 scriptMode: io.scriptMode,
+                ...(arrayElements === undefined || name !== commandWordText(cmd) ? {} : { arrayElements }),
                 isFdTerminal: (fd) => this.isFdTerminal(fds, fd),
                 getPositionals: () => this.readPositionals(builtinIo),
                 setPositionals: (nextArgs) => this.writePositionals(builtinIo, nextArgs),
-                executeInline: async (input, options) => (await this.executeInline(input, builtinIo, options)),
+                executeInline: async (input, options) => {
+                  ranText = true;
+                  return (await this.executeInline(input, builtinIo, options));
+                },
             declareLocal: (name) => this.declareLocal(name),
             unsetFunction: (name) => this.functions.delete(name),
             shell: this.config,
             interactive: io.interactive,
             getLastExitCode: () => this.lastExitCode,
+            exitStatus: () => this.trapEntryStatus ?? this.lastExitCode,
             identity: () => {
               if (!io.commandIdentity) throw new Error('shell command identity is unavailable');
               return io.commandIdentity;
@@ -1098,6 +1326,7 @@ export class Interpreter {
     const fatalSpecialBuiltin = io.scriptMode === true
       && exitCode !== 0
       && !viaCommand
+      && !ranText
       && isFatalSpecialBuiltin(name);
     this.lastExitCode = exitCode;
     if (fatalSpecialBuiltin) throw new ErrexitSignal(exitCode);
@@ -1220,6 +1449,23 @@ export class Interpreter {
     return assignVariable(this.config, name, value, assign.append);
   }
 
+  /** Bash's PIPESTATUS: `statuses`, its array alone. */
+  private setPipestatus(statuses: readonly number[]): void {
+    this.config.arrays.set('PIPESTATUS', statuses.map(String));
+    delete this.config.env.PIPESTATUS;
+  }
+
+  /**
+   * How many function calls may be running at once: FUNCNEST where it is a
+   * number above 0, as bash reads it at each call (a `local FUNCNEST` included),
+   * but never past MAX_FUNCTION_NESTING, which applies where it is not.
+   */
+  private functionNestingLimit(): number {
+    const funcnest = this.config.env.FUNCNEST;
+    const set = funcnest !== undefined && FUNCNEST_NUMBER.test(funcnest) ? Number.parseInt(funcnest, 10) : 0;
+    return set > 0 ? Math.min(set, MAX_FUNCTION_NESTING) : MAX_FUNCTION_NESTING;
+  }
+
   private async executeFunction(body: CompoundCommandNode, args: string[], io: ExecutionIo): Promise<number> {
     let exitCode: number;
     const functionIo = this.createCommandIo(io);
@@ -1267,7 +1513,7 @@ export class Interpreter {
     captureIo.stdout = capture.stream;
     captureIo.positionals = this.forkPositionals(io);
     // $( ) runs in a child shell.
-    const child = this.fork();
+    const child = this.inTrapAction(this.fork());
     const exitCode = await child.finishChild(async () => (await child.executeLineWithIo(input, captureIo)), captureIo);
     capture.end();
 
@@ -1283,13 +1529,13 @@ export class Interpreter {
     if (options.positionals !== undefined) {
       inlineIo.positionals = { args: [...options.positionals] };
     }
-    return (await this.executeLineWithIo(input, inlineIo));
+    return (await this.executeLineWithIo(input, inlineIo, { readsLines: true, inline: true }));
   }
 
-  private async executeLineWithIo(input: string, io: ExecutionIo): Promise<number> {
+  private async executeLineWithIo(input: string, io: ExecutionIo, run: ScriptRun = {}): Promise<number> {
     const tokens = lex(input);
     const script = parse(tokens);
-    return (await this.executeScriptWithIo(script, io));
+    return (await this.executeScriptWithIo(script, io, run));
   }
 
   /**
@@ -1307,7 +1553,8 @@ export class Interpreter {
       try {
         exitCode = await run();
       } catch (e) {
-        if (!(e instanceof ExitSignal)) throw e;
+        // An `exit` inside it ends only it; so do `set -e` and a fatal error, and a call past the nesting bound.
+        if (!(e instanceof ExitSignal) && !(e instanceof ErrexitSignal) && !(e instanceof FunctionNestingSignal)) throw e;
         exitCode = e.exitCode;
       }
       return (await this.runExitTrap(exitCode, io, true));
@@ -1322,13 +1569,21 @@ export class Interpreter {
     if (action === undefined) return exitCode;
 
     const savedLastExitCode = this.lastExitCode;
+    const savedTrapEntryStatus = this.trapEntryStatus;
     this.lastExitCode = exitCode;
+    this.trapEntryStatus = exitCode;
     this.exitTrapDepth++;
     try {
-      await this.executeLineWithIo(action, io);
+      // Run as the shell's own text: an `exit` in it, or an end by `set -e`, is the shell's status.
+      await this.executeLineWithIo(action, io, { readsLines: true, inline: true });
+    } catch (e) {
+      if (e instanceof ExitSignal || e instanceof ErrexitSignal) return e.exitCode;
+      // A call past the nesting bound ends the action, a child shell's too; the status stays (bash 5.2).
+      if (!(e instanceof FunctionNestingSignal)) throw e;
     } finally {
       this.exitTrapDepth--;
       this.lastExitCode = savedLastExitCode;
+      this.trapEntryStatus = savedTrapEntryStatus;
     }
     return exitCode;
   }
@@ -1530,7 +1785,7 @@ export class Interpreter {
         const heredoc = redir.heredoc ?? { body: '', quoted: false, stripTabs: false };
         const body = heredoc.quoted
           ? heredoc.body
-          : await expandWord([{ text: heredoc.body, quoted: 'double' }], expandCtx);
+          : await expandWord([{ text: heredoc.body, quoted: 'double' }], { ...expandCtx, hereDocument: true });
         this.setInputFd(fds, redir.fd ?? 0, { stream: staticStdinReader(body), terminal: false });
         continue;
       }
@@ -1844,7 +2099,8 @@ export class Interpreter {
     /** A `< file` redirect: name the file and position (CommandInputStream.file), so a program's fd 0 can be the file. */
     namesFile = false,
   ): CommandInputStream {
-    const decoder = new TextDecoder('utf-8');
+    // A redirected file is read as its bytes: a leading U+FEFF stays.
+    const decoder = new TextDecoder('utf-8', { ignoreBOM: true });
     let offset = 0;
     let eof = false;
     const file = namesFile ? { path, get offset() { return offset; } } : undefined;

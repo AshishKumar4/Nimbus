@@ -11,7 +11,7 @@
 // (flushCount advanced), /api/_diag still serves, the shell works, and
 // a new exit is still flushed (flushCount > 0).
 
-import { mintSession, Terminal, sleep, makeAsserter, BASE } from '../../../_driver.mjs';
+import { mintSession, Terminal, sleep, readUntil, makeAsserter, BASE, hasOutputLine } from '../../../_driver.mjs';
 import { diagMemory } from '../../../heap-correctness/_diag.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -35,7 +35,7 @@ for (let i = 0; i < 3; i++) {
     20_000,
   );
   a.check(`facet run ${i} produced marker output`,
-    new RegExp(`janitor-run-${i}`).test(output),
+    hasOutputLine(output, `janitor-run-${i}`),
     `output tail=${JSON.stringify(output.slice(-200))}`);
 }
 
@@ -81,9 +81,9 @@ await t.run(
   `node -e "console.log('post-wake'); process.exit(0)"`,
   20_000,
 );
-await sleep(2000); // W9 debounce + flush window
-const m2 = await diagMemory(sid);
-const F2 = m2?.hib?.flushCount ?? 0;
+// The W9 flush runs after its 250 ms debounce: read the count until it does, at most 10 s.
+const flushes = async (signal) => (await diagMemory(sid, signal))?.hib?.flushCount ?? 0;
+const F2 = await readUntil(flushes, (count) => count > 0, 10_000);
 console.log(`[post-wake-exit] flushCount=${F2}`);
 a.check('W9 flush path still operational post-wake (flushCount>0)',
   F2 > 0,

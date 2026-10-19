@@ -19,11 +19,11 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 import { mintProbeToken } from '../../behavioral/_mint-probe-token.mjs';
+import { freePort } from './plain-workerd.mjs';
 
 const REPO = resolve(import.meta.dirname, '../../..');
 const PROBE_APP = join(REPO, 'apps/probe');
@@ -32,17 +32,6 @@ const BUNDLE_RUNTIME = join(REPO, 'packages/worker/scripts/bundle-runtime.mjs');
 /** The runtimes a local probe can stage, as the publisher names them. */
 const RUNTIME_VERSIONS = { bash: '5.2.37-7', git: '2.53.0-1', cpython: '3.13.14-3' };
 const BUCKET = 'nimbus-runtime-cache';
-
-async function freePort() {
-  return new Promise((resolvePort, reject) => {
-    const server = createServer();
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const { port } = /** @type {import('node:net').AddressInfo} */ (server.address());
-      server.close(() => resolvePort(port));
-    });
-  });
-}
 
 function run(command, args, options) {
   const result = spawnSync(command, args, { encoding: 'utf8', ...options });

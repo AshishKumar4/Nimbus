@@ -10,8 +10,8 @@
 // Covers:
 //   1. core `npmRun` (substrate): missing `build` script → exit 1 +
 //      `Missing script: "build"` on stderr, no `[npm:debug]` anywhere.
-//   2. core `npmRun` with a runnable script: dispatches past the
-//      local-bin registration with no debug chatter.
+//   2. core `npmRun` with a runnable script: runs it through the host's
+//      shell with no debug chatter.
 //   3. `detectBundlerBin` classifies build-shaped scripts (next/vite).
 //   4. `checkNodeModulesGuard` missing/present/zero-dep cases.
 //   5. `withLoudTimeout` passes fast work through and rejects a stall
@@ -38,7 +38,13 @@ import { writeText } from '../../packages/core/src/vfs/vfs.ts';
 {
   const harness = createSqliteVfsTestHarness();
   const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx });
-  ws.registry.register('npm', createNpmCommand(ws.registry, undefined, ws.kernel));
+  const shellExecute = async (command, ctx) => {
+    const result = await ws.exec(command, { cwd: ctx.cwd, env: ctx.env });
+    await ctx.stdout.write(result.stdout);
+    await ctx.stderr.write(result.stderr);
+    return result.exitCode;
+  };
+  ws.registry.register('npm', createNpmCommand(ws.registry, shellExecute, ws.kernel));
   let built = 0;
   ws.registry.register('mybuilder', () => { built++; return 0; });
 
@@ -52,15 +58,15 @@ import { writeText } from '../../packages/core/src/vfs/vfs.ts';
   assert.ok(!missing.stderr.includes('[npm:debug]'), `no debug scaffolding on stderr:\n${missing.stderr}`);
   assert.ok(!missing.stdout.includes('[npm:debug]'), `no debug scaffolding on stdout:\n${missing.stdout}`);
 
-  // A runnable script dispatches past bin registration — still silent.
+  // A runnable script runs — still silent.
   await writeText(ws.fs, '/home/user/package.json', JSON.stringify({
     name: 'hx', version: '1.0.0', scripts: { build: 'mybuilder --flag' },
   }));
   const ran = await ws.exec('npm run build');
   assert.equal(ran.exitCode, 0, `runnable build script exits 0 (stderr=${ran.stderr})`);
   assert.equal(built, 1, 'the script body dispatched to the registered bin');
-  assert.ok(!ran.stderr.includes('[npm:debug]'), `bin registration stays silent:\n${ran.stderr}`);
-  console.log('  core npmRun: missing build guarded, runnable build silent-dispatches');
+  assert.ok(!ran.stderr.includes('[npm:debug]'), `the run stays silent:\n${ran.stderr}`);
+  console.log('  core npmRun: missing build guarded, runnable build runs silently');
   harness.db.close();
 }
 

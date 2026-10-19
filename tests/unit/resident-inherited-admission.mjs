@@ -37,7 +37,7 @@ import { STOP_RECORD_PREFIX } from '../../packages/worker/src/runtime/stop-repla
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
-import { createFacetCtx, createFacetWorld, residentRunner } from './facet-host-harness.mjs';
+import { createFacetCtx, createFacetWorld, residentRunner } from './lib/facet-host-harness.mjs';
 import { processFiles } from './lib/process-bridge.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
 

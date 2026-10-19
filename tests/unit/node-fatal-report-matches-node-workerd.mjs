@@ -23,12 +23,7 @@
 // Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
 // generated artifacts before testing a runner change.
 
-import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { localTerminal, splitScenarioOutput, startLocalProbe } from './lib/workerd-probe.mjs';
+import { matchNodeInWorkerd, placed } from './lib/node-differential.mjs';
 
 const W = '/home/user/fatal';
 const FILES = {
@@ -82,41 +77,9 @@ const COMMANDS = [
   `node -e 'throw new Error("ev")'`, 'node - < input.js',
 ];
 
-const host = realpathSync(mkdtempSync(join(tmpdir(), 'node-fatal-')));
-process.on('exit', () => rmSync(host, { recursive: true, force: true }));
-for (const [path, text] of Object.entries(FILES)) writeFileSync(join(host, path), text);
-// What a command printed to fd 2 and its exit code, with the place it ran named W.
-const shown = (stderr, from) => stderr.split(from).join(W)
+// What a command printed to fd 2, without stack frames (the runtime's own
+// beside the program's) or the cause-stack elisions that count them.
+const shown = (stderr, { from, root }) => placed(stderr, from, root)
   .split('\n').filter((line) => !/^\s+at /.test(line) && !/^\s*\.\.\. \d+ lines matching cause stack trace \.\.\.$/.test(line)).join('\n');
-const run = (command) => `${command} > out.txt 2> err.txt; echo $? > code.txt`;
-const read = `node -e "const fs = require('fs'); process.stdout.write(JSON.stringify({ err: fs.readFileSync('err.txt').toString('base64'), code: fs.readFileSync('code.txt', 'utf8') }))"`;
-
-console.log('node-fatal-report-matches-node-workerd: starting local workerd');
-const probe = await startLocalProbe({ runtimes: [] });
-try {
-  const session = await localTerminal(probe, { install: [] });
-  try {
-    const made = await session.run(`mkdir -p ${W}`, 30_000);
-    assert.equal(made.status, 0, made.stdout);
-    for (const [path, text] of Object.entries(FILES)) await session.writeFile(`${W}/${path}`, text);
-    for (const command of COMMANDS) {
-      const expected = spawnSync('sh', ['-c', run(command)], { cwd: host, env: { PATH: process.env.PATH, HOME: host } });
-      assert.equal(expected.status, 0);
-      const want = { err: shown(spawnSync('cat', ['err.txt'], { cwd: host, encoding: 'utf8' }).stdout, host), code: spawnSync('cat', ['code.txt'], { cwd: host, encoding: 'utf8' }).stdout.trim() };
-      await session.run(`cd ${W} && ${run(command)}`, 120_000);
-      const r = await session.run(`cd ${W} && ${read}`, 60_000);
-      const line = splitScenarioOutput(r.stdout).lines.find((l) => l.startsWith('{'));
-      assert.ok(line, `${command}: read its output: ${r.stdout.slice(-1500)}`);
-      const got = JSON.parse(line);
-      const err = shown(Buffer.from(got.err, 'base64').toString('utf8'), W);
-      assert.equal(err, want.err, `${command}: stderr is Node's`);
-      assert.equal(got.code.trim(), want.code, `${command}: exits as Node does`);
-      console.log(`  ok  ${command}: exit ${want.code}`);
-    }
-  } finally {
-    await session.close().catch(() => {});
-  }
-} finally {
-  await probe.stop();
-}
+await matchNodeInWorkerd('node-fatal-report-matches-node-workerd', W, FILES, COMMANDS, { shown, streams: ['err'] });
 console.log('node-fatal-report-matches-node-workerd: uncaught errors end the program as they end Node');

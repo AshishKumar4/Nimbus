@@ -39,7 +39,6 @@ const tempDir = mkdtempSync(join(tmpdir(), 'nimbus-git-backend-mode-parity-'));
 try {
   writeFileSync(join(tempDir, 'git-network-worker.mjs'), assembleGitNetworkFacetSource());
   writeFileSync(join(tempDir, 'git-bundle.js'), `
-export const gitHttp = {};
 export const git = {
   async fetch({ fs, dir }) {
     const requests = ${JSON.stringify(REQUESTS)};

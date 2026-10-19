@@ -18,10 +18,10 @@
  * reboot — itself a useful signal (counters at 0 immediately after the
  * banner reprinted = the killed isolate took its state with it).
  */
+import { readSupervisorAllocationAttribution } from './heavy-alloc-coord.js';
 const _counters = {
     installPhase: 'idle',
     inFlightRpcPayloadBytes: 0,
-    prefetchBundleBytes: 0,
     prefetchCacheBytes: 0,
     supervisorAnsweredBytes: 0,
     installFacet: {
@@ -46,7 +46,7 @@ const _counters = {
 };
 /** Read a snapshot — caller-side mutations don't affect the singleton. */
 export function readDiagCounters() {
-    return { ..._counters };
+    return { ..._counters, ...readSupervisorAllocationAttribution() };
 }
 /** Count `bytes` the session answered a process's supervisor call with. */
 export function recordSupervisorAnswer(bytes) {
@@ -99,25 +99,12 @@ export function rpcPayloadEnd(bytes) {
     }
 }
 /**
- * Track an in-flight prefetch-bundle build. Call with the byte reservation the
- * build took from the supervisor allocation budget, and pair with
- * `prefetchBundleEnd` in the matching `finally` so it returns to zero whether
- * the build succeeded or threw.
+ * Attribution belongs to the budget's actual lease. The public gauges are
+ * derived from its holders, never maintained in a second counter registry.
  */
-export function prefetchBundleStart(bytes) {
-    const n = Number(bytes);
-    if (!Number.isFinite(n) || n <= 0)
-        return;
-    _counters.prefetchBundleBytes += n;
-}
-/** Release an in-flight prefetch-bundle reservation. Floors at 0. */
-export function prefetchBundleEnd(bytes) {
-    const n = Number(bytes);
-    if (!Number.isFinite(n) || n <= 0)
-        return;
-    _counters.prefetchBundleBytes -= n;
-    if (_counters.prefetchBundleBytes < 0)
-        _counters.prefetchBundleBytes = 0;
+export function attributeAllocation(owner, lease) {
+    lease.attribute(owner);
+    return lease;
 }
 /**
  * Publish the prefetch-bundle LRU's live retained total. A gauge: the cache

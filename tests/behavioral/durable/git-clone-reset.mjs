@@ -28,8 +28,8 @@
 //   to the session's /api/_diag/abort with the probe token, and the cleanup
 //   is polled through files again.
 
-import { BASE, AUTH_TOKEN, makeAsserter, mintSession, deleteSession, Terminal, requestHeaders, sleep } from '../_driver.mjs';
-import { afterReset } from './_reset-window.mjs';
+import { BASE, AUTH_TOKEN, makeAsserter, mintSession, deleteSession, Terminal, sleep } from '../_driver.mjs';
+import { afterReset, resetInstance } from './_reset-window.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 
@@ -75,8 +75,8 @@ async function cutShort(dest, fresh, durable) {
   a.check('the clone marks its .git while it runs', marked.ok, JSON.stringify(marked.last));
 
   // ── 2. a real isolate reset, mid-clone ──
-  const abort = await fetch(`${BASE}/s/${sid}/api/_diag/abort`, { method: 'POST', headers: requestHeaders({}, sid) });
-  a.check('_diag/abort answers the reset', abort.status === 204, `status=${abort.status}`);
+  const reset = await resetInstance(sid);
+  a.check('the abort reset the instance: the session answers from a new incarnation', reset.ok, reset.detail);
   const resetDeadline = Date.now() + 10_000;
   while (!t.closed && Date.now() < resetDeadline) await sleep(50);
   a.check('the reset ended the instance (its terminal socket dropped)', t.closed, `closed=${t.closed} detail=${t.closeDetail}`);

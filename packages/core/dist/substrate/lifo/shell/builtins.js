@@ -1,13 +1,12 @@
 import { resolveContext } from '../commands/registry.js';
 import { resolve } from '../utils/path.js';
 import { echoOutput } from '../utils/backslash-escapes.js';
+import { writeLossless } from '../utils/bytes-io.js';
 import { singleQuote } from '../../../_shared/shell-quote.js';
 import { isDecimalInteger, isShellIdentifier } from './names.js';
 import { assignArray, assignVariable } from './variables.js';
 import { DEFAULT_HOME } from '../../../constants.js';
 import { ExitSignal } from './interpreter.js';
-import { lex } from './lexer.js';
-import { TokenKind } from './types.js';
 import { resolveJobSpec } from './jobs.js';
 import { evaluateTest } from './test-builtin.js';
 import { isVfsError, strerror } from '../../../vfs/vfs-error.js';
@@ -41,6 +40,7 @@ const BUILTINS = {
     history: builtinHistory,
     source: builtinSource,
     '.': builtinSource,
+    eval: builtinEval,
     alias: builtinAlias,
     unalias: builtinUnalias,
     test: ({ args, stderr, context }) => evaluateTest(args, context.vfs, stderr, context),
@@ -90,7 +90,7 @@ async function builtinPwd({ stdout, state }) {
     return 0;
 }
 async function builtinEcho({ args, stdout }) {
-    (await stdout.write(echoOutput(args)));
+    await writeLossless(stdout, echoOutput(args));
     return 0;
 }
 async function builtinClear({ host }) {
@@ -458,7 +458,7 @@ async function builtinDeclare(verb, { args, stderr, state, context }) {
     let readonlyFlag = false;
     let global = false;
     let exitCode = 0;
-    for (const arg of args) {
+    for (const [index, arg] of args.entries()) {
         if (arg.startsWith('-') && arg.length > 1 && !arg.includes('=')) {
             for (const flag of arg.slice(1)) {
                 if (flag === 'r')
@@ -484,28 +484,20 @@ async function builtinDeclare(verb, { args, stderr, state, context }) {
             (await stderr.write(`${verb}: can only be used in a function\n`));
             return 1;
         }
-        if (eq !== -1 && !(await assignDeclared(state, name, arg.slice(eq + 1), stderr)))
+        if (eq !== -1 && !(await assignDeclared(state, name, context.arrayElements?.get(index) ?? arg.slice(eq + 1), stderr)))
             exitCode = 1;
         if (readonlyFlag)
             state.readonlyNames.add(name);
     }
     return exitCode;
 }
-/** The right-hand side of a declaration: `(word …)` is an array literal. */
-async function assignDeclared(state, name, text, stderr) {
+/** The right-hand side of a declaration: a string, or an array assignment's elements (BuiltinExecutionContext.arrayElements). */
+async function assignDeclared(state, name, value, stderr) {
     if (state.readonlyNames.has(name)) {
         (await stderr.write(`${name}: readonly variable\n`));
         return false;
     }
-    if (text.startsWith('(') && text.endsWith(')')) {
-        const elements = [];
-        for (const token of lex(text.slice(1, -1))) {
-            if (token.kind === TokenKind.Word)
-                elements.push(unquoteWord(token));
-        }
-        return assignArray(state, name, elements);
-    }
-    return assignVariable(state, name, text);
+    return typeof value === 'string' ? assignVariable(state, name, value) : assignArray(state, name, value);
 }
 async function assignEnv(state, name, value, stderr) {
     if (assignVariable(state, name, value))
@@ -519,7 +511,7 @@ async function builtinExit({ args, stderr, context }) {
         return 1;
     }
     if (args.length === 0) {
-        throw new ExitSignal(context.getLastExitCode());
+        throw new ExitSignal(context.exitStatus());
     }
     const status = parseShellExitStatus(args[0] ?? '');
     if (status === null) {
@@ -644,6 +636,20 @@ async function builtinSource({ args, stderr, state, host, context }) {
     }
     const sourceArgs = args.slice(1);
     return (await context.executeInline(content, sourceArgs.length > 0 ? { positionals: sourceArgs } : undefined));
+}
+/**
+ * eval: its arguments, joined by spaces, run in this shell, as `source` runs
+ * a file's (its `return`, `break` and `exit` are this shell's); its status
+ * the last command's, 0 where there is none. It takes no options: a leading
+ * `--` ends them, and any other is refused.
+ */
+async function builtinEval({ args, stderr, context }) {
+    const [first] = args;
+    if (first !== undefined && first.startsWith('-') && first !== '-' && first !== '--') {
+        (await stderr.write(`eval: ${first.slice(0, 2)}: invalid option\neval: usage: eval [arg ...]\n`));
+        return 2;
+    }
+    return (await context.executeInline((first === '--' ? args.slice(1) : args).join(' ')));
 }
 async function builtinAlias({ args, stdout, state }) {
     if (args.length === 0) {
@@ -780,10 +786,6 @@ function splitWhitespaceFields(line) {
     if (current.length > 0)
         fields.push(current);
     return fields;
-}
-/** A lexed word's text with its quoting removed, the way expansion leaves it. */
-function unquoteWord(token) {
-    return token.parts === undefined ? token.value : token.parts.map((p) => p.text).join('');
 }
 function isSetOptionCluster(arg) {
     if (arg.length < 2)

@@ -25,7 +25,7 @@
 //   add(3,4) === 7      sub(10,5) === 5      mul(6,7) === 42
 //   max(7,2) === 7      max(2,7) === 7
 
-import { mintSession, Terminal, sleep, BASE } from '../_driver.mjs';
+import { mintSession, Terminal, BASE } from '../_driver.mjs';
 import { MULTI_WASM_B64, runFor, writeWasm } from './_fixtures.mjs';
 
 const sid = await mintSession();
@@ -33,7 +33,6 @@ console.log(`[wasm-runner-multi] sid=${sid} BASE=${BASE}`);
 
 const t = new Terminal(sid);
 await t.connect();
-await sleep(2_000);
 await t.waitForPrompt(60_000);
 
 await t.run('mkdir -p /home/user/wr-multi', 10_000);

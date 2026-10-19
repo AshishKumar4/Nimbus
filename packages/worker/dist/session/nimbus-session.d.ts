@@ -215,13 +215,11 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
     _diagPeakAt: number;
     _diagSampleCount: number;
     /**
-     * Fix 5: toggled by env NIMBUS_DEBUG=1 (checked each call; cheap enough).
+     * Fix 5: toggled by env NIMBUS_DEBUG ('1' or 'true'; checked each call, cheap enough).
      * When true: spawn banners and exit traces are unconditional (not just
      * long-running facets), RPC envelope errors are surfaced to the terminal
      * with a [rpc-error] prefix, and the exit trace includes duration_ms.
-     *
-     * The flag is derived from `this.env.NIMBUS_DEBUG` — the binding comes
-     * from wrangler's var declaration or a test harness.
+     * Read as the hosted runtime and the facet manager read it (nimbusDebugEnabled).
      */
     get nimbusDebug(): boolean;
     /**
@@ -371,7 +369,6 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
     readonly servedReads: ServedReads;
     _rpcReadFile(path: string, pid?: number, cred?: VfsCred): Promise<string | null>;
     _rpcReadFileBytes(path: string, pid?: number, cred?: VfsCred): Promise<Uint8Array | null>;
-    _rpcInnerDoFetch(req: any): Promise<any>;
     _rpcInnerDoCall(req: any): Promise<unknown>;
     _rpcKvCall(target: {
         root: string;
@@ -843,5 +840,5 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
     /** W5: bridge _w5PersistRing → ctx.waitUntil. Delegator → ./session/ws.ts (S7). */
     _w5SafePersistRing(): void;
 }
-export { NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, NimbusDOStub, NimbusKVNamespace, NimbusD1Binding, NimbusR2Bucket, } from '@nimbus-sh/fabric/bindings.js';
+export { NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker, NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, NimbusKVNamespace, NimbusD1Binding, NimbusR2Bucket, } from '@nimbus-sh/fabric/bindings.js';
 //# sourceMappingURL=nimbus-session.d.ts.map

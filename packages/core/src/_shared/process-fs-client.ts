@@ -420,6 +420,8 @@ export function unsettledNoteOf(error: unknown): string {
 
 /** A data call's bytes per op: a larger one is sent as its first piece, then writes at offsets. */
 const DATA_PIECE_BYTES = WAVE_BYTES;
+const FOLD_BUFFER = Symbol('process-fs-fold-buffer');
+const FOLD_WAITERS = Symbol('process-fs-fold-waiters');
 
 /** The most subtrees one process holds at once; past it, two are widened to their common ancestor. */
 export const MAX_DELEGATIONS_PER_PROCESS = 8;
@@ -477,8 +479,13 @@ function standingOf(grant: Grant, key: string): 'held' | 'above' | undefined {
   return within(key, grant.root) ? 'held' : within(grant.root, key) ? 'above' : undefined;
 }
 
+// A walk asks this of each name it reaches, after the program may have
+// replaced String.prototype.startsWith: compared by index, no method asked.
 function within(key: string, root: string): boolean {
-  return root === '' || key === root || key.startsWith(`${root}/`);
+  if (root === '' || key === root) return true;
+  if (key.length <= root.length || key[root.length] !== '/') return false;
+  for (let i = 0; i < root.length; i++) if (key[i] !== root[i]) return false;
+  return true;
 }
 
 function commonAncestor(left: string, right: string): string {
@@ -489,9 +496,17 @@ function commonAncestor(left: string, right: string): string {
   return out.join('/');
 }
 
+interface FoldWaiters {
+  resolves: ((answer: ProcessFsAnswer) => void)[];
+  rejects: ((error: Error) => void)[];
+}
+
 interface Entry {
   /** The change, while the heap holds it; else the journal does (journal.read(jid)). */
   op: ProcessFsOp | null;
+  /** Capacity is attached only when this entry extends; plain entries keep their shape. */
+  [FOLD_BUFFER]?: Uint8Array;
+  [FOLD_WAITERS]?: FoldWaiters;
   /** Its place in the journal. */
   jid: number;
   /** The call's name, for a failure's report (writeFile, mkdir, rename, …). */
@@ -543,6 +558,35 @@ function descriptionOf(call: W7Call): string | undefined {
   return 'description' in call ? call.description : undefined;
 }
 
+function startFoldWaiters(entry: Entry): FoldWaiters {
+  const resolves = [entry.resolve];
+  const rejects = [entry.reject];
+  const waiters = { resolves, rejects };
+  entry[FOLD_WAITERS] = waiters;
+  entry.resolve = (answer) => {
+    for (const resolve of resolves) resolve(answer);
+    resolves.length = rejects.length = 0;
+  };
+  entry.reject = (error) => {
+    for (const reject of rejects) reject(error);
+    resolves.length = rejects.length = 0;
+  };
+  return waiters;
+}
+
+type DataCall = Extract<W7Call, { data: Uint8Array }>;
+
+function extended(call: DataCall, data: Uint8Array, buffer: Uint8Array | null): { op: ProcessFsOp; buffer: Uint8Array; append: Uint8Array } {
+  const size = call.data.byteLength + data.byteLength;
+  if (buffer === null || buffer.byteLength < size) {
+    buffer = new Uint8Array(Math.min(DATA_PIECE_BYTES, Math.max(size, (buffer?.byteLength ?? call.data.byteLength) * 2)));
+    buffer.set(call.data);
+  }
+  buffer.set(data, call.data.byteLength);
+  const joined = buffer.subarray(0, size);
+  return { op: { type: 'call', call: { ...call, data: joined } }, buffer, append: joined.subarray(call.data.byteLength) };
+}
+
 /**
  * `next` folded into `last`, the log's unsent tail, when it is the same
  * file's next bytes and nothing was logged between them: a whole write
@@ -551,31 +595,25 @@ function descriptionOf(call: W7Call): string | undefined {
  * page cache folds them; null when it is not such a change, or the folded
  * bytes would pass a piece.
  */
-function folded(last: ProcessFsOp, next: ProcessFsOp): ProcessFsOp | null {
+function folded(last: ProcessFsOp, next: ProcessFsOp, buffer: Uint8Array | null): { op: ProcessFsOp; buffer: Uint8Array | null; append?: Uint8Array } | null {
   if (last.type !== 'call' || next.type !== 'call' || !('data' in last.call) || !('data' in next.call)) return null;
   const a = last.call;
   const b = next.call;
   // Through one description only: another's access, or its file, may differ.
   if (a.path !== b.path || descriptionOf(a) !== descriptionOf(b) || a.data.byteLength + b.data.byteLength > DATA_PIECE_BYTES) return null;
   const inoOf = (call: W7Call): number | undefined => ('ino' in call ? call.ino : undefined);
-  const join = (left: Uint8Array, right: Uint8Array): Uint8Array => {
-    const out = new Uint8Array(left.byteLength + right.byteLength);
-    out.set(left, 0);
-    out.set(right, left.byteLength);
-    return out;
-  };
   if (b.call === 'writeFile' && inoOf(b) === undefined && (a.call === 'writeFile' || a.call === 'appendFile')) {
     // The last write's file is made (or kept) by the first: its make wins, the bytes are the last's.
-    return { type: 'call', call: { ...a, call: 'writeFile', data: b.data } as W7Call };
+    return { op: { type: 'call', call: { ...a, call: 'writeFile', data: b.data } as W7Call }, buffer: null };
   }
   if (b.call === 'appendFile' && inoOf(b) === undefined && (a.call === 'writeFile' || a.call === 'appendFile')) {
-    return { type: 'call', call: { ...a, data: join(a.data, b.data) } as W7Call };
+    return extended(a, b.data, buffer);
   }
   if (b.call === 'append' && a.call === 'append' && inoOf(a) === inoOf(b)) {
-    return { type: 'call', call: { ...a, data: join(a.data, b.data) } };
+    return extended(a, b.data, buffer);
   }
   if (b.call === 'write' && a.call === 'write' && inoOf(a) === inoOf(b) && a.offset + a.data.byteLength === b.offset) {
-    return { type: 'call', call: { ...a, data: join(a.data, b.data) } };
+    return extended(a, b.data, buffer);
   }
   return null;
 }
@@ -807,7 +845,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     try {
       ops = entries.map(opOf);
       // Sent: the heap's copy is the wave's now.
-      for (const entry of entries) if (entry.op !== null) { heapBytes -= entry.bytes; entry.op = null; }
+      for (const entry of entries) if (entry.op !== null) { heapBytes -= entry.bytes; entry.op = null; if (entry[FOLD_BUFFER] !== undefined) entry[FOLD_BUFFER] = undefined; }
       bytes = await encodeWriteBatch({ inodes: [], chunks: [], ops });
       // Numbered once, under the epoch they are first sent under; a re-send keeps them.
       numberEntries(entries);
@@ -944,7 +982,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     processGone ??= refusal;
     const ended = [...entries, ...queue.splice(0)];
     for (const entry of ended) {
-      if (entry.op !== null) { heapBytes -= entry.bytes; entry.op = null; }
+      if (entry.op !== null) { heapBytes -= entry.bytes; entry.op = null; if (entry[FOLD_BUFFER] !== undefined) entry[FOLD_BUFFER] = undefined; }
       fail(entry, 'ESRCH', processGone.message);
     }
     forget(ended[ended.length - 1]!.jid, false);
@@ -957,7 +995,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     processGone ??= fsError('EIO', refusal.message, '');
     const stopped = [...entries, ...queue.splice(0)];
     for (const entry of stopped) {
-      if (entry.op !== null) { heapBytes -= entry.bytes; entry.op = null; }
+      if (entry.op !== null) { heapBytes -= entry.bytes; entry.op = null; if (entry[FOLD_BUFFER] !== undefined) entry[FOLD_BUFFER] = undefined; }
       fail(entry, 'EIO', refusal.message);
     }
     forget(stopped[stopped.length - 1]!.jid, false);
@@ -1300,7 +1338,12 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       return found;
     },
     guards(key) {
-      return escaped === null && grants.some((grant) => standingOf(grant, key) !== undefined);
+      if (escaped !== null) return false;
+      for (let i = 0; i < grants.length; i++) {
+        const grant = grants[i];
+        if (grant !== undefined && standingOf(grant, key) !== undefined) return true;
+      }
+      return false;
     },
     pending() {
       return queue.length > 0 || inFlight !== null;
@@ -1324,13 +1367,14 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       // The same file's next bytes, right after its last unsent change: folded into it.
       const tail = queue[queue.length - 1];
       // (The queue holds only unsent changes; one sent and back for a re-send is numbered.)
-      const merged = parts.length === 1 && tail !== undefined && tail.seq === 0 && tail.op !== null && tail.acknowledged === acknowledged
-        ? folded(tail.op, parts[0]!) : null;
+      const merged = parts.length === 1 && tail !== undefined && tail.paths[0] === named[0] && tail.seq === 0 && tail.op !== null && tail.acknowledged === acknowledged
+        ? folded(tail.op, parts[0]!, tail[FOLD_BUFFER] ?? null) : null;
       if (merged !== null && tail !== undefined) {
-        const mergedBytes = merged.type === 'call' && 'data' in merged.call ? merged.call.data.byteLength : 0;
-        journal.replace(tail.jid, merged);
+        const mergedBytes = merged.op.type === 'call' && 'data' in merged.op.call ? merged.op.call.data.byteLength : 0;
+        journal.replace(tail.jid, merged.op, merged.append);
         const grown = mergedBytes - tail.bytes;
-        tail.op = merged;
+        tail.op = merged.op;
+        if (merged.buffer !== null || tail[FOLD_BUFFER] !== undefined) tail[FOLD_BUFFER] = merged.buffer ?? undefined;
         tail.bytes = mergedBytes;
         // Someone waits on the fold now: what lingered goes.
         if (tail.lingers && !lingers) {
@@ -1343,10 +1387,9 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
         counters.ops++;
         counters.folded++;
         const answer = new Promise<ProcessFsAnswer>((resolve, reject) => {
-          const resolveTail = tail.resolve;
-          const rejectTail = tail.reject;
-          tail.resolve = (answered) => { resolveTail(answered); resolve(answered); };
-          tail.reject = (error) => { rejectTail(error); reject(error); };
+          const waiters = tail[FOLD_WAITERS] ?? startFoldWaiters(tail);
+          waiters.resolves.push(resolve);
+          waiters.rejects.push(reject);
         });
         if (acknowledged) answer.catch(() => {});
         return answer;

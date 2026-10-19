@@ -1,21 +1,10 @@
 import { syscallError } from './vfs-error.js';
 import { timeAt } from './posix-access.js';
-const encoder = new TextEncoder();
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
+import { rootClampedSegments } from '@nimbus-sh/platform/lexical-path.js';
 const EMPTY = new Uint8Array(0);
 function fail(code, call) {
     return syscallError(code, call.syscall, call.path, { dest: call.dest });
-}
-function segments(path) {
-    const out = [];
-    for (const segment of path.split('/')) {
-        if (segment === '' || segment === '.')
-            continue;
-        if (segment === '..')
-            out.pop();
-        else
-            out.push(segment);
-    }
-    return out;
 }
 export class MemoryVFS {
     owner;
@@ -41,7 +30,7 @@ export class MemoryVFS {
     }
     /** The entry at `path`, following symlinks except a final one when `follow` is false; `call` names a failure. */
     find(path, call, follow = true, hops = 0) {
-        const parts = segments(path);
+        const parts = rootClampedSegments(path);
         let at = this.root;
         for (let i = 0; i < parts.length; i++) {
             if (at.type !== 'directory')
@@ -60,7 +49,7 @@ export class MemoryVFS {
         return at;
     }
     parentOf(path, call) {
-        const parts = segments(path);
+        const parts = rootClampedSegments(path);
         const name = parts.pop();
         if (name === undefined)
             throw syscallError('EBUSY', call.syscall, call.path, { dest: call.dest, detail: 'the root cannot be replaced' });
@@ -79,7 +68,7 @@ export class MemoryVFS {
         return {
             ino: entry.ino,
             type: entry.type,
-            size: entry.type === 'symlink' ? encoder.encode(entry.target).length : entry.data.length,
+            size: entry.type === 'symlink' ? utf8Length(entry.target) : entry.data.length,
             mtimeMs: entry.mtimeMs,
             revision: entry.revision,
             mode: entry.mode,
@@ -155,7 +144,7 @@ export class MemoryVFS {
         if (options?.recursive) {
             const made = [];
             let at = '';
-            for (const part of segments(path)) {
+            for (const part of rootClampedSegments(path)) {
                 at += `/${part}`;
                 const existing = this.find(at, call);
                 if (existing === null) {
@@ -175,7 +164,7 @@ export class MemoryVFS {
     }
     unlink(path) {
         const call = { syscall: 'unlink', path };
-        if (segments(path).length === 0)
+        if (rootClampedSegments(path).length === 0)
             throw fail('EISDIR', call);
         const { dir, name } = this.parentOf(path, call);
         const entry = dir.children.get(name);
@@ -219,8 +208,8 @@ export class MemoryVFS {
         const entry = source.dir.children.get(source.name);
         if (entry === undefined)
             throw fail('ENOENT', call);
-        const fromKey = segments(from).join('/');
-        const toKey = segments(to).join('/');
+        const fromKey = rootClampedSegments(from).join('/');
+        const toKey = rootClampedSegments(to).join('/');
         if (fromKey === toKey)
             return;
         if (entry.type === 'directory' && `${toKey}/`.startsWith(`${fromKey}/`)) {

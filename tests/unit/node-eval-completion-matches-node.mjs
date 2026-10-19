@@ -15,7 +15,7 @@ import { spawnSync } from 'node:child_process';
 
 import { nodeEvalProgram, nodeStdinPrintProgram } from '../../packages/core/src/runtime/node-eval.ts';
 import { isEsModuleInput } from '../../packages/core/src/runtime/module-format.ts';
-import { NODE_ERROR_PREAMBLE } from '../../packages/worker/src/loaders/generated-workers.ts';
+import { NODE_ERROR_PREAMBLE, PRIMORDIALS_PREAMBLE } from '../../packages/worker/src/loaders/workers.generated.ts';
 
 // Whether the code is a module is the runtime's decision (module-format.ts), as Node's is its syntax detection's.
 const nodeEvalCode = (code, print) => nodeEvalProgram(code, print, isEsModuleInput(code, undefined) ? 'module' : 'default').code;
@@ -61,8 +61,11 @@ const REFUSED = [
 // Node errors: each value as console.log formats it, or the first line of
 // what it throws, and what it logged.
 const RUNNER = `
+${PRIMORDIALS_PREAMBLE}
 ${NODE_ERROR_PREAMBLE}
 globalThis.__nimbusNodeError = nodeError;
+// The runtime's V8 error for a top-level return (node-shims __nimbusEvalIllegalReturn), its arrow aside: eval-typescript-matches-node-workerd compares that.
+globalThis.__nimbusEvalIllegalReturn = () => new SyntaxError('Illegal return statement');
 const { format } = require('node:util');
 const codes = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
 process.stdout.write(JSON.stringify(codes.map((code) => {

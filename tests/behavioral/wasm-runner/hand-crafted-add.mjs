@@ -21,7 +21,7 @@
 // (run inside Node, not workerd, where instantiate(bytes) is allowed).
 // 70 bytes including the `name` custom section.
 
-import { mintSession, Terminal, sleep, stripAnsi, BASE } from '../_driver.mjs';
+import { mintSession, Terminal, stripAnsi, BASE, tailLines, hasOutputLine } from '../_driver.mjs';
 import { ADD_WASM_B64, writeWasm } from './_fixtures.mjs';
 
 const sid = await mintSession();
@@ -29,7 +29,6 @@ console.log(`[wasm-runner] sid=${sid} BASE=${BASE}`);
 
 const t = new Terminal(sid);
 await t.connect();
-await sleep(2_000);
 await t.waitForPrompt(60_000);
 
 await t.run('mkdir -p /home/user/wr-add', 10_000);
@@ -41,18 +40,18 @@ await writeWasm(t, 'add.wasm', ADD_WASM_B64);
 // inside facets returns 0 for fresh writes — see the multi-runtime
 // wave's notes on facet-vs-supervisor VFS split).
 const lsResult = await t.run('ls add.wasm', 5_000);
-const fixtureOk = /\badd\.wasm\b/.test(stripAnsi(lsResult.output));
+const fixtureOk = hasOutputLine(lsResult.output, 'add.wasm');
 
 // ── A: --version smoke ──
 const versionResult = await t.run('wasm-runner --version', 15_000);
 const versionOut = stripAnsi(versionResult.output);
-const versionOk = /\b\d+\.\d+\.\d+\b/.test(versionOut.split(/\r?\n/).slice(-3).join('\n'));
+const versionOk = /\b\d+\.\d+\.\d+\b/.test(tailLines(versionOut, 3));
 
 // ── B: add(3, 4) → 7 ──
 const addResult = await t.run('wasm-runner add.wasm add 3 4', 60_000);
 const addOut = stripAnsi(addResult.output);
 // The literal "7" must appear AFTER the user's command echo (last 4 lines).
-const tail = addOut.split(/\r?\n/).slice(-6).join('\n');
+const tail = tailLines(addOut, 6);
 const addOk = /^\s*7\s*$/m.test(tail) && !/\berror\b/i.test(tail.toLowerCase());
 
 // ── C: ps shows wasm-runner row ──

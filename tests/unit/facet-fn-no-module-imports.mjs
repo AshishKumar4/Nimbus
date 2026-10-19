@@ -7,7 +7,7 @@ import * as worker from '../../packages/worker/src/loaders/compiled-bodies.gener
 import { WASI_INSTANCE_PREAMBLE_SRC } from '../../packages/core/src/runtime/wasi-instance.ts';
 import { NPM_RESOLVE_PREAMBLE } from '../../packages/worker/src/loaders/npm-resolve-preamble.ts';
 import { NPM_INSTALL_PREAMBLE } from '../../packages/worker/src/loaders/npm-install-preamble.ts';
-import { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE, WAVE_WRITER_PREAMBLE } from '../../packages/worker/src/loaders/generated-workers.ts';
+import { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE, WAVE_WRITER_PREAMBLE } from '../../packages/worker/src/loaders/workers.generated.ts';
 import { assembleLoaderWorkerModuleSource } from '../../packages/fabric/src/isolate-pool.ts';
 import { FACET_GLOBALS, freeNames } from '../../packages/worker/scripts/free-names.mjs';
 import { requireFacetTaskSource } from '../../packages/core/src/runtime/facet-task.ts';

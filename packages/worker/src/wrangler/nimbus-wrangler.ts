@@ -701,9 +701,9 @@ export class NimbusWrangler {
 
     // ── durable_objects ──
     // Inner worker: env[binding] is a local namespace (inner-do-env.ts) over
-    // the binding made here, whose fetchOn, callOn and getOn each stub
-    // relays to. buildAndLoad registers the classes, from the load this env
-    // goes into, in the registry _rpcInnerDoFetch and _rpcInnerDoCall read.
+    // the binding made here, whose callOn and getOn each stub relays to.
+    // buildAndLoad registers the classes, from the load this env goes into,
+    // in the registry _rpcInnerDoCall reads.
     const doBindingNames = (this.config?.durable_objects?.bindings || []).map((b: { name: string }) => b.name);
     if (doBindingNames.length > 0) {
       const ctxExports = this.supervisorCtx?.exports;
@@ -924,7 +924,9 @@ export class NimbusWrangler {
       // Nimbus-as-inner emits when its default fallthrough runs. User
       // workers that deliberately return 404 at other paths are untouched.
       if (response.status === 404 && pathname === '/') {
-        const bodyText = await response.clone().text();
+        // Read once, and the answer made from those bytes: a cloned (teed) body passed on can reach the browser out of order.
+        const bytes = await response.arrayBuffer();
+        const bodyText = new TextDecoder().decode(bytes);
         if (bodyText === 'Not found' || bodyText.length === 0) {
           const html = renderWorkerRunningHtml({
             workerName: this.config?.name || 'user worker',
@@ -939,6 +941,7 @@ export class NimbusWrangler {
             },
           });
         }
+        return new Response(bytes, { status: response.status, statusText: response.statusText, headers: newHeaders });
       }
 
       return new Response(response.body, {

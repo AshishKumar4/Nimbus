@@ -10,6 +10,7 @@
  * Surfaces:
  *   - readNodeMem() — process.memoryUsage() if available; null otherwise.
  *   - readPerfMem() — performance.memory if available; null otherwise.
+ *   - readIsolateId() — the isolate this session shares with its co-tenants.
  *   - sampleMemory(host) — read + update peak trackers (no I/O, microseconds).
  *   - rehydrateRingFromStorage(host, ctx) — load OOM ring snapshot at boot.
  *   - persistRing(host, ctx) — async put with redundant-write skip.
@@ -18,6 +19,15 @@
  */
 import { rehydrateFromStorage, snapshotForStorage, getFailures, } from '@nimbus-sh/platform/oom-discriminator.js';
 import { W5_RING_STORAGE_KEY } from './keys.js';
+let isolateId;
+/**
+ * This isolate's id, made the first time it is asked for: the same for every
+ * session the isolate hosts, and new once the platform resets it. Sessions
+ * that report one id share one memory limit.
+ */
+export function readIsolateId() {
+    return isolateId ??= crypto.randomUUID();
+}
 export function readNodeMem() {
     try {
         const g = globalThis;

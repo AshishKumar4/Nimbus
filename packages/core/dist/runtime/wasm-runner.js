@@ -16,11 +16,11 @@
  *   wasm-runner <file.wasm> <exportName> [int args...]
  *
  * Each invocation:
- *   1. Reads bytes from VFS (or any caller-supplied source).
+ *   1. Opens the program in the VFS as a facet image and inspects its bytes.
  *   2. Allocates a PID via the process supervisor (Process tab integration).
- *   3. Facet.submit() with wasmModules: { 'user.wasm': bytes } — the
- *      host compiles the image and publishes it on the facet's
- *      `globalThis.__NIMBUS_WASM`.
+ *   3. Facet.submit() with wasmModules: { 'user.wasm': image } — the
+ *      host reads the image for the facet's load, compiles it and
+ *      publishes it on the facet's `globalThis.__NIMBUS_WASM`.
  *   4. The submitted fn runs inside the inner facet:
  *      - reads globalThis.__NIMBUS_WASM['user.wasm'] (the precompiled
  *        Module the facet host registered)
@@ -50,10 +50,12 @@
 import { WASM_CALL_TASK } from './compiled-bodies.generated.js';
 import { openInvocationStdio } from './runtime-stdio.js';
 import { gateSyncLaunch, requireVfsCred, WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
-import { withHostView } from './process-files.js';
+import { hostImage } from './process-files.js';
+import { isVfsError } from '../vfs/vfs-error.js';
 import { WASI_INSTANCE_PREAMBLE_SRC, WASI_IMPLEMENTED_FNS, WASI_ABI_NAMESPACE } from './wasi-instance.js';
 import { inspectWasmThreads, wasiThreadsLoadError } from './wasi-threads.js';
-import { withMemoryLimit, DEFAULT_WASM_PROCESS_LIMIT_BYTES } from './wasm-memory.js';
+import { withMemoryLimit, DEFAULT_WASM_PROCESS_LIMIT_BYTES, MEMORY_LIMIT_GROWTH_BYTES } from './wasm-memory.js';
+import { withSupervisorLoadAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { wasmInterface } from './wasm-binary.js';
 import { errorText } from '../_shared/error-text.js';
 import { unsettledNoteOf } from '../_shared/process-fs-client.js';
@@ -147,38 +149,48 @@ export function makeWasmRunner(deps) {
         if (notHydrated !== null)
             return { exitCode: 1, stdout: '', stderr: `wasm-runner: ${notHydrated}\n` };
         // The program is read as the invoking credential before a process exists
-        // for it, so a host lease carries the read rather than a process binding.
-        let bytes;
+        // for it, so a host lease carries each read rather than a process binding.
+        // It is opened (its content key), read here to be inspected, admitted as
+        // a load is, and let go: the facet's load reads it again as the same
+        // image, the bytes inspected here, or not at all.
+        let program;
+        let inspected;
         try {
-            // A whole program image bypasses the content cache: it is read once and
-            // handed to the facet's module map, never re-read from this isolate.
-            const program = await withHostView(deps.filesystem, cred, async (fs) => (await fs.exists(wasmPath)) ? fs.readFileUncached(wasmPath) : null);
-            if (program === null) {
+            program = await hostImage(deps.filesystem, cred, wasmPath);
+            inspected = await withSupervisorLoadAllocation(`wasm-runner '${opts.filename}'`, program.peak, opts.signal, async () => {
+                const bytes = await program.read();
+                return {
+                    // Detect WASI imports BEFORE parsing argv as direct-mode integers.
+                    // WASI mode treats every argv token as a string passed to the
+                    // program; direct mode treats argv[0] as export name and the rest
+                    // as integers.
+                    wasiAbi: detectWasiAbi(bytes),
+                    // Threads are decided here, from the binary, so an unsupported build is
+                    // rejected before a facet is ever spawned and the diagnosis names the
+                    // build line rather than a trap deep inside libc.
+                    threadsInfo: inspectWasmThreads(bytes),
+                };
+            }, { owner: `wasm-runner inspect '${opts.filename}'`, pid: opts.invokerPid });
+        }
+        catch (e) {
+            // Killed while it waited its turn: it ends as an interrupted run does.
+            if (opts.signal?.aborted)
+                return { exitCode: 130, stdout: '', stderr: '' };
+            if (isVfsError(e, 'ENOENT')) {
                 return {
                     exitCode: 1,
                     stdout: '',
                     stderr: `wasm-runner: cannot find module '${opts.filename}'\n`,
                 };
             }
-            bytes = program;
-        }
-        catch (e) {
             return {
                 exitCode: 1,
                 stdout: '',
                 stderr: `wasm-runner: cannot read '${opts.filename}': ${e instanceof Error ? e.message : String(e)}\n`,
             };
         }
-        // Detect WASI imports BEFORE parsing argv as direct-mode integers.
-        // WASI mode treats every argv token as a string passed to the
-        // program; direct mode treats argv[0] as export name and the rest
-        // as integers.
-        const wasiAbi = detectWasiAbi(bytes);
+        const { wasiAbi, threadsInfo } = inspected;
         const isWasi = wasiAbi !== null;
-        // Threads are decided here, from the binary, so an unsupported build is
-        // rejected before a facet is ever spawned and the diagnosis names the
-        // build line rather than a trap deep inside libc.
-        const threadsInfo = inspectWasmThreads(bytes);
         const threadsError = wasiThreadsLoadError(threadsInfo);
         if (threadsError) {
             return { exitCode: 1, stdout: '', stderr: `wasm-runner: ${threadsError}\n` };
@@ -252,22 +264,27 @@ export function makeWasmRunner(deps) {
         // A wasi-threads build is untouched: it imports its shared memory and
         // names the ceiling on its own build line (`--max-memory`), so there is no
         // memory section to rewrite and no unbounded growth to prevent.
-        let limited = bytes;
-        try {
-            limited = withMemoryLimit(bytes, DEFAULT_WASM_PROCESS_LIMIT_BYTES);
-        }
-        catch (e) {
-            console.warn(`wasm-runner: leaving '${opts.filename}' uncapped: ` +
-                (e instanceof Error ? e.message : String(e)));
-        }
-        // Convert Uint8Array (SqliteVFS native) into ArrayBuffer.
-        // structuredClone-safe ArrayBuffer is required by the facet host's
-        // wasmModules contract; sub-views aren't accepted by workerd's
-        // modules map either. The slice() call always returns a fresh
-        // ArrayBuffer regardless of whether bytes.buffer was originally
-        // a Shared variant — TS's overload-resolution narrowing here is
-        // overly conservative; cast to ArrayBuffer is correct.
-        const buf = limited.buffer.slice(limited.byteOffset, limited.byteOffset + limited.byteLength);
+        //
+        // The rewrite is made as the facet loads, on the bytes it reads then:
+        // the program's image, the bytes inspected above.
+        const limited = {
+            path: program.path,
+            identity: `${program.identity}:max-memory-${DEFAULT_WASM_PROCESS_LIMIT_BYTES}`,
+            size: program.size + MEMORY_LIMIT_GROWTH_BYTES,
+            // The read and the capped copy made from it.
+            peak: 2 * program.size + MEMORY_LIMIT_GROWTH_BYTES,
+            read: async () => {
+                const bytes = await program.read();
+                try {
+                    return withMemoryLimit(bytes, DEFAULT_WASM_PROCESS_LIMIT_BYTES);
+                }
+                catch (e) {
+                    console.warn(`wasm-runner: leaving '${opts.filename}' uncapped: ` +
+                        (e instanceof Error ? e.message : String(e)));
+                    return bytes;
+                }
+            },
+        };
         // PID + log integration. The runtime-registry's contract is
         // runtime-agnostic at the PID layer; node + bun get this for
         // free via runFresh → facetMgr.exec which spawns through the
@@ -353,7 +370,7 @@ export function makeWasmRunner(deps) {
                 }
                 : { mode: 'direct', exportName: exportName, intArgs: parsedArgs };
             outcome = (await facet.submit(WASM_CALL_TASK, submitArgs, {
-                wasmModules: { 'user.wasm': buf },
+                wasmModules: { 'user.wasm': limited },
                 signal: runSignal,
             }));
         }

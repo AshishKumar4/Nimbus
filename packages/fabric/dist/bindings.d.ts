@@ -14,8 +14,8 @@
  * through that RPC stub. Co-located here for grep-ability.
  *
  * NimbusAssetsRPC, NimbusLoaderRPC, NimbusLoadedWorker,
- * NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, NimbusDOStub,
- * NimbusKVNamespace, NimbusD1Binding and NimbusR2Bucket are public API of
+ * NimbusLoadedEntrypoint, NimbusDurableObjectNamespace, NimbusKVNamespace,
+ * NimbusD1Binding and NimbusR2Bucket are public API of
  * the embedder's Worker: wrangler resolves them by class name
  * and ctx.exports auto-populates them by export name, so the embedder's entry
  * module re-exports them under exactly these names.
@@ -236,21 +236,8 @@ interface NimbusDoNamespaceProps {
  * with a local namespace (inner-do-env.ts, inner-env.ts) that makes ids
  * and stubs itself, and relays each member a stub's caller reaches, its
  * fetch included, to `callOn` or `getOn`.
- *
- * `idFromName`, `newUniqueId`, `idFromString` and `get` answer as before, for
- * a caller that awaits them. idFromName produces prefix `name:` (a
- * deterministic hash, innerDoIdFromName); newUniqueId uses `uniq:`; the
- * prefixes keep the two id spaces distinct.
  */
 export declare class NimbusDurableObjectNamespace extends WorkerEntrypoint<object, NimbusDoNamespaceProps> {
-    /** Stable string id derived from a name. Hash is deterministic. */
-    idFromName(name: string): string;
-    /** Fresh random id (matches DurableObjectNamespace.newUniqueId()). */
-    newUniqueId(): string;
-    /** Accept-through for an already-formatted id. */
-    idFromString(s: string): string;
-    /** Return a stub bound to the given id. */
-    get(id: string): unknown;
     /**
      * The member of object `id` at `path` (names from the object down), called
      * with `args`: its answer, or what it throws, as the object gave it.
@@ -258,27 +245,6 @@ export declare class NimbusDurableObjectNamespace extends WorkerEntrypoint<objec
     callOn(id: string, path: string[], args: unknown[]): Promise<unknown>;
     /** The member of object `id` at `path`, read. */
     getOn(id: string, path: string[]): Promise<unknown>;
-}
-/** Props the DO stub carries: which binding, which supervisor, which id. */
-interface NimbusDoStubProps extends NimbusDoNamespaceProps {
-    id?: string;
-}
-/** What the session's innerDoFetch answers: the object's response, as fields. */
-export interface InnerDoFetchAnswer {
-    status: number;
-    statusText: string;
-    headers: [string, string][];
-    body: ArrayBuffer | null;
-}
-/**
- * A Durable-Object-namespace-stub for a specific id, for a caller of the
- * binding's own `get`: its fetch. The important invariant: EVERY call
- * resolves the inner DO class via getInnerDoClass() (./inner-do-registry.js)
- * and spins up / attaches to a facet via the supervisor's ctx.facets in the
- * SAME outer request context — never reusing stubs across requests.
- */
-export declare class NimbusDOStub extends WorkerEntrypoint<object, NimbusDoStubProps> {
-    fetch(request: Request): Promise<Response>;
 }
 /** Props a storage binding is minted with: its store, and the way to the session that holds it. */
 interface NimbusStorageProps {

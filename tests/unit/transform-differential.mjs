@@ -15,15 +15,19 @@
 // A divergence must be listed, with its reason, in the fixture's DIVERGENT.
 
 import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
 import { CASES, DIVERGENT } from '../fixtures/transform-differential/cases.mjs';
 import { generateTransformFacetRuntimeSource } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { rewriteDynamicImports } from '../../packages/core/src/runtime/dynamic-import-rewrite.ts';
 import { readEsModule } from '../../packages/core/src/runtime/native-esm.ts';
 import { rewriteProvidedCommonJsModules } from '../../packages/core/src/runtime/provided-packages.ts';
 import { wrapCommonJsCell } from '../../packages/core/src/_shared/commonjs-cell.ts';
+import { programLaunchesServer } from '../../packages/core/src/runtime/server-launch.ts';
 import { esbuildEngine, stopEsbuildEngine } from './lib/esbuild-engine.mjs';
 import { oxcEngine } from './lib/oxc-engine.mjs';
+import { originalPosition } from './lib/sourcemap-vlq.mjs';
 
+const { parse } = createRequire(new URL('../../packages/core/package.json', import.meta.url))('acorn');
 const { runTransformRequest } = new Function(`${generateTransformFacetRuntimeSource()}\nreturn { runTransformRequest };`)();
 // What the transform facet's preamble installs beside its engine.
 const runtime = { rewriteDynamicImports, readEsModule, rewriteProvidedCommonJsModules };
@@ -60,7 +64,7 @@ function describe(value) {
  * so the order of its own
  * side effects and its dependencies' is compared too.
  */
-async function observe(code) {
+async function observe(code, dependencies = null) {
   const holder = {};
   try {
     new Function('module', wrapCommonJsCell(code, 'block').text)(holder);
@@ -75,7 +79,12 @@ async function observe(code) {
   const log = console.log;
   console.log = () => {};
   try {
-    const returned = holder.exports(Function).call(module.exports, module.exports, (s) => { requires.push(s); return anything(); }, module, '/app/x.js', '/app');
+    const returned = holder.exports(Function).call(module.exports, module.exports, (s) => {
+      requires.push(s);
+      if (dependencies === null) return anything();
+      assert.ok(Object.hasOwn(dependencies, s), `the fixture supplies ${s}`);
+      return dependencies[s];
+    }, module, '/app/x.js', '/app');
     if (returned && typeof returned.then === 'function') await returned;
   } catch (error) {
     // The message names the binding esbuild or Oxc chose; the constructor does not.
@@ -91,10 +100,27 @@ async function observe(code) {
     esModule: Boolean(exported?.__esModule),
     type: typeof exported,
     exports: keys.map((key) => { try { return `${key}=${describe(exported[key])}`; } catch (error) { return `${key} throws ${error.constructor.name}`; } }),
+    ...(dependencies === null ? {} : { values: exported }),
   };
 }
 
 const loaderOf = (name) => (/\.tsx$/.test(name) ? 'tsx' : /\.[mc]?ts$/.test(name) ? 'ts' : /\.jsx$/.test(name) ? 'jsx' : 'js');
+function refusal(error, map = null) {
+  assert.ok(error instanceof Error);
+  assert.ok(Array.isArray(error.errors));
+  assert.ok(error.errors.length > 0);
+  return {
+    refused: true,
+    kind: error.constructor.name,
+    locations: error.errors.map(({ location }) => {
+      if (location === null) return null;
+      assert.ok(Number.isInteger(location.line) && location.line > 0);
+      assert.ok(Number.isInteger(location.column) && location.column >= 0);
+      return map === null ? [location.line, location.column] : originalPosition(map, location.line, location.column);
+    }),
+  };
+}
+
 const outcomes = {
   async commonjs(engine, name, source) {
     const url = `file:///app/${name}`;
@@ -102,7 +128,7 @@ const outcomes = {
       const { code } = await runTransformRequest(engine, source, { loader: loaderOf(name), format: 'cjs', dynamicImportParent: url }, runtime);
       return await observe(code);
     } catch (error) {
-      return { refused: true, topLevelAwait: /top-level await.*not supported.*cjs/i.test(String(error.message)) };
+      return refusal(error);
     }
   },
   async browser(engine, name, source) {
@@ -110,17 +136,32 @@ const outcomes = {
     let code;
     try {
       ({ code } = await engine.transform(source, { loader: loaderOf(name) === 'js' ? 'ts' : loaderOf(name), format: 'esm', target: 'esnext', jsx: 'automatic', define, sourcemap: 'inline', supported: { 'dynamic-import': false, 'import-meta': false } }));
-    } catch {
-      return { refused: true };
+    } catch (error) {
+      return refusal(error);
     }
-    assert.match(code, /\/\/# sourceMappingURL=data:application\/json;(charset=utf-8;)?base64,/, `${name}: the browser module carries its map`);
+    const mapUrl = [...code.matchAll(/\/[/*][#@]\s*sourceMappingURL\s*=\s*([^\s*]+)/g)].at(-1)?.[1];
+    assert.equal(new URL(mapUrl).protocol, 'data:', `${name}: the browser map is inline`);
+    const map = await (await fetch(mapUrl)).json();
+    assert.equal(map.version, 3);
+    if (name === 'destructure.mjs') {
+      const firstBinding = (text) => {
+        const ast = parse(text, { ecmaVersion: 'latest', sourceType: 'module', locations: true });
+        const declaration = ast.body.find(({ type }) => type === 'VariableDeclaration');
+        assert.ok(declaration, 'the module declares a binding');
+        return declaration.declarations[0].id.loc.start;
+      };
+      const input = firstBinding(source);
+      const output = firstBinding(code);
+      assert.deepEqual(originalPosition(map, output.line, output.column), [input.line, input.column],
+        'the browser map points the emitted binding back to its source position');
+      assert.ok(map.sourcesContent.includes(source), 'the map carries the source as written');
+    }
     // One engine reads both outputs as CommonJS, so only the first pass differs.
     try {
       const { code: cjs } = await esbuild.transform(code, { loader: 'js', format: 'cjs', supported: { 'dynamic-import': true, 'import-meta': true } });
       return await observe(cjs);
     } catch (error) {
-      // Where in the output it was refused depends on the printer; why does not.
-      return { refused: true, reread: String(error.message).split('\n')[1].replace(/^<stdin>:\d+:\d+: /, '') };
+      return { ...refusal(error, map), reread: true };
     }
   },
 };
@@ -132,6 +173,10 @@ const unexpected = [];
 for (const [name, source] of CASES) {
   for (const [path, outcome] of Object.entries(outcomes)) {
     const [before, after] = [await outcome(engines.esbuild, name, source), await outcome(engines.oxc, name, source)];
+    if (name === 'dup-decl.mjs') {
+      assert.deepEqual(before, { refused: true, kind: 'Error', locations: [[1, 15]] });
+      assert.deepEqual(after, { refused: true, kind: 'Error', locations: [[1, 4]] });
+    }
     compared++;
     if (JSON.stringify(before) === JSON.stringify(after)) { equal++; continue; }
     if (DIVERGENT[name]) divergent.add(name);
@@ -188,34 +233,85 @@ console.log(`  ok  ${CASES.length} modules x ${Object.keys(outcomes).length} tra
   console.log(`  ok  ${Object.keys(deep).length} deep modules equal: ${viaOxc} by Oxc, ${viaEsbuild} past its stack by esbuild`);
 }
 
-// ── The CommonJS shape other code reads by name ─────────────────────────────
+// ── Imported calls and tags preserve ES module receivers and arguments ─────
 {
-  // server-launch.ts unwraps `__toESM(require(...))` and `__toCommonJS` by
-  // name; module.exports is the __toCommonJS object, __esModule unenumerable.
-  const { code } = await oxcEngine.transform(
-    "import d from 'a'; import { x } from 'b'; export const y = x(d); export default 1;",
-    { loader: 'js', format: 'cjs' },
-  );
-  assert.match(code, /var import_a = __toESM\(require\("a"\)\);/);
-  assert.match(code, /var import_b = require\("b"\);/);
-  assert.match(code, /module\.exports = __toCommonJS\(stdin_exports\);/);
-  assert.match(code, /\(0, import_b\.x\)\(import_a\.default\)/);
-  // An imported tag is called without its record as receiver, as an ES
-  // module calls it (esbuild 0.24 passes the record; the mock above cannot tell).
-  const { code: tagged } = await oxcEngine.transform("import { tag } from 't'; tag`a`;", { loader: 'js', format: 'cjs' });
-  assert.match(tagged, /\(0, import_t\.tag\)`a`/);
-  console.log('  ok  CommonJS output keeps the helper and record names Nimbus reads');
+  const calls = [];
+  const callable = (label, result) => function (...args) {
+    calls.push({ label, receiver: this, args });
+    return result;
+  };
+  const tag = (label, result) => function (strings, ...substitutions) {
+    calls.push({ label, receiver: this, strings: [...strings], raw: [...strings.raw], substitutions });
+    return result;
+  };
+  const object = { method: callable('method', 'method-result') };
+  const source = `
+    import call from 'default-call';
+    import { call as namedCall } from 'named-call';
+    import tag from 'default-tag';
+    import { tag as namedTag, object } from 'named-tag';
+    export const called = [call('default', 7), namedCall('named', { count: 2 })];
+    export const tagged = [tag\`line\\n\${3}!\`, namedTag\`named\${{ value: 4 }}end\`];
+    export const method = object.method('method', 5);
+    export default 11;
+  `;
+  const { code } = await runTransformRequest(oxcEngine, source,
+    { loader: 'js', format: 'cjs', dynamicImportParent: 'file:///app/calls.mjs' }, runtime);
+  const observed = await observe(code, {
+    'default-call': callable('default-call', 'default-result'),
+    'named-call': { call: callable('named-call', 'named-result') },
+    'default-tag': tag('default-tag', 'default-tag-result'),
+    'named-tag': { tag: tag('named-tag', 'named-tag-result'), object },
+  });
+  assert.equal(observed.threw, null);
+  assert.equal(observed.esModule, true);
+  assert.deepEqual(observed.requires, ['default-call', 'named-call', 'default-tag', 'named-tag']);
+  assert.deepEqual(observed.values, {
+    called: ['default-result', 'named-result'], tagged: ['default-tag-result', 'named-tag-result'],
+    method: 'method-result', default: 11,
+  });
+  assert.deepEqual(calls, [
+    { label: 'default-call', receiver: undefined, args: ['default', 7] },
+    { label: 'named-call', receiver: undefined, args: ['named', { count: 2 }] },
+    { label: 'default-tag', receiver: undefined, strings: ['line\n', '!'], raw: ['line\\n', '!'], substitutions: [3] },
+    { label: 'named-tag', receiver: undefined, strings: ['named', 'end'], raw: ['named', 'end'], substitutions: [{ value: 4 }] },
+    { label: 'method', receiver: object, args: ['method', 5] },
+  ]);
+  assert.equal(calls[4].receiver, object, 'the method receives the imported object itself');
+  console.log('  ok  imported calls and tags have no receiver; an imported object keeps its method receiver');
 }
 
-// ── Refusals keep esbuild's message shape ───────────────────────────────────
+// ── The server classifier consumes the real emitted CommonJS ───────────────
 {
-  await assert.rejects(oxcEngine.transform('await 1; export {};', { loader: 'js', format: 'cjs' }),
-    (error) => /^Transform failed with 1 error:\n<stdin>:1:0: ERROR: Top-level await is currently not supported with the "cjs" output format$/.test(error.message) && error.errors[0].location.line === 1);
-  await assert.rejects(oxcEngine.transform('let a = ;', { loader: 'js', format: 'cjs' }), /Transform failed with 1 error:\n<stdin>:1:8: ERROR: /);
-  await assert.rejects(oxcEngine.transform('x', { loader: 'css' }), /oxc transform: loader "css" is not supported/);
-  await assert.rejects(oxcEngine.transform('x', { target: 'es2020' }), /oxc transform: target "es2020" is not supported/);
-  await assert.rejects(oxcEngine.transform('<C />', { loader: 'jsx', jsx: 'preserve', format: 'cjs' }), /jsx "preserve" is not supported with format "cjs"/);
-  console.log('  ok  refusals read as esbuild\'s, and unsupported options are refused, not ignored');
+  const { code } = await runTransformRequest(oxcEngine, `
+    import program from 'commander';
+    program.command('serve').action(() => require('node:http').createServer().listen(3000));
+    program.command('build').action(() => console.log('built'));
+    program.parse(process.argv);
+  `, { loader: 'js', format: 'cjs', dynamicImportParent: 'file:///app/cli.mjs' }, runtime);
+  const host = { resolve: async () => null, read: async () => null };
+  for (const [args, expected] of [[['serve'], true], [['build'], false], [['serve', '--help'], false], [['--help'], false]]) {
+    const launches = await programLaunchesServer({
+      source: code, path: '/app/cli.cjs', dir: '/app', packageRoot: '/app', argv: ['/usr/bin/node', '/app/cli.cjs', ...args],
+    }, host);
+    assert.equal(launches, expected, `the transformed CLI classifies ${args.join(' ')}`);
+  }
+  console.log('  ok  the server classifier distinguishes serve, build and help in transformed CommonJS');
+}
+
+// ── Refusals carry structured locations and reject unsupported options ─────
+{
+  for (const [source, location] of [['await 1; export {};', [1, 0]], ['let a = ;', [1, 8]]]) {
+    await assert.rejects(oxcEngine.transform(source, { loader: 'js', format: 'cjs' }), (error) => {
+      assert.deepEqual(refusal(error), { refused: true, kind: 'Error', locations: [location] });
+      assert.equal(error.errors[0].location.lineText, source);
+      return true;
+    });
+  }
+  await assert.rejects(oxcEngine.transform('x', { loader: 'css' }), Error);
+  await assert.rejects(oxcEngine.transform('x', { target: 'es2020' }), Error);
+  await assert.rejects(oxcEngine.transform('<C />', { loader: 'jsx', jsx: 'preserve', format: 'cjs' }), Error);
+  console.log('  ok  refusals locate invalid source, and unsupported options are refused, not ignored');
 }
 
 await stopEsbuildEngine();
