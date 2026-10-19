@@ -49,8 +49,11 @@ const cases = [
   { name: 'symlink-to-directory leaf', fault: 'link', kept: [], errors: [] },
   { name: 'operand stat EACCES', fault: 'operand-stat', kept: ['tree', 'tree/free'], errors: [['/walk/tree', 'Permission denied']] },
   { name: 'operand scandir EACCES', fault: 'operand-read', kept: ['tree', 'tree/free'], errors: [['/walk/tree', 'Permission denied']] },
-  { name: 'writable mounted subtree', fault: 'mount-rw', kept: ['tree'], mounted: [], errors: [['/walk/tree/mounted', 'Device or resource busy']] },
-  { name: 'read-only mounted subtree', fault: 'mount-ro', kept: ['tree'], mounted: ['a', 'b'], errors: [['/walk/tree/mounted/a', 'Read-only file system'], ['/walk/tree/mounted/b', 'Read-only file system']] },
+  // A removal keeps out of a mount; one that asks to be crossed (removalCrosses) is entered, as Linux's rm -r enters one.
+  { name: 'writable mounted subtree', fault: 'mount-rw', kept: ['tree'], mounted: ['a', 'b'], errors: [['/walk/tree/mounted', 'Device or resource busy']] },
+  { name: 'read-only mounted subtree', fault: 'mount-ro', kept: ['tree'], mounted: ['a', 'b'], errors: [['/walk/tree/mounted', 'Device or resource busy']] },
+  { name: 'writable mounted subtree, crossed', fault: 'mount-rw-cross', kept: ['tree'], mounted: [], errors: [['/walk/tree/mounted', 'Device or resource busy']] },
+  { name: 'read-only mounted subtree, crossed', fault: 'mount-ro-cross', kept: ['tree'], mounted: ['a', 'b'], errors: [['/walk/tree/mounted/a', 'Read-only file system'], ['/walk/tree/mounted/b', 'Read-only file system']] },
   { name: 'two failed children', fault: 'two-read', kept: ['tree', 'tree/bad', 'tree/bad/secret', 'tree/worse', 'tree/worse/secret'], errors: [['/walk/tree/bad', 'Permission denied'], ['/walk/tree/worse', 'Permission denied']] },
   { name: 'actionable backend detail', fault: 'detail', kept: ['tree', 'tree/bad', 'tree/bad/secret'], errors: [['/walk/tree/bad', 'outside the consented directory']] },
 ];
@@ -130,7 +133,9 @@ async function fixture(test, asynchronous) {
     setupMount.chown('home/user', USER.uid, USER.gid);
     const mountedRoot = rooted(setupMount);
     mountedRoot.writeFile('a', 'a'); mountedRoot.writeFile('b', 'b');
-    box.files.vfs.mount('/walk/tree/mounted', new RootedFiles(mountedEngine, USER), { readOnly: test.fault === 'mount-ro' });
+    box.files.vfs.mount('/walk/tree/mounted', new RootedFiles(mountedEngine, USER), {
+      readOnly: test.fault.startsWith('mount-ro'), removalCrosses: test.fault.endsWith('-cross'),
+    });
     mounted = { harness: mountedHarness, root: mountedRoot };
   }
   return {

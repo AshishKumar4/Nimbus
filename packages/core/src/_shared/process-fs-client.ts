@@ -44,7 +44,7 @@
  * session refused is not asked for again.
  */
 
-import { encodeWriteBatch, type W7Attrs, type W7Call } from '@nimbus-sh/platform/w7-frame.js';
+import { encodeWriteBatch, type W7Attrs, type W7Call, type W7Expected } from '@nimbus-sh/platform/w7-frame.js';
 import type { ExclusiveMutationGrant, GrantCertificate, RecallKind } from '../runtime/os-contracts.js';
 import { WAVE_BYTES, WAVE_PATHS, WAVE_PATH_BYTES, openWaveEpoch, sendWaveAttempts, waveAttemptsOf, type WaveFence, type WaveTimers } from '@nimbus-sh/platform/wave-writer.js';
 import { WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
@@ -62,9 +62,11 @@ export { SYSCALL_VERDICTS };
 /** One mutation, as the session applies it: a call, or a rename, truncate or attribute change. */
 export type ProcessFsOp =
   | { type: 'call'; call: W7Call }
-  | { type: 'rename'; from: string; to: string }
+  /** `expect`, `expectTo`: the files the process decided it on at `from` and `to` (W7Expected). */
+  | { type: 'rename'; from: string; to: string; expect?: W7Expected; expectTo?: W7Expected }
   | { type: 'truncate'; path: string; size: number }
-  | { type: 'setattr'; path: string; attrs: W7Attrs };
+  /** `description`: fchmod, fchown or futimens through the process's open description of that id. */
+  | { type: 'setattr'; path: string; attrs: W7Attrs; description?: string; expect?: W7Expected };
 
 /** What the client asks of the session. */
 export interface ProcessFsSession {
@@ -121,8 +123,12 @@ export interface ProcessFsAnswer {
   receipt?: ProcessFsReceipt;
   /** The op's path's revision right before it and the session's right after (WaveMutation), when it committed on the session's own filesystem. */
   mutation?: { before: number; after: number };
-  /** An acknowledged op the session refused or never answered (it is reported, never thrown). */
-  failed?: { errno: string; message: string };
+  /**
+   * An acknowledged op the session refused or never answered (it is
+   * reported, never thrown): `refused` where it never applied it (its
+   * verdict, or it was never sent); else its fate is unknown.
+   */
+  failed?: { errno: string; message: string; refused?: true };
 }
 
 /** An op the program was told succeeded that the session refused, or whose fate it could not answer. */
@@ -211,6 +217,19 @@ export interface ProcessFsClient {
    * subtree the process holds, lingers (LINGER_MS).
    */
   submit(op: ProcessFsOp, options?: { acknowledged?: boolean; decided?: boolean }): Promise<ProcessFsAnswer>;
+  /**
+   * Whether `bytes` more of synchronous (acknowledged) writes fit under the
+   * cap the client holds unanswered: throws submit's ENOMEM where they would
+   * not, for a caller that has changed nothing yet.
+   */
+  fitsSync(bytes: number, path: string): void;
+  /**
+   * `op` folded into the last unsent change, as submit folds the same file's
+   * next bytes through the same description: its bytes copied into that
+   * change's (the caller's buffer is not kept), answered with that change's
+   * answer. Undefined, nothing logged, where it does not continue it.
+   */
+  fold(op: ProcessFsOp, submitOptions?: { acknowledged?: boolean }): Promise<ProcessFsAnswer> | undefined;
   /** Send what lingers now: someone waits on one of the process's own changes. */
   hurry(): void;
   /**
@@ -423,7 +442,6 @@ export function unsettledNoteOf(error: unknown): string {
 /** A data call's bytes per op: a larger one is sent as its first piece, then writes at offsets. */
 const DATA_PIECE_BYTES = WAVE_BYTES;
 const FOLD_BUFFER = Symbol('process-fs-fold-buffer');
-const FOLD_WAITERS = Symbol('process-fs-fold-waiters');
 
 /** The most subtrees one process holds at once; past it, two are widened to their common ancestor. */
 export const MAX_DELEGATIONS_PER_PROCESS = 8;
@@ -500,17 +518,11 @@ function commonAncestor(left: string, right: string): string {
   return out.join('/');
 }
 
-interface FoldWaiters {
-  resolves: ((answer: ProcessFsAnswer) => void)[];
-  rejects: ((error: Error) => void)[];
-}
-
 interface Entry {
   /** The change, while the heap holds it; else the journal does (journal.read(jid)). */
   op: ProcessFsOp | null;
   /** Capacity is attached only when this entry extends; plain entries keep their shape. */
   [FOLD_BUFFER]?: Uint8Array;
-  [FOLD_WAITERS]?: FoldWaiters;
   /** Its place in the journal. */
   jid: number;
   /** The call's name, for a failure's report (writeFile, mkdir, rename, …). */
@@ -526,6 +538,8 @@ interface Entry {
   lingers: boolean;
   resolve(answer: ProcessFsAnswer): void;
   reject(error: Error): void;
+  /** What an op folded into it is given: its call's answer (a one-piece call's), else its piece's. */
+  answer: Promise<ProcessFsAnswer> | null;
 }
 
 const GLOBAL_TIMERS: WaveTimers = {
@@ -562,22 +576,6 @@ function descriptionOf(call: W7Call): string | undefined {
   return 'description' in call ? call.description : undefined;
 }
 
-function startFoldWaiters(entry: Entry): FoldWaiters {
-  const resolves = [entry.resolve];
-  const rejects = [entry.reject];
-  const waiters = { resolves, rejects };
-  entry[FOLD_WAITERS] = waiters;
-  entry.resolve = (answer) => {
-    for (const resolve of resolves) resolve(answer);
-    resolves.length = rejects.length = 0;
-  };
-  entry.reject = (error) => {
-    for (const reject of rejects) reject(error);
-    resolves.length = rejects.length = 0;
-  };
-  return waiters;
-}
-
 type DataCall = Extract<W7Call, { data: Uint8Array }>;
 
 function extended(call: DataCall, data: Uint8Array, buffer: Uint8Array | null): { op: ProcessFsOp; buffer: Uint8Array; append: Uint8Array } {
@@ -591,6 +589,22 @@ function extended(call: DataCall, data: Uint8Array, buffer: Uint8Array | null): 
   return { op: { type: 'call', call: { ...call, data: joined } }, buffer, append: joined.subarray(call.data.byteLength) };
 }
 
+/** How `next` folds into `last`: its bytes replace last's, extend them, or (null) it does not fold. */
+function foldOf(last: ProcessFsOp, next: ProcessFsOp): 'replaces' | 'extends' | null {
+  if (last.type !== 'call' || next.type !== 'call' || !('data' in last.call) || !('data' in next.call)) return null;
+  const a = last.call;
+  const b = next.call;
+  // Through one description only: another's access, or its file, may differ.
+  if (a.path !== b.path || descriptionOf(a) !== descriptionOf(b) || a.data.byteLength + b.data.byteLength > DATA_PIECE_BYTES) return null;
+  const inoOf = (call: W7Call): number | undefined => ('ino' in call ? call.ino : undefined);
+  // The last write's file is made (or kept) by the first: its make wins, the bytes are the last's.
+  if (b.call === 'writeFile' && inoOf(b) === undefined && (a.call === 'writeFile' || a.call === 'appendFile')) return 'replaces';
+  if (b.call === 'appendFile' && inoOf(b) === undefined && (a.call === 'writeFile' || a.call === 'appendFile')) return 'extends';
+  if (b.call === 'append' && a.call === 'append' && inoOf(a) === inoOf(b)) return 'extends';
+  if (b.call === 'write' && a.call === 'write' && inoOf(a) === inoOf(b) && a.offset + a.data.byteLength === b.offset) return 'extends';
+  return null;
+}
+
 /**
  * `next` folded into `last`, the log's unsent tail, when it is the same
  * file's next bytes and nothing was logged between them: a whole write
@@ -600,26 +614,12 @@ function extended(call: DataCall, data: Uint8Array, buffer: Uint8Array | null): 
  * bytes would pass a piece.
  */
 function folded(last: ProcessFsOp, next: ProcessFsOp, buffer: Uint8Array | null): { op: ProcessFsOp; buffer: Uint8Array | null; append?: Uint8Array } | null {
-  if (last.type !== 'call' || next.type !== 'call' || !('data' in last.call) || !('data' in next.call)) return null;
-  const a = last.call;
-  const b = next.call;
-  // Through one description only: another's access, or its file, may differ.
-  if (a.path !== b.path || descriptionOf(a) !== descriptionOf(b) || a.data.byteLength + b.data.byteLength > DATA_PIECE_BYTES) return null;
-  const inoOf = (call: W7Call): number | undefined => ('ino' in call ? call.ino : undefined);
-  if (b.call === 'writeFile' && inoOf(b) === undefined && (a.call === 'writeFile' || a.call === 'appendFile')) {
-    // The last write's file is made (or kept) by the first: its make wins, the bytes are the last's.
-    return { op: { type: 'call', call: { ...a, call: 'writeFile', data: b.data } as W7Call }, buffer: null };
-  }
-  if (b.call === 'appendFile' && inoOf(b) === undefined && (a.call === 'writeFile' || a.call === 'appendFile')) {
-    return extended(a, b.data, buffer);
-  }
-  if (b.call === 'append' && a.call === 'append' && inoOf(a) === inoOf(b)) {
-    return extended(a, b.data, buffer);
-  }
-  if (b.call === 'write' && a.call === 'write' && inoOf(a) === inoOf(b) && a.offset + a.data.byteLength === b.offset) {
-    return extended(a, b.data, buffer);
-  }
-  return null;
+  const fold = foldOf(last, next);
+  if (fold === null) return null;
+  const a = (last as Extract<ProcessFsOp, { type: 'call' }>).call as DataCall;
+  const b = (next as Extract<ProcessFsOp, { type: 'call' }>).call as DataCall;
+  if (fold === 'replaces') return { op: { type: 'call', call: { ...a, call: 'writeFile', data: b.data } as W7Call }, buffer: null };
+  return extended(a, b.data, buffer);
 }
 
 /**
@@ -730,12 +730,13 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     }
   };
 
-  const fail = (entry: Entry, errno: string, message: string): void => {
+  /** `entry` failed: `refused` where the session never applied it (its verdict, or it was never sent); else its fate is unknown. */
+  const fail = (entry: Entry, errno: string, message: string, refused = false): void => {
     settled(entry);
     const path = entry.paths[0] ?? '';
     if (entry.acknowledged) {
       failures.push({ op: entry.name, path, errno, message });
-      entry.resolve({ failed: { errno, message } });
+      entry.resolve({ failed: { errno, message, ...(refused ? { refused: true as const } : {}) } });
     } else {
       entry.reject(fsError(errno, message, path));
     }
@@ -840,7 +841,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
         endedProcess(entries, error, epoch?.writer ?? null);
         return;
       }
-      for (const entry of entries) fail(entry, 'EIO', `the session gave this process no writer: ${error instanceof Error ? error.message : String(error)}`);
+      for (const entry of entries) fail(entry, 'EIO', `the session gave this process no writer: ${error instanceof Error ? error.message : String(error)}`, true);
       forget(entries[entries.length - 1]!.jid, false);
       return;
     }
@@ -858,7 +859,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       // an op no wave can carry): answered as refused, each one, never left waiting.
       const code = (error as { code?: unknown } | null)?.code;
       const errno = typeof code === 'string' && /^E[A-Z0-9]+$/.test(code) ? code : 'EIO';
-      for (const entry of entries) fail(entry, errno, `this write could not be sent: ${error instanceof Error ? error.message : String(error)}`);
+      for (const entry of entries) fail(entry, errno, `this write could not be sent: ${error instanceof Error ? error.message : String(error)}`, true);
       forget(entries[entries.length - 1]!.jid, false);
       // An epoch numbers ops by their place in the log: dropped, these leave
       // a gap the session would refuse what follows for. What follows is
@@ -920,7 +921,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     for (const [index, entry] of entries.entries()) {
       if (refused !== null && entry.seq === refused.seq) {
         counters.refused++;
-        fail(entry, refused.errno, refused.message);
+        fail(entry, refused.errno, refused.message, true);
         if (writer === null) ack = Math.max(ack, entry.seq);
         continue;
       }
@@ -1029,6 +1030,96 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       sending = null;
       pump();
     });
+  };
+
+  /** submit's body: `op` logged (folded, or queued), its answer; with `foldOnly`, undefined and nothing logged where it does not fold. */
+  const entered = (given: ProcessFsOp, submitOptions: { acknowledged?: boolean; decided?: boolean } | undefined, foldOnly: boolean): Promise<ProcessFsAnswer> | undefined => {
+    const acknowledged = submitOptions?.acknowledged === true;
+    if (processGone !== null && !(sealed && (acknowledged || submitOptions?.decided === true))) throw processGone;
+    const op = withUmaskOf(given, options.umask);
+    const named = pathsOf(op);
+    const lingers = (acknowledged || submitOptions?.decided === true) && named.every((path) => heldGrant(path) !== undefined);
+    for (const path of named) if (!canonical(path)) throw fsError('EINVAL', `EINVAL: not a filesystem path the session takes: '${path}'`, path);
+    // A link's target past PATH_MAX is refused here, as symlink(2) refuses it; no wave could carry it.
+    if (op.type === 'call' && op.call.call === 'symlink' && utf8Length(op.call.target) > SYMLINK_TARGET_MAX) {
+      throw fsError('ENAMETOOLONG', `ENAMETOOLONG: a link's target is at most ${SYMLINK_TARGET_MAX} bytes`, op.call.path);
+    }
+    const parts = pieces(op);
+    const bytes = parts.reduce((sum, part) => sum + (part.type === 'call' && 'data' in part.call ? part.call.data.byteLength : 0), 0);
+    if (acknowledged && !sealed && pendingSyncBytes + bytes > syncCap) throw syncCapRefusal(bytes, pathsOf(op)[0] ?? '');
+    // The same file's next bytes, right after its last unsent change: folded into it.
+    const tail = foldTail(parts, named, acknowledged);
+    const merged = tail !== undefined ? folded(tail.op!, parts[0]!, tail[FOLD_BUFFER] ?? null) : null;
+    if (merged !== null && tail !== undefined) {
+      const mergedBytes = merged.op.type === 'call' && 'data' in merged.op.call ? merged.op.call.data.byteLength : 0;
+      journal.replace(tail.jid, merged.op, merged.append);
+      const grown = mergedBytes - tail.bytes;
+      tail.op = merged.op;
+      if (merged.buffer !== null || tail[FOLD_BUFFER] !== undefined) tail[FOLD_BUFFER] = merged.buffer ?? undefined;
+      tail.bytes = mergedBytes;
+      // Someone waits on the fold now: what lingered goes.
+      if (tail.lingers && !lingers) {
+        tail.lingers = false;
+        schedule();
+      }
+      heapBytes += grown;
+      pendingBytes += grown;
+      if (acknowledged) pendingSyncBytes += grown;
+      counters.ops++;
+      counters.folded++;
+      return tail.answer!;
+    }
+    if (foldOnly) return undefined;
+    const answers = parts.map((part) => {
+      let entry: Entry | undefined;
+      const answer = new Promise<ProcessFsAnswer>((resolve, reject) => {
+        const partBytes = part.type === 'call' && 'data' in part.call ? part.call.data.byteLength : 0;
+        // Logged where the process's death does not reach, before it is told anything.
+        const jid = journal.append(part);
+        // The heap keeps a window of what is unsent; the rest is read back from the journal.
+        const kept = !journal.durable || heapBytes + partBytes <= PROCESS_FS_HEAP_WINDOW_BYTES;
+        if (kept) heapBytes += partBytes;
+        entry = { op: kept ? part : null, jid, name: nameOf(part), seq: 0, order: ++logged, bytes: partBytes, paths: pathsOf(part), acknowledged, lingers, resolve, reject, answer: null };
+        queue.push(entry);
+        pendingBytes += partBytes;
+        if (acknowledged) {
+          pendingSyncBytes += partBytes;
+          pendingSyncOps++;
+        }
+        counters.ops++;
+      });
+      // Undefined where the journal refused it: nothing was queued, and the answer is that refusal.
+      if (entry !== undefined) entry.answer = answer;
+      return { entry, answer };
+    });
+    schedule();
+    // A piece failed fails the call; its last piece's receipt answers it,
+    // and its mutation spans them all.
+    const answer = Promise.all(answers.map((piece) => piece.answer)).then((all): ProcessFsAnswer => {
+      const first = all[0]?.mutation;
+      const last = all[all.length - 1];
+      if (last === undefined) return {};
+      // An acknowledged piece failed: the call's failure (reported once, by the client). Refused,
+      // never applied, only where every piece was: one applied or of unknown fate leaves the call's unknown.
+      const failures = all.filter((piece) => piece.failed !== undefined);
+      if (failures.length > 0) {
+        const { errno, message } = failures[0]!.failed!;
+        return { failed: failures.length === all.length && failures.every((piece) => piece.failed!.refused === true) ? { errno, message, refused: true } : { errno, message } };
+      }
+      const { mutation: _mutation, ...rest } = last;
+      return first !== undefined && last.mutation !== undefined ? { ...rest, mutation: { before: first.before, after: last.mutation.after } } : rest;
+    });
+    if (acknowledged) answer.catch(() => {});
+    // A one-piece call's entry gives an op folded into it the call's own answer: the same, at the same turn.
+    const only = answers.length === 1 ? answers[0]!.entry : undefined;
+    if (only !== undefined) only.answer = answer;
+    return answer;
+  };
+
+  /** The last unsent change `parts` (one op's) may fold into: one piece, its file's, sent never (one back for a re-send is numbered), logged alike. */
+  const foldTail = (parts: readonly ProcessFsOp[], named: readonly string[], acknowledged: boolean): Entry | undefined => {
+    const tail = queue[queue.length - 1];
+    return parts.length === 1 && tail !== undefined && tail.paths[0] === named[0] && tail.seq === 0 && tail.op !== null && tail.acknowledged === acknowledged ? tail : undefined;
   };
 
   const schedule = (): void => {
@@ -1293,6 +1384,9 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   const heldGrant = (key: string): Grant | undefined => (escaped !== null ? undefined
     : grants.find((grant) => !grant.ended && !grant.closing && !grant.shared && within(key, grant.root)));
 
+  /** What refuses `bytes` more of synchronous writes past the cap the client holds unanswered. */
+  const syncCapRefusal = (bytes: number, path: string): Error => fsError('ENOMEM', `ENOMEM: ${pendingSyncBytes} bytes of synchronous writes are waiting for the session, and this one (${bytes}) would pass the ${syncCap}-byte cap; let the program yield (an await) for them to be sent`, path);
+
   const client: ProcessFsClient = {
     holder(key) {
       const held = heldGrant(key);
@@ -1368,82 +1462,14 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     pending() {
       return queue.length > 0 || inFlight !== null;
     },
+    fitsSync(bytes, path) {
+      if (!sealed && pendingSyncBytes + bytes > syncCap) throw syncCapRefusal(bytes, path);
+    },
     submit(given, submitOptions) {
-      const acknowledged = submitOptions?.acknowledged === true;
-      if (processGone !== null && !(sealed && (acknowledged || submitOptions?.decided === true))) throw processGone;
-      const op = withUmaskOf(given, options.umask);
-      const named = pathsOf(op);
-      const lingers = (acknowledged || submitOptions?.decided === true) && named.every((path) => heldGrant(path) !== undefined);
-      for (const path of named) if (!canonical(path)) throw fsError('EINVAL', `EINVAL: not a filesystem path the session takes: '${path}'`, path);
-      // A link's target past PATH_MAX is refused here, as symlink(2) refuses it; no wave could carry it.
-      if (op.type === 'call' && op.call.call === 'symlink' && utf8Length(op.call.target) > SYMLINK_TARGET_MAX) {
-        throw fsError('ENAMETOOLONG', `ENAMETOOLONG: a link's target is at most ${SYMLINK_TARGET_MAX} bytes`, op.call.path);
-      }
-      const parts = pieces(op);
-      const bytes = parts.reduce((sum, part) => sum + (part.type === 'call' && 'data' in part.call ? part.call.data.byteLength : 0), 0);
-      if (acknowledged && !sealed && pendingSyncBytes + bytes > syncCap) {
-        throw fsError('ENOMEM', `ENOMEM: ${pendingSyncBytes} bytes of synchronous writes are waiting for the session, and this one (${bytes}) would pass the ${syncCap}-byte cap; let the program yield (an await) for them to be sent`, pathsOf(op)[0] ?? '');
-      }
-      // The same file's next bytes, right after its last unsent change: folded into it.
-      const tail = queue[queue.length - 1];
-      // (The queue holds only unsent changes; one sent and back for a re-send is numbered.)
-      const merged = parts.length === 1 && tail !== undefined && tail.paths[0] === named[0] && tail.seq === 0 && tail.op !== null && tail.acknowledged === acknowledged
-        ? folded(tail.op, parts[0]!, tail[FOLD_BUFFER] ?? null) : null;
-      if (merged !== null && tail !== undefined) {
-        const mergedBytes = merged.op.type === 'call' && 'data' in merged.op.call ? merged.op.call.data.byteLength : 0;
-        journal.replace(tail.jid, merged.op, merged.append);
-        const grown = mergedBytes - tail.bytes;
-        tail.op = merged.op;
-        if (merged.buffer !== null || tail[FOLD_BUFFER] !== undefined) tail[FOLD_BUFFER] = merged.buffer ?? undefined;
-        tail.bytes = mergedBytes;
-        // Someone waits on the fold now: what lingered goes.
-        if (tail.lingers && !lingers) {
-          tail.lingers = false;
-          schedule();
-        }
-        heapBytes += grown;
-        pendingBytes += grown;
-        if (acknowledged) pendingSyncBytes += grown;
-        counters.ops++;
-        counters.folded++;
-        const answer = new Promise<ProcessFsAnswer>((resolve, reject) => {
-          const waiters = tail[FOLD_WAITERS] ?? startFoldWaiters(tail);
-          waiters.resolves.push(resolve);
-          waiters.rejects.push(reject);
-        });
-        if (acknowledged) answer.catch(() => {});
-        return answer;
-      }
-      const answers = parts.map((part) => new Promise<ProcessFsAnswer>((resolve, reject) => {
-        const partBytes = part.type === 'call' && 'data' in part.call ? part.call.data.byteLength : 0;
-        // Logged where the process's death does not reach, before it is told anything.
-        const jid = journal.append(part);
-        // The heap keeps a window of what is unsent; the rest is read back from the journal.
-        const kept = !journal.durable || heapBytes + partBytes <= PROCESS_FS_HEAP_WINDOW_BYTES;
-        if (kept) heapBytes += partBytes;
-        queue.push({ op: kept ? part : null, jid, name: nameOf(part), seq: 0, order: ++logged, bytes: partBytes, paths: pathsOf(part), acknowledged, lingers, resolve, reject });
-        pendingBytes += partBytes;
-        if (acknowledged) {
-          pendingSyncBytes += partBytes;
-          pendingSyncOps++;
-        }
-        counters.ops++;
-      }));
-      schedule();
-      // A piece refused rejects the call; its last piece's receipt answers it,
-      // and its mutation spans them all.
-      const answer = Promise.all(answers).then((all): ProcessFsAnswer => {
-        const first = all[0]?.mutation;
-        const last = all[all.length - 1];
-        if (last === undefined) return {};
-        // An acknowledged piece refused: the call's failure (reported once, by the client).
-        const failed = all.find((piece) => piece.failed !== undefined)?.failed;
-        if (failed !== undefined) return { failed };
-        const { mutation: _mutation, ...rest } = last;
-        return first !== undefined && last.mutation !== undefined ? { ...rest, mutation: { before: first.before, after: last.mutation.after } } : rest;
-      });
-      if (acknowledged) answer.catch(() => {});
-      return answer;
+      return entered(given, submitOptions, false)!;
+    },
+    fold(given, submitOptions) {
+      return entered(given, submitOptions, true);
     },
     hurry() {
       for (const entry of queue) entry.lingers = false;

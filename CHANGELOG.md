@@ -16,6 +16,40 @@ published independently in the `@nimbus-sh` npm scope.
   walks. `route().path`, a pin's and a held file's name, and realpath are
   that spelling when it has a `..`. Before, the namespace collapsed the path
   lexically first, so the backend read `/f` for each of those.
+- Changed (core): the resident filesystem decides what a caller that
+  cannot wait changes outside a subtree the process holds (its
+  `synchronous` view). Such a change is answered at once, logged through
+  the process's one client, and seen by the process until the view has
+  the session's version of it. A descriptor names an inode, as on Linux.
+  This is the engine Node's `fs` moves onto next, and that move deletes
+  the shim's own. Each file the holder decides costs more CPU: on
+  holder-ops-cpu against main, writing 1,000 files is 25% slower, a tar
+  extract 5% and a checkout 8%. Clone, warm install, cold start, first
+  paint, module load and gem require take the same wall time (paired
+  against main, no detectable change).
+- Changed (core): an operation a process decides by name without waiting
+  carries the file it was decided on (W7 `expect`): the file's number,
+  none, or the open that made it. The session refuses it before any
+  effect where the name leads elsewhere by then (a peer replaced it, or a
+  link there leads to another file): ENOENT where a file was expected,
+  EEXIST where none was, EXDEV on a mount. The refusal is reported as any
+  refusal of a decision is. Before, the operation acted on whatever the
+  name led to, and an open's answer that named another file was merged
+  into it.
+- Fixed: `utimes`/`futimes` with `'now'` (or an omitted time) by a file's
+  owner now succeeds when the owner lacks write permission, as
+  utimensat(2) allows. Before, it was refused `EACCES`.
+- Fixed (data loss, since core 0.19): a recursive removal no longer enters a
+  mount point. `CompositeVFS.removeRecursive`, and so the shell's `rm -r`, the
+  SDK's `files.delete`, npm's and git's removals and a guest's `fs.rm`, keeps
+  the mount point and everything under it, reports it EBUSY in the result's
+  failures, and removes the rest, as GNU `rm --one-file-system` does. Before,
+  `rm -r` of a directory holding a mount deleted what the mount held (Kinu
+  ask 60: a connected machine's files).
+- Added: `MountOptions.removalCrosses`. A mount that sets it is crossed by a
+  recursive removal from above, as Linux's `rm -r` crosses one.
+- Fixed: the shell's `rm -r /` is refused, as GNU's `--preserve-root` (the
+  default; `--no-preserve-root` lifts it). `--one-file-system` is taken.
 - Fixed: a Node program that replaced `Array.prototype.push`, the array
   iterator, `String.prototype.split` or `replace`, `RegExp.prototype.exec` or
   `Set.prototype.has` can still import a module the launch did not hold, and

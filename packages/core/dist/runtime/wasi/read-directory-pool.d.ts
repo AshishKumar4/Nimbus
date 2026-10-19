@@ -28,7 +28,8 @@ export interface ReadDirectoryPool {
         key: string;
         entry: ResidentEntry;
     } | null;
-    close(id: number): void | Promise<void>;
+    /** `wait`: a close that may wait for the session retires what is queued when the queue is full; one that cannot queues it. */
+    close(id: number, wait?: boolean): void | Promise<void>;
     /** Only call where a real supervisor/store I/O reply arrived; timers never establish trust. */
     io(): void;
     /**

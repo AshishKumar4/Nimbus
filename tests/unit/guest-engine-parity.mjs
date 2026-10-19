@@ -25,6 +25,17 @@ import { APP, answeredAtOnce, ledgerScenarios, stat } from './lib/guest-engines.
 
 const OUT = `${APP}/out`;
 const enc = new TextEncoder();
+const dec = new TextDecoder();
+
+/** What the session holds at `path` now, read as its own store reads it (no recall); undefined where nothing is. */
+function sessionText(e, path) {
+  try { return e.authority.read(path.slice(1)); } catch { return undefined; }
+}
+
+/** Whether the session holds a name at `path` now, read as its own store reads it (no recall). */
+function sessionHas(e, path) {
+  try { e.authority.kfs.stat(path.slice(1)); return true; } catch { return false; }
+}
 
 /** The change `work` makes is answered with the session's waves stalled, and the session has it once they go. */
 async function decided(e, work, landed) {
@@ -200,6 +211,154 @@ const SCENARIOS = {
     await until(() => e.held(`${APP}/modes/x`), 'the chmods took their subtree', 5_000);
   },
 
+  // ── Synchronous calls: answered now, from what the process holds ──────
+  async 'a synchronous write in a held subtree is answered at once, and read back at once'(e) {
+    await e.hold(OUT);
+    await e.fs.readdir(OUT);
+    e.stall();
+    const written = e.sync.writeFile(`${OUT}/sync.txt`, enc.encode('SYNC'));
+    assert.ok(!(written instanceof Promise), 'a synchronous write began a wait');
+    assert.equal(dec.decode(e.sync.readFile(`${OUT}/sync.txt`)), 'SYNC');
+    assert.equal(stat(e.sync.stat(`${OUT}/sync.txt`)).size, 4);
+    await e.release();
+    assert.equal(await e.peerText(`${OUT}/sync.txt`), 'SYNC');
+  },
+  async 'synchronous mkdir, rename, chmod and unlink in a held subtree are answered at once'(e) {
+    await e.hold(OUT);
+    await e.fs.readdir(OUT);
+    e.stall();
+    e.sync.mkdir(`${OUT}/d`, { mode: 0o750 });
+    e.sync.writeFile(`${OUT}/a.txt`, enc.encode('A'));
+    e.sync.rename(`${OUT}/a.txt`, `${OUT}/d/b.txt`);
+    e.sync.chmod(`${OUT}/d/b.txt`, 0o600);
+    assert.equal(stat(e.sync.stat(`${OUT}/d/b.txt`)).mode, 0o600);
+    assert.equal(e.sync.stat(`${OUT}/a.txt`), null);
+    e.sync.writeFile(`${OUT}/gone.txt`, enc.encode('G'));
+    e.sync.unlink(`${OUT}/gone.txt`);
+    assert.equal(e.sync.stat(`${OUT}/gone.txt`), null);
+    await e.release();
+    assert.equal((await e.peerStat(`${OUT}/d`)).mode, 0o750);
+    assert.equal(await e.peerText(`${OUT}/d/b.txt`), 'A');
+    assert.equal((await e.peerStat(`${OUT}/d/b.txt`)).mode, 0o600);
+    assert.equal(sessionHas(e, `${OUT}/gone.txt`), false);
+  },
+
+  async 'a synchronous write outside a held subtree is answered at once, seen by name, and lands'(e) {
+    await e.fs.readdir(APP);
+    e.stall();
+    e.sync.writeFile(`${APP}/p.txt`, enc.encode('PROVISIONAL'));
+    assert.equal(dec.decode(e.sync.readFile(`${APP}/p.txt`)), 'PROVISIONAL');
+    assert.equal(stat(e.sync.stat(`${APP}/p.txt`)).size, 11);
+    await e.release();
+    await until(() => sessionText(e, `${APP}/p.txt`) === 'PROVISIONAL', 'the session has the write');
+  },
+  async 'synchronous mkdir -p, rename, chmod, symlink, rmdir and unlink outside a held subtree are answered at once, and land'(e) {
+    await e.fs.readdir(APP);
+    e.stall();
+    e.sync.mkdir(`${APP}/p/q`, { recursive: true, mode: 0o750 });
+    e.sync.writeFile(`${APP}/p/q/a.txt`, enc.encode('A'));
+    e.sync.rename(`${APP}/p/q/a.txt`, `${APP}/p/b.txt`);
+    e.sync.chmod(`${APP}/p/b.txt`, 0o600);
+    e.sync.symlink('b.txt', `${APP}/p/link`);
+    e.sync.mkdir(`${APP}/p/empty`);
+    e.sync.rmdir(`${APP}/p/empty`);
+    e.sync.writeFile(`${APP}/p/gone.txt`, enc.encode('G'));
+    e.sync.unlink(`${APP}/p/gone.txt`);
+    assert.equal(stat(e.sync.stat(`${APP}/p/q`)).type, 'directory');
+    assert.equal(stat(e.sync.stat(`${APP}/p/b.txt`)).mode, 0o600);
+    assert.equal(e.sync.readlink(`${APP}/p/link`), 'b.txt');
+    assert.equal(e.sync.stat(`${APP}/p/empty`), null);
+    assert.equal(e.sync.stat(`${APP}/p/gone.txt`), null);
+    assert.equal(e.sync.stat(`${APP}/p/q/a.txt`), null);
+    await e.release();
+    await until(() => sessionText(e, `${APP}/p/b.txt`) === 'A', 'the session has the rename');
+    await until(() => sessionText(e, `${APP}/p/gone.txt`) === undefined, 'the session has the unlink');
+    assert.equal((await e.peerStat(`${APP}/p/q`)).mode, 0o750);
+    assert.equal((await e.peerStat(`${APP}/p/b.txt`)).mode, 0o600);
+    assert.equal(await e.authority.peer.readlink(`${APP.slice(1)}/p/link`), 'b.txt');
+    await until(() => !sessionHas(e, `${APP}/p/empty`), 'the session has the rmdir');
+  },
+  async 'a synchronous change is seen until the view has the session\'s, and the session\'s after'(e) {
+    await e.fs.readdir(APP);
+    e.sync.writeFile(`${APP}/r.txt`, enc.encode('MINE'));
+    await until(() => sessionText(e, `${APP}/r.txt`) === 'MINE', 'the session has the write');
+    // Answered, and no barrier since: the view is the process's own still.
+    assert.equal(dec.decode(e.sync.readFile(`${APP}/r.txt`)), 'MINE');
+    assert.equal(dec.decode(await e.fs.readFile(`${APP}/r.txt`)), 'MINE');
+    // Retired: a peer's change is the view's once a barrier brings it.
+    await e.authority.peer.writeFile(`${APP.slice(1)}/r.txt`, 'THEIRS');
+    await until(() => sessionText(e, `${APP}/r.txt`) === 'THEIRS', 'the peer\'s write');
+    e.fs.inbound?.();
+    assert.equal(dec.decode(await e.fs.readFile(`${APP}/r.txt`)), 'THEIRS');
+  },
+
+  async 'what the session refused of a synchronous write is the next fsync\'s answer'(e) {
+    await e.authority.peer.mkdir(`${APP.slice(1)}/locked`, { mode: 0o755 });
+    await e.fs.readdir(APP);
+    await e.fs.readdir(`${APP}/locked`);
+    e.stall();
+    e.sync.writeFile(`${APP}/locked/x.txt`, enc.encode('X'));
+    // The session's directory changes before the write reaches it: it refuses it.
+    await e.authority.peer.chmod(`${APP.slice(1)}/locked`, 0o555);
+    await e.release();
+    const fd = e.sync.open(`${APP}/other.txt`, { write: true, create: true, truncate: true, mode: 0o644 }).id;
+    let refused;
+    await until(() => {
+      try { e.sync.fsync(fd); return false; } catch (error) { refused = error; return true; }
+    }, 'the refusal reported');
+    assert.equal(refused.code, 'EACCES', refused.message);
+    e.sync.close(fd);
+    assert.equal(sessionText(e, `${APP}/locked/x.txt`), undefined);
+  },
+
+  // ── A synchronous descriptor names its file, as on Linux ──────────────
+  async 'a synchronous open reads nothing: its read needs the bytes, an awaited read fetches them'(e) {
+    await e.authority.peer.writeFile(`${APP.slice(1)}/far.txt`, 'FAR');
+    await e.fs.readdir(APP);
+    const fd = e.sync.open(`${APP}/far.txt`, { read: true }).id;
+    // Its bytes now, where the process holds them; else not resident, refused at the read.
+    try { assert.equal(dec.decode(e.sync.read(fd, 0, 16)), 'FAR'); } catch (error) { assert.equal(error.code, 'EAGAIN', error.message); }
+    assert.equal(dec.decode(await e.readFd(fd, 0, 16)), 'FAR');
+    assert.equal(dec.decode(e.sync.read(fd, 0, 16)), 'FAR');
+    e.sync.close(fd);
+  },
+  async 'a synchronous descriptor reads what is written to its file, by name or through another'(e) {
+    await e.fs.readdir(APP);
+    e.sync.writeFile(`${APP}/live.txt`, enc.encode('OLD'));
+    const r = e.sync.open(`${APP}/live.txt`, { read: true }).id;
+    e.sync.writeFile(`${APP}/live.txt`, enc.encode('NEW'));
+    assert.equal(dec.decode(e.sync.read(r, 0, 16)), 'NEW');
+    const w = e.sync.open(`${APP}/live.txt`, { read: true, write: true }).id;
+    e.sync.write(w, 0, enc.encode('X'));
+    assert.equal(dec.decode(e.sync.read(r, 0, 16)), 'XEW');
+    e.sync.ftruncate(w, 1);
+    assert.equal(dec.decode(e.sync.read(r, 0, 16)), 'X');
+    e.sync.close(w);
+    e.sync.close(r);
+  },
+  async 'a synchronous descriptor reads the file it opened after its name is unlinked'(e) {
+    await e.fs.readdir(APP);
+    e.sync.writeFile(`${APP}/kept.txt`, enc.encode('KEPT'));
+    const r = e.sync.open(`${APP}/kept.txt`, { read: true }).id;
+    e.sync.unlink(`${APP}/kept.txt`);
+    e.sync.writeFile(`${APP}/kept.txt`, enc.encode('OTHER'));
+    assert.equal(dec.decode(e.sync.read(r, 0, 16)), 'KEPT', 'the descriptor read the name\'s new file');
+    assert.equal(Number(e.sync.fstat(r).nlink), 0);
+    e.sync.close(r);
+  },
+  async 'a synchronous open is judged by its file\'s mode for the access it asks'(e) {
+    await e.fs.readdir(APP);
+    e.sync.writeFile(`${APP}/ro.txt`, enc.encode('R'));
+    e.sync.chmod(`${APP}/ro.txt`, 0o444);
+    e.sync.writeFile(`${APP}/wo.txt`, enc.encode('W'));
+    e.sync.chmod(`${APP}/wo.txt`, 0o222);
+    e.sync.close(e.sync.open(`${APP}/ro.txt`, { read: true }).id);
+    assert.throws(() => e.sync.open(`${APP}/ro.txt`, { write: true }), { code: 'EACCES' });
+    assert.throws(() => e.sync.open(`${APP}/ro.txt`, { read: true, write: true }), { code: 'EACCES' });
+    e.sync.close(e.sync.open(`${APP}/wo.txt`, { write: true }).id);
+    assert.throws(() => e.sync.open(`${APP}/wo.txt`, { read: true }), { code: 'EACCES' });
+  },
+
   // ── Descriptors ────────────────────────────────────────────────────────
   async 'an open description reads the file it opened after its name is unlinked'(e) {
     await e.hold(OUT);
@@ -368,6 +527,7 @@ const GAPS = {
   'fchmod, fchown and futimes change the file a description opened after its name is renamed [node]': { lacks: PATH_FDS, shows: 'ENOENT' },
   'fchmod of a file whose name is gone is judged as the session judges a description: a confined principal grants nothing [node]': { lacks: PATH_FDS, shows: 'ENOENT' },
   'fchmod, fchown and futimes through the session\'s description change the file it opened, not the name\'s [node]': { lacks: PATH_FDS, shows: 'the opened file did not change as asked' },
+  'a synchronous descriptor reads the file it opened after its name is unlinked [node]': { lacks: PATH_FDS, shows: 'the descriptor read the name\'s new file' },
 };
 
 await runScenarios(import.meta.path, ledgerScenarios(SCENARIOS), { gaps: GAPS });

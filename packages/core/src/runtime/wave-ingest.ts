@@ -1043,6 +1043,8 @@ export class WaveIngest {
      * `changed`: the name it changes on the mount, which a captured run
      * cannot put back (WaveScope.landsElsewhere).
      */
+    /** A record the process decided on a file of this filesystem it expected at the name (W7Expected): a mount's is never that file. */
+    const elsewhere = (named: string): Error => vfsError('EXDEV', named, 'the name leads to a mount, not the file the process decided this on');
     const reached = (changed: string | null): void => {
       if (changed !== null) scope.landsElsewhere(changed);
       if (at.reach === undefined) return;
@@ -1129,6 +1131,7 @@ export class WaveIngest {
           call.path,
         );
         if (placed === null) return false;
+        if ('expect' in call && call.expect !== undefined) throw elsewhere(call.path);
         at.setPhase('publish');
         await at.settleBefore();
         reached(call.call !== 'open' || openAccessRights(call.access).write || call.create === true || call.truncate === true || call.fchmod !== undefined ? placed : null);
@@ -1159,6 +1162,7 @@ export class WaveIngest {
         const from = await mountOf('delete', record.from);
         const to = await mountOf('file', record.to);
         if (from === null && to === null) return false;
+        if (record.expect !== undefined || record.expectTo !== undefined) throw elsewhere(record.from);
         if (from === null || to === null || router.placement(from) !== router.placement(to)) {
           throw vfsError('EXDEV', record.from, `a rename to '${record.to}' crosses a mount`);
         }
@@ -1173,8 +1177,25 @@ export class WaveIngest {
       case 'setattr': {
         // A mode changes who may search a directory: later names resolve again.
         if (record.type === 'setattr') at.routes.clear();
+        // Through a description it is that description's, never placed by its name: a mount's file
+        // wherever its name leads now; any other is this filesystem's (EBADF for one not open).
+        if (record.type === 'setattr' && record.description !== undefined) {
+          const described = at.descriptions?.mounted(record.description);
+          if (described === undefined) return false;
+          at.setPhase('publish');
+          await at.settleBefore();
+          // A mount's change, wherever its name leads now: as a write through a description, its record's name.
+          reached(record.path);
+          const attrs = record.attrs;
+          await backend(Promise.resolve('mode' in attrs ? described.chmod(attrs.mode, at.guard)
+            : 'uid' in attrs ? described.chown(attrs.uid, attrs.gid, at.guard)
+            : described.utimes(attrs.atime, attrs.mtime, at.guard)));
+          at.committed(null, 0);
+          return true;
+        }
         const placed = await mountOf('file', record.path);
         if (placed === null) return false;
+        if (record.type === 'setattr' && record.expect !== undefined) throw elsewhere(record.path);
         at.setPhase('publish');
         await at.settleBefore();
         reached(placed);

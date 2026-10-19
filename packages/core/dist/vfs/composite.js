@@ -3022,6 +3022,12 @@ export class CompositeVFS {
                 lstat: (r) => this.statAt(at(r), false, sync),
                 readdir: (r) => this.readdirAt(at(r), sync),
                 remove: (r, dir) => andThen(this.onMutation(at(r), false, sync, dir ? 'removed' : 'unlinked', (backend, backendRel, named) => removeOn(backend, backendRel, dir, this.locate(named).mount, named), { told: null, recursiveEntry: true }), () => undefined),
+                // A mount point is entered only by a mount that asks to be (MountOptions.removalCrosses).
+                crosses: (r) => {
+                    const point = at(r);
+                    const held = point === ROOT_POINT ? undefined : this.table.mounts.get(point);
+                    return held === undefined || held.options.removalCrosses === true;
+                },
             }
             : {
                 lstat: (r) => { this.check?.(); return ops.stat(r, { follow: false }); },

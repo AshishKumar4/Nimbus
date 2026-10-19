@@ -43,7 +43,7 @@
  * (ProcessFiles' process view), so its waves name none. A subtree the
  * session refused is not asked for again.
  */
-import { type W7Attrs, type W7Call } from '@nimbus-sh/platform/w7-frame.js';
+import { type W7Attrs, type W7Call, type W7Expected } from '@nimbus-sh/platform/w7-frame.js';
 import type { ExclusiveMutationGrant, GrantCertificate, RecallKind } from '../runtime/os-contracts.js';
 import { type WaveFence, type WaveTimers } from '@nimbus-sh/platform/wave-writer.js';
 import { SYSCALL_VERDICTS } from '../vfs/vfs-error.js';
@@ -56,18 +56,26 @@ export { SYSCALL_VERDICTS };
 export type ProcessFsOp = {
     type: 'call';
     call: W7Call;
-} | {
+}
+/** `expect`, `expectTo`: the files the process decided it on at `from` and `to` (W7Expected). */
+ | {
     type: 'rename';
     from: string;
     to: string;
+    expect?: W7Expected;
+    expectTo?: W7Expected;
 } | {
     type: 'truncate';
     path: string;
     size: number;
-} | {
+}
+/** `description`: fchmod, fchown or futimens through the process's open description of that id. */
+ | {
     type: 'setattr';
     path: string;
     attrs: W7Attrs;
+    description?: string;
+    expect?: W7Expected;
 };
 /** What the client asks of the session. */
 export interface ProcessFsSession {
@@ -127,10 +135,15 @@ export interface ProcessFsAnswer {
         before: number;
         after: number;
     };
-    /** An acknowledged op the session refused or never answered (it is reported, never thrown). */
+    /**
+     * An acknowledged op the session refused or never answered (it is
+     * reported, never thrown): `refused` where it never applied it (its
+     * verdict, or it was never sent); else its fate is unknown.
+     */
     failed?: {
         errno: string;
         message: string;
+        refused?: true;
     };
 }
 /** An op the program was told succeeded that the session refused, or whose fate it could not answer. */
@@ -224,6 +237,21 @@ export interface ProcessFsClient {
         acknowledged?: boolean;
         decided?: boolean;
     }): Promise<ProcessFsAnswer>;
+    /**
+     * Whether `bytes` more of synchronous (acknowledged) writes fit under the
+     * cap the client holds unanswered: throws submit's ENOMEM where they would
+     * not, for a caller that has changed nothing yet.
+     */
+    fitsSync(bytes: number, path: string): void;
+    /**
+     * `op` folded into the last unsent change, as submit folds the same file's
+     * next bytes through the same description: its bytes copied into that
+     * change's (the caller's buffer is not kept), answered with that change's
+     * answer. Undefined, nothing logged, where it does not continue it.
+     */
+    fold(op: ProcessFsOp, submitOptions?: {
+        acknowledged?: boolean;
+    }): Promise<ProcessFsAnswer> | undefined;
     /** Send what lingers now: someone waits on one of the process's own changes. */
     hurry(): void;
     /**

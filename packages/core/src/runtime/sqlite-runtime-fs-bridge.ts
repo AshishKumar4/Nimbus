@@ -12,27 +12,8 @@ import { modeAllows } from '../vfs/posix-access.js';
 import { sameFileVersion } from './os-contracts.js';
 
 export { fsError, walkBeneath, type BeneathLookup } from './beneath-walk.js';
-import type {
-  RuntimeFileHandle,
-  RuntimeOpenedFile,
-  RuntimeFsPath,
-  RuntimeReadFileOptions,
-  RuntimeReadOptions,
-  RuntimeSynchronousFs,
-  RuntimeFsBridge,
-  RuntimeOpenFlags,
-  RuntimeReopenTarget,
-  RuntimeVfsDirEntry,
-  RuntimeVfsStat,
-  VfsAcquireOptions,
-  VfsAcquireResult,
-  VfsListPage,
-  VfsMutationReceipt,
-  RuntimeMutationOwner,
-  ExclusiveMutationGrant,
-  ExclusiveMutationRequest,
-  FsTime,
-} from './os-contracts.js';
+import type { RuntimeFileHandle, RuntimeOpenedFile, RuntimeFsPath, RuntimeReadFileOptions, RuntimeReadOptions, RuntimeSynchronousFs, RuntimeFsBridge, RuntimeOpenFlags, RuntimeReopenTarget, RuntimeVfsDirEntry, RuntimeVfsStat, VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeMutationOwner, ExclusiveMutationGrant, ExclusiveMutationRequest } from './os-contracts.js';
+import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 
 export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   readonly synchronous: RuntimeSynchronousFs = this;

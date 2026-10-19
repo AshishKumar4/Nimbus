@@ -164,6 +164,13 @@ export function createLazy(
         },
         reserve: (bytes) => admission.pin(bytes),
         release: (bytes) => admission.unpin(bytes),
+        // Each row as it is put, the process's (one listener: this view's process, a later one replacing it).
+        onAdmitted(listener) {
+          namespace.onPut((k) => {
+            const entry = view.entry(k);
+            if (entry) listener(k, entry);
+          });
+        },
       };
       return view;
     },

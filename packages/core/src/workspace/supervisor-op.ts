@@ -12,7 +12,8 @@ import { ProcessFiles } from '../runtime/process-files.js';
 import { RuntimeFsPathSchema as FsPath } from '../runtime/filesystem-path.js';
 import { readDirectoryBatch } from '../runtime/read-directory-batch.js';
 import { sendRemoval } from '../runtime/filesystem-methods.js';
-import type { FsTime, NimbusFilesystemAuthority, NimbusHostFilesystemLease, RuntimeFsBridge, RuntimeFsPath, RuntimeMutationOwner, RuntimeVfsStat } from '../runtime/os-contracts.js';
+import type { NimbusFilesystemAuthority, NimbusHostFilesystemLease, RuntimeFsBridge, RuntimeFsPath, RuntimeMutationOwner, RuntimeVfsStat } from '../runtime/os-contracts.js';
+import { parseFsTime, type FsTime } from '@nimbus-sh/platform/w7-frame.js';
 import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import {
   supervisorDeliveredOp,
@@ -171,8 +172,7 @@ function nullableNumberArg(envelope: SupervisorOpEnvelope, index: number): numbe
 
 /** A time as utimes and futimes take it (FsTime): finite ms, 'now' or 'omit'. */
 function timeArg(envelope: SupervisorOpEnvelope, index: number): FsTime {
-  const value = envelope.args?.[index];
-  return value === 'now' || value === 'omit' ? value : numberArg(envelope, index);
+  return parseFsTime(envelope.args?.[index], `supervisor op ${envelope.op}: argument ${index}`);
 }
 
 function bytesArg(envelope: SupervisorOpEnvelope, index: number): Uint8Array {

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { processFsClient } from '../../packages/core/src/_shared/process-fs-client.ts';
 import { readDirectoryPool } from '../../packages/core/src/runtime/wasi/read-directory-pool.ts';
+import { DIRECTORY_PREFETCH_LIMIT } from '../../packages/core/src/constants.ts';
 
 const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
 function fixture(options = {}) {
@@ -232,6 +233,25 @@ function fixture(options = {}) {
   assert.equal(received.length, 2);
   s.admission = null;
   assert.deepEqual((await s.retiredNext()).filter((id) => received.includes(id)).sort(), received.sort(), 'no received ID was lost between receipt and admission');
+  await s.close();
+}
+// A close that cannot wait (a synchronous caller's) queues its retirement
+// and begins no exchange, however full the queue. Red before: the close that
+// filled the queue waited on its retirement.
+{
+  const s = fixture();
+  for (let i = 100; i < 140; i++) s.nodes.set(`d${i}`, { ...s.nodes.get('d0'), ino: i + 1 });
+  // Every description the pool may hold, open: closed, they fill its retirement queue.
+  const ids = [];
+  for (let i = 0; i < 140; i++) {
+    const opened = await s.pool.open(`/d${i}`, `d${i}`, async () => []);
+    if (opened === null) break;
+    ids.push(opened.id);
+  }
+  assert.equal(ids.length, DIRECTORY_PREFETCH_LIMIT);
+  const sent = s.calls.length;
+  for (const id of ids) assert.equal(s.pool.close(id, false), undefined, 'a close that cannot wait began a retirement exchange');
+  assert.equal(s.calls.length, sent);
   await s.close();
 }
 console.log('read-directory-pool: original ask, recall ordering, final namespace, late parks and bounded lifetime');

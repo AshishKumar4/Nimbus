@@ -85,10 +85,21 @@ export interface BatchWritePayload {
  * chmod, chown and utimes each make. An owner side that is null keeps what
  * the file has when the change lands (chown's -1).
  */
+/**
+ * A time utimes and futimes set, as utimensat(2) takes it: ms since the
+ * epoch (explicit: only the owner may set it), 'now' (UTIME_NOW: the
+ * clock of the filesystem that commits the change, as it commits it) or
+ * 'omit' (UTIME_OMIT: left as it is then). 'now' and 'omit' need the owner or write
+ * permission. Carried as it is to the filesystem that commits the change,
+ * which alone resolves it (posix-access.ts, timeAt) and judges it
+ * (utimesRefusal, explicitTimes).
+ */
+export type FsTime = number | 'now' | 'omit';
+
 export type W7Attrs =
   | { mode: number }
   | { uid: number | null; gid: number | null }
-  | { atime: number; mtime: number };
+  | { atime: FsTime; mtime: FsTime };
 
 /**
  * A process's filesystem call as a record (v4), applied by the session's own
@@ -115,6 +126,19 @@ export function openAccessMask(call: { access: W7OpenAccess; truncate?: true }):
   const rights = openAccessRights(call.access);
   return (rights.read ? 4 : 0) | (rights.write || call.truncate === true ? 2 : 0);
 }
+
+/**
+ * What a process decided a call on from its own view of the name: the file
+ * it expected there (its number on the session's filesystem), none (null),
+ * or the file its open of description `made` reached, for a file that open
+ * made and the process has no number of yet (it keeps that description
+ * open until it has). Where the name leads elsewhere now (a stale view: a
+ * peer replaced the name, or a link there leads to another file; or that
+ * open was refused), the session refuses the call before any effect:
+ * ENOENT where it expected a file, EEXIST where it expected none, EXDEV
+ * where the name leads to a mount.
+ */
+export type W7Expected = number | null | { readonly made: string };
 
 export type W7Call =
   /**
@@ -144,8 +168,8 @@ export type W7Call =
   | { call: 'ftruncate'; path: string; ino?: number; description?: string; size: number }
   /** `existing: 'ok'`: a directory already there answers success, as `mkdir -p` takes it (anything else there is still EEXIST). */
   | { call: 'mkdir'; path: string; mode: number; ino?: number; umask?: number; existing?: 'ok' }
-  | { call: 'unlink'; path: string }
-  | { call: 'rmdir'; path: string }
+  | { call: 'unlink'; path: string; expect?: W7Expected }
+  | { call: 'rmdir'; path: string; expect?: W7Expected }
   | { call: 'symlink'; path: string; target: string; ino?: number }
   /**
    * copyfile as the session copies a file: the file \`from\` names (a link
@@ -182,7 +206,7 @@ export type W7Call =
    * open: refused (EPERM: another's file), the open is refused and keeps no
    * description, so a write through it is EBADF.
    */
-  | { call: 'open'; path: string; mode: number; access: W7OpenAccess; ino?: number; umask?: number; create?: true; truncate?: true; exclusive?: true; nofollow?: true; description?: string; fchmod?: number }
+  | { call: 'open'; path: string; mode: number; access: W7OpenAccess; ino?: number; umask?: number; create?: true; truncate?: true; exclusive?: true; nofollow?: true; description?: string; fchmod?: number; expect?: W7Expected }
   /** close(2) of the session's open description `description` (an `open` call's). */
   | { call: 'close'; path: string; description: string };
 
@@ -197,9 +221,11 @@ export type W7Op =
   | { type: 'directory'; inode: BatchInodeEntry }
   | { type: 'file'; inode: BatchInodeEntry; data: Uint8Array }
   | { type: 'file'; inode: BatchInodeEntry; source: AsyncIterable<Uint8Array> }
-  | { type: 'rename'; from: string; to: string }
+  /** `expect`, `expectTo`: the files the process expected at `from` and at `to` (W7Expected). */
+  | { type: 'rename'; from: string; to: string; expect?: W7Expected; expectTo?: W7Expected }
   | { type: 'truncate'; path: string; size: number }
-  | { type: 'setattr'; path: string; attrs: W7Attrs }
+  /** `description`: through the session's open description of that id (fchmod, fchown, futimens): its file, whatever names it now. */
+  | { type: 'setattr'; path: string; attrs: W7Attrs; description?: string; expect?: W7Expected }
   | { type: 'call'; call: W7Call };
 
 export const W7_MAGIC = new Uint8Array([0x4e, 0x57, 0x37, 0x04]);
@@ -350,9 +376,9 @@ export type W7DecodedRecord =
       chunkCount: number;
       check: number;
     }
-  | { type: 'rename'; from: string; to: string }
+  | { type: 'rename'; from: string; to: string; expect?: W7Expected; expectTo?: W7Expected }
   | { type: 'truncate'; path: string; size: number }
-  | { type: 'setattr'; path: string; attrs: W7Attrs }
+  | { type: 'setattr'; path: string; attrs: W7Attrs; description?: string; expect?: W7Expected }
   | { type: 'call'; call: W7PathCall }
   | { type: 'batch-end'; summary: W7BatchSummary };
 
@@ -367,9 +393,9 @@ type EncoderOp =
   | { kind: 'delete'; path: string }
   | { kind: 'directory'; inode: W7DirectoryInode }
   | { kind: 'file'; file: EncoderFile }
-  | { kind: 'rename'; from: string; to: string }
+  | { kind: 'rename'; from: string; to: string; expect?: W7Expected; expectTo?: W7Expected }
   | { kind: 'truncate'; path: string; size: number }
-  | { kind: 'setattr'; path: string; attrs: W7Attrs }
+  | { kind: 'setattr'; path: string; attrs: W7Attrs; description?: string; expect?: W7Expected }
   | { kind: 'call'; call: W7PathCall };
 
 interface EncoderFile {
@@ -712,7 +738,7 @@ async function* decodeRecords(
           if (v3) throw new Error(`w7-frame: unknown record tag ${envelope.tag}`);
           summary.pathCount++;
           summary.opCount++;
-          const value = parseObject(payload, 'call', ['call', 'path'], ['mode', 'target', 'from', 'ino', 'size', 'existing', 'recursive', 'force', 'uid', 'gid', 'atime', 'mtime', 'umask', 'access', 'create', 'truncate', 'exclusive', 'nofollow', 'description', 'fchmod']);
+          const value = parseObject(payload, 'call', ['call', 'path'], ['mode', 'target', 'from', 'ino', 'size', 'existing', 'recursive', 'force', 'uid', 'gid', 'atime', 'mtime', 'umask', 'access', 'create', 'truncate', 'exclusive', 'nofollow', 'description', 'fchmod', 'expect']);
           yield { type: 'call', call: parsePathCall(value, (path, label) => ownedPaths.claim(canonicalPath(path, label))) };
           break;
         }
@@ -723,18 +749,21 @@ async function* decodeRecords(
           summary.pathCount++;
           summary.opCount++;
           if (envelope.tag === RecordTag.Rename) {
-            const value = parseObject(payload, 'rename', ['from', 'to']);
+            const value = parseObject(payload, 'rename', ['from', 'to'], ['expect', 'expectTo']);
             const from = ownedPaths.claim(canonicalPath(value.from, 'rename source'));
             const to = ownedPaths.claim(canonicalPath(value.to, 'rename target'));
-            yield { type: 'rename', from, to };
+            yield { type: 'rename', from, to, ...expectations(value, 'rename') };
           } else if (envelope.tag === RecordTag.Truncate) {
             const value = parseObject(payload, 'truncate', ['path', 'size']);
             yield { type: 'truncate', path: ownedPaths.claim(canonicalPath(value.path, 'truncate path')), size: safeInteger(value.size, 'truncate size') };
           } else {
-            const value = parseObject(payload, 'setattr', ['path'], ['mode', 'uid', 'gid', 'atime', 'mtime']);
+            const value = parseObject(payload, 'setattr', ['path'], ['mode', 'uid', 'gid', 'atime', 'mtime', 'description', 'expect']);
             const path = ownedPaths.claim(canonicalPath(value.path, 'setattr path'));
-            const { path: _path, ...attrs } = value;
-            yield { type: 'setattr', path, attrs: parseAttrs(attrs, 'setattr') };
+            const { path: _path, description, expect: _expect, ...attrs } = value;
+            yield {
+              type: 'setattr', path, attrs: parseAttrs(attrs, 'setattr'),
+              ...(description === undefined ? {} : { description: descriptionId(description, 'setattr description') }), ...expectations(value, 'setattr'),
+            };
           }
           break;
         }
@@ -803,7 +832,7 @@ async function* encodeRecords(batchId: string, ops: readonly EncoderOp[]): Async
       case 'rename':
         state.summary.pathCount++;
         state.summary.opCount++;
-        yield encodeMetadataRecord(RecordTag.Rename, { from: op.from, to: op.to }, state);
+        yield encodeMetadataRecord(RecordTag.Rename, { from: op.from, to: op.to, ...expectations(op, 'rename') }, state);
         break;
       case 'truncate':
         state.summary.pathCount++;
@@ -813,7 +842,7 @@ async function* encodeRecords(batchId: string, ops: readonly EncoderOp[]): Async
       case 'setattr':
         state.summary.pathCount++;
         state.summary.opCount++;
-        yield encodeMetadataRecord(RecordTag.SetAttr, { path: op.path, ...op.attrs }, state);
+        yield encodeMetadataRecord(RecordTag.SetAttr, { path: op.path, ...op.attrs, ...(op.description === undefined ? {} : { description: op.description }), ...expectations(op, 'setattr') }, state);
         break;
       case 'call':
         state.summary.pathCount++;
@@ -1020,11 +1049,16 @@ function prepareOps(payload: BatchWritePayload, batchId: string): EncoderOp[] {
           kind: 'rename',
           from: ownedPaths.claim(canonicalPath(op.from, 'rename source')),
           to: ownedPaths.claim(canonicalPath(op.to, 'rename target')),
+          ...expectations(op, 'rename'),
         };
       case 'truncate':
         return { kind: 'truncate', path: ownedPaths.claim(canonicalPath(op.path, 'truncate path')), size: safeInteger(op.size, 'truncate size') };
       case 'setattr':
-        return { kind: 'setattr', path: ownedPaths.claim(canonicalPath(op.path, 'setattr path')), attrs: parseAttrs(op.attrs as Record<string, unknown>, 'setattr') };
+        return {
+          kind: 'setattr', path: ownedPaths.claim(canonicalPath(op.path, 'setattr path')), attrs: parseAttrs(op.attrs as Record<string, unknown>, 'setattr'),
+          ...(op.description === undefined ? {} : { description: descriptionId(op.description, 'setattr description') }),
+          ...expectations(op, 'setattr'),
+        };
       case 'call': {
         const call = op.call;
         if ('data' in call) {
@@ -1060,8 +1094,15 @@ function parseAttrs(value: Record<string, unknown>, label: string): W7Attrs {
   const keys = Object.keys(value).sort().join(',');
   if (keys === 'mode') return { mode: u32(value.mode, `${label} mode`) };
   if (keys === 'gid,uid') return { uid: ownerId(value.uid, `${label} uid`), gid: ownerId(value.gid, `${label} gid`) };
-  if (keys === 'atime,mtime') return { atime: safeInteger(value.atime, `${label} atime`), mtime: safeInteger(value.mtime, `${label} mtime`) };
+  if (keys === 'atime,mtime') return { atime: parseFsTime(value.atime, `w7-frame: ${label} atime`), mtime: parseFsTime(value.mtime, `w7-frame: ${label} mtime`) };
   throw new Error(`w7-frame: ${label} changes the mode, the owner or the times, one of them: got ${keys || 'nothing'}`);
+}
+
+/** `value` as an FsTime (a finite number of milliseconds, 'now' or 'omit'); else an error naming `label`. */
+export function parseFsTime(value: unknown, label: string): FsTime {
+  if (value === 'now' || value === 'omit') return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  throw new Error(`${label} must be a time: milliseconds, 'now' or 'omit'`);
 }
 
 function parseDelete(bytes: Uint8Array): DeleteMetadata {
@@ -1139,8 +1180,8 @@ function parsePathCall(value: Record<string, unknown>, path: (value: unknown, la
     }
     case 'unlink':
     case 'rmdir':
-      if (keys !== 'call,path') break;
-      return { call: value.call, path: path(value.path, `${value.call} path`) };
+      if (keys !== 'call,path' && keys !== 'call,expect,path') break;
+      return { call: value.call, path: path(value.path, `${value.call} path`), ...expectations(value, value.call) };
     case 'symlink':
       if (keys !== 'call,path,target' && keys !== 'call,ino,path,target') break;
       return {
@@ -1177,7 +1218,7 @@ function parsePathCall(value: Record<string, unknown>, path: (value: unknown, la
     case 'open': {
       const flags = ['create', 'exclusive', 'nofollow', 'truncate'] as const;
       let required = keys;
-      for (const flag of ['create', 'description', 'exclusive', 'fchmod', 'ino', 'nofollow', 'truncate', 'umask']) required = required.replace(`,${flag}`, '');
+      for (const flag of ['create', 'description', 'exclusive', 'expect', 'fchmod', 'ino', 'nofollow', 'truncate', 'umask']) required = required.replace(`,${flag}`, '');
       if (required !== 'access,call,mode,path') break;
       for (const flag of flags) {
         if (value[flag] !== undefined && value[flag] !== true) throw new Error(`w7-frame: open ${flag} is true or absent`);
@@ -1194,6 +1235,7 @@ function parsePathCall(value: Record<string, unknown>, path: (value: unknown, la
         ...(value.nofollow === true ? { nofollow: true as const } : {}),
         ...(value.description === undefined ? {} : { description: descriptionId(value.description, 'open description') }),
         ...(value.fchmod === undefined ? {} : { fchmod: u32(value.fchmod, 'open fchmod') }),
+        ...expectations(value, 'open'),
       };
     }
     case 'lutimes':
@@ -1266,6 +1308,22 @@ function inodeNumber(value: unknown, label: string): number {
   const ino = safeInteger(value, label);
   if (ino < 2) throw new Error(`w7-frame: ${label} must be at least 2`);
   return ino;
+}
+
+/** A record's expectations (W7Expected), checked: `expect`, and a rename's `expectTo`. */
+function expectations(value: { expect?: unknown; expectTo?: unknown }, label: string): { expect?: W7Expected; expectTo?: W7Expected } {
+  const expected = (field: unknown, name: string): W7Expected => {
+    if (field === null) return null;
+    if (isObject(field) && !Array.isArray(field)) {
+      if (Object.keys(field).join(',') !== 'made') throw new Error(`w7-frame: ${label} ${name} is a number, null or { made }`);
+      return { made: descriptionId(field.made, `${label} ${name} made`) };
+    }
+    return inodeNumber(field, `${label} ${name}`);
+  };
+  return {
+    ...(value.expect === undefined ? {} : { expect: expected(value.expect, 'expect') }),
+    ...(value.expectTo === undefined ? {} : { expectTo: expected(value.expectTo, 'expectTo') }),
+  };
 }
 
 function parseObject(

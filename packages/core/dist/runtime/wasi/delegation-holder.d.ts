@@ -34,8 +34,9 @@
  * a guest that waits in a syscall lets it run; one computing does not
  * (the documented limit, answered by the session's recall timeout).
  */
-import type { FsTime, RuntimeFileHandle, RuntimeOpenFlags, RuntimeVfsDirEntry } from '../os-contracts.js';
+import type { RuntimeFileHandle, RuntimeOpenFlags, RuntimeVfsDirEntry } from '../os-contracts.js';
 import type { ResidentEntry } from './resident-filesystem.js';
+import { type Provisional } from './provisional.js';
 import type { W7Attrs } from '@nimbus-sh/platform/w7-frame.js';
 import { type ProcessFsClient, type ProcessFsJournal, type ProcessFsSession } from '../../_shared/process-fs-client.js';
 /** What the holder reads of the process's resident store (its own decisions aside). */
@@ -50,6 +51,11 @@ export interface HolderStore {
     entry(key: string): ResidentEntry | null | undefined;
     /** As ResidentNamespace.children. */
     children(key: string): RuntimeVfsDirEntry[] | undefined;
+    /** As ResidentNamespace.content: the store's bytes of `key` at `revision`, where it holds them. */
+    content?(key: string, revision: number): Uint8Array | undefined;
+    /** As ResidentNamespace.reserve and release: what a provisional decision keeps takes of the process's budget (no grant reserved it). */
+    reserve?(bytes: number): boolean;
+    release?(bytes: number): void;
 }
 export interface HolderOptions {
     /** The session the process's filesystem client sends to and takes its grants from. */
@@ -67,37 +73,31 @@ export interface HolderOptions {
     readonly grantInos?: number;
     /** Where the client logs what it sends until the session answers: the process's own store, where it has one (process-fs-journal.ts). */
     readonly journal?: ProcessFsJournal;
+    /**
+     * Whether the caller deciding now cannot wait (ResidentFilesystem.synchronous):
+     * what no held subtree decides is then its provisional decisions' (provisional.ts),
+     * and a change is counted toward taking a subtree only once one makes it.
+     */
+    readonly cannotWait?: () => boolean;
+    /** The process's live umask, for what it makes provisionally (a held subtree's grant carries the session's). */
+    readonly umask?: () => number;
 }
-/** A file made or rewritten here: its bytes until they are sent. */
-/** An attribute change by a descriptor: a mode, an owner (null or -1 kept), or times (FsTime). */
-export type HolderAttrChange = {
-    mode: number;
-} | {
-    uid: number | null;
-    gid: number | null;
-} | {
-    atime: FsTime;
-    mtime: FsTime;
-};
 /** The decisions the process made in a held subtree, not yet sent. */
 export interface DelegationHolder {
     /** The process's filesystem client: what the holder decided is logged into it. */
     readonly client: ProcessFsClient;
+    /** What a caller that cannot wait decides where no held subtree does: its descriptors are the holder's too (owns). */
+    readonly provisional: Provisional;
     /** What the process decided is at `key`: an entry, null (removed), or undefined (nothing decided). */
     entry(key: string): ResidentEntry | null | undefined;
+    /** What the process sees at `key`: what it decided (entry), else the store's; undefined where neither knows. */
+    row(key: string): ResidentEntry | null | undefined;
     /** The names in `key`, as `base` lists them with what the process decided there. */
     children(key: string, base: RuntimeVfsDirEntry[] | undefined): RuntimeVfsDirEntry[] | undefined;
     /** The bytes of a file made or rewritten here. */
     content(entry: ResidentEntry): Uint8Array | undefined;
     /** Whether `handleId` is one of the holder's own descriptors. */
     owns(handleId: number): boolean;
-    /**
-     * Open `key` to write it at the session, as a write description outside
-     * any subtree this process holds: one `open` call (W7Call open), ordered
-     * with everything the process logged before it and answered with the
-     * file's stat; the description it returns writes through (LocalFile.through).
-     */
-    openThrough(key: string, path: string, flags: RuntimeOpenFlags): Promise<RuntimeFileHandle>;
     /**
      * Everything logged so far answered, what the session refused kept for the
      * next sync (flush) to report: what goes before a call to the session.
@@ -106,46 +106,37 @@ export interface DelegationHolder {
     /** A refusal the session has made of what this process logged, thrown now (with its errno), not waiting for anything: what a close reports. */
     reportRecorded(): void;
     /**
-     * Whether a change written through (no subtree held decides it: its bytes
-     * are the session's, not held here) was logged since the store last
-     * caught up: what the store answers waits for it to be sent (send), so the
-     * process reads its own writes.
-     */
-    throughPending(): boolean;
-    /**
      * The process is about to change a name or an access at or above `keys`
      * (anywhere, when absent) by a route not decided here (a call of the
-     * session's, or a change by name the client logs): each file it holds
-     * open there writes through from now on, its descriptions opened first.
+     * session's, or a change by name the client logs): no grant decides a
+     * file it holds open there from now on (Provisional.unhold), its
+     * descriptions opened at the session first.
      */
     changing(keys?: readonly string[]): void;
-    /** Whether `handleId` writes through: its reads are the session's (readThrough). */
-    through(handleId: number): boolean;
-    /** A write-through description's session descriptor (its open answered), or undefined (a mount's file keeps none). */
-    sessionOf(handleId: number): Promise<number | undefined>;
     /** fcntl(F_SETFL) of one of the holder's descriptors: O_APPEND is its writes' to keep. */
     setStatus(handleId: number, status: {
         append?: boolean;
     }): void;
-    /** The size this process gave file `ino` through a description of it still open, or undefined: what a stat of it by name reports here. */
-    writing(ino: number): number | undefined;
-    /**
-     * A read through a write-through description, at `offset` or its
-     * position: `read` reads the session's bytes of `key` (what this process
-     * sent before it is answered first).
-     */
-    readThrough(handleId: number, offset: number | null, length: number, read: (key: string, at: number, length: number) => Promise<Uint8Array>): Promise<Uint8Array>;
     /**
      * Decide an open that creates or empties a file at `key` (resolved, its
      * parent known): a descriptor of the holder's, or undefined when the
      * session is to decide it.
      */
-    open(key: string, path: string, flags: RuntimeOpenFlags): RuntimeFileHandle | undefined;
-    read(handleId: number, offset: number | null, length: number): Uint8Array;
+    open(key: string, path: string, flags: RuntimeOpenFlags, initial?: number): RuntimeFileHandle | undefined;
+    /**
+     * A whole file written by name (an open of `flags`, a write and a close),
+     * decided here as `open` decides: its revision, or undefined when the
+     * session must write it. Its bytes' room is drawn before anything is
+     * decided, so no name is made for bytes that do not fit.
+     */
+    writeFile(key: string, path: string, bytes: Uint8Array, flags: RuntimeOpenFlags): number | undefined;
+    /** Undefined where its bytes are the store's and it does not hold them (a provisional descriptor's: Provisional.inodeOf). */
+    read(handleId: number, offset: number | null, length: number): Uint8Array | undefined;
     write(handleId: number, offset: number | null, bytes: Uint8Array): number;
     seek(handleId: number, offset: number, whence: 'set' | 'current' | 'end'): number;
     ftruncate(handleId: number, size: number): void;
-    fstat(handleId: number): ResidentEntry;
+    /** Its file's attributes, by its identity: undefined where the view can say nothing of it now (Provisional.fstat). */
+    fstat(handleId: number): ResidentEntry | undefined;
     close(handleId: number): void;
     /** The name a descriptor of the holder's writes, now. */
     keyOf(handleId: number): string;
@@ -193,23 +184,32 @@ export interface DelegationHolder {
     /** Decide an attribute change of `key`: true when decided here. */
     setattr(key: string, attrs: W7Attrs): boolean;
     /**
-     * Decide an attribute change of the file `handleId` opened (fchmod,
-     * fchown, futimes): true when decided here, for a file of the holder's
-     * that lost its name, or one it decides under its name, its times
-     * resolved here as it is decided; false when it is the session's, through
-     * the description it holds of the file (restat after).
+     * An attribute change of the file `handleId` opened (fchmod, fchown,
+     * futimes): decided here where the file's grant decides it (or it lost its
+     * name: it is this process's alone), its times resolved as it is decided;
+     * true then. False where the provisional decisions logged it, through its
+     * description: the session's to apply (a caller that may wait waits for it).
      */
-    fsetattr(handleId: number, change: HolderAttrChange): boolean;
-    /** The session's stat of the file a through description opened, after a change through it: what fstat answers from now on. */
-    restat(handleId: number, stat: Omit<ResidentEntry, 'target'>): void;
+    fsetattr(handleId: number, change: W7Attrs): boolean;
     /**
      * The session changed `key`'s attributes itself, after everything the
      * holder had was sent (one it holds but did not decide): what was decided
      * of it is the session's now, and the store answers it after its barrier.
      */
     undecided(key: string): void;
+    /** The session moved or removed the name `key` (OwnNames.superseded). */
+    superseded(key: string): void;
     /** Whether a mutation at `key` would be decided here (a held subtree holds it). */
     holds(key: string): boolean;
+    /** A barrier begins: its number, which `retire` takes once it lands. */
+    barrierBegun(): number;
+    /**
+     * Barrier `begun` landed: what this process changed by name and the
+     * session answered before it began is the view's now. Its own record of
+     * each such name retires, outside a held subtree (a held one keeps its
+     * decisions while it holds it).
+     */
+    retire(begun: number): void;
     /** Whether anything decided here is not sent yet. */
     pending(): boolean;
     /** Send everything decided, in order. A refusal is thrown (the run fails, naming it). */
