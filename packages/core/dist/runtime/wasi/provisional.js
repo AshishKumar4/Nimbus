@@ -162,7 +162,7 @@ export function provisional(host) {
                 && changed.heldAt === undefined && changed.records.length === 0 && ![...layer.values()].includes(changed)) {
                 // A retained fold is only the fallback while no name leads to its inode.
                 // The view found it again (a peer's rename): its retired content is the view's.
-                changed.key = changed.origin = key;
+                renamed(changed, key, key);
                 changed.row = row;
                 changed.base = changed.state = null;
                 touched.delete(changed);
@@ -225,6 +225,8 @@ export function provisional(host) {
      * to lead to since.
      */
     const viewed = (inode) => {
+        if (inode.lost)
+            return undefined;
         const name = inode.origin;
         const row = host.row(name);
         if (!row || row.dev !== inode.dev || row.ino !== inode.ino)
@@ -232,8 +234,8 @@ export function provisional(host) {
         const held = inode.type === 'file' ? host.content(name, row.revision) : undefined;
         return { name, row, bytes: held !== undefined && held.byteLength === row.size ? held : undefined };
     };
-    /** Whether the view can say nothing of `inode` now: no row at the name it has it at (not listed again since a barrier began it anew). */
-    const unknown = (inode) => !inode.local && inode.state === null && host.row(inode.origin) === undefined;
+    /** Whether the view can say nothing of `inode` now: no row at the name it has it at (not listed again since a barrier began it anew), or it is lost. */
+    const unknown = (inode) => !inode.local && inode.state === null && (inode.lost === true || host.row(inode.origin) === undefined);
     /** What an inode's records fold over: the view's version of it where the view still has it, else its row as last known, its bytes not held. */
     const baseline = (inode) => {
         const seen = inode.local ? undefined : viewed(inode);
@@ -330,6 +332,29 @@ export function provisional(host) {
         if (need < 0)
             host.release(-need);
         inode.reserved += need;
+    };
+    /**
+     * `inode`'s names here (`key`) and in the view (`origin`) from now on, the
+     * one way they change: what they grow by admitted, or already admitted by
+     * the change's plan (planMove, a rename's). Where the budget has no room
+     * for them, it keeps the names it has and is lost (its names a cache, not
+     * its identity): what reaches it by a name is the view's to say.
+     */
+    const renamed = (inode, key, origin) => {
+        const was = { key: inode.key, origin: inode.origin };
+        inode.key = key;
+        inode.origin = origin;
+        const need = cost(inode) - inode.reserved;
+        if (need > 0 && !host.reserve(need)) {
+            inode.key = was.key;
+            inode.origin = was.origin;
+            inode.lost = true;
+            return;
+        }
+        if (need > 0)
+            inode.reserved += need;
+        delete inode.lost;
+        fit(inode);
     };
     /** What `ops` on `inode` cost before they are made: admitted (ENOSPC where the budget has no room), its charge raised to it. */
     const admitOps = (inode, ops, syscall, path) => {
@@ -494,7 +519,7 @@ export function provisional(host) {
     /** The overlay rebuilt: every name record still pending replayed over the view, in log order. */
     const replay = () => {
         for (const inode of everyInode())
-            inode.key = inode.origin;
+            renamed(inode, inode.origin, inode.origin);
         layer.clear();
         added.clear();
         removed.clear();
@@ -562,7 +587,7 @@ export function provisional(host) {
         note(parentKey(key), nameOf(key), inode === null ? null : inode.type);
         if (inode !== null) {
             touched.delete(inode);
-            inode.key = key;
+            renamed(inode, key, inode.origin);
             inode.unnamed = false;
             if (inode.state !== null)
                 touched.add(inode);
@@ -1011,13 +1036,14 @@ export function provisional(host) {
                 if (!pendingMoves.has(plan))
                     return;
                 const files = beneath();
-                if (made)
-                    for (const inode of files)
-                        inode.key = inode.origin = to + inode.key.slice(from.length);
                 pendingMoves.delete(plan);
-                // Made, what each keeps is what it was charged; not, the growth goes back.
-                for (const inode of files)
-                    fit(inode);
+                // Made, its names are beneath `to`, what they grew by taken as charged; not, the growth goes back.
+                for (const inode of files) {
+                    if (made)
+                        renamed(inode, to + inode.key.slice(from.length), to + inode.key.slice(from.length));
+                    else
+                        fit(inode);
+                }
             };
             return { commit: () => settle(true), cancel: () => settle(false) };
         },
@@ -1204,13 +1230,12 @@ export function provisional(host) {
             if (inode === undefined || inode.local || inode.cell?.detached !== undefined || inode.origin === key && inode.row === entry)
                 return;
             // Its name here follows the view's unless a rename of its own is pending (that one expects it where it was).
-            if (inode.key === inode.origin)
-                inode.key = key;
-            inode.origin = key;
+            renamed(inode, inode.key === inode.origin ? key : inode.key, key);
+            if (inode.lost)
+                return;
             inode.unnamed = false;
             if (inode.state === null)
                 inode.row = entry;
-            fit(inode);
         },
         fsetattr: (handleId, change) => {
             const desc = descOf(handleId);
@@ -1418,7 +1443,7 @@ export function provisional(host) {
                     const moved = to + key.slice(from.length);
                     layer.set(moved, value);
                     if (value !== null)
-                        value.key = moved;
+                        renamed(value, moved, value.origin);
                 }
                 for (const map of [added, removed]) {
                     for (const [key, value] of [...map])
@@ -1432,10 +1457,8 @@ export function provisional(host) {
             }, undefined, () => {
                 // The view has it moved: what was beneath the source starts beneath the destination (its growth the record's, given back first).
                 for (const inode of everyInode()) {
-                    if (!within(inode.origin, from))
-                        continue;
-                    inode.origin = to + inode.origin.slice(from.length);
-                    fit(inode);
+                    if (within(inode.origin, from))
+                        renamed(inode, inode.key, to + inode.origin.slice(from.length));
                 }
             });
             fit(moving);

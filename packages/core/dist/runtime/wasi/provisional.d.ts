@@ -148,6 +148,12 @@ export interface Inode {
     retained: string[];
     /** Its opens not answered yet: it stays while an answer may still name it (reconcile). */
     answers: number;
+    /**
+     * Its names are not where the view has it now: a move the budget had no
+     * room for (renamed). Its descriptors answer by its identity alone, as
+     * where the view can say nothing of it (unknown), until a move is kept.
+     */
+    lost?: true;
     /** The view's bytes of it at `revision` its descriptors last read: what they read once the view no longer has a name for it. */
     pin?: {
         readonly revision: number;
