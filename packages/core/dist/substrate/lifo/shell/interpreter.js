@@ -1194,6 +1194,8 @@ export class Interpreter {
      * descriptors close.
      */
     async finishChild(run, io) {
+        // The child's own dispatches, from none (its io is its own: each caller made it).
+        io.dispatched = { shell: this, last: null };
         // Taken before the first await: a background child starts here while its
         // parent goes on to close what it opened.
         const inherited = [...(io.openFiles?.values() ?? [])];
