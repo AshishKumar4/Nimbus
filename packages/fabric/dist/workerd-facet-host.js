@@ -131,13 +131,10 @@ export const DURABLE_FACET_NAME_PREFIX = 'app-slot-';
  * Keyed weakly off `ctx`, so a book describes one incarnation. A facet that
  * is still running when that incarnation ends outlives it (measured: a timer
  * or an outgoing call keeps it going), and a `get` of its name with a new
- * class then resets the whole object. So a process's first get of its name
- * ends whatever runs there first: a minted `proc-slot-` name is deleted,
- * which also wipes the storage a previous incarnation left, and an explicit
- * name is aborted, which keeps it. What still runs under an explicit name is
- * only ever a predecessor of the same application, here or in an ended
- * incarnation: its owner has one name for life, and a second running
- * instance of an owner is refused before it gets one.
+ * class then resets the whole object. So a fresh incarnation's first get of
+ * each name ends whatever runs there first: a minted `proc-slot-` name is
+ * deleted, which also wipes the storage a previous incarnation left, and an
+ * explicit name is aborted, which keeps it.
  *
  * The book allocates only the `proc-slot-` space. Durable `app-slot-` names
  * are allocated against DO storage instead (their owner survives a reset), so
@@ -147,7 +144,7 @@ const slotBooks = new WeakMap();
 function slotBook(ctx) {
     let book = slotBooks.get(ctx);
     if (!book) {
-        book = { next: 0, held: new Map() };
+        book = { next: 0, held: new Map(), live: new Set() };
         slotBooks.set(ctx, book);
     }
     return book;
@@ -340,6 +337,7 @@ function spawnResident(ctx, env, disk, supervisor, params) {
             throw error;
         }
     };
+    const book = slotBook(ctx);
     const ledger = sessionLedger(ctx);
     // This process's hold on `name`, until its release or a newer process's spawn.
     const holding = {};
@@ -354,11 +352,10 @@ function spawnResident(ctx, env, disk, supervisor, params) {
         // the facet exists; a refusal leaves no facet.
         if (ledger !== null && params.storageBytes !== undefined)
             ledger.fill(name, params.storageBytes);
-        // get() with a new class on a facet still running (its predecessor's, an
-        // earlier incarnation's) resets this object, and a running facet does not
-        // take a new class: what runs there is ended first, its storage kept.
-        if (explicit)
-            facets.abort(name, new Error('Nimbus: a newer process takes this facet name'));
+        // get() with a new class on a facet an earlier incarnation left running resets this object.
+        if (explicit && !book.live.has(name)) {
+            facets.abort(name, new Error('Nimbus: a new incarnation takes this facet name'));
+        }
         params.created?.(name);
         facet = facets.get(name, start);
     }
@@ -367,6 +364,8 @@ function spawnResident(ctx, env, disk, supervisor, params) {
             releaseSlot(ctx, params.pid);
         throw error;
     }
+    if (explicit)
+        book.live.add(name);
     holders.set(name, holding);
     // A journaling process: the session holds its facet's name until its log is drained.
     params.journal?.opened(name);
@@ -403,6 +402,8 @@ function spawnResident(ctx, env, disk, supervisor, params) {
                 facets.abort(name, new Error('Nimbus: resident process released'));
             }
             catch { /* already gone */ }
+            if (explicit)
+                book.live.delete(name);
         });
         // What the process logged and the session never answered is in its
         // facet's store: drained before the store goes, and before the release
@@ -776,13 +777,10 @@ async function untilEnded(signal, start) {
  * read through the journal reader class the facet is opened with now, over
  * the same SQLite. The name is aborted first: a get with a new class of a
  * facet still running (a previous incarnation's) would reset this object.
- */
-/**
- * `name`'s write log, read by a reader started under the name. `holds`, if
- * given, says the name is still its process's: a name a newer process has
- * been given is that process's facet, never opened for a reader, and the
- * log reads empty here (the newer process's store keeps it, for the
- * session's next drain of the name).
+ * `holds`, if given, says the name is still its process's: a name a newer
+ * process has been given is that process's facet, never opened for a
+ * reader, and the log reads empty here (the newer process's store keeps it,
+ * for the session's next drain of the name).
  */
 export function facetJournal(ctx, env, name, holds = () => true) {
     const loader = env.LOADER;
