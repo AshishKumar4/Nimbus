@@ -83,13 +83,14 @@ function matchCharClass(pattern, pos, ch) {
     return { matched: negate ? !matched : matched, end: i + 1 };
 }
 /**
- * Expand a glob pattern against the VFS.
- * Returns sorted matching paths, or [pattern] if no matches.
+ * Expand a field against the VFS: `pattern` is the field as globMatch reads it
+ * (its quoted characters escaped), `text` the field itself. Returns the sorted
+ * matching paths, or [text] when the pattern has no unescaped glob character
+ * or nothing matches.
  */
-export async function expandGlob(pattern, cwd, vfs) {
-    // If no glob chars, return as-is
-    if (!hasGlobChars(pattern)) {
-        return [pattern];
+export async function expandGlob(pattern, text, cwd, vfs) {
+    if (!hasUnescapedGlob(pattern)) {
+        return [text];
     }
     const absPattern = pattern.startsWith('/') ? pattern : resolve(cwd, pattern);
     const parts = absPattern.split('/').filter(Boolean);
@@ -97,10 +98,11 @@ export async function expandGlob(pattern, cwd, vfs) {
     let candidates = ['/'];
     for (const part of parts) {
         const nextCandidates = [];
-        if (!hasGlobChars(part)) {
+        if (!hasUnescapedGlob(part)) {
             // Literal path segment
+            const name = unescapeGlob(part);
             for (const dir of candidates) {
-                const full = dir === '/' ? `/${part}` : `${dir}/${part}`;
+                const full = dir === '/' ? `/${name}` : `${dir}/${name}`;
                 if (await vfs.exists(full)) {
                     nextCandidates.push(full);
                 }
@@ -126,7 +128,7 @@ export async function expandGlob(pattern, cwd, vfs) {
         candidates = nextCandidates;
     }
     if (candidates.length === 0) {
-        return [pattern]; // no matches, return literal
+        return [text]; // no matches: the field as it is
     }
     // Convert back to relative paths if pattern was relative
     let results;
@@ -147,4 +149,26 @@ export async function expandGlob(pattern, cwd, vfs) {
 /** Whether `s` holds a glob's special characters (`*`, `?`, `[`). */
 export function hasGlobChars(s) {
     return s.includes('*') || s.includes('?') || s.includes('[');
+}
+/**
+ * `text` as a pattern that matches only itself: each character globMatch reads
+ * specially quoted with a backslash, a bracket expression's `-`, `!` and `^`
+ * too (`[a$'-'z]` holds a, - and z).
+ */
+export function escapeGlob(text) {
+    return text.replace(/[\\*?[\]\-!^]/g, '\\$&');
+}
+/** Whether pattern `s` holds a glob character no backslash quotes. */
+function hasUnescapedGlob(s) {
+    for (let i = 0; i < s.length; i++) {
+        if (s[i] === '\\')
+            i++;
+        else if (s[i] === '*' || s[i] === '?' || s[i] === '[')
+            return true;
+    }
+    return false;
+}
+/** Pattern `s` with its backslash quoting removed: the name it matches when it has no glob character. */
+function unescapeGlob(s) {
+    return s.replace(/\\(.)/gs, '$1');
 }

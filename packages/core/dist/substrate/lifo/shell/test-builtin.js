@@ -1,5 +1,5 @@
-import { expandWord } from './expander.js';
-import { globMatch, hasGlobChars } from '../utils/glob.js';
+import { expandPatternWord } from './expander.js';
+import { globMatch } from '../utils/glob.js';
 import { resolve } from '../utils/path.js';
 import { S_IFCHR, S_IFMT } from '../../../vfs/vfs.js';
 import { lstatOrThrow, statOrThrow } from '../../../vfs/vfs.js';
@@ -32,12 +32,7 @@ export async function evaluateDoubleBracketWords(words, expandCtx, vfs, stderr, 
             const cached = expanded.get(i);
             if (cached !== undefined)
                 return cached;
-            const word = words[i] ?? [];
-            const value = await expandWord(word, expandCtx);
-            const arg = {
-                value,
-                canUseAsPattern: hasUnquotedPart(word) && hasGlobChars(value),
-            };
+            const arg = await expandPatternWord(words[i] ?? [], expandCtx);
             expanded.set(i, arg);
             return arg;
         },
@@ -239,16 +234,13 @@ function isAndOperator(value, mode) {
     return value === '-a' || (mode === 'double-bracket' && value === '&&');
 }
 function stringCompare(left, right, mode) {
-    if (mode === 'double-bracket' && right.canUseAsPattern) {
-        return globMatch(right.value, left.value);
+    if (mode === 'double-bracket' && right.pattern !== undefined) {
+        return globMatch(right.pattern, left.value);
     }
     return left.value === right.value;
 }
 function literalArg(value) {
-    return { value, canUseAsPattern: false };
-}
-function hasUnquotedPart(word) {
-    return word.some((part) => part.quoted === 'none');
+    return { value };
 }
 /**
  * File tests resolve their operand against the working directory, the way

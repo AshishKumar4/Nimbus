@@ -44,6 +44,16 @@ export declare class ExpansionError extends Error {
  */
 export declare function expandWords(words: WordPart[][], ctx: ExpandContext): Promise<string[]>;
 /**
+ * A pattern word (a case pattern, `[[ ]]`'s right-hand side) expanded, as its
+ * value and as the pattern globMatch reads: each character that came from
+ * quotes, a quoted part or a quoted expansion, escaped so it matches only
+ * itself, and an unquoted expansion's characters left as pattern characters.
+ */
+export declare function expandPatternWord(parts: WordPart[], ctx: ExpandContext): Promise<{
+    value: string;
+    pattern: string;
+}>;
+/**
  * Expand a single word (e.g., for redirect targets and assignments).
  * No field splitting and no glob expansion.
  */

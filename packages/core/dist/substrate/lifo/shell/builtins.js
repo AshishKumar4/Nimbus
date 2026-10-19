@@ -460,7 +460,7 @@ async function builtinDeclare(verb, { args, stderr, state, context }) {
     let readonlyFlag = false;
     let global = false;
     let exitCode = 0;
-    for (const arg of args) {
+    for (const [index, arg] of args.entries()) {
         if (arg.startsWith('-') && arg.length > 1 && !arg.includes('=')) {
             for (const flag of arg.slice(1)) {
                 if (flag === 'r')
@@ -486,20 +486,20 @@ async function builtinDeclare(verb, { args, stderr, state, context }) {
             (await stderr.write(`${verb}: can only be used in a function\n`));
             return 1;
         }
-        if (eq !== -1 && !(await assignDeclared(state, name, arg.slice(eq + 1), stderr)))
+        if (eq !== -1 && !(await assignDeclared(state, name, arg.slice(eq + 1), context.arrayLiterals?.has(index) === true, stderr)))
             exitCode = 1;
         if (readonlyFlag)
             state.readonlyNames.add(name);
     }
     return exitCode;
 }
-/** The right-hand side of a declaration: `(word …)` is an array literal. */
-async function assignDeclared(state, name, text, stderr) {
+/** The right-hand side of a declaration: `(word …)` is an array literal when it was written as one (`literal`). */
+async function assignDeclared(state, name, text, literal, stderr) {
     if (state.readonlyNames.has(name)) {
         (await stderr.write(`${name}: readonly variable\n`));
         return false;
     }
-    if (text.startsWith('(') && text.endsWith(')')) {
+    if (literal && text.startsWith('(') && text.endsWith(')')) {
         const elements = [];
         for (const token of lex(text.slice(1, -1))) {
             if (token.kind === TokenKind.Word)

@@ -12,14 +12,26 @@ export function parse(tokens) {
     const parser = new Parser(tokens);
     return parser.parseScript();
 }
+/**
+ * A word's text when it could be a reserved word: one part, unquoted, no
+ * substitution in it; else null. Syntax is decided by the lexer's parts, never
+ * by a word's text with its quoting gone: `'fi'` is a command named fi.
+ */
+function unquotedLiteral(token) {
+    if (token.kind !== TokenKind.Word)
+        return null;
+    if (token.parts === undefined)
+        return token.value;
+    const [only] = token.parts;
+    return token.parts.length === 1 && only !== undefined && only.quoted === 'none' && only.commandSubstitution === undefined
+        ? only.text : null;
+}
 function isUnquotedLiteralWord(token, value) {
-    if (token.kind !== TokenKind.Word || token.value !== value)
-        return false;
-    const parts = token.parts ?? [{ text: token.value, quoted: 'none' }];
-    return parts.length === 1
-        && parts[0]?.text === value
-        && parts[0]?.quoted === 'none'
-        && parts[0]?.commandSubstitution === undefined;
+    return unquotedLiteral(token) === value;
+}
+/** A word as written, for a message: its quotes in it. */
+function sourceOf(token) {
+    return token.source ?? token.value;
 }
 const KEYWORDS = new Set([
     'if', 'then', 'else', 'elif', 'fi',
@@ -27,6 +39,16 @@ const KEYWORDS = new Set([
     'while', 'until',
     'case', 'esac',
 ]);
+/** Reserved words that cannot begin a command: where one does, unquoted, it is a syntax error, as bash's. */
+const STRAY_RESERVED = new Set(['then', 'else', 'elif', 'fi', 'in', 'do', 'done', 'esac', '}', ']]']);
+/** bash's legal_identifier. */
+const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/** bash's check_identifier on a for variable (it must be a name) or a function name (`checkWord` false): its error, or null. */
+function identifierError(token, checkWord) {
+    const literal = unquotedLiteral(token);
+    const valid = literal !== null && !literal.includes('$') && !/^[0-9]+$/.test(literal) && (!checkWord || IDENTIFIER.test(literal));
+    return valid ? null : `\`${sourceOf(token)}': not a valid identifier`;
+}
 class Parser {
     tokens;
     pos = 0;
@@ -56,7 +78,7 @@ class Parser {
     }
     expectWord(value) {
         const token = this.peek();
-        if (token.kind !== TokenKind.Word || token.value !== value) {
+        if (!isUnquotedLiteralWord(token, value)) {
             throw new ParseError(`Expected '${value}' but got '${token.value}'`, token.pos);
         }
         return this.advance();
@@ -65,7 +87,7 @@ class Parser {
         return this.peek().kind === TokenKind.EOF;
     }
     isWord(value) {
-        return this.peek().kind === TokenKind.Word && this.peek().value === value;
+        return isUnquotedLiteralWord(this.peek(), value);
     }
     skipNewlines() {
         while (this.peek().kind === TokenKind.Newline) {
@@ -124,7 +146,7 @@ class Parser {
     parsePipeline() {
         let negated = false;
         // Check for ! prefix
-        if (this.peek().kind === TokenKind.Word && this.peek().value === '!') {
+        if (isUnquotedLiteralWord(this.peek(), '!')) {
             negated = true;
             this.advance();
         }
@@ -139,30 +161,33 @@ class Parser {
     }
     parseCommand() {
         const token = this.peek();
-        // Check for compound command keywords
+        // Check for compound command keywords: a reserved word only unquoted.
         if (token.kind === TokenKind.Word) {
-            if (isUnquotedLiteralWord(token, '[[')) {
+            const keyword = unquotedLiteral(token);
+            if (keyword === '[[') {
                 return this.parseDoubleBracketCommand();
             }
-            switch (token.value) {
+            switch (keyword) {
                 case 'if': return this.parseIf();
                 case 'for': return this.parseFor();
                 case 'while':
-                case 'until': return this.parseLoop(token.value);
+                case 'until': return this.parseLoop(keyword);
                 case 'case': return this.parseCase();
+            }
+            if (keyword !== null && STRAY_RESERVED.has(keyword)) {
+                throw new ParseError(`syntax error near unexpected token \`${keyword}'`, token.pos);
             }
             // Check for function definition: name () { ... }
             if (this.peekAt(1).kind === TokenKind.LParen && this.peekAt(2).kind === TokenKind.RParen) {
-                const name = token.value;
                 // Don't treat keywords as function names
-                if (!KEYWORDS.has(name)) {
+                if (keyword === null || !KEYWORDS.has(keyword)) {
                     return this.parseFunctionDef();
                 }
             }
-        }
-        // { ... } group
-        if (token.kind === TokenKind.Word && token.value === '{') {
-            return this.parseGroup();
+            // { ... } group
+            if (keyword === '{') {
+                return this.parseGroup();
+            }
         }
         if (token.kind === TokenKind.LParen) {
             return this.parseSubshell();
@@ -198,7 +223,8 @@ class Parser {
             const prevPos = this.pos;
             // Check terminators
             const t = this.peek();
-            if (t.kind === TokenKind.Word && terminators.includes(t.value)) {
+            const word = unquotedLiteral(t);
+            if (word !== null && terminators.includes(word)) {
                 break;
             }
             if (t.kind === TokenKind.RParen && terminators.includes(')')) {
@@ -245,6 +271,7 @@ class Parser {
         this.expectWord('for');
         const varToken = this.expect(TokenKind.Word);
         const variable = varToken.value;
+        const variableError = identifierError(varToken, true);
         this.skipNewlines();
         let words = null;
         // Optional 'in word...'
@@ -255,7 +282,7 @@ class Parser {
                 const t = this.peek();
                 if (t.kind === TokenKind.Semi || t.kind === TokenKind.Newline)
                     break;
-                if (t.kind === TokenKind.Word && t.value === 'do')
+                if (isUnquotedLiteralWord(t, 'do'))
                     break;
                 if (t.kind !== TokenKind.Word)
                     break;
@@ -269,7 +296,7 @@ class Parser {
         const body = this.parseCompoundList(['done']);
         this.expectWord('done');
         const redirections = this.parseTrailingRedirections();
-        return { type: 'for', variable, words, body, redirections };
+        return { type: 'for', variable, ...(variableError === null ? {} : { variableError }), words, body, redirections };
     }
     parseLoop(keyword) {
         this.expectWord(keyword);
@@ -312,7 +339,7 @@ class Parser {
                 const t = this.peek();
                 if (t.kind === TokenKind.DoubleSemi)
                     break;
-                if (t.kind === TokenKind.Word && t.value === 'esac')
+                if (isUnquotedLiteralWord(t, 'esac'))
                     break;
                 if (t.kind === TokenKind.EOF)
                     break;
@@ -336,11 +363,12 @@ class Parser {
     parseFunctionDef() {
         const nameToken = this.advance(); // consume name
         const name = nameToken.value;
+        const nameError = identifierError(nameToken, false);
         this.expect(TokenKind.LParen);
         this.expect(TokenKind.RParen);
         this.skipNewlines();
         const body = this.parseCommand();
-        return { type: 'function_def', name, body };
+        return { type: 'function_def', name, ...(nameError === null ? {} : { nameError }), body };
     }
     parseGroup() {
         this.expectWord('{');
@@ -512,27 +540,91 @@ class Parser {
 /**
  * `NAME=value`, `NAME+=value`, `NAME[expr]=value` and `NAME=(word …)`.
  *
- * The lexer keeps a parenthesised list attached to its assignment, so an array
- * assignment arrives as one word and is recognised here by its shape. Returns
- * null for anything that is an ordinary word rather than an assignment.
+ * As bash's assignment(): the name, the brackets, `+` and `=` are the word's
+ * own unquoted characters, so `'x=y'` and `x"="y` are commands named so. A
+ * subscript's characters may be quoted. The lexer keeps a parenthesised list
+ * attached to its assignment, unquoted, so an array assignment arrives as one
+ * word of one unquoted part, `(` to `)`: `x='(a b)'` is a scalar. Returns null
+ * for anything that is an ordinary word rather than an assignment.
  */
 function parseAssignment(token) {
-    const head = /^([a-zA-Z_][a-zA-Z0-9_]*)(\[[^\]]*\])?(\+)?=/.exec(token.value);
+    const head = assignmentHead(token);
     if (head === null)
         return null;
-    const [matched, name, bracket, plus] = head;
-    const value = partsAfter(token, matched.length);
+    const { length, name, subscript, append } = head;
+    const value = partsAfter(token, length);
     const assignment = { name, value };
-    if (bracket !== undefined)
-        assignment.subscript = bracket.slice(1, -1);
-    if (plus !== undefined)
+    if (subscript !== undefined)
+        assignment.subscript = subscript;
+    if (append)
         assignment.append = true;
-    const elements = parseArrayLiteral(token.value.slice(matched.length));
+    const whole = token.parts === undefined || token.parts.length === 1 ? unquotedLiteral(token) : null;
+    const elements = whole === null || subscript !== undefined ? null : parseArrayLiteral(whole.slice(length));
     if (elements !== null) {
         assignment.elements = elements;
         assignment.value = [];
     }
     return assignment;
+}
+/** An assignment word's prefix: its length in the word's characters, its name, subscript and `+`; or null. */
+function assignmentHead(token) {
+    const parts = token.parts ?? [{ text: token.value, quoted: 'none' }];
+    const [first] = parts;
+    if (first === undefined || first.quoted !== 'none' || first.commandSubstitution !== undefined)
+        return null;
+    const name = /^[a-zA-Z_][a-zA-Z0-9_]*/.exec(first.text)?.[0];
+    if (name === undefined)
+        return null;
+    // The characters after the name, each with whether it is quoted.
+    let part = 0;
+    let at = name.length;
+    let length = name.length;
+    const next = () => {
+        for (; part < parts.length; part++, at = 0) {
+            const current = parts[part];
+            if (current === undefined || at >= current.text.length)
+                continue;
+            const char = current.text.charAt(at++);
+            length++;
+            return { char, quoted: current.quoted !== 'none' || current.commandSubstitution !== undefined };
+        }
+        return null;
+    };
+    let char = next();
+    let subscript;
+    if (char !== null && char.char === '[' && !char.quoted) {
+        let text = '';
+        let depth = 1;
+        for (char = next(); char !== null; char = next()) {
+            if (!char.quoted && char.char === '[')
+                depth++;
+            if (!char.quoted && char.char === ']' && --depth === 0)
+                break;
+            text += char.char;
+        }
+        if (char === null)
+            return null;
+        subscript = text;
+        char = next();
+    }
+    let append = false;
+    if (char !== null && char.char === '+' && !char.quoted) {
+        append = true;
+        char = next();
+    }
+    if (char === null || char.char !== '=' || char.quoted)
+        return null;
+    return { length, name, ...(subscript === undefined ? {} : { subscript }), append };
+}
+/**
+ * Whether `parts` is a compound array assignment as written: one unquoted part,
+ * `name=(` to `)`, the form the lexer attaches. A declaration builtin's
+ * argument is an array literal only so: `declare x='(a b)'` is a scalar.
+ */
+export function isArrayLiteralWord(parts) {
+    const [only] = parts;
+    return parts.length === 1 && only !== undefined && only.quoted === 'none' && only.commandSubstitution === undefined
+        && /^[a-zA-Z_][a-zA-Z0-9_]*\+?=\(.*\)$/s.test(only.text);
 }
 /** `(word …)` — the words inside are lexed and expanded like any argument. */
 function parseArrayLiteral(text) {

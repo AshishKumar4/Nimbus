@@ -327,6 +327,8 @@ function isWordBreak(ch) {
 const ARRAY_ASSIGNMENT_PREFIX = /^[a-zA-Z_][a-zA-Z0-9_]*(\[[^\]]*\])?\+?=$/;
 function readWord(input, pos) {
     const parts = [];
+    // Each $'…' span and its decoded text: bash's reader keeps the word with it as '…'.
+    const ansiC = [];
     let i = pos;
     let currentText = '';
     let hasContent = false;
@@ -459,6 +461,7 @@ function readWord(input, pos) {
             flushCurrentText();
             const quoted = readAnsiCQuote(input, i);
             parts.push({ text: quoted.text, quoted: 'single' });
+            ansiC.push({ start: i, end: quoted.end, text: quoted.text });
             i = quoted.end;
             hasContent = true;
             continue;
@@ -527,9 +530,19 @@ function readWord(input, pos) {
     // Build combined value for backward compatibility
     const value = parts.map((p) => p.text).join('');
     return {
-        token: { kind: TokenKind.Word, value, pos, parts },
+        token: { kind: TokenKind.Word, value, pos, parts, source: writtenWord(input, pos, i, ansiC) },
         end: i,
     };
+}
+/** The word from `pos` to `end` as bash's reader keeps it: its quotes in it, each $'…' as '…' decoded. */
+function writtenWord(input, pos, end, ansiC) {
+    let written = '';
+    let at = pos;
+    for (const span of ansiC) {
+        written += `${input.slice(at, span.start)}'${span.text}'`;
+        at = span.end;
+    }
+    return written + input.slice(at, end);
 }
 function readCommandSubstitution(input, pos) {
     let i = pos + 1; // skip $
@@ -625,7 +638,7 @@ function stopTable(chars) {
 }
 /** Where a balanced span's scan must look, by its brackets: every other character is body as it stands. */
 const SPAN_STOPS = {
-    '(': stopTable('\\\'"$`#()'),
+    '(': stopTable('\\\'"$`#()<\n'),
     '{': stopTable('\\\'"$`#{}'),
 };
 /** Where a double-quoted span's scan must look. */
@@ -643,13 +656,18 @@ function nextStop(input, i, stops) {
  * The body of a balanced `open`...`close` span whose body starts at `pos`
  * (just past `open`), and where it ends (just past `close`, or the input's
  * end when it never closes). Quotes and nested `$(...)` inside it are
- * skipped whole, so a `close` inside them does not end it.
+ * skipped whole, so a `close` inside them does not end it. In a command's
+ * span, a here-document's body is too: read at the newline after its `<<`,
+ * as the shell's reader reads it, so its `'` or `)` is text. An arithmetic
+ * span (`arithmetic`: `$((…))`) has no here-document: `<<` shifts.
  */
-export function readBalancedCommand(input, pos, open, close) {
+export function readBalancedCommand(input, pos, open, close, arithmetic = false) {
     const stops = SPAN_STOPS[open];
     let i = pos;
     let depth = 1;
     let body = '';
+    // The here-documents whose bodies follow the next newline.
+    const heredocs = [];
     while (i < input.length) {
         // Characters that are no syntax here go into the body as one run.
         const at = nextStop(input, i, stops);
@@ -679,7 +697,7 @@ export function readBalancedCommand(input, pos, open, close) {
                 : next === '$' ? i + 2
                     : next === "'" ? ansiCQuoteEnd(input, i)
                         : next === '{' ? readBracedExpansion(input, i).end
-                            : next === '(' ? readBalancedCommand(input, i + 2, '(', ')').end
+                            : next === '(' ? readBalancedCommand(input, i + 2, '(', ')', input[i + 2] === '(').end
                                 : i + 1;
             const stop = end === -1 ? input.length : end;
             body += input.slice(i, stop);
@@ -693,6 +711,35 @@ export function readBalancedCommand(input, pos, open, close) {
             const stop = newline === -1 ? input.length : newline;
             body += input.slice(i, stop);
             i = stop;
+            continue;
+        }
+        // A `<<` or `<<-` (not `<<<`): its delimiter word, its quotes removed, names where its body ends.
+        if (ch === '<' && open === '(' && !arithmetic && input[i + 1] === '<' && input[i + 2] !== '<') {
+            const stripTabs = input[i + 2] === '-';
+            let at = i + (stripTabs ? 3 : 2);
+            while (input[at] === ' ' || input[at] === '\t')
+                at++;
+            const word = readWord(input, at);
+            if (word !== null) {
+                heredocs.push({ delimiter: word.token.value, stripTabs });
+                body += input.slice(i, word.end);
+                i = word.end;
+                continue;
+            }
+        }
+        if (ch === '\n' && heredocs.length > 0) {
+            i++;
+            body += ch;
+            for (const heredoc of heredocs) {
+                while (i < input.length) {
+                    const line = readLine(input, i);
+                    body += input.slice(i, line.end);
+                    i = line.end;
+                    if (endsHeredoc(line.text, heredoc) || !line.hadNewline)
+                        break;
+                }
+            }
+            heredocs.length = 0;
             continue;
         }
         if (ch === open)
