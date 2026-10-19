@@ -101,6 +101,8 @@ let editorText = '';
 let editorPresent = null;
 let urlAfterClick = '';
 let runtimeErrors = [];
+/** The module the crash overlay names, as served after the crash (servedModuleExcerpt). */
+let crashedModule = null;
 let consoleSummary = [];
 
 if (cloneOk) {
@@ -190,6 +192,7 @@ if (cloneOk) {
 
     urlAfterClick = await ctx.currentUrl();
     runtimeErrors = ctx.collectErrors();
+    crashedModule = await ctx.servedModuleExcerpt(homeText);
     consoleSummary = consoleSummary.concat(
       ctx.consoleMessages.slice(0, 40).map((m) => ({
         type: m.type,
@@ -228,6 +231,7 @@ const findings = {
     location: e.location || null,
   })),
   consoleHead: consoleSummary.slice(0, 20),
+  crashedModule,
 };
 console.log(JSON.stringify(findings, null, 2));
 

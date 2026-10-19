@@ -402,6 +402,32 @@ export async function openPage(browser, sid, opts = {}) {
       return page.url();
     },
 
+    /**
+     * Evidence for a module the page could not evaluate: for the first
+     * "… @ /s/<sid>/…/@modules/<name>:<line>" in `text` (the dev server's
+     * crash overlay), that module as the page is served it now, its status
+     * headers and the lines around <line>. Null when `text` names none, or
+     * the module cannot be fetched.
+     */
+    async servedModuleExcerpt(text) {
+      const at = /@ (\/s\/[^\s:]+\/@modules\/[^\s:]+):(\d+)/.exec(text);
+      if (!at) return null;
+      const line = Number(at[2]);
+      return page.evaluate(async (path, line) => {
+        try {
+          const response = await fetch(path, { cache: 'no-store' });
+          const lines = (await response.text()).split('\n');
+          return {
+            path, line, status: response.status, lines: lines.length,
+            bundleStatus: response.headers.get('x-nimbus-bundle-status'),
+            excerpt: lines.slice(Math.max(0, line - 6), line + 5).map((text, i) => `${Math.max(1, line - 5) + i}: ${text.slice(0, 240)}`),
+          };
+        } catch (error) {
+          return { path, line, error: String(error) };
+        }
+      }, at[1], line).catch(() => null);
+    },
+
     async close() {
       try { await page.close(); } catch { /* best-effort */ }
     },
