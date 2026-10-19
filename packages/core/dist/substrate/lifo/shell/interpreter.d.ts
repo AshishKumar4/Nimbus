@@ -180,7 +180,7 @@ export interface InterpreterConfig extends ShellState {
 export declare class Interpreter {
     private config;
     private lastExitCode;
-    private commandsRun;
+    private lastBuiltin;
     private functions;
     private persistentOutputFds;
     private persistentInputFds;
