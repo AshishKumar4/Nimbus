@@ -9,5 +9,8 @@ await remotePairedCpu({
   name: 'remote-credit-pool-cpu',
   receipts: 'remote-credit-pool-cpu',
   baselineDir: '.ci-credit-pool-baseline',
-  command: ['node', 'tests/bench/credit-pool-cpu.mjs'],
+  engine: 'node',
+  // Its arms are bundled on their own (esbuild): bun runs it too, for context.
+  engines: ['node', 'bun'],
+  bench: 'tests/bench/credit-pool-cpu.mjs',
 });
