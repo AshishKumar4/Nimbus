@@ -100,7 +100,7 @@ export interface ProvisionalHost {
    */
   promote(dev: number, ino: number): Inode | undefined;
   /** File (dev, ino)'s Inode where a grant decides it alone (the holder's, outside the table): a borrow, to price a change before take promotes it. */
-  held(dev: number, ino: number): Inode | undefined;
+  heldFile(dev: number, ino: number): Inode | undefined;
   /** What the files a grant holds alone keep of the budget (their Inodes, outside the table). */
   heldCost(): number;
 }
@@ -567,7 +567,7 @@ export function provisional(host: ProvisionalHost): Provisional {
    */
   const promotionNeed = (dev: number, ino: number, price: (inode: Inode) => number): number => {
     if (inodeAtNumber(dev, ino) !== undefined) return 0;
-    const shell = host.held(dev, ino);
+    const shell = host.heldFile(dev, ino);
     if (shell === undefined) return 0;
     const cell = shell.cell!;
     const row = shell.row;
@@ -1611,12 +1611,12 @@ export function provisional(host: ProvisionalHost): Provisional {
       host.drain();
       // All it will admit, a file a grant holds alone among them priced as promoted, before it takes any (§11).
       {
-        const borrowed = layer.get(from) ?? inodeAtNumber(source.dev, source.ino) ?? host.held(source.dev, source.ino);
+        const borrowed = layer.get(from) ?? inodeAtNumber(source.dev, source.ino) ?? host.heldFile(source.dev, source.ino);
         const more = nameCost([from, to]) + (borrowed === undefined ? INODE_COST + 2 * stringCost(from) + 2 * stringCost(to) : 2 * stringCost(to));
         const sourceNeed = layer.has(from) ? 0 : promotionNeed(source.dev, source.ino, () => 0);
         const replaced = target === null ? undefined : inodeAtNumber(target.dev, target.ino);
         const targetNeed = target === null || replaced !== undefined ? keepNeed(replaced, more)
-          : host.held(target.dev, target.ino) !== undefined ? promotionNeed(target.dev, target.ino, () => more) : more;
+          : host.heldFile(target.dev, target.ino) !== undefined ? promotionNeed(target.dev, target.ino, () => more) : more;
         probe(sourceNeed + targetNeed, 'rename', path);
       }
       const known = layer.get(from) ?? take(source.dev, source.ino);

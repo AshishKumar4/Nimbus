@@ -550,7 +550,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       promote(inode);
       return inode;
     },
-    held: (dev, ino) => {
+    heldFile: (dev, ino) => {
       const inode = heldOf(dev, ino);
       return inode === undefined || inode.cell!.detached !== undefined ? undefined : inode;
     },
