@@ -408,10 +408,12 @@ again.
   merge-base with origin/main; `release.mjs staging` passes the commit
   production serves) beside the candidate, stands up four fresh
   throwaways (two of the baseline, two of the candidate), runs those probes
-  in a task of their own and deletes the throwaways at the end. A probe is
-  red only when both candidate throwaways are slower than both baseline
-  ones: one Preview can run slower than another of the same code for a
-  whole run. Run by hand without them, a paired probe exits 2.
+  in a task of their own and deletes the throwaways at the end. Each
+  candidate throwaway is graded against the mean of the two baseline ones,
+  and a probe is red on a set only when both are slower: one Preview can
+  run slower than another of the same code for a whole run. A red set is
+  confirmed on four fresh throwaways, and the probe is red only when that
+  set is red too. Run by hand without them, a paired probe exits 2.
 - A red row whose session socket closed 1006 (the session ledger records
   it) or that shows `E_NIMBUS_DO_OVERLOADED` is attributed from Workers Logs
   and traces by the exact error on each session's object
