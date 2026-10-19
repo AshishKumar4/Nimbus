@@ -109,7 +109,7 @@ function exercise() {
     ordinary: prototypeOf(order) === arrayPrototype && prototypeOf(conflicts) === arrayPrototype
       && prototypeOf(names) === arrayPrototype && prototypeOf(commonjs) === arrayPrototype && prototypeOf(images) === arrayPrototype,
     adoptedOnce,
-    missingName: failure.message, kept: failure === repeated && lateLink.keptFailure('wrong.mjs') === failure,
+    missingName: failure.message, retriedNames: failure !== repeated && lateLink.keptFailure('wrong.mjs') === undefined,
     stagedFailure: stagedFailure === refusal && lateLink.keptFailure('refused.mjs') === refusal,
   });
 }
@@ -158,6 +158,6 @@ assert.deepEqual(answers[1], answers[0], 'late loading, linking and wasm paths a
 assert.deepEqual(answers[0], {
   order: [1, 0], conflicts: ['clash'], names: ['own', 'alias', 'space', 'leftOnly', 'rightOnly'], commonjs: ['default', 'c'],
   images: ['pkg/lib/a.wasm', 'b.wasm', 'pkg/lib/d.wasm'], rawBase: ['a//x.wasm', 'a//../y.wasm'],
-  ordinary: true, adoptedOnce: true, missingName: 'missing absent from ./bridge.mjs', kept: true, stagedFailure: true,
+  ordinary: true, adoptedOnce: true, missingName: 'missing absent from ./bridge.mjs', retriedNames: true, stagedFailure: true,
 });
 console.log('esm-late-primordials: late evaluation uses the launch captures; graph order, ordinary arrays and wasm paths survive replacement');
