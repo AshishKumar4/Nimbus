@@ -21,8 +21,8 @@ const wasm = await build({
   bundle: true, format: 'iife', globalName: 'wasmPaths', platform: 'neutral', write: false,
   external: ['./primordials.js'],
 });
-const capture = new Script(`{ const module = { exports: {} }; ${bundles.primordials}; captures = module.exports; }`);
-const late = new Script(`{ const module = { exports: {} }; ${bundles.esmLate}; lateLink = module.exports; }`);
+const capture = new Script(`captures = ((module) => { ${bundles.primordials}; return module.exports; })({ exports: {} });`);
+const late = new Script(`lateLink = ((module, require) => { ${bundles.esmLate}; return module.exports; })({ exports: {} }, require);`);
 const paths = new Script(wasm.outputFiles[0].text);
 const setup = new Script(`
 const stringify = JSON.stringify;
@@ -86,14 +86,10 @@ const host = {
   requests(_path, text) { reads++; return analyses[text]; },
 };
 function exercise() {
-  const facadeRow = host.row('commonjs', 'common.cjs');
-  const facadeRead = stringify(captures.JSONParse(host.rowBindings()));
   const order = lateLink.linkLateGraph(host, 'root.mjs', 'file:///root.mjs', true);
   const conflicts = lateLink.starConflicts(host, 'file:///root.mjs');
   const names = lateLink.namespaceNames(host, 'file:///root.mjs');
-  let commonjs;
-  try { commonjs = lateLink.commonJsNames(host, 'common.cjs'); }
-  catch (error) { throw new Failure('commonjs row ' + facadeRow + ', facades ' + facadeRead, { cause: error }); }
+  const commonjs = lateLink.commonJsNames(host, 'common.cjs');
   const beforeAdoption = reads;
   lateLink.linkAdopted(host, 1, 'bridge.mjs', 'file:///bridge.mjs');
   const adoptedOnce = beforeAdoption === reads;
@@ -156,7 +152,6 @@ for (const replaced of [false, true]) {
   late.runInContext(context);
   assert.ok(requests > beforeLate, 'esm-late requires the already evaluated captures');
   run.runInContext(context);
-  console.log(replaced ? 'replaced' : 'baseline', context.outcome);
   answers.push(JSON.parse(context.outcome));
 }
 assert.deepEqual(answers[1], answers[0], 'late loading, linking and wasm paths answer alike after replacement');
