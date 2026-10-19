@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "7bfac95b60d928054a778f60d08d2509f54231b98fb107ae349db81e6a252a40",
+  "fingerprint": "16eb4b17d1882843a23571b9e9512e557891700ce85e70d2d97214621c750ba7",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2152,8 +2152,8 @@
     "packages/platform/dist/wave-writer.d.ts.map": "dfd9be07785bb8a31b5c286075ea033a8a2f7fb2779e117bb4d7213b4fcea242",
     "packages/platform/dist/wave-writer.js": "0b27c7ce5886510cfaee2e04d260b143280f511a5f1aedccdd2ba1d6378bb994",
     "packages/platform/dist/weighted-credit-pool.d.ts": "6e205959860e4579e30bc22834a440103f1f72825385319a0af5a1bc78b8a654",
-    "packages/platform/dist/weighted-credit-pool.d.ts.map": "c730725c767484203db9c6bc082e50e6c429dd8b05ffd96533d282238ed44595",
-    "packages/platform/dist/weighted-credit-pool.js": "7c38ab6f936f98e9c7dfe1139cbde697ecb47e7274133351a6ccc599ad46b6ce",
+    "packages/platform/dist/weighted-credit-pool.d.ts.map": "9ae3d06a7b826ba6afe09ec6a9c56a684c75d3c46c7dee36e76234e3367fad30",
+    "packages/platform/dist/weighted-credit-pool.js": "4a8a45faffb4c253bc08dab62e7e0c8f7dfe0798eb9de39e5ccf256abc895ecd",
     "packages/platform/dist/worker-code.d.ts": "c46d0b95bfc9bb569eff200647eb78a3ba49932c9d53f765e1c37086f845dbee",
     "packages/platform/dist/worker-code.d.ts.map": "84238bfc7c7af59aee8a20b7ff98a5bae7e22f758f96604fdbaad8be9217147c",
     "packages/platform/dist/worker-code.js": "9fb94e65c7b64ce008f9a6c03d130be8a3b2c137e5cd74703d2eb23cdd7bce8f",
@@ -2179,7 +2179,7 @@
     "packages/platform/src/utf8.ts": "09e23226d8cd24c24e12d31b2b9dcd8464304835e5c53713b5912418da1ea591",
     "packages/platform/src/w7-frame.ts": "e83c5f2f69b28bfa0fda70212c09ec9bad9089024703624c04ba6bee60863c03",
     "packages/platform/src/wave-writer.ts": "0184e7706196132d8c7bfd889635c88b9176365f9110c2e5b99a1e5fa44fde22",
-    "packages/platform/src/weighted-credit-pool.ts": "4579b4f9b536a6294a3fa450e4dc11ee85f2dd69af2cc9d476d45bfc5cf7d9d6",
+    "packages/platform/src/weighted-credit-pool.ts": "052f51c8a5de477dc2cefd21943c32d5303980e34edbfbd11934f39acb53a316",
     "packages/platform/src/worker-code.ts": "0d61390f4d3c46cc09f44188fdf8b454ff1e779ce1c85801ec053d10767f4c1c",
     "packages/platform/tsconfig.json": "6dc680d90729597ee71dcaf78368fceb9f44638d4e301811dd4cff58bdb9b62f",
     "packages/react/LICENSE": "9abf902a70f15256b6d108767fc510341854ec2297e3874c5bc6df496a895617",
