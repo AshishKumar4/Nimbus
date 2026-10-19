@@ -210,4 +210,37 @@ export declare const objectDefineProperty: <T>(o: T, p: PropertyKey, attributes:
 export declare const arrayPush: <T>(list: T[], ...items: T[]) => number;
 export declare const arraySplice: <T>(list: T[], start: number, deleteCount: number) => T[];
 export declare const ObjectPrototypePropertyIsEnumerableOf: (object: object, key: PropertyKey) => boolean;
+/** Once every promise in `list` has settled: Promise.allSettled's wait, without the list's iterator or the program's Promise.resolve and then. */
+export declare function promiseSettled<T>(list: ArrayLike<T>): Promise<void>;
+/** What each promise in `list` fulfilled with, in its order, or the first rejection: Promise.all, on the same captures. */
+export declare function promiseAll<T>(list: ArrayLike<T>): Promise<SafeList<Awaited<T>>>;
+export declare const dateNow: () => number;
+export declare const mathMax: (...values: number[]) => number;
+export declare const mathCeil: (x: number) => number;
+export declare const numberIsSafeInteger: (number: unknown) => boolean;
+/** A list copied with ArrayCreate and CreateDataProperty, never its species or a prototype's setters. */
+export declare const arrayCopy: <T>(list: ArrayLike<T>) => T[];
+/** TypedArray's byteLength accessor, reading only the view's internal slots. */
+export declare const typedArrayByteLength: (view: Uint8Array) => number;
+declare const ProxyConstructor: ProxyConstructor;
+export { ProxyConstructor as Proxy };
+export declare const Uint8ArrayConstructor: Uint8ArrayConstructor;
+export declare const ArrayBufferConstructor: ArrayBufferConstructor;
+/** A TextEncoder of the realm's. */
+export declare function newTextEncoder(): TextEncoder;
+/** `encoder.encode(text)`, by the realm's TextEncoder.prototype.encode. */
+export declare function textEncoderEncode(encoder: TextEncoder, text: string): Uint8Array;
+/** `encoder.encodeInto(text, destination)`, by the realm's TextEncoder.prototype.encodeInto. */
+export declare function textEncoderEncodeInto(encoder: TextEncoder, text: string, destination: Uint8Array): TextEncoderEncodeIntoResult;
+export declare const mathFloor: (x: number) => number;
+export declare const stringCodePointAt: (text: string, index: number) => number | undefined;
+export declare const typedArraySet: (view: Uint8Array, source: Uint8Array, offset?: number) => void;
+export declare const typedArrayBuffer: (view: Uint8Array) => ArrayBufferLike;
+export declare const typedArrayByteOffset: (view: Uint8Array) => number;
+/** A backing buffer's length, whether ordinary or shared, through its own captured accessor. */
+export declare const arrayBufferByteLength: (buffer: ArrayBufferLike) => number;
+/** Array.prototype.shift: unlike splice, it makes no array, so it consults no species. */
+export declare const arrayShift: <T>(list: T[]) => T | undefined;
+/** The first member of `set` that `test` holds of, or undefined: a walk that stops there, on the Set iterator as the launch found it. */
+export declare function setFind<T>(set: ReadonlySet<T>, test: (value: T) => boolean): T | undefined;
 //# sourceMappingURL=primordials.d.ts.map

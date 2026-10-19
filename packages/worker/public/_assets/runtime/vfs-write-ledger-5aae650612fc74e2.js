@@ -107,11 +107,12 @@ var __nimbusProcessFsModule = (() => {
   var SUPERVISOR_READ_RESERVE_BYTES = 1024 * 1024;
   var MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES = 8 * 1024 * 1024;
 
-  var LONG_UNITS = 256;
+  var UTF8_LONG_UNITS = 256;
+  var UTF8_SCRATCH_BYTES = 256 * 1024;
   var encoder = new TextEncoder();
   var scratch;
   function utf8Length(text) {
-    if (text.length >= LONG_UNITS)
+    if (text.length >= UTF8_LONG_UNITS)
       return longUtf8Length(text);
     let bytes = text.length;
     for (let index = 0; index < text.length; index++) {
@@ -135,7 +136,7 @@ var __nimbusProcessFsModule = (() => {
     return bytes;
   }
   function longUtf8Length(text) {
-    scratch ??= new Uint8Array(256 * 1024);
+    scratch ??= new Uint8Array(UTF8_SCRATCH_BYTES);
     let bytes = 0;
     for (let read = 0; read < text.length; ) {
       const done = encoder.encodeInto(read === 0 ? text : text.slice(read), scratch);
@@ -2452,7 +2453,10 @@ const __nimbusVfsAppendRangeResult = {};
 const __nimbusVfsRefusedResult = {};
 
 function __nimbusVfsPathKey(path) {
-  return String(path).replace(/^\/+/, "");
+  const text = __nimbusLaunchCaptures.stringOf(path);
+  let at = 0;
+  while (at < text.length && __nimbusLaunchCaptures.stringCharCodeAt(text, at) === 47) at++;
+  return at === 0 ? text : __nimbusLaunchCaptures.stringSlice(text, at);
 }
 
 /**
@@ -2678,18 +2682,24 @@ function __nimbusAwaitAncestorMutations(path) {
   if (pending.length === 0) return Promise.resolve();
   // Someone waits on them: what lingers goes now.
   __nimbusHurryVfs();
-  return Promise.all(pending).then(() => undefined);
+  return __nimbusLaunchCaptures.promiseSettled(pending);
 }
 
 /** The tails queued for `path` and each of its ancestors, as of now. */
 function __nimbusAncestorTails(path) {
-  const pending = [];
+  const pending = new __nimbusLaunchCaptures.SafeList();
+  const key = __nimbusVfsPathKey(path);
   let prefix = "";
-  for (const segment of __nimbusVfsPathKey(path).split("/")) {
-    if (!segment) continue;
-    prefix = prefix ? prefix + "/" + segment : segment;
-    const tail = __vfsMutationTails.get(prefix);
-    if (tail) pending.push(tail);
+  for (let from = 0; from <= key.length;) {
+    let slash = __nimbusLaunchCaptures.stringIndexOf(key, "/", from);
+    if (slash < 0) slash = key.length;
+    if (slash > from) {
+      const segment = __nimbusLaunchCaptures.stringSlice(key, from, slash);
+      prefix = prefix ? prefix + "/" + segment : segment;
+      const tail = __vfsMutationTails.get(prefix);
+      if (tail) pending[pending.length] = tail;
+    }
+    from = slash + 1;
   }
   return pending;
 }
@@ -2723,7 +2733,7 @@ function __nimbusQueueVfsMutation(path, mutation, retainFailure = true) {
   // pending for its ancestors — one place, so a flushed write, an fd write
   // and a queued mkdir all obey the same rule without each site knowing it.
   const tails = __nimbusAncestorTails(key);
-  const ancestors = tails.length === 0 ? Promise.resolve() : Promise.all(tails).then(() => undefined);
+  const ancestors = tails.length === 0 ? Promise.resolve() : __nimbusLaunchCaptures.promiseSettled(tails);
   const result = previous.then(() => ancestors).then(mutation);
   __nimbusPendingVfsMutations.add(result);
   // A failed mutation rejects its own caller but must not poison later writes
@@ -2809,19 +2819,21 @@ function __nimbusOwnAcknowledgement(path, work, generation) {
  * coming back, for nothing it reads.
  */
 function __nimbusReportedOwnAcknowledgements() {
-  const pending = [];
-  for (const [key, held] of __vfsOwnAcks) {
+  // Every barrier asks: by the SafeMap's and SafeSets' own forEach, after the program may have replaced the iterators.
+  const pending = new __nimbusLaunchCaptures.SafeList();
+  __vfsOwnAcks.forEach((held, key) => {
     const lease = __vfsOwnLeases[key];
-    if (__vfsParkedReports[key] === undefined && !(lease && lease.reported !== -1)) continue;
-    const parkedOver = lease === undefined && Object.prototype.hasOwnProperty.call(__vfsWrites, key);
-    for (const ack of held) {
-      if (parkedOver && ack.generation !== undefined && ack.generation !== __vfsWriteGenerations[key]) continue;
-      pending.push(ack.settled);
-    }
-  }
+    if (__vfsParkedReports[key] === undefined && !(lease && lease.reported !== -1)) return;
+    const parkedOver = lease === undefined && __nimbusLaunchCaptures.objectHasOwn(__vfsWrites, key);
+    held.forEach((ack) => {
+      if (parkedOver && ack.generation !== undefined && ack.generation !== __vfsWriteGenerations[key]) return;
+      pending[pending.length] = ack.settled;
+    });
+  });
   if (pending.length === 0) return null;
   __nimbusHurryVfs();
-  return Promise.all(pending);
+  // Each settles, never rejects.
+  return __nimbusLaunchCaptures.promiseSettled(pending);
 }
 
 /**

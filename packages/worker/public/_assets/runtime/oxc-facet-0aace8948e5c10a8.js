@@ -10174,6 +10174,7 @@ error: the Oxc transform crashed (${reason})`);
   var SymbolPrototypeDescription = Reflect.getOwnPropertyDescriptor(Symbol.prototype, "description")?.get;
   var numberIsInteger = Number.isInteger;
   var runtimeCaptureStackTrace = Reflect.get(Error, "captureStackTrace");
+  var TypeErrorConstructor = TypeError;
   function copyMethods(to, from, methods) {
     for (let i = 0; i < methods.length; i++) {
       const descriptor = reflectGetOwnPropertyDescriptor(from, methods[i]);
@@ -10247,6 +10248,44 @@ error: the Oxc transform crashed (${reason})`);
   var arrayPush = uncurryThis(Array.prototype.push);
   var arraySplice = uncurryThis(Array.prototype.splice);
   var ObjectPrototypePropertyIsEnumerableOf = uncurryThis(Object.prototype.propertyIsEnumerable);
+  var dateNow = Date.now;
+  var numberIsSafeInteger = Number.isSafeInteger;
+  var arrayCopy = uncurryThis(Reflect.get(Array.prototype, "toSpliced"));
+  var typedArrayByteLength = (() => {
+    const prototype = reflectGetPrototypeOf(Uint8Array.prototype);
+    const getter = reflectGetOwnPropertyDescriptor(prototype ?? {}, "byteLength")?.get;
+    if (getter === void 0) throw new TypeErrorConstructor("TypedArray.prototype.byteLength is not an accessor");
+    return uncurryThis(getter);
+  })();
+  var ArrayBufferConstructor = ArrayBuffer;
+  var TextEncoderOf = typeof TextEncoder === "function" ? TextEncoder : void 0;
+  var encode = TextEncoderOf === void 0 ? void 0 : uncurryThis(TextEncoderOf.prototype.encode);
+  var encodeInto = TextEncoderOf === void 0 ? void 0 : uncurryThis(TextEncoderOf.prototype.encodeInto);
+  var stringCodePointAt = uncurryThis(String.prototype.codePointAt);
+  var typedArraySet = uncurryThis(Uint8Array.prototype.set);
+  var typedArrayBuffer = (() => {
+    const prototype = reflectGetPrototypeOf(Uint8Array.prototype);
+    const getter = reflectGetOwnPropertyDescriptor(prototype ?? {}, "buffer")?.get;
+    if (getter === void 0) throw new TypeErrorConstructor("TypedArray.prototype.buffer is not an accessor");
+    return uncurryThis(getter);
+  })();
+  var typedArrayByteOffset = (() => {
+    const prototype = reflectGetPrototypeOf(Uint8Array.prototype);
+    const getter = reflectGetOwnPropertyDescriptor(prototype ?? {}, "byteOffset")?.get;
+    if (getter === void 0) throw new TypeErrorConstructor("TypedArray.prototype.byteOffset is not an accessor");
+    return uncurryThis(getter);
+  })();
+  var arrayBufferByteLength = (() => {
+    const getter = reflectGetOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength")?.get;
+    if (getter === void 0) throw new TypeErrorConstructor("ArrayBuffer.prototype.byteLength is not an accessor");
+    const length = uncurryThis(getter);
+    const sharedGetter = typeof SharedArrayBuffer === "function" ? reflectGetOwnPropertyDescriptor(SharedArrayBuffer.prototype, "byteLength")?.get : void 0;
+    const sharedLength = sharedGetter === void 0 ? void 0 : uncurryThis(sharedGetter);
+    return (buffer) => buffer instanceof ArrayBufferConstructor || sharedLength === void 0 ? length(buffer) : sharedLength(buffer);
+  })();
+  var arrayShift = uncurryThis(Array.prototype.shift);
+  var setValuesOf = uncurryThis(Set.prototype.values);
+  var setIteratorNext = uncurryThis(reflectGet(reflectGetPrototypeOf((  new Set()).values()) ?? {}, "next"));
 
   function extensionOf(path) {
     const base = stringSlice(path, stringLastIndexOf(path, "/") + 1);

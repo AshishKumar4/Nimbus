@@ -282,3 +282,102 @@ export const objectDefineProperty = Object.defineProperty;
 export const arrayPush: <T>(list: T[], ...items: T[]) => number = uncurryThis(Array.prototype.push);
 export const arraySplice: <T>(list: T[], start: number, deleteCount: number) => T[] = uncurryThis(Array.prototype.splice);
 export const ObjectPrototypePropertyIsEnumerableOf: (object: object, key: PropertyKey) => boolean = uncurryThis(Object.prototype.propertyIsEnumerable);
+/** Once every promise in `list` has settled: Promise.allSettled's wait, without the list's iterator or the program's Promise.resolve and then. */
+export function promiseSettled<T>(list: ArrayLike<T>): Promise<void> {
+  return new PromiseConstructor<void>((resolve) => {
+    let left = list.length;
+    if (left === 0) { resolve(); return; }
+    const one = (): void => { if (--left === 0) resolve(); };
+    for (let i = 0; i < list.length; i++) reflectApply(PromisePrototypeThen, reflectApply(PromiseResolve, PromiseConstructor, [list[i]]), [one, one]);
+  });
+}
+/** What each promise in `list` fulfilled with, in its order, or the first rejection: Promise.all, on the same captures. */
+export function promiseAll<T>(list: ArrayLike<T>): Promise<SafeList<Awaited<T>>> {
+  return new PromiseConstructor<SafeList<Awaited<T>>>((resolve, reject) => {
+    const values = new SafeList<Awaited<T>>();
+    let left = list.length;
+    if (left === 0) { resolve(values); return; }
+    for (let i = 0; i < list.length; i++) {
+      const at = i;
+      const one = (value: Awaited<T>): void => {
+        values[at] = value;
+        if (--left === 0) resolve(values);
+      };
+      reflectApply(PromisePrototypeThen, reflectApply(PromiseResolve, PromiseConstructor, [list[i]]), [one, reject]);
+    }
+  });
+}
+
+export const dateNow = Date.now;
+export const mathMax = Math.max;
+export const mathCeil = Math.ceil;
+export const numberIsSafeInteger = Number.isSafeInteger;
+/** A list copied with ArrayCreate and CreateDataProperty, never its species or a prototype's setters. */
+export const arrayCopy: <T>(list: ArrayLike<T>) => T[] = uncurryThis(Reflect.get(Array.prototype, 'toSpliced'));
+/** TypedArray's byteLength accessor, reading only the view's internal slots. */
+export const typedArrayByteLength: (view: Uint8Array) => number = (() => {
+  const prototype = reflectGetPrototypeOf(Uint8Array.prototype);
+  const getter = reflectGetOwnPropertyDescriptor(prototype ?? {}, 'byteLength')?.get;
+  if (getter === undefined) throw new TypeErrorConstructor('TypedArray.prototype.byteLength is not an accessor');
+  return uncurryThis(getter);
+})();
+
+const ProxyConstructor = Proxy;
+export { ProxyConstructor as Proxy };
+export const Uint8ArrayConstructor = Uint8Array;
+export const ArrayBufferConstructor = ArrayBuffer;
+// None in a realm with no TextEncoder (a test262 realm's), where nothing measures resident bytes.
+const TextEncoderOf: typeof TextEncoder | undefined = typeof TextEncoder === 'function' ? TextEncoder : undefined;
+const encode: ((encoder: TextEncoder, text: string) => Uint8Array) | undefined
+  = TextEncoderOf === undefined ? undefined : uncurryThis(TextEncoderOf.prototype.encode);
+const encodeInto: ((encoder: TextEncoder, text: string, destination: Uint8Array) => TextEncoderEncodeIntoResult) | undefined
+  = TextEncoderOf === undefined ? undefined : uncurryThis(TextEncoderOf.prototype.encodeInto);
+/** A TextEncoder of the realm's. */
+export function newTextEncoder(): TextEncoder {
+  if (TextEncoderOf === undefined) throw new TypeErrorConstructor('TextEncoder is not defined');
+  return new TextEncoderOf();
+}
+/** `encoder.encode(text)`, by the realm's TextEncoder.prototype.encode. */
+export function textEncoderEncode(encoder: TextEncoder, text: string): Uint8Array {
+  if (encode === undefined) throw new TypeErrorConstructor('TextEncoder is not defined');
+  return encode(encoder, text);
+}
+/** `encoder.encodeInto(text, destination)`, by the realm's TextEncoder.prototype.encodeInto. */
+export function textEncoderEncodeInto(encoder: TextEncoder, text: string, destination: Uint8Array): TextEncoderEncodeIntoResult {
+  if (encodeInto === undefined) throw new TypeErrorConstructor('TextEncoder is not defined');
+  return encodeInto(encoder, text, destination);
+}
+export const mathFloor = Math.floor;
+export const stringCodePointAt: (text: string, index: number) => number | undefined = uncurryThis(String.prototype.codePointAt);
+export const typedArraySet: (view: Uint8Array, source: Uint8Array, offset?: number) => void = uncurryThis(Uint8Array.prototype.set);
+export const typedArrayBuffer: (view: Uint8Array) => ArrayBufferLike = (() => {
+  const prototype = reflectGetPrototypeOf(Uint8Array.prototype);
+  const getter = reflectGetOwnPropertyDescriptor(prototype ?? {}, 'buffer')?.get;
+  if (getter === undefined) throw new TypeErrorConstructor('TypedArray.prototype.buffer is not an accessor');
+  return uncurryThis(getter);
+})();
+export const typedArrayByteOffset: (view: Uint8Array) => number = (() => {
+  const prototype = reflectGetPrototypeOf(Uint8Array.prototype);
+  const getter = reflectGetOwnPropertyDescriptor(prototype ?? {}, 'byteOffset')?.get;
+  if (getter === undefined) throw new TypeErrorConstructor('TypedArray.prototype.byteOffset is not an accessor');
+  return uncurryThis(getter);
+})();
+/** A backing buffer's length, whether ordinary or shared, through its own captured accessor. */
+export const arrayBufferByteLength: (buffer: ArrayBufferLike) => number = (() => {
+  const getter = reflectGetOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength')?.get;
+  if (getter === undefined) throw new TypeErrorConstructor('ArrayBuffer.prototype.byteLength is not an accessor');
+  const length = uncurryThis(getter);
+  const sharedGetter = typeof SharedArrayBuffer === 'function' ? reflectGetOwnPropertyDescriptor(SharedArrayBuffer.prototype, 'byteLength')?.get : undefined;
+  const sharedLength = sharedGetter === undefined ? undefined : uncurryThis(sharedGetter);
+  return (buffer: ArrayBufferLike): number => buffer instanceof ArrayBufferConstructor || sharedLength === undefined ? length(buffer) : sharedLength(buffer);
+})();
+/** Array.prototype.shift: unlike splice, it makes no array, so it consults no species. */
+export const arrayShift: <T>(list: T[]) => T | undefined = uncurryThis(Array.prototype.shift);
+const setValuesOf: <T>(set: ReadonlySet<T>) => SetIterator<T> = uncurryThis(Set.prototype.values);
+const setIteratorNext: <T>(iterator: SetIterator<T>) => IteratorResult<T, undefined> = uncurryThis(reflectGet(reflectGetPrototypeOf(new Set<never>().values()) ?? {}, 'next'));
+/** The first member of `set` that `test` holds of, or undefined: a walk that stops there, on the Set iterator as the launch found it. */
+export function setFind<T>(set: ReadonlySet<T>, test: (value: T) => boolean): T | undefined {
+  const iterator = setValuesOf(set);
+  for (let step = setIteratorNext(iterator); !step.done; step = setIteratorNext(iterator)) if (test(step.value)) return step.value;
+  return undefined;
+}
