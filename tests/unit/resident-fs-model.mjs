@@ -565,11 +565,12 @@ async function runSteps(steps, met, grants) {
   await catchUp();
 
   /**
-   * The names' directory renamed and back by a call that cannot wait (a
-   * grant decides it where one holds the subtree), while a barrier begun
-   * before it waits. Once it lands, what such a call sees of each name is
-   * what the session has: a decision the rename moved is newer than that
-   * barrier's answer.
+   * The names' directory renamed by a call that cannot wait (a grant decides
+   * it where one holds the subtree) while a barrier begun before it waits.
+   * Once that barrier lands, what such a call sees of each name at the new
+   * place is what the session has there once it has the rename: a decision
+   * the rename moved is newer than that barrier's answer. Or EAGAIN, never
+   * absent nor another size or mode. Then it is renamed back.
    */
   const swapStep = async (label) => {
     await deliver();
@@ -583,23 +584,27 @@ async function runSteps(steps, met, grants) {
     control.held = true;
     control.opened = Promise.withResolvers();
     assert.ok(landing !== undefined, `${label}: the barrier began`);
-    const aside = `/${DIR}/t`;
-    if ((await errnoOf(() => sync.rename(`/${dir}`, aside))) === null) {
-      budget.limit = 1 << 30;
-      assert.equal(await errnoOf(() => sync.rename(aside, `/${dir}`)), null, `${label}: the rename back`);
-    }
+    const aside = `${DIR}/t`;
+    const code = await errnoOf(() => sync.rename(`/${dir}`, `/${aside}`));
     const land = landing;
     landing = undefined;
     land();
     await catching;
-    const seen = statsNow();
+    if (code !== null) return;
+    const seen = statsAt(aside);
     await catchUp();
-    assert.deepEqual(seen, statsNow(), `${label}: what a call that cannot wait saw of each name once the barrier landed, against the session's`);
+    const session = statsAt(aside);
+    for (const name of NAMES) {
+      if (seen[name] !== 'EAGAIN') assert.deepEqual(seen[name], session[name], `${label}: what a call that cannot wait saw of ${name} once the barrier landed`);
+    }
+    budget.limit = 1 << 30;
+    assert.equal(await errnoOf(() => sync.rename(`/${aside}`, `/${dir}`)), null, `${label}: the rename back`);
+    await catchUp();
   };
-  /** Each name's size and mode as a call that cannot wait sees them, or its errno. */
-  const statsNow = () => Object.fromEntries(NAMES.map((name) => {
+  /** Each name's size and mode in `where` as a call that cannot wait sees them, or its errno. */
+  const statsAt = (where) => Object.fromEntries(NAMES.map((name) => {
     try {
-      const stat = sync.stat(path(name));
+      const stat = sync.stat(`/${where}/${name}`);
       return [name, stat === null ? null : [stat.size, stat.mode & 0o7777]];
     } catch (error) {
       return [name, error?.code ?? String(error)];
