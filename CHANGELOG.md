@@ -5,6 +5,12 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a launch could wait forever in "prepare" (a vite dev server sat 5
+  minutes) after a session that shared its isolate was deleted while it
+  waited for the isolate's transient budget. The budget had handed that
+  session its share, which workerd never let it receive, so the share was
+  held for good. A waiter now takes its share itself when its turn comes;
+  a turn not taken within a second passes to the next waiter.
 - Fixed: a dev server relaunched after a change could miss its start
   (remix's took 198 s against a 180 s bound). Its module map was dropped
   and made again three times, each time a file read of a running program
