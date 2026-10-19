@@ -54,6 +54,8 @@ function recording(memory, { sync: synchronous = true } = {}) {
       if (key === 'sync') return sync || !synchronous ? undefined : face(t.sync, true);
       const value = t[key];
       if (typeof value !== 'function') return value;
+      // A principal's view of it is the same adapter (its faces, its record).
+      if (key === 'as') return (...args) => face(value.apply(t, args), sync);
       return (...args) => {
         asked.push(`${String(key)} ${args[0]}${typeof args[1] === 'string' ? ` ${args[1]}` : ''}`);
         const out = value.apply(t, args);
@@ -75,6 +77,10 @@ function tree() {
   memory.writeFile('/dir/g', enc.encode('g'));
   memory.symlink('/a/b', '/link');
   memory.symlink('/a/b', '/toB');
+  // A relative link beside /a/b/c, and a decoy where the lexical name /b would lead.
+  memory.symlink('c', '/a/b/toC');
+  memory.mkdir('/b', { recursive: true });
+  memory.writeFile('/b/c', enc.encode('decoy'));
   return memory;
 }
 
@@ -137,7 +143,7 @@ for (const face of ['async', 'sync']) {
   if (face === 'async') {
     m.asked.length = 0;
     const listed = await vfs.readdirStat('/m/link/../b');
-    assert.deepEqual(listed.map(({ name, stat }) => [name, stat.type]), [['c', 'file']]);
+    assert.deepEqual(listed.map(({ name, stat }) => [name, stat.type]).sort(), [['c', 'file'], ['toC', 'symlink']]);
     assert.ok(m.asked.every((line) => !line.includes('/b/c') || line.includes('/link/../b/c')), `${m.asked}`);
   }
 
@@ -218,6 +224,20 @@ for (const face of ['async', 'sync']) {
   assert.deepEqual(removal.removed, [`/m/a/${made}-p`]);
 }
 
+// A copy into itself through spellings the backend walks, where the backend has
+// no copy of its own: refused by name before anything is made, never unbounded.
+{
+  const m = recording(tree());
+  const vfs = new CompositeVFS(new MemoryVFS());
+  const noCopy = new Proxy(m.vfs, { get: (t, key) => (key === 'copy' ? undefined : t[key]) });
+  vfs.mount('/m', noCopy, { resolvesPaths: true });
+  m.memory.mkdir('/src/inner', { recursive: true });
+  for (const [from, to] of [['/m/src', '/m/src/copy/'], ['/m/dir/../src', '/m/src/copy']]) {
+    assert.equal(await outcome(() => vfs.copy(from, to, { recursive: true })), 'EINVAL', `${from} -> ${to}`);
+    assert.equal(m.memory.stat('/src/copy'), null);
+  }
+}
+
 // A root that resolves its own paths is handed the rest from `/`.
 {
   const m = recording(tree());
@@ -227,6 +247,9 @@ for (const face of ['async', 'sync']) {
     ['/link/../f', 'a/f', ['readFile /link/../f']],
     ['/f', 'f', ['readFile /f']],
     ['//f', 'f', ['readFile //f']],
+    // At `/` a `..` climbs nowhere: the backend walks it.
+    ['/../missing/../f', 'ENOENT', ['readFile /../missing/../f']],
+    ['/../f', 'f', ['readFile /../f']],
   ]) {
     m.asked.length = 0;
     assert.equal(await outcome(() => vfs.readFile(path)), want, path);
@@ -247,6 +270,8 @@ for (const face of ['synchronous', 'awaiting']) {
   files.vfs.mount('/m', m.vfs, { resolvesPaths: true });
   const bound = files.bind({ pid: 7, cred: { uid: 0, gid: 0, groups: [], umask: 0o022 } });
   const fs = face === 'synchronous' ? bound.synchronous : bound;
+  // The awaiting arm's mount is async-only: the synchronous face cannot reach it.
+  if (face === 'awaiting') assert.notEqual(await outcome(() => bound.synchronous.readFile('/m/f')), 'f');
   assert.equal(await outcome(() => fs.unlink('/m/f/')), 'ENOTDIR', `${face}: unlink of a file with a final slash`);
   assert.equal(dec.decode(m.memory.readFile('/f')), 'f');
   assert.equal(await outcome(() => fs.readFile('/m/link/../f')), 'a/f', `${face}: a read through a link's ..`);
@@ -254,6 +279,8 @@ for (const face of ['synchronous', 'awaiting']) {
   const dir = await fs.open('/m/link/../b', { read: true, directory: true });
   assert.equal(await outcome(() => fs.readFile({ directory: dir.id, path: 'c' })), 'a/b/c', `${face}: relative to the directory`);
   assert.equal(await outcome(() => fs.readFile({ directory: dir.id, path: 'c', beneath: true })), 'a/b/c', `${face}: beneath the directory`);
+  // A relative link beneath it is followed from it, not from its lexical name (/b holds a decoy c).
+  assert.equal(await outcome(() => fs.readFile({ directory: dir.id, path: 'toC', beneath: true })), 'a/b/c', `${face}: a relative link beneath the directory`);
   await fs.close(dir.id);
   await files.releaseProcess(7);
   harness.db.close();

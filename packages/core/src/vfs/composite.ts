@@ -2324,13 +2324,17 @@ export class CompositeVFS implements VFS {
    * another mount's (a mount nested in this one covers it): the backend
    * follows the link to its own file, which the namespace has no name for,
    * so a caller hands the link's own path to the namespace instead (whose
-   * backend follows it) or takes what it leads to as unknown. Any other
-   * link leads to its text. readlink answers the text, as written, so a
+   * backend follows it) or takes what it leads to as unknown. A relative
+   * link read at a spelling past a `..` (Resolution.spelling) leads to its
+   * text, from that spelling. Any other link leads to its text. readlink answers the text, as written, so a
    * copied link is the same link.
    */
   linkLeadsTo(path: string, link: string): string | null {
     const route = this.locate(normalizePath(path));
     if (!route.mount.options.resolvesPaths) return link;
+    // Read at a name past a `..` its backend walks (a walk anchored at a directory
+    // opened so), a relative target is the walk's to follow from that name.
+    if (!link.startsWith('/') && DOT_DOT.test(path)) return link;
     const inBackend = normalizePath(link.startsWith('/') ? link : `${parentOf(route.rel)}/${link}`);
     const leads = inBackend === ROOT_POINT ? route.mount.point : `${route.mount.point}${inBackend}`;
     return this.locate(leads).mount === route.mount ? leads : null;
@@ -2755,7 +2759,8 @@ export class CompositeVFS implements VFS {
    * owns (a nested mount point, a directory above one), and a `..` from one,
    * move the cut past them, the position there rebased (`/m/n/../f`, n a
    * mount, is handed `/f`). None when a `..` climbs past the point (the path
-   * is the namespace's, lexically), or the rest lands on the point, on a name
+   * is the namespace's, lexically; at `/` it climbs nowhere, and the backend
+   * walks it), or the rest lands on the point, on a name
    * the namespace owns, or in another mount.
    */
   private forwardedTail(holder: Mount, components: readonly string[], from: number): Resolution['operand'] {
@@ -2770,7 +2775,11 @@ export class CompositeVFS implements VFS {
       const name = components[i];
       if (name === '' || name === '.') continue;
       if (name === '..') {
-        if (position.length === 0) return undefined;
+        // At `/` a `..` stays there (the backend walks it); past any other point it leaves the mount.
+        if (position.length === 0) {
+          if (point === ROOT_POINT) continue;
+          return undefined;
+        }
         const leaving = owned(named(position));
         position.pop();
         if (leaving) { cut = i + 1; base = position.length === 0 ? '' : `/${position.join('/')}`; }
@@ -3352,9 +3361,11 @@ export class CompositeVFS implements VFS {
           if (parent === null) throw new Refusal('ENOENT', to);
           if (parent.type !== 'directory') throw new Refusal('ENOTDIR', to);
         }), () => {
-          // Into itself, by name: where both names are what is reached (a spelling past a
-          // `..` the backend walks is its own to judge, and a walked copy passes its own root by).
-          if (dir && fromR.spelling === from && toR.spelling === to && (to === from || to.startsWith(`${from}/`))) {
+          // Into itself, by name, unless the backend copies it itself from names it
+          // walks (a spelling past a `..`, which only it can judge); a copy walked here
+          // could not tell its own new root among the entries it lists.
+          const judgesItself = (fromR.spelling !== from || toR.spelling !== to) && source.mount === target.mount && typeof sourceOps.copy === 'function';
+          if (dir && !judgesItself && (to === from || to.startsWith(`${from}/`))) {
             throw new Refusal('EINVAL', to, 'a tree cannot be copied into itself');
           }
           return andThen(this.statOf(toR, false, sync), (existing) => {
