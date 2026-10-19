@@ -430,6 +430,7 @@ export class PeerHost {
         if (!stored)
             return { cancelled: record !== undefined };
         // A name this incarnation has since given a newer process is that process's facet now.
+        // One an earlier life of the peer left held is the cancelled process's own, ended here.
         if (stored.facet && !facetNameHeld(this.ctx, stored.facet)) {
             abortFacet(this.ctx, stored.facet, new Error('Nimbus: the coordinator released its previous process'));
             deleteFacetStorage(this.ctx, stored.facet);

@@ -197,7 +197,7 @@ function sessionLedger(ctx) {
     return sql ? new StorageLedger(sql) : null;
 }
 /**
- * The process each facet name was last given to, per facet container: the
+ * The hold each facet name was last given, per facet container: the
  * platform's `ctx.facets`, shared by every incarnation of an object that the
  * platform ended keeping its facets. A process's release ends, drains and
  * deletes its facet by name only while the name is still its own; once a
@@ -211,9 +211,13 @@ function holdersOf(facets) {
         nameHolders.set(facets, holders = new Map());
     return holders;
 }
-/** Whether a process this actor's facets were given `name` to still holds it: then its facet is that process's. */
+/**
+ * Whether a process this incarnation (`ctx`) spawned holds `name`: then its
+ * facet is that process's. A hold an ended incarnation left (a process whose
+ * release never ran) is no process of this one.
+ */
 export function facetNameHeld(ctx, name) {
-    return holdersOf(facetContainer(ctx)).has(name);
+    return holdersOf(facetContainer(ctx)).get(name)?.ctx === ctx;
 }
 const facetNames = new WeakMap();
 function facetOfPid(ctx) {
@@ -340,7 +344,7 @@ function spawnResident(ctx, env, disk, supervisor, params) {
     const book = slotBook(ctx);
     const ledger = sessionLedger(ctx);
     // This process's hold on `name`, until its release or a newer process's spawn.
-    const holding = {};
+    const holding = { ctx };
     const holders = holdersOf(facets);
     const holds = () => holders.get(name) === holding;
     // A warm worker keeps the SUPERVISOR binding it was built with, and the
