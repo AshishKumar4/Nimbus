@@ -3,11 +3,11 @@
 // word whose parentheses nest and whose `|` and blanks inside parentheses are
 // its own; its quoted characters match only themselves and an unquoted
 // expansion's are regex characters; it is a POSIX extended regular expression
-// as glibc compiles it (its errors, with status 2, by glibc's messages), and
-// a match is leftmost, then longest, with BASH_REMATCH its text and each
-// group's ("" for one that took no part; empty on no match). Before, lifo had
-// no `=~` ("test: too many arguments"). Each line runs as a session's line
-// and as host bash's `bash -c` under C.UTF-8. Host bash is the oracle
+// as glibc compiles it (one glibc refuses is status 2, of which bash 5.2 says
+// nothing); and a match is leftmost, then longest, with BASH_REMATCH its text
+// and each group's ("" for one that took no part; empty on no match). Before,
+// lifo had no `=~` ("test: too many arguments"). Each line runs as a session's
+// line and as host bash's `bash -c` under C.UTF-8. Host bash is the oracle
 // (stdout, status, stderr without bash's line prefix).
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -22,19 +22,19 @@ const CASES = [
   "x='a.c'; [[ abc =~ $x ]] && echo m; [[ abc =~ \"$x\" ]] || echo n",
   "[[ abc =~ b(c) ]] && echo \"${BASH_REMATCH[@]}\" ${#BASH_REMATCH[@]}",
   "[[ AbC =~ ^[[:upper:]][[:lower:]] ]] && echo cls; [[ abc =~ [[:alpha:]]+ ]] && echo \"${BASH_REMATCH[0]}\"",
-  "[[ ab =~ ^(a)(x)?b$ ]]; declare -p BASH_REMATCH",
-  "[[ ab =~ (a|ab)(c|bcd)? ]]; declare -p BASH_REMATCH; [[ ab =~ (a?)(ab)? ]]; declare -p BASH_REMATCH",
+  "[[ ab =~ ^(a)(x)?b$ ]]; printf '<%s>' "${#BASH_REMATCH[@]}" "${BASH_REMATCH[@]}"; echo",
+  "[[ ab =~ (a|ab)(c|bcd)? ]]; printf '<%s>' "${#BASH_REMATCH[@]}" "${BASH_REMATCH[@]}"; echo; [[ ab =~ (a?)(ab)? ]]; printf '<%s>' "${#BASH_REMATCH[@]}" "${BASH_REMATCH[@]}"; echo",
   "[[ \"a b\" =~ (a b) ]] && echo \"${BASH_REMATCH[0]}\"; [[ ab =~ a|x ]] && echo alt; [[ x =~ (a|x) ]] && echo \"${BASH_REMATCH[1]}\"",
   "[[ abc =~ ^a.c$ && 1 == 1 ]] && echo and; [[ ! abc =~ x ]] && echo not",
   "for r in '[' '[abc' 'a{' '*' '(b' 'a{x}' '[z-a]' '[[:foo:]]' 'a\\' '(*a)' '{1}' '[[:alpha:]-z]' 'a{3,1}' 'x{1' '^*'; do [[ x =~ $r ]]; echo \"$r $?\"; done",
   "for r in 'a)' '()' 'a**' 'a+?' 'a{,2}' '[]a]' '[^]a]' '[a-]' '[\\.]' 'a{2}{3}' '\\w+' '\\<a' 'a\\>' '(a)\\1' '\\{' 'a|' '|a' 'a$b' 'a^b' '\\`a' \"a\\\\'\"; do [[ 'aa]a.\\{' =~ $r ]]; echo \"$r $? ${BASH_REMATCH[0]-unset}\"; done",
-  "[[ a =~ b ]]; declare -p BASH_REMATCH; [[ ab =~ (a) ]]; [[ ab =~ x ]]; declare -p BASH_REMATCH",
+  "[[ a =~ b ]]; printf '<%s>' "${#BASH_REMATCH[@]}" "${BASH_REMATCH[@]}"; echo; [[ ab =~ (a) ]]; [[ ab =~ x ]]; printf '<%s>' "${#BASH_REMATCH[@]}" "${BASH_REMATCH[@]}"; echo",
   "[[ é =~ ^.$ ]] && echo one; [[ 😀x =~ ^(.)x$ ]] && echo \"${BASH_REMATCH[1]}\"",
   "[[ $'a\\nb' =~ a.b ]] && echo dotnl; [[ $'a\\nb' =~ ^b ]] || echo noml",
   "[[ a+ =~ a\\+ ]] && echo m6; [[ \"a b\" =~ a\\ b ]] && echo m7; [[ foo.bar =~ \\. ]] && echo esc; [[ ab =~ \\w+ ]] || echo nw; [[ aa =~ (a)\\1 ]] || echo nbr",
   "[[ abc =~ \"a\"b ]] && echo m8; x=b; [[ abc =~ a${x}c ]] && echo m9; [[ ab =~ a{1}b ]] && echo m10",
   "[[ abc =~ ( b ) ]]; echo st=$?; [[ 'a b c' =~ ( b ) ]] && echo \"[${BASH_REMATCH[0]}]\"",
-  "[[ xyz =~ y|yz ]] && echo \"${BASH_REMATCH[0]}\"; [[ aabb =~ (a*)(ab)?b ]] && declare -p BASH_REMATCH",
+  "[[ xyz =~ y|yz ]] && echo \"${BASH_REMATCH[0]}\"; [[ aabb =~ (a*)(ab)?b ]] && printf '<%s>' "${#BASH_REMATCH[@]}" "${BASH_REMATCH[@]}"; echo",
   "[[ a-b =~ [a-]+ ]] && echo \"${BASH_REMATCH[0]}\"; [[ 'x]y' =~ []x]+ ]] && echo \"${BASH_REMATCH[0]}\"; [[ 'a\\b' =~ [\\]b ]] && echo \"${BASH_REMATCH[0]}\"",
   "r='([0-9]+)\\.([0-9]+)'; [[ v12.34 =~ $r ]] && echo \"${BASH_REMATCH[1]} ${BASH_REMATCH[2]}\"; [[ ab =~ \"(\" ]] || echo q",
   "[[ AB =~ [[:lower:]] ]] || echo nolower; [[ ' ' =~ [[:space:]] ]] && echo sp; [[ 9 =~ ^[[:digit:][:alpha:]]$ ]] && echo dg; [[ - =~ [[:punct:]] ]] && echo pu",

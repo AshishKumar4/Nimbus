@@ -21,8 +21,8 @@ export interface TestContext {
   setRematch?(values: readonly string[]): void;
 }
 
-/** A conditional's diagnostic as it is written whole (`[[: …`), not after `test: `. */
-class ConditionalError extends Error {}
+/** A regular expression glibc refuses: bash 5.2 says nothing of it, and `[[ ]]`'s status is 2. */
+class RegexRefused extends Error {}
 
 /**
  * Implementation of the `test` / `[` shell builtin (POSIX `test`), and of
@@ -134,7 +134,7 @@ async function evaluateTestExpression(
     }
     return result.value ? 0 : 1;
   } catch (e) {
-    (await stderr.write(e instanceof ConditionalError ? `${e.message}\n` : `test: ${e instanceof Error ? e.message : String(e)}\n`));
+    if (!(e instanceof RegexRefused)) (await stderr.write(`test: ${e instanceof Error ? e.message : String(e)}\n`));
     return 2;
   }
 }
@@ -301,7 +301,7 @@ function compiledOrRefused(ere: string): ExtendedRegex {
   try {
     return compileExtended(ere);
   } catch (e) {
-    if (e instanceof RegexSyntaxError) throw new ConditionalError(`[[: invalid regular expression \`${ere}': ${e.message}`);
+    if (e instanceof RegexSyntaxError) throw new RegexRefused(`invalid regular expression \`${ere}': ${e.message}`);
     throw e;
   }
 }
