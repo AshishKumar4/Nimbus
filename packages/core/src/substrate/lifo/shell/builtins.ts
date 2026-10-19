@@ -137,18 +137,90 @@ async function builtinClear({ host }: BuiltinCall): Promise<number> {
   return 0;
 }
 
-async function builtinExport({ args, stderr, state }: BuiltinCall): Promise<number> {
+async function builtinExport({ args, stdout, stderr, state }: BuiltinCall): Promise<number> {
   let exitCode = 0;
-  for (const arg of args) {
-    const eqIdx = arg.indexOf('=');
-    if (eqIdx !== -1) {
-      const key = arg.slice(0, eqIdx);
-      const value = arg.slice(eqIdx + 1);
-      if (!(await assignEnv(state, key, value, stderr))) exitCode = 1;
+  let unexport = false;
+  let first = 0;
+  for (; first < args.length && args[first].startsWith('-') && args[first] !== '-'; first++) {
+    if (args[first] === '--') { first++; break; }
+    for (const flag of args[first].slice(1)) {
+      if (flag === 'n') unexport = true;
+      else if (flag !== 'p' && flag !== 'f') {
+        (await stderr.write(`export: -${flag}: invalid option\nexport: usage: export [-fn] [name[=value] ...] or export -p\n`));
+        return 2;
+      }
     }
+  }
+  const names = args.slice(first);
+  // `export` or `export -p`: every exported variable, as a declaration bash reads back.
+  if (names.length === 0) {
+    for (const name of Array.from(state.exportedNames).sort()) {
+      const declared = declarationOf(state, name);
+      if (declared !== null) (await stdout.write(`${declared}\n`));
+    }
+    return 0;
+  }
+  for (const arg of names) {
+    const eqIdx = arg.indexOf('=');
+    const key = eqIdx === -1 ? arg : arg.slice(0, eqIdx);
+    if (!isShellIdentifier(key)) {
+      (await stderr.write(`export: \`${arg}': not a valid identifier\n`));
+      exitCode = 1;
+      continue;
+    }
+    if (eqIdx !== -1 && !(await assignEnv(state, key, arg.slice(eqIdx + 1), stderr))) {
+      exitCode = 1;
+      continue;
+    }
+    if (unexport) state.exportedNames.delete(key);
+    else state.exportedNames.add(key);
   }
   return exitCode;
 }
+
+/**
+ * Variable `name` as `declare -p` prints it, a declaration bash reads back:
+ * its attributes (a array, r readonly, x exported; `--` for none) and its
+ * value quoted as bash quotes it (declareQuote). Null when it is not set.
+ */
+function declarationOf(state: ShellState, name: string): string | null {
+  const array = state.arrays.get(name);
+  const scalar = array === undefined ? state.env[name] : undefined;
+  if (array === undefined && scalar === undefined) return null;
+  const flags = `${array === undefined ? '' : 'a'}${state.readonlyNames.has(name) ? 'r' : ''}${state.exportedNames.has(name) ? 'x' : ''}`;
+  const attributes = flags === '' ? '--' : `-${flags}`;
+  if (array === undefined) return `declare ${attributes} ${name}=${declareQuote(scalar ?? '')}`;
+  const elements: string[] = [];
+  for (let i = 0; i < array.length; i++) {
+    const value = array[i];
+    if (value !== undefined) elements.push(`[${i}]=${declareQuote(value)}`);
+  }
+  return `declare ${attributes} ${name}=(${elements.join(' ')})`;
+}
+
+/**
+ * A value as bash's `declare -p` quotes it (print_var_value): in double
+ * quotes, `"`, `$`, backquote and backslash escaped; or, holding a control
+ * character, as $'…' (ansic_quote): \a \b \E \f \n \r \t \v, `'` and `\`
+ * escaped, any other control character in three octal digits.
+ */
+function declareQuote(value: string): string {
+  if (!/[\x00-\x1f\x7f]/.test(value)) return `"${value.replace(/["$`\\]/g, '\\$&')}"`;
+  let out = "$'";
+  for (const char of value) {
+    const code = char.charCodeAt(0);
+    const named = ANSIC_ESCAPES.get(char);
+    if (named !== undefined) out += `\\${named}`;
+    else if (char === "'" || char === '\\') out += `\\${char}`;
+    else if (code < 0x20 || code === 0x7f) out += `\\${code.toString(8).padStart(3, '0')}`;
+    else out += char;
+  }
+  return `${out}'`;
+}
+
+const ANSIC_ESCAPES: ReadonlyMap<string, string> = new Map([
+  ['\x07', 'a'], ['\b', 'b'], ['\x1b', 'E'], ['\f', 'f'], ['\n', 'n'], ['\r', 'r'], ['\t', 't'], ['\v', 'v'],
+]);
 
 async function builtinSet({ args, stdout, stderr, state, context }: BuiltinCall): Promise<number> {
   if (args.length === 0) {
@@ -482,6 +554,7 @@ async function builtinUnset({ args, stderr, state, context }: BuiltinCall): Prom
     if (element === null) {
       delete state.env[name];
       state.arrays.delete(name);
+      state.exportedNames.delete(name);
       continue;
     }
     const array = state.arrays.get(name);
@@ -499,26 +572,48 @@ async function builtinUnset({ args, stderr, state, context }: BuiltinCall): Prom
  * the value it had outside comes back when the function returns; `declare`
  * only does so when it is itself inside a function, matching bash.
  *
- * Attribute flags (-a -A -i -r -x -g) are accepted. Only -r has an effect —
- * the rest describe types this shell does not distinguish.
+ * Attribute flags (-a -A -i -r -x -g) are accepted. -r and -x have an
+ * effect; the rest describe types this shell does not distinguish. -p prints
+ * each named variable, or every one, as a declaration (declarationOf).
  */
-async function builtinDeclare(verb: 'local' | 'declare' | 'typeset', { args, stderr, state, context }: BuiltinCall): Promise<number> {
+async function builtinDeclare(verb: 'local' | 'declare' | 'typeset', { args, stdout, stderr, state, context }: BuiltinCall): Promise<number> {
   let readonlyFlag = false;
+  let exportFlag = false;
   let global = false;
+  let print = false;
   let exitCode = 0;
 
-  for (const [index, arg] of args.entries()) {
-    if (arg.startsWith('-') && arg.length > 1 && !arg.includes('=')) {
-      for (const flag of arg.slice(1)) {
-        if (flag === 'r') readonlyFlag = true;
-        else if (flag === 'g') global = true;
-        else if (!'aAixlunft'.includes(flag)) {
-          (await stderr.write(`${verb}: -${flag}: invalid option\n`));
-          return 2;
-        }
+  for (const arg of args) {
+    if (!arg.startsWith('-') || arg.length < 2 || arg.includes('=')) continue;
+    for (const flag of arg.slice(1)) {
+      if (flag === 'r') readonlyFlag = true;
+      else if (flag === 'x') exportFlag = true;
+      else if (flag === 'g') global = true;
+      else if (flag === 'p') print = true;
+      else if (!'aAilunft'.includes(flag)) {
+        (await stderr.write(`${verb}: -${flag}: invalid option\n`));
+        return 2;
       }
-      continue;
     }
+  }
+  // `declare -p [name …]`: each named variable as a declaration bash reads back, or every one.
+  if (print) {
+    const names = args.filter((arg) => !(arg.startsWith('-') && arg.length > 1));
+    const listed = names.length > 0 ? names : [...Object.keys(state.env).filter(isShellIdentifier), ...state.arrays.keys()].sort();
+    for (const name of listed) {
+      const declared = declarationOf(state, name);
+      if (declared === null) {
+        (await stderr.write(`${verb}: ${name}: not found\n`));
+        exitCode = 1;
+      } else {
+        (await stdout.write(`${declared}\n`));
+      }
+    }
+    return exitCode;
+  }
+
+  for (const [index, arg] of args.entries()) {
+    if (arg.startsWith('-') && arg.length > 1 && !arg.includes('=')) continue;
 
     const eq = arg.indexOf('=');
     const name = eq === -1 ? arg : arg.slice(0, eq);
@@ -536,6 +631,7 @@ async function builtinDeclare(verb: 'local' | 'declare' | 'typeset', { args, std
 
     if (eq !== -1 && !(await assignDeclared(state, name, context.arrayElements?.get(index) ?? arg.slice(eq + 1), stderr))) exitCode = 1;
     if (readonlyFlag) state.readonlyNames.add(name);
+    if (exportFlag) state.exportedNames.add(name);
   }
   return exitCode;
 }

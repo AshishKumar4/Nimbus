@@ -1,0 +1,71 @@
+#!/usr/bin/env bun
+// `declare -p` (and `typeset -p`, `local -p`), as bash 5.2 prints it: each
+// named variable as a declaration bash reads back, its attributes (a array,
+// r readonly, x exported; `--` for none) and its value in double quotes with
+// `"`, `$`, backquote and backslash escaped, or as $'…' when it holds a
+// control character; an array as ([i]="v" …), holes skipped; an unset name is
+// `declare: NAME: not found`, status 1. `export` marks a name exported (`-n`
+// unmarks it), as `declare -x` does, and `unset` drops the mark. Before, lifo
+// said `declare: -p: invalid option` (status 2) and kept no export mark
+// (ticket-lifo-declare-print). Each line runs as a session's line and as host
+// bash's `bash -c` under C.UTF-8. Host bash is the oracle (stdout, status,
+// stderr without bash's line prefix).
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
+import { hostSqlite } from './lib/host-sqlite.mjs';
+
+const CASES = [
+  "x=1; declare -p x",
+  "a=(a 'b c'); a[5]=z; declare -p a",
+  "export y=$'q\"\\\\$'; declare -p y",
+  "readonly r=1; declare -p r",
+  "declare -p nope; echo $?",
+  "x=$'a\\tb\\x01'\"'\"; declare -p x",
+  "e=(); declare -p e",
+  "export z=1; export -n z; declare -p z",
+  "export q; q=2; declare -p q",
+  "f() { local l=3; local -p l; typeset -p l; }; f",
+  "declare -rx w=5; declare -p w",
+  "u=1; unset u; declare -p u; echo $?",
+  "export 1x=2; echo $?",
+  "x='it'\"'\"'s $HOME `pwd` \\\\'; declare -p x",
+  "x=1 y=2; declare -p x y",
+  "declare -x d=4; env | grep '^d='; declare -p d",
+];
+
+/** bash's diagnostic prefix: `bash: line 1: `, `bash: -c: line 1: `. */
+const plainStderr = (text) => text.replace(/^bash: (?:-c: )?(?:line \d+: )?/gm, '');
+
+const LINES = CASES.map((c) => (typeof c === 'string' ? { line: c, compare: 'all' } : c));
+const compared = (result, compare) => (compare === 'out' ? { stdout: result.stdout, status: result.status } : result);
+
+const want = [];
+for (const { line, compare } of LINES) {
+  const dir = mkdtempSync(join(tmpdir(), 'shell-declare-'));
+  try {
+    const r = spawnSync('bash', ['--norc', '--noprofile', '-c', line], { cwd: dir, encoding: 'utf8', timeout: 10_000, env: { PATH: process.env.PATH, LC_ALL: 'C.UTF-8' } });
+    assert.equal(r.error, undefined, `bash ran ${JSON.stringify(line)}: ${r.error?.message}`);
+    want.push(compared({ stdout: r.stdout, stderr: plainStderr(r.stderr), status: r.status }, compare));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const { sql, transactions } = await hostSqlite();
+const ws = await NimbusWorkspace.create({ sql, transactions, generation: 1 });
+const failed = [];
+try {
+  for (const [i, { line, compare }] of LINES.entries()) {
+    const r = await ws.exec(line, { cwd: '/home/user' });
+    const ours = compared({ stdout: r.stdout, stderr: r.stderr, status: r.exitCode }, compare);
+    if (JSON.stringify(ours) !== JSON.stringify(want[i])) failed.push(`${JSON.stringify(line)}\n  bash: ${JSON.stringify(want[i])}\n  ours: ${JSON.stringify(ours)}`);
+  }
+} finally {
+  await ws.close();
+}
+console.log(`shell-declare-print-bash: ${LINES.length - failed.length} of ${LINES.length} lines as bash's`);
+assert.deepEqual(failed, [], `as bash:\n${failed.join('\n')}`);
