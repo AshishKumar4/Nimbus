@@ -6,7 +6,8 @@ import { exists } from '../../../vfs/vfs.js';
  * Match a glob pattern against a text string, as fnmatch(3) without flags:
  * `*`, `?`, `[abc]`, `[!a-z]` (`^` too; `]` first is literal), `\` quotes the
  * next character (a trailing one matches nothing), and a `[` with no closing
- * `]` is a literal `[`.
+ * `]` is a literal `[`. Characters are code points, as in a UTF-8 locale: `?`
+ * matches 😀 whole, and a range orders by code point.
  */
 export function globMatch(pattern: string, text: string): boolean {
   return matchPattern(pattern, text, false);
@@ -21,6 +22,24 @@ export function shellMatch(pattern: string, text: string): boolean {
   return matchPattern(pattern, text, true);
 }
 
+/** The character (code point) at UTF-16 index `i` of `s`: a surrogate pair whole, anything else one unit. */
+export function characterAt(s: string, i: number): string {
+  const high = s.charCodeAt(i);
+  if (high >= 0xd800 && high <= 0xdbff && i + 1 < s.length) {
+    const low = s.charCodeAt(i + 1);
+    if (low >= 0xdc00 && low <= 0xdfff) return s.slice(i, i + 2);
+  }
+  return s.charAt(i);
+}
+
+/** The UTF-16 indices where `s`'s characters begin, and its length: every place a character boundary falls. */
+export function characterBounds(s: string): number[] {
+  const bounds: number[] = [];
+  for (let i = 0; i < s.length; i += characterAt(s, i).length) bounds.push(i);
+  bounds.push(s.length);
+  return bounds;
+}
+
 function matchPattern(pattern: string, text: string, finalBackslash: boolean): boolean {
   let pi = 0;
   let ti = 0;
@@ -32,34 +51,47 @@ function matchPattern(pattern: string, text: string, finalBackslash: boolean): b
       starTi = ti;
       continue;
     }
-    const next = pi < pattern.length ? matchOne(pattern, pi, text[ti]!, finalBackslash) : -1;
+    const ch = characterAt(text, ti);
+    const next = pi < pattern.length ? matchOne(pattern, pi, ch, finalBackslash) : -1;
     if (next >= 0) {
       pi = next;
-      ti++;
+      ti += ch.length;
       continue;
     }
     if (starPi < 0) return false;
     pi = starPi + 1;
-    ti = ++starTi;
+    starTi += characterAt(text, starTi).length;
+    ti = starTi;
   }
   while (pi < pattern.length && pattern[pi] === '*') pi++;
   return pi === pattern.length;
 }
 
-/** Where the pattern continues after its token at `pi` matched `ch`, or -1. */
+/** Where the pattern continues after its token at `pi` matched the character `ch`, or -1. */
 function matchOne(pattern: string, pi: number, ch: string, finalBackslash: boolean): number {
-  const c = pattern[pi]!;
+  const c = characterAt(pattern, pi);
   if (c === '?') return pi + 1;
   if (c === '\\') {
     // A trailing backslash quotes nothing: it matches nothing (glibc), or itself (bash).
     if (pi + 1 >= pattern.length) return finalBackslash && ch === '\\' ? pi + 1 : -1;
-    return pattern[pi + 1] === ch ? pi + 2 : -1;
+    const quoted = characterAt(pattern, pi + 1);
+    return quoted === ch ? pi + 1 + quoted.length : -1;
   }
   if (c === '[') {
     const cls = matchCharClass(pattern, pi, ch);
     if (cls !== null) return cls.matched ? cls.end : -1;
   }
-  return c === ch ? pi + 1 : -1;
+  return c === ch ? pi + c.length : -1;
+}
+
+/** A bracket expression's member at `i`: its character, backslash-quoted or not, and where it ends. */
+function classMember(pattern: string, i: number): { char: string; end: number } {
+  if (pattern[i] === '\\' && i + 1 < pattern.length) {
+    const char = characterAt(pattern, i + 1);
+    return { char, end: i + 1 + char.length };
+  }
+  const char = characterAt(pattern, i);
+  return { char, end: i + char.length };
 }
 
 /** A bracket expression at `pos`: whether it matches `ch` and where it ends; null when it never closes. */
@@ -72,18 +104,17 @@ function matchCharClass(pattern: string, pos: number, ch: string): { matched: bo
   }
   let matched = false;
   const start = i;
+  const code = ch.codePointAt(0) ?? 0;
   while (i < pattern.length && (pattern[i] !== ']' || i === start)) {
-    let lo = pattern[i]!;
-    if (lo === '\\' && i + 1 < pattern.length) lo = pattern[++i]!;
-    if (i + 2 < pattern.length && pattern[i + 1] === '-' && pattern[i + 2] !== ']') {
-      let hi = pattern[i + 2]!;
-      let end = i + 3;
-      if (hi === '\\' && i + 3 < pattern.length) { hi = pattern[i + 3]!; end = i + 4; }
-      if (ch >= lo && ch <= hi) matched = true;
-      i = end;
+    const lo = classMember(pattern, i);
+    if (lo.end + 1 < pattern.length && pattern[lo.end] === '-' && pattern[lo.end + 1] !== ']') {
+      const hi = classMember(pattern, lo.end + 1);
+      // A range orders by code point.
+      if (code >= (lo.char.codePointAt(0) ?? 0) && code <= (hi.char.codePointAt(0) ?? 0)) matched = true;
+      i = hi.end;
     } else {
-      if (ch === lo) matched = true;
-      i++;
+      if (ch === lo.char) matched = true;
+      i = lo.end;
     }
   }
   if (i >= pattern.length) return null;
@@ -171,9 +202,9 @@ export function fixedMatchLength(pattern: string): number | null {
   for (let i = 0; i < pattern.length; length++) {
     const c = pattern[i];
     if (c === '*') return null;
-    if (c === '\\') i += 2;
+    if (c === '\\' && i + 1 < pattern.length) i += 1 + characterAt(pattern, i + 1).length;
     else if (c === '[') i = classEnd(pattern, i) ?? i + 1;
-    else i++;
+    else i += characterAt(pattern, i).length;
   }
   return length;
 }
@@ -183,7 +214,7 @@ function classEnd(pattern: string, pos: number): number | null {
   let i = pos + 1;
   if (pattern[i] === '!' || pattern[i] === '^') i++;
   const start = i;
-  while (i < pattern.length && (pattern[i] !== ']' || i === start)) i += pattern[i] === '\\' ? 2 : 1;
+  while (i < pattern.length && (pattern[i] !== ']' || i === start)) i = classMember(pattern, i).end;
   return i < pattern.length ? i + 1 : null;
 }
 
