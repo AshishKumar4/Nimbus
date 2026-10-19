@@ -7,8 +7,6 @@ import { isDecimalInteger, isShellIdentifier } from './names.js';
 import { assignArray, assignVariable } from './variables.js';
 import { DEFAULT_HOME } from '../../../constants.js';
 import { ExitSignal } from './interpreter.js';
-import { lex } from './lexer.js';
-import { TokenKind } from './types.js';
 import { resolveJobSpec } from './jobs.js';
 import { evaluateTest } from './test-builtin.js';
 import { isVfsError, strerror } from '../../../vfs/vfs-error.js';
@@ -486,28 +484,20 @@ async function builtinDeclare(verb, { args, stderr, state, context }) {
             (await stderr.write(`${verb}: can only be used in a function\n`));
             return 1;
         }
-        if (eq !== -1 && !(await assignDeclared(state, name, arg.slice(eq + 1), context.arrayLiterals?.has(index) === true, stderr)))
+        if (eq !== -1 && !(await assignDeclared(state, name, context.arrayElements?.get(index) ?? arg.slice(eq + 1), stderr)))
             exitCode = 1;
         if (readonlyFlag)
             state.readonlyNames.add(name);
     }
     return exitCode;
 }
-/** The right-hand side of a declaration: `(word …)` is an array literal when it was written as one (`literal`). */
-async function assignDeclared(state, name, text, literal, stderr) {
+/** The right-hand side of a declaration: a string, or an array assignment's elements (BuiltinExecutionContext.arrayElements). */
+async function assignDeclared(state, name, value, stderr) {
     if (state.readonlyNames.has(name)) {
         (await stderr.write(`${name}: readonly variable\n`));
         return false;
     }
-    if (literal && text.startsWith('(') && text.endsWith(')')) {
-        const elements = [];
-        for (const token of lex(text.slice(1, -1))) {
-            if (token.kind === TokenKind.Word)
-                elements.push(unquoteWord(token));
-        }
-        return assignArray(state, name, elements);
-    }
-    return assignVariable(state, name, text);
+    return typeof value === 'string' ? assignVariable(state, name, value) : assignArray(state, name, value);
 }
 async function assignEnv(state, name, value, stderr) {
     if (assignVariable(state, name, value))
@@ -796,10 +786,6 @@ function splitWhitespaceFields(line) {
     if (current.length > 0)
         fields.push(current);
     return fields;
-}
-/** A lexed word's text with its quoting removed, the way expansion leaves it. */
-function unquoteWord(token) {
-    return token.parts === undefined ? token.value : token.parts.map((p) => p.text).join('');
 }
 function isSetOptionCluster(arg) {
     if (arg.length < 2)

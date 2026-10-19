@@ -6,6 +6,17 @@ import { resolve } from './path.js';
  * `]` is a literal `[`.
  */
 export function globMatch(pattern, text) {
+    return matchPattern(pattern, text, false);
+}
+/**
+ * Match as bash's strmatch does (the shell's case, [[ ]], pathname expansion
+ * and pattern operators): as globMatch, but a final backslash matches a
+ * backslash (bash's sm_loop), where fnmatch(3)'s matches nothing.
+ */
+export function shellMatch(pattern, text) {
+    return matchPattern(pattern, text, true);
+}
+function matchPattern(pattern, text, finalBackslash) {
     let pi = 0;
     let ti = 0;
     let starPi = -1;
@@ -16,7 +27,7 @@ export function globMatch(pattern, text) {
             starTi = ti;
             continue;
         }
-        const next = pi < pattern.length ? matchOne(pattern, pi, text[ti]) : -1;
+        const next = pi < pattern.length ? matchOne(pattern, pi, text[ti], finalBackslash) : -1;
         if (next >= 0) {
             pi = next;
             ti++;
@@ -32,13 +43,15 @@ export function globMatch(pattern, text) {
     return pi === pattern.length;
 }
 /** Where the pattern continues after its token at `pi` matched `ch`, or -1. */
-function matchOne(pattern, pi, ch) {
+function matchOne(pattern, pi, ch, finalBackslash) {
     const c = pattern[pi];
     if (c === '?')
         return pi + 1;
     if (c === '\\') {
-        // A trailing backslash quotes nothing and matches nothing (glibc).
-        return pi + 1 < pattern.length && pattern[pi + 1] === ch ? pi + 2 : -1;
+        // A trailing backslash quotes nothing: it matches nothing (glibc), or itself (bash).
+        if (pi + 1 >= pattern.length)
+            return finalBackslash && ch === '\\' ? pi + 1 : -1;
+        return pattern[pi + 1] === ch ? pi + 2 : -1;
     }
     if (c === '[') {
         const cls = matchCharClass(pattern, pi, ch);
@@ -92,7 +105,8 @@ export async function expandGlob(pattern, text, cwd, vfs) {
     if (!hasUnescapedGlob(pattern)) {
         return [text];
     }
-    const absPattern = pattern.startsWith('/') ? pattern : resolve(cwd, pattern);
+    // The working directory's name matches only itself: escaped, as the pattern's quoted characters are.
+    const absPattern = pattern.startsWith('/') ? pattern : resolve(escapeGlob(cwd), pattern);
     const parts = absPattern.split('/').filter(Boolean);
     const isAbsolute = pattern.startsWith('/');
     let candidates = ['/'];
@@ -114,7 +128,7 @@ export async function expandGlob(pattern, text, cwd, vfs) {
                 try {
                     const entries = await vfs.readdir(dir);
                     for (const entry of entries) {
-                        if (globMatch(part, entry.name)) {
+                        if (shellMatch(part, entry.name)) {
                             const full = dir === '/' ? `/${entry.name}` : `${dir}/${entry.name}`;
                             nextCandidates.push(full);
                         }
@@ -145,6 +159,36 @@ export async function expandGlob(pattern, text, cwd, vfs) {
         });
     }
     return results.sort();
+}
+/**
+ * How many characters `pattern` matches when that is fixed (no `*` in it), as
+ * bash's umatchlen: each `?`, character, backslash-quoted character or bracket
+ * expression is one. Null when it varies.
+ */
+export function fixedMatchLength(pattern) {
+    let length = 0;
+    for (let i = 0; i < pattern.length; length++) {
+        const c = pattern[i];
+        if (c === '*')
+            return null;
+        if (c === '\\')
+            i += 2;
+        else if (c === '[')
+            i = classEnd(pattern, i) ?? i + 1;
+        else
+            i++;
+    }
+    return length;
+}
+/** Where the bracket expression at `pos` ends, just past its `]`, or null when it never closes (as matchCharClass reads it). */
+function classEnd(pattern, pos) {
+    let i = pos + 1;
+    if (pattern[i] === '!' || pattern[i] === '^')
+        i++;
+    const start = i;
+    while (i < pattern.length && (pattern[i] !== ']' || i === start))
+        i += pattern[i] === '\\' ? 2 : 1;
+    return i < pattern.length ? i + 1 : null;
 }
 /** Whether `s` holds a glob's special characters (`*`, `?`, `[`). */
 export function hasGlobChars(s) {

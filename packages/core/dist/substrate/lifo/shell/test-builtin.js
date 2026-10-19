@@ -1,5 +1,5 @@
 import { expandPatternWord } from './expander.js';
-import { globMatch } from '../utils/glob.js';
+import { shellMatch } from '../utils/glob.js';
 import { resolve } from '../utils/path.js';
 import { S_IFCHR, S_IFMT } from '../../../vfs/vfs.js';
 import { lstatOrThrow, statOrThrow } from '../../../vfs/vfs.js';
@@ -235,7 +235,7 @@ function isAndOperator(value, mode) {
 }
 function stringCompare(left, right, mode) {
     if (mode === 'double-bracket' && right.pattern !== undefined) {
-        return globMatch(right.pattern, left.value);
+        return shellMatch(right.pattern, left.value);
     }
     return left.value === right.value;
 }

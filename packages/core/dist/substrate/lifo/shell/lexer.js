@@ -11,6 +11,11 @@ export function lex(input) {
             i++;
             continue;
         }
+        // A line continuation between words is no word and no newline.
+        if (input[i] === '\\' && input[i + 1] === '\n') {
+            i += 2;
+            continue;
+        }
         // Newline
         if (input[i] === '\n') {
             tokens.push({ kind: TokenKind.Newline, value: '\n', pos: i });
@@ -60,6 +65,15 @@ export function lex(input) {
     }
     tokens.push({ kind: TokenKind.EOF, value: '', pos: i });
     return tokens;
+}
+/**
+ * Whether `text` ends inside a comment, which takes the rest of its line: what
+ * would follow it there is no word (an alias whose text ends in `#…`).
+ */
+export function endsInComment(text) {
+    const marked = (tail) => lex(`${text}${tail}`)
+        .some((token) => token.kind === TokenKind.Word && token.pos === text.length + 1 && token.value === ':');
+    return !marked(' :') && marked('\n:');
 }
 /**
  * How `input` leaves the lexer at end of input: inside an unclosed single or
@@ -340,6 +354,11 @@ function readWord(input, pos) {
     };
     while (i < input.length) {
         const ch = input[i];
+        // A line continuation: removed, the word going on (bash's shell_getc).
+        if (ch === '\\' && input[i + 1] === '\n') {
+            i += 2;
+            continue;
+        }
         // Backslash escape (outside quotes)
         if (ch === '\\' && i + 1 < input.length) {
             flushCurrentText();
@@ -377,8 +396,11 @@ function readWord(input, pos) {
             while (i < input.length && input[i] !== '"') {
                 if (input[i] === '\\' && i + 1 < input.length) {
                     const nextCh = input[i + 1];
-                    // Inside double quotes, only these chars are special with backslash
-                    if (nextCh === '"' || nextCh === '\\' || nextCh === '$' || nextCh === '`') {
+                    // Inside double quotes, only these chars are special with backslash; before a newline it continues the line.
+                    if (nextCh === '\n') {
+                        i += 2;
+                    }
+                    else if (nextCh === '"' || nextCh === '\\' || nextCh === '$' || nextCh === '`') {
                         flushDoubleText();
                         parts.push({ text: nextCh, quoted: 'single' });
                         doubleQuotedContent = true;
@@ -659,9 +681,10 @@ function nextStop(input, i, stops) {
  * skipped whole, so a `close` inside them does not end it. In a command's
  * span, a here-document's body is too: read at the newline after its `<<`,
  * as the shell's reader reads it, so its `'` or `)` is text. An arithmetic
- * span (`arithmetic`: `$((…))`) has no here-document: `<<` shifts.
+ * span, `$((…))` (its body at the second `(`), has no here-document: `<<` shifts.
  */
-export function readBalancedCommand(input, pos, open, close, arithmetic = false) {
+export function readBalancedCommand(input, pos, open, close) {
+    const arithmetic = open === '(' && input[pos] === '(' && input[pos - 1] === '(' && input[pos - 2] === '$';
     const stops = SPAN_STOPS[open];
     let i = pos;
     let depth = 1;
@@ -697,7 +720,7 @@ export function readBalancedCommand(input, pos, open, close, arithmetic = false)
                 : next === '$' ? i + 2
                     : next === "'" ? ansiCQuoteEnd(input, i)
                         : next === '{' ? readBracedExpansion(input, i).end
-                            : next === '(' ? readBalancedCommand(input, i + 2, '(', ')', input[i + 2] === '(').end
+                            : next === '(' ? readBalancedCommand(input, i + 2, '(', ')').end
                                 : i + 1;
             const stop = end === -1 ? input.length : end;
             body += input.slice(i, stop);

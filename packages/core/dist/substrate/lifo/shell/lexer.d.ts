@@ -1,5 +1,10 @@
 import { type Token } from './types.js';
 export declare function lex(input: string): Token[];
+/**
+ * Whether `text` ends inside a comment, which takes the rest of its line: what
+ * would follow it there is no word (an alias whose text ends in `#…`).
+ */
+export declare function endsInComment(text: string): boolean;
 export type ContinuationState = 'single' | 'double' | 'backslash';
 /**
  * How `input` leaves the lexer at end of input: inside an unclosed single or
@@ -31,9 +36,9 @@ export declare function readBracedExpansion(input: string, pos: number): {
  * skipped whole, so a `close` inside them does not end it. In a command's
  * span, a here-document's body is too: read at the newline after its `<<`,
  * as the shell's reader reads it, so its `'` or `)` is text. An arithmetic
- * span (`arithmetic`: `$((…))`) has no here-document: `<<` shifts.
+ * span, `$((…))` (its body at the second `(`), has no here-document: `<<` shifts.
  */
-export declare function readBalancedCommand(input: string, pos: number, open: '(' | '{', close: ')' | '}', arithmetic?: boolean): {
+export declare function readBalancedCommand(input: string, pos: number, open: '(' | '{', close: ')' | '}'): {
     body: string;
     end: number;
     closed: boolean;

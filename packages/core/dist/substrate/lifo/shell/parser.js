@@ -547,7 +547,7 @@ class Parser {
  * word of one unquoted part, `(` to `)`: `x='(a b)'` is a scalar. Returns null
  * for anything that is an ordinary word rather than an assignment.
  */
-function parseAssignment(token) {
+export function parseAssignment(token) {
     const head = assignmentHead(token);
     if (head === null)
         return null;
@@ -615,16 +615,6 @@ function assignmentHead(token) {
     if (char === null || char.char !== '=' || char.quoted)
         return null;
     return { length, name, ...(subscript === undefined ? {} : { subscript }), append };
-}
-/**
- * Whether `parts` is a compound array assignment as written: one unquoted part,
- * `name=(` to `)`, the form the lexer attaches. A declaration builtin's
- * argument is an array literal only so: `declare x='(a b)'` is a scalar.
- */
-export function isArrayLiteralWord(parts) {
-    const [only] = parts;
-    return parts.length === 1 && only !== undefined && only.quoted === 'none' && only.commandSubstitution === undefined
-        && /^[a-zA-Z_][a-zA-Z0-9_]*\+?=\(.*\)$/s.test(only.text);
 }
 /** `(word …)` — the words inside are lexed and expanded like any argument. */
 function parseArrayLiteral(text) {

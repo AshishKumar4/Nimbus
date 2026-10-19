@@ -4,8 +4,8 @@ import { resolveContext } from '../commands/registry.js';
 import { syscallError } from '../../../vfs/vfs-error.js';
 import { execRefusal } from '../../../shell/exec-dispatch.js';
 import { withRecall } from '../../../vfs/recall.js';
-import { lex } from './lexer.js';
-import { isArrayLiteralWord, parse } from './parser.js';
+import { endsInComment, lex } from './lexer.js';
+import { parse, parseAssignment, ParseError } from './parser.js';
 import { expandWords, expandWord, expandPatternWord, evaluateSubscript, ExpansionError, } from './expander.js';
 import { evaluateDoubleBracketWords } from './test-builtin.js';
 import { isPipeEnd, PipeChannel } from './pipe.js';
@@ -15,7 +15,7 @@ import { exitCodeForAbortSignal, KILLED_BY_SIGPIPE } from './signals.js';
 import { isBrokenPipe, isRefusedWrite, textCapture } from '../utils/bytes-io.js';
 import { resolve } from '../utils/path.js';
 import { encode } from '../utils/encoding.js';
-import { globMatch } from '../utils/glob.js';
+import { shellMatch } from '../utils/glob.js';
 import { staticStdinReader } from '../../../shell/stdin-adapter.js';
 import { BASH_BUILTINS } from './bash-builtins.js';
 import { isDecimalInteger } from './names.js';
@@ -679,7 +679,7 @@ export class Interpreter {
             for (const item of node.items) {
                 for (const pattern of item.patterns) {
                     // Its quoted characters match only themselves.
-                    if (globMatch((await expandPatternWord(pattern, expandCtx)).pattern, wordValue)) {
+                    if (shellMatch((await expandPatternWord(pattern, expandCtx)).pattern, wordValue)) {
                         exitCode = await this.executeCompoundList(item.body, redirIo);
                         this.lastExitCode = exitCode;
                         return exitCode;
@@ -735,10 +735,13 @@ export class Interpreter {
      * are no alias). The alias's text is read as tokens in the word's place, and
      * the command's other words follow as the words they are, never read again
      * as text. Its assignments go before the first command that text makes, and
-     * its redirections after the last. An alias whose text ends in a blank has
-     * the next word checked too. None of the text's commands expands those
-     * aliases, or the ones this command was read within, again. Null when the
-     * word is no alias.
+     * its redirections after the last; before a compound command they are a
+     * syntax error, as bash's grammar has it. A text that ends in a comment takes
+     * the command's other words and redirections into it (the rest of the line,
+     * in bash; here, the rest of the command). An alias whose text ends in a
+     * blank has the next word checked too. None of the text's commands expands
+     * those aliases, or the ones this command was read within, again. Null when
+     * the word is no alias.
      */
     aliasExpansion(cmd) {
         const aliases = this.config.aliases;
@@ -747,6 +750,7 @@ export class Interpreter {
         const expanding = new Set(cmd.aliasesExpanding);
         const tokens = [];
         let used = 0;
+        let commented = false;
         for (;;) {
             const word = cmd.words[used];
             const name = word === undefined ? null : literalWordText(word);
@@ -758,26 +762,36 @@ export class Interpreter {
                 if (token.kind !== TokenKind.EOF)
                     tokens.push(token);
             used++;
-            if (!/[ \t\n]$/.test(value))
+            commented = endsInComment(value);
+            if (commented || !/[ \t\n]$/.test(value))
                 break;
         }
         if (used === 0)
             return null;
-        for (const parts of cmd.words.slice(used))
-            tokens.push({ kind: TokenKind.Word, value: parts.map((part) => part.text).join(''), pos: 0, parts });
+        if (!commented) {
+            for (const parts of cmd.words.slice(used))
+                tokens.push({ kind: TokenKind.Word, value: parts.map((part) => part.text).join(''), pos: 0, parts });
+        }
         tokens.push({ kind: TokenKind.EOF, value: '', pos: 0 });
         const script = parse(tokens);
         markAliasText(script.lists, expanding);
         const commands = script.lists.flatMap((list) => list.entries.flatMap((entry) => entry.pipeline.commands));
         const first = commands[0];
         const last = commands.at(-1);
-        if (cmd.assignments.length > 0) {
+        const [assignment] = cmd.assignments;
+        if (assignment !== undefined && first !== undefined && first.type !== 'simple_command') {
+            // bash reads the assignment before the text: what it says of that.
+            const head = `${assignment.name}=`;
+            parse([{ kind: TokenKind.Word, value: head, pos: 0, parts: [{ text: head, quoted: 'none' }] }, ...tokens]);
+            throw new ParseError(`syntax error near unexpected token \`${tokens[0]?.value ?? ''}'`, 0);
+        }
+        if (assignment !== undefined) {
             if (first?.type === 'simple_command')
                 first.assignments.unshift(...cmd.assignments);
             else
                 script.lists.unshift({ type: 'list', entries: [{ pipeline: { type: 'pipeline', negated: false, commands: [{ type: 'simple_command', assignments: cmd.assignments, words: [], redirections: [] }] }, connector: null }], background: false });
         }
-        if (cmd.redirections.length > 0 && last !== undefined && last.type !== 'function_def')
+        if (!commented && cmd.redirections.length > 0 && last !== undefined && last.type !== 'function_def')
             last.redirections.push(...cmd.redirections);
         return script;
     }
@@ -794,19 +808,23 @@ export class Interpreter {
         if (aliased !== null)
             return (await this.executeScriptWithIo(aliased, io, { inline: true }));
         const expandCtx = this.createExpandContext(io);
-        // Expand words. A declaration builtin's (declare, typeset, local) are
-        // expanded one by one, so that the arguments its compound array
-        // assignments became are known by index (isArrayLiteralWord).
-        let arrayLiterals;
+        // Expand words. A declaration builtin's (declare, typeset, local) array
+        // assignments, `b=("$v" z)`, are read as an assignment's are (parseAssignment):
+        // each element expanded as a word, and the argument only names the array.
+        let arrayElements;
         let expandedArgs;
         const [commandWord] = cmd.words;
-        if (commandWord !== undefined && isDeclarationWord(commandWord) && cmd.words.some(isArrayLiteralWord)) {
-            arrayLiterals = new Set();
+        if (commandWord !== undefined && isDeclarationWord(commandWord)) {
             expandedArgs = [];
-            for (const word of cmd.words) {
-                if (isArrayLiteralWord(word))
-                    arrayLiterals.add(expandedArgs.length - 1);
-                expandedArgs.push(...await expandWords([word], expandCtx));
+            for (const [index, parts] of cmd.words.entries()) {
+                const assignment = index === 0 ? null : parseAssignment({ kind: TokenKind.Word, value: parts.map((part) => part.text).join(''), pos: 0, parts });
+                if (assignment?.elements !== undefined && assignment.subscript === undefined && assignment.append !== true) {
+                    (arrayElements ??= new Map()).set(expandedArgs.length - 1, await expandWords(assignment.elements, expandCtx));
+                    expandedArgs.push(`${assignment.name}=`);
+                }
+                else {
+                    expandedArgs.push(...await expandWords([parts], expandCtx));
+                }
             }
         }
         else {
@@ -932,7 +950,7 @@ export class Interpreter {
                                     stderr: fds.terminalOutputFds.has(2),
                                 },
                                 scriptMode: io.scriptMode,
-                                ...(arrayLiterals === undefined || name !== commandWordText(cmd) ? {} : { arrayLiterals }),
+                                ...(arrayElements === undefined || name !== commandWordText(cmd) ? {} : { arrayElements }),
                                 isFdTerminal: (fd) => this.isFdTerminal(fds, fd),
                                 getPositionals: () => this.readPositionals(builtinIo),
                                 setPositionals: (nextArgs) => this.writePositionals(builtinIo, nextArgs),
