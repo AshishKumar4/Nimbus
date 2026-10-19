@@ -160,7 +160,11 @@ function ownerOf(path) {
   return bundles.get(path) ?? [...trees].find((tree) => path.startsWith(tree)) ?? null;
 }
 
-const inStore = (path) => watched !== null && path.startsWith(watched.store);
+/** The third-party store of this repository's own install: the bench tooling's (esbuild), the same as the harness's when it is this repository. */
+const toolStore = existsSync(join(repository, 'node_modules', '.bun')) ? realpathSync(join(repository, 'node_modules', '.bun')) + sep : null;
+
+/** Third-party code: the harness's store, or the bench tooling's. */
+const inStore = (path) => (watched !== null && path.startsWith(watched.store)) || (toolStore !== null && path.startsWith(toolStore));
 
 /** Throws, naming each offence (`found`: [the module's path, what it did]) whose module it has not named before. */
 function offences(found, what) {
