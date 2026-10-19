@@ -14,6 +14,13 @@ published independently in the `@nimbus-sh` npm scope.
   holds the most, and warns when the total grew 10 GB or more since the
   last run. The registry holds every armada environment snapshot and every
   container image, and the account's storage is limited.
+- Added: `declare -p` (and `typeset -p`, `local -p`) prints each named
+  variable as bash does, as a declaration it reads back: `declare -- x="1"`,
+  `declare -a a=([0]="a" [5]="z")`, `declare -rx w="5"`, a control
+  character as `$'…'`; an unset name is `declare: NAME: not found`, status 1.
+  `export` marks a name exported (`export -n` unmarks it, `export -p` lists
+  them), as `declare -x` does, and `unset` drops the mark. Before, `declare
+  -p` was an invalid option.
 - Changed (core): the resident filesystem decides what a caller that
   cannot wait changes outside a subtree the process holds (its
   `synchronous` view). Such a change is answered at once, logged through
