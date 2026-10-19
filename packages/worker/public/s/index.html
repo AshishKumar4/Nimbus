@@ -2379,6 +2379,8 @@
       let activeHandle = null;
       // The pointer that holds it: one drag at a time, and only its pointer moves or ends it.
       let activePointer = null;
+      // The element that captured that pointer.
+      let activeTarget = null;
       let dragStartXY = 0;
       let dragStartDim = 0;
       let dragStartTotal = 0;
@@ -2387,6 +2389,7 @@
         if (activeHandle) return;
         activeHandle = kind;
         activePointer = e.pointerId;
+        activeTarget = e.currentTarget;
         e.preventDefault();
         // The handle keeps the pointer's events while it is held, wherever
         // the pointer goes: over the preview's frame they went to the frame.
@@ -2451,10 +2454,20 @@
         if (e.pointerId === activePointer) finishDrag();
       }
 
+      // The window lost focus. While the handle still holds the pointer it is
+      // down and the drag goes on: a frame the shell loads can take focus on
+      // its own. Without the capture, a press elsewhere (in the preview's
+      // frame) took focus, so the button was released unheard: the drag is over.
+      function onBlur() {
+        if (activeTarget && activePointer !== null && activeTarget.hasPointerCapture(activePointer)) return;
+        finishDrag();
+      }
+
       function finishDrag() {
         if (!activeHandle) return;
         activeHandle = null;
         activePointer = null;
+        activeTarget = null;
         document.body.style.cursor = '';
         saveDims();
         applyTerminalFit();
@@ -2473,7 +2486,7 @@
         window.addEventListener('pointermove', onMove);
         window.addEventListener('pointerup', endDrag);
         window.addEventListener('pointercancel', endDrag);
-        window.addEventListener('blur', finishDrag);
+        window.addEventListener('blur', onBlur);
       }
 
       function restoreDims() {
