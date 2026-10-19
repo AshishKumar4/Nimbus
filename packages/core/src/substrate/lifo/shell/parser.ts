@@ -105,6 +105,9 @@ function identifierError(token: Token, checkWord: boolean): string | null {
   return valid ? null : `\`${sourceOf(token)}': not a valid identifier`;
 }
 
+const endsNothing = (): boolean => false;
+const endsCaseItem = (token: Token): boolean => token.kind === TokenKind.DoubleSemi || isUnquotedLiteralWord(token, 'esac');
+
 class Parser {
   // The tokens read so far, and for a token that began a batch the reader's mark before it.
   private tokens: Token[] = [];
@@ -237,7 +240,7 @@ class Parser {
       const prevPos = this.pos;
       const list = this.parseList();
       lists.push(list);
-      this.requireListEnd(list, () => false);
+      this.requireListEnd(list, endsNothing);
       // Its separators: a newline ends the line (read no further, so the next line is read after this one runs).
       let newline = this.consumeHeredocBodies();
       while (!newline && (this.peek().kind === TokenKind.Semi || this.peek().kind === TokenKind.Newline)) {
@@ -435,6 +438,10 @@ class Parser {
 
   private parseCompoundList(terminators: string[]): ListNode[] {
     const lists: ListNode[] = [];
+    const ends = (token: Token): boolean => {
+      const word = unquotedLiteral(token);
+      return (word !== null && terminators.includes(word)) || (token.kind === TokenKind.RParen && terminators.includes(')'));
+    };
 
     this.skipSeparators();
 
@@ -453,10 +460,7 @@ class Parser {
 
       const list = this.parseList();
       lists.push(list);
-      this.requireListEnd(list, (token) => {
-        const ending = unquotedLiteral(token);
-        return (ending !== null && terminators.includes(ending)) || (token.kind === TokenKind.RParen && terminators.includes(')'));
-      });
+      this.requireListEnd(list, ends);
       this.consumeHeredocBodies();
       this.skipSeparators();
       if (this.pos === prevPos) {
@@ -594,7 +598,7 @@ class Parser {
         if (t.kind === TokenKind.EOF) break;
         const list = this.parseList();
         body.push(list);
-        this.requireListEnd(list, (token) => token.kind === TokenKind.DoubleSemi || isUnquotedLiteralWord(token, 'esac'));
+        this.requireListEnd(list, endsCaseItem);
         this.skipSeparators();
         if (this.pos === prevPos) {
           throw new ParseError(
