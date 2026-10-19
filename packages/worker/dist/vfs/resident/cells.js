@@ -20,16 +20,12 @@
  * of one.
  */
 import { FACET_OWN_WRITE_MEMORY_BYTES } from '@nimbus-sh/platform/limits.js';
-import { RESIDENT_ROW_BYTES, residentBytes, residentCellCost } from './cell-cost.js';
+import { RESIDENT_ROW_BYTES, residentBytes, residentCellCost, textChunkEnds } from './cell-cost.js';
 import { nsDescribes, prefixEnd } from './namespace.js';
 import { nsKey } from './namespace-lookup.js';
-import { arrayCopy, arrayIsArray, Error, mathCeil, mathFloor, mathMax, mathMin, NumberOf, objectCreate, objectHasOwn, ownField, Proxy, reflectSetPrototypeOf, SafeList, SafeMap, SafeSet, stringOf, stringSlice, stringStartsWith, typedArrayBuffer, typedArrayByteLength, typedArrayByteOffset, typedArraySet, Uint8ArrayConstructor, } from '@nimbus-sh/core/_shared/primordials.js';
+import { SafeMap, SafeSet, stringSlice } from '@nimbus-sh/core/_shared/primordials.js';
 import { RESIDENT_CHUNK_BYTES } from '../facet-resident-limits.js';
 import { RK_BINARY, RK_DENIED, RK_OWN_WRITE, RK_TEXT } from './tables.js';
-/** A record's own data field, retaining the type its contract gives it. */
-function ownValue(record, key) {
-    return objectHasOwn(record, key) ? record[key] : undefined;
-}
 export function createCells(coherence, admission, namespace, observeRead) {
     // An own write the store could not hold (no room in the session's storage)
     // is kept here, so the program still reads what it wrote: a bounded LRU
@@ -39,7 +35,70 @@ export function createCells(coherence, admission, namespace, observeRead) {
     // name only, so a miss on it says why.
     const held = new SafeMap();
     const unheld = new SafeSet();
-    const cellSize = (cell) => (typeof cell === 'string' ? cell.length * 3 : typedArrayByteLength(residentBytes(cell)));
+    const cellSize = (cell) => (typeof cell === 'string' ? cell.length * 3 : residentBytes(cell).byteLength);
+    // Bound at the store's creation, before the program runs: never a method it replaced.
+    const encodeText = TextEncoder.prototype.encode.bind(new TextEncoder());
+    const sameBytes = (a, b) => {
+        if (a.byteLength !== b.byteLength)
+            return false;
+        for (let i = 0; i < a.byteLength; i++)
+            if (a[i] !== b[i])
+                return false;
+        return true;
+    };
+    /**
+     * Whether the store holds `incoming` for `path` already: the same bytes,
+     * held as text or as bytes (a sync fill holds text, an async read returns
+     * bytes), compared a stored chunk at a time. A denial is never a file's bytes.
+     */
+    const holds = (t, path, incoming) => {
+        if (typeof incoming === 'object' && 'error' in incoming)
+            return false;
+        const found = t.fileHead(path);
+        if (found === undefined) {
+            const cell = held.get(path)?.cell;
+            if (cell === undefined || typeof cell === 'object' && 'error' in cell)
+                return false;
+            if (typeof cell === 'string' && typeof incoming === 'string')
+                return cell === incoming;
+            return sameBytes(typeof cell === 'string' ? encodeText(cell) : residentBytes(cell), typeof incoming === 'string' ? encodeText(incoming) : residentBytes(incoming));
+        }
+        if (found.kind === RK_DENIED)
+            return false;
+        // One chunk is read as `get` reads it; a file of several, in part order.
+        const rows = () => (found.chunks === 1 ? [t.chunkFirst(path)] : t.chunkParts(path));
+        if (found.kind === RK_TEXT && typeof incoming === 'string') {
+            if (found.size !== incoming.length)
+                return false;
+            if (found.chunks === 1)
+                return t.chunkFirst(path)?.txt === incoming;
+            let at = 0;
+            for (const row of rows()) {
+                if (row === undefined)
+                    return false;
+                const text = row.txt ?? '';
+                if (stringSlice(incoming, at, at + text.length) !== text)
+                    return false;
+                at += text.length;
+            }
+            return at === incoming.length;
+        }
+        const bytes = typeof incoming === 'string' ? encodeText(incoming) : residentBytes(incoming);
+        // A text row's size is its UTF-16 length: each unit is 1 to 3 bytes of UTF-8.
+        if (found.kind === RK_BINARY ? found.size !== bytes.byteLength : bytes.byteLength < found.size || bytes.byteLength > 3 * found.size)
+            return false;
+        // A text chunk never ends inside a surrogate pair (textChunkEnds): each encodes whole.
+        let at = 0;
+        for (const row of rows()) {
+            if (row === undefined)
+                return false;
+            const part = found.kind === RK_TEXT ? encodeText(row.txt ?? '') : residentBytes(row.bin);
+            if (!sameBytes(part, bytes.subarray(at, at + part.byteLength)))
+                return false;
+            at += part.byteLength;
+        }
+        return at === bytes.byteLength;
+    };
     const forgetHeld = (path) => {
         const cell = held.get(path);
         if (cell !== undefined) {
@@ -56,14 +115,11 @@ export function createCells(coherence, admission, namespace, observeRead) {
             unheld.add(path);
             return;
         }
-        if (admission.heldBytes + size > limit) {
-            held.forEach((old, oldest) => {
-                if (admission.heldBytes + size <= limit)
-                    return;
-                held.delete(oldest);
-                admission.addHeld(-cellSize(old.cell));
-                unheld.add(oldest);
-            });
+        while (admission.heldBytes + size > limit) {
+            const [oldest, old] = held.entries().next().value;
+            held.delete(oldest);
+            admission.addHeld(-cellSize(old.cell));
+            unheld.add(oldest);
         }
         held.set(path, { cell, rev: RK_OWN_WRITE });
         admission.addHeld(size);
@@ -71,8 +127,9 @@ export function createCells(coherence, admission, namespace, observeRead) {
     const head = (path) => coherence.require().fileHead(path);
     const dropDated = () => {
         coherence.tables('dropDated').dropDated();
-        held.forEach((cell, path) => { if (cell.rev !== RK_OWN_WRITE)
-            forgetHeld(path); });
+        for (const [path, cell] of [...held])
+            if (cell.rev !== RK_OWN_WRITE)
+                forgetHeld(path);
     };
     /**
      * Write one cell, chunking past the single-value ceiling.
@@ -90,54 +147,54 @@ export function createCells(coherence, admission, namespace, observeRead) {
         admission.release(path);
         t.chunkDelete(path);
         const stamp = typeof rev === 'number' ? rev : RK_OWN_WRITE;
-        if (cell && typeof cell === 'object' && ownField(cell, 'error')) {
+        if (cell && typeof cell === 'object' && 'error' in cell && cell.error) {
             t.filePut(path, RK_DENIED, 0, 0, stamp, null);
             return true;
         }
         const isText = typeof cell === 'string';
         const kind = isText ? RK_TEXT : RK_BINARY;
         const body = isText ? cell : residentBytes(cell);
-        const size = typeof body === 'string' ? body.length : typedArrayByteLength(body);
-        // Chunk on the encoded length for text, since the ceiling is on bytes and a
-        // multi-byte string would otherwise cross it while measuring short.
-        const limit = isText ? mathFloor(RESIDENT_CHUNK_BYTES / 3) : RESIDENT_CHUNK_BYTES;
-        const chunks = mathMax(1, mathCeil(size / limit));
+        const size = typeof body === 'string' ? body.length : body.byteLength;
+        // Text is chunked on its encoded length, since the ceiling is on bytes and
+        // a multi-byte string would otherwise cross it while measuring short.
+        const ends = typeof body === 'string' ? textChunkEnds(body) : null;
+        const chunks = ends !== null ? ends.length : Math.max(1, Math.ceil(size / RESIDENT_CHUNK_BYTES));
         // Not admitted: nothing is held for the path (its old bytes are gone above).
         if (!admission.fits(residentCellCost(cell), stamp !== RK_OWN_WRITE)) {
             t.fileDelete(path);
             if (stamp === RK_OWN_WRITE)
-                hold(path, body);
+                hold(path, cell);
             return false;
         }
-        for (let part = 0; part < chunks; part++) {
-            // Bytes are viewed, not copied: the table keeps what it is given as its own (tables.ts).
-            const start = part * limit;
-            const slice = typeof body === 'string' ? stringSlice(body, start, (part + 1) * limit)
-                : new Uint8ArrayConstructor(typedArrayBuffer(body), typedArrayByteOffset(body) + start, mathMin(limit, size - start));
-            if (typeof slice === 'string')
-                t.chunkAddText(path, part, slice);
-            else
-                t.chunkAddBin(path, part, slice);
+        for (let part = 0, from = 0; part < chunks; part++) {
+            if (typeof body === 'string' && ends !== null) {
+                t.chunkAddText(path, part, stringSlice(body, from, ends[part]));
+                from = ends[part];
+            }
+            else if (typeof body !== 'string') {
+                // Bytes are viewed, not copied: the table keeps what it is given as its own (tables.ts).
+                t.chunkAddBin(path, part, body.subarray(part * RESIDENT_CHUNK_BYTES, (part + 1) * RESIDENT_CHUNK_BYTES));
+            }
         }
-        t.filePut(path, kind, size, chunks, stamp, stamp === RK_OWN_WRITE || ckey == null ? null : stringOf(ckey));
+        t.filePut(path, kind, size, chunks, stamp, stamp === RK_OWN_WRITE || ckey == null ? null : String(ckey));
         return true;
     };
     /** One chunk row, written as it arrives. The streaming filler's primitive. */
     const putChunk = (t, path, part, bytes) => {
         if (part === 0)
             admission.release(path);
-        if (!admission.fits(mathCeil(typedArrayByteLength(bytes) * 1.01) + RESIDENT_ROW_BYTES + 4096))
+        if (!admission.fits(Math.ceil(bytes.byteLength * 1.01) + RESIDENT_ROW_BYTES + 4096))
             return false;
         t.chunkSetBin(path, part, bytes);
         return true;
     };
     const admit = (result) => {
         const t = coherence.tables('admit');
-        const dropped = new SafeList();
-        const relist = new SafeList();
+        const dropped = [];
+        const relist = [];
         let kept = 0, pushed = 0;
-        const epoch = result && result.epoch != null ? stringOf(result.epoch) : null;
-        const rev = result && result.rev != null ? NumberOf(result.rev) : null;
+        const epoch = result && result.epoch != null ? String(result.epoch) : null;
+        const rev = result && result.rev != null ? Number(result.rev) : null;
         if (epoch === null || rev === null) {
             throw new Error('Nimbus: fsAcquire returned no cursor; the resident store stays sealed '
                 + 'rather than serving rows it cannot date');
@@ -149,8 +206,8 @@ export function createCells(coherence, admission, namespace, observeRead) {
         // only moves forward, and only entries above it are applied.
         const at = coherence.cursor();
         const floor = at !== null && coherence.sealed() === null && at.epoch === epoch && !(result && result.poison) ? at.rev : null;
-        if (at !== null && floor !== null && rev <= floor) {
-            return { dropped: arrayCopy(dropped), kept, pushed: 0, relist: arrayCopy(relist), cursor: at, stale: rev < floor };
+        if (floor !== null && rev <= floor) {
+            return { dropped, kept, pushed: 0, relist, cursor: at, stale: rev < floor };
         }
         // The namespace moves with the cursor or not at all: a delta without stats,
         // or a poison, leaves it describing a revision the cursor has left, so it
@@ -158,18 +215,9 @@ export function createCells(coherence, admission, namespace, observeRead) {
         // An answer naming no path changes no name, with or without stats. One
         // that arrives while the namespace is not answering keeps why it is not.
         const nsOk = namespace.ok;
-        const paths = result && arrayIsArray(result.paths) ? result.paths : null;
-        let followable = !!result && !result.poison
-            && (ownValue(result, 'namespace') === true || (paths !== null && paths.length === 0));
-        if (followable && paths !== null) {
-            for (let i = 0; i < paths.length; i++) {
-                const stat = ownValue(paths[i], 'stat');
-                if (stat !== null && !nsDescribes(stat)) {
-                    followable = false;
-                    break;
-                }
-            }
-        }
+        const followable = !!result && !result.poison
+            && (result.namespace === true || (Array.isArray(result.paths) && result.paths.length === 0))
+            && (!Array.isArray(result.paths) || result.paths.every((entry) => entry.stat === null || nsDescribes(entry.stat)));
         const namespaced = nsOk && followable;
         if (nsOk && !followable) {
             namespace.markReady(t, false, !result || result.poison ? "the session's change log was truncated past this process's cursor"
@@ -185,17 +233,15 @@ export function createCells(coherence, admission, namespace, observeRead) {
             // store is what made a poison cost a whole filesystem.
             dropDated();
         }
-        else if (paths !== null) {
-            for (let i = 0; i < paths.length; i++) {
-                const entry = paths[i];
-                const entryRev = NumberOf(entry.rev);
-                if (floor !== null && entryRev <= floor)
+        else if (Array.isArray(result.paths)) {
+            for (const entry of result.paths) {
+                if (floor !== null && Number(entry.rev) <= floor)
                     continue;
                 const path = entry.path;
                 if (namespaced && namespace.ready()) {
                     const again = namespace.applyEntry(t, entry);
                     if (again !== null)
-                        relist[relist.length] = again;
+                        relist.push(again);
                 }
                 // A row at or above the reported revision already holds that mutation —
                 // this facet's own write coming back, or bytes fetched after it; anything
@@ -208,29 +254,25 @@ export function createCells(coherence, admission, namespace, observeRead) {
                 // path, each judged the same way: something beneath it this facet may
                 // not see changed, or the directory went, or who may enter it did. A
                 // row there may be stale, or no longer this facet's to be served.
-                const subtree = ownValue(entry, 'subtree');
-                const stat = ownValue(entry, 'stat');
-                if (subtree || ownValue(entry, 'structural')) {
+                if (entry.subtree || entry.structural) {
                     const end = prefixEnd(path + '/');
-                    const rows = t.fileRevsIn(path + '/', end);
-                    for (let j = 0; j < rows.length; j++) {
-                        const row = rows[j];
+                    for (const row of t.fileRevsIn(path + '/', end)) {
                         const stamped = row.rev;
-                        if (stamped === RK_OWN_WRITE || stamped >= entryRev)
+                        if (stamped === RK_OWN_WRITE || stamped >= Number(entry.rev))
                             continue;
                         t.chunkDelete(row.path);
                         t.fileDelete(row.path);
-                        dropped[dropped.length] = row.path;
+                        dropped.push(row.path);
                     }
-                    held.forEach((heldCell, heldPath) => {
-                        if (!stringStartsWith(heldPath, path + '/') || heldCell.rev === RK_OWN_WRITE || heldCell.rev >= entryRev)
-                            return;
+                    for (const [heldPath, heldCell] of [...held]) {
+                        if (!heldPath.startsWith(path + '/') || heldCell.rev === RK_OWN_WRITE || heldCell.rev >= Number(entry.rev))
+                            continue;
                         forgetHeld(heldPath);
-                    });
+                    }
                     // Names under it may have become hidden or visible without being
                     // named: the namespace relists that subtree.
-                    if (namespaced && subtree && stat && stat.type === 'directory')
-                        relist[relist.length] = path;
+                    if (namespaced && entry.subtree && entry.stat && entry.stat.type === 'directory')
+                        relist.push(path);
                 }
                 let isHeld = false, stamped = 0, heldKey = null;
                 const row = t.fileRevKey(path);
@@ -239,7 +281,7 @@ export function createCells(coherence, admission, namespace, observeRead) {
                     stamped = row.rev;
                     heldKey = row.ckey;
                 }
-                if (isHeld && (stamped === RK_OWN_WRITE || stamped >= entryRev)) {
+                if (isHeld && (stamped === RK_OWN_WRITE || stamped >= Number(entry.rev))) {
                     kept++;
                     continue;
                 }
@@ -248,7 +290,7 @@ export function createCells(coherence, admission, namespace, observeRead) {
                 // any, are held as the store can.
                 const heldCell = held.get(path);
                 if (heldCell !== undefined) {
-                    if (heldCell.rev === RK_OWN_WRITE || heldCell.rev >= entryRev) {
+                    if (heldCell.rev === RK_OWN_WRITE || heldCell.rev >= Number(entry.rev)) {
                         kept++;
                         continue;
                     }
@@ -258,32 +300,36 @@ export function createCells(coherence, admission, namespace, observeRead) {
                 // with identical content): kept, and dated at the report, while the
                 // report says this credential may still read them. A chmod or chown
                 // that revoked the read drops them, and the session answers the read.
-                const contentKey = ownValue(entry, 'contentKey');
-                if (isHeld && heldKey !== null && contentKey != null && heldKey === stringOf(contentKey) && namespace.readable(stat)) {
-                    t.fileSetRev(path, entryRev);
+                if (isHeld && heldKey !== null && entry.contentKey != null && heldKey === String(entry.contentKey) && namespace.readable(entry.stat)) {
+                    t.fileSetRev(path, Number(entry.rev));
                     kept++;
                     continue;
                 }
                 // Pushed content: the file's bytes at the answer's revision, so dating
                 // them at the path's own revision cannot be newer than they are.
-                const bytes = ownValue(entry, 'bytes');
-                if (bytes != null && stat && stat.type === 'file') {
-                    if (put(t, path, residentBytes(bytes), entryRev, contentKey))
+                if (entry.bytes != null && entry.stat && entry.stat.type === 'file') {
+                    // Bytes it holds already (no content key to say so): dated, never rewritten and lost at the cap.
+                    if (isHeld && holds(t, path, residentBytes(entry.bytes))) {
+                        t.fileSetRev(path, Number(entry.rev));
+                        kept++;
+                        continue;
+                    }
+                    if (put(t, path, residentBytes(entry.bytes), Number(entry.rev), entry.contentKey))
                         pushed++;
                     else if (isHeld)
-                        dropped[dropped.length] = path;
+                        dropped.push(path);
                     continue;
                 }
                 if (!isHeld)
                     continue;
                 t.chunkDelete(path);
                 t.fileDelete(path);
-                dropped[dropped.length] = path;
+                dropped.push(path);
             }
         }
         coherence.writeCursor(t, { epoch, rev });
         coherence.unseal();
-        return { dropped: arrayCopy(dropped), kept, pushed, relist: arrayCopy(relist), cursor: { epoch, rev } };
+        return { dropped, kept, pushed, relist, cursor: { epoch, rev } };
     };
     /**
      * The synchronous read. THE point of this store: a plain, non-async function
@@ -316,7 +362,7 @@ export function createCells(coherence, admission, namespace, observeRead) {
             const row = t.chunkFirst(path);
             if (row === undefined)
                 return undefined;
-            return kind === RK_TEXT ? row.txt ?? undefined : residentBytes(row.bin);
+            return kind === RK_TEXT ? row.txt : residentBytes(row.bin);
         }
         // Chunked: a file past the single-value ceiling. Reassembled here so callers
         // never learn the file was split.
@@ -326,18 +372,18 @@ export function createCells(coherence, admission, namespace, observeRead) {
         if (kind === RK_TEXT) {
             let text = '';
             for (let i = 0; i < rows.length; i++)
-                text += rows[i].txt ?? '';
+                text += rows[i]?.txt ?? '';
             return text;
         }
         let total = 0;
         for (let i = 0; i < rows.length; i++)
-            total += typedArrayByteLength(residentBytes(rows[i].bin));
-        const out = new Uint8ArrayConstructor(total);
+            total += residentBytes(rows[i]?.bin).byteLength;
+        const out = new Uint8Array(total);
         let offset = 0;
         for (let i = 0; i < rows.length; i++) {
-            const bytes = residentBytes(rows[i].bin);
-            typedArraySet(out, bytes, offset);
-            offset += typedArrayByteLength(bytes);
+            const bytes = residentBytes(rows[i]?.bin);
+            out.set(bytes, offset);
+            offset += bytes.byteLength;
         }
         return out;
     };
@@ -349,8 +395,7 @@ export function createCells(coherence, admission, namespace, observeRead) {
         return had;
     };
     const keys = () => coherence.require().fileAllPaths();
-    const target = objectCreate(null);
-    const handler = {
+    const bundle = new Proxy(Object.create(null), {
         get(_t, path) {
             if (typeof path !== 'string')
                 return undefined;
@@ -391,15 +436,9 @@ export function createCells(coherence, admission, namespace, observeRead) {
             // such scan read 87 MiB and threw all of it away. A getter answers the
             // name question for free and still returns the bytes to anything that
             // genuinely reads the property.
-            const descriptor = objectCreate(null);
-            descriptor.configurable = true;
-            descriptor.enumerable = true;
-            descriptor.get = () => get(path);
-            return descriptor;
+            return { configurable: true, enumerable: true, get() { return get(path); } };
         },
-    };
-    reflectSetPrototypeOf(handler, null);
-    const bundle = new Proxy(target, handler);
+    });
     return {
         bundle,
         /**
@@ -439,7 +478,7 @@ export function createCells(coherence, admission, namespace, observeRead) {
             if (found !== undefined)
                 return found.kind === RK_DENIED;
             const cell = held.get(path)?.cell;
-            return typeof cell === 'object' && cell !== null && !(cell instanceof Uint8ArrayConstructor) && typeof ownField(cell, 'error') === 'string';
+            return typeof cell === 'object' && cell !== null && !(cell instanceof Uint8Array) && typeof cell.error === 'string';
         },
         get,
         put,
@@ -454,7 +493,7 @@ export function createCells(coherence, admission, namespace, observeRead) {
          * Writing the head first would invert that into a truncated read.
          */
         putHead(t, path, kind, size, chunks, rev, ckey) {
-            t.filePut(path, kind, size, chunks, typeof rev === 'number' ? rev : RK_OWN_WRITE, typeof rev === 'number' && ckey != null ? stringOf(ckey) : null);
+            t.filePut(path, kind, size, chunks, typeof rev === 'number' ? rev : RK_OWN_WRITE, typeof rev === 'number' && ckey != null ? String(ckey) : null);
         },
         /**
          * Hold `path` with the bytes of a dated row whose content identity is
@@ -462,14 +501,14 @@ export function createCells(coherence, admission, namespace, observeRead) {
          * no fetch is needed. Returns whether a source existed.
          */
         copyByKey(t, path, ckey, rev) {
-            const source = t.fileByKey(stringOf(ckey), path);
+            const source = t.fileByKey(String(ckey), path);
             if (source === undefined)
                 return false;
             if (!admission.fits(source.size + (source.chunks + 1) * RESIDENT_ROW_BYTES))
                 return false;
             t.chunkDelete(path);
             t.chunkCopy(path, source.path);
-            t.filePut(path, source.kind, source.size, source.chunks, rev, stringOf(ckey));
+            t.filePut(path, source.kind, source.size, source.chunks, rev, String(ckey));
             return true;
         },
         delete: deleteCell,
@@ -545,6 +584,16 @@ export function createCells(coherence, admission, namespace, observeRead) {
             const heldCell = held.get(path);
             if (heldCell !== undefined && (heldCell.rev === RK_OWN_WRITE || heldCell.rev > rev))
                 return false;
+            // Bytes the store holds already are its own: the read dates them, and
+            // rewriting them could only lose them, refused at the store's cap (a dev
+            // server rereads its sources asynchronously, every one it serves).
+            if (holds(t, path, cell)) {
+                if (dated !== undefined)
+                    t.fileSetRev(path, rev);
+                else if (heldCell !== undefined)
+                    heldCell.rev = rev;
+                return true;
+            }
             return put(t, path, cell, rev);
         },
         /** Every held path. Backs the Object.keys / for-in scans in the shims. */
@@ -570,7 +619,7 @@ export function createCells(coherence, admission, namespace, observeRead) {
          * escaping — those are only wildcards to an operator this no longer uses.
          */
         keysUnder(prefix) {
-            const from = stringOf(prefix);
+            const from = String(prefix);
             return coherence.require().filePaths(from, prefixEnd(from));
         },
         /**
@@ -580,19 +629,16 @@ export function createCells(coherence, admission, namespace, observeRead) {
          * over again.
          */
         hasUnder(prefix) {
-            const from = stringOf(prefix);
+            const from = String(prefix);
             return coherence.require().fileAny(from, prefixEnd(from));
         },
         storageMiss: (path) => unheld.has(path),
         dropHeld(all) {
-            held.forEach((cell, path) => { if (all || cell.rev !== RK_OWN_WRITE)
-                forgetHeld(path); });
+            for (const [path, cell] of [...held])
+                if (all || cell.rev !== RK_OWN_WRITE)
+                    forgetHeld(path);
         },
-        heldRevisions() {
-            const out = new SafeList();
-            held.forEach((cell, path) => { out[out.length] = [path, cell.rev]; });
-            return arrayCopy(out);
-        },
+        heldRevisions: () => [...held].map(([path, cell]) => [path, cell.rev]),
         forget: forgetHeld,
         /**
          * Drop every cell AND the cursor, and re-seal.
@@ -607,8 +653,9 @@ export function createCells(coherence, admission, namespace, observeRead) {
         clear() {
             coherence.tables('clear').clear();
             // Held cells go with the rows, but for own writes still in flight.
-            held.forEach((cell, path) => { if (cell.rev !== RK_OWN_WRITE)
-                forgetHeld(path); });
+            for (const [path, cell] of [...held])
+                if (cell.rev !== RK_OWN_WRITE)
+                    forgetHeld(path);
             namespace.clear();
             coherence.seal('the store was cleared');
         },

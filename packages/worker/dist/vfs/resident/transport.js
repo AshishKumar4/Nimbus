@@ -5,10 +5,8 @@
  * fetch with (sync.ts, lazy.ts). Every bound here is the session's.
  */
 import { FS_LIST_PAGE_LIMIT, FS_LIST_TREE_MAX_ENTRIES, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES, } from '@nimbus-sh/core/constants.js';
-import { arrayCopy, arrayIsArray, Error, mathCeil, mathMax, mathMin, NumberOf, numberIsSafeInteger, objectHasOwn, ownField, reflectApply, reflectGet, SafeList, SafeMap, SafeSet, stringOf, stringStartsWith, typedArrayByteLength, TypeError, } from '@nimbus-sh/core/_shared/primordials.js';
-import { RESIDENT_ROW_BYTES, namespaceRowBytes, residentBytes } from './cell-cost.js';
-import { nsDescribes, nsKey } from './namespace.js';
-import { nsName, nsParent } from './namespace-lookup.js';
+import { RESIDENT_ROW_BYTES, namespaceRowBytes, residentBytes, residentCellCost } from './cell-cost.js';
+import { nsDescribes, nsKey, nsSplit } from './namespace.js';
 import { RESIDENT_CHUNK_BYTES } from '../facet-resident-limits.js';
 import { RK_BINARY, RK_OWN_WRITE } from './tables.js';
 /**
@@ -31,19 +29,7 @@ const BATCH_BYTES = FS_READ_BATCH_REQUEST_BYTES;
  * rather than a workload.
  */
 const MAX_LIST_PAGES = 4096;
-/** A record's own data field, retaining the type its contract gives it. */
-function ownValue(record, key) {
-    return objectHasOwn(record, key) ? record[key] : undefined;
-}
-/** An RPC stub exposes methods through its interceptor, not own data fields. */
-function method(supervisor, name) {
-    return reflectGet(supervisor, name);
-}
-// An exception's message wherever it is defined (a DOMException's, a class's, is inherited).
-export const messageOf = (e) => {
-    const message = e !== null && (typeof e === 'object' || typeof e === 'function') ? reflectGet(e, 'message') : undefined;
-    return stringOf(message || e);
-};
+export const messageOf = (e) => (e?.message) || String(e);
 export function createTransport(coherence, admission, namespace, cells) {
     /**
      * Re-read the names beneath `dir` from the authority: a directory that just
@@ -51,21 +37,18 @@ export function createTransport(coherence, admission, namespace, cells) {
      */
     const relist = async (supervisor, dir) => {
         const t = coherence.tables('relist');
-        const fsList = supervisor ? method(supervisor, 'fsList') : undefined;
-        if (!supervisor || typeof fsList !== 'function') {
+        if (!supervisor || typeof supervisor.fsList !== 'function') {
             namespace.markReady(t, false, 'the session cannot list its filesystem');
             return;
         }
         const prefix = dir + '/';
-        const seen = new SafeList();
+        const seen = [];
         let replaceBytes = 0;
         let incomingBytes = 0;
         if (admission.inHeap) {
-            const rows = t.nsKeys();
-            for (let i = 0; i < rows.length; i++) {
-                const row = rows[i];
+            for (const row of t.nsKeys()) {
                 const key = row.parent ? row.parent + '/' + row.name : row.name;
-                if (!stringStartsWith(key, prefix))
+                if (!key.startsWith(prefix))
                     continue;
                 replaceBytes += namespaceRowBytes(row.parent, row.name, t.nsGet(row.parent, row.name)?.target);
             }
@@ -75,20 +58,19 @@ export function createTransport(coherence, admission, namespace, cells) {
         for (let page = 0; page < MAX_LIST_PAGES && !done; page++) {
             let listed;
             try {
-                listed = await reflectApply(fsList, supervisor, [after, FS_LIST_PAGE_LIMIT]);
+                listed = await supervisor.fsList(after, FS_LIST_PAGE_LIMIT);
             }
             catch (e) {
                 namespace.markReady(t, false, 'a listing of /' + dir + ' failed (' + messageOf(e) + ')');
                 return;
             }
-            if (!listed || !arrayIsArray(listed.entries)) {
+            if (!listed || !Array.isArray(listed.entries)) {
                 namespace.markReady(t, false, 'a listing of /' + dir + ' came back without entries');
                 return;
             }
-            for (let i = 0; i < listed.entries.length; i++) {
-                const entry = listed.entries[i];
+            for (const entry of listed.entries) {
                 const k = nsKey(entry.path);
-                if (!stringStartsWith(k, prefix)) {
+                if (!k.startsWith(prefix)) {
                     if (k > prefix) {
                         done = true;
                         break;
@@ -97,14 +79,15 @@ export function createTransport(coherence, admission, namespace, cells) {
                 }
                 if (entry.stat) {
                     if (admission.inHeap && admission.cap !== null) {
-                        incomingBytes += namespaceRowBytes(nsParent(k), nsName(k), ownValue(entry, 'linkTarget') ?? ownValue(entry, 'unlisted'));
+                        const [parent, name] = nsSplit(k);
+                        incomingBytes += namespaceRowBytes(parent, name, entry.linkTarget ?? entry.unlisted);
                         const refused = admission.namespaceRefusal(incomingBytes - replaceBytes);
                         if (refused !== null) {
                             namespace.markReady(t, false, refused);
                             return;
                         }
                     }
-                    seen[seen.length] = entry;
+                    seen.push(entry);
                 }
             }
             if (listed.next === null || listed.next === undefined)
@@ -116,19 +99,15 @@ export function createTransport(coherence, admission, namespace, cells) {
             namespace.markReady(t, false, 'a listing of /' + dir + ' did not finish');
             return;
         }
-        for (let i = 0; i < seen.length; i++) {
-            if (!nsDescribes(seen[i].stat)) {
-                namespace.markReady(t, false, 'a listing of /' + dir + ' named an entry without its stat');
-                return;
-            }
+        if (!seen.every((entry) => nsDescribes(entry.stat))) {
+            namespace.markReady(t, false, 'a listing of /' + dir + ' named an entry without its stat');
+            return;
         }
         // Exactly what the listing has under the directory: a name it no longer
         // shows (hidden now, or gone) leaves, one it shows is written.
         namespace.deleteTree(t, dir, false);
-        for (let i = 0; i < seen.length; i++) {
-            const entry = seen[i];
-            namespace.put(t, nsKey(entry.path), entry.stat, entry.rev, ownValue(entry, 'linkTarget'), ownValue(entry, 'unlisted') ?? null);
-        }
+        for (const entry of seen)
+            namespace.put(t, nsKey(entry.path), entry.stat, entry.rev, entry.linkTarget, entry.unlisted ?? null);
     };
     /**
      * Fetch these files from the authority and install them, each dated at the
@@ -165,8 +144,9 @@ export function createTransport(coherence, admission, namespace, cells) {
      * installed, or a later read would be served them by their length alone.
      */
     const outdated = (t, path, rev) => {
-        const listed = t.nsGet(nsParent(path), nsName(path));
-        return listed !== undefined && NumberOf(listed.rev) > rev;
+        const [parent, name] = nsSplit(path);
+        const listed = t.nsGet(parent, name);
+        return listed !== undefined && Number(listed.rev) > rev;
     };
     const fetchFiles = async (supervisor, wantedFiles) => {
         // Content already held under another path, or wanted twice in this batch,
@@ -174,36 +154,32 @@ export function createTransport(coherence, admission, namespace, cells) {
         const t = coherence.tables('fetchFiles');
         const requested = wantedFiles.length;
         let copied = 0;
-        const files = new SafeList();
-        const later = new SafeList();
-        const fetching = new SafeSet();
-        for (let i = 0; i < wantedFiles.length; i++) {
-            const file = wantedFiles[i];
-            const ckey = ownValue(file, 'ckey');
-            if (ckey != null) {
-                if (cells.copyByKey(t, file.path, ckey, file.rev)) {
+        const files = [];
+        const later = [];
+        const fetching = new Set();
+        for (const file of wantedFiles) {
+            if (file.ckey != null) {
+                if (cells.copyByKey(t, file.path, file.ckey, file.rev)) {
                     copied++;
                     continue;
                 }
-                if (fetching.has(ckey)) {
-                    later[later.length] = file;
+                if (fetching.has(file.ckey)) {
+                    later.push(file);
                     continue;
                 }
-                fetching.add(ckey);
+                fetching.add(file.ckey);
             }
-            files[files.length] = file;
+            files.push(file);
         }
         // One flat list of ranges across all files, so packing is a single pass and
         // a 25 MiB file and a 40-byte one are the same shape.
-        const ranges = new SafeList();
-        for (let i = 0; i < files.length; i++) {
-            const file = files[i];
-            const parts = mathMax(1, mathCeil(file.size / RESIDENT_CHUNK_BYTES));
-            const version = file.rev === 0 ? ownValue(file, 'version') ?? ownValue(file, 'stat') ?? null : null;
-            const ckey = ownValue(file, 'ckey') ?? null;
+        const ranges = [];
+        for (const file of files) {
+            const parts = Math.max(1, Math.ceil(file.size / RESIDENT_CHUNK_BYTES));
+            const version = file.rev === 0 ? file.version ?? file.stat ?? null : null;
             for (let part = 0; part < parts; part++) {
                 const offset = part * RESIDENT_CHUNK_BYTES;
-                ranges[ranges.length] = {
+                ranges.push({
                     path: file.path,
                     rev: file.rev,
                     epoch: file.epoch,
@@ -211,71 +187,58 @@ export function createTransport(coherence, admission, namespace, cells) {
                     part,
                     parts,
                     offset,
-                    length: mathMin(RESIDENT_CHUNK_BYTES, mathMax(0, file.size - offset)),
+                    length: Math.min(RESIDENT_CHUNK_BYTES, Math.max(0, file.size - offset)),
                     size: file.size,
-                    ckey,
-                };
+                    ckey: file.ckey ?? null,
+                });
             }
         }
         // Per-file landed-part counts, so a head row is written only once every
         // range of that file is in. See cells.putHead.
-        const landed = new SafeMap();
+        const landed = new Map();
         let filled = 0, failed = 0, fetchedBytes = 0;
-        const failedPaths = new SafeSet();
+        const failedPaths = new Set();
         /** The revision each path is read at. */
-        const revOf = new SafeMap();
-        for (let i = 0; i < ranges.length; i++) {
-            const range = ranges[i];
-            revOf.set(range.path, range.rev);
-        }
+        const revOf = new Map(ranges.map((range) => [range.path, range.rev]));
         for (let at = 0; at < ranges.length;) {
-            const batch = new SafeList();
+            const batch = [];
             let bytes = 0;
             while (at < ranges.length
                 && batch.length < BATCH_PATHS
                 && (batch.length === 0 || bytes + ranges[at].length <= BATCH_BYTES)) {
-                const range = ranges[at];
-                bytes += range.length;
-                batch[batch.length] = range;
+                bytes += ranges[at].length;
+                batch.push(ranges[at]);
                 at++;
             }
             // N18: room for the batch first; what the ledger will not admit is read
             // through the session instead of held.
             if (!(await admission.ensureRoom(bytes + batch.length * RESIDENT_ROW_BYTES))) {
-                for (let i = 0; i < batch.length; i++)
-                    failedPaths.add(batch[i].path);
+                for (const r of batch)
+                    failedPaths.add(r.path);
                 continue;
             }
             let results;
             try {
-                const fsReadBatch = method(supervisor, 'fsReadBatch');
-                if (typeof fsReadBatch !== 'function')
-                    throw new TypeError('supervisor.fsReadBatch is not a function');
+                results = await supervisor.fsReadBatch(
                 // A dated file at its revision; an undated one as its listing's stat named it.
-                const requests = new SafeList();
-                for (let i = 0; i < batch.length; i++) {
-                    const r = batch[i];
-                    requests[requests.length] = r.version === null
-                        ? { path: r.path, offset: r.offset, length: r.length, expectedEpoch: r.epoch, expectedRevision: r.rev }
-                        : { path: r.path, offset: r.offset, length: r.length, expectedFile: fileVersionOf(r.version) };
-                }
-                results = await reflectApply(fsReadBatch, supervisor, [arrayCopy(requests)]);
+                batch.map((r) => (r.version === null
+                    ? { path: r.path, offset: r.offset, length: r.length, expectedEpoch: r.epoch, expectedRevision: r.rev }
+                    : { path: r.path, offset: r.offset, length: r.length, expectedFile: fileVersionOf(r.version) })));
             }
             catch {
-                for (let i = 0; i < batch.length; i++)
-                    failedPaths.add(batch[i].path);
+                for (const r of batch)
+                    failedPaths.add(r.path);
                 continue;
             }
             for (let i = 0; i < batch.length; i++) {
                 const range = batch[i];
-                const entry = results && ownValue(results, i);
-                const error = entry && ownValue(entry, 'error');
-                if (!entry || error) {
+                const entry = results && results[i];
+                if (!entry || entry.error) {
                     // A denial is a real answer and is stored as one, so a later read
                     // reports EACCES synchronously instead of missing. Anything else is a
                     // path this store will not hold, and a read of it falls through to
                     // exactly the miss it would have had before.
-                    const code = error ? ownField(error, 'code') : undefined;
+                    const code = entry?.error ? entry.error.code : undefined;
                     if (code === 'EACCES' && range.part === 0) {
                         cells.put(t, range.path, { error: 'EACCES' }, range.rev);
                         filled++;
@@ -284,14 +247,12 @@ export function createTransport(coherence, admission, namespace, cells) {
                         failedPaths.add(range.path);
                     continue;
                 }
-                const bytes = ownValue(entry, 'bytes');
-                if (bytes === null || bytes === undefined) {
+                if (entry.bytes === null || entry.bytes === undefined) {
                     failedPaths.add(range.path);
                     continue;
                 }
-                const chunk = residentBytes(bytes);
-                const chunkBytes = typedArrayByteLength(chunk);
-                if (chunkBytes !== range.length) {
+                const chunk = residentBytes(entry.bytes);
+                if (chunk.byteLength !== range.length) {
                     failedPaths.add(range.path);
                     continue;
                 }
@@ -300,7 +261,7 @@ export function createTransport(coherence, admission, namespace, cells) {
                     failedPaths.add(range.path);
                     continue;
                 }
-                fetchedBytes += chunkBytes;
+                fetchedBytes += chunk.byteLength;
                 if (!cells.putChunk(t, range.path, range.part, chunk)) {
                     failedPaths.add(range.path);
                     continue;
@@ -316,7 +277,7 @@ export function createTransport(coherence, admission, namespace, cells) {
         // A file whose ranges did not all land has chunk rows and no head, so it is
         // unreadable rather than short. Drop them so the slot does not carry bytes
         // nothing will ever serve.
-        failedPaths.forEach((path) => {
+        for (const path of failedPaths) {
             failed++;
             // A head at this read's revision or later (another fill, own bytes) is
             // not this read's to drop; an older one may sit over chunks this read
@@ -324,13 +285,12 @@ export function createTransport(coherence, admission, namespace, cells) {
             const held = t.fileRev(path);
             const rev = revOf.get(path);
             if (held !== undefined && (held === RK_OWN_WRITE || (rev !== undefined && held >= rev)))
-                return;
+                continue;
             t.chunkDelete(path);
             t.fileDelete(path);
-        });
-        for (let i = 0; i < later.length; i++) {
-            const file = later[i];
-            if (!outdated(t, file.path, file.rev) && cells.copyByKey(t, file.path, ownValue(file, 'ckey'), file.rev))
+        }
+        for (const file of later) {
+            if (!outdated(t, file.path, file.rev) && cells.copyByKey(t, file.path, file.ckey, file.rev))
                 copied++;
             else
                 failed++;
@@ -354,39 +314,36 @@ export function createTransport(coherence, admission, namespace, cells) {
      */
     const enumerate = async (supervisor) => {
         const t = coherence.tables('enumerate');
-        const entries = new SafeList();
+        const entries = [];
         // Every name, whatever its kind: the namespace is built from these.
-        const names = new SafeList();
+        const names = [];
         let namespaceBytes = 0;
         let after = null;
         let cursor = null;
-        const fsList = method(supervisor, 'fsList');
-        if (typeof fsList !== 'function')
-            throw new TypeError('supervisor.fsList is not a function');
         for (let page = 0; page < MAX_LIST_PAGES; page++) {
-            const listed = await reflectApply(fsList, supervisor, [after, FS_LIST_PAGE_LIMIT]);
-            if (!listed || !arrayIsArray(listed.entries)) {
+            const listed = await supervisor.fsList(after, FS_LIST_PAGE_LIMIT);
+            if (!listed || !Array.isArray(listed.entries)) {
                 throw new Error('Nimbus: fsList returned no page');
             }
             if (cursor === null) {
-                cursor = { epoch: stringOf(listed.epoch), rev: NumberOf(listed.rev) };
+                cursor = { epoch: String(listed.epoch), rev: Number(listed.rev) };
             }
-            else if (stringOf(listed.epoch) !== cursor.epoch) {
-                return { entries: arrayCopy(entries), names: arrayCopy(names), cursor, complete: false, reason: 'the supervisor changed incarnation mid-enumeration' };
+            else if (String(listed.epoch) !== cursor.epoch) {
+                return { entries, names, cursor, complete: false, reason: 'the supervisor changed incarnation mid-enumeration' };
             }
-            for (let i = 0; i < listed.entries.length; i++) {
-                const entry = listed.entries[i];
+            for (const entry of listed.entries) {
                 if (entry.stat) {
                     if (admission.inHeap && admission.cap !== null) {
                         const key = nsKey(entry.path);
+                        const [parent, name] = nsSplit(key);
                         if (key)
-                            namespaceBytes += namespaceRowBytes(nsParent(key), nsName(key), ownValue(entry, 'linkTarget') ?? ownValue(entry, 'unlisted'));
+                            namespaceBytes += namespaceRowBytes(parent, name, entry.linkTarget ?? entry.unlisted);
                         const heap = coherence.heap;
                         const refused = admission.namespaceRefusal(namespaceBytes - (heap === null ? 0 : heap.nsBytes()));
                         if (refused !== null)
                             namespace.refuse(t, refused);
                     }
-                    names[names.length] = entry;
+                    names.push(entry);
                 }
                 // Directories carry no content, and a symlink's size is its TARGET's
                 // length rather than the resolved file's — reading one by that size
@@ -397,24 +354,23 @@ export function createTransport(coherence, admission, namespace, cells) {
                 const path = nsKey(entry.path);
                 if (!path)
                     continue;
-                const size = NumberOf(entry.size);
+                const size = Number(entry.size);
                 // The path's own last-mutation revision. It is what makes a held row
                 // verifiable without fetching its bytes, and so what makes a poison
                 // repairable rather than fatal — see synchronize.
-                const rev = NumberOf(entry.rev);
-                if (!numberIsSafeInteger(size) || size < 0 || !numberIsSafeInteger(rev) || rev < 0) {
+                const rev = Number(entry.rev);
+                if (!Number.isSafeInteger(size) || size < 0 || !Number.isSafeInteger(rev) || rev < 0) {
                     throw new Error("Nimbus: fsList returned unusable metadata for '" + path + "'");
                 }
                 // Its stat, for the bytes the store already has: who may read them (namespace.readable).
-                const contentKey = ownValue(entry, 'contentKey');
-                entries[entries.length] = { path, size, rev, epoch: cursor.epoch, ckey: contentKey == null ? null : stringOf(contentKey), stat: entry.stat ?? null };
+                entries.push({ path, size, rev, epoch: cursor.epoch, ckey: entry.contentKey == null ? null : String(entry.contentKey), stat: entry.stat ?? null });
             }
             if (listed.next === null || listed.next === undefined) {
-                return { entries: arrayCopy(entries), names: arrayCopy(names), namespaceBytes, cursor, complete: true, reason: null };
+                return { entries, names, namespaceBytes, cursor, complete: true, reason: null };
             }
             after = listed.next;
         }
-        return { entries: arrayCopy(entries), names: arrayCopy(names), cursor, complete: false, reason: 'the filesystem exceeded the enumeration page bound' };
+        return { entries, names, cursor, complete: false, reason: 'the filesystem exceeded the enumeration page bound' };
     };
     /**
      * Learn the names along one path in one round trip: an lstat of each key, in
@@ -433,44 +389,33 @@ export function createTransport(coherence, admission, namespace, cells) {
      * are all of it.
      */
     const lookupKeys = async (supervisor, keys, contentBytes) => {
-        const fsReadBatch = supervisor ? method(supervisor, 'fsReadBatch') : undefined;
-        if (!supervisor || typeof fsReadBatch !== 'function' || keys.length === 0)
+        if (!supervisor || typeof supervisor.fsReadBatch !== 'function' || keys.length === 0)
             return false;
         const t = coherence.require();
-        const batch = new SafeList();
-        for (let i = 0, end = mathMin(keys.length, BATCH_PATHS - 2); i < end; i++)
-            batch[batch.length] = keys[i];
+        const batch = keys.slice(0, BATCH_PATHS - 2);
         const last = batch[batch.length - 1];
         const withContent = contentBytes > 0 && batch.length === keys.length;
-        const requests = new SafeList();
-        for (let i = 0; i < batch.length; i++)
-            requests[requests.length] = { path: '/' + batch[i], lstat: true };
-        if (withContent) {
-            requests[requests.length] = { path: '/' + last, offset: 0, length: contentBytes };
-            requests[requests.length] = { path: '/' + last, lstat: true };
-        }
+        const requests = batch.map((k) => ({ path: '/' + k, lstat: true }));
+        if (withContent)
+            requests.push({ path: '/' + last, offset: 0, length: contentBytes }, { path: '/' + last, lstat: true });
         let answers;
         try {
-            answers = await reflectApply(fsReadBatch, supervisor, [arrayCopy(requests)]);
+            answers = await supervisor.fsReadBatch(requests);
         }
         catch {
             return false;
         }
-        if (!arrayIsArray(answers) || answers.length !== requests.length)
+        if (!Array.isArray(answers) || answers.length !== requests.length)
             return false;
         let reachedLast = false;
         for (let i = 0; i < batch.length; i++) {
-            const answer = ownValue(answers, i);
-            const stat = answer && ownValue(answer, 'stat');
-            if (!answer || ownValue(answer, 'error') || stat === null || stat === undefined || !nsDescribes(stat))
+            const answer = answers[i];
+            if (!answer || answer.error || answer.stat === null || answer.stat === undefined || !nsDescribes(answer.stat))
                 break;
             let target;
-            if (stat.type === 'symlink') {
+            if (answer.stat.type === 'symlink') {
                 try {
-                    const readlink = method(supervisor, 'readlink');
-                    if (typeof readlink !== 'function')
-                        break;
-                    target = await reflectApply(readlink, supervisor, ['/' + batch[i]]);
+                    target = await supervisor.readlink('/' + batch[i]);
                 }
                 catch {
                     break;
@@ -478,31 +423,24 @@ export function createTransport(coherence, admission, namespace, cells) {
                 if (typeof target !== 'string')
                     break;
             }
-            if (!namespace.tryPut(t, batch[i], stat, NumberOf(stat.revision) || 0, target))
+            if (!namespace.tryPut(t, batch[i], answer.stat, Number(answer.stat.revision) || 0, target))
                 return false;
             if (i === batch.length - 1)
                 reachedLast = true;
-            if (stat.type !== 'directory')
+            if (answer.stat.type !== 'directory')
                 break;
         }
         if (withContent && reachedLast) {
-            const lastAnswer = ownValue(answers, batch.length - 1);
-            const before = lastAnswer && ownValue(lastAnswer, 'stat');
-            const read = ownValue(answers, batch.length);
-            const after = ownValue(answers, batch.length + 1);
-            const content = read && !ownValue(read, 'error') && ownValue(read, 'bytes');
-            const bytes = content ? residentBytes(content) : null;
-            const size = bytes === null ? 0 : typedArrayByteLength(bytes);
-            const afterStat = after && !ownValue(after, 'error') ? ownValue(after, 'stat') : null;
-            if (before && before.type === 'file' && bytes !== null && size === NumberOf(before.size)
-                && afterStat && afterStat.type === 'file'
-                && NumberOf(afterStat.ino) === NumberOf(before.ino) && NumberOf(afterStat.revision) === NumberOf(before.revision)
-                && await admission.ensureRoom(size + RESIDENT_ROW_BYTES)) {
-                // Whatever was held there is replaced whole, never left headless or with stray parts.
-                t.fileDelete(last);
-                t.chunkDelete(last);
-                if (cells.putChunk(t, last, 0, bytes))
-                    cells.putHead(t, last, RK_BINARY, size, 1, NumberOf(before.revision) || 0, null);
+            const before = answers[batch.length - 1].stat;
+            const read = answers[batch.length];
+            const after = answers[batch.length + 1];
+            const bytes = read && !read.error && read.bytes ? residentBytes(read.bytes) : null;
+            if (before.type === 'file' && bytes !== null && bytes.byteLength === Number(before.size)
+                && after && !after.error && after.stat && after.stat.type === 'file'
+                && Number(after.stat.ino) === Number(before.ino) && Number(after.stat.revision) === Number(before.revision)
+                && await admission.ensureRoom(residentCellCost(bytes))) {
+                // As a read's bytes: dating what is held already, replacing the rest whole.
+                cells.fill(last, bytes, Number(before.revision) || 0);
             }
         }
         return true;
@@ -517,66 +455,49 @@ export function createTransport(coherence, admission, namespace, cells) {
      * not readable): the caller asks the authority instead.
      */
     const listDirectory = async (supervisor, dir) => {
-        const readdir = supervisor ? method(supervisor, 'readdir') : undefined;
-        const fsReadBatch = supervisor ? method(supervisor, 'fsReadBatch') : undefined;
-        if (!supervisor || typeof readdir !== 'function' || typeof fsReadBatch !== 'function')
+        if (!supervisor || typeof supervisor.readdir !== 'function' || typeof supervisor.fsReadBatch !== 'function')
             return false;
         const t = coherence.require();
         let names;
         try {
-            names = await reflectApply(readdir, supervisor, ['/' + dir]);
+            names = await supervisor.readdir('/' + dir);
         }
         catch {
             return false;
         }
-        if (!arrayIsArray(names))
+        if (!Array.isArray(names))
             return false;
-        const keys = new SafeList();
-        for (let i = 0; i < names.length; i++)
-            keys[keys.length] = (dir === '' ? '' : dir + '/') + stringOf(names[i].name);
-        const stats = new SafeMap();
+        const keys = names.map((entry) => (dir === '' ? '' : dir + '/') + String(entry.name));
+        const stats = new Map();
         for (let i = 0; i < keys.length; i += BATCH_PATHS) {
-            const batch = new SafeList();
-            const requests = new SafeList();
-            for (let j = i, end = mathMin(keys.length, i + BATCH_PATHS); j < end; j++) {
-                batch[batch.length] = keys[j];
-                requests[requests.length] = { path: '/' + keys[j], lstat: true };
-            }
+            const batch = keys.slice(i, i + BATCH_PATHS);
             let answers;
             try {
-                answers = await reflectApply(fsReadBatch, supervisor, [arrayCopy(requests)]);
+                answers = await supervisor.fsReadBatch(batch.map((k) => ({ path: '/' + k, lstat: true })));
             }
             catch {
                 return false;
             }
-            if (!arrayIsArray(answers) || answers.length !== batch.length)
+            if (!Array.isArray(answers) || answers.length !== batch.length)
                 return false;
             for (let j = 0; j < batch.length; j++) {
-                const answer = ownValue(answers, j);
-                if (!answer || ownValue(answer, 'error'))
+                const answer = answers[j];
+                if (!answer || answer.error)
                     return false;
-                const stat = ownValue(answer, 'stat');
-                if (stat === null || stat === undefined)
+                if (answer.stat === null || answer.stat === undefined)
                     continue;
-                if (!nsDescribes(stat))
+                if (!nsDescribes(answer.stat))
                     return false;
-                stats.set(batch[j], stat);
+                stats.set(batch[j], answer.stat);
             }
         }
-        const statKeys = new SafeList();
-        stats.forEach((_stat, k) => { statKeys[statKeys.length] = k; });
-        const targets = new SafeMap();
-        for (let i = 0; i < statKeys.length; i++) {
-            const k = statKeys[i];
-            const stat = stats.get(k);
-            if (stat === undefined || stat.type !== 'symlink')
+        const targets = new Map();
+        for (const [k, stat] of stats) {
+            if (stat.type !== 'symlink')
                 continue;
             let target;
             try {
-                const readlink = method(supervisor, 'readlink');
-                if (typeof readlink !== 'function')
-                    return false;
-                target = await reflectApply(readlink, supervisor, ['/' + k]);
+                target = await supervisor.readlink('/' + k);
             }
             catch {
                 return false;
@@ -586,17 +507,13 @@ export function createTransport(coherence, admission, namespace, cells) {
             targets.set(k, target);
         }
         // Only what the directory holds now: a row for a name it no longer shows goes.
-        const children = namespace.children(dir);
-        for (let i = 0; i < children.length; i++) {
-            const child = children[i];
+        for (const child of namespace.children(dir)) {
             const k = (dir === '' ? '' : dir + '/') + child.name;
             if (!stats.has(k))
                 namespace.deleteTree(t, k, true);
         }
-        for (let i = 0; i < statKeys.length; i++) {
-            const k = statKeys[i];
-            const stat = stats.get(k);
-            if (stat !== undefined && !namespace.tryPut(t, k, stat, NumberOf(stat.revision) || 0, targets.get(k)))
+        for (const [k, stat] of stats) {
+            if (!namespace.tryPut(t, k, stat, Number(stat.revision) || 0, targets.get(k)))
                 return false;
         }
         namespace.markListed(dir);
@@ -611,47 +528,40 @@ export function createTransport(coherence, admission, namespace, cells) {
      * True when `dir` was listed whole.
      */
     const listSubtree = async (supervisor, dir) => {
-        const fsListTree = supervisor ? method(supervisor, 'fsListTree') : undefined;
-        if (!supervisor || typeof fsListTree !== 'function')
+        if (!supervisor || typeof supervisor.fsListTree !== 'function')
             return false;
         const t = coherence.require();
         let tree;
         try {
-            tree = await reflectApply(fsListTree, supervisor, ['/' + dir, FS_LIST_TREE_MAX_ENTRIES]);
+            tree = await supervisor.fsListTree('/' + dir, FS_LIST_TREE_MAX_ENTRIES);
         }
         catch {
             return false;
         }
-        if (!tree || !arrayIsArray(tree.entries))
+        if (!tree || !Array.isArray(tree.entries))
             return false;
-        const listed = new SafeList();
-        listed[listed.length] = dir;
-        const written = new SafeSet();
-        for (let i = 0; i < tree.entries.length; i++) {
-            const entry = tree.entries[i];
+        const listed = [dir];
+        const written = new Set();
+        for (const entry of tree.entries) {
             const k = nsKey(entry.path);
             if (!entry.stat || !nsDescribes(entry.stat))
                 return false;
-            const unlisted = ownValue(entry, 'unlisted');
-            if (!namespace.tryPut(t, k, entry.stat, entry.rev, ownValue(entry, 'linkTarget'), unlisted ?? null))
+            if (!namespace.tryPut(t, k, entry.stat, entry.rev, entry.linkTarget, entry.unlisted ?? null))
                 return false;
             written.add(k);
-            if (entry.kind === 'directory' && !unlisted)
-                listed[listed.length] = k;
+            if (entry.kind === 'directory' && !entry.unlisted)
+                listed.push(k);
         }
         // A name the listing no longer shows under a directory it listed goes.
-        for (let i = 0; i < listed.length; i++) {
-            const directory = listed[i];
-            const children = namespace.children(directory);
-            for (let j = 0; j < children.length; j++) {
-                const child = children[j];
+        for (const directory of listed) {
+            for (const child of namespace.children(directory)) {
                 const k = (directory === '' ? '' : directory + '/') + child.name;
                 if (!written.has(k))
                     namespace.deleteTree(t, k, true);
             }
         }
-        for (let i = 0; i < listed.length; i++)
-            namespace.markListed(listed[i]);
+        for (const directory of listed)
+            namespace.markListed(directory);
         return true;
     };
     return { relist, fetchFiles, enumerate, lookupKeys, listDirectory, listSubtree };

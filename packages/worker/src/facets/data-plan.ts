@@ -30,6 +30,15 @@
  *                  (Vite's optimizer reads each with readFileSync), and the
  *                  process never loads them
  *   learned        paths earlier launches of the same package versions missed
+ *   stylesheet-source  for a process that carries Tailwind's oxide scanner,
+ *                  whose reads cannot wait: the files under each `@source`
+ *                  outside the working tree that the project's stylesheets
+ *                  name, through the `@import`s Tailwind inlines
+ *                  (sheetSources, sheetStringImports), each brace
+ *                  alternative's directory prefix taken whole, through its
+ *                  links, with the project rule's exclusions; the plan names
+ *                  these roots, for the facet's barriers to push as they
+ *                  push the working tree
  *
  * Code the closure loads is in the module map already; the store adopts a
  * file that is its own module, so it is readable as data too. A file whose
@@ -41,9 +50,18 @@ import { resolveFile, type RequireFs } from '@nimbus-sh/core/runtime/require-res
 import { resolveDeferredImport } from '@nimbus-sh/core/runtime/require-resolver.js';
 import type { RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { StaticFsRefs } from '@nimbus-sh/core/runtime/static-fs-refs.js';
+import { parseSheet, sheetSources, sheetStringImports } from '@nimbus-sh/core/runtime/css-syntax.js';
+import braces from 'braces';
 import { rootClampedSegments } from '@nimbus-sh/platform/lexical-path.js';
 
-export interface DataPlanEntry { path: string; kind: string; size: number; linkTarget?: string }
+export interface DataPlanEntry {
+  path: string;
+  kind: string;
+  size: number;
+  linkTarget?: string;
+  /** A directory on a mount whose entries the listing does not name (RuntimeVfsListEntry.unlisted): its mount point. */
+  unlisted?: string;
+}
 
 export interface DataPlanSource {
   /** One page of the namespace in path order; `next === null` ends it. */
@@ -58,6 +76,8 @@ export interface DataPlanSource {
   linkTarget(path: string): Promise<string | null>;
   /** What is at a path, following symlinks, or null. */
   stat(path: string): Promise<{ kind: string; size: number } | null>;
+  /** The entries directly in a directory, a symlink's kind 'symlink' and unfollowed, or null when it is none. */
+  readdir(dir: string): Promise<DataPlanEntry[] | null>;
 }
 
 export interface DataPlanInput {
@@ -74,16 +94,35 @@ export interface DataPlanInput {
   conditions?: readonly string[];
   /** Called with the bytes of each listed page, to pace a long walk. */
   spend?: (units: number) => Promise<void>;
+  /**
+   * Name what the stylesheet sources' walk read (planStylesheetSources'
+   * `read`) where the process's listing walks mounts
+   * (NimbusFilesystemAuthority.nameLaunch), as its launch's own names are,
+   * so that its listing at boot holds what the plan holds.
+   */
+  nameSources?: (read: readonly string[]) => void;
 }
 
 export type DataPlanRule =
-  | 'package-json' | 'project' | 'convention' | 'package-data' | 'home' | 'typescript' | 'static' | 'entries' | 'learned';
+  | 'package-json' | 'project' | 'convention' | 'package-data' | 'home' | 'typescript' | 'static' | 'entries' | 'learned'
+  | 'stylesheet-source';
 
 export interface DataPlan {
   paths: string[];
   bytes: number;
   rules: Record<DataPlanRule, { files: number; bytes: number }>;
+  /** The stylesheet sources outside the working tree it planned (stylesheet-source), as absolute paths. */
+  sourceRoots: string[];
+  /** Where the stylesheet-source walk stopped at its bound (planStylesheetSources' `stopped`), or null. */
+  sourcesStopped: string | null;
+  /** The names the namespace listed, once however many walks the plan took: what a store holding it holds a row for. */
+  names: number;
 }
+
+/** The package whose scanner reads a stylesheet's sources synchronously (Tailwind v4). */
+const OXIDE_PACKAGE = 'node_modules/@tailwindcss/oxide';
+/** A glob character, once braces are expanded: a pattern's directory prefix ends before the name holding one. */
+const GLOB_SPECIAL = /[*?[\]{}]/;
 
 /** Package data this size or larger is a bundle or a binary, not configuration. */
 export const PACKAGE_DATA_MAX_BYTES = 256 * 1024;
@@ -133,6 +172,26 @@ export function packageRootOf(k: string): string | null {
   const take = rest[0]?.startsWith('@') ? 2 : 1;
   if (rest.length <= take) return null;
   return k.slice(0, at) + 'node_modules/' + rest.slice(0, take).join('/');
+}
+
+/**
+ * Whether directory `d`, at or below `dir`, is a dependency, VCS or cache
+ * directory below `dir` or inside one, or a cache of the home directory it is
+ * in ($HOME, or /home/<user>).
+ */
+function excludedDir(home: string, dir: string, d: string): boolean {
+  if (d !== dir && d.slice(dir === '' ? 0 : dir.length + 1).split('/').some((seg) => PROJECT_EXCLUDED.has(seg))) return true;
+  const segs = d.split('/');
+  const userHome = home !== '' && (d === home || d.startsWith(home + '/')) ? home
+    : segs[0] === 'home' && segs.length > 1 ? 'home/' + segs[1] : null;
+  if (userHome === null) return false;
+  const inHome = d.slice(userHome.length + 1) + '/';
+  return HOME_EXCLUDED.some((prefix) => inHome.startsWith(prefix));
+}
+
+/** Whether file `k`, below `dir`, lies in a directory excludedDir leaves out. */
+function excludedBelow(home: string, dir: string, k: string): boolean {
+  return excludedDir(home, dir, parentOf(k));
 }
 
 /** `rel` under the key `base`, taken as it is; a leading slash in `rel` does not reset it. */
@@ -269,6 +328,7 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
     closureRoots.add(root);
     if (typescriptRoot === null && root.endsWith('node_modules/typescript')) typescriptRoot = root;
   }
+  const oxide = carriesOxide(input.closure);
   // Each link question once per plan: the paths it resolves share prefixes.
   const linkAnswers = new Map<string, Promise<string | null>>();
   const links = {
@@ -302,7 +362,7 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
   for (const p of input.learned ?? []) learned.add(key(p));
 
   const rules = Object.fromEntries(
-    (['package-json', 'project', 'convention', 'package-data', 'home', 'typescript', 'static', 'entries', 'learned'] as DataPlanRule[])
+    (['package-json', 'project', 'convention', 'package-data', 'home', 'typescript', 'static', 'entries', 'learned', 'stylesheet-source'] as DataPlanRule[])
       .map((r) => [r, { files: 0, bytes: 0 }]),
   ) as DataPlan['rules'];
   const paths: string[] = [];
@@ -331,20 +391,6 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
     return !HOME_EXCLUDED.some((prefix) => rel.startsWith(prefix));
   };
   /**
-   * Whether a file lies in a dependency, VCS or cache directory below `dir`,
-   * or in a cache of the home directory it is in ($HOME, or /home/<user>).
-   */
-  const excludedBelow = (dir: string, k: string): boolean => {
-    const rel = k.slice(dir === '' ? 0 : dir.length + 1).split('/');
-    if (rel.slice(0, -1).some((seg) => PROJECT_EXCLUDED.has(seg))) return true;
-    const segs = k.split('/');
-    const userHome = home !== '' && k.startsWith(home + '/') ? home
-      : segs[0] === 'home' && segs.length > 2 ? 'home/' + segs[1] : null;
-    if (userHome === null) return false;
-    const inHome = k.slice(userHome.length + 1) + '/';
-    return HOME_EXCLUDED.some((prefix) => inHome.startsWith(prefix));
-  };
-  /**
    * Whether a file is one a pattern `dir/prefix*suffix` can name. A hole with
    * a known prefix or suffix fills one name in `dir`: a file there, or the
    * files directly in a directory there. A bare hole under a
@@ -358,13 +404,13 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
     const name = baseOf(k);
     for (const p of patterns) {
       if (p.prefix === '' && p.suffix === '') {
-        if (p.dir !== '' && k.startsWith(p.dir + '/') && !excludedBelow(p.dir, k)) return true;
+        if (p.dir !== '' && k.startsWith(p.dir + '/') && !excludedBelow(home, p.dir, k)) return true;
         continue;
       }
       const named = (n: string) => n.startsWith(p.prefix) && n.endsWith(p.suffix) && n.length >= p.prefix.length + p.suffix.length;
       if (p.dir === dir && named(name)) return true;
       // A matched name may be a directory the code lists: its own files, one level.
-      if (dir !== '' && p.dir === parentOf(dir) && named(baseOf(dir)) && !excludedBelow(p.dir, k)) return true;
+      if (dir !== '' && p.dir === parentOf(dir) && named(baseOf(dir)) && !excludedBelow(home, p.dir, k)) return true;
     }
     return false;
   };
@@ -373,6 +419,10 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
   // Directories a home or project symlink points at, whose files the rule
   // that took the link would have taken had they been in place.
   const linkedDirs: { target: string; rule: DataPlanRule }[] = [];
+  /** The project's stylesheets, for the sources they name (stylesheet-source): its own, and those behind its links. */
+  const projectSheets: string[] = [];
+  /** The mount points of directories the listing did not walk: mounts whose listing walks what is named. */
+  const unlistedMounts = new Set<string>();
   /**
    * A statically named file is worth holding when the module map does not
    * already hold it, and it is data-sized or the code reads it synchronously
@@ -385,13 +435,16 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
     && (entry.size < PACKAGE_DATA_MAX_BYTES || exact.get(entry.path) === true);
 
   let after: string | null = null;
+  let names = 0;
   for (;;) {
     const page = await source.list(after);
+    names += page.entries.length;
     if (input.spend) await input.spend(page.entries.length * 64);
     for (const raw of page.entries) {
       const k = key(raw.path);
       const entry = { path: k, kind: raw.kind, size: raw.size };
       if (entry.kind === 'directory') {
+        if (raw.unlisted !== undefined) unlistedMounts.add(key(raw.unlisted));
         if (listed.has(k)) expanded.add(k);
         if (packageRootOf(k + '/x') === k) packageRoots.add(k);
         continue;
@@ -416,7 +469,11 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
       if (isManifestKey(k)) { take(entry, 'package-json'); continue; }
       if (cwdPrefix === '' || k.startsWith(cwdPrefix)) {
         const rel = cwdPrefix === '' ? segs : k.slice(cwdPrefix.length).split('/');
-        if (!rel.slice(0, -1).some((s) => PROJECT_EXCLUDED.has(s))) { take(entry, 'project'); continue; }
+        if (!rel.slice(0, -1).some((s) => PROJECT_EXCLUDED.has(s))) {
+          take(entry, 'project');
+          if (oxide && name.endsWith('.css')) projectSheets.push(k);
+          continue;
+        }
       }
       if (conventionDirs.has(parentOf(k)) && CONVENTION.some((re) => re.test(name))) { take(entry, 'convention'); continue; }
       const root = packageRootOf(k);
@@ -588,19 +645,195 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
       for (const raw of page.entries) {
         if (raw.kind !== 'file') continue;
         const k = key(raw.path);
-        for (const { target, rule } of linkedDirs) {
-          if (k === target || k.startsWith(target + '/')) {
-            if (!k.slice(target.length).split('/').some((x) => x === 'node_modules' || x === '.git')) {
-              take({ path: k, kind: 'file', size: raw.size }, rule);
-            }
-            break;
-          }
-        }
+        // The first root that holds it, below which it is not what the rule that took the root would have left out.
+        const holder = linkedDirs.find(({ target }) => (k === target || k.startsWith(target + '/')) && !excludedBelow(home, target, k));
+        if (!holder) continue;
+        take({ path: k, kind: 'file', size: raw.size }, holder.rule);
+        if (oxide && holder.rule === 'project' && k.endsWith('.css')) projectSheets.push(k);
       }
       if (page.next === null) break;
       after = page.next;
     }
   }
 
-  return { paths, bytes, rules };
+  const sourceRoots: string[] = [];
+  let sourcesStopped: string | null = null;
+  if (oxide) {
+    const found = await planStylesheetSources({ ...source, linkTarget: links.linkTarget }, { cwd, home, sheets: projectSheets, spend: input.spend });
+    for (const entry of found.files) take(entry, 'stylesheet-source');
+    sourceRoots.push(...found.roots);
+    sourcesStopped = found.stopped;
+    if (found.read.length > 0 && input.nameSources) {
+      // Named, what the walk read on a mount the listing did not walk joins
+      // the listing, with the directories above it there: the names it adds
+      // are counted, over each such mount.
+      const read = found.read.map(key);
+      const mounts = [...unlistedMounts].filter((m) => read.some((k) => under(m, k)))
+        .filter((m, _, all) => !all.some((other) => other !== m && under(other, m)));
+      const before = await listedUnder(source, mounts);
+      input.nameSources(found.read);
+      names += (await listedUnder(source, mounts)) - before;
+    }
+  }
+
+  return { paths, bytes, rules, sourceRoots, sourcesStopped, names };
+}
+
+/** Whether key `k` is `dir` or below it. */
+function under(dir: string, k: string): boolean {
+  return dir === '' || k === dir || k.startsWith(dir + '/');
+}
+
+/** How many names the listing has below `dirs`, each listed from where it begins to where its names end. */
+async function listedUnder(source: Pick<DataPlanSource, 'list'>, dirs: readonly string[]): Promise<number> {
+  let count = 0;
+  for (const dir of dirs) {
+    const prefix = dir + '/';
+    let inside = false;
+    for (let after: string | null = dir; after !== null;) {
+      const page = await source.list(after);
+      after = page.next;
+      for (const raw of page.entries) {
+        const k = key(raw.path);
+        if (k.startsWith(prefix)) { count++; inside = true; continue; }
+        if (inside || k > prefix) { after = null; break; }
+      }
+    }
+  }
+  return count;
+}
+
+/** Whether a closure carries Tailwind's oxide scanner, whose reads cannot wait (the stylesheet-source rule). */
+export function carriesOxide(closure: Iterable<string>): boolean {
+  for (const path of closure) if (packageRootOf(key(path))?.endsWith(OXIDE_PACKAGE)) return true;
+  return false;
+}
+
+/**
+ * The most files the stylesheet-source rule holds for one launch. A source
+ * can name a tree of any size (`@source "../.."`); past this, the walk stops
+ * and says so, and the files it did not reach are learned from the scanner's
+ * misses, as any file a launch did not plan.
+ */
+export const STYLESHEET_SOURCE_MAX_FILES = 5_000;
+
+/** A directory planStylesheetSources walks: as it is named below its root, where it is, and the one it was found in. */
+interface WalkedDir {
+  readonly named: string;
+  readonly at: string;
+  readonly up: WalkedDir | null;
+}
+
+/** Whether `at` is where `dir` or a directory it is below is. */
+function below(dir: WalkedDir, at: string): boolean {
+  for (let d: WalkedDir | null = dir; d !== null; d = d.up) if (d.at === at) return true;
+  return false;
+}
+
+/**
+ * The stylesheet-source rule, for a resident's plan and a one-shot's alike:
+ * from `sheets`, through the `@import`s Tailwind inlines (a path's, not a
+ * package's), each sheet where its links lead and read once, every `@source`
+ * outside the working tree `cwd`, each brace alternative's directory prefix
+ * taken whole, through its links; and the files under those roots, walked a
+ * directory at a time with the project rule's exclusions, which are of a path
+ * as it is named below its root, whatever a link makes of it. The roots it
+ * returns are what the facet's barriers push: those, and wherever a link
+ * below one leads; `read` is where it read, which a process's listing of a
+ * mount that walks only what is named must be named.
+ *
+ * It holds a file under the package-data bound (PACKAGE_DATA_MAX_BYTES), and
+ * at most STYLESHEET_SOURCE_MAX_FILES of them, whether a source names the
+ * file or a directory above it: at that, `stopped` names the root it was
+ * walking, for the launch to say so on the process's stderr.
+ */
+export async function planStylesheetSources(
+  source: Pick<DataPlanSource, 'readText' | 'stat' | 'linkTarget' | 'readdir'>,
+  input: { cwd: string; home: string; sheets: Iterable<string>; spend?: (units: number) => Promise<void> | void },
+): Promise<{ roots: string[]; files: DataPlanEntry[]; read: string[]; stopped: string | null }> {
+  const cwd = key(input.cwd);
+  const home = key(input.home);
+  const roots: string[] = [];
+  // A sheet is where its links lead, as Tailwind resolves it: what it names is relative to that, and it is read once.
+  const located = async (k: string) => (await throughLinks(source, k)) ?? k;
+  const sheets = new Set<string>();
+  for (const sheet of input.sheets) sheets.add(await located(key(sheet)));
+  for (const sheet of sheets) {
+    const text = await source.readText(sheet);
+    if (text === null) continue;
+    const parsed = parseSheet(text);
+    const resolve = (path: string) => joinKey(path.startsWith('/') ? '' : parentOf(sheet), path);
+    for (const path of sheetStringImports(parsed)) {
+      if (!/^\.{0,2}\//.test(path)) continue;
+      const imported = await located(resolve(path));
+      if ((await source.stat(imported))?.kind === 'file') sheets.add(imported);
+    }
+    for (const { path, negated } of sheetSources(parsed)) {
+      if (negated) continue;
+      // Quotes are filename characters to oxide, and a range of any length is a set of paths.
+      for (const alternative of braces(path, { expand: true, keepQuotes: true, rangeLimit: Infinity })) {
+        const names = alternative.split('/');
+        const glob = names.findIndex((name) => GLOB_SPECIAL.test(name));
+        const named = resolve(glob < 0 ? alternative : names.slice(0, glob).join('/') || (alternative.startsWith('/') ? '/' : '.'));
+        const root = (await throughLinks(source, named)) ?? named;
+        if (cwd === '' || root === cwd || root.startsWith(cwd + '/') || roots.includes(root)) continue;
+        roots.push(root);
+      }
+    }
+  }
+  const files = new Map<string, DataPlanEntry>();
+  // Where the walk read: each directory it listed, and each file it holds that no such listing named.
+  const read = new Set<string>();
+  // What a barrier pushes: the roots, and wherever a link below one leads out of them.
+  const pushed = [...roots];
+  const pushFrom = (k: string) => { if (!pushed.some((dir) => under(dir, k))) pushed.push(k); };
+  let stopped: string | null = null;
+  /** Holds `path` within the bounds: false once the walk is at its bound. */
+  const hold = (root: string, path: string, size: number): boolean => {
+    if (size >= PACKAGE_DATA_MAX_BYTES || files.has(path)) return true;
+    if (files.size >= STYLESHEET_SOURCE_MAX_FILES) { stopped = root; return false; }
+    files.set(path, { path, kind: 'file', size });
+    return true;
+  };
+  walk: for (const root of roots) {
+    const at = await source.stat(root);
+    if (at?.kind === 'file') {
+      if (!hold(root, root, at.size)) break;
+      read.add(root);
+      continue;
+    }
+    if (at?.kind !== 'directory') continue;
+    // Each directory as it is named below the root, which its exclusions are
+    // of, where it is, which is what is read, and what it is below: a name is
+    // walked once each, unless a link loops it back to where it is below.
+    const queue: WalkedDir[] = [{ named: root, at: root, up: null }];
+    for (let i = 0; i < queue.length; i++) {
+      const dir = queue[i];
+      if (dir === undefined) break;
+      const entries = await source.readdir(dir.at);
+      if (entries === null) continue;
+      read.add(dir.at);
+      if (input.spend) await input.spend(entries.length * 64);
+      for (const entry of entries) {
+        const named = dir.named === '' ? baseOf(entry.path) : `${dir.named}/${baseOf(entry.path)}`;
+        let { path, kind, size } = entry;
+        if (kind === 'symlink') {
+          const target = await throughLinks(source, path);
+          const found = target === null ? null : await source.stat(target);
+          if (target === null || found === null) continue;
+          [path, kind, size] = [target, found.kind, found.size];
+        }
+        if (kind === 'directory') {
+          if (excludedDir(home, root, named) || below(dir, path)) continue;
+          pushFrom(path);
+          queue.push({ named, at: path, up: dir });
+        } else if (kind === 'file' && !excludedBelow(home, root, named)) {
+          pushFrom(path);
+          if (!hold(root, path, size)) break walk;
+          if (path !== entry.path) read.add(path);
+        }
+      }
+    }
+  }
+  return { roots: pushed.map((root) => '/' + root), files: [...files.values()], read: [...read].map((k) => '/' + k), stopped: stopped === null ? null : '/' + stopped };
 }

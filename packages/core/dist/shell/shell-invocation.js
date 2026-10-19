@@ -52,6 +52,8 @@ export function parseShellInvocation(shellName, rawArgs) {
             return { ok: true, invocation: { kind: 'usage', topic: 'help' } };
         if (arg === '--version')
             return { ok: true, invocation: { kind: 'usage', topic: 'version' } };
+        if (arg === '--posix')
+            options.posix = true;
         if (LONG_MODE_FLAGS.has(arg))
             continue;
         if (arg.startsWith('--'))
@@ -141,6 +143,9 @@ function applyShellOption(_shellName, option, enabled, options) {
             return true;
         case 'pipefail':
             options.pipefail = enabled;
+            return true;
+        case 'posix':
+            options.posix = enabled;
             return true;
         default:
             return false;

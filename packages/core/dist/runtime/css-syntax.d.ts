@@ -18,8 +18,9 @@
  * selector, a no-break space stays a name character); conditions print as
  * esbuild 0.24 prints them, since a bundle writes them back.
  *
- * Used by css-bundle.ts (the built-in `vite build`'s stylesheets) and by the
- * Vite dev server's stylesheet serving.
+ * Used by css-bundle.ts (the built-in `vite build`'s stylesheets), by the
+ * Vite dev server's stylesheet serving, and by a facet's data plan for the
+ * sources a stylesheet names (sheetSources, sheetStringImports).
  */
 import type { CssNode } from 'css-tree/types';
 /**
@@ -106,6 +107,23 @@ export declare function sheetRules(sheet: ParsedSheet, rewriteUrl?: (url: string
     url: string;
     written: boolean;
 }): string[];
+/**
+ * A `@source` a sheet names (Tailwind v4): its path as written, relative to
+ * the sheet, and whether it excludes what it names (`@source not`). An
+ * `@source inline(...)` names no files and is none.
+ */
+export interface SheetSource {
+    path: string;
+    negated: boolean;
+}
+/**
+ * Every `@import "<path>"` in a sheet, at any depth and position, in order,
+ * as Tailwind v4 inlines them (substituteAtImports): a string's path; an
+ * `@import url(...)` is left to the browser, and is none.
+ */
+export declare function sheetStringImports(sheet: ParsedSheet): string[];
+/** Every `@source` in a sheet, at any depth, in order, read from its prelude's tokens. */
+export declare function sheetSources(sheet: ParsedSheet): SheetSource[];
 /** A url() in a sheet's rules: its URL, where its token is, and where the URL is inside it (for diagnostics). */
 export interface SheetUrl {
     url: string;

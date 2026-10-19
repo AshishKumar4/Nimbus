@@ -289,11 +289,40 @@ async function reportPageNavigations(page) {
   await watch(cdp);
 }
 
+/**
+ * Print each time `page`'s top window loses focus, and what has it then (an
+ * element of the page, a frame's, or nothing: another window). The shell
+ * ends a drag when its window loses focus (index.html PaneResizer), so a
+ * probe that finds its drag dropped is told what took focus. Evidence; it
+ * never fails one.
+ */
+async function reportFocusLoss(page) {
+  const since = performance.now();
+  await page.exposeFunction('__nimbusProbeFocusLost', (to) => {
+    console.log(`  [page] the window lost focus (now ${to}) at +${Math.round(performance.now() - since)} ms`);
+  });
+  await page.evaluateOnNewDocument(() => {
+    if (window !== window.top) return;
+    addEventListener('blur', (event) => {
+      if (event.target !== window) return;
+      // Where focus went is settled once the blur has been dispatched. A
+      // frame holding focus is the page's active element, and the page still
+      // "has" focus (hasFocus counts its frames): named, it is not "back".
+      setTimeout(() => {
+        const to = document.activeElement;
+        const named = to === null || to === document.body ? null : to.tagName + (to.id ? '#' + to.id : '');
+        __nimbusProbeFocusLost(to instanceof HTMLIFrameElement ? named : !document.hasFocus() ? `another window (${named ?? 'nothing'} here)` : `back to ${named ?? 'the page'}`);
+      }, 0);
+    });
+  });
+}
+
 export async function openPage(browser, sid, opts = {}) {
   const page = await browser.newPage();
   await applyProbeCookies(page, BASE, sid);
   await exchangeAttachCookie(page, sid);
   await reportPageNavigations(page);
+  await reportFocusLoss(page);
   const consoleMessages = [];
   const pageErrors = [];
   /**

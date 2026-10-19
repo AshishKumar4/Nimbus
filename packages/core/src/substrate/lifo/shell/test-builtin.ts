@@ -2,7 +2,9 @@ import type { ProcessView } from '../../../runtime/process-files.js';
 import type { ProcessStat } from '../../../runtime/process-files.js';
 import type { CommandOutputStream } from '../commands/types.js';
 import type { WordPart } from './types.js';
-import { expandPatternWord, type ExpandContext } from './expander.js';
+import { expandPatternWord, expandRegexWord, type ExpandContext } from './expander.js';
+import { compileRegcomp, execLongest, PosixRegexSyntax, type CompiledRegex } from '../utils/posix-regex.js';
+import { BINARY_OPERATORS, UNARY_OPERATORS } from './conditional-operators.js';
 import { shellMatch } from '../utils/glob.js';
 import { resolve } from '../utils/path.js';
 import { S_IFCHR, S_IFMT } from '../../../vfs/vfs.js';
@@ -16,7 +18,12 @@ import { lstatOrThrow, statOrThrow } from '../../../vfs/vfs.js';
 export interface TestContext {
   readonly cwd: string;
   isFdTerminal?(fd: number): boolean;
+  /** `[[ =~ ]]`'s match, its text and each group's, or [] when there is none: BASH_REMATCH. */
+  setRematch?(values: readonly string[]): void;
 }
+
+/** A regular expression glibc refuses: bash 5.2 says nothing of it, and `[[ ]]`'s status is 2. */
+class RegexRefused extends Error {}
 
 /**
  * Implementation of the `test` / `[` shell builtin (POSIX `test`), and of
@@ -63,6 +70,7 @@ export async function evaluateDoubleBracketWords(
       expanded.set(i, arg);
       return arg;
     },
+    regex: async (i) => (await expandRegexWord(words[i] ?? [], expandCtx)),
   };
   return (await evaluateTestExpression(operands, vfs, stderr, context, 'double-bracket'));
 }
@@ -83,6 +91,8 @@ type Operands = {
   readonly length: number;
   literal(index: number): string | undefined;
   value(index: number): Promise<TestArg>;
+  /** `[[ ]]`'s: the operand on the right of `=~` as an extended regular expression. */
+  regex?(index: number): Promise<string>;
 };
 
 function literalOperands(args: string[]): Operands {
@@ -125,7 +135,7 @@ async function evaluateTestExpression(
     }
     return result.value ? 0 : 1;
   } catch (e) {
-    (await stderr.write(`test: ${e instanceof Error ? e.message : String(e)}\n`));
+    if (!(e instanceof RegexRefused)) (await stderr.write(`test: ${e instanceof Error ? e.message : String(e)}\n`));
     return 2;
   }
 }
@@ -239,6 +249,10 @@ async function parsePrimary(
 
   // A binary operator in second place wins over a unary reading of the first word.
   const op = pos + 2 < ops.length ? ops.literal(pos + 1) : undefined;
+  if (op === '=~' && ops.regex !== undefined) {
+    const value = evaluate ? regexMatches((await ops.value(pos)).value, await ops.regex(pos + 2), context) : false;
+    return { value, pos: pos + 3 };
+  }
   if (op !== undefined && Object.hasOwn(BINARY_OPERATORS, op)) {
     const value = evaluate
       ? evaluateBinary(op, await ops.value(pos), await ops.value(pos + 2), mode) ?? false
@@ -266,16 +280,21 @@ const INTEGER_COMPARISONS: Record<string, ((a: number, b: number) => boolean) | 
   '-ge': (a, b) => a >= b,
 };
 
-const BINARY_OPERATORS: Record<string, true> = {
-  '=': true, '==': true, '!=': true, '<': true, '>': true,
-  '-eq': true, '-ne': true, '-lt': true, '-le': true, '-gt': true, '-ge': true,
-};
+/** `[[ value =~ ere ]]`: whether it matches, BASH_REMATCH set to what it matched; a regex glibc refuses is status 2. */
+function regexMatches(value: string, ere: string, context: TestContext | undefined): boolean {
+  const match = execLongest(compiledOrRefused(ere), value);
+  context?.setRematch?.(match ?? []);
+  return match !== null;
+}
 
-// POSIX unary primaries; -h and -L are the same symlink test.
-const UNARY_OPERATORS: Record<string, true> = {
-  '-b': true, '-c': true, '-d': true, '-e': true, '-f': true, '-g': true, '-h': true, '-k': true, '-L': true,
-  '-n': true, '-p': true, '-r': true, '-s': true, '-S': true, '-t': true, '-u': true, '-w': true, '-x': true, '-z': true,
-};
+function compiledOrRefused(ere: string): CompiledRegex {
+  try {
+    return compileRegcomp(ere);
+  } catch (e) {
+    if (e instanceof PosixRegexSyntax) throw new RegexRefused(`invalid regular expression \`${ere}': ${e.message}`);
+    throw e;
+  }
+}
 
 /** Undefined when `op` is not a binary comparison. */
 function evaluateBinary(op: string, left: TestArg, right: TestArg, mode: TestMode): boolean | undefined {

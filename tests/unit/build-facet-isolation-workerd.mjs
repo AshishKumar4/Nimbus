@@ -39,6 +39,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { build } from 'esbuild';
+import { wranglerNodeBuiltins } from './lib/wrangler-node-builtins.mjs';
 import { servePlainWorkerd } from './lib/plain-workerd.mjs';
 
 const REPO = resolve(import.meta.dirname, '../..');
@@ -61,7 +62,7 @@ const bundled = await build({
   nodePaths: [join(REPO, 'packages/worker/node_modules')],
   write: false,
   logLevel: 'error',
-  plugins: [{
+  plugins: [wranglerNodeBuiltins, {
     name: 'facet-stats',
     setup(on) {
       on.onLoad({ filter: /facets[\\/]build-facet\.ts$/ }, (args) => {

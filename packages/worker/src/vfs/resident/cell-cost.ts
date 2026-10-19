@@ -7,7 +7,7 @@
 
 import { LEDGER_ROW_BYTES } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import {
-  ArrayBufferConstructor, mathCeil, mathFloor, mathMax, reflectGet, stringCharCodeAt, stringOf, stringSlice,
+  arrayCopy, ArrayBufferConstructor, mathCeil, mathFloor, mathMax, mathMin, reflectGet, SafeList, stringCharCodeAt, stringOf, stringSlice,
   newTextEncoder, textEncoderEncodeInto, typedArrayByteLength, Uint8ArrayConstructor,
 } from '@nimbus-sh/core/_shared/primordials.js';
 import { RESIDENT_CHUNK_BYTES } from '../facet-resident-limits.js';
@@ -61,6 +61,27 @@ export function residentBytes(value: unknown): Uint8Array {
   return new Uint8ArrayConstructor(0);
 }
 
+/** The most UTF-16 units a chunk of text holds: its UTF-8 at most a chunk's bytes. */
+const TEXT_CHUNK_UNITS = mathFloor(RESIDENT_CHUNK_BYTES / 3);
+
+/**
+ * Where text's chunks end: at most TEXT_CHUNK_UNITS each, never inside a
+ * surrogate pair. SQLite keeps text as UTF-8, where half of a pair is not a
+ * character: stored apart, both halves came back as U+FFFD.
+ */
+export function textChunkEnds(text: string): number[] {
+  const ends = new SafeList<number>();
+  let at = 0;
+  do {
+    let end = mathMin(text.length, at + TEXT_CHUNK_UNITS);
+    const last = stringCharCodeAt(text, end - 1);
+    if (end < text.length && last >= 0xd800 && last <= 0xdbff) end--;
+    ends[ends.length] = end;
+    at = end;
+  } while (at < text.length);
+  return arrayCopy(ends);
+}
+
 /**
  * What holding a cell costs the database: its bytes (a text cell's UTF-8
  * length) on overflow pages (1% over, for page headers and the b-tree pages
@@ -68,10 +89,9 @@ export function residentBytes(value: unknown): Uint8Array {
  */
 export function residentCellCost(cell: unknown): number {
   const isText = typeof cell === 'string';
-  const size = isText ? cell.length : typedArrayByteLength(residentBytes(cell));
-  const limit = isText ? mathFloor(RESIDENT_CHUNK_BYTES / 3) : RESIDENT_CHUNK_BYTES;
-  const chunks = mathMax(1, mathCeil(size / limit));
-  return mathCeil((isText ? utf8Length(cell) : size) * 1.01) + (chunks + 1) * RESIDENT_ROW_BYTES + 4096;
+  const size = isText ? utf8Length(cell) : typedArrayByteLength(residentBytes(cell));
+  const chunks = isText ? textChunkEnds(cell).length : mathMax(1, mathCeil(size / RESIDENT_CHUNK_BYTES));
+  return mathCeil(size * 1.01) + (chunks + 1) * RESIDENT_ROW_BYTES + 4096;
 }
 
 /**
@@ -80,7 +100,8 @@ export function residentCellCost(cell: unknown): number {
  * bytes have not arrived yet asks room for.
  */
 export function residentFileCost(size: number): number {
-  const chunks = mathMax(1, mathCeil(size / mathFloor(RESIDENT_CHUNK_BYTES / 3)));
+  // A text chunk ends a unit early rather than inside a pair (textChunkEnds).
+  const chunks = mathMax(1, mathCeil(size / (TEXT_CHUNK_UNITS - 1)));
   return mathCeil(size * 1.01) + (chunks + 1) * RESIDENT_ROW_BYTES + 4096;
 }
 

@@ -54,6 +54,13 @@ export declare function expandPatternWord(parts: WordPart[], ctx: ExpandContext)
     pattern: string;
 }>;
 /**
+ * `[[ =~ ]]`'s regex word expanded: an extended regular expression in which
+ * each quoted character a regular expression reads specially is escaped, so
+ * it matches only itself, and an unquoted expansion's characters stay the
+ * expression's (bash's quote_string_for_globbing, QGLOB_REGEXP).
+ */
+export declare function expandRegexWord(parts: WordPart[], ctx: ExpandContext): Promise<string>;
+/**
  * Expand a single word (e.g., for redirect targets and assignments).
  * No field splitting and no glob expansion.
  */

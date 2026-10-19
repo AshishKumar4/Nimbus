@@ -39,6 +39,22 @@ export async function expandPatternWord(parts, ctx) {
     const pieces = await expandParts(parts, ctx);
     return { value: joinPieces(pieces), pattern: patternOf(pieces) };
 }
+/**
+ * `[[ =~ ]]`'s regex word expanded: an extended regular expression in which
+ * each quoted character a regular expression reads specially is escaped, so
+ * it matches only itself, and an unquoted expansion's characters stay the
+ * expression's (bash's quote_string_for_globbing, QGLOB_REGEXP).
+ */
+export async function expandRegexWord(parts, ctx) {
+    let ere = '';
+    for (const piece of await expandParts(parts, ctx)) {
+        if (piece.kind === 'break')
+            ere += ' ';
+        else
+            ere += piece.literal ? piece.text.replace(/[.[\\()*+?{|^$]/g, '\\$&') : piece.text;
+    }
+    return ere;
+}
 /** `pieces` as a pattern: quoted characters escaped (escapeGlob). */
 function patternOf(pieces) {
     let pattern = '';

@@ -19,6 +19,12 @@ export type ResidentCell = string | Uint8Array | {
 };
 export declare function residentBytes(value: unknown): Uint8Array;
 /**
+ * Where text's chunks end: at most TEXT_CHUNK_UNITS each, never inside a
+ * surrogate pair. SQLite keeps text as UTF-8, where half of a pair is not a
+ * character: stored apart, both halves came back as U+FFFD.
+ */
+export declare function textChunkEnds(text: string): number[];
+/**
  * What holding a cell costs the database: its bytes (a text cell's UTF-8
  * length) on overflow pages (1% over, for page headers and the b-tree pages
  * above them), a row per chunk and head, and a page of slack.

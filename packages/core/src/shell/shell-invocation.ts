@@ -4,6 +4,7 @@ export type ShellInvocationOptions = {
   errexit?: boolean;
   nounset?: boolean;
   pipefail?: boolean;
+  posix?: boolean;
 };
 
 export type ShellInvocation =
@@ -73,6 +74,7 @@ export function parseShellInvocation(shellName: ShellName, rawArgs: string[] | u
     // the script the way every installer expects.
     if (arg === '--help') return { ok: true, invocation: { kind: 'usage', topic: 'help' } };
     if (arg === '--version') return { ok: true, invocation: { kind: 'usage', topic: 'version' } };
+    if (arg === '--posix') options.posix = true;
     if (LONG_MODE_FLAGS.has(arg)) continue;
     if (arg.startsWith('--')) return error(shellName, `unsupported option: ${arg}`, 2);
     if (isOptionCluster(arg)) {
@@ -174,6 +176,9 @@ function applyShellOption(
       return true;
     case 'pipefail':
       options.pipefail = enabled;
+      return true;
+    case 'posix':
+      options.posix = enabled;
       return true;
     default:
       return false;

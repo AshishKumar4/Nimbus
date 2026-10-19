@@ -51,7 +51,7 @@ import { prefetchForRequire, requireFsOverBridge, resolveDeferredImport, Closure
 import { typeScriptStripOptions } from '@nimbus-sh/core/runtime/node-cli.js';
 import { findStaticFsReferences } from '@nimbus-sh/core/runtime/static-fs-refs.js';
 import { fileCell, fileText, packageScopeType } from '@nimbus-sh/core/runtime/require-resolution.js';
-import { isManifestKey, linkTargetOf, packageRootOf, planFacetData } from './data-plan.js';
+import { carriesOxide, isManifestKey, linkTargetOf, packageRootOf, planFacetData, planStylesheetSources, STYLESHEET_SOURCE_MAX_FILES } from './data-plan.js';
 import { principalTag, profilePrincipal, ReadProfile, verifiedEvidence, } from './read-profile.js';
 /** What the shared read profile may add to one launch: an eighth of its module map's bytes. */
 const READ_PROFILE_LAUNCH_BYTES = Math.floor(VFS_BUNDLE_MAX_BYTES / 8);
@@ -156,6 +156,43 @@ function declaredBindingFs(fs) {
         catch {
             return null;
         } },
+    };
+}
+/**
+ * A launch's fs as a data plan reads it (DataPlanSource, but its listing):
+ * keys without a leading slash, what a path holds following links, and a
+ * directory's entries, a symlink's unfollowed.
+ */
+function planSourceOf(vfs) {
+    return {
+        readText: async (path) => {
+            try {
+                return await filesOf(vfs).readFileString(path);
+            }
+            catch {
+                return null;
+            }
+        },
+        linkTarget: (path) => linkTargetOf(vfs, path),
+        stat: async (path) => {
+            const st = await filesOf(vfs).stat(path).catch(() => null);
+            return st && { kind: st.type, size: st.size };
+        },
+        readdir: async (dir) => {
+            const entries = await Promise.resolve(vfs.readdir('/' + dir)).catch(() => null);
+            if (entries === null)
+                return null;
+            const typed = [];
+            for (const entry of entries) {
+                const path = dir === '' ? entry.name : `${dir}/${entry.name}`;
+                const kind = await launchEntryType(vfs, '/' + dir, entry);
+                if (kind === null)
+                    continue;
+                const size = kind === 'file' ? (await filesOf(vfs).stat(path).catch(() => null))?.size ?? 0 : 0;
+                typed.push({ path, kind, size });
+            }
+            return typed;
+        },
     };
 }
 function filesOf(fs) {
@@ -1506,7 +1543,9 @@ ${VFS_CURSOR_SEED_SOURCE}
     globalThis.__nimbusLazyReads = new Map(Object.entries((__startArgs && __startArgs.lazyReads) || {}));
     // A SafeSet (the launch's captures): every read strikes one off, after a program may have replaced Set.prototype.delete.
     __nimbusProfileStaged = new __nimbusLaunchCaptures.SafeSet((__startArgs && __startArgs.profileStaged) || []);
-    __resident.sync.setPushRoots([_cwd || "/home/user", "/tmp"]);
+    // What a barrier pushes: the working tree, /tmp, and the stylesheet
+    // sources outside the tree the plan held (data-plan.ts stylesheet-source).
+    __resident.sync.setPushRoots([_cwd || "/home/user", "/tmp", ...((__startArgs && __startArgs.sourceRoots) || [])]);
     // Bring the store to the authority's current state before the program's
     // first instruction. This is what makes a first synchronous read of an
     // untouched file succeed, and it is the ONLY blocking step: the waiting is
@@ -5247,9 +5286,10 @@ export class FacetManager {
     program, 
     /** The program's own conditions, which its code's resolutions use. */
     conditions = []) {
-        if (!this.vfs || !this.filesystem)
-            return { paths: [], storageBytes: 0, lazyReads: {} };
-        const vfs = this.filesystem.bind({ pid: entry.pid, cred: entry.cred });
+        const filesystem = this.filesystem;
+        if (!this.vfs || !filesystem)
+            return { paths: [], storageBytes: 0, lazyReads: {}, sourceRoots: [] };
+        const vfs = filesystem.bind({ pid: entry.pid, cred: entry.cred });
         const started = Date.now();
         const trace = (what) => {
             if (!this.debugEnabled)
@@ -5283,31 +5323,17 @@ export class FacetManager {
         trace(`${refs.length} modules name paths (${syncReadsOf.size} lazy ones' synchronous reads deferred to their import()); learned reads`);
         // Where this process's listing walks mounts, the plan's below and its own
         // at boot: what its launch names.
-        this.filesystem.nameLaunch?.(entry, () => launchNames(cwd, program, entry.argv, vfsState.bundlePaths ?? [], refs));
+        filesystem.nameLaunch?.(entry, () => launchNames(cwd, program, entry.argv, vfsState.bundlePaths ?? [], refs));
         const learned = await this._learnedReads(vfsState, entry.cred);
         trace(`${learned.length} learned; listing`);
         let pages = 0;
-        let names = 0;
         const plan = await planFacetData({
             list: async (after) => {
                 const page = await vfs.list(after, FS_LIST_PAGE_LIMIT);
-                names += page.entries.length;
                 trace(`page ${++pages}: ${page.entries.length} entries`);
                 return { entries: page.entries, next: page.next };
             },
-            readText: async (path) => {
-                try {
-                    return await filesOf(vfs).readFileString(path);
-                }
-                catch {
-                    return null;
-                }
-            },
-            linkTarget: (path) => linkTargetOf(vfs, path),
-            stat: async (path) => {
-                const st = await filesOf(vfs).stat(path).catch(() => null);
-                return st && { kind: st.type, size: st.size };
-            },
+            ...planSourceOf(vfs),
         }, {
             cwd,
             home: home || '/home/user',
@@ -5317,18 +5343,20 @@ export class FacetManager {
             learned,
             conditions,
             spend: (units) => pacer.spend(units),
+            nameSources: (read) => filesystem.nameLaunch?.(entry, () => read),
         });
         trace(`planned ${plan.paths.length}`);
         // What the facet's store will hold (N18), in the cost its store charges
         // itself (vfs/resident residentCellCost): the planned bytes on
         // overflow pages (1% over), a head and chunk rows per file, a namespace
         // row per name, and slack for the last write's page.
-        const rows = plan.paths.length * 2 + Math.ceil(plan.bytes / RESIDENT_CHUNK_BYTES) + names;
+        const rows = plan.paths.length * 2 + Math.ceil(plan.bytes / RESIDENT_CHUNK_BYTES) + plan.names;
         // And the module map, which the store adopts at boot: the process's code,
         // costed when the map was built (its cells are released once serialized).
         const moduleBytes = vfsState.moduleStorageBytes ?? moduleMapStorageBytes(vfsState.bundle, vfsState.codeOnly);
         const storageBytes = Math.ceil(plan.bytes * 1.01) + rows * LEDGER_ROW_BYTES + moduleBytes + 65_536;
-        return { paths: plan.paths, storageBytes, lazyReads };
+        this._noteSourcesStopped(entry, plan.sourcesStopped);
+        return { paths: plan.paths, storageBytes, lazyReads, sourceRoots: plan.sourceRoots };
     }
     /**
      * A one-shot's data plan: what its closure reads synchronously by a path its
@@ -5341,7 +5369,13 @@ export class FacetManager {
      * URL('lightningcss_node.wasm', import.meta.url)), which as a map cell
      * left the closure no room under the map's bound.
      */
-    async _staticReadPlan(entry, vfsState, cwd, pacer) {
+    /** Says on the process's stderr where its stylesheet sources' walk stopped at its bound (planStylesheetSources), if it did. */
+    _noteSourcesStopped(entry, stopped) {
+        if (stopped === null)
+            return;
+        this.processes.appendOutput(entry.pid, 'stderr', `[nimbus: Tailwind's stylesheet sources: held the first ${STYLESHEET_SOURCE_MAX_FILES} files under ${stopped}; the rest are held as the scanner reads them]\n`);
+    }
+    async _staticReadPlan(entry, vfsState, cwd, home, pacer) {
         if (!this.filesystem)
             return [];
         const vfs = this.filesystem.bind({ pid: entry.pid, cred: entry.cred });
@@ -5372,6 +5406,18 @@ export class FacetManager {
             const stat = await filesOf(vfs).stat(target).catch(() => null);
             if (stat?.type === 'file')
                 plan.add(target);
+        }
+        // And, for Tailwind's oxide, what its stylesheets name (data-plan.ts
+        // stylesheet-source), from the stylesheets its bundle holds.
+        if (carriesOxide(vfsState.bundlePaths ?? [])) {
+            const sheets = (vfsState.bundlePaths ?? []).filter((path) => path.endsWith('.css') && packageRootOf(path) === null);
+            const found = await planStylesheetSources(planSourceOf(vfs), { cwd, home: home || '/home/user', sheets, spend: (units) => pacer.spend(units) });
+            for (const file of found.files)
+                if (!held.has(file.path))
+                    plan.add(file.path);
+            this._noteSourcesStopped(entry, found.stopped);
+            // Where its listing walks mounts, as its launch's names are.
+            this.filesystem.nameLaunch?.(entry, () => found.read);
         }
         return [...plan];
     }
@@ -6481,7 +6527,7 @@ export class FacetManager {
                     // principal's image is where that comes from). What its closure reads
                     // synchronously by a path its code spells out needs no listing, and is
                     // its data plan.
-                    let dataPlan = await this._staticReadPlan(entry, vfsState, cwd, pacer);
+                    let dataPlan = await this._staticReadPlan(entry, vfsState, cwd, opts.env?.HOME, pacer);
                     // And every manifest it can see, from what the session read once per install.
                     const manifests = await this._installedManifests(entry, pacer);
                     let result;
@@ -6539,7 +6585,7 @@ export class FacetManager {
                         let refusedResume;
                         for (;;) {
                             prepared = await prepareAgain();
-                            dataPlan = await this._staticReadPlan(entry, vfsState, cwd, pacer);
+                            dataPlan = await this._staticReadPlan(entry, vfsState, cwd, opts.env?.HOME, pacer);
                             this._launchStage(entry, 'admission', abortController.signal);
                             const parked = this._parkOneShotMap(entry.pid, prepared, abortController.signal);
                             let granted = false;
@@ -8214,7 +8260,7 @@ export class FacetManager {
             }
             return planned;
         };
-        let { paths: dataPlan, storageBytes, lazyReads } = await plan();
+        let { paths: dataPlan, storageBytes, lazyReads, sourceRoots } = await plan();
         const bundleMs = diagOn ? Date.now() - __bundleStart : 0;
         // The launch-time overlay (`$PORT`, `$NIMBUS_APP` under a reservation)
         // rides on top of the recipe's env and is never journalled: it is
@@ -8267,7 +8313,7 @@ export class FacetManager {
                 if (!(error instanceof ModuleMapOverCeilingError) || rebuilt)
                     throw error;
                 vfsState = await this._rebuildUnderCeiling(entry, spec, vfsState, error, pacer);
-                ({ paths: dataPlan, storageBytes, lazyReads } = await plan());
+                ({ paths: dataPlan, storageBytes, lazyReads, sourceRoots } = await plan());
             }
         }
         // Sized here, while the map is still in hand. Reading these after the load
@@ -8380,6 +8426,7 @@ export class FacetManager {
                             startArgs: {
                                 pid: entry.pid, vfsCursor, dataPlan,
                                 ...(Object.keys(lazyReads).length > 0 ? { lazyReads } : {}),
+                                ...(sourceRoots.length > 0 ? { sourceRoots } : {}),
                                 ...(profileOffer !== undefined && profileOffer.staged.length > 0 ? { profileStaged: profileOffer.staged.map((e) => e.path) } : {}),
                                 ...(this.debugEnabled ? { diag: true } : {}),
                                 ...(stdinWriter ? { stdinWriter: true } : {}),

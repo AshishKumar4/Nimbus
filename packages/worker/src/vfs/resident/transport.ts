@@ -19,7 +19,7 @@ import {
 import type { FsReadBatchRequest } from '../../session/rpc.js';
 import type { Admission } from './admission.js';
 import type { Cells } from './cells.js';
-import { RESIDENT_ROW_BYTES, namespaceRowBytes, residentBytes } from './cell-cost.js';
+import { RESIDENT_ROW_BYTES, namespaceRowBytes, residentBytes, residentCellCost } from './cell-cost.js';
 import type { Coherence, Cursor } from './coherence.js';
 import { nsDescribes, nsKey, type Namespace } from './namespace.js';
 import { nsName, nsParent } from './namespace-lookup.js';
@@ -488,12 +488,10 @@ export function createTransport(coherence: Coherence, admission: Admission, name
         before && before.type === 'file' && bytes !== null && size === NumberOf(before.size)
         && afterStat && afterStat.type === 'file'
         && NumberOf(afterStat.ino) === NumberOf(before.ino) && NumberOf(afterStat.revision) === NumberOf(before.revision)
-        && await admission.ensureRoom(size + RESIDENT_ROW_BYTES)
+        && await admission.ensureRoom(residentCellCost(bytes))
       ) {
-        // Whatever was held there is replaced whole, never left headless or with stray parts.
-        t.fileDelete(last);
-        t.chunkDelete(last);
-        if (cells.putChunk(t, last, 0, bytes)) cells.putHead(t, last, RK_BINARY, size, 1, NumberOf(before.revision) || 0, null);
+        // As a read's bytes: dating what is held already, replacing the rest whole.
+        cells.fill(last, bytes, NumberOf(before.revision) || 0);
       }
     }
     return true;

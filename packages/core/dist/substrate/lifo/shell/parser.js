@@ -1,4 +1,5 @@
-import { lex } from './lexer.js';
+import { lex, TokenReader } from './lexer.js';
+import { BINARY_OPERATORS, UNARY_OPERATORS } from './conditional-operators.js';
 import { TokenKind, } from './types.js';
 export class ParseError extends Error {
     pos;
@@ -8,9 +9,25 @@ export class ParseError extends Error {
         this.name = 'ParseError';
     }
 }
-export function parse(tokens) {
-    const parser = new Parser(tokens);
+export function parse(input, options = {}) {
+    const parser = new Parser(new TokenReader(input), options);
     return parser.parseScript();
+}
+/**
+ * A text's commands, read a line at a time, as bash's reader reads them: a
+ * line is read whole (a syntax error in it runs none of it) only once the
+ * lines before it have run, so an alias they define is expanded in it, and a
+ * syntax error in a later line leaves the earlier ones run.
+ */
+export class ScriptLines {
+    parser;
+    constructor(input, options = {}) {
+        this.parser = new Parser(new TokenReader(input), options);
+    }
+    /** The next line's lists, or null at the text's end; a ParseError when it is no command. */
+    nextLine() {
+        return this.parser.nextLine();
+    }
 }
 /**
  * A word's text when it could be a reserved word: one part, unquoted, no
@@ -28,6 +45,11 @@ function unquotedLiteral(token) {
 }
 function isUnquotedLiteralWord(token, value) {
     return unquotedLiteral(token) === value;
+}
+/** The alias a word may name: one unquoted part, with no expansion in it. */
+function aliasName(token) {
+    const text = unquotedLiteral(token);
+    return text === null || /[$`/=]/.test(text) ? null : text;
 }
 /** A word as written, for a message: its quotes in it. */
 function sourceOf(token) {
@@ -49,18 +71,78 @@ function identifierError(token, checkWord) {
     const valid = literal !== null && !literal.includes('$') && !/^[0-9]+$/.test(literal) && (!checkWord || IDENTIFIER.test(literal));
     return valid ? null : `\`${sourceOf(token)}': not a valid identifier`;
 }
+const endsNothing = () => false;
+const endsCaseItem = (token) => token.kind === TokenKind.DoubleSemi || isUnquotedLiteralWord(token, 'esac');
 class Parser {
-    tokens;
+    reader;
+    // The tokens read so far, and for a token that began a batch the reader's mark before it.
+    tokens = [];
+    marks = [];
     pos = 0;
     pendingHeredocs = [];
-    constructor(tokens) {
-        this.tokens = tokens;
+    aliases;
+    constructor(reader, options) {
+        this.reader = reader;
+        this.aliases = options.aliases;
+    }
+    /**
+     * The word at a command's start (or one after an alias whose text ended in
+     * a blank): while it names an alias whose text is not being read, read
+     * that text in its place, as bash's reader does, before any reserved word
+     * is recognized. Whether it did.
+     */
+    expandAliases() {
+        let expanded = false;
+        for (;;) {
+            const token = this.peek();
+            const name = aliasName(token);
+            const value = name === null || token.aliases?.has(name) === true ? undefined : this.aliases?.(name);
+            if (name === null || value === undefined)
+                return expanded;
+            // Forget the word, and anything read after it, and read the alias's text after where the word ended.
+            const after = this.marks[this.pos + 1];
+            if (this.tokens.length > this.pos + 1) {
+                if (after === undefined)
+                    throw new ParseError('internal: a word read again began no batch', token.pos);
+                this.reader.reset(after);
+            }
+            this.tokens.length = this.pos;
+            this.marks.length = this.pos;
+            this.reader.pushAlias(name, value);
+            expanded = true;
+        }
+    }
+    /** Read until token `index` is there, or the input has ended. */
+    fill(index) {
+        while (this.tokens.length <= index && this.tokens.at(-1)?.kind !== TokenKind.EOF) {
+            const mark = this.reader.mark();
+            const batch = this.reader.next();
+            this.marks[this.tokens.length] = mark;
+            for (const token of batch)
+                this.tokens.push(token);
+        }
     }
     peek() {
+        this.fill(this.pos);
         return this.tokens[this.pos] ?? { kind: TokenKind.EOF, value: '', pos: -1 };
     }
     peekAt(offset) {
+        this.fill(this.pos + offset);
         return this.tokens[this.pos + offset] ?? { kind: TokenKind.EOF, value: '', pos: -1 };
+    }
+    /**
+     * Read the current token again in a mode of its own: forget it and every
+     * token after it, and go back to where it began. It began a batch: it is
+     * read after a word.
+     */
+    rereadFromHere() {
+        this.fill(this.pos);
+        const mark = this.marks[this.pos];
+        if (mark === undefined)
+            throw new ParseError('internal: a token read again began no batch', this.peek().pos);
+        this.tokens.length = this.pos;
+        this.marks.length = this.pos;
+        this.reader.reset(mark);
     }
     advance() {
         const token = this.peek();
@@ -96,24 +178,49 @@ class Parser {
     }
     parseScript() {
         const lists = [];
-        // Skip leading separators
+        for (let line = this.nextLine(); line !== null; line = this.nextLine())
+            for (const list of line)
+                lists.push(list);
+        return { type: 'script', lists };
+    }
+    /** The next line's lists, read whole; null at the end. */
+    nextLine() {
         this.skipSeparators();
-        while (!this.isAtEnd()) {
+        if (this.isAtEnd())
+            return null;
+        const lists = [];
+        for (;;) {
             const prevPos = this.pos;
             const list = this.parseList();
             lists.push(list);
-            const listEnd = this.pos;
-            this.consumeHeredocBodies();
-            this.skipSeparators();
-            list.endsLine = this.isAtEnd() || this.tokens.slice(listEnd, this.pos).some((token) => token.kind === TokenKind.Newline);
+            this.requireListEnd(list, endsNothing);
+            // Its separators: a newline ends the line (read no further, so the next line is read after this one runs).
+            let newline = this.consumeHeredocBodies();
+            while (!newline && (this.peek().kind === TokenKind.Semi || this.peek().kind === TokenKind.Newline)) {
+                newline = this.consumeHeredocBodies() || this.advance().kind === TokenKind.Newline;
+            }
             // Guard against infinite loop: if no progress was made, the current token
             // is unexpected (e.g. a stray '(' from pasted JS code). Throw so the
             // caller can display an error instead of hanging the browser.
             if (this.pos === prevPos) {
                 throw new ParseError(`unexpected token '${this.peek().value}'`, this.peek().pos);
             }
+            list.endsLine = newline || this.isAtEnd();
+            if (list.endsLine)
+                return lists;
         }
-        return { type: 'script', lists };
+    }
+    /**
+     * After a list: a separator, or what ends what encloses it (`ends`), comes
+     * next, unless it runs in the background, as bash's grammar has it; any
+     * other token there is a syntax error (`x=1 (echo)`, `echo a (b)`).
+     */
+    requireListEnd(list, ends) {
+        const token = this.peek();
+        const kind = token.kind;
+        if (list.background || kind === TokenKind.Semi || kind === TokenKind.Newline || kind === TokenKind.EOF || ends(token))
+            return;
+        throw new ParseError(`syntax error near unexpected token \`${token.value}'`, token.pos);
     }
     skipSeparators() {
         while (this.peek().kind === TokenKind.Semi || this.peek().kind === TokenKind.Newline) {
@@ -160,6 +267,7 @@ class Parser {
         return { type: 'pipeline', commands, negated };
     }
     parseCommand() {
+        this.expandAliases();
         const token = this.peek();
         // Check for compound command keywords: a reserved word only unquoted.
         if (token.kind === TokenKind.Word) {
@@ -197,6 +305,11 @@ class Parser {
     parseDoubleBracketCommand() {
         this.advance();
         const words = [];
+        // Where the expression is: at a term's start, after its first operand
+        // (where a binary operator may come), or where an operand must come
+        // (after a unary or a binary operator); and how many of its groups are open.
+        let at = 'term';
+        let groups = 0;
         while (!this.isAtEnd()) {
             const token = this.advance();
             if (isUnquotedLiteralWord(token, ']]')) {
@@ -207,8 +320,53 @@ class Parser {
                 };
             }
             words.push(this.doubleBracketTokenParts(token));
+            const word = token.kind === TokenKind.Word ? unquotedLiteral(token) : null;
+            if (at === 'operand')
+                at = 'done';
+            else if (at === 'first' && word === '=~') {
+                // The binary operator =~: its operand is a regular expression.
+                words.push(this.parseRegexWord(groups > 0));
+                at = 'done';
+            }
+            else if (at === 'first' && word !== null && Object.hasOwn(BINARY_OPERATORS, word))
+                at = 'operand';
+            else if (token.kind === TokenKind.And || token.kind === TokenKind.Or)
+                at = 'term';
+            else if (token.kind === TokenKind.RParen) {
+                groups = Math.max(0, groups - 1);
+                at = 'done';
+            }
+            else if (at === 'term') {
+                if (token.kind === TokenKind.LParen)
+                    groups++;
+                else if (word !== '!')
+                    at = word !== null && Object.hasOwn(UNARY_OPERATORS, word) ? 'operand' : 'first';
+            }
+            else
+                at = 'done';
         }
         throw new ParseError('missing ]]', this.peek().pos);
+    }
+    /**
+     * The regular expression after `=~`, read from its source as bash's reader
+     * reads one (TokenReader.readRegexWord). A `)` after it closes one of the
+     * expression's groups (`inGroup`); outside a group it is a syntax error.
+     */
+    parseRegexWord(inGroup) {
+        this.rereadFromHere();
+        const regex = this.reader.readRegexWord();
+        // Nothing there, or the conditional's own `]]`: no operand.
+        if (regex === null || unquotedLiteral(regex.token) === ']]')
+            throw new ParseError('unexpected argument to conditional binary operator', this.peek().pos);
+        if (regex.unclosed)
+            throw new ParseError("unexpected EOF while looking for matching `)'", regex.token.pos);
+        this.tokens.push(regex.token);
+        this.marks.push(undefined);
+        this.pos++;
+        if (this.peek().kind === TokenKind.RParen && !inGroup) {
+            throw new ParseError("syntax error in conditional expression: unexpected token `)'", this.peek().pos);
+        }
+        return regex.token.parts ?? [];
     }
     doubleBracketTokenParts(token) {
         if (token.kind === TokenKind.Word) {
@@ -218,6 +376,10 @@ class Parser {
     }
     parseCompoundList(terminators) {
         const lists = [];
+        const ends = (token) => {
+            const word = unquotedLiteral(token);
+            return (word !== null && terminators.includes(word)) || (token.kind === TokenKind.RParen && terminators.includes(')'));
+        };
         this.skipSeparators();
         while (!this.isAtEnd()) {
             const prevPos = this.pos;
@@ -232,7 +394,9 @@ class Parser {
             }
             if (t.kind === TokenKind.EOF)
                 break;
-            lists.push(this.parseList());
+            const list = this.parseList();
+            lists.push(list);
+            this.requireListEnd(list, ends);
             this.consumeHeredocBodies();
             this.skipSeparators();
             if (this.pos === prevPos) {
@@ -343,7 +507,9 @@ class Parser {
                     break;
                 if (t.kind === TokenKind.EOF)
                     break;
-                body.push(this.parseList());
+                const list = this.parseList();
+                body.push(list);
+                this.requireListEnd(list, endsCaseItem);
                 this.skipSeparators();
                 if (this.pos === prevPos) {
                     throw new ParseError(`unexpected token '${this.peek().value}'`, this.peek().pos);
@@ -399,17 +565,11 @@ class Parser {
             const token = this.peek();
             // Check for redirections
             if (this.isRedirectOperator(token.kind)) {
-                // The node itself: a here-document's body is filled into it when the parser reaches it.
-                const redirection = this.parseRedirection();
-                redirection.wordsBefore = words.length;
-                redirections.push(redirection);
+                redirections.push(this.parseRedirection());
                 continue;
             }
             // Check for word tokens
             if (token.kind === TokenKind.Word) {
-                // Don't consume keywords that are terminators in compound commands
-                // (only when no words have been accumulated yet -- empty command)
-                // This check is not needed here since parseCommand dispatches before us
                 // Check for VAR=value assignment (only before any regular words)
                 if (words.length === 0) {
                     const assignment = parseAssignment(token);
@@ -419,6 +579,9 @@ class Parser {
                         continue;
                     }
                 }
+                // The command word, after assignments or redirections, and a word after an alias whose text ended in a blank, may be an alias.
+                if ((words.length === 0 || token.aliasCheck === true) && this.expandAliases())
+                    continue;
                 this.advance();
                 const parts = token.parts ?? [{ text: token.value, quoted: 'none' }];
                 words.push(parts);
@@ -471,11 +634,15 @@ class Parser {
         this.pendingHeredocs.push(redirection);
         return redirection;
     }
+    /** The bodies of the here-documents the line opened, read at its newline (none before it): whether it read one. */
     consumeHeredocBodies() {
-        if (this.pendingHeredocs.length === 0)
-            return;
-        while (this.peek().kind === TokenKind.Newline)
+        if (this.pendingHeredocs.length === 0 || this.peek().kind !== TokenKind.Newline)
+            return false;
+        let newline = false;
+        while (this.peek().kind === TokenKind.Newline) {
             this.advance();
+            newline = true;
+        }
         while (this.pendingHeredocs.length > 0) {
             const target = this.pendingHeredocs.shift();
             if (!target)
@@ -487,6 +654,7 @@ class Parser {
                 stripTabs: target.heredoc?.stripTabs ?? false,
             };
         }
+        return newline;
     }
     redirectionOperator(kind) {
         switch (kind) {

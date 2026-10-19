@@ -328,12 +328,19 @@ export const Uint8ArrayConstructor = Uint8Array;
 export const ArrayBufferConstructor = ArrayBuffer;
 // None in a realm with no TextEncoder (a test262 realm's), where nothing measures resident bytes.
 const TextEncoderOf: typeof TextEncoder | undefined = typeof TextEncoder === 'function' ? TextEncoder : undefined;
+const encode: ((encoder: TextEncoder, text: string) => Uint8Array) | undefined
+  = TextEncoderOf === undefined ? undefined : uncurryThis(TextEncoderOf.prototype.encode);
 const encodeInto: ((encoder: TextEncoder, text: string, destination: Uint8Array) => TextEncoderEncodeIntoResult) | undefined
   = TextEncoderOf === undefined ? undefined : uncurryThis(TextEncoderOf.prototype.encodeInto);
 /** A TextEncoder of the realm's. */
 export function newTextEncoder(): TextEncoder {
   if (TextEncoderOf === undefined) throw new TypeErrorConstructor('TextEncoder is not defined');
   return new TextEncoderOf();
+}
+/** `encoder.encode(text)`, by the realm's TextEncoder.prototype.encode. */
+export function textEncoderEncode(encoder: TextEncoder, text: string): Uint8Array {
+  if (encode === undefined) throw new TypeErrorConstructor('TextEncoder is not defined');
+  return encode(encoder, text);
 }
 /** `encoder.encodeInto(text, destination)`, by the realm's TextEncoder.prototype.encodeInto. */
 export function textEncoderEncodeInto(encoder: TextEncoder, text: string, destination: Uint8Array): TextEncoderEncodeIntoResult {
