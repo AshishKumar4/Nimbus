@@ -168,6 +168,7 @@ for (const [key, contract] of Object.entries(GIT_RUNNER_CONTRACTS)) {
           return makeGitRunnerFactory({
             facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem, processes: self.processes,
             fsmonitorState: sqliteGitFsmonitorState(self.ctx.storage.sql, workspace.filesystem.namespace),
+            session: self.ctx.id.toString(),
             ...contract,
           });
         })().catch((error) => { gitFactory = null; throw error; });

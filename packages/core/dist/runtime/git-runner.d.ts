@@ -43,6 +43,8 @@ export declare function makeGitRunnerFactory(deps: {
     restartsWaits: boolean;
     /** The installed image takes the signals sent to its process: its runner key's contract (GIT_RUNNER_CONTRACTS). */
     takesSignals: boolean;
+    /** The session the git processes run in: its warm facets are its own (warm-facets.ts). */
+    session: string;
 }): (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => Command;
 export declare const GIT_RUNNER_PREAMBLE: string;
 //# sourceMappingURL=git-runner.d.ts.map
