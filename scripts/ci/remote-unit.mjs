@@ -13,7 +13,7 @@
 // Exit: 0, every row green; 1, a red row; 2, not graded (run it again).
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
-import { armadaClient, armadaEnv } from './lib/armada.mjs';
+import { armadaClient, armadaEnv, reportContainerStorage } from './lib/armada.mjs';
 
 const argv = process.argv.slice(2);
 const flags = {};
@@ -48,6 +48,7 @@ try {
 } catch (error) {
   notGraded(error.message);
 }
+await reportContainerStorage();
 const words = [...(flags.tier ? ['--tier', flags.tier] : []), ...(flags.only ? ['--only', flags.only] : [])];
 const ran = spawnSync('bun', [join(client, 'src', 'cli.ts'), 'run', sha, ...(words.length ? ['--', ...words] : [])], {
   cwd: repo, stdio: 'inherit', env: armadaEnv(),

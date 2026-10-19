@@ -43,12 +43,13 @@ export function armadaEnv(env = process.env) {
 const STORAGE_READ_MS = 30_000;
 
 /**
- * Says what the account's container storage holds, before a run
- * (container-storage.mjs): its total, its change since the last run, and
- * who holds the most. A read that fails is said and changes nothing; one
- * slower than STORAGE_READ_MS is said when it ends, the run started.
+ * Says what the account's container storage holds (container-storage.mjs),
+ * before each run: mapOnArmada's, and remote-unit's `armada run`. Its total,
+ * its change since the last run, and who holds the most. A read that fails
+ * is said and changes nothing; one slower than STORAGE_READ_MS is said when
+ * it ends, the run started.
  */
-async function reportContainerStorage(log) {
+export async function reportContainerStorage(log = (line) => console.error(line)) {
   const said = (async () => {
     try {
       const { account } = JSON.parse(readFileSync(armadaEnv().ARMADA_CONNECTION, 'utf8'));
