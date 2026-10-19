@@ -41,7 +41,7 @@ const elapsed = Date.now() - t0;
 
 a.check(`git clone produced "Cloning into" marker AND no "clone failed" (within 180s)`,
   cloneOk, `elapsed=${elapsed}ms output=${cloneOutput.slice(-200)}`);
-a.check(`cloned tree has ≥1 file (got ${fileCount})`, fileCount >= 1, `fileCount=${fileCount}`);
+a.check(`cloned tree has ≥1 file (got ${fileCount})`, fileCount >= 1, `fileCount=${fileCount} cloneOutput=${JSON.stringify(cloneOutput.slice(-2000))}`);
 a.check(`clone completed under 180s wall (${(elapsed/1000).toFixed(1)}s)`, elapsed < 180_000);
 
 // Hello-World's default branch has three commits. The default clone is
@@ -64,9 +64,13 @@ const BIG_REPO = 'https://github.com/AshishKumar4/Nimbus.git';
 const tBig0 = Date.now();
 let bigOk = false;
 let bigFileCount = 0;
+// The clone's own output, for a failing check to name its cause.
+let bigCloneOutput = '';
 try {
-  const r = await t.run(`git clone ${BIG_REPO} cloned-nimbus`, 180_000);
-  bigOk = /Cloning into|Receiving objects/.test(r.output) && !/clone failed/.test(r.output);
+  const r = await t.run(`git clone ${BIG_REPO} cloned-nimbus; echo "clone exit $?"`, 180_000);
+  bigCloneOutput = r.output;
+  // A failed clone fails on its exit status, not only on what it printed.
+  bigOk = /\bclone exit 0\b/.test(r.output) && /Cloning into|Receiving objects/.test(r.output) && !/clone failed/.test(r.output);
   const r2 = await t.run('ls -1 cloned-nimbus | wc -l', 30_000);
   const m = r2.output.match(/(\d+)/g);
   if (m && m.length > 0) bigFileCount = parseInt(m[m.length - 1], 10);
@@ -75,9 +79,9 @@ try {
 }
 const bigElapsed = Date.now() - tBig0;
 a.check(`Nimbus clone (1600+ file repo) completes within 180s (no freeze)`,
-  bigOk, `elapsed=${bigElapsed}ms`);
+  bigOk, `elapsed=${bigElapsed}ms cloneOutput=${JSON.stringify(bigCloneOutput.slice(-2000))}`);
 a.check(`Nimbus clone tree has top-level entries (got ${bigFileCount})`,
-  bigFileCount >= 5, `fileCount=${bigFileCount}`);
+  bigFileCount >= 5, `fileCount=${bigFileCount} elapsed=${bigElapsed}ms cloneOutput=${JSON.stringify(bigCloneOutput.slice(-2000))}`);
 
 await t.close();
 const s = a.summary();
