@@ -1811,8 +1811,8 @@ export class CompositeVFS implements VFS {
    * it is on, that backend as this principal sees it, and the path the
    * backend is handed, so an embedder can call a backend's own extras. The
    * lookup is every operation's: root links on the way are followed (the
-   * last only with `follow`), and `..` inside a mount whose backend resolves
-   * its own paths is lexical. A mount absent for this principal (any mount
+   * last only with `follow`), and a mount whose backend resolves its own
+   * paths is handed the rest as written (Resolution.operand). A mount absent for this principal (any mount
    * on the path, rule 1) answers a null source, with its absentReason.
    * Rejects as the operation's lookup would: ENOENT, ENOTDIR, EACCES, ELOOP.
    * `creating`: the lookup of a write that makes its parents (writeFile's

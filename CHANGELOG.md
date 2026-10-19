@@ -5,6 +5,17 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Changed (Kinu ask 58): a mount that resolves its own paths
+  (`MountOptions.resolvesPaths`) is handed the rest of a path as written,
+  with its `.`, `..`, empty components and trailing slash, for its backend
+  to walk as a kernel does. `/m/missing/../f` is now ENOENT, `/m/f/` is
+  ENOTDIR, and `/m/link/../f` reaches the file beside where the link leads.
+  The namespace keeps the names it owns: the mount point, a nested mount
+  point or a directory above one met on the way, and a `..` past the mount's
+  root. This applies to every operation, on both faces, and to a process's
+  walks. `route().path`, a pin's and a held file's name, and realpath are
+  that spelling when it has a `..`. Before, the namespace collapsed the path
+  lexically first, so the backend read `/f` for each of those.
 - Fixed: a Node program that replaced `Array.prototype.push`, the array
   iterator, `String.prototype.split` or `replace`, `RegExp.prototype.exec` or
   `Set.prototype.has` can still import a module the launch did not hold, and
