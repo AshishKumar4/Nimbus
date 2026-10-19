@@ -198,6 +198,24 @@ await runScenarios(fileURLToPath(import.meta.url), {
     }
     assert.equal(h.submissions(), 2, 'neither plan was invalidated and submitted again');
   },
+  // An entry already written for these names whose bytes something replaced
+  // is written again: the name says what it should hold, not what it holds.
+  async replacedEntryIsRewritten() {
+    const h = fixture('replaced-entry', { synthetic: true });
+    const blocker = buildPrebundle(h.context, 'blocker', null, (code) => code);
+    await h.entered;
+    h.finish();
+    assert.equal((await blocker).kind, 'built');
+    const first = await buildPrebundle(h.context, 'pkg', h.barrel, (code) => code);
+    assert.equal(first.kind, 'built', JSON.stringify(first));
+    const dir = 'home/user/app/node_modules/.nimbus-synthetic';
+    const entries = h.fs.readdir(dir).map(({ name }) => name).filter((name) => name.startsWith('pkg.'));
+    assert.equal(entries.length, 1, `one entry for these names: ${entries}`);
+    h.fs.writeFile(`${dir}/${entries[0]}`, 'export const X = 999;');
+    const again = await buildPrebundle(h.context, 'pkg', h.barrel, (code) => code);
+    assert.equal(again.kind, 'built', JSON.stringify(again));
+    assert.equal(again.served, first.served, 'the entry shipped is the synthesized one, not the replaced bytes');
+  },
   async entryDisappears() {
     const h = fixture('queued-entry-disappears');
     const result = await h.queued(() => h.fs.writeFile(h.pkg + '/package.json', '{"main":"missing.js"}'));
