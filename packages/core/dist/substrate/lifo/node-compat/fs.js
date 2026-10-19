@@ -277,13 +277,23 @@ export function createFs(vfs, cwd, stdin, reachStreams) {
             return vfs.realpath(abs);
         },
     });
+    /**
+     * truncate(2) as Node makes it: the file opened for writing (its errors
+     * name open), cut or zero-extended to `len` (a negative one is 0), closed.
+     * A descriptor in place of the path is ftruncate's (Node's DEP0081).
+     */
     function truncateSync(path, len) {
-        const abs = resolvePath(cwd, path);
-        const data = vfs.readFile(abs);
-        const newLen = len ?? 0;
-        if (newLen >= data.length)
+        if (typeof path === 'number') {
+            ftruncateSync(path, len);
             return;
-        vfs.writeFile(abs, data.slice(0, newLen));
+        }
+        const fd = vfs.open(resolvePath(cwd, path), openFlagsOf('r+', undefined));
+        try {
+            vfs.ftruncate(fd, Math.max(0, len ?? 0));
+        }
+        finally {
+            vfs.close(fd);
+        }
     }
     // ─── File descriptor sync API ───
     function openSync(path, flags, mode) {
@@ -333,16 +343,19 @@ export function createFs(vfs, cwd, stdin, reachStreams) {
     function fdatasyncSync(fd) {
         onDescriptor(fd, 'fdatasync', (id) => vfs.fsync(id));
     }
-    // ─── Symlink stubs ───
-    function symlinkSync(_target, _path, _type) {
-        // No-op - VFS has no symlink support yet
+    // ─── Links ───
+    /** symlink(2): the link at `path` holds `target` as given (a relative target stays relative, read from the link's directory). */
+    function symlinkSync(target, path, _type) {
+        vfs.symlink(typeof target === 'string' ? target : target.pathname, resolvePath(cwd, path));
     }
     function linkSync(_existingPath, _newPath) {
         // No-op
     }
-    function readlinkSync(path) {
-        // Return the path itself since we have no symlinks
-        return resolvePath(cwd, path);
+    /** readlink(2): the link's text, or its bytes with `encoding: 'buffer'`. */
+    function readlinkSync(path, options) {
+        const text = vfs.readlink(resolvePath(cwd, path));
+        const encoding = typeof options === 'string' ? options : options?.encoding;
+        return encoding === 'buffer' ? Buffer.from(text) : text;
     }
     // ─── Callback API ───
     function wrapCallback(syncFn, cb) {
@@ -419,6 +432,20 @@ export function createFs(vfs, cwd, stdin, reachStreams) {
         const callback = typeof modeOrCb === 'function' ? modeOrCb : cb;
         const mode = typeof modeOrCb === 'function' ? undefined : modeOrCb;
         wrapCallback(() => accessSync(path, mode), callback);
+    }
+    function symlink(target, path, typeOrCb, cb) {
+        const callback = typeof typeOrCb === 'function' ? typeOrCb : cb;
+        wrapCallback(() => symlinkSync(target, path), callback);
+    }
+    function readlink(path, optionsOrCb, cb) {
+        const callback = typeof optionsOrCb === 'function' ? optionsOrCb : cb;
+        const options = typeof optionsOrCb === 'function' ? undefined : optionsOrCb;
+        wrapCallback(() => readlinkSync(path, options), callback);
+    }
+    function truncate(path, lenOrCb, cb) {
+        const callback = typeof lenOrCb === 'function' ? lenOrCb : cb;
+        const len = typeof lenOrCb === 'function' ? undefined : lenOrCb ?? undefined;
+        wrapCallback(() => truncateSync(path, len), callback);
     }
     function exists(path, cb) {
         queueMicrotask(() => {
@@ -611,6 +638,8 @@ export function createFs(vfs, cwd, stdin, reachStreams) {
         access: async (path, mode) => accessSync(path, mode),
         realpath: async (path) => realpathSync(path),
         truncate: async (path, len) => truncateSync(path, len),
+        symlink: async (target, path, type) => symlinkSync(target, path, type),
+        readlink: async (path, options) => readlinkSync(path, options),
         chmod: async (path, mode) => chmodSync(path, mode),
         chown: async (path, uid, gid) => chownSync(path, uid, gid),
         lchown: async (path, uid, gid) => lchownSync(path, uid, gid),
@@ -698,6 +727,9 @@ export function createFs(vfs, cwd, stdin, reachStreams) {
         rename,
         access,
         exists,
+        symlink,
+        readlink,
+        truncate,
         open,
         close,
         read,
