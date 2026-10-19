@@ -55,8 +55,8 @@ const CASES = [
   "x=1; local -p x; echo $?",
 ];
 
-/** bash's diagnostic prefix: `bash: line 1: `, `bash: -c: line 1: `. */
-const plainStderr = (text) => text.replace(/^bash: (?:-c: )?(?:line \d+: )?/gm, '');
+/** bash's diagnostic prefix: `bash: line 1: `, `bash: -c: line 1: `, and in a function 5.2's `environment: line 1: `. */
+const plainStderr = (text) => text.replace(/^(?:bash|environment): (?:-c: )?(?:line \d+: )?/gm, '');
 
 const LINES = CASES.map((c) => (typeof c === 'string' ? { line: c, compare: 'all' } : c));
 const compared = (result, compare) => (compare === 'out' ? { stdout: result.stdout, status: result.status } : result);
