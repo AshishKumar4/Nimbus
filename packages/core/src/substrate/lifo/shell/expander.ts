@@ -697,6 +697,19 @@ function characterList(s: string): string[] {
   return out;
 }
 
+/**
+ * Where `s`'s characters begin, and its end: index `k` of them is `at(k)`,
+ * `count` of them. A value with no surrogate is its UTF-16 indices, read
+ * without making the list.
+ */
+function boundsOf(s: string): { count: number; at: (k: number) => number } {
+  if (!SURROGATE.test(s)) return { count: s.length + 1, at: (k) => k };
+  const bounds = characterBounds(s);
+  return { count: bounds.length, at: (k) => bounds[k] ?? s.length };
+}
+
+const SURROGATE = /[\uD800-\uDFFF]/;
+
 /** The last IFS split on, and its characters: every word's split asks, and IFS seldom changes. */
 let lastIfs: { ifs: string; characters: ReadonlySet<string> } | null = null;
 
@@ -716,18 +729,18 @@ function characterCount(s: string): number {
 // points), as bash does in a UTF-8 locale: never inside a surrogate pair.
 
 function trimPrefix(value: string, pattern: string, longest: boolean): string {
-  const bounds = characterBounds(value);
-  for (let k = 0; k < bounds.length; k++) {
-    const i = bounds[longest ? bounds.length - 1 - k : k] ?? 0;
+  const { count, at } = boundsOf(value);
+  for (let k = 0; k < count; k++) {
+    const i = at(longest ? count - 1 - k : k);
     if (shellMatch(pattern, value.slice(0, i))) return value.slice(i);
   }
   return value;
 }
 
 function trimSuffix(value: string, pattern: string, longest: boolean): string {
-  const bounds = characterBounds(value);
-  for (let k = 0; k < bounds.length; k++) {
-    const i = bounds[longest ? k : bounds.length - 1 - k] ?? 0;
+  const { count, at } = boundsOf(value);
+  for (let k = 0; k < count; k++) {
+    const i = at(longest ? k : count - 1 - k);
     if (shellMatch(pattern, value.slice(i))) return value.slice(0, i);
   }
   return value;
@@ -765,15 +778,16 @@ function unescapedSlash(text: string): number {
 function replaceAnchored(
   value: string, pattern: string, replacement: string, anchor: 'prefix' | 'suffix',
 ): string {
-  const bounds = characterBounds(value);
+  const { count, at } = boundsOf(value);
   if (anchor === 'prefix') {
-    for (let k = bounds.length - 1; k >= 0; k--) {
-      const i = bounds[k] ?? 0;
+    for (let k = count - 1; k >= 0; k--) {
+      const i = at(k);
       if (shellMatch(pattern, value.slice(0, i))) return replacement + value.slice(i);
     }
     return value;
   }
-  for (const i of bounds) {
+  for (let k = 0; k < count; k++) {
+    const i = at(k);
     if (shellMatch(pattern, value.slice(i))) return value.slice(0, i) + replacement;
   }
   return value;
@@ -973,8 +987,12 @@ function splitGroup(
   if (ifs === '') return keep([field(0, text.length)]);
 
   // IFS's characters, and the text's, are code points: 😀 in IFS splits at 😀 only, never at half of 😁.
-  const delimiters = ifsCharacters(ifs);
-  const isDelimiter = (i: number): boolean => eligible[i] === true && delimiters.has(characterAt(text, i));
+  const isDelimiter = (i: number): boolean => {
+    if (eligible[i] !== true) return false;
+    const unit = text.charCodeAt(i);
+    // A surrogate is half of a character, or a byte kept as one: never matched by half of IFS's.
+    return unit < 0xd800 || unit > 0xdfff ? ifs.includes(text.charAt(i)) : ifsCharacters(ifs).has(characterAt(text, i));
+  };
   const isWhitespace = (i: number): boolean => IFS_WHITESPACE.includes(text.charAt(i));
   const next = (i: number): number => i + characterAt(text, i).length;
   const previous = (i: number): number => (i >= 2 && characterAt(text, i - 2).length === 2 ? i - 2 : i - 1);
@@ -1016,18 +1034,18 @@ function splitGroup(
  * fixed length (`fixed`, fixedMatchLength) is tried at that length only.
  */
 function leftmostLongest(
-  val: string, bounds: readonly number[], pattern: string, from: number, fixed: number | null,
+  val: string, bounds: { count: number; at: (k: number) => number }, pattern: string, from: number, fixed: number | null,
 ): [number, number] | null {
-  for (let s = from; s < bounds.length; s++) {
-    const start = bounds[s] ?? 0;
+  const { count, at } = bounds;
+  for (let s = from; s < count; s++) {
+    const start = at(s);
     if (fixed !== null) {
-      const end = bounds[s + fixed];
-      if (end === undefined) return null;
-      if (shellMatch(pattern, val.slice(start, end))) return [s, s + fixed];
+      if (s + fixed >= count) return null;
+      if (shellMatch(pattern, val.slice(start, at(s + fixed)))) return [s, s + fixed];
       continue;
     }
-    for (let e = bounds.length - 1; e >= s; e--) {
-      if (shellMatch(pattern, val.slice(start, bounds[e] ?? 0))) return [s, e];
+    for (let e = count - 1; e >= s; e--) {
+      if (shellMatch(pattern, val.slice(start, at(e)))) return [s, e];
     }
   }
   return null;
@@ -1051,9 +1069,9 @@ function replaceMatches(val: string, pattern: string, replacement: string, all: 
   if (pattern === '') return val;
   const fixed = fixedMatchLength(pattern);
   // Matches start and end between characters: indices into the value's character bounds.
-  const bounds = characterBounds(val);
-  const last = bounds.length - 1;
-  const at = (k: number): number => bounds[k] ?? val.length;
+  const bounds = boundsOf(val);
+  const last = bounds.count - 1;
+  const { at } = bounds;
   let out = '';
   let i = 0;
   for (;;) {
