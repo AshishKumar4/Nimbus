@@ -384,9 +384,9 @@ export function delegationHolder(options) {
         return mine !== undefined ? mine : row;
     };
     const composedChildren = (key, base) => prov.children(key, names.children(key, base));
-    /** The view's bytes of file `entry` at `key`, where it holds them whole and they are the view's (not fenced, not the provisional decisions'). */
+    /** The view's bytes of file `entry` at `key`, where it holds them whole and they are the view's: not a grant's given back that no barrier has covered (fenced). */
     const viewBytes = (key, entry) => {
-        if (pendingFile(entry.dev, entry.ino))
+        if (entry.dev === store.device && fenced.has(entry.ino))
             return undefined;
         const stored = store.content?.(key, entry.revision);
         return stored !== undefined && stored.byteLength === entry.size ? stored : undefined;
