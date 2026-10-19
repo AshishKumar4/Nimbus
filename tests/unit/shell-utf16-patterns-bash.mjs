@@ -23,6 +23,8 @@ const CASES = [
   `case 😀 in ?) echo one;; *) echo many;; esac; [[ 😀 == ? ]] && echo one; [[ 😀😀 == ?? ]] && echo two`,
   `case é in [é]) echo m;; *) echo n;; esac; case 😁 in [😀-😂]) echo range;; *) echo none;; esac`,
   `printf '<%s>' a?; echo`,
+  // An undecodable byte is in no range of characters, and matches only itself.
+  `x=$'\\377'; case $x in [a-😀]) echo in;; *) echo out;; esac; case $x in [!a-😀]) echo not-in;; esac; case $x in ?) echo one;; esac`,
   `a=(😀 b); printf '<%s>' "\${a[0]:0:1}" "\${#a[0]}" "\${a[@]%?}"; echo`,
 ];
 

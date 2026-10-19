@@ -32,6 +32,12 @@ export function characterAt(s: string, i: number): string {
   return s.charAt(i);
 }
 
+/** Whether `char` is a surrogate on its own: a byte lossless text keeps (U+DC80+byte), or half of a pair. */
+function isLoneSurrogate(char: string): boolean {
+  const unit = char.charCodeAt(0);
+  return char.length === 1 && unit >= 0xd800 && unit <= 0xdfff;
+}
+
 /** The UTF-16 indices where `s`'s characters begin, and its length: every place a character boundary falls. */
 export function characterBounds(s: string): number[] {
   const bounds: number[] = [];
@@ -109,8 +115,12 @@ function matchCharClass(pattern: string, pos: number, ch: string): { matched: bo
     const lo = classMember(pattern, i);
     if (lo.end + 1 < pattern.length && pattern[lo.end] === '-' && pattern[lo.end + 1] !== ']') {
       const hi = classMember(pattern, lo.end + 1);
-      // A range orders by code point.
-      if (code >= (lo.char.codePointAt(0) ?? 0) && code <= (hi.char.codePointAt(0) ?? 0)) matched = true;
+      // A range orders by code point, among characters of one kind: a byte
+      // lossless text keeps as a lone surrogate is in no range of characters,
+      // as bash's matcher keeps an undecodable byte out of one.
+      const kind = isLoneSurrogate(ch);
+      if (kind === isLoneSurrogate(lo.char) && kind === isLoneSurrogate(hi.char)
+        && code >= (lo.char.codePointAt(0) ?? 0) && code <= (hi.char.codePointAt(0) ?? 0)) matched = true;
       i = hi.end;
     } else {
       if (ch === lo.char) matched = true;

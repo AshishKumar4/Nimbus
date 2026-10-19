@@ -690,13 +690,6 @@ async function applyTrim(
     : trimSuffix(value, pattern, longest)));
 }
 
-/** `s`'s characters (code points), a surrogate pair one. */
-function characterList(s: string): string[] {
-  const out: string[] = [];
-  for (let i = 0; i < s.length; i += characterAt(s, i).length) out.push(characterAt(s, i));
-  return out;
-}
-
 /**
  * Where `s`'s characters begin, and its end: index `k` of them is `at(k)`,
  * `count` of them. A value with no surrogate is its UTF-16 indices, read
@@ -714,7 +707,8 @@ const SURROGATE = /[\uD800-\uDFFF]/;
 let lastIfs: { ifs: string; characters: ReadonlySet<string> } | null = null;
 
 function ifsCharacters(ifs: string): ReadonlySet<string> {
-  if (lastIfs?.ifs !== ifs) lastIfs = { ifs, characters: new Set(characterList(ifs)) };
+  // A string's iterator yields its code points: a pair whole, a lone surrogate alone.
+  if (lastIfs?.ifs !== ifs) lastIfs = { ifs, characters: new Set(ifs) };
   return lastIfs.characters;
 }
 
