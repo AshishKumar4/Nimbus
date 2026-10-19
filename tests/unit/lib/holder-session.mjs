@@ -54,11 +54,18 @@ export function session({ grantInos, journal, gate, refuse, view, acquired, gran
     if (!seen.has(key)) seen.set(key, { entry: entryNow(key), content: contentNow(key) });
     return seen.get(key);
   };
+  /** A name in a directory the session does not have is not the view's to say (the process's own word may make one there). */
+  const parentKnown = (key) => {
+    const at = key.lastIndexOf('/');
+    if (at < 0) return true;
+    const parent = viewed(key.slice(0, at)).entry;
+    return parent !== null && parent.type === 'directory';
+  };
   const store = {
     device,
     cred: user,
     ready: () => true,
-    entry: (key) => (view ? viewed(key).entry : entryNow(key)),
+    entry: (key) => (!view ? entryNow(key) : viewed(key).entry === null && !parentKnown(key) ? undefined : viewed(key).entry),
     children: (key) => {
       try { return bridge.readdir('/' + key); } catch { return undefined; }
     },

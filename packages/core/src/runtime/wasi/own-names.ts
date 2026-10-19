@@ -20,8 +20,12 @@ export interface OwnNamesOptions {
 export interface OwnNames {
   /** This process's word on `key`: what it decided, or absent for a name not made in a directory it made. Undefined where it has none. */
   entry(key: string): ResidentEntry | null | undefined;
-  /** What it decided, by name (null: removed): read and changed as the holder decides; a name decided again is the deciding grant's. */
-  readonly decided: Map<string, ResidentEntry | null>;
+  /** What it decided, by name (null: removed): read as the holder decides; a name decided again is the deciding grant's. */
+  readonly decided: ReadonlyMap<string, ResidentEntry | null>;
+  /** Decide `key` (null: removed): a new decision there, of a new generation. */
+  decide(key: string, entry: ResidentEntry | null): void;
+  /** The generation of its decision at `key`: undefined where it has none. */
+  generation(key: string): number | undefined;
   /** Its decision at `key` while the deciding grant's own, not given back: undefined where it has none or gave it back. */
   current(key: string): ResidentEntry | null | undefined;
   /** Its decision at `key` was changed in place (a held write): decided again, not what was given back. */
@@ -30,6 +34,13 @@ export interface OwnNames {
   undecide(key: string): void;
   /** The session moved or removed the name `key`: what it decided at and under it goes, with what was noted there (its listing, a file's cell). */
   superseded(key: string): void;
+  /**
+   * A change of the process's own at `key`, made over its decision there of
+   * `generation`, is the view's: that decision and what was noted of the
+   * name go (true). One decided or moved there since is newer than the
+   * view's answer, and stays.
+   */
+  settled(key: string, generation: number | undefined): boolean;
   /** Directory `dir` gained `name` (`type`), or lost it (null). */
   note(dir: string, name: string, type: RuntimeVfsDirEntry['type'] | null): void;
   /** A directory made at `key`: its names are the ones made in it. */
@@ -67,13 +78,16 @@ function within(key: string, root: string): boolean {
 
 export function ownNames(options: OwnNamesOptions): OwnNames {
   const decided = new Map<string, ResidentEntry | null>();
+  /** Each decision's generation: one made again, or moved, is a new one. */
+  const born = new Map<string, number>();
+  let generations = 0;
   /**
    * The barrier begun when each name's subtree was last given back,
-   * everything decided there answered, and the decision it gave back: one
-   * begun after retires it, unless the name was decided again since (a new
-   * decision is a new row).
+   * everything decided there answered, and the generation of the decision
+   * it gave back: one begun after retires it, unless the name was decided
+   * again or moved since (a new generation).
    */
-  const own = new Map<string, { barrier: number; decision: ResidentEntry | null }>();
+  const own = new Map<string, { barrier: number; generation: number | undefined }>();
   const added = new Map<string, Map<string, RuntimeVfsDirEntry['type']>>();
   const removed = new Map<string, Set<string>>();
   let barriers = 0;
@@ -88,6 +102,7 @@ export function ownNames(options: OwnNamesOptions): OwnNames {
     const entry = decided.get(key);
     own.delete(key);
     decided.delete(key);
+    born.delete(key);
     made.delete(key);
     added.get(parentKey(key))?.delete(nameOf(key));
     removed.get(parentKey(key))?.delete(nameOf(key));
@@ -103,13 +118,26 @@ export function ownNames(options: OwnNamesOptions): OwnNames {
       return key !== '' && madeHere(dir) && !added.get(dir)?.has(nameOf(key)) ? null : undefined;
     },
     decided,
+    decide: (key, entry) => {
+      decided.set(key, entry);
+      born.set(key, ++generations);
+    },
+    generation: (key) => born.get(key),
     current: (key) => (own.has(key) ? undefined : decided.get(key)),
     rewritten: (key) => {
       if (own.size !== 0) own.delete(key);
     },
-    undecide: (key) => { decided.delete(key); },
+    undecide: (key) => {
+      decided.delete(key);
+      born.delete(key);
+    },
     superseded: (key) => {
       for (const name of [...decided.keys()]) if (within(name, key)) forget(name);
+    },
+    settled: (key, generation) => {
+      if (generation === undefined || born.get(key) !== generation) return false;
+      forget(key);
+      return true;
     },
     note: (dir, name, type) => {
       if (type === null) {
@@ -146,26 +174,28 @@ export function ownNames(options: OwnNamesOptions): OwnNames {
     },
     move: (from, to) => {
       const moved = (key: string): string => to + key.slice(from.length);
-      for (const [key, value] of [...decided]) if (key !== from && within(key, from)) { decided.delete(key); decided.set(moved(key), value); }
+      for (const [key, value] of [...decided]) {
+        if (key === from || !within(key, from)) continue;
+        decided.delete(key);
+        born.delete(key);
+        decided.set(moved(key), value);
+        born.set(moved(key), ++generations);
+      }
       for (const key of [...made]) if (within(key, from)) { made.delete(key); made.add(moved(key)); }
       for (const map of [added, removed] as Map<string, unknown>[]) {
         for (const [key, value] of [...map]) if (within(key, from)) { map.delete(key); map.set(moved(key), value); }
       }
-      for (const [key, value] of [...own]) {
-        if (key === from || !within(key, from)) continue;
-        own.delete(key);
-        own.set(moved(key), value);
-      }
+      for (const key of [...own.keys()]) if (key !== from && within(key, from)) own.delete(key);
     },
     released: (root) => {
       // Stamped at every release: one decided under a later grant retires after this release, not an earlier one.
-      for (const [key, decision] of decided) if (within(key, root)) own.set(key, { barrier: barriers, decision });
+      for (const key of decided.keys()) if (within(key, root)) own.set(key, { barrier: barriers, generation: born.get(key) });
     },
     barrierBegun: () => ++barriers,
     // A subtree held again since does not keep it: what the session has there now is what the view read.
     retire: (begun) => {
-      for (const [key, { barrier, decision }] of [...own]) {
-        if (decided.get(key) !== decision) own.delete(key);
+      for (const [key, { barrier, generation }] of [...own]) {
+        if (born.get(key) !== generation) own.delete(key);
         else if (barrier < begun) forget(key);
       }
     },

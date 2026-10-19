@@ -94,6 +94,23 @@ export interface ProvisionalHost {
   nextHandle(): number;
   /** A grant's file a provisional decision is about to change: no grant decides it from now on (Provisional.unhold, after what it decided is logged). */
   unhold(inode: Inode): void;
+  /** The generation of a grant's decision at `key` (OwnNames.generation): undefined where none. */
+  generation(key: string): number | undefined;
+  /**
+   * The view has what these decisions did at `key`, made over a grant's
+   * decision there of `generation`: that decision answers no more, the
+   * view's row does (OwnNames.settled); true where it did. One made since
+   * is newer than the view's answer, and stays.
+   */
+  settled(key: string, generation: number | undefined): boolean;
+  /**
+   * A grant's decision of file `file` (by number) at `key`, made since these
+   * decisions' records of it began (a move above it): newer than the view's
+   * answer, it stays, and takes `file`'s size, mode, owner and times, what
+   * their retired records made of it. The decision; undefined where `key`
+   * has none of that file.
+   */
+  absorb(key: string, file: ResidentEntry): ResidentEntry | undefined;
 }
 
 /**
@@ -174,6 +191,8 @@ export interface Inode {
    * until they are. Its own content stands until a barrier begun after (retire).
    */
   heldAt?: number;
+  /** The grant's decision of its name its records fold over (its baseline's row), by name and generation: settled once they retire. */
+  over?: { readonly key: string; readonly generation: number };
 }
 
 /** One of the process's operations on an inode, kept until the view has its outcome (retire). */
@@ -203,6 +222,8 @@ const NO_RETAINED = Object.freeze([]) as readonly string[] as string[];
 interface NameRecord {
   readonly id: number;
   readonly keys: readonly string[];
+  /** The generation of a grant's decision at each of its keys when it was logged: what it settles once it retires. */
+  readonly over: readonly (number | undefined)[];
   /** What it keeps of the budget until it leaves (refused, retired). */
   readonly cost: number;
   readonly replay: () => void;
@@ -272,7 +293,7 @@ export interface Provisional {
   /** Open description `description` was answered: `handle` is the session's descriptor of it. */
   anchored(description: string, handle: number | undefined, read: boolean): void;
   owns(handleId: number): boolean;
-  /** Whether a decision of this process's at `key`, or at the directory it is in, is not yet the view's: a held subtree decides nothing there until it is. */
+  /** Whether a decision of this process's at `key`, at the directory it is in, or at a name under it, is not yet the view's: a held subtree decides nothing there until it is. */
   touches(key: string): boolean;
   /** fcntl(F_SETFL) of a descriptor: O_APPEND is its writes' to keep. */
   setStatus(handleId: number, status: { append?: boolean }): void;
@@ -457,13 +478,13 @@ export function provisional(host: ProvisionalHost): Provisional {
    * (origin), where that name still leads to it: never another file's that
    * a name came to lead to since. Its row refreshed from there.
    */
-  const viewed = (inode: Inode): { row: ResidentEntry; bytes: Uint8Array | undefined } | undefined => {
+  const viewed = (inode: Inode): { name: string; row: ResidentEntry; bytes: Uint8Array | undefined } | undefined => {
     for (const name of [inode.origin, inode.opened, inode.key]) {
       if (name === undefined) continue;
       const row = host.row(name);
       if (!row || row.dev !== inode.dev || row.ino !== inode.ino) continue;
       const held = inode.type === 'file' ? host.content(name, row.revision) : undefined;
-      return { row, bytes: held !== undefined && held.byteLength === row.size ? held : undefined };
+      return { name, row, bytes: held !== undefined && held.byteLength === row.size ? held : undefined };
     }
     return undefined;
   };
@@ -471,7 +492,11 @@ export function provisional(host: ProvisionalHost): Provisional {
   /** What an inode's records fold over: the view's version of it where the view still has it, else its row as last known, its bytes not held. */
   const baseline = (inode: Inode): InodeState => {
     const seen = inode.local ? undefined : viewed(inode);
-    if (seen !== undefined) inode.row = seen.row;
+    if (seen !== undefined) {
+      inode.row = seen.row;
+      const generation = host.generation(seen.name);
+      if (generation !== undefined) inode.over = { key: seen.name, generation };
+    }
     const row = inode.row;
     const held = seen?.bytes ?? (inode.pin?.revision === row.revision ? inode.pin.bytes : undefined);
     const bytes = held === undefined ? (row.size === 0 ? new Uint8Array(0) : null) : owned(held);
@@ -728,7 +753,7 @@ export function provisional(host: ProvisionalHost): Provisional {
    * subtree at its names, as a change decided there is.
    */
   const loggedName = (op: ProcessFsOp, keys: readonly string[], cost: number, apply: () => void, settled?: (refused: boolean, answer: ProcessFsAnswer | undefined) => void, retired?: () => void, awaited = false): Promise<unknown> | undefined => {
-    const record: NameRecord = { id: ++ids, keys, cost, replay: apply, ...(retired === undefined ? {} : { retired }), answered: false, answeredAt: 0 };
+    const record: NameRecord = { id: ++ids, keys, over: keys.map((key) => host.generation(key)), cost, replay: apply, ...(retired === undefined ? {} : { retired }), answered: false, answeredAt: 0 };
     nameRecords.push(record);
     apply();
     for (const key of keys) host.count(key);
@@ -1321,6 +1346,8 @@ export function provisional(host: ProvisionalHost): Provisional {
     touches: (key) => {
       if (layer.size === 0 && touched.size === 0) return false;
       if (layer.has(key) || layer.has(parentKey(key))) return true;
+      // Above a name they have pending: a grant moves nothing their name records reach (a file's own records follow it, moved).
+      for (const name of layer.keys()) if (within(name, key)) return true;
       const row = host.row(key);
       return row ? inodeAtNumber(row.dev, row.ino)?.state != null : false;
     },
@@ -1666,6 +1693,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       // A name record answered before the barrier began is the view's now; one under a held subtree waits for it to be given back.
       const kept = nameRecords.filter((record) => {
         if (!record.answered || record.answeredAt >= begun) return true;
+        record.keys.forEach((key, at) => host.settled(key, record.over[at]));
         record.retired?.();
         host.release(record.cost);
         return false;
@@ -1693,7 +1721,12 @@ export function provisional(host: ProvisionalHost): Provisional {
           release(inode);
           if (inodeAtNumber(inode.dev, inode.ino) !== inode) continue;
         }
-        const seen = viewed(inode);
+        let seen = viewed(inode);
+        // What its retired records did is the view's: the grant's decision of its name they fold over answers no more.
+        if (retired.length > 0 && inode.over !== undefined) {
+          if (host.settled(inode.over.key, inode.over.generation)) seen = viewed(inode);
+          delete inode.over;
+        }
         if (seen === undefined) {
           // No name leads to it in the view: what it holds is what retired made of it, where its baseline's bytes can say so
           // (else they stay records while a descriptor may still read them).
@@ -1707,12 +1740,20 @@ export function provisional(host: ProvisionalHost): Provisional {
           }
         } else if (inode.records.length === retired.length) {
           dropRecords(inode, new Set(retired));
-          inode.row = seen.row;
+          // A grant's decision of its name made since (a move above it) is newer than the view's answer: it stays, and takes what they made of the file.
+          inode.row = (retired.length > 0 ? host.absorb(seen.name, entryOf(inode)) : undefined) ?? seen.row;
           inode.base = null;
           inode.state = null;
         } else {
           dropRecords(inode, new Set(retired));
-          inode.base = baseline(inode);
+          const folded = inode.base === null ? null : retired.reduce((state, record) => applyOp(state, record.op), inode.base);
+          const decision = folded === null ? undefined : host.absorb(seen.name, { ...seen.row, size: folded.size, mode: folded.mode, uid: folded.uid, gid: folded.gid, atime: folded.atime, mtime: folded.mtime, ctime: folded.ctime });
+          if (decision === undefined) {
+            inode.base = baseline(inode);
+          } else {
+            inode.row = decision;
+            inode.base = folded;
+          }
         }
         if (inode.state === null) {
           touched.delete(inode);

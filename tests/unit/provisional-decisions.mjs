@@ -36,6 +36,10 @@ function overlay() {
     umask: () => 0o022,
     now: () => 5,
     nextHandle: () => handles--,
+    // No grant decides anything here: nothing to settle or absorb.
+    generation: () => undefined,
+    settled: () => false,
+    absorb: () => undefined,
   });
   const answer = async (outcome) => {
     pending.shift().resolve(outcome);
