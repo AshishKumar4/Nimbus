@@ -94,7 +94,8 @@ export function walkRemoval(steps: RemovalSteps, walk: RemovalWalk): Awaitable<V
     if (stat.type !== 'directory') { order.push(entry); return undefined; }
     if (steps.crosses !== undefined && !steps.crosses(r)) {
       keepWithAncestors(r);
-      failures.push({ path: at(r), error: syscallError('EBUSY', 'rm', at(r)) });
+      // As the rmdir it is not attempted would be refused: the mount point is busy.
+      failures.push({ path: at(r), error: syscallError('EBUSY', 'rmdir', at(r)) });
       return undefined;
     }
     const failed = (cause: unknown): void => {
