@@ -19,10 +19,12 @@ const moved = (word) => objectHasOwn(word, 'from');
  * carry the rename (or an earlier one of the entry, `via`) to the table
  * before the word retires: the word stands while the table holds the entry
  * where the word reads it (a link's own row at `link`, else at `from`); once
- * the name itself holds it, the table's row there answers; where an earlier
- * rename left it, the word reads it there. A word that names no entry stands.
+ * the name holds it (at `step`, where the table keeps the name the walk
+ * reached, an outer rename's mapping applied), the table's row there
+ * answers; where an earlier rename left it, the word reads it there. A word
+ * that names no entry stands.
  */
-function standing(t, name, word) {
+function standing(t, step, word) {
     if (word === undefined || !moved(word) || word.from === undefined)
         return word;
     const ino = ownField(word, 'ino');
@@ -37,7 +39,7 @@ function standing(t, name, word) {
     };
     if (holds(link ?? word.from))
         return word;
-    if (holds(name))
+    if (step !== null && holds(step))
         return undefined;
     const via = ownField(word, 'via');
     if (arrayIsArray(via)) {
@@ -140,7 +142,7 @@ export function walkNamespace(t, links, k, followLeaf, own, visit) {
             if (visit !== undefined && !visit(prefix))
                 return 'EACCES';
             const step = table === null ? null : table ? `${table}/${name}` : name;
-            const word = own === undefined ? undefined : standing(t, prefix, own(prefix));
+            const word = own === undefined ? undefined : standing(t, step, own(prefix));
             let target;
             if (word !== undefined && removed(word)) {
                 return { path, table: null, row: undefined, own: word };

@@ -1109,7 +1109,7 @@ var __nimbusResidentModule = (() => {
   var removed = (word) => objectHasOwn(word, "absent");
   var linked = (word) => objectHasOwn(word, "target");
   var moved = (word) => objectHasOwn(word, "from");
-  function standing(t, name, word) {
+  function standing(t, step, word) {
     if (word === void 0 || !moved(word) || word.from === void 0) return word;
     const ino = ownField(word, "ino");
     if (typeof ino !== "number") return word;
@@ -1121,7 +1121,7 @@ var __nimbusResidentModule = (() => {
       return row !== void 0 && row.ino === ino && (typeof dev !== "number" || row.dev === dev);
     };
     if (holds(link ?? word.from)) return word;
-    if (holds(name)) return void 0;
+    if (step !== null && holds(step)) return void 0;
     const via = ownField(word, "via");
     if (arrayIsArray(via)) {
       for (let i = 0; i < via.length; i++) {
@@ -1185,7 +1185,7 @@ var __nimbusResidentModule = (() => {
         start = stop + 1;
         if (visit !== void 0 && !visit(prefix)) return "EACCES";
         const step = table === null ? null : table ? `${table}/${name}` : name;
-        const word = own === void 0 ? void 0 : standing(t, prefix, own(prefix));
+        const word = own === void 0 ? void 0 : standing(t, step, own(prefix));
         let target;
         if (word !== void 0 && removed(word)) {
           return { path, table: null, row: void 0, own: word };
