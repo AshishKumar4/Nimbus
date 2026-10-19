@@ -63,6 +63,24 @@ function park(budget, bytes) {
   console.log('  ✓ running work overtakes the queue and reclaims the oldest parked map');
 }
 
+// ── two running asks at once reclaim only what they need together ─────────
+// The first is woken to its turn with the credit one reclaim freed; the
+// second fits beside it, so nothing more is reclaimed for it.
+{
+  const budget = new SupervisorAllocationBudget(100);
+  const older = await park(budget, 40);
+  const newer = await park(budget, 40);
+  const [first, second] = await Promise.all([budget.acquireRunning(30), budget.acquireRunning(30)]);
+  assert.equal(older.reclaimed, true, 'the oldest parked map is reclaimed');
+  assert.equal(newer.reclaimed, false, 'and not the next: both asks fit beside it');
+  first.release();
+  second.release();
+  newer.unregister();
+  newer.lease.release();
+  assert.equal(budget.stats.current, 0);
+  console.log('  ✓ two running asks at once reclaim only what they need together');
+}
+
 // ── a launch that parks while a running ask waits is reclaimed for it ───────
 {
   const budget = new SupervisorAllocationBudget(100);

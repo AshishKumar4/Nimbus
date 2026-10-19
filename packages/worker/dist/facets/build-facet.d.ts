@@ -54,6 +54,11 @@ export declare class BuildFacetResetError extends Error {
  * once more on a fresh facet, logged. A second throw is a
  * BuildFacetResetError naming the package and why; a facet that never
  * loaded is the load's own error, not retried.
+ *
+ * The isolate moves to a new generation when any Durable Object's binding
+ * outgrows its mark. A pre-bundle that has not begun then begins on the new
+ * one: nothing of it ran, so it is no reset. Its slice, if it holds one, is
+ * given back first, and taken again once the new facet is warm.
  */
 export declare function buildFacetPrebundler(ctx: DurableObjectState, env: unknown, signal?: AbortSignal): Promise<(task: PrebundleDispatch) => Promise<PrebundleResult>>;
 /**
