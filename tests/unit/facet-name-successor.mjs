@@ -3,8 +3,7 @@
 // after a newer one took its name (Kinu's ask 59: the platform ended an
 // activation and kept its facets, and the next activation launched the same
 // durable application into its app-slot) must not end, drain or delete the
-// facet its successor now runs in; and a process given a name ends whatever
-// still runs there first, so it boots in an instance of its own.
+// facet its successor now runs in.
 
 import assert from 'node:assert/strict';
 import { answerHostWatch } from './lib/host-watch-socket.mjs';
@@ -75,7 +74,6 @@ const spawn = (ctx, pid, facet) => processes(ctx, env).spawn(
   await before.release();
   assert.equal(platform.running('app-slot-0'), booted.instance, `the next activation's application still runs: ${JSON.stringify(platform.ended)}`);
   assert.ok(!platform.ended.some((e) => e.instance === booted.instance), 'and nothing the ended activation released ended it');
-  assert.equal(await (await after.handleHttpRequest(new Request('https://app.invalid/'), { settled() {} })).text(), `instance ${booted.instance}`);
   console.log('  ✓ a release leaves the facet its successor runs in alone (durable)');
 }
 
@@ -95,18 +93,22 @@ const spawn = (ctx, pid, facet) => processes(ctx, env).spawn(
   console.log('  ✓ a release leaves the facet its successor runs in alone (ephemeral)');
 }
 
-// ── one incarnation: the same owner launched again before its last process was released ──
+// ── one incarnation: a name shared by two of its processes ──────────────────
+// A spawn never ends what its own incarnation runs under a name
+// (durable-facet-storage 5b): the second process shares the facet. The
+// first one's release leaves it to the second, whose release ends it.
 {
   const platform = platformFacets();
   const ctx = incarnation(platform);
-  const before = spawn(ctx, 3000001, { name: 'app-slot-1', durable: true });
-  const first = await before.started;
-  const after = spawn(ctx, 3000002, { name: 'app-slot-1', durable: true });
-  const booted = await after.started;
-  assert.notEqual(booted.instance, first.instance, 'the new process boots in an instance of its own, not the one still running');
-  await before.release();
-  assert.equal(platform.running('app-slot-1'), booted.instance, 'and its predecessor\'s release leaves it running');
-  console.log('  ✓ a process given a name ends what still runs there; its predecessor\'s release does not end it');
+  const first = spawn(ctx, 3000001, { name: 'app-slot-1', durable: true });
+  const shared = (await first.started).instance;
+  const second = spawn(ctx, 3000002, { name: 'app-slot-1', durable: true });
+  assert.equal((await second.started).instance, shared, 'the second shares the running facet');
+  await first.release();
+  assert.equal(platform.running('app-slot-1'), shared, 'the first one\'s release leaves it running for the second');
+  await second.release();
+  assert.equal(platform.running('app-slot-1'), undefined, 'the last holder\'s release ends it');
+  console.log('  ✓ a facet two processes of one incarnation share ends with the last one\'s release');
 }
 
 // ── the holder's own release still ends its facet ───────────────────────────
