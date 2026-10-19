@@ -15,15 +15,17 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: publish
-  cancel-in-progress: false
-
+# One publish at a time, each tag's in turn: a pending release waits rather
+# than being replaced by a later tag (queue: max). Dry runs queue apart.
 jobs:
   publish:
     if: startsWith(github.ref, 'refs/tags/npm/')
     runs-on: ubuntu-24.04
     environment: npm
+    concurrency:
+      group: npm-publish
+      cancel-in-progress: false
+      queue: max
     permissions:
       contents: read
       id-token: write
@@ -37,6 +39,10 @@ jobs:
   dry-run:
     if: startsWith(github.ref, 'refs/tags/npm-dry-run/')
     runs-on: ubuntu-24.04
+    concurrency:
+      group: npm-dry-run
+      cancel-in-progress: false
+      queue: max
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

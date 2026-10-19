@@ -154,20 +154,20 @@ export const SPECS = {
       // The wasm module Pyodide instantiates. Goes to share/ so the
       // user-VFS layout matches binji-clang's convention (bin/ for
       // exec entry, share/<name>/ for runtime-private blobs).
-      { src: 'pyodide.asm.wasm', vfs: 'share/pyodide/pyodide.asm.wasm' },
+      { src: 'pyodide.asm.wasm', vfs: 'share/pyodide/pyodide.asm.wasm', sha256: '10090fe41e019ae669d512e1f747021a8db2aaab0f6dd6f85fa9368c55d681e3' },
       // The Emscripten JS half. Runtime sync adapts it once for
       // workerd and records that contract in manifest metadata; the
       // Python runner consumes the resulting artifact without patching
       // it during session boot.
-      { src: 'pyodide.asm.js',   vfs: 'share/pyodide/pyodide.asm.js', transform: 'pyodide-workerd-adapter' },
+      { src: 'pyodide.asm.js',   vfs: 'share/pyodide/pyodide.asm.js', transform: 'pyodide-workerd-adapter', sha256: 'fe75e97ef2c7a10c41f23b96344c553c7c1c62821bb206080dbb24941c06d5f3' },
       // Python 3.13 stdlib. Pyodide writes this into its Emscripten
       // MEMFS at /lib/python313.zip and CPython imports from there
       // via the ZipImporter on sys.path.
-      { src: 'python_stdlib.zip', vfs: 'share/pyodide/python_stdlib.zip' },
+      { src: 'python_stdlib.zip', vfs: 'share/pyodide/python_stdlib.zip', sha256: '92cb24faa546818f3ef4050fd5bd2b6487bd2042efed2113af141d035f30efb4' },
       // Lockfile — only used by pyodide.loadPackage / micropip (v3
       // scope). We ship it so v3 doesn't need to re-bundle from
       // scratch; v1 ignores its contents.
-      { src: 'pyodide-lock.json', vfs: 'share/pyodide/pyodide-lock.json' },
+      { src: 'pyodide-lock.json', vfs: 'share/pyodide/pyodide-lock.json', sha256: '14d2c2dba101277999e17135e653d8f15389ad1437f53eae213bf0c3cdff723d' },
       // The user-facing "bin" — a tiny launcher marker. We don't
       // actually exec this file; the python-runner factory pulls
       // bytes from the share/ entries and ignores bin/python's
