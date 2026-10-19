@@ -21,8 +21,10 @@ published independently in the `@nimbus-sh` npm scope.
     of the line.
   - A function keeps the aliases it was defined with.
   - A here-document after `;` on its line is read.
-  Before, a whole script was parsed first, and an alias was expanded when its
-  command ran.
+  - A command followed by another without `;`, `&` or a newline is a syntax
+    error, as `(echo a) (echo b)` and `x=1 (echo hi)` are in bash.
+  Before, a whole script was parsed first, an alias was expanded when its
+  command ran, and those two commands both ran.
 - Fixed: the shell's patterns, trims, substitutions, `${#x}` and IFS count
   characters, as bash does in a UTF-8 locale, not UTF-16 units. `${x%?}` of
   😀 leaves nothing rather than half of it, `?` and `case 😀 in ?)` match it
