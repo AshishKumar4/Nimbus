@@ -1,80 +1,202 @@
 import { TokenKind } from './types.js';
 import { expandBackslashEscapes } from '../utils/backslash-escapes.js';
+/** Every token of `input`, read at once. */
 export function lex(input) {
-    return lexText(input).tokens;
+    const reader = new TokenReader(input);
+    const tokens = [];
+    for (;;) {
+        const batch = reader.next();
+        tokens.push(...batch);
+        if (batch.some((token) => token.kind === TokenKind.EOF))
+            return tokens;
+    }
 }
 /**
- * The tokens of `input`, and whether it ends inside a comment, which takes the
- * rest of its line: what would follow it there is no word (an alias whose text
- * ends in `#…`).
+ * The shell's reader: `input`'s tokens a batch at a time (a token, or a
+ * newline and the here-document bodies it opens), as its parser asks for
+ * them, so that the parser can go back to where a token began and read a
+ * word there in a mode of its own (the regular expression after `=~`), or
+ * read an alias's text in place of a word (pushAlias), as bash's reader
+ * does: a comment in that text takes the rest of the line it is read in.
  */
-export function lexText(input) {
-    const tokens = [];
-    let endsInComment = false;
-    const pendingHeredocs = [];
-    let nextHeredocOperator = null;
-    let i = 0;
-    while (i < input.length) {
-        // Skip whitespace (but NOT newlines -- they become Newline tokens)
-        if (input[i] === ' ' || input[i] === '\t') {
-            i++;
-            continue;
-        }
-        // A line continuation between words is no word and no newline.
-        if (input[i] === '\\' && input[i + 1] === '\n') {
-            i += 2;
-            continue;
-        }
-        // Newline
-        if (input[i] === '\n') {
-            tokens.push({ kind: TokenKind.Newline, value: '\n', pos: i });
-            i++;
-            if (pendingHeredocs.length > 0) {
-                const bodies = readHeredocBodies(input, i, pendingHeredocs);
-                tokens.push(...bodies.tokens);
-                i = bodies.end;
-                pendingHeredocs.length = 0;
-            }
-            continue;
-        }
-        // Comment -- skip to end of line
-        if (input[i] === '#') {
-            while (i < input.length && input[i] !== '\n') {
-                i++;
-            }
-            endsInComment = i >= input.length;
-            continue;
-        }
-        // Operators
-        const op = tryOperator(input, i);
-        if (op) {
-            tokens.push(op.token);
-            if (op.token.kind === TokenKind.Heredoc || op.token.kind === TokenKind.HeredocStripTabs) {
-                nextHeredocOperator = op.token.kind;
-            }
-            i = op.end;
-            continue;
-        }
-        // Word (may include quotes, escapes, $(), globs, variables)
-        const word = readWord(input, i);
-        if (word) {
-            tokens.push(word.token);
-            if (nextHeredocOperator !== null) {
-                pendingHeredocs.push({
-                    delimiter: word.token.value,
-                    quoted: wordHasQuotedParts(word.token),
-                    stripTabs: nextHeredocOperator === TokenKind.HeredocStripTabs,
-                });
-                nextHeredocOperator = null;
-            }
-            i = word.end;
-            continue;
-        }
-        // Shouldn't reach here, but advance to avoid infinite loop
-        i++;
+export class TokenReader {
+    frames;
+    pending = [];
+    operator = null;
+    // The next word follows an alias whose text ended in a blank.
+    checkNext = false;
+    constructor(input) {
+        this.frames = [{ input, at: 0, alias: null, blank: false }];
     }
-    tokens.push({ kind: TokenKind.EOF, value: '', pos: i });
-    return { tokens, endsInComment };
+    mark() {
+        return { frames: this.frames.map((frame) => ({ ...frame })), pending: [...this.pending], operator: this.operator, checkNext: this.checkNext };
+    }
+    reset(mark) {
+        this.frames = mark.frames.map((frame) => ({ ...frame }));
+        this.pending = [...mark.pending];
+        this.operator = mark.operator;
+        this.checkNext = mark.checkNext;
+    }
+    /** Read `alias`'s text `value` next, in place of its name: none of its words, or the next one's after it, is `alias` again until it is read. */
+    pushAlias(alias, value) {
+        this.frames.push({ input: value, at: 0, alias, blank: /[ \t\n]$/.test(value) });
+    }
+    /** The text being read: an alias's ends where its text does, and the text it was read in goes on. */
+    get frame() {
+        for (;;) {
+            const top = this.frames[this.frames.length - 1];
+            if (this.frames.length === 1 || top.at < top.input.length)
+                return top;
+            this.frames.pop();
+            if (top.blank)
+                this.checkNext = true;
+        }
+    }
+    /** The aliases whose text is being read: their names expand nothing read now. */
+    aliasesInUse() {
+        if (this.frames.length === 1)
+            return undefined;
+        const names = new Set();
+        for (const frame of this.frames)
+            if (frame.alias !== null)
+                names.add(frame.alias);
+        return names;
+    }
+    /** The next batch: a token, or a newline and the here-document bodies it opens; at the input's end, EOF. */
+    next() {
+        const batch = this.read();
+        const aliases = this.aliasesInUse();
+        if (aliases !== undefined)
+            for (const token of batch)
+                token.aliases = aliases;
+        const [first] = batch;
+        if (this.checkNext && first !== undefined) {
+            if (first.kind === TokenKind.Word)
+                first.aliasCheck = true;
+            this.checkNext = false;
+        }
+        return batch;
+    }
+    read() {
+        for (let frame = this.frame; frame.at < frame.input.length; frame = this.frame) {
+            const input = frame.input;
+            const i = frame.at;
+            // Skip whitespace (but NOT newlines -- they become Newline tokens)
+            if (input[i] === ' ' || input[i] === '\t') {
+                frame.at++;
+                continue;
+            }
+            // A line continuation between words is no word and no newline.
+            if (input[i] === '\\' && input[i + 1] === '\n') {
+                frame.at += 2;
+                continue;
+            }
+            // Newline
+            if (input[i] === '\n') {
+                const batch = [{ kind: TokenKind.Newline, value: '\n', pos: i }];
+                frame.at++;
+                if (this.pending.length > 0) {
+                    const bodies = readHeredocBodies(input, frame.at, this.pending);
+                    batch.push(...bodies.tokens);
+                    frame.at = bodies.end;
+                    this.pending = [];
+                }
+                return batch;
+            }
+            // Comment -- skip to end of line: past an alias's text, into the line it is read in.
+            if (input[i] === '#') {
+                let reading = frame;
+                for (;;) {
+                    while (reading.at < reading.input.length && reading.input[reading.at] !== '\n')
+                        reading.at++;
+                    if (reading.at < reading.input.length || this.frames.length === 1)
+                        break;
+                    reading = this.frame;
+                }
+                continue;
+            }
+            // Operators
+            const op = tryOperator(input, i);
+            if (op) {
+                if (op.token.kind === TokenKind.Heredoc || op.token.kind === TokenKind.HeredocStripTabs) {
+                    this.operator = op.token.kind;
+                }
+                frame.at = op.end;
+                return [op.token];
+            }
+            // Word (may include quotes, escapes, $(), globs, variables)
+            const word = readWord(input, i);
+            if (word) {
+                if (this.operator !== null) {
+                    this.pending.push({
+                        delimiter: word.token.value,
+                        quoted: wordHasQuotedParts(word.token),
+                        stripTabs: this.operator === TokenKind.HeredocStripTabs,
+                    });
+                    this.operator = null;
+                }
+                frame.at = word.end;
+                return [word.token];
+            }
+            // Shouldn't reach here, but advance to avoid infinite loop
+            frame.at++;
+        }
+        return [{ kind: TokenKind.EOF, value: '', pos: this.frame.at }];
+    }
+    /**
+     * The word after `=~`, as bash's reader reads a regular expression: up to a
+     * blank or an operator, except that its parentheses nest and, inside them,
+     * blanks, newlines, `#` and operators are its own, and `|` is its own
+     * anywhere. A `)` outside them ends it, for the conditional to read. Null
+     * when no word begins here (a comment, a newline, an operator); `unclosed`
+     * when the input ends inside its parentheses.
+     */
+    readRegexWord() {
+        const frame = this.frame;
+        const input = frame.input;
+        while (input[frame.at] === ' ' || input[frame.at] === '\t' || (input[frame.at] === '\\' && input[frame.at + 1] === '\n')) {
+            frame.at += input[frame.at] === '\\' ? 2 : 1;
+        }
+        const pos = frame.at;
+        if (pos >= input.length || input[pos] === '#')
+            return null;
+        const parts = [];
+        let depth = 0;
+        let i = pos;
+        while (i < input.length) {
+            const ch = input[i];
+            if (ch === '\\' && input[i + 1] === '\n') {
+                i += 2;
+                continue;
+            }
+            if (depth === 0 && (ch === ' ' || ch === '\t' || ch === '\n' || ch === ';' || ch === '&' || ch === '<' || ch === '>' || ch === ')'))
+                break;
+            if (ch === '(')
+                depth++;
+            else if (ch === ')')
+                depth--;
+            if (isWordBreak(ch)) {
+                parts.push({ text: ch, quoted: 'none' });
+                i++;
+                continue;
+            }
+            const word = readWord(input, i);
+            if (word === null) {
+                parts.push({ text: ch, quoted: 'none' });
+                i++;
+                continue;
+            }
+            parts.push(...(word.token.parts ?? [{ text: word.token.value, quoted: 'none' }]));
+            i = word.end;
+        }
+        if (i === pos)
+            return null;
+        frame.at = i;
+        return {
+            token: { kind: TokenKind.Word, value: parts.map((part) => part.text).join(''), pos, parts, source: input.slice(pos, i) },
+            unclosed: depth > 0,
+        };
+    }
 }
 /**
  * How `input` leaves the lexer at end of input: inside an unclosed single or
