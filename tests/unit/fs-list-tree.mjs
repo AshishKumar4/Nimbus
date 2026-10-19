@@ -3,7 +3,8 @@
  * fs-list-tree — everything beneath a directory in one answer (the session's
  * fsListTree, core runtime/fs-list-tree.ts): the subtree whole, in path order,
  * at one revision, as the process's credential lists it; a subtree past the
- * bound is refused (E2BIG), never cut short.
+ * bound is refused (E2BIG), never cut short; a root that is not a directory
+ * is refused as readdir refuses it, never listed as an empty one.
  */
 
 import assert from 'node:assert/strict';
@@ -17,7 +18,7 @@ const USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 const harness = createSqliteVfsTestHarness();
 const engine = new SqliteVFS(harness.sql, harness.ctx);
 const kernel = engine.as(CRED_KERNEL);
-for (const dir of ['home/user/proj/a/b', 'home/user/proj2', 'home/user/proj/closed']) kernel.mkdir(dir, { recursive: true });
+for (const dir of ['home/user/proj/a/b', 'home/user/proj2', 'home/user/proj/closed', 'home/user/empty']) kernel.mkdir(dir, { recursive: true });
 kernel.chown('home/user', 1000, 1000);
 for (const file of ['home/user/proj/x.txt', 'home/user/proj/a/y.txt', 'home/user/proj/a/b/z.txt', 'home/user/proj2/other.txt', 'home/user/proj/closed/secret.txt']) {
   kernel.writeFile(file, file);
@@ -38,7 +39,9 @@ assert.deepEqual(listing.entries.map((entry) => entry.path.replace(/^\/+/, '')),
 assert.ok(listing.entries.every((entry) => entry.stat && typeof entry.rev === 'number'));
 assert.deepEqual((await subtreeListing(bridge, 'home/user/proj/a/b', 1)).entries.map((entry) => entry.path.replace(/^\/+/, '')), ['home/user/proj/a/b/z.txt'], 'exactly the bound');
 await assert.rejects(subtreeListing(bridge, '/home/user/proj', 5), (error) => error.code === 'E2BIG', 'past the bound it is refused, not cut short');
-assert.deepEqual((await subtreeListing(bridge, '/home/user/proj/a/b/z.txt', 10)).entries, [], 'a file has nothing beneath it');
+assert.deepEqual((await subtreeListing(bridge, '/home/user/empty', 10)).entries, [], 'an empty directory');
+await assert.rejects(subtreeListing(bridge, '/home/user/proj/a/b/z.txt', 10), (error) => error.code === 'ENOTDIR', 'a file is no directory to list');
+await assert.rejects(subtreeListing(bridge, '/home/user/gone', 10), (error) => error.code === 'ENOENT', 'nor is a name that is not there');
 {
   // A change between its pages: the walk is made again, never mixed.
   let calls = 0;
