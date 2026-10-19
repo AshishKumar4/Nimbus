@@ -151,8 +151,8 @@ const within = (promise, ms, what) => {
   const abort = new AbortController();
   abort.abort(new Error('gone before it asked'));
   const turn = pool.queue(10 * MiB, abort.signal);
-  await assert.rejects(turn.woken(), { name: 'AbortError' });
-  assert.equal(turn.take(), null);
+  await within(turn.woken(), 100, 'its wait ends at once');
+  assert.equal(turn.take(), null, 'and it takes nothing');
   assert.equal(pool.stats.current, 0);
   assert.equal(pool.stats.queued, 0);
   turn.leave();
