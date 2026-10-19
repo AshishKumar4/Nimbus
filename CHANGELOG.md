@@ -31,6 +31,11 @@ published independently in the `@nimbus-sh` npm scope.
 
   Before, these read a word's text after its quotes were gone.
 
+- Fixed: a launch whose program loads wasm or a native binding (rolldown's,
+  in a remix dev server) no longer gathers its closure twice. Its build
+  gave back the bytes its module map would need for them, then had to ask
+  for them again, and when anything else was waiting it gathered the
+  whole closure again. The build now keeps what its map will own.
 - Fixed: a launch could wait forever in "prepare" (a vite dev server sat 5
   minutes) after a session that shared its isolate was deleted while it
   waited for the isolate's transient budget. The budget had handed that
