@@ -226,7 +226,49 @@ var objectDefineProperty = Object.defineProperty;
 var arrayPush = uncurryThis(Array.prototype.push);
 var arraySplice = uncurryThis(Array.prototype.splice);
 var ObjectPrototypePropertyIsEnumerableOf = uncurryThis(Object.prototype.propertyIsEnumerable);
-return { ArrayConstructor, ArrayFrom, ArrayIteratorNext, ArrayIteratorPrototype, ArrayPrototypeIndexOf, ArrayPrototypeLastIndexOf, ArrayPrototypePop, ArrayPrototypeToSpliced, ArrayPrototypeWith, ArrayValues, BigInt: BigIntOf, BigIntPrototypeToString, Error: ErrorConstructor, FunctionPrototypeBind, GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, JSONParse, JSONStringify, MapConstructor, NumberOf, NumberPrototypeToString, ObjectOf, ObjectPrototype, ObjectPrototypeHasOwnProperty, ObjectPrototypePropertyIsEnumerable, ObjectPrototypePropertyIsEnumerableOf, ObjectPrototypeToString, PromiseConstructor, PromisePrototypeThen, PromiseReject, PromiseResolve, RangeError: RangeErrorConstructor, ReferenceError: ReferenceErrorConstructor, RegExp: RegExpConstructor, RegExpPrototypeAccessors, RegExpPrototypeExec, SafeAsyncGeneratorPrototype, SafeGeneratorPrototype, SafeList, SafeMap, SafeRegExpPrototype, SafeSet, SafeWeakMap, SafeWeakSet, StringFromCharCode, StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeIndexOf, StringPrototypeLastIndexOf, StringPrototypeSlice, StringPrototypeSubstr, SymbolConstructor, SymbolPrototypeDescription, SymbolPrototypeToString, SyntaxError: SyntaxErrorConstructor, TypeError: TypeErrorConstructor, URIError: URIErrorConstructor, URL: URLConstructor, arrayIncludes, arrayIndexOf, arrayIsArray, arrayJoin, arrayPush, arraySort, arraySplice, captureStackTraceOf, dataDescriptor, decodeURIComponentOf, encodeURIComponentOf, generatorNext, generatorThrow, globalObject, mapGet, mathAbs, mathMin, newURL, numberIsInteger, objectAssign, objectCreate, objectDefineProperties, objectDefineProperty, objectFreeze, objectGetOwnPropertyNames, objectHasOwn, objectIs, objectIsExtensible, objectKeys, objectPreventExtensions, ownField, parseFloatOf, parseIntOf, reflectApply, reflectConstruct, reflectDefineProperty, reflectDeleteProperty, reflectGet, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectHas, reflectOwnKeys, reflectSet, reflectSetPrototypeOf, regExpExec, safeGenerator, setForEach, stringCharCodeAt, stringEndsWith, stringIncludes, stringIndexOf, stringLastIndexOf, stringOf, stringSlice, stringStartsWith, stringToLowerCase, symbolAsyncIterator, symbolFor, symbolIterator, symbolToStringTag, symbolUnscopables, useCaptureStackTrace };
+function promiseSettled(list) {
+  return new PromiseConstructor((resolve) => {
+    let left = list.length;
+    if (left === 0) {
+      resolve();
+      return;
+    }
+    const one = () => {
+      if (--left === 0) resolve();
+    };
+    for (let i = 0; i < list.length; i++) reflectApply(PromisePrototypeThen, reflectApply(PromiseResolve, PromiseConstructor, [list[i]]), [one, one]);
+  });
+}
+function promiseAll(list) {
+  return new PromiseConstructor((resolve, reject) => {
+    const values = new SafeList();
+    let left = list.length;
+    if (left === 0) {
+      resolve(values);
+      return;
+    }
+    for (let i = 0; i < list.length; i++) {
+      const at = i;
+      const one = (value) => {
+        values[at] = value;
+        if (--left === 0) resolve(values);
+      };
+      reflectApply(PromisePrototypeThen, reflectApply(PromiseResolve, PromiseConstructor, [list[i]]), [one, reject]);
+    }
+  });
+}
+var dateNow = Date.now;
+var mathMax = Math.max;
+var mathCeil = Math.ceil;
+var numberIsSafeInteger = Number.isSafeInteger;
+var arrayCopy = uncurryThis(Reflect.get(Array.prototype, "toSpliced"));
+var typedArrayByteLength = (() => {
+  const prototype = reflectGetPrototypeOf(Uint8Array.prototype);
+  const getter = reflectGetOwnPropertyDescriptor(prototype ?? {}, "byteLength")?.get;
+  if (getter === void 0) throw new TypeErrorConstructor("TypedArray.prototype.byteLength is not an accessor");
+  return uncurryThis(getter);
+})();
+return { ArrayConstructor, ArrayFrom, ArrayIteratorNext, ArrayIteratorPrototype, ArrayPrototypeIndexOf, ArrayPrototypeLastIndexOf, ArrayPrototypePop, ArrayPrototypeToSpliced, ArrayPrototypeWith, ArrayValues, BigInt: BigIntOf, BigIntPrototypeToString, Error: ErrorConstructor, FunctionPrototypeBind, GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, JSONParse, JSONStringify, MapConstructor, NumberOf, NumberPrototypeToString, ObjectOf, ObjectPrototype, ObjectPrototypeHasOwnProperty, ObjectPrototypePropertyIsEnumerable, ObjectPrototypePropertyIsEnumerableOf, ObjectPrototypeToString, PromiseConstructor, PromisePrototypeThen, PromiseReject, PromiseResolve, RangeError: RangeErrorConstructor, ReferenceError: ReferenceErrorConstructor, RegExp: RegExpConstructor, RegExpPrototypeAccessors, RegExpPrototypeExec, SafeAsyncGeneratorPrototype, SafeGeneratorPrototype, SafeList, SafeMap, SafeRegExpPrototype, SafeSet, SafeWeakMap, SafeWeakSet, StringFromCharCode, StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeIndexOf, StringPrototypeLastIndexOf, StringPrototypeSlice, StringPrototypeSubstr, SymbolConstructor, SymbolPrototypeDescription, SymbolPrototypeToString, SyntaxError: SyntaxErrorConstructor, TypeError: TypeErrorConstructor, URIError: URIErrorConstructor, URL: URLConstructor, arrayCopy, arrayIncludes, arrayIndexOf, arrayIsArray, arrayJoin, arrayPush, arraySort, arraySplice, captureStackTraceOf, dataDescriptor, dateNow, decodeURIComponentOf, encodeURIComponentOf, generatorNext, generatorThrow, globalObject, mapGet, mathAbs, mathCeil, mathMax, mathMin, newURL, numberIsInteger, numberIsSafeInteger, objectAssign, objectCreate, objectDefineProperties, objectDefineProperty, objectFreeze, objectGetOwnPropertyNames, objectHasOwn, objectIs, objectIsExtensible, objectKeys, objectPreventExtensions, ownField, parseFloatOf, parseIntOf, promiseAll, promiseSettled, reflectApply, reflectConstruct, reflectDefineProperty, reflectDeleteProperty, reflectGet, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectHas, reflectOwnKeys, reflectSet, reflectSetPrototypeOf, regExpExec, safeGenerator, setForEach, stringCharCodeAt, stringEndsWith, stringIncludes, stringIndexOf, stringLastIndexOf, stringOf, stringSlice, stringStartsWith, stringToLowerCase, symbolAsyncIterator, symbolFor, symbolIterator, symbolToStringTag, symbolUnscopables, typedArrayByteLength, useCaptureStackTrace };
 })();
 
 var { captureStack, determineSpecificType, hideStackFrames, invalidArgType, invalidArgValue, isErrorStackTraceLimitWritable, nodeError, nodeErrorCodes, nodeSystemError, outOfRange, reshapeAsNodeError, useNodeErrorInspect } = (() => {
@@ -3767,8 +3809,8 @@ const {
   objectCreate: __nimbusObjectCreate, reflectDefineProperty: __nimbusDefine, dataDescriptor: __nimbusData,
   objectFreeze: __nimbusFreeze, objectPreventExtensions: __nimbusPreventExtensions, objectKeys: __nimbusKeys,
   arrayIsArray: __nimbusIsArray, arrayIndexOf: __nimbusIndexOf, arraySort: __nimbusSort, JSONParse: __nimbusJsonParse,
-  mapGet: __nimbusMapGet, MapConstructor: __NimbusMap, PromiseConstructor: __NimbusPromise,
-  PromiseResolve: __nimbusPromiseResolve, PromisePrototypeThen: __nimbusPromiseThen, reflectApply: __nimbusApply,
+  mapGet: __nimbusMapGet, MapConstructor: __NimbusMap, reflectApply: __nimbusApply,
+  promiseSettled: __nimbusSettled, promiseAll: __nimbusAll,
 } = __nimbusPrimordials;
 /** A SafeSet's or a SafeMap's members (keys), in order, as a SafeList: never their iterator. */
 function __nimbusListOf(collection) {
@@ -3800,15 +3842,6 @@ function __nimbusFileHref(path) {
   const url = __nimbusPrimordials.newURL("file:///");
   url.pathname = encoded;
   return url.href;
-}
-/** Each promise of `list` settled, however it settles: Promise.allSettled, without the array iterator. */
-function __nimbusSettled(list) {
-  return new __NimbusPromise((resolve) => {
-    let left = list.length;
-    if (left === 0) { resolve(); return; }
-    const one = () => { if (--left === 0) resolve(); };
-    for (let i = 0; i < list.length; i++) __nimbusApply(__nimbusPromiseThen, __nimbusApply(__nimbusPromiseResolve, __NimbusPromise, [list[i]]), [one, one]);
-  });
 }
 /** `text`'s names, what lies between its slashes, empty ones dropped. */
 function __vfsNames(text) {
@@ -5801,8 +5834,8 @@ const __fsMod = (() => {
       // the report is noted first: the write or mutation that owns the row
       // judges it against its own revision when that arrives, as it does for
       // a heap cell. A read in flight gets the same note.
-      if (Array.isArray(result.paths)) {
-        for (const entry of result.paths) _noteReport(entry);
+      if (__nimbusIsArray(result.paths)) {
+        for (let i = 0; i < result.paths.length; i++) _noteReport(result.paths[i]);
       }
       // N18: room for what it pushes, before it is held.
       await __resident.admission.roomForPushed(result);
@@ -5811,7 +5844,7 @@ const __fsMod = (() => {
         _cursor.epoch = admitted.cursor.epoch;
         _cursor.rev = admitted.cursor.rev;
         // A directory that became searchable has descendants no delta names.
-        for (const dir of admitted.relist) await __resident.transport.relist(supervisor, dir);
+        for (let i = 0; i < admitted.relist.length; i++) await __resident.transport.relist(supervisor, admitted.relist[i]);
         return admitted;
       });
       _nsRetire(begin);
@@ -6169,19 +6202,22 @@ const __fsMod = (() => {
   async function _announceLocalDirs(absPath, supervisor) {
     await _awaitStructuralOrder(absPath);
     if (!__vfsDirs) return;
-    const pending = [];
+    const pending = new __PathList();
+    const names = __vfsNames(_strip(absPath));
     let key = "";
-    for (const segment of _strip(absPath).split("/")) {
-      if (!segment) continue;
-      key = key ? key + "/" + segment : segment;
-      if (key in __vfsDirs && !_announcedDirs.has(key)) pending.push(key);
+    for (let i = 0; i < names.length; i++) {
+      key = key ? key + "/" + names[i] : names[i];
+      if (key in __vfsDirs && !_announcedDirs.has(key)) pending[pending.length] = key;
     }
     if (pending.length === 0) return;
     const deepest = "/" + pending[pending.length - 1];
     // Each one, shallowest first, as mkdir -p makes them.
-    const made = pending.map((dir) => _vfsCall({ call: "mkdir", path: dir, mode: _localAttr("mode", dir)?.value ?? 0o777, existing: "ok" }));
-    await _fsRpc(Promise.all(made), "mkdir", deepest, () => undefined);
-    for (const dir of pending) _announcedDirs.add(dir);
+    const made = new __PathList();
+    for (let i = 0; i < pending.length; i++) {
+      made[i] = _vfsCall({ call: "mkdir", path: pending[i], mode: _localAttr("mode", pending[i])?.value ?? 0o777, existing: "ok" });
+    }
+    await _fsRpc(__nimbusAll(made), "mkdir", deepest, () => undefined);
+    for (let i = 0; i < pending.length; i++) _announcedDirs.add(pending[i]);
     _markVfsStale();
   }
 
@@ -6594,16 +6630,16 @@ const __fsMod = (() => {
     const end = meta ? Number(meta.size) || 0 : 0;
     // A charged read pays for the remainder it plans before issuing it.
     if (charge && !charge(end)) throw _fsErr("EFBIG", "read", displayPath);
-    const offsets = [];
-    for (let off = from; off < end; off += READ_STREAM_CHUNK_BYTES) offsets.push(off);
-    const chunks = await Promise.all(offsets.map((off) => _readRangeAt(
-      absPath, displayPath, off, Math.min(READ_STREAM_CHUNK_BYTES, end - off),
-    )));
-    const parts = [];
-    for (const chunk of chunks) {
-      if (chunk === null) break;
-      parts.push(chunk);
-      if (chunk.byteLength < READ_STREAM_CHUNK_BYTES) break;
+    const reads = new __PathList();
+    for (let off = from; off < end; off += READ_STREAM_CHUNK_BYTES) {
+      reads[reads.length] = _readRangeAt(absPath, displayPath, off, Math.min(READ_STREAM_CHUNK_BYTES, end - off));
+    }
+    const chunks = await __nimbusAll(reads);
+    const parts = new __PathList();
+    for (let i = 0; i < chunks.length; i++) {
+      if (chunks[i] === null) break;
+      parts[parts.length] = chunks[i];
+      if (chunks[i].byteLength < READ_STREAM_CHUNK_BYTES) break;
     }
     return parts;
   }
@@ -6638,7 +6674,8 @@ const __fsMod = (() => {
           [[{ path: absPath, offset: 0, length: firstLength }, { path: absPath, lstat: true }]],
           (promise) => _fsReadRpc(promise, "read", p, (result) => result), "read", p, fill,
         );
-        const [read, learned] = Array.isArray(entries) ? entries : [];
+        const read = __nimbusIsArray(entries) ? entries[0] : undefined;
+        const learned = __nimbusIsArray(entries) ? entries[1] : undefined;
         if (!read || read.error) throw _mapSupervisorError(read ? read.error : null, "read", p);
         if (read.bytes === null || read.bytes === undefined) throw _fsErr("ENOENT", "open", p);
         first = {
@@ -6676,20 +6713,21 @@ const __fsMod = (() => {
         // that fits in one. When it comes back full there is demonstrably
         // more, and a stat says how much, so the remainder is issued together
         // and the read batch carries it in a single trip.
-        const parts = [];
+        const parts = new __PathList();
         let total = 0;
         for (;;) {
           const want = total === 0 ? firstLength : READ_STREAM_CHUNK_BYTES;
           if (charge && !charge(total + want)) throw _fsErr("EFBIG", "read", p);
           const chunk = first !== null && total === 0 ? first.chunk : await _readRangeAt(absPath, p, total, want);
           if (chunk === null) break;
-          parts.push(chunk);
+          parts[parts.length] = chunk;
           total += chunk.byteLength;
           if (chunk.byteLength < want) break;
           if (typeof supervisor.stat !== "function") continue;
-          for (const rest of await _readChunksFrom(absPath, p, supervisor, total, charge)) {
-            parts.push(rest);
-            total += rest.byteLength;
+          const rest = await _readChunksFrom(absPath, p, supervisor, total, charge);
+          for (let i = 0; i < rest.length; i++) {
+            parts[parts.length] = rest[i];
+            total += rest[i].byteLength;
           }
           break;
         }
@@ -6750,7 +6788,7 @@ const __fsMod = (() => {
   function _concatBytes(parts, total) {
     const out = new Uint8Array(total);
     let off = 0;
-    for (const part of parts) { out.set(part, off); off += part.byteLength; }
+    for (let i = 0; i < parts.length; i++) { out.set(parts[i], off); off += parts[i].byteLength; }
     return out;
   }
 
@@ -6815,7 +6853,7 @@ const __fsMod = (() => {
       _served.fsAcquired = false;
       await _acquireBarrier(supervisor);
       if (fill) fill.reported = Infinity;
-      return rpc(supervisor[op](...args));
+      return rpc(__nimbusApply(supervisor[op], supervisor, args));
     }
     const acquired = answer ? answer.acquired : undefined;
     // Taken as its answer arrives.
@@ -14667,7 +14705,8 @@ function __nimbusTakeStdin() {
   return { source: { bytes: __BufferMod.from(typeof stdin === "string" ? stdin : "") }, ended };
 }
 // The paths that name fd 0.
-const __NIMBUS_STDIN_PATHS = new Set(["/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"]);
+// A SafeSet: every file read asks it, after the program may have replaced Set.prototype.has.
+const __NIMBUS_STDIN_PATHS = new __NimbusSafeSet(["/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"]);
 // Synchronous reads of fd 0 (readSync, readFileSync, fs.read) share one
 // position in what fd 0 held, as they do in Node, and process.stdin goes on
 // from it (__nimbusStdinRemainder).

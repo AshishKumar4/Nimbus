@@ -210,4 +210,16 @@ export declare const objectDefineProperty: <T>(o: T, p: PropertyKey, attributes:
 export declare const arrayPush: <T>(list: T[], ...items: T[]) => number;
 export declare const arraySplice: <T>(list: T[], start: number, deleteCount: number) => T[];
 export declare const ObjectPrototypePropertyIsEnumerableOf: (object: object, key: PropertyKey) => boolean;
+/** Once every promise in `list` has settled: Promise.allSettled's wait, without the list's iterator or the program's Promise.resolve and then. */
+export declare function promiseSettled<T>(list: ArrayLike<T>): Promise<void>;
+/** What each promise in `list` fulfilled with, in its order, or the first rejection: Promise.all, on the same captures. */
+export declare function promiseAll<T>(list: ArrayLike<T>): Promise<SafeList<Awaited<T>>>;
+export declare const dateNow: () => number;
+export declare const mathMax: (...values: number[]) => number;
+export declare const mathCeil: (x: number) => number;
+export declare const numberIsSafeInteger: (number: unknown) => boolean;
+/** A list copied with ArrayCreate and CreateDataProperty, never its species or a prototype's setters. */
+export declare const arrayCopy: <T>(list: ArrayLike<T>) => T[];
+/** TypedArray's byteLength accessor, reading only the view's internal slots. */
+export declare const typedArrayByteLength: (view: Uint8Array) => number;
 //# sourceMappingURL=primordials.d.ts.map

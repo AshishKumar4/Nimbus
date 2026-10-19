@@ -146,7 +146,7 @@ var __nimbusResidentModule = (() => {
   }
 
   // nimbus-launch-captures:launch-captures
-  var { ArrayConstructor, ArrayFrom, ArrayIteratorNext, ArrayIteratorPrototype, ArrayPrototypeIndexOf, ArrayPrototypeLastIndexOf, ArrayPrototypePop, ArrayPrototypeToSpliced, ArrayPrototypeWith, ArrayValues, BigInt, BigIntPrototypeToString, Error: Error2, FunctionPrototypeBind, GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, JSONParse, JSONStringify, MapConstructor, NumberOf, NumberPrototypeToString, ObjectOf, ObjectPrototype, ObjectPrototypeHasOwnProperty, ObjectPrototypePropertyIsEnumerable, ObjectPrototypePropertyIsEnumerableOf, ObjectPrototypeToString, PromiseConstructor, PromisePrototypeThen, PromiseReject, PromiseResolve, RangeError, ReferenceError: ReferenceError2, RegExp, RegExpPrototypeAccessors, RegExpPrototypeExec, SafeAsyncGeneratorPrototype, SafeGeneratorPrototype, SafeList, SafeMap, SafeRegExpPrototype, SafeSet, SafeWeakMap, SafeWeakSet, StringFromCharCode, StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeIndexOf, StringPrototypeLastIndexOf, StringPrototypeSlice, StringPrototypeSubstr, SymbolConstructor, SymbolPrototypeDescription, SymbolPrototypeToString, SyntaxError, TypeError: TypeError2, URIError, URL, arrayIncludes, arrayIndexOf, arrayIsArray, arrayJoin, arrayPush, arraySort, arraySplice, captureStackTraceOf, dataDescriptor, decodeURIComponentOf, encodeURIComponentOf, generatorNext, generatorThrow, globalObject, mapGet, mathAbs, mathMin, newURL, numberIsInteger, objectAssign, objectCreate, objectDefineProperties, objectDefineProperty, objectFreeze, objectGetOwnPropertyNames, objectHasOwn, objectIs, objectIsExtensible, objectKeys, objectPreventExtensions, ownField, parseFloatOf, parseIntOf, reflectApply, reflectConstruct, reflectDefineProperty, reflectDeleteProperty, reflectGet, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectHas, reflectOwnKeys, reflectSet, reflectSetPrototypeOf, regExpExec, safeGenerator, setForEach, stringCharCodeAt, stringEndsWith, stringIncludes, stringIndexOf, stringLastIndexOf, stringOf, stringSlice, stringStartsWith, stringToLowerCase, symbolAsyncIterator, symbolFor, symbolIterator, symbolToStringTag, symbolUnscopables, useCaptureStackTrace } = __nimbusLaunchCaptures;
+  var { ArrayConstructor, ArrayFrom, ArrayIteratorNext, ArrayIteratorPrototype, ArrayPrototypeIndexOf, ArrayPrototypeLastIndexOf, ArrayPrototypePop, ArrayPrototypeToSpliced, ArrayPrototypeWith, ArrayValues, BigInt, BigIntPrototypeToString, Error: Error2, FunctionPrototypeBind, GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, JSONParse, JSONStringify, MapConstructor, NumberOf, NumberPrototypeToString, ObjectOf, ObjectPrototype, ObjectPrototypeHasOwnProperty, ObjectPrototypePropertyIsEnumerable, ObjectPrototypePropertyIsEnumerableOf, ObjectPrototypeToString, PromiseConstructor, PromisePrototypeThen, PromiseReject, PromiseResolve, RangeError, ReferenceError: ReferenceError2, RegExp, RegExpPrototypeAccessors, RegExpPrototypeExec, SafeAsyncGeneratorPrototype, SafeGeneratorPrototype, SafeList, SafeMap, SafeRegExpPrototype, SafeSet, SafeWeakMap, SafeWeakSet, StringFromCharCode, StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeIndexOf, StringPrototypeLastIndexOf, StringPrototypeSlice, StringPrototypeSubstr, SymbolConstructor, SymbolPrototypeDescription, SymbolPrototypeToString, SyntaxError, TypeError: TypeError2, URIError, URL, arrayCopy, arrayIncludes, arrayIndexOf, arrayIsArray, arrayJoin, arrayPush, arraySort, arraySplice, captureStackTraceOf, dataDescriptor, dateNow, decodeURIComponentOf, encodeURIComponentOf, generatorNext, generatorThrow, globalObject, mapGet, mathAbs, mathCeil, mathMax, mathMin, newURL, numberIsInteger, numberIsSafeInteger, objectAssign, objectCreate, objectDefineProperties, objectDefineProperty, objectFreeze, objectGetOwnPropertyNames, objectHasOwn, objectIs, objectIsExtensible, objectKeys, objectPreventExtensions, ownField, parseFloatOf, parseIntOf, promiseAll, promiseSettled, reflectApply, reflectConstruct, reflectDefineProperty, reflectDeleteProperty, reflectGet, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectHas, reflectOwnKeys, reflectSet, reflectSetPrototypeOf, regExpExec, safeGenerator, setForEach, stringCharCodeAt, stringEndsWith, stringIncludes, stringIndexOf, stringLastIndexOf, stringOf, stringSlice, stringStartsWith, stringToLowerCase, symbolAsyncIterator, symbolFor, symbolIterator, symbolToStringTag, symbolUnscopables, typedArrayByteLength, useCaptureStackTrace } = __nimbusLaunchCaptures;
 
   // src/vfs/resident/admission.ts
   function createAdmission(coherence) {
@@ -1032,9 +1032,6 @@ var __nimbusResidentModule = (() => {
   function nsName(k) {
     return stringSlice(k, stringLastIndexOf(k, "/") + 1);
   }
-  function nsSplit(k) {
-    return [nsParent(k), nsName(k)];
-  }
   function nsKey(path) {
     const text = stringOf(path);
     let at = 0;
@@ -1129,23 +1126,25 @@ var __nimbusResidentModule = (() => {
   function nsKindCode(type) {
     return type === "directory" ? NS_DIR : type === "symlink" ? NS_LINK : NS_FILE;
   }
+  function ownValue(record, key) {
+    return objectHasOwn(record, key) ? record[key] : void 0;
+  }
   function nsDescribes(stat) {
-    const described = stat;
-    if (!described || typeof described.type !== "string") return false;
-    for (const field of ["mode", "uid", "gid"]) {
-      if (described[field] === null || described[field] === void 0 || !Number.isInteger(Number(described[field]))) return false;
-    }
-    return true;
+    if (stat === null || typeof stat !== "object" && typeof stat !== "function" || typeof ownField(stat, "type") !== "string") return false;
+    const mode = ownField(stat, "mode");
+    const uid = ownField(stat, "uid");
+    const gid = ownField(stat, "gid");
+    return mode !== null && mode !== void 0 && numberIsInteger(NumberOf(mode)) && uid !== null && uid !== void 0 && numberIsInteger(NumberOf(uid)) && gid !== null && gid !== void 0 && numberIsInteger(NumberOf(gid));
   }
   function prefixEnd(prefix) {
     for (let i = prefix.length - 1; i >= 0; i--) {
-      const code = prefix.charCodeAt(i);
-      if (code < 65535) return prefix.slice(0, i) + String.fromCharCode(code + 1);
+      const code = stringCharCodeAt(prefix, i);
+      if (code < 65535) return stringSlice(prefix, 0, i) + StringFromCharCode(code + 1);
     }
     return null;
   }
   function createNamespace(coherence, admission) {
-    const realNow = Date.now;
+    const realNow = dateNow;
     let links = new SafeSet();
     let unlisted = new SafeMap();
     let cred = null;
@@ -1157,11 +1156,11 @@ var __nimbusResidentModule = (() => {
     const markReady = (t, isReady, why) => {
       t.metaSet("ns", isReady ? "1" : "0");
       ok = !!isReady;
-      if (!isReady) cause = String(why || "a change it could not follow");
+      if (!isReady) cause = stringOf(why || "a change it could not follow");
     };
     const refuse = (t, why) => {
       markReady(t, false, why);
-      throw Object.assign(new Error(why), { code: "ENOSPC" });
+      throw objectAssign(new Error2(why), { code: "ENOSPC" });
     };
     const unlistedOver = (k, self) => {
       if (unlisted.size === 0) return null;
@@ -1175,10 +1174,11 @@ var __nimbusResidentModule = (() => {
       return null;
     };
     const put = (t, k, stat, rev, target, unlistedAt) => {
-      const [parent, name] = nsSplit(k);
+      const parent = nsParent(k);
+      const name = nsName(k);
       const kind = nsKindCode(stat.type);
       const mount = kind !== NS_DIR ? null : unlistedAt === void 0 ? unlisted.get(k) ?? null : unlistedAt;
-      const stored = kind === NS_LINK ? String(target ?? "") : mount;
+      const stored = kind === NS_LINK ? stringOf(target ?? "") : mount;
       const heap = coherence.heap;
       if (heap !== null && admission.inHeap) {
         const refused = admission.rowRefusal(heap.nsGrowth(parent, name, stored));
@@ -1188,18 +1188,18 @@ var __nimbusResidentModule = (() => {
         parent,
         name,
         kind,
-        Number(stat.size) || 0,
-        Number(stat.mode) || 0,
-        Number(stat.uid) || 0,
-        Number(stat.gid) || 0,
-        Number(stat.atime) || 0,
-        Number(stat.mtime) || 0,
-        Number(stat.ctime) || 0,
-        Number(stat.ino) || 0,
-        Number(rev) || 0,
+        NumberOf(stat.size) || 0,
+        NumberOf(stat.mode) || 0,
+        NumberOf(stat.uid) || 0,
+        NumberOf(stat.gid) || 0,
+        NumberOf(stat.atime) || 0,
+        NumberOf(stat.mtime) || 0,
+        NumberOf(stat.ctime) || 0,
+        NumberOf(stat.ino) || 0,
+        NumberOf(rev) || 0,
         stored,
-        Number(stat.dev) || 0,
-        Number(stat.nlink) || 1
+        NumberOf(ownValue(stat, "dev")) || 0,
+        NumberOf(ownValue(stat, "nlink")) || 1
       );
       if (kind === NS_LINK) links.add(k);
       else links.delete(k);
@@ -1211,13 +1211,15 @@ var __nimbusResidentModule = (() => {
         put(t, k, stat, rev, target, unlistedAt);
         return true;
       } catch (error) {
-        if (admission.inHeap && error?.code === "ENOSPC") return false;
+        if (admission.inHeap && error !== null && (typeof error === "object" || typeof error === "function") && ownField(error, "code") === "ENOSPC") return false;
         throw error;
       }
     };
     const forgetListed = (dir) => {
       const prefix = dir === "" ? "" : dir + "/";
-      for (const done of [...listed]) if (done === dir || done.startsWith(prefix)) listed.delete(done);
+      listed.forEach((done) => {
+        if (done === dir || stringStartsWith(done, prefix)) listed.delete(done);
+      });
     };
     const deleteTree = (t, k, self) => {
       if (lazy) forgetListed(k);
@@ -1232,16 +1234,22 @@ var __nimbusResidentModule = (() => {
       t.nsDeleteChildren(k);
       t.nsDeleteParents(prefix, end);
       if (self) {
-        const [parent, name] = nsSplit(k);
+        const parent = nsParent(k);
+        const name = nsName(k);
         t.nsDelete(parent, name);
         links.delete(k);
         unlisted.delete(k);
       }
-      for (const link of links) if (link.startsWith(prefix)) links.delete(link);
-      for (const dir of unlisted.keys()) if (dir.startsWith(prefix)) unlisted.delete(dir);
+      links.forEach((link) => {
+        if (stringStartsWith(link, prefix)) links.delete(link);
+      });
+      unlisted.forEach((_mount, dir) => {
+        if (stringStartsWith(dir, prefix)) unlisted.delete(dir);
+      });
     };
     const forget = (t, k) => {
-      const [parent, name] = nsSplit(k);
+      const parent = nsParent(k);
+      const name = nsName(k);
       t.nsDelete(parent, name);
       links.delete(k);
       unlisted.delete(k);
@@ -1253,18 +1261,30 @@ var __nimbusResidentModule = (() => {
       if (!row || row.kind !== NS_DIR) return false;
       return namespaceAllows(cred, row, "directory", 1);
     };
-    const children = (k) => coherence.require().nsChildren(k).map((row) => ({ name: String(row.name), kind: Number(row.kind), mode: Number(row.mode) }));
+    const children = (k) => {
+      const rows = coherence.require().nsChildren(k);
+      const out = new SafeList();
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        out[out.length] = { name: stringOf(row.name), kind: NumberOf(row.kind), mode: NumberOf(row.mode) };
+      }
+      return arrayCopy(out);
+    };
     return {
       bind(t) {
         links = new SafeSet();
-        for (const row of t.nsOfKind(NS_LINK)) {
-          const parent = String(row.parent);
-          links.add(parent ? parent + "/" + String(row.name) : String(row.name));
+        const linkRows = t.nsOfKind(NS_LINK);
+        for (let i = 0; i < linkRows.length; i++) {
+          const row = linkRows[i];
+          const parent = stringOf(row.parent);
+          links.add(parent ? parent + "/" + stringOf(row.name) : stringOf(row.name));
         }
         unlisted = new SafeMap();
-        for (const row of t.nsUnlisted()) {
-          const parent = String(row.parent);
-          unlisted.set(parent ? parent + "/" + String(row.name) : String(row.name), String(row.target));
+        const unlistedRows = t.nsUnlisted();
+        for (let i = 0; i < unlistedRows.length; i++) {
+          const row = unlistedRows[i];
+          const parent = stringOf(row.parent);
+          unlisted.set(parent ? parent + "/" + stringOf(row.name) : stringOf(row.name), stringOf(row.target));
         }
         ok = t.metaGet("ns") === "1";
       },
@@ -1312,7 +1332,7 @@ var __nimbusResidentModule = (() => {
       unknown(k, followLeaf, listing, own) {
         if (unlisted.size === 0) return null;
         const found = lookup(k, followLeaf, own);
-        if (found === "ELOOP" || found.own !== void 0 || found.table === null) return null;
+        if (found === "ELOOP" || ownValue(found, "own") !== void 0 || found.table === null) return null;
         if (found.row === void 0) return unlistedOver(found.table, false);
         return listing ? unlistedOver(found.table, true) : null;
       },
@@ -1327,7 +1347,7 @@ var __nimbusResidentModule = (() => {
        * the mode and owner is no grant: the session is asked instead, and answers.
        */
       readable(stat) {
-        if (!stat || !Number.isInteger(Number(stat.mode)) || !Number.isInteger(Number(stat.uid)) || !Number.isInteger(Number(stat.gid))) return false;
+        if (!stat || !numberIsInteger(NumberOf(ownValue(stat, "mode"))) || !numberIsInteger(NumberOf(ownValue(stat, "uid"))) || !numberIsInteger(NumberOf(ownValue(stat, "gid")))) return false;
         return namespaceAllows(cred, stat, "file", 4);
       },
       /**
@@ -1338,14 +1358,15 @@ var __nimbusResidentModule = (() => {
       applyEntry(t, entry) {
         const k = nsKey(entry.path);
         if (k === "") return null;
-        if (entry.stat === null) {
+        const stat = ownValue(entry, "stat");
+        if (stat === null) {
           deleteTree(t, k, true);
           return null;
         }
         const before = nsRowAt(t, k);
-        if (!tryPut(t, k, entry.stat, entry.rev, entry.linkTarget)) return null;
+        if (stat === void 0 || !tryPut(t, k, stat, entry.rev, ownValue(entry, "linkTarget"))) return null;
         const after = nsRowAt(t, k);
-        if (after.kind !== NS_DIR) {
+        if (after === void 0 || after.kind !== NS_DIR) {
           deleteTree(t, k, false);
           return null;
         }
@@ -1360,32 +1381,41 @@ var __nimbusResidentModule = (() => {
        * listing no longer names. Called once per enumeration, after its last page.
        */
       replace(t, entries) {
-        const names = /* @__PURE__ */ new Set();
-        for (const entry of entries) names.add(nsKey(entry.path));
-        for (const row of t.nsKeys()) {
-          const parent = String(row.parent);
-          const k = parent ? parent + "/" + String(row.name) : String(row.name);
+        const names = new SafeSet();
+        for (let i = 0; i < entries.length; i++) names.add(nsKey(entries[i].path));
+        const rows = t.nsKeys();
+        for (let i = 0; i < rows.length; i++) {
+          const row = rows[i];
+          const parent = stringOf(row.parent);
+          const k = parent ? parent + "/" + stringOf(row.name) : stringOf(row.name);
           if (!names.has(k)) forget(t, k);
         }
         if (admission.inHeap) {
-          for (const entry of entries) {
+          for (let i = 0; i < entries.length; i++) {
+            const entry = entries[i];
             const k = nsKey(entry.path);
             if (!k) continue;
-            const [parent, name] = nsSplit(k);
+            const parent = nsParent(k);
+            const name = nsName(k);
             const held = t.nsGet(parent, name);
-            if (held && namespaceRowBytes(parent, name, held.target) > namespaceRowBytes(parent, name, entry.linkTarget ?? entry.unlisted)) {
-              put(t, k, entry.stat, entry.rev, entry.linkTarget, entry.unlisted ?? null);
+            const linkTarget = ownValue(entry, "linkTarget");
+            const unlistedAt = ownValue(entry, "unlisted");
+            if (held && namespaceRowBytes(parent, name, held.target) > namespaceRowBytes(parent, name, linkTarget ?? unlistedAt)) {
+              put(t, k, entry.stat, entry.rev, linkTarget, unlistedAt ?? null);
             }
           }
         }
-        for (const entry of entries) {
+        for (let i = 0; i < entries.length; i++) {
+          const entry = entries[i];
           const k = nsKey(entry.path);
           if (k === "") continue;
           names.add(k);
           const held = nsRowAt(t, k);
           const s = entry.stat;
-          if (held !== void 0 && held.kind === nsKindCode(s.type) && held.size === Number(s.size) && held.mode === Number(s.mode) && held.uid === Number(s.uid) && held.gid === Number(s.gid) && held.mtime === Number(s.mtime) && held.ctime === Number(s.ctime) && held.ino === Number(s.ino) && held.dev === (Number(s.dev) || 0) && held.rev === Number(entry.rev) && (held.target ?? null) === (entry.linkTarget ?? entry.unlisted ?? null)) continue;
-          put(t, k, s, entry.rev, entry.linkTarget, entry.unlisted ?? null);
+          const linkTarget = ownValue(entry, "linkTarget");
+          const unlistedAt = ownValue(entry, "unlisted");
+          if (held !== void 0 && held.kind === nsKindCode(s.type) && held.size === NumberOf(s.size) && held.mode === NumberOf(s.mode) && held.uid === NumberOf(s.uid) && held.gid === NumberOf(s.gid) && held.mtime === NumberOf(s.mtime) && held.ctime === NumberOf(s.ctime) && held.ino === NumberOf(s.ino) && held.dev === (NumberOf(s.dev) || 0) && held.rev === NumberOf(entry.rev) && (held.target ?? null) === (linkTarget ?? unlistedAt ?? null)) continue;
+          put(t, k, s, entry.rev, linkTarget, unlistedAt ?? null);
         }
       },
       /**
@@ -1401,14 +1431,14 @@ var __nimbusResidentModule = (() => {
         const held = nsRowAt(t, k);
         if (held !== void 0 && held.rev >= rev) return;
         const now = realNow();
-        const slash = k.lastIndexOf("/");
-        const parent = held === void 0 ? nsRowAt(t, slash < 0 ? "" : k.slice(0, slash)) : void 0;
+        const slash = stringLastIndexOf(k, "/");
+        const parent = held === void 0 ? nsRowAt(t, slash < 0 ? "" : stringSlice(k, 0, slash)) : void 0;
         tryPut(t, k, {
           type: "file",
           size,
-          mode: held ? held.mode : 33206 & ~Number(cred?.umask ?? 18),
-          uid: held ? held.uid : Number(cred?.uid ?? 0),
-          gid: held ? held.gid : Number(cred?.gid ?? 0),
+          mode: held ? held.mode : 33206 & ~NumberOf((cred === null ? void 0 : ownValue(cred, "umask")) ?? 18),
+          uid: held ? held.uid : NumberOf(cred === null ? 0 : cred.uid),
+          gid: held ? held.gid : NumberOf(cred === null ? 0 : cred.gid),
           atime: now,
           mtime: now,
           ctime: now,
@@ -1449,7 +1479,7 @@ var __nimbusResidentModule = (() => {
           return;
         }
         if (!nsDescribes(stat)) return;
-        const target = stat.linkTarget ?? stat.target ?? null;
+        const target = ownValue(stat, "linkTarget") ?? ownValue(stat, "target") ?? null;
         if (stat.type === "symlink" && target === null) return;
         tryPut(t, k, stat, written ?? cursor.rev, target);
       },
@@ -2215,22 +2245,34 @@ var __nimbusResidentModule = (() => {
   var BATCH_PATHS = FS_READ_BATCH_PATH_LIMIT;
   var BATCH_BYTES = FS_READ_BATCH_REQUEST_BYTES;
   var MAX_LIST_PAGES = 4096;
-  var messageOf = (e) => e?.message || String(e);
+  function ownValue2(record, key) {
+    return objectHasOwn(record, key) ? record[key] : void 0;
+  }
+  function method(supervisor, name) {
+    return reflectGet(supervisor, name);
+  }
+  var messageOf = (e) => {
+    const message = e !== null && (typeof e === "object" || typeof e === "function") ? ownField(e, "message") : void 0;
+    return stringOf(message || e);
+  };
   function createTransport(coherence, admission, namespace, cells) {
     const relist = async (supervisor, dir) => {
       const t = coherence.tables("relist");
-      if (!supervisor || typeof supervisor.fsList !== "function") {
+      const fsList = supervisor ? method(supervisor, "fsList") : void 0;
+      if (!supervisor || typeof fsList !== "function") {
         namespace.markReady(t, false, "the session cannot list its filesystem");
         return;
       }
       const prefix = dir + "/";
-      const seen = [];
+      const seen = new SafeList();
       let replaceBytes = 0;
       let incomingBytes = 0;
       if (admission.inHeap) {
-        for (const row of t.nsKeys()) {
+        const rows = t.nsKeys();
+        for (let i = 0; i < rows.length; i++) {
+          const row = rows[i];
           const key = row.parent ? row.parent + "/" + row.name : row.name;
-          if (!key.startsWith(prefix)) continue;
+          if (!stringStartsWith(key, prefix)) continue;
           replaceBytes += namespaceRowBytes(row.parent, row.name, t.nsGet(row.parent, row.name)?.target);
         }
       }
@@ -2239,18 +2281,19 @@ var __nimbusResidentModule = (() => {
       for (let page = 0; page < MAX_LIST_PAGES && !done; page++) {
         let listed;
         try {
-          listed = await supervisor.fsList(after, FS_LIST_PAGE_LIMIT);
+          listed = await reflectApply(fsList, supervisor, [after, FS_LIST_PAGE_LIMIT]);
         } catch (e) {
           namespace.markReady(t, false, "a listing of /" + dir + " failed (" + messageOf(e) + ")");
           return;
         }
-        if (!listed || !Array.isArray(listed.entries)) {
+        if (!listed || !arrayIsArray(listed.entries)) {
           namespace.markReady(t, false, "a listing of /" + dir + " came back without entries");
           return;
         }
-        for (const entry of listed.entries) {
+        for (let i = 0; i < listed.entries.length; i++) {
+          const entry = listed.entries[i];
           const k = nsKey(entry.path);
-          if (!k.startsWith(prefix)) {
+          if (!stringStartsWith(k, prefix)) {
             if (k > prefix) {
               done = true;
               break;
@@ -2259,15 +2302,14 @@ var __nimbusResidentModule = (() => {
           }
           if (entry.stat) {
             if (admission.inHeap && admission.cap !== null) {
-              const [parent, name] = nsSplit(k);
-              incomingBytes += namespaceRowBytes(parent, name, entry.linkTarget ?? entry.unlisted);
+              incomingBytes += namespaceRowBytes(nsParent(k), nsName(k), ownValue2(entry, "linkTarget") ?? ownValue2(entry, "unlisted"));
               const refused = admission.namespaceRefusal(incomingBytes - replaceBytes);
               if (refused !== null) {
                 namespace.markReady(t, false, refused);
                 return;
               }
             }
-            seen.push(entry);
+            seen[seen.length] = entry;
           }
         }
         if (listed.next === null || listed.next === void 0) done = true;
@@ -2277,46 +2319,54 @@ var __nimbusResidentModule = (() => {
         namespace.markReady(t, false, "a listing of /" + dir + " did not finish");
         return;
       }
-      if (!seen.every((entry) => nsDescribes(entry.stat))) {
-        namespace.markReady(t, false, "a listing of /" + dir + " named an entry without its stat");
-        return;
+      for (let i = 0; i < seen.length; i++) {
+        if (!nsDescribes(seen[i].stat)) {
+          namespace.markReady(t, false, "a listing of /" + dir + " named an entry without its stat");
+          return;
+        }
       }
       namespace.deleteTree(t, dir, false);
-      for (const entry of seen) namespace.put(t, nsKey(entry.path), entry.stat, entry.rev, entry.linkTarget, entry.unlisted ?? null);
+      for (let i = 0; i < seen.length; i++) {
+        const entry = seen[i];
+        namespace.put(t, nsKey(entry.path), entry.stat, entry.rev, ownValue2(entry, "linkTarget"), ownValue2(entry, "unlisted") ?? null);
+      }
     };
     const outdated = (t, path, rev) => {
-      const [parent, name] = nsSplit(path);
-      const listed = t.nsGet(parent, name);
-      return listed !== void 0 && Number(listed.rev) > rev;
+      const listed = t.nsGet(nsParent(path), nsName(path));
+      return listed !== void 0 && NumberOf(listed.rev) > rev;
     };
     const fetchFiles = async (supervisor, wantedFiles) => {
       const t = coherence.tables("fetchFiles");
       const requested = wantedFiles.length;
       let copied = 0;
-      const files = [];
-      const later = [];
-      const fetching = /* @__PURE__ */ new Set();
-      for (const file of wantedFiles) {
-        if (file.ckey != null) {
-          if (cells.copyByKey(t, file.path, file.ckey, file.rev)) {
+      const files = new SafeList();
+      const later = new SafeList();
+      const fetching = new SafeSet();
+      for (let i = 0; i < wantedFiles.length; i++) {
+        const file = wantedFiles[i];
+        const ckey = ownValue2(file, "ckey");
+        if (ckey != null) {
+          if (cells.copyByKey(t, file.path, ckey, file.rev)) {
             copied++;
             continue;
           }
-          if (fetching.has(file.ckey)) {
-            later.push(file);
+          if (fetching.has(ckey)) {
+            later[later.length] = file;
             continue;
           }
-          fetching.add(file.ckey);
+          fetching.add(ckey);
         }
-        files.push(file);
+        files[files.length] = file;
       }
-      const ranges = [];
-      for (const file of files) {
-        const parts = Math.max(1, Math.ceil(file.size / RESIDENT_CHUNK_BYTES));
-        const version = file.rev === 0 ? file.version ?? file.stat ?? null : null;
+      const ranges = new SafeList();
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const parts = mathMax(1, mathCeil(file.size / RESIDENT_CHUNK_BYTES));
+        const version = file.rev === 0 ? ownValue2(file, "version") ?? ownValue2(file, "stat") ?? null : null;
+        const ckey = ownValue2(file, "ckey") ?? null;
         for (let part = 0; part < parts; part++) {
           const offset = part * RESIDENT_CHUNK_BYTES;
-          ranges.push({
+          ranges[ranges.length] = {
             path: file.path,
             rev: file.rev,
             epoch: file.epoch,
@@ -2324,55 +2374,67 @@ var __nimbusResidentModule = (() => {
             part,
             parts,
             offset,
-            length: Math.min(RESIDENT_CHUNK_BYTES, Math.max(0, file.size - offset)),
+            length: mathMin(RESIDENT_CHUNK_BYTES, mathMax(0, file.size - offset)),
             size: file.size,
-            ckey: file.ckey ?? null
-          });
+            ckey
+          };
         }
       }
-      const landed = /* @__PURE__ */ new Map();
+      const landed = new SafeMap();
       let filled = 0, failed = 0, fetchedBytes = 0;
-      const failedPaths = /* @__PURE__ */ new Set();
-      const revOf = new Map(ranges.map((range) => [range.path, range.rev]));
+      const failedPaths = new SafeSet();
+      const revOf = new SafeMap();
+      for (let i = 0; i < ranges.length; i++) {
+        const range = ranges[i];
+        revOf.set(range.path, range.rev);
+      }
       for (let at = 0; at < ranges.length; ) {
-        const batch = [];
+        const batch = new SafeList();
         let bytes = 0;
         while (at < ranges.length && batch.length < BATCH_PATHS && (batch.length === 0 || bytes + ranges[at].length <= BATCH_BYTES)) {
-          bytes += ranges[at].length;
-          batch.push(ranges[at]);
+          const range = ranges[at];
+          bytes += range.length;
+          batch[batch.length] = range;
           at++;
         }
         if (!await admission.ensureRoom(bytes + batch.length * RESIDENT_ROW_BYTES)) {
-          for (const r of batch) failedPaths.add(r.path);
+          for (let i = 0; i < batch.length; i++) failedPaths.add(batch[i].path);
           continue;
         }
         let results;
         try {
-          results = await supervisor.fsReadBatch(
-            // A dated file at its revision; an undated one as its listing's stat named it.
-            batch.map((r) => r.version === null ? { path: r.path, offset: r.offset, length: r.length, expectedEpoch: r.epoch, expectedRevision: r.rev } : { path: r.path, offset: r.offset, length: r.length, expectedFile: fileVersionOf(r.version) })
-          );
+          const fsReadBatch = method(supervisor, "fsReadBatch");
+          if (typeof fsReadBatch !== "function") throw new TypeError2("supervisor.fsReadBatch is not a function");
+          const requests = new SafeList();
+          for (let i = 0; i < batch.length; i++) {
+            const r = batch[i];
+            requests[requests.length] = r.version === null ? { path: r.path, offset: r.offset, length: r.length, expectedEpoch: r.epoch, expectedRevision: r.rev } : { path: r.path, offset: r.offset, length: r.length, expectedFile: fileVersionOf(r.version) };
+          }
+          results = await reflectApply(fsReadBatch, supervisor, [arrayCopy(requests)]);
         } catch {
-          for (const r of batch) failedPaths.add(r.path);
+          for (let i = 0; i < batch.length; i++) failedPaths.add(batch[i].path);
           continue;
         }
         for (let i = 0; i < batch.length; i++) {
           const range = batch[i];
-          const entry = results && results[i];
-          if (!entry || entry.error) {
-            const code = entry?.error ? entry.error.code : void 0;
+          const entry = results && ownValue2(results, i);
+          const error = entry && ownValue2(entry, "error");
+          if (!entry || error) {
+            const code = error ? ownField(error, "code") : void 0;
             if (code === "EACCES" && range.part === 0) {
               cells.put(t, range.path, { error: "EACCES" }, range.rev);
               filled++;
             } else failedPaths.add(range.path);
             continue;
           }
-          if (entry.bytes === null || entry.bytes === void 0) {
+          const bytes2 = ownValue2(entry, "bytes");
+          if (bytes2 === null || bytes2 === void 0) {
             failedPaths.add(range.path);
             continue;
           }
-          const chunk = residentBytes(entry.bytes);
-          if (chunk.byteLength !== range.length) {
+          const chunk = residentBytes(bytes2);
+          const chunkBytes = typedArrayByteLength(chunk);
+          if (chunkBytes !== range.length) {
             failedPaths.add(range.path);
             continue;
           }
@@ -2380,7 +2442,7 @@ var __nimbusResidentModule = (() => {
             failedPaths.add(range.path);
             continue;
           }
-          fetchedBytes += chunk.byteLength;
+          fetchedBytes += chunkBytes;
           if (!cells.putChunk(t, range.path, range.part, chunk)) {
             failedPaths.add(range.path);
             continue;
@@ -2393,16 +2455,17 @@ var __nimbusResidentModule = (() => {
           }
         }
       }
-      for (const path of failedPaths) {
+      failedPaths.forEach((path) => {
         failed++;
         const held = t.fileRev(path);
         const rev = revOf.get(path);
-        if (held !== void 0 && (held === RK_OWN_WRITE || rev !== void 0 && held >= rev)) continue;
+        if (held !== void 0 && (held === RK_OWN_WRITE || rev !== void 0 && held >= rev)) return;
         t.chunkDelete(path);
         t.fileDelete(path);
-      }
-      for (const file of later) {
-        if (!outdated(t, file.path, file.rev) && cells.copyByKey(t, file.path, file.ckey, file.rev)) copied++;
+      });
+      for (let i = 0; i < later.length; i++) {
+        const file = later[i];
+        if (!outdated(t, file.path, file.rev) && cells.copyByKey(t, file.path, ownValue2(file, "ckey"), file.rev)) copied++;
         else failed++;
       }
       if (ranges.length > 0) await admission.reportSize();
@@ -2417,172 +2480,216 @@ var __nimbusResidentModule = (() => {
     };
     const enumerate = async (supervisor) => {
       const t = coherence.tables("enumerate");
-      const entries = [];
-      const names = [];
+      const entries = new SafeList();
+      const names = new SafeList();
       let namespaceBytes = 0;
       let after = null;
       let cursor = null;
+      const fsList = method(supervisor, "fsList");
+      if (typeof fsList !== "function") throw new TypeError2("supervisor.fsList is not a function");
       for (let page = 0; page < MAX_LIST_PAGES; page++) {
-        const listed = await supervisor.fsList(after, FS_LIST_PAGE_LIMIT);
-        if (!listed || !Array.isArray(listed.entries)) {
-          throw new Error("Nimbus: fsList returned no page");
+        const listed = await reflectApply(fsList, supervisor, [after, FS_LIST_PAGE_LIMIT]);
+        if (!listed || !arrayIsArray(listed.entries)) {
+          throw new Error2("Nimbus: fsList returned no page");
         }
         if (cursor === null) {
-          cursor = { epoch: String(listed.epoch), rev: Number(listed.rev) };
-        } else if (String(listed.epoch) !== cursor.epoch) {
-          return { entries, names, cursor, complete: false, reason: "the supervisor changed incarnation mid-enumeration" };
+          cursor = { epoch: stringOf(listed.epoch), rev: NumberOf(listed.rev) };
+        } else if (stringOf(listed.epoch) !== cursor.epoch) {
+          return { entries: arrayCopy(entries), names: arrayCopy(names), cursor, complete: false, reason: "the supervisor changed incarnation mid-enumeration" };
         }
-        for (const entry of listed.entries) {
+        for (let i = 0; i < listed.entries.length; i++) {
+          const entry = listed.entries[i];
           if (entry.stat) {
             if (admission.inHeap && admission.cap !== null) {
               const key = nsKey(entry.path);
-              const [parent, name] = nsSplit(key);
-              if (key) namespaceBytes += namespaceRowBytes(parent, name, entry.linkTarget ?? entry.unlisted);
+              if (key) namespaceBytes += namespaceRowBytes(nsParent(key), nsName(key), ownValue2(entry, "linkTarget") ?? ownValue2(entry, "unlisted"));
               const heap = coherence.heap;
               const refused = admission.namespaceRefusal(namespaceBytes - (heap === null ? 0 : heap.nsBytes()));
               if (refused !== null) namespace.refuse(t, refused);
             }
-            names.push(entry);
+            names[names.length] = entry;
           }
           if (entry.kind !== "file") continue;
           const path = nsKey(entry.path);
           if (!path) continue;
-          const size = Number(entry.size);
-          const rev = Number(entry.rev);
-          if (!Number.isSafeInteger(size) || size < 0 || !Number.isSafeInteger(rev) || rev < 0) {
-            throw new Error("Nimbus: fsList returned unusable metadata for '" + path + "'");
+          const size = NumberOf(entry.size);
+          const rev = NumberOf(entry.rev);
+          if (!numberIsSafeInteger(size) || size < 0 || !numberIsSafeInteger(rev) || rev < 0) {
+            throw new Error2("Nimbus: fsList returned unusable metadata for '" + path + "'");
           }
-          entries.push({ path, size, rev, epoch: cursor.epoch, ckey: entry.contentKey == null ? null : String(entry.contentKey), stat: entry.stat ?? null });
+          const contentKey = ownValue2(entry, "contentKey");
+          entries[entries.length] = { path, size, rev, epoch: cursor.epoch, ckey: contentKey == null ? null : stringOf(contentKey), stat: entry.stat ?? null };
         }
         if (listed.next === null || listed.next === void 0) {
-          return { entries, names, namespaceBytes, cursor, complete: true, reason: null };
+          return { entries: arrayCopy(entries), names: arrayCopy(names), namespaceBytes, cursor, complete: true, reason: null };
         }
         after = listed.next;
       }
-      return { entries, names, cursor, complete: false, reason: "the filesystem exceeded the enumeration page bound" };
+      return { entries: arrayCopy(entries), names: arrayCopy(names), cursor, complete: false, reason: "the filesystem exceeded the enumeration page bound" };
     };
     const lookupKeys = async (supervisor, keys, contentBytes) => {
-      if (!supervisor || typeof supervisor.fsReadBatch !== "function" || keys.length === 0) return false;
+      const fsReadBatch = supervisor ? method(supervisor, "fsReadBatch") : void 0;
+      if (!supervisor || typeof fsReadBatch !== "function" || keys.length === 0) return false;
       const t = coherence.require();
-      const batch = keys.slice(0, BATCH_PATHS - 2);
+      const batch = new SafeList();
+      for (let i = 0, end = mathMin(keys.length, BATCH_PATHS - 2); i < end; i++) batch[batch.length] = keys[i];
       const last = batch[batch.length - 1];
       const withContent = contentBytes > 0 && batch.length === keys.length;
-      const requests = batch.map((k) => ({ path: "/" + k, lstat: true }));
-      if (withContent) requests.push({ path: "/" + last, offset: 0, length: contentBytes }, { path: "/" + last, lstat: true });
+      const requests = new SafeList();
+      for (let i = 0; i < batch.length; i++) requests[requests.length] = { path: "/" + batch[i], lstat: true };
+      if (withContent) {
+        requests[requests.length] = { path: "/" + last, offset: 0, length: contentBytes };
+        requests[requests.length] = { path: "/" + last, lstat: true };
+      }
       let answers;
       try {
-        answers = await supervisor.fsReadBatch(requests);
+        answers = await reflectApply(fsReadBatch, supervisor, [arrayCopy(requests)]);
       } catch {
         return false;
       }
-      if (!Array.isArray(answers) || answers.length !== requests.length) return false;
+      if (!arrayIsArray(answers) || answers.length !== requests.length) return false;
       let reachedLast = false;
       for (let i = 0; i < batch.length; i++) {
-        const answer = answers[i];
-        if (!answer || answer.error || answer.stat === null || answer.stat === void 0 || !nsDescribes(answer.stat)) break;
+        const answer = ownValue2(answers, i);
+        const stat = answer && ownValue2(answer, "stat");
+        if (!answer || ownValue2(answer, "error") || stat === null || stat === void 0 || !nsDescribes(stat)) break;
         let target;
-        if (answer.stat.type === "symlink") {
+        if (stat.type === "symlink") {
           try {
-            target = await supervisor.readlink("/" + batch[i]);
+            const readlink = method(supervisor, "readlink");
+            if (typeof readlink !== "function") break;
+            target = await reflectApply(readlink, supervisor, ["/" + batch[i]]);
           } catch {
             break;
           }
           if (typeof target !== "string") break;
         }
-        if (!namespace.tryPut(t, batch[i], answer.stat, Number(answer.stat.revision) || 0, target)) return false;
+        if (!namespace.tryPut(t, batch[i], stat, NumberOf(stat.revision) || 0, target)) return false;
         if (i === batch.length - 1) reachedLast = true;
-        if (answer.stat.type !== "directory") break;
+        if (stat.type !== "directory") break;
       }
       if (withContent && reachedLast) {
-        const before = answers[batch.length - 1].stat;
-        const read = answers[batch.length];
-        const after = answers[batch.length + 1];
-        const bytes = read && !read.error && read.bytes ? residentBytes(read.bytes) : null;
-        if (before.type === "file" && bytes !== null && bytes.byteLength === Number(before.size) && after && !after.error && after.stat && after.stat.type === "file" && Number(after.stat.ino) === Number(before.ino) && Number(after.stat.revision) === Number(before.revision) && await admission.ensureRoom(bytes.byteLength + RESIDENT_ROW_BYTES)) {
+        const lastAnswer = ownValue2(answers, batch.length - 1);
+        const before = lastAnswer && ownValue2(lastAnswer, "stat");
+        const read = ownValue2(answers, batch.length);
+        const after = ownValue2(answers, batch.length + 1);
+        const content = read && !ownValue2(read, "error") && ownValue2(read, "bytes");
+        const bytes = content ? residentBytes(content) : null;
+        const size = bytes === null ? 0 : typedArrayByteLength(bytes);
+        const afterStat = after && !ownValue2(after, "error") ? ownValue2(after, "stat") : null;
+        if (before && before.type === "file" && bytes !== null && size === NumberOf(before.size) && afterStat && afterStat.type === "file" && NumberOf(afterStat.ino) === NumberOf(before.ino) && NumberOf(afterStat.revision) === NumberOf(before.revision) && await admission.ensureRoom(size + RESIDENT_ROW_BYTES)) {
           t.fileDelete(last);
           t.chunkDelete(last);
-          if (cells.putChunk(t, last, 0, bytes)) cells.putHead(t, last, RK_BINARY, bytes.byteLength, 1, Number(before.revision) || 0, null);
+          if (cells.putChunk(t, last, 0, bytes)) cells.putHead(t, last, RK_BINARY, size, 1, NumberOf(before.revision) || 0, null);
         }
       }
       return true;
     };
     const listDirectory = async (supervisor, dir) => {
-      if (!supervisor || typeof supervisor.readdir !== "function" || typeof supervisor.fsReadBatch !== "function") return false;
+      const readdir = supervisor ? method(supervisor, "readdir") : void 0;
+      const fsReadBatch = supervisor ? method(supervisor, "fsReadBatch") : void 0;
+      if (!supervisor || typeof readdir !== "function" || typeof fsReadBatch !== "function") return false;
       const t = coherence.require();
       let names;
       try {
-        names = await supervisor.readdir("/" + dir);
+        names = await reflectApply(readdir, supervisor, ["/" + dir]);
       } catch {
         return false;
       }
-      if (!Array.isArray(names)) return false;
-      const keys = names.map((entry) => (dir === "" ? "" : dir + "/") + String(entry.name));
-      const stats = /* @__PURE__ */ new Map();
+      if (!arrayIsArray(names)) return false;
+      const keys = new SafeList();
+      for (let i = 0; i < names.length; i++) keys[keys.length] = (dir === "" ? "" : dir + "/") + stringOf(names[i].name);
+      const stats = new SafeMap();
       for (let i = 0; i < keys.length; i += BATCH_PATHS) {
-        const batch = keys.slice(i, i + BATCH_PATHS);
+        const batch = new SafeList();
+        const requests = new SafeList();
+        for (let j = i, end = mathMin(keys.length, i + BATCH_PATHS); j < end; j++) {
+          batch[batch.length] = keys[j];
+          requests[requests.length] = { path: "/" + keys[j], lstat: true };
+        }
         let answers;
         try {
-          answers = await supervisor.fsReadBatch(batch.map((k) => ({ path: "/" + k, lstat: true })));
+          answers = await reflectApply(fsReadBatch, supervisor, [arrayCopy(requests)]);
         } catch {
           return false;
         }
-        if (!Array.isArray(answers) || answers.length !== batch.length) return false;
+        if (!arrayIsArray(answers) || answers.length !== batch.length) return false;
         for (let j = 0; j < batch.length; j++) {
-          const answer = answers[j];
-          if (!answer || answer.error) return false;
-          if (answer.stat === null || answer.stat === void 0) continue;
-          if (!nsDescribes(answer.stat)) return false;
-          stats.set(batch[j], answer.stat);
+          const answer = ownValue2(answers, j);
+          if (!answer || ownValue2(answer, "error")) return false;
+          const stat = ownValue2(answer, "stat");
+          if (stat === null || stat === void 0) continue;
+          if (!nsDescribes(stat)) return false;
+          stats.set(batch[j], stat);
         }
       }
-      const targets = /* @__PURE__ */ new Map();
-      for (const [k, stat] of stats) {
-        if (stat.type !== "symlink") continue;
+      const statKeys = new SafeList();
+      stats.forEach((_stat, k) => {
+        statKeys[statKeys.length] = k;
+      });
+      const targets = new SafeMap();
+      for (let i = 0; i < statKeys.length; i++) {
+        const k = statKeys[i];
+        const stat = stats.get(k);
+        if (stat === void 0 || stat.type !== "symlink") continue;
         let target;
         try {
-          target = await supervisor.readlink("/" + k);
+          const readlink = method(supervisor, "readlink");
+          if (typeof readlink !== "function") return false;
+          target = await reflectApply(readlink, supervisor, ["/" + k]);
         } catch {
           return false;
         }
         if (typeof target !== "string") return false;
         targets.set(k, target);
       }
-      for (const child of namespace.children(dir)) {
+      const children = namespace.children(dir);
+      for (let i = 0; i < children.length; i++) {
+        const child = children[i];
         const k = (dir === "" ? "" : dir + "/") + child.name;
         if (!stats.has(k)) namespace.deleteTree(t, k, true);
       }
-      for (const [k, stat] of stats) {
-        if (!namespace.tryPut(t, k, stat, Number(stat.revision) || 0, targets.get(k))) return false;
+      for (let i = 0; i < statKeys.length; i++) {
+        const k = statKeys[i];
+        const stat = stats.get(k);
+        if (stat !== void 0 && !namespace.tryPut(t, k, stat, NumberOf(stat.revision) || 0, targets.get(k))) return false;
       }
       namespace.markListed(dir);
       return true;
     };
     const listSubtree = async (supervisor, dir) => {
-      if (!supervisor || typeof supervisor.fsListTree !== "function") return false;
+      const fsListTree = supervisor ? method(supervisor, "fsListTree") : void 0;
+      if (!supervisor || typeof fsListTree !== "function") return false;
       const t = coherence.require();
       let tree;
       try {
-        tree = await supervisor.fsListTree("/" + dir, FS_LIST_TREE_MAX_ENTRIES);
+        tree = await reflectApply(fsListTree, supervisor, ["/" + dir, FS_LIST_TREE_MAX_ENTRIES]);
       } catch {
         return false;
       }
-      if (!tree || !Array.isArray(tree.entries)) return false;
-      const listed = [dir];
-      const written = /* @__PURE__ */ new Set();
-      for (const entry of tree.entries) {
+      if (!tree || !arrayIsArray(tree.entries)) return false;
+      const listed = new SafeList();
+      listed[listed.length] = dir;
+      const written = new SafeSet();
+      for (let i = 0; i < tree.entries.length; i++) {
+        const entry = tree.entries[i];
         const k = nsKey(entry.path);
         if (!entry.stat || !nsDescribes(entry.stat)) return false;
-        if (!namespace.tryPut(t, k, entry.stat, entry.rev, entry.linkTarget, entry.unlisted ?? null)) return false;
+        const unlisted = ownValue2(entry, "unlisted");
+        if (!namespace.tryPut(t, k, entry.stat, entry.rev, ownValue2(entry, "linkTarget"), unlisted ?? null)) return false;
         written.add(k);
-        if (entry.kind === "directory" && !entry.unlisted) listed.push(k);
+        if (entry.kind === "directory" && !unlisted) listed[listed.length] = k;
       }
-      for (const directory of listed) {
-        for (const child of namespace.children(directory)) {
+      for (let i = 0; i < listed.length; i++) {
+        const directory = listed[i];
+        const children = namespace.children(directory);
+        for (let j = 0; j < children.length; j++) {
+          const child = children[j];
           const k = (directory === "" ? "" : directory + "/") + child.name;
           if (!written.has(k)) namespace.deleteTree(t, k, true);
         }
       }
-      for (const directory of listed) namespace.markListed(directory);
+      for (let i = 0; i < listed.length; i++) namespace.markListed(listed[i]);
       return true;
     };
     return { relist, fetchFiles, enumerate, lookupKeys, listDirectory, listSubtree };

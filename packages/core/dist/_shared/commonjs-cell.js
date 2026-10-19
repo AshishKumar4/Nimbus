@@ -508,6 +508,23 @@ const {
   registerSource: __nimbusRegisterSource,
   SyntaxError: __nimbusSyntaxError,
 } = __nimbusLaunchCaptures;
+// What formats a stack and reports the runtime's code, captured too: they run
+// after the program may have replaced the array iterator, Array.prototype.push
+// or String.prototype.slice (Node's prepareStackTrace callback runs on its primordials).
+const {
+  stringSlice: __nimbusStackSlice, stringLastIndexOf: __nimbusStackLastIndexOf, stringStartsWith: __nimbusStackStartsWith,
+  stringOf: __nimbusStackString, objectGetOwnPropertyNames: __nimbusStackOwnNames, objectHasOwn: __nimbusStackHasOwn,
+  reflectGetPrototypeOf: __nimbusStackProtoOf, reflectSetPrototypeOf: __nimbusStackSetProto, reflectApply: __nimbusStackApply,
+  reflectGetOwnPropertyDescriptor: __nimbusStackDescriptor, reflectDefineProperty: __nimbusStackDefine,
+  reflectDeleteProperty: __nimbusStackDelete, arrayIsArray: __nimbusStackIsArray, dataDescriptor: __nimbusStackData,
+  TypeError: __nimbusStackTypeError, SafeMap: __NimbusCellMap, SafeSet: __NimbusCellSet,
+  SafeWeakMap: __NimbusCellWeakMap, SafeWeakSet: __NimbusCellWeakSet,
+} = __nimbusLaunchCaptures;
+/** Whether \`test\` holds of any of \`sites\`: Array.prototype.some, on no method of the list. */
+function __nimbusSomeSite(sites, test) {
+  for (let i = 0; i < sites.length; i++) if (test(sites[i])) return true;
+  return false;
+}
 // A SafeMap: module loading asks it after the program may have replaced Map.prototype.has.
 const __nimbusCodeCells = new __nimbusLaunchCaptures.SafeMap(__NIMBUS_CODE_CELLS.map((__row) => [__row[0], __row]));
 // Where node:fs shows the map's modules: beside this main module, /bundle/.
@@ -558,14 +575,14 @@ function __nimbusEntryWrapper(name, importer) {
 const __nimbusStackEntry = typeof __NIMBUS_STACK_ENTRY === "undefined" ? null : __NIMBUS_STACK_ENTRY;
 const __NIMBUS_BUNDLE_URL = new URL("./", import.meta.url).href;
 let __nimbusCellsByName = null;
-const __nimbusModules = new Map();
+const __nimbusModules = new __NimbusCellMap();
 // A stack frame's module, by its URL in the map: the cell's VFS path (or the
 // entry's name), whether it is an ES module, the wrapper's head on its first
 // line, and whether its first line was a shebang. Null for a frame of
 // anything else: this runner, the shims, a builtin.
 function __nimbusFrameModule(url) {
-  if (typeof url !== "string" || !url.startsWith(__NIMBUS_BUNDLE_URL)) return null;
-  return __nimbusModuleNamed(url.slice(__NIMBUS_BUNDLE_URL.length));
+  if (typeof url !== "string" || !__nimbusStackStartsWith(url, __NIMBUS_BUNDLE_URL)) return null;
+  return __nimbusModuleNamed(__nimbusStackSlice(url, __NIMBUS_BUNDLE_URL.length));
 }
 // The module of the launch's cell at \`path\` (no leading slash), and the entry's; null for none.
 function __nimbusModuleAtPath(path) {
@@ -667,13 +684,13 @@ function __nimbusSourceLine(module, line, emitted) {
   return source + emitted.slice(at);
 }
 let __nimbusModulesByFile = null;
-const __nimbusInterpretedModules = new Map();
+const __nimbusInterpretedModules = new __NimbusCellMap();
 // The module whose frames read \`file\` (__nimbusFrameFile), or null.
 function __nimbusModuleOfFile(file) {
   const interpreted = __nimbusInterpretedModules.get(file);
   if (interpreted !== undefined) return interpreted;
   if (__nimbusModulesByFile === null) {
-    __nimbusModulesByFile = new Map();
+    __nimbusModulesByFile = new __NimbusCellMap();
     const add = (name) => {
       const module = __nimbusModuleNamed(name);
       if (module !== null) __nimbusModulesByFile.set(__nimbusFrameFile(module), module);
@@ -698,10 +715,10 @@ function __nimbusFrameLocation(site) {
   return { from: fileName + ":" + line + ":" + column, module, file: __nimbusFrameFile(module), line, column: at };
 }
 function __nimbusFrameText(site, location) {
-  const text = String(site);
+  const text = __nimbusStackString(site);
   if (location === null) return text;
-  const at = text.lastIndexOf(location.from);
-  return at === -1 ? text : text.slice(0, at) + location.file + ":" + location.line + ":" + location.column + text.slice(at + location.from.length);
+  const at = __nimbusStackLastIndexOf(text, location.from);
+  return at === -1 ? text : __nimbusStackSlice(text, 0, at) + location.file + ":" + location.line + ":" + location.column + __nimbusStackSlice(text, at + location.from.length);
 }
 // A call site of the program's code as Node's reads: its file and place;
 // anything else, V8's own.
@@ -718,11 +735,13 @@ class __NimbusCallSite {
     if (location === null) return site;
     if (!__NimbusCallSite.delegates) {
       __NimbusCallSite.delegates = true;
-      for (const name of Object.getOwnPropertyNames(Object.getPrototypeOf(site))) {
-        if (name === "constructor" || Object.hasOwn(__NimbusCallSite.prototype, name) || typeof site[name] !== "function") continue;
-        Object.defineProperty(__NimbusCallSite.prototype, name, {
-          value: function (...args) { return this.#site[name](...args); }, writable: true, configurable: true,
-        });
+      const names = __nimbusStackOwnNames(__nimbusStackProtoOf(site));
+      for (let i = 0; i < names.length; i++) {
+        const name = names[i];
+        if (name === "constructor" || __nimbusStackHasOwn(__NimbusCallSite.prototype, name) || typeof site[name] !== "function") continue;
+        __nimbusStackDefine(__NimbusCallSite.prototype, name, __nimbusStackData(function (...args) {
+          return __nimbusStackApply(this.#site[name], this.#site, args);
+        }, true, false, true));
       }
     }
     return new __NimbusCallSite(site, location);
@@ -742,7 +761,7 @@ class __NimbusCallSite {
 }
 // A source activation has the same CallSite interface as V8's, without
 // exposing the interpreter's environment, AST, or implementation function.
-const __nimbusInterpretedLocations = new WeakMap();
+const __nimbusInterpretedLocations = new __NimbusCellWeakMap();
 class __NimbusInterpretedCallSite {
   #frame;
   #file;
@@ -790,7 +809,7 @@ class __NimbusInterpretedCallSite {
     return (frame.async ? "async " : "") + text;
   }
 }
-const __nimbusInterpretedStacks = new WeakMap();
+const __nimbusInterpretedStacks = new __NimbusCellWeakMap();
 function __nimbusInterpreterSite(site) {
   const file = site.getFileName();
   return typeof file === "string" && (
@@ -810,13 +829,17 @@ function __nimbusRecordInterpretedStack(error, frames) {
 }
 function __nimbusProgramSites(error, original) {
   const stamp = __nimbusInterpretedStacks.get(error);
-  if (stamp === undefined || (original.length !== 0 && !original.some(__nimbusInterpreterSite))) return original.map(__NimbusCallSite.of);
+  // The program's formatter gets an array, as Node's does.
   const output = [];
+  if (stamp === undefined || (original.length !== 0 && !__nimbusSomeSite(original, __nimbusInterpreterSite))) {
+    for (let i = 0; i < original.length; i++) output[i] = __NimbusCallSite.of(original[i]);
+    return output;
+  }
   // Host errors keep their native innermost frames. Their interpreted
   // callers are captured before the interpreter unwinds the fault's node.
-  for (const site of original) {
-    if (__nimbusInterpreterSite(site)) break;
-    output.push(__NimbusCallSite.of(site));
+  for (let i = 0; i < original.length; i++) {
+    if (__nimbusInterpreterSite(original[i])) break;
+    output[output.length] = __NimbusCallSite.of(original[i]);
   }
   let next = 0, internal = false;
   const physical = stamp.sites.length === 0 ? original : stamp.sites;
@@ -836,20 +859,21 @@ function __nimbusProgramSites(error, original) {
     if (__nimbusInterpreterSite(site)) {
       internal = true;
       if (site.getFileName() === __NIMBUS_BUNDLE_URL + ${JSON.stringify(RUNTIME_INTERPRETER_OPS_MODULE)} && next < stamp.frames.length && stamp.frames[next].async === site.isAsync()) {
-        output.push(new __NimbusInterpretedCallSite(stamp.frames[next++]));
+        output[output.length] = new __NimbusInterpretedCallSite(stamp.frames[next++]);
         internal = false;
       }
       continue;
     }
     if (internal && next < stamp.frames.length && !stamp.frames[next].async) {
-      output.push(new __NimbusInterpretedCallSite(stamp.frames[next++]));
+      output[output.length] = new __NimbusInterpretedCallSite(stamp.frames[next++]);
       internal = false;
     }
-    output.push(__NimbusCallSite.of(site));
+    output[output.length] = __NimbusCallSite.of(site);
   }
-  while (next < stamp.frames.length) output.push(new __NimbusInterpretedCallSite(stamp.frames[next++]));
+  while (next < stamp.frames.length) output[output.length] = new __NimbusInterpretedCallSite(stamp.frames[next++]);
   const limit = typeof stamp.limit === "number" ? Math.max(0, Math.floor(stamp.limit)) : 0;
-  return output.slice(0, limit);
+  if (output.length > limit) output.length = limit;
+  return output;
 }
 // What a runtime's shims format a stack with instead (node --enable-source-maps): null to keep the hook's own.
 let __nimbusStackFormatter = null;
@@ -882,34 +906,38 @@ Object.defineProperty(Error, "captureStackTrace", {
 });
 __nimbusLaunchCaptures.useCaptureStackTrace(Error.captureStackTrace);
 function __nimbusStackSites(holder, count, above) {
+  // The realm's own Error, whatever the program put on globalThis.
+  const ErrorOf = __nimbusCaptureError;
   const set = (name, value) => {
-    const descriptor = Object.getOwnPropertyDescriptor(Error, name);
+    const descriptor = __nimbusStackDescriptor(ErrorOf, name);
+    // Read as a descriptor again (restored below) without Object.prototype's get and set.
+    if (descriptor !== undefined) __nimbusStackSetProto(descriptor, null);
     if (descriptor === undefined || descriptor.configurable) {
-      Object.defineProperty(Error, name, { value, writable: true, enumerable: name === "stackTraceLimit", configurable: true });
+      if (!__nimbusStackDefine(ErrorOf, name, __nimbusStackData(value, true, name === "stackTraceLimit", true))) throw new __nimbusStackTypeError("Error." + name + " is locked");
     } else if (descriptor.writable) {
-      Error[name] = value;
+      ErrorOf[name] = value;
     } else {
-      throw new TypeError("Error." + name + " is locked");
+      throw new __nimbusStackTypeError("Error." + name + " is locked");
     }
     return () => {
-      if (descriptor === undefined) delete Error[name];
-      else if (descriptor.configurable) Object.defineProperty(Error, name, descriptor);
-      else Error[name] = descriptor.value;
+      if (descriptor === undefined) __nimbusStackDelete(ErrorOf, name);
+      else if (descriptor.configurable) __nimbusStackDefine(ErrorOf, name, descriptor);
+      else ErrorOf[name] = descriptor.value;
     };
   };
   const restores = [];
   try {
-    restores.push(set("prepareStackTrace", __nimbusSites));
+    restores[restores.length] = set("prepareStackTrace", __nimbusSites);
     if (count !== undefined) {
-      restores.push(set("stackTraceLimit", count));
-      Reflect.apply(__nimbusCaptureStackTrace, Error, [holder, above]);
+      restores[restores.length] = set("stackTraceLimit", count);
+      __nimbusStackApply(__nimbusCaptureStackTrace, ErrorOf, [holder, above]);
     }
     const sites = holder.stack;
-    return Array.isArray(sites) ? sites : [];
+    return __nimbusStackIsArray(sites) ? sites : [];
   } catch {
     return [];
   } finally {
-    for (const restore of restores.reverse()) restore();
+    for (let i = restores.length - 1; i >= 0; i--) restores[i]();
   }
 }
 function __nimbusUseStackFormatter(format) {
@@ -918,8 +946,9 @@ function __nimbusUseStackFormatter(format) {
 {
   let __userPrepare;
   const __apply = Reflect.apply;
+  const __nimbusErrorToString = __nimbusCaptureError.prototype.toString;
   const __prepare = function prepareStackTrace(error, sites) {
-    if (__nimbusInterpreter !== null && __nimbusInterpreter.stackFrames(error) === null && sites.some(__nimbusInterpreterSite)) {
+    if (__nimbusInterpreter !== null && __nimbusInterpreter.stackFrames(error) === null && __nimbusSomeSite(sites, __nimbusInterpreterSite)) {
       __nimbusInterpreter.captureStack(error);
       const stamp = __nimbusInterpretedStacks.get(error);
       if (stamp !== undefined) stamp.sites = __nimbusStackSites({}, Infinity, __prepare);
@@ -929,13 +958,13 @@ function __nimbusUseStackFormatter(format) {
     if (typeof __userPrepare === "function") return __apply(__userPrepare, globalThis.Error, [error, sites]);
     let stack;
     try {
-      stack = Error.prototype.toString.call(error);
+      stack = __nimbusStackApply(__nimbusErrorToString, error, []);
     } catch {
       stack = "<error>";
     }
     const formatted = __nimbusStackFormatter === null ? null : __nimbusStackFormatter(error, stack, sites);
     if (formatted !== null) return formatted;
-    for (const site of sites) stack += "\\n    at " + __nimbusFrameText(site, __nimbusFrameLocation(site));
+    for (let i = 0; i < sites.length; i++) stack += "\\n    at " + __nimbusFrameText(sites[i], __nimbusFrameLocation(sites[i]));
     return stack;
   };
   Object.defineProperty(Error, "prepareStackTrace", {
@@ -967,7 +996,7 @@ function __nimbusFatalLocation(text, goal, offset) {
 // What Node's stack carries for a module that does not compile: where
 // (decorateErrorStack: the arrow, then the stack), so its report prints it
 // once (node-shims.ts __nimbusFatalReport).
-const __nimbusDecorated = new WeakSet();
+const __nimbusDecorated = new __NimbusCellWeakSet();
 function __nimbusDecorateSyntaxError(e, name) {
   if (!(e instanceof __nimbusSyntaxError) || __nimbusDecorated.has(e)) return;
   // The arrow first: it may give the error Node's message before its stack is formatted.
@@ -998,9 +1027,26 @@ const __nimbusRuntimeLedger = new __nimbusLaunchCaptures.SafeMap();
 let __nimbusRuntimeLedgerBytes = 0;
 let __nimbusRuntimeCodeReporter = null;
 let __nimbusCodeNotifyQueued = false;
-const __nimbusCodeAcknowledged = new Set();
-const __nimbusModulesAcknowledged = new Set();
-const __nimbusReadsAcknowledged = new Set();
+const __nimbusCodeAcknowledged = new __NimbusCellSet();
+const __nimbusModulesAcknowledged = new __NimbusCellSet();
+const __nimbusReadsAcknowledged = new __NimbusCellSet();
+// A SafeMap's or SafeSet's entries \`acknowledged\` does not hold: their keys and values, in order.
+function __nimbusUnacknowledged(collection, acknowledged) {
+  const keys = [];
+  const values = [];
+  if (collection) collection.forEach((value, key) => {
+    if (acknowledged.has(key)) return;
+    keys[keys.length] = key;
+    values[values.length] = value;
+  });
+  return { keys, values };
+}
+// The \`count\` of \`list\` from \`from\`, as an array: what one report carries.
+function __nimbusReportBatch(list, from, count) {
+  const out = [];
+  for (let i = from; i < list.length && i < from + count; i++) out[out.length] = list[i];
+  return out;
+}
 let __nimbusCodeSending = Promise.resolve();
 // A server may catch a compile miss (SSR error page) and never exit. Persist
 // new code independently of exit, in bounded batches, and acknowledge only
@@ -1014,18 +1060,19 @@ function __nimbusFlushRuntimeCode(supervisor) {
     if (typeof globalThis.__nimbusVfsResidencySettle === "function") {
       try { await globalThis.__nimbusVfsResidencySettle(); } catch {}
     }
-    const entries = [...__nimbusRuntimeLedger].filter(([key]) => !__nimbusCodeAcknowledged.has(key));
-    const modules = [...(globalThis.__nimbusModuleMisses || [])].filter((path) => !__nimbusModulesAcknowledged.has(path));
-    const reads = [...(globalThis.__nimbusVfsResidencyMisses || [])].filter((path) => !__nimbusReadsAcknowledged.has(path));
-    const batches = Math.max(Math.ceil(entries.length / 32), Math.ceil(modules.length / 128), Math.ceil(reads.length / 128));
+    // The ledger and both miss sets are SafeMap and SafeSets: their own forEach.
+    const code = __nimbusUnacknowledged(__nimbusRuntimeLedger, __nimbusCodeAcknowledged);
+    const modules = __nimbusUnacknowledged(globalThis.__nimbusModuleMisses, __nimbusModulesAcknowledged).keys;
+    const reads = __nimbusUnacknowledged(globalThis.__nimbusVfsResidencyMisses, __nimbusReadsAcknowledged).keys;
+    const batches = Math.max(Math.ceil(code.keys.length / 32), Math.ceil(modules.length / 128), Math.ceil(reads.length / 128));
     for (let i = 0; i < batches; i++) {
-      const batch = entries.slice(i * 32, (i + 1) * 32);
-      const executed = modules.slice(i * 128, (i + 1) * 128);
-      const read = reads.slice(i * 128, (i + 1) * 128);
-      await supervisor.reportRuntimeCode(batch.map(([, entry]) => entry), executed, read);
-      for (const [key] of batch) __nimbusCodeAcknowledged.add(key);
-      for (const path of executed) __nimbusModulesAcknowledged.add(path);
-      for (const path of read) __nimbusReadsAcknowledged.add(path);
+      const keys = __nimbusReportBatch(code.keys, i * 32, 32);
+      const executed = __nimbusReportBatch(modules, i * 128, 128);
+      const read = __nimbusReportBatch(reads, i * 128, 128);
+      await supervisor.reportRuntimeCode(__nimbusReportBatch(code.values, i * 32, 32), executed, read);
+      for (let j = 0; j < keys.length; j++) __nimbusCodeAcknowledged.add(keys[j]);
+      for (let j = 0; j < executed.length; j++) __nimbusModulesAcknowledged.add(executed[j]);
+      for (let j = 0; j < read.length; j++) __nimbusReadsAcknowledged.add(read[j]);
     }
   });
   __nimbusCodeSending = send.catch(() => undefined);

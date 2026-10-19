@@ -16074,6 +16074,15 @@ var mapGet = uncurryThis(Map.prototype.get);
 var arrayPush = uncurryThis(Array.prototype.push);
 var arraySplice = uncurryThis(Array.prototype.splice);
 var ObjectPrototypePropertyIsEnumerableOf = uncurryThis(Object.prototype.propertyIsEnumerable);
+var dateNow = Date.now;
+var numberIsSafeInteger = Number.isSafeInteger;
+var arrayCopy = uncurryThis(Reflect.get(Array.prototype, "toSpliced"));
+var typedArrayByteLength = (() => {
+  const prototype = reflectGetPrototypeOf(Uint8Array.prototype);
+  const getter = reflectGetOwnPropertyDescriptor(prototype ?? {}, "byteLength")?.get;
+  if (getter === void 0) throw new TypeErrorConstructor("TypedArray.prototype.byteLength is not an accessor");
+  return uncurryThis(getter);
+})();
 
 // ../core/src/_shared/node-error.ts
 var nodeErrorClasses = new SafeMap();

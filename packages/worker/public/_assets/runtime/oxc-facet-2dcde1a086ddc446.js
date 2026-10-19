@@ -10174,6 +10174,7 @@ error: the Oxc transform crashed (${reason})`);
   var SymbolPrototypeDescription = Reflect.getOwnPropertyDescriptor(Symbol.prototype, "description")?.get;
   var numberIsInteger = Number.isInteger;
   var runtimeCaptureStackTrace = Reflect.get(Error, "captureStackTrace");
+  var TypeErrorConstructor = TypeError;
   function copyMethods(to, from, methods) {
     for (let i = 0; i < methods.length; i++) {
       const descriptor = reflectGetOwnPropertyDescriptor(from, methods[i]);
@@ -10247,6 +10248,15 @@ error: the Oxc transform crashed (${reason})`);
   var arrayPush = uncurryThis(Array.prototype.push);
   var arraySplice = uncurryThis(Array.prototype.splice);
   var ObjectPrototypePropertyIsEnumerableOf = uncurryThis(Object.prototype.propertyIsEnumerable);
+  var dateNow = Date.now;
+  var numberIsSafeInteger = Number.isSafeInteger;
+  var arrayCopy = uncurryThis(Reflect.get(Array.prototype, "toSpliced"));
+  var typedArrayByteLength = (() => {
+    const prototype = reflectGetPrototypeOf(Uint8Array.prototype);
+    const getter = reflectGetOwnPropertyDescriptor(prototype ?? {}, "byteLength")?.get;
+    if (getter === void 0) throw new TypeErrorConstructor("TypedArray.prototype.byteLength is not an accessor");
+    return uncurryThis(getter);
+  })();
 
   function extensionOf(path) {
     const base = stringSlice(path, stringLastIndexOf(path, "/") + 1);

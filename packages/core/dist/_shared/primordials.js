@@ -270,3 +270,51 @@ export const objectDefineProperty = Object.defineProperty;
 export const arrayPush = uncurryThis(Array.prototype.push);
 export const arraySplice = uncurryThis(Array.prototype.splice);
 export const ObjectPrototypePropertyIsEnumerableOf = uncurryThis(Object.prototype.propertyIsEnumerable);
+/** Once every promise in `list` has settled: Promise.allSettled's wait, without the list's iterator or the program's Promise.resolve and then. */
+export function promiseSettled(list) {
+    return new PromiseConstructor((resolve) => {
+        let left = list.length;
+        if (left === 0) {
+            resolve();
+            return;
+        }
+        const one = () => { if (--left === 0)
+            resolve(); };
+        for (let i = 0; i < list.length; i++)
+            reflectApply(PromisePrototypeThen, reflectApply(PromiseResolve, PromiseConstructor, [list[i]]), [one, one]);
+    });
+}
+/** What each promise in `list` fulfilled with, in its order, or the first rejection: Promise.all, on the same captures. */
+export function promiseAll(list) {
+    return new PromiseConstructor((resolve, reject) => {
+        const values = new SafeList();
+        let left = list.length;
+        if (left === 0) {
+            resolve(values);
+            return;
+        }
+        for (let i = 0; i < list.length; i++) {
+            const at = i;
+            const one = (value) => {
+                values[at] = value;
+                if (--left === 0)
+                    resolve(values);
+            };
+            reflectApply(PromisePrototypeThen, reflectApply(PromiseResolve, PromiseConstructor, [list[i]]), [one, reject]);
+        }
+    });
+}
+export const dateNow = Date.now;
+export const mathMax = Math.max;
+export const mathCeil = Math.ceil;
+export const numberIsSafeInteger = Number.isSafeInteger;
+/** A list copied with ArrayCreate and CreateDataProperty, never its species or a prototype's setters. */
+export const arrayCopy = uncurryThis(Reflect.get(Array.prototype, 'toSpliced'));
+/** TypedArray's byteLength accessor, reading only the view's internal slots. */
+export const typedArrayByteLength = (() => {
+    const prototype = reflectGetPrototypeOf(Uint8Array.prototype);
+    const getter = reflectGetOwnPropertyDescriptor(prototype ?? {}, 'byteLength')?.get;
+    if (getter === undefined)
+        throw new TypeErrorConstructor('TypedArray.prototype.byteLength is not an accessor');
+    return uncurryThis(getter);
+})();
