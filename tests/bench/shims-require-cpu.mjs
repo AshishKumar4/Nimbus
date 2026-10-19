@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
-import { armTree, assertBundleInside, importBundle, repository } from './lib/isolated-core.mjs';
+import { armTree, assertArmsInside, assertBundleInside, importBundle, repository } from './lib/isolated-core.mjs';
 import { cpuMs, pairedKind, shuffled } from './lib/paired-cpu.mjs';
 
 const args = process.argv.slice(2);
@@ -167,6 +167,8 @@ try {
     const { samples, ...summary } = result;
     console.log(JSON.stringify(summary));
   }
+  // What the arms loaded while they worked, a lazy import included, was theirs.
+  assertArmsInside();
 } finally {
   for (const dispose of disposals) dispose();
   rmSync(scratch, { recursive: true, force: true });

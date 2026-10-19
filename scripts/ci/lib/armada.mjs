@@ -13,7 +13,7 @@ import { cloudflareApiToken } from './cloudflare-api.mjs';
 import { describeContainerStorage, readContainerStorage } from './container-storage.mjs';
 import { NIMBUS_STATE } from './state-dir.mjs';
 
-const SELF_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+export const SELF_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 // The armada client, pinned: exactly ARMADA_CLIENT, a commit on main of
 // ARMADA_REPO, as a clean checkout at ARMADA_DIR with its node_modules from

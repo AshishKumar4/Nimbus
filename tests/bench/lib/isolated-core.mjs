@@ -8,12 +8,15 @@
 // harness), with the harness's installed node_modules laid over it: a
 // workspace package resolves to the arm's own copy (the install's links are
 // relative), a third-party one to the harness's store, the same for every arm
-// (and the same code, since the sides' lockfiles must match). A guard records
-// every module an arm's code resolves, and the bench fails if one lies outside
-// that arm's tree and the store (assertArmsInside).
+// (and the same code, since the sides' lockfiles must match). Once the first
+// arm is made, the bench loads only arms' modules and third-party code: a
+// guard watches every module the process loads (Bun's module registry, node's
+// resolve hook), whoever loads it and however (an import, a require, a lazy
+// import from a bundle, a third-party module's own), and the bench fails if
+// one is the harness's repository's outside its store (assertArmsInside).
 import assert from 'node:assert/strict';
 import {
-  copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync,
+  copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync,
 } from 'node:fs';
 import * as nodeModule from 'node:module';
 import { tmpdir } from 'node:os';
@@ -57,10 +60,9 @@ export function armTree(root, cleanup, { harness = repository } = {}) {
       }
     }
   };
+  watch(harness);
   copy(side, tree);
   linkInstall(tree, harness);
-  guarded.add(realpathSync(tree) + sep);
-  store ??= realpathSync(join(harness, 'node_modules', '.bun')) + sep;
   return tree;
 }
 
@@ -98,69 +100,56 @@ function linkInstall(tree, harness) {
   }
 }
 
-/** Every arm tree's realpath (with a trailing separator), and the harness's third-party store's. */
-const guarded = new Set();
-let store = null;
-/** What an arm's code imported: [specifier, importer, resolved path or null when only the specifier is known]. */
-const edges = [];
-/** While the guard resolves recorded edges itself: Bun's resolver runs the resolve hook for those too. */
-let checking = false;
+/**
+ * What the guard watches from the first arm on: the harness's repository and
+ * its third-party store (realpaths, with a trailing separator), and, under
+ * Bun, the modules loaded before (its registry, require.cache, holds every
+ * module, of any kind, the process has loaded).
+ */
+let watched = null;
+/** Under node: each file the process resolved a module to once watched. */
+const resolvedFiles = [];
 
-/** The arm tree `path` lies in, if any. */
-const armOf = (path) => [...guarded].find((tree) => path.startsWith(tree) || path + sep === tree);
-
-if (typeof Bun !== 'undefined') {
-  // Bun's resolve hook cannot ask for the resolution it would make: the edge is resolved when checked.
-  Bun.plugin({
-    name: 'paired-arm-guard',
-    setup(build) {
-      build.onResolve({ filter: /.*/ }, (args) => {
-        if (!checking && args.importer && armOf(args.importer)) edges.push([args.path, args.importer, null]);
-        return undefined;
-      });
-    },
-  });
-} else {
+if (typeof Bun === 'undefined') {
   nodeModule.registerHooks({
     resolve(specifier, context, next) {
       const result = next(specifier, context);
-      if (context.parentURL?.startsWith('file:') && result.url.startsWith('file:')) {
-        const importer = fileURLToPath(context.parentURL);
-        if (armOf(importer)) edges.push([specifier, importer, fileURLToPath(result.url)]);
-      }
+      if (watched !== null && result.url.startsWith('file:')) resolvedFiles.push(fileURLToPath(result.url));
       return result;
     },
   });
 }
 
-/** The file a recorded edge resolved to (realpath), or null for a builtin. */
-function resolved([specifier, importer, path]) {
-  if (path !== null) return realpathSync(path);
-  if (/^(node|bun):/.test(specifier)) return null;
-  // Resolved from the importer's directory (Bun names a module's importer by its file or, in some versions, its directory).
-  const at = Bun.resolveSync(specifier, statSync(importer).isDirectory() ? importer : dirname(importer));
-  return at.startsWith('/') ? realpathSync(at) : null;
+function watch(harness) {
+  const root = realpathSync(harness) + sep;
+  if (watched !== null) {
+    assert.equal(watched.root, root, 'one harness per process');
+    return;
+  }
+  watched = { root, store: realpathSync(join(harness, 'node_modules', '.bun')) + sep, before: typeof Bun === 'undefined' ? null : new Set(Object.keys(require.cache)) };
+}
+
+/** Every file loaded as a module since the last look (realpaths). */
+function loadedSince() {
+  let files;
+  if (watched.before === null) {
+    files = resolvedFiles.splice(0);
+  } else {
+    files = Object.keys(require.cache).filter((path) => !watched.before.has(path));
+    for (const path of files) watched.before.add(path);
+  }
+  return [...new Set(files.filter((path) => path.startsWith('/')).map((path) => (existsSync(path) ? realpathSync(path) : path)))];
 }
 
 /**
- * Throws, naming each, when some module an arm's code resolved lies outside
- * that arm's tree and the harness's third-party store.
+ * Throws, naming each, when some module loaded since the first arm was made
+ * is the harness repository's, outside its third-party store: an arm's code
+ * (or code it loaded) reached past its own tree.
  */
 export function assertArmsInside() {
-  const outside = [];
-  checking = true;
-  try {
-    for (const edge of edges.splice(0)) {
-      const at = resolved(edge);
-      if (at === null) continue;
-      const tree = armOf(realpathSync(edge[1]));
-      if (at.startsWith(tree) || (store !== null && at.startsWith(store))) continue;
-      outside.push(`${edge[1]} imports ${edge[0]}, which resolves to ${at}, outside its arm's tree ${tree}`);
-    }
-  } finally {
-    checking = false;
-  }
-  assert.deepEqual(outside, [], 'every module of an arm resolves inside its own tree');
+  if (watched === null) return;
+  const outside = loadedSince().filter((path) => path.startsWith(watched.root) && !path.startsWith(watched.store));
+  assert.deepEqual(outside, [], "once its arms are made, a bench loads only their modules and third-party code, none of the harness repository's");
 }
 
 /**
@@ -174,7 +163,7 @@ export function assertBundleInside(tree, metafile, workingDir) {
     // Not a file: esbuild's stdin (named or not), or another namespace's.
     .filter((input) => !input.startsWith('<') && !input.includes(':') && existsSync(resolve(workingDir, input)))
     .map((input) => realpathSync(resolve(workingDir, input)))
-    .filter((at) => !at.startsWith(own) && !(store !== null && at.startsWith(store)));
+    .filter((at) => !at.startsWith(own) && !(watched !== null && at.startsWith(watched.store)));
   assert.deepEqual(outside, [], `every input of a bundle of ${tree} lies inside it`);
 }
 
@@ -182,7 +171,8 @@ export function assertBundleInside(tree, metafile, workingDir) {
  * An arm's code bundled on its own (esbuild, `options` run in `tree`, the
  * arm's tree), so no arm shares a module, or its JIT state, with another:
  * every input checked to lie inside the tree (assertBundleInside), the bundle
- * written to `file` and imported.
+ * written to `file` and imported. What it loads later, a lazy import, the
+ * guard watches (assertArmsInside).
  */
 export async function importBundle(tree, options, file) {
   const { build } = await import('esbuild');

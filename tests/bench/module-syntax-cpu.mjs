@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { armTree, importBundle, repository } from './lib/isolated-core.mjs';
+import { armTree, assertArmsInside, importBundle, repository } from './lib/isolated-core.mjs';
 import { cpuMs, pairedKind, shuffled } from './lib/paired-cpu.mjs';
 
 const args = process.argv.slice(2);
@@ -68,6 +68,8 @@ try {
     console.log(JSON.stringify(summary));
   }
   assert.ok(checksum > 0);
+  // What the arms loaded while they worked, a lazy import included, was theirs.
+  assertArmsInside();
 } finally {
   for (const dispose of disposals) dispose();
   rmSync(scratch, { recursive: true, force: true });

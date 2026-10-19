@@ -2,10 +2,10 @@
 // over independent runs, each a process of its own: what one process's state
 // does to a whole run is noise across them, and the interval is taken over runs.
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join, normalize } from 'node:path';
 import { parseArgs } from 'node:util';
-import { mapOnArmada, overlayCommit } from './armada.mjs';
+import { mapOnArmada, overlayCommit, SELF_ROOT } from './armada.mjs';
 import { NIMBUS_STATE } from './state-dir.mjs';
 import { median, medianInterval } from '../../lib/statistics.mjs';
 
@@ -82,6 +82,41 @@ export function pairedCpuPasses(sets, verdicts, runsPerSet) {
   return measuredAll && finished && verdicts.every((verdict) => verdict.failures.length === 0);
 }
 
+/** A module's relative imports (static, re-exports, literal dynamic ones). */
+const IMPORTS = /\b(?:import|export)\b[^'"`;]*?\bfrom\s*['"]([^'"]+)['"]|\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)|\bimport\s+['"]([^'"]+)['"]/g;
+
+/**
+ * A paired bench's harness: `bench` (a path from `root`) and every file of
+ * this repository's tests/ and scripts/ it imports, transitively (none of
+ * packages/: that code is the revision's, each arm's own).
+ */
+export function benchHarness(bench, root = SELF_ROOT) {
+  const files = new Set();
+  const pending = [bench];
+  while (pending.length > 0) {
+    const path = pending.pop();
+    if (files.has(path)) continue;
+    files.add(path);
+    for (const match of readFileSync(join(root, path), 'utf8').matchAll(IMPORTS)) {
+      const specifier = match[1] ?? match[2] ?? match[3];
+      if (!specifier.startsWith('.')) continue;
+      const target = normalize(join(dirname(path), specifier));
+      if (/^(tests|scripts)\//.test(target) && existsSync(join(root, target))) pending.push(target);
+    }
+  }
+  return [...files].sort();
+}
+
+/**
+ * The commit a paired run sends: `revision`'s tree, with this checkout's
+ * bench harness (benchHarness) laid over it, so a run of an older revision
+ * measures it with the bench as it is now, and `baseline`'s whole tree under
+ * `baselineDir`.
+ */
+export function pairedRunCommit({ repo, revision, baseline, baselineDir, bench, from = SELF_ROOT }) {
+  return overlayCommit(repo, revision, [...benchHarness(bench, from), { path: baselineDir, tree: baseline }], from);
+}
+
 const git = (...args) => {
   const result = spawnSync('git', args, { encoding: 'utf8', maxBuffer: 1 << 26 });
   if (result.status !== 0) throw new Error(result.stderr);
@@ -92,7 +127,8 @@ const git = (...args) => {
  * A paired CPU bench of `revision` (default HEAD) against `baseline`, from
  * the command line (`<baseline> [<revision>]`), on armada: RUNS processes,
  * each given the baseline's whole tree under `baselineDir` (each arm runs
- * its side's whole code: tests/bench/lib/isolated-core.mjs), as
+ * its side's whole code: tests/bench/lib/isolated-core.mjs) and this
+ * checkout's bench (pairedRunCommit), as
  * `<engine> <bench> --baseline <baselineDir> --out <file>`. `engine` is the
  * one the code runs on in production: `node` (V8, as workerd runs the
  * guest's code) or `bun`; `--engine` runs another, for context, and the
@@ -112,7 +148,7 @@ export async function remotePairedCpu(bench) {
   const repo = git('rev-parse', '--show-toplevel').trim();
   const sha = git('rev-parse', `${plan.revision}^{commit}`).trim();
   const base = git('rev-parse', `${plan.baseline}^{commit}`).trim();
-  const measured = overlayCommit(repo, sha, [{ path: baselineDir, tree: base }]);
+  const measured = pairedRunCommit({ repo, revision: sha, baseline: base, baselineDir, bench: bench.bench });
   const runSet = (label) => mapOnArmada({
     repo, sha: measured, files: [], items: Array.from({ length: RUNS }, (_, i) => i + 1), pool: RUNS, timeout: 1200,
     label: `${name} ${sha.slice(0, 12)} ${engine}${label}`,
