@@ -57,8 +57,11 @@ import { gemHomeFor, installRubyBundle, installRubyGems, installedGemBins, insta
 import { errorText } from '../_shared/error-text.js';
 import { openRuntimeStdio, runtimeOutput } from './runtime-stdio.js';
 import { unsettledNoteOf } from '../_shared/process-fs-client.js';
+import { warmFacetKeys } from './warm-facets.js';
 const RUBY_RUNTIME_BIN_NAMES = new Set(['ruby', 'ruby3', 'gem', 'bundle', 'bundler']);
 const RUBY_VERSION_FLAGS = new Set(['--version', '-v']);
+/** Idle warm Ruby workers a session keeps: each holds the compiled ruby+stdlib.wasm (30 MB). */
+const WARM_RUBY_FACETS = 2;
 /**
  * Build the ruby-runner factory. Called once at session init; the
  * returned factory binds the manifest + install root for each
@@ -66,6 +69,7 @@ const RUBY_VERSION_FLAGS = new Set(['--version', '-v']);
  */
 export function makeRubyRunnerFactory(deps) {
     const { registry } = deps;
+    const warmKeys = warmFacetKeys(deps.session, 'ruby', WARM_RUBY_FACETS);
     return async function rubyRunnerFactory(manifest, installRoot, binName, binKind) {
         const wasmVfs = installedPath(manifest, installRoot, 'share/ruby/ruby+stdlib.wasm');
         const registerGemBins = async (vfs, home) => {
@@ -227,7 +231,7 @@ export function makeRubyRunnerFactory(deps) {
             else {
                 const stdio = openRuntimeStdio(deps, ctx, formatRubyCommand(binName, argv));
                 try {
-                    result = await dispatchRubyFacet(deps.facets, stdio.syscalls, facetArgs, await vfs.image(wasmVfs), stdio.pid, stdio.signal);
+                    result = await dispatchRubyFacet(deps.facets, warmKeys, stdio.syscalls, facetArgs, await vfs.image(wasmVfs), stdio.pid, stdio.signal);
                 }
                 finally {
                     await stdio.finish(result?.exitCode ?? 1);
@@ -511,6 +515,7 @@ const RubyFacetResultSchema = z.object({
     stderr: z.string().optional(),
     error: z.string().optional(),
     control: z.record(z.string(), z.string()).optional(),
+    reusable: z.boolean().optional(),
 }).passthrough();
 /**
  * A facet's answer, checked at the trust boundary. Exported for the resident
@@ -526,6 +531,7 @@ export function normalizeRubyFacetResult(raw) {
         stderr: parsed.data.stderr || '',
         error: parsed.data.error,
         control: parsed.data.control,
+        reusable: parsed.data.reusable,
     };
 }
 /** The per-call payload, from the invocation's own state. */
@@ -541,14 +547,12 @@ function toRubyCallArgs(args) {
         cred: args.cred,
     };
 }
-async function dispatchRubyFacet(facets, syscalls, args, image, pid, signal) {
-    // The Ruby preamble runs the entire bootstrap in the facet's own scope,
-    // before any function is submitted: the wasm Module is instantiated where
-    // the host permits it, _initialize + __wasi_vfs_rt_init run, and the live
-    // instance stays in that scope for every later call.
-    //
-    // The preamble also includes WASI_INSTANCE_PREAMBLE_SRC so
-    // __wasiMakeImports / __wasiInitFS / __wasiRunStart are in scope.
+async function dispatchRubyFacet(facets, warmKeys, syscalls, args, image, pid, signal) {
+    // A warm worker of the session's keeps the compiled module; the process
+    // boots a VM of its own in it (__rubyRunProcess), so it finds nothing an
+    // earlier process left. Its key goes back only when the process ended
+    // clean and never reached JavaScript; any other is not used again.
+    const warm = warmKeys.take();
     const facet = facets.open({
         tag: 'ruby-runner',
         concurrency: 1,
@@ -557,17 +561,19 @@ async function dispatchRubyFacet(facets, syscalls, args, image, pid, signal) {
         // and never write — every write-back rejected as an unauthorized process.
         syscalls,
         preamble: buildRubyPreamble(),
+        wasmModules: { 'ruby+stdlib.wasm': image },
+        warm,
     });
     try {
         const rawResult = await facet.submit(RUBY_CALL_TASK, { ...toRubyCallArgs(args), supervisorPid: pid }, {
-            wasmModules: {
-                'ruby+stdlib.wasm': image,
-            },
             // No deadline: a process runs until it exits or is killed. A kill or
             // Ctrl-C ends the facet too, where the host can.
             signal,
         });
-        return normalizeRubyFacetResult(rawResult) || {
+        const result = normalizeRubyFacetResult(rawResult);
+        if (result?.reusable === true && result.error === undefined)
+            warmKeys.give(warm);
+        return result || {
             exitCode: 1,
             stdout: '',
             stderr: '',
@@ -616,8 +622,9 @@ export function buildRubyPreamble() {
         '// ── FinalizationRegistry shim ─────────────────────────────────',
         '// Ruby ABI guest uses FinalizationRegistry for resource cleanup.',
         '// workerd does not always expose it (compat-flag gated). Same',
-        '// no-op pattern as python-runner v2 — leaky but acceptable for',
-        '// per-call facet lifetime (each invocation spawns a fresh facet).',
+        '// no-op pattern as python-runner v2: what it would clean up is a',
+        '// JS bridge value, and a worker whose process reached JavaScript',
+        '// serves no later process.',
         'if (typeof globalThis.FinalizationRegistry === "undefined") {',
         '  globalThis.FinalizationRegistry = class FinalizationRegistry {',
         '    constructor(_cleanup) {}',
@@ -632,13 +639,14 @@ export function buildRubyPreamble() {
 /**
  * The Ruby-specific portion of the preamble. Wires the wasm imports
  * (wasi_snapshot_preview1 from __wasiMakeImports, canonical_abi from a
- * tiny Slab implementation, rb-js-abi-host for the `js` bridge),
- * instantiates the wasm Module from __NIMBUS_WASM at module-init, and
- * runs Ruby's bootstrap sequence.
+ * tiny Slab implementation, rb-js-abi-host for the `js` bridge) and boots
+ * a VM from the Module on __NIMBUS_WASM: one per one-shot process
+ * (__rubyRunProcess), one for the life of a resident or the prompt
+ * (__rubyRun).
  *
- * Per-call __rubyRun then mutates WASI argv/env, clears the stdout/
- * stderr capture buffers, and invokes rb-eval-string-protect with a
- * wrapper that captures SystemExit to extract the exit code.
+ * A run sets WASI argv/env, binds the stdout/stderr relay, and invokes
+ * rb-eval-string-protect with a wrapper that captures SystemExit to
+ * extract the exit code.
  */
 export const RUBY_RUNNER_PREAMBLE_TAIL = `
 // ── BEGIN: ruby-runner preamble (Ruby 3.3.4, Nimbus v1) ─────────────
@@ -717,14 +725,15 @@ class __NimbusRubySlab {
   remove(id) { const v = this._map.get(id); this._map.delete(id); return v; }
 }
 
-// ── Bootstrap promise: runs at child-facet module-init time ────────
+// ── A Ruby VM ────────────────────────────────────────────────────────
 //
-// Mirrors pyodide v2's __pyodideBootstrap pattern. The synchronous
-// portion (WebAssembly.instantiate + _initialize + ruby-init-loadpath
-// + ruby-init) all completes before the first await — so it executes
-// in module-init CSP context where workerd permits wasm code-gen
-// from the LOADER-provided Module.
-globalThis.__rubyBootstrap = (async function nimbusRubyBootstrap() {
+// ruby+stdlib.wasm instantiated from the Module the host compiled, with
+// imports of its own, and booted as far as it may before a request
+// (ruby-init waits for the first run: it reads entropy). Its state is its
+// instance's memory and these imports' closures; nothing of it is left at
+// module scope, so a warm worker's next process boots a VM of its own
+// (__rubyRunProcess).
+async function __nimbusRubyBoot() {
   const wasmTable = globalThis.__NIMBUS_WASM || {};
   const rubyMod = wasmTable['ruby+stdlib.wasm'];
   if (!rubyMod) {
@@ -784,6 +793,10 @@ globalThis.__rubyBootstrap = (async function nimbusRubyBootstrap() {
   };
 
   const jsAbiResources = jsValueSlab;
+  // Whether the program reached JavaScript: what it did there (a global set,
+  // a prototype patched) is in this isolate's realm, which no fresh instance
+  // resets, so its worker serves no later process (__rubyRunProcess).
+  let reachedJs = false;
   // A Ruby string's value, a leading U+FEFF kept: a name or a value, never a document.
   const guestStringDecoder = new TextDecoder('utf-8', { ignoreBOM: true });
   function readGuestString(ptr, len) {
@@ -885,6 +898,14 @@ globalThis.__rubyBootstrap = (async function nimbusRubyBootstrap() {
     },
   };
 
+  for (const [name, call] of Object.entries(rb_js_abi_host)) {
+    // The rewind guard is Ruby's own fiber machinery, not the program's JavaScript.
+    if (name === 'rb_wasm_throw_prohibit_rewind_exception') continue;
+    rb_js_abi_host[name] = function (...callArgs) {
+      reachedJs = true;
+      return call.apply(this, callArgs);
+    };
+  }
   const imports = {
     wasi_snapshot_preview1: wasi.wasiImport,
     canonical_abi,
@@ -998,9 +1019,16 @@ globalThis.__rubyBootstrap = (async function nimbusRubyBootstrap() {
     rbEvalStringProtect: enterVm(rbEvalStringProtect),
     writeListString,
     writeString,
-    rubyInitialized: false,  // mutated to true by __rubyRun on first call
+    reachedJs: () => reachedJs,
+    rubyInitialized: false,  // mutated to true by its first run
   };
-})();
+}
+
+// The VM of a process that keeps its worker (a resident, the prompt): one,
+// made at its first run.
+function __nimbusRubyVm() {
+  return (globalThis.__rubyBootstrap ??= __nimbusRubyBoot());
+}
 
 // ── Per-call entry point ───────────────────────────────────────────
 //
@@ -1043,7 +1071,7 @@ async function __nimbusRubyEval(boot, rubyCode) {
 //   hostDriven  it has listened, so inbound requests are what resume it now
 //   wakeAfter   seconds until the earliest deadline it owes, or null for none
 globalThis.__nimbusRubyResumeMain = async function __nimbusRubyResumeMain() {
-  const boot = await globalThis.__rubyBootstrap;
+  const boot = await __nimbusRubyVm();
   if (!boot.ok) return { resumed: false, alive: false, hostDriven: false, wakeAfter: null };
   delete __nimbusRubyStderrControl.values.resumed;
   await __nimbusRubyEval(boot, [
@@ -1100,11 +1128,31 @@ globalThis.__nimbusRubyDriveBoot = async function __nimbusRubyDriveBoot() {
   }
 };
 
+// A run in the VM of a process that keeps its worker: a resident's start, a
+// prompt line.
 globalThis.__rubyRun = async function __rubyRun(args) {
+  return __nimbusRubyRunIn(await __nimbusRubyVm(), args);
+};
+
+// A one-shot process: a VM of its own, a filesystem mounted for it alone,
+// and no socket error of an earlier one, so it finds nothing an earlier
+// process on this worker left. \`reusable\` says whether another process may
+// run on this worker after it (FacetSpec.warm): it ended clean, no syscall
+// of it was abandoned, and it never reached JavaScript.
+globalThis.__rubyRunProcess = async function __rubyRunProcess(args) {
+  __nimbusRubyMounted = null;
+  globalThis.__nimbusWasiLastSocketError = '';
+  const boot = await __nimbusRubyBoot();
+  const result = await __nimbusRubyRunIn(boot, args);
+  const settled = result.error === undefined && boot.ok && !boot.reachedJs();
+  return { ...result, reusable: settled && typeof __wasiReusable === 'function' && __wasiReusable() };
+};
+
+async function __nimbusRubyRunIn(boot, args) {
   __nimbusRubyBindOutput(args);
   let result;
   try {
-    result = await __rubyRunOnce(args);
+    result = await __rubyRunOnce(args, boot);
   } catch (e) {
     result = { exitCode: 1, stdout: '', stderr: '', error: (e && e.message) || String(e) };
   }
@@ -1123,10 +1171,8 @@ globalThis.__rubyRun = async function __rubyRun(args) {
   __nimbusRubyStderrControl = stderrControl;
   if (stdoutControl) result.control = stdoutControl.values;
   return lost ? { ...result, exitCode: result.exitCode || 1, error: result.error ? result.error + '; ' + lost : lost } : result;
-};
-async function __rubyRunOnce(args) {
-
-  const boot = await globalThis.__rubyBootstrap;
+}
+async function __rubyRunOnce(args, boot) {
   if (!boot.ok) {
     return {
       exitCode: 1,
