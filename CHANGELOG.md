@@ -29,6 +29,21 @@ published independently in the `@nimbus-sh` npm scope.
     error, as `(echo a) (echo b)` and `x=1 (echo hi)` are in bash.
   Before, a whole script was parsed first, an alias was expanded when its
   command ran, and those two commands both ran.
+- Fixed: Tailwind v4 generates the utilities its stylesheets' `@source`
+  directives name outside the working tree. Tailwind's scanner reads those
+  files synchronously, and they were not held for it, so their classes were
+  silently missing. A process carrying the scanner now holds the files under
+  each such source, found from the project's stylesheets (its own, those
+  behind its links, and the sheets they `@import`), each brace alternative's
+  directory taken whole, through links, with the project's exclusions
+  (`node_modules`, VCS and cache directories). Their changes reach the
+  dev server as the working tree's do, and a source on a mounted drive is
+  listed for the process. At most 5,000 files of under 256 KiB each are
+  held this way; past that, a launch says where it stopped, and the rest
+  are learned from what the scanner misses.
+
+## 2026-10-19: platform 0.13.0, core 0.24.0, fabric 0.19.0, worker 0.22.0, sdk 0.18.0, react 0.4.0, config 0.3.2, cli 0.2.9, loom 0.3.2, create-nimbus-app 0.2.5 (runtimes unchanged: runtime-bash 5.2.37-7, runtime-cpython 3.13.14-3, runtime-git 2.53.0-1)
+
 - Fixed: the shell's patterns, trims, substitutions, `${#x}` and IFS count
   characters, as bash does in a UTF-8 locale, not UTF-16 units. `${x%?}` of
   😀 leaves nothing rather than half of it, `?` and `case 😀 in ?)` match it
@@ -45,6 +60,12 @@ published independently in the `@nimbus-sh` npm scope.
   other character outside the Basic Multilingual Plane at a chunk boundary
   read back with two replacement characters in place of it, from a
   process's resident store.
+
+- Fixed: the shell's patterns, trims, substitutions, `${#x}` and IFS count
+  characters, as bash does in a UTF-8 locale, not UTF-16 units. `${x%?}` of
+  😀 leaves nothing rather than half of it, `?` and `case 😀 in ?)` match it
+  whole, `${#x}` is 1, and IFS=😀 joins and splits by 😀 without splitting
+  😁. Before, these could leave a lone surrogate in a value.
 - Fixed: the shell reads quoting as bash does wherever quoting decides what
   a word is.
   - A quoted reserved word is a command: `'if' true` runs a command named

@@ -40,6 +40,7 @@
 import assert from 'node:assert/strict';
 import { join, resolve } from 'node:path';
 import { build } from 'esbuild';
+import { wranglerNodeBuiltins } from './lib/wrangler-node-builtins.mjs';
 import { servePlainWorkerd } from './lib/plain-workerd.mjs';
 
 const REPO = resolve(import.meta.dirname, '../..');
@@ -57,6 +58,7 @@ const bundled = await build({
   nodePaths: [join(REPO, 'packages/worker/node_modules')],
   write: false,
   logLevel: 'error',
+  plugins: [wranglerNodeBuiltins],
 });
 const served = await servePlainWorkerd({
   name: 'rpc-private-surface',
