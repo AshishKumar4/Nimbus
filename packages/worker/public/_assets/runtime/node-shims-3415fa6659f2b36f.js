@@ -218,15 +218,11 @@ function safeGenerator(fn) {
 function ownField(object, key) {
   return objectHasOwn(object, key) ? reflectGet(object, key) : void 0;
 }
-<<<<<<<< HEAD:packages/worker/public/_assets/runtime/node-shims-e724a2e586e81ae4.js
 var mapGet = uncurryThis(Map.prototype.get);
 var MapConstructor = Map;
 var objectPreventExtensions = Object.preventExtensions;
 var symbolToStringTag = Symbol.toStringTag;
-return { ArrayConstructor, ArrayFrom, ArrayIteratorNext, ArrayIteratorPrototype, ArrayPrototypeIndexOf, ArrayPrototypeLastIndexOf, ArrayPrototypePop, ArrayPrototypeToSpliced, ArrayPrototypeWith, ArrayValues, BigInt: BigIntOf, BigIntPrototypeToString, Error: ErrorConstructor, FunctionPrototypeBind, GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, JSONParse, JSONStringify, MapConstructor, NumberOf, NumberPrototypeToString, ObjectOf, ObjectPrototype, ObjectPrototypeHasOwnProperty, ObjectPrototypePropertyIsEnumerable, ObjectPrototypeToString, PromiseConstructor, PromisePrototypeThen, PromiseReject, PromiseResolve, RangeError: RangeErrorConstructor, ReferenceError: ReferenceErrorConstructor, RegExp: RegExpConstructor, RegExpPrototypeAccessors, RegExpPrototypeExec, SafeAsyncGeneratorPrototype, SafeGeneratorPrototype, SafeList, SafeMap, SafeRegExpPrototype, SafeSet, SafeWeakMap, SafeWeakSet, StringFromCharCode, StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeIndexOf, StringPrototypeLastIndexOf, StringPrototypeSlice, StringPrototypeSubstr, SymbolConstructor, SymbolPrototypeDescription, SymbolPrototypeToString, SyntaxError: SyntaxErrorConstructor, TypeError: TypeErrorConstructor, URIError: URIErrorConstructor, URL: URLConstructor, arrayIncludes, arrayIndexOf, arrayIsArray, arrayJoin, arraySort, captureStackTraceOf, dataDescriptor, decodeURIComponentOf, encodeURIComponentOf, generatorNext, generatorThrow, globalObject, mapGet, mathAbs, newURL, numberIsInteger, objectAssign, objectCreate, objectDefineProperties, objectFreeze, objectGetOwnPropertyNames, objectHasOwn, objectIs, objectIsExtensible, objectKeys, objectPreventExtensions, ownField, parseFloatOf, parseIntOf, reflectApply, reflectConstruct, reflectDefineProperty, reflectDeleteProperty, reflectGet, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectHas, reflectOwnKeys, reflectSet, reflectSetPrototypeOf, regExpExec, safeGenerator, setForEach, stringCharCodeAt, stringEndsWith, stringIncludes, stringIndexOf, stringLastIndexOf, stringOf, stringSlice, stringStartsWith, stringToLowerCase, symbolAsyncIterator, symbolFor, symbolIterator, symbolToStringTag, symbolUnscopables, useCaptureStackTrace };
-========
-return { ArrayConstructor, ArrayFrom, ArrayIteratorNext, ArrayIteratorPrototype, ArrayPrototypeIndexOf, ArrayPrototypeLastIndexOf, ArrayPrototypePop, ArrayPrototypeToSpliced, ArrayPrototypeWith, ArrayValues, BigInt: BigIntOf, BigIntPrototypeToString, Error: ErrorConstructor, FunctionPrototypeBind, GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, JSONParse, JSONStringify, NumberOf, NumberPrototypeToString, ObjectOf, ObjectPrototype, ObjectPrototypeHasOwnProperty, ObjectPrototypePropertyIsEnumerable, ObjectPrototypeToString, PromiseConstructor, PromisePrototypeThen, PromiseReject, PromiseResolve, RangeError: RangeErrorConstructor, ReferenceError: ReferenceErrorConstructor, RegExp: RegExpConstructor, RegExpPrototypeAccessors, RegExpPrototypeExec, SafeAsyncGeneratorPrototype, SafeGeneratorPrototype, SafeList, SafeMap, SafeRegExpPrototype, SafeSet, SafeWeakMap, SafeWeakSet, StringFromCharCode, StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeIndexOf, StringPrototypeLastIndexOf, StringPrototypeSlice, StringPrototypeSubstr, SymbolConstructor, SymbolPrototypeDescription, SymbolPrototypeToString, SyntaxError: SyntaxErrorConstructor, TypeError: TypeErrorConstructor, URIError: URIErrorConstructor, URL: URLConstructor, arrayIncludes, arrayIndexOf, arrayIsArray, arrayJoin, arraySort, captureStackTraceOf, dataDescriptor, decodeURIComponentOf, encodeURIComponentOf, generatorNext, generatorThrow, globalObject, mathAbs, mathMin, newURL, numberIsInteger, objectAssign, objectCreate, objectDefineProperties, objectFreeze, objectGetOwnPropertyNames, objectHasOwn, objectIs, objectIsExtensible, objectKeys, ownField, parseFloatOf, parseIntOf, reflectApply, reflectConstruct, reflectDefineProperty, reflectDeleteProperty, reflectGet, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectHas, reflectOwnKeys, reflectSet, reflectSetPrototypeOf, regExpExec, safeGenerator, setForEach, stringCharCodeAt, stringEndsWith, stringIncludes, stringIndexOf, stringLastIndexOf, stringOf, stringSlice, stringStartsWith, stringToLowerCase, symbolAsyncIterator, symbolFor, symbolIterator, symbolUnscopables, useCaptureStackTrace };
->>>>>>>> work/loader-primordials-4-late:packages/worker/public/_assets/runtime/node-shims-ba5a80ab9450834e.js
+return { ArrayConstructor, ArrayFrom, ArrayIteratorNext, ArrayIteratorPrototype, ArrayPrototypeIndexOf, ArrayPrototypeLastIndexOf, ArrayPrototypePop, ArrayPrototypeToSpliced, ArrayPrototypeWith, ArrayValues, BigInt: BigIntOf, BigIntPrototypeToString, Error: ErrorConstructor, FunctionPrototypeBind, GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, JSONParse, JSONStringify, MapConstructor, NumberOf, NumberPrototypeToString, ObjectOf, ObjectPrototype, ObjectPrototypeHasOwnProperty, ObjectPrototypePropertyIsEnumerable, ObjectPrototypeToString, PromiseConstructor, PromisePrototypeThen, PromiseReject, PromiseResolve, RangeError: RangeErrorConstructor, ReferenceError: ReferenceErrorConstructor, RegExp: RegExpConstructor, RegExpPrototypeAccessors, RegExpPrototypeExec, SafeAsyncGeneratorPrototype, SafeGeneratorPrototype, SafeList, SafeMap, SafeRegExpPrototype, SafeSet, SafeWeakMap, SafeWeakSet, StringFromCharCode, StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeIndexOf, StringPrototypeLastIndexOf, StringPrototypeSlice, StringPrototypeSubstr, SymbolConstructor, SymbolPrototypeDescription, SymbolPrototypeToString, SyntaxError: SyntaxErrorConstructor, TypeError: TypeErrorConstructor, URIError: URIErrorConstructor, URL: URLConstructor, arrayIncludes, arrayIndexOf, arrayIsArray, arrayJoin, arraySort, captureStackTraceOf, dataDescriptor, decodeURIComponentOf, encodeURIComponentOf, generatorNext, generatorThrow, globalObject, mapGet, mathAbs, mathMin, newURL, numberIsInteger, objectAssign, objectCreate, objectDefineProperties, objectFreeze, objectGetOwnPropertyNames, objectHasOwn, objectIs, objectIsExtensible, objectKeys, objectPreventExtensions, ownField, parseFloatOf, parseIntOf, reflectApply, reflectConstruct, reflectDefineProperty, reflectDeleteProperty, reflectGet, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectHas, reflectOwnKeys, reflectSet, reflectSetPrototypeOf, regExpExec, safeGenerator, setForEach, stringCharCodeAt, stringEndsWith, stringIncludes, stringIndexOf, stringLastIndexOf, stringOf, stringSlice, stringStartsWith, stringToLowerCase, symbolAsyncIterator, symbolFor, symbolIterator, symbolToStringTag, symbolUnscopables, useCaptureStackTrace };
 })();
 
 var { captureStack, determineSpecificType, hideStackFrames, invalidArgType, invalidArgValue, isErrorStackTraceLimitWritable, nodeError, nodeErrorCodes, nodeSystemError, outOfRange, reshapeAsNodeError, useNodeErrorInspect } = (() => {
@@ -5191,7 +5187,7 @@ const __fsMod = (() => {
   }
   // Parked cells that are not the file's whole content (an append to a file
   // this view never held): by generation, as the cell is.
-  const _parkedPartial = new Map();
+  const _parkedPartial = new __NimbusSafeMap();
   // What dates an own mutation's cell (__nimbusEndOwnMutation): a logged
   // op's mutation receipt, or what a call made in its place answered.
   function _receiptOf(answer) {
@@ -5383,7 +5379,7 @@ const __fsMod = (() => {
    * or a poison is judged only by what is reported after it began. Sharing the
    * earlier read's record condemned the read issued to replace it.
    */
-  const _fillReports = new Map();
+  const _fillReports = new __NimbusSafeMap();
 
   /**
    * Begin a live read of `k`: the cursor it is issued under — every mutation
@@ -5395,7 +5391,7 @@ const __fsMod = (() => {
     const fill = { k, rev: _cursor.rev, reported: -1 };
     let live = _fillReports.get(k);
     if (!live) {
-      live = new Set();
+      live = new __NimbusSafeSet();
       _fillReports.set(k, live);
     }
     live.add(fill);
@@ -5647,7 +5643,7 @@ const __fsMod = (() => {
    * eviction and a refetch, never a stale byte.
    */
   function _settleSkippedReports(ownAtStart, repaired) {
-    const reports = new Map();
+    const reports = new __NimbusSafeMap();
     if (repaired && repaired.cursor && repaired.reconciled && Array.isArray(repaired.own)) {
       for (const entry of repaired.own) reports.set(entry.path, entry.rev);
     } else {
@@ -6012,7 +6008,7 @@ const __fsMod = (() => {
    * ticket that read installs under — the cursor it was issued at, and the
    * reports noted against it since.
    */
-  const _refetching = new Map();
+  const _refetching = new __NimbusSafeMap();
 
   /**
    * Read `k` live and install it, behind the barrier just taken. Settles
@@ -21857,6 +21853,7 @@ var generatorPrototype = reflectGetPrototypeOf(function* () {
 }.prototype);
 var generatorNext = uncurryThis(reflectGet(generatorPrototype ?? {}, "next"));
 var generatorThrow = uncurryThis(reflectGet(generatorPrototype ?? {}, "throw"));
+var mapGet = uncurryThis(Map.prototype.get);
 
 function relativeWasmPaths(source, filename) {
   const literals = /["'`]((?:\.{1,2}\/)*[\w@.-]+(?:\/[\w@.-]+)*\.wasm)["'`]/g;
