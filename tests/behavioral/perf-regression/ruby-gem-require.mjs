@@ -10,7 +10,7 @@ import { assertCandidateRounds, assertPaired, measurePaired, requirePairedTarget
 
 const a = makeAsserter('perf-regression/ruby-gem-require');
 const arms = requirePairedTargets('perf-regression/ruby-gem-require');
-console.log(`perf-regression/ruby-gem-require — baseline ${arms.a1.base}, ${arms.a2.base}; candidate ${arms.b.base}`);
+console.log(`perf-regression/ruby-gem-require — baseline ${arms.a1.base}, ${arms.a2.base}; candidate ${arms.b1.base}, ${arms.b2.base}`);
 
 const ROUNDS = 20;
 const GEMS = 30;

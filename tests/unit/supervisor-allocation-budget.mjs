@@ -33,7 +33,10 @@ const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
   await tick();
   assert.equal(admitted, 4);
-  assert.deepEqual(budget.stats, {
+  const { holders, waiting, ...totals } = budget.stats;
+  assert.equal(holders.length, 4);
+  assert.equal(waiting.length, 8);
+  assert.deepEqual(totals, {
     capacity: 32,
     current: 32,
     peak: 32,

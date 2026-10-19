@@ -62,7 +62,8 @@ const bundled = [];
 let dropped = 0;
 const bundlePool = {
   acquire: async () => ({
-    prebundle: async (spec) => {
+    prebundle: async (task) => {
+      const spec = task.prepare();
       bundled.push(spec.specifier);
       // The client destroys the session while this one is in flight.
       if (bundled.length === 1) dropped = deleteAll();
@@ -144,7 +145,8 @@ assert.match(lines, /Pre-bundle complete: 0\/0 succeeded, 5 stopped/, lines);
     esbuild: new EsbuildService(undefined, {}),
     bundlePool: {
       acquire: async () => ({
-        prebundle: async (spec) => {
+        prebundle: async (task) => {
+          const spec = task.prepare();
           sent.push(spec.specifier);
           return { specifier: spec.specifier, ok: true, esmCode: 'export const x = 1;', elapsed: 0, warnings: [] };
         },

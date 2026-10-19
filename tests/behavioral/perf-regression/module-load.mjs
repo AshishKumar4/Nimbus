@@ -21,7 +21,7 @@ import { assertCandidateRounds, assertPaired, measurePaired, requirePairedTarget
 
 const a = makeAsserter('perf-regression/module-load');
 const arms = requirePairedTargets('perf-regression/module-load');
-console.log(`perf-regression/module-load — baseline ${arms.a1.base}, ${arms.a2.base}; candidate ${arms.b.base}`);
+console.log(`perf-regression/module-load — baseline ${arms.a1.base}, ${arms.a2.base}; candidate ${arms.b1.base}, ${arms.b2.base}`);
 
 const ROUNDS = 40;
 const PACKAGES = 24;

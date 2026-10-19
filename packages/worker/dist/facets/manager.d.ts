@@ -1793,7 +1793,7 @@ export declare class FacetManager {
     private _launchStage;
     /** `pid`'s launch is over: its run was entered, or it ended before it could be. */
     private _launchEnded;
-    /** The one-shot launches not yet running (their stage and its age) and the launches waiting for a turn. */
+    /** Launches not yet running (their stage and its age) and the launches waiting for a turn. */
     launchState(now?: number): {
         launches: Array<{
             pid: number;
@@ -2003,6 +2003,7 @@ export declare class FacetManager {
     private _launchEnds;
     /** The launches holding the supervisor's credit, or null where some of it is held by other work (another session's, a write wave). */
     private _creditHolders;
+    private _allocationOwner;
     /**
      * A launch's share of the credit for the module map it makes from `state`
      * (another launch's build, the cache's), taken before it holds a worker:

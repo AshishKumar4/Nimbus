@@ -462,7 +462,7 @@ export class NpmInstaller {
             // through this invocation's `log`, which turns to the console once the
             // command has returned, so a late line never lands on the redrawn
             // prompt or in another install's output.
-            void withRecall(() => this.prebundleUsedModules(engineDir, rootPackages(installing()), this.store.as(opts.cred), log))
+            void withRecall(() => this.prebundleUsedModules(engineDir, rootPackages(installing()), this.store.as(opts.cred), log, opts.pid, opts.signal))
                 .catch((e) => log(`pre-bundle skipped: ${errorText(e)}`));
             phases['bundle'] = Date.now() - phaseStart;
         }
@@ -1733,13 +1733,14 @@ export class NpmInstaller {
      * most one is held. Best effort: the dev server bundles on demand whatever
      * is not warm.
      */
-    async prebundleUsedModules(projDir, installed, fs, progress) {
+    async prebundleUsedModules(projDir, installed, fs, progress, pid, signal) {
         // Built in the session's build facet: a caller without esbuild (whose
         // parser scans the project) or without the pool does not warm.
         if (!this.esbuild || !this.bundlePool)
             return;
         const ctx = {
             vfs: fs, root: projDir, cache: this.cache, pool: this.bundlePool, parse: transformParser(this.esbuild), esbuild: this.esbuild, serviceFallback: false,
+            signal, owner: { pid, session: this.ctx?.id?.toString() },
         };
         const scan = await scanProject(ctx);
         if (scan.unread !== null) {

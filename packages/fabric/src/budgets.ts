@@ -874,6 +874,12 @@ export function suspendHeldAdmission(ctx: object): ((signal?: AbortSignal) => Pr
   return suspendLaunchAdmission(ctx);
 }
 
+/** Whether this frame is a running, claimed launch, not a preparation's reserved worker. */
+export function runningLaunchAdmission(ctx: object): boolean {
+  const admission = launchAdmission.getStore();
+  return admission?.ctx === ctx && admission.end !== undefined && admission.claimed && !admission.closed;
+}
+
 export function claimAdmission(ctx: object, pid?: number): EndLoaderFetch | undefined {
   const admission = launchAdmission.getStore();
   if (admission?.ctx !== ctx || admission.end === undefined || admission.claimed) return undefined;
@@ -904,13 +910,14 @@ function claimed(admission: Admission, runner: EndLoaderFetch): EndLoaderFetch {
  * a launch whose admission is given back while it prepares again).
  * End the hold from the caller's own `finally`, as beginLoaderFetch's.
  */
-export async function beginHelperFetch(ctx: object, workerKey: string): Promise<EndLoaderFetch> {
+export async function beginHelperFetch(ctx: object, workerKey: string, signal?: AbortSignal): Promise<EndLoaderFetch> {
+  signal?.throwIfAborted();
   const admitted = beginAdmittedFetch(ctx);
   if (admitted !== undefined) return admitted;
   const admission = launchAdmission.getStore();
   const preparing = launchPreparation.getStore();
   const process = admission?.ctx === ctx ? admission.process : preparing?.ctx === ctx ? preparing.process : undefined;
-  return beginLoaderFetchWhenFree(ctx, workerKey, process === undefined ? {} : { process });
+  return beginLoaderFetchWhenFree(ctx, workerKey, { ...(process === undefined ? {} : { process }), signal });
 }
 
 /**
