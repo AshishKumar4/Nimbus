@@ -72,6 +72,8 @@ const GUEST_LOADING = [
   fileURLToPath(new URL('../../packages/worker/src/vfs/resident/namespace-lookup.ts', import.meta.url)),
   fileURLToPath(new URL('../../packages/worker/src/vfs/resident/namespace.ts', import.meta.url)),
   fileURLToPath(new URL('../../packages/worker/src/vfs/resident/transport.ts', import.meta.url)),
+  fileURLToPath(new URL('../../packages/worker/src/vfs/resident/cells.ts', import.meta.url)),
+  fileURLToPath(new URL('../../packages/worker/src/vfs/resident/cell-cost.ts', import.meta.url)),
 ];
 const FILES = [
   ...readdirSync(DIR).filter((f) => f.endsWith('.ts') && !UNCHECKED.has(f)).map((f) => join(DIR, f)),
