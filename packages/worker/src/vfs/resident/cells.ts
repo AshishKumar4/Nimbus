@@ -29,7 +29,7 @@ import { nsKey } from './namespace-lookup.js';
 import { SafeMap, SafeSet, stringSlice } from '@nimbus-sh/core/_shared/primordials.js';
 import { RESIDENT_CHUNK_BYTES } from '../facet-resident-limits.js';
 import type { VfsAcquireResult } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { RK_BINARY, RK_DENIED, RK_OWN_WRITE, RK_TEXT, type FileHead, type ResidentTables } from './tables.js';
+import { RK_BINARY, RK_DENIED, RK_OWN_WRITE, RK_TEXT, type ChunkRow, type FileHead, type ResidentTables } from './tables.js';
 
 /** An own write held in memory: the store had no room for it in its tables. */
 interface HeldCell { cell: ResidentCell; rev: number }
@@ -133,12 +133,16 @@ export function createCells(
       return sameBytes(typeof cell === 'string' ? encodeText(cell) : residentBytes(cell), typeof incoming === 'string' ? encodeText(incoming) : residentBytes(incoming));
     }
     if (found.kind === RK_DENIED) return false;
+    // One chunk is read as `get` reads it; a file of several, in part order.
+    const rows = (): (ChunkRow | undefined)[] => (found.chunks === 1 ? [t.chunkFirst(path)] : t.chunkParts(path));
     if (found.kind === RK_TEXT && typeof incoming === 'string') {
       if (found.size !== incoming.length) return false;
+      if (found.chunks === 1) return t.chunkFirst(path)?.txt === incoming;
       let at = 0;
-      for (const row of t.chunkParts(path)) {
+      for (const row of rows()) {
+        if (row === undefined) return false;
         const text = row.txt ?? '';
-        if (incoming.slice(at, at + text.length) !== text) return false;
+        if (stringSlice(incoming, at, at + text.length) !== text) return false;
         at += text.length;
       }
       return at === incoming.length;
@@ -148,7 +152,8 @@ export function createCells(
     if (found.kind === RK_BINARY ? found.size !== bytes.byteLength : bytes.byteLength < found.size || bytes.byteLength > 3 * found.size) return false;
     // A text chunk never ends inside a surrogate pair (textChunkEnds): each encodes whole.
     let at = 0;
-    for (const row of t.chunkParts(path)) {
+    for (const row of rows()) {
+      if (row === undefined) return false;
       const part = found.kind === RK_TEXT ? encodeText(row.txt ?? '') : residentBytes(row.bin);
       if (!sameBytes(part, bytes.subarray(at, at + part.byteLength))) return false;
       at += part.byteLength;
