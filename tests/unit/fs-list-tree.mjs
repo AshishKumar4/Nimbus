@@ -24,6 +24,8 @@ for (const file of ['home/user/proj/x.txt', 'home/user/proj/a/y.txt', 'home/user
   kernel.writeFile(file, file);
 }
 kernel.chmod('home/user/proj/closed', 0o700);
+kernel.symlink('proj', 'home/user/to-proj');
+kernel.symlink('empty', 'home/user/to-empty');
 const bridge = new ProcessFiles(engine).bind({ pid: 7, cred: USER });
 
 const listing = await subtreeListing(bridge, '/home/user/proj', 100);
@@ -42,6 +44,8 @@ await assert.rejects(subtreeListing(bridge, '/home/user/proj', 5), (error) => er
 assert.deepEqual((await subtreeListing(bridge, '/home/user/empty', 10)).entries, [], 'an empty directory');
 await assert.rejects(subtreeListing(bridge, '/home/user/proj/a/b/z.txt', 10), (error) => error.code === 'ENOTDIR', 'a file is no directory to list');
 await assert.rejects(subtreeListing(bridge, '/home/user/gone', 10), (error) => error.code === 'ENOENT', 'nor is a name that is not there');
+await assert.rejects(subtreeListing(bridge, '/home/user/to-proj', 10), (error) => error.code === 'ENOTDIR', 'nor a link, which is not walked through: its directory is not empty');
+await assert.rejects(subtreeListing(bridge, '/home/user/to-empty', 10), (error) => error.code === 'ENOTDIR', 'whatever it leads to');
 {
   // A change between its pages: the walk is made again, never mixed.
   let calls = 0;
