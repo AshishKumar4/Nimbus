@@ -26,9 +26,20 @@ class CreditLane {
     get stats() {
         return { current: this.current, peak: this.peak, queued: this.waiters.length + this.ahead.length };
     }
-    /** Whether an ask ahead waits for credit not free: one woken to its turn has it. */
-    get aheadQueued() {
-        return this.ahead.some((waiter) => waiter.woken === null);
+    /**
+     * Whether an ask ahead waits for credit that is not free beside what the
+     * turns woken before it are taking: what reclaiming more would be for.
+     */
+    get aheadStarved() {
+        let promised = this.current;
+        for (const waiter of this.ahead) {
+            if (waiter.state === 'woken') {
+                promised += waiter.bytes;
+                continue;
+            }
+            return promised + waiter.bytes > this.capacity;
+        }
+        return false;
     }
     /** Granted now, or null: an ask ahead waits only for asks ahead of it, any other for every ask queued. */
     tryAcquire(bytes, ahead = false) {
@@ -56,6 +67,8 @@ class CreditLane {
                 const lease = turn.take();
                 if (lease)
                     return lease;
+                if (signal?.aborted)
+                    throw abortError(signal);
             }
         }
         finally {
@@ -64,20 +77,27 @@ class CreditLane {
     }
     /**
      * A place at the end of the queue for `bytes` (ahead of every ordinary ask,
-     * if `ahead`). While it waits it looks at the line again every
+     * if `ahead`). While it is queued it looks at the line again every
      * CREDIT_TURN_MS, so a turn another waiter never took lapses even when
      * nothing else touches the lane.
      */
     queue(bytes, signal, ahead) {
         const queue = ahead ? this.ahead : this.waiters;
-        const waiter = { bytes, woken: null, settle: null };
+        const waiter = { bytes, state: 'waiting', wokenAt: 0, turn: Promise.resolve(), wake: () => { }, refuse: () => { } };
         let recheck;
+        const arm = () => {
+            waiter.state = 'waiting';
+            waiter.turn = new Promise((resolve, reject) => { waiter.wake = resolve; waiter.refuse = reject; });
+            // Refused with no one waiting on it (a turn never observed), it is no unhandled rejection.
+            waiter.turn.catch(() => { });
+        };
         const place = () => {
+            arm();
             queue.push(waiter);
             if (recheck !== undefined)
                 return;
             const timer = setInterval(() => {
-                if (queue.includes(waiter))
+                if (waiter.state === 'waiting' || waiter.state === 'woken')
                     this.drain();
                 else {
                     clearInterval(timer);
@@ -93,9 +113,11 @@ class CreditLane {
         };
         const listen = (aborted) => {
             const onAbort = () => {
+                if (waiter.state === 'done')
+                    return;
                 remove();
-                waiter.settle?.refuse(abortError(aborted));
-                waiter.settle = null;
+                waiter.state = 'done';
+                waiter.refuse(abortError(aborted));
                 this.drain();
             };
             aborted.addEventListener('abort', onAbort, { once: true });
@@ -103,33 +125,35 @@ class CreditLane {
         };
         const unlisten = signal ? listen(signal) : () => { };
         place();
+        this.drain();
         return {
-            woken: () => new Promise((resolve, reject) => {
-                if (signal?.aborted) {
-                    reject(abortError(signal));
-                    return;
-                }
-                waiter.settle = { wake: resolve, refuse: reject };
-                this.drain();
-            }),
+            woken: () => waiter.turn,
             take: () => {
-                if (signal?.aborted)
+                if (waiter.state === 'done')
                     return null;
-                // Its turn lapsed: back to the end of the line.
-                if (!queue.includes(waiter)) {
-                    waiter.woken = null;
+                const now = Date.now();
+                // Taken past its turn: the turn passed, as if a look at the line had seen it first.
+                if (waiter.state === 'woken' && now - waiter.wokenAt >= CREDIT_TURN_MS) {
+                    remove();
+                    waiter.state = 'lapsed';
+                    this.drain(now);
+                }
+                if (waiter.state === 'lapsed') {
                     place();
+                    this.drain(now);
                     return null;
                 }
-                // Still first, its credit still free, and no running ask waiting before an ordinary one: its own now.
-                if (queue[0] === waiter && waiter.woken !== null && this.current + bytes <= this.capacity
-                    && (ahead || !this.aheadQueued)) {
+                // Its turn, its credit still free, and no running ask before an ordinary one: its own now.
+                if (waiter.state === 'woken' && this.current + bytes <= this.capacity && (ahead || this.ahead.length === 0)) {
                     remove();
+                    waiter.state = 'done';
                     const lease = this.grant(bytes);
-                    this.drain();
+                    this.drain(now);
                     return lease;
                 }
-                waiter.woken = null;
+                // Not its turn yet, or no longer room: it waits again, in its place.
+                if (waiter.state === 'woken')
+                    arm();
                 return null;
             },
             leave: () => {
@@ -137,8 +161,10 @@ class CreditLane {
                 if (recheck !== undefined)
                     clearInterval(recheck);
                 recheck = undefined;
-                remove();
-                waiter.settle = null;
+                if (waiter.state !== 'done') {
+                    remove();
+                    waiter.state = 'done';
+                }
                 this.drain();
             },
         };
@@ -203,19 +229,19 @@ class CreditLane {
     drain(now = Date.now()) {
         for (const queue of [this.ahead, this.waiters]) {
             for (let waiter = queue[0]; waiter !== undefined; waiter = queue[0]) {
-                if (waiter.woken !== null) {
-                    if (now - waiter.woken < CREDIT_TURN_MS)
+                if (waiter.state === 'woken') {
+                    if (now - waiter.wokenAt < CREDIT_TURN_MS)
                         return;
-                    // Never taken: its continuation is gone, or late, and comes back to the end of the line.
+                    // Never taken: its continuation is gone, or late and back at the end of the line if it ever takes.
                     queue.shift();
+                    waiter.state = 'lapsed';
                     continue;
                 }
-                if (this.current + waiter.bytes > this.capacity || waiter.settle === null)
+                if (this.current + waiter.bytes > this.capacity)
                     return;
-                waiter.woken = now;
-                const { wake } = waiter.settle;
-                waiter.settle = null;
-                wake();
+                waiter.state = 'woken';
+                waiter.wokenAt = now;
+                waiter.wake();
                 return;
             }
         }
@@ -300,9 +326,9 @@ export class WeightedCreditPool {
         const now = signal?.aborted ? null : this.tryAcquireAhead(bytes);
         return now ? Promise.resolve(now) : this.general.acquireAhead(bytes, signal);
     }
-    /** Whether a running program's ask (acquireAhead) waits. */
-    get aheadQueued() {
-        return this.general.aheadQueued;
+    /** Whether a running program's ask (acquireAhead) waits for credit no woken turn is taking (CreditLane.aheadStarved). */
+    get aheadStarved() {
+        return this.general.aheadStarved;
     }
     /** acquireAhead's credit now, or null. */
     tryAcquireAhead(bytes) {

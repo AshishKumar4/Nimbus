@@ -88,8 +88,8 @@ export declare class WeightedCreditPool {
      * free. It never waits on the reserve, which neither frees.
      */
     acquireAhead(bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease>;
-    /** Whether a running program's ask (acquireAhead) waits. */
-    get aheadQueued(): boolean;
+    /** Whether a running program's ask (acquireAhead) waits for credit no woken turn is taking (CreditLane.aheadStarved). */
+    get aheadStarved(): boolean;
     /** acquireAhead's credit now, or null. */
     tryAcquireAhead(bytes: number): ResizableCreditLease | null;
     /**
