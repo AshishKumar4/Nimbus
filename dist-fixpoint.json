@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "86e8913a17251aff27c6710be75797b2508f6e7df25fbf74dc5870df6430b3c0",
+  "fingerprint": "6454c4bf89f929780269e1d659fb79834a797f6a82470fc1df062f33dddd7dd8",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
