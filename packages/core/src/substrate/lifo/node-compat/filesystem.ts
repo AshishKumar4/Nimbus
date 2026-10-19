@@ -1,6 +1,6 @@
 import type { RuntimeFsBridge, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat } from '../../../runtime/os-contracts.js';
 import type { VfsEvent } from '../../../vfs/events.js';
-import { errnoCodeOf, syscallError } from '../../../vfs/vfs-error.js';
+import { errnoCodeOf, isVfsErrorCode, syscallError } from '../../../vfs/vfs-error.js';
 
 export interface NodeWatch {
   close(): void;
@@ -120,8 +120,17 @@ function bridgeFilesystem(bridge: RuntimeFsBridge, umask: () => number): NodeFil
     readlink(path) {
       const text = fs.readlink(path);
       if (text !== null) return text;
-      // The bridge answers null for no link and for nothing there: readlink(2) tells them apart.
-      throw syscallError(fs.stat(path, { followSymlinks: false }) === null ? 'ENOENT' : 'EINVAL', 'readlink', path);
+      // The bridge answers null for no link and for nothing there: readlink(2) tells them apart, and a
+      // lookup that fails on the way (ENOTDIR below a file, ELOOP) is readlink's failure too.
+      let stat;
+      try {
+        stat = fs.stat(path, { followSymlinks: false });
+      } catch (error) {
+        const code = errnoCodeOf(error);
+        if (!isVfsErrorCode(code)) throw error;
+        throw syscallError(code, 'readlink', path, { cause: error });
+      }
+      throw syscallError(stat === null ? 'ENOENT' : 'EINVAL', 'readlink', path);
     },
     mkdir: (path, options) => fs.mkdir(path, { ...options, umask: umask() }),
     readdir: path => fs.readdir(path) as RuntimeVfsDirEntry[],

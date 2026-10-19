@@ -5,8 +5,8 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
-- Fixed: the shell's `node` makes symbolic links in the session's filesystem (`fs.symlink`, in its sync, callback and promise forms). `readlink` answers the link's text; it is `EINVAL` for a file that is no link and `ENOENT` for nothing. Before, `symlink` did nothing and `readlink` returned the path it was given.
-- Fixed: the shell's `node` `fs.truncate` extends a file with zero bytes as well as cutting it, clamps a negative length to 0, and reports `open`'s errors, as Node does. It now also has a callback form, and takes a descriptor. Before, a longer length left the file unchanged, and a negative one cut from the end.
+- Fixed: the shell's `node` makes symbolic links in the session's filesystem (`fs.symlink`, in its sync, callback and promise forms). `readlink` answers the link's text; it is `EINVAL` for a file that is no link and `ENOENT` for nothing. Before, `symlink` did nothing and `readlink` returned the path it was given. `readlink` answers in the encoding asked, and a lookup that fails on the way to a link (`ENOTDIR`, `ELOOP`) is `readlink`'s error. A path given to `fs` may be a `Buffer` or a `file:` URL, whose path is decoded (`%20` is a space); another scheme is `ERR_INVALID_URL_SCHEME`. A callback that is not a function is refused before anything is done.
+- Fixed: the shell's `node` `fs.truncate` extends a file with zero bytes as well as cutting it, clamps a negative length to 0, and reports `open`'s errors, as Node does. It now also has a callback form, and takes a descriptor; `fs.promises.truncate` takes a path only, as Node's does. Before, a longer length left the file unchanged, and a negative one cut from the end.
 - Changed: a `ruby` one-shot (`ruby -e`, `gem --version`, `bundle --version`
   and the like) runs on one of its session's warm Ruby workers, which keep
   ruby+stdlib.wasm compiled, instead of loading it into a new worker every

@@ -13,7 +13,12 @@
 //     the sync, callback and promise forms, and on a descriptor as ftruncate
 //     (Node's deprecation warning for that, DEP0081, is not compared: this
 //     node prints none); a directory opened for writing is EISDIR, as
-//     open(2) answers Node.
+//     open(2) answers Node; the promise form takes a path only;
+//   - a path is a string, a Buffer's text or a file: URL's decoded path
+//     (another scheme is refused); readlink answers in the encoding asked
+//     (an unknown one refused); a callback that is not a function is refused
+//     before anything is done; a lookup that fails on the way to a link
+//     (ENOTDIR, ELOOP) is readlink's failure.
 //
 // Red before (audit X-M1, X-M2): symlink did nothing, readlink answered the
 // path it was given, and truncate never extended a file and cut by
@@ -27,8 +32,12 @@ import { join } from 'node:path';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { hostSqlite } from './lib/host-sqlite.mjs';
 
+// Each asynchronous call waits for the one before: Node does not order
+// independent ones.
 const PRELUDE = String.raw`const fs = require("fs");
 const t = (f) => { try { const v = f(); return v === undefined ? "ok" : v } catch (e) { return e.code + " " + e.syscall } };
+const m = (f) => { try { f(); return "ok" } catch (e) { return e.code + " " + e.message } };
+const run = (f) => new Promise((r) => f((e, s) => r((e ? e.code + " " + e.syscall : "ok") + " " + s)));
 const bytes = (p) => JSON.stringify([...fs.readFileSync(p)]);`;
 
 const LINKS = String.raw`${PRELUDE}
@@ -42,10 +51,22 @@ console.log("dangling", t(() => fs.symlinkSync("nowhere", "dead")), t(() => fs.r
 console.log("no link", t(() => fs.readlinkSync("d/f")), t(() => fs.readlinkSync("d")));
 console.log("nothing", t(() => fs.readlinkSync("missing")));
 console.log("over", t(() => fs.symlinkSync("x", "d/f")), t(() => fs.symlinkSync("x", "top")));
-fs.symlink("d/f", "cb", (e) => { console.log("cb symlink", e && e.code); fs.readlink("cb", (e, s) => console.log("cb readlink", e && e.code, s));
-  fs.readlink("d/f", (e) => console.log("cb einval", e.code, e.syscall));
-  fs.promises.symlink("d/f", "pr").then(() => fs.promises.readlink("pr")).then((s) => console.log("promise", s));
-  fs.promises.readlink("missing").catch((e) => console.log("promise enoent", e.code)); });`;
+console.log("encoding", t(() => fs.readlinkSync("top", "hex")), t(() => fs.readlinkSync("top", { encoding: "base64" })), m(() => fs.readlinkSync("top", "bogus")));
+console.log("buffer path", t(() => fs.symlinkSync(Buffer.from("d/f"), Buffer.from("buf"))), t(() => fs.readlinkSync(Buffer.from("buf"))));
+const here = "file://" + process.cwd();
+console.log("file url", t(() => fs.symlinkSync(new URL("file:///tmp/a%20b"), new URL(here + "/u%20l"))), t(() => fs.readlinkSync("u l")), t(() => fs.readlinkSync(new URL(here + "/u%20l"))));
+console.log("other url", m(() => fs.symlinkSync("d/f", new URL("http://x/y"))), m(() => fs.readlinkSync(new URL("http://x/top"))));
+console.log("below file", t(() => fs.readlinkSync("d/f/child")));
+console.log("loop", t(() => fs.symlinkSync("loop", "loop")), t(() => fs.readlinkSync("loop/x")));
+console.log("no callback", m(() => fs.symlink("d/f", "nocb")), fs.existsSync("nocb"), m(() => fs.readlink("top")), m(() => fs.readlink("top", null)));
+(async () => {
+  console.log("cb symlink", await run((cb) => fs.symlink("d/f", "cb", cb)));
+  console.log("cb readlink", await run((cb) => fs.readlink("cb", cb)), await run((cb) => fs.readlink("cb", "hex", cb)));
+  console.log("cb einval", await run((cb) => fs.readlink("d/f", cb)));
+  await fs.promises.symlink("d/f", "pr");
+  console.log("promise", await fs.promises.readlink("pr"), await fs.promises.readlink("pr", "base64"));
+  console.log("promise enoent", await fs.promises.readlink("missing").catch((e) => e.code + " " + e.syscall));
+})();`;
 
 const TRUNCATE = String.raw`${PRELUDE}
 fs.writeFileSync("x", "abc");
@@ -61,11 +82,18 @@ console.log("dir", t(() => fs.truncateSync("dir", 1)));
 fs.writeFileSync("y", "hello");
 const fd = fs.openSync("y", "r+"); fs.truncateSync(fd, 2); fs.closeSync(fd);
 console.log("fd", bytes("y"));
-fs.truncate("y", 4, (e) => { console.log("cb", e && e.code, bytes("y"));
-  fs.truncate("y", (e) => { console.log("cb none", e && e.code, bytes("y"));
-    fs.promises.truncate("y", 3).then(() => { console.log("promise", bytes("y"));
-      return fs.promises.truncate("missing").catch((e) => console.log("promise missing", e.code, e.syscall)); }); }); });
-console.log("open dir", t(() => fs.openSync("dir", "r+")), t(() => fs.openSync("dir", "w")), typeof fs.openSync("dir", "r"));`;
+console.log("open dir", t(() => fs.openSync("dir", "r+")), t(() => fs.openSync("dir", "w")), typeof fs.openSync("dir", "r"));
+console.log("no callback", m(() => fs.truncate("y", 0, null)), m(() => fs.truncate("y", 0)), bytes("y"));
+(async () => {
+  console.log("cb", await run((cb) => fs.truncate("y", 4, cb)), bytes("y"));
+  console.log("cb none", await run((cb) => fs.truncate("y", cb)), bytes("y"));
+  await fs.promises.truncate("y", 3);
+  console.log("promise", bytes("y"));
+  console.log("promise missing", await fs.promises.truncate("missing").catch((e) => e.code + " " + e.syscall));
+  const descriptor = fs.openSync("y", "r+");
+  console.log("promise fd", await fs.promises.truncate(descriptor, 0).catch((e) => e.code), bytes("y"));
+  fs.closeSync(descriptor);
+})();`;
 
 const CASES = [
   [`node -e '${LINKS}'; echo "status=$?"`, 'symlink and readlink, as Node makes and reads them'],
