@@ -480,9 +480,10 @@ assert.equal(noTs.rules.typescript.files, 0);
   assert.deepEqual(direct.roots, withOxide.sourceRoots);
 }
 
-// A source can name a tree of any size: the rule holds at most
-// STYLESHEET_SOURCE_MAX_FILES files, each under the package-data bound, and
-// says where it stopped. The rest are learned from the scanner's misses.
+// A source can name a tree of any size, or as many files: the rule holds at
+// most STYLESHEET_SOURCE_MAX_FILES files, each under the package-data bound,
+// and returns where it stopped, for the launch to say so. The rest are
+// learned from the scanner's misses.
 {
   const tree = {
     'home/user/app/src/index.css': '@import "tailwindcss";\n@source "../..";',
@@ -490,21 +491,22 @@ assert.equal(noTs.rules.typescript.files, 0);
     'home/user/aab/huge.tsx': big(PACKAGE_DATA_MAX_BYTES),
   };
   for (let i = 0; i < STYLESHEET_SOURCE_MAX_FILES + 50; i++) tree[`home/user/big/f${String(i).padStart(5, '0')}.tsx`] = 'x';
-  const warned = [];
-  const warn = console.warn;
-  console.warn = (...args) => warned.push(args.join(' '));
-  let found;
-  try {
-    found = await planStylesheetSources(namespace(tree), { cwd: '/home/user/app', home: '/home/user', sheets: ['home/user/app/src/index.css'] });
-  } finally {
-    console.warn = warn;
-  }
+  const ns = namespace(tree);
+  const found = await planStylesheetSources(ns, { cwd: '/home/user/app', home: '/home/user', sheets: ['home/user/app/src/index.css'] });
   const held = new Set(found.files.map((f) => f.path));
   assert.equal(found.files.length, STYLESHEET_SOURCE_MAX_FILES, 'the walk holds no more than the bound');
   assert.ok(held.has('home/user/aaa/small.tsx'), 'a file under the bounds is held');
   assert.ok(!held.has('home/user/aab/huge.tsx'), 'a file over the package-data bound is not');
   assert.equal(found.stopped, '/home/user', 'it names where it stopped');
-  assert.equal(warned.filter((line) => line.includes('stylesheet sources: stopped at') && line.includes('/home/user')).length, 1, `and says so once: ${JSON.stringify(warned)}`);
+  const planned = await planFacetData(ns, { cwd: '/home/user/app', home: '/home/user', closure: ['home/user/app/node_modules/@tailwindcss/oxide/index.js'], refs: [] });
+  assert.equal(planned.sourcesStopped, '/home/user', 'a resident\'s plan carries where it stopped');
+
+  // Files a source names one by one count toward the same bound.
+  const named = { 'home/user/app/src/index.css': `@import "tailwindcss";\n@source "../../each/{0..${STYLESHEET_SOURCE_MAX_FILES + 49}}.tsx";` };
+  for (let i = 0; i < STYLESHEET_SOURCE_MAX_FILES + 50; i++) named[`home/user/each/${i}.tsx`] = 'x';
+  const byName = await planStylesheetSources(namespace(named), { cwd: '/home/user/app', home: '/home/user', sheets: ['home/user/app/src/index.css'] });
+  assert.equal(byName.files.length, STYLESHEET_SOURCE_MAX_FILES, 'files named one by one are bounded too');
+  assert.ok(byName.stopped !== null, 'and say where they stopped');
 }
 
 // The project's stylesheets behind its links are its stylesheets: a sheet

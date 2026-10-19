@@ -113,6 +113,8 @@ export interface DataPlan {
   rules: Record<DataPlanRule, { files: number; bytes: number }>;
   /** The stylesheet sources outside the working tree it planned (stylesheet-source), as absolute paths. */
   sourceRoots: string[];
+  /** Where the stylesheet-source walk stopped at its bound (planStylesheetSources' `stopped`), or null. */
+  sourcesStopped: string | null;
   /** The names the namespace listed, once however many walks the plan took: what a store holding it holds a row for. */
   names: number;
 }
@@ -655,10 +657,12 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
   }
 
   const sourceRoots: string[] = [];
+  let sourcesStopped: string | null = null;
   if (oxide) {
     const found = await planStylesheetSources({ ...source, linkTarget: links.linkTarget }, { cwd, home, sheets: projectSheets, spend: input.spend });
     for (const entry of found.files) take(entry, 'stylesheet-source');
     sourceRoots.push(...found.roots);
+    sourcesStopped = found.stopped;
     if (found.read.length > 0 && input.nameSources) {
       // Named, what the walk read on a mount the listing did not walk joins
       // the listing, with the directories above it there: the names it adds
@@ -672,7 +676,7 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
     }
   }
 
-  return { paths, bytes, rules, sourceRoots, names };
+  return { paths, bytes, rules, sourceRoots, sourcesStopped, names };
 }
 
 /** Whether key `k` is `dir` or below it. */
@@ -739,8 +743,9 @@ function below(dir: WalkedDir, at: string): boolean {
  * mount that walks only what is named must be named.
  *
  * It holds a file under the package-data bound (PACKAGE_DATA_MAX_BYTES), and
- * at most STYLESHEET_SOURCE_MAX_FILES of them: at that, `stopped` names the
- * root it was walking.
+ * at most STYLESHEET_SOURCE_MAX_FILES of them, whether a source names the
+ * file or a directory above it: at that, `stopped` names the root it was
+ * walking, for the launch to say so on the process's stderr.
  */
 export async function planStylesheetSources(
   source: Pick<DataPlanSource, 'readText' | 'stat' | 'linkTarget' | 'readdir'>,
@@ -783,10 +788,17 @@ export async function planStylesheetSources(
   const pushed = [...roots];
   const pushFrom = (k: string) => { if (!pushed.some((dir) => under(dir, k))) pushed.push(k); };
   let stopped: string | null = null;
+  /** Holds `path` within the bounds: false once the walk is at its bound. */
+  const hold = (root: string, path: string, size: number): boolean => {
+    if (size >= PACKAGE_DATA_MAX_BYTES || files.has(path)) return true;
+    if (files.size >= STYLESHEET_SOURCE_MAX_FILES) { stopped = root; return false; }
+    files.set(path, { path, kind: 'file', size });
+    return true;
+  };
   walk: for (const root of roots) {
     const at = await source.stat(root);
     if (at?.kind === 'file') {
-      if (at.size < PACKAGE_DATA_MAX_BYTES) files.set(root, { path: root, kind: 'file', size: at.size });
+      if (!hold(root, root, at.size)) break;
       read.add(root);
       continue;
     }
@@ -817,16 +829,11 @@ export async function planStylesheetSources(
           queue.push({ named, at: path, up: dir });
         } else if (kind === 'file' && !excludedBelow(home, root, named)) {
           pushFrom(path);
-          if (size >= PACKAGE_DATA_MAX_BYTES || files.has(path)) continue;
-          if (files.size >= STYLESHEET_SOURCE_MAX_FILES) { stopped = root; break walk; }
-          files.set(path, { path, kind, size });
+          if (!hold(root, path, size)) break walk;
           if (path !== entry.path) read.add(path);
         }
       }
     }
-  }
-  if (stopped !== null) {
-    console.warn(`[nimbus] stylesheet sources: stopped at ${STYLESHEET_SOURCE_MAX_FILES} files under /${stopped}; the rest are learned from the scanner's misses`);
   }
   return { roots: pushed.map((root) => '/' + root), files: [...files.values()], read: [...read].map((k) => '/' + k), stopped: stopped === null ? null : '/' + stopped };
 }

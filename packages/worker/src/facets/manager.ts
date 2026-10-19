@@ -83,7 +83,7 @@ import type { NodeTypeScript } from '@nimbus-sh/core/runtime/typescript-strip.js
 import { findStaticFsReferences, type StaticFsRefs } from '@nimbus-sh/core/runtime/static-fs-refs.js';
 import { fileCell, fileText, packageScopeType } from '@nimbus-sh/core/runtime/require-resolution.js';
 import type { ModuleScope, PackageType } from '@nimbus-sh/core/runtime/module-format.js';
-import { carriesOxide, isManifestKey, linkTargetOf, packageRootOf, planFacetData, planStylesheetSources, type DataPlanEntry, type DataPlanSource } from './data-plan.js';
+import { carriesOxide, isManifestKey, linkTargetOf, packageRootOf, planFacetData, planStylesheetSources, STYLESHEET_SOURCE_MAX_FILES, type DataPlanEntry, type DataPlanSource } from './data-plan.js';
 import {
   principalTag, profilePrincipal, ReadProfile, verifiedEvidence, type ReadProfileBucket, type StagedProfileEntry,
 } from './read-profile.js';
@@ -6396,6 +6396,7 @@ export class FacetManager {
     // costed when the map was built (its cells are released once serialized).
     const moduleBytes = vfsState.moduleStorageBytes ?? moduleMapStorageBytes(vfsState.bundle, vfsState.codeOnly);
     const storageBytes = Math.ceil(plan.bytes * 1.01) + rows * LEDGER_ROW_BYTES + moduleBytes + 65_536;
+    this._noteSourcesStopped(entry, plan.sourcesStopped);
     return { paths: plan.paths, storageBytes, lazyReads, sourceRoots: plan.sourceRoots };
   }
 
@@ -6410,6 +6411,13 @@ export class FacetManager {
    * URL('lightningcss_node.wasm', import.meta.url)), which as a map cell
    * left the closure no room under the map's bound.
    */
+  /** Says on the process's stderr where its stylesheet sources' walk stopped at its bound (planStylesheetSources), if it did. */
+  private _noteSourcesStopped(entry: ProcessEntry, stopped: string | null): void {
+    if (stopped === null) return;
+    this.processes.appendOutput(entry.pid, 'stderr',
+      `[nimbus: Tailwind's stylesheet sources: held the first ${STYLESHEET_SOURCE_MAX_FILES} files under ${stopped}; the rest are held as the scanner reads them]\n`);
+  }
+
   private async _staticReadPlan(entry: ProcessEntry, vfsState: FacetVfsState, cwd: string, home: string | undefined, pacer: TurnBudget): Promise<string[]> {
     if (!this.filesystem) return [];
     const vfs = this.filesystem.bind({ pid: entry.pid, cred: entry.cred });
@@ -6435,6 +6443,7 @@ export class FacetManager {
       const sheets = (vfsState.bundlePaths ?? []).filter((path) => path.endsWith('.css') && packageRootOf(path) === null);
       const found = await planStylesheetSources(planSourceOf(vfs), { cwd, home: home || '/home/user', sheets, spend: (units) => pacer.spend(units) });
       for (const file of found.files) if (!held.has(file.path)) plan.add(file.path);
+      this._noteSourcesStopped(entry, found.stopped);
       // Where its listing walks mounts, as its launch's names are.
       this.filesystem.nameLaunch?.(entry, () => found.read);
     }
