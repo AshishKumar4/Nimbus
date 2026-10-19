@@ -18,6 +18,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { SHIMS_STORE_PRELUDE, listAuthority, declareNamespace } from './lib/shims-namespace.mjs';
 import { waveSupervisor } from './lib/wave-supervisor.mjs';
+import { DO_STORAGE_LIMIT_BYTES } from '../../packages/platform/src/limits.ts';
 
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -663,6 +664,9 @@ const sfs = fs.statfsSync('/home/user');
 assert.deepEqual(Object.keys(sfs).sort(), ['bavail', 'bfree', 'blocks', 'bsize', 'ffree', 'files', 'type']);
 assert.equal(sfs.bsize, 4096);
 assert.ok(sfs.blocks > 0 && sfs.bfree <= sfs.blocks && sfs.bavail <= sfs.bfree);
+// Its capacity is the storage limit the session enforces (DO_STORAGE_LIMIT_BYTES),
+// in whole blocks, as Linux's statfs is the filesystem's own (VFS-30: it was 10 GiB).
+assert.equal(sfs.blocks, Math.floor(DO_STORAGE_LIMIT_BYTES / sfs.bsize));
 for (const k of Object.keys(sfs)) assert.equal(typeof sfs[k], 'number');
 const sfsBig = fs.statfsSync('/home/user', { bigint: true });
 assert.equal(typeof sfsBig.blocks, 'bigint');
