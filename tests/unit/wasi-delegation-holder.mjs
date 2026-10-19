@@ -755,4 +755,58 @@ async function until(ready, what) {
   assert.equal(await withRecall(() => s.kernel.readFileString('home/user/st.log')), 'a;b;');
 }
 
+// ── A held file the client cannot take yet (past its synchronous cap), at a give-back ──
+// Given back idle, or renewed by a claim (its range nearly spent): the give-back waits and the file stays the
+// process's, with no promise left rejected for no one. The program is told: on its next fsync, at its next decision
+// (an open, which logs what was written before it first), or at the run's end (the settle, whose failure the run
+// reports, exiting non-zero) when nothing touches the file again. Red before: the drain's ENOMEM rejected the
+// give-back with no one to tell.
+for (const [route, told] of [['idle', 'fsync'], ['idle', 'settle'], ['renewal', 'open']]) {
+  const label = `${route}, told at its ${told}`;
+  const unhandled = [];
+  const record = (reason) => { unhandled.push(reason?.code ?? String(reason)); };
+  process.on('unhandledRejection', record);
+  // A grant with room for one file past the cap (64 MiB in a journal on the heap).
+  const s = session({ grantBytes: 128 * 1024 * 1024, ...(route === 'renewal' ? { grantInos: 8 } : {}) });
+  await s.fs.mkdir('/home/user/proj/cap', { mode: 0o755 });
+  const size = 65 * 1024 * 1024;
+  const big = await s.fs.open('/home/user/proj/cap/big', { write: true, create: true, truncate: true, mode: 0o644 });
+  await s.fs.write(big.id, null, new Uint8Array(size));
+  assert.equal(s.filesystem.delegations.size, 1, `${label}: held`);
+  if (route === 'idle') {
+    // Unused for its idle period (2 s): given back.
+    await new Promise((resolve) => setTimeout(resolve, 2_600));
+  } else {
+    // Each open takes a number, a quarter of the range left asks for the grant again (renewed), and logs what was
+    // written before it first: the program is told there.
+    const codes = [];
+    for (let index = 0; index < 8; index++) {
+      try {
+        const handle = await s.fs.open(`/home/user/proj/cap/f${index}`, { write: true, create: true, truncate: true, mode: 0o644 });
+        await s.fs.close(handle.id);
+        codes.push(null);
+      } catch (error) {
+        codes.push(error?.code ?? String(error));
+      }
+    }
+    assert.ok(codes.includes('ENOMEM') && codes.every((code) => code === 'ENOMEM' || code === null), `${label}: what the opens are told: ${codes}`);
+  }
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  process.off('unhandledRejection', record);
+  assert.deepEqual(unhandled, [], `${label}: a give-back rejected with no one to tell`);
+  // Still the process's, as it wrote it.
+  assert.equal((await s.fs.stat('/home/user/proj/cap/big')).size, size, `${label}: the file`);
+  if (told === 'fsync') {
+    const synced = await s.fs.fsync(big.id).then(() => null, (error) => error?.code);
+    assert.equal(synced, 'ENOMEM', `${label}: what the program's next fsync is told`);
+  }
+  const failures = await s.fs.settle();
+  assert.deepEqual(failures.map((failure) => failure.error?.code), ['ENOMEM'], `${label}: what the run's end reports`);
+  // The test's own end: the file shrunk to what the client takes, the run ends clean, nothing held.
+  await s.fs.ftruncate(big.id, 1);
+  await s.fs.close(big.id);
+  assert.deepEqual(await s.fs.settle(), [], `${label}: settled once it fits`);
+  assert.equal(s.filesystem.delegations.size, 0, `${label}: given back at the end`);
+}
+
 console.log('wasi delegation holder: ok');

@@ -185,6 +185,8 @@ export interface ProcessFsClientOptions {
    * renewal): called before the flush that sends what was decided under it,
    * so the runtime stops deciding there first (its files' descriptions go
    * through the session) and that flush covers all it accepted until now.
+   * It throws, having stopped nothing, where what was decided there cannot
+   * be logged yet (`drain`'s refusal: the synchronous cap's ENOMEM).
    */
   readonly freezing?: (root: string) => void;
   /**
@@ -1045,13 +1047,22 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   /**
    * Give `grant` back: nothing more is decided under it from now, what was
    * (numbered from its range) is sent, then it is released, so no op names a
-   * number of a lease the session no longer holds.
+   * number of a lease the session no longer holds. Where what was decided
+   * there cannot be logged yet (freezing refused), it is not given back: it
+   * stays held, its bytes the runtime's, and the next flush (a sync, the
+   * settle at the run's end) reports the refusal (false).
    */
-  const close = async (grant: Grant): Promise<void> => {
+  const close = async (grant: Grant): Promise<boolean> => {
     grant.closing = true;
-    options.freezing?.(grant.root);
+    try {
+      options.freezing?.(grant.root);
+    } catch {
+      grant.closing = false;
+      return false;
+    }
     await client.flush();
     await end(grant);
+    return true;
   };
 
   /** Release `grant` (its log already sent: close). */
@@ -1221,7 +1232,8 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       // Its own grant of the same root among them: a renewal, with a range twice as large.
       const covered = live().filter((grant) => within(grant.root, target));
       if (covered.length > 0) {
-        await Promise.all(covered.map(close));
+        // One not given back stays held: no lease is taken over it.
+        if (!(await Promise.all(covered.map(close))).every(Boolean)) return;
         if (covered.some((grant) => grant.root !== target)) counters.widened++;
         else counters.renewed++;
       }
