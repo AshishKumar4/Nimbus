@@ -1409,9 +1409,15 @@ const __fsMod = (() => {
   }
   function _nsRetire(begin) {
     const done = (part) => part !== null && part.settled !== null && part.settled < begin;
-    for (const [k, rec] of [..._own]) {
+    // The records as they are now (a drop changes _own), by the SafeMap's own forEach.
+    const keys = new __PathList();
+    const recs = new __PathList();
+    _own.forEach((rec, k) => { keys[keys.length] = k; recs[recs.length] = rec; });
+    for (let i = 0; i < keys.length; i++) {
+      const k = keys[i];
+      const rec = recs[i];
       if (done(rec.entry)) _nsOwnDrop(k);
-      for (const field of _OWN_ATTRS) if (done(rec[field])) rec[field] = null;
+      for (let j = 0; j < _OWN_ATTRS.length; j++) if (done(rec[_OWN_ATTRS[j]])) rec[_OWN_ATTRS[j]] = null;
       _ownCompact(k, rec);
     }
     _nsDevices.clear();
