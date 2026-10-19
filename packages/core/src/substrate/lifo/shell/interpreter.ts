@@ -32,7 +32,7 @@ import type { VfsCred } from '../../../runtime/os-contracts.js';
 import { syscallError } from '../../../vfs/vfs-error.js';
 import { execRefusal } from '../../../shell/exec-dispatch.js';
 import { withRecall } from '../../../vfs/recall.js';
-import { parseAssignment, ScriptLines } from './parser.js';
+import { parseAssignment, ParseError, ScriptLines } from './parser.js';
 import {
   expandWords, expandWord, expandPatternWord, evaluateSubscript, ExpansionError,
   type ExpandContext, type CapturedCommand,
@@ -74,6 +74,9 @@ export class ErrexitSignal {
 export class ExitSignal {
   constructor(public exitCode: number) {}
 }
+
+/** A syntax error in the text eval or `.` reads (not one met running it, a command substitution's): theirs to answer. */
+export class TextSyntaxError extends Error {}
 
 /**
  * A function call past the nesting bound (functionNestingLimit): the rest of
@@ -226,6 +229,15 @@ type ExecutionIo = {
    */
   background?: boolean;
   scriptMode?: boolean;
+  /**
+   * The command word this shell's text last dispatched (null for a
+   * function's call), before its redirections: bash's this_shell_builtin,
+   * which decides whether a syntax error in eval's or `.`'s text is theirs
+   * (evalstring). One per line a shell reads (a nested bash or sh has its
+   * own), and only that shell's dispatches count: a child's (a subshell's, a
+   * substitution's, a pipeline's) are another process's.
+   */
+  dispatched?: { readonly shell: Interpreter; last: string | null };
   signal?: AbortSignal;
   positionals?: PositionalFrame;
   /** Host-supplied fields merged into each command's CommandContext. */
@@ -1042,6 +1054,7 @@ export class Interpreter {
     const viaCommand = name === 'command' && !replacesShell && !this.functions.has(name) && !this.config.aliases.has(name)
       && args.length > 0 && (args[0] === '--' ? args.length > 1 : !args[0].startsWith('-'));
     if (viaCommand) [name, ...args] = args[0] === '--' ? args.slice(1) : args;
+    if (io.dispatched?.shell === this) io.dispatched.last = this.functions.has(name) && !viaCommand ? null : name;
 
     // Apply per-command assignments (temporary env)
     const saved = new Map<string, SavedVariable>();
@@ -1139,7 +1152,16 @@ export class Interpreter {
                 setPositionals: (nextArgs) => this.writePositionals(builtinIo, nextArgs),
                 executeInline: async (input, options) => {
                   ranText = true;
-                  return (await this.executeInline(input, builtinIo, options));
+                  try {
+                    return (await this.executeInline(input, builtinIo, options));
+                  } catch (error) {
+                    // A syntax error while eval or `.` is still the builtin last dispatched (no
+                    // other command of the text has been, or one was, an eval or `.`) is the
+                    // builtin's own failure, as bash's evalstring has it: fatal in a POSIX script.
+                    const last = io.dispatched?.last;
+                    if (error instanceof TextSyntaxError && (last === 'eval' || last === '.' || last === 'source')) ranText = false;
+                    throw error;
+                  }
                 },
             declareLocal: (name) => this.declareLocal(name),
             unsetFunction: (name) => this.functions.delete(name),
@@ -1226,6 +1248,7 @@ export class Interpreter {
 
     // `command` takes a special builtin's failure from fatal to an ordinary status (POSIX).
     const fatalSpecialBuiltin = io.scriptMode === true
+      && this.config.options.posix
       && exitCode !== 0
       && !viaCommand
       && !ranText
@@ -1431,7 +1454,19 @@ export class Interpreter {
     if (options.positionals !== undefined) {
       inlineIo.positionals = { args: [...options.positionals] };
     }
-    return (await this.executeLineWithIo(input, inlineIo, { readsLines: true, inline: true }));
+    const lines = this.linesOf(input);
+    // A syntax error in the text read here is the runner's (TextSyntaxError); one met running it is not.
+    const reader = {
+      nextLine: (): ListNode[] | null => {
+        try {
+          return lines.nextLine();
+        } catch (error) {
+          if (error instanceof ParseError) throw new TextSyntaxError(error.message);
+          throw error;
+        }
+      },
+    };
+    return (await this.executeScriptWithIo(reader, inlineIo, { readsLines: true, inline: true }));
   }
 
   private async executeLineWithIo(input: string, io: ExecutionIo, run: ScriptRun = {}): Promise<number> {
@@ -1444,6 +1479,8 @@ export class Interpreter {
    * descriptors close.
    */
   private async finishChild(run: () => Promise<number>, io: ExecutionIo): Promise<number> {
+    // The child's own dispatches, from none (its io is its own: each caller made it).
+    io.dispatched = { shell: this, last: null };
     // Taken before the first await: a background child starts here while its
     // parent goes on to close what it opened.
     const inherited = [...(io.openFiles?.values() ?? [])];
@@ -1500,6 +1537,7 @@ export class Interpreter {
     if (terminalStdin) io.terminalStdin = terminalStdin;
     if (terminalFds) io.terminalFds = terminalFds;
     if (scriptMode) io.scriptMode = true;
+    io.dispatched = { shell: this, last: null };
     return io;
   }
 
@@ -1513,6 +1551,7 @@ export class Interpreter {
     if (io.terminalFds) next.terminalFds = io.terminalFds;
     if (io.background) next.background = true;
     if (io.scriptMode) next.scriptMode = true;
+    if (io.dispatched) next.dispatched = io.dispatched;
     if (io.signal) next.signal = io.signal;
     if (io.positionals) next.positionals = io.positionals;
     if (io.commandContext) next.commandContext = io.commandContext;
@@ -2140,6 +2179,8 @@ function isFatalSpecialBuiltin(name: string): boolean {
   switch (name) {
     case ':':
     case '.':
+    // bash's source_builtin is `.`'s: either name fails alike.
+    case 'source':
     case 'break':
     case 'continue':
     case 'eval':

@@ -27,6 +27,9 @@ export declare class ExitSignal {
     exitCode: number;
     constructor(exitCode: number);
 }
+/** A syntax error in the text eval or `.` reads (not one met running it, a command substitution's): theirs to answer. */
+export declare class TextSyntaxError extends Error {
+}
 /**
  * A function call past the nesting bound (functionNestingLimit): the rest of
  * the line it is in is discarded (bash's jump_to_top_level(DISCARD)): a
@@ -106,6 +109,18 @@ type ExecutionIo = {
      */
     background?: boolean;
     scriptMode?: boolean;
+    /**
+     * The command word this shell's text last dispatched (null for a
+     * function's call), before its redirections: bash's this_shell_builtin,
+     * which decides whether a syntax error in eval's or `.`'s text is theirs
+     * (evalstring). One per line a shell reads (a nested bash or sh has its
+     * own), and only that shell's dispatches count: a child's (a subshell's, a
+     * substitution's, a pipeline's) are another process's.
+     */
+    dispatched?: {
+        readonly shell: Interpreter;
+        last: string | null;
+    };
     signal?: AbortSignal;
     positionals?: PositionalFrame;
     /** Host-supplied fields merged into each command's CommandContext. */

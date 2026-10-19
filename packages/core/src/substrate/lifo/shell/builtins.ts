@@ -15,7 +15,7 @@ import { singleQuote } from '../../../_shared/shell-quote.js';
 import { isDecimalInteger, isShellIdentifier } from './names.js';
 import { assignArray, assignVariable } from './variables.js';
 import { DEFAULT_HOME } from '../../../constants.js';
-import { ExitSignal, type BuiltinExecutionContext, type BuiltinFn } from './interpreter.js';
+import { ExitSignal, TextSyntaxError, type BuiltinExecutionContext, type BuiltinFn } from './interpreter.js';
 import { resolveJobSpec } from './jobs.js';
 import { evaluateTest } from './test-builtin.js';
 import { isVfsError, strerror } from '../../../vfs/vfs-error.js';
@@ -296,6 +296,7 @@ async function printShellOptions(state: ShellState, stdout: CommandOutputStream)
   (await stdout.write(`errexit         ${state.options.errexit ? 'on' : 'off'}\n`));
   (await stdout.write(`nounset         ${state.options.nounset ? 'on' : 'off'}\n`));
   (await stdout.write(`pipefail        ${state.options.pipefail ? 'on' : 'off'}\n`));
+  (await stdout.write(`posix           ${state.options.posix ? 'on' : 'off'}\n`));
 }
 
 function setShellOptionByName(state: ShellState, option: string, enabled: boolean): boolean {
@@ -308,6 +309,9 @@ function setShellOptionByName(state: ShellState, option: string, enabled: boolea
       return true;
     case 'pipefail':
       state.options.pipefail = enabled;
+      return true;
+    case 'posix':
+      state.options.posix = enabled;
       return true;
     default:
       return false;
@@ -670,10 +674,25 @@ async function builtinSource({ args, stderr, state, host, context }: BuiltinCall
   }
 
   const sourceArgs = args.slice(1);
-  return (await context.executeInline(
+  return (await runText(args[0], stderr, () => context.executeInline(
     content,
     sourceArgs.length > 0 ? { positionals: sourceArgs } : undefined,
-  ));
+  )));
+}
+
+/**
+ * Text eval or `.` runs: a syntax error in it (lines read before it have
+ * run) is its runner's status 2, said on its stderr as `name: message`, and
+ * the line the runner is in goes on, as in bash.
+ */
+async function runText(name: string, stderr: CommandOutputStream, run: () => Promise<number>): Promise<number> {
+  try {
+    return await run();
+  } catch (error) {
+    if (!(error instanceof TextSyntaxError)) throw error;
+    await stderr.write(`${name}: ${error.message}\n`);
+    return 2;
+  }
 }
 
 /**
@@ -688,7 +707,7 @@ async function builtinEval({ args, stderr, context }: BuiltinCall): Promise<numb
     (await stderr.write(`eval: ${first.slice(0, 2)}: invalid option\neval: usage: eval [arg ...]\n`));
     return 2;
   }
-  return (await context.executeInline((first === '--' ? args.slice(1) : args).join(' ')));
+  return (await runText('eval', stderr, () => context.executeInline((first === '--' ? args.slice(1) : args).join(' '))));
 }
 
 async function builtinAlias({ args, stdout, state }: BuiltinCall): Promise<number> {
