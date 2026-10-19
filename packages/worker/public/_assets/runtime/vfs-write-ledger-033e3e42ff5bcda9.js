@@ -1814,9 +1814,15 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
     const allowedRoot = (root) => root !== "" && !(options.isHomeRoot?.(root) ?? false);
     const close = async (grant) => {
       grant.closing = true;
-      options.freezing?.(grant.root);
+      try {
+        options.freezing?.(grant.root);
+      } catch {
+        grant.closing = false;
+        return false;
+      }
       await client.flush();
       await end(grant);
+      return true;
     };
     const end = async (grant) => {
       if (grant.ended) return;
@@ -1940,7 +1946,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         }
         const covered = live().filter((grant2) => within(grant2.root, target));
         if (covered.length > 0) {
-          await Promise.all(covered.map(close));
+          if (!(await Promise.all(covered.map(close))).every(Boolean)) return;
           if (covered.some((grant2) => grant2.root !== target)) counters.widened++;
           else counters.renewed++;
         }
