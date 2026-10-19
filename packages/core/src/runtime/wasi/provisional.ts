@@ -1068,7 +1068,7 @@ export function provisional(host: ProvisionalHost): Provisional {
     const last = desc.lastRecord;
     if (last === null || last.answered || last.gone === true || last.owner !== inode || inode.cell !== undefined || inode.state === null) return false;
     const was = last.op;
-    if (start === undefined ? was.kind !== 'append' : was.kind !== 'write' || start !== was.offset + was.data.byteLength) return false;
+    if (!('data' in was) || (start === undefined ? was.kind !== 'append' : was.kind !== 'write' || start !== was.offset + was.data.byteLength)) return false;
     // What it adds is what grows: its record's room and its state's, each by doubling; most writes add nothing to admit.
     const state = inode.state;
     const before = was.data.byteLength;
