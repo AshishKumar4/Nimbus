@@ -227,13 +227,11 @@ export declare const REFUSED_CALL_WAIT_MS = 15000;
  * claim, process; a launch's run is that launch's run again), once the
  * ledger lets it in: after the pause, even when its key is still in flight,
  * and when there is room. Undefined once `signal` aborts or the call's first
- * refusal (`since`) is {@link REFUSED_CALL_WAIT_MS} old. `onWait` is called
- * as a wait of it queues.
+ * refusal (`since`) is {@link REFUSED_CALL_WAIT_MS} old.
  */
 export declare function readmitRefused(refused: EndLoaderFetch, options: {
     since: number;
     signal?: AbortSignal;
-    onWait?: () => void;
 }): Promise<EndLoaderFetch | undefined>;
 /** The one Dynamic Worker a process puts in flight, on the ledger: its launch, then its run or its residency. */
 export declare function launchWorkerKey(pid: number): string;

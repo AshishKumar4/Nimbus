@@ -563,8 +563,7 @@ let ownRuns = 0;
  * claim, process; a launch's run is that launch's run again), once the
  * ledger lets it in: after the pause, even when its key is still in flight,
  * and when there is room. Undefined once `signal` aborts or the call's first
- * refusal (`since`) is {@link REFUSED_CALL_WAIT_MS} old. `onWait` is called
- * as a wait of it queues.
+ * refusal (`since`) is {@link REFUSED_CALL_WAIT_MS} old.
  */
 export async function readmitRefused(refused, options) {
     const terms = holdTerms.get(refused);
@@ -578,7 +577,7 @@ export async function readmitRefused(refused, options) {
     const timer = setTimeout(() => deadline.abort(), remainingMs);
     const signal = options.signal ? AbortSignal.any([deadline.signal, options.signal]) : deadline.signal;
     const process = terms.holder === null ? undefined : { pid: terms.holder };
-    const wait = (key) => queue(terms.entry, key, terms.claim, process, true, signal, options.onWait).catch(() => undefined);
+    const wait = (key) => queue(terms.entry, key, terms.claim, process, true, signal).catch(() => undefined);
     let end = await wait(terms.key);
     const admission = terms.admission;
     if (end !== undefined && admission !== undefined && !admission.closed) {
