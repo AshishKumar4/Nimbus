@@ -873,6 +873,14 @@ export class SqliteRuntimeFsBridge {
             }
             const candidate = [...resolved, segment].join('/');
             const isFinal = pending.length === 0;
+            if (!followSymlinks && isFinal) {
+                // Not followed, the last name is no link to read; handed to a backend that resolves its own paths, it keeps its spelling.
+                if (handoff === null && this.namespace?.composes('/' + candidate) && this.namespace.resolvedByBackend('/' + candidate, '/', '/' + candidate)) {
+                    handoff = { base: '/' + resolved.join('/'), rest: [segment] };
+                }
+                resolved.push(segment);
+                continue;
+            }
             // On a mount, or a directory above one, the namespace answers whether
             // this component is a link (the SQLite rows it covers, links among
             // them, are never followed). The walk itself stays here, except on a
@@ -880,10 +888,9 @@ export class SqliteRuntimeFsBridge {
             if (this.namespace?.composes('/' + candidate)) {
                 const to = '/' + [...resolved, segment, ...pending].join('/');
                 const handed = this.namespace.resolvedByBackend('/' + candidate, '/', to);
-                // A last name not followed is handed over as written too (its final `/` kept: handedSpelling).
                 if (handed)
                     handoff ??= { base: '/' + resolved.join('/'), rest: [segment, ...pending] };
-                const link = handed || (!followSymlinks && isFinal) ? null : this.mountedLink('/' + candidate);
+                const link = handed ? null : this.mountedLink('/' + candidate);
                 if (link === null) {
                     resolved.push(segment);
                     continue;
