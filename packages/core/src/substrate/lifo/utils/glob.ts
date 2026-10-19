@@ -1,7 +1,7 @@
 import type { ProcessView } from '../../../runtime/process-files.js';
 import { resolve } from './path.js';
 import { exists } from '../../../vfs/vfs.js';
-import { encodeLossless, firstLosslessByte } from './lossless-text.js';
+import { decodeLossless, encodeLossless, firstLosslessByte } from './lossless-text.js';
 
 /**
  * Match a glob pattern against a text string, as fnmatch(3) without flags:
@@ -24,17 +24,47 @@ export function shellMatch(pattern: string, text: string): boolean {
 }
 
 /**
- * shellMatch of `pattern` for many pieces of one `value` (a trim's or a
- * substitution's candidates): whether it matches byte-wise is decided once,
- * from the pattern and the whole value, not again for every piece.
+ * The units a trim or a substitution of `value` by `pattern` works in, as
+ * bash's: characters, or, when either holds a byte that is no character,
+ * bytes. `pattern` and `value` are given in those units (a byte one string
+ * character), `matches` is shellMatch of the pattern there, `encode` puts
+ * other text (a replacement) in them, and `decode` gives a result back as
+ * text, so a byte-wise cut never leaves half of a character's UTF-16.
  */
-export function shellMatcher(pattern: string, value: string): (text: string) => boolean {
-  if (firstLosslessByte(value) !== -1 || firstLosslessByte(pattern) !== -1) {
-    const bytes = byteString(pattern);
-    return (text) => matchCharacters(bytes, byteString(text), true);
-  }
-  return (text) => matchCharacters(pattern, text, true);
+export interface ShellUnits {
+  readonly pattern: string;
+  readonly value: string;
+  readonly matches: (text: string) => boolean;
+  readonly encode: (text: string) => string;
+  readonly decode: (units: string) => string;
 }
+
+export function shellUnits(pattern: string, value: string): ShellUnits {
+  if ((!SURROGATE.test(value) || firstLosslessByte(value) === -1) && (!SURROGATE.test(pattern) || firstLosslessByte(pattern) === -1)) {
+    return { pattern, value, matches: (text) => matchCharacters(pattern, text, true), encode: (text) => text, decode: (text) => text };
+  }
+  const bytes = byteString(pattern);
+  return {
+    pattern: bytes,
+    value: byteString(value),
+    matches: (text) => matchCharacters(bytes, text, true),
+    encode: byteString,
+    decode: (units) => {
+      const out = new Uint8Array(units.length);
+      for (let i = 0; i < units.length; i++) out[i] = units.charCodeAt(i);
+      return decodeLossless(out);
+    },
+  };
+}
+
+/** How many UTF-16 units the character at index `i` of `s` takes: 2 for a surrogate pair, else 1. */
+export function characterWidth(s: string, i: number): number {
+  const high = s.charCodeAt(i);
+  return high >= 0xd800 && high <= 0xdbff && (s.charCodeAt(i + 1) & 0xfc00) === 0xdc00 ? 2 : 1;
+}
+
+/** Any surrogate: text with none is its UTF-16 units, character for character, and holds no lossless byte. */
+const SURROGATE = /[\uD800-\uDFFF]/;
 
 /** The character (code point) at UTF-16 index `i` of `s`: a surrogate pair whole, anything else one unit. */
 export function characterAt(s: string, i: number): string {
@@ -61,7 +91,7 @@ export function characterBounds(s: string): number[] {
  * bytes ($'\200' is in [a-😀], whose 😀 is four bytes; z is in $'[a-\377]').
  */
 function matchPattern(pattern: string, text: string, finalBackslash: boolean): boolean {
-  if (firstLosslessByte(text) !== -1 || firstLosslessByte(pattern) !== -1) {
+  if ((SURROGATE.test(text) && firstLosslessByte(text) !== -1) || (SURROGATE.test(pattern) && firstLosslessByte(pattern) !== -1)) {
     return matchCharacters(byteString(pattern), byteString(text), finalBackslash);
   }
   return matchCharacters(pattern, text, finalBackslash);
@@ -85,7 +115,8 @@ function matchCharacters(pattern: string, text: string, finalBackslash: boolean)
       starTi = ti;
       continue;
     }
-    const ch = characterAt(text, ti);
+    const width = characterWidth(text, ti);
+    const ch = width === 1 ? text.charAt(ti) : text.slice(ti, ti + 2);
     const next = pi < pattern.length ? matchOne(pattern, pi, ch, finalBackslash) : -1;
     if (next >= 0) {
       pi = next;
@@ -94,7 +125,7 @@ function matchCharacters(pattern: string, text: string, finalBackslash: boolean)
     }
     if (starPi < 0) return false;
     pi = starPi + 1;
-    starTi += characterAt(text, starTi).length;
+    starTi += characterWidth(text, starTi);
     ti = starTi;
   }
   while (pi < pattern.length && pattern[pi] === '*') pi++;
@@ -103,7 +134,7 @@ function matchCharacters(pattern: string, text: string, finalBackslash: boolean)
 
 /** Where the pattern continues after its token at `pi` matched the character `ch`, or -1. */
 function matchOne(pattern: string, pi: number, ch: string, finalBackslash: boolean): number {
-  const c = characterAt(pattern, pi);
+  const c = characterWidth(pattern, pi) === 1 ? pattern.charAt(pi) : pattern.slice(pi, pi + 2);
   if (c === '?') return pi + 1;
   if (c === '\\') {
     // A trailing backslash quotes nothing: it matches nothing (glibc), or itself (bash).

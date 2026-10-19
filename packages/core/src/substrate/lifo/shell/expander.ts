@@ -2,7 +2,7 @@ import type { WordPart } from './types.js';
 import { isShellIdentifier } from './names.js';
 import { DEFAULT_HOME } from '../../../constants.js';
 import type { ProcessView } from '../../../runtime/process-files.js';
-import { characterAt, characterBounds, escapeGlob, expandGlob, fixedMatchLength, shellMatcher } from '../utils/glob.js';
+import { characterAt, characterBounds, characterWidth, escapeGlob, expandGlob, fixedMatchLength, shellMatch, shellUnits } from '../utils/glob.js';
 import { readAnsiCQuote, readBalancedCommand, readBracedExpansion } from './lexer.js';
 import type { ShellOptions } from './state.js';
 
@@ -722,24 +722,27 @@ function characterCount(s: string): number {
 // Trims and substitutions cut a value only between its characters (code
 // points), as bash does in a UTF-8 locale: never inside a surrogate pair.
 
-function trimPrefix(value: string, pattern: string, longest: boolean): string {
+// Each works in shellUnits: characters, or bytes when the value or the
+// pattern holds a byte that is no character, its result decoded back.
+
+function trimPrefix(text: string, pattern: string, longest: boolean): string {
+  const { value, matches, decode } = shellUnits(pattern, text);
   const { count, at } = boundsOf(value);
-  const matches = shellMatcher(pattern, value);
   for (let k = 0; k < count; k++) {
     const i = at(longest ? count - 1 - k : k);
-    if (matches(value.slice(0, i))) return value.slice(i);
+    if (matches(value.slice(0, i))) return decode(value.slice(i));
   }
-  return value;
+  return text;
 }
 
-function trimSuffix(value: string, pattern: string, longest: boolean): string {
+function trimSuffix(text: string, pattern: string, longest: boolean): string {
+  const { value, matches, decode } = shellUnits(pattern, text);
   const { count, at } = boundsOf(value);
-  const matches = shellMatcher(pattern, value);
   for (let k = 0; k < count; k++) {
     const i = at(longest ? k : count - 1 - k);
-    if (matches(value.slice(i))) return value.slice(0, i);
+    if (matches(value.slice(i))) return decode(value.slice(0, i));
   }
-  return value;
+  return text;
 }
 
 /** `${p/pat/rep}` `${p//pat/rep}` `${p/#pat/rep}` `${p/%pat/rep}` */
@@ -772,22 +775,22 @@ function unescapedSlash(text: string): number {
 }
 
 function replaceAnchored(
-  value: string, pattern: string, replacement: string, anchor: 'prefix' | 'suffix',
+  text: string, pattern: string, replacement: string, anchor: 'prefix' | 'suffix',
 ): string {
+  const { value, matches, encode, decode } = shellUnits(pattern, text);
   const { count, at } = boundsOf(value);
-  const matches = shellMatcher(pattern, value);
   if (anchor === 'prefix') {
     for (let k = count - 1; k >= 0; k--) {
       const i = at(k);
-      if (matches(value.slice(0, i))) return replacement + value.slice(i);
+      if (matches(value.slice(0, i))) return decode(encode(replacement) + value.slice(i));
     }
-    return value;
+    return text;
   }
   for (let k = 0; k < count; k++) {
     const i = at(k);
-    if (matches(value.slice(i))) return value.slice(0, i) + replacement;
+    if (matches(value.slice(i))) return decode(value.slice(0, i) + encode(replacement));
   }
-  return value;
+  return text;
 }
 
 /** `${p^pat}` `${p^^pat}` `${p,pat}` `${p,,pat}` -- case conversion. */
@@ -799,9 +802,9 @@ async function applyCase(
   const pattern = await expandParameterPattern(rest.slice(every ? 2 : 1), ctx);
   const convert = (c: string): string => (operator === '^' ? c.toUpperCase() : c.toLowerCase());
 
+  const matches = (c: string): boolean => pattern === '' || shellMatch(pattern, c);
+
   return (await mapParameter(ref, ctx, quoted, (value) => {
-    const matcher = shellMatcher(pattern, value);
-    const matches = (c: string): boolean => pattern === '' || matcher(c);
     if (!every) {
       const first = characterAt(value, 0);
       return value === '' || !matches(first) ? value : convert(first) + value.slice(first.length);
@@ -992,8 +995,8 @@ function splitGroup(
     return unit < 0xd800 || unit > 0xdfff ? ifs.includes(text.charAt(i)) : ifsCharacters(ifs).has(characterAt(text, i));
   };
   const isWhitespace = (i: number): boolean => IFS_WHITESPACE.includes(text.charAt(i));
-  const next = (i: number): number => i + characterAt(text, i).length;
-  const previous = (i: number): number => (i >= 2 && characterAt(text, i - 2).length === 2 ? i - 2 : i - 1);
+  const next = (i: number): number => i + characterWidth(text, i);
+  const previous = (i: number): number => (i >= 2 && characterWidth(text, i - 2) === 2 ? i - 2 : i - 1);
 
   let start = 0;
   let end = text.length;
@@ -1063,21 +1066,25 @@ function replaceAll(val: string, pattern: string, replacement: string): string {
  * nothing; an empty match keeps the character after it, and ends the search
  * at the end of the value.
  */
-function replaceMatches(val: string, pattern: string, replacement: string, all: boolean): string {
-  if (pattern === '') return val;
-  const fixed = fixedMatchLength(pattern);
+function replaceMatches(text: string, pattern: string, replacement: string, all: boolean): string {
+  if (pattern === '') return text;
+  const units = shellUnits(pattern, text);
+  const val = units.value;
+  const { matches } = units;
+  // Its length in the same units as the value's bounds.
+  const fixed = fixedMatchLength(units.pattern);
+  const encoded = units.encode(replacement);
   // Matches start and end between characters: indices into the value's character bounds.
   const bounds = boundsOf(val);
   const last = bounds.count - 1;
   const { at } = bounds;
-  const matches = shellMatcher(pattern, val);
   let out = '';
   let i = 0;
   for (;;) {
     const match = leftmostLongest(val, bounds, matches, i, fixed);
     if (match === null) break;
     const [start, end] = match;
-    out += val.slice(at(i), at(start)) + replacement;
+    out += val.slice(at(i), at(start)) + encoded;
     i = end;
     if (start === end) {
       if (start >= last) break;
@@ -1086,7 +1093,7 @@ function replaceMatches(val: string, pattern: string, replacement: string, all: 
     }
     if (!all || i >= last) break;
   }
-  return out + val.slice(at(i));
+  return units.decode(out + val.slice(at(i)));
 }
 
 // ─── Arithmetic evaluator ───

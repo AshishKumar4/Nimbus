@@ -26,6 +26,8 @@ const CASES = [
   // A byte that is no character makes a match byte-wise (bash's xstrmatch): a range orders bytes.
   `x=$'\\377'; case $x in [a-😀]) echo in;; *) echo out;; esac; case $x in [!a-😀]) echo not-in;; esac; case $x in ?) echo one;; esac`,
   `x=$'\\200'; case $x in [a-😀]) echo in;; *) echo out;; esac; p=$'[a-\\377]'; case z in $p) echo z-in;; esac; x=z; printf '<%s>' "\${x//$p/X}"; echo`,
+  // In bytes, a trim or a substitution cuts between bytes, and its result is text again.
+  `x=😀; p=$'?[!\\377]'; printf '<%s>' "\${x//$p/}" "\${x//$p/X}" "\${x#$p}" "\${x%$p}" "\${x/#$p/Y}"; echo`,
   `a=(😀 b); printf '<%s>' "\${a[0]:0:1}" "\${#a[0]}" "\${a[@]%?}"; echo`,
 ];
 
