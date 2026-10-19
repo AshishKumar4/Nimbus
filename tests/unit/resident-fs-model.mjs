@@ -60,6 +60,9 @@ const known = (bytes, mode) => ({ bytes, size: bytes.length, mode });
 async function errnoOf(work) {
   try { await work(); return null; } catch (error) { return error?.code ?? String(error); }
 }
+const errnoOfAny = errnoOf;
+/** A step the full budget refused (ENOSPC): it ends, with nothing of it made. */
+const NO_SPACE = Symbol('no space');
 
 /**
  * A known engine defect, not the model's: a wave the session fails EIO
@@ -96,6 +99,8 @@ async function runSteps(steps, met, grants) {
   const control = { held: true, opened: Promise.withResolvers() };
   // What the process's provisional decisions take of its budget: always what they keep, and nothing once all is drained.
   const budget = { used: 0, limit: 1 << 30 };
+  /** The next step runs with the budget full (a squeeze). */
+  let squeezed = false;
   const s = session({
     budget,
     view: {},
@@ -223,6 +228,12 @@ async function runSteps(steps, met, grants) {
   /** The process's operation `step`, made synchronously: its local refusal, which the model predicts, or its effects. */
   const processStep = async (step, label) => {
     const now = viewOf();
+    // While the budget is full: a refusal for room ends the step, with no effect (the checks after it say so).
+    const errnoOf = async (work) => {
+      const code = await errnoOfAny(work);
+      if (code === 'ENOSPC' && squeezed) throw NO_SPACE;
+      return code;
+    };
     const add = (effect, logged) => {
       const record = { effect, refused: false };
       pending.push(record);
@@ -357,6 +368,31 @@ async function runSteps(steps, met, grants) {
       const written = add({ kind: 'write', ref: { opened }, offset: 0, data });
       undelivered.push({ records, record: written, logged: { opened, flags: { write: true, create: true, truncate: true }, write: { kind: 'write', offset: 0, data }, close: opened } });
     }
+    if (step.op === 'copy') {
+      const source = fileAt(step.from);
+      const target = fileAt(step.to);
+      const reference = now.names.get(step.to);
+      // A source whose bytes the model cannot say is not copied.
+      if (source !== undefined && source.bytes === null) return;
+      const expected = source === undefined ? 'ENOENT' : !(source.mode & 0o400) ? 'EACCES' : target !== undefined && !(target.mode & 0o200) ? 'EACCES' : null;
+      const code = await errnoOf(() => sync.copyFile(path(step.from), path(step.to)));
+      // Bytes not here (a caller that cannot wait): refused, nothing made.
+      if (code === 'EAGAIN' && expected === null) return;
+      assert.equal(code, expected, `${label}: copy ${step.from} ${step.to}`);
+      if (code !== null) return;
+      const data = source.bytes.slice();
+      const made = reference === undefined;
+      const opened = { ...(made ? { view: `L${++local}` } : { base: reference }), write: true, name: step.to };
+      const records = [];
+      // A copy's file is made with the source's permission bits, the umask taken; an existing one keeps its mode.
+      if (made) {
+        records.push(add({ kind: 'create', ref: { opened }, mode: source.mode & 0o777 & ~0o022 }));
+        records.push(add({ kind: 'name', name: step.to, ref: { opened } }));
+      }
+      records.push(add({ kind: 'truncate', ref: { opened }, size: 0 }));
+      const written = add({ kind: 'write', ref: { opened }, offset: 0, data });
+      undelivered.push({ records, record: written, logged: { opened, flags: { write: true, create: true, truncate: true }, mode: source.mode & 0o777, write: { kind: 'write', offset: 0, data }, close: opened } });
+    }
   };
 
   /** What the session received since the last delivery, made on the reference directly, in order: each one it refuses, refused. */
@@ -384,7 +420,7 @@ async function runSteps(steps, met, grants) {
         const opened = logged.opened ?? logged.close;
         if (logged.flags) {
           // The session's open is to write (and to read when asked): its answer names the file it opened.
-          refused = (await errnoOf(async () => { opened.refHandle = (await direct.open(path(opened.name), { ...logged.flags, mode: 0o666, umask: 0o022 })).id; })) !== null;
+          refused = (await errnoOf(async () => { opened.refHandle = (await direct.open(path(opened.name), { ...logged.flags, mode: logged.mode ?? 0o666, umask: 0o022 })).id; })) !== null;
           for (const made of records ?? []) made.refused = refused;
           if (refused) opened.refHandle = undefined;
           else {
@@ -516,11 +552,24 @@ async function runSteps(steps, met, grants) {
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i];
     const label = `step ${i} ${JSON.stringify(step)}`;
-    if (step.op === 'deliver') await deliver();
-    else if (step.op === 'catchUp') await catchUp();
-    else if (step.op === 'peer') await peerStep(step);
-    else if (step.op === 'readAsync') await readAsync(step, label);
-    else await processStep(step, label);
+    if (step.op === 'squeeze') {
+      squeezed = true;
+      continue;
+    }
+    // The budget full for this step: a change it needs room for is refused (ENOSPC), and leaves nothing changed.
+    if (squeezed) budget.limit = budget.used;
+    try {
+      if (step.op === 'deliver') await deliver();
+      else if (step.op === 'catchUp') await catchUp();
+      else if (step.op === 'peer') await peerStep(step);
+      else if (step.op === 'readAsync') await readAsync(step, label);
+      else await processStep(step, label);
+    } catch (error) {
+      if (error !== NO_SPACE) throw error;
+    } finally {
+      budget.limit = 1 << 30;
+      squeezed = false;
+    }
     await check(label);
   }
   // The end: every descriptor closed, everything delivered, the session holds what the reference holds.
@@ -588,6 +637,37 @@ const metKnown = [];
  * only where no name led to it, so a read that could not wait was EAGAIN.
  */
 const FOUND = [
+  // A held source rewritten same-size once resident, copied: the copy has the new bytes.
+  { name: 'a copy of a held source rewritten once resident', grants: true, steps: [
+    { op: 'writeFile', name: 'a', data: 'xy' },
+    { op: 'catchUp' },
+    { op: 'writeFile', name: 'a', data: 'pq' },
+    { op: 'copy', from: 'a', to: 'b' },
+    { op: 'catchUp' },
+  ] },
+  // A file given back with no descriptor, opened read-only before a barrier: the new bytes or EAGAIN, never the old.
+  { name: 'a read-only open of a file given back, before a barrier', grants: true, steps: [
+    { op: 'writeFile', name: 'a', data: 'xy' },
+    { op: 'catchUp' },
+    { op: 'writeFile', name: 'a', data: 'pq' },
+    { op: 'peer', kind: 'write', name: 'c', to: 'c', data: 'zz', mode: 420 },
+    { op: 'open', fd: 0, name: 'a', flags: { read: true, write: false, append: false, create: false, exclusive: false, truncate: false } },
+    { op: 'copy', from: 'a', to: 'b' },
+    { op: 'catchUp' },
+  ] },
+  // The budget full while a held file has a descriptor open: what is refused changes nothing.
+  { name: 'refusals for room around a held file with a descriptor open', grants: true, steps: [
+    { op: 'open', fd: 0, name: 'a', flags: { read: true, write: true, append: false, create: true, exclusive: false, truncate: true } },
+    { op: 'write', fd: 0, offset: null, data: 'held' },
+    { op: 'squeeze' },
+    { op: 'open', fd: 1, name: 'a', flags: { read: true, write: false, append: false, create: false, exclusive: false, truncate: false } },
+    { op: 'squeeze' },
+    { op: 'rename', from: 'a', to: 'b' },
+    { op: 'squeeze' },
+    { op: 'unlink', name: 'a' },
+    { op: 'write', fd: 0, offset: null, data: '!' },
+    { op: 'catchUp' },
+  ] },
   // A resident file overwritten same-size under a grant, the grant given back before the view admits the write: read now, the new bytes or EAGAIN, never the old.
   { name: 'an overwritten resident file read now after a give-back', grants: true, steps: [
     { op: 'writeFile', name: 'a', data: 'xy' },
@@ -722,7 +802,7 @@ for (const found of FOUND) {
   if (failure !== null && failure.known !== true) failures.set(`found: ${found.name}`, { seeds: [0], reason: failure, minimal: found.steps, grants: found.grants });
 }
 for (const seed of seeds) {
-  const steps = program(seed);
+  const steps = program(seed, 40, { copies: true });
   // A third of the programs run with the session granting the subtree the process changes.
   const grants = seed % 3 === 0;
   const failure = await run(steps, grants).then(() => null, (error) => error);
