@@ -171,8 +171,10 @@ export interface MountOptions {
    * mounted root included), checks no parent, and reads no link inside the
    * mount. The backend follows its own links, in its own tree, and answers
    * for every component itself: ENOENT, ENOTDIR, EACCES on an ancestor it
-   * will not show, or a parent it makes on write. A `..` inside the mount is
-   * taken lexically, so it leaves the mount only past its root. readlink
+   * will not show, or a parent it makes on write. It is handed the path below
+   * the mount point as written, its `.`, `..` and trailing slash included,
+   * for it to walk; a `..` that climbs past the mount's root leaves the
+   * mount, taken lexically by the namespace. readlink
    * answers a link's text, as written; a walk over the namespace that
    * follows a link itself (a launch's staged view, a process's walks) asks
    * `linkLeadsTo` where it leads (an absolute target re-rooted at the mount
@@ -218,7 +220,12 @@ export type VfsRouteReport = (VfsRoute & VfsTraversal) | VfsRouteRefusal;
 export type VfsMutationRouteReport = (VfsMutationRoute & VfsTraversal) | VfsRouteRefusal;
 
 /** The optional per-lookup recorder `resolve` writes while it walks; absent costs nothing. */
-interface LookupTrace { links: string[]; at: string }
+/**
+ * What a lookup met: the root links it followed, where it stopped, and, where
+ * it handed the rest of the path to a mount that resolves its own paths, that
+ * rest as written (its `.`, `..` and trailing slash), for the backend to walk.
+ */
+interface LookupTrace { links: string[]; at: string; verbatim?: { point: string; rel: string } }
 const LOOKUP_REFUSALS: ReadonlySet<string> = new Set<VfsLookupRefusalCode>(['ENOENT', 'ENOTDIR', 'ELOOP', 'ENXIO', 'EACCES']);
 
 /** Whether `code` is a lookup's refusal (VfsRouteRefusal). */
@@ -2386,6 +2393,13 @@ export class CompositeVFS implements VFS {
   // (MountOptions.resolvesPaths) nothing is looked up: the backend is handed
   // the rest of the path whole.
 
+  /** locate(path), its rel the rest as written where the lookup handed it to a mount that resolves its own paths (LookupTrace.verbatim). */
+  private located(path: string, trace: LookupTrace): Route {
+    const route = this.locate(path);
+    const given = trace.verbatim;
+    return given !== undefined && given.point === route.mount.point && route.mount.options.resolvesPaths === true ? { ...route, rel: given.rel } : route;
+  }
+
   /** The mount `path` (resolved, normalized) is on: the longest point at or above it. */
   private locate(path: string): Route {
     for (let at = path; ; at = parentOf(at)) {
@@ -2521,12 +2535,13 @@ export class CompositeVFS implements VFS {
     input: string, sync: boolean, name: K, write: boolean, run: (fn: NonNullable<SyncVFS[K]>, rel: string) => Awaitable<T>,
     { written, creates = false }: { written?: Uint8Array; creates?: boolean } = {},
   ): Awaitable<T> {
-    return andThen(this.resolve(input, true, sync), (path) => {
+    const trace: LookupTrace = { links: [], at: '' };
+    return andThen(this.resolve(input, true, sync, false, trace), (path) => {
       this.present(path);
       if (this.isStructural(path)) {
         throw new Refusal('EISDIR', path);
       }
-      const route = this.locate(path);
+      const route = this.located(path, trace);
       if (write && route.mount.options.readOnly) throw new Refusal('EROFS', path, `${route.mount.point} is mounted read-only`);
       return andThen(this.reachable(path, sync), () => {
         const ops = this.ops(route, sync);
@@ -2585,7 +2600,13 @@ export class CompositeVFS implements VFS {
         shadowParent = false;
         if (final) return null;
         const holder = this.locate(prefix).mount;
-        if (holder.options.resolvesPaths && this.locate(normalizePath(`${prefix}/${components.slice(at + 1).join('/')}`)).mount === holder) return null;
+        const rest = components.slice(at + 1).join('/');
+        const lands = normalizePath(`${prefix}/${rest}`);
+        if (holder.options.resolvesPaths && this.locate(lands).mount === holder) {
+          // Below the mount point, the backend walks the rest as written; the point itself stays the namespace's.
+          if (trace !== undefined && prefix === holder.point && lands !== prefix) trace.verbatim = { point: prefix, rel: `/${rest}` };
+          return null;
+        }
         const mount = this.table.mounts.get(prefix);
         return andThen(mount === undefined ? this.heldDirectory(prefix, sync) : this.mountRoot(mount, prefix, sync), (held) => {
           if (held !== null && !this.permits(held, 1)) throw new Refusal('EACCES', input);
@@ -2752,16 +2773,17 @@ export class CompositeVFS implements VFS {
 
   private statAt(input: string, follow: boolean, sync: boolean): Awaitable<VfsStat | null> {
     // Nothing at a component on the way is "not there" too: stat answers null.
+    const trace: LookupTrace = { links: [], at: '' };
     const walked = (): Awaitable<string | null> => {
       const absent = (e: unknown): null => { if (isVfsError(e, 'ENOENT')) return null; throw e; };
       try {
-        const out = this.resolve(input, follow, sync);
+        const out = this.resolve(input, follow, sync, false, trace);
         return isPromise(out) ? out.catch(absent) : out;
       } catch (e) {
         return absent(e);
       }
     };
-    return andThen(walked(), (path) => (path === null ? null : andThen(this.statResolved(path, follow, sync), (stat) => stat === null ? null : this.identify(path, stat))));
+    return andThen(walked(), (path) => (path === null ? null : andThen(this.statResolved(path, follow, sync, trace), (stat) => stat === null ? null : this.identify(path, stat))));
   }
 
   /**
@@ -2785,7 +2807,7 @@ export class CompositeVFS implements VFS {
   }
 
   /** The stat of a resolved namespace path, before its identity is stamped. */
-  private statResolved(path: string, follow: boolean, sync: boolean): Awaitable<VfsStat | null> {
+  private statResolved(path: string, follow: boolean, sync: boolean, trace?: LookupTrace): Awaitable<VfsStat | null> {
     if (this.absentOn(path) !== null) return null;
     // A live mount point is the mounted backend's root: its mode, owner
     // and times are the backend's (chmod of /tmp reaches it, so stat must
@@ -2806,7 +2828,7 @@ export class CompositeVFS implements VFS {
     }
     return andThen(this.shadowed(path, sync), (hidden) => {
       if (hidden) return null;
-      const route = this.locate(path);
+      const route = trace === undefined ? this.locate(path) : this.located(path, trace);
       return this.softStat(this.ops(route, sync), route.rel, follow);
     });
   }
@@ -2836,11 +2858,12 @@ export class CompositeVFS implements VFS {
   }
 
   private readdirAt(input: string, sync: boolean): Awaitable<VfsDirent[]> {
-    return andThen(this.resolve(input, true, sync), (path) => this.readdirOf(path, sync));
+    const trace: LookupTrace = { links: [], at: '' };
+    return andThen(this.resolve(input, true, sync, false, trace), (path) => this.readdirOf(path, sync, trace));
   }
 
   /** readdir of a path already resolved in this namespace. */
-  private readdirOf(path: string, sync: boolean): Awaitable<VfsDirent[]> {
+  private readdirOf(path: string, sync: boolean, trace?: LookupTrace): Awaitable<VfsDirent[]> {
     this.present(path);
     const prefix = path === ROOT_POINT ? '/' : `${path}/`;
     const extra = this.liveNamesIn(path);
@@ -2869,7 +2892,7 @@ export class CompositeVFS implements VFS {
         ? own()
         : andThen(this.heldDirectory(path, sync), (held) => (held === null ? [] : own())), finish));
     }
-    const route = this.locate(path);
+    const route = trace === undefined ? this.locate(path) : this.located(path, trace);
     const ops = this.ops(route, sync);
     // opendir(O_DIRECTORY) answers ENOTDIR before a permission check (a
     // backend that resolves its own paths answers in its own order).
@@ -2898,7 +2921,8 @@ export class CompositeVFS implements VFS {
   }
 
   private onFile<T>(input: string, follow: boolean, sync: boolean, run: (ops: Ops, rel: string, path: string) => Awaitable<T>): Awaitable<T> {
-    return andThen(this.resolve(input, follow, sync), (path) => {
+    const trace: LookupTrace = { links: [], at: '' };
+    return andThen(this.resolve(input, follow, sync, false, trace), (path) => {
       this.present(path);
       if (this.isStructural(path)) {
         // open(2) checks read permission before a read answers EISDIR.
@@ -2907,7 +2931,7 @@ export class CompositeVFS implements VFS {
           throw new Refusal('EISDIR', path);
         });
       }
-      const route = this.locate(path);
+      const route = this.located(path, trace);
       return andThen(this.reachable(path, sync), () => {
         this.check?.();
         return run(this.ops(route, sync), route.rel, path);
@@ -2925,7 +2949,8 @@ export class CompositeVFS implements VFS {
     run: (ops: Ops, rel: string, path: string) => Awaitable<T>,
     { parents = false, written, told, children = false, recursiveEntry = false }: { parents?: boolean; written?: Uint8Array; told?: VfsEventType | null; children?: boolean; recursiveEntry?: boolean } = {},
   ): Awaitable<T> {
-    return andThen(this.resolve(input, follow, sync, parents), (path) => {
+    const trace: LookupTrace = { links: [], at: '' };
+    return andThen(this.resolve(input, follow, sync, parents, trace), (path) => {
       this.present(path);
       // unlink(2) refuses a directory before anything else (Linux), and a
       // mount point is one.
@@ -2937,7 +2962,7 @@ export class CompositeVFS implements VFS {
           throw new Refusal('EISDIR', path);
         });
       }
-      const route = this.locate(path);
+      const route = this.located(path, trace);
       // chmod, chown and utimes of a mount point change the mounted root, as
       // on Linux; only a directory above a mount point has no backend to ask.
       const metadataOnly = what === 'changed' && (path === ROOT_POINT || this.table.mounts.get(path) !== undefined);
