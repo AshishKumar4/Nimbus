@@ -5,6 +5,11 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a launch whose program loads wasm or a native binding (rolldown's,
+  in a remix dev server) no longer gathers its closure twice. Its build
+  gave back the bytes its module map would need for them, then had to ask
+  for them again, and when anything else was waiting it gathered the
+  whole closure again. The build now keeps what its map will own.
 - Fixed: a dev server relaunched after a change could miss its start
   (remix's took 198 s against a 180 s bound). Its module map was dropped
   and made again three times, each time a file read of a running program

@@ -367,6 +367,41 @@ await runScenarios(fileURLToPath(import.meta.url), {
     drained();
   },
 
+  // A launch's build keeps what its map will own beside its closure (its
+  // wasm), so the map takes no more than the build held: an ask queued
+  // meanwhile, which growth may not pass, costs it no second gather.
+  async fittedToItsMembers() {
+    const authority = createAuthority();
+    adoptSessionSupervisor(authority.host, () => {});
+    const { manager } = session(authority, 'fitted-members');
+    const readsOf = closureReads(authority, manager);
+    const entry = 'require("./cell.js"); import("node:path").then(path => process.stdout.write(path.default.basename("/home/user/entry")))';
+    const withMember = (dir) => {
+      const cwd = bigClosure(authority, dir);
+      authority.kfs.writeFile(`${cwd}/image.wasm`, wasmImage(4 * 1024 * 1024));
+      authority.kfs.writeFile(`${cwd}/cell.js`, 'require("fs").readFileSync(require("path").join(__dirname, "image.wasm")); module.exports = require("./big.js");');
+      return cwd;
+    };
+    const alone = await gatedTransforms(manager);
+    alone.proceed();
+    ran(await manager.exec(entry, { cwd: withMember('alone'), captureOutput: true }), 'entry');
+    const generating = await gatedTransforms(manager);
+    const waiting = manager.exec(entry, { cwd: withMember('queued'), captureOutput: true });
+    try {
+      await generating.entered;
+      const queued = acquireSupervisorAllocation(readSupervisorAllocationBudget().capacity);
+      await until(() => readSupervisorAllocationBudget().queued === 1, 'an ordinary ask queues while the launch makes its map');
+      generating.proceed();
+      // Granted once the launch gives its share up: as it loads its map, or to gather again.
+      (await withinMs(queued, 'the queued ask waited past the launch')).release();
+      ran(await waiting, 'entry');
+    } finally {
+      generating.proceed();
+    }
+    assert.equal(readsOf('queued'), readsOf('alone'), 'the closure is gathered once, though an ask was queued as its map was made');
+    drained();
+  },
+
   async entryHelperOwner() {
     const authority = createAuthority();
     adoptSessionSupervisor(authority.host, () => {});

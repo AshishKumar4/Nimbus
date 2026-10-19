@@ -4364,8 +4364,11 @@ interface PrefetchAdmission {
   readonly queued: boolean;
   /** The bytes it holds now. */
   held(): number;
-  /** What it is made from is known (`closureBytes`): it keeps only what that needs, giving the rest back. */
-  fit(closureBytes: number): void;
+  /**
+   * What it is made from is known (`closureBytes`, and the bytes its map owns
+   * beside them): it keeps only what that needs, giving the rest back.
+   */
+  fit(closureBytes: number, memberBytes?: number): void;
   /** Keeps only what the generated map owns while its launch waits for a worker. */
   retain(bytes: number): void;
   /** Holds `bytes` (within the budget) if what it lacks can be granted now, without waiting; else false. */
@@ -4376,9 +4379,14 @@ interface PrefetchAdmission {
   release(): void;
 }
 
-/** What work made from a closure of `closureBytes` holds at its peak, within the budget. */
-function prefetchNeed(closureBytes: number): number {
-  return Math.min(SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES, Math.max(1, Math.ceil(closureBytes * PREFETCH_PEAK_PER_BYTE)));
+/**
+ * What work made from a closure of `closureBytes` holds at its peak, within
+ * the budget: its build's, or its generated map's `textBytes` if more, beside
+ * the `memberBytes` the map owns (its wasm, its staged bindings).
+ */
+function prefetchNeed(closureBytes: number, memberBytes = 0, textBytes = 0): number {
+  return Math.min(SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES,
+    Math.max(1, Math.ceil(Math.max(closureBytes * PREFETCH_PEAK_PER_BYTE, textBytes) + memberBytes)));
 }
 
 /**
@@ -4442,8 +4450,8 @@ function admissionOf(admitted: SupervisorAllocationLease, queued: boolean): Pref
   return {
     queued,
     held: () => (released ? 0 : lease.bytes),
-    fit(closureBytes) {
-      const need = prefetchNeed(closureBytes);
+    fit(closureBytes, memberBytes = 0) {
+      const need = prefetchNeed(closureBytes, memberBytes);
       if (released || need >= lease.bytes) return;
       lease.shrinkTo(need);
     },
@@ -6730,8 +6738,6 @@ export class FacetManager {
         ],
         ...(evaluatedModule ? { entryEsModule: entryEsModuleKey(spec.scriptPath, spec.cwd) } : {}),
       }, creditLimit);
-      // A preparation returning for a larger map keeps the share it already sized.
-      if (held === undefined) admission.fit(vfsState.rawBytes ?? 0);
       if (offered.length > 0) {
         const staged: StagedProfileEntry[] = [];
         const unresolved: string[] = [];
@@ -6755,7 +6761,8 @@ export class FacetManager {
       const declaredBindings = await stagedBindingsDeclaredBy(declaredBindingFs(vfs), spec.scriptPath, undefined, declaredWalk);
       const namedBindings = stagedBindingsRequiredBy(Object.entries(vfsState.bundle));
       const requiredBindings = new Set([...namedBindings, ...declaredBindings]);
-      vfsState.stagedBindings = STAGED_BINDINGS.filter((b) => requiredBindings.has(b.key)).map((b) => b.key);
+      const stagedBindings = STAGED_BINDINGS.filter((b) => requiredBindings.has(b.key)).map((b) => b.key);
+      vfsState.stagedBindings = stagedBindings;
       if (this.debugEnabled) {
         this.processes.appendOutput(entry.pid, 'stderr', `[nimbus-debug] staged bindings: [${vfsState.stagedBindings.join(', ')}]`
           + ` (named by the closure: [${namedBindings.join(', ')}]; declared by the bin's dependencies: [${declaredBindings.join(', ')}],`
@@ -6767,6 +6774,13 @@ export class FacetManager {
       // And so do the images earlier runs compiled from bytes in memory (learnedWasmImages).
       const inlineWasm = this._stageWasmImageBytes([...findInlineWasmImages(vfsState.bundle), ...learnedWasmImages(learning.code)], entry.pid);
       if (inlineWasm.length > 0) vfsState.wasmImages = [...(vfsState.wasmImages ?? []), ...inlineWasm];
+      // Sized with what its map owns beside the closure, so a launch never
+      // gives back what its map takes moments later. A preparation returning
+      // for a larger map keeps the share it already sized.
+      if (held === undefined) {
+        const members = await this._oneShotMemberBytes(entry, facetWasmImports([], vfsState.wasmImages ?? []), stagedBindings);
+        admission.fit(vfsState.rawBytes ?? 0, members.owned);
+      }
       // And what the module map costs the facet's store, which adopts it at boot
       // (N18): taken now, while the cells exist, for every launch this state
       // serves (a cache hit included).
@@ -8106,7 +8120,7 @@ export class FacetManager {
       true,
     );
     const textBytes = generatedMapRetainedBytes(generated, {});
-    this._ensureOneShotShare(entry.pid, Math.max(prefetchNeed(vfsState.rawBytes ?? 0), textBytes) + memberBytes.owned);
+    this._ensureOneShotShare(entry.pid, prefetchNeed(vfsState.rawBytes ?? 0, memberBytes.owned, textBytes));
     const wasmModules = await this._wasmModulesByValue(entry, wasmImports);
     const stagedModules = await this._stagedBindingModulesByValue(bindingNames);
     const ownedMembers = { ...wasmModules, ...stagedModules };
