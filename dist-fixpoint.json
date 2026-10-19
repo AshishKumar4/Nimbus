@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "b0a4e09acf6586f4637be51c54a44610925bb7c575eb772c0ad5be40892d8825",
+  "fingerprint": "ec9cf71f5f3090813dc1af3c0120c46a1965cd99667ccc2f99449ac7af53bb65",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2153,7 +2153,7 @@
     "packages/platform/dist/wave-writer.js": "0b27c7ce5886510cfaee2e04d260b143280f511a5f1aedccdd2ba1d6378bb994",
     "packages/platform/dist/weighted-credit-pool.d.ts": "8be8bd1db6527bbdb7efd413347e02e6de6702a24c1408d2686904f1a6bac162",
     "packages/platform/dist/weighted-credit-pool.d.ts.map": "e4301eef4931d16b6f4bc872f9faec075fcf894395e9a58870086edfb8f94882",
-    "packages/platform/dist/weighted-credit-pool.js": "dfc441898ef3cec76199e1d656fa6b5aff6a655a43514b54f0f846a573c65feb",
+    "packages/platform/dist/weighted-credit-pool.js": "b10ebbbfffe72e1cbfd1c12c39412b5f335568e156be0a6db1817ce98506c1c8",
     "packages/platform/dist/worker-code.d.ts": "c46d0b95bfc9bb569eff200647eb78a3ba49932c9d53f765e1c37086f845dbee",
     "packages/platform/dist/worker-code.d.ts.map": "84238bfc7c7af59aee8a20b7ff98a5bae7e22f758f96604fdbaad8be9217147c",
     "packages/platform/dist/worker-code.js": "9fb94e65c7b64ce008f9a6c03d130be8a3b2c137e5cd74703d2eb23cdd7bce8f",
@@ -2179,7 +2179,7 @@
     "packages/platform/src/utf8.ts": "09e23226d8cd24c24e12d31b2b9dcd8464304835e5c53713b5912418da1ea591",
     "packages/platform/src/w7-frame.ts": "e83c5f2f69b28bfa0fda70212c09ec9bad9089024703624c04ba6bee60863c03",
     "packages/platform/src/wave-writer.ts": "0184e7706196132d8c7bfd889635c88b9176365f9110c2e5b99a1e5fa44fde22",
-    "packages/platform/src/weighted-credit-pool.ts": "8dfa7518fc127f65662dec776a680f8082998266feef76112bfebb06ffa36a36",
+    "packages/platform/src/weighted-credit-pool.ts": "356564f0e164eec7a59f43ee1a55b0b0960f45851d67fa7098d314988815fe49",
     "packages/platform/src/worker-code.ts": "0d61390f4d3c46cc09f44188fdf8b454ff1e779ce1c85801ec053d10767f4c1c",
     "packages/platform/tsconfig.json": "6dc680d90729597ee71dcaf78368fceb9f44638d4e301811dd4cff58bdb9b62f",
     "packages/react/LICENSE": "9abf902a70f15256b6d108767fc510341854ec2297e3874c5bc6df496a895617",
