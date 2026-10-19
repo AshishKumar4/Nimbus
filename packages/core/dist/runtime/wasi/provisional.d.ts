@@ -154,9 +154,17 @@ export interface Inode {
      * where the view can say nothing of it (unknown), until a move is kept.
      */
     lost?: true;
-    /** The view's bytes of it at `revision` its descriptors last read: what they read once the view no longer has a name for it. */
+    /** Merged into this one (canonicalize): a name record's replay that names it names that one. */
+    merged?: Inode;
+    /**
+     * The bytes its descriptors last read, and the revision they were made at:
+     * the view's at that revision, or null for its own (what its retired
+     * records made, at no revision the view named). Nothing relabels them.
+     * They answer for a row of that revision, and otherwise only once no name
+     * leads to the file (its lifetime).
+     */
     pin?: {
-        readonly revision: number;
+        readonly revision: number | null;
         readonly bytes: Uint8Array;
     };
     /** What it holds of the process's budget: cost(inode), and never more but transiently. */

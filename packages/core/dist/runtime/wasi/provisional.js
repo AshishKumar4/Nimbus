@@ -234,6 +234,19 @@ export function provisional(host) {
         const held = inode.type === 'file' ? host.content(name, row.revision) : undefined;
         return { name, row, bytes: held !== undefined && held.byteLength === row.size ? held : undefined };
     };
+    /**
+     * The bytes `inode`'s pin answers with, where the view has `seen` of it:
+     * only those of `revision` (the row's) while a name the view has leads to
+     * it; any, theirs for its lifetime, once none does.
+     */
+    const pinned = (inode, seen, revision) => {
+        const pin = inode.pin;
+        if (pin === undefined)
+            return undefined;
+        if (seen === undefined)
+            return inode.local || named(inode) ? undefined : pin.bytes;
+        return pin.revision === revision ? pin.bytes : undefined;
+    };
     /** Whether the view can say nothing of `inode` now: no row at the name it has it at (not listed again since a barrier began it anew), or it is lost. */
     const unknown = (inode) => !inode.local && inode.state === null && (inode.lost === true || host.row(inode.origin) === undefined);
     /** What an inode's records fold over: the view's version of it where the view still has it, else its row as last known, its bytes not held. */
@@ -246,7 +259,7 @@ export function provisional(host) {
                 inode.over = { key: seen.name, generation };
         }
         const row = inode.row;
-        const held = seen?.bytes ?? (inode.pin?.revision === row.revision ? inode.pin.bytes : undefined);
+        const held = seen?.bytes ?? pinned(inode, seen, row.revision);
         const bytes = held === undefined ? (row.size === 0 ? new Uint8Array(0) : null) : owned(held);
         return { bytes, size: row.size, mode: row.mode, uid: row.uid, gid: row.gid, atime: row.atime, mtime: row.mtime, ctime: row.ctime };
     };
@@ -288,7 +301,7 @@ export function provisional(host) {
             // A grant's file: its cell's bytes are what the first record folds over (fold: unhold).
             const seen = inode.local || inode.cell !== undefined ? undefined : viewed(inode);
             const held = inode.cell !== undefined ? inode.cell.bytes.subarray(0, inode.cell.length)
-                : seen?.bytes ?? (inode.pin?.revision === (seen?.row.revision ?? inode.row.revision) ? inode.pin.bytes : undefined);
+                : seen?.bytes ?? pinned(inode, seen, seen?.row.revision ?? inode.row.revision);
             known = held !== undefined || inode.row.size === 0;
             baseBytes = held?.byteLength ?? 0;
             capacity = baseBytes;
@@ -591,7 +604,7 @@ export function provisional(host) {
     };
     /** `key` names `inode` from now on (null: nothing). */
     const place = (key, placed) => {
-        const inode = placed;
+        const inode = placed?.merged ?? placed;
         layer.set(key, inode);
         note(parentKey(key), nameOf(key), inode === null ? null : inode.type);
         if (inode !== null) {
@@ -661,43 +674,72 @@ export function provisional(host) {
     /**
      * An open's answer: the file the session opened is the one the process
      * decided it on (its open carried it: W7Expected; the session refuses one
-     * whose name led elsewhere), or the file it made, numbered now. A file
-     * this process made is the session's numbered one from now on: rekeyed,
-     * its baseline the receipt's.
+     * whose name led elsewhere), or the file it made, numbered now
+     * (canonicalize). The Inode that is that file from now on.
      */
     const reconcile = (inode, answer, creating) => {
         const receipt = answer?.receipt;
-        if (receipt === undefined)
-            return;
-        if (creating && inode.local) {
-            removeInode(inode);
-            inode.local = false;
-            inode.dev = receipt.dev;
-            inode.ino = receipt.ino;
-            inode.row = { ...inode.row, dev: receipt.dev, ino: receipt.ino, size: receipt.size, mode: receipt.mode, uid: receipt.uid, gid: receipt.gid };
-            addInode(inode);
-            // The receipt is the file as the open left it: what this process made of it folds over that.
-            inode.base = { bytes: receipt.size === 0 ? new Uint8Array(0) : null, size: receipt.size, mode: receipt.mode, uid: receipt.uid, gid: receipt.gid, atime: receipt.mtimeMs, mtime: receipt.mtimeMs, ctime: receipt.ctimeMs };
-            refold(inode);
-        }
-        fit(inode);
+        const file = receipt !== undefined && creating && inode.local ? canonicalize(inode, receipt) : inode;
+        fit(file);
+        return file;
     };
     /**
-     * An open's answer, `credit` its open set aside: reconciled (reconcile),
-     * then what was made through it settled, then what the answer did not
-     * need of the credit given back.
+     * A file this process made is the session's numbered one from now on
+     * (§0.1), before the number is published anywhere, the one way the
+     * registry learns a number for one of its own: rekeyed; or, where the
+     * table already holds an Inode of that number (an admission learned it
+     * first: a peer moved the new file, and the process opened it there),
+     * merged into that one, its descriptors, records and names with it: one
+     * owner, never two. Its baseline is the receipt's, the file as the
+     * creating open left it, with what this process made of it through
+     * either folded over that in log order. The owner.
      */
-    const openAnswered = (inode, description, records, creating, read) => (refused, answer) => {
-        inode.answers--;
+    const canonicalize = (made, receipt) => {
+        removeInode(made);
+        made.local = false;
+        const owner = inodeAtNumber(receipt.dev, receipt.ino) ?? made;
+        if (owner === made) {
+            made.dev = receipt.dev;
+            made.ino = receipt.ino;
+            addInode(made);
+        }
+        else {
+            for (const desc of descs.values())
+                if (desc.inode === made)
+                    desc.inode = owner;
+            for (const record of made.records)
+                record.owner = owner;
+            owner.records = [...owner.records, ...made.records].sort((a, b) => a.id - b.id);
+            owner.recordsCost += made.recordsCost;
+            owner.descs += made.descs;
+            owner.answers += made.answers;
+            owner.retained = [...owner.retained, ...made.retained];
+            for (const [key, value] of layer)
+                if (value === made)
+                    layer.set(key, owner);
+            for (const record of nameRecords)
+                record.places = record.places.map((inode) => (inode === made ? owner : inode));
+            touched.delete(made);
+            host.release(made.reserved);
+            made.reserved = 0;
+            made.merged = owner;
+        }
+        owner.row = { ...owner.row, dev: receipt.dev, ino: receipt.ino, size: receipt.size, mode: receipt.mode, uid: receipt.uid, gid: receipt.gid };
+        owner.base = { bytes: receipt.size === 0 ? new Uint8Array(0) : null, size: receipt.size, mode: receipt.mode, uid: receipt.uid, gid: receipt.gid, atime: receipt.mtimeMs, mtime: receipt.mtimeMs, ctime: receipt.ctimeMs };
+        refold(owner);
+        return owner;
+    };
+    /** An open's answer: reconciled (reconcile), then what was made through it settled. */
+    const openAnswered = (opened, description, records, creating, read) => (refused, answer) => {
+        opened.answers--;
         // The session's descriptor of the description: what reads its file once no name leads to it (sessionOf).
         if (!refused && answer?.receipt?.handle !== undefined)
             sessions.set(description, { handle: answer.receipt.handle, read });
-        if (!refused)
-            reconcile(inode, answer, creating);
+        const inode = refused ? opened : reconcile(opened, answer, creating);
+        if (opened.made === description)
+            delete opened.made;
         // Numbered, or never made: its description names it no more, and goes once nothing holds it open; refused, the
         // session never had it, so it is no file's anchor either.
-        if (inode.made === description)
-            delete inode.made;
         if (refused && inode.retained.includes(description)) {
             inode.retained = inode.retained.filter((kept) => kept !== description);
             sessions.delete(description);
@@ -764,8 +806,10 @@ export function provisional(host) {
         }
         inode.row = seen.row;
         // The view's name for it has no bytes yet (moved there by a rename): what its descriptors read of it at that revision.
-        if (seen.bytes === undefined)
-            return inode.pin?.revision === seen.row.revision ? { bytes: inode.pin.bytes, size: inode.pin.bytes.byteLength } : undefined;
+        if (seen.bytes === undefined) {
+            const pin = pinned(inode, seen, seen.row.revision);
+            return pin === undefined ? undefined : { bytes: pin, size: pin.byteLength };
+        }
         // Pinned for its descriptors while the view's name for it may move or go: the bytes they last read.
         if (inode.descs > 0 && inode.pin?.bytes !== seen.bytes) {
             inode.pin = { revision: seen.row.revision, bytes: seen.bytes };
@@ -1592,9 +1636,9 @@ export function provisional(host) {
                     dropRecords(inode, new Set(retired));
                     // A grant's decision of its name made since (a move above it) is newer than the view's answer: it stays, and takes what they made of the file.
                     inode.row = (retired.length > 0 ? host.absorb(seen.name, entryOf(inode)) : undefined) ?? seen.row;
-                    // What its descriptors read last is what it made: theirs while the view's name for it may move or go (pin).
+                    // What its descriptors read last is what it made, at no revision the view named: theirs once no name leads to it (pin).
                     if (inode.descs > 0 && inode.state?.bytes)
-                        inode.pin = { revision: inode.row.revision, bytes: inode.state.bytes.subarray(0, inode.state.size) };
+                        inode.pin = { revision: null, bytes: inode.state.bytes.subarray(0, inode.state.size) };
                     inode.base = null;
                     inode.state = null;
                 }
