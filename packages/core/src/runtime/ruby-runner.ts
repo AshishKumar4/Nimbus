@@ -1211,8 +1211,11 @@ async function __nimbusRubyEval(boot, rubyCode) {
 //   alive       the body is still running - it parked rather than finished
 //   hostDriven  it has listened, so inbound requests are what resume it now
 //   wakeAfter   seconds until the earliest deadline it owes, or null for none
-globalThis.__nimbusRubyResumeMain = async function __nimbusRubyResumeMain() {
-  const boot = await __nimbusRubyVm();
+//
+// \`vm\` is the VM to resume: a one-shot's own (__rubyRunProcess), else the
+// one a resident or the prompt keeps for its life.
+globalThis.__nimbusRubyResumeMain = async function __nimbusRubyResumeMain(vm = __nimbusRubyVm()) {
+  const boot = await vm;
   if (!boot.ok) return { resumed: false, alive: false, hostDriven: false, wakeAfter: null };
   delete __nimbusRubyStderrControl.values.resumed;
   await __nimbusRubyEval(boot, [
@@ -1240,8 +1243,8 @@ globalThis.__nimbusRubyResumeMain = async function __nimbusRubyResumeMain() {
 // no single request may own it: a request context is torn down without warning
 // when its response is sent, taking anything anchored to it.
 globalThis.__nimbusRubyResumeQueue = globalThis.__nimbusRubyResumeQueue || Promise.resolve();
-globalThis.__nimbusRubyStep = function __nimbusRubyStep() {
-  const run = () => globalThis.__nimbusRubyResumeMain();
+globalThis.__nimbusRubyStep = function __nimbusRubyStep(vm) {
+  const run = () => globalThis.__nimbusRubyResumeMain(vm);
   const task = globalThis.__nimbusRubyResumeQueue.then(run, run);
   globalThis.__nimbusRubyResumeQueue = task.then(() => {}, () => {});
   return task;
@@ -1258,9 +1261,9 @@ globalThis.__nimbusRubyStep = function __nimbusRubyStep() {
 // It stops the moment the process listens: from there the process is resumed
 // by inbound requests, and those requests carry the deadlines — a driver
 // anchored to this invocation would be cancelled with it.
-globalThis.__nimbusRubyDriveBoot = async function __nimbusRubyDriveBoot() {
+globalThis.__nimbusRubyDriveBoot = async function __nimbusRubyDriveBoot(vm) {
   for (;;) {
-    const step = await globalThis.__nimbusRubyStep();
+    const step = await globalThis.__nimbusRubyStep(vm);
     if (!step.resumed || !step.alive) return step;
     if (step.hostDriven || step.wakeAfter === null) return step;
     // Always through a timer, even at zero: the turn boundary is what moves
@@ -1518,7 +1521,7 @@ async function __rubyRunOnce(args, boot) {
   let evalStatus;
   try {
     evalStatus = await callEvalStringProtect(userWrapper);
-    await globalThis.__nimbusRubyDriveBoot();
+    await globalThis.__nimbusRubyDriveBoot(boot);
   } catch (e) {
     return {
       exitCode: 1,
