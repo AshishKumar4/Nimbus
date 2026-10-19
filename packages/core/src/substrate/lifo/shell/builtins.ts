@@ -176,7 +176,8 @@ async function builtinExport({ args, stdout, stderr, state, context }: BuiltinCa
     }
     const eqIdx = arg.indexOf('=');
     const key = eqIdx === -1 ? arg : arg.slice(0, eqIdx);
-    if (eqIdx === -1 && !Object.hasOwn(state.env, key) && !state.arrays.has(key)) state.declaredNames.add(key);
+    // Exported with no value, a name is declared; unexported, an absent one stays absent.
+    if (!unexport && eqIdx === -1 && !Object.hasOwn(state.env, key) && !state.arrays.has(key)) state.declaredNames.add(key);
     // A refused assignment (a readonly name) still takes the attribute, as bash's does.
     if (eqIdx !== -1 && !(await assignEnv(state, key, arg.slice(eqIdx + 1), stderr))) exitCode = 1;
     if (unexport) state.exportedNames.delete(key);
@@ -568,7 +569,8 @@ async function builtinUnset({ args, stderr, state, context }: BuiltinCall): Prom
       context.unsetFunction(arg);
       continue;
     }
-    if (!variables && !Object.hasOwn(state.env, arg) && !state.arrays.has(arg) && context.unsetFunction(arg)) continue;
+    if (!variables && !Object.hasOwn(state.env, arg) && !state.arrays.has(arg) && !state.declaredNames.has(arg) && !state.exportedNames.has(arg)
+      && context.unsetFunction(arg)) continue;
     // `unset arr[2]` clears one element; `unset arr` removes the variable.
     const element = /^([a-zA-Z_][a-zA-Z0-9_]*)\[([^\]]*)\]$/.exec(arg);
     const name = element === null ? arg : element[1];
@@ -676,7 +678,8 @@ async function builtinDeclare(verb: 'local' | 'declare' | 'typeset', { args, std
     }
 
     if (eq !== -1 && !(await assignDeclared(state, name, context.arrayElements?.get(index) ?? arg.slice(eq + 1), stderr))) exitCode = 1;
-    if (eq === -1 && verb !== 'local' && !Object.hasOwn(state.env, name) && !state.arrays.has(name)) state.declaredNames.add(name);
+    // Declared with no value (a local too, which a callee sees): it exists, unset.
+    if (eq === -1 && !Object.hasOwn(state.env, name) && !state.arrays.has(name)) state.declaredNames.add(name);
     if (readonlyFlag) state.readonlyNames.add(name);
     if (exportFlag) state.exportedNames.add(name);
   }

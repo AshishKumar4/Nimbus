@@ -59,6 +59,11 @@ const CASES = [
   "f() { local p; declare -p | grep -E ' p$'; }; f",
   "f() { local z=1 a=2; local -p; }; f; g() { local plain=1 marked=2; export marked; local -xp; }; g",
   "f() { :; }; export -f f=value; echo $?",
+  "f() { echo still; }; declare f; unset f; f; declare -p f",
+  "x=outer; x=inner eval 'export x'; declare -p x; unset x; x=inner eval 'export x'; declare -p x; echo $?",
+  "x=0; x=1 export x; declare -p x; y=0; y=1 readonly y; declare -p y; z=0; z=1 export w; declare -p z",
+  "export -n ghost; declare -p ghost; echo $?",
+  "g() { declare -p p; }; f() { local p; g; }; f; declare -p p; echo $?",
 ];
 
 /** bash's diagnostic prefix: `bash: line 1: `, `bash: -c: line 1: `, and in a function 5.2's `environment: line 1: `. */

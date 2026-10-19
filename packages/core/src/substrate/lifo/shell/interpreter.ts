@@ -366,6 +366,9 @@ export interface InterpreterConfig extends ShellState {
 
 
 
+/** The builtins that declare variables: a name one declares keeps its command-prefix binding (bash's tempenv promotion). */
+const DECLARING_BUILTINS: ReadonlySet<string> = new Set(['export', 'declare', 'typeset', 'readonly', 'local']);
+
 export class Interpreter {
   private config: InterpreterConfig;
   private lastExitCode = 0;
@@ -1250,8 +1253,13 @@ export class Interpreter {
       }
     } finally {
       writeFailed = await this.flushFds(fds, name);
-      // Restore env from per-command assignments
-      for (const [name, value] of saved) restoreVariable(this.config, name, value, false);
+      // Restore env from per-command assignments, but for a name the command declares
+      // itself (`x=1 export x`, `x=1 readonly x`): that binding, value and attributes, stays.
+      const declares = DECLARING_BUILTINS.has(name) && !this.functions.has(name);
+      for (const [variable, value] of saved) {
+        if (declares && args.some((arg) => arg === variable || arg.startsWith(`${variable}=`))) continue;
+        restoreVariable(this.config, variable, value);
+      }
     }
     if (writeFailed && exitCode === 0) exitCode = 1;
 
