@@ -33,6 +33,7 @@ def permCase (S : St) (ks : List Nat) (steps : List (Cred × Op × Path)) (root 
 def perm : List Json :=
   [permCase operandTrace [0, 1, 2, 3]
     [(kernel, .readFile, ["m", "missing", "..", "f"]),
+     (kernel, .readFile, ["m", "..", "m", "missing", "..", "f"]),
      (kernel, .stat, ["m", "missing", "..", "f"]),
      (kernel, .readFile, ["m", "f", ""]), (kernel, .readFile, ["m", "f", "."]),
      (kernel, .stat, ["m", "f", ""]), (kernel, .stat, ["m", "f", "."]),

@@ -22,7 +22,13 @@
 //   - a root that resolves its own paths;
 //   - a process's walk beneath a preopen (walkBeneath) gives the namespace
 //     the name as written past the point it hands over, after a link it
-//     followed on the way in, with a trailing slash kept.
+//     followed on the way in, with a trailing slash kept; on both process
+//     faces, a no-follow last name keeps its slash, and a directory opened
+//     past a `..` is where its descriptor's relative and beneath lookups
+//     start;
+//   - final separators reach the backend on mutations (mkdir, rmdir,
+//     unlink), a no-follow `/` follows the link (its own name and number),
+//     and a rename between two files of one lexical name happens.
 //
 // Red before: the namespace collapsed `.`, `..` and the trailing slash, so
 // the backend read /f for /m/missing/../f, and /f for /m/link/../f (the
@@ -31,18 +37,21 @@ import assert from 'node:assert/strict';
 import { CompositeVFS } from '../../packages/core/src/vfs/composite.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { walkBeneath } from '../../packages/core/src/runtime/beneath-walk.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
+import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
-/** A backend that records each call (`op path`), over a non-resolving CompositeVFS over `memory`, its stats numbering no inodes. */
-function recording(memory) {
+/** A backend that records each call (`op path`), over a non-resolving CompositeVFS over `memory`, its stats numbering no inodes. `sync`: it has a synchronous face. */
+function recording(memory, { sync: synchronous = true } = {}) {
   const inner = new CompositeVFS(memory);
   const asked = [];
   const strip = (value) => (value !== null && typeof value === 'object' && 'type' in value && 'ino' in value ? { ...value, ino: undefined } : value);
   const face = (target, sync) => new Proxy(target, {
     get(t, key) {
-      if (key === 'sync') return sync ? undefined : face(t.sync, true);
+      if (key === 'sync') return sync || !synchronous ? undefined : face(t.sync, true);
       const value = t[key];
       if (typeof value !== 'function') return value;
       return (...args) => {
@@ -55,7 +64,7 @@ function recording(memory) {
   return { vfs: face(inner, false), asked, memory };
 }
 
-/** The backend's tree: /link leads to /a/b, so /link/../f is /a/f, not /f. */
+/** The backend's tree: /link leads to /a/b, so /link/../f is /a/f, not /f; /toB leads to /a/b too. */
 function tree() {
   const memory = new MemoryVFS();
   memory.mkdir('/a/b', { recursive: true });
@@ -65,6 +74,7 @@ function tree() {
   memory.writeFile('/f', enc.encode('f'));
   memory.writeFile('/dir/g', enc.encode('g'));
   memory.symlink('/a/b', '/link');
+  memory.symlink('/a/b', '/toB');
   return memory;
 }
 
@@ -144,6 +154,24 @@ for (const face of ['async', 'sync']) {
   assert.equal(await outcome(() => ns.readFile(real)), 'a/f');
   assert.equal(face === 'sync' ? vfs.realpath('/m/dir/./g') : await vfs.realpathAsync('/m/dir//g'), '/m/dir/g');
 
+  // Not followed, a final `/` follows the link: its name keeps the `/`, and its number is its own.
+  assert.equal((await ns.stat('/m/toB/', { follow: false }))?.type, 'directory');
+  assert.equal((await ns.stat('/m/toB', { follow: false }))?.type, 'symlink');
+  assert.notEqual((await ns.stat('/m/toB/', { follow: false })).ino, (await ns.stat('/m/toB', { follow: false })).ino);
+  const linkDir = await vfs.pin('/m/toB/', { follow: false, sync: face === 'sync' });
+  assert.equal(linkDir.name, '/m/toB/');
+  assert.equal((await linkDir.stat())?.type, 'directory');
+  // Final separators reach the backend on every mutation too.
+  assert.deepEqual(await call('mkdir', () => ns.mkdir(`/m/${face}-slashed/`)), { got: undefined, asked: [`mkdir /${face}-slashed/`] });
+  assert.deepEqual(await call('rmdir', () => ns.rmdir(`/m/${face}-slashed/`)), { got: undefined, asked: [`rmdir /${face}-slashed/`] });
+  assert.deepEqual(await call('unlink', () => ns.unlink('/m/f/')), { got: 'ENOTDIR', asked: ['unlink /f/'] });
+  assert.equal(dec.decode(m.memory.readFile('/f')), 'f');
+  // A rename onto the name of another file: two spellings, one lexical name, both observed.
+  m.memory.writeFile('/a/g2', enc.encode('a/g2'));
+  m.memory.writeFile('/g2', enc.encode('g2'));
+  assert.deepEqual(await call('rename', () => ns.rename('/m/link/../g2', '/m/g2')), { got: undefined, asked: ['rename /link/../g2 /g2'] });
+  assert.equal(dec.decode(m.memory.readFile('/g2')), 'a/g2');
+
   // A pin holds the name it was found at, as written past a `..`; its file is the backend's /a/f.
   const pinned = await vfs.pin('/m/link/../f', { follow: true, sync: face === 'sync' });
   assert.equal(pinned.name, '/m/link/../f');
@@ -207,6 +235,28 @@ for (const face of ['async', 'sync']) {
   assert.equal(await vfs.realpathAsync('/f'), '/f');
   const first = await vfs.stat('/f');
   assert.equal((await vfs.stat('/f')).ino, first.ino, 'a root file keeps its number');
+}
+
+// A process's two faces: their walks hand the namespace the name as written,
+// a last name not followed included, and a directory opened past a `..` is
+// where its descriptor's lookups start.
+for (const face of ['synchronous', 'awaiting']) {
+  const harness = createSqliteVfsTestHarness();
+  const files = new ProcessFiles(new SqliteVFS(harness.sql, harness.ctx));
+  const m = recording(tree(), { sync: face === 'synchronous' });
+  files.vfs.mount('/m', m.vfs, { resolvesPaths: true });
+  const bound = files.bind({ pid: 7, cred: { uid: 0, gid: 0, groups: [], umask: 0o022 } });
+  const fs = face === 'synchronous' ? bound.synchronous : bound;
+  assert.equal(await outcome(() => fs.unlink('/m/f/')), 'ENOTDIR', `${face}: unlink of a file with a final slash`);
+  assert.equal(dec.decode(m.memory.readFile('/f')), 'f');
+  assert.equal(await outcome(() => fs.readFile('/m/link/../f')), 'a/f', `${face}: a read through a link's ..`);
+  assert.equal((await fs.stat('/m/toB/', { followSymlinks: false }))?.type, 'directory', `${face}: lstat with a final slash`);
+  const dir = await fs.open('/m/link/../b', { read: true, directory: true });
+  assert.equal(await outcome(() => fs.readFile({ directory: dir.id, path: 'c' })), 'a/b/c', `${face}: relative to the directory`);
+  assert.equal(await outcome(() => fs.readFile({ directory: dir.id, path: 'c', beneath: true })), 'a/b/c', `${face}: beneath the directory`);
+  await fs.close(dir.id);
+  await files.releaseProcess(7);
+  harness.db.close();
 }
 
 // A walk beneath a preopen hands the namespace the name as written past the point.

@@ -515,17 +515,19 @@ def forwardedTail (S : St) (done : Path) (raw : List String) : TailScan :=
 
 /-- Capturing does not change component ownership or the namespace walk. Once a
     scan has found an operand, later backend-owned steps cannot shorten its raw
-    prefix. A namespace-followed link starts a new scan; escaped points remain
-    lexical even if the path subsequently enters them again. -/
+    prefix. A namespace-followed link starts a new scan. An escaped point stays
+    lexical until a fresh visit to that point restarts its suffix scan. -/
 structure Capture where
   operand : Option Operand := none
   escaped : List Path := []
 
 def captureTail (S : St) (done : Path) (raw : List String) (cap : Capture) : Capture :=
-  if cap.operand.isSome || (ownerOf S.mounts done).point ∈ cap.escaped then cap
+  let point := (ownerOf S.mounts done).point
+  let cap := if done == point then { cap with escaped := cap.escaped.filter (· != point) } else cap
+  if cap.operand.isSome || point ∈ cap.escaped then cap
   else
     let scanned := forwardedTail S done raw
-    ⟨scanned.operand, if scanned.escaped then (ownerOf S.mounts done).point :: cap.escaped else cap.escaped⟩
+    ⟨scanned.operand, if scanned.escaped then point :: cap.escaped else cap.escaped⟩
 
 /-- Linux path walk in the caller's namespace; in a path its backend resolves,
     lexical (the backend answers for the rest). -/
@@ -1136,13 +1138,14 @@ private theorem the_resolution_keeps_its_operand :
     (resolveResolution rootOperandTrace kernel true ["", "f"]).map Resolution.operand =
       .ok (some ⟨[], ["", "f"]⟩) ∧
     (resolveResolution operandTrace kernel true ["m", "..", "m", "missing", "..", "f"]).map Resolution.operand =
-      .ok none := by
+      .ok (some ⟨["m"], ["missing", "..", "f"]⟩) := by
   exact ⟨rfl, rfl, rfl, rfl, rfl, rfl, rfl⟩
 
 /-- Namespace ownership stays lexical, while the operand's backend-local walk
     observes missing/non-directory components and the physical parent of a link. -/
 private theorem resolving_backends_walk_physically :
     (cOp operandTrace kernel .readFile ["m", "missing", "..", "f"]).1 = .err "ENOENT" ∧
+    (cOp operandTrace kernel .readFile ["m", "..", "m", "missing", "..", "f"]).1 = .err "ENOENT" ∧
     (cOp operandTrace kernel .readFile ["m", "f", ""]).1 = .err "ENOTDIR" ∧
     (cOp operandTrace kernel .readFile ["m", "f", "."]).1 = .err "ENOTDIR" ∧
     (cOp operandTrace kernel .readFile ["m", "link", "..", "f"]).1 = .bytes 2 ∧
