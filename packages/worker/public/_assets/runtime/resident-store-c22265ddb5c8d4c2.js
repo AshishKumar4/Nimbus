@@ -1486,12 +1486,13 @@ var __nimbusResidentModule = (() => {
     const held = new SafeMap();
     const unheld = new SafeSet();
     const cellSize = (cell) => typeof cell === "string" ? cell.length * 3 : residentBytes(cell).byteLength;
+    const encodeText = TextEncoder.prototype.encode.bind(new TextEncoder());
     const sameCell = (held2, incoming) => {
       if (held2 === void 0 || typeof held2 === "object" && "error" in held2) return false;
-      if (typeof held2 === "string" || typeof incoming === "string") return held2 === incoming;
       if (typeof incoming === "object" && "error" in incoming) return false;
-      const a = residentBytes(held2);
-      const b = residentBytes(incoming);
+      if (typeof held2 === "string" && typeof incoming === "string") return held2 === incoming;
+      const a = typeof held2 === "string" ? encodeText(held2) : residentBytes(held2);
+      const b = typeof incoming === "string" ? encodeText(incoming) : residentBytes(incoming);
       if (a.byteLength !== b.byteLength) return false;
       for (let i = 0; i < a.byteLength; i++) if (a[i] !== b[i]) return false;
       return true;
