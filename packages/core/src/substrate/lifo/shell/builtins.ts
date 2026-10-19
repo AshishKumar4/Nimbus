@@ -180,8 +180,12 @@ async function builtinExport({ args, stdout, stderr, state, context }: BuiltinCa
     if (!unexport && eqIdx === -1 && !Object.hasOwn(state.env, key) && !state.arrays.has(key)) state.declaredNames.add(key);
     // A refused assignment (a readonly name) still takes the attribute, as bash's does.
     if (eqIdx !== -1 && !(await assignEnv(state, key, arg.slice(eqIdx + 1), stderr))) exitCode = 1;
-    if (unexport) state.exportedNames.delete(key);
-    else state.exportedNames.add(key);
+    if (unexport) {
+      state.exportedNames.delete(key);
+    } else {
+      state.exportedNames.add(key);
+      context.promote(key);
+    }
   }
   return exitCode;
 }
@@ -431,7 +435,7 @@ function setShellOptionByFlag(state: ShellState, flag: string, enabled: boolean)
   }
 }
 
-async function builtinReadonly({ args, stdout, stderr, state }: BuiltinCall): Promise<number> {
+async function builtinReadonly({ args, stdout, stderr, state, context }: BuiltinCall): Promise<number> {
   if (args.length === 0 || (args.length === 1 && args[0] === '-p')) {
     for (const name of Array.from(state.readonlyNames).sort()) {
       const value = state.env[name];
@@ -459,6 +463,7 @@ async function builtinReadonly({ args, stdout, stderr, state }: BuiltinCall): Pr
       }
       if ((await assignEnv(state, name, arg.slice(eqIdx + 1), stderr))) {
         state.readonlyNames.add(name);
+        context.promote(name);
       } else {
         exitCode = 1;
       }
@@ -470,6 +475,7 @@ async function builtinReadonly({ args, stdout, stderr, state }: BuiltinCall): Pr
       continue;
     }
     state.readonlyNames.add(arg);
+    context.promote(arg);
   }
   return exitCode;
 }
@@ -682,6 +688,7 @@ async function builtinDeclare(verb: 'local' | 'declare' | 'typeset', { args, std
     if (eq === -1 && !Object.hasOwn(state.env, name) && !state.arrays.has(name)) state.declaredNames.add(name);
     if (readonlyFlag) state.readonlyNames.add(name);
     if (exportFlag) state.exportedNames.add(name);
+    context.promote(name);
   }
   return exitCode;
 }

@@ -150,6 +150,8 @@ export interface BuiltinExecutionContext {
   localNames(): readonly string[] | null;
   /** Whether `name` is a function of the shell running the builtin. */
   isFunction(name: string): boolean;
+  /** Keep `name`'s command-prefix binding, value and attributes, past the command: the builtin declared it (bash's tempenv promotion, `x=1 export x`). */
+  promote(name: string): void;
   /** Remove a function from the shell running the builtin (a child shell's own, after a fork); false when none is defined. */
   unsetFunction(name: string): boolean;
   /** The state of the shell running the builtin: a child shell's own, after a fork. */
@@ -365,9 +367,6 @@ export interface InterpreterConfig extends ShellState {
  */
 
 
-
-/** The builtins that declare variables: a name one declares keeps its command-prefix binding (bash's tempenv promotion). */
-const DECLARING_BUILTINS: ReadonlySet<string> = new Set(['export', 'declare', 'typeset', 'readonly', 'local']);
 
 export class Interpreter {
   private config: InterpreterConfig;
@@ -1063,11 +1062,18 @@ export class Interpreter {
     if (viaCommand) [name, ...args] = args[0] === '--' ? args.slice(1) : args;
     if (io.dispatched?.shell === this) io.dispatched.last = this.functions.has(name) && !viaCommand ? null : name;
 
-    // Apply per-command assignments (temporary env, exported for the command, as bash's tempenv is)
+    // Apply per-command assignments (temporary env, exported for the command, as bash's tempenv is).
+    // Each is restored, value and attributes, however the command ends, unless the builtin
+    // run declared it (BuiltinExecutionContext.promote: `x=1 export x` keeps x).
     const saved = new Map<string, SavedVariable>();
+    const promoted = new Set<string>();
+    const restorePrefix = (): void => {
+      for (const [variable, value] of saved) if (!promoted.has(variable)) restoreVariable(this.config, variable, value);
+    };
     for (const assign of cmd.assignments) {
       if (!saved.has(assign.name)) saved.set(assign.name, saveVariable(this.config, assign.name));
       if (!await this.applyAssignment(assign, expandCtx)) {
+        restorePrefix();
         (await (io.stderr ?? this.terminalSink(io)).write(`${assign.name}: readonly variable\n`));
         return 1;
       }
@@ -1087,6 +1093,7 @@ export class Interpreter {
         ? redirectionDiagnostic(error)
         : `${error instanceof Error ? error.message : String(error)}\n`));
       await this.flushFds(fds);
+      restorePrefix();
       this.lastExitCode = 1;
       return 1;
     }
@@ -1177,6 +1184,7 @@ export class Interpreter {
               return frame === undefined ? null : Array.from(frame.keys());
             },
             isFunction: (name) => this.functions.has(name),
+            promote: (variable) => { promoted.add(variable); },
             unsetFunction: (name) => this.functions.delete(name),
             shell: this.config,
             interactive: io.interactive,
@@ -1254,14 +1262,7 @@ export class Interpreter {
       }
     } finally {
       writeFailed = await this.flushFds(fds, name);
-      // Restore env from per-command assignments, but for a name the command declares
-      // itself (`x=1 export x`, `x=1 readonly x`): that binding, value and attributes, stays.
-      // (Printing them, `declare -p x`, declares nothing.)
-      const declares = DECLARING_BUILTINS.has(name) && !this.functions.has(name) && !args.some((arg) => /^-[^-]*p/.test(arg));
-      for (const [variable, value] of saved) {
-        if (declares && args.some((arg) => arg === variable || arg.startsWith(`${variable}=`))) continue;
-        restoreVariable(this.config, variable, value);
-      }
+      restorePrefix();
     }
     if (writeFailed && exitCode === 0) exitCode = 1;
 
