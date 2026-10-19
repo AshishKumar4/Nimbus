@@ -222,7 +222,10 @@ var mapGet = uncurryThis(Map.prototype.get);
 var MapConstructor = Map;
 var objectPreventExtensions = Object.preventExtensions;
 var symbolToStringTag = Symbol.toStringTag;
-return { ArrayConstructor, ArrayFrom, ArrayIteratorNext, ArrayIteratorPrototype, ArrayPrototypeIndexOf, ArrayPrototypeLastIndexOf, ArrayPrototypePop, ArrayPrototypeToSpliced, ArrayPrototypeWith, ArrayValues, BigInt: BigIntOf, BigIntPrototypeToString, Error: ErrorConstructor, FunctionPrototypeBind, GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, JSONParse, JSONStringify, MapConstructor, NumberOf, NumberPrototypeToString, ObjectOf, ObjectPrototype, ObjectPrototypeHasOwnProperty, ObjectPrototypePropertyIsEnumerable, ObjectPrototypeToString, PromiseConstructor, PromisePrototypeThen, PromiseReject, PromiseResolve, RangeError: RangeErrorConstructor, ReferenceError: ReferenceErrorConstructor, RegExp: RegExpConstructor, RegExpPrototypeAccessors, RegExpPrototypeExec, SafeAsyncGeneratorPrototype, SafeGeneratorPrototype, SafeList, SafeMap, SafeRegExpPrototype, SafeSet, SafeWeakMap, SafeWeakSet, StringFromCharCode, StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeIndexOf, StringPrototypeLastIndexOf, StringPrototypeSlice, StringPrototypeSubstr, SymbolConstructor, SymbolPrototypeDescription, SymbolPrototypeToString, SyntaxError: SyntaxErrorConstructor, TypeError: TypeErrorConstructor, URIError: URIErrorConstructor, URL: URLConstructor, arrayIncludes, arrayIndexOf, arrayIsArray, arrayJoin, arraySort, captureStackTraceOf, dataDescriptor, decodeURIComponentOf, encodeURIComponentOf, generatorNext, generatorThrow, globalObject, mapGet, mathAbs, mathMin, newURL, numberIsInteger, objectAssign, objectCreate, objectDefineProperties, objectFreeze, objectGetOwnPropertyNames, objectHasOwn, objectIs, objectIsExtensible, objectKeys, objectPreventExtensions, ownField, parseFloatOf, parseIntOf, reflectApply, reflectConstruct, reflectDefineProperty, reflectDeleteProperty, reflectGet, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectHas, reflectOwnKeys, reflectSet, reflectSetPrototypeOf, regExpExec, safeGenerator, setForEach, stringCharCodeAt, stringEndsWith, stringIncludes, stringIndexOf, stringLastIndexOf, stringOf, stringSlice, stringStartsWith, stringToLowerCase, symbolAsyncIterator, symbolFor, symbolIterator, symbolToStringTag, symbolUnscopables, useCaptureStackTrace };
+var objectDefineProperty = Object.defineProperty;
+var arrayPush = uncurryThis(Array.prototype.push);
+var ObjectPrototypePropertyIsEnumerableOf = uncurryThis(Object.prototype.propertyIsEnumerable);
+return { ArrayConstructor, ArrayFrom, ArrayIteratorNext, ArrayIteratorPrototype, ArrayPrototypeIndexOf, ArrayPrototypeLastIndexOf, ArrayPrototypePop, ArrayPrototypeToSpliced, ArrayPrototypeWith, ArrayValues, BigInt: BigIntOf, BigIntPrototypeToString, Error: ErrorConstructor, FunctionPrototypeBind, GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, JSONParse, JSONStringify, MapConstructor, NumberOf, NumberPrototypeToString, ObjectOf, ObjectPrototype, ObjectPrototypeHasOwnProperty, ObjectPrototypePropertyIsEnumerable, ObjectPrototypePropertyIsEnumerableOf, ObjectPrototypeToString, PromiseConstructor, PromisePrototypeThen, PromiseReject, PromiseResolve, RangeError: RangeErrorConstructor, ReferenceError: ReferenceErrorConstructor, RegExp: RegExpConstructor, RegExpPrototypeAccessors, RegExpPrototypeExec, SafeAsyncGeneratorPrototype, SafeGeneratorPrototype, SafeList, SafeMap, SafeRegExpPrototype, SafeSet, SafeWeakMap, SafeWeakSet, StringFromCharCode, StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeIndexOf, StringPrototypeLastIndexOf, StringPrototypeSlice, StringPrototypeSubstr, SymbolConstructor, SymbolPrototypeDescription, SymbolPrototypeToString, SyntaxError: SyntaxErrorConstructor, TypeError: TypeErrorConstructor, URIError: URIErrorConstructor, URL: URLConstructor, arrayIncludes, arrayIndexOf, arrayIsArray, arrayJoin, arrayPush, arraySort, captureStackTraceOf, dataDescriptor, decodeURIComponentOf, encodeURIComponentOf, generatorNext, generatorThrow, globalObject, mapGet, mathAbs, mathMin, newURL, numberIsInteger, objectAssign, objectCreate, objectDefineProperties, objectDefineProperty, objectFreeze, objectGetOwnPropertyNames, objectHasOwn, objectIs, objectIsExtensible, objectKeys, objectPreventExtensions, ownField, parseFloatOf, parseIntOf, reflectApply, reflectConstruct, reflectDefineProperty, reflectDeleteProperty, reflectGet, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectHas, reflectOwnKeys, reflectSet, reflectSetPrototypeOf, regExpExec, safeGenerator, setForEach, stringCharCodeAt, stringEndsWith, stringIncludes, stringIndexOf, stringLastIndexOf, stringOf, stringSlice, stringStartsWith, stringToLowerCase, symbolAsyncIterator, symbolFor, symbolIterator, symbolToStringTag, symbolUnscopables, useCaptureStackTrace };
 })();
 
 var { captureStack, determineSpecificType, hideStackFrames, invalidArgType, invalidArgValue, isErrorStackTraceLimitWritable, nodeError, nodeErrorCodes, nodeSystemError, outOfRange, reshapeAsNodeError, useNodeErrorInspect } = (() => {
@@ -17560,15 +17563,16 @@ builtins.tty = {
 // A SafeSet: every require asks it, after the program may have replaced Set.prototype.has.
 const __nimbusFacetProvidedPackages = new __NimbusSafeSet(["undici"]);
 // Node's builtins that exist only with the scheme (lib/internal/bootstrap/realm.js schemelessBlockList).
-const __NODE_SCHEME_ONLY_BUILTINS = new Set(["sea","sqlite","test","test/reporters"]);
+const __NODE_SCHEME_ONLY_BUILTINS = new __NimbusSafeSet(["sea","sqlite","test","test/reporters"]);
 // The Node builtin `specifier` names, by its id, or null: what require,
 // import, module.isBuiltin, module.builtinModules and
 // process.getBuiltinModule read. The packages the process provides are in
 // the table but are not Node's.
 function __nimbusBuiltinId(specifier) {
-  const scheme = specifier.startsWith("node:");
-  const id = scheme ? specifier.slice(5) : specifier;
-  if (!Object.prototype.hasOwnProperty.call(builtins, id) || __nimbusFacetProvidedPackages.has(id)) return null;
+  // Every require and import asks this: on the launch's captures.
+  const scheme = __pathStartsWith(specifier, "node:");
+  const id = scheme ? __pathSlice(specifier, 5) : specifier;
+  if (!__nimbusPrimordials.objectHasOwn(builtins, id) || __nimbusFacetProvidedPackages.has(id)) return null;
   return scheme || !__NODE_SCHEME_ONLY_BUILTINS.has(id) ? id : null;
 }
 // node:module. In Node `require('module')` IS the Module constructor, its
@@ -17601,7 +17605,8 @@ Object.defineProperty(__NodeModule.prototype, "parent", {
 });
 function __nimbusUpdateChildren(parent, child, scan) {
   const children = parent?.children;
-  if (children && !(scan && children.includes(child))) children.push(child);
+  // Node's updateChildren, on its primordials (ArrayPrototypeIncludes, ArrayPrototypePush): ours are the launch's.
+  if (children && !(scan && __nimbusPrimordials.arrayIncludes(children, child))) __nimbusPrimordials.arrayPush(children, child);
 }
 // Where a module's requests resolve from: its file's directory, or for one
 // with no file (Node's REPL, a hand-made Module) the working directory.
@@ -21082,9 +21087,10 @@ function __nimbusGraphRecord(resolution, parent) {
     return __nimbusGraphRecords.get(key) ?? __nimbusGraphSet(key, __nimbusEvaluatedRecord(__nimbusTranslatedNamespace(resolution, builtins[resolution.builtin])));
   }
   if (resolution.format === "data") return __nimbusGraphRecords.get(resolution.url) ?? __nimbusDataRecord(resolution.url);
-  const key = resolution.path.replace(/^\/+/, "");
-  const { search, hash } = new URL(resolution.url);
-  const variant = search !== "" || hash !== "";
+  const key = __vfsKey(resolution.path);
+  // Made with the captured constructor, its members read live as Node's are (package-map.ts).
+  const parsed = __nimbusPrimordials.newURL(resolution.url);
+  const variant = parsed.search !== "" || parsed.hash !== "";
   if (!variant) {
     const id = __nimbusEsmId("module", key);
     if (id !== -1) return __nimbusStagedRecord(id, key, parent);
@@ -21202,13 +21208,13 @@ function __nimbusDecideStaged(placeholder, first) {
 // Node's would, though the registry evaluates asynchronously.
 function __nimbusPlanGraph(root, sync) {
   const visited = new __NimbusSafeSet();
-  const first = [];
+  const first = new __PathList();
   let ran = false;
   const visit = (record) => {
     if (visited.has(record)) return;
     visited.add(record);
     if (!(record instanceof __nimbusGraph.CyclicModuleRecord)) {
-      if (record.begin !== undefined) first.push(record);
+      if (record.begin !== undefined) first[first.length] = record;
       if (record.runs?.() === true) ran = true;
       return;
     }
@@ -21435,7 +21441,8 @@ async function __nimbusImportRecord(record, url) {
       record.host.evaluateSync();
       return record.namespace();
     }
-    for (const leaf of __nimbusPlanGraph(record, false)) await leaf.begin();
+    const leaves = __nimbusPlanGraph(record, false);
+    for (let i = 0; i < leaves.length; i++) await leaves[i].begin();
     __nimbusGraph.link(record);
   } catch (e) {
     __nimbusExplainCommonJSGlobalLike(e, url, false);
@@ -21853,6 +21860,8 @@ var generatorPrototype = reflectGetPrototypeOf(function* () {
 var generatorNext = uncurryThis(reflectGet(generatorPrototype ?? {}, "next"));
 var generatorThrow = uncurryThis(reflectGet(generatorPrototype ?? {}, "throw"));
 var mapGet = uncurryThis(Map.prototype.get);
+var arrayPush = uncurryThis(Array.prototype.push);
+var ObjectPrototypePropertyIsEnumerableOf = uncurryThis(Object.prototype.propertyIsEnumerable);
 
 function relativeWasmPaths(source, filename) {
   const literals = /["'`]((?:\.{1,2}\/)*[\w@.-]+(?:\/[\w@.-]+)*\.wasm)["'`]/g;

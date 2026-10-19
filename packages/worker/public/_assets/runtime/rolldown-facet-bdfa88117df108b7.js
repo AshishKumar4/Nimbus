@@ -16071,6 +16071,8 @@ function ownField(object2, key) {
   return objectHasOwn(object2, key) ? reflectGet(object2, key) : void 0;
 }
 var mapGet = uncurryThis(Map.prototype.get);
+var arrayPush = uncurryThis(Array.prototype.push);
+var ObjectPrototypePropertyIsEnumerableOf = uncurryThis(Object.prototype.propertyIsEnumerable);
 
 // ../core/src/_shared/node-error.ts
 var nodeErrorClasses = new SafeMap();
