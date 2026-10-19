@@ -12,9 +12,10 @@ published independently in the `@nimbus-sh` npm scope.
   the session's version of it. A descriptor names an inode, as on Linux.
   This is the engine Node's `fs` moves onto next, and that move deletes
   the shim's own. Each file the holder decides costs more CPU: on
-  holder-ops-cpu against main, writing 1,000 files is 14% slower, a tar
-  extract 5% and a checkout 6%. Clone and warm install take the same wall
-  time (paired against main, no detectable change).
+  holder-ops-cpu against main, writing 1,000 files is 25% slower, a tar
+  extract 5% and a checkout 8%. Clone, warm install, cold start, first
+  paint, module load and gem require take the same wall time (paired
+  against main, no detectable change).
 - Changed (core): an operation a process decides by name without waiting
   carries the file it was decided on (W7 `expect`): the file's number,
   none, or the open that made it. The session refuses it before any
