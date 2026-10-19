@@ -704,11 +704,12 @@ let ownRuns = 0;
  * claim, process; a launch's run is that launch's run again), once the
  * ledger lets it in: after the pause, even when its key is still in flight,
  * and when there is room. Undefined once `signal` aborts or the call's first
- * refusal (`since`) is {@link REFUSED_CALL_WAIT_MS} old.
+ * refusal (`since`) is {@link REFUSED_CALL_WAIT_MS} old. `onWait` is called
+ * as a wait of it queues.
  */
 export async function readmitRefused(
   refused: EndLoaderFetch,
-  options: { since: number; signal?: AbortSignal },
+  options: { since: number; signal?: AbortSignal; onWait?: () => void },
 ): Promise<EndLoaderFetch | undefined> {
   const terms = holdTerms.get(refused);
   if (terms === undefined) throw new Error('Nimbus: only a hold the Dynamic Worker ledger gave can be readmitted');
@@ -719,7 +720,7 @@ export async function readmitRefused(
   const timer = setTimeout(() => deadline.abort(), remainingMs);
   const signal = options.signal ? AbortSignal.any([deadline.signal, options.signal]) : deadline.signal;
   const process = terms.holder === null ? undefined : { pid: terms.holder };
-  const wait = (key: string) => queue(terms.entry, key, terms.claim, process, true, signal).catch(() => undefined);
+  const wait = (key: string) => queue(terms.entry, key, terms.claim, process, true, signal, options.onWait).catch(() => undefined);
   let end = await wait(terms.key);
   const admission = terms.admission;
   if (end !== undefined && admission !== undefined && !admission.closed) {
@@ -874,7 +875,7 @@ export function beginAdmittedFetch(ctx: object): EndLoaderFetch | undefined {
  * unclaimed, so a wait for credit inside it holds no worker (the lock order:
  * credit, then a worker); undefined where it holds none to give back.
  */
-export function suspendHeldAdmission(ctx: object): ((signal?: AbortSignal) => Promise<void>) | undefined {
+export function suspendHeldAdmission(ctx: object): ((signal?: AbortSignal, onWait?: () => void) => Promise<void>) | undefined {
   const admission = launchAdmission.getStore();
   if (admission?.ctx !== ctx || admission.end === undefined || admission.claimed || admission.closed) return undefined;
   return suspendLaunchAdmission(ctx);
@@ -915,15 +916,16 @@ function claimed(admission: Admission, runner: EndLoaderFetch): EndLoaderFetch {
  * flight, as the process whose preparation it is (withLaunchPreparation, or
  * a launch whose admission is given back while it prepares again).
  * End the hold from the caller's own `finally`, as beginLoaderFetch's.
+ * `onWait` is called if it has to wait, as it queues.
  */
-export async function beginHelperFetch(ctx: object, workerKey: string, signal?: AbortSignal): Promise<EndLoaderFetch> {
+export async function beginHelperFetch(ctx: object, workerKey: string, signal?: AbortSignal, onWait?: () => void): Promise<EndLoaderFetch> {
   signal?.throwIfAborted();
   const admitted = beginAdmittedFetch(ctx);
   if (admitted !== undefined) return admitted;
   const admission = launchAdmission.getStore();
   const preparing = launchPreparation.getStore();
   const process = admission?.ctx === ctx ? admission.process : preparing?.ctx === ctx ? preparing.process : undefined;
-  return beginLoaderFetchWhenFree(ctx, workerKey, { ...(process === undefined ? {} : { process }), signal });
+  return beginLoaderFetchWhenFree(ctx, workerKey, { ...(process === undefined ? {} : { process }), signal, onWait });
 }
 
 /**

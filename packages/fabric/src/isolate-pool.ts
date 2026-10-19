@@ -445,31 +445,41 @@ function loadedIds(ctx: object): Set<string> {
 }
 
 /**
- * A load's images' credit, taken before its worker and not yet used: running
- * work may reclaim it (the lock order) until the loader's callback takes it,
- * for the load may wait for a worker, and a worker the loader answers warm
- * never calls back.
+ * A load's images' credit, taken before its worker and not yet used: once the
+ * load has to wait for a worker (`reclaimable`), running work may reclaim it
+ * (the lock order) until the loader's callback takes it, and a worker the
+ * loader answers warm never calls back.
  */
 interface LoadCredit {
   /** The lease, no longer reclaimable, or null if it was reclaimed or taken. */
   take(): ResizableCreditLease | null;
   /** Give back what is not taken. */
   release(): void;
+  /** Lets running work reclaim it: the load waits for a worker. */
+  reclaimable(): void;
 }
 
 function loadCredit(lease: ResizableCreditLease): LoadCredit {
   let held: ResizableCreditLease | null = lease;
-  const unregister = reclaimableSupervisorAllocation(() => {
-    held = null;
-    lease.release();
-  });
+  let unregister = () => {};
   const take = (): ResizableCreditLease | null => {
     unregister();
     const taken = held;
     held = null;
     return taken;
   };
-  return { take, release: () => take()?.release() };
+  return {
+    take,
+    release: () => take()?.release(),
+    reclaimable: () => {
+      if (held === null) return;
+      unregister();
+      unregister = reclaimableSupervisorAllocation(() => {
+        held = null;
+        lease.release();
+      });
+    },
+  };
 }
 
 /** The hold a refused call's readmission took for its next attempt, and the credit taken before it. */
@@ -872,7 +882,7 @@ export class IsolatePool {
       const credit = loadCredit(await acquireSupervisorLoad(`facet '${this.tag}' images`, imageBytes, signal,
         { owner: `facet '${this.tag}' images`, pid: this.writerPid, session: this.ctx.id?.toString() }));
       try {
-        await resume?.(signal);
+        await resume?.(signal, credit.reclaimable);
       } catch (error) {
         credit.release();
         throw error;
@@ -1061,7 +1071,7 @@ export class IsolatePool {
           const credit = await takeCredit();
           let admitted: EndLoaderFetch | undefined;
           try {
-            admitted = await readmitRefused(held, { since: firstRefusal, signal });
+            admitted = await readmitRefused(held, { since: firstRefusal, signal, onWait: credit?.reclaimable });
           } finally {
             if (!admitted) credit?.release();
           }

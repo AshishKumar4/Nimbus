@@ -289,14 +289,14 @@ function abortFacet(ctx: DurableObjectState, facet: SharedFacet): void {
  * worker, anything else waits its turn. Counted on the facet from the start,
  * so a retirement while it waits does not abort the facet under it.
  */
-async function beginCall(ctx: DurableObjectState, facet: SharedFacet, signal?: AbortSignal): Promise<() => void> {
+async function beginCall(ctx: DurableObjectState, facet: SharedFacet, signal?: AbortSignal, onWait?: () => void): Promise<() => void> {
   facet.calls++;
   const finished = () => {
     facet.calls--;
     if (facet.retired && facet.calls === 0) abortFacet(ctx, facet);
   };
   try {
-    const endFetch = await beginHelperFetch(ctx, generationId(facet.generation), signal);
+    const endFetch = await beginHelperFetch(ctx, generationId(facet.generation), signal, onWait);
     if (signal?.aborted) { endFetch(); signal.throwIfAborted(); }
     return () => { endFetch(); finished(); };
   } catch (error) { finished(); throw error; }
@@ -403,7 +403,7 @@ export async function buildFacetPrebundler(ctx: DurableObjectState, env: unknown
   const stub = await untilAborted(facet.stub, signal);
   return async (task) => {
     if (facet.retired || facet.generation !== generation) throw new BuildFacetResetError(task.specifier, 'the warmed generation was retired', 1);
-    const endCall = await beginCall(ctx, facet, task.signal);
+    const endCall = await beginCall(ctx, facet, task.signal, task.waiting);
     let result: PrebundleResult & Crashed;
     try {
       task.signal?.throwIfAborted();

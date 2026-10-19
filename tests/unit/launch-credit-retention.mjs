@@ -52,6 +52,31 @@ function wasmImage(payloadBytes) {
   bytes.set(length, 9);
   return bytes;
 }
+/** A closure over `/home/user/<dir>/big.js`, larger than the prefetch cache keeps (its cwd). */
+function bigClosure(authority, dir) {
+  const cwd = `/home/user/${dir}`;
+  authority.kfs.mkdir(cwd);
+  authority.kfs.writeFile(`${cwd}/big.js`, `module.exports = "big";\n// ${'x'.repeat(11 * 1024 * 1024)}\n`);
+  return cwd;
+}
+/** How often `manager`'s launches read `/home/user/<dir>/big.js`, by dir: once per gather of its closure. */
+function closureReads(authority, manager) {
+  const files = processFiles(authority.rawVfs);
+  const bind = files.bind.bind(files);
+  const reads = new Map();
+  files.bind = (binding) => new Proxy(bind(binding), {
+    get(target, name) {
+      const value = Reflect.get(target, name);
+      if (name !== 'readFile' || typeof value !== 'function') return value;
+      return (path, ...rest) => {
+        reads.set(String(path), (reads.get(String(path)) ?? 0) + 1);
+        return Reflect.apply(value, target, [path, ...rest]);
+      };
+    },
+  });
+  manager.setVfs(authority.rawVfs, files);
+  return (dir) => [...reads].filter(([path]) => path.endsWith(`/${dir}/big.js`)).reduce((sum, [, count]) => sum + count, 0);
+}
 /** `manager`'s transforms held at the first until `proceed`: its launch's map is being generated meanwhile. */
 async function gatedTransforms(manager) {
   const { oxcTransforms } = await import('./lib/oxc-engine.mjs');
@@ -253,35 +278,30 @@ await runScenarios(fileURLToPath(import.meta.url), {
 
   // A launch whose worker is free takes it and loads its map, though running
   // work waits for credit as it parks: the running ask waits for that load,
-  // and the map it waited for is not dropped and made again.
+  // and the map is not dropped and its closure gathered again.
   async freeWorkerKeepsItsMap() {
     const authority = createAuthority();
     adoptSessionSupervisor(authority.host, () => {});
     const { manager, ctx } = session(authority, 'free-worker');
-    const cwd = '/home/user/free-worker';
-    authority.kfs.mkdir(cwd);
-    authority.kfs.writeFile(`${cwd}/cell.js`, `module.exports = 7;\n// ${'x'.repeat(256 * 1024)}\n`);
+    const readsOf = closureReads(authority, manager);
+    const entry = 'require("./big.js"); import("node:path").then(path => process.stdout.write(path.default.basename("/home/user/entry")))';
+    const alone = await gatedTransforms(manager);
+    alone.proceed();
+    ran(await manager.exec(entry, { cwd: bigClosure(authority, 'alone'), captureOutput: true }), 'entry');
     const generating = await gatedTransforms(manager);
-    const waiting = manager.exec('require("./cell.js"); import("node:path").then(path => process.stdout.write(path.default.basename("/home/user/entry")))', {
-      cwd, captureOutput: true,
-    });
+    const waiting = manager.exec(entry, { cwd: bigClosure(authority, 'contended'), captureOutput: true });
     try {
       await generating.entered;
-      const running = withinMs(acquireSupervisorRunningAllocation(readSupervisorAllocationBudget().capacity)
-        .then((lease) => ({ lease, stage: manager.launchState().launches[0]?.stage })), 'running work waited past the launch\'s load');
+      const running = withinMs(acquireSupervisorRunningAllocation(readSupervisorAllocationBudget().capacity), 'running work waited past the launch\'s load');
       await until(() => readSupervisorAllocationBudget().queued === 1, 'running work queues while the map is still being generated');
       assert.equal(loaderLedgerStats(ctx).inFlightWorkers.length, 0, 'the launch\'s worker is free');
       generating.proceed();
-      const { lease, stage } = await running;
-      try {
-        assert.equal(stage, 'load', 'running work gets the credit as the launch loads its map, not by reclaiming it');
-      } finally {
-        lease.release();
-      }
+      (await running).release();
       ran(await waiting, 'entry');
     } finally {
       generating.proceed();
     }
+    assert.equal(readsOf('contended'), readsOf('alone'), 'the closure is gathered as often as with nothing waiting: its map was not reclaimed');
     drained();
   },
 
@@ -330,37 +350,20 @@ await runScenarios(fileURLToPath(import.meta.url), {
     const authority = createAuthority();
     adoptSessionSupervisor(authority.host, () => {});
     const { manager } = session(authority, 'shortfall');
-    const files = processFiles(authority.rawVfs);
-    const bind = files.bind.bind(files);
-    const reads = new Map();
-    files.bind = (binding) => new Proxy(bind(binding), {
-      get(target, name) {
-        const value = Reflect.get(target, name);
-        if (name !== 'readFile' || typeof value !== 'function') return value;
-        return (path, ...rest) => {
-          reads.set(String(path), (reads.get(String(path)) ?? 0) + 1);
-          return Reflect.apply(value, target, [path, ...rest]);
-        };
-      },
-    });
-    manager.setVfs(authority.rawVfs, files);
-    /** Runs a closure over `big.js` in `dir`, beside a 4 MiB wasm member if `member`: how often big.js was read. */
+    const readsOf = closureReads(authority, manager);
     const launch = async (dir, member) => {
-      const cwd = `/home/user/${dir}`;
-      authority.kfs.mkdir(cwd);
-      authority.kfs.writeFile(`${cwd}/big.js`, `module.exports = "big";\n// ${'x'.repeat(11 * 1024 * 1024)}\n`);
+      const cwd = bigClosure(authority, dir);
       if (member) authority.kfs.writeFile(`${cwd}/image.wasm`, wasmImage(4 * 1024 * 1024));
       const wasm = member ? 'require("fs").readFileSync(require("path").join(__dirname, "image.wasm")); ' : '';
       authority.kfs.writeFile(`${cwd}/cell.js`, `${wasm}module.exports = require("./big.js");`);
       ran(await manager.exec('process.stdout.write(require("./cell.js"))', {
         cwd, dirname: cwd, filename: `${cwd}/run.js`, captureOutput: true,
       }), 'big');
-      return [...reads].filter(([path]) => path.endsWith(`/${dir}/big.js`)).reduce((sum, [, count]) => sum + count, 0);
     };
-    const fits = await launch('fits', false);
-    const short = await launch('short', true);
-    assert.ok(fits > 0, 'the closure is read');
-    assert.equal(short, fits, `the closure is gathered once, not again for its map's shortfall (${short} reads, ${fits} where the map fits)`);
+    await launch('fits', false);
+    await launch('short', true);
+    assert.ok(readsOf('fits') > 0, 'the closure is read');
+    assert.equal(readsOf('short'), readsOf('fits'), 'the closure is gathered once, not again for its map\'s shortfall');
     drained();
   },
 

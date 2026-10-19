@@ -59,6 +59,23 @@ const settled = () => new Promise((resolve) => setTimeout(resolve, 0));
   console.log('  ✓ growth never overtakes a queued ask');
 }
 
+// ── a small request's lease grows only as a small request is granted ──
+{
+  const smallRequestBytes = 64 * 1024;
+  const pool = new WeightedCreditPool(40 * MiB, { smallRequestBytes, reserve: MiB });
+  const heavy = await pool.acquire(40 * MiB);
+  const read = await pool.acquire(16 * 1024);
+  assert.equal(pool.stats.current, 40 * MiB + 16 * 1024, 'the read took the reserve beside the full lane');
+  assert.equal(read.tryGrowTo(smallRequestBytes), true, 'within a small request, it grows in the reserve');
+  assert.equal(read.tryGrowTo(512 * 1024), false, 'past one, it is no small request, and the full lane has no room');
+  assert.equal(read.tryGrowTo(2 * MiB), false, 'nor past the reserve itself');
+  assert.equal(read.bytes, smallRequestBytes);
+  heavy.release();
+  read.release();
+  assert.equal(pool.stats.current, 0);
+  console.log('  ✓ a reserve lease grows only within a small request');
+}
+
 // ── through the supervisor budget: the lease it hands out grows the same ─
 {
   const budget = new SupervisorAllocationBudget(40 * MiB);
@@ -66,6 +83,7 @@ const settled = () => new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(lease.tryGrowTo(34 * MiB), true);
   assert.equal(budget.stats.current, 34 * MiB);
   assert.throws(() => lease.tryGrowTo(20 * MiB), RangeError, 'shrinking is shrinkTo');
+  assert.equal(lease.tryGrowTo(41 * MiB), false, 'past the capacity: refused, not thrown');
   lease.release();
   assert.throws(() => lease.tryGrowTo(34 * MiB), /released/);
   assert.equal(budget.stats.current, 0);
