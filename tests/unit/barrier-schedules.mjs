@@ -55,6 +55,11 @@ const FOUND = {
     schedule: [['own', 'readFile', 'top'], ['settle'], ['hold', 'acquire'], ['input'], ['peer', 'write', 'top', 'rewritten once'], ['settle'],
       ['input'], ['peer', 'write', 'top', 'rewritten twice!'], ['settle'], ['release', 'acquire'], ['settle'], ['sync', 'readFile', 'top'], ['own', 'readFile', 'top']],
   },
+  'a listing whose names and stats straddle a peer\'s rename is not served': {
+    engines: ['holder'],
+    schedule: [['own', 'stat', 'd/e'], ['settle'], ['hold', 'lookup', 1], ['own', 'stat', 'd/e/q'], ['settle'], ['peer', 'rename', 'd/e/g', 'd/e/g2'], ['settle'],
+      ['release', 'lookup'], ['settle'], ['own', 'readdir', 'd/e'], ['own', 'stat', 'd/e/g2']],
+  },
   'a directory a call that cannot wait has not listed is not refused as a directory': {
     schedule: [['own', 'stat', 'd'], ['settle'], ['sync', 'readdir', 'd'], ['sync', 'readdir', 'x']],
   },

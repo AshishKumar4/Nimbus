@@ -8,7 +8,7 @@
  *   ['sync', op, ...args]  its call that cannot wait, answered at once;
  *   ['peer', op, ...args]  a change from outside the process, left in flight;
  *   ['input']              input arrives: the process's barrier, left in flight;
- *   ['hold', kind]         the next reply of `kind` waits (KINDS);
+ *   ['hold', kind, skip?]  the next reply of `kind` (after `skip` more) waits (KINDS);
  *   ['release', kind?]     the oldest parked reply (of `kind`) is delivered;
  *   ['settle']             wait until nothing moves without a release;
  *   ['poison']             the next ACQUIRE is answered with a poison.
@@ -181,6 +181,20 @@ export function generate(seed, steps = 40) {
   return schedule;
 }
 
+/**
+ * What an engine is known to answer wrong, each kept red by its scenario in
+ * barrier-schedules.mjs (listed there as a gap), and let pass here so a
+ * drawn schedule finds something new. A gap closed is removed from both.
+ *   - unshownAwaitedChange: an awaited change outside a grant is not shown
+ *     to a call that cannot wait until a barrier lands (O9);
+ *   - readdirIsDirectory: a call that cannot wait to list a directory the
+ *     view has not listed is refused EISDIR.
+ */
+export const KNOWN_GAPS = Object.freeze({
+  node: Object.freeze({}),
+  holder: Object.freeze({ unshownAwaitedChange: true, readdirIsDirectory: true }),
+});
+
 /** A finding: the schedule, the step, and what was wrong there. */
 class Finding extends Error {
   constructor(message, at) {
@@ -219,14 +233,16 @@ function answers(op, rel, answer, world) {
 
 /**
  * Run `schedule` on engine `kind` (bootEngine) with a seeded parking policy
- * (`parkSeed`, or none: only `hold` parks). Resolves when it holds; throws a
- * Finding naming the step where it does not.
+ * (`parkSeed`, or none: only `hold` parks), letting pass what `knownGaps`
+ * (KNOWN_GAPS[kind]) names. Resolves when it holds; throws a Finding naming
+ * the step where it does not.
  */
-export async function runSchedule(kind, schedule, { parkSeed, deadlineMs = 40_000, trace = [] } = {}) {
+export async function runSchedule(kind, schedule, { parkSeed, knownGaps = {}, deadlineMs = 40_000, trace = [] } = {}) {
   // Each line as it happens, on the test's own stderr: a child killed for a hang shows where it was.
   const note = (line) => { trace.push(line); writeSync(2, `  | ${line}\n`); };
   note(`boot ${kind}`);
   const lazy = kind === 'holder';
+  const gaps = knownGaps;
   // Replies park at random once the process is up: its boot waits on replies no step releases.
   const parkRandom = parkSeed === undefined ? null : prng(parkSeed);
   let booted = false;
@@ -285,6 +301,7 @@ export async function runSchedule(kind, schedule, { parkSeed, deadlineMs = 40_00
   };
   const judge = (at, way, op, rel, answer, from, to) => {
     if (answer?.code === 'EAGAIN' && way === 'sync' && (lazy || poisoned || op === 'readFile')) return;
+    if (gaps.readdirIsDirectory && way === 'sync' && op === 'readdir' && answer?.code === 'EISDIR') return;
     const worlds = worldsSeen(rel, from, to);
     if (worlds.some((world) => answers(op, rel, answer, world))) return;
     const shown = answer?.code ?? (answer && typeof answer === 'object' && !Array.isArray(answer) ? `${answer.type} ${(answer.mode & 0o777).toString(8)} size ${answer.size}` : JSON.stringify(answer));
@@ -347,7 +364,7 @@ export async function runSchedule(kind, schedule, { parkSeed, deadlineMs = 40_00
       record.done = seq();
       if (way === 'peer') peerAt.push({ done: seq(), domain });
       else {
-        for (const root of domain) ownAt.set(root, seq());
+        if (way === 'sync' || !gaps.unshownAwaitedChange) for (const root of domain) ownAt.set(root, seq());
         unpublished = [...unpublished, ...domain];
       }
     };
@@ -399,7 +416,7 @@ export async function runSchedule(kind, schedule, { parkSeed, deadlineMs = 40_00
 
   const step = async (at, s) => {
     const [what] = s;
-    if (what === 'hold') return transport.hold(s[1]);
+    if (what === 'hold') return transport.hold(s[1], s[2]);
     if (what === 'release') { transport.release(s[1]); return sleep(0); }
     if (what === 'settle') return settle(at);
     if (what === 'poison') { transport.poison(); poisoned = true; return undefined; }

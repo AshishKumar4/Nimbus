@@ -11,7 +11,7 @@
 
 import { runScenarios } from './lib/resident-body.mjs';
 import { ENGINES } from './lib/guest-engines.mjs';
-import { generate, runSchedule } from './lib/barrier-schedule.mjs';
+import { generate, KNOWN_GAPS, runSchedule } from './lib/barrier-schedule.mjs';
 
 const realProcess = globalThis.process;
 const SEEDS = Number(realProcess.env.NIMBUS_BARRIER_SEEDS ?? 24);
@@ -25,7 +25,7 @@ scenarios.explicit = () => run(realProcess.env.NIMBUS_BARRIER_KIND, JSON.parse(r
 
 async function run(kind, schedule, parkSeed) {
   try {
-    await runSchedule(kind, schedule, { parkSeed });
+    await runSchedule(kind, schedule, { parkSeed, knownGaps: KNOWN_GAPS[kind] });
   } catch (error) {
     throw new Error(`${error.message} (${kind}${parkSeed === undefined ? '' : `, parked by seed ${parkSeed}`}; its steps are above)`);
   }

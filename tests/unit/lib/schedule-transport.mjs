@@ -30,7 +30,7 @@ export const KINDS = Object.freeze({
 export function scheduleTransport({ park = () => false } = {}) {
   /** @type {{ id: number, kind: string, name: string, deliver: () => void }[]} */
   const parked = [];
-  /** Kinds whose next reply waits, however many times each is held. */
+  /** Per kind, the replies to wait for: each the count of that kind's calls still to let through first. */
   const held = new Map();
   let ids = 0;
   let poisonNext = false;
@@ -38,10 +38,12 @@ export function scheduleTransport({ park = () => false } = {}) {
   const counts = { asked: 0, delivered: 0 };
 
   const waits = (kind, name) => {
-    const times = held.get(kind) ?? 0;
-    if (times > 0) {
-      held.set(kind, times - 1);
-      return true;
+    const holds = held.get(kind) ?? [];
+    if (holds.length > 0) {
+      const parks = holds[0] === 0;
+      if (parks) holds.shift();
+      else holds[0]--;
+      return parks;
     }
     return park(kind, name);
   };
@@ -69,8 +71,8 @@ export function scheduleTransport({ park = () => false } = {}) {
   return {
     /** For bootEngine's `supervise`: each parkable call, wrapped. */
     supervise: Object.fromEntries(Object.keys(KINDS).map((name) => [name, supervise(name)])),
-    /** Park the next reply of `kind`. */
-    hold(kind) { held.set(kind, (held.get(kind) ?? 0) + 1); },
+    /** Park a reply of `kind`: the next, or the one after `skip` more go through. */
+    hold(kind, skip = 0) { held.set(kind, [...(held.get(kind) ?? []), skip]); },
     /** The next ACQUIRE is asked from no cursor: the session answers it with a poison at its own cursor. */
     poison() { poisonNext = true; },
     /** Replies waiting, oldest first. */
