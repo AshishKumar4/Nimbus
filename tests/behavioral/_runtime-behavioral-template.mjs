@@ -296,7 +296,14 @@ export async function openPage(browser, sid, opts = {}) {
   await reportPageNavigations(page);
   const consoleMessages = [];
   const pageErrors = [];
+  /** Every pre-bundled module's text as the page received it, by path: what it evaluated. */
+  const receivedModules = new Map();
 
+  page.on('response', (response) => {
+    const path = new URL(response.url()).pathname;
+    if (!path.includes('/@modules/')) return;
+    response.text().then((text) => receivedModules.set(path, text), () => {});
+  });
   page.on('console', (msg) => {
     consoleMessages.push({
       type: msg.type(),
@@ -405,27 +412,44 @@ export async function openPage(browser, sid, opts = {}) {
     /**
      * Evidence for a module the page could not evaluate: for the first
      * "… @ /s/<sid>/…/@modules/<name>:<line>" in `text` (the dev server's
-     * crash overlay), that module as the page is served it now, its status
-     * headers and the lines around <line>. Null when `text` names none, or
-     * the module cannot be fetched.
+     * crash overlay), the lines around <line> of that module as the page
+     * received it, and whether it is served the same now: lengths, and the
+     * first offset at which the two differ. Null when `text` names none.
      */
     async servedModuleExcerpt(text) {
       const at = /@ (\/s\/[^\s:]+\/@modules\/[^\s:]+):(\d+)/.exec(text);
       if (!at) return null;
-      const line = Number(at[2]);
-      return page.evaluate(async (path, line) => {
+      const [, path, named] = at;
+      const line = Number(named);
+      const received = receivedModules.get(path) ?? null;
+      const now = await page.evaluate(async (path) => {
         try {
           const response = await fetch(path, { cache: 'no-store' });
-          const lines = (await response.text()).split('\n');
-          return {
-            path, line, status: response.status, lines: lines.length,
-            bundleStatus: response.headers.get('x-nimbus-bundle-status'),
-            excerpt: lines.slice(Math.max(0, line - 6), line + 5).map((text, i) => `${Math.max(1, line - 5) + i}: ${text.slice(0, 240)}`),
-          };
+          return { status: response.status, bundleStatus: response.headers.get('x-nimbus-bundle-status'), text: await response.text() };
         } catch (error) {
-          return { path, line, error: String(error) };
+          return { error: String(error) };
         }
-      }, at[1], line).catch(() => null);
+      }, path).catch((error) => ({ error: String(error) }));
+      const excerpt = (body) => {
+        const lines = body.split('\n');
+        const from = Math.max(1, line - 5);
+        return {
+          length: body.length,
+          lineOffset: lines.slice(0, line - 1).reduce((sum, text) => sum + text.length + 1, 0),
+          lines: lines.slice(from - 1, line + 5).map((text, i) => `${from + i}: ${text.slice(0, 240)}`),
+        };
+      };
+      const firstDifference = (a, b) => {
+        const end = Math.min(a.length, b.length);
+        for (let i = 0; i < end; i++) if (a.charCodeAt(i) !== b.charCodeAt(i)) return i;
+        return a.length === b.length ? null : end;
+      };
+      return {
+        path, line,
+        received: received === null ? null : excerpt(received),
+        now: 'text' in now ? { status: now.status, bundleStatus: now.bundleStatus, ...excerpt(now.text) } : now,
+        firstDifference: received !== null && 'text' in now ? firstDifference(received, now.text) : null,
+      };
     },
 
     async close() {
