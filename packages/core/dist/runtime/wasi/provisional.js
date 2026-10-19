@@ -160,11 +160,15 @@ export function provisional(host) {
     const inodeAt = (key, row) => {
         let inode = take(row.dev, row.ino);
         if (inode === undefined) {
-            inode = { dev: row.dev, ino: row.ino, type: row.type, key, origin: key, row, base: null, state: null, records: NO_RECORDS, recordsCost: 0, unnamed: false, local: false, descs: 0, retained: NO_RETAINED, credit: 0, reserved: 0 };
+            inode = shellAt(key, row);
             addInode(inode);
         }
         return inode;
     };
+    /** The Inode inodeAt makes of `row` at `key` where none has the file, not kept: to price a change before it is made. */
+    const shellAt = (key, row) => ({
+        dev: row.dev, ino: row.ino, type: row.type, key, origin: key, row, base: null, state: null, records: NO_RECORDS, recordsCost: 0, unnamed: false, local: false, descs: 0, retained: NO_RETAINED, credit: 0, reserved: 0,
+    });
     /**
      * Whether `inode` is still the file at its name: the row there names it
      * (or the view cannot say, and it was). One whose name leads elsewhere is
@@ -1498,8 +1502,12 @@ export function provisional(host) {
             judgeAttrs(row, attrs, syscall, path);
             const op = attrOp(attrs, host.now());
             // An access change at or above files a grant holds open: they are promoted first, their descriptions keeping the access they were opened with.
+            // All of it admitted first: those, and the file itself (a grant's priced as promoted).
             const through = 'mode' in attrs ? host.heldOpen([key]).filter((inode) => inode.dev !== row.dev || inode.ino !== row.ino) : [];
-            let need = layer.has(key) ? 0 : promotionNeed(row.dev, row.ino, (promoted) => projectedCost(promoted, [op]) - promoted.reserved);
+            const known = layer.get(key) ?? inodeAtNumber(row.dev, row.ino);
+            let need = known ? projectedCost(known, [op]) - known.reserved
+                : host.heldFile(row.dev, row.ino) !== undefined ? promotionNeed(row.dev, row.ino, (promoted) => projectedCost(promoted, [op]) - promoted.reserved)
+                    : projectedCost(shellAt(key, row), [op]);
             for (const inode of through)
                 need += promotionNeed(inode.dev, inode.ino, () => 0);
             probe(need, syscall, path);
