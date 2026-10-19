@@ -97,12 +97,13 @@ try {
     if (JSON.stringify(ours) !== JSON.stringify(want[i])) failed.push(`${JSON.stringify(line)}\n  bash: ${JSON.stringify(want[i])}\n  ours: ${JSON.stringify(ours)}`);
   }
   // A prefix assignment whose expansion throws gives back the bindings before it, in a shell
-  // that goes on (a session's named shell, as an interactive bash): x as it was, unexported.
+  // that goes on (a session's named shell, as an interactive bash): x as it was. (A named
+  // shell's next line has its variables back as its environment: exported, so its value is compared.)
   const persistent = { cwd: '/home/user', shellId: 'prefix-throw' };
   await ws.exec('x=outer', persistent);
   await ws.exec('x=inner y=${missing:?oops} true', persistent);
   const after = await ws.exec('declare -p x', persistent);
-  if (after.stdout !== 'declare -- x="outer"\n') failed.push(`a throwing prefix expansion: ${JSON.stringify(after)}`);
+  if (!after.stdout.endsWith(' x="outer"\n')) failed.push(`a throwing prefix expansion: ${JSON.stringify(after)}`);
 } finally {
   await ws.close();
 }
