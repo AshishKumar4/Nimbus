@@ -2,8 +2,8 @@ import type { ProcessView } from '../../../runtime/process-files.js';
 import type { ProcessStat } from '../../../runtime/process-files.js';
 import type { CommandOutputStream } from '../commands/types.js';
 import type { WordPart } from './types.js';
-import { expandWord, type ExpandContext } from './expander.js';
-import { globMatch, hasGlobChars } from '../utils/glob.js';
+import { expandPatternWord, type ExpandContext } from './expander.js';
+import { shellMatch } from '../utils/glob.js';
 import { resolve } from '../utils/path.js';
 import { S_IFCHR, S_IFMT } from '../../../vfs/vfs.js';
 import { lstatOrThrow, statOrThrow } from '../../../vfs/vfs.js';
@@ -59,12 +59,7 @@ export async function evaluateDoubleBracketWords(
     value: async (i) => {
       const cached = expanded.get(i);
       if (cached !== undefined) return cached;
-      const word = words[i] ?? [];
-      const value = await expandWord(word, expandCtx);
-      const arg: TestArg = {
-        value,
-        canUseAsPattern: hasUnquotedPart(word) && hasGlobChars(value),
-      };
+      const arg: TestArg = await expandPatternWord(words[i] ?? [], expandCtx);
       expanded.set(i, arg);
       return arg;
     },
@@ -73,9 +68,10 @@ export async function evaluateDoubleBracketWords(
 }
 
 type TestMode = 'test' | 'double-bracket';
+/** An operand: its value, and, in `[[ ]]`, the pattern it is on the right of `==` or `!=` (its quoted characters escaped). */
 type TestArg = {
   value: string;
-  canUseAsPattern: boolean;
+  pattern?: string;
 };
 
 /**
@@ -322,18 +318,14 @@ function isAndOperator(value: string | undefined, mode: TestMode): boolean {
 }
 
 function stringCompare(left: TestArg, right: TestArg, mode: TestMode): boolean {
-  if (mode === 'double-bracket' && right.canUseAsPattern) {
-    return globMatch(right.value, left.value);
+  if (mode === 'double-bracket' && right.pattern !== undefined) {
+    return shellMatch(right.pattern, left.value);
   }
   return left.value === right.value;
 }
 
 function literalArg(value: string): TestArg {
-  return { value, canUseAsPattern: false };
-}
-
-function hasUnquotedPart(word: WordPart[]): boolean {
-  return word.some((part) => part.quoted === 'none');
+  return { value };
 }
 
 /**
