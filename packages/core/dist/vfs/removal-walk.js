@@ -11,6 +11,9 @@
  * vanished, which is no failure: with `keepVanishedAncestors` the
  * directories holding it stay, as GNU leaves them, otherwise they go. A
  * directory that could not be read reports that refusal, not its rmdir's.
+ * A directory the walk does not cross (a mount point, as GNU rm
+ * --one-file-system keeps out of one) is neither read nor removed: it stays,
+ * with what holds it, and is reported EBUSY.
  */
 import { isVfsError, syscallError } from './vfs-error.js';
 import { parentOf } from './path.js';
@@ -75,6 +78,12 @@ export function walkRemoval(steps, walk) {
         const entry = { rel: r, dir: stat.type === 'directory' };
         if (stat.type !== 'directory') {
             order.push(entry);
+            return undefined;
+        }
+        if (steps.crosses !== undefined && !steps.crosses(r)) {
+            keepWithAncestors(r);
+            // As the rmdir it is not attempted would be refused: the mount point is busy.
+            failures.push({ path: at(r), error: syscallError('EBUSY', 'rmdir', at(r)) });
             return undefined;
         }
         const failed = (cause) => {
