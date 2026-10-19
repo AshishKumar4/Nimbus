@@ -142,13 +142,15 @@ try {
     const pool = await new PrebundlePool(other.env, other.ctx).acquire();
     const queued = (tag) => pool.prebundle({ specifier: 'pkg', bytes: prebundleSliceBytes(spec(tag).slice), prepare: () => structuredClone(spec(tag)) });
     const results = [];
-    const { lines } = await warnings(async () => {
+    const { value, lines } = await warnings(async () => {
       for (let round = 0; round < 3; round++) {
         await prebundle(outgrowing.ctx, outgrowing.env, spec(`outgrown-${round}`));
         results.push(await queued(`moved-${round}`).then((value) => value, (error) => ({ error: String(error?.message ?? error) })));
       }
     });
-    check('a pre-bundle not begun when another session outgrew the binding runs on the next generation', results.every((r, i) => r.ok === true && r.esmCode.includes(`moved-${i}`)), JSON.stringify(results).slice(0, 400));
+    check('a pre-bundle not begun when another session outgrew the binding runs on the next generation',
+      value.error === undefined && results.length === 3 && results.every((r, i) => r.ok === true && r.esmCode.includes(`moved-${i}`)),
+      String(value.error?.message ?? JSON.stringify(results)).slice(0, 400));
     check('and is no reset: nothing is retried or logged', lines.length === 0, JSON.stringify(lines));
   }
   // The isolate moves again while the waiting pre-bundle warms the generation it moved to.
