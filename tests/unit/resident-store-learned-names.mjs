@@ -16,97 +16,16 @@
  * - a name the store learned under a directory a peer replaced is not
  *   served once the barrier admitted the replacement, on either engine.
  *
- * The first three run the resident filesystem (core
+ * The first ones run the resident filesystem (core
  * runtime/wasi/resident-filesystem.ts) over a store listed on demand, as a
- * WASI process has it, whose supervisor can park a reply: computed when
- * asked, delivered when released.
+ * WASI process has it (lib/store-session.mjs).
  */
 
 import assert from 'node:assert/strict';
-import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { residentFilesystem } from '../../packages/core/src/runtime/wasi/resident-filesystem.ts';
-import { subtreeListing } from '../../packages/core/src/runtime/fs-list-tree.ts';
-import { createResidentStore } from '../../packages/worker/src/vfs/resident/index.ts';
-import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { runScenarios, sleep } from './lib/resident-body.mjs';
 import { APP, ENGINES, bootEngine } from './lib/guest-engines.mjs';
+import { ROOT, k, storeSession } from './lib/store-session.mjs';
 
-const enc = new TextEncoder();
-const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });
-const ROOT = 'home/user';
-const k = (p) => `/${ROOT}/${p}`;
-
-/** A session with `tree` (path → content, or null for a directory) under the user's home, and the resident filesystem over a store listed on demand. */
-async function session(tree) {
-  const harness = createSqliteVfsTestHarness();
-  const engine = new SqliteVFS(harness.sql, harness.ctx);
-  const files = new ProcessFiles(engine);
-  const kernel = files.bind({ pid: 1, cred: CRED_KERNEL });
-  const authority = files.bind({ pid: 2, cred: USER });
-  for (const dir of ['/home', `/${ROOT}`]) await kernel.mkdir(dir, { recursive: true });
-  await kernel.chown(`/${ROOT}`, 1000, 1000);
-  for (const [path, content] of Object.entries(tree)) {
-    if (content === null) await kernel.mkdir(k(path), { recursive: true });
-    else await kernel.writeFile(k(path), enc.encode(content));
-    await kernel.chown(k(path), 1000, 1000);
-  }
-  const holds = new Set();
-  const parked = [];
-  const answered = async (name, compute) => {
-    const answer = await compute();
-    if (!holds.delete(name)) return answer;
-    const release = Promise.withResolvers();
-    parked.push({ name, release: release.resolve });
-    await release.promise;
-    return answer;
-  };
-  let poisonNext = false;
-  const supervisor = {
-    // A poison is the session's answer to an ACQUIRE from no cursor.
-    fsAcquire: (...args) => (poisonNext ? (poisonNext = false, authority.acquire(null, 0, { namespace: true })) : authority.acquire(...args)),
-    fsList: (...args) => authority.list(...args),
-    readdir: (path) => answered('readdir', () => authority.readdir(path)),
-    readlink: (path) => authority.readlink(path),
-    fsListTree: (root, maxEntries) => answered('fsListTree', () => subtreeListing(authority, root, maxEntries)),
-    stat: (path, options) => authority.stat(path, options),
-    fsReadBatch: (requests) => answered('fsReadBatch', async () => {
-      const out = [];
-      for (const request of requests) {
-        try {
-          if (request.lstat) out.push({ stat: await authority.stat(request.path, { followSymlinks: false }) });
-          else out.push({ bytes: await authority.readRange(request.path, request.offset, request.length) });
-        } catch (error) { out.push({ error }); }
-      }
-      return out;
-    }),
-  };
-  const store = createResidentStore();
-  store.bindInMemory(64 * 1024 * 1024);
-  store.admission.setStorage(undefined, supervisor);
-  assert.equal(await store.view.bootLazy(supervisor), true);
-  const device = (await authority.stat('/')).dev;
-  const view = store.view.namespaceView(supervisor, device, USER);
-  const fs = residentFilesystem(authority, view);
-  return {
-    kernel,
-    authority,
-    view,
-    fs,
-    /** The next barrier is answered with a poison. */
-    poison() { poisonNext = true; },
-    /** Park the next reply of `name`; the returned wait resolves once something asked it. */
-    hold(name) {
-      holds.add(name);
-      return async () => {
-        for (let i = 0; i < 500 && !parked.some((p) => p.name === name); i++) await sleep(2);
-        assert.ok(parked.some((p) => p.name === name), `a ${name} was asked`);
-      };
-    },
-    release(name) { parked.splice(parked.findIndex((p) => p.name === name), 1)[0].release(); },
-  };
-}
 
 /** What a call that cannot wait reads of `path`: its stat, null where nothing is, or 'EAGAIN' where the view cannot say (one listed on demand may refuse a name it does not know). */
 function synchronously(fs, path) {
@@ -129,7 +48,7 @@ async function renamedOnto(s, path) {
 
 /** A barrier admits a peer's `change` (by default, removing `d/f`) while `learning` (begun before it, `d` known) waits on its parked `reply` (by default, its lstat batch); then it lands. */
 async function lateLearning(tree, learning, { change = (kernel) => kernel.unlink(k('d/f')), reply = 'fsReadBatch' } = {}) {
-  const s = await session(tree);
+  const s = await storeSession(tree);
   assert.equal((await s.fs.stat(k('d'))).type, 'directory');
   const asked = s.hold(reply);
   const first = learning(s);
@@ -185,7 +104,7 @@ const scenarios = {
     assert.deepEqual((await s.fs.readdir(k('d'))).map((entry) => entry.name).sort(), ['g'], 'the directory');
   },
   async 'a lookup asked before the namespace started again installs nothing'() {
-    const s = await session({ d: null, 'd/f': 'f', other: 'o' });
+    const s = await storeSession({ d: null, 'd/f': 'f', other: 'o' });
     assert.equal((await s.fs.stat(k('d'))).type, 'directory');
     const asked = s.hold('fsReadBatch');
     const first = s.fs.stat(k('d/f'));
@@ -200,7 +119,7 @@ const scenarios = {
     assert.equal(await s.fs.stat(k('d/f')), null, 'the removed file');
   },
   async 'a listing whose names and stats straddle a peer\'s rename installs nothing'() {
-    const s = await session({ d: null, 'd/f': 'f', 'd/g': 'g' });
+    const s = await storeSession({ d: null, 'd/f': 'f', 'd/g': 'g' });
     assert.equal((await s.fs.stat(k('d'))).type, 'directory');
     const asked = s.hold('readdir');
     const listing = s.view.list(`${ROOT}/d`);
@@ -211,14 +130,14 @@ const scenarios = {
     assert.deepEqual((await s.fs.readdir(k('d'))).map((entry) => entry.name).sort(), ['f', 'h'], 'the directory');
   },
   async 'a tree listing of a directory a peer moved away is not an empty directory'() {
-    const s = await session({ d: null, 'd/f': 'f' });
+    const s = await storeSession({ d: null, 'd/f': 'f' });
     assert.equal((await s.fs.stat(k('d'))).type, 'directory');
     await s.kernel.rename(k('d'), k('z'));
     assert.equal(await s.view.listTree(`${ROOT}/d`), false, 'nothing is listed at a name that is not there');
     await assert.rejects(async () => s.fs.readdir(k('d')), (error) => error.code === 'ENOENT', 'the directory');
   },
   async 'a learned name under a directory a peer made unsearchable is refused after the barrier'() {
-    const s = await session({ d: null, 'd/f': 'f', other: 'o' });
+    const s = await storeSession({ d: null, 'd/f': 'f', other: 'o' });
     assert.notEqual(await s.fs.stat(k('d/f')), null);
     await s.kernel.chown(k('d'), 2000, 2000);
     await s.kernel.chmod(k('d'), 0o700);
