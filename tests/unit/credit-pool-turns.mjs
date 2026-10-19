@@ -31,14 +31,14 @@ const within = (promise, ms, what) => {
   let woken = false;
   gone.woken().then(() => { woken = true; });
   const whole = pool.acquire(40 * MiB);
+  const started = Date.now();
   held.release();
   await settled();
   assert.equal(woken, true, 'the first waiter is woken to its turn');
   assert.equal(pool.stats.current, 0, 'and holds nothing until it takes it');
   assert.equal(pool.tryAcquire(MiB), null, 'its turn is kept for it: nothing passes it');
-  const started = Date.now();
   const lease = await within(whole, 4 * CREDIT_TURN_MS, 'the waiter after a turn never taken is served');
-  assert.ok(Date.now() - started >= CREDIT_TURN_MS - 50, 'once that turn lapsed');
+  assert.ok(Date.now() - started >= CREDIT_TURN_MS, 'once that turn lapsed');
   assert.equal(pool.stats.current, 40 * MiB);
   assert.equal(gone.take(), null, 'taken late, the lapsed turn holds nothing: it waits again, at the end of the line');
   lease.release();
@@ -73,7 +73,6 @@ const within = (promise, ms, what) => {
   const kept = await pool.acquire(10 * MiB);
   const held = await pool.acquire(30 * MiB);
   const ordinary = pool.queue(30 * MiB);
-  ordinary.woken();
   held.release();
   await settled();
   // Woken with room for it; then a running ask that does not fit beside what is kept waits before it.
@@ -90,6 +89,72 @@ const within = (promise, ms, what) => {
   taken.release();
   assert.equal(pool.stats.current, 0);
   console.log('  ✓ a woken ordinary turn yields to a running ask');
+}
+
+// ── both woken at once, the running ask's turn still comes first ─────────
+{
+  const pool = new WeightedCreditPool(40 * MiB);
+  const kept = await pool.acquire(10 * MiB);
+  const held = await pool.acquire(30 * MiB);
+  const ordinary = pool.queue(30 * MiB);
+  held.release();
+  const running = pool.acquireAhead(35 * MiB);
+  // The running ask's turn comes as `kept` goes, before either continuation runs.
+  kept.release();
+  assert.equal(ordinary.take(), null, 'the ordinary turn, woken first, does not take what the running turn is woken to');
+  const lease = await within(running, 1000, 'the running ask takes its turn');
+  assert.equal(lease.bytes, 35 * MiB);
+  lease.release();
+  const taken = await within(ordinary.woken().then(() => ordinary.take()), 1000, 'then the ordinary waiter');
+  ordinary.leave();
+  taken.release();
+  assert.equal(pool.stats.current, 0);
+  console.log('  ✓ of two woken turns, the running ask takes first');
+}
+
+// ── taken past its turn, between two looks at the line ───────────────────
+{
+  const pool = new WeightedCreditPool(40 * MiB);
+  const held = await pool.acquire(40 * MiB);
+  const late = pool.queue(10 * MiB);
+  // Woken half a turn after it queued, between its own looks at the line.
+  await new Promise((resolve) => setTimeout(resolve, CREDIT_TURN_MS / 2));
+  held.release();
+  await late.woken();
+  await new Promise((resolve) => setTimeout(resolve, CREDIT_TURN_MS + 100));
+  assert.equal(late.take(), null, 'a turn taken past its time has lapsed');
+  assert.equal(pool.stats.current, 0, 'and holds nothing');
+  assert.equal(pool.stats.queued, 1, 'it waits again');
+  const lease = await within(late.woken().then(() => late.take()), 1000, 'and is woken again');
+  late.leave();
+  lease.release();
+  console.log('  ✓ a turn taken past its time lapses');
+}
+
+// ── a turn left is gone: a late take does not bring it back ──────────────
+{
+  const pool = new WeightedCreditPool(40 * MiB);
+  const held = await pool.acquire(40 * MiB);
+  const left = pool.queue(10 * MiB);
+  held.release();
+  left.leave();
+  assert.equal(left.take(), null);
+  assert.equal(pool.stats.queued, 0, 'nothing is queued');
+  const lease = await within(pool.acquire(40 * MiB), 100, 'the next ask is served at once');
+  lease.release();
+  console.log('  ✓ a turn left stays gone');
+}
+
+// ── a turn never even looked at lapses too ───────────────────────────────
+{
+  const pool = new WeightedCreditPool(40 * MiB);
+  const held = await pool.acquire(40 * MiB);
+  pool.queue(10 * MiB);
+  const next = pool.acquire(40 * MiB);
+  held.release();
+  const lease = await within(next, 4 * CREDIT_TURN_MS, 'the next waiter is served once that turn lapses');
+  lease.release();
+  console.log('  ✓ a turn never looked at lapses');
 }
 
 // ── an abort during a woken turn gives the turn to the next waiter ───────
