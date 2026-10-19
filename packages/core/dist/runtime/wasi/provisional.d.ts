@@ -64,6 +64,23 @@ export interface ProvisionalHost {
     nextHandle(): number;
     /** A grant's file a provisional decision is about to change: no grant decides it from now on (Provisional.unhold, after what it decided is logged). */
     unhold(inode: Inode): void;
+    /** The generation of a grant's decision at `key` (OwnNames.generation): undefined where none. */
+    generation(key: string): number | undefined;
+    /**
+     * The view has what these decisions did at `key`, made over a grant's
+     * decision there of `generation`: that decision answers no more, the
+     * view's row does (OwnNames.settled); true where it did. One made since
+     * is newer than the view's answer, and stays.
+     */
+    settled(key: string, generation: number | undefined): boolean;
+    /**
+     * A grant's decision of file `file` (by number) at `key`, made since these
+     * decisions' records of it began (a move above it): newer than the view's
+     * answer, it stays, and takes `file`'s size, mode, owner and times, what
+     * their retired records made of it. The decision; undefined where `key`
+     * has none of that file.
+     */
+    absorb(key: string, file: ResidentEntry): ResidentEntry | undefined;
 }
 /**
  * A file's content while a grant decides it (the holder's): its bytes here,
@@ -145,6 +162,11 @@ export interface Inode {
      * until they are. Its own content stands until a barrier begun after (retire).
      */
     heldAt?: number;
+    /** The grant's decision of its name its records fold over (its baseline's row), by name and generation: settled once they retire. */
+    over?: {
+        readonly key: string;
+        readonly generation: number;
+    };
 }
 /** One of the process's operations on an inode, kept until the view has its outcome (retire). */
 interface InodeRecord {
@@ -222,7 +244,7 @@ export interface Provisional {
     /** Open description `description` was answered: `handle` is the session's descriptor of it. */
     anchored(description: string, handle: number | undefined, read: boolean): void;
     owns(handleId: number): boolean;
-    /** Whether a decision of this process's at `key`, or at the directory it is in, is not yet the view's: a held subtree decides nothing there until it is. */
+    /** Whether a decision of this process's at `key`, at the directory it is in, or at a name under it, is not yet the view's: a held subtree decides nothing there until it is. */
     touches(key: string): boolean;
     /** fcntl(F_SETFL) of a descriptor: O_APPEND is its writes' to keep. */
     setStatus(handleId: number, status: {

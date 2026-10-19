@@ -291,6 +291,22 @@ export function delegationHolder(options) {
             drain();
             unhold(inode);
         },
+        generation: (key) => names.generation(key),
+        settled: (key, generation) => names.settled(key, generation),
+        absorb: (key, file) => {
+            const decision = decided.get(key);
+            if (!decision || decision.dev !== file.dev || decision.ino !== file.ino)
+                return undefined;
+            // In place: the decision it is, not a new one (its generation and what was given back of it stand).
+            decision.size = file.size;
+            decision.mode = file.mode;
+            decision.uid = file.uid;
+            decision.gid = file.gid;
+            decision.atime = file.atime;
+            decision.mtime = file.mtime;
+            decision.ctime = file.ctime;
+            return decision;
+        },
     });
     // The provisional decisions are the newest wherever they are pending: a held subtree decides nothing there (deciding).
     const composedEntry = (key) => {
@@ -481,7 +497,7 @@ export function delegationHolder(options) {
             file.mode = mode;
             if (target === null)
                 names.note(parentKey(to), nameOf(to), 'file');
-            decided.set(to, entry);
+            names.decide(to, entry);
             prov.hold(inode, file);
             const description = descriptionId();
             changes++;
@@ -539,7 +555,7 @@ export function delegationHolder(options) {
                 if (inode === undefined)
                     return undefined;
                 prov.hold(inode, file);
-                decided.set(key, entry);
+                names.decide(key, entry);
                 names.note(parentKey(key), nameOf(key), 'file');
                 // Made here: the name exists from now on, in the log's order. Logged
                 // with its bytes, before the next decision (drain), as one call.
@@ -576,7 +592,7 @@ export function delegationHolder(options) {
                 }
                 file.length = 0;
                 prov.hold(inode, file);
-                decided.set(key, { ...current, size: 0, mtime: now(), ctime: now() });
+                names.decide(key, { ...current, size: 0, mtime: now(), ctime: now() });
                 written(inode);
             }
             return prov.heldDescriptor(inode, path, !!flags.read, false);
@@ -723,7 +739,7 @@ export function delegationHolder(options) {
             const stamp = now();
             const umask = mask ?? grant.umask;
             const perm = (mode & 0o777 & ~umask) | (setgid ? 0o2000 : 0);
-            decided.set(key, {
+            names.decide(key, {
                 type: 'directory', dev: store.device, ino, nlink: 2, size: 0, atime: stamp, mtime: stamp, ctime: stamp,
                 mode: 0o40000 | perm, uid, gid, revision: 0, target: null,
             });
@@ -740,7 +756,7 @@ export function delegationHolder(options) {
                 return false;
             if (writableParent(key, path, 'unlink') === undefined)
                 return false;
-            decided.set(key, null);
+            names.decide(key, null);
             names.note(parentKey(key), nameOf(key), null);
             const local = prov.inode(current.dev, current.ino);
             if (local?.cell !== undefined && local.key === key) {
@@ -777,8 +793,8 @@ export function delegationHolder(options) {
             drain();
             // What was decided under the source moves with it.
             names.move(from, to);
-            decided.set(from, null);
-            decided.set(to, { ...source, ctime: now() });
+            names.decide(from, null);
+            names.decide(to, { ...source, ctime: now() });
             names.note(parentKey(from), nameOf(from), null);
             names.note(parentKey(to), nameOf(to), source.type);
             // A file it replaces loses its name: its open descriptions keep its bytes.
@@ -816,7 +832,7 @@ export function delegationHolder(options) {
                     return false;
             }
             const next = changedBy(current, attrs);
-            decided.set(key, next);
+            names.decide(key, next);
             const local = prov.inode(current.dev, current.ino)?.cell;
             if (local !== undefined) {
                 local.mode = next.mode & 0o7777;
@@ -829,12 +845,6 @@ export function delegationHolder(options) {
             const handle = heldDesc(handleId);
             if (handle === undefined) {
                 prov.fsetattr(handleId, change);
-                // A name its grant decides for the file shows the change made through its description, as the session will (one given back is the view's to say).
-                const inode = prov.descriptor(handleId).inode;
-                const named = names.current(inode.key);
-                if (named && named.ino === inode.ino) {
-                    decided.set(inode.key, changedBy(named, 'atime' in change ? { atime: timeAt(change.atime, named.atime, now()), mtime: timeAt(change.mtime, named.mtime, now()) } : change));
-                }
                 return false;
             }
             const inode = handle.inode;

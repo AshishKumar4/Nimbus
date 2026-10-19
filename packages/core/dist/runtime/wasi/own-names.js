@@ -18,11 +18,14 @@ function within(key, root) {
 }
 export function ownNames(options) {
     const decided = new Map();
+    /** Each decision's generation: one made again, or moved, is a new one. */
+    const born = new Map();
+    let generations = 0;
     /**
      * The barrier begun when each name's subtree was last given back,
-     * everything decided there answered, and the decision it gave back: one
-     * begun after retires it, unless the name was decided again since (a new
-     * decision is a new row).
+     * everything decided there answered, and the generation of the decision
+     * it gave back: one begun after retires it, unless the name was decided
+     * again or moved since (a new generation).
      */
     const own = new Map();
     const added = new Map();
@@ -37,6 +40,7 @@ export function ownNames(options) {
         const entry = decided.get(key);
         own.delete(key);
         decided.delete(key);
+        born.delete(key);
         made.delete(key);
         added.get(parentKey(key))?.delete(nameOf(key));
         removed.get(parentKey(key))?.delete(nameOf(key));
@@ -53,16 +57,30 @@ export function ownNames(options) {
             return key !== '' && madeHere(dir) && !added.get(dir)?.has(nameOf(key)) ? null : undefined;
         },
         decided,
+        decide: (key, entry) => {
+            decided.set(key, entry);
+            born.set(key, ++generations);
+        },
+        generation: (key) => born.get(key),
         current: (key) => (own.has(key) ? undefined : decided.get(key)),
         rewritten: (key) => {
             if (own.size !== 0)
                 own.delete(key);
         },
-        undecide: (key) => { decided.delete(key); },
+        undecide: (key) => {
+            decided.delete(key);
+            born.delete(key);
+        },
         superseded: (key) => {
             for (const name of [...decided.keys()])
                 if (within(name, key))
                     forget(name);
+        },
+        settled: (key, generation) => {
+            if (generation === undefined || born.get(key) !== generation)
+                return false;
+            forget(key);
+            return true;
         },
         note: (dir, name, type) => {
             if (type === null) {
@@ -107,11 +125,14 @@ export function ownNames(options) {
         },
         move: (from, to) => {
             const moved = (key) => to + key.slice(from.length);
-            for (const [key, value] of [...decided])
-                if (key !== from && within(key, from)) {
-                    decided.delete(key);
-                    decided.set(moved(key), value);
-                }
+            for (const [key, value] of [...decided]) {
+                if (key === from || !within(key, from))
+                    continue;
+                decided.delete(key);
+                born.delete(key);
+                decided.set(moved(key), value);
+                born.set(moved(key), ++generations);
+            }
             for (const key of [...made])
                 if (within(key, from)) {
                     made.delete(key);
@@ -124,24 +145,21 @@ export function ownNames(options) {
                         map.set(moved(key), value);
                     }
             }
-            for (const [key, value] of [...own]) {
-                if (key === from || !within(key, from))
-                    continue;
-                own.delete(key);
-                own.set(moved(key), value);
-            }
+            for (const key of [...own.keys()])
+                if (key !== from && within(key, from))
+                    own.delete(key);
         },
         released: (root) => {
             // Stamped at every release: one decided under a later grant retires after this release, not an earlier one.
-            for (const [key, decision] of decided)
+            for (const key of decided.keys())
                 if (within(key, root))
-                    own.set(key, { barrier: barriers, decision });
+                    own.set(key, { barrier: barriers, generation: born.get(key) });
         },
         barrierBegun: () => ++barriers,
         // A subtree held again since does not keep it: what the session has there now is what the view read.
         retire: (begun) => {
-            for (const [key, { barrier, decision }] of [...own]) {
-                if (decided.get(key) !== decision)
+            for (const [key, { barrier, generation }] of [...own]) {
+                if (born.get(key) !== generation)
                     own.delete(key);
                 else if (barrier < begun)
                     forget(key);
