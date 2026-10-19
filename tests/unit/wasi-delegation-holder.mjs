@@ -818,15 +818,18 @@ for (const [route, told] of [['idle', 'fsync'], ['idle', 'settle'], ['renewal', 
   let opened = Promise.withResolvers();
   const s = session({ grantBytes: 128 * 1024 * 1024, gate: { then: (resolve, reject) => (gated ? opened.promise : Promise.resolve()).then(resolve, reject) } });
   for (let index = 0; index < 7; index++) await create(s.fs, `/home/user/proj/d${index}/x`, 'x');
+  // Taken at its first change: the file made after is held.
+  await create(s.fs, '/home/user/other/first', 'f');
+  await s.fs.flush();
   const big = await s.fs.open('/home/user/other/big', { write: true, create: true, truncate: true, mode: 0o644 });
   await s.fs.write(big.id, null, enc.encode('b'));
   await s.fs.flush();
   assert.equal(s.filesystem.delegations.size, 8, 'eight subtrees held');
-  // The seven go idle (2 s); the other is kept in use. Their closes wait at the session.
+  // The seven go idle (2 s); the other is kept in use (a file made there). Their closes wait at the session.
   gated = true;
   for (let tick = 0; tick < 5; tick++) {
     await new Promise((resolve) => setTimeout(resolve, 500));
-    await s.fs.write(big.id, 0, enc.encode('b'));
+    await create(s.fs, `/home/user/other/t${tick}`, 't');
   }
   // The other's held file grows past the cap; then a ninth subtree widens over the seven.
   await s.fs.write(big.id, null, new Uint8Array(65 * 1024 * 1024));
@@ -835,18 +838,22 @@ for (const [route, told] of [['idle', 'fsync'], ['idle', 'settle'], ['renewal', 
   await Promise.resolve();
   // Under one of the seven, being given back: the session's to decide, not this process's.
   const before = delegated();
-  const after = s.fs.open('/home/user/proj/d0/after', { write: true, create: true, truncate: true, mode: 0o644 }).then((handle) => s.fs.close(handle.id), () => null);
-  await Promise.resolve();
+  const after = (async () => {
+    const handle = await s.fs.open('/home/user/proj/d0/after', { write: true, create: true, truncate: true, mode: 0o644 });
+    await s.fs.close(handle.id);
+    return null;
+  })().catch((error) => error?.code ?? String(error));
   assert.equal(delegated() - before, 1, 'a create under a grant being given back went to the session');
   await s.fs.ftruncate(big.id, 1);
   gated = false;
   opened.resolve();
   await ninth;
-  await after;
+  // What was written before it cannot be logged yet: the program is told, and nothing is made.
+  assert.equal(await after, 'ENOMEM', 'the create under the grant given back');
   await s.fs.close(big.id);
   assert.deepEqual(await s.fs.settle(), []);
   assert.equal(s.filesystem.delegations.size, 0, 'everything given back');
-  assert.equal(s.kernel.exists('home/user/proj/d0/after'), true);
+  assert.equal(s.kernel.exists('home/user/proj/d0/after'), false);
 }
 
 // ── A decision whose drain the client refuses (a held file past its synchronous cap) leaves nothing decided ──
