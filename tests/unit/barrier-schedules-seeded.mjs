@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// @tier slow — SEEDS_PLACEHOLDER
+// @tier slow — 24 seeded schedules on each engine, each in its own child: 150-270 s on armada
 /**
  * barrier-schedules-seeded — the barrier schedules (lib/barrier-schedule.mjs)
  * drawn from seeds, each reply parked at random once the process is up, on

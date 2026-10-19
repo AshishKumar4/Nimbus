@@ -5,6 +5,12 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a Node program could be told a file or directory it had just
+  renamed was not there (`fs.statSync` ENOENT, and renaming it again
+  refused) when input arrived while the rename was still on its way to the
+  session: the program's own record of the rename read the old name, which
+  the input's catch-up had already removed. The new name now answers from
+  the session's record once that catch-up has landed.
 - Fixed: a WASI program (python, ruby, clang, bash) listing a directory
   while another process changed it could be shown a listing the directory
   never had: a directory moved away listed as empty, or a renamed file
