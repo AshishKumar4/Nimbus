@@ -311,8 +311,8 @@ export function createCells(coherence, admission, namespace, observeRead) {
                         forgetHeld(heldPath);
                     });
                     // Names under it may have become hidden or visible without being
-                    // named: the namespace relists that subtree.
-                    if (namespaced && subtree && stat && stat.type === 'directory')
+                    // named: an enumerated namespace relists that subtree.
+                    if (namespaced && !namespace.lazy && subtree && stat && stat.type === 'directory')
                         relist[relist.length] = path;
                 }
                 let isHeld = false, stamped = 0, heldKey = null;
