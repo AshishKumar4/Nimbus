@@ -12,7 +12,7 @@ const fabric = 'packages/fabric/src';
  * path: string;
  * taskImport?: string;
  * tasks: Array<[name: string, entry: string, exported: string]>;
- * bodies: Array<[name: string, entry: string | null, names: string[], contents?: string]>;
+ * bodies: Array<[name: string, entry: string | null, names: string[], contents?: string, captures?: string]>;
  * }>} */
 const outputs = [
   {
