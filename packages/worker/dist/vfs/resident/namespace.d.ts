@@ -39,6 +39,14 @@ export type Resolved = {
     path: string;
     row: NsRow;
 } | 'ELOOP';
+/** A lookup or listing asked of the session, until its answer is installed or dropped (Namespace.learning). */
+export interface Learning {
+    /** Whether what the answer says of `k` may be installed: nothing admitted since it was asked is at or above `k`, and the table was not replaced. */
+    installs(k: string): boolean;
+    /** Whether the answer's listing of `dir` may be installed: as `installs`, and nothing admitted beneath it either. */
+    lists(dir: string): boolean;
+    end(): void;
+}
 export interface Namespace {
     bind(t: ResidentTables): void;
     setCred(cred: ResidentCred | null | undefined): void;
@@ -101,7 +109,12 @@ export interface Namespace {
     listedAt(k: string): boolean;
     isListed(dir: string): boolean;
     markListed(dir: string): void;
-    forgetListed(dir: string): void;
+    /**
+     * A lookup or listing about to be asked of the session: a delta admitted
+     * before its answer lands is newer than the answer at every path it names,
+     * and beneath, so the answer installs nothing there, no row and no absence.
+     */
+    learning(): Learning;
 }
 export declare function nsKindCode(type: unknown): number;
 /**

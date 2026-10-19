@@ -101,12 +101,18 @@ export function createNamespace(coherence, admission) {
     let lazy = false;
     /** Directories (keys) every entry of which is a row: below them a missing row is an absent name. */
     const listed = new SafeSet();
+    /** Moved whenever the table is replaced or stops answering: a learning asked before installs nothing. */
+    let generation = 0;
+    /** Each learning in flight, with every path an admitted delta named since it was asked. */
+    const learnings = new SafeSet();
     const ready = () => ok && coherence.serving();
     const markReady = (t, isReady, why) => {
         t.metaSet('ns', isReady ? '1' : '0');
         ok = !!isReady;
-        if (!isReady)
+        if (!isReady) {
             cause = stringOf(why || 'a change it could not follow');
+            generation++;
+        }
     };
     const refuse = (t, why) => {
         markReady(t, false, why);
@@ -318,11 +324,12 @@ export function createNamespace(coherence, admission) {
         },
         /**
          * Apply one delta entry that carries a stat. Returns a directory whose
-         * subtree must be relisted — one that just became searchable, whose
-         * descendants no delta names — or null.
+         * subtree an enumerated namespace must relist — one that just became
+         * searchable, whose descendants no delta names — or null.
          */
         applyEntry(t, entry) {
             const k = nsKey(entry.path);
+            learnings.forEach((asked) => { asked.reported[asked.reported.length] = k; });
             if (k === '')
                 return null;
             const stat = ownValue(entry, 'stat');
@@ -340,6 +347,14 @@ export function createNamespace(coherence, admission) {
             }
             const was = before !== undefined && traversable(before);
             const now = traversable(after);
+            // Listed on demand, a directory whose names moved without being named
+            // (replaced, renamed, its mode or owner changed) is unknown beneath:
+            // its names are looked up again.
+            if (lazy) {
+                if (ownValue(entry, 'structural') || ownValue(entry, 'subtree') || was !== now)
+                    deleteTree(t, k, false);
+                return null;
+            }
             if (was && !now)
                 deleteTree(t, k, false);
             if (!was && now && before !== undefined)
@@ -351,6 +366,7 @@ export function createNamespace(coherence, admission) {
          * listing no longer names. Called once per enumeration, after its last page.
          */
         replace(t, entries) {
+            generation++;
             const names = new SafeSet();
             for (let i = 0; i < entries.length; i++)
                 names.add(nsKey(entries[i].path));
@@ -474,12 +490,14 @@ export function createNamespace(coherence, admission) {
             tryPut(t, k, stat, written ?? cursor.rev, target);
         },
         clear() {
+            generation++;
             links = new SafeSet();
             unlisted = new SafeMap();
             ok = false;
         },
         get lazy() { return lazy; },
         beginLazy() {
+            generation++;
             lazy = true;
             listed.clear();
             links = new SafeSet();
@@ -491,7 +509,22 @@ export function createNamespace(coherence, admission) {
         onPut(listener) {
             putListener = listener;
         },
-        /** Forget that `dir` and every directory beneath it are listed: a change no delta itemises may have moved their names. */
-        forgetListed,
+        learning() {
+            const asked = { generation, reported: new SafeList() };
+            learnings.add(asked);
+            const named = (k, beneath) => {
+                for (let i = 0; i < asked.reported.length; i++) {
+                    const at = asked.reported[i];
+                    if (at === '' || at === k || stringStartsWith(k, at + '/') || (beneath && (k === '' || stringStartsWith(at, k + '/'))))
+                        return true;
+                }
+                return false;
+            };
+            return {
+                installs: (k) => asked.generation === generation && !named(k, false),
+                lists: (dir) => asked.generation === generation && !named(dir, true),
+                end: () => { learnings.delete(asked); },
+            };
+        },
     };
 }

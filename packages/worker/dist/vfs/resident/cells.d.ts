@@ -32,7 +32,7 @@ export interface Admitted {
     /** Rows kept because their revision already covers the report (this facet's own writes coming back). */
     kept: number;
     pushed: number;
-    /** Directories the namespace must relist: no delta will itemise what is under them. */
+    /** Directories an enumerated namespace must relist: no delta will itemise what is under them. */
     relist: string[];
     cursor: Cursor;
     /** An answer older than the store's cursor: nothing was applied. */
