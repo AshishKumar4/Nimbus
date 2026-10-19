@@ -203,6 +203,14 @@ export declare class Interpreter {
      * EXIT trap when it finishes (`finishChild`).
      */
     fork(): Interpreter;
+    /**
+     * `child`, forked for a substitution or a simple command (a pipeline's
+     * element, a job), runs inside the EXIT trap's action still: a bare `exit`
+     * there ends with the trap's entry status, and an EXIT trap set there does
+     * not run. bash keeps running_trap for these, and clears it in the
+     * subshell of a compound command, `( … )` among them.
+     */
+    private inTrapAction;
     getLastExitCode(): number;
     setLastExitCode(exitCode: number): void;
     executeScript(script: ScriptNode, terminalStdin?: TerminalInputStream): Promise<number>;
