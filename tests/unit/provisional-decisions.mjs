@@ -11,8 +11,8 @@ import { provisional } from '../../packages/core/src/runtime/wasi/provisional.ts
 
 const directory = (ino) => ({ type: 'directory', dev: 1, ino, nlink: 2, size: 0, atime: 1, mtime: 1, ctime: 1, mode: 0o40755, uid: 1000, gid: 1000, revision: 1, target: null });
 
-/** A provisional overlay over a view holding `/` and `/p`, whose session answers each logged op when the test says. */
-function overlay() {
+/** A provisional overlay over a view holding `/` and `/p`, whose session answers each logged op when the test says; `budget` counts what it takes. */
+function overlay(budget = { used: 0 }) {
   const rows = new Map([['', directory(1)], ['p', directory(2)]]);
   const pending = [];
   let handles = -1;
@@ -22,8 +22,8 @@ function overlay() {
     row: (key) => (rows.has(key) ? rows.get(key) : null),
     children: () => [],
     content: () => undefined,
-    reserve: () => true,
-    release: () => {},
+    reserve: (bytes) => { budget.used += bytes; return true; },
+    release: (bytes) => { budget.used -= bytes; },
     client: {
       submit: (op) => new Promise((resolve) => { pending.push({ op, resolve }); }),
       fitsSync: () => {},
@@ -70,6 +70,22 @@ for (const [fate, outcome] of [
   decisions.mkdir('p/d', '/p/d', 0o755, null, undefined);
   await answer({ failed: { errno: 'EACCES', message: 'refused', refused: true } });
   assert.equal(decisions.entry('p/d'), undefined, 'a refused record stayed in the overlay');
+}
+
+// A grant's file given back keeps the bytes it was written, charged as kept: not the room the grant drew for more.
+{
+  const budget = { used: 0 };
+  const { decisions } = overlay(budget);
+  const row = { type: 'file', dev: 1, ino: 9, nlink: 1, size: 0, atime: 1, mtime: 1, ctime: 1, mode: 0o100644, uid: 1000, gid: 1000, revision: 1, target: null };
+  const inode = decisions.inodeFor('p/f', row);
+  const room = new Uint8Array(4096);
+  room[0] = 7;
+  decisions.hold(inode, { bytes: room, length: 1, mode: 0o644 });
+  const before = budget.used;
+  decisions.unhold(inode, row);
+  assert.equal(budget.used, decisions.kept(), 'what is taken of the budget is what is kept');
+  assert.ok(budget.used - before >= inode.base.bytes.buffer.byteLength, `a given-back file keeps ${inode.base.bytes.buffer.byteLength} bytes, charged ${budget.used - before}`);
+  assert.deepEqual([...decisions.content(row)], [7], 'its bytes');
 }
 
 console.log('provisional-decisions: ok');

@@ -574,6 +574,9 @@ async function runSteps(steps, met, grants) {
    * mode. Then it is renamed back.
    */
   const swapStep = async (label) => {
+    // The budget full for the rename alone (a squeeze before it): what the names beneath it grow by has no room.
+    const full = squeezed;
+    budget.limit = 1 << 30;
     await deliver();
     control.held = false;
     control.opened.resolve();
@@ -585,20 +588,28 @@ async function runSteps(steps, met, grants) {
     control.held = true;
     control.opened = Promise.withResolvers();
     assert.ok(landing !== undefined, `${label}: the barrier began`);
-    const aside = `${DIR}/t`;
+    // Longer than its name: the names beneath it grow, which the budget admits first.
+    const aside = `${DIR}/swapped-aside`;
+    if (full) budget.limit = budget.used;
     const code = await errnoOf(() => sync.rename(`/${dir}`, `/${aside}`));
+    budget.limit = 1 << 30;
     const land = landing;
     landing = undefined;
     land();
     await catching;
-    if (code !== null) return;
+    // Refused only for room, with the budget full: nothing of it done (the checks after the step say so).
+    assert.ok(code === null || (code === 'ENOSPC' && full), `${label}: the rename ${code}`);
+    // Refused, nothing moved: the model takes the barrier that landed as the view did.
+    if (code !== null) {
+      await catchUp();
+      return;
+    }
     const seen = statsAt(aside);
     await catchUp();
     const session = statsAt(aside);
     for (const name of NAMES) {
       if (seen[name] !== 'EAGAIN') assert.deepEqual(seen[name], session[name], `${label}: what a call that cannot wait saw of ${name} once the barrier landed`);
     }
-    budget.limit = 1 << 30;
     assert.equal(await errnoOf(() => sync.rename(`/${aside}`, `/${dir}`)), null, `${label}: the rename back`);
     await catchUp();
   };

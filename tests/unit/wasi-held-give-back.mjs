@@ -14,7 +14,10 @@
  *     a barrier begun before it lands: the moved decision stays (newer than
  *     the barrier's answer), with what they made of the file;
  *   - a decision given back, then moved under a later grant before the
- *     barrier its give-back waits on lands, stays.
+ *     barrier its give-back waits on lands, stays;
+ *   - a held directory renamed to a longer name, the budget full: what its
+ *     files' names grow by is admitted first, or the rename is refused with
+ *     nothing done; what is taken of the budget is always what is kept.
  */
 
 import assert from 'node:assert/strict';
@@ -209,6 +212,37 @@ for (const [change, refusal] of [['open', null], ['rename', null], ['unlink', nu
   names.released('p');
   names.retire(names.barrierBegun());
   assert.equal(names.entry('p/g'), undefined, 'a decision given back stayed after a barrier begun after it landed');
+}
+
+// ── A held directory renamed to a longer name with files open beneath it, the budget full, then with room ──
+{
+  const budget = { used: 0, limit: 1 << 30 };
+  const s = await holding({ budget });
+  const sync = s.fs.synchronous;
+  const kept = () => {
+    const stats = s.fs.stats();
+    return stats.provisionalBytes + stats.pinnedBytes;
+  };
+  sync.mkdir('/home/user/proj/d');
+  const handles = [];
+  for (let i = 0; i < 3; i++) {
+    const handle = sync.open(`/home/user/proj/d/f${i}`, { write: true, create: true, truncate: true, mode: 0o644 });
+    sync.write(handle.id, null, enc.encode(`f${i}`));
+    handles.push(handle);
+  }
+  assert.equal(budget.used, kept(), 'before: what is taken is what is kept');
+  const longer = '/home/user/proj/d-renamed-to-a-much-longer-name';
+  budget.limit = budget.used;
+  const code = await errnoOf(() => sync.rename('/home/user/proj/d', longer));
+  budget.limit = 1 << 30;
+  assert.equal(budget.used, kept(), `a rename the budget had no room for (${code}): what is taken is what is kept`);
+  assert.equal(code, 'ENOSPC', 'a rename whose names have no room is refused');
+  assert.ok(sync.stat('/home/user/proj/d/f0') !== null && sync.stat(`${longer}/f0`) === null, 'a refused rename moved nothing');
+  assert.equal(await errnoOf(() => sync.rename('/home/user/proj/d', longer)), null, 'with room');
+  assert.equal(budget.used, kept(), 'renamed: what is taken is what is kept');
+  for (const handle of handles) sync.close(handle.id);
+  await s.fs.settle();
+  assert.equal(s.kernel.readFileString(`${longer.slice(1)}/f2`), 'f2', 'its files moved with it');
 }
 
 console.log('ok - wasi-held-give-back');

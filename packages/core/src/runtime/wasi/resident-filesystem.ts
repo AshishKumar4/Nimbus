@@ -1400,6 +1400,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
    */
   const byClient = (name: string, op: ProcessFsOp): Promise<void> => {
     if (now) throw NOT_NOW;
+    // What the names of the files it moves grow by, admitted before anything is done.
+    const files = op.type === 'rename' ? holder!.provisional.planMove(op.from, op.to, '/' + op.from) : undefined;
     delegated(name);
     // A name it changes: the files the process holds open at or under it write through first.
     if (op.type === 'rename') holder!.changing([op.from, op.to]);
@@ -1411,10 +1413,14 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       if (op.type === 'rename') {
         holder!.superseded(op.from);
         holder!.superseded(op.to);
-        holder!.provisional.moved(op.from, op.to);
+        files?.move();
       } else if (op.type === 'call' && (op.call.call === 'unlink' || op.call.call === 'rmdir')) holder!.superseded(op.call.path);
       owed++;
-    }, (error: unknown) => { owed++; throw error; });
+    }, (error: unknown) => {
+      files?.cancel();
+      owed++;
+      throw error;
+    });
   };
   const pathOf = (path: RuntimeFsPath): string => (typeof path === 'string' ? path : path.path);
 

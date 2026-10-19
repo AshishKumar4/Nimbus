@@ -18,8 +18,9 @@ function generator(seed) {
  * A program of `length` steps from `seed`; `wasi` adds descriptor-path opens
  * and stream reads; `copies` adds copies (one name's file to another name)
  * and squeezes (the budget full for the next step), from a stream of their
- * own; `swaps` adds, from another, renames of the names' directory and back
- * while a barrier begun before them waits.
+ * own; `swaps` adds, from another, renames of the names' directory to a
+ * longer name and back while a barrier begun before them waits, some with
+ * the budget full.
  */
 export function program(seed, length = 40, { wasi = false, copies = false, swaps = false } = {}) {
   const random = generator(seed);
@@ -64,7 +65,8 @@ export function program(seed, length = 40, { wasi = false, copies = false, swaps
         const to = NAMES[(NAMES.indexOf(from) + 1 + Math.floor(extra() * (NAMES.length - 1))) % NAMES.length];
         out.push({ op: 'copy', from, to });
       }
-      if (swaps && swap() < 0.12) out.push({ op: 'swap' });
+      // A swap with the budget full now and then: what the names beneath it grow by has no room.
+      if (swaps && swap() < 0.12) out.push(...(swap() < 0.3 ? [{ op: 'squeeze' }] : []), { op: 'swap' });
       return out;
     });
   }

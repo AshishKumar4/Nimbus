@@ -919,6 +919,8 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       if (grant === undefined || deciding(to) !== grant) return false;
       if (from === to) return true;
       if (writableParent(from, path, 'rename') === undefined || writableParent(to, path, 'rename') === undefined) return false;
+      // What the names of its files grow by, admitted before anything is done.
+      const files = prov.planMove(from, to, path);
       // What was written before the rename is logged under the name it had.
       drain();
       // What was decided under the source moves with it.
@@ -936,7 +938,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
         }
       }
       // Its files move with it: the name they are reached by, which the view will have.
-      prov.moved(from, to);
+      files.move();
       log({ type: 'rename', from, to });
       return true;
     },
