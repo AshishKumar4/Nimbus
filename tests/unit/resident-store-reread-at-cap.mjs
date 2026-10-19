@@ -1,15 +1,17 @@
 #!/usr/bin/env bun
-// A resident store at its budget keeps a file whose bytes it is handed
+// A resident store at its cap keeps a file whose bytes it is handed
 // again, whichever way they come: a read's write-through (fill) of the
 // same content held as text, as bytes, or in several chunks, and a delta
 // that pushes the same bytes with no content key to say so. Each used to
 // remove the row before asking whether the replacement fit, and at the
-// budget it did not. A changed file's bytes still replace the row, or,
+// cap it did not: the store's size is the file SQLite allocated, which a
+// delete does not shrink. A changed file's bytes still replace the row, or,
 // with no room for them, leave no row: never the old bytes.
 
 import assert from 'node:assert/strict';
 import { createResidentStore } from '../../packages/worker/src/vfs/resident/index.ts';
 import { RESIDENT_CHUNK_BYTES } from '../../packages/worker/src/vfs/facet-resident-limits.ts';
+import { facetSql } from './lib/resident-body.mjs';
 
 const enc = new TextEncoder();
 const CURSOR = { poison: false, paths: [], epoch: 'e1', rev: 7 };
@@ -22,23 +24,23 @@ const FILES = {
   'home/user/app/public/blob.bin': Uint8Array.from({ length: RESIDENT_CHUNK_BYTES * 2 + 17 }, (_, i) => (i * 31) & 255),
 };
 
-/** A heap store holding FILES as a launch's fills leave them (text as text), its budget `budget`. */
-function seeded(budget) {
-  const store = createResidentStore();
-  store.bindInMemory(budget);
-  store.cells.admit(CURSOR);
-  for (const [path, body] of Object.entries(FILES)) assert.ok(store.cells.fill(path, body, 7), `${path} is seeded`);
-  return store;
-}
-// A store whose budget is exactly what it holds.
-const store = seeded(seeded(64 * 1024 * 1024).admission.dbBytes());
+// A process facet's store over its SQLite, holding FILES as a launch's fills
+// leave them (text as text); then its allowance is exactly what it holds,
+// and the session's ledger has no more.
+const store = createResidentStore();
+store.bind({ storage: { sql: facetSql() } });
+store.cells.admit(CURSOR);
+const ledger = { fsStorageGrant: async () => ({ granted: 0 }) };
+store.admission.setStorage({ facet: 'proc-slot-0', grant: 64 * 1024 * 1024 }, ledger);
+for (const [path, body] of Object.entries(FILES)) assert.ok(store.cells.fill(path, body, 7), `${path} is seeded`);
+store.admission.setStorage({ facet: 'proc-slot-0', grant: 0 }, ledger);
 const t = store.coherence.require();
 const read = (path) => store.bundle[path];
 const bytesOf = (body) => (typeof body === 'string' ? enc.encode(body) : body);
 
 for (const [path, body] of Object.entries(FILES)) {
   assert.ok(store.cells.fill(path, bytesOf(body), 8), `${path}: a read of the same bytes is taken`);
-  assert.ok(store.cells.has(path), `${path} is still held after a read of the same bytes, at the budget`);
+  assert.ok(store.cells.has(path), `${path} is still held after a read of the same bytes, at the cap`);
   assert.equal(t.fileRev(path), 8, `${path} is dated at the read`);
   assert.deepEqual(bytesOf(read(path)), bytesOf(body), `${path} reads as before`);
 }
@@ -54,7 +56,7 @@ for (const [path, body] of Object.entries(FILES)) {
   const bytes = bytesOf(FILES[path]);
   const admitted = store.cells.admit({ poison: false, epoch: 'e1', rev: 10, paths: [{ path, rev: 10, bytes, stat: STAT(bytes.byteLength) }] });
   assert.deepEqual(admitted.dropped, [], 'nothing held is dropped');
-  assert.ok(store.cells.has(path), 'the pushed file is still held, at the budget');
+  assert.ok(store.cells.has(path), 'the pushed file is still held, at the cap');
   assert.equal(t.fileRev(path), 10, 'dated at the delta');
 }
 
