@@ -52,8 +52,13 @@ try {
 await reportContainerStorage();
 const words = [...(flags.tier ? ['--tier', flags.tier] : []), ...(flags.only ? ['--only', flags.only] : [])];
 // Not spawnSync: a storage read slower than its wait finishes during the run.
-const ran = spawn('bun', [join(client, 'src', 'cli.ts'), 'run', sha, ...(words.length ? ['--', ...words] : [])], {
-  cwd: repo, stdio: 'inherit', env: armadaEnv(),
-});
-const [status] = await once(ran, 'exit');
+let status = null;
+try {
+  const ran = spawn('bun', [join(client, 'src', 'cli.ts'), 'run', sha, ...(words.length ? ['--', ...words] : [])], {
+    cwd: repo, stdio: 'inherit', env: armadaEnv(),
+  });
+  [status] = await once(ran, 'exit');
+} catch (error) {
+  notGraded(`armada did not start: ${error.message}`);
+}
 process.exit(status ?? 2);

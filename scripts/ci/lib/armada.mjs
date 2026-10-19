@@ -9,7 +9,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { cloudflareApiToken } from './cloudflare-token.mjs';
+import { cloudflareApiToken } from './cloudflare-api.mjs';
 import { describeContainerStorage, readContainerStorage } from './container-storage.mjs';
 import { NIMBUS_STATE } from './state-dir.mjs';
 
@@ -41,29 +41,33 @@ export function armadaEnv(env = process.env) {
 
 /** How long a run waits for the account's container storage to be read before it starts anyway. */
 const STORAGE_READ_MS = 30_000;
+const STORAGE_STATE = join(NIMBUS_STATE, 'container-storage');
 
 /**
  * Says what the account's container storage holds (container-storage.mjs),
  * before each run: mapOnArmada's, and remote-unit's `armada run`. Its total,
  * its change since the last run, and who holds the most. A read that fails
  * is said and changes nothing; one slower than STORAGE_READ_MS is said when
- * it ends, the run started.
+ * it ends, the run started. Answers what stops a read still going once the
+ * run has ended.
  */
 export async function reportContainerStorage(log = (line) => console.error(line)) {
+  const stopped = new AbortController();
+  let timer;
+  const late = new Promise((resolve) => { timer = setTimeout(() => resolve(true), STORAGE_READ_MS); });
   const said = (async () => {
     try {
       const { account } = JSON.parse(readFileSync(armadaEnv().ARMADA_CONNECTION, 'utf8'));
-      const cacheDir = join(NIMBUS_STATE, 'container-storage');
-      const usage = await readContainerStorage({ account, token: cloudflareApiToken({ cwd: SELF_ROOT, account }), cacheDir });
-      for (const line of describeContainerStorage(usage, { cacheDir })) log(line);
+      const token = await cloudflareApiToken({ cwd: SELF_ROOT, account, signal: stopped.signal });
+      const usage = await readContainerStorage({ account, token, stateDir: STORAGE_STATE, signal: stopped.signal });
+      for (const line of describeContainerStorage(usage, { stateDir: STORAGE_STATE })) log(line);
     } catch (error) {
-      log(`container storage: not read (${error instanceof Error ? error.message : String(error)})`);
+      if (!stopped.signal.aborted) log(`container storage: not read (${error instanceof Error ? error.message : String(error)})`);
     }
   })();
-  let timer;
-  const late = new Promise((resolve) => { timer = setTimeout(() => resolve(true), STORAGE_READ_MS); });
   if (await Promise.race([said.then(() => false), late])) log(`container storage: still being read after ${STORAGE_READ_MS / 1000} s; the run starts`);
   clearTimeout(timer);
+  return () => stopped.abort();
 }
 
 /**
@@ -175,10 +179,18 @@ export function armadaClient({ dir = process.env.ARMADA_DIR || ARMADA_DIR, repo 
  * @param {{ repo: string, sha: string, files: string[], setup?: string | { name: string, text: string }, items: unknown[], command: string[], env?: Record<string, string>,
  *   label: string, pool?: number, timeout?: number, log?: (line: string) => void }} options
  */
-export async function mapOnArmada({ repo, sha, files, setup, items, command, env = {}, label, pool = items.length, timeout = 3600, log = (line) => console.error(line) }) {
+export async function mapOnArmada({ log = (line) => console.error(line), ...job }) {
   const armadaDir = armadaClient();
   Object.assign(process.env, armadaEnv());
-  await reportContainerStorage(log);
+  const stopReport = await reportContainerStorage(log);
+  try {
+    return await mapCommit(armadaDir, { ...job, log });
+  } finally {
+    stopReport();
+  }
+}
+
+async function mapCommit(armadaDir, { repo, sha, files, setup, items, command, env = {}, label, pool = items.length, timeout = 3600, log }) {
   const { connect } = await import(join(armadaDir, 'src', 'sdk.ts'));
   const { argvOf, cancelOnInterrupt, onCommit } = await import(join(armadaDir, 'src', 'ci.ts'));
   const { commandTask } = await import(join(armadaDir, 'src', 'task.ts'));
