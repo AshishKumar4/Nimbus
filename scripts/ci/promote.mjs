@@ -22,6 +22,10 @@
 //   5. The live checks, from containers, against https://nimbus-os.dev as a
 //      visitor reaches it (HOSTED_DEMO_CHECKS and PRODUCTION_ONLY_CHECKS:
 //      /try, the docs terminal, host-form previews).
+//   6. With every check green, the tag npm/<sha12> pushed to origin: the
+//      publish workflow (.github/workflows/publish.yml) publishes the
+//      commit's npm release. A push that fails does not undo the promotion;
+//      the summary says so, with the push to run.
 // The checks count only if production still serves the upload after them.
 // On a failed check it prints the rollback to the version served before.
 // --dry-run does 1 and 2, reads the version production serves, writes the
@@ -175,4 +179,11 @@ if (live.status !== 0) {
   console.log(`promote: ${productionName} serves ${versionId}, and the live checks are not green (exit ${live.status}). Roll back: ${rollback}`);
   process.exit(1);
 }
+// 6. The npm release.
+const npmTag = `npm/${sha.slice(0, 12)}`;
+const tagged = spawnSync('git', ['push', 'origin', `${sha}:refs/tags/${npmTag}`], { cwd: repo, encoding: 'utf8' });
 console.log(`promote: ${sha.slice(0, 12)} is live as ${versionId}, every check green; ${join(dir, 'promoted.json')}`);
+console.log(tagged.status === 0
+  ? `promote: pushed ${npmTag}; the publish workflow publishes its npm release`
+  : `promote: NOT ON NPM: pushing ${npmTag} failed (${(tagged.stderr || tagged.error?.message || '').trim().split('\n').at(-1)}); to publish: git push origin ${sha}:refs/tags/${npmTag}`);
+console.log(`promote: to go back: ${rollback}`);

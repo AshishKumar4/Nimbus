@@ -1,0 +1,25 @@
+name: npm-pack
+description: >-
+  The checked-out commit's npm release, packed and gated by
+  scripts/ci/publish-pack.mjs into $RUNNER_TEMP (pack.json and tarballs/),
+  on CI's Node and Bun (scripts/ci/recipe/setup.sh) and an npm that publishes
+  by OIDC (11.5.1 or later).
+runs:
+  using: composite
+  steps:
+    - id: versions
+      shell: bash
+      run: sed -n 's/^NODE_VERSION=/node=/p; s/^BUN_VERSION=/bun=/p' scripts/ci/recipe/setup.sh >> "$GITHUB_OUTPUT"
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: ${{ steps.versions.outputs.node }}
+        registry-url: https://registry.npmjs.org
+    - shell: bash
+      run: npm install -g npm@11.21.1
+    - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      with:
+        bun-version: ${{ steps.versions.outputs.bun }}
+    - shell: bash
+      run: bun scripts/install-deps.mjs
+    - shell: bash
+      run: bun scripts/ci/publish-pack.mjs --out "$RUNNER_TEMP/pack.json" --tarballs "$RUNNER_TEMP/tarballs"
