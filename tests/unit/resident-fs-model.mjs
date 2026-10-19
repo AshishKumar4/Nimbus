@@ -1142,6 +1142,19 @@ const FOUND = [
     { op: 'close', fd: 2 },
     { op: 'catchUp' },
   ] },
+  // A held copy written, then given back with the budget full (its bytes dropped): never refilled with the view's older bytes.
+  { name: 'a held file given back with the budget full', grants: true, steps: [
+    { op: 'open', fd: 2, name: 'a', flags: { read: true, write: true, append: false, create: true, exclusive: false, truncate: false } },
+    { op: 'peer', kind: 'rename', name: 'a', to: 'b', data: 'rpr', mode: 292 },
+    { op: 'swap', awaited: false },
+    { op: 'ftruncate', fd: 2, size: 4 },
+    { op: 'copy', from: 'b', to: 'c' },
+    { op: 'open', fd: 1, name: 'c', flags: { read: true, write: true, append: false, create: false, exclusive: true, truncate: false } },
+    { op: 'swap', awaited: false },
+    { op: 'write', fd: 1, offset: null, data: 'p' },
+    { op: 'squeeze' },
+    { op: 'peer', kind: 'chmod', name: 'b', to: 'a', data: 'ss', mode: 420 },
+  ] },
 ];
 for (const found of FOUND) {
   const failure = await run(found.steps, found.grants).then(() => null, (error) => error);

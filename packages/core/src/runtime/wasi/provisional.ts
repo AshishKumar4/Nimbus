@@ -1093,7 +1093,8 @@ export function provisional(host: ProvisionalHost): Provisional {
     if (inode.state !== null) {
       if (inode.state.bytes === null) {
         // Its baseline's bytes not held when it took its first record: held now at that revision, the records fold over them.
-        const seen = viewed(inode);
+        // One a grant gave back (heldAt) has its cell's bytes for baseline, newer than any the view has until it retires.
+        const seen = inode.heldAt === undefined ? viewed(inode) : undefined;
         if (seen?.bytes === undefined || seen.row.revision !== inode.row.revision) return undefined;
         inode.base = { ...inode.base!, bytes: owned(seen.bytes) };
         refold(inode);
