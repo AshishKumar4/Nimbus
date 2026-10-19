@@ -568,9 +568,10 @@ async function runSteps(steps, met, grants) {
    * The names' directory renamed by a call that cannot wait (a grant decides
    * it where one holds the subtree) while a barrier begun before it waits.
    * Once that barrier lands, what such a call sees of each name at the new
-   * place is what the session has there once it has the rename: a decision
-   * the rename moved is newer than that barrier's answer. Or EAGAIN, never
-   * absent nor another size or mode. Then it is renamed back.
+   * place is what the session has there once it has the rename (a decision
+   * the rename moved is newer than that barrier's answer), or EAGAIN where
+   * the view has not that place yet: never absent, nor another size or
+   * mode. Then it is renamed back.
    */
   const swapStep = async (label) => {
     await deliver();
