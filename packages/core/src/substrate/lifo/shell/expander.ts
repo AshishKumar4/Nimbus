@@ -81,7 +81,8 @@ export async function expandWords(words: WordPart[][], ctx: ExpandContext): Prom
       // Each field globbed as a pattern whose quoted characters match only
       // themselves: an unquoted expansion's `*` globs, a quoted one's does not.
       for (const field of splitFields(await expandParts(braceExpandedWord, ctx), ifsOf(ctx))) {
-        results.push(...await expandGlob(field.pattern, field.text, ctx.cwd, ctx.vfs));
+        if (field.pattern === null) results.push(field.text);
+        else results.push(...await expandGlob(field.pattern, field.text, ctx.cwd, ctx.vfs));
       }
     }
   }
@@ -884,8 +885,11 @@ function joinPieces(pieces: readonly Piece[]): string {
  * an unquoted expansion are eligible delimiters, so literal text keeps its
  * IFS characters, and `"$@"` boundaries split regardless of IFS.
  */
-/** A field: its text, and the pattern pathname expansion reads (its quoted characters escaped). */
-type Field = { text: string; pattern: string };
+/**
+ * A field: its text, and the pattern pathname expansion reads (its quoted
+ * characters escaped), or null when no unquoted character of it is a glob's.
+ */
+type Field = { text: string; pattern: string | null };
 
 function splitFields(pieces: readonly Piece[], ifs: string): Field[] {
   const fields: Field[] = [];
@@ -928,9 +932,19 @@ function splitGroup(
   const keep = (fields: Field[]): Field[] =>
     (fields.length === 1 && fields[0]?.text === '' && !literal ? [] : fields);
   const field = (start: number, end: number): Field => {
+    const value = text.slice(start, end);
+    let globs = false;
+    for (let i = start; i < end && !globs; i++) globs = !quoted[i] && (text[i] === '*' || text[i] === '?' || text[i] === '[');
+    if (!globs) return { text: value, pattern: null };
+    // The pattern, run by run: a quoted run escaped whole.
     let pattern = '';
-    for (let i = start; i < end; i++) pattern += quoted[i] ? escapeGlob(text[i] ?? '') : text[i];
-    return { text: text.slice(start, end), pattern };
+    for (let i = start; i < end;) {
+      let j = i + 1;
+      while (j < end && quoted[j] === quoted[i]) j++;
+      pattern += quoted[i] ? escapeGlob(text.slice(i, j)) : text.slice(i, j);
+      i = j;
+    }
+    return { text: value, pattern };
   };
 
   if (ifs === '') return keep([field(0, text.length)]);

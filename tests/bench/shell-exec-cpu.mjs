@@ -1,8 +1,9 @@
 #!/usr/bin/env bun
 // The shell's own work, CPU per arm: lines of builtins read one after another,
-// a loop, function calls, and pipelines of builtins (each element a child
-// shell). Independent copies of the shell (substrate/lifo/shell) for main,
-// main's null arm, and head, each on a fresh filesystem.
+// a loop, function calls, pipelines of builtins (each element a child shell),
+// and words split and matched as patterns. Independent copies of the shell
+// (substrate/lifo/shell) for main, main's null arm, and head, each on a fresh
+// filesystem.
 import assert from 'node:assert/strict';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { createDefaultRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
@@ -25,6 +26,8 @@ const WORK = {
   loop: (n) => `i=0; while [ "$i" -lt ${n} ]; do i=$((i + 1)); true; done`,
   functions: (n) => `f() { g "$1"; }; g() { : "$1"; return 0; }; for i in $(seq 1 ${n}); do f "$i"; done`,
   pipelines: (n) => Array.from({ length: n }, () => 'true | : | true').join('\n'),
+  // Splitting, quoting and the pattern operators: fields that keep or lose their quoted characters.
+  words: (n) => `v='a b c d e f g h'; for i in $(seq 1 ${n}); do set -- $v "$v" \${u:-'q r' s} "\${v#a b}" "\${v/c*/X}" "\${v//[aeiou]/_}"; done`,
 };
 
 await runPairedBenchmark({
