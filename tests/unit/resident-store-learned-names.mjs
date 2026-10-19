@@ -8,7 +8,8 @@
  *   a barrier admitted the removal, never brings the file back; nor does a
  *   listing's;
  * - nor does either stand in for what a peer's rename put at the name, or
- *   hide a name a rename brought into the directory;
+ *   hide a name a rename brought into the directory; nor a tree listing's;
+ *   nor one asked before the namespace started again;
  * - a name the store learned under a directory a peer replaced is not
  *   served once the barrier admitted the replacement, on either engine.
  *
@@ -23,6 +24,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { residentFilesystem } from '../../packages/core/src/runtime/wasi/resident-filesystem.ts';
+import { subtreeListing } from '../../packages/core/src/runtime/fs-list-tree.ts';
 import { createResidentStore } from '../../packages/worker/src/vfs/resident/index.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { runScenarios, sleep } from './lib/resident-body.mjs';
@@ -62,6 +64,7 @@ async function session(tree) {
     fsList: (...args) => authority.list(...args),
     readdir: (path) => answered('readdir', () => authority.readdir(path)),
     readlink: (path) => authority.readlink(path),
+    fsListTree: (root, maxEntries) => answered('fsListTree', () => subtreeListing(authority, root, maxEntries)),
     stat: (path, options) => authority.stat(path, options),
     fsReadBatch: (requests) => answered('fsReadBatch', async () => {
       const out = [];
@@ -79,9 +82,12 @@ async function session(tree) {
   store.admission.setStorage(undefined, supervisor);
   assert.equal(await store.lazy.bootLazy(supervisor), true);
   const device = (await authority.stat('/')).dev;
-  const fs = residentFilesystem(authority, store.lazy.namespaceView(supervisor, device, USER));
+  const view = store.lazy.namespaceView(supervisor, device, USER);
+  const fs = residentFilesystem(authority, view);
   return {
     kernel,
+    authority,
+    view,
     fs,
     /** Park the next reply of `name`; the returned wait resolves once something asked it. */
     hold(name) {
@@ -114,18 +120,18 @@ async function renamedOnto(s, path) {
   assert.equal(new TextDecoder().decode(await s.fs.readFile(k(path))), 'new', 'its bytes');
 }
 
-/** A barrier admits a peer's `change` (by default, removing `d/f`) while `learning` (begun before it, `d` known) waits on its parked lstat batch; then it lands. */
-async function lateLearning(tree, learning, change = (kernel) => kernel.unlink(k('d/f'))) {
+/** A barrier admits a peer's `change` (by default, removing `d/f`) while `learning` (begun before it, `d` known) waits on its parked `reply` (by default, its lstat batch); then it lands. */
+async function lateLearning(tree, learning, { change = (kernel) => kernel.unlink(k('d/f')), reply = 'fsReadBatch' } = {}) {
   const s = await session(tree);
   assert.equal((await s.fs.stat(k('d'))).type, 'directory');
-  const asked = s.hold('fsReadBatch');
+  const asked = s.hold(reply);
   const first = learning(s);
   await asked();
   await change(s.kernel);
   s.fs.inbound();
   const barrier = s.fs.stat(k('other'));
   const landed = await Promise.race([barrier.then(() => true), sleep(1_000).then(() => false)]);
-  s.release('fsReadBatch');
+  s.release(reply);
   await first;
   await barrier;
   assert.ok(landed, 'the barrier landed while the learning waited on its reply');
@@ -146,17 +152,17 @@ const scenarios = {
   },
   async 'a late lookup never stands in for the file a peer renamed onto its name'() {
     const s = await lateLearning({ d: null, 'd/f': 'old', 'd/n': 'new', other: 'o' }, (s) => s.fs.stat(k('d/f')),
-      (kernel) => kernel.rename(k('d/n'), k('d/f')));
+      { change: (kernel) => kernel.rename(k('d/n'), k('d/f')) });
     await renamedOnto(s, 'd/f');
   },
   async 'a late lookup never stands in for what a peer renamed onto the directory above it'() {
     const s = await lateLearning({ d: null, 'd/f': 'old', x: null, 'x/f': 'new', other: 'o' }, (s) => s.fs.stat(k('d/f')),
-      async (kernel) => { await kernel.rename(k('d'), k('d-old')); await kernel.rename(k('x'), k('d')); });
+      { change: async (kernel) => { await kernel.rename(k('d'), k('d-old')); await kernel.rename(k('x'), k('d')); } });
     await renamedOnto(s, 'd/f');
   },
   async 'a late listing never hides a name a peer renamed into the directory'() {
     const s = await lateLearning({ d: null, 'd/f': 'f', 'd/n': 'n', other: 'o' }, (s) => s.fs.readdir(k('d')),
-      (kernel) => kernel.rename(k('d/n'), k('d/e')));
+      { change: (kernel) => kernel.rename(k('d/n'), k('d/e')) });
     const moved = (await s.kernel.stat(k('d/e'))).ino;
     const seen = synchronously(s.fs, k('d/e'));
     assert.ok(seen === 'EAGAIN' || seen?.ino === moved, `what a call that cannot wait reads of the name the rename brought: ${JSON.stringify(seen)}`);
@@ -164,6 +170,26 @@ const scenarios = {
     assert.equal((await s.fs.stat(k('d/e'))).ino, moved, 'the name the rename brought');
     assert.equal(await s.fs.stat(k('d/n')), null, 'the name the rename took away');
     assert.deepEqual((await s.fs.readdir(k('d'))).map((entry) => entry.name).sort(), ['e', 'f'], 'the directory');
+  },
+  async 'a late tree listing never brings back a file a barrier saw removed'() {
+    const s = await lateLearning({ d: null, 'd/f': 'f', 'd/g': 'g', other: 'o' }, (s) => s.view.listTree(`${ROOT}/d`), { reply: 'fsListTree' });
+    notServed(s.fs, k('d/f'), 'what a call that cannot wait reads of the removed file');
+    assert.equal(await s.fs.stat(k('d/f')), null, 'the removed file');
+    assert.deepEqual((await s.fs.readdir(k('d'))).map((entry) => entry.name).sort(), ['g'], 'the directory');
+  },
+  async 'a lookup asked before the namespace started again installs nothing'() {
+    const s = await session({ d: null, 'd/f': 'f', other: 'o' });
+    assert.equal((await s.fs.stat(k('d'))).type, 'directory');
+    const asked = s.hold('fsReadBatch');
+    const first = s.fs.stat(k('d/f'));
+    await asked();
+    await s.kernel.unlink(k('d/f'));
+    // An ACQUIRE from no cursor is a poison by construction: the namespace starts again from nothing at the authority's cursor.
+    assert.equal(await s.view.admit(await s.authority.acquire(null, 0, { namespace: true })), false);
+    s.release('fsReadBatch');
+    await first;
+    notServed(s.fs, k('d/f'), 'what a call that cannot wait reads of the removed file');
+    assert.equal(await s.fs.stat(k('d/f')), null, 'the removed file');
   },
   async 'a learned name under a directory a peer made unsearchable is refused after the barrier'() {
     const s = await session({ d: null, 'd/f': 'f', other: 'o' });
