@@ -267,7 +267,7 @@ function __wasiStartResident(sup: WasiSupervisorStub, cred: WasiCred): { store: 
   let view: ResidentNamespace | null = kept === null ? null : store.lazy.namespaceView(supervisor, kept.device, cred);
   if (view !== null && !view.ready()) view = null;
   /** The process's admission listener, given to the view once there is one (ResidentNamespace.onAdmitted). */
-  let admitted: ((key: string, entry: ResidentEntry) => void) | null = null;
+  let admitted: ((key: string, dev: number, ino: number) => void) | null = null;
   if (view === null) store.bindInMemory(WASI_RESIDENT_STORE_BYTES);
   const ready = view !== null ? Promise.resolve(view) : (async () => {
     // The session's own filesystem is the one the store answers for: its root reports its device.

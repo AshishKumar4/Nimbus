@@ -78,8 +78,8 @@ export interface Namespace {
   /** Why the namespace is not answering (meaningful only while ready() is false). */
   notReadyCause(): string;
   put(t: ResidentTables, k: string, stat: NsStat, rev: unknown, target?: string | null, unlisted?: string | null): void;
-  /** `listener` told of each row put, by its key, in the same turn (ResidentNamespace.onAdmitted): one, a later one replacing it. */
-  onPut(listener: ((k: string) => void) | null): void;
+  /** `listener` told of each row put, by its key and its file's number, in the same turn (ResidentNamespace.onAdmitted): one, a later one replacing it. */
+  onPut(listener: ((k: string, dev: number, ino: number) => void) | null): void;
   tryPut(t: ResidentTables, k: string, stat: NsStat, rev: unknown, target?: string | null, unlisted?: string | null): boolean;
   deleteTree(t: ResidentTables, k: string, self: boolean): void;
   /** Drop one row and what the table keeps of it in heap. */
@@ -172,7 +172,7 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
   /** Paths of every symlink in the table: resolution walks only past these. */
   let links = new SafeSet<string>();
   /** Told of each row put (onPut). */
-  let putListener: ((k: string) => void) | null = null;
+  let putListener: ((k: string, dev: number, ino: number) => void) | null = null;
   /**
    * Directories on a mount whose entries the listing did not name (the launch
    * did not name them, or they were past its bound), each to the mount point
@@ -247,15 +247,16 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
       const refused = admission.rowRefusal(heap.nsGrowth(parent, name, stored));
       if (refused !== null) refuse(t, refused);
     }
+    const ino = NumberOf(stat.ino) || 0;
+    const dev = NumberOf(ownValue(stat, 'dev')) || 0;
     t.nsPut(
       parent, name, kind, NumberOf(stat.size) || 0, NumberOf(stat.mode) || 0, NumberOf(stat.uid) || 0,
       NumberOf(stat.gid) || 0, NumberOf(stat.atime) || 0, NumberOf(stat.mtime) || 0, NumberOf(stat.ctime) || 0,
-      NumberOf(stat.ino) || 0, NumberOf(rev) || 0, stored,
-      NumberOf(ownValue(stat, 'dev')) || 0, NumberOf(ownValue(stat, 'nlink')) || 1,
+      ino, NumberOf(rev) || 0, stored, dev, NumberOf(ownValue(stat, 'nlink')) || 1,
     );
     if (kind === NS_LINK) links.add(k); else links.delete(k);
     if (mount !== null) unlisted.set(k, mount); else unlisted.delete(k);
-    putListener?.(k);
+    putListener?.(k, dev, ino);
   };
 
   // The authority operation may succeed while metadata cannot be cached.

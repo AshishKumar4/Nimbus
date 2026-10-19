@@ -157,7 +157,9 @@ export function createNamespace(coherence, admission) {
             if (refused !== null)
                 refuse(t, refused);
         }
-        t.nsPut(parent, name, kind, NumberOf(stat.size) || 0, NumberOf(stat.mode) || 0, NumberOf(stat.uid) || 0, NumberOf(stat.gid) || 0, NumberOf(stat.atime) || 0, NumberOf(stat.mtime) || 0, NumberOf(stat.ctime) || 0, NumberOf(stat.ino) || 0, NumberOf(rev) || 0, stored, NumberOf(ownValue(stat, 'dev')) || 0, NumberOf(ownValue(stat, 'nlink')) || 1);
+        const ino = NumberOf(stat.ino) || 0;
+        const dev = NumberOf(ownValue(stat, 'dev')) || 0;
+        t.nsPut(parent, name, kind, NumberOf(stat.size) || 0, NumberOf(stat.mode) || 0, NumberOf(stat.uid) || 0, NumberOf(stat.gid) || 0, NumberOf(stat.atime) || 0, NumberOf(stat.mtime) || 0, NumberOf(stat.ctime) || 0, ino, NumberOf(rev) || 0, stored, dev, NumberOf(ownValue(stat, 'nlink')) || 1);
         if (kind === NS_LINK)
             links.add(k);
         else
@@ -166,7 +168,7 @@ export function createNamespace(coherence, admission) {
             unlisted.set(k, mount);
         else
             unlisted.delete(k);
-        putListener?.(k);
+        putListener?.(k, dev, ino);
     };
     // The authority operation may succeed while metadata cannot be cached.
     // A heap put refused for room has sealed the sync view; keep the async result.
