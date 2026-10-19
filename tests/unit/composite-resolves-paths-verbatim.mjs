@@ -104,10 +104,11 @@ asked.length = 0;
 assert.equal(await namespace.stat('/m/missing/../f'), null);
 assert.deepEqual(asked, ['stat /missing/../f']);
 
-// A `..` past the mount's root leaves it: the namespace's /x.
+// A `..` past the mount's root leaves it: the namespace's /x. The backend is asked only
+// for its root, whose search permission the walk through /m needs (as Linux's).
 asked.length = 0;
 assert.equal(new TextDecoder().decode(await namespace.readFile('/m/../x')), 'the namespace');
-assert.deepEqual(asked, []);
+assert.deepEqual(asked, ['stat /']);
 
 // The same spellings at the namespace's own root answer the same.
 const plain = new CompositeVFS(tree);
