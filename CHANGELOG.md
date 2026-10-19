@@ -22,68 +22,7 @@ published independently in the `@nimbus-sh` npm scope.
   with "resident process released": the earlier process's release ended
   the facet its successor had just started in. A release now ends,
   drains and deletes only a facet whose name is still its own.
-- Fixed: a Node program that replaced `Array.prototype.push`, the array
-  iterator, `String.prototype.split` or `replace`, `RegExp.prototype.exec` or
-  `Set.prototype.has` can still import a module the launch did not hold, and
-  an error's stack still formats. import()'s fetch of the file, the resident
-  store it lands in, a missed module's read and the stack formatter now call
-  only what the launch captured before the program ran, as Node's loader does.
-  Before, the import failed with ERR_NIMBUS_PREFETCH_UNREADABLE or "not in this
-  launch's module map".
-- Added: `/api/_diag/session` reports the session's last facet calls under
-  `launch.facetCalls`: each call's facet, whether its worker was built for
-  it (cold) or kept warm, and how long its code took to load and the call
-  took.
-- Fixed: a syntax error in `eval`'s text, or in a file `.` runs, is that
-  command's status 2, said on its stderr, and the rest of the line runs, as in
-  bash: `eval 'if' 2>/dev/null || echo recovered` prints `recovered`. Lines
-  of the text before the error have run. In an `sh` script (bash's POSIX mode,
-  also `--posix` and `set -o posix`), a syntax error before the text ran a
-  command ends the script, as a special builtin's own failure does. Before,
-  it ended the whole line, and `2>/dev/null` did not hide its message.
-- Fixed: a `bash` script goes on after a special builtin's own failure
-  (`. ./missing`, `eval -x`), as bash does outside POSIX mode; an `sh`
-  script still ends there. Before, every script ended.
-- Fixed: dragging a workspace divider could stop following the pointer at
-  once when the preview's frame took focus as it loaded. The shell ended a
-  drag whenever its window lost focus; it now ends one only when the
-  pointer is no longer held by the divider.
-- Fixed: when the file tree could not list the session's files, filtering
-  it or opening a file (the editor's welcome page opens one) replaced the
-  failure with "Empty", as if the session had no files. The failure now
-  stays shown until the files are listed.
-- Added: the shell's `[[ word =~ regex ]]`, as in bash 5.2. The regex is a
-  POSIX extended regular expression as glibc compiles it. Its parentheses,
-  and the blanks and `|` inside them, are its own; quoted characters match
-  only themselves. A match is leftmost, then longest, and sets
-  `BASH_REMATCH`. A regex glibc refuses gives status 2. Before, `=~` was
-  "test: too many arguments".
-- Fixed: the shell reads a script a line at a time and expands aliases as it
-  reads, as bash does.
-  - A line is read whole before any of it runs. A syntax error on a later
-    line leaves the earlier lines run; one on the same line runs none of it.
-  - An alias defined on a line is expanded from the next line on.
-  - An alias's text is read in place of its word, before reserved words, so
-    `alias begin='if true; then'` works, and a comment in it takes the rest
-    of the line.
-  - A function keeps the aliases it was defined with.
-  - A here-document after `;` on its line is read.
-  - A command followed by another without `;`, `&` or a newline is a syntax
-    error, as `(echo a) (echo b)` and `x=1 (echo hi)` are in bash.
-  Before, a whole script was parsed first, an alias was expanded when its
-  command ran, and those two commands both ran.
-- Fixed: Tailwind v4 generates the utilities its stylesheets' `@source`
-  directives name outside the working tree. Tailwind's scanner reads those
-  files synchronously, and they were not held for it, so their classes were
-  silently missing. A process carrying the scanner now holds the files under
-  each such source, found from the project's stylesheets (its own, those
-  behind its links, and the sheets they `@import`), each brace alternative's
-  directory taken whole, through links, with the project's exclusions
-  (`node_modules`, VCS and cache directories). Their changes reach the
-  dev server as the working tree's do, and a source on a mounted drive is
-  listed for the process. At most 5,000 files of under 256 KiB each are
-  held this way; past that, a launch says where it stopped, and the rest
-  are learned from what the scanner misses.
+
 ## 2026-10-19: platform 0.13.0, core 0.24.0, fabric 0.19.0, worker 0.22.0, sdk 0.18.0, react 0.4.0, config 0.3.2, cli 0.2.9, loom 0.3.2, create-nimbus-app 0.2.5 (runtimes unchanged: runtime-bash 5.2.37-7, runtime-cpython 3.13.14-3, runtime-git 2.53.0-1)
 
 - Fixed: the shell's patterns, trims, substitutions, `${#x}` and IFS count
