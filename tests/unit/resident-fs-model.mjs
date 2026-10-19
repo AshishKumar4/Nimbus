@@ -588,6 +588,13 @@ const metKnown = [];
  * only where no name led to it, so a read that could not wait was EAGAIN.
  */
 const FOUND = [
+  // A file renamed, without a grant, over a name a peer wrote: a read of the new name that cannot wait reads the file moved there, never the peer's bytes.
+  { name: 'renamed over a peer\'s file, read now', grants: false, steps: [
+    { op: 'peer', kind: 'write', name: 'b', to: 'c', data: 'pp', mode: 292 },
+    { op: 'writeFile', name: 'a', data: 'rp' },
+    { op: 'catchUp' },
+    { op: 'rename', from: 'a', to: 'b' },
+  ] },
   // A file opened before its subtree is taken, its times then set by name under the grant: the provisional decisions' (the name is theirs), not the session's.
   { name: 'times by name of a file the provisional decisions hold, under a grant', grants: true, steps: [
     { op: 'open', fd: 0, name: 'a', flags: { read: true, write: true, append: false, create: true, exclusive: false, truncate: true } },

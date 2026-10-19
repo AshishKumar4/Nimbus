@@ -265,7 +265,7 @@ export interface Provisional {
   unhold(inode: Inode, entry: ResidentEntry): void;
   /** What was decided under `root` is answered (its grant given back): its files are the session's after the next barrier. */
   answeredHeld(root: string): void;
-  /** Whether file (dev, ino)'s content and size are this process's here (a cell, or its fold), not the view's. */
+  /** Whether file (dev, ino)'s content and size are this process's here (a cell, its fold, or a name the view does not have it at yet), not what the view has at its name. */
   pending(dev: number, ino: number): boolean;
   /** The session descriptor of `handleId`'s own description, else its file's anchor. With `read`, only a description opened for reading. */
   sessionOf(handleId: number, access?: 'read'): number | undefined;
@@ -1295,7 +1295,7 @@ export function provisional(host: ProvisionalHost): Provisional {
 
     pending: (dev, ino) => {
       const inode = inodeAtNumber(dev, ino);
-      return inode !== undefined && (inode.cell !== undefined || inode.state !== null);
+      return inode !== undefined && (inode.cell !== undefined || inode.state !== null || inode.key !== inode.origin);
     },
 
     sessionOf: (handleId, access) => {
@@ -1650,10 +1650,14 @@ export function provisional(host: ProvisionalHost): Provisional {
     },
 
     content: (entry) => {
-      if (touched.size === 0) return undefined;
+      if (table.size === 0) return undefined;
       const inode = inodeAtNumber(entry.dev, entry.ino);
-      if (inode === undefined || inode.state === null || inode.state.bytes === null) return undefined;
-      return owned(inode.state.bytes, inode.state.size);
+      if (inode === undefined) return undefined;
+      if (inode.state !== null) return inode.state.bytes === null ? undefined : owned(inode.state.bytes, inode.state.size);
+      // Moved here by a rename the view does not have yet: its bytes are the view's at the name it has it at, not this name's.
+      if (inode.key === inode.origin) return undefined;
+      const seen = viewed(inode);
+      return seen?.bytes === undefined ? undefined : owned(seen.bytes, seen.row.size);
     },
 
     barrierBegun: () => ++barriers,
