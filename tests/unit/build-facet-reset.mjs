@@ -151,6 +151,37 @@ try {
     check('a pre-bundle not begun when another session outgrew the binding runs on the next generation', results.every((r, i) => r.ok === true && r.esmCode.includes(`moved-${i}`)), JSON.stringify(results).slice(0, 400));
     check('and is no reset: nothing is retried or logged', lines.length === 0, JSON.stringify(lines));
   }
+  // The isolate moves again while the waiting pre-bundle warms the generation it moved to.
+  {
+    const outgrowing = durableObject(null, async () => {
+      const { BuildFacet: Fresh } = await freshFacetClass();
+      return class extends Fresh {
+        async prebundle(s) { return { ...(await super.prebundle(s)), retire: true }; }
+      };
+    });
+    let warms = 0;
+    let moveOnWarm = false;
+    const other = durableObject(null, async () => {
+      const { BuildFacet: Fresh } = await freshFacetClass();
+      return class extends Fresh {
+        async warm() {
+          await super.warm();
+          warms++;
+          if (!moveOnWarm) return;
+          moveOnWarm = false;
+          await prebundle(outgrowing.ctx, outgrowing.env, spec('outgrown-while-warming'));
+        }
+      };
+    });
+    const pool = await new PrebundlePool(other.env, other.ctx).acquire();
+    const { value, lines } = await warnings(async () => {
+      await prebundle(outgrowing.ctx, outgrowing.env, spec('outgrown-first'));
+      moveOnWarm = true;
+      return pool.prebundle({ specifier: 'pkg', bytes: prebundleSliceBytes(spec('moved-twice').slice), prepare: () => structuredClone(spec('moved-twice')) });
+    });
+    check('a pre-bundle whose isolate moves twice before it begins, once as it warms, runs on the last generation', value.value?.ok === true && value.value.esmCode.includes('moved-twice'), String(value.error?.message ?? JSON.stringify(value.value)).slice(0, 300));
+    check('having warmed each generation it moved to, and logged nothing', warms === 3 && lines.length === 0, `${warms} warms; ${JSON.stringify(lines)}`);
+  }
 
   // ── The dev server, its pool reset twice ───────────────────────────────
   const root = 'home/user/app';
