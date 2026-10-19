@@ -6,9 +6,7 @@ import { remotePairedCpu } from './lib/paired-cpu.mjs';
 await remotePairedCpu({
   name: 'remote-module-syntax-cpu',
   receipts: 'remote-module-syntax-cpu',
-  source: 'packages/core/src',
-  baselineDir: 'packages/core/.ci-syntax-baseline',
-  files: ['runtime/javascript-ast.ts'],
+  baselineDir: '.ci-syntax-baseline',
   engine: 'node',
   // Its arms are bundled on their own (esbuild): bun runs it too, for context.
   engines: ['node', 'bun'],

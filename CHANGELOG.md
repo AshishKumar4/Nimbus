@@ -26,12 +26,27 @@ published independently in the `@nimbus-sh` npm scope.
   ended clean and never reached JavaScript (`require "js"`); a session keeps
   at most two idle. On paired Previews a `ruby -e` launch took 0.38× the
   time (medians 471–493 ms against 1000–1731 ms) and a gem require 0.32×.
+- CI: a paired CPU bench's arms each run their side's whole tree, every
+  module resolved inside it, and a bench fails if an arm resolves one outside.
+  Before, only a hand-kept list of modules was the baseline's, and the rest
+  were the head's for both arms.
 - Fixed: a WASI program (python, ruby, clang, bash) could see a file
   another process had deleted. A lookup or listing it asked before the
   delete, answered after it, put the name back. A name under a directory
   another process replaced was also still served. Now a lookup or listing
   that a later change overtook adds nothing, and a replaced directory's
   names are looked up again.
+- Changed (Kinu ask 58): a mount that resolves its own paths
+  (`MountOptions.resolvesPaths`) is handed the rest of a path as written,
+  with its `.`, `..`, empty components and trailing slash, for its backend
+  to walk as a kernel does. `/m/missing/../f` is now ENOENT, `/m/f/` is
+  ENOTDIR, and `/m/link/../f` reaches the file beside where the link leads.
+  The namespace keeps the names it owns: the mount point, a nested mount
+  point or a directory above one met on the way, and a `..` past the mount's
+  root. This applies to every operation, on both faces, and to a process's
+  walks. `route().path`, a pin's and a held file's name, and realpath are
+  that spelling when it has a `..`. Before, the namespace collapsed the path
+  lexically first, so the backend read `/f` for each of those.
 - Fixed: a WASI program (python, ruby, clang, bash) could see a stale name
   after another process changed it. A lookup or listing asked before the
   change and answered after it could put back a deleted file, keep the old

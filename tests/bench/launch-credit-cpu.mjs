@@ -2,20 +2,12 @@
 // Paired launch preparation and admission, in one process with an A/A null arm.
 // Only Worker execution is stood in for: maps, filesystem walks, supervisor
 // credit, process lifecycle, and Dynamic Worker admissions use the real flow.
+// Each arm is its side's whole tree (isolated-core.mjs): its facet manager,
+// and every module and test harness it is driven with.
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync, rmSync } from 'node:fs';
-import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
-import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
-import { beginLoaderFetch, DO_DYNAMIC_WORKER_LIMIT } from '../../packages/fabric/src/budgets.ts';
-import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
-import { readSupervisorAllocationBudget } from '../../packages/platform/src/heavy-alloc-coord.ts';
-import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
-import { createFacetCtx, createFacetWorld } from '../unit/lib/facet-host-harness.mjs';
-import { launchSession } from '../unit/lib/facet-launch-harness.mjs';
-import { processFiles } from '../unit/lib/process-bridge.mjs';
-import { stagedAssets } from '../unit/lib/staged-assets.mjs';
+import { writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { armImports, armTree, assertArmsInside, repository } from './lib/isolated-core.mjs';
 import { cpuMs, pairedKind, shuffled } from './lib/paired-cpu.mjs';
 
 const option = (name) => {
@@ -25,13 +17,11 @@ const option = (name) => {
 };
 const baseline = resolve(option('--baseline'));
 const output = option('--out');
-const source = new URL('../../packages/worker/src/', import.meta.url).pathname;
-const fixtures = [];
+const disposals = [];
 const ITERATIONS = 32;
 const PAIRS = 24;
 const results = [];
 let serial = 0;
-adoptCtxExports({ SupervisorRPC: ({ props }) => ({ props }) });
 const loader = {
   load(config) {
     assert.ok(config.modules[config.mainModule], 'the generated map reaches the loader');
@@ -47,33 +37,34 @@ const until = async (ready) => {
   }
 };
 try {
+  /** An arm: its side's tree (`from`), every module this bench drives a launch with taken from it. */
   const load = async (from) => {
-    const fixture = mkdtempSync(join(source, '.launch-cpu-'));
-    fixtures.push(fixture);
-    for (const entry of readdirSync(source)) {
-      if (entry.startsWith('.launch-cpu-')) continue;
-      if (entry !== 'facets') { symlinkSync(join(source, entry), join(fixture, entry)); continue; }
-      mkdirSync(join(fixture, entry));
-      for (const file of readdirSync(join(source, entry))) {
-        const target = join(fixture, entry, file);
-        if (file === 'manager.ts') writeFileSync(target, readFileSync(join(from, entry, file)));
-        else symlinkSync(join(source, entry, file), target);
-      }
-    }
-    return (await import(pathToFileURL(join(fixture, 'facets/manager.ts')).href)).FacetManager;
+    const tree = armTree(from, (dispose) => disposals.push(dispose));
+    const [manager, supervisor, ports, budgets, composition, credit, host, facets, launches, bridge, assets] = await armImports(tree, [
+      'packages/worker/src/facets/manager.ts', 'packages/core/src/runtime/session-process-supervisor.ts', 'packages/core/src/runtime/port-registry.ts',
+      'packages/fabric/src/budgets.ts', 'packages/fabric/src/composition.ts', 'packages/platform/src/heavy-alloc-coord.ts',
+      'packages/worker/src/loaders/process-host.ts', 'tests/unit/lib/facet-host-harness.mjs', 'tests/unit/lib/facet-launch-harness.mjs',
+      'tests/unit/lib/process-bridge.mjs', 'tests/unit/lib/staged-assets.mjs',
+    ]);
+    composition.adoptCtxExports({ SupervisorRPC: ({ props }) => ({ props }) });
+    return {
+      Manager: manager.FacetManager, supervisor, ports, budgets, credit, host, facets, launches, bridge, assets,
+    };
   };
-  const makeSession = (Manager) => {
-    const { vfs } = launchSession();
-    const ctx = createFacetCtx(createFacetWorld(() => ({})), `launch-cpu-${serial++}`);
-    const manager = new Manager(ctx, { LOADER: loader, ASSETS: stagedAssets }, new SessionProcessSupervisor(), new PortRegistry(), processHostFor, {});
-    manager.setVfs(vfs, processFiles(vfs));
+  const makeSession = (arm) => {
+    const { vfs } = arm.launches.launchSession();
+    const ctx = arm.facets.createFacetCtx(arm.facets.createFacetWorld(() => ({})), `launch-cpu-${serial++}`);
+    const manager = new arm.Manager(ctx, { LOADER: loader, ASSETS: arm.assets.stagedAssets }, new arm.supervisor.SessionProcessSupervisor(),
+      new arm.ports.PortRegistry(), arm.host.processHostFor, {});
+    manager.setVfs(vfs, arm.bridge.processFiles(vfs));
     return { ctx, manager };
   };
   const arms = {};
   for (const name of shuffled(['A', 'null', 'real'])) {
-    const Manager = await load(name === 'real' ? source : baseline);
-    arms[name] = { Manager, single: makeSession(Manager) };
+    const loaded = await load(name === 'real' ? repository : baseline);
+    arms[name] = { ...loaded, single: makeSession(loaded) };
   }
+  assertArmsInside();
   const launch = async (manager, code = '2 + 2') => {
     const result = await manager.exec(code, { cwd: '/home/user', captureOutput: true });
     assert.equal(result.exitCode, 0, result.stderr);
@@ -82,9 +73,9 @@ try {
     for (let i = 0; i < ITERATIONS; i++) await launch(arm.single.manager);
   };
   const contended = async (arm) => {
-    const sessions = Array.from({ length: 16 }, () => makeSession(arm.Manager));
+    const sessions = Array.from({ length: 16 }, () => makeSession(arm));
     const holds = sessions.slice(0, 15).flatMap(({ ctx }) =>
-      Array.from({ length: DO_DYNAMIC_WORKER_LIMIT }, (_, i) => beginLoaderFetch(ctx, `busy-${i}`)));
+      Array.from({ length: arm.budgets.DO_DYNAMIC_WORKER_LIMIT }, (_, i) => arm.budgets.beginLoaderFetch(ctx, `busy-${i}`)));
     const parked = [launch(sessions[0].manager)];
     let timer;
     try {
@@ -116,9 +107,12 @@ try {
     writeFileSync(output, `${JSON.stringify(results, null, 2)}\n`);
     const { samples, ...summary } = result;
     console.log(JSON.stringify(summary));
-    assert.equal(readSupervisorAllocationBudget().current, 0, 'each sample releases all launch credit');
-    assert.equal(readSupervisorAllocationBudget().queued, 0, 'each sample drains all builds');
+    for (const arm of Object.values(arms)) {
+      assert.equal(arm.credit.readSupervisorAllocationBudget().current, 0, 'each sample releases all launch credit');
+      assert.equal(arm.credit.readSupervisorAllocationBudget().queued, 0, 'each sample drains all builds');
+    }
   }
+  assertArmsInside();
 } finally {
-  for (const fixture of fixtures) rmSync(fixture, { recursive: true, force: true });
+  for (const dispose of disposals) dispose();
 }

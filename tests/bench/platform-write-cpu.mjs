@@ -1,19 +1,20 @@
 #!/usr/bin/env node
 // Platform write and UTF-8 workloads under V8, as workerd runs them.
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { build } from 'esbuild';
 import { cpuMs } from './lib/paired-cpu.mjs';
 import { PLATFORM_CPU_SOURCES } from './lib/cpu-sources.mjs';
+import { armTree, importBundle } from './lib/isolated-core.mjs';
 import { runPairedBenchmark } from './lib/paired-runner.mjs';
 
 let checksum = 0;
 
-/** Bundle each arm on its own. The baseline site encoded its UTF-8 count. */
-async function arm(name, dir, encodes, scratch) {
+/** Each arm bundled on its own, from its side's tree (`from`). The baseline site encoded its UTF-8 count. */
+async function arm(name, from, encodes, scratch, cleanup) {
+  const tree = armTree(from, cleanup);
+  const dir = join(tree, PLATFORM_CPU_SOURCES.source);
   const at = (file) => JSON.stringify(join(dir, file));
   const contents = [
     `export { WaveWriter } from ${at('wave-writer.ts')};`,
@@ -22,10 +23,7 @@ async function arm(name, dir, encodes, scratch) {
       ? 'const encoder = new TextEncoder();\nexport const siteLength = (text) => encoder.encode(text).byteLength;'
       : `export { utf8Length as siteLength } from ${at('utf8.ts')};`,
   ].join('\n');
-  const bundled = await build({ stdin: { contents, resolveDir: dir, loader: 'js' }, bundle: true, write: false, format: 'esm', platform: 'neutral', target: 'esnext' });
-  const file = join(scratch, `${name}.mjs`);
-  writeFileSync(file, bundled.outputFiles[0].text);
-  return import(pathToFileURL(file).href);
+  return importBundle(tree, { stdin: { contents, resolveDir: dir, loader: 'js' }, format: 'esm', platform: 'neutral', target: 'esnext' }, join(scratch, `${name}.mjs`));
 }
 
 const supervisor = {
@@ -74,12 +72,11 @@ function workloads(short) {
 }
 
 await runPairedBenchmark({
-  source: PLATFORM_CPU_SOURCES.source,
   async run({ short, cleanup, withArms, sample }) {
     const scratch = mkdtempSync(join(tmpdir(), 'platform-cpu-'));
     cleanup(() => rmSync(scratch, { recursive: true, force: true }));
     const work = workloads(short);
-    await withArms((from, name) => arm(name, from, name !== 'real', scratch), async (arms) => {
+    await withArms((from, name) => arm(name, from, name !== 'real', scratch, cleanup), async (arms) => {
       for (const kind of Object.keys(work)) {
         await sample(kind, arms, (exports) => cpuMs(() => work[kind](exports)), { pairs: 30, warm: 8, iterations: 1 });
       }

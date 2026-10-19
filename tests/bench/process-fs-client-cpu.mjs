@@ -2,13 +2,13 @@
 // The client's submit and delivery CPU, with an independent module graph per arm.
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
-import { decodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { HOLDER_CPU_SOURCES } from './lib/cpu-sources.mjs';
 import { loadIsolatedCore } from './lib/isolated-core.mjs';
 import { runPairedBenchmark } from './lib/paired-runner.mjs';
 
 const TEN = new TextEncoder().encode('0123456789');
 const MODULE = '_shared/process-fs-client.ts';
+const FRAMES = 'packages/platform/src/w7-frame.ts';
 let checksum = 0;
 
 function storage() {
@@ -26,7 +26,8 @@ function storage() {
   };
 }
 
-async function work(module, mode, writes, files, metric) {
+/** The arm's client (`module`) writing, the arm's own frame decoder standing in for the supervisor. */
+async function work(module, { decodeWriteBatchStream }, mode, writes, files, metric) {
   const durable = mode === 'sql' ? storage() : null;
   const journal = durable ? module.sqlJournal(durable.sql) : module.memoryJournal();
   const received = Array.from({ length: files }, () => new Uint8Array(writes / files * TEN.byteLength));
@@ -81,14 +82,13 @@ async function work(module, mode, writes, files, metric) {
 }
 
 await runPairedBenchmark({
-  source: HOLDER_CPU_SOURCES.source,
   async run({ short, cleanup, withArms, sample }) {
     await withArms((from) => loadIsolatedCore(from, cleanup, {
-      sources: HOLDER_CPU_SOURCES, modules: [MODULE],
+      sources: HOLDER_CPU_SOURCES, modules: [MODULE], helpers: [FRAMES],
     }), async (arms) => {
       for (const mode of ['heap', 'sql']) for (const writes of [5_000, 20_000]) for (const files of [1, 2]) for (const metric of ['submit', 'total']) {
         const kind = `${mode}-${writes}-${files}file-${metric}`;
-        await sample(kind, arms, (modules) => work(modules[MODULE], mode, short ? 500 : writes, files, metric), {
+        await sample(kind, arms, (modules) => work(modules[MODULE], modules[FRAMES], mode, short ? 500 : writes, files, metric), {
           pairs: 12, warm: 4, iterations: 1,
         });
       }
