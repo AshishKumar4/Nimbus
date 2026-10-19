@@ -4,8 +4,8 @@
  * manager charges a launch's module map the same before it admits the launch
  * (manager.ts moduleMapStorageBytes).
  */
-import { utf8Length } from '@nimbus-sh/platform/utf8.js';
-export { utf8Length };
+/** The platform's UTF-8 measure, on the launch's captures after a program starts. */
+export declare function utf8Length(text: string): number;
 /** A row's allowance: what one row of 'file', 'chunk' or 'ns' is charged beside its payload. */
 export declare const RESIDENT_ROW_BYTES = 256;
 /** A cell as the facet holds it — the shape `__vfsBundle` has always carried. */

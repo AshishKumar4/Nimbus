@@ -16083,6 +16083,30 @@ var typedArrayByteLength = (() => {
   if (getter === void 0) throw new TypeErrorConstructor("TypedArray.prototype.byteLength is not an accessor");
   return uncurryThis(getter);
 })();
+var ArrayBufferConstructor = ArrayBuffer;
+var stringCodePointAt = uncurryThis(String.prototype.codePointAt);
+var typedArraySet = uncurryThis(Uint8Array.prototype.set);
+var textEncoderEncodeInto = uncurryThis(TextEncoder.prototype.encodeInto);
+var typedArrayBuffer = (() => {
+  const prototype = reflectGetPrototypeOf(Uint8Array.prototype);
+  const getter = reflectGetOwnPropertyDescriptor(prototype ?? {}, "buffer")?.get;
+  if (getter === void 0) throw new TypeErrorConstructor("TypedArray.prototype.buffer is not an accessor");
+  return uncurryThis(getter);
+})();
+var typedArrayByteOffset = (() => {
+  const prototype = reflectGetPrototypeOf(Uint8Array.prototype);
+  const getter = reflectGetOwnPropertyDescriptor(prototype ?? {}, "byteOffset")?.get;
+  if (getter === void 0) throw new TypeErrorConstructor("TypedArray.prototype.byteOffset is not an accessor");
+  return uncurryThis(getter);
+})();
+var arrayBufferByteLength = (() => {
+  const getter = reflectGetOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength")?.get;
+  if (getter === void 0) throw new TypeErrorConstructor("ArrayBuffer.prototype.byteLength is not an accessor");
+  const length = uncurryThis(getter);
+  const sharedGetter = typeof SharedArrayBuffer === "function" ? reflectGetOwnPropertyDescriptor(SharedArrayBuffer.prototype, "byteLength")?.get : void 0;
+  const sharedLength = sharedGetter === void 0 ? void 0 : uncurryThis(sharedGetter);
+  return (buffer) => buffer instanceof ArrayBufferConstructor || sharedLength === void 0 ? length(buffer) : sharedLength(buffer);
+})();
 
 // ../core/src/_shared/node-error.ts
 var nodeErrorClasses = new SafeMap();

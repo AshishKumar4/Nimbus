@@ -5,17 +5,49 @@
  * (manager.ts moduleMapStorageBytes).
  */
 import { LEDGER_ROW_BYTES } from '@nimbus-sh/core/runtime/storage-ledger.js';
-import { utf8Length } from '@nimbus-sh/platform/utf8.js';
+import { ArrayBufferConstructor, mathCeil, mathFloor, mathMax, reflectGet, stringCharCodeAt, stringOf, stringSlice, TextEncoderConstructor, textEncoderEncodeInto, typedArrayByteLength, Uint8ArrayConstructor, } from '@nimbus-sh/core/_shared/primordials.js';
 import { RESIDENT_CHUNK_BYTES } from '../facet-resident-limits.js';
-export { utf8Length };
+const encoder = new TextEncoderConstructor();
+let scratch;
+/** The platform's UTF-8 measure, on the launch's captures after a program starts. */
+export function utf8Length(text) {
+    if (text.length >= 256) {
+        scratch ??= new Uint8ArrayConstructor(256 * 1024);
+        let bytes = 0;
+        for (let read = 0; read < text.length;) {
+            const done = textEncoderEncodeInto(encoder, read === 0 ? text : stringSlice(text, read), scratch);
+            // encodeInto returns these as own data properties, not library accessors.
+            read += reflectGet(done, 'read');
+            bytes += reflectGet(done, 'written');
+        }
+        return bytes;
+    }
+    let bytes = text.length;
+    for (let index = 0; index < text.length; index++) {
+        const unit = stringCharCodeAt(text, index);
+        if (unit < 0x80)
+            continue;
+        if (unit < 0x800)
+            bytes++;
+        else if (unit >= 0xd800 && unit <= 0xdbff && index + 1 < text.length) {
+            const next = stringCharCodeAt(text, index + 1);
+            bytes += 2;
+            if (next >= 0xdc00 && next <= 0xdfff)
+                index++;
+        }
+        else
+            bytes += 2;
+    }
+    return bytes;
+}
 /** A row's allowance: what one row of 'file', 'chunk' or 'ns' is charged beside its payload. */
 export const RESIDENT_ROW_BYTES = LEDGER_ROW_BYTES;
 export function residentBytes(value) {
-    if (value instanceof Uint8Array)
+    if (value instanceof Uint8ArrayConstructor)
         return value;
-    if (value instanceof ArrayBuffer)
-        return new Uint8Array(value);
-    return new Uint8Array(0);
+    if (value instanceof ArrayBufferConstructor)
+        return new Uint8ArrayConstructor(value);
+    return new Uint8ArrayConstructor(0);
 }
 /**
  * What holding a cell costs the database: its bytes (a text cell's UTF-8
@@ -24,10 +56,10 @@ export function residentBytes(value) {
  */
 export function residentCellCost(cell) {
     const isText = typeof cell === 'string';
-    const size = isText ? cell.length : residentBytes(cell).byteLength;
-    const limit = isText ? Math.floor(RESIDENT_CHUNK_BYTES / 3) : RESIDENT_CHUNK_BYTES;
-    const chunks = Math.max(1, Math.ceil(size / limit));
-    return Math.ceil((isText ? utf8Length(cell) : size) * 1.01) + (chunks + 1) * RESIDENT_ROW_BYTES + 4096;
+    const size = isText ? cell.length : typedArrayByteLength(residentBytes(cell));
+    const limit = isText ? mathFloor(RESIDENT_CHUNK_BYTES / 3) : RESIDENT_CHUNK_BYTES;
+    const chunks = mathMax(1, mathCeil(size / limit));
+    return mathCeil((isText ? utf8Length(cell) : size) * 1.01) + (chunks + 1) * RESIDENT_ROW_BYTES + 4096;
 }
 /**
  * At most what holding a file of `size` bytes costs, read as bytes or as
@@ -35,8 +67,8 @@ export function residentCellCost(cell) {
  * bytes have not arrived yet asks room for.
  */
 export function residentFileCost(size) {
-    const chunks = Math.max(1, Math.ceil(size / Math.floor(RESIDENT_CHUNK_BYTES / 3)));
-    return Math.ceil(size * 1.01) + (chunks + 1) * RESIDENT_ROW_BYTES + 4096;
+    const chunks = mathMax(1, mathCeil(size / mathFloor(RESIDENT_CHUNK_BYTES / 3)));
+    return mathCeil(size * 1.01) + (chunks + 1) * RESIDENT_ROW_BYTES + 4096;
 }
 /**
  * What a namespace row costs a one-shot's heap. JavaScript keeps path/target
@@ -44,5 +76,5 @@ export function residentFileCost(size) {
  * when the engine can compress text.
  */
 export function namespaceRowBytes(parent, name, target) {
-    return RESIDENT_ROW_BYTES + 2 * (String(parent).length + String(name).length + (target == null ? 0 : String(target).length));
+    return RESIDENT_ROW_BYTES + 2 * (stringOf(parent).length + stringOf(name).length + (target == null ? 0 : stringOf(target).length));
 }

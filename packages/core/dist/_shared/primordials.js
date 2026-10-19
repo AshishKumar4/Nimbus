@@ -318,3 +318,36 @@ export const typedArrayByteLength = (() => {
         throw new TypeErrorConstructor('TypedArray.prototype.byteLength is not an accessor');
     return uncurryThis(getter);
 })();
+const ProxyConstructor = Proxy;
+export { ProxyConstructor as Proxy };
+export const Uint8ArrayConstructor = Uint8Array;
+export const ArrayBufferConstructor = ArrayBuffer;
+export const TextEncoderConstructor = TextEncoder;
+export const mathFloor = Math.floor;
+export const stringCodePointAt = uncurryThis(String.prototype.codePointAt);
+export const typedArraySet = uncurryThis(Uint8Array.prototype.set);
+export const textEncoderEncodeInto = uncurryThis(TextEncoder.prototype.encodeInto);
+export const typedArrayBuffer = (() => {
+    const prototype = reflectGetPrototypeOf(Uint8Array.prototype);
+    const getter = reflectGetOwnPropertyDescriptor(prototype ?? {}, 'buffer')?.get;
+    if (getter === undefined)
+        throw new TypeErrorConstructor('TypedArray.prototype.buffer is not an accessor');
+    return uncurryThis(getter);
+})();
+export const typedArrayByteOffset = (() => {
+    const prototype = reflectGetPrototypeOf(Uint8Array.prototype);
+    const getter = reflectGetOwnPropertyDescriptor(prototype ?? {}, 'byteOffset')?.get;
+    if (getter === undefined)
+        throw new TypeErrorConstructor('TypedArray.prototype.byteOffset is not an accessor');
+    return uncurryThis(getter);
+})();
+/** A backing buffer's length, whether ordinary or shared, through its own captured accessor. */
+export const arrayBufferByteLength = (() => {
+    const getter = reflectGetOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength')?.get;
+    if (getter === undefined)
+        throw new TypeErrorConstructor('ArrayBuffer.prototype.byteLength is not an accessor');
+    const length = uncurryThis(getter);
+    const sharedGetter = typeof SharedArrayBuffer === 'function' ? reflectGetOwnPropertyDescriptor(SharedArrayBuffer.prototype, 'byteLength')?.get : undefined;
+    const sharedLength = sharedGetter === undefined ? undefined : uncurryThis(sharedGetter);
+    return (buffer) => buffer instanceof ArrayBufferConstructor || sharedLength === undefined ? length(buffer) : sharedLength(buffer);
+})();

@@ -54,44 +54,8 @@ var __nimbusResidentModule = (() => {
   // ../core/dist/runtime/storage-ledger.js
   var LEDGER_ROW_BYTES = 256;
 
-  // ../platform/dist/utf8.js
-  var LONG_UNITS = 256;
-  var encoder = new TextEncoder();
-  var scratch;
-  function utf8Length(text) {
-    if (text.length >= LONG_UNITS)
-      return longUtf8Length(text);
-    let bytes = text.length;
-    for (let index = 0; index < text.length; index++) {
-      const unit = text.charCodeAt(index);
-      if (unit < 128)
-        continue;
-      if (unit < 2048) {
-        bytes += 1;
-      } else if (unit >= 55296 && unit <= 56319 && index + 1 < text.length) {
-        const next = text.charCodeAt(index + 1);
-        if (next >= 56320 && next <= 57343) {
-          bytes += 2;
-          index++;
-        } else {
-          bytes += 2;
-        }
-      } else {
-        bytes += 2;
-      }
-    }
-    return bytes;
-  }
-  function longUtf8Length(text) {
-    scratch ??= new Uint8Array(256 * 1024);
-    let bytes = 0;
-    for (let read = 0; read < text.length; ) {
-      const done = encoder.encodeInto(read === 0 ? text : text.slice(read), scratch);
-      read += done.read;
-      bytes += done.written;
-    }
-    return bytes;
-  }
+  // nimbus-launch-captures:launch-captures
+  var { ArrayBufferConstructor, ArrayConstructor, ArrayFrom, ArrayIteratorNext, ArrayIteratorPrototype, ArrayPrototypeIndexOf, ArrayPrototypeLastIndexOf, ArrayPrototypePop, ArrayPrototypeToSpliced, ArrayPrototypeWith, ArrayValues, BigInt, BigIntPrototypeToString, Error: Error2, FunctionPrototypeBind, GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, JSONParse, JSONStringify, MapConstructor, NumberOf, NumberPrototypeToString, ObjectOf, ObjectPrototype, ObjectPrototypeHasOwnProperty, ObjectPrototypePropertyIsEnumerable, ObjectPrototypePropertyIsEnumerableOf, ObjectPrototypeToString, PromiseConstructor, PromisePrototypeThen, PromiseReject, PromiseResolve, Proxy: Proxy2, RangeError, ReferenceError: ReferenceError2, RegExp, RegExpPrototypeAccessors, RegExpPrototypeExec, SafeAsyncGeneratorPrototype, SafeGeneratorPrototype, SafeList, SafeMap, SafeRegExpPrototype, SafeSet, SafeWeakMap, SafeWeakSet, StringFromCharCode, StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeIndexOf, StringPrototypeLastIndexOf, StringPrototypeSlice, StringPrototypeSubstr, SymbolConstructor, SymbolPrototypeDescription, SymbolPrototypeToString, SyntaxError, TextEncoderConstructor, TypeError: TypeError2, URIError, URL, Uint8ArrayConstructor, arrayBufferByteLength, arrayCopy, arrayIncludes, arrayIndexOf, arrayIsArray, arrayJoin, arrayPush, arraySort, arraySplice, captureStackTraceOf, dataDescriptor, dateNow, decodeURIComponentOf, encodeURIComponentOf, generatorNext, generatorThrow, globalObject, mapGet, mathAbs, mathCeil, mathFloor, mathMax, mathMin, newURL, numberIsInteger, numberIsSafeInteger, objectAssign, objectCreate, objectDefineProperties, objectDefineProperty, objectFreeze, objectGetOwnPropertyNames, objectHasOwn, objectIs, objectIsExtensible, objectKeys, objectPreventExtensions, ownField, parseFloatOf, parseIntOf, promiseAll, promiseSettled, reflectApply, reflectConstruct, reflectDefineProperty, reflectDeleteProperty, reflectGet, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectHas, reflectOwnKeys, reflectSet, reflectSetPrototypeOf, regExpExec, safeGenerator, setForEach, stringCharCodeAt, stringCodePointAt, stringEndsWith, stringIncludes, stringIndexOf, stringLastIndexOf, stringOf, stringSlice, stringStartsWith, stringToLowerCase, symbolAsyncIterator, symbolFor, symbolIterator, symbolToStringTag, symbolUnscopables, textEncoderEncodeInto, typedArrayBuffer, typedArrayByteLength, typedArrayByteOffset, typedArraySet, useCaptureStackTrace } = __nimbusLaunchCaptures;
 
   // ../core/dist/constants.js
   var NODE_RELEASE = "22.22.3";
@@ -124,29 +88,52 @@ var __nimbusResidentModule = (() => {
   var ONE_SHOT_STORE_MEMORY_BYTES = VFS_BUNDLE_MAX_BYTES + 16 * 1024 * 1024;
 
   // src/vfs/resident/cell-cost.ts
+  var encoder = new TextEncoderConstructor();
+  var scratch;
+  function utf8Length(text) {
+    if (text.length >= 256) {
+      scratch ??= new Uint8ArrayConstructor(256 * 1024);
+      let bytes2 = 0;
+      for (let read = 0; read < text.length; ) {
+        const done = textEncoderEncodeInto(encoder, read === 0 ? text : stringSlice(text, read), scratch);
+        read += reflectGet(done, "read");
+        bytes2 += reflectGet(done, "written");
+      }
+      return bytes2;
+    }
+    let bytes = text.length;
+    for (let index = 0; index < text.length; index++) {
+      const unit = stringCharCodeAt(text, index);
+      if (unit < 128) continue;
+      if (unit < 2048) bytes++;
+      else if (unit >= 55296 && unit <= 56319 && index + 1 < text.length) {
+        const next = stringCharCodeAt(text, index + 1);
+        bytes += 2;
+        if (next >= 56320 && next <= 57343) index++;
+      } else bytes += 2;
+    }
+    return bytes;
+  }
   var RESIDENT_ROW_BYTES = LEDGER_ROW_BYTES;
   function residentBytes(value) {
-    if (value instanceof Uint8Array) return value;
-    if (value instanceof ArrayBuffer) return new Uint8Array(value);
-    return new Uint8Array(0);
+    if (value instanceof Uint8ArrayConstructor) return value;
+    if (value instanceof ArrayBufferConstructor) return new Uint8ArrayConstructor(value);
+    return new Uint8ArrayConstructor(0);
   }
   function residentCellCost(cell) {
     const isText = typeof cell === "string";
-    const size = isText ? cell.length : residentBytes(cell).byteLength;
-    const limit = isText ? Math.floor(RESIDENT_CHUNK_BYTES / 3) : RESIDENT_CHUNK_BYTES;
-    const chunks = Math.max(1, Math.ceil(size / limit));
-    return Math.ceil((isText ? utf8Length(cell) : size) * 1.01) + (chunks + 1) * RESIDENT_ROW_BYTES + 4096;
+    const size = isText ? cell.length : typedArrayByteLength(residentBytes(cell));
+    const limit = isText ? mathFloor(RESIDENT_CHUNK_BYTES / 3) : RESIDENT_CHUNK_BYTES;
+    const chunks = mathMax(1, mathCeil(size / limit));
+    return mathCeil((isText ? utf8Length(cell) : size) * 1.01) + (chunks + 1) * RESIDENT_ROW_BYTES + 4096;
   }
   function residentFileCost(size) {
-    const chunks = Math.max(1, Math.ceil(size / Math.floor(RESIDENT_CHUNK_BYTES / 3)));
-    return Math.ceil(size * 1.01) + (chunks + 1) * RESIDENT_ROW_BYTES + 4096;
+    const chunks = mathMax(1, mathCeil(size / mathFloor(RESIDENT_CHUNK_BYTES / 3)));
+    return mathCeil(size * 1.01) + (chunks + 1) * RESIDENT_ROW_BYTES + 4096;
   }
   function namespaceRowBytes(parent, name, target) {
-    return RESIDENT_ROW_BYTES + 2 * (String(parent).length + String(name).length + (target == null ? 0 : String(target).length));
+    return RESIDENT_ROW_BYTES + 2 * (stringOf(parent).length + stringOf(name).length + (target == null ? 0 : stringOf(target).length));
   }
-
-  // nimbus-launch-captures:launch-captures
-  var { ArrayConstructor, ArrayFrom, ArrayIteratorNext, ArrayIteratorPrototype, ArrayPrototypeIndexOf, ArrayPrototypeLastIndexOf, ArrayPrototypePop, ArrayPrototypeToSpliced, ArrayPrototypeWith, ArrayValues, BigInt, BigIntPrototypeToString, Error: Error2, FunctionPrototypeBind, GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, JSONParse, JSONStringify, MapConstructor, NumberOf, NumberPrototypeToString, ObjectOf, ObjectPrototype, ObjectPrototypeHasOwnProperty, ObjectPrototypePropertyIsEnumerable, ObjectPrototypePropertyIsEnumerableOf, ObjectPrototypeToString, PromiseConstructor, PromisePrototypeThen, PromiseReject, PromiseResolve, RangeError, ReferenceError: ReferenceError2, RegExp, RegExpPrototypeAccessors, RegExpPrototypeExec, SafeAsyncGeneratorPrototype, SafeGeneratorPrototype, SafeList, SafeMap, SafeRegExpPrototype, SafeSet, SafeWeakMap, SafeWeakSet, StringFromCharCode, StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeIndexOf, StringPrototypeLastIndexOf, StringPrototypeSlice, StringPrototypeSubstr, SymbolConstructor, SymbolPrototypeDescription, SymbolPrototypeToString, SyntaxError, TypeError: TypeError2, URIError, URL, arrayCopy, arrayIncludes, arrayIndexOf, arrayIsArray, arrayJoin, arrayPush, arraySort, arraySplice, captureStackTraceOf, dataDescriptor, dateNow, decodeURIComponentOf, encodeURIComponentOf, generatorNext, generatorThrow, globalObject, mapGet, mathAbs, mathCeil, mathMax, mathMin, newURL, numberIsInteger, numberIsSafeInteger, objectAssign, objectCreate, objectDefineProperties, objectDefineProperty, objectFreeze, objectGetOwnPropertyNames, objectHasOwn, objectIs, objectIsExtensible, objectKeys, objectPreventExtensions, ownField, parseFloatOf, parseIntOf, promiseAll, promiseSettled, reflectApply, reflectConstruct, reflectDefineProperty, reflectDeleteProperty, reflectGet, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectHas, reflectOwnKeys, reflectSet, reflectSetPrototypeOf, regExpExec, safeGenerator, setForEach, stringCharCodeAt, stringEndsWith, stringIncludes, stringIndexOf, stringLastIndexOf, stringOf, stringSlice, stringStartsWith, stringToLowerCase, symbolAsyncIterator, symbolFor, symbolIterator, symbolToStringTag, symbolUnscopables, typedArrayByteLength, useCaptureStackTrace } = __nimbusLaunchCaptures;
 
   // src/vfs/resident/admission.ts
   function createAdmission(coherence) {
@@ -633,15 +620,15 @@ var __nimbusResidentModule = (() => {
     let names = 0;
     let namespaceBytes = 0;
     const cmp = (a, b) => {
-      const n = Math.min(a.length, b.length);
+      const n = mathMin(a.length, b.length);
       for (let i = 0; i < n; i++) {
-        const x = a.codePointAt(i), y = b.codePointAt(i);
+        const x = stringCodePointAt(a, i) ?? 0, y = stringCodePointAt(b, i) ?? 0;
         if (x !== y) return x < y ? -1 : 1;
         if (x > 65535) i++;
       }
       return a.length === b.length ? 0 : a.length < b.length ? -1 : 1;
     };
-    const payload = (cell) => cell.txt != null ? utf8Length(cell.txt) : cell.bin ? cell.bin.byteLength : 0;
+    const payload = (cell) => cell.txt != null ? utf8Length(cell.txt) : cell.bin ? typedArrayByteLength(cell.bin) : 0;
     const unkey = (path, row) => {
       if (row && row.ckey != null) {
         const set = byKey.get(row.ckey);
@@ -652,7 +639,13 @@ var __nimbusResidentModule = (() => {
       }
     };
     const paths = () => {
-      if (sorted === null) sorted = [...files.keys()].sort(cmp);
+      if (sorted === null) {
+        const list = new SafeList();
+        files.forEach((_row, path) => {
+          list[list.length] = path;
+        });
+        sorted = arraySort(list, cmp);
+      }
       return sorted;
     };
     const lowerBound = (list, from) => {
@@ -666,19 +659,21 @@ var __nimbusResidentModule = (() => {
     };
     const inRange = (from, to) => {
       const list = paths();
-      const out = [];
-      for (let i = lowerBound(list, from); i < list.length && (to === null || cmp(list[i], to) < 0); i++) out.push(list[i]);
+      const out = new SafeList();
+      for (let i = lowerBound(list, from); i < list.length && (to === null || cmp(list[i], to) < 0); i++) out[out.length] = list[i];
       return out;
     };
-    const copy = (cell) => ({ txt: cell.txt ?? null, bin: cell.bin ? cell.bin.slice() : null });
+    const copy = (cell) => ({ txt: cell.txt ?? null, bin: cell.bin ? new Uint8ArrayConstructor(cell.bin) : null });
     const owned = (bin) => {
       const bytes = residentBytes(bin);
-      return bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength ? bytes : bytes.slice();
+      return typedArrayByteOffset(bytes) === 0 && typedArrayByteLength(bytes) === arrayBufferByteLength(typedArrayBuffer(bytes)) ? bytes : new Uint8ArrayConstructor(bytes);
     };
     const dropChunks = (path) => {
       const parts = chunks.get(path);
       if (!parts) return;
-      for (const cell of parts.values()) used -= RESIDENT_ROW_BYTES + payload(cell);
+      parts.forEach((cell) => {
+        used -= RESIDENT_ROW_BYTES + payload(cell);
+      });
       chunks.delete(path);
     };
     const dropFile = (path) => {
@@ -697,7 +692,7 @@ var __nimbusResidentModule = (() => {
       }
       const had = parts.get(part);
       if (had !== void 0) {
-        if (!replace) throw new Error("UNIQUE constraint failed: chunk.path, chunk.part");
+        if (!replace) throw new Error2("UNIQUE constraint failed: chunk.path, chunk.part");
         used -= RESIDENT_ROW_BYTES + payload(had);
       }
       parts.set(part, cell);
@@ -722,18 +717,28 @@ var __nimbusResidentModule = (() => {
       const dir = ns.get(parent);
       if (!dir) return;
       names -= dir.size;
-      for (const [name, row] of dir) {
+      dir.forEach((row, name) => {
         const bytes = namespaceRowBytes(parent, name, row.target);
         used -= bytes;
         namespaceBytes -= bytes;
-      }
+      });
       ns.delete(parent);
     };
     const dropWhere = (keepFile, keepChunkPath) => {
-      for (const path of [...chunks.keys()]) if (!keepChunkPath(path)) dropChunks(path);
-      for (const [path, row] of [...files]) if (!keepFile(row)) dropFile(path);
+      chunks.forEach((_parts, path) => {
+        if (!keepChunkPath(path)) dropChunks(path);
+      });
+      files.forEach((row, path) => {
+        if (!keepFile(row)) dropFile(path);
+      });
     };
-    const sortedNames = (dir) => [...dir.keys()].sort(cmp);
+    const sortedNames = (dir) => {
+      const out = new SafeList();
+      dir.forEach((_row, name) => {
+        out[out.length] = name;
+      });
+      return arraySort(out, cmp);
+    };
     return {
       bytes() {
         return used;
@@ -745,7 +750,7 @@ var __nimbusResidentModule = (() => {
         return meta.get(k);
       },
       metaSet(k, v) {
-        meta.set(k, String(v));
+        meta.set(k, stringOf(v));
       },
       fileHead(path) {
         const row = files.get(path);
@@ -764,13 +769,13 @@ var __nimbusResidentModule = (() => {
         return row !== void 0 && row.rev === RK_OWN_WRITE ? row.size : void 0;
       },
       filePut(path, kind, size, chunkCount, rev, ckey) {
-        if (!(rev >= -1)) throw new Error("CHECK constraint failed: rev >= -1");
+        if (!(rev >= -1)) throw new Error2("CHECK constraint failed: rev >= -1");
         const had = files.get(path);
         if (had === void 0) {
           sorted = null;
           used += RESIDENT_ROW_BYTES;
         } else unkey(path, had);
-        const row = { kind: Number(kind), size: Number(size), chunks: Number(chunkCount), rev: Number(rev), ckey: ckey == null ? null : String(ckey) };
+        const row = { kind: NumberOf(kind), size: NumberOf(size), chunks: NumberOf(chunkCount), rev: NumberOf(rev), ckey: ckey == null ? null : stringOf(ckey) };
         files.set(path, row);
         if (row.ckey !== null) {
           let set = byKey.get(row.ckey);
@@ -783,26 +788,28 @@ var __nimbusResidentModule = (() => {
       },
       fileSetRev(path, rev) {
         const row = files.get(path);
-        if (row !== void 0) row.rev = Number(rev);
+        if (row !== void 0) row.rev = NumberOf(rev);
       },
       fileStampOwn(path, rev) {
         const row = files.get(path);
-        if (row !== void 0 && row.rev === RK_OWN_WRITE) row.rev = Number(rev);
+        if (row !== void 0 && row.rev === RK_OWN_WRITE) row.rev = NumberOf(rev);
       },
       fileDelete(path) {
         dropFile(path);
       },
       fileByKey(ckey, notPath) {
-        const set = byKey.get(String(ckey));
+        const set = byKey.get(stringOf(ckey));
         if (!set) return void 0;
-        for (const path of set) {
+        let found;
+        set.forEach((path) => {
+          if (found !== void 0) return;
           const row = files.get(path);
-          if (path !== notPath && row && row.rev >= 0) return { path, kind: row.kind, size: row.size, chunks: row.chunks };
-        }
-        return void 0;
+          if (path !== notPath && row && row.rev >= 0) found = { path, kind: row.kind, size: row.size, chunks: row.chunks };
+        });
+        return found;
       },
       filePaths(from, to) {
-        return inRange(from, to);
+        return arrayCopy(inRange(from, to));
       },
       fileAny(from, to) {
         const list = paths();
@@ -810,23 +817,39 @@ var __nimbusResidentModule = (() => {
         return i < list.length && (to === null || cmp(list[i], to) < 0);
       },
       fileRevsIn(from, to) {
-        return inRange(from, to).map((path) => ({ path, rev: files.get(path).rev }));
+        const list = inRange(from, to);
+        const out = new SafeList();
+        for (let i = 0; i < list.length; i++) {
+          const path = list[i];
+          const row = files.get(path);
+          if (row !== void 0) out[out.length] = { path, rev: row.rev };
+        }
+        return arrayCopy(out);
       },
       fileAllPaths() {
-        return [...paths()];
+        return arrayCopy(paths());
       },
       fileRows() {
-        return paths().map((path) => {
+        const list = paths();
+        const out = new SafeList();
+        for (let i = 0; i < list.length; i++) {
+          const path = list[i];
           const row = files.get(path);
-          return { path, rev: row.rev, ckey: row.ckey };
-        });
+          if (row !== void 0) out[out.length] = { path, rev: row.rev, ckey: row.ckey };
+        }
+        return arrayCopy(out);
       },
       fileOwnPaths() {
-        return paths().filter((path) => files.get(path).rev === RK_OWN_WRITE);
+        const list = paths();
+        const out = new SafeList();
+        for (let i = 0; i < list.length; i++) if (files.get(list[i])?.rev === RK_OWN_WRITE) out[out.length] = list[i];
+        return arrayCopy(out);
       },
       fileStats() {
         let b = 0;
-        for (const row of files.values()) b += row.size;
+        files.forEach((row) => {
+          b += row.size;
+        });
         return { n: files.size, b };
       },
       chunkFirst(path) {
@@ -842,44 +865,55 @@ var __nimbusResidentModule = (() => {
           numbers[numbers.length] = part;
         });
         arraySort(numbers, (a, b) => a - b);
-        const out = [];
+        const out = new SafeList();
         for (let i = 0; i < numbers.length; i++) {
-          const cell = parts.get(numbers[i] ?? 0);
-          if (cell !== void 0) reflectDefineProperty(out, out.length, dataDescriptor(copy(cell), true, true, true));
+          const cell = parts.get(numbers[i]);
+          if (cell !== void 0) out[out.length] = copy(cell);
         }
-        return out;
+        return arrayCopy(out);
       },
       chunkAddText(path, part, txt) {
-        addChunk(path, Number(part), { txt: String(txt), bin: null }, false);
+        addChunk(path, NumberOf(part), { txt: stringOf(txt), bin: null }, false);
       },
       chunkAddBin(path, part, bin) {
-        addChunk(path, Number(part), { txt: null, bin: owned(bin) }, false);
+        addChunk(path, NumberOf(part), { txt: null, bin: owned(bin) }, false);
       },
       chunkSetBin(path, part, bin) {
-        addChunk(path, Number(part), { txt: null, bin: owned(bin) }, true);
+        addChunk(path, NumberOf(part), { txt: null, bin: owned(bin) }, true);
       },
       chunkCopy(to, from) {
         const parts = chunks.get(from);
         if (!parts) return;
         const held = chunks.get(to);
-        if (held) {
-          for (const part of parts.keys()) if (held.has(part)) throw new Error("UNIQUE constraint failed: chunk.path, chunk.part");
-        }
-        for (const [part, cell] of [...parts]) addChunk(to, part, { txt: cell.txt, bin: cell.bin }, false);
+        if (held) parts.forEach((_cell, part) => {
+          if (held.has(part)) throw new Error2("UNIQUE constraint failed: chunk.path, chunk.part");
+        });
+        parts.forEach((cell, part) => {
+          addChunk(to, part, { txt: cell.txt, bin: cell.bin }, false);
+        });
       },
       chunkDelete(path) {
         dropChunks(path);
       },
       dropOwn() {
-        const own = new Set(paths().filter((path) => files.get(path).rev === RK_OWN_WRITE));
+        const own = new SafeSet();
+        files.forEach((row, path) => {
+          if (row.rev === RK_OWN_WRITE) own.add(path);
+        });
         dropWhere((row) => row.rev !== RK_OWN_WRITE, (path) => !own.has(path));
       },
       dropDated() {
-        const own = new Set(paths().filter((path) => files.get(path).rev === RK_OWN_WRITE));
+        const own = new SafeSet();
+        files.forEach((row, path) => {
+          if (row.rev === RK_OWN_WRITE) own.add(path);
+        });
         dropWhere((row) => row.rev === RK_OWN_WRITE, (path) => own.has(path));
       },
       dropDatedFiles() {
-        const dated = new Set(paths().filter((path) => files.get(path).rev !== RK_OWN_WRITE));
+        const dated = new SafeSet();
+        files.forEach((row, path) => {
+          if (row.rev !== RK_OWN_WRITE) dated.add(path);
+        });
         dropWhere((row) => row.rev === RK_OWN_WRITE, (path) => !dated.has(path));
       },
       clear() {
@@ -944,19 +978,19 @@ var __nimbusResidentModule = (() => {
         used += growth;
         namespaceBytes += growth;
         dir.set(name, {
-          kind: Number(kind),
-          size: Number(size),
-          mode: Number(mode),
-          uid: Number(uid),
-          gid: Number(gid),
-          atime: Number(atime),
-          mtime: Number(mtime),
-          ctime: Number(ctime),
-          ino: Number(ino),
-          rev: Number(rev),
-          target: target == null ? null : String(target),
-          dev: Number(dev) || 0,
-          nlink: Number(nlink) || 1
+          kind: NumberOf(kind),
+          size: NumberOf(size),
+          mode: NumberOf(mode),
+          uid: NumberOf(uid),
+          gid: NumberOf(gid),
+          atime: NumberOf(atime),
+          mtime: NumberOf(mtime),
+          ctime: NumberOf(ctime),
+          ino: NumberOf(ino),
+          rev: NumberOf(rev),
+          target: target == null ? null : stringOf(target),
+          dev: NumberOf(dev) || 0,
+          nlink: NumberOf(nlink) || 1
         });
       },
       nsGet(parent, name) {
@@ -970,7 +1004,9 @@ var __nimbusResidentModule = (() => {
         nsDropParent(parent);
       },
       nsDeleteParents(from, to) {
-        for (const parent of [...ns.keys()]) if (cmp(parent, from) >= 0 && (to === null || cmp(parent, to) < 0)) nsDropParent(parent);
+        ns.forEach((_dir, parent) => {
+          if (cmp(parent, from) >= 0 && (to === null || cmp(parent, to) < 0)) nsDropParent(parent);
+        });
       },
       nsClear() {
         used -= namespaceBytes;
@@ -986,33 +1022,60 @@ var __nimbusResidentModule = (() => {
         return namespaceRowBytes(parent, name, target) - (previous === void 0 ? 0 : namespaceRowBytes(parent, name, previous.target));
       },
       nsKeys() {
-        const out = [];
-        for (const parent of [...ns.keys()].sort(cmp)) for (const name of sortedNames(ns.get(parent))) out.push({ parent, name });
-        return out;
+        const out = new SafeList();
+        const parents = sortedNames(ns);
+        for (let i = 0; i < parents.length; i++) {
+          const parent = parents[i];
+          const dir = ns.get(parent);
+          if (dir === void 0) continue;
+          const list = sortedNames(dir);
+          for (let j = 0; j < list.length; j++) out[out.length] = { parent, name: list[j] };
+        }
+        return arrayCopy(out);
       },
       nsOfKind(kind) {
-        const out = [];
-        for (const parent of [...ns.keys()].sort(cmp)) {
+        const out = new SafeList();
+        const parents = sortedNames(ns);
+        const code = NumberOf(kind);
+        for (let i = 0; i < parents.length; i++) {
+          const parent = parents[i];
           const dir = ns.get(parent);
-          for (const name of sortedNames(dir)) if (dir.get(name).kind === Number(kind)) out.push({ parent, name });
-        }
-        return out;
-      },
-      nsUnlisted() {
-        const out = [];
-        for (const parent of [...ns.keys()].sort(cmp)) {
-          const dir = ns.get(parent);
-          for (const name of sortedNames(dir)) {
-            const row = dir.get(name);
-            if (row.kind === NS_DIR && row.target !== null) out.push({ parent, name, target: row.target });
+          if (dir === void 0) continue;
+          const list = sortedNames(dir);
+          for (let j = 0; j < list.length; j++) {
+            const name = list[j];
+            if (dir.get(name)?.kind === code) out[out.length] = { parent, name };
           }
         }
-        return out;
+        return arrayCopy(out);
+      },
+      nsUnlisted() {
+        const out = new SafeList();
+        const parents = sortedNames(ns);
+        for (let i = 0; i < parents.length; i++) {
+          const parent = parents[i];
+          const dir = ns.get(parent);
+          if (dir === void 0) continue;
+          const list = sortedNames(dir);
+          for (let j = 0; j < list.length; j++) {
+            const name = list[j];
+            const row = dir.get(name);
+            if (row !== void 0 && row.kind === NS_DIR && row.target !== null) out[out.length] = { parent, name, target: row.target };
+          }
+        }
+        return arrayCopy(out);
       },
       nsChildren(parent) {
         const dir = ns.get(parent);
         if (!dir) return [];
-        return sortedNames(dir).map((name) => ({ name, kind: dir.get(name).kind, mode: dir.get(name).mode }));
+        const list = sortedNames(dir);
+        const out = new SafeList();
+        for (let i = 0; i < list.length; i++) {
+          const name = list[i];
+          const row = dir.get(name);
+          if (row !== void 0) out[out.length] = { name, kind: row.kind, mode: row.mode };
+        }
+        return arrayCopy(out);
       },
       nsCount() {
         return names;
@@ -1512,10 +1575,13 @@ var __nimbusResidentModule = (() => {
   }
 
   // src/vfs/resident/cells.ts
+  function ownValue2(record, key) {
+    return objectHasOwn(record, key) ? record[key] : void 0;
+  }
   function createCells(coherence, admission, namespace, observeRead) {
     const held = new SafeMap();
     const unheld = new SafeSet();
-    const cellSize = (cell) => typeof cell === "string" ? cell.length * 3 : residentBytes(cell).byteLength;
+    const cellSize = (cell) => typeof cell === "string" ? cell.length * 3 : typedArrayByteLength(residentBytes(cell));
     const forgetHeld = (path) => {
       const cell = held.get(path);
       if (cell !== void 0) {
@@ -1532,11 +1598,13 @@ var __nimbusResidentModule = (() => {
         unheld.add(path);
         return;
       }
-      while (admission.heldBytes + size > limit) {
-        const [oldest, old] = held.entries().next().value;
-        held.delete(oldest);
-        admission.addHeld(-cellSize(old.cell));
-        unheld.add(oldest);
+      if (admission.heldBytes + size > limit) {
+        held.forEach((old, oldest) => {
+          if (admission.heldBytes + size <= limit) return;
+          held.delete(oldest);
+          admission.addHeld(-cellSize(old.cell));
+          unheld.add(oldest);
+        });
       }
       held.set(path, { cell, rev: RK_OWN_WRITE });
       admission.addHeld(size);
@@ -1544,89 +1612,108 @@ var __nimbusResidentModule = (() => {
     const head = (path) => coherence.require().fileHead(path);
     const dropDated = () => {
       coherence.tables("dropDated").dropDated();
-      for (const [path, cell] of [...held]) if (cell.rev !== RK_OWN_WRITE) forgetHeld(path);
+      held.forEach((cell, path) => {
+        if (cell.rev !== RK_OWN_WRITE) forgetHeld(path);
+      });
     };
     const put = (t, path, cell, rev, ckey) => {
       forgetHeld(path);
       admission.release(path);
       t.chunkDelete(path);
       const stamp = typeof rev === "number" ? rev : RK_OWN_WRITE;
-      if (cell && typeof cell === "object" && "error" in cell && cell.error) {
+      if (cell && typeof cell === "object" && ownField(cell, "error")) {
         t.filePut(path, RK_DENIED, 0, 0, stamp, null);
         return true;
       }
       const isText = typeof cell === "string";
       const kind = isText ? RK_TEXT : RK_BINARY;
       const body = isText ? cell : residentBytes(cell);
-      const size = isText ? body.length : body.byteLength;
-      const limit = isText ? Math.floor(RESIDENT_CHUNK_BYTES / 3) : RESIDENT_CHUNK_BYTES;
-      const chunks = Math.max(1, Math.ceil(size / limit));
+      const size = typeof body === "string" ? body.length : typedArrayByteLength(body);
+      const limit = isText ? mathFloor(RESIDENT_CHUNK_BYTES / 3) : RESIDENT_CHUNK_BYTES;
+      const chunks = mathMax(1, mathCeil(size / limit));
       if (!admission.fits(residentCellCost(cell), stamp !== RK_OWN_WRITE)) {
         t.fileDelete(path);
-        if (stamp === RK_OWN_WRITE) hold(path, cell);
+        if (stamp === RK_OWN_WRITE) hold(path, body);
         return false;
       }
       for (let part = 0; part < chunks; part++) {
-        const slice = typeof body === "string" ? body.slice(part * limit, (part + 1) * limit) : body.subarray(part * limit, (part + 1) * limit);
+        const start = part * limit;
+        const slice = typeof body === "string" ? stringSlice(body, start, (part + 1) * limit) : new Uint8ArrayConstructor(typedArrayBuffer(body), typedArrayByteOffset(body) + start, mathMin(limit, size - start));
         if (typeof slice === "string") t.chunkAddText(path, part, slice);
         else t.chunkAddBin(path, part, slice);
       }
-      t.filePut(path, kind, size, chunks, stamp, stamp === RK_OWN_WRITE || ckey == null ? null : String(ckey));
+      t.filePut(path, kind, size, chunks, stamp, stamp === RK_OWN_WRITE || ckey == null ? null : stringOf(ckey));
       return true;
     };
     const putChunk = (t, path, part, bytes) => {
       if (part === 0) admission.release(path);
-      if (!admission.fits(Math.ceil(bytes.byteLength * 1.01) + RESIDENT_ROW_BYTES + 4096)) return false;
+      if (!admission.fits(mathCeil(typedArrayByteLength(bytes) * 1.01) + RESIDENT_ROW_BYTES + 4096)) return false;
       t.chunkSetBin(path, part, bytes);
       return true;
     };
     const admit = (result) => {
       const t = coherence.tables("admit");
-      const dropped = [];
-      const relist = [];
+      const dropped = new SafeList();
+      const relist = new SafeList();
       let kept = 0, pushed = 0;
-      const epoch = result && result.epoch != null ? String(result.epoch) : null;
-      const rev = result && result.rev != null ? Number(result.rev) : null;
+      const epoch = result && result.epoch != null ? stringOf(result.epoch) : null;
+      const rev = result && result.rev != null ? NumberOf(result.rev) : null;
       if (epoch === null || rev === null) {
-        throw new Error(
+        throw new Error2(
           "Nimbus: fsAcquire returned no cursor; the resident store stays sealed rather than serving rows it cannot date"
         );
       }
       const at = coherence.cursor();
       const floor = at !== null && coherence.sealed() === null && at.epoch === epoch && !(result && result.poison) ? at.rev : null;
-      if (floor !== null && rev <= floor) {
-        return { dropped, kept, pushed: 0, relist, cursor: at, stale: rev < floor };
+      if (at !== null && floor !== null && rev <= floor) {
+        return { dropped: arrayCopy(dropped), kept, pushed: 0, relist: arrayCopy(relist), cursor: at, stale: rev < floor };
       }
       const nsOk = namespace.ok;
-      const followable = !!result && !result.poison && (result.namespace === true || Array.isArray(result.paths) && result.paths.length === 0) && (!Array.isArray(result.paths) || result.paths.every((entry) => entry.stat === null || nsDescribes(entry.stat)));
+      const paths = result && arrayIsArray(result.paths) ? result.paths : null;
+      let followable = !!result && !result.poison && (ownValue2(result, "namespace") === true || paths !== null && paths.length === 0);
+      if (followable && paths !== null) {
+        for (let i = 0; i < paths.length; i++) {
+          const stat = ownValue2(paths[i], "stat");
+          if (stat !== null && !nsDescribes(stat)) {
+            followable = false;
+            break;
+          }
+        }
+      }
       const namespaced = nsOk && followable;
       if (nsOk && !followable) {
         namespace.markReady(t, false, !result || result.poison ? "the session's change log was truncated past this process's cursor" : "a change reported without the stat every name needs");
       }
       if (!result || result.poison) {
         dropDated();
-      } else if (Array.isArray(result.paths)) {
-        for (const entry of result.paths) {
-          if (floor !== null && Number(entry.rev) <= floor) continue;
+      } else if (paths !== null) {
+        for (let i = 0; i < paths.length; i++) {
+          const entry = paths[i];
+          const entryRev = NumberOf(entry.rev);
+          if (floor !== null && entryRev <= floor) continue;
           const path = entry.path;
           if (namespaced && namespace.ready()) {
             const again = namespace.applyEntry(t, entry);
-            if (again !== null) relist.push(again);
+            if (again !== null) relist[relist.length] = again;
           }
-          if (entry.subtree || entry.structural) {
+          const subtree = ownValue2(entry, "subtree");
+          const stat = ownValue2(entry, "stat");
+          if (subtree || ownValue2(entry, "structural")) {
             const end = prefixEnd(path + "/");
-            for (const row2 of t.fileRevsIn(path + "/", end)) {
+            const rows = t.fileRevsIn(path + "/", end);
+            for (let j = 0; j < rows.length; j++) {
+              const row2 = rows[j];
               const stamped2 = row2.rev;
-              if (stamped2 === RK_OWN_WRITE || stamped2 >= Number(entry.rev)) continue;
+              if (stamped2 === RK_OWN_WRITE || stamped2 >= entryRev) continue;
               t.chunkDelete(row2.path);
               t.fileDelete(row2.path);
-              dropped.push(row2.path);
+              dropped[dropped.length] = row2.path;
             }
-            for (const [heldPath, heldCell2] of [...held]) {
-              if (!heldPath.startsWith(path + "/") || heldCell2.rev === RK_OWN_WRITE || heldCell2.rev >= Number(entry.rev)) continue;
+            held.forEach((heldCell2, heldPath) => {
+              if (!stringStartsWith(heldPath, path + "/") || heldCell2.rev === RK_OWN_WRITE || heldCell2.rev >= entryRev) return;
               forgetHeld(heldPath);
-            }
-            if (namespaced && entry.subtree && entry.stat && entry.stat.type === "directory") relist.push(path);
+            });
+            if (namespaced && subtree && stat && stat.type === "directory") relist[relist.length] = path;
           }
           let isHeld = false, stamped = 0, heldKey = null;
           const row = t.fileRevKey(path);
@@ -1635,37 +1722,39 @@ var __nimbusResidentModule = (() => {
             stamped = row.rev;
             heldKey = row.ckey;
           }
-          if (isHeld && (stamped === RK_OWN_WRITE || stamped >= Number(entry.rev))) {
+          if (isHeld && (stamped === RK_OWN_WRITE || stamped >= entryRev)) {
             kept++;
             continue;
           }
           const heldCell = held.get(path);
           if (heldCell !== void 0) {
-            if (heldCell.rev === RK_OWN_WRITE || heldCell.rev >= Number(entry.rev)) {
+            if (heldCell.rev === RK_OWN_WRITE || heldCell.rev >= entryRev) {
               kept++;
               continue;
             }
             forgetHeld(path);
           }
-          if (isHeld && heldKey !== null && entry.contentKey != null && heldKey === String(entry.contentKey) && namespace.readable(entry.stat)) {
-            t.fileSetRev(path, Number(entry.rev));
+          const contentKey = ownValue2(entry, "contentKey");
+          if (isHeld && heldKey !== null && contentKey != null && heldKey === stringOf(contentKey) && namespace.readable(stat)) {
+            t.fileSetRev(path, entryRev);
             kept++;
             continue;
           }
-          if (entry.bytes != null && entry.stat && entry.stat.type === "file") {
-            if (put(t, path, residentBytes(entry.bytes), Number(entry.rev), entry.contentKey)) pushed++;
-            else if (isHeld) dropped.push(path);
+          const bytes = ownValue2(entry, "bytes");
+          if (bytes != null && stat && stat.type === "file") {
+            if (put(t, path, residentBytes(bytes), entryRev, contentKey)) pushed++;
+            else if (isHeld) dropped[dropped.length] = path;
             continue;
           }
           if (!isHeld) continue;
           t.chunkDelete(path);
           t.fileDelete(path);
-          dropped.push(path);
+          dropped[dropped.length] = path;
         }
       }
       coherence.writeCursor(t, { epoch, rev });
       coherence.unseal();
-      return { dropped, kept, pushed, relist, cursor: { epoch, rev } };
+      return { dropped: arrayCopy(dropped), kept, pushed, relist: arrayCopy(relist), cursor: { epoch, rev } };
     };
     const get = (path) => {
       if (observeRead !== null) observeRead(nsKey(path));
@@ -1683,23 +1772,23 @@ var __nimbusResidentModule = (() => {
       if (found.chunks === 1) {
         const row = t.chunkFirst(path);
         if (row === void 0) return void 0;
-        return kind === RK_TEXT ? row.txt : residentBytes(row.bin);
+        return kind === RK_TEXT ? row.txt ?? void 0 : residentBytes(row.bin);
       }
       const rows = t.chunkParts(path);
       if (rows.length === 0) return void 0;
       if (kind === RK_TEXT) {
         let text = "";
-        for (let i = 0; i < rows.length; i++) text += rows[i]?.txt ?? "";
+        for (let i = 0; i < rows.length; i++) text += rows[i].txt ?? "";
         return text;
       }
       let total = 0;
-      for (let i = 0; i < rows.length; i++) total += residentBytes(rows[i]?.bin).byteLength;
-      const out = new Uint8Array(total);
+      for (let i = 0; i < rows.length; i++) total += typedArrayByteLength(residentBytes(rows[i].bin));
+      const out = new Uint8ArrayConstructor(total);
       let offset = 0;
       for (let i = 0; i < rows.length; i++) {
-        const bytes = residentBytes(rows[i]?.bin);
-        out.set(bytes, offset);
-        offset += bytes.byteLength;
+        const bytes = residentBytes(rows[i].bin);
+        typedArraySet(out, bytes, offset);
+        offset += typedArrayByteLength(bytes);
       }
       return out;
     };
@@ -1711,7 +1800,8 @@ var __nimbusResidentModule = (() => {
       return had;
     };
     const keys = () => coherence.require().fileAllPaths();
-    const bundle = new Proxy(/* @__PURE__ */ Object.create(null), {
+    const target = objectCreate(null);
+    const handler = {
       get(_t, path) {
         if (typeof path !== "string") return void 0;
         return get(path);
@@ -1735,11 +1825,15 @@ var __nimbusResidentModule = (() => {
       getOwnPropertyDescriptor(_t, path) {
         if (typeof path !== "string") return void 0;
         if (head(path) === void 0) return void 0;
-        return { configurable: true, enumerable: true, get() {
-          return get(path);
-        } };
+        const descriptor = objectCreate(null);
+        descriptor.configurable = true;
+        descriptor.enumerable = true;
+        descriptor.get = () => get(path);
+        return descriptor;
       }
-    });
+    };
+    reflectSetPrototypeOf(handler, null);
+    const bundle = new Proxy2(target, handler);
     return {
       bundle,
       /**
@@ -1778,7 +1872,7 @@ var __nimbusResidentModule = (() => {
         const found = head(path);
         if (found !== void 0) return found.kind === RK_DENIED;
         const cell = held.get(path)?.cell;
-        return typeof cell === "object" && cell !== null && !(cell instanceof Uint8Array) && typeof cell.error === "string";
+        return typeof cell === "object" && cell !== null && !(cell instanceof Uint8ArrayConstructor) && typeof ownField(cell, "error") === "string";
       },
       get,
       put,
@@ -1799,7 +1893,7 @@ var __nimbusResidentModule = (() => {
           size,
           chunks,
           typeof rev === "number" ? rev : RK_OWN_WRITE,
-          typeof rev === "number" && ckey != null ? String(ckey) : null
+          typeof rev === "number" && ckey != null ? stringOf(ckey) : null
         );
       },
       /**
@@ -1808,12 +1902,12 @@ var __nimbusResidentModule = (() => {
        * no fetch is needed. Returns whether a source existed.
        */
       copyByKey(t, path, ckey, rev) {
-        const source = t.fileByKey(String(ckey), path);
+        const source = t.fileByKey(stringOf(ckey), path);
         if (source === void 0) return false;
         if (!admission.fits(source.size + (source.chunks + 1) * RESIDENT_ROW_BYTES)) return false;
         t.chunkDelete(path);
         t.chunkCopy(path, source.path);
-        t.filePut(path, source.kind, source.size, source.chunks, rev, String(ckey));
+        t.filePut(path, source.kind, source.size, source.chunks, rev, stringOf(ckey));
         return true;
       },
       delete: deleteCell,
@@ -1876,7 +1970,7 @@ var __nimbusResidentModule = (() => {
        */
       fill(path, cell, rev) {
         if (typeof rev !== "number" || rev < 0) {
-          throw new Error(
+          throw new Error2(
             "Nimbus: refusing to fill '" + path + "' with no authority revision. An undated row cannot be invalidated, so it would be served stale forever."
           );
         }
@@ -1910,7 +2004,7 @@ var __nimbusResidentModule = (() => {
        * escaping — those are only wildcards to an operator this no longer uses.
        */
       keysUnder(prefix) {
-        const from = String(prefix);
+        const from = stringOf(prefix);
         return coherence.require().filePaths(from, prefixEnd(from));
       },
       /**
@@ -1920,14 +2014,22 @@ var __nimbusResidentModule = (() => {
        * over again.
        */
       hasUnder(prefix) {
-        const from = String(prefix);
+        const from = stringOf(prefix);
         return coherence.require().fileAny(from, prefixEnd(from));
       },
       storageMiss: (path) => unheld.has(path),
       dropHeld(all) {
-        for (const [path, cell] of [...held]) if (all || cell.rev !== RK_OWN_WRITE) forgetHeld(path);
+        held.forEach((cell, path) => {
+          if (all || cell.rev !== RK_OWN_WRITE) forgetHeld(path);
+        });
       },
-      heldRevisions: () => [...held].map(([path, cell]) => [path, cell.rev]),
+      heldRevisions() {
+        const out = new SafeList();
+        held.forEach((cell, path) => {
+          out[out.length] = [path, cell.rev];
+        });
+        return arrayCopy(out);
+      },
       forget: forgetHeld,
       /**
        * Drop every cell AND the cursor, and re-seal.
@@ -1941,7 +2043,9 @@ var __nimbusResidentModule = (() => {
        */
       clear() {
         coherence.tables("clear").clear();
-        for (const [path, cell] of [...held]) if (cell.rev !== RK_OWN_WRITE) forgetHeld(path);
+        held.forEach((cell, path) => {
+          if (cell.rev !== RK_OWN_WRITE) forgetHeld(path);
+        });
         namespace.clear();
         coherence.seal("the store was cleared");
       },
@@ -2245,7 +2349,7 @@ var __nimbusResidentModule = (() => {
   var BATCH_PATHS = FS_READ_BATCH_PATH_LIMIT;
   var BATCH_BYTES = FS_READ_BATCH_REQUEST_BYTES;
   var MAX_LIST_PAGES = 4096;
-  function ownValue2(record, key) {
+  function ownValue3(record, key) {
     return objectHasOwn(record, key) ? record[key] : void 0;
   }
   function method(supervisor, name) {
@@ -2302,7 +2406,7 @@ var __nimbusResidentModule = (() => {
           }
           if (entry.stat) {
             if (admission.inHeap && admission.cap !== null) {
-              incomingBytes += namespaceRowBytes(nsParent(k), nsName(k), ownValue2(entry, "linkTarget") ?? ownValue2(entry, "unlisted"));
+              incomingBytes += namespaceRowBytes(nsParent(k), nsName(k), ownValue3(entry, "linkTarget") ?? ownValue3(entry, "unlisted"));
               const refused = admission.namespaceRefusal(incomingBytes - replaceBytes);
               if (refused !== null) {
                 namespace.markReady(t, false, refused);
@@ -2328,7 +2432,7 @@ var __nimbusResidentModule = (() => {
       namespace.deleteTree(t, dir, false);
       for (let i = 0; i < seen.length; i++) {
         const entry = seen[i];
-        namespace.put(t, nsKey(entry.path), entry.stat, entry.rev, ownValue2(entry, "linkTarget"), ownValue2(entry, "unlisted") ?? null);
+        namespace.put(t, nsKey(entry.path), entry.stat, entry.rev, ownValue3(entry, "linkTarget"), ownValue3(entry, "unlisted") ?? null);
       }
     };
     const outdated = (t, path, rev) => {
@@ -2344,7 +2448,7 @@ var __nimbusResidentModule = (() => {
       const fetching = new SafeSet();
       for (let i = 0; i < wantedFiles.length; i++) {
         const file = wantedFiles[i];
-        const ckey = ownValue2(file, "ckey");
+        const ckey = ownValue3(file, "ckey");
         if (ckey != null) {
           if (cells.copyByKey(t, file.path, ckey, file.rev)) {
             copied++;
@@ -2362,8 +2466,8 @@ var __nimbusResidentModule = (() => {
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         const parts = mathMax(1, mathCeil(file.size / RESIDENT_CHUNK_BYTES));
-        const version = file.rev === 0 ? ownValue2(file, "version") ?? ownValue2(file, "stat") ?? null : null;
-        const ckey = ownValue2(file, "ckey") ?? null;
+        const version = file.rev === 0 ? ownValue3(file, "version") ?? ownValue3(file, "stat") ?? null : null;
+        const ckey = ownValue3(file, "ckey") ?? null;
         for (let part = 0; part < parts; part++) {
           const offset = part * RESIDENT_CHUNK_BYTES;
           ranges[ranges.length] = {
@@ -2417,8 +2521,8 @@ var __nimbusResidentModule = (() => {
         }
         for (let i = 0; i < batch.length; i++) {
           const range = batch[i];
-          const entry = results && ownValue2(results, i);
-          const error = entry && ownValue2(entry, "error");
+          const entry = results && ownValue3(results, i);
+          const error = entry && ownValue3(entry, "error");
           if (!entry || error) {
             const code = error ? ownField(error, "code") : void 0;
             if (code === "EACCES" && range.part === 0) {
@@ -2427,7 +2531,7 @@ var __nimbusResidentModule = (() => {
             } else failedPaths.add(range.path);
             continue;
           }
-          const bytes2 = ownValue2(entry, "bytes");
+          const bytes2 = ownValue3(entry, "bytes");
           if (bytes2 === null || bytes2 === void 0) {
             failedPaths.add(range.path);
             continue;
@@ -2465,7 +2569,7 @@ var __nimbusResidentModule = (() => {
       });
       for (let i = 0; i < later.length; i++) {
         const file = later[i];
-        if (!outdated(t, file.path, file.rev) && cells.copyByKey(t, file.path, ownValue2(file, "ckey"), file.rev)) copied++;
+        if (!outdated(t, file.path, file.rev) && cells.copyByKey(t, file.path, ownValue3(file, "ckey"), file.rev)) copied++;
         else failed++;
       }
       if (ranges.length > 0) await admission.reportSize();
@@ -2502,7 +2606,7 @@ var __nimbusResidentModule = (() => {
           if (entry.stat) {
             if (admission.inHeap && admission.cap !== null) {
               const key = nsKey(entry.path);
-              if (key) namespaceBytes += namespaceRowBytes(nsParent(key), nsName(key), ownValue2(entry, "linkTarget") ?? ownValue2(entry, "unlisted"));
+              if (key) namespaceBytes += namespaceRowBytes(nsParent(key), nsName(key), ownValue3(entry, "linkTarget") ?? ownValue3(entry, "unlisted"));
               const heap = coherence.heap;
               const refused = admission.namespaceRefusal(namespaceBytes - (heap === null ? 0 : heap.nsBytes()));
               if (refused !== null) namespace.refuse(t, refused);
@@ -2517,7 +2621,7 @@ var __nimbusResidentModule = (() => {
           if (!numberIsSafeInteger(size) || size < 0 || !numberIsSafeInteger(rev) || rev < 0) {
             throw new Error2("Nimbus: fsList returned unusable metadata for '" + path + "'");
           }
-          const contentKey = ownValue2(entry, "contentKey");
+          const contentKey = ownValue3(entry, "contentKey");
           entries[entries.length] = { path, size, rev, epoch: cursor.epoch, ckey: contentKey == null ? null : stringOf(contentKey), stat: entry.stat ?? null };
         }
         if (listed.next === null || listed.next === void 0) {
@@ -2550,9 +2654,9 @@ var __nimbusResidentModule = (() => {
       if (!arrayIsArray(answers) || answers.length !== requests.length) return false;
       let reachedLast = false;
       for (let i = 0; i < batch.length; i++) {
-        const answer = ownValue2(answers, i);
-        const stat = answer && ownValue2(answer, "stat");
-        if (!answer || ownValue2(answer, "error") || stat === null || stat === void 0 || !nsDescribes(stat)) break;
+        const answer = ownValue3(answers, i);
+        const stat = answer && ownValue3(answer, "stat");
+        if (!answer || ownValue3(answer, "error") || stat === null || stat === void 0 || !nsDescribes(stat)) break;
         let target;
         if (stat.type === "symlink") {
           try {
@@ -2569,14 +2673,14 @@ var __nimbusResidentModule = (() => {
         if (stat.type !== "directory") break;
       }
       if (withContent && reachedLast) {
-        const lastAnswer = ownValue2(answers, batch.length - 1);
-        const before = lastAnswer && ownValue2(lastAnswer, "stat");
-        const read = ownValue2(answers, batch.length);
-        const after = ownValue2(answers, batch.length + 1);
-        const content = read && !ownValue2(read, "error") && ownValue2(read, "bytes");
+        const lastAnswer = ownValue3(answers, batch.length - 1);
+        const before = lastAnswer && ownValue3(lastAnswer, "stat");
+        const read = ownValue3(answers, batch.length);
+        const after = ownValue3(answers, batch.length + 1);
+        const content = read && !ownValue3(read, "error") && ownValue3(read, "bytes");
         const bytes = content ? residentBytes(content) : null;
         const size = bytes === null ? 0 : typedArrayByteLength(bytes);
-        const afterStat = after && !ownValue2(after, "error") ? ownValue2(after, "stat") : null;
+        const afterStat = after && !ownValue3(after, "error") ? ownValue3(after, "stat") : null;
         if (before && before.type === "file" && bytes !== null && size === NumberOf(before.size) && afterStat && afterStat.type === "file" && NumberOf(afterStat.ino) === NumberOf(before.ino) && NumberOf(afterStat.revision) === NumberOf(before.revision) && await admission.ensureRoom(size + RESIDENT_ROW_BYTES)) {
           t.fileDelete(last);
           t.chunkDelete(last);
@@ -2615,9 +2719,9 @@ var __nimbusResidentModule = (() => {
         }
         if (!arrayIsArray(answers) || answers.length !== batch.length) return false;
         for (let j = 0; j < batch.length; j++) {
-          const answer = ownValue2(answers, j);
-          if (!answer || ownValue2(answer, "error")) return false;
-          const stat = ownValue2(answer, "stat");
+          const answer = ownValue3(answers, j);
+          if (!answer || ownValue3(answer, "error")) return false;
+          const stat = ownValue3(answer, "stat");
           if (stat === null || stat === void 0) continue;
           if (!nsDescribes(stat)) return false;
           stats.set(batch[j], stat);
@@ -2675,8 +2779,8 @@ var __nimbusResidentModule = (() => {
         const entry = tree.entries[i];
         const k = nsKey(entry.path);
         if (!entry.stat || !nsDescribes(entry.stat)) return false;
-        const unlisted = ownValue2(entry, "unlisted");
-        if (!namespace.tryPut(t, k, entry.stat, entry.rev, ownValue2(entry, "linkTarget"), unlisted ?? null)) return false;
+        const unlisted = ownValue3(entry, "unlisted");
+        if (!namespace.tryPut(t, k, entry.stat, entry.rev, ownValue3(entry, "linkTarget"), unlisted ?? null)) return false;
         written.add(k);
         if (entry.kind === "directory" && !unlisted) listed[listed.length] = k;
       }

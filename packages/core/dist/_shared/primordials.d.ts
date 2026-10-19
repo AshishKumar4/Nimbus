@@ -222,4 +222,17 @@ export declare const numberIsSafeInteger: (number: unknown) => boolean;
 export declare const arrayCopy: <T>(list: ArrayLike<T>) => T[];
 /** TypedArray's byteLength accessor, reading only the view's internal slots. */
 export declare const typedArrayByteLength: (view: Uint8Array) => number;
+declare const ProxyConstructor: ProxyConstructor;
+export { ProxyConstructor as Proxy };
+export declare const Uint8ArrayConstructor: Uint8ArrayConstructor;
+export declare const ArrayBufferConstructor: ArrayBufferConstructor;
+export declare const TextEncoderConstructor: new () => TextEncoder;
+export declare const mathFloor: (x: number) => number;
+export declare const stringCodePointAt: (text: string, index: number) => number | undefined;
+export declare const typedArraySet: (view: Uint8Array, source: Uint8Array, offset?: number) => void;
+export declare const textEncoderEncodeInto: (encoder: TextEncoder, text: string, destination: Uint8Array) => TextEncoderEncodeIntoResult;
+export declare const typedArrayBuffer: (view: Uint8Array) => ArrayBufferLike;
+export declare const typedArrayByteOffset: (view: Uint8Array) => number;
+/** A backing buffer's length, whether ordinary or shared, through its own captured accessor. */
+export declare const arrayBufferByteLength: (buffer: ArrayBufferLike) => number;
 //# sourceMappingURL=primordials.d.ts.map

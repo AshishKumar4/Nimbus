@@ -18,7 +18,7 @@
  * callers normalise with residentBytes), ns rows with every stat column.
  */
 import { RESIDENT_ROW_BYTES, namespaceRowBytes, residentBytes, utf8Length } from './cell-cost.js';
-import { arraySort, dataDescriptor, reflectDefineProperty, SafeList, SafeMap, SafeSet } from '@nimbus-sh/core/_shared/primordials.js';
+import { arrayBufferByteLength, arrayCopy, arraySort, Error, mathMin, NumberOf, SafeList, SafeMap, SafeSet, stringCodePointAt, stringOf, typedArrayBuffer, typedArrayByteLength, typedArrayByteOffset, Uint8ArrayConstructor, } from '@nimbus-sh/core/_shared/primordials.js';
 /**
  * Cell kinds. A cell is one of the three things __vfsBundle has always held,
  * and the kind is stored rather than inferred so a text file whose bytes happen
@@ -241,9 +241,9 @@ export function heapTables() {
     // SQLite's binary collation orders TEXT by its UTF-8 bytes: code-point
     // order, which UTF-16 comparison is not past the BMP.
     const cmp = (a, b) => {
-        const n = Math.min(a.length, b.length);
+        const n = mathMin(a.length, b.length);
         for (let i = 0; i < n; i++) {
-            const x = a.codePointAt(i), y = b.codePointAt(i);
+            const x = stringCodePointAt(a, i) ?? 0, y = stringCodePointAt(b, i) ?? 0;
             if (x !== y)
                 return x < y ? -1 : 1;
             if (x > 0xffff)
@@ -251,7 +251,7 @@ export function heapTables() {
         }
         return a.length === b.length ? 0 : a.length < b.length ? -1 : 1;
     };
-    const payload = (cell) => (cell.txt != null ? utf8Length(cell.txt) : cell.bin ? cell.bin.byteLength : 0);
+    const payload = (cell) => (cell.txt != null ? utf8Length(cell.txt) : cell.bin ? typedArrayByteLength(cell.bin) : 0);
     const unkey = (path, row) => {
         if (row && row.ckey != null) {
             const set = byKey.get(row.ckey);
@@ -263,8 +263,11 @@ export function heapTables() {
         }
     };
     const paths = () => {
-        if (sorted === null)
-            sorted = [...files.keys()].sort(cmp);
+        if (sorted === null) {
+            const list = new SafeList();
+            files.forEach((_row, path) => { list[list.length] = path; });
+            sorted = arraySort(list, cmp);
+        }
         return sorted;
     };
     const lowerBound = (list, from) => {
@@ -280,12 +283,12 @@ export function heapTables() {
     };
     const inRange = (from, to) => {
         const list = paths();
-        const out = [];
+        const out = new SafeList();
         for (let i = lowerBound(list, from); i < list.length && (to === null || cmp(list[i], to) < 0); i++)
-            out.push(list[i]);
+            out[out.length] = list[i];
         return out;
     };
-    const copy = (cell) => ({ txt: cell.txt ?? null, bin: cell.bin ? cell.bin.slice() : null });
+    const copy = (cell) => ({ txt: cell.txt ?? null, bin: cell.bin ? new Uint8ArrayConstructor(cell.bin) : null });
     // Bytes given to the table are its own from then on, as SQLite's are once
     // inserted: nothing that gives them changes them after (the shims' cells
     // are copies of what a program wrote, never changed within their length;
@@ -293,14 +296,14 @@ export function heapTables() {
     // copied, so the table holds no more memory than it counts.
     const owned = (bin) => {
         const bytes = residentBytes(bin);
-        return bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength ? bytes : bytes.slice();
+        return typedArrayByteOffset(bytes) === 0 && typedArrayByteLength(bytes) === arrayBufferByteLength(typedArrayBuffer(bytes))
+            ? bytes : new Uint8ArrayConstructor(bytes);
     };
     const dropChunks = (path) => {
         const parts = chunks.get(path);
         if (!parts)
             return;
-        for (const cell of parts.values())
-            used -= RESIDENT_ROW_BYTES + payload(cell);
+        parts.forEach((cell) => { used -= RESIDENT_ROW_BYTES + payload(cell); });
         chunks.delete(path);
     };
     const dropFile = (path) => {
@@ -346,27 +349,29 @@ export function heapTables() {
         if (!dir)
             return;
         names -= dir.size;
-        for (const [name, row] of dir) {
+        dir.forEach((row, name) => {
             const bytes = namespaceRowBytes(parent, name, row.target);
             used -= bytes;
             namespaceBytes -= bytes;
-        }
+        });
         ns.delete(parent);
     };
     const dropWhere = (keepFile, keepChunkPath) => {
-        for (const path of [...chunks.keys()])
-            if (!keepChunkPath(path))
-                dropChunks(path);
-        for (const [path, row] of [...files])
-            if (!keepFile(row))
-                dropFile(path);
+        chunks.forEach((_parts, path) => { if (!keepChunkPath(path))
+            dropChunks(path); });
+        files.forEach((row, path) => { if (!keepFile(row))
+            dropFile(path); });
     };
-    const sortedNames = (dir) => [...dir.keys()].sort(cmp);
+    const sortedNames = (dir) => {
+        const out = new SafeList();
+        dir.forEach((_row, name) => { out[out.length] = name; });
+        return arraySort(out, cmp);
+    };
     return {
         bytes() { return used; },
         databaseSize() { return used; },
         metaGet(k) { return meta.get(k); },
-        metaSet(k, v) { meta.set(k, String(v)); },
+        metaSet(k, v) { meta.set(k, stringOf(v)); },
         fileHead(path) { const row = files.get(path); return row === undefined ? undefined : { kind: row.kind, size: row.size, chunks: row.chunks }; },
         fileRev(path) { const row = files.get(path); return row === undefined ? undefined : row.rev; },
         fileRevKey(path) { const row = files.get(path); return row === undefined ? undefined : { rev: row.rev, ckey: row.ckey }; },
@@ -381,7 +386,7 @@ export function heapTables() {
             }
             else
                 unkey(path, had);
-            const row = { kind: Number(kind), size: Number(size), chunks: Number(chunkCount), rev: Number(rev), ckey: ckey == null ? null : String(ckey) };
+            const row = { kind: NumberOf(kind), size: NumberOf(size), chunks: NumberOf(chunkCount), rev: NumberOf(rev), ckey: ckey == null ? null : stringOf(ckey) };
             files.set(path, row);
             if (row.ckey !== null) {
                 let set = byKey.get(row.ckey);
@@ -393,29 +398,58 @@ export function heapTables() {
             }
         },
         fileSetRev(path, rev) { const row = files.get(path); if (row !== undefined)
-            row.rev = Number(rev); },
+            row.rev = NumberOf(rev); },
         fileStampOwn(path, rev) { const row = files.get(path); if (row !== undefined && row.rev === RK_OWN_WRITE)
-            row.rev = Number(rev); },
+            row.rev = NumberOf(rev); },
         fileDelete(path) { dropFile(path); },
         fileByKey(ckey, notPath) {
-            const set = byKey.get(String(ckey));
+            const set = byKey.get(stringOf(ckey));
             if (!set)
                 return undefined;
-            for (const path of set) {
+            let found;
+            set.forEach((path) => {
+                if (found !== undefined)
+                    return;
                 const row = files.get(path);
                 if (path !== notPath && row && row.rev >= 0)
-                    return { path, kind: row.kind, size: row.size, chunks: row.chunks };
-            }
-            return undefined;
+                    found = { path, kind: row.kind, size: row.size, chunks: row.chunks };
+            });
+            return found;
         },
-        filePaths(from, to) { return inRange(from, to); },
+        filePaths(from, to) { return arrayCopy(inRange(from, to)); },
         fileAny(from, to) { const list = paths(); const i = lowerBound(list, from); return i < list.length && (to === null || cmp(list[i], to) < 0); },
-        fileRevsIn(from, to) { return inRange(from, to).map((path) => ({ path, rev: files.get(path).rev })); },
-        fileAllPaths() { return [...paths()]; },
-        fileRows() { return paths().map((path) => { const row = files.get(path); return { path, rev: row.rev, ckey: row.ckey }; }); },
-        fileOwnPaths() { return paths().filter((path) => files.get(path).rev === RK_OWN_WRITE); },
-        fileStats() { let b = 0; for (const row of files.values())
-            b += row.size; return { n: files.size, b }; },
+        fileRevsIn(from, to) {
+            const list = inRange(from, to);
+            const out = new SafeList();
+            for (let i = 0; i < list.length; i++) {
+                const path = list[i];
+                const row = files.get(path);
+                if (row !== undefined)
+                    out[out.length] = { path, rev: row.rev };
+            }
+            return arrayCopy(out);
+        },
+        fileAllPaths() { return arrayCopy(paths()); },
+        fileRows() {
+            const list = paths();
+            const out = new SafeList();
+            for (let i = 0; i < list.length; i++) {
+                const path = list[i];
+                const row = files.get(path);
+                if (row !== undefined)
+                    out[out.length] = { path, rev: row.rev, ckey: row.ckey };
+            }
+            return arrayCopy(out);
+        },
+        fileOwnPaths() {
+            const list = paths();
+            const out = new SafeList();
+            for (let i = 0; i < list.length; i++)
+                if (files.get(list[i])?.rev === RK_OWN_WRITE)
+                    out[out.length] = list[i];
+            return arrayCopy(out);
+        },
+        fileStats() { let b = 0; files.forEach((row) => { b += row.size; }); return { n: files.size, b }; },
         chunkFirst(path) { const parts = chunks.get(path); const cell = parts && parts.get(0); return cell === undefined ? undefined : copy(cell); },
         chunkParts(path) {
             const parts = chunks.get(path);
@@ -425,20 +459,17 @@ export function heapTables() {
             const numbers = new SafeList();
             parts.forEach((_cell, part) => { numbers[numbers.length] = part; });
             arraySort(numbers, (a, b) => a - b);
-            // An ordinary array, as the SQL backing answers, each element defined
-            // on it: an append past its end would meet a setter a program put on
-            // Array.prototype.
-            const out = [];
+            const out = new SafeList();
             for (let i = 0; i < numbers.length; i++) {
-                const cell = parts.get(numbers[i] ?? 0);
+                const cell = parts.get(numbers[i]);
                 if (cell !== undefined)
-                    reflectDefineProperty(out, out.length, dataDescriptor(copy(cell), true, true, true));
+                    out[out.length] = copy(cell);
             }
-            return out;
+            return arrayCopy(out);
         },
-        chunkAddText(path, part, txt) { addChunk(path, Number(part), { txt: String(txt), bin: null }, false); },
-        chunkAddBin(path, part, bin) { addChunk(path, Number(part), { txt: null, bin: owned(bin) }, false); },
-        chunkSetBin(path, part, bin) { addChunk(path, Number(part), { txt: null, bin: owned(bin) }, true); },
+        chunkAddText(path, part, txt) { addChunk(path, NumberOf(part), { txt: stringOf(txt), bin: null }, false); },
+        chunkAddBin(path, part, bin) { addChunk(path, NumberOf(part), { txt: null, bin: owned(bin) }, false); },
+        chunkSetBin(path, part, bin) { addChunk(path, NumberOf(part), { txt: null, bin: owned(bin) }, true); },
         chunkCopy(to, from) {
             const parts = chunks.get(from);
             if (!parts)
@@ -446,23 +477,27 @@ export function heapTables() {
             // One statement in SQLite: a conflicting part fails the whole copy, and nothing lands.
             const held = chunks.get(to);
             if (held)
-                for (const part of parts.keys())
-                    if (held.has(part))
-                        throw new Error('UNIQUE constraint failed: chunk.path, chunk.part');
-            for (const [part, cell] of [...parts])
-                addChunk(to, part, { txt: cell.txt, bin: cell.bin }, false);
+                parts.forEach((_cell, part) => { if (held.has(part))
+                    throw new Error('UNIQUE constraint failed: chunk.path, chunk.part'); });
+            parts.forEach((cell, part) => { addChunk(to, part, { txt: cell.txt, bin: cell.bin }, false); });
         },
         chunkDelete(path) { dropChunks(path); },
         dropOwn() {
-            const own = new Set(paths().filter((path) => files.get(path).rev === RK_OWN_WRITE));
+            const own = new SafeSet();
+            files.forEach((row, path) => { if (row.rev === RK_OWN_WRITE)
+                own.add(path); });
             dropWhere((row) => row.rev !== RK_OWN_WRITE, (path) => !own.has(path));
         },
         dropDated() {
-            const own = new Set(paths().filter((path) => files.get(path).rev === RK_OWN_WRITE));
+            const own = new SafeSet();
+            files.forEach((row, path) => { if (row.rev === RK_OWN_WRITE)
+                own.add(path); });
             dropWhere((row) => row.rev === RK_OWN_WRITE, (path) => own.has(path));
         },
         dropDatedFiles() {
-            const dated = new Set(paths().filter((path) => files.get(path).rev !== RK_OWN_WRITE));
+            const dated = new SafeSet();
+            files.forEach((row, path) => { if (row.rev !== RK_OWN_WRITE)
+                dated.add(path); });
             dropWhere((row) => row.rev === RK_OWN_WRITE, (path) => !dated.has(path));
         },
         clear() {
@@ -524,18 +559,17 @@ export function heapTables() {
             used += growth;
             namespaceBytes += growth;
             dir.set(name, {
-                kind: Number(kind), size: Number(size), mode: Number(mode), uid: Number(uid), gid: Number(gid),
-                atime: Number(atime), mtime: Number(mtime), ctime: Number(ctime), ino: Number(ino), rev: Number(rev),
-                target: target == null ? null : String(target), dev: Number(dev) || 0, nlink: Number(nlink) || 1,
+                kind: NumberOf(kind), size: NumberOf(size), mode: NumberOf(mode), uid: NumberOf(uid), gid: NumberOf(gid),
+                atime: NumberOf(atime), mtime: NumberOf(mtime), ctime: NumberOf(ctime), ino: NumberOf(ino), rev: NumberOf(rev),
+                target: target == null ? null : stringOf(target), dev: NumberOf(dev) || 0, nlink: NumberOf(nlink) || 1,
             });
         },
         nsGet(parent, name) { const row = nsGetRow(parent, name); return row === undefined ? undefined : { ...row }; },
         nsDelete(parent, name) { nsDrop(parent, name); },
         nsDeleteChildren(parent) { nsDropParent(parent); },
         nsDeleteParents(from, to) {
-            for (const parent of [...ns.keys()])
-                if (cmp(parent, from) >= 0 && (to === null || cmp(parent, to) < 0))
-                    nsDropParent(parent);
+            ns.forEach((_dir, parent) => { if (cmp(parent, from) >= 0 && (to === null || cmp(parent, to) < 0))
+                nsDropParent(parent); });
         },
         nsClear() { used -= namespaceBytes; names = 0; namespaceBytes = 0; ns.clear(); },
         nsBytes() { return namespaceBytes; },
@@ -544,39 +578,68 @@ export function heapTables() {
             return namespaceRowBytes(parent, name, target) - (previous === undefined ? 0 : namespaceRowBytes(parent, name, previous.target));
         },
         nsKeys() {
-            const out = [];
-            for (const parent of [...ns.keys()].sort(cmp))
-                for (const name of sortedNames(ns.get(parent)))
-                    out.push({ parent, name });
-            return out;
+            const out = new SafeList();
+            const parents = sortedNames(ns);
+            for (let i = 0; i < parents.length; i++) {
+                const parent = parents[i];
+                const dir = ns.get(parent);
+                if (dir === undefined)
+                    continue;
+                const list = sortedNames(dir);
+                for (let j = 0; j < list.length; j++)
+                    out[out.length] = { parent, name: list[j] };
+            }
+            return arrayCopy(out);
         },
         nsOfKind(kind) {
-            const out = [];
-            for (const parent of [...ns.keys()].sort(cmp)) {
+            const out = new SafeList();
+            const parents = sortedNames(ns);
+            const code = NumberOf(kind);
+            for (let i = 0; i < parents.length; i++) {
+                const parent = parents[i];
                 const dir = ns.get(parent);
-                for (const name of sortedNames(dir))
-                    if (dir.get(name).kind === Number(kind))
-                        out.push({ parent, name });
-            }
-            return out;
-        },
-        nsUnlisted() {
-            const out = [];
-            for (const parent of [...ns.keys()].sort(cmp)) {
-                const dir = ns.get(parent);
-                for (const name of sortedNames(dir)) {
-                    const row = dir.get(name);
-                    if (row.kind === NS_DIR && row.target !== null)
-                        out.push({ parent, name, target: row.target });
+                if (dir === undefined)
+                    continue;
+                const list = sortedNames(dir);
+                for (let j = 0; j < list.length; j++) {
+                    const name = list[j];
+                    if (dir.get(name)?.kind === code)
+                        out[out.length] = { parent, name };
                 }
             }
-            return out;
+            return arrayCopy(out);
+        },
+        nsUnlisted() {
+            const out = new SafeList();
+            const parents = sortedNames(ns);
+            for (let i = 0; i < parents.length; i++) {
+                const parent = parents[i];
+                const dir = ns.get(parent);
+                if (dir === undefined)
+                    continue;
+                const list = sortedNames(dir);
+                for (let j = 0; j < list.length; j++) {
+                    const name = list[j];
+                    const row = dir.get(name);
+                    if (row !== undefined && row.kind === NS_DIR && row.target !== null)
+                        out[out.length] = { parent, name, target: row.target };
+                }
+            }
+            return arrayCopy(out);
         },
         nsChildren(parent) {
             const dir = ns.get(parent);
             if (!dir)
                 return [];
-            return sortedNames(dir).map((name) => ({ name, kind: dir.get(name).kind, mode: dir.get(name).mode }));
+            const list = sortedNames(dir);
+            const out = new SafeList();
+            for (let i = 0; i < list.length; i++) {
+                const name = list[i];
+                const row = dir.get(name);
+                if (row !== undefined)
+                    out[out.length] = { name, kind: row.kind, mode: row.mode };
+            }
+            return arrayCopy(out);
         },
         nsCount() { return names; },
     };
