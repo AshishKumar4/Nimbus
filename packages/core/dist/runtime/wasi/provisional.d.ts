@@ -154,7 +154,7 @@ export interface Inode {
      * where the view can say nothing of it (unknown), until a move is kept.
      */
     lost?: true;
-    /** Merged into this one (canonicalize): a name record's replay that names it names that one. */
+    /** Merged into this one (canonicalize): dead, its forward all it keeps (bury); what held it resolves it (canonical). */
     merged?: Inode;
     /**
      * The bytes its descriptors last read, and the revision they were made at:

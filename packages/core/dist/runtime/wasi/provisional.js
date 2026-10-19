@@ -162,7 +162,7 @@ export function provisional(host) {
                 && changed.heldAt === undefined && changed.records.length === 0 && ![...layer.values()].includes(changed)) {
                 // A retained fold is only the fallback while no name leads to its inode.
                 // The view found it again (a peer's rename): its retired content is the view's.
-                renamed(changed, key, key);
+                renamed(changed, key, key, true);
                 changed.row = row;
                 changed.base = changed.state = null;
                 touched.delete(changed);
@@ -193,6 +193,13 @@ export function provisional(host) {
         if (inode?.local !== true)
             return { expect: row.ino };
         return inode.made === undefined ? {} : { expect: { made: inode.made } };
+    };
+    /** The Inode `inode` is now: itself, or the owner a merge made it part of (canonicalize). */
+    const canonical = (inode) => {
+        let at = inode;
+        while (at.merged !== undefined)
+            at = at.merged;
+        return at;
     };
     /** The one Inode of the file `row` (at `key`) names. */
     const inodeAt = (key, row) => {
@@ -351,9 +358,12 @@ export function provisional(host) {
      * one way they change: what they grow by admitted, or already admitted by
      * the change's plan (planMove, a rename's). Where the budget has no room
      * for them, it keeps the names it has and is lost (its names a cache, not
-     * its identity): what reaches it by a name is the view's to say.
+     * its identity): what reaches it by a name is the view's to say. It is
+     * lost no more only where a location is accepted as current (`current`:
+     * one the view has it at, or a move it makes); a replay restoring the
+     * names it has learns nothing.
      */
-    const renamed = (inode, key, origin) => {
+    const renamed = (inode, key, origin, current = origin !== inode.origin) => {
         const was = { key: inode.key, origin: inode.origin };
         inode.key = key;
         inode.origin = origin;
@@ -366,7 +376,8 @@ export function provisional(host) {
         }
         if (need > 0)
             inode.reserved += need;
-        delete inode.lost;
+        if (current)
+            delete inode.lost;
         fit(inode);
     };
     /** What `ops` on `inode` cost before they are made: admitted (ENOSPC where the budget has no room), its charge raised to it. */
@@ -604,7 +615,7 @@ export function provisional(host) {
     };
     /** `key` names `inode` from now on (null: nothing). */
     const place = (key, placed) => {
-        const inode = placed?.merged ?? placed;
+        const inode = placed === null ? null : canonical(placed);
         layer.set(key, inode);
         note(parentKey(key), nameOf(key), inode === null ? null : inode.type);
         if (inode !== null) {
@@ -722,22 +733,39 @@ export function provisional(host) {
             touched.delete(made);
             host.release(made.reserved);
             made.reserved = 0;
-            made.merged = owner;
+            bury(made, owner);
         }
         owner.row = { ...owner.row, dev: receipt.dev, ino: receipt.ino, size: receipt.size, mode: receipt.mode, uid: receipt.uid, gid: receipt.gid };
         owner.base = { bytes: receipt.size === 0 ? new Uint8Array(0) : null, size: receipt.size, mode: receipt.mode, uid: receipt.uid, gid: receipt.gid, atime: receipt.mtimeMs, mtime: receipt.mtimeMs, ctime: receipt.ctimeMs };
         refold(owner);
         return owner;
     };
+    /**
+     * A merged Inode is dead: it keeps only its forward to its owner, which
+     * whatever held it across a wait resolves (canonical); any other use of it
+     * throws, so a stray reference shows itself at once.
+     */
+    const bury = (dead, owner) => {
+        for (const field of Object.keys(dead)) {
+            Object.defineProperty(dead, field, {
+                get: () => { throw new Error(`a merged Inode's ${field} used after its merge (canonical)`); },
+                configurable: true,
+            });
+        }
+        Object.defineProperty(dead, 'merged', { value: owner });
+    };
     /** An open's answer: reconciled (reconcile), then what was made through it settled. */
     const openAnswered = (opened, description, records, creating, read) => (refused, answer) => {
-        opened.answers--;
+        // The file it opened as it is now: one a merge made part of another is that one.
+        let inode = canonical(opened);
+        inode.answers--;
         // The session's descriptor of the description: what reads its file once no name leads to it (sessionOf).
         if (!refused && answer?.receipt?.handle !== undefined)
             sessions.set(description, { handle: answer.receipt.handle, read });
-        const inode = refused ? opened : reconcile(opened, answer, creating);
-        if (opened.made === description)
-            delete opened.made;
+        if (inode.made === description)
+            delete inode.made;
+        if (!refused)
+            inode = reconcile(inode, answer, creating);
         // Numbered, or never made: its description names it no more, and goes once nothing holds it open; refused, the
         // session never had it, so it is no file's anchor either.
         if (refused && inode.retained.includes(description)) {
@@ -779,7 +807,8 @@ export function provisional(host) {
         if (inode.state !== null) {
             if (inode.state.bytes === null) {
                 // Its baseline's bytes not held when it took its first record: held now at that revision, the records fold over them.
-                const seen = viewed(inode);
+                // One a grant gave back (heldAt) has its cell's bytes for baseline, newer than any the view has until it retires.
+                const seen = inode.heldAt === undefined ? viewed(inode) : undefined;
                 if (seen?.bytes === undefined || seen.row.revision !== inode.row.revision)
                     return undefined;
                 inode.base = { ...inode.base, bytes: owned(seen.bytes) };
@@ -1283,7 +1312,7 @@ export function provisional(host) {
             if (inode === undefined || inode.local || inode.cell?.detached !== undefined || inode.origin === key && inode.row === entry)
                 return;
             // Its name here follows the view's unless a rename of its own is pending (that one expects it where it was).
-            renamed(inode, inode.key === inode.origin ? key : inode.key, key);
+            renamed(inode, inode.key === inode.origin ? key : inode.key, key, true);
             if (inode.lost)
                 return;
             inode.unnamed = false;
