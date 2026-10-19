@@ -76,6 +76,8 @@ export interface ClangFacetResult {
     error?: string;
     /** The toolchain's filesystem calls and who answered them (wasi/resident-filesystem.ts). */
     fsStats?: ResidentFilesystemStats | null;
+    /** Whether its worker may run another process (__wasiReusable). */
+    reusable?: boolean;
 }
 export const clangFacetCall = async function clangFacetCall(inArgs: {
     primaryName: string;

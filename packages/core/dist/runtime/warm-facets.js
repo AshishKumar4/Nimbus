@@ -23,9 +23,11 @@ export function warmFacetKeys(session, runtime, kept) {
     let named = 0;
     return {
         take: () => idle.pop() ?? { session, name: `${runtime}-${incarnation}-${++named}` },
-        give(key) {
+        give(key, ...ends) {
             if (key.session !== session)
                 throw new Error(`warm ${runtime} facets: a key of another session was given back`);
+            if (!ends.every((end) => end.reusable === true && end.error === undefined && !end.killed))
+                return;
             if (idle.length < kept && !idle.includes(key))
                 idle.push(key);
         },
