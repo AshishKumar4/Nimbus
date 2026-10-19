@@ -793,7 +793,7 @@ class __NimbusInterpretedCallSite {
   #file;
   constructor(frame) {
     this.#frame = frame;
-    this.#file = frame.unit.esModule && !frame.unit.file.startsWith("data:") && !frame.unit.file.startsWith("file:") ? __nimbusFileUrl(frame.unit.file) : frame.unit.file;
+    this.#file = frame.unit.esModule && !__nimbusStackStartsWith(frame.unit.file, "data:") && !__nimbusStackStartsWith(frame.unit.file, "file:") ? __nimbusFileUrl(frame.unit.file) : frame.unit.file;
     const module = {
       name: this.#file, path: frame.unit.file, file: this.#file, frameFile: this.#file,
       head: 0, tail: 0, esModule: frame.unit.esModule, hashbang: false, columns: null, source: frame.unit.source,
