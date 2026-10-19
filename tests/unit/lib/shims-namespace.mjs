@@ -186,12 +186,17 @@ function __nimbusRegistryRequire(id) {
 }
 `;
 
-/** Splice ahead of generateShimsCode() in a standalone shims factory. */
-export const SHIMS_STORE_PRELUDE = `\n${RESIDENT_STORE}\nconst __resident = __nimbusResidentModule.createResidentStore({
+/** The standalone factory's prelude over its own resident store bundle. */
+export function createShimsStorePrelude(residentSource) {
+  return `\n${residentSource}\nconst __resident = __nimbusResidentModule.createResidentStore({
   observeRead: (path) => {
     if (globalThis.__nimbusProfileStaged) globalThis.__nimbusProfileStaged.delete(path);
   },
 });\n${SEED}\n${MODULE_CELLS}\n${RUNTIME_MODULES}\n`;
+}
+
+/** Splice ahead of generateShimsCode() in a standalone shims factory. */
+export const SHIMS_STORE_PRELUDE = createShimsStorePrelude(RESIDENT_STORE);
 
 /**
  * List a test authority (a SqliteVFS) as the session would for a launch, into
