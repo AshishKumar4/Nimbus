@@ -9,15 +9,18 @@
 // require, a third-party module's own import); which, once arms exist, loads
 // one that is no arm's (a bundle's lazy import, the harness's own); which
 // loads the harness's workspace code at all, before any arm too; and (node,
-// which names an import's importer) whose arm lazily imports another arm's.
-// Under Bun and under node; and a bundle's input outside its arm's tree.
+// which names an import's importer) whose arm lazily imports another arm's;
+// and whose arm reuses a module another arm (or checkout) loaded first, or
+// reaches a shared store module that holds one (under Bun, read from the
+// module graph's sources). Under Bun and under node; and a bundle's input
+// outside its arm's tree.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { armTree, assertArmsInside, importBundle, loadIsolatedCore } from '../bench/lib/isolated-core.mjs';
+import { armImports, armTree, assertArmsInside, importBundle, loadIsolatedCore } from '../bench/lib/isolated-core.mjs';
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'isolated-core-')));
 const harness = join(root, 'harness');
@@ -127,6 +130,21 @@ try {
   await unrelatedLater.later();
   assert.throws(() => assertArmsInside(), /unrelated\/later\.mjs/, 'a module that is no arm\'s, loaded later, is caught');
 
+  // Another arm's module already loaded, reused by the arm being made (no new load to see): caught by its graph.
+  put(join(elsewhere, 'packages/b/src/preloaded.mjs'), 'export const token = {};');
+  const preloaded = await import(pathToFileURL(join(elsewhere, 'packages/b/src/preloaded.mjs')).href);
+  put(join(leaky, 'packages/b/src/reuse.mjs'), `export * from ${JSON.stringify(join(elsewhere, 'packages/b/src/preloaded.mjs'))};`);
+  await assert.rejects(loadIsolatedCore(leaky, cleanup, { sources, modules: ['reuse.mjs'], harness }), /preloaded\.mjs, imported by [^,]*reuse\.mjs, not its arm's own/);
+  assert.ok(preloaded.token);
+
+  // A shared store module that holds an arm's module would give it to every arm: caught when an arm reaches it.
+  const capturing = armTree(leaky, cleanup, { harness });
+  put(join(harness, 'node_modules/.bun/capture@1/node_modules/capture/package.json'), JSON.stringify({ name: 'capture', exports: './index.mjs' }));
+  put(join(harness, 'node_modules/.bun/capture@1/node_modules/capture/index.mjs'), `export * from ${JSON.stringify(join(capturing, 'packages/b/src/helper.mjs'))};`);
+  link('../../../node_modules/.bun/capture@1/node_modules/capture', join(capturing, 'packages/b/node_modules/capture'));
+  put(join(capturing, 'packages/b/src/captured.mjs'), "export * from 'capture';");
+  await assert.rejects(armImports(capturing, ['packages/b/src/captured.mjs']), /helper\.mjs, imported by [^,]*capture\/index\.mjs, a shared store module, from outside the store/);
+
   // So does a bundle with an input outside it; one inside is imported, and what it loads later is watched.
   const bundled = await importBundle(tree, { entryPoints: [join(tree, 'packages/b/src/main.mjs')], format: 'esm', platform: 'neutral' }, join(root, 'bundle.mjs'));
   assert.equal(bundled.version, 'real');
@@ -175,10 +193,35 @@ try {
     assert.notEqual(leaked.status, 0, module);
     assert.match(leaked.stderr, /while an arm is made, it loads only its own tree's modules/, module);
   }
+  // Under node, a module loaded before (another checkout's) reused by the arm being made is caught by its import edge.
+  put(join(root, 'unrelated/preloaded.mjs'), 'export const token = {};');
+  put(join(leaky, 'packages/b/src/reuse-node.mjs'), `export * from ${JSON.stringify(join(root, 'unrelated/preloaded.mjs'))}; export const version = 'leaky';`);
+  const reused = node(['reuse-node.mjs'], join(root, 'unrelated/preloaded.mjs'));
+  assert.notEqual(reused.status, 0);
+  assert.match(reused.stderr, /unrelated\/preloaded\.mjs, imported by [^,]*reuse-node\.mjs, not its arm's own/);
+  // And a shared store module that holds an arm's module.
+  const storeScript = `
+    import { armImports, armTree } from ${JSON.stringify(pathToFileURL(join(import.meta.dirname, '../bench/lib/isolated-core.mjs')).href)};
+    import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
+    import { join } from 'node:path';
+    const cleanups = [];
+    try {
+      const tree = armTree(${JSON.stringify(leaky)}, (dispose) => cleanups.push(dispose), { harness: ${JSON.stringify(harness)} });
+      const store = ${JSON.stringify(join(harness, 'node_modules/.bun/capture@1/node_modules/capture'))};
+      writeFileSync(join(store, 'index.mjs'), 'export * from ' + JSON.stringify(join(tree, 'packages/b/src/helper.mjs')) + ';');
+      mkdirSync(join(tree, 'packages/b/node_modules'), { recursive: true });
+      symlinkSync('../../../node_modules/.bun/capture@1/node_modules/capture', join(tree, 'packages/b/node_modules/capture'));
+      writeFileSync(join(tree, 'packages/b/src/captured.mjs'), "export * from 'capture';");
+      await armImports(tree, ['packages/b/src/captured.mjs']);
+    } finally { for (const dispose of cleanups) dispose(); }
+  `;
+  const captured = spawnSync('node', ['--input-type=module', '-e', storeScript], { encoding: 'utf8' });
+  assert.notEqual(captured.status, 0);
+  assert.match(captured.stderr, /helper\.mjs, imported by [^,]*capture\/index\.mjs, a shared store module, from outside the store/);
   // Under node, an arm's lazy import of another arm's module is caught too (its importer is named).
   const crossed = node(['cross-later.mjs'], undefined, true);
   assert.notEqual(crossed.status, 0);
-  assert.match(crossed.stderr, /packages\/b\/src\/helper\.mjs, imported by [^,]*cross-later\.mjs, another arm's/);
+  assert.match(crossed.stderr, /packages\/b\/src\/helper\.mjs, imported by [^,]*cross-later\.mjs, not its arm's own/);
 } finally {
   for (const dispose of cleanups.reverse()) dispose();
   rmSync(root, { recursive: true, force: true });

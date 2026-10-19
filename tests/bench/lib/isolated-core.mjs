@@ -16,7 +16,12 @@
 // the process loads (Bun's module registry, node's resolve hook), whoever
 // loads it and however (an import, a require, a lazy import from a bundle, a
 // third-party module's own), and the bench fails on one that breaks any of
-// these (assertArmsInside).
+// these (assertArmsInside). Under node, every import's importer is known, a
+// cached module's included; under Bun, which names none, an arm's module
+// graph, and the store's it reaches, is read from their sources (every name
+// they spell), so an arm reusing a module another arm loaded first, or a
+// shared store module holding an arm's, is caught too. A name only computed
+// when the code runs, under Bun, is checked only if it loads something new.
 import assert from 'node:assert/strict';
 import {
   copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync,
@@ -166,6 +171,63 @@ const toolStore = existsSync(join(repository, 'node_modules', '.bun')) ? realpat
 /** Third-party code: the harness's store, or the bench tooling's. */
 const inStore = (path) => (watched !== null && path.startsWith(watched.store)) || (toolStore !== null && path.startsWith(toolStore));
 
+/**
+ * The import edges of the module graph from `entries` (files of an arm's
+ * tree, or its bundles), every module of it reached by a name the source
+ * spells (static, side-effect, re-export, dynamic with a constant name,
+ * require), resolved as Bun resolves it: [importer, imported], realpaths.
+ * Under Bun, which names no importer of what it loads (a module another arm
+ * loaded first is reused, unseen), this graph is how an arm's own, and the
+ * shared store's, dependencies are known. Each module's edges are read once.
+ */
+const edgesRead = new Set();
+const transpilers = {};
+function staticEdges(entries) {
+  const edges = [];
+  const pending = [...entries];
+  while (pending.length > 0) {
+    const file = pending.pop();
+    if (edgesRead.has(file)) continue;
+    edgesRead.add(file);
+    const loader = /\.tsx$/.test(file) ? 'tsx' : /\.[cm]?ts$/.test(file) ? 'ts' : /\.jsx$/.test(file) ? 'jsx' : /\.[cm]?js$/.test(file) ? 'js' : null;
+    if (loader === null) continue;
+    transpilers[loader] ??= new Bun.Transpiler({ loader });
+    let imports;
+    try {
+      imports = transpilers[loader].scanImports(readFileSync(file, 'utf8').replace(/^#!.*\n/, ''));
+    } catch {
+      continue;
+    }
+    for (const { path: specifier } of imports) {
+      if (nodeModule.isBuiltin(specifier) || specifier.startsWith('bun:')) continue;
+      let at;
+      try {
+        at = real(Bun.resolveSync(specifier, dirname(file)));
+      } catch {
+        // Not resolvable from here (an optional dependency's guarded require): nothing loaded.
+        continue;
+      }
+      edges.push([file, at]);
+      pending.push(at);
+    }
+  }
+  return edges;
+}
+
+/**
+ * Each edge of `edges` ([importer, imported]) that shares code it should
+ * not: an arm's module importing what is not its own (another arm's, the
+ * harness's, an unrelated checkout's) or the store's; a store module
+ * importing what is not the store's (it would hold that code for every arm).
+ */
+function foreignEdges(edges) {
+  return edges.filter(([parent, path]) => {
+    if (inStore(parent)) return !inStore(path);
+    const owner = ownerOf(parent);
+    return owner !== null && ownerOf(path) !== owner && !inStore(path);
+  }).map(([parent, path]) => [path, `${path}, imported by ${parent}, ${inStore(parent) ? 'a shared store module, from outside the store' : "not its arm's own"}`]);
+}
+
 /** Throws, naming each offence (`found`: [the module's path, what it did]) whose module it has not named before. */
 function offences(found, what) {
   const fresh = [];
@@ -182,10 +244,15 @@ function offences(found, what) {
  * arm (`tree`) was being made lies outside that arm's tree and bundles and
  * the harness's store: it would be shared with another arm, or the harness.
  */
-function assertOwnLoads(tree, from) {
+function assertOwnLoads(tree, from, entries) {
   const own = realpathSync(tree) + sep;
-  offences(loadedSince(from).filter(([, path]) => ownerOf(path) !== own && !inStore(path)).map(([, path]) => [path, `${path}, loaded while making the arm ${own}`]),
-    "while an arm is made, it loads only its own tree's modules and the harness's third-party store");
+  const loads = loadedSince(from);
+  // Under Bun, the edges its source spells (a module already loaded, reused, is no new load).
+  const edges = typeof Bun === 'undefined' ? loads.filter(([parent]) => parent !== null) : staticEdges(entries.map(real));
+  offences([
+    ...loads.filter(([, path]) => ownerOf(path) !== own && !inStore(path)).map(([, path]) => [path, `${path}, loaded while making the arm ${own}`]),
+    ...foreignEdges(edges),
+  ], "while an arm is made, it loads only its own tree's modules and the harness's third-party store, and no shared store module imports from outside the store");
 }
 
 /**
@@ -195,7 +262,7 @@ function assertOwnLoads(tree, from) {
  * and bundles and the harness's third-party store (the harness's own, an
  * unrelated checkout's); or (under node, which names each import's importer)
  * a module an arm's code imported from outside its own tree and bundles and
- * the store (another arm's).
+ * the store (another arm's), or a store module from outside the store.
  */
 export function assertArmsInside() {
   if (watched === null) return;
@@ -205,10 +272,7 @@ export function assertArmsInside() {
   offences([
     ...ever.filter(([, path]) => path.startsWith(packages) && !inStore(path)).map(([, path]) => [path, path]),
     ...since.filter(([, path]) => ownerOf(path) === null && !inStore(path)).map(([, path]) => [path, path]),
-    ...since.filter(([parent, path]) => {
-      const owner = parent === null ? null : ownerOf(parent);
-      return owner !== null && ownerOf(path) !== owner && !inStore(path);
-    }).map(([parent, path]) => [path, `${path}, imported by ${parent}, another arm's`]),
+    ...foreignEdges(since.filter(([parent]) => parent !== null)),
   ], "a bench loads no workspace package code of the harness's, and once its arms are made, nothing but its arms' own modules (each arm its own) and the harness's third-party store, none of the harness repository's");
 }
 
@@ -244,7 +308,7 @@ export async function importBundle(tree, options, file) {
   bundles.set(realpathSync(file), realpathSync(tree) + sep);
   const from = mark();
   const loaded = await import(pathToFileURL(file).href);
-  assertOwnLoads(tree, from);
+  assertOwnLoads(tree, from, [file]);
   return loaded;
 }
 
@@ -256,7 +320,7 @@ export async function importBundle(tree, options, file) {
 export async function armImports(tree, paths) {
   const from = mark();
   const loaded = await Promise.all(paths.map((path) => import(pathToFileURL(join(tree, path)).href)));
-  assertOwnLoads(tree, from);
+  assertOwnLoads(tree, from, paths.map((path) => join(tree, path)));
   assertArmsInside();
   return loaded;
 }
