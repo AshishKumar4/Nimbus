@@ -14,6 +14,8 @@ export interface PrebundleDispatch {
     readonly signal?: AbortSignal;
     take(): PrebundleSpec;
     transferred(): void;
+    /** Called as its call queues for a worker, when it has to wait for one. */
+    waiting(): void;
 }
 /** What both pre-bundling pipelines call. */
 export interface BundlePool {
@@ -35,6 +37,7 @@ export declare class PrebundlePool implements BundlePoolProvider {
     get session(): string;
     acquire(signal?: AbortSignal): Promise<BundlePool>;
     private dispatch;
+    /** A slot, now or in turn; `onWait` is called as it queues. */
     private waitForSlot;
     /** The build facet is the Durable Object's, not the pool's: nothing to release. */
     dispose(): void;

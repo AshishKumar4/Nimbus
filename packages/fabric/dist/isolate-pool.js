@@ -131,17 +131,26 @@ function loadedIds(ctx) {
 }
 function loadCredit(lease) {
     let held = lease;
-    const unregister = reclaimableSupervisorAllocation(() => {
-        held = null;
-        lease.release();
-    });
+    let unregister = () => { };
     const take = () => {
         unregister();
         const taken = held;
         held = null;
         return taken;
     };
-    return { take, release: () => take()?.release() };
+    return {
+        take,
+        release: () => take()?.release(),
+        reclaimable: () => {
+            if (held === null)
+                return;
+            unregister();
+            unregister = reclaimableSupervisorAllocation(() => {
+                held = null;
+                lease.release();
+            });
+        },
+    };
 }
 /**
  * The images' part of a loader cache key: '0' for none, so a pool without
@@ -503,7 +512,7 @@ export class IsolatePool {
             // Refused or aborted, it ends at once: the launch, its admission given back, holds no worker for it.
             const credit = loadCredit(await acquireSupervisorLoad(`facet '${this.tag}' images`, imageBytes, signal, { owner: `facet '${this.tag}' images`, pid: this.writerPid, session: this.ctx.id?.toString() }));
             try {
-                await resume?.(signal);
+                await resume?.(signal, credit.reclaimable);
             }
             catch (error) {
                 credit.release();
@@ -701,7 +710,7 @@ export class IsolatePool {
                     const credit = await takeCredit();
                     let admitted;
                     try {
-                        admitted = await readmitRefused(held, { since: firstRefusal, signal });
+                        admitted = await readmitRefused(held, { since: firstRefusal, signal, onWait: credit?.reclaimable });
                     }
                     finally {
                         if (!admitted)

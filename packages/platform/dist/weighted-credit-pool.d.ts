@@ -4,7 +4,10 @@ export interface CreditLease {
 }
 export interface ResizableCreditLease extends CreditLease {
     shrinkTo(bytes: number): void;
-    /** Holds `bytes` in all if the rest can be granted now, as tryAcquire would grant it, else holds what it held. */
+    /**
+     * Holds `bytes` in all if the rest can be granted now, in its own lane, as
+     * tryAcquire would grant it; else holds what it held and answers false.
+     */
     tryGrowTo(bytes: number): boolean;
 }
 export interface WeightedCreditPoolStats {

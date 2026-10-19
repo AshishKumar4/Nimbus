@@ -227,11 +227,13 @@ export declare const REFUSED_CALL_WAIT_MS = 15000;
  * claim, process; a launch's run is that launch's run again), once the
  * ledger lets it in: after the pause, even when its key is still in flight,
  * and when there is room. Undefined once `signal` aborts or the call's first
- * refusal (`since`) is {@link REFUSED_CALL_WAIT_MS} old.
+ * refusal (`since`) is {@link REFUSED_CALL_WAIT_MS} old. `onWait` is called
+ * as a wait of it queues.
  */
 export declare function readmitRefused(refused: EndLoaderFetch, options: {
     since: number;
     signal?: AbortSignal;
+    onWait?: () => void;
 }): Promise<EndLoaderFetch | undefined>;
 /** The one Dynamic Worker a process puts in flight, on the ledger: its launch, then its run or its residency. */
 export declare function launchWorkerKey(pid: number): string;
@@ -291,7 +293,7 @@ export declare function beginAdmittedFetch(ctx: object): EndLoaderFetch | undefi
  * unclaimed, so a wait for credit inside it holds no worker (the lock order:
  * credit, then a worker); undefined where it holds none to give back.
  */
-export declare function suspendHeldAdmission(ctx: object): ((signal?: AbortSignal) => Promise<void>) | undefined;
+export declare function suspendHeldAdmission(ctx: object): ((signal?: AbortSignal, onWait?: () => void) => Promise<void>) | undefined;
 /** Whether this frame is a running, claimed launch, not a preparation's reserved worker. */
 export declare function runningLaunchAdmission(ctx: object): boolean;
 export declare function claimAdmission(ctx: object, pid?: number): EndLoaderFetch | undefined;
@@ -303,8 +305,9 @@ export declare function claimAdmission(ctx: object, pid?: number): EndLoaderFetc
  * flight, as the process whose preparation it is (withLaunchPreparation, or
  * a launch whose admission is given back while it prepares again).
  * End the hold from the caller's own `finally`, as beginLoaderFetch's.
+ * `onWait` is called if it has to wait, as it queues.
  */
-export declare function beginHelperFetch(ctx: object, workerKey: string, signal?: AbortSignal): Promise<EndLoaderFetch>;
+export declare function beginHelperFetch(ctx: object, workerKey: string, signal?: AbortSignal, onWait?: () => void): Promise<EndLoaderFetch>;
 /**
  * Distinct Dynamic Workers this actor may still put in flight: the limit
  * less what is held and claimed right now, and none while a limit refusal's

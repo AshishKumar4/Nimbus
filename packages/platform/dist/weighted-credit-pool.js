@@ -4,12 +4,15 @@
  */
 class CreditLane {
     capacity;
+    largest;
     current = 0;
     peak = 0;
     waiters = [];
     ahead = [];
-    constructor(capacity) {
+    /** `largest`: the most one lease of this lane may hold (a small request's bound, for the reserve). */
+    constructor(capacity, largest = capacity) {
         this.capacity = capacity;
+        this.largest = largest;
     }
     get stats() {
         return { current: this.current, peak: this.peak, queued: this.waiters.length + this.ahead.length };
@@ -90,11 +93,12 @@ class CreditLane {
                 if (released) {
                     throw new Error('cannot grow a released weighted credit lease');
                 }
-                if (!Number.isSafeInteger(nextBytes) || nextBytes < leasedBytes || nextBytes > this.capacity) {
-                    throw new RangeError(`weighted credit lease can only grow to a safe integer from ${leasedBytes} to ${this.capacity}: ${nextBytes}`);
+                if (!Number.isSafeInteger(nextBytes) || nextBytes < leasedBytes) {
+                    throw new RangeError(`weighted credit lease can only grow to a safe integer no smaller than ${leasedBytes}: ${nextBytes}`);
                 }
                 // Never ahead of a queued ask, as an ordinary tryAcquire.
-                if (this.ahead.length > 0 || this.waiters.length > 0 || this.current + nextBytes - leasedBytes > this.capacity)
+                if (nextBytes > this.largest || this.ahead.length > 0 || this.waiters.length > 0
+                    || this.current + nextBytes - leasedBytes > this.capacity)
                     return false;
                 this.current += nextBytes - leasedBytes;
                 this.peak = Math.max(this.peak, this.current);
@@ -176,7 +180,7 @@ export class WeightedCreditPool {
         }
         this.general = new CreditLane(capacity);
         this.smallRequestBytes = smallRequestBytes;
-        this.small = smallRequestBytes > 0 ? new CreditLane(reserve) : null;
+        this.small = smallRequestBytes > 0 ? new CreditLane(reserve, smallRequestBytes) : null;
     }
     get stats() {
         const general = this.general.stats;

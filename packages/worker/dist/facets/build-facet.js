@@ -234,7 +234,7 @@ function abortFacet(ctx, facet) {
  * worker, anything else waits its turn. Counted on the facet from the start,
  * so a retirement while it waits does not abort the facet under it.
  */
-async function beginCall(ctx, facet, signal) {
+async function beginCall(ctx, facet, signal, onWait) {
     facet.calls++;
     const finished = () => {
         facet.calls--;
@@ -242,7 +242,7 @@ async function beginCall(ctx, facet, signal) {
             abortFacet(ctx, facet);
     };
     try {
-        const endFetch = await beginHelperFetch(ctx, generationId(facet.generation), signal);
+        const endFetch = await beginHelperFetch(ctx, generationId(facet.generation), signal, onWait);
         if (signal?.aborted) {
             endFetch();
             signal.throwIfAborted();
@@ -364,7 +364,7 @@ export async function buildFacetPrebundler(ctx, env, signal) {
     return async (task) => {
         if (facet.retired || facet.generation !== generation)
             throw new BuildFacetResetError(task.specifier, 'the warmed generation was retired', 1);
-        const endCall = await beginCall(ctx, facet, task.signal);
+        const endCall = await beginCall(ctx, facet, task.signal, task.waiting);
         let result;
         try {
             task.signal?.throwIfAborted();
