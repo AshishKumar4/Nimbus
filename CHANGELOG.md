@@ -5,6 +5,14 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Changed: a `ruby` one-shot (`ruby -e`, `gem --version`, `bundle --version`
+  and the like) runs on one of its session's warm Ruby workers, which keep
+  ruby+stdlib.wasm compiled, instead of loading it into a new worker every
+  time. Each process boots a VM of its own there, so it finds nothing an
+  earlier process left. A worker is used again only after a process that
+  ended clean and never reached JavaScript (`require "js"`); a session keeps
+  at most two idle.
+
 - Changed (core): the resident filesystem decides what a caller that
   cannot wait changes outside a subtree the process holds (its
   `synchronous` view). Such a change is answered at once, logged through
