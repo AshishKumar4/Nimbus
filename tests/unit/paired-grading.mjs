@@ -125,11 +125,12 @@ for (const shift of [-10, 0, 10]) {
   assert.equal(unmeasured.failures.length, 2, `a second set that measured nothing leaves it slower: ${JSON.stringify(unmeasured)}`);
 }
 
-// A run that measured fewer kinds leaves the others graded over the runs that measured them.
+// Each kind any run measured is graded over the runs that measured it, and
+// says how many did: remotePairedCpu passes no set with a kind some run missed.
 {
   const runs = cpuRuns([100, 200, 300].map((ms) => ({ A1: ms, A2: ms, null: ms, real: ms + 10 })));
-  const other = { ...runs[0][0], kind: 'other-cpu' };
-  const verdicts = pairedCpuVerdicts([[...runs[0], other], ...runs.slice(1)]);
+  const other = { ...runs[1][0], kind: 'other-cpu' };
+  const verdicts = pairedCpuVerdicts([runs[0], [...runs[1], other], ...runs.slice(2)]);
   assert.deepEqual(verdicts.map(({ kind, runs: measured }) => [kind, measured]), [['copy-cpu', 8], ['other-cpu', 1]]);
 }
 

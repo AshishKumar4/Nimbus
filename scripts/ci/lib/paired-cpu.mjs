@@ -19,7 +19,7 @@ import { median, medianInterval } from '../../lib/statistics.mjs';
  * asks a second set of runs).
  */
 export function pairedCpuVerdicts(runs) {
-  return (runs[0] ?? []).map(({ kind }) => {
+  return [...new Set(runs.flatMap((results) => results.map(({ kind }) => kind)))].map((kind) => {
     const of = runs.flatMap((results) => results.filter((result) => result.kind === kind));
     // Cancel the common A inside each pair, not after two independent medians:
     // median(real - A) - median(null - A) need not equal median(real - null).
@@ -93,7 +93,8 @@ export async function remotePairedCpu({ name, receipts, source, baselineDir, fil
   const first = values.short ? [] : pairedCpuVerdicts(runs);
   // A slower kind is measured again, on a second set of runs, before it is called slower.
   const confirmation = first.some((verdict) => verdict.failures.length > 0) ? await runSet(' confirmation') : null;
-  const verdicts = confirmation ? confirmedVerdicts(first, pairedCpuVerdicts(resultsOf(confirmation))) : first;
+  const again = confirmation ? pairedCpuVerdicts(resultsOf(confirmation)) : [];
+  const verdicts = confirmation ? confirmedVerdicts(first, again) : first;
   const directory = join(NIMBUS_STATE, receipts);
   mkdirSync(directory, { recursive: true });
   const receipt = join(directory, `${values.short ? 'short-' : ''}${sha.slice(0, 12)}-${run.jobId}.json`);
@@ -102,7 +103,10 @@ export async function remotePairedCpu({ name, receipts, source, baselineDir, fil
   const sets = [run, ...(confirmation ? [confirmation] : [])];
   for (const set of sets) for (const outcome of set.outcomes) if (outcome.kind !== 'exited' || outcome.exitCode !== 0) console.log(outcome.tail);
   for (const verdict of verdicts) console.log(JSON.stringify(verdict));
-  const complete = sets.every((set) => resultsOf(set).length === RUNS && set.outcomes.every((outcome) => outcome.kind === 'exited' && outcome.exitCode === 0));
+  // A kind that some run of either set did not measure fails the bench: fewer runs pass nothing.
+  const partial = [...first, ...again].filter((verdict) => verdict.runs !== RUNS);
+  for (const verdict of partial) console.log(`incomplete: ${verdict.kind} was measured in ${verdict.runs} of ${RUNS} runs of a set`);
+  const complete = partial.length === 0 && sets.every((set) => resultsOf(set).length === RUNS && set.outcomes.every((outcome) => outcome.kind === 'exited' && outcome.exitCode === 0));
   if (values.short) console.log(`short smoke: ${runs.length}/${RUNS} runs completed; performance is not graded`);
   process.exit(complete && verdicts.every((verdict) => verdict.failures.length === 0) ? 0 : 1);
 }
