@@ -326,11 +326,23 @@ const ProxyConstructor = Proxy;
 export { ProxyConstructor as Proxy };
 export const Uint8ArrayConstructor = Uint8Array;
 export const ArrayBufferConstructor = ArrayBuffer;
-export const TextEncoderConstructor = TextEncoder;
+// None in a realm with no TextEncoder (a test262 realm's), where nothing measures resident bytes.
+const TextEncoderOf: typeof TextEncoder | undefined = typeof TextEncoder === 'function' ? TextEncoder : undefined;
+const encodeInto: ((encoder: TextEncoder, text: string, destination: Uint8Array) => TextEncoderEncodeIntoResult) | undefined
+  = TextEncoderOf === undefined ? undefined : uncurryThis(TextEncoderOf.prototype.encodeInto);
+/** A TextEncoder of the realm's. */
+export function newTextEncoder(): TextEncoder {
+  if (TextEncoderOf === undefined) throw new TypeErrorConstructor('TextEncoder is not defined');
+  return new TextEncoderOf();
+}
+/** `encoder.encodeInto(text, destination)`, by the realm's TextEncoder.prototype.encodeInto. */
+export function textEncoderEncodeInto(encoder: TextEncoder, text: string, destination: Uint8Array): TextEncoderEncodeIntoResult {
+  if (encodeInto === undefined) throw new TypeErrorConstructor('TextEncoder is not defined');
+  return encodeInto(encoder, text, destination);
+}
 export const mathFloor = Math.floor;
 export const stringCodePointAt: (text: string, index: number) => number | undefined = uncurryThis(String.prototype.codePointAt);
 export const typedArraySet: (view: Uint8Array, source: Uint8Array, offset?: number) => void = uncurryThis(Uint8Array.prototype.set);
-export const textEncoderEncodeInto: (encoder: TextEncoder, text: string, destination: Uint8Array) => TextEncoderEncodeIntoResult = uncurryThis(TextEncoder.prototype.encodeInto);
 export const typedArrayBuffer: (view: Uint8Array) => ArrayBufferLike = (() => {
   const prototype = reflectGetPrototypeOf(Uint8Array.prototype);
   const getter = reflectGetOwnPropertyDescriptor(prototype ?? {}, 'buffer')?.get;

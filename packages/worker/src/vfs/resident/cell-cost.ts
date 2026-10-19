@@ -8,17 +8,18 @@
 import { LEDGER_ROW_BYTES } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import {
   ArrayBufferConstructor, mathCeil, mathFloor, mathMax, reflectGet, stringCharCodeAt, stringOf, stringSlice,
-  TextEncoderConstructor, textEncoderEncodeInto, typedArrayByteLength, Uint8ArrayConstructor,
+  newTextEncoder, textEncoderEncodeInto, typedArrayByteLength, Uint8ArrayConstructor,
 } from '@nimbus-sh/core/_shared/primordials.js';
 import { RESIDENT_CHUNK_BYTES } from '../facet-resident-limits.js';
 
-const encoder = new TextEncoderConstructor();
+let encoder: TextEncoder | undefined;
 let scratch: Uint8Array | undefined;
 
 /** The platform's UTF-8 measure, on the launch's captures after a program starts. */
 export function utf8Length(text: string): number {
   if (text.length >= 256) {
     scratch ??= new Uint8ArrayConstructor(256 * 1024);
+    encoder ??= newTextEncoder();
     let bytes = 0;
     for (let read = 0; read < text.length;) {
       const done = textEncoderEncodeInto(encoder, read === 0 ? text : stringSlice(text, read), scratch);
