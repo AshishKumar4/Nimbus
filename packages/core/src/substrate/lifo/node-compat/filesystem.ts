@@ -1,6 +1,6 @@
 import type { RuntimeFsBridge, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat } from '../../../runtime/os-contracts.js';
 import type { VfsEvent } from '../../../vfs/events.js';
-import { errnoCodeOf, syscallError } from '../../../vfs/vfs-error.js';
+import { errnoCodeOf, isVfsErrorCode, syscallError } from '../../../vfs/vfs-error.js';
 
 export interface NodeWatch {
   close(): void;
@@ -22,6 +22,10 @@ export interface NodeFilesystem {
   lstat(path: string): RuntimeVfsStat;
   /** Canonical VFS path, following links; native module caches key by it. */
   realpath(path: string): string;
+  /** symlink(2): a link at `path` whose text is `target`, as given (a relative one stays relative). */
+  symlink(target: string, path: string): void;
+  /** readlink(2): the text of the link at `path`; EINVAL where `path` is no link, ENOENT where nothing is there. */
+  readlink(path: string): string;
   mkdir(path: string, options?: { recursive?: boolean; mode?: number }): void;
   readdir(path: string): RuntimeVfsDirEntry[];
   unlink(path: string): void;
@@ -112,6 +116,22 @@ function bridgeFilesystem(bridge: RuntimeFsBridge, umask: () => number): NodeFil
       return stat;
     },
     realpath: path => fs.realpath(path),
+    symlink: (target, path) => fs.symlink(target, path),
+    readlink(path) {
+      const text = fs.readlink(path);
+      if (text !== null) return text;
+      // The bridge answers null for no link and for nothing there: readlink(2) tells them apart, and a
+      // lookup that fails on the way (ENOTDIR below a file, ELOOP) is readlink's failure too.
+      let stat;
+      try {
+        stat = fs.stat(path, { followSymlinks: false });
+      } catch (error) {
+        const code = errnoCodeOf(error);
+        if (!isVfsErrorCode(code)) throw error;
+        throw syscallError(code, 'readlink', path, { cause: error });
+      }
+      throw syscallError(stat === null ? 'ENOENT' : 'EINVAL', 'readlink', path);
+    },
     mkdir: (path, options) => fs.mkdir(path, { ...options, umask: umask() }),
     readdir: path => fs.readdir(path) as RuntimeVfsDirEntry[],
     unlink: path => fs.unlink(path),
@@ -121,7 +141,15 @@ function bridgeFilesystem(bridge: RuntimeFsBridge, umask: () => number): NodeFil
     copyFile: (from, to) => fs.copyFile(from, to),
     chmod: (path, mode) => fs.chmod(path, mode),
     chown: (path, uid, gid, follow) => { fs.chown(path, uid, gid, { followSymlinks: follow }); },
-    open: (path, flags) => fs.open(path, { ...flags, umask: umask() }).id,
+    open(path, flags) {
+      const opened = fs.open(path, { ...flags, umask: umask() });
+      // A directory opens with whatever rights a WASI guest asks for; Node's open(2) refuses one for writing.
+      if (flags.write === true && opened.stat.type === 'directory') {
+        fs.close(opened.id);
+        throw syscallError('EISDIR', 'open', path);
+      }
+      return opened.id;
+    },
     read: (fd, position, length) => fs.read(fd, position, length),
     write: (fd, position, data) => fs.write(fd, position, data),
     fstat: (fd) => fs.fstat(fd),
