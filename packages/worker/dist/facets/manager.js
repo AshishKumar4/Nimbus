@@ -28,6 +28,7 @@ import { execIdField, parseExecId } from '@nimbus-sh/core/runtime/process-table.
 import { exitCodeForSignal } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { ensureKernelStoreRoot, KERNEL_STORE_ROOT } from './kernel-store-root.js';
 import { parseProcessSignalName } from '@nimbus-sh/core/runtime/process-io-protocol.js';
+import { TASK_BODY_FAILED } from '@nimbus-sh/core/runtime/facet-host.js';
 import { createNodeFacetRuntime, fetchNodeFacetSources, nodeFacetSource } from '../runtime/node-shims-artifact.js';
 import { moduleSource } from '@nimbus-sh/platform/module-source.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
@@ -1033,7 +1034,11 @@ const __MODULE_VFS_BUNDLE = __nimbusWithCodeCells(${bundleSource.expression});
 
 export default {
   async fetch(request, workerEnv, workerCtx) {
-    const args = await request.json();
+    // A body that does not parse is marked for the entry to name.
+    const args = await request.json().catch((error) => {
+      if (error instanceof Error) error[${JSON.stringify(TASK_BODY_FAILED)}] = true;
+      throw error;
+    });
     const { argv, nodeCommandLine, env, cwd: _cwd, filename, dirname, stdin, captureOutput, cred, diag: __diag, vfsCursor, dataPlan, manifests } = args;
     const __nimbusProcessId = Number(args.pid || 1);
     // A pipe or redirect streams through this input channel (exec's

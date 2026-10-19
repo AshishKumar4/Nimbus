@@ -3,6 +3,7 @@ import { PYTHON_REPL_TASK } from '../loaders/compiled-bodies.generated.js';
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { hostImage, withHostView } from '@nimbus-sh/core/runtime/process-files.js';
 import { z } from 'zod/v4';
+import { facetAnswer } from '@nimbus-sh/core/runtime/facet-host.js';
 import { ReplSession } from './repl-session.js';
 import { sessionUsesSciVariant } from '@nimbus-sh/core/runtime/python-pip.js';
 import { buildCPythonPreamble, cpythonMarkers, enterWorkingDirectory } from '@nimbus-sh/core/runtime/cpython-runner.js';
@@ -21,7 +22,6 @@ const INCOMPLETE_MARKER = '__NIMBUS_PY_INCOMPLETE__';
  */
 const EXIT_MARKER = '__NIMBUS_PY_EXIT__';
 const PythonFacetResult = z.object({ stdout: z.string(), stderr: z.string(), exitCode: z.number().int(), error: z.string().optional(), control: z.record(z.string(), z.string()).optional() });
-const PythonFacetFailure = z.object({ __nimbusFacetError: z.string() });
 /** Where cpython-runner's catalog spec stages the interpreter. */
 const CPYTHON_WASM_REL = 'share/cpython/python.wasm';
 const CPYTHON_SCI_WASM_REL = 'share/cpython/python-sci.wasm';
@@ -235,11 +235,7 @@ class PythonReplAdapter {
             body: JSON.stringify(pythonReplStep(this.deps, this.pythonHome, userCode)),
             signal,
         }));
-        if (!response.ok) {
-            const failure = PythonFacetFailure.parse(await response.json());
-            throw new Error(failure.__nimbusFacetError);
-        }
-        return PythonFacetResult.parse(await response.json());
+        return PythonFacetResult.parse(await facetAnswer(response));
     }
 }
 /**
