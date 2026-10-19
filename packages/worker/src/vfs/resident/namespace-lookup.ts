@@ -183,8 +183,9 @@ export function walkNamespace(
         const named = ownField(word, 'link');
         const link = typeof named === 'string' ? named : undefined;
         if (link !== undefined && leaf && !followLeaf) {
-          const at = nsRowAt(t, link) !== undefined ? link : prefix;
-          return { path, table: at, row: nsRowAt(t, at), own: word };
+          // The link's own row, or once a barrier moved it, the name's where the table keeps it.
+          const at = nsRowAt(t, link) !== undefined ? link : step;
+          return { path, table: at, row: at === null ? undefined : nsRowAt(t, at), own: word };
         }
         if (word.from === undefined) return { path, table: null, row: undefined, own: { absent: true } };
         if (link !== undefined) target = `/${word.from}`;
