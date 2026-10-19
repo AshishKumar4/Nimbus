@@ -234,7 +234,7 @@ function abortFacet(ctx, facet) {
  * worker, anything else waits its turn. Counted on the facet from the start,
  * so a retirement while it waits does not abort the facet under it.
  */
-async function beginCall(ctx, facet, signal) {
+async function beginCall(ctx, facet, signal, onWait) {
     facet.calls++;
     const finished = () => {
         facet.calls--;
@@ -242,7 +242,7 @@ async function beginCall(ctx, facet, signal) {
             abortFacet(ctx, facet);
     };
     try {
-        const endFetch = await beginHelperFetch(ctx, generationId(facet.generation), signal);
+        const endFetch = await beginHelperFetch(ctx, generationId(facet.generation), signal, onWait);
         if (signal?.aborted) {
             endFetch();
             signal.throwIfAborted();
@@ -353,18 +353,29 @@ const messageOf = (error) => (error instanceof Error ? error.message : String(er
  * once more on a fresh facet, logged. A second throw is a
  * BuildFacetResetError naming the package and why; a facet that never
  * loaded is the load's own error, not retried.
+ *
+ * The isolate moves to a new generation when any Durable Object's binding
+ * outgrows its mark. A pre-bundle that has not begun then begins on the new
+ * one: nothing of it ran, so it is no reset. Its slice, if it holds one, is
+ * given back first, and taken again once the new facet is warm.
  */
 export async function buildFacetPrebundler(ctx, env, signal) {
     signal?.throwIfAborted();
-    // Bind the warmed generation now: a retained slice never waits on loading its successor.
-    const facet = sharedBuildFacet(ctx, env);
-    facet.warmed ??= warm(ctx, facet);
-    await untilAborted(facet.warmed, signal);
-    const stub = await untilAborted(facet.stub, signal);
+    // The warmed generation, loaded before any slice is held; a task whose generation moved warms the next one, holding none.
+    const warmed = async (abort) => {
+        const facet = sharedBuildFacet(ctx, env);
+        facet.warmed ??= warm(ctx, facet);
+        await untilAborted(facet.warmed, abort);
+        return { facet, stub: await untilAborted(facet.stub, abort) };
+    };
+    let current = await warmed(signal);
     return async (task) => {
-        if (facet.retired || facet.generation !== generation)
-            throw new BuildFacetResetError(task.specifier, 'the warmed generation was retired', 1);
-        const endCall = await beginCall(ctx, facet, task.signal);
+        while (current.facet.retired || current.facet.generation !== generation) {
+            task.transferred();
+            current = await warmed(task.signal);
+        }
+        const { facet, stub } = current;
+        const endCall = await beginCall(ctx, facet, task.signal, task.waiting);
         let result;
         try {
             task.signal?.throwIfAborted();

@@ -10,6 +10,8 @@
 
 import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import assert from 'node:assert/strict';
+// The launch's captures the write ledger reads (__nimbusLaunchCaptures).
+import './lib/launch-captures.mjs';
 import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { createCurlCommand } from '../../packages/core/src/substrate/lifo/commands/net/curl.ts';

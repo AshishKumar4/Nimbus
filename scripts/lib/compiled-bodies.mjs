@@ -26,14 +26,14 @@ function builtinImports() {
 }
 
 /**
- * @param {{ entry?: string; exports?: string[]; contents?: string; resolveDir?: string; external?: string[]; alias?: Record<string,string>; target?: string }} input
+ * @param {{ entry?: string; exports?: string[]; contents?: string; resolveDir?: string; external?: string[]; alias?: Record<string,string>; target?: string; plugins?: import('esbuild').Plugin[] }} input
  * @returns {Promise<{ module: string; expression: string; imports: string[] }>}
  */
-export async function compiledBodies({ entry, exports, contents, resolveDir = process.cwd(), external = [], alias = {}, target = 'esnext' }) {
+export async function compiledBodies({ entry, exports, contents, resolveDir = process.cwd(), external = [], alias = {}, target = 'esnext', plugins = [] }) {
   const result = await build({
     stdin: { contents: contents ?? `export { ${exports.join(', ')} } from ${JSON.stringify(entry)};`, resolveDir, sourcefile: 'compiled-bodies-entry.mjs', loader: 'js' },
     bundle: true, write: false, platform: 'neutral', format: 'esm', target, minify: true,
-    conditions: ['workspace', 'workerd', 'worker', 'import'], mainFields: ['module', 'main'], external: ['cloudflare:*', ...external], alias, plugins: [builtinImports()],
+    conditions: ['workspace', 'workerd', 'worker', 'import'], mainFields: ['module', 'main'], external: ['cloudflare:*', ...external], alias, plugins: [...plugins, builtinImports()],
     legalComments: 'none', logLevel: 'warning',
   });
   const module = result.outputFiles[0].text;

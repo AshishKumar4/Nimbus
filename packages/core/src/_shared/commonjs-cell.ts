@@ -526,7 +526,8 @@ const {
   registerSource: __nimbusRegisterSource,
   SyntaxError: __nimbusSyntaxError,
 } = __nimbusLaunchCaptures;
-const __nimbusCodeCells = new Map(__NIMBUS_CODE_CELLS.map((__row) => [__row[0], __row]));
+// A SafeMap: module loading asks it after the program may have replaced Map.prototype.has.
+const __nimbusCodeCells = new __nimbusLaunchCaptures.SafeMap(__NIMBUS_CODE_CELLS.map((__row) => [__row[0], __row]));
 // Where node:fs shows the map's modules: beside this main module, /bundle/.
 const __NIMBUS_BUNDLE_FILES = decodeURIComponent(new URL("./", import.meta.url).pathname);
 // The URL import() in the module at a path resolves against (moduleImporterUrl).
@@ -1009,8 +1010,9 @@ function __nimbusWithCodeCells(bundle) {
   return bundle;
 }
 // ── Runtime code (see RUNTIME CODE in commonjs-cell.ts) ──
-const __nimbusRuntimeKeys = new Set(__NIMBUS_RUNTIME_CODE);
-const __nimbusRuntimeLedger = new Map();
+// The launch's SafeSet and SafeMap: compiling a program's code asks these after it may have replaced Set's and Map's methods.
+const __nimbusRuntimeKeys = new __nimbusLaunchCaptures.SafeSet(__NIMBUS_RUNTIME_CODE);
+const __nimbusRuntimeLedger = new __nimbusLaunchCaptures.SafeMap();
 let __nimbusRuntimeLedgerBytes = 0;
 let __nimbusRuntimeCodeReporter = null;
 let __nimbusCodeNotifyQueued = false;
@@ -1090,7 +1092,7 @@ function __nimbusRuntimeInterpreter() {
     __nimbusInterpreter = createInterpreter(__nimbusRegistryRequire("./${RUNTIME_INTERPRETER_OPS_MODULE}"), {
       dynamicImport: (parentUrl, specifier, options) => globalThis.__nimbusDynamicImport(parentUrl, specifier, options),
       primordials: __nimbusLaunchPrimordials,
-      moduleHelpers: ${ESM_MODULE_HELPERS},
+      moduleHelpers: ${ESM_MODULE_HELPERS}(__nimbusLaunchCaptures),
       stackCapture: __nimbusRecordInterpretedStack,
       stackIsProxy: __nimbusStackIsProxy,
       stackIsError: __nimbusStackIsError,

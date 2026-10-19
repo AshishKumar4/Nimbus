@@ -296,7 +296,23 @@ export async function openPage(browser, sid, opts = {}) {
   await reportPageNavigations(page);
   const consoleMessages = [];
   const pageErrors = [];
+  /**
+   * Every pre-bundled module the page received, by path: how many responses
+   * came, and the last one's status, headers and text (what it evaluated),
+   * the text a promise of its body or of why it could not be read.
+   */
+  const receivedModules = new Map();
 
+  page.on('response', (response) => {
+    const path = new URL(response.url()).pathname;
+    if (!path.includes('/@modules/')) return;
+    receivedModules.set(path, {
+      responses: (receivedModules.get(path)?.responses ?? 0) + 1,
+      status: response.status(),
+      headers: response.headers(),
+      text: response.text().then((text) => ({ text }), (error) => ({ error: String(error) })),
+    });
+  });
   page.on('console', (msg) => {
     consoleMessages.push({
       type: msg.type(),
@@ -400,6 +416,64 @@ export async function openPage(browser, sid, opts = {}) {
     /** Get the current page URL. */
     async currentUrl() {
       return page.url();
+    },
+
+    /**
+     * Evidence for a module the page could not evaluate: for the first
+     * "… @ /s/<sid>/…/@modules/<name>:<line>" in `text` (the dev server's
+     * crash overlay), the lines around <line> of that module as the page
+     * received it, and whether it is served the same now: lengths, and the
+     * first offset at which the two differ. Null when `text` names none.
+     */
+    async servedModuleExcerpt(text) {
+      const at = /@ (\/s\/[^\s:]+\/@modules\/[^\s:]+):(\d+)/.exec(text);
+      if (!at) return null;
+      const [, path, named] = at;
+      const line = Number(named);
+      const got = receivedModules.get(path) ?? null;
+      const body = got === null ? null : await got.text;
+      const received = body?.text ?? null;
+      const now = await page.evaluate(async (path) => {
+        try {
+          const response = await fetch(path, { cache: 'no-store' });
+          return { status: response.status, bundleStatus: response.headers.get('x-nimbus-bundle-status'), text: await response.text() };
+        } catch (error) {
+          return { error: String(error) };
+        }
+      }, path).catch((error) => ({ error: String(error) }));
+      const excerpt = (body) => {
+        const lines = body.split('\n');
+        const from = Math.max(1, line - 5);
+        return {
+          length: body.length,
+          lineOffset: lines.slice(0, line - 1).reduce((sum, text) => sum + text.length + 1, 0),
+          lines: lines.slice(from - 1, line + 5).map((text, i) => `${from + i}: ${text.slice(0, 240)}`),
+        };
+      };
+      const firstDifference = (a, b) => {
+        const end = Math.min(a.length, b.length);
+        for (let i = 0; i < end; i++) if (a.charCodeAt(i) !== b.charCodeAt(i)) return i;
+        return a.length === b.length ? null : end;
+      };
+      // Where each 4 KiB block of what the page received sits in what is served now (-1: nowhere): a permutation or a substitution.
+      const blockMap = (got, served) => {
+        const map = [];
+        for (let at = 0; at < got.length; at += 4096) {
+          const block = got.slice(at, at + 4096);
+          map.push(served.startsWith(block, at) ? at : served.indexOf(block));
+        }
+        return map.map((found, i) => (found === i * 4096 ? '=' : `${i * 4096}<-${found}`)).filter((entry) => entry !== '=');
+      };
+      return {
+        path, line,
+        received: got === null ? null : {
+          responses: got.responses, status: got.status, headers: got.headers,
+          ...(received === null ? { error: body?.error ?? null } : excerpt(received)),
+        },
+        now: 'text' in now ? { status: now.status, bundleStatus: now.bundleStatus, ...excerpt(now.text) } : now,
+        firstDifference: received !== null && 'text' in now ? firstDifference(received, now.text) : null,
+        movedBlocks: received !== null && 'text' in now ? blockMap(received, now.text) : null,
+      };
     },
 
     async close() {

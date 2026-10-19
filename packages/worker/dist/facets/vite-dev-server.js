@@ -268,13 +268,10 @@ function extractCjsExportNames(code) {
         n !== 'default' &&
         !RESERVED_ES_KEYWORDS.has(n));
 }
-/**
- * A module that fails in the page with `diag`. It declares `names` (each
- * undefined) beside its default, so an importer of any of them links, and
- * throws `diag` as it evaluates: the preview's overlay shows that, where a
- * module lacking a name the importer asks for would fail to link with "does
- * not provide an export named ..." and never run.
- */
+/** A Response of `module`'s own: one per consumer, never a clone of another's. */
+function moduleResponse(module) {
+    return new Response(module.body, { status: module.status, headers: module.headers });
+}
 export function failingModule(diag, names) {
     const escaped = JSON.stringify(diag);
     // A string export name must be well-formed Unicode (a lone surrogate is a
@@ -1235,8 +1232,8 @@ export class ViteDevServer {
      * multiple parallel requests for the same /preview/@modules/<spec>
      * (which happens on first preview load — every imported module
      * resolves concurrently), we want exactly ONE bundle attempt per
-     * spec. The map holds the in-flight Promise<Response> keyed by
-     * cacheKey; subsequent fetches return the same promise. Entry is
+     * spec. The map holds the in-flight module (ServedModule) keyed by
+     * cacheKey; subsequent fetches wait on the same promise. Entry is
      * deleted when the promise settles so repeat-after-cache-expiry
      * goes through the cold path again.
      *
@@ -1903,12 +1900,15 @@ export class ViteDevServer {
         // leases the slice while it gathers and hands it off, never while it
         // waits for a slot or the compiler's answer. See `pendingBundles`.
         //
-        // The shared promise resolves to a Response nobody consumes
-        // directly: a Response body is readable once, so every coalesced
-        // consumer — the initiator included — takes its own clone.
+        // The shared promise resolves to the module's text, and every
+        // consumer, the initiator included, gets a Response of its own made
+        // from it. Not a clone: a cloned (teed) body streamed out of the
+        // Durable Object reached the browser with a 16 KiB chunk out of order
+        // (markflow on fresh deploys, about 1 run in 35), and the module
+        // failed to parse.
         const inflight = this.pendingBundles.get(cacheKey);
         if (inflight)
-            return inflight.then((response) => response.clone());
+            return inflight.then(moduleResponse);
         const coldPromise = this.serveModuleCold(specifier, headers, base, barrel);
         this.pendingBundles.set(cacheKey, coldPromise);
         // Drop the coalescing entry once settled. Subsequent requests
@@ -1917,7 +1917,7 @@ export class ViteDevServer {
         const finished = () => { if (this.pendingBundles.get(cacheKey) === coldPromise)
             this.pendingBundles.delete(cacheKey); };
         coldPromise.then(finished, finished);
-        return coldPromise.then((response) => response.clone());
+        return coldPromise.then(moduleResponse);
     }
     /**
      * Cold path of serveModule: the specifier's bundle built on demand
@@ -1932,7 +1932,7 @@ export class ViteDevServer {
         const outcome = await buildPrebundle(this.prebundle, specifier, barrel, (bundled) => {
             const code = this.servablePrebundle(bundled, base);
             this.cacheModule(generation, cacheKey, { code, timestamp: Date.now(), inputHash: barrel?.inputHash ?? '' });
-            return new Response(code, { headers: { ...headers, 'Content-Type': JS_CT } });
+            return { body: code, status: 200, headers: { ...headers, 'Content-Type': JS_CT } };
         });
         if (outcome.kind === 'built') {
             if (outcome.changed)
@@ -1946,10 +1946,11 @@ export class ViteDevServer {
         // dev server's log, not as an opaque 500 in the network panel.
         if (outcome.kind === 'refused' && outcome.status !== 'native') {
             this.log('error', `[vite-dev] ${outcome.message}`);
-            return new Response(failingModule(outcome.message, outcome.names), {
+            return {
+                body: failingModule(outcome.message, outcome.names),
                 status: 200,
                 headers: { ...headers, 'Content-Type': JS_CT, 'X-Nimbus-Bundle-Status': outcome.status },
-            });
+            };
         }
         const failure = outcome.kind === 'unresolved' ? 'its entry module could not be resolved in node_modules' : outcome.message;
         if (outcome.kind !== 'unresolved')
@@ -1984,9 +1985,7 @@ export class ViteDevServer {
                 `export const __nimbus_optional_dep_stub = true;\n`;
             // Cache so repeated transitive references don't re-walk + re-warn.
             this.cacheModule(generation, cacheKey, { code: stubCode, timestamp: Date.now() });
-            return new Response(stubCode, {
-                headers: { ...headers, 'Content-Type': JS_CT },
-            });
+            return { body: stubCode, status: 200, headers: { ...headers, 'Content-Type': JS_CT } };
         }
         const diag = `[vite-dev] cannot serve /preview/@modules/${specifier}: ` +
             `Nimbus could not bundle it: ${failure}. Reload the page to try again; ` +
@@ -2008,7 +2007,8 @@ export class ViteDevServer {
             }
             catch { /* the package's own exports above */ }
         }
-        return new Response(failingModule(diag, names), {
+        return {
+            body: failingModule(diag, names),
             status: 200,
             headers: {
                 ...headers,
@@ -2016,7 +2016,7 @@ export class ViteDevServer {
                 'Cache-Control': 'no-store',
                 'X-Nimbus-Bundle-Status': 'bundle-failed',
             },
-        });
+        };
     }
     // ── File serving ──────────────────────────────────────────────────────
     /**

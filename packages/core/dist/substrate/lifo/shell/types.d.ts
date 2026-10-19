@@ -34,6 +34,7 @@ export interface Token {
     heredocQuoted?: boolean;
     heredocTerminated?: boolean;
     parts?: WordPart[];
+    source?: string;
 }
 export interface ScriptNode {
     type: 'script';
@@ -85,6 +86,8 @@ export interface RedirectionNode {
     operator: 'write' | 'append' | 'read' | 'readWrite' | 'writeAll' | 'dupOutput' | 'dupInput' | 'heredoc';
     fd: number | null;
     target: WordPart[];
+    /** In a simple command: how many of its words came before it (an alias's comment takes only what follows its word). */
+    wordsBefore?: number;
     heredoc?: {
         body: string;
         quoted: boolean;
@@ -103,6 +106,8 @@ export interface IfNode {
 export interface ForNode {
     type: 'for';
     variable: string;
+    /** Not a name (quoted, or not an identifier): bash's error, the loop not run. */
+    variableError?: string;
     words: WordPart[][] | null;
     body: ListNode[];
     redirections: RedirectionNode[];
@@ -132,6 +137,8 @@ export interface CaseNode {
 export interface FunctionDefNode {
     type: 'function_def';
     name: string;
+    /** Not a function name (quoted, a `$` in it, or all digits): bash's error, nothing defined. */
+    nameError?: string;
     body: CompoundCommandNode;
 }
 export interface GroupNode {

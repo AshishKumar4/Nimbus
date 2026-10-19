@@ -113,6 +113,7 @@ export declare const numberIsInteger: (number: unknown) => boolean;
 export declare const objectIs: (value1: any, value2: any) => boolean;
 export declare const objectIsExtensible: (o: any) => boolean;
 export declare const mathAbs: (x: number) => number;
+export declare const mathMin: (...values: number[]) => number;
 export declare function captureStackTraceOf(): unknown;
 /** The runtime's own Error.captureStackTrace, installed before any program code (commonjs-cell). */
 export declare function useCaptureStackTrace(capture: Function): void;
@@ -200,4 +201,13 @@ export declare function newURL(input: string, base?: string | URL): URL;
 export declare function safeGenerator<A extends unknown[], R>(fn: (...args: A) => Generator<unknown, R, unknown>): (...args: A) => Generator<unknown, R, unknown>;
 /** `object`'s own `key`, or undefined: a parsed package.json's field, which Node's reader takes only as the file has it (no inherited one). */
 export declare function ownField(object: object, key: string): unknown;
+/** Map.prototype.get of a Map the glue did not make (the launch's tables on globalThis). */
+export declare const mapGet: <K, V>(map: Map<K, V>, key: K) => V | undefined;
+export declare const MapConstructor: MapConstructor;
+export declare const objectPreventExtensions: <T>(o: T) => T;
+export declare const symbolToStringTag: typeof Symbol.toStringTag;
+export declare const objectDefineProperty: <T>(o: T, p: PropertyKey, attributes: PropertyDescriptor & ThisType<any>) => T;
+export declare const arrayPush: <T>(list: T[], ...items: T[]) => number;
+export declare const arraySplice: <T>(list: T[], start: number, deleteCount: number) => T[];
+export declare const ObjectPrototypePropertyIsEnumerableOf: (object: object, key: PropertyKey) => boolean;
 //# sourceMappingURL=primordials.d.ts.map

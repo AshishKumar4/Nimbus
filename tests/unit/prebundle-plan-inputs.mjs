@@ -11,7 +11,7 @@ import { NpmCache } from '../../packages/worker/src/npm/cache.ts';
 import { PrebundleInputs, PrebundlePlanChanged, materializePrebundleSlice, planSliceForSpecifierWithCap } from '../../packages/worker/src/npm/pre-bundle-facet.ts';
 import { launchSession } from './lib/facet-launch-harness.mjs';
 import { namedFacetPlatform } from './lib/named-facet-platform.mjs';
-import { runScenarios } from './lib/resident-body.mjs';
+import { runScenarios, until } from './lib/resident-body.mjs';
 
 function fixture(name, { field = 'main', synthetic = false, unrelated = false, churnFloor = false } = {}) {
   const session = launchSession();
@@ -72,7 +72,7 @@ function fixture(name, { field = 'main', synthetic = false, unrelated = false, c
   const context = { vfs: fs, root, cache: new NpmCache(session.disk.sql), pool, parse: async (_path, source) => source,
     esbuild: new EsbuildService(undefined, {}), serviceFallback: false, running: true };
   const barrel = synthetic ? { pkgName: 'pkg', fileCount: 1000, names: new Set(['X']), inputHash: 'x' } : null;
-  return { fs, pkg, context, barrel, specs, submissions: () => submissions,
+  return { fs, pkg, context, barrel, specs, submissions: () => submissions, entered: entered.promise, finish: () => finish.resolve(),
     move: () => fs.writeFile(pkg + '/package.json', manifest(entry('index-b.js'))),
     async queued(change) {
       const blocker = buildPrebundle(context, 'blocker', null, (code) => code);
@@ -178,6 +178,43 @@ await runScenarios(fileURLToPath(import.meta.url), {
     assert.equal(inputs.current(), true, 'an unchanged dangling link is still missing to a following stat');
     fs.writeFile(dir + '/nowhere.json', '{}');
     assert.equal(inputs.current(), false, 'its target appearing makes it present');
+  },
+  // The same barrel asked for again while its first prebundle waits, as a
+  // dev server's modules ask for it: the second request writes the same
+  // synthetic entry, and neither plan sees the other's write as a change.
+  async sameBarrelAskedTwice() {
+    const h = fixture('same-barrel-twice', { synthetic: true });
+    const blocker = buildPrebundle(h.context, 'blocker', null, (code) => code);
+    await h.entered;
+    const first = buildPrebundle(h.context, 'pkg', h.barrel, (code) => code);
+    await until(() => h.submissions() === 1, 'the first request is queued behind the blocker');
+    const second = buildPrebundle(h.context, 'pkg', h.barrel, (code) => code);
+    await until(() => h.submissions() === 2, 'the second request has written its entry and is queued too');
+    h.finish();
+    assert.equal((await blocker).kind, 'built');
+    for (const result of [await first, await second]) {
+      assert.equal(result.kind, 'built', JSON.stringify(result));
+      assert.equal(result.changed, false);
+    }
+    assert.equal(h.submissions(), 2, 'neither plan was invalidated and submitted again');
+  },
+  // An entry already written for these names whose bytes something replaced
+  // is written again: the name says what it should hold, not what it holds.
+  async replacedEntryIsRewritten() {
+    const h = fixture('replaced-entry', { synthetic: true });
+    const blocker = buildPrebundle(h.context, 'blocker', null, (code) => code);
+    await h.entered;
+    h.finish();
+    assert.equal((await blocker).kind, 'built');
+    const first = await buildPrebundle(h.context, 'pkg', h.barrel, (code) => code);
+    assert.equal(first.kind, 'built', JSON.stringify(first));
+    const dir = 'home/user/app/node_modules/.nimbus-synthetic';
+    const entries = h.fs.readdir(dir).map(({ name }) => name).filter((name) => name.startsWith('pkg.'));
+    assert.equal(entries.length, 1, `one entry for these names: ${entries}`);
+    h.fs.writeFile(`${dir}/${entries[0]}`, 'export const X = 999;');
+    const again = await buildPrebundle(h.context, 'pkg', h.barrel, (code) => code);
+    assert.equal(again.kind, 'built', JSON.stringify(again));
+    assert.equal(again.served, first.served, 'the entry shipped is the synthesized one, not the replaced bytes');
   },
   async entryDisappears() {
     const h = fixture('queued-entry-disappears');

@@ -59,7 +59,7 @@ function realm(interpreted, printed) {
     interp = createInterpreter(load(opsScript, context), {
       dynamicImport: () => Promise.reject(new Error('no module loader')),
       primordials: primordials.LAUNCH_PRIMORDIALS,
-      moduleHelpers: load(helpersScript, context),
+      moduleHelpers: load(helpersScript, context, { [`./${PRIMORDIALS_FILE}`]: primordials }),
     });
     routeScript.runInContext(context)(interp);
   }

@@ -2,7 +2,17 @@ import { TokenKind, type Token, type WordPart } from './types.js';
 import { expandBackslashEscapes } from '../utils/backslash-escapes.js';
 
 export function lex(input: string): Token[] {
+  return lexText(input).tokens;
+}
+
+/**
+ * The tokens of `input`, and whether it ends inside a comment, which takes the
+ * rest of its line: what would follow it there is no word (an alias whose text
+ * ends in `#…`).
+ */
+export function lexText(input: string): { tokens: Token[]; endsInComment: boolean } {
   const tokens: Token[] = [];
+  let endsInComment = false;
   const pendingHeredocs: HeredocDelimiter[] = [];
   let nextHeredocOperator: TokenKind.Heredoc | TokenKind.HeredocStripTabs | null = null;
   let i = 0;
@@ -11,6 +21,11 @@ export function lex(input: string): Token[] {
     // Skip whitespace (but NOT newlines -- they become Newline tokens)
     if (input[i] === ' ' || input[i] === '\t') {
       i++;
+      continue;
+    }
+    // A line continuation between words is no word and no newline.
+    if (input[i] === '\\' && input[i + 1] === '\n') {
+      i += 2;
       continue;
     }
 
@@ -32,6 +47,7 @@ export function lex(input: string): Token[] {
       while (i < input.length && input[i] !== '\n') {
         i++;
       }
+      endsInComment = i >= input.length;
       continue;
     }
 
@@ -67,7 +83,7 @@ export function lex(input: string): Token[] {
   }
 
   tokens.push({ kind: TokenKind.EOF, value: '', pos: i });
-  return tokens;
+  return { tokens, endsInComment };
 }
 
 export type ContinuationState = 'single' | 'double' | 'backslash';
@@ -373,6 +389,8 @@ const ARRAY_ASSIGNMENT_PREFIX = /^[a-zA-Z_][a-zA-Z0-9_]*(\[[^\]]*\])?\+?=$/;
 
 function readWord(input: string, pos: number): { token: Token; end: number } | null {
   const parts: WordPart[] = [];
+  // Each $'…' span and its decoded text: bash's reader keeps the word with it as '…'.
+  const ansiC: Array<{ start: number; end: number; text: string }> = [];
   let i = pos;
   let currentText = '';
   let hasContent = false;
@@ -386,6 +404,12 @@ function readWord(input: string, pos: number): { token: Token; end: number } | n
 
   while (i < input.length) {
     const ch = input[i];
+
+    // A line continuation: removed, the word going on (bash's shell_getc).
+    if (ch === '\\' && input[i + 1] === '\n') {
+      i += 2;
+      continue;
+    }
 
     // Backslash escape (outside quotes)
     if (ch === '\\' && i + 1 < input.length) {
@@ -425,7 +449,11 @@ function readWord(input: string, pos: number): { token: Token; end: number } | n
       while (i < input.length && input[i] !== '"') {
         if (input[i] === '\\' && i + 1 < input.length) {
           const nextCh = input[i + 1];
-          // Inside double quotes, only these chars are special with backslash
+          // Inside double quotes, only these chars are special with backslash; before a newline it continues the line, no content.
+          if (nextCh === '\n') {
+            i += 2;
+            continue;
+          }
           if (nextCh === '"' || nextCh === '\\' || nextCh === '$' || nextCh === '`') {
             flushDoubleText();
             parts.push({ text: nextCh, quoted: 'single' });
@@ -502,6 +530,7 @@ function readWord(input: string, pos: number): { token: Token; end: number } | n
       flushCurrentText();
       const quoted = readAnsiCQuote(input, i);
       parts.push({ text: quoted.text, quoted: 'single' });
+      ansiC.push({ start: i, end: quoted.end, text: quoted.text });
       i = quoted.end;
       hasContent = true;
       continue;
@@ -579,9 +608,20 @@ function readWord(input: string, pos: number): { token: Token; end: number } | n
   const value = parts.map((p) => p.text).join('');
 
   return {
-    token: { kind: TokenKind.Word, value, pos, parts },
+    token: { kind: TokenKind.Word, value, pos, parts, source: writtenWord(input, pos, i, ansiC) },
     end: i,
   };
+}
+
+/** The word from `pos` to `end` as bash's reader keeps it: its quotes in it, each $'…' as '…' decoded. */
+function writtenWord(input: string, pos: number, end: number, ansiC: ReadonlyArray<{ start: number; end: number; text: string }>): string {
+  let written = '';
+  let at = pos;
+  for (const span of ansiC) {
+    written += `${input.slice(at, span.start)}'${span.text}'`;
+    at = span.end;
+  }
+  return written + input.slice(at, end);
 }
 
 type SubstitutionRead =
@@ -700,7 +740,7 @@ function stopTable(chars: string): Uint8Array {
 
 /** Where a balanced span's scan must look, by its brackets: every other character is body as it stands. */
 const SPAN_STOPS: Readonly<Record<'(' | '{', Uint8Array>> = {
-  '(': stopTable('\\\'"$`#()'),
+  '(': stopTable('\\\'"$`#()<\n'),
   '{': stopTable('\\\'"$`#{}'),
 };
 /** Where a double-quoted span's scan must look. */
@@ -719,7 +759,10 @@ function nextStop(input: string, i: number, stops: Uint8Array): number {
  * The body of a balanced `open`...`close` span whose body starts at `pos`
  * (just past `open`), and where it ends (just past `close`, or the input's
  * end when it never closes). Quotes and nested `$(...)` inside it are
- * skipped whole, so a `close` inside them does not end it.
+ * skipped whole, so a `close` inside them does not end it. In a command's
+ * span, a here-document's body is too: read at the newline after its `<<`,
+ * as the shell's reader reads it, so its `'` or `)` is text. An arithmetic
+ * span, `$((…))` (its body at the second `(`), has no here-document: `<<` shifts.
  */
 export function readBalancedCommand(
   input: string,
@@ -727,10 +770,13 @@ export function readBalancedCommand(
   open: '(' | '{',
   close: ')' | '}',
 ): { body: string; end: number; closed: boolean } {
+  const arithmetic = open === '(' && input[pos] === '(' && input[pos - 1] === '(' && input[pos - 2] === '$';
   const stops = SPAN_STOPS[open];
   let i = pos;
   let depth = 1;
   let body = '';
+  // The here-documents whose bodies follow the next newline.
+  const heredocs: Array<{ delimiter: string; stripTabs: boolean }> = [];
 
   while (i < input.length) {
     // Characters that are no syntax here go into the body as one run.
@@ -774,6 +820,33 @@ export function readBalancedCommand(
       const stop = newline === -1 ? input.length : newline;
       body += input.slice(i, stop);
       i = stop;
+      continue;
+    }
+    // A `<<` or `<<-` (not `<<<`): its delimiter word, its quotes removed, names where its body ends.
+    if (ch === '<' && open === '(' && !arithmetic && input[i + 1] === '<' && input[i + 2] !== '<') {
+      const stripTabs = input[i + 2] === '-';
+      let at = i + (stripTabs ? 3 : 2);
+      while (input[at] === ' ' || input[at] === '\t') at++;
+      const word = readWord(input, at);
+      if (word !== null) {
+        heredocs.push({ delimiter: word.token.value, stripTabs });
+        body += input.slice(i, word.end);
+        i = word.end;
+        continue;
+      }
+    }
+    if (ch === '\n' && heredocs.length > 0) {
+      i++;
+      body += ch;
+      for (const heredoc of heredocs) {
+        while (i < input.length) {
+          const line = readLine(input, i);
+          body += input.slice(i, line.end);
+          i = line.end;
+          if (endsHeredoc(line.text, heredoc) || !line.hadNewline) break;
+        }
+      }
+      heredocs.length = 0;
       continue;
     }
     if (ch === open) depth++;
