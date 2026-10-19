@@ -109,23 +109,8 @@ export interface DelegationHolder {
   row(key: string): ResidentEntry | null | undefined;
   /** The names in `key`, as `base` lists them with what the process decided there. */
   children(key: string, base: RuntimeVfsDirEntry[] | undefined): RuntimeVfsDirEntry[] | undefined;
-  /**
-   * File `entry`'s bytes (at `key`) as this process may read them here, the
-   * one source of them: its grant's cell; its provisional decisions' fold;
-   * else the view's at its revision, unless the file's bytes are this
-   * process's and not yet the view's (pendingFile). null: this process's,
-   * not here (the session reads them); undefined: not here, the view may
-   * fetch them.
-   */
-  bytes(key: string, entry: ResidentEntry): Uint8Array | null | undefined;
-  /**
-   * Whether file (dev, ino)'s bytes are this process's, not the view's: its
-   * provisional decisions' (Provisional.pending), or a grant's given back
-   * whose bytes no barrier begun after their answer has covered yet.
-   */
-  pendingFile(dev: number, ino: number): boolean;
-  /** Descriptor `handleId`, a grant's (its file's cell) or the provisional decisions'. */
-  descriptor(handleId: number): Desc | undefined;
+  /** The bytes of a file made or rewritten here. */
+  content(entry: ResidentEntry): Uint8Array | undefined;
   /** Whether `handleId` is one of the holder's own descriptors. */
   owns(handleId: number): boolean;
   /**
@@ -262,27 +247,14 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     entry: (key) => store.entry(key),
     // A cell goes with its name, but for bytes still unlogged or open.
     forgot: (key, entry) => {
-      const inode = entry ? heldOf(entry.dev, entry.ino) : undefined;
-      if (inode === undefined || inode.key !== key || dirty.has(inode) || inode.descs > 0) return;
-      dropHeld(inode, false);
+      const inode = entry ? prov.inode(entry.dev, entry.ino) : undefined;
+      if (inode?.cell === undefined || inode.key !== key || dirty.has(inode) || inode.descs > 0) return;
+      prov.dropCell(inode);
     },
   });
   /** What it decided by name (OwnNames.decided). */
   const { decided } = names;
   let nextHandle = FIRST_LOCAL_HANDLE;
-  /**
-   * The files a grant decides alone, by number (on the store's device): each
-   * an Inode outside the provisional decisions' table, its cell its content,
-   * its descriptors in heldHandles. One leaves for the provisional decisions
-   * only by promote, in one synchronous step (§11's invariant: one owner).
-   */
-  const heldFiles = new Map<number, Inode>();
-  /** Their descriptors: each fd's id and its open description (a dup shares one). */
-  const heldHandles = new Map<number, Desc>();
-  /** Files given back without a descriptor, by number: the barriers begun when they were; their bytes are not the view's until one begun after lands (retire). */
-  const fenced = new Map<number, number>();
-  let barriersBegun = 0;
-  const heldOf = (dev: number, ino: number): Inode | undefined => (dev === store.device ? heldFiles.get(ino) : undefined);
   /** Files written since their bytes were last logged, in the order last written. */
   const dirty = new Set<Inode>();
 
@@ -310,31 +282,11 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
   let provisionalActive = false;
 
   /**
-   * Set while a change commits: judged and admitted in full first, or one
-   * nothing refuses (a give-back, a drain of what was decided, a call handed
-   * to the session). A file a grant holds alone is promoted only then, so a
-   * refused change never moved one (§11).
-   */
-  let committing = false;
-  const commit = <T>(work: () => T): T => {
-    if (committing) return work();
-    committing = true;
-    try {
-      return work();
-    } finally {
-      committing = false;
-    }
-  };
-
-  /**
    * No grant decides `inode` from now on (its grant is shared, recalled or
-   * gone, or the process is about to change a name or an access above it,
-   * or a provisional decision takes it): in one synchronous step it and its
-   * open descriptions are the provisional decisions' (Provisional.adopt),
-   * moved, not copied; what it decided was logged; each open description of
-   * it is opened at the session, in the log's order, with the access it was
-   * opened with, its file's anchor (Provisional.unhold); its bytes are its
-   * content there.
+   * gone, or the process is about to change a name or an access above it):
+   * what it decided was logged; each open description of it is opened at
+   * the session, in the log's order, with the access it was opened with,
+   * its file's anchor (Provisional.unhold); its bytes are its content here.
    * `made`: the file is not made at the session yet, and its mode refuses
    * what its descriptions do (creat(2) of 0444): its first description's
    * open makes it (create, exclusive, its number), which keeps that access
@@ -342,15 +294,9 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
    * A file that lost its name stays its descriptions' alone: nothing of it
    * is the session's.
    */
-  const promote = (inode: Inode, made?: number): void => {
-    if (!committing) throw new Error('a file a grant holds was promoted outside a commit (§11)');
+  const unhold = (inode: Inode, made?: number): void => {
     const cell = inode.cell;
-    if (cell === undefined || cell.detached !== undefined || heldFiles.get(inode.ino) !== inode) return;
-    const handles = new Map<number, Desc>();
-    for (const [id, desc] of heldHandles) if (desc.inode === inode) handles.set(id, desc);
-    for (const id of handles.keys()) heldHandles.delete(id);
-    heldFiles.delete(inode.ino);
-    prov.adopt(inode, handles);
+    if (cell === undefined || cell.detached !== undefined) return;
     dirty.delete(inode);
     delete cell.logged;
     // A made file's cell keeps the mode its open asked, its umask beside it, until a chmod here decides it.
@@ -376,41 +322,6 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     prov.unhold(inode, { ...entry, dev: inode.dev, ino: inode.ino, mode: (entry.mode & ~0o7777) | mode });
   };
 
-  /**
-   * `inode`, a file a grant decides alone, goes (its name gone, forgotten, or
-   * its grant given back with no descriptor of it open): what it keeps of the
-   * budget with it. `fence`: its bytes, logged, are not the view's until a
-   * barrier begun after now lands (pendingFile), so nothing older is read for them.
-   */
-  const dropHeld = (inode: Inode, fence: boolean): void => {
-    if (heldFiles.get(inode.ino) !== inode) return;
-    heldFiles.delete(inode.ino);
-    dirty.delete(inode);
-    store.release?.(inode.reserved);
-    inode.reserved = 0;
-    if (fence) fenced.set(inode.ino, barriersBegun);
-  };
-
-  /** A descriptor of `inode`, a file a grant decides alone: no session description, its rights the open's. */
-  const heldDescriptor = (inode: Inode, path: string, read: boolean, append: boolean): RuntimeFileHandle => {
-    const id = nextHandle--;
-    heldHandles.set(id, { inode, read, write: true, append, position: 0, path, lastRecord: null, lastAnswer: null });
-    inode.descs++;
-    return { id, path } as RuntimeFileHandle;
-  };
-
-  /** Every open description of `inode`, a file a grant decides alone, each once (a dup shares its open). */
-  const heldDescsOf = (inode: Inode): Desc[] => {
-    if (inode.descs === 0) return [];
-    return [...new Set(heldHandles.values())].filter((desc) => desc.inode === inode);
-  };
-
-  /** `inode` a file a grant decides alone from now on, `cell` its content. */
-  const hold = (inode: Inode, cell: HeldCell): void => {
-    inode.cell = cell;
-    heldFiles.set(inode.ino, inode);
-  };
-
   /** What is decided here, else what the view has, at `inode`'s name while that name leads to the file. */
   const atName = (inode: Inode): ResidentEntry | undefined => {
     const entry = decided.get(inode.key) ?? store.entry(inode.key);
@@ -433,7 +344,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
   const refusedByMode = (inode: Inode): boolean => {
     const entry = decided.get(inode.key);
     if (entry === undefined || entry === null || entry.ino !== inode.ino) return false;
-    for (const desc of heldDescsOf(inode)) {
+    for (const desc of prov.descriptorsOf(inode)) {
       if (!modeAllows(entry, (desc.read ? 4 : 0) | (desc.write ? 2 : 0), store.cred)) return true;
     }
     return false;
@@ -448,17 +359,11 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
    * the state the local open saw, never re-authorized against a later one.
    */
   const throughAt = (keys?: readonly string[]): void => {
-    const open = heldOpenAt(keys);
+    const open = prov.cells().filter((inode) => inode.cell!.detached === undefined && inode.descs > 0
+      && (keys === undefined || keys.some((key) => within(inode.key, key))));
     if (open.length === 0) return;
     drain();
-    for (const inode of open) promote(inode);
-  };
-
-  /** The files it holds open at or under `keys` (anywhere, when absent), a name leading to each: what throughAt promotes. */
-  const heldOpenAt = (keys?: readonly string[]): Inode[] => {
-    if (heldHandles.size === 0) return [];
-    return [...heldFiles.values()].filter((inode) => inode.cell!.detached === undefined && inode.descs > 0
-      && (keys === undefined || keys.some((key) => within(inode.key, key))));
+    for (const inode of open) unhold(inode);
   };
 
   /**
@@ -480,8 +385,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
         dirty.delete(inode);
         delete file.changedFrom;
         delete file.made;
-        // The commit of the open that made it, decided before.
-        commit(() => promote(inode, ino));
+        unhold(inode, ino);
         continue;
       }
       if (ino === undefined && from > 0) {
@@ -509,18 +413,13 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
    * write through from now on: a peer may write the file, and a whole-file
    * write of what this process held would overwrite what the peer wrote.
    */
-  const dropDecisions = (root: string): void => commit(() => {
+  const dropDecisions = (root: string): void => {
     drain();
-    // One with a descriptor open goes on through it (promote); any other goes, its bytes fenced until the view has them.
-    for (const inode of [...heldFiles.values()]) {
-      if (inode.cell!.detached !== undefined || !within(inode.key, root)) continue;
-      if (inode.descs > 0) promote(inode);
-      else dropHeld(inode, true);
-    }
+    for (const inode of prov.cells()) if (within(inode.key, root)) unhold(inode);
     names.released(root);
     prov.answeredHeld(root);
     options.sent?.();
-  });
+  };
 
   const client = processFsClient({
     session: options.session,
@@ -533,16 +432,16 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     // Closing starts (a recall, an idle or renewing give-back): nothing more
     // is decided under it, and its files' descriptions write through from now
     // on, so the flush that follows covers everything accepted before.
-    freezing: (root) => commit(() => {
+    freezing: (root) => {
       drain();
-      throughAt([root]);
-    }),
+      for (const inode of prov.cells()) if (within(inode.key, root)) unhold(inode);
+    },
     drain,
   });
 
   /** A file's bytes a grant decides here (its cell). */
   const heldContent = (entry: ResidentEntry): Uint8Array | undefined => {
-    const cell = heldOf(entry.dev, entry.ino)?.cell;
+    const cell = prov.inode(entry.dev, entry.ino)?.cell;
     return cell === undefined ? undefined : cell.bytes.slice(0, cell.length);
   };
 
@@ -552,7 +451,10 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     get cred() { return store.cred; },
     row: (key) => entryOf(key),
     children: (key) => names.children(key, store.children(key)),
-    content: (key, row) => viewBytes(key, row),
+    content: (key, revision) => {
+      const entry = decided.get(key);
+      return (entry ? heldContent(entry) : undefined) ?? store.content?.(key, revision);
+    },
     reserve: (bytes) => store.reserve?.(bytes) ?? true,
     release: (bytes) => store.release?.(bytes),
     client,
@@ -565,28 +467,9 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     umask: () => options.umask?.() ?? 0o022,
     now,
     nextHandle: () => nextHandle--,
-    commit,
-    promote: (dev, ino) => {
-      const inode = heldOf(dev, ino);
-      // One no name leads to stays its descriptors' alone (POSIX: until its last close): nothing of the session's reaches it by number.
-      if (inode === undefined || inode.cell!.detached !== undefined) return undefined;
+    unhold: (inode) => {
       drain();
-      promote(inode);
-      return inode;
-    },
-    heldFile: (dev, ino) => {
-      const inode = heldOf(dev, ino);
-      return inode === undefined || inode.cell!.detached !== undefined ? undefined : inode;
-    },
-    heldHandle: (handleId) => {
-      const desc = heldHandles.get(handleId);
-      return desc === undefined || desc.inode.cell!.detached !== undefined ? undefined : desc;
-    },
-    heldOpen: (keys) => heldOpenAt(keys),
-    heldCost: () => {
-      let total = 0;
-      for (const inode of heldFiles.values()) total += inode.reserved;
-      return total;
+      unhold(inode);
     },
     generation: (key) => names.generation(key),
     settled: (key, generation) => names.settled(key, generation),
@@ -617,24 +500,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     return mine !== undefined ? mine : row;
   };
   const composedChildren = (key: string, base: RuntimeVfsDirEntry[] | undefined): RuntimeVfsDirEntry[] | undefined => prov.children(key, names.children(key, base));
-  /** The view's bytes of file `entry` at `key`, where it holds them whole and they are the view's: not a grant's given back that no barrier has covered (fenced). */
-  const viewBytes = (key: string, entry: ResidentEntry): Uint8Array | undefined => {
-    if (entry.dev === store.device && fenced.has(entry.ino)) return undefined;
-    const stored = store.content?.(key, entry.revision);
-    return stored !== undefined && stored.byteLength === entry.size ? stored : undefined;
-  };
-  /** DelegationHolder.bytes. */
-  const bytesOf = (key: string, entry: ResidentEntry): Uint8Array | null | undefined => {
-    const held = heldContent(entry);
-    if (held !== undefined) return held;
-    if (provisionalActive) {
-      const mine = prov.content(entry);
-      if (mine !== undefined) return mine;
-    }
-    if (pendingFile(entry.dev, entry.ino)) return null;
-    return viewBytes(key, entry);
-  };
-  const pendingFile = (dev: number, ino: number): boolean => (dev === store.device && fenced.has(ino)) || prov.pending(dev, ino);
+  const composedContent = (entry: ResidentEntry): Uint8Array | undefined => prov.content(entry) ?? heldContent(entry);
 
   /** Log a decision, after the bytes written before it. */
   const log = (op: ProcessFsOp): void => {
@@ -699,10 +565,9 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
 
   /** Descriptor `handleId` where its file's grant decides it (its cell), else undefined: the provisional decisions' to answer. */
   const heldDesc = (handleId: number): (Desc & { inode: Inode & { cell: HeldCell } }) | undefined => {
-    const desc = heldHandles.get(handleId);
-    if (desc !== undefined) return desc as Desc & { inode: Inode & { cell: HeldCell } };
-    if (prov.descriptor(handleId) === undefined) throw fsError('EBADF', 'fd', String(handleId));
-    return undefined;
+    const desc = prov.descriptor(handleId);
+    if (desc === undefined) throw fsError('EBADF', 'fd', String(handleId));
+    return desc.inode.cell === undefined ? undefined : desc as Desc & { inode: Inode & { cell: HeldCell } };
   };
 
   /**
@@ -761,13 +626,11 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       // Counted toward taking the destination's subtree, as any change there is.
       const grant = deciding(to);
       if (grant === undefined || client.held(from) === undefined) return false;
-      const here = bytesOf(from, source);
-      if (here === null) return false;
-      const bytes = here ?? stored;
+      const bytes = holder.content(source) ?? stored;
       if (bytes === undefined) return false;
-      const known = target === null ? undefined : heldOf(target.dev, target.ino);
+      const known = target === null ? undefined : prov.inode(target.dev, target.ino);
       // Another's file there, or one this process holds open or changes outside a grant, is the session's to copy over.
-      if (target !== null && ((store.cred.uid !== 0 && target.uid !== store.cred.uid) || known?.descs || (known === undefined && prov.inode(target.dev, target.ino) !== undefined))) return false;
+      if (target !== null && ((store.cred.uid !== 0 && target.uid !== store.cred.uid) || (known !== undefined && (known.descs > 0 || known.cell === undefined)))) return false;
       const umask = grant.umask;
       const asked = copiedPermissions(source.mode, false);
       // What the open leaves (cp(1)'s mode), and with keepMode its fchmod to the source's: one a confined principal may not grant is the session's.
@@ -789,7 +652,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
         entry = { ...target, size: bytes.byteLength, mode: (target.mode & ~0o7777) | mode, mtime: now(), ctime: now() };
       }
       // Its Inode: the file's, or one made for it where the budget has room; else the session copies.
-      const inode = known ?? prov.shell(to, { ...entry });
+      const inode = known ?? prov.inodeFor(to, { ...entry });
       if (inode === undefined) return false;
       // After everything decided before it, the destination's own bytes among them.
       drain();
@@ -798,7 +661,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       // grant reserved (room); else the session copies.
       const file: HeldCell = inode.cell ?? { bytes: new Uint8Array(0), length: 0, mode };
       if (!room(file, to, bytes.byteLength)) {
-        if (known === undefined) store.release?.(inode.reserved);
+        if (inode.cell === undefined) prov.dropCell(inode);
         return false;
       }
       file.bytes.set(bytes);
@@ -807,7 +670,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       file.mode = mode;
       if (target === null) names.note(parentKey(to), nameOf(to), 'file');
       names.decide(to, entry);
-      hold(inode, file);
+      prov.hold(inode, file);
       const description = descriptionId();
       changes++;
       acknowledged({ type: 'call', call: { call: 'open', path: to, mode: asked, access: 'write', ...(made === undefined ? {} : { ino: made, umask }), create: true, truncate: true, ...(keepMode ? { fchmod: mode } : {}), description } });
@@ -821,13 +684,9 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       drain();
     },
 
-    bytes: bytesOf,
+    content: (entry) => (provisionalActive ? composedContent(entry) : heldContent(entry)),
 
-    owns: (handleId) => heldHandles.has(handleId) || prov.owns(handleId),
-
-    descriptor: (handleId) => heldHandles.get(handleId) ?? prov.descriptor(handleId),
-
-    pendingFile,
+    owns: (handleId) => prov.owns(handleId),
 
     open: (key, path, flags, initial = 0) => {
       if (!flags.write || flags.append) return undefined;
@@ -858,9 +717,9 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
         const file: HeldCell = { bytes: new Uint8Array(0), length: 0, mode: asked, made: ino, umask };
         // Room for what it is opened to be written with, before anything is decided (its number unused if not).
         if (initial > 0 && !room(file, key, initial)) return undefined;
-        inode = prov.shell(key, { ...entry });
+        inode = prov.inodeFor(key, { ...entry });
         if (inode === undefined) return undefined;
-        hold(inode, file);
+        prov.hold(inode, file);
         names.decide(key, entry);
         names.note(parentKey(key), nameOf(key), 'file');
         // Made here: the name exists from now on, in the log's order. Logged
@@ -873,27 +732,27 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
         // opened here; any other is the session's. Read permission too, when
         // it is opened to read.
         if (!modeAllows(current, flags.read ? 6 : 2, store.cred)) throw fsError('EACCES', 'open', path);
-        inode = heldOf(current.dev, current.ino);
-        if (inode === undefined || inode.key !== key) return undefined;
+        inode = prov.inode(current.dev, current.ino);
+        if (inode?.cell === undefined || inode.key !== key) return undefined;
       } else {
         // An existing file emptied: decided here, its number the session's.
         if (!modeAllows(current, flags.read ? 6 : 2, store.cred)) throw fsError('EACCES', 'open', path);
-        // One the provisional decisions have is theirs to empty.
-        if (prov.inode(current.dev, current.ino) !== undefined) return undefined;
-        const held = heldOf(current.dev, current.ino);
-        inode = held ?? prov.shell(key, current);
+        inode = prov.inode(current.dev, current.ino);
+        // One the provisional decisions change is theirs to empty.
+        if (inode !== undefined && inode.cell === undefined && (inode.state !== null || inode.records.length > 0)) return undefined;
+        inode ??= prov.inodeFor(key, current);
         if (inode === undefined) return undefined;
         const file: HeldCell = inode.cell ?? { bytes: new Uint8Array(0), length: 0, mode: current.mode & 0o7777 };
         if (initial > 0 && !room(file, key, initial)) {
-          if (held === undefined) store.release?.(inode.reserved);
+          if (inode.cell === undefined) prov.dropCell(inode);
           return undefined;
         }
         file.length = 0;
-        hold(inode, file);
+        prov.hold(inode, file);
         names.decide(key, { ...current, size: 0, mtime: now(), ctime: now() });
         written(inode);
       }
-      return heldDescriptor(inode, path, !!flags.read, false);
+      return prov.heldDescriptor(inode, path, !!flags.read, false);
     },
 
     writeFile: (key, path, bytes, flags) => {
@@ -906,11 +765,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       return revision;
     },
 
-    setStatus: (handleId, status) => {
-      const desc = heldHandles.get(handleId);
-      if (desc === undefined) return prov.setStatus(handleId, status);
-      if (status.append !== undefined) desc.append = status.append;
-    },
+    setStatus: (handleId, status) => prov.setStatus(handleId, status),
 
     read: (handleId, offset, length) => {
       const handle = heldDesc(handleId);
@@ -977,26 +832,11 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       return { ...entry, size: file.length };
     },
 
-    close: (handleId) => {
-      const desc = heldHandles.get(handleId);
-      if (desc === undefined) return prov.close(handleId);
-      heldHandles.delete(handleId);
-      for (const other of heldHandles.values()) if (other === desc) return;
-      const inode = desc.inode;
-      inode.descs--;
-      // One that lost its name goes with its last descriptor (POSIX: its last close).
-      if (inode.descs === 0 && inode.cell!.detached !== undefined) dropHeld(inode, false);
-    },
+    close: (handleId) => prov.close(handleId),
 
-    keyOf: (handleId) => heldHandles.get(handleId)?.inode.key ?? prov.keyOf(handleId),
+    keyOf: (handleId) => prov.keyOf(handleId),
 
-    dup: (handleId) => {
-      const desc = heldHandles.get(handleId);
-      if (desc === undefined) return prov.dup(handleId);
-      const id = nextHandle--;
-      heldHandles.set(id, desc);
-      return { id, path: desc.path } as RuntimeFileHandle;
-    },
+    dup: (handleId) => prov.dup(handleId),
 
     reopen: (handleId, flags) => {
       const handle = heldDesc(handleId);
@@ -1010,8 +850,8 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       if (!modeAllows(entry, (flags.read ? 4 : 0) | (flags.write || flags.truncate ? 2 : 0), store.cred)) throw fsError('EACCES', 'open', handle.path);
       // Its truncate is made before the descriptor exists: one whose room is not there is the session's.
       if (flags.truncate && !room(file, inode.key, 0)) return undefined;
-      const opened = heldDescriptor(inode, handle.path, !!flags.read, false);
-      heldHandles.get(opened.id)!.write = !!flags.write;
+      const opened = prov.heldDescriptor(inode, handle.path, !!flags.read, false);
+      prov.descriptor(opened.id)!.write = !!flags.write;
       if (flags.truncate) {
         file.length = 0;
         resized(inode, 0);
@@ -1055,13 +895,13 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       if (writableParent(key, path, 'unlink') === undefined) return false;
       names.decide(key, null);
       names.note(parentKey(key), nameOf(key), null);
-      const local = heldOf(current.dev, current.ino);
-      if (local !== undefined && local.key === key) {
-        const made = local.cell!.made;
+      const local = prov.inode(current.dev, current.ino);
+      if (local?.cell !== undefined && local.key === key) {
+        const made = local.cell.made;
         // Its bytes go with it: nothing of them is logged, now or through a
         // description still open on it.
         detach(local, current);
-        if (local.descs === 0) dropHeld(local, false);
+        if (local.descs === 0) prov.dropCell(local);
         // Made here and never logged: the session never had the name.
         if (made !== undefined) return true;
       }
@@ -1089,19 +929,14 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       names.note(parentKey(to), nameOf(to), source.type);
       // A file it replaces loses its name: its open descriptions keep its bytes.
       if (target !== null) {
-        const replaced = heldOf(target.dev, target.ino);
-        if (replaced !== undefined && replaced.key === to) {
+        const replaced = prov.inode(target.dev, target.ino);
+        if (replaced?.cell !== undefined && replaced.key === to) {
           detach(replaced, target);
-          if (replaced.descs === 0) dropHeld(replaced, false);
+          if (replaced.descs === 0) prov.dropCell(replaced);
         }
       }
       // Its files move with it: the name they are reached by, which the view will have.
       prov.moved(from, to);
-      for (const inode of heldFiles.values()) {
-        if (inode.cell!.detached !== undefined || !within(inode.key, from)) continue;
-        inode.key = inode.origin = to + inode.key.slice(from.length);
-        prov.charge(inode);
-      }
       log({ type: 'rename', from, to });
       return true;
     },
@@ -1116,12 +951,13 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       if ('uid' in attrs && chownRefusal(current, attrs.uid, attrs.gid, store.cred) !== null) return false;
       // A grant a confined principal may not make: the session's to judge.
       if ('mode' in attrs && confinedModeRefusal(current.mode, attrs.mode) !== null) return false;
-      // An access change at or above a file it holds open: those files go through first, their descriptions keeping the access
-      // they were opened with (throughAt), and are the provisional decisions' then. Theirs or the session's to make, with that in its commit.
-      if ('mode' in attrs && heldOpenAt([key]).length > 0) return false;
+      if ('mode' in attrs) {
+        throughAt([key]);
+        if (provisionalActive && prov.touches(key)) return false;
+      }
       const next = changedBy(current, attrs);
       names.decide(key, next);
-      const local = heldOf(current.dev, current.ino)?.cell;
+      const local = prov.inode(current.dev, current.ino)?.cell;
       if (local !== undefined) {
         local.mode = next.mode & 0o7777;
         delete local.umask;
@@ -1132,28 +968,33 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
 
     fsetattr: (handleId, change) => {
       const handle = heldDesc(handleId);
-      const detached = handle?.inode.cell.detached;
-      if (handle === undefined || detached === undefined) {
-        const entry = handle === undefined ? undefined : atName(handle.inode);
-        // Its times as it is decided (timeAt): now, explicit, or as they are.
-        const at = now();
-        const attrs: W7Attrs = entry && 'atime' in change ? { atime: timeAt(change.atime, entry.atime, at), mtime: timeAt(change.mtime, entry.mtime, at) } : change;
-        // By its name where its grant decides it; else no grant decides the file from now on: the provisional
-        // decisions', through its description (one a grant holds is promoted in their commit, once judged and admitted).
-        if (handle !== undefined && entry && holder.setattr(handle.inode.key, attrs)) return true;
+      if (handle === undefined) {
+        prov.fsetattr(handleId, change);
+        return false;
+      }
+      const inode = handle.inode;
+      const file = inode.cell;
+      const entry = file.detached ?? atName(inode);
+      // Its times as it is decided (timeAt): now, explicit, or as they are.
+      const at = now();
+      const attrs: W7Attrs = entry && 'atime' in change ? { atime: timeAt(change.atime, entry.atime, at), mtime: timeAt(change.mtime, entry.mtime, at) } : change;
+      if (file.detached === undefined) {
+        // By its name where its grant decides it; else no grant decides the file from now on: the provisional decisions', through its description.
+        if (entry && holder.setattr(inode.key, attrs)) return true;
+        drain();
+        unhold(inode);
         prov.fsetattr(handleId, change);
         return false;
       }
       // Its name gone, the file is this process's alone: judged and changed
       // here, as the session judges a description, its confinement of the
       // principal too (judged confined once no grant there says).
-      const file = handle.inode.cell;
-      const attrs: W7Attrs = 'atime' in change ? { atime: timeAt(change.atime, detached.atime, now()), mtime: timeAt(change.mtime, detached.mtime, now()) } : change;
-      const confined = client.held(handle.inode.key)?.confined ?? true;
+      const detached = file.detached;
+      const confined = client.held(inode.key)?.confined ?? true;
       const refused = 'mode' in attrs ? chmodRefusal(detached, store.cred) ?? (confined ? confinedModeRefusal(detached.mode, attrs.mode) : null)
         : 'uid' in attrs ? chownRefusal(detached, attrs.uid, attrs.gid, store.cred)
         : utimesRefusal(detached, 'atime' in change && explicitTimes(change.atime, change.mtime), store.cred);
-      if (refused !== null) throw fsError(refused, 'mode' in attrs ? 'fchmod' : 'uid' in attrs ? 'fchown' : 'futimes', '/' + handle.inode.key);
+      if (refused !== null) throw fsError(refused, 'mode' in attrs ? 'fchmod' : 'uid' in attrs ? 'fchown' : 'futimes', '/' + inode.key);
       file.detached = changedBy(detached, attrs);
       file.mode = file.detached.mode & 0o7777;
       return true;
@@ -1164,12 +1005,11 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     holds: (key) => client.held(key) !== undefined,
     barrierBegun: () => {
       prov.barrierBegun();
-      return barriersBegun = names.barrierBegun();
+      return names.barrierBegun();
     },
     retire: (begun) => {
       names.retire(begun);
       prov.retire(begun);
-      for (const [ino, stamp] of fenced) if (stamp < begun) fenced.delete(ino);
     },
     pending: () => dirty.size > 0 || client.pending(),
     flush: async () => {
@@ -1188,7 +1028,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     reportRecorded: () => failed(),
 
 
-    changing: (keys) => commit(() => throughAt(keys)),
+    changing: (keys) => throughAt(keys),
     settle: async () => {
       drain();
       const covered = changes;

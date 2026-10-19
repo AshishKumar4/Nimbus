@@ -39,6 +39,8 @@ export declare class FunctionNestingSignal {
 }
 export interface BuiltinExecutionContext {
     interactive?: boolean;
+    /** A declaration builtin's arguments written as array assignments, `name=(…)`, by index: their elements, each expanded as a word. */
+    arrayElements?: ReadonlyMap<number, readonly string[]>;
     vfs: ProcessView;
     /** The working directory a builtin resolves its relative path operands against. */
     cwd: string;
@@ -260,6 +262,21 @@ export declare class Interpreter {
     private executeGroup;
     private executeSubshell;
     private executeCompoundList;
+    /**
+     * `cmd` with its command word's alias expanded, as bash's reader expands one:
+     * on the word as written, unquoted and before any expansion (`'p'` and `$c`
+     * are no alias). The alias's text is read as tokens in the word's place, and
+     * the command's other words follow as the words they are, never read again
+     * as text. Its assignments go before the first command that text makes, and
+     * its redirections after the last; before a compound command they are a
+     * syntax error, as bash's grammar has it. A text that ends in a comment takes
+     * the command's words and redirections written after it into it (the rest of
+     * the line, in bash; here, the rest of the command). An alias whose text ends in a
+     * blank has the next word checked too. None of the text's commands expands
+     * those aliases, or the ones this command was read within, again. Null when
+     * the word is no alias.
+     */
+    private aliasExpansion;
     private executeSimpleCommand;
     /**
      * execvp(3) of `argv`: argv[0] is found as a program is found (the

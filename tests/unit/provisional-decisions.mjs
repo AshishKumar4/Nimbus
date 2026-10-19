@@ -36,10 +36,7 @@ function overlay() {
     umask: () => 0o022,
     now: () => 5,
     nextHandle: () => handles--,
-    // No grant holds anything here: nothing to borrow, promote, settle or absorb.
-    heldHandle: () => undefined,
-    heldOpen: () => [],
-    commit: (work) => work(),
+    // No grant decides anything here: nothing to settle or absorb.
     generation: () => undefined,
     settled: () => false,
     absorb: () => undefined,

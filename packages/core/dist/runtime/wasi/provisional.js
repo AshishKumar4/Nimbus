@@ -57,18 +57,16 @@ const NO_RETAINED = Object.freeze([]);
 export function provisional(host) {
     /** Every file this process has open or changed, one Inode each, by device and number. */
     const table = new Map();
-    /** The same Inodes, as one set: what visits every one visits only these (a file a grant holds alone is the holder's). */
-    const all = new Set();
-    /** The Inode of file (dev, ino) these decisions have: a borrow (a file a grant holds alone is not here; see take). */
+    /** The same Inodes by what holds them: a grant (its cell), or these decisions. What visits one kind visits only it. */
+    const held = new Set();
+    const loose = new Set();
     const inodeAtNumber = (dev, ino) => table.get(dev)?.get(ino);
-    /** The Inode of file (dev, ino), where anything of this process's has it: these decisions', else one a grant holds alone, promoted (ProvisionalHost.promote). */
-    const take = (dev, ino) => inodeAtNumber(dev, ino) ?? host.promote(dev, ino);
     const addInode = (inode) => {
         let numbers = table.get(inode.dev);
         if (numbers === undefined)
             table.set(inode.dev, numbers = new Map());
         numbers.set(inode.ino, inode);
-        all.add(inode);
+        (inode.cell === undefined ? loose : held).add(inode);
     };
     const removeInode = (inode) => {
         const numbers = table.get(inode.dev);
@@ -77,10 +75,22 @@ export function provisional(host) {
         numbers.delete(inode.ino);
         if (numbers.size === 0)
             table.delete(inode.dev);
-        all.delete(inode);
+        held.delete(inode);
+        loose.delete(inode);
+    };
+    /** `inode`'s grant's cell from now on, or (undefined) none: a grant decides it, or no longer. */
+    const setCell = (inode, cell) => {
+        if (cell === undefined)
+            delete inode.cell;
+        else
+            inode.cell = cell;
+        if (inodeAtNumber(inode.dev, inode.ino) !== inode)
+            return;
+        (cell === undefined ? held : loose).delete(inode);
+        (cell === undefined ? loose : held).add(inode);
     };
     /** Every Inode: a copy, so what visits may add or remove. */
-    const everyInode = () => [...all];
+    const everyInode = () => [...held, ...loose];
     /** Every descriptor of those files, held and provisional alike. */
     const descs = new Map();
     /** Each answered session description's descriptor and the read access its open asked for. */
@@ -134,7 +144,7 @@ export function provisional(host) {
         if (touched.size > 0) {
             const row = known !== undefined ? known : host.row(key);
             const changed = row ? inodeAtNumber(row.dev, row.ino) : undefined;
-            if (changed !== undefined && changed.state !== null && !changed.local
+            if (changed !== undefined && changed.state !== null && !changed.local && changed.cell === undefined
                 && changed.heldAt === undefined && changed.records.length === 0 && ![...layer.values()].includes(changed)) {
                 // A retained fold is only the fallback while no name leads to its inode.
                 // The view found it again (a peer's rename): its retired content is the view's.
@@ -158,17 +168,13 @@ export function provisional(host) {
     };
     /** The one Inode of the file `row` (at `key`) names. */
     const inodeAt = (key, row) => {
-        let inode = take(row.dev, row.ino);
+        let inode = inodeAtNumber(row.dev, row.ino);
         if (inode === undefined) {
-            inode = shellAt(key, row);
+            inode = { dev: row.dev, ino: row.ino, type: row.type, key, origin: key, row, base: null, state: null, records: NO_RECORDS, recordsCost: 0, unnamed: false, local: false, descs: 0, retained: NO_RETAINED, credit: 0, reserved: 0 };
             addInode(inode);
         }
         return inode;
     };
-    /** The Inode inodeAt makes of `row` at `key` where none has the file, not kept: to price a change before it is made. */
-    const shellAt = (key, row) => ({
-        dev: row.dev, ino: row.ino, type: row.type, key, origin: key, row, base: null, state: null, records: NO_RECORDS, recordsCost: 0, unnamed: false, local: false, descs: 0, retained: NO_RETAINED, credit: 0, reserved: 0,
-    });
     /**
      * Whether `inode` is still the file at its name: the row there names it
      * (or the view cannot say, and it was). One whose name leads elsewhere is
@@ -205,7 +211,7 @@ export function provisional(host) {
             const row = host.row(name);
             if (!row || row.dev !== inode.dev || row.ino !== inode.ino)
                 continue;
-            const held = inode.type === 'file' ? host.content(name, row) : undefined;
+            const held = inode.type === 'file' ? host.content(name, row.revision) : undefined;
             return { name, row, bytes: held !== undefined && held.byteLength === row.size ? held : undefined };
         }
         return undefined;
@@ -259,8 +265,10 @@ export function provisional(host) {
         let known = inode.state !== null && inode.state.bytes !== null;
         let size = inode.state?.size ?? inode.row.size;
         if (inode.base === null) {
-            const seen = inode.local ? undefined : viewed(inode);
-            const held = seen?.bytes ?? (inode.pin?.revision === (seen?.row.revision ?? inode.row.revision) ? inode.pin.bytes : undefined);
+            // A grant's file: its cell's bytes are what the first record folds over (fold: unhold).
+            const seen = inode.local || inode.cell !== undefined ? undefined : viewed(inode);
+            const held = inode.cell !== undefined ? inode.cell.bytes.subarray(0, inode.cell.length)
+                : seen?.bytes ?? (inode.pin?.revision === (seen?.row.revision ?? inode.row.revision) ? inode.pin.bytes : undefined);
             known = held !== undefined || inode.row.size === 0;
             baseBytes = held?.byteLength ?? 0;
             capacity = baseBytes;
@@ -305,37 +313,6 @@ export function provisional(host) {
             host.release(-need);
         inode.reserved += need;
     };
-    /**
-     * What a change that takes file (dev, ino) asks of the budget, where a
-     * grant holds it alone: its promotion (its cell's bytes, its baseline
-     * then) and `price`, what the change admits of its Inode as it would be
-     * promoted. 0 where none holds it. A borrow: nothing moves.
-     */
-    const promotionNeed = (dev, ino, price) => {
-        if (inodeAtNumber(dev, ino) !== undefined)
-            return 0;
-        const shell = host.heldFile(dev, ino);
-        if (shell === undefined)
-            return 0;
-        const cell = shell.cell;
-        const row = shell.row;
-        const base = { bytes: cell.bytes.subarray(0, cell.length), size: cell.length, mode: row.mode, uid: row.uid, gid: row.gid, atime: row.atime, mtime: row.mtime, ctime: row.ctime };
-        const promoted = { ...shell, base, state: base };
-        delete promoted.cell;
-        promoted.reserved = cost(promoted);
-        return cell.length + Math.max(0, price(promoted));
-    };
-    /**
-     * `bytes` of the budget there now, nothing taken: ENOSPC where it has no
-     * room. A change that takes a file a grant holds alone checks all it will
-     * admit first, so a refusal leaves the file the grant's (§11).
-     */
-    const probe = (bytes, syscall, path) => {
-        if (bytes <= 0)
-            return;
-        admit(bytes, syscall, path);
-        host.release(bytes);
-    };
     /** What `ops` on `inode` cost before they are made: admitted (ENOSPC where the budget has no room), its charge raised to it. */
     const admitOps = (inode, ops, syscall, path, credit = 0) => {
         const need = projectedCost(inode, ops) + credit - inode.reserved;
@@ -351,6 +328,9 @@ export function provisional(host) {
     /** Fold `op` into `inode` (its baseline taken first): its record, kept until it retires; `description` the one it was made through. */
     /** `inode` ready for a change here: a grant's no longer (what that logs goes first), and its fold begun. */
     const ready = (inode) => {
+        // A grant's file changed here is no grant's from now on: one content, the fold.
+        if (inode.cell !== undefined)
+            host.unhold(inode);
         if (inode.base === null) {
             inode.base = baseline(inode);
             inode.state = copyState(inode.base);
@@ -376,7 +356,7 @@ export function provisional(host) {
     };
     /** `inode` has nothing pending, nothing open and no name here: it goes, and what it held goes back. */
     const release = (inode) => {
-        if (inode.records.length > 0 || inode.descs > 0 || inode.credit > 0)
+        if (inode.records.length > 0 || inode.descs > 0 || inode.credit > 0 || inode.cell !== undefined)
             return;
         for (const value of layer.values())
             if (value === inode)
@@ -602,8 +582,6 @@ export function provisional(host) {
      * name goes (an unlink, a rename over it): admitted with what removes it
      * (`more`, its record), then taken.
      */
-    /** What keepForDescriptors(`inode`, `more`) admits. */
-    const keepNeed = (inode, more) => (inode === undefined || inode.descs === 0 || inode.base !== null ? more : more + 2 * (viewed(inode)?.bytes?.byteLength ?? 0));
     const keepForDescriptors = (inode, more, syscall, path) => {
         if (inode === undefined || inode.descs === 0 || inode.base !== null) {
             admit(more, syscall, path);
@@ -688,8 +666,7 @@ export function provisional(host) {
             inode.opened = key;
             return;
         }
-        // The file the session opened, whoever of this process's has it: a grant's alone is promoted first (take), the commit of that open.
-        const known = host.commit(() => take(receipt.dev, receipt.ino));
+        const known = inodeAtNumber(receipt.dev, receipt.ino);
         if (creating && inode.local) {
             removeInode(inode);
             inode.local = false;
@@ -876,7 +853,7 @@ export function provisional(host) {
     const continued = (desc, start, bytes, at) => {
         const inode = desc.inode;
         const last = desc.lastRecord;
-        if (last === null || last.answered || last.gone === true || last.owner !== inode || inode.state === null)
+        if (last === null || last.answered || last.gone === true || last.owner !== inode || inode.cell !== undefined || inode.state === null)
             return false;
         const was = last.op;
         if (!('data' in was) || (start === undefined ? was.kind !== 'append' : was.kind !== 'write' || start !== was.offset + was.data.byteLength))
@@ -973,95 +950,96 @@ export function provisional(host) {
         if (chmod !== undefined)
             ops.push({ kind: 'chmod', mode: chmod, at });
         // What older decisions left unlogged goes first, and with what this logs, must fit what the log holds unanswered.
-        if (row !== null)
-            probe(promotionNeed(row.dev, row.ino, (promoted) => projectedCost(promoted, ops) + openCredit(promoted, key) - promoted.reserved), 'open', path);
-        return host.commit(() => {
-            host.drain();
-            host.client.fitsSync(bytes?.byteLength ?? 0, path);
-            const inode = row === null ? null : inodeAt(key, row);
-            let credit;
-            if (inode !== null) {
-                credit = openCredit(inode, key);
-                try {
-                    admitOps(inode, ops, 'open', path, credit);
-                }
-                catch (error) {
-                    release(inode);
-                    throw error;
-                }
+        host.drain();
+        host.client.fitsSync(bytes?.byteLength ?? 0, path);
+        const inode = row === null ? null : inodeAt(key, row);
+        let credit;
+        if (inode !== null) {
+            credit = openCredit(inode, key);
+            try {
+                admitOps(inode, ops, 'open', path, credit);
             }
-            else {
-                credit = INODE_COST + 4 * stringCost(key);
-                const written = bytes !== null && bytes.byteLength > 0 ? Math.max(bytes.byteLength, 4096) : 0;
-                admit(madeCost(key) + nameCost([key]) + credit + written + ops.reduce((sum, op) => sum + RECORD_COST + payloadOf(op), 0), 'open', path);
+            catch (error) {
+                release(inode);
+                throw error;
             }
-            // Made.
-            const description = descriptionId();
-            // The open as the caller asked it: the session's name may lead elsewhere by the time it lands, and its open is the one that decides.
-            const open = {
-                type: 'call', call: {
-                    call: 'open', path: key, mode: flags.create ? asked : row.mode & 0o7777,
-                    ...(flags.create ? { umask, create: true } : {}),
-                    ...(flags.exclusive && row === null ? { exclusive: true } : {}),
-                    ...(flags.truncate ? { truncate: true } : {}),
-                    ...(flags.followSymlinks === false ? { nofollow: true } : {}),
-                    access: read ? 'readwrite' : 'write',
-                    ...(chmod === undefined ? {} : { fchmod: chmod }),
-                    description,
-                },
-            };
-            let target;
-            if (row === null) {
-                target = made(key, 'file', 0o100000 | (asked & ~umask), parent);
-                // Admitted above with it: its records, its fold's buffer, and its open's credit.
-                target.reserved += credit + (bytes !== null && bytes.byteLength > 0 ? Math.max(bytes.byteLength, 4096) : 0) + ops.reduce((sum, op) => sum + RECORD_COST + payloadOf(op), 0);
-            }
-            else {
-                target = inode;
-            }
-            target.credit += credit;
-            // The open's own effects (its truncate, its fchmod) are its records; its writes are theirs.
-            const opened = ops.filter((op) => op.kind !== 'write').map((op) => fold(target, op, description));
-            // Its answer says which file the session opened first: what was made through it is that file's before any is settled.
-            const answered = openAnswered(target, key, description, credit, opened, row === null, read);
-            let opening;
-            if (row === null) {
-                opening = loggedName(open, [key], nameCost([key]), () => place(key, target), answered, undefined, awaited);
-            }
-            else {
-                host.count(key);
-                opening = logged(open, answered, awaited);
-            }
-            for (const op of ops) {
-                if (op.kind !== 'write')
-                    continue;
-                loggedOn([fold(target, op, description)], { type: 'call', call: { call: 'write', path: key, description, offset: op.offset, data: op.data } });
-            }
-            fit(target);
-            const handle = descriptor(target, path, { ...flags, write: true }, description);
-            descOf(handle.id).write = flags.write === true || flags.append === true || bytes !== null;
-            if (opening !== undefined)
-                descOf(handle.id).opening = opening;
-            if (close)
-                provisional.close(handle.id);
-            return handle;
-        });
+        }
+        else {
+            credit = INODE_COST + 4 * stringCost(key);
+            const written = bytes !== null && bytes.byteLength > 0 ? Math.max(bytes.byteLength, 4096) : 0;
+            admit(madeCost(key) + nameCost([key]) + credit + written + ops.reduce((sum, op) => sum + RECORD_COST + payloadOf(op), 0), 'open', path);
+        }
+        // Made.
+        const description = descriptionId();
+        // The open as the caller asked it: the session's name may lead elsewhere by the time it lands, and its open is the one that decides.
+        const open = {
+            type: 'call', call: {
+                call: 'open', path: key, mode: flags.create ? asked : row.mode & 0o7777,
+                ...(flags.create ? { umask, create: true } : {}),
+                ...(flags.exclusive && row === null ? { exclusive: true } : {}),
+                ...(flags.truncate ? { truncate: true } : {}),
+                ...(flags.followSymlinks === false ? { nofollow: true } : {}),
+                access: read ? 'readwrite' : 'write',
+                ...(chmod === undefined ? {} : { fchmod: chmod }),
+                description,
+            },
+        };
+        let target;
+        if (row === null) {
+            target = made(key, 'file', 0o100000 | (asked & ~umask), parent);
+            // Admitted above with it: its records, its fold's buffer, and its open's credit.
+            target.reserved += credit + (bytes !== null && bytes.byteLength > 0 ? Math.max(bytes.byteLength, 4096) : 0) + ops.reduce((sum, op) => sum + RECORD_COST + payloadOf(op), 0);
+        }
+        else {
+            target = inode;
+        }
+        target.credit += credit;
+        // The open's own effects (its truncate, its fchmod) are its records; its writes are theirs.
+        const opened = ops.filter((op) => op.kind !== 'write').map((op) => fold(target, op, description));
+        // Its answer says which file the session opened first: what was made through it is that file's before any is settled.
+        const answered = openAnswered(target, key, description, credit, opened, row === null, read);
+        let opening;
+        if (row === null) {
+            opening = loggedName(open, [key], nameCost([key]), () => place(key, target), answered, undefined, awaited);
+        }
+        else {
+            host.count(key);
+            opening = logged(open, answered, awaited);
+        }
+        for (const op of ops) {
+            if (op.kind !== 'write')
+                continue;
+            loggedOn([fold(target, op, description)], { type: 'call', call: { call: 'write', path: key, description, offset: op.offset, data: op.data } });
+        }
+        fit(target);
+        const handle = descriptor(target, path, { ...flags, write: true }, description);
+        descOf(handle.id).write = flags.write === true || flags.append === true || bytes !== null;
+        if (opening !== undefined)
+            descOf(handle.id).opening = opening;
+        if (close)
+            provisional.close(handle.id);
+        return handle;
     };
     const provisional = {
         inode: inodeAtNumber,
-        shell: (key, row) => {
-            const inode = { dev: row.dev, ino: row.ino, type: row.type, key, origin: key, row, base: null, state: null, records: NO_RECORDS, recordsCost: 0, unnamed: false, local: false, descs: 0, retained: NO_RETAINED, credit: 0, reserved: 0 };
+        inodeFor: (key, row) => {
+            const known = inodeAtNumber(row.dev, row.ino);
+            if (known !== undefined)
+                return known;
+            const inode = inodeAt(key, row);
             const need = cost(inode);
-            if (!host.reserve(need))
+            if (!host.reserve(need)) {
+                removeInode(inode);
                 return undefined;
+            }
             inode.reserved = need;
             return inode;
         },
-        charge: (inode) => fit(inode),
-        adopt: (inode, handles) => {
-            addInode(inode);
-            for (const [id, desc] of handles)
-                descs.set(id, desc);
+        heldDescriptor: (inode, path, read, append) => {
+            const id = host.nextHandle();
+            descs.set(id, { inode, read, write: true, append, position: 0, path, lastRecord: null, lastAnswer: null });
+            inode.descs++;
+            return { id, path };
         },
         descriptor: (handleId) => descs.get(handleId),
         descriptorsOf: (inode) => {
@@ -1069,9 +1047,16 @@ export function provisional(host) {
                 return [];
             return [...new Set(descs.values())].filter((desc) => desc.inode === inode);
         },
+        cells: () => [...held],
+        hold: (inode, cell) => setCell(inode, cell),
+        dropCell: (inode) => {
+            setCell(inode, undefined);
+            fit(inode);
+            release(inode);
+        },
         moved: (from, to) => {
-            for (const inode of all) {
-                if (!within(inode.key, from))
+            for (const inode of everyInode()) {
+                if (inode.cell?.detached !== undefined || !within(inode.key, from))
                     continue;
                 inode.key = inode.origin = to + inode.key.slice(from.length);
                 fit(inode);
@@ -1081,7 +1066,7 @@ export function provisional(host) {
             const cell = inode.cell;
             if (cell === undefined)
                 return;
-            delete inode.cell;
+            setCell(inode, undefined);
             inode.row = { ...entry, size: cell.length };
             // The cell's buffer is the baseline's own: no one else holds it now.
             inode.base = { bytes: cell.bytes.subarray(0, cell.length), size: cell.length, mode: entry.mode, uid: entry.uid, gid: entry.gid, atime: entry.atime, mtime: entry.mtime, ctime: entry.ctime };
@@ -1094,13 +1079,13 @@ export function provisional(host) {
             activity();
         },
         answeredHeld: (root) => {
-            for (const inode of all)
+            for (const inode of loose)
                 if (inode.heldAt === Infinity && (within(inode.key, root) || within(inode.origin, root)))
                     inode.heldAt = barriers;
         },
         pending: (dev, ino) => {
             const inode = inodeAtNumber(dev, ino);
-            return inode !== undefined && (inode.state !== null || inode.key !== inode.origin);
+            return inode !== undefined && (inode.cell !== undefined || inode.state !== null || inode.key !== inode.origin);
         },
         sessionOf: (handleId, access) => {
             const desc = descs.get(handleId);
@@ -1115,8 +1100,8 @@ export function provisional(host) {
                 sessions.set(description, { handle, read });
         },
         kept: () => {
-            let total = host.heldCost();
-            for (const inode of all)
+            let total = 0;
+            for (const inode of everyInode())
                 total += cost(inode);
             for (const record of nameRecords)
                 total += record.cost;
@@ -1181,19 +1166,15 @@ export function provisional(host) {
                 return undefined;
             if (!modeAllows(row, 4, host.cred))
                 throw fsError('EACCES', 'open', path);
-            probe(promotionNeed(row.dev, row.ino, (promoted) => projectedCost(promoted, []) - promoted.reserved), 'open', path);
-            return host.commit(() => {
-                host.drain();
-                const inode = inodeAt(key, row);
-                try {
-                    admitOps(inode, [], 'open', path);
-                }
-                catch (error) {
-                    release(inode);
-                    throw error;
-                }
-                return descriptor(inode, path, flags, undefined);
-            });
+            const inode = inodeAt(key, row);
+            try {
+                admitOps(inode, [], 'open', path);
+            }
+            catch (error) {
+                release(inode);
+                throw error;
+            }
+            return descriptor(inode, path, flags, undefined);
         },
         writeFile: (key, path, bytes, row, umask) => openToWrite(key, path, { write: true, create: true, truncate: true, mode: 0o666, ...(umask === undefined ? {} : { umask }) }, row, bytes, true) !== undefined,
         read: (handleId, offset, length) => {
@@ -1255,30 +1236,21 @@ export function provisional(host) {
             return entryOf(desc.inode);
         },
         fsetattr: (handleId, change) => {
-            // One of a file a grant holds alone: borrowed to judge and price the change, its file taken (promoted) in the commit.
-            const held = descs.has(handleId) ? undefined : host.heldHandle(handleId);
-            const desc = held ?? descOf(handleId);
+            const desc = descOf(handleId);
             const inode = desc.inode;
             const attrs = change;
             const syscall = 'mode' in attrs ? 'fchmod' : 'uid' in attrs ? 'fchown' : 'futimes';
             // The file it opened: through its description, wherever or whether a name leads to it; without one, by the name that still does.
-            if (desc.description === undefined && anchorOf(inode) === undefined && !named(inode))
+            const described = desc.description ?? anchorOf(inode);
+            if (described === undefined && !named(inode))
                 throw fsError('ESTALE', syscall, desc.path);
             judgeAttrs(entryOf(inode), attrs, syscall, desc.path);
             const op = attrOp(attrs, host.now());
-            if (held !== undefined)
-                probe(promotionNeed(inode.dev, inode.ino, (promoted) => projectedCost(promoted, [op]) - promoted.reserved), syscall, desc.path);
-            host.commit(() => {
-                host.drain();
-                if (held !== undefined)
-                    take(inode.dev, inode.ino);
-                admitOps(inode, [op], syscall, desc.path);
-                host.count(inode.key);
-                // Promoted, it is opened at the session through its own description.
-                const described = desc.description ?? anchorOf(inode);
-                loggedOn([fold(inode, op, described)], { type: 'setattr', path: inode.key, attrs, ...(described === undefined ? {} : { description: described }) });
-                fit(inode);
-            });
+            host.drain();
+            admitOps(inode, [op], syscall, desc.path);
+            host.count(inode.key);
+            loggedOn([fold(inode, op, described)], { type: 'setattr', path: inode.key, attrs, ...(described === undefined ? {} : { description: described }) });
+            fit(inode);
         },
         abandon: (handleId) => {
             delete descOf(handleId).description;
@@ -1309,6 +1281,9 @@ export function provisional(host) {
             }
             if (desc.description !== undefined && !inode.retained.includes(desc.description))
                 sessions.delete(desc.description);
+            // A grant's file that lost its name goes with its last descriptor (POSIX: its last close).
+            if (inode.descs === 0 && inode.cell?.detached !== undefined)
+                setCell(inode, undefined);
             release(inode);
         },
         dup: (handleId) => {
@@ -1387,13 +1362,10 @@ export function provisional(host) {
             if (writableParent(key, path, 'unlink') === undefined)
                 return false;
             // Its descriptors keep what it holds: its bytes, where only the view has them, admitted for their lifetime first.
-            probe(promotionNeed(row.dev, row.ino, () => nameCost([key])), 'unlink', path);
-            return host.commit(() => {
-                host.drain();
-                keepForDescriptors(take(row.dev, row.ino), nameCost([key]), 'unlink', path);
-                loggedName({ type: 'call', call: { call: 'unlink', path: key } }, [key], nameCost([key]), () => place(key, null));
-                return true;
-            });
+            host.drain();
+            keepForDescriptors(inodeAtNumber(row.dev, row.ino), nameCost([key]), 'unlink', path);
+            loggedName({ type: 'call', call: { call: 'unlink', path: key } }, [key], nameCost([key]), () => place(key, null));
+            return true;
         },
         rmdir: (key, path, row) => {
             if (row === undefined)
@@ -1446,52 +1418,40 @@ export function provisional(host) {
             if (writableParent(from, path, 'rename') === undefined || writableParent(to, path, 'rename') === undefined)
                 return false;
             // A file it replaces keeps, for its descriptors, what it holds: admitted first, with the record and the Inode it moves.
-            // All it will admit, a file a grant holds alone among them priced as promoted, before anything is done (§11).
-            {
-                const borrowed = layer.get(from) ?? inodeAtNumber(source.dev, source.ino) ?? host.heldFile(source.dev, source.ino);
-                const more = nameCost([from, to]) + (borrowed === undefined ? INODE_COST + 2 * stringCost(from) + 2 * stringCost(to) : 2 * stringCost(to));
-                const sourceNeed = layer.has(from) ? 0 : promotionNeed(source.dev, source.ino, () => 0);
-                const replaced = target === null ? undefined : inodeAtNumber(target.dev, target.ino);
-                const targetNeed = target === null || replaced !== undefined ? keepNeed(replaced, more)
-                    : host.heldFile(target.dev, target.ino) !== undefined ? promotionNeed(target.dev, target.ino, () => more) : more;
-                probe(sourceNeed + targetNeed, 'rename', path);
-            }
-            return host.commit(() => {
-                host.drain();
-                const known = layer.get(from) ?? take(source.dev, source.ino);
-                const moves = known === undefined ? INODE_COST + 2 * stringCost(from) + 2 * stringCost(to) : 2 * stringCost(to);
-                keepForDescriptors(target === null ? undefined : take(target.dev, target.ino), nameCost([from, to]) + moves, 'rename', path);
-                const moving = known ?? inodeAt(from, source);
-                moving.reserved += moves;
-                loggedName({ type: 'rename', from, to }, [from, to], nameCost([from, to]), () => {
-                    // What is beneath the source moves with it: names, never records.
-                    for (const [key, value] of [...layer]) {
-                        if (key === from || !within(key, from))
-                            continue;
-                        layer.delete(key);
-                        const moved = to + key.slice(from.length);
-                        layer.set(moved, value);
-                        if (value !== null)
-                            value.key = moved;
-                    }
-                    for (const map of [added, removed]) {
-                        for (const [key, value] of [...map])
-                            if (within(key, from)) {
-                                map.delete(key);
-                                map.set(to + key.slice(from.length), value);
-                            }
-                    }
-                    place(from, null);
-                    place(to, moving);
-                }, undefined, () => {
-                    // The view has it moved: what was beneath the source starts beneath the destination.
-                    for (const inode of everyInode())
-                        if (within(inode.origin, from))
-                            inode.origin = to + inode.origin.slice(from.length);
-                });
-                fit(moving);
-                return true;
+            host.drain();
+            const known = layer.get(from) ?? inodeAtNumber(source.dev, source.ino);
+            const moves = known === undefined ? INODE_COST + 2 * stringCost(from) + 2 * stringCost(to) : 2 * stringCost(to);
+            keepForDescriptors(target === null ? undefined : inodeAtNumber(target.dev, target.ino), nameCost([from, to]) + moves, 'rename', path);
+            const moving = known ?? inodeAt(from, source);
+            moving.reserved += moves;
+            loggedName({ type: 'rename', from, to }, [from, to], nameCost([from, to]), () => {
+                // What is beneath the source moves with it: names, never records.
+                for (const [key, value] of [...layer]) {
+                    if (key === from || !within(key, from))
+                        continue;
+                    layer.delete(key);
+                    const moved = to + key.slice(from.length);
+                    layer.set(moved, value);
+                    if (value !== null)
+                        value.key = moved;
+                }
+                for (const map of [added, removed]) {
+                    for (const [key, value] of [...map])
+                        if (within(key, from)) {
+                            map.delete(key);
+                            map.set(to + key.slice(from.length), value);
+                        }
+                }
+                place(from, null);
+                place(to, moving);
+            }, undefined, () => {
+                // The view has it moved: what was beneath the source starts beneath the destination.
+                for (const inode of everyInode())
+                    if (within(inode.origin, from))
+                        inode.origin = to + inode.origin.slice(from.length);
             });
+            fit(moving);
+            return true;
         },
         setattr: (key, path, attrs, row) => {
             if (row === undefined)
@@ -1500,34 +1460,20 @@ export function provisional(host) {
             if (row === null)
                 throw fsError('ENOENT', syscall, path);
             judgeAttrs(row, attrs, syscall, path);
+            host.drain();
+            const inode = layer.get(key) ?? inodeAt(key, row);
             const op = attrOp(attrs, host.now());
-            // An access change at or above files a grant holds open: they are promoted first, their descriptions keeping the access they were opened with.
-            // All of it admitted first: those, and the file itself (a grant's priced as promoted).
-            const through = 'mode' in attrs ? host.heldOpen([key]).filter((inode) => inode.dev !== row.dev || inode.ino !== row.ino) : [];
-            const known = layer.get(key) ?? inodeAtNumber(row.dev, row.ino);
-            let need = known ? projectedCost(known, [op]) - known.reserved
-                : host.heldFile(row.dev, row.ino) !== undefined ? promotionNeed(row.dev, row.ino, (promoted) => projectedCost(promoted, [op]) - promoted.reserved)
-                    : projectedCost(shellAt(key, row), [op]);
-            for (const inode of through)
-                need += promotionNeed(inode.dev, inode.ino, () => 0);
-            probe(need, syscall, path);
-            return host.commit(() => {
-                host.drain();
-                for (const inode of through)
-                    take(inode.dev, inode.ino);
-                const inode = layer.get(key) ?? inodeAt(key, row);
-                try {
-                    admitOps(inode, [op], syscall, path);
-                }
-                catch (error) {
-                    release(inode);
-                    throw error;
-                }
-                host.count(key);
-                loggedOn([fold(inode, op)], { type: 'setattr', path: key, attrs });
-                fit(inode);
-                return true;
-            });
+            try {
+                admitOps(inode, [op], syscall, path);
+            }
+            catch (error) {
+                release(inode);
+                throw error;
+            }
+            host.count(key);
+            loggedOn([fold(inode, op)], { type: 'setattr', path: key, attrs });
+            fit(inode);
+            return true;
         },
         copyFile: (to, path, source, bytes, target, keepMode) => {
             // The source as the session's copy reads it: a file it may read, no set-id bit (the session's to judge).
@@ -1576,7 +1522,7 @@ export function provisional(host) {
                 replay();
             }
             // A grant's decides it (held): one given back stands until a barrier begun after its decisions were answered.
-            for (const inode of [...all]) {
+            for (const inode of [...loose]) {
                 if (inode.heldAt !== undefined) {
                     if (inode.heldAt >= begun)
                         continue;

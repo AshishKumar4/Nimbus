@@ -42,8 +42,8 @@ export interface ProvisionalHost {
     row(key: string): ResidentEntry | null | undefined;
     /** The listing of `key`, as `row` sees it. */
     children(key: string): RuntimeVfsDirEntry[] | undefined;
-    /** The view's bytes of file `row` at `key`, where it holds them and they are the view's (DelegationHolder.bytes' last source). */
-    content(key: string, row: ResidentEntry): Uint8Array | undefined;
+    /** The store's bytes of `key` at `revision`, where it holds them. */
+    content(key: string, revision: number): Uint8Array | undefined;
     reserve(bytes: number): boolean;
     release(bytes: number): void;
     readonly client: ProcessFsClient;
@@ -62,26 +62,8 @@ export interface ProvisionalHost {
     now(): number;
     /** The next descriptor id, from the holder's own range. */
     nextHandle(): number;
-    /**
-     * File (dev, ino), where a grant decides it alone (the holder's cell, no
-     * Inode here): promoted, in one synchronous step, to an Inode of these
-     * decisions (Provisional.adopt, then unhold), which it returns; undefined
-     * where no grant holds it. The one way these decisions take a held file.
-     */
-    promote(dev: number, ino: number): Inode | undefined;
-    /** File (dev, ino)'s Inode where a grant decides it alone (the holder's, outside the table): a borrow, to price a change before take promotes it. */
-    heldFile(dev: number, ino: number): Inode | undefined;
-    /** What the files a grant holds alone keep of the budget (their Inodes, outside the table). */
-    heldCost(): number;
-    /** Descriptor `handleId` where a grant holds its file alone (the holder's): a borrow, to judge and price a change before take promotes it. */
-    heldHandle(handleId: number): Desc | undefined;
-    /** The files a grant holds alone with a descriptor open, at or under `keys`: a borrow, as for heldFile. */
-    heldOpen(keys: readonly string[]): readonly Inode[];
-    /**
-     * `work`, the commit of a change judged and admitted in full: nothing it
-     * does is refused. The only place promote runs (§11).
-     */
-    commit<T>(work: () => T): T;
+    /** A grant's file a provisional decision is about to change: no grant decides it from now on (Provisional.unhold, after what it decided is logged). */
+    unhold(inode: Inode): void;
     /** The generation of a grant's decision at `key` (OwnNames.generation): undefined where none. */
     generation(key: string): number | undefined;
     /**
@@ -225,29 +207,25 @@ export interface Provisional {
     kept(): number;
     /** The Inode of file (dev, ino), where this process has one. */
     inode(dev: number, ino: number): Inode | undefined;
-    /**
-     * An Inode for a file a grant decides alone (`key` its name, `row` what it
-     * is), outside the table, its cost reserved: undefined where the budget has
-     * no room. The holder keeps it until it goes or is promoted (adopt).
-     */
-    shell(key: string, row: ResidentEntry): Inode | undefined;
-    /** A shell's cost charged again as it is now (a rename changed its name): kept where the budget has room. */
-    charge(inode: Inode): void;
-    /**
-     * `inode`, a shell, is these decisions' from now on, with its open
-     * descriptions (`handles`: each fd's id and its description, a dup sharing
-     * one), moved as they are: no copy. Then unhold makes its cell its content.
-     */
-    adopt(inode: Inode, handles: ReadonlyMap<number, Desc>): void;
+    /** Its Inode, made where none is (`key` the name it is reached by, `row` what it is): undefined where the budget has no room for one. */
+    inodeFor(key: string, row: ResidentEntry): Inode | undefined;
+    /** A descriptor of `inode` an open decided under its grant made (Inode.cell): no session description, its rights the open's. */
+    heldDescriptor(inode: Inode, path: string, read: boolean, append: boolean): RuntimeFileHandle;
     /** The descriptor `handleId`, where it is one of this process's. */
     descriptor(handleId: number): Desc | undefined;
     /** Every descriptor of `inode`, each open once (a dup shares its open). */
     descriptorsOf(inode: Inode): Desc[];
+    /** The Inodes a grant decides now (their cells). */
+    cells(): Inode[];
+    /** A grant decides `inode` from now on: `cell` is its content. */
+    hold(inode: Inode, cell: HeldCell): void;
+    /** `inode`'s cell goes (its name retired, nothing holds it): the Inode with it, but for what else holds it. */
+    dropCell(inode: Inode): void;
     /**
-     * A rename a grant decided, `from` to `to`: every file of these decisions
-     * reached beneath `from` (a descriptor's included) is reached at its name
-     * beneath `to` from now on, the name the view will have it at too. The
-     * holder moves the files a grant holds alone.
+     * A rename a grant decided, `from` to `to`: every file reached beneath
+     * `from` (a grant's cell, or one these decisions hold, a descriptor's
+     * included) is reached at its name beneath `to` from now on, the name the
+     * view will have it at too. A cell that no name leads to stays where it is.
      */
     moved(from: string, to: string): void;
     /**

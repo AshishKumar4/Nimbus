@@ -167,13 +167,6 @@ export declare function rewriteExternalRequires(code: string, basePath: string):
  *   - No CJS export patterns found in the bundle source
  */
 export declare function synthesizeCjsNamedExports(code: string): string;
-/**
- * A module that fails in the page with `diag`. It declares `names` (each
- * undefined) beside its default, so an importer of any of them links, and
- * throws `diag` as it evaluates: the preview's overlay shows that, where a
- * module lacking a name the importer asks for would fail to link with "does
- * not provide an export named ..." and never run.
- */
 export declare function failingModule(diag: string, names: Iterable<string>): string;
 /**
  * The package scope of an importing file, read once: the first package.json
@@ -250,8 +243,8 @@ export declare class ViteDevServer {
      * multiple parallel requests for the same /preview/@modules/<spec>
      * (which happens on first preview load — every imported module
      * resolves concurrently), we want exactly ONE bundle attempt per
-     * spec. The map holds the in-flight Promise<Response> keyed by
-     * cacheKey; subsequent fetches return the same promise. Entry is
+     * spec. The map holds the in-flight module (ServedModule) keyed by
+     * cacheKey; subsequent fetches wait on the same promise. Entry is
      * deleted when the promise settles so repeat-after-cache-expiry
      * goes through the cold path again.
      *

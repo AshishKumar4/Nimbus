@@ -1,23 +1,25 @@
 #!/usr/bin/env bun
 /**
- * A file a grant decides alone (the holder's cell) and the provisional
- * decisions (§11, rev 6): one owner per file, and every byte read through
- * one owner-aware source.
+ * A file a grant decides (its cell) across give-backs, and the provisional
+ * decisions beside it:
  *   - its bytes given back with no descriptor open are not the view's until
  *     a barrier covers them: a read that cannot wait, by a new descriptor
  *     or a copy, is the new bytes or EAGAIN, never the old;
  *   - a copy that cannot wait reads a held source's bytes from its cell,
  *     cold or once resident, to a destination no grant holds;
- *   - a change refused, for room or permission, leaves a held file with a
- *     descriptor open the grant's: nothing of it moved or logged for a
- *     failed call, by name or through the descriptor;
+ *   - a change refused, for room or permission, by name or through a
+ *     descriptor of a held file, changes nothing, and the file's
+ *     descriptor writes on as before;
  *   - a grant's rename above a file the provisional decisions changed, while
  *     a barrier begun before it lands: the moved decision stays (newer than
- *     the barrier's answer), with what they made of the file.
+ *     the barrier's answer), with what they made of the file;
+ *   - a decision given back, then moved under a later grant before the
+ *     barrier its give-back waits on lands, stays.
  */
 
 import assert from 'node:assert/strict';
 import { withRecall } from '../../packages/core/src/vfs/recall.ts';
+import { ownNames } from '../../packages/core/src/runtime/wasi/own-names.ts';
 import { session } from './lib/holder-session.mjs';
 
 const enc = new TextEncoder();
@@ -113,9 +115,9 @@ async function holding({ prepare, ...options } = {}) {
   assert.equal(s.kernel.readFileString('tmp/warm2-copy'), 'NEW2', 'a copy took the resident bytes of a held source, not its cell');
 }
 
-// ── A change refused, for room or permission, leaves a held file with a descriptor open the grant's ──
-// Each that would promote it judges and admits everything first: by name (open, rename, unlink, chmod) and through its
-// descriptor (fchmod; fchown and futimes the grant declines). `refusal`: its errno, or null where it may also succeed.
+// ── A change refused, for room or permission, of a held file with a descriptor open changes nothing ──
+// By name (open, rename, unlink, chmod) and through its descriptor (fchmod; fchown and futimes the grant declines).
+// `refusal`: its errno, or null where it may also succeed.
 for (const [change, refusal] of [['open', null], ['rename', null], ['unlink', null], ['chmod', 'ENOSPC'], ['fchmod', 'ENOSPC'], ['fchown', 'EPERM'], ['futimes', 'EPERM']]) {
   const budget = { used: 0, limit: 1 << 30 };
   // Another's file the process may write: its times are not the process's to set (futimes).
@@ -127,7 +129,7 @@ for (const [change, refusal] of [['open', null], ['rename', null], ['unlink', nu
   const handle = await s.fs.open('/home/user/proj/h', { write: true, create: true, truncate: true, mode: 0o644 });
   await s.fs.write(handle.id, null, enc.encode('held'));
   const sync = s.fs.synchronous;
-  const ops = s.fs.stats().client.ops;
+  const before = sync.stat('/home/user/proj/h');
   // No room: anything the provisional decisions would admit is refused.
   budget.limit = budget.used;
   const code = await errnoOf(() => {
@@ -143,8 +145,10 @@ for (const [change, refusal] of [['open', null], ['rename', null], ['unlink', nu
   budget.limit = 1 << 30;
   if (refusal === null && code === null) continue;
   assert.equal(code, refusal ?? 'ENOSPC', `${change}: refused`);
-  assert.equal(s.fs.stats().client.ops, ops, `${change}: a refused change moved the held file (its descriptor's open logged)`);
-  // Still the grant's: its descriptor writes here, and the session has its bytes once sent.
+  const after = sync.stat('/home/user/proj/h');
+  assert.deepEqual([after.ino, after.mode, after.uid, Number(after.mtime)], [before.ino, before.mode, before.uid, Number(before.mtime)], `${change}: a refused change changed the file`);
+  assert.equal(sync.stat('/tmp/h'), null, `${change}: a refused rename moved the file`);
+  // Its descriptor writes on, and the session has its bytes once sent.
   await s.fs.write(handle.id, null, enc.encode('!'));
   await s.fs.close(handle.id);
   await s.fs.settle();
@@ -190,4 +194,21 @@ for (const [change, refusal] of [['open', null], ['rename', null], ['unlink', nu
   assert.equal(s.kernel.stat('home/user/proj/q/f').mode & 0o777, 0o640, 'the moved file\'s mode');
 }
 
-console.log('ok - wasi-held-promotion');
+// ── A decision given back, then moved under a later grant before the barrier its give-back waits on lands: it stays ──
+{
+  const names = ownNames({ entry: () => undefined, forgot: () => {} });
+  const row = { type: 'file', dev: 1, ino: 9, nlink: 1, size: 3, atime: 1, mtime: 1, ctime: 1, mode: 0o100644, uid: 1000, gid: 1000, revision: 0, target: null };
+  names.decide('p/d/f', row);
+  names.released('p');
+  const begun = names.barrierBegun();
+  names.move('p/d', 'p/e');
+  names.retire(begun);
+  assert.equal(names.entry('p/e/f'), row, 'a moved decision was forgotten by the give-back marker of its old name');
+  // Not moved, it retires then.
+  names.decide('p/g', row);
+  names.released('p');
+  names.retire(names.barrierBegun());
+  assert.equal(names.entry('p/g'), undefined, 'a decision given back stayed after a barrier begun after it landed');
+}
+
+console.log('ok - wasi-held-give-back');

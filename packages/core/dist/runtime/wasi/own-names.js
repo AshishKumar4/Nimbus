@@ -23,9 +23,9 @@ export function ownNames(options) {
     let generations = 0;
     /**
      * The barrier begun when each name's subtree was last given back,
-     * everything decided there answered, and the decision it gave back: one
-     * begun after retires it, unless the name was decided again since (a new
-     * decision is a new row).
+     * everything decided there answered, and the generation of the decision
+     * it gave back: one begun after retires it, unless the name was decided
+     * again or moved since (a new generation).
      */
     const own = new Map();
     const added = new Map();
@@ -145,24 +145,21 @@ export function ownNames(options) {
                         map.set(moved(key), value);
                     }
             }
-            for (const [key, value] of [...own]) {
-                if (key === from || !within(key, from))
-                    continue;
-                own.delete(key);
-                own.set(moved(key), value);
-            }
+            for (const key of [...own.keys()])
+                if (key !== from && within(key, from))
+                    own.delete(key);
         },
         released: (root) => {
             // Stamped at every release: one decided under a later grant retires after this release, not an earlier one.
-            for (const [key, decision] of decided)
+            for (const key of decided.keys())
                 if (within(key, root))
-                    own.set(key, { barrier: barriers, decision });
+                    own.set(key, { barrier: barriers, generation: born.get(key) });
         },
         barrierBegun: () => ++barriers,
         // A subtree held again since does not keep it: what the session has there now is what the view read.
         retire: (begun) => {
-            for (const [key, { barrier, decision }] of [...own]) {
-                if (decided.get(key) !== decision)
+            for (const [key, { barrier, generation }] of [...own]) {
+                if (born.get(key) !== generation)
                     own.delete(key);
                 else if (barrier < begun)
                     forget(key);
