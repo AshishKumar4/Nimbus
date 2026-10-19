@@ -305,10 +305,13 @@ async function reportFocusLoss(page) {
     if (window !== window.top) return;
     addEventListener('blur', (event) => {
       if (event.target !== window) return;
-      // Where focus went is settled once the blur has been dispatched.
+      // Where focus went is settled once the blur has been dispatched. A
+      // frame holding focus is the page's active element, and the page still
+      // "has" focus (hasFocus counts its frames): named, it is not "back".
       setTimeout(() => {
         const to = document.activeElement;
-        __nimbusProbeFocusLost(document.hasFocus() ? 'back' : to === null || to === document.body ? 'nothing here' : to.tagName + (to.id ? '#' + to.id : ''));
+        const named = to === null || to === document.body ? null : to.tagName + (to.id ? '#' + to.id : '');
+        __nimbusProbeFocusLost(to instanceof HTMLIFrameElement ? named : !document.hasFocus() ? `another window (${named ?? 'nothing'} here)` : `back to ${named ?? 'the page'}`);
       }, 0);
     });
   });
