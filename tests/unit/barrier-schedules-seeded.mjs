@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// @tier slow — 24 seeded schedules on each engine, each in its own child: 59 s on armada when green, a failing seed then shrunk within 120 s
+// @tier slow — 24 seeded schedules on each engine, each in its own child: 102 s on armada when green, a failing seed then shrunk within 120 s
 /**
  * barrier-schedules-seeded — the barrier schedules (lib/barrier-schedule.mjs)
  * drawn from seeds, each reply parked at random once the process is up, on
