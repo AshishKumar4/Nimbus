@@ -115,7 +115,7 @@ export async function storeSession(tree, { eager = false, unlisted = [], delegat
   }
   const device = (await authority.stat('/')).dev;
   const view = store.view.namespaceView(supervisor, device, USER);
-  const fs = residentFilesystem(authority, view, delegated ? {
+  const fs = residentFilesystem(authority, view, delegated ? /** @type {any} */ ({
     session: {
       openWriter: async () => null,
       writeBatchStream: async (stream, _fence, owner) => authority.writeStream(stream, owner === undefined ? {} : { mutationOwner: owner }),
@@ -129,7 +129,7 @@ export async function storeSession(tree, { eager = false, unlisted = [], delegat
     grantAfter: Number.MAX_SAFE_INTEGER,
     readLeases: () => true,
     isHomeRoot: (key) => key === ROOT,
-  } : undefined);
+  }) : undefined);
   return {
     kernel,
     authority,
