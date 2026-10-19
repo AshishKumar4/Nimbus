@@ -123,6 +123,9 @@ var __nimbusResidentModule = (() => {
   var RESIDENT_CHUNK_BYTES = 1048576;
   var ONE_SHOT_STORE_MEMORY_BYTES = VFS_BUNDLE_MAX_BYTES + 16 * 1024 * 1024;
 
+  // nimbus-launch-captures:launch-captures
+  var { ArrayConstructor, ArrayFrom, ArrayIteratorNext, ArrayIteratorPrototype, ArrayPrototypeIndexOf, ArrayPrototypeLastIndexOf, ArrayPrototypePop, ArrayPrototypeToSpliced, ArrayPrototypeWith, ArrayValues, BigInt, BigIntPrototypeToString, Error: Error2, FunctionPrototypeBind, GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, JSONParse, JSONStringify, MapConstructor, NumberOf, NumberPrototypeToString, ObjectOf, ObjectPrototype, ObjectPrototypeHasOwnProperty, ObjectPrototypePropertyIsEnumerable, ObjectPrototypePropertyIsEnumerableOf, ObjectPrototypeToString, PromiseConstructor, PromisePrototypeThen, PromiseReject, PromiseResolve, RangeError, ReferenceError: ReferenceError2, RegExp, RegExpPrototypeAccessors, RegExpPrototypeExec, SafeAsyncGeneratorPrototype, SafeGeneratorPrototype, SafeList, SafeMap, SafeRegExpPrototype, SafeSet, SafeWeakMap, SafeWeakSet, StringFromCharCode, StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeIndexOf, StringPrototypeLastIndexOf, StringPrototypeSlice, StringPrototypeSubstr, SymbolConstructor, SymbolPrototypeDescription, SymbolPrototypeToString, SyntaxError, TypeError: TypeError2, URIError, URL, arrayIncludes, arrayIndexOf, arrayIsArray, arrayJoin, arrayPush, arraySort, arraySplice, captureStackTraceOf, dataDescriptor, decodeURIComponentOf, encodeURIComponentOf, generatorNext, generatorThrow, globalObject, mapGet, mathAbs, mathMin, newURL, numberIsInteger, objectAssign, objectCreate, objectDefineProperties, objectDefineProperty, objectFreeze, objectGetOwnPropertyNames, objectHasOwn, objectIs, objectIsExtensible, objectKeys, objectPreventExtensions, ownField, parseFloatOf, parseIntOf, reflectApply, reflectConstruct, reflectDefineProperty, reflectDeleteProperty, reflectGet, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectHas, reflectOwnKeys, reflectSet, reflectSetPrototypeOf, regExpExec, safeGenerator, setForEach, stringCharCodeAt, stringEndsWith, stringIncludes, stringIndexOf, stringLastIndexOf, stringOf, stringSlice, stringStartsWith, stringToLowerCase, symbolAsyncIterator, symbolFor, symbolIterator, symbolToStringTag, symbolUnscopables, useCaptureStackTrace } = __nimbusLaunchCaptures;
+
   // src/vfs/resident/cell-cost.ts
   var RESIDENT_ROW_BYTES = LEDGER_ROW_BYTES;
   function residentBytes(value) {
@@ -130,23 +133,32 @@ var __nimbusResidentModule = (() => {
     if (value instanceof ArrayBuffer) return new Uint8Array(value);
     return new Uint8Array(0);
   }
+  var TEXT_CHUNK_UNITS = Math.floor(RESIDENT_CHUNK_BYTES / 3);
+  function textChunkEnds(text) {
+    const ends = [];
+    let at = 0;
+    do {
+      let end = Math.min(text.length, at + TEXT_CHUNK_UNITS);
+      const last = stringCharCodeAt(text, end - 1);
+      if (end < text.length && last >= 55296 && last <= 56319) end--;
+      ends.push(end);
+      at = end;
+    } while (at < text.length);
+    return ends;
+  }
   function residentCellCost(cell) {
     const isText = typeof cell === "string";
-    const size = isText ? cell.length : residentBytes(cell).byteLength;
-    const limit = isText ? Math.floor(RESIDENT_CHUNK_BYTES / 3) : RESIDENT_CHUNK_BYTES;
-    const chunks = Math.max(1, Math.ceil(size / limit));
-    return Math.ceil((isText ? utf8Length(cell) : size) * 1.01) + (chunks + 1) * RESIDENT_ROW_BYTES + 4096;
+    const size = isText ? utf8Length(cell) : residentBytes(cell).byteLength;
+    const chunks = isText ? textChunkEnds(cell).length : Math.max(1, Math.ceil(size / RESIDENT_CHUNK_BYTES));
+    return Math.ceil(size * 1.01) + (chunks + 1) * RESIDENT_ROW_BYTES + 4096;
   }
   function residentFileCost(size) {
-    const chunks = Math.max(1, Math.ceil(size / Math.floor(RESIDENT_CHUNK_BYTES / 3)));
+    const chunks = Math.max(1, Math.ceil(size / (TEXT_CHUNK_UNITS - 1)));
     return Math.ceil(size * 1.01) + (chunks + 1) * RESIDENT_ROW_BYTES + 4096;
   }
   function namespaceRowBytes(parent, name, target) {
     return RESIDENT_ROW_BYTES + 2 * (String(parent).length + String(name).length + (target == null ? 0 : String(target).length));
   }
-
-  // nimbus-launch-captures:launch-captures
-  var { ArrayConstructor, ArrayFrom, ArrayIteratorNext, ArrayIteratorPrototype, ArrayPrototypeIndexOf, ArrayPrototypeLastIndexOf, ArrayPrototypePop, ArrayPrototypeToSpliced, ArrayPrototypeWith, ArrayValues, BigInt, BigIntPrototypeToString, Error: Error2, FunctionPrototypeBind, GeneratorPrototypeNext, GeneratorPrototypeReturn, GeneratorPrototypeThrow, JSONParse, JSONStringify, MapConstructor, NumberOf, NumberPrototypeToString, ObjectOf, ObjectPrototype, ObjectPrototypeHasOwnProperty, ObjectPrototypePropertyIsEnumerable, ObjectPrototypePropertyIsEnumerableOf, ObjectPrototypeToString, PromiseConstructor, PromisePrototypeThen, PromiseReject, PromiseResolve, RangeError, ReferenceError: ReferenceError2, RegExp, RegExpPrototypeAccessors, RegExpPrototypeExec, SafeAsyncGeneratorPrototype, SafeGeneratorPrototype, SafeList, SafeMap, SafeRegExpPrototype, SafeSet, SafeWeakMap, SafeWeakSet, StringFromCharCode, StringPrototypeCharAt, StringPrototypeCharCodeAt, StringPrototypeIndexOf, StringPrototypeLastIndexOf, StringPrototypeSlice, StringPrototypeSubstr, SymbolConstructor, SymbolPrototypeDescription, SymbolPrototypeToString, SyntaxError, TypeError: TypeError2, URIError, URL, arrayIncludes, arrayIndexOf, arrayIsArray, arrayJoin, arrayPush, arraySort, arraySplice, captureStackTraceOf, dataDescriptor, decodeURIComponentOf, encodeURIComponentOf, generatorNext, generatorThrow, globalObject, mapGet, mathAbs, mathMin, newURL, numberIsInteger, objectAssign, objectCreate, objectDefineProperties, objectDefineProperty, objectFreeze, objectGetOwnPropertyNames, objectHasOwn, objectIs, objectIsExtensible, objectKeys, objectPreventExtensions, ownField, parseFloatOf, parseIntOf, reflectApply, reflectConstruct, reflectDefineProperty, reflectDeleteProperty, reflectGet, reflectGetOwnPropertyDescriptor, reflectGetPrototypeOf, reflectHas, reflectOwnKeys, reflectSet, reflectSetPrototypeOf, regExpExec, safeGenerator, setForEach, stringCharCodeAt, stringEndsWith, stringIncludes, stringIndexOf, stringLastIndexOf, stringOf, stringSlice, stringStartsWith, stringToLowerCase, symbolAsyncIterator, symbolFor, symbolIterator, symbolToStringTag, symbolUnscopables, useCaptureStackTrace } = __nimbusLaunchCaptures;
 
   // src/vfs/resident/admission.ts
   function createAdmission(coherence) {
@@ -1486,6 +1498,46 @@ var __nimbusResidentModule = (() => {
     const held = new SafeMap();
     const unheld = new SafeSet();
     const cellSize = (cell) => typeof cell === "string" ? cell.length * 3 : residentBytes(cell).byteLength;
+    const encodeText = TextEncoder.prototype.encode.bind(new TextEncoder());
+    const sameBytes = (a, b) => {
+      if (a.byteLength !== b.byteLength) return false;
+      for (let i = 0; i < a.byteLength; i++) if (a[i] !== b[i]) return false;
+      return true;
+    };
+    const holds = (t, path, incoming) => {
+      if (typeof incoming === "object" && "error" in incoming) return false;
+      const found = t.fileHead(path);
+      if (found === void 0) {
+        const cell = held.get(path)?.cell;
+        if (cell === void 0 || typeof cell === "object" && "error" in cell) return false;
+        if (typeof cell === "string" && typeof incoming === "string") return cell === incoming;
+        return sameBytes(typeof cell === "string" ? encodeText(cell) : residentBytes(cell), typeof incoming === "string" ? encodeText(incoming) : residentBytes(incoming));
+      }
+      if (found.kind === RK_DENIED) return false;
+      const rows = () => found.chunks === 1 ? [t.chunkFirst(path)] : t.chunkParts(path);
+      if (found.kind === RK_TEXT && typeof incoming === "string") {
+        if (found.size !== incoming.length) return false;
+        if (found.chunks === 1) return t.chunkFirst(path)?.txt === incoming;
+        let at2 = 0;
+        for (const row of rows()) {
+          if (row === void 0) return false;
+          const text = row.txt ?? "";
+          if (stringSlice(incoming, at2, at2 + text.length) !== text) return false;
+          at2 += text.length;
+        }
+        return at2 === incoming.length;
+      }
+      const bytes = typeof incoming === "string" ? encodeText(incoming) : residentBytes(incoming);
+      if (found.kind === RK_BINARY ? found.size !== bytes.byteLength : bytes.byteLength < found.size || bytes.byteLength > 3 * found.size) return false;
+      let at = 0;
+      for (const row of rows()) {
+        if (row === void 0) return false;
+        const part = found.kind === RK_TEXT ? encodeText(row.txt ?? "") : residentBytes(row.bin);
+        if (!sameBytes(part, bytes.subarray(at, at + part.byteLength))) return false;
+        at += part.byteLength;
+      }
+      return at === bytes.byteLength;
+    };
     const forgetHeld = (path) => {
       const cell = held.get(path);
       if (cell !== void 0) {
@@ -1528,18 +1580,21 @@ var __nimbusResidentModule = (() => {
       const isText = typeof cell === "string";
       const kind = isText ? RK_TEXT : RK_BINARY;
       const body = isText ? cell : residentBytes(cell);
-      const size = isText ? body.length : body.byteLength;
-      const limit = isText ? Math.floor(RESIDENT_CHUNK_BYTES / 3) : RESIDENT_CHUNK_BYTES;
-      const chunks = Math.max(1, Math.ceil(size / limit));
+      const size = typeof body === "string" ? body.length : body.byteLength;
+      const ends = typeof body === "string" ? textChunkEnds(body) : null;
+      const chunks = ends !== null ? ends.length : Math.max(1, Math.ceil(size / RESIDENT_CHUNK_BYTES));
       if (!admission.fits(residentCellCost(cell), stamp !== RK_OWN_WRITE)) {
         t.fileDelete(path);
         if (stamp === RK_OWN_WRITE) hold(path, cell);
         return false;
       }
-      for (let part = 0; part < chunks; part++) {
-        const slice = typeof body === "string" ? body.slice(part * limit, (part + 1) * limit) : body.subarray(part * limit, (part + 1) * limit);
-        if (typeof slice === "string") t.chunkAddText(path, part, slice);
-        else t.chunkAddBin(path, part, slice);
+      for (let part = 0, from = 0; part < chunks; part++) {
+        if (typeof body === "string" && ends !== null) {
+          t.chunkAddText(path, part, stringSlice(body, from, ends[part]));
+          from = ends[part];
+        } else if (typeof body !== "string") {
+          t.chunkAddBin(path, part, body.subarray(part * RESIDENT_CHUNK_BYTES, (part + 1) * RESIDENT_CHUNK_BYTES));
+        }
       }
       t.filePut(path, kind, size, chunks, stamp, stamp === RK_OWN_WRITE || ckey == null ? null : String(ckey));
       return true;
@@ -1623,6 +1678,11 @@ var __nimbusResidentModule = (() => {
             continue;
           }
           if (entry.bytes != null && entry.stat && entry.stat.type === "file") {
+            if (isHeld && holds(t, path, residentBytes(entry.bytes))) {
+              t.fileSetRev(path, Number(entry.rev));
+              kept++;
+              continue;
+            }
             if (put(t, path, residentBytes(entry.bytes), Number(entry.rev), entry.contentKey)) pushed++;
             else if (isHeld) dropped.push(path);
             continue;
@@ -1855,6 +1915,11 @@ var __nimbusResidentModule = (() => {
         if (dated !== void 0 && (dated === RK_OWN_WRITE || dated > rev)) return false;
         const heldCell = held.get(path);
         if (heldCell !== void 0 && (heldCell.rev === RK_OWN_WRITE || heldCell.rev > rev)) return false;
+        if (holds(t, path, cell)) {
+          if (dated !== void 0) t.fileSetRev(path, rev);
+          else if (heldCell !== void 0) heldCell.rev = rev;
+          return true;
+        }
         return put(t, path, cell, rev);
       },
       /** Every held path. Backs the Object.keys / for-in scans in the shims. */
@@ -2498,10 +2563,8 @@ var __nimbusResidentModule = (() => {
         const read = answers[batch.length];
         const after = answers[batch.length + 1];
         const bytes = read && !read.error && read.bytes ? residentBytes(read.bytes) : null;
-        if (before.type === "file" && bytes !== null && bytes.byteLength === Number(before.size) && after && !after.error && after.stat && after.stat.type === "file" && Number(after.stat.ino) === Number(before.ino) && Number(after.stat.revision) === Number(before.revision) && await admission.ensureRoom(bytes.byteLength + RESIDENT_ROW_BYTES)) {
-          t.fileDelete(last);
-          t.chunkDelete(last);
-          if (cells.putChunk(t, last, 0, bytes)) cells.putHead(t, last, RK_BINARY, bytes.byteLength, 1, Number(before.revision) || 0, null);
+        if (before.type === "file" && bytes !== null && bytes.byteLength === Number(before.size) && after && !after.error && after.stat && after.stat.type === "file" && Number(after.stat.ino) === Number(before.ino) && Number(after.stat.revision) === Number(before.revision) && await admission.ensureRoom(residentCellCost(bytes))) {
+          cells.fill(last, bytes, Number(before.revision) || 0);
         }
       }
       return true;
