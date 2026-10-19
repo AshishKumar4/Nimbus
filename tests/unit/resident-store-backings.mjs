@@ -266,9 +266,10 @@ for (let seed = 1; seed <= SEQUENCES; seed++) {
   const heap = heapTables();
   heap.chunkAddText('home/user/big.js', 1, 'b');
   heap.chunkAddText('home/user/big.js', 0, 'a');
-  const met = [];
+  // A string, not an array: a push to one would meet the setter itself.
+  let met = '';
   const descriptors = [0, 1].map((index) => [index, Object.getOwnPropertyDescriptor(Array.prototype, index)]);
-  for (const index of [0, 1]) Object.defineProperty(Array.prototype, index, { configurable: true, set(value) { met.push([index, value]); } });
+  for (const index of [0, 1]) Object.defineProperty(Array.prototype, index, { configurable: true, set() { met += `${index} `; } });
   let parts;
   try {
     parts = heap.chunkParts('home/user/big.js');
@@ -278,7 +279,7 @@ for (let seed = 1; seed <= SEQUENCES; seed++) {
       else delete Array.prototype[index];
     }
   }
-  assert.deepEqual(met, [], 'no setter on Array.prototype is met');
+  assert.equal(met, '', 'no setter on Array.prototype is met');
   assert.ok(Array.isArray(parts) && Object.getPrototypeOf(parts) === Array.prototype);
   assert.deepEqual(parts.map((part) => part.txt), ['a', 'b'], 'in part order');
 }
