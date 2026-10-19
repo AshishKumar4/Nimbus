@@ -1376,7 +1376,10 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
     return within(key, grant.root) ? "held" : within(grant.root, key) ? "above" : void 0;
   }
   function within(key, root) {
-    return root === "" || key === root || key.startsWith(`${root}/`);
+    if (root === "" || key === root) return true;
+    if (key.length <= root.length || key[root.length] !== "/") return false;
+    for (let i = 0; i < root.length; i++) if (key[i] !== root[i]) return false;
+    return true;
   }
   function commonAncestor(left, right) {
     const a = left.split("/");
@@ -2036,7 +2039,9 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         return found;
       },
       guards(key) {
-        return escaped === null && grants.some((grant) => standingOf(grant, key) !== void 0);
+        if (escaped !== null) return false;
+        for (let i = 0; i < grants.length; i++) if (standingOf(grants[i], key) !== void 0) return true;
+        return false;
       },
       pending() {
         return queue.length > 0 || inFlight !== null;

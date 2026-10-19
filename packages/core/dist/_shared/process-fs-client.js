@@ -139,8 +139,17 @@ function standingOf(grant, key) {
         return undefined;
     return within(key, grant.root) ? 'held' : within(grant.root, key) ? 'above' : undefined;
 }
+// A walk asks this of each name it reaches, after the program may have
+// replaced String.prototype.startsWith: compared by index, no method asked.
 function within(key, root) {
-    return root === '' || key === root || key.startsWith(`${root}/`);
+    if (root === '' || key === root)
+        return true;
+    if (key.length <= root.length || key[root.length] !== '/')
+        return false;
+    for (let i = 0; i < root.length; i++)
+        if (key[i] !== root[i])
+            return false;
+    return true;
 }
 function commonAncestor(left, right) {
     const a = left.split('/');
@@ -1018,7 +1027,12 @@ export function processFsClient(options) {
             return found;
         },
         guards(key) {
-            return escaped === null && grants.some((grant) => standingOf(grant, key) !== undefined);
+            if (escaped !== null)
+                return false;
+            for (let i = 0; i < grants.length; i++)
+                if (standingOf(grants[i], key) !== undefined)
+                    return true;
+            return false;
         },
         pending() {
             return queue.length > 0 || inFlight !== null;
