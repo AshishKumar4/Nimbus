@@ -9,12 +9,13 @@
 // its own; `wrangler preview` there is a stand-in that reports a deployment,
 // and the command's Cloudflare API requests reach the fixture server.
 import assert from 'node:assert/strict';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { runBoundedProcess } from '../../scripts/lib/bounded-process.mjs';
 
 const REPO = join(import.meta.dirname, '..', '..');
 const ACCOUNT = 'proof-account';
@@ -110,17 +111,12 @@ globalThis.fetch = (input, options) => {
 };
 await import('./tests/behavioral/_throwaway-target.mjs');
 `);
-  const up = () => new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ['drive.mjs', 'up', '--name', NAME, '--bundle', release], {
-      cwd: checkout,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: ACCOUNT, CLOUDFLARE_API_TOKEN: TOKEN, XDG_STATE_HOME: join(checkout, 'state'), TMPDIR: join(checkout, 'tmp'), WRANGLER_SEND_METRICS: 'false' },
-    });
-    let output = '';
-    child.stdout.on('data', (chunk) => { output += chunk; });
-    child.stderr.on('data', (chunk) => { output += chunk; });
-    child.on('error', reject);
-    child.on('close', (status) => resolve({ status, output }));
+  // Bounded, so a wait that never ends fails here and the fixture is still cleaned up.
+  const up = () => runBoundedProcess(process.execPath, ['drive.mjs', 'up', '--name', NAME, '--bundle', release], {
+    cwd: checkout,
+    timeoutMs: 120_000,
+    name: 'throwaway up',
+    env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: ACCOUNT, CLOUDFLARE_API_TOKEN: TOKEN, XDG_STATE_HOME: join(checkout, 'state'), TMPDIR: join(checkout, 'tmp'), WRANGLER_SEND_METRICS: 'false' },
   });
 
   for (const [name, settled, expected] of [
@@ -130,8 +126,9 @@ await import('./tests/behavioral/_throwaway-target.mjs');
     mode = settled;
     latestReads = 0;
     const started = Date.now();
-    const { status, output } = await up();
-    assert.notEqual(status, 0, `${name}: up fails\n${output}`);
+    const { code, signal, reason, stdout, stderr } = await up();
+    const output = `${stdout}${stderr}`;
+    assert.ok(code !== 0 && code !== null && signal === null, `${name}: up fails by itself, in time (${reason})\n${output}`);
     assert.match(output, expected, `${name}: up says what the API served\n${output}`);
     assert.doesNotMatch(output, /AbortError|TimeoutError|operation was aborted/, `${name}: never its own deadline's abort\n${output}`);
     assert.ok(Date.now() - started >= 30_000, `${name}: it waited the 30 s out`);
