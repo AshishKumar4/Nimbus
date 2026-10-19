@@ -296,15 +296,22 @@ export async function openPage(browser, sid, opts = {}) {
   await reportPageNavigations(page);
   const consoleMessages = [];
   const pageErrors = [];
-  /** Every pre-bundled module the page received, by path: its last text (what it evaluated), how many times it came, and its headers. */
+  /**
+   * Every pre-bundled module the page received, by path: how many responses
+   * came, and the last one's status, headers and text (what it evaluated),
+   * the text a promise of its body or of why it could not be read.
+   */
   const receivedModules = new Map();
 
   page.on('response', (response) => {
     const path = new URL(response.url()).pathname;
     if (!path.includes('/@modules/')) return;
-    const responses = (receivedModules.get(path)?.responses ?? 0) + 1;
-    const headers = response.headers();
-    response.text().then((text) => receivedModules.set(path, { text, responses, headers }), () => {});
+    receivedModules.set(path, {
+      responses: (receivedModules.get(path)?.responses ?? 0) + 1,
+      status: response.status(),
+      headers: response.headers(),
+      text: response.text().then((text) => ({ text }), (error) => ({ error: String(error) })),
+    });
   });
   page.on('console', (msg) => {
     consoleMessages.push({
@@ -424,7 +431,8 @@ export async function openPage(browser, sid, opts = {}) {
       const [, path, named] = at;
       const line = Number(named);
       const got = receivedModules.get(path) ?? null;
-      const received = got?.text ?? null;
+      const body = got === null ? null : await got.text;
+      const received = body?.text ?? null;
       const now = await page.evaluate(async (path) => {
         try {
           const response = await fetch(path, { cache: 'no-store' });
@@ -458,7 +466,10 @@ export async function openPage(browser, sid, opts = {}) {
       };
       return {
         path, line,
-        received: received === null ? null : { ...excerpt(received), responses: got.responses, headers: got.headers },
+        received: got === null ? null : {
+          responses: got.responses, status: got.status, headers: got.headers,
+          ...(received === null ? { error: body?.error ?? null } : excerpt(received)),
+        },
         now: 'text' in now ? { status: now.status, bundleStatus: now.bundleStatus, ...excerpt(now.text) } : now,
         firstDifference: received !== null && 'text' in now ? firstDifference(received, now.text) : null,
         movedBlocks: received !== null && 'text' in now ? blockMap(received, now.text) : null,

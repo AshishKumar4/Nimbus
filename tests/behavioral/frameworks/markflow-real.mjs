@@ -192,7 +192,7 @@ if (cloneOk) {
 
     urlAfterClick = await ctx.currentUrl();
     runtimeErrors = ctx.collectErrors();
-    crashedModule = await ctx.servedModuleExcerpt(homeText);
+    crashedModule = await ctx.servedModuleExcerpt(editorText) ?? await ctx.servedModuleExcerpt(homeText);
     consoleSummary = consoleSummary.concat(
       ctx.consoleMessages.slice(0, 40).map((m) => ({
         type: m.type,
