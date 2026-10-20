@@ -472,6 +472,8 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
   let unpublished = [];
   /** Each peer change that returned, and as the model stood then: what the process may not know of before its next input lands. */
   const peerAt = [];
+  /** Each awaited change of the process's own that returned, and as the model stood then: unshown to its calls that cannot wait until a barrier lands, where that is a known gap. */
+  const awaitedAt = [];
 
   /** Whether a call that cannot wait may be refused (EAGAIN): a view listed on demand, a namespace a poison stopped or a listing is moving, or bytes it does not hold of a file it may read. */
   /**
@@ -538,12 +540,17 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
       note(`  (step ${at} skipped: a peer changed its names since the process's last input)`);
       return null;
     }
+    if (way === 'sync' && gaps.unshownAwaitedChange && awaitedAt.some(({ done, domain: its }) => done > landed && overlaps(its, [...domain, ...domain.map(parentOf)]))) {
+      note(`  (step ${at} skipped: it would decide on an awaited change of the process's own its view does not show yet, a known gap)`);
+      return null;
+    }
     const record = model.begin(step);
     if (record === null) { note(`  (step ${at} skipped: ${JSON.stringify(step)} is not valid now)`); return null; }
     const publishes = outside(way) && overlaps(unpublished, domain) ? unpublished : null;
     const finish = () => model.finish(record, () => {
       if (outside(way)) peerAt.push({ done: seq(), domain });
       else {
+        if (way === 'own') awaitedAt.push({ done: seq(), domain });
         for (const rel of [...resident]) if (domain.some((root) => under(rel, root) || under(root, rel))) resident.delete(rel);
         if (way === 'sync' || !gaps.unshownAwaitedChange) for (const root of domain) ownAt.set(root, seq());
         unpublished = [...unpublished, ...domain];
@@ -671,7 +678,7 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
       for (const way of ['own', 'sync']) {
         for (const op of ['stat', state?.type === 'dir' ? 'readdir' : 'readFile']) {
           const answer = await read(way, op, rel);
-          if (answer?.code === 'EAGAIN' && way === 'sync' && (op === 'readFile' ? !owedBytes(rel) && model.readable(rel, seq(), seq()) : lazy)) continue;
+          if (answer?.code === 'EAGAIN' && way === 'sync' && (op === 'readFile' ? !owedBytes(rel) && (lazy || model.readable(rel, seq(), seq())) : lazy)) continue;
           if (answer?.code === 'EISDIR' && way === 'sync' && gaps.refusedAsDirectory && state?.type === 'dir') continue;
           if (!answers(op, rel, answer, world)) {
             throw new Finding(`at rest, ${way} ${op} ${rel || '.'} answered ${JSON.stringify(answer)}; the model holds ${describe(state)}`, end);
