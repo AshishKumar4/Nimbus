@@ -491,6 +491,17 @@ function spawnResident(ctx, env, disk, supervisor, params) {
             return response;
         throw new ProcessNotAdmitted(params.pid, new Error(await response.text()));
     };
+    // A request waiting on its lease's watch: the host lost meanwhile (the
+    // watch found another instance) refuses it unsent, and anything else that
+    // ended the wait (its caller left) is that.
+    const unsentUntilValidated = async (lease) => {
+        try {
+            await lease.ready;
+        }
+        catch (error) {
+            throw lostAlready ? new ProcessNotAdmitted(params.pid, error) : error;
+        }
+    };
     // A request's admission rides its headers: the leaf's entry is its fetch.
     const admitted = async (request, signal) => {
         const headers = new Headers(request.headers);
@@ -516,6 +527,14 @@ function spawnResident(ctx, env, disk, supervisor, params) {
         // body and all, for its caller to run again (HostLoss.request).
         handleHttpRequest: async (request, scope, leg = {}) => {
             const lease = observation.acquire();
+            try {
+                if (!observation.validated())
+                    await unsentUntilValidated(lease);
+            }
+            catch (error) {
+                lease.release();
+                throw error;
+            }
             const cancel = leg.relayed === undefined ? new AbortController() : null;
             scope.settled((delivered) => {
                 lease.release();
@@ -524,8 +543,6 @@ function spawnResident(ctx, env, disk, supervisor, params) {
             });
             const signal = leg.relayed ?? cancel.signal;
             try {
-                if (!observation.validated())
-                    await lease.ready;
                 leg.sending?.();
                 // Unencoded: the registry decodes a coding once, as it did the bytes an RPC hop carried.
                 const response = await facet.fetch(request, { signal, encodeResponseBody: 'manual' });
@@ -544,7 +561,7 @@ function spawnResident(ctx, env, disk, supervisor, params) {
             const lease = observation.acquire();
             try {
                 if (!observation.validated())
-                    await lease.ready;
+                    await unsentUntilValidated(lease);
                 const upgrade = await admitted(request);
                 sending?.();
                 return await checked(await facet.fetch(upgrade));

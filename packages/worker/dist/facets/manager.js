@@ -4908,7 +4908,8 @@ export class FacetManager {
         const entry = this.processes.get(pid);
         const key = `${FENCED_WORK_KEY_PREFIX}${pid}`;
         const row = (await this.launchJournal.rows()).get(key);
-        const crashed = entry?.state === 'exited' && (entry.exitCode ?? 0) !== 0;
+        const code = entry?.exitCode ?? 0;
+        const crashed = entry?.state === 'exited' && code !== 0;
         // A loss that refused requests unsent owes them a run, whatever the
         // restart policy, now: their callers wait on it (routeToSessionPort).
         const owed = this.owedRuns.has(pid);
@@ -4923,7 +4924,7 @@ export class FacetManager {
         }
         const delayMs = RESTART_BACKOFF_BASE_MS * 2 ** row.attempt;
         const ended = hostLost === undefined
-            ? `"${row.command}" exited with code ${entry.exitCode}`
+            ? `"${row.command}" exited with code ${code}`
             : `the platform reset the host of "${row.command}"`;
         this.hooks.notify?.(`\x1b[2m[nimbus: ${ended} — restarting in ${delayMs / 1000}s (FencedWork attempt ${row.attempt + 1})]\x1b[0m\r\n`);
         await this.launchPump.nextTurn(Promise.resolve(), Date.now() + delayMs);
@@ -4932,7 +4933,7 @@ export class FacetManager {
         if (!(await this.launchJournal.rows()).has(key))
             return;
         await this.launchJournal.drive(key, row, hostLost === undefined
-            ? { kind: 'exited', code: entry.exitCode ?? 1 }
+            ? { kind: 'exited', code }
             : { kind: 'host-reset' });
     }
     /** Claim identity AND write its recovery row in one serializable storage transaction. */
