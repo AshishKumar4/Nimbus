@@ -373,8 +373,10 @@ counts only calls or rows misleads. Two consequences:
   DO: the clock does not advance across synchronous SQL, so a timed step
   over `sql.exec` reads 0 ms. A probe or scratch route that measures the DO
   makes each variant its own request and reads the spans afterwards.
-git status on next.js shows why: one ordered scan replaced its 51,000 calls
-by name, 10× cheaper in bun, and the DO's status time did not move.
+- One pair of throwaway runs is not a measurement: Previews land on hosts
+  of unequal speed (the same status took 4 s of CPU on one and 7 s on
+  another), so a DO-side A/B runs both arms side by side, more than once,
+  and reports each run.
 
 A red-first test of a hang or runaway bug bounds itself: it runs the
 failing path in a child with a timeout, so red is a clean failure.
