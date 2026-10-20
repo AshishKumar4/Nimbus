@@ -936,6 +936,13 @@ function parameterWordParts(word: string, mode: ParameterWordMode): WordPart[] {
       i = quoted.end;
       continue;
     }
+    // A nested expansion is its own to expand, a substitution in it too (expandBraced).
+    if (ch === '$' && word[i + 1] === '{') {
+      const end = readBracedExpansion(word, i).end;
+      text += word.slice(i, end);
+      i = end;
+      continue;
+    }
     // A backquoted substitution, as a word's (readWord): one command substitution.
     if (ch === '`') {
       const subst = readBacktickSubstitution(word, i);

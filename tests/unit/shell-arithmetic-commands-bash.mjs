@@ -53,6 +53,9 @@ const LINES = [
   'unset v; ((x=1${v:+)})); echo "$x"; unset v; for ((i=0${v:+;}; i<1; i++)); do echo "$i"; done',
   '((x = `echo 3`)); echo "$x"; ((y = $(echo "(2)") + 1)); echo $y',
   "alias a='(( '\na x=1 )); echo \"${x-unset}\"",
+  "alias b='('\nb(y=1)); echo \"${y-unset}\"",
+  // A backquoted substitution in a nested expansion runs only where that expansion uses it.
+  'unset v u; echo "${v:-${u:+`echo BAD >&2`}}"; ((z = ${u:-`echo 5`})); echo $z',
 ];
 
 /** bash's diagnostic prefix: `bash: line 1: `, `bash: -c: line 1: `, and in a function 5.2's `environment: line 1: `. */

@@ -374,11 +374,14 @@ class Parser {
     return this.parseSimpleCommand();
   }
 
-  /** `((expression))` at the next token, as the reader reads it (TokenReader.readArithmeticCommand); null where it is no such command. */
+  /**
+   * `((expression))` at the next token, as the reader reads it
+   * (TokenReader.readArithmeticCommand, which also says whether the two `(`
+   * are one `((`, an alias's text and the text after it joined); null where
+   * it is no such command.
+   */
   private readArithmeticCommand(): string | null {
-    const open = this.peek();
-    const next = this.peekAt(1);
-    if (open.kind !== TokenKind.LParen || next.kind !== TokenKind.LParen || next.pos !== open.pos + 1) return null;
+    if (this.peek().kind !== TokenKind.LParen || this.peekAt(1).kind !== TokenKind.LParen) return null;
     this.rereadFromHere();
     const token = this.reader.readArithmeticCommand();
     if (token === null) return null;
