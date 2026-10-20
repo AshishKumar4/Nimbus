@@ -37,7 +37,7 @@ import { execRefusal } from '../../../shell/exec-dispatch.js';
 import { withRecall } from '../../../vfs/recall.js';
 import { parseAssignment, ParseError, ScriptLines } from './parser.js';
 import {
-  expandBraceWord, expandFields, expandWords, expandWord, expandPatternWord, expandSubscript, arithmeticOf, arithmeticValue, ArithmeticError, ExpansionError,
+  expandBraceWord, expandFields, expandWords, expandWord, expandPatternWord, expandSubscript, arithmeticOf, arithmeticValue, ArithmeticError, ExpansionError, reportWarnings,
   type ExpandContext, type CapturedCommand,
 } from './expander.js';
 import { evaluateDoubleBracketWords } from './test-builtin.js';
@@ -912,13 +912,18 @@ export class Interpreter {
   private async arithmeticCommandValue(expression: string, io: ExecutionIo): Promise<number | null> {
     const ctx = this.createExpandContext(io);
     const text = await expandSubscript(expression, ctx);
+    let value: number | null;
+    let failure: ArithmeticError | null = null;
     try {
-      return arithmeticOf(text, ctx);
+      value = arithmeticOf(text, ctx);
     } catch (error) {
       if (!(error instanceof ArithmeticError)) throw error;
-      await ctx.report(`((: ${error.message}`);
-      return null;
+      value = null;
+      failure = error;
     }
+    await reportWarnings(ctx, ctx.report);
+    if (failure !== null) await ctx.report(failure.reportedBy('(('));
+    return value;
   }
 
   private loopTicks = 0;
@@ -1762,7 +1767,9 @@ export class Interpreter {
     return {
       env: this.config.env,
       arrays: this.config.arrays,
+      readonlyNames: this.config.readonlyNames,
       positionals: this.readPositionals(io),
+      warnings: [],
       lastExitCode: this.lastExitCode,
       cwd: this.config.getCwd(),
       vfs: io.vfs ?? this.config.vfs,

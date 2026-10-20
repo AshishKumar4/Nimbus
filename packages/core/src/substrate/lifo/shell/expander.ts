@@ -5,7 +5,7 @@ import type { ProcessView } from '../../../runtime/process-files.js';
 import { characterAt, characterBounds, characterWidth, escapeGlob, expandGlob, fixedMatchLength, shellMatch, shellUnits } from '../utils/glob.js';
 import { readAnsiCQuote, readBacktickSubstitution, readBalancedCommand, readBracedExpansion } from './lexer.js';
 import type { ShellOptions } from './state.js';
-import { arrayIndex } from './variables.js';
+import { arrayFor, arrayIndex, assignVariable, type ShellValues } from './variables.js';
 import { DiscardSignal } from './discard.js';
 
 export interface ExpandContext {
@@ -15,8 +15,12 @@ export interface ExpandContext {
    * `${arr[@]}` skips and `${!arr[@]}` omits. A name lives here or in `env`,
    * never both, so `$arr` and `${arr[0]}` have one answer.
    */
-  arrays?: ReadonlyMap<string, readonly (string | undefined)[]>;
+  arrays: Map<string, (string | undefined)[]>;
+  /** The names `readonly` protects: arithmetic's assignments refuse them. */
+  readonlyNames: ReadonlySet<string>;
   positionals?: readonly string[];
+  /** Arithmetic's warnings (a bad array subscript) not yet reported (reportWarnings). */
+  warnings: string[];
   lastExitCode: number;
   cwd: string;
   vfs: ProcessView;
@@ -56,7 +60,30 @@ export class ExpansionError extends Error {}
  * the token. Met expanding, it is reported and the line discarded
  * (arithmeticValue); in `[[ ]]` it makes its comparison false.
  */
-export class ArithmeticError extends Error {}
+export class ArithmeticError extends Error {
+  /** As a command (`((`, `let`, `[[`) reports it: after its name, as bash's evalerror does. */
+  reportedBy(command: string): string {
+    return `${command}: ${this.message}`;
+  }
+}
+
+/** An arithmetic assignment to a readonly name (bash's err_readonly): its diagnostic is the name's alone, whoever reports it. */
+export class ReadonlyArithmeticError extends ArithmeticError {
+  override reportedBy(): string {
+    return this.message;
+  }
+}
+
+/** What arithmetic reads and writes: the shell's values, its positional parameters, and where its warnings go. */
+export interface ArithmeticScope extends ShellValues {
+  readonly positionals?: readonly string[];
+  readonly warnings: string[];
+}
+
+/** Report `scope`'s pending warnings, in order (arithmetic's, which it cannot write as it goes). */
+export async function reportWarnings(scope: ArithmeticScope, report: (diagnostic: string) => Promise<void>): Promise<void> {
+  for (const warning of scope.warnings.splice(0)) await report(warning);
+}
 
 const IFS_WHITESPACE = ' \t\n';
 
@@ -390,6 +417,7 @@ async function expandDollar(
     } catch (error) {
       return await discardArithmetic(error, ctx);
     }
+    if (ctx.warnings.length > 0) await reportWarnings(ctx, ctx.report);
     return { pieces: [valuePiece(String(result), quoted)], end: arithmetic.end };
   }
 
@@ -481,15 +509,15 @@ async function resolveParameter(ref: ParameterRef, ctx: ExpandContext): Promise<
       : ctx.env[name] === undefined ? [] : [ctx.env[name]];
     return { kind: 'list', values, star: subscript === '*' };
   }
-  if (array === undefined) {
-    const value = ctx.env[name];
-    if (subscript === undefined) return { kind: 'scalar', value };
-    // A scalar is an array of its one value.
-    const index = await arithmeticValue(await expandSubscript(subscript, ctx), ctx);
-    return { kind: 'scalar', value: index === 0 || index === -1 ? value : undefined };
+  if (subscript === undefined) return { kind: 'scalar', value: array === undefined ? ctx.env[name] : array[0] };
+  // A scalar is an array of its one value. A subscript before the first is bad (bash's array_expand_index).
+  const value = await arithmeticValue(await expandSubscript(subscript, ctx), ctx);
+  const index = array === undefined ? value : arrayIndex(array, value);
+  if (index < 0) {
+    await ctx.report(`${name}: bad array subscript`);
+    return { kind: 'scalar', value: undefined };
   }
-  const index = subscript === undefined ? 0 : arrayIndex(array, await arithmeticValue(await expandSubscript(subscript, ctx), ctx));
-  return { kind: 'scalar', value: array[index] };
+  return { kind: 'scalar', value: array === undefined ? (index === 0 ? ctx.env[name] : undefined) : array[index] };
 }
 
 /** A subscript's text once its expansions (`$i`, `$(…)`) are done, before its arithmetic. */
@@ -498,22 +526,26 @@ export async function expandSubscript(subscript: string, ctx: ExpandContext): Pr
 }
 
 /** An expanded word's arithmetic (a subscript's, a `[[ -eq ]]` operand's, let's): a blank one is 0. Throws ArithmeticError. */
-export function arithmeticOf(expanded: string, ctx: Pick<ExpandContext, 'env' | 'positionals'>): number {
-  return expanded.trim() === '' ? 0 : evaluateArithmetic(expanded, ctx.env, ctx.positionals);
+export function arithmeticOf(expanded: string, scope: ArithmeticScope): number {
+  return expanded.trim() === '' ? 0 : evaluateArithmetic(expanded, scope);
 }
 
 /** arithmeticOf as an expansion meets it: an error is reported, and the rest of the line discarded (bash's evalerror). */
 export async function arithmeticValue(expanded: string, ctx: ExpandContext): Promise<number> {
+  let value: number;
   try {
-    return arithmeticOf(expanded, ctx);
+    value = arithmeticOf(expanded, ctx);
   } catch (error) {
     return await discardArithmetic(error, ctx);
   }
+  if (ctx.warnings.length > 0) await reportWarnings(ctx, ctx.report);
+  return value;
 }
 
 /** An arithmetic error met expanding: reported, and the rest of the line discarded. Anything else is thrown as it is. */
 async function discardArithmetic(error: unknown, ctx: ExpandContext): Promise<never> {
   if (!(error instanceof ArithmeticError)) throw error;
+  await reportWarnings(ctx, ctx.report);
   await ctx.report(error.message);
   throw new DiscardSignal();
 }
@@ -1172,9 +1204,9 @@ function replaceMatches(text: string, pattern: string, replacement: string, all:
 
 // ─── Arithmetic evaluator ───
 
-function evaluateArithmetic(expr: string, env: Record<string, string>, positionals?: readonly string[], depth = 0): number {
+function evaluateArithmetic(expr: string, scope: ArithmeticScope, depth = 0): number {
   // Its trailing blanks are its own, as bash's diagnostics quote the expression.
-  const parser = new ArithParser(expr.trimStart(), env, positionals, depth);
+  const parser = new ArithParser(expr.trimStart(), scope, depth);
   const result = parser.parseExpression();
   return result;
 }
@@ -1235,20 +1267,28 @@ function integerConstant(text: string, error: (why: string) => ArithmeticError):
   return value;
 }
 
+/**
+ * A variable as arithmetic names it: `name`, or `name[subscript]`, its
+ * subscript's text and value (null where it is `@`, `*` or empty), read
+ * once where the name is (bash's lvalue index).
+ */
+interface ArithmeticTarget {
+  readonly name: string;
+  readonly subscript?: { readonly text: string; readonly index: number | null };
+}
+
 class ArithParser {
   private expr: string;
   private pos = 0;
-  private env: Record<string, string>;
-  private positionals?: readonly string[];
+  private readonly scope: ArithmeticScope;
   /** How many variables' values this expression is evaluated inside. */
   private readonly depth: number;
   /** Inside a branch `&&`, `||` or `?:` skips (bash's noeval): read, its variables neither evaluated nor assigned. */
   private noeval = 0;
 
-  constructor(expr: string, env: Record<string, string>, positionals?: readonly string[], depth = 0) {
+  constructor(expr: string, scope: ArithmeticScope, depth = 0) {
     this.expr = expr;
-    this.env = env;
-    this.positionals = positionals;
+    this.scope = scope;
     this.depth = depth;
   }
 
@@ -1263,8 +1303,67 @@ class ArithParser {
     }
   }
 
-  private assign(name: string, value: string): void {
-    if (this.noeval === 0) this.env[name] = value;
+  /**
+   * `value` into `target`, as bash's expr_bind_variable binds it: a readonly
+   * name refuses (an error); a subscript `@`, `*`, empty or before the first
+   * is warned of and the value not stored; an element promotes a scalar.
+   */
+  private assign(target: ArithmeticTarget, value: number): void {
+    if (this.noeval > 0) return;
+    const { name, subscript } = target;
+    if (this.scope.readonlyNames.has(name)) throw new ReadonlyArithmeticError(`${name}: readonly variable`);
+    if (subscript === undefined) {
+      assignVariable(this.scope, name, String(value));
+      return;
+    }
+    const existing = this.scope.arrays.get(name);
+    const index = subscript.index === null ? -1 : existing === undefined ? subscript.index : arrayIndex(existing, subscript.index);
+    if (index < 0) {
+      this.scope.warnings.push(`${name}[${subscript.text}]: bad array subscript`);
+      return;
+    }
+    arrayFor(this.scope, name)[index] = String(value);
+  }
+
+  /**
+   * `target`'s value read as an expression (bash's expr_streval): unset or
+   * empty is 0; an array alone is its first element; a subscript `@`, `*`
+   * or empty, or before the first, is warned of and 0.
+   */
+  private read(target: ArithmeticTarget): number {
+    if (this.noeval > 0) return 0;
+    const { name, subscript } = target;
+    if (subscript === undefined) return this.valueOf(name, this.getParameter(name));
+    if (subscript.index === null) {
+      this.scope.warnings.push(`${name}[${subscript.text}]: bad array subscript`);
+      return 0;
+    }
+    const array = this.scope.arrays.get(name);
+    const index = array === undefined ? subscript.index : arrayIndex(array, subscript.index);
+    if (index < 0) {
+      this.scope.warnings.push(`${name}: bad array subscript`);
+      return 0;
+    }
+    return this.valueOf(name, array === undefined ? (index === 0 ? this.scope.env[name] : undefined) : array[index]);
+  }
+
+  /** A name, and its `[subscript]` when one follows (evaluated here, once); null where no name is next. */
+  private readTarget(): ArithmeticTarget | null {
+    const name = this.readVarName();
+    if (name === null) return null;
+    if (this.peek() !== '[') return { name };
+    let depth = 0;
+    let end = this.pos;
+    for (; end < this.expr.length; end++) {
+      if (this.expr[end] === '[') depth++;
+      else if (this.expr[end] === ']' && --depth === 0) break;
+    }
+    if (end >= this.expr.length) return { name };
+    const text = this.expr.slice(this.pos + 1, end);
+    this.pos = end + 1;
+    const trimmed = text.trim();
+    if (trimmed === '' || trimmed === '@' || trimmed === '*') return { name, subscript: { text, index: null } };
+    return { name, subscript: { text, index: this.noeval > 0 ? 0 : evaluateArithmetic(text, this.scope, this.depth) } };
   }
 
   /** bash's evalerror at the token from `start` to here: the expression through it, `why`, the token. */
@@ -1537,10 +1636,10 @@ class ArithParser {
       const start = this.pos;
       this.pos += 2;
       this.skipSpaces();
-      const name = this.readVarName();
-      if (name) {
-        const val = this.getVar(name) + (ch === '+' ? 1 : -1);
-        this.assign(name, String(val));
+      const target = this.readTarget();
+      if (target !== null) {
+        const val = this.read(target) + (ch === '+' ? 1 : -1);
+        this.assign(target, val);
         return val;
       }
       this.pos = start;
@@ -1592,27 +1691,22 @@ class ArithParser {
       this.pos++;
       this.skipSpaces();
       const name = this.readVarName();
-      if (name) return this.getVar(name);
+      if (name) return this.read({ name });
       return 0;
     }
 
     // Variable reference (possibly with post-increment)
     if (/[a-zA-Z_]/.test(ch)) {
-      const name = this.readVarName();
-      if (!name) return 0;
+      const target = this.readTarget();
+      if (target === null) return 0;
       this.skipSpaces();
 
       // Post-increment/decrement
-      if (this.pos + 1 < this.expr.length && this.expr[this.pos] === '+' && this.expr[this.pos + 1] === '+') {
+      if (this.pos + 1 < this.expr.length && (this.expr[this.pos] === '+' || this.expr[this.pos] === '-') && this.expr[this.pos + 1] === this.expr[this.pos]) {
+        const step = this.expr[this.pos] === '+' ? 1 : -1;
         this.pos += 2;
-        const val = this.getVar(name);
-        this.assign(name, String(val + 1));
-        return val;
-      }
-      if (this.pos + 1 < this.expr.length && this.expr[this.pos] === '-' && this.expr[this.pos + 1] === '-') {
-        this.pos += 2;
-        const val = this.getVar(name);
-        this.assign(name, String(val - 1));
+        const val = this.read(target);
+        this.assign(target, val + step);
         return val;
       }
 
@@ -1624,14 +1718,14 @@ class ArithParser {
         this.skipSpaces();
         const start = this.pos;
         // A compound one's left value is read before its right side runs (bash's expassign).
-        const left = operator === '=' ? 0 : this.getVar(name);
+        const left = operator === '=' ? 0 : this.read(target);
         const right = this.parseTernary();
         const val = operator === '=' ? right : this.operate(operator.slice(0, -1), left, right, start);
-        this.assign(name, String(val));
+        this.assign(target, val);
         return val;
       }
 
-      return this.getVar(name);
+      return this.read(target);
     }
 
     return 0;
@@ -1652,22 +1746,22 @@ class ArithParser {
     return name || null;
   }
 
-  /** A variable's value read as an expression (bash's expr_streval): unset or empty is 0. */
-  private getVar(name: string): number {
-    const val = this.getParameter(name);
-    if (val === undefined || val.trim() === '' || this.noeval > 0) return 0;
+  /** `name`'s value `val` read as an expression: unset or empty is 0. */
+  private valueOf(name: string, val: string | undefined): number {
+    if (val === undefined || val.trim() === '') return 0;
     // A decimal integer, the most a variable holds, is its value.
     if (DECIMAL_INTEGER.test(val)) return Number(val);
     if (this.depth >= MAX_ARITHMETIC_DEPTH) {
       throw new ArithmeticError(`${name}: expression recursion level exceeded (error token is "${name}")`);
     }
-    return evaluateArithmetic(val, this.env, this.positionals, this.depth + 1);
+    return evaluateArithmetic(val, this.scope, this.depth + 1);
   }
 
+  /** A name's value: a positional parameter's, a scalar's, or an array's first element. */
   private getParameter(name: string): string | undefined {
-    if (this.positionals !== undefined && isPositionalParameterName(name)) {
-      return this.positionals[Number.parseInt(name, 10) - 1];
+    if (this.scope.positionals !== undefined && isPositionalParameterName(name)) {
+      return this.scope.positionals[Number.parseInt(name, 10) - 1];
     }
-    return this.env[name];
+    return this.scope.env[name] ?? this.scope.arrays.get(name)?.[0];
   }
 }
