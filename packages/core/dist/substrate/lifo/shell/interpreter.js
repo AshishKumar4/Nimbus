@@ -742,10 +742,13 @@ export class Interpreter {
             // Bare assignment -- set env vars
             for (const assign of cmd.assignments) {
                 const { diagnostics, failed } = await this.applyAssignment(assign, expandCtx);
-                for (const diagnostic of diagnostics)
+                for (const diagnostic of diagnostics) {
                     this.writeTerminal(io, `${diagnostic}\n`);
+                    this.exitOnReportedError();
+                }
+                // A non-interactive POSIX shell ends (bash's FORCE_EOF); any other discards the line.
                 if (failed)
-                    throw new AssignmentErrorSignal();
+                    throw io.scriptMode === true && this.config.options.posix ? new ErrexitSignal(1) : new AssignmentErrorSignal();
             }
             // A command that is only assignments exits with the status of the last
             // command substitution it ran, so `out="$(cmd)" || die` sees cmd fail.
@@ -872,6 +875,7 @@ export class Interpreter {
                                     },
                                     scriptMode: io.scriptMode,
                                     ...(arrayElements === undefined || name !== commandWordText(cmd) ? {} : { arrayElements }),
+                                    reportedError: () => this.exitOnReportedError(),
                                     isFdTerminal: (fd) => this.isFdTerminal(fds, fd),
                                     getPositionals: () => this.readPositionals(builtinIo),
                                     setPositionals: (nextArgs) => this.writePositionals(builtinIo, nextArgs),
@@ -1142,7 +1146,9 @@ export class Interpreter {
      * `append`), and a `[subscript]=` element at its subscript's arithmetic (a
      * negative one counted back from past the last), the next index after it.
      * An element whose subscript is empty, `@` or `*`, or before the first is
-     * refused with bash's diagnostic and skipped.
+     * refused with bash's diagnostic and skipped; under `set -e` the first
+     * refusal ends the assignment, what it assigned before kept, as the shell
+     * ends there (exitOnReportedError).
      */
     async arrayLiteral(name, elements, append, ctx) {
         const expanded = [];
@@ -1162,13 +1168,11 @@ export class Interpreter {
             }
             const { subscript, value } = element;
             const written = `[${subscript}]${element.append ? '+=' : '='}${value}`;
-            if (subscript === '@' || subscript === '*') {
-                refused.push(`${written}: cannot assign to non-numeric index`);
-                continue;
-            }
-            const index = subscript === '' ? -1 : arrayIndex(array, subscriptArithmetic(subscript, ctx));
+            const index = subscript === '' || subscript === '@' || subscript === '*' ? -1 : arrayIndex(array, subscriptArithmetic(subscript, ctx));
             if (index < 0) {
-                refused.push(`${written}: bad array subscript`);
+                refused.push(`${written}: ${subscript === '@' || subscript === '*' ? 'cannot assign to non-numeric index' : 'bad array subscript'}`);
+                if (this.config.options.errexit)
+                    break;
                 continue;
             }
             array[index] = element.append ? (array[index] ?? '') + value : value;
@@ -1919,6 +1923,11 @@ export class Interpreter {
         if (fd === 0)
             return fds.terminalInputFds.has(fd);
         return fds.terminalOutputFds.has(fd);
+    }
+    /** bash's report_error: under `set -e`, an error the shell reports ends it, wherever it is (an `if`'s condition too). */
+    exitOnReportedError() {
+        if (this.config.options.errexit)
+            throw new ErrexitSignal(1);
     }
     enforceErrexit(connector, exitCode) {
         if (!this.config.options.errexit)

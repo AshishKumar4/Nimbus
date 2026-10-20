@@ -54,6 +54,8 @@ export interface BuiltinExecutionContext {
     interactive?: boolean;
     /** A declaration builtin's arguments written as array assignments, `name=(…)`, by index: their arrays (Interpreter.arrayLiteral). */
     arrayElements?: ReadonlyMap<number, ArrayLiteral>;
+    /** bash's report_error, after a builtin reports an error the shell's own: under `set -e` the shell ends there. */
+    reportedError?(): void;
     vfs: ProcessView;
     /** The working directory a builtin resolves its relative path operands against. */
     cwd: string;
@@ -327,7 +329,9 @@ export declare class Interpreter {
      * `append`), and a `[subscript]=` element at its subscript's arithmetic (a
      * negative one counted back from past the last), the next index after it.
      * An element whose subscript is empty, `@` or `*`, or before the first is
-     * refused with bash's diagnostic and skipped.
+     * refused with bash's diagnostic and skipped; under `set -e` the first
+     * refusal ends the assignment, what it assigned before kept, as the shell
+     * ends there (exitOnReportedError).
      */
     private arrayLiteral;
     /** Bash's PIPESTATUS: `statuses`, its array alone. */
@@ -426,6 +430,8 @@ export declare class Interpreter {
     private createNullWriter;
     private createEmptyReader;
     private isFdTerminal;
+    /** bash's report_error: under `set -e`, an error the shell reports ends it, wherever it is (an `if`'s condition too). */
+    private exitOnReportedError;
     private enforceErrexit;
     private withErrexitSuppressed;
     private abortExitCode;
