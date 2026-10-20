@@ -2199,12 +2199,14 @@ function mkRm(): Command {
         continue;
       }
       // Another name for the root (`link/`, a walk through a link) is refused as the root is; a link
-      // itself named (no trailing slash) is only unlinked.
-      const walked = target.endsWith('/') || !(await vfs.isSymlink(path));
-      if (recursive && preserveRoot && walked && await vfs.realpath(path).catch(() => null) === '/') {
-        await ctx.stderr.write(`rm: it is dangerous to operate recursively on '${target}' (same as '/')\nrm: use --no-preserve-root to override this failsafe\n`);
-        code = 1;
-        continue;
+      // itself named (no trailing slash) is only unlinked. A name that cannot be looked up is the removal's to report.
+      if (recursive && preserveRoot) {
+        const walked = target.endsWith('/') || !(await vfs.isSymlink(path).catch(() => false));
+        if (walked && await vfs.realpath(path).catch(() => null) === '/') {
+          await ctx.stderr.write(`rm: it is dangerous to operate recursively on '${target}' (same as '/')\nrm: use --no-preserve-root to override this failsafe\n`);
+          code = 1;
+          continue;
+        }
       }
       try {
         if (!recursive) { await vfs.remove(path, { force }); continue; }
