@@ -502,13 +502,14 @@ export class NimbusWrangler {
      * False when one is missing: logged, unless the build was superseded.
      */
     async exportsDoClasses(worker, classesEntrypoint, bindings, superseded) {
-        const watched = holdThreadWatch(this.supervisorCtx, 'wrangler dev classes');
+        // A server with no session's context (a plain Worker's) has no session thread to watch.
+        const watched = this.supervisorCtx ? holdThreadWatch(this.supervisorCtx, 'wrangler dev classes') : undefined;
         let named;
         try {
             named = await worker.getEntrypoint(classesEntrypoint, { limits: facetLimits('worker') }).missing(bindings.map((b) => b.class_name));
         }
         finally {
-            watched();
+            watched?.();
         }
         const missing = new Set(named);
         if (superseded())
@@ -843,14 +844,14 @@ export class NimbusWrangler {
                 // correctly-prefixed outer URL.
                 redirect: 'manual',
             });
-            const watched = holdThreadWatch(this.supervisorCtx, 'wrangler dev request');
+            const watched = this.supervisorCtx ? holdThreadWatch(this.supervisorCtx, 'wrangler dev request') : undefined;
             let response;
             // Awaited by this frame, as an RPC stub call must be (beginLoaderFetch); the watch only brackets it.
             try {
                 response = await this.workerStub.fetch(workerReq);
             }
             finally {
-                watched();
+                watched?.();
             }
             // ── Response post-processing ─────────────────────────────────
             const newHeaders = new Headers(response.headers);
