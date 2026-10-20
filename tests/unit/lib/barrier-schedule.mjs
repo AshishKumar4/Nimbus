@@ -21,7 +21,9 @@
  *                          the revision it had where it can be, its bytes
  *                          changed and their size not, so a page or a fill
  *                          of the last incarnation's bytes, held or in
- *                          flight, could pass for this one's.
+ *                          flight, could pass for this one's;
+ *   ['aligned', rel]       the last restart kept `rel` at its revision (a
+ *                          schedule that needs the same revision says so).
  * Reads are stat, readFile, readdir, (awaited) opendir, a directory read
  * through its descriptor, and (awaited) pread, a file's bytes at an offset
  * read through its descriptor; a file past what a process holds whole
@@ -663,6 +665,8 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
    * next barrier, a poison. Node's own engine (node-shims) is not run
    * across one: it goes with the cutover.
    */
+  /** Each name's revision before the last restart. */
+  const revsBefore = new Map();
   const restart = async (at) => {
     if (kind === 'node') { note(`  (step ${at}: a restart is the resident filesystem's to meet)`); return; }
     stalled = false;
@@ -676,19 +680,22 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
     unpublished = [];
     const root = engine.authority.rawVfs.as(CRED_KERNEL);
     const next = new Map();
+    // In the order they took their revisions, a directory before what it holds.
+    const byRev = [...model.world].map(([rel, state]) => ({ rel, state, rev: Number(root.lstat(key(rel)).revision) })).sort((a, b) => a.rev - b.rev);
     const entries = [];
-    const files = [];
-    for (const [rel, state] of [...model.world].sort(([a], [b]) => a.split('/').length - b.split('/').length || (a < b ? -1 : 1))) {
-      if (state.type === 'dir') {
-        next.set(rel, state);
-        if (rel !== '') entries.push({ key: key(rel), type: 'dir', mode: state.mode, uid: state.uid, gid: state.gid });
-        continue;
-      }
-      const content = turned(state.content);
-      next.set(rel, { ...state, content });
-      files.push({ key: key(rel), type: 'file', content, mode: state.mode, uid: state.uid, gid: state.gid, rev: Number(root.lstat(key(rel)).revision) });
-    }
-    engine.authority.incarnate([{ key: key(''), type: 'dir', mode: model.world.get('').mode }, ...entries, ...files.sort((a, b) => a.rev - b.rev)]);
+    const made = new Set();
+    const make = (item) => {
+      if (made.has(item.rel)) return;
+      if (item.rel !== '') make(byRev.find((other) => other.rel === parentOf(item.rel)));
+      made.add(item.rel);
+      const { rel, state, rev } = item;
+      const content = state.type === 'file' ? turned(state.content) : undefined;
+      next.set(rel, content === undefined ? state : { ...state, content });
+      revsBefore.set(rel, rev);
+      entries.push({ key: key(rel), type: state.type, content, mode: state.mode, uid: state.uid, gid: state.gid, ...(state.type === 'file' ? { rev } : {}) });
+    };
+    for (const item of byRev) make(item);
+    engine.authority.incarnate(entries);
     model.restart(next);
     peerAt.push({ done: seq(), domain: [''] });
     resident.clear();
@@ -705,6 +712,11 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
     if (what === 'stall') { stalled = true; return engine.stall(); }
     if (what === 'unstall') { stalled = false; return engine.release(); }
     if (what === 'restart') return restart(at);
+    if (what === 'aligned') {
+      const now = Number(engine.authority.rawVfs.as(CRED_KERNEL).lstat(key(s[1])).revision);
+      if (kind !== 'node' && now !== revsBefore.get(s[1])) throw new Finding(`the restart did not keep ${s[1]} at its revision (${revsBefore.get(s[1])}, now ${now}): the schedule does not test what it says`, at);
+      return undefined;
+    }
     if (what === 'input') {
       const arrived = seq();
       inputsInFlight++;

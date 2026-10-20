@@ -136,11 +136,11 @@ const FOUND = {
   // A session that started again: another epoch, its files at the revisions they had, other bytes.
   'a page held of the last incarnation is not this one\'s, at the same revision': {
     engines: ['holder', 'eager'],
-    schedule: [['own', 'pread', 'big', 70_000], ['settle'], ['restart'], ['input'], ['settle'], ['own', 'pread', 'big', 70_000], ['settle']],
+    schedule: [['own', 'pread', 'big', 70_000], ['settle'], ['restart'], ['aligned', 'big'], ['input'], ['settle'], ['own', 'pread', 'big', 70_000], ['settle']],
   },
   'a fill asked of the last incarnation, landing late, leaves this one\'s fill whole': {
     engines: ['holder', 'eager'],
-    schedule: [['hold', 'lookup'], ['own', 'readFile', 'mid'], ['settle'], ['restart'], ['input'], ['settle'],
+    schedule: [['hold', 'lookup'], ['own', 'readFile', 'mid'], ['settle'], ['restart'], ['aligned', 'mid'], ['input'], ['settle'],
       ['hold', 'lookup', 1], ['own', 'readFile', 'mid'], ['settle'], ['release', 'lookup'], ['settle'], ['release', 'lookup'], ['settle'],
       ['sync', 'readFile', 'mid'], ['own', 'readFile', 'mid']],
   },

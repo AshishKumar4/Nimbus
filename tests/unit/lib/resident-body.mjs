@@ -161,19 +161,15 @@ export function createAuthority(vfsOptions, { sequenced = false } = {}) {
     incarnate(entries) {
       const next = incarnation();
       const filler = () => next.root.writeFile('home/user/.filler', new Uint8Array(0));
-      const owned = (key, entry) => next.root.chown(key, entry.uid ?? CRED_SESSION_USER.uid, entry.gid ?? CRED_SESSION_USER.gid);
+      // Each made in one change, as the session user made it where it is the user's: a revision apiece.
       for (const entry of entries) {
-        if (entry.type === 'dir') {
-          next.root.mkdir(entry.key, { mode: entry.mode ?? 0o755 });
-          owned(entry.key, entry);
-          continue;
-        }
-        while (entry.rev !== undefined && next.rawVfs.revision() + 1 < entry.rev) filler();
-        next.root.writeFile(entry.key, entry.content, { mode: entry.mode ?? 0o644 });
-        owned(entry.key, entry);
-        next.root.chmod(entry.key, entry.mode ?? 0o644);
+        const users = (entry.uid ?? CRED_SESSION_USER.uid) === CRED_SESSION_USER.uid && (entry.gid ?? CRED_SESSION_USER.gid) === CRED_SESSION_USER.gid;
+        const as = users ? next.kfs : next.root;
+        if (entry.type === 'file') while (entry.rev !== undefined && next.rawVfs.revision() + 1 < entry.rev) filler();
+        if (entry.type === 'dir') as.mkdir(entry.key, { mode: entry.mode ?? 0o755 });
+        else as.writeFile(entry.key, entry.content, { mode: entry.mode ?? 0o644 });
+        if (!users) next.root.chown(entry.key, entry.uid, entry.gid);
       }
-      for (const entry of entries) if (entry.type === 'dir') next.root.chmod(entry.key, entry.mode ?? 0o755);
       current = next;
       host.sqliteFs = next.rawVfs;
       // The session's ops are its incarnation's, as a session that started again builds them.
