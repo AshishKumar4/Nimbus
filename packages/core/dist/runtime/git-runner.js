@@ -41,11 +41,9 @@ import { makeGitFsmonitor } from './git-fsmonitor.js';
 /** Where the installed runtime keeps the image and the system configuration. */
 const GIT_WASM = 'share/git/git.wasm';
 const GIT_SYSTEM_CONFIG = 'share/git/gitconfig';
-/** Warm facets kept idle between runs; past it, a facet a run leaves is let go. */
-const WARM_GIT_FACETS = 2;
 export function makeGitRunnerFactory(deps) {
     const fsmonitor = makeGitFsmonitor(deps.fsmonitorState);
-    const warmKeys = warmFacetKeys(deps.session, 'git', WARM_GIT_FACETS);
+    const warmKeys = warmFacetKeys(deps.session, 'git');
     return function gitRunnerFactory(manifest, installRoot, binName, binKind) {
         if (binKind === 'fsmonitor')
             return async (ctx) => {

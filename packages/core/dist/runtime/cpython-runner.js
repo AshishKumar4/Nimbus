@@ -189,13 +189,11 @@ async function buildPythonModulePipInvocation(argv, cwd, vfs, runtimeContext) {
         return { mode: 'none', code: '', exitCode: 0 };
     return await buildPipInvocation(argv.slice(2), 'pip', cwd, vfs, runtimeContext);
 }
-/** Idle warm CPython workers a session keeps, per interpreter: each holds its compiled python.wasm. */
-const WARM_CPYTHON_FACETS = 2;
 export function makeCPythonRunnerFactory(deps) {
     // One set per interpreter: a warm worker holds the one python.wasm it compiled.
     const warmKeys = {
-        plain: warmFacetKeys(deps.session, CPYTHON_RUNNER, WARM_CPYTHON_FACETS),
-        sci: warmFacetKeys(deps.session, `${CPYTHON_RUNNER}:sci`, WARM_CPYTHON_FACETS),
+        plain: warmFacetKeys(deps.session, CPYTHON_RUNNER),
+        sci: warmFacetKeys(deps.session, `${CPYTHON_RUNNER}:sci`),
     };
     return function cpythonRunnerFactory(manifest, installRoot, binName, _binKind) {
         const findFile = (rel) => installedPath(manifest, installRoot, rel);
