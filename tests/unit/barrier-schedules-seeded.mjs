@@ -3,10 +3,11 @@
 /**
  * barrier-schedules-seeded — the barrier schedules (lib/barrier-schedule.mjs)
  * drawn from seeds, each reply parked at random once the process is up, on
- * each engine: NIMBUS_BARRIER_SEEDS=n runs n seeds (default 24). A seed
- * that fails is shrunk, one child per try within a budget, and printed as a
- * schedule to add to lib/barrier-found.mjs; a seed that hangs is reported
- * as it is.
+ * each engine: NIMBUS_BARRIER_SEEDS=n runs n seeds (default 24), from
+ * NIMBUS_BARRIER_SEED_FROM (default 1). A seed that fails is shrunk, one
+ * child per try within a budget (none with NIMBUS_BARRIER_SHRINK=0), and
+ * printed as a schedule to add to lib/barrier-found.mjs; a seed that hangs
+ * is reported as it is.
  */
 
 import { runScenarios } from './lib/resident-body.mjs';
@@ -15,9 +16,10 @@ import { generate, KNOWN_GAPS, runSchedule } from './lib/barrier-schedule.mjs';
 
 const realProcess = globalThis.process;
 const SEEDS = Number(realProcess.env.NIMBUS_BARRIER_SEEDS ?? 24);
+const FROM = Number(realProcess.env.NIMBUS_BARRIER_SEED_FROM ?? 1);
 
 const scenarios = {};
-for (let seed = 1; seed <= SEEDS; seed++) {
+for (let seed = FROM; seed < FROM + SEEDS; seed++) {
   for (const kind of ENGINES) scenarios[`seed ${seed} [${kind}]`] = () => run(kind, generate(seed), seed);
 }
 // A schedule given whole, as the shrinker tries one.
@@ -71,7 +73,7 @@ if (realProcess.env.NIMBUS_RESIDENT_BODY_SCENARIO) {
     await runScenarios(import.meta.path, named);
   } catch (error) {
     for (const [, seed, kind] of String(error.message).matchAll(/seed (\d+) \[(\w+)\]/g)) {
-      if (fails(kind, generate(Number(seed)), Number(seed)) !== true) continue;
+      if (realProcess.env.NIMBUS_BARRIER_SHRINK === '0' || fails(kind, generate(Number(seed)), Number(seed)) !== true) continue;
       const minimal = shrink(kind, generate(Number(seed)), Number(seed));
       realProcess.stdout.write(`  seed ${seed} [${kind}] shrinks to (parked by seed ${seed}):\n    ${JSON.stringify(minimal)}\n`);
     }
