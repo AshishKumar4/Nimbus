@@ -608,7 +608,7 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
       return void track(engine.input().then(() => { landed = Math.max(landed, arrived); poisoned = false; }).finally(() => { inputsInFlight--; }));
     }
     const [way, op, rel] = s;
-    if (op === 'stat' || op === 'readFile' || op === 'readdir') {
+    if (op === 'stat' || op === 'readFile' || op === 'readdir' || op === 'opendir') {
       const bound = Math.max(landed, kind === 'node' && way === 'sync' ? model.decidedSince(rel) : 0,
         ...[...ownAt].filter(([root]) => under(rel, root) || under(root, rel)).map(([, i]) => i));
       if (way === 'sync') {
