@@ -4200,7 +4200,7 @@ export class SqliteVFS {
    * The highest directory at or above `dir` (a name in the caller's view)
    * that the caller may not enter, in `tree` (the live one by default), or
    * null: each directory judged once in `memo`, by the search check
-   * resolvePath makes of each directory on a walk.
+   * resolvePath makes of each directory on a walk, a link by where it leads.
    */
   private closedAbove(dir: string, cred: VfsCred, memo: Map<string, string | null>, tree: InodeLookup = this.inodes): string | null {
     if (dir === '') return null;
@@ -4209,7 +4209,18 @@ export class SqliteVFS {
     let closed = this.closedAbove(parentKey(dir), cred, memo, tree);
     if (closed === null) {
       const inode = tree.get(this.keyOfName(dir, this.confinedTmpRoots.get(cred.uid)));
-      if (inode === undefined || inode.kind !== 'directory' || !this.accessInode(inode, 0o1, cred)) closed = dir;
+      if (inode?.kind === 'symlink') {
+        // A link is entered where it leads, as a lookup through it is: rows
+        // stranded under one (a build left under a link) are judged there.
+        try {
+          this.checkAccess(dir, 0o1, cred, { tree });
+        } catch (error) {
+          if (error instanceof RecallRequired) throw error;
+          closed = dir;
+        }
+      } else if (inode === undefined || inode.kind !== 'directory' || !this.accessInode(inode, 0o1, cred)) {
+        closed = dir;
+      }
     }
     memo.set(dir, closed);
     return closed;
