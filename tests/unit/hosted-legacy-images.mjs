@@ -32,6 +32,9 @@ const world = createFacetWorld(() => ({ async startProcess() { return { ok: true
 const harness = createSqliteVfsTestHarness();
 const vfs = new bundle.SqliteVFS(harness.sql, harness.ctx);
 const kernel = vfs.as(CRED_KERNEL);
+const processes = new bundle.SessionProcessSupervisor();
+// The session's filesystem as an earlier release left it: its workspace first, then the images.
+const workspace = await bundle.NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, vfs, processes, generation: 1 });
 
 /** A file at its content address in `dir`, as the kernel wrote it. */
 async function imageAt(dir, text) {
@@ -54,8 +57,6 @@ const ctx = {
   exports: { SupervisorRPC: ({ props }) => ({ props }) },
   getWebSockets: () => [],
 };
-const processes = new bundle.SessionProcessSupervisor();
-const workspace = await bundle.NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, vfs, processes, generation: 1 });
 const env = { WORKSPACES: { idFromName() {}, idFromString() {}, get() {} }, LOADER: world.loader, ASSETS: stagedAssets };
 const runtime = await bundle.composeHostedRuntime({ workspace, ctx, env, ports: new bundle.PortRegistry(), lifecycle: hostedLifecycle(ctx, () => runtime) });
 try {
