@@ -47,6 +47,8 @@ const BATCH_BYTES = FS_READ_BATCH_REQUEST_BYTES;
  * rather than a workload.
  */
 const MAX_LIST_PAGES = 4096;
+/** Relists of one directory a barrier tries, each overtaken by a later one's delta, before the namespace stops answering. */
+const RELIST_ATTEMPTS = 3;
 
 /** A file to fetch: its listed size and revision, the epoch they are on, and its content key. */
 /**
@@ -100,12 +102,28 @@ export interface Transport {
 export function createTransport(coherence: Coherence, admission: Admission, namespace: Namespace, cells: Cells): Transport {
   /**
    * Re-read the names beneath `dir` from the authority: a directory that just
-   * became searchable, whose descendants no delta will ever name.
+   * became searchable, whose descendants no delta will ever name. A relist is
+   * a learning: one a later barrier's delta overtook (a report at, above or
+   * beneath `dir`) installs nothing and lists again, so often before the
+   * namespace stops answering.
    */
   const relist = async (supervisor: ResidentSupervisor | null | undefined, dir: string): Promise<void> => {
     const t = coherence.tables('relist');
     const fsList = supervisor ? method(supervisor, 'fsList') : undefined;
     if (!supervisor || typeof fsList !== 'function') { namespace.markReady(t, false, 'the session cannot list its filesystem'); return; }
+    for (let attempt = 0; attempt < RELIST_ATTEMPTS; attempt++) {
+      const learning = namespace.learning();
+      try {
+        const listed = await relistWith(learning, t, supervisor, fsList, dir);
+        if (listed !== 'overtaken') return;
+      } finally {
+        learning.end();
+      }
+    }
+    namespace.markReady(t, false, 'a listing of /' + dir + ' was overtaken by every barrier since');
+  };
+
+  const relistWith = async (learning: Learning, t: ResidentTables, supervisor: ResidentSupervisor, fsList: Function, dir: string): Promise<'overtaken' | void> => {
     const prefix = dir + '/';
     const seen = new SafeList<VfsListEntry>();
     let replaceBytes = 0;
@@ -152,6 +170,7 @@ export function createTransport(coherence: Coherence, admission: Admission, name
     for (let i = 0; i < seen.length; i++) {
       if (!nsDescribes(seen[i].stat)) { namespace.markReady(t, false, 'a listing of /' + dir + ' named an entry without its stat'); return; }
     }
+    if (!learning.lists(dir)) return 'overtaken';
     // Exactly what the listing has under the directory: a name it no longer
     // shows (hidden now, or gone) leaves, one it shows is written.
     namespace.deleteTree(t, dir, false);
@@ -159,7 +178,7 @@ export function createTransport(coherence: Coherence, admission: Admission, name
       const entry = seen[i];
       namespace.put(t, nsKey(entry.path), entry.stat, entry.rev, ownValue(entry, 'linkTarget'), ownValue(entry, 'unlisted') ?? null);
     }
-    namespace.unfence(dir);
+    namespace.relisted(dir);
   };
 
   /**
@@ -261,6 +280,8 @@ export function createTransport(coherence: Coherence, admission: Admission, name
     const landed = new SafeMap<string, number>();
     let filled = 0, failed = 0, fetchedBytes = 0;
     const failedPaths = new SafeSet<string>();
+    /** Paths a later delta or a store started again took from this read: what is held there is not its to judge. */
+    const overtaken = new SafeSet<string>();
     /** The revision each path is read at. */
     const revOf = new SafeMap<string, number>();
     for (let i = 0; i < ranges.length; i++) {
@@ -326,7 +347,11 @@ export function createTransport(coherence: Coherence, admission: Admission, name
         const chunkBytes = typedArrayByteLength(chunk);
         if (chunkBytes !== range.length) { failedPaths.add(range.path); continue; }
         // Not a byte of it beneath a newer revision of the file (another fill's head and chunks).
-        if (outdated(t, learning, range.path, range.rev)) { failedPaths.add(range.path); continue; }
+        if (outdated(t, learning, range.path, range.rev)) {
+          if (!learning.installs(range.path)) overtaken.add(range.path);
+          failedPaths.add(range.path);
+          continue;
+        }
         fetchedBytes += chunkBytes;
         if (!cells.putChunk(t, range.path, range.part, chunk)) { failedPaths.add(range.path); continue; }
         const seen = (landed.get(range.path) || 0) + 1;
@@ -348,7 +373,7 @@ export function createTransport(coherence: Coherence, admission: Admission, name
       // wrote, and goes with them.
       const held = t.fileRev(path);
       const rev = revOf.get(path);
-      if (held !== undefined && (held === RK_OWN_WRITE || (rev !== undefined && held >= rev))) return;
+      if (held !== undefined && (held === RK_OWN_WRITE || overtaken.has(path) || (rev !== undefined && held >= rev))) return;
       t.chunkDelete(path);
       t.fileDelete(path);
     });

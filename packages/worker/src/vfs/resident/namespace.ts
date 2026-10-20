@@ -127,12 +127,19 @@ export interface Namespace {
   learn(t: ResidentTables, k: string, stat: NsStat, rev: unknown, target?: string | null): boolean;
   /**
    * A delta made `dir`'s listing stale and its relist is on its way: until
-   * it lands (`unfence`), nothing at or under it is answered, cached rows and
-   * nested directories' absences included (`fenced`).
+   * that relist lands (`relisted`), nothing at or under it is answered,
+   * cached rows and nested directories' absences included (`fenced`).
    */
   fence(dir: string): void;
-  unfence(dir: string): void;
+  /**
+   * A relist of `dir` landed: its fence goes (another still on its way keeps
+   * its own), and a directory a learning marked is whole, every name beneath
+   * it now a row. One a mount left unlisted stays so.
+   */
+  relisted(dir: string): void;
   fenced(k: string): boolean;
+  /** Every learning in flight installs nothing: what it was asked against is being replaced (a repair begun). */
+  spoilLearnings(): void;
   /**
    * A lookup or listing about to be asked of the session: a delta admitted
    * before its answer lands is newer than the answer at every path it names,
@@ -219,12 +226,12 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
 
   const ready = (): boolean => ok && coherence.serving();
 
-  /** Directories whose relist is on its way (fence): nothing at or under one is answered. */
-  let relisting = new SafeSet<string>();
+  /** Directories whose relists are on their way, with how many (fence): nothing at or under one is answered. */
+  let relisting = new SafeMap<string, number>();
   const fenced = (k: string): boolean => {
     if (relisting.size === 0) return false;
     let hit = false;
-    relisting.forEach((dir) => { if (!hit && (dir === '' || k === dir || stringStartsWith(k, dir + '/'))) hit = true; });
+    relisting.forEach((_count, dir) => { if (!hit && (dir === '' || k === dir || stringStartsWith(k, dir + '/'))) hit = true; });
     return hit;
   };
 
@@ -241,6 +248,16 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
     if (dir === '') return true;
     const row = nsRowAt(coherence.require(), dir);
     return row !== undefined && row.kind === NS_DIR;
+  };
+
+  const markListed = (dir: string): void => {
+    if (lazy) { listed.add(dir); return; }
+    if (dir === '' || unlisted.get(dir) === undefined) return;
+    const t = coherence.require();
+    const row = nsRowAt(t, dir);
+    if (row === undefined || row.kind !== NS_DIR) return;
+    t.nsPut(nsParent(dir), nsName(dir), row.kind, row.size, row.mode, row.uid, row.gid, row.atime, row.mtime, row.ctime, row.ino, row.rev, null, row.dev, row.nlink);
+    unlisted.delete(dir);
   };
 
   /** The mark a directory a learning makes takes: the mount the nearest marked directory above it is on, or its own name. */
@@ -501,7 +518,7 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
      */
     replace(t, entries) {
       generation++;
-      relisting = new SafeSet();
+      relisting = new SafeMap();
       const names = new SafeSet<string>();
       for (let i = 0; i < entries.length; i++) names.add(nsKey(entries[i].path));
       // Remove stale rows before admitting replacements; do not transiently
@@ -613,7 +630,7 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
     },
     clear() {
       generation++;
-      relisting = new SafeSet();
+      relisting = new SafeMap();
       links = new SafeSet();
       unlisted = new SafeMap();
       ok = false;
@@ -621,7 +638,7 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
     get lazy() { return lazy; },
     beginLazy() {
       generation++;
-      relisting = new SafeSet();
+      relisting = new SafeMap();
       lazy = true;
       listed.clear();
       links = new SafeSet();
@@ -629,22 +646,19 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
     },
     listedAt(k) { return isListed(nsParent(k)); },
     isListed,
-    markListed(dir) {
-      if (lazy) { listed.add(dir); return; }
-      if (dir === '' || unlisted.get(dir) === undefined) return;
-      const t = coherence.require();
-      const row = nsRowAt(t, dir);
-      if (row === undefined || row.kind !== NS_DIR) return;
-      t.nsPut(nsParent(dir), nsName(dir), row.kind, row.size, row.mode, row.uid, row.gid, row.atime, row.mtime, row.ctime, row.ino, row.rev, null, row.dev, row.nlink);
-      unlisted.delete(dir);
-    },
+    markListed,
     learn(t, k, stat, rev, target) {
       if (lazy || stat.type !== 'directory' || nsRowAt(t, k) !== undefined) return tryPut(t, k, stat, rev, target);
       return tryPut(t, k, stat, rev, target, learnedMark(k));
     },
-    fence(dir) { relisting.add(dir); },
-    unfence(dir) { relisting.delete(dir); },
+    fence(dir) { relisting.set(dir, (relisting.get(dir) ?? 0) + 1); },
+    relisted(dir) {
+      const count = relisting.get(dir) ?? 0;
+      if (count <= 1) relisting.delete(dir); else relisting.set(dir, count - 1);
+      if (!lazy && unlisted.get(dir) === dir) markListed(dir);
+    },
     fenced,
+    spoilLearnings() { generation++; },
     onPut(listener) {
       putListener = listener;
     },

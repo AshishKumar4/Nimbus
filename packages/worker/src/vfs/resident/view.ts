@@ -23,7 +23,7 @@ import type { ResidentBarrier, ResidentBarrierOptions, ResidentEntry, ResidentNa
 import type { Admission } from './admission.js';
 import type { Cells } from './cells.js';
 import type { Coherence, Cursor } from './coherence.js';
-import { nsRowAt, type Namespace } from './namespace.js';
+import { nsKey, nsRowAt, type Namespace } from './namespace.js';
 import type { Pages } from './pages.js';
 import type { ResidentCred } from './permissions.js';
 import type { ResidentSupervisor } from './supervisor.js';
@@ -205,6 +205,8 @@ export function createView(
        * listing, which keeps every row it proves current (sync.synchronize).
        */
       const runRepair = async (answer: VfsAcquireResult | null): Promise<void> => {
+        // What was asked before is answered against what the repair replaces: none of it is installed.
+        namespace.spoilLearnings();
         if (await repairFromFloor(answer)) return;
         let repaired = null;
         try { repaired = await sync.synchronize(supervisor); }
@@ -302,8 +304,12 @@ export function createView(
         }
         const applied = await sync.applyAcquire(supervisor, answer!);
         if (!namespace.ready()) return { landed: false };
-        // What it held and the delta dropped, fetched again at its new revision, and every refetch it found in flight.
-        await Promise.all([...refetch(applied.dropped), ...joined]);
+        // What it held and the delta dropped, fetched again at its new
+        // revision; a refetch in flight that its delta overtook (a file
+        // rewritten again), once more; and every refetch it found in flight.
+        const named = answer!.paths.map((entry) => nsKey(entry.path));
+        const overtaken = [...refetching.keys()].filter((k) => !applied.dropped.includes(k) && named.some((at) => at === k || at === '' || k.startsWith(at + '/')));
+        await Promise.all([...refetch([...applied.dropped, ...overtaken]), ...joined]);
         return answer!.readLease ? { landed: true, applied: !repaired, readLease: answer!.readLease } : { landed: true, applied: !repaired };
       };
 

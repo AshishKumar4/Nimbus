@@ -86,6 +86,8 @@ const FOUND = {
       ['input'], ['settle'], ['sync', 'stat', 'z/n'], ['sync', 'stat', 'd/n'], ['unstall'], ['release', 'wave'], ['settle'], ['sync', 'stat', 'z/n']],
   },
   'a relist overtaken by a later barrier restores nothing it saw': {
+    // A store listed on demand relists nothing.
+    engines: ['node', 'eager'],
     schedule: [['own', 'stat', 'd/e/g'], ['settle'], ['root', 'chown', 'd', 0], ['root', 'chmod', 'd', 0o700], ['settle'], ['input'], ['settle'],
       ['root', 'chmod', 'd', 0o755], ['settle'], ['hold', 'listing'], ['input'], ['settle'],
       ['peer', 'unlink', 'd/e/g'], ['peer', 'write', 'd/f', 'f rewritten'], ['settle'], ['input'], ['settle'], ['release', 'listing'], ['settle'],
@@ -115,9 +117,13 @@ const GAPS = {
     lacks: 'O9: an awaited mutation outside a grant is decided by the provisional decisions (the cutover)',
     shows: 'sync stat top answered file 644',
   },
-  'a directory a call that cannot wait has not listed is not refused as a directory [eager]': {
-    lacks: 'its synchronous refusal names the call: a directory is EISDIR only to a call for bytes (notResident, the cutover)',
-    shows: 'answered EISDIR',
+  'a name the process renamed into place can be renamed again at once [eager]': {
+    lacks: 'O9: an awaited rename outside a grant is decided by the provisional decisions (the cutover)',
+    shows: 'sync stat d/e/g answered file 644 size 5',
+  },
+  'a name the process renamed into place stays once the session acknowledges it after a barrier reported it [eager]': {
+    lacks: 'O9: an awaited rename outside a grant is decided by the provisional decisions (the cutover)',
+    shows: 'sync stat d/f answered file 644 size 2',
   },
   'a directory the process may search again shows nothing stale while it is relisted [node]': {
     lacks: 'B2: a relist answers what is under its directory as unknown until it lands (the cutover\'s relist fence); '
