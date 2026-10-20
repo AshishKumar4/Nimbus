@@ -39,6 +39,7 @@ import type { Awaitable, RuntimeFileHandle, RuntimeFsBridge, RuntimeOpenedFile, 
 import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 import { fsError, walkBeneath } from '../beneath-walk.js';
 import { modeAllows } from '../../vfs/posix-access.js';
+import { errnoCodeOf } from '../../vfs/vfs-error.js';
 import { openIdentified } from './filesystem.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES, DIRECTORY_BATCH_LIMIT, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES } from '../../constants.js';
 import { RESIDENT_PAGE_BYTES } from '@nimbus-sh/platform/limits.js';
@@ -1572,11 +1573,25 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   // makes its parents is decided here too where its directory is (making
   // none); where a directory on the way is missing, the session makes them.
   const bySessionWriteFile = fs.writeFile;
+  /** The walk to a file a write names; one that makes its parents and meets a directory missing on the way is the session's. */
+  const walkToWrite = (path: RuntimeFsPath, makesParents: boolean): Walk | Delegate | Promise<Walk | Delegate> => {
+    if (!makesParents) return walkFor(path, true);
+    const missing = (error: unknown): Delegate => {
+      if (errnoCodeOf(error) === 'ENOENT') return DELEGATE;
+      throw error;
+    };
+    try {
+      const walk = walkFor(path, true);
+      return walk instanceof Promise ? walk.catch(missing) : walk;
+    } catch (error) {
+      return missing(error);
+    }
+  };
   fs.writeFile = (path, bytes, options) => {
     if (holder === null || options?.expectedRevision !== undefined) return bySessionWriteFile(path, bytes, options);
     const data = typeof bytes === 'string' ? new TextEncoder().encode(bytes) : bytes;
     const flags: RuntimeOpenFlags = { write: true, create: true, truncate: true, mode: 0o666, ...(options?.umask === undefined ? {} : { umask: options.umask }) };
-    const local = decide<number>(() => after(walkFor(path, true), (walk) => {
+    const local = decide<number>(() => after(walkToWrite(path, options?.createParents === true), (walk) => {
       if (walk === DELEGATE || !decidable(walk.key, walk)) return DELEGATE;
       return holder!.writeFile(walk.key, pathOf(path), data, flags) ?? DELEGATE;
     }));
