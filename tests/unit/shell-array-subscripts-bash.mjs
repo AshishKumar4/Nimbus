@@ -24,7 +24,9 @@
 // line, as bash's DISCARD does: the next line runs with $? 1, in a script, a
 // function's caller's line, eval's text; a subshell ends with 1. A prefix
 // `a+=(…)` leaves the array as it was after its command. The subscript of a
-// `[subscript]=` element is read whole: `[i + 1]`, `[(1+2)*2]`.
+// `[subscript]=` element is read whole: `[i + 1]`, `[(1+2)*2]`, a `]` in a
+// substitution its own. Under `set -e` a reported error ends the shell; in
+// a POSIX script (`sh`) a failed assignment does.
 //
 // Red before (ticket-lifo-indexed-array-literals): `[i]=v` was stored as the
 // literal word at consecutive indices; `a+=(…)` went on past a removed last
@@ -32,7 +34,7 @@
 // oracle (stdout, status, stderr without bash's line prefix).
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
@@ -91,23 +93,36 @@ const LINES = [
   'f() { a=(); a[-1]=x; echo in; }; f; echo "after $?"\necho "next $?"',
   '(a=(); a[-1]=x; echo in); echo "paren $?"; x=$(a=(); a[-1]=x; echo in); echo "sub $? [$x]"',
   'a=(); eval "a[-1]=x; echo in\necho in2 \\$?"; echo "after $?"',
-  // As a script runs (its diagnostics name the script and line, so only its output and status are compared).
-  { line: 'printf \'a=()\\na[-1]=x; echo same\\necho "next $?"\\nreadonly r=1\\nr=2; echo same\\necho "next $?"\\n\' > s.sh; bash s.sh; echo "exit $?"', compare: 'out' },
+  'a=([$( : ]=; echo 2)]=v [`echo [1]`]=w); declare -p a',
+  // Under `set -e` an error the shell reports ends it, an `if`'s condition too (bash's report_error).
+  'set -e; a=(); a[-1]=x\necho next',
+  'set -e; a=([-1]=x z)\necho "next $?"',
+  'set -e; readonly r=1; r=2\necho next',
+  'set -e; if a=([-1]=x); then echo in-if; fi; echo after',
+  'set -e; declare -a d=([-1]=x)\necho next',
+  // As scripts: `bash ./s.sh` discards the line; a POSIX shell's (`sh`, bash --posix the oracle) ends.
+  // Their diagnostics name the script and its line, so their output and status are compared.
+  { line: 'a=()\na[-1]=x; echo same\necho "next $?"\nreadonly r=1\nr=2; echo same\necho "next $?"', script: 'bash' },
+  { line: 'a=()\na[-1]=x; echo same\necho "next $?"', script: 'sh' },
+  { line: 'readonly r=1\nr=2; echo same\necho "next $?"', script: 'sh' },
+  { line: 'a=([-1]=x z)\necho "next $?"', script: 'sh' },
 ];
 
 /** bash's diagnostic prefix: `bash: line 1: `, `bash: -c: line 1: `, and in a function 5.2's `environment: line 1: `. */
 const plainStderr = (text) => text.replace(/^(?:bash|environment): (?:-c: )?(?:line \d+: )?/gm, '');
 
-const CASES = LINES.map((c) => (typeof c === 'string' ? { line: c, compare: 'all' } : c));
-const compared = (result, compare) => (compare === 'out' ? { stdout: result.stdout, status: result.status } : result);
+const CASES = LINES.map((c) => (typeof c === 'string' ? { line: c, script: null } : c));
+const compared = (result, script) => (script === null ? result : { stdout: result.stdout, status: result.status });
 
 const want = [];
-for (const { line, compare } of CASES) {
+for (const { line, script } of CASES) {
   const dir = mkdtempSync(join(tmpdir(), 'shell-array-subscripts-'));
   try {
-    const r = spawnSync('bash', ['--norc', '--noprofile', '-c', line], { cwd: dir, encoding: 'utf8', timeout: 10_000, env: { PATH: process.env.PATH, LC_ALL: 'C.UTF-8', HOME: '/home/user' } });
+    if (script !== null) writeFileSync(join(dir, 's.sh'), `${line}\n`);
+    const argv = script === 'sh' ? ['--posix', './s.sh'] : script === 'bash' ? ['./s.sh'] : ['--norc', '--noprofile', '-c', line];
+    const r = spawnSync('bash', argv, { cwd: dir, encoding: 'utf8', timeout: 10_000, env: { PATH: process.env.PATH, LC_ALL: 'C.UTF-8', HOME: '/home/user' } });
     assert.equal(r.error, undefined, `bash ran ${JSON.stringify(line)}: ${r.error?.message}`);
-    want.push(compared({ stdout: r.stdout, stderr: plainStderr(r.stderr), status: r.status }, compare));
+    want.push(compared({ stdout: r.stdout, stderr: plainStderr(r.stderr), status: r.status }, script));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -119,9 +134,12 @@ const ws = await NimbusWorkspace.create({ sql, transactions, generation: 1 });
 registerShellEntrypointCommands(ws.registry, { execute: (cmd, options) => ws.shell.execute(cmd, options) });
 const failed = [];
 try {
-  for (const [i, { line, compare }] of CASES.entries()) {
-    const r = await ws.exec(line, { cwd: '/home/user' });
-    const ours = compared({ stdout: r.stdout, stderr: r.stderr, status: r.exitCode }, compare);
+  for (const [i, { line, script }] of CASES.entries()) {
+    const dir = `/home/user/case${i}`;
+    await ws.exec(`mkdir -p ${dir}`, { cwd: '/home/user' });
+    if (script !== null) await ws.fs.writeFile(`${dir}/s.sh`, `${line}\n`);
+    const r = await ws.exec(script === null ? line : `${script} ./s.sh`, { cwd: dir });
+    const ours = compared({ stdout: r.stdout, stderr: r.stderr, status: r.exitCode }, script);
     if (JSON.stringify(ours) !== JSON.stringify(want[i])) failed.push(`${JSON.stringify(line)}\n  bash: ${JSON.stringify(want[i])}\n  ours: ${JSON.stringify(ours)}`);
   }
 } finally {

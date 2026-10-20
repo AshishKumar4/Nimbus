@@ -1043,7 +1043,13 @@ export class Interpreter {
       for (const [index, parts] of cmd.words.entries()) {
         const assignment = index === 0 ? null : parseAssignment({ kind: TokenKind.Word, value: parts.map((part) => part.text).join(''), pos: 0, parts });
         if (assignment?.elements !== undefined && assignment.subscript === undefined && assignment.append !== true) {
-          (arrayElements ??= new Map()).set(expandedArgs.length - 1, await this.arrayLiteral(assignment.name, assignment.elements, false, expandCtx));
+          const literal = await this.arrayLiteral(assignment.name, assignment.elements, false, expandCtx);
+          // Its refusals are the builtin's to report, unless `set -e` ends the shell at the first.
+          if (literal.refused.length > 0 && this.config.options.errexit) {
+            (await (io.stderr ?? this.terminalSink(io)).write(`${literal.refused[0]}\n`));
+            this.exitOnReportedError();
+          }
+          (arrayElements ??= new Map()).set(expandedArgs.length - 1, literal);
           expandedArgs.push(`${assignment.name}=`);
         } else {
           expandedArgs.push(...await expandWords([parts], expandCtx));
@@ -1056,8 +1062,12 @@ export class Interpreter {
       // Bare assignment -- set env vars
       for (const assign of cmd.assignments) {
         const { diagnostics, failed } = await this.applyAssignment(assign, expandCtx);
-        for (const diagnostic of diagnostics) this.writeTerminal(io, `${diagnostic}\n`);
-        if (failed) throw new AssignmentErrorSignal();
+        for (const diagnostic of diagnostics) {
+          this.writeTerminal(io, `${diagnostic}\n`);
+          this.exitOnReportedError();
+        }
+        // A non-interactive POSIX shell ends (bash's FORCE_EOF); any other discards the line.
+        if (failed) throw io.scriptMode === true && this.config.options.posix ? new ErrexitSignal(1) : new AssignmentErrorSignal();
       }
       // A command that is only assignments exits with the status of the last
       // command substitution it ran, so `out="$(cmd)" || die` sees cmd fail.
@@ -2237,6 +2247,11 @@ export class Interpreter {
   private isFdTerminal(fds: FdState, fd: number): boolean {
     if (fd === 0) return fds.terminalInputFds.has(fd);
     return fds.terminalOutputFds.has(fd);
+  }
+
+  /** bash's report_error: under `set -e`, an error the shell reports ends it, wherever it is (an `if`'s condition too). */
+  private exitOnReportedError(): void {
+    if (this.config.options.errexit) throw new ErrexitSignal(1);
   }
 
   private enforceErrexit(connector: '&&' | '||' | null, exitCode: number): void {
