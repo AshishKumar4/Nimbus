@@ -121,7 +121,8 @@ console.log(`  ✓ the scan answers as a walk by name on ${compared} entries; as
   let wrote = false;
   const refused = (async () => {
     for await (const entry of view.scan(root)) {
-      if (!wrote) { wrote = true; await view.writeFile(`${root}/a0`, 'changed while scanned'); }
+      // Committed at once, through the filesystem itself.
+      if (!wrote) { wrote = true; user.writeFile(`${w}/a0`, 'changed while scanned'); }
       void entry;
     }
   })();

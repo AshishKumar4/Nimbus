@@ -143,12 +143,19 @@ export declare class WorktreeRepo {
      * its listings and lstats answered from the scan, what the scan marks
      * `byName` (a directory on an unlisted mount, or one the caller may not
      * read) asked by name, its contents read as {@link worktree} reads them.
-     * On next.js's 34,302 files, status's 51,000 calls by name were all of
-     * its 3.5 s on a session's thread; the scan is a page of entries a slice.
-     * The scan is held whole, so a command that walks a tree too large to
-     * hold (add -A, under its memory bound) keeps {@link worktree}.
+     * Measured on next.js's 34,302 files (throwaway Previews, the spans'
+     * session CPU): status took 3.8–4.2 s of the session's CPU walking by
+     * name and 1.0–1.6 s from the scan. The walk by name stands where the
+     * scan cannot: a top it does not list as a readdir of the top does (a
+     * top on a mount it does not name, one the caller may not read), a tree
+     * that changed under it SCAN_ATTEMPTS times, or a scan that failed,
+     * whose errors the walk reports entry by entry. The scan is held whole (not `.git`'s
+     * contents, which no walk reads), so a command that walks a tree too
+     * large to hold (add -A, under its memory bound) keeps {@link worktree}.
      */
     scannedWorktree(): Promise<Worktree>;
+    /** One scan of the worktree into the tables scannedWorktree answers from. */
+    private scanTree;
     /** The worktree with the settings its comparisons take. */
     worktree(): Promise<Worktree>;
     /** The index, as git's repo_read_index leaves it: see clearPresentSkips. */

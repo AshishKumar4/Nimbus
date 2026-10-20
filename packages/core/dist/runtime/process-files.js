@@ -27,7 +27,7 @@ import { DevVFS } from '../vfs/dev-vfs.js';
 import { standardProc } from '../vfs/proc-vfs.js';
 import { sqliteFiles } from '../vfs/sqlite-files.js';
 import { isVfsError, syscallError, toVfsError } from '../vfs/vfs-error.js';
-import { normalizeVfsPath } from '../vfs/path.js';
+import { beforeSubtree, normalizeVfsPath } from '../vfs/path.js';
 import { abandon, andThen, readDeclaredSource, readRangeOrWhole, readText } from '../vfs/vfs.js';
 import { formatProcMounts } from '../shell/mount-commands.js';
 import { sameFileVersion, CRED_KERNEL, isVfsCred, requireVfsCred, } from './os-contracts.js';
@@ -1546,28 +1546,33 @@ export class ProcessView {
      * walk by name would answer differently is marked `byName`, for the
      * caller to ask by name: one on a mount whose names the scan does not
      * list (`unlisted`), or one the caller may not read and search
-     * (`unreadable`), whose readdir is refused. Between pages the thread is given up for a turn: a page of SCAN_PAGE
+     * (`unreadable`), whose readdir is refused. A subtree changed between the
+     * first page and the last (its revision) is refused EAGAIN: its pages are
+     * not one tree. Between pages the thread is given up for a turn: a page of SCAN_PAGE
      * entries is one bounded slice of the session's thread.
      */
     async *scan(path) {
         const key = normalizeVfsPath(path);
         const prefix = key === '' ? '' : `${key}/`;
+        const revision = await this.call('scandir', path, () => this.fs.revision(path));
         let after = key === '' ? null : prefix;
-        for (;;) {
-            const page = await this.call('scandir', path, () => this.fs.list(after, SCAN_PAGE, { revisions: false, contentKeys: false }));
+        pages: for (;;) {
+            const page = await this.call('scandir', path, () => this.fs.list(after, SCAN_PAGE, { revisions: false, contentKeys: false, linkTargets: false }));
             for (const entry of page.entries) {
                 const at = normalizeVfsPath(entry.path);
-                if (at === key)
+                if (at === key || beforeSubtree(at, key))
                     continue;
                 if (!at.startsWith(prefix))
-                    return;
+                    break pages;
                 yield { path: at.slice(prefix.length), stat: vfsStatOf(entry.stat), byName: entry.unlisted !== undefined || entry.unreadable === true };
             }
             if (page.next === null)
-                return;
+                break;
             after = page.next;
             await new Promise((resolve) => engineSetTimeout(resolve, 0));
         }
+        if (await this.call('scandir', path, () => this.fs.revision(path)) !== revision)
+            throw syscallError('EAGAIN', 'scandir', path);
     }
     /** access(2): `mode` is F_OK or any of R_OK, W_OK, X_OK. */
     async access(path, mode) { await this.call('access', path, () => this.fs.access(path, mode)); }

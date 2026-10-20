@@ -25,4 +25,11 @@ export declare function stripLeadingSlashes(p: string): string;
  * load-bearing rather than an edge case.
  */
 export declare function vfsPathExtension(path: string): string;
+/**
+ * Whether `path` is a sibling of directory `key` whose name extends `key`'s
+ * with a character below '/' (`key-x`, `key.x`): it sorts between `key` and
+ * `key/`, so a walk of `key` from the cursor `key/` (which names `key`) meets
+ * it first, and its own subtree, before `key`'s entries.
+ */
+export declare function beforeSubtree(path: string, key: string): boolean;
 //# sourceMappingURL=path.d.ts.map

@@ -1,5 +1,5 @@
 import { FS_LIST_PAGE_LIMIT } from '../constants.js';
-import { normalizeVfsPath } from '../vfs/path.js';
+import { beforeSubtree, normalizeVfsPath } from '../vfs/path.js';
 /** Walks a subtree's listing begins before it is refused (EAGAIN): each met a change between its pages. */
 const LIST_TREE_WALKS = 4;
 /**
@@ -45,7 +45,7 @@ async function walkOnce(bridge, key, maxEntries) {
             return null;
         for (const entry of page.entries) {
             const path = normalizeVfsPath(entry.path);
-            if (path === key)
+            if (path === key || beforeSubtree(path, key))
                 continue;
             if (!path.startsWith(prefix))
                 return { ...at, entries };
