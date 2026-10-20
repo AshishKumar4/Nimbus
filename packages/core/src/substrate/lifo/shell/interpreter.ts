@@ -275,6 +275,15 @@ function commandWordText(cmd: SimpleCommandNode): string | null {
 }
 
 /** A declaration builtin's name, written unquoted: its compound array assignments are arrays. */
+/** What an assignment leaves its caller to report (Interpreter.applyAssignment). */
+interface AssignmentOutcome {
+  readonly diagnostics: readonly string[];
+  readonly failed: boolean;
+}
+
+/** An assignment that did what it was asked, with nothing to report. */
+const ASSIGNED: AssignmentOutcome = { diagnostics: [], failed: false };
+
 function isDeclarationWord(word: readonly WordPart[]): boolean {
   const text = literalWordText(word);
   return text === 'declare' || text === 'typeset' || text === 'local';
@@ -1386,7 +1395,7 @@ export class Interpreter {
    * element (bash's bad array subscript). An array literal's refused
    * elements are reported, and the rest of it is assigned.
    */
-  private async applyAssignment(assign: AssignmentNode, ctx: ExpandContext): Promise<{ diagnostics: readonly string[]; failed: boolean }> {
+  private async applyAssignment(assign: AssignmentNode, ctx: ExpandContext): Promise<AssignmentOutcome> {
     const { name } = assign;
     if (this.config.readonlyNames.has(name)) return { diagnostics: [`${name}: readonly variable`], failed: true };
     if (assign.elements !== undefined) {
@@ -1403,11 +1412,11 @@ export class Interpreter {
       const index = raw < 0 && subscript !== '' ? lastIndex(array) + 1 + raw : raw;
       if (index < 0) return { diagnostics: [`${name}[${assign.subscript}]: bad array subscript`], failed: true };
       array[index] = assign.append ? (array[index] ?? '') + value : value;
-      return { diagnostics: [], failed: false };
+      return ASSIGNED;
     }
     // On an array name, `arr=x` and `arr+=x` land on its first element.
     assignVariable(this.config, name, value, assign.append);
-    return { diagnostics: [], failed: false };
+    return ASSIGNED;
   }
 
   /**

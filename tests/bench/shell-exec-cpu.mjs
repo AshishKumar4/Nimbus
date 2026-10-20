@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // The shell's own work, CPU per arm: lines of builtins read one after another,
 // a loop, function calls, pipelines of builtins (each element a child shell),
-// and words split and matched as patterns. Each arm is its side's whole tree
+// words split and matched as patterns, and arrays built and copied. Each arm is its side's whole tree
 // (main, main's null arm, and head): its shell, commands, supervisor and
 // filesystem, a fresh filesystem each sample.
 import assert from 'node:assert/strict';
@@ -30,6 +30,8 @@ const WORK = {
   pipelines: (n) => Array.from({ length: n }, () => 'true | : | true').join('\n'),
   // Splitting, quoting and the pattern operators: fields that keep or lose their quoted characters.
   words: (n) => `v='a b c d e f g h'; for i in $(seq 1 ${n}); do set -- $v "$v" \${u:-'q r' s} "\${v#a b}" "\${v/c*/X}" "\${v//[aeiou]/_}"; done`,
+  // An array built one element at a time, written at subscripts, and copied by a literal.
+  arrays: (n) => `a=(); for i in $(seq 1 ${n}); do a+=("$i"); a[i+1]=x; done; b=([0]=p "\${a[@]}" [2]=q); : "\${#b[@]}"`,
 };
 
 await runPairedBenchmark({
