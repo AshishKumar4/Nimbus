@@ -111,6 +111,8 @@ export interface ProgrammaticHost extends TimerHost {
   _viteShimPort: number | null;
   _cirrusHmrWsClients?: { clear(): void } | null;
   terminal?: (TerminalLike & { write(text: string): void; close(): void }) | null;
+  /** The session's named terminals (named-terminals.ts). */
+  readonly terminals: NamedTerminals;
   kernel?: unknown;
   childProcessManager?: ChildProcessManager | null;
   esbuildService?: unknown;
@@ -1377,6 +1379,8 @@ async function quiesceInMemorySessionState(self: ProgrammaticHost): Promise<void
     try { clearTimeout(self._w9FlushTimer); } catch {}
     self._w9FlushTimer = null;
   }
+  // The named terminals go with the session's own: none outlives its workspace.
+  self.terminals.dispose();
   try { self.terminal?.close?.(); } catch {}
   self.terminal = null;
   await closeAcceptedWebSockets(self);
@@ -1452,6 +1456,8 @@ async function closeAcceptedWebSockets(self: ProgrammaticHost): Promise<void> {
 
 async function resetInMemorySessionState(self: ProgrammaticHost): Promise<void> {
   try { self._cirrusHmrWsClients?.clear?.(); } catch {}
+  // The named terminals go with the session's own: none outlives its workspace.
+  self.terminals.dispose();
   try { self.terminal?.close?.(); } catch {}
 
   const filesystem = self.filesystem;

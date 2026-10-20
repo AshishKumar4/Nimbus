@@ -1754,11 +1754,12 @@ async function namedTerminalUpgrade(self: NamedTerminalUpgradeHost, name: string
   if (!TerminalNameSchema.safeParse(name).success) {
     return Response.json({ error: 'invalid terminal name', hint: 'a name is 1 to 64 of A-Z a-z 0-9 . _ -' }, { status: 400 });
   }
+  await self.ensureRuntimeReady();
+  // From here to the socket's tag, nothing awaits: two upgrades cannot both find the name free.
   const priorSockets: WebSocket[] = self.ctx.getWebSockets();
   if (hasLiveShellOwner(self.ctx, priorSockets, Date.now(), name)) {
     return Response.json({ error: `terminal ${name} already has an active socket` }, { status: 409 });
   }
-  await self.ensureRuntimeReady();
   if (!self.terminals.admits(name)) {
     return Response.json({ error: 'too many terminals', hint: `a session keeps at most ${NAMED_TERMINAL_LIMIT}; close one first` }, { status: 409 });
   }

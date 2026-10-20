@@ -85,6 +85,7 @@ const attach = async (name) => {
   return ws;
 };
 
+try {
 const a = await attach('a');
 assert.ok(a.frames.some((f) => f.type === 'ready'), 'a named terminal attaches and is ready');
 await run('a', a, 'cd /tmp');
@@ -138,6 +139,13 @@ assert.match(await run('b', b, 'pwd'), /\/home\/user\/bdir\r\n/, 'b is as it was
 // Names follow the rule, and a session keeps at most 16.
 await assert.rejects(runtime.attachTerminal(socket(), { terminal: 'no/slash' }));
 await assert.rejects(runtime.closeTerminal('x'.repeat(65)), TypeError);
-for (let n = 1; n <= 15; n++) await attach(`t${n}`);
+for (let n = 1; n <= 14; n++) await attach(`t${n}`);
+// Two new names at once for the last place: one gets it, an opening counts from its start.
+const raced = await Promise.allSettled([attach('race-1'), attach('race-2')]);
+assert.deepEqual(raced.map((r) => r.status).sort(), ['fulfilled', 'rejected'], 'one of two openings at once takes the last place');
 await assert.rejects(attach('one-too-many'), /at most 16 named terminals/);
 console.log('named-terminals: ok');
+} finally {
+  // Its jobs (b's sleep) end with it, so nothing keeps the test's process alive.
+  await runtime.close();
+}
