@@ -44,15 +44,14 @@ export async function evaluateDoubleBracketWords(words, expandCtx, vfs, stderr, 
         },
         regex: async (i) => (await expandRegexWord(words[i] ?? [], expandCtx)),
         // An operand whose arithmetic fails makes its comparison false, reported as [['s there (bash's arithcomp).
-        integer: async (text) => {
+        integer: (text) => {
             try {
                 return arithmeticOf(text, expandCtx);
             }
             catch (error) {
                 if (!(error instanceof ArithmeticError))
                     throw error;
-                (await stderr.write(`[[: ${error.message}\n`));
-                return null;
+                return reportedNull(stderr, `[[: ${error.message}\n`);
             }
         },
     };
@@ -126,7 +125,7 @@ async function evaluateByArgCount(ops, start, count, vfs, context) {
                 return at(0).length > 0 && at(2).length > 0;
             if (at(1) === '-o')
                 return at(0).length > 0 || at(2).length > 0;
-            const binary = await evaluateBinary(at(1), literalArg(at(0)), literalArg(at(2)), 'test', decimal);
+            const binary = evaluateBinary(at(1), literalArg(at(0)), literalArg(at(2)), 'test');
             if (binary !== undefined)
                 return binary;
             if (at(0) === '!') {
@@ -196,7 +195,9 @@ async function parsePrimary(ops, pos, vfs, context, mode, evaluate) {
     }
     if (op !== undefined && Object.hasOwn(BINARY_OPERATORS, op)) {
         const value = evaluate
-            ? await evaluateBinary(op, await ops.value(pos), await ops.value(pos + 2), mode, ops.integer ?? decimal) ?? false
+            ? (ops.integer !== undefined && Object.hasOwn(INTEGER_COMPARISONS, op)
+                ? await compareIntegers(INTEGER_COMPARISONS[op], (await ops.value(pos)).value, (await ops.value(pos + 2)).value, ops.integer)
+                : evaluateBinary(op, await ops.value(pos), await ops.value(pos + 2), mode) ?? false)
             : false;
         return { value, pos: pos + 3 };
     }
@@ -233,8 +234,27 @@ function compiledOrRefused(ere) {
         throw e;
     }
 }
-/** Undefined when `op` is not a binary comparison. */
-async function evaluateBinary(op, left, right, mode, integer) {
+/** `[[ ]]`'s integer comparison: false where an operand's arithmetic fails (the left's first, as bash's arithcomp). */
+async function compareIntegers(compare, left, right, integer) {
+    const a = integer(left);
+    if (typeof a !== 'number') {
+        await a;
+        return false;
+    }
+    const b = integer(right);
+    if (typeof b !== 'number') {
+        await b;
+        return false;
+    }
+    return compare !== undefined && compare(a, b);
+}
+/** Null, once `diagnostic` is written. */
+async function reportedNull(stderr, diagnostic) {
+    (await stderr.write(diagnostic));
+    return null;
+}
+/** Undefined when `op` is not a binary comparison. `test`'s integers are decimal. */
+function evaluateBinary(op, left, right, mode) {
     switch (op) {
         case '=':
         case '==':
@@ -247,13 +267,7 @@ async function evaluateBinary(op, left, right, mode, integer) {
             return left.value > right.value;
     }
     const integerCompare = Object.hasOwn(INTEGER_COMPARISONS, op) ? INTEGER_COMPARISONS[op] : undefined;
-    if (integerCompare === undefined)
-        return undefined;
-    const a = await integer(left.value);
-    if (a === null)
-        return false;
-    const b = await integer(right.value);
-    return b !== null && integerCompare(a, b);
+    return integerCompare?.(toInt(left.value), toInt(right.value));
 }
 async function evaluateUnary(op, operand, vfs, context) {
     switch (op) {
@@ -332,10 +346,6 @@ async function statOf(vfs, path, followSymlinks) {
     catch {
         return null;
     }
-}
-/** `test`'s integer operand: decimal. */
-async function decimal(text) {
-    return toInt(text);
 }
 function toInt(s) {
     const n = parseInt(s, 10);
