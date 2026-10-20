@@ -4,13 +4,8 @@
 // raw spawn with a parent and a cred) is made only if the workspace's
 // `mayChangeIdentity(from, to, command)` allows it; a refusal is EPERM and no
 // process. Before, sudo and su gave the session user uid 0 with nothing asked.
-// The last block keeps it one choke point: a process is made, and its
-// credential chosen, only where the policy is asked.
+// identity-change-choke-point.mjs keeps it one choke point.
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
-import { join, relative } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { registerShellEntrypointCommands } from '../../packages/core/src/shell/shell-entrypoints.ts';
@@ -80,71 +75,14 @@ try {
 
 // No policy: allowed, as today.
 {
-  const plain = await NimbusWorkspace.create({ sql: createSqliteVfsTestHarness().sql, transactions: createSqliteVfsTestHarness().ctx });
+  const plainHarness = createSqliteVfsTestHarness();
+  const plain = await NimbusWorkspace.create({ sql: plainHarness.sql, transactions: plainHarness.ctx });
   try {
     const result = await plain.exec('sudo whoami');
     assert.deepEqual([result.stdout, result.exitCode], ['root\n', 0]);
   } finally {
     await plain.close();
   }
-}
-
-// One choke point, by what each call resolves to (the type checker), not its spelling: a process is
-// made only by ProcessTable.spawn, called only from SessionProcessSupervisor.spawn, after it asks the
-// policy; the one table is the supervisor's; a process's cred is written only by the table itself.
-{
-  const ts = createRequire(import.meta.url)('typescript');
-  const repo = fileURLToPath(new URL('../../', import.meta.url));
-  const config = ts.getParsedCommandLineOfConfigFile(join(repo, 'tsconfig.json'), {}, { ...ts.sys, onUnRecoverableConfigFileDiagnostic: () => {} });
-  const program = ts.createProgram(config.fileNames, config.options);
-  const checker = program.getTypeChecker();
-  const TABLE = join(repo, 'packages/core/src/runtime/process-table.ts');
-  const SUPERVISOR = join(repo, 'packages/core/src/runtime/session-process-supervisor.ts');
-  /** The declaration `node` names, through aliases, as `file:Class.member`. */
-  const declared = (node) => {
-    let symbol = checker.getSymbolAtLocation(node);
-    if (symbol && symbol.flags & ts.SymbolFlags.Alias) symbol = checker.getAliasedSymbol(symbol);
-    const declaration = symbol?.declarations?.[0];
-    if (!declaration) return '';
-    const owner = declaration.parent && (ts.isClassDeclaration(declaration.parent) || ts.isInterfaceDeclaration(declaration.parent)) ? `${declaration.parent.name?.text}.` : '';
-    return `${declaration.getSourceFile().fileName}:${owner}${symbol.name}`;
-  };
-  /** `node`'s enclosing method or function, as `Class.member`. */
-  const enclosing = (node) => {
-    for (let at = node.parent; at; at = at.parent) {
-      if ((ts.isMethodDeclaration(at) || ts.isConstructorDeclaration(at)) && ts.isClassDeclaration(at.parent)) return `${at.parent.name?.text}.${at.name?.getText() ?? 'constructor'}`;
-      if (ts.isPropertyDeclaration(at) && ts.isClassDeclaration(at.parent)) return `${at.parent.name?.text}.${at.name.getText()}`;
-      if (ts.isFunctionDeclaration(at)) return at.name?.text ?? '';
-    }
-    return '';
-  };
-  const spawns = [];
-  const tables = [];
-  const credWrites = [];
-  for (const file of program.getSourceFiles()) {
-    if (file.isDeclarationFile || !file.fileName.startsWith(repo) || file.fileName.includes('.generated.')) continue;
-    const where = (node) => `${relative(repo, file.fileName)} ${enclosing(node)}`;
-    const visit = (node) => {
-      if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) && declared(node.expression.name) === `${TABLE}:ProcessTable.spawn`) {
-        spawns.push(where(node));
-      }
-      if (ts.isNewExpression(node) && declared(node.expression) === `${TABLE}:ProcessTable`) tables.push(where(node));
-      if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isPropertyAccessExpression(node.left)
-        && declared(node.left.name) === `${TABLE}:ProcessEntry.cred`) credWrites.push(where(node));
-      // An entry made whole: a literal whose type is ProcessEntry, giving it a cred.
-      if (ts.isObjectLiteralExpression(node) && node.properties.some((property) => property.name?.getText() === 'cred')
-        && checker.getContextualType(node)?.getProperty('cred')?.declarations?.some((d) => d.getSourceFile().fileName === TABLE && d.parent.name?.text === 'ProcessEntry')) credWrites.push(where(node));
-      ts.forEachChild(node, visit);
-    };
-    visit(file);
-  }
-  const supervisor = relative(repo, SUPERVISOR);
-  const table = relative(repo, TABLE);
-  assert.deepEqual(spawns, [`${supervisor} SessionProcessSupervisor.spawn`], 'a process is made only in the supervisor\'s spawn');
-  assert.deepEqual(tables, [`${supervisor} SessionProcessSupervisor.table`], 'the one process table is the supervisor\'s');
-  assert.deepEqual([...new Set(credWrites)].sort(), [`${table} ProcessTable.setUmask`, `${table} ProcessTable.spawn`], 'a process\'s cred is written only as it is made, and by umask');
-  const spawn = readFileSync(SUPERVISOR, 'utf8').match(/\n {2}spawn\([^]*?\n {2}\}\n/)?.[0] ?? '';
-  assert.ok(spawn.indexOf('this.identityPolicy(') !== -1 && spawn.indexOf('this.identityPolicy(') < spawn.indexOf('table.spawn('), 'which asks the policy first');
 }
 
 console.log('identity-change-policy: every identity change asks the host');
