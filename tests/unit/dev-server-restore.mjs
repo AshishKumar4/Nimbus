@@ -204,6 +204,19 @@ try {
   assert.equal(next.ports.get(5174), undefined, 'the server stopped with its process: its port is free');
   await settle(() => recordKeys().length === 0, 'the record to be released');
 
+  // ── what runs is listed with what the restore runs again (Kinu ask 65) ──
+  const job1 = await next.runtime.exec('vite --port 5173 --no-install-check', { cwd: '/home/user/app', execId: 'job-1' });
+  assert.equal(job1.exitCode, 0, job1.stderr);
+  await next.ctx.storage.sync();
+  next = await incarnation({ restored: false });
+  // Asked at once, as an embedder's recovery asks: "none" must mean none is coming.
+  const listed = (await next.runtime.listProcesses()).find((process) => process.execId === 'job-1' && process.state === 'running');
+  assert.ok(listed, 'the restored server is listed at once, under the exec id it had');
+  assert.equal(listed.restartedFrom?.cause, 'session-restart', 'as the restart of the one before');
+  assert.ok((await next.runtime.listPorts()).some((port) => port.port === 5173 && port.pid === listed.pid), 'and its port is listed with it');
+  await next.runtime.exec('vite stop', { cwd: '/home/user/app' });
+  await settle(() => recordKeys().length === 0, 'the record to be released');
+
   // ── a login file that starts one, with one to restore ───────────────────
   const recorded = await next.runtime.exec('vite --port 5173 --no-install-check', { cwd: '/home/user/app' });
   assert.equal(recorded.exitCode, 0, recorded.stderr);
