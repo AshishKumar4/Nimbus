@@ -152,7 +152,7 @@ async function cleanStatusPeak(count) {
     peak = base;
     const code = await runGitCommand({
       pid: 1, cred: CRED_SESSION_USER, args: ['status', '--porcelain'], cwd: virtual,
-      env: { HOME: '/home/user' },
+      env: { HOME: '/home/user', NIMBUS_GIT_COUNTERS: '1' },
       stdout: { write(s) { stdout += s; }, writeBytes(b) { stdout += Buffer.from(b).toString('latin1'); } },
       stderr: { write(s) { stderr += s; } },
       vfs: observed,
@@ -161,14 +161,17 @@ async function cleanStatusPeak(count) {
     measuring = false;
     assert.equal(code, 0, stderr);
     assert.equal(stdout, realGit(disk, 'status', '--porcelain'), `${count} files: status as git's`);
-    return (peak - base) / MB;
+    const counters = JSON.parse(/\[git\] (\{.*\})/.exec(stderr)?.[1] ?? '{}');
+    return { growth: (peak - base) / MB, counters };
   };
   // The first status refreshes the mirrored index's stat. The next, a second later, compares every entry
   // (those written in the index's second were racily clean) and writes the index again: the one measured.
   // (A status after that, with nothing changed since the index, compares nothing.)
   await status(false);
   await Bun.sleep(1100);
-  const growth = await status(true);
+  const { growth, counters } = await status(true);
+  // What is measured is the scan's walk: one scan of every entry, nothing asked by name.
+  assert.ok(counters.scans === 1 && counters.lstats === 0 && counters.scanned >= count, `${count} files: status read one scan: ${JSON.stringify(counters)}`);
   return { growth, indexBytes: user.stat(`${virtual.slice(1)}/.git/index`).size };
 }
 
