@@ -151,24 +151,29 @@ export function attributesOf(store: VariableStore): VariableAttributes {
 
 /**
  * `attributes` put back into `store`, whose `env` holds the scalars they were
- * saved with (`saved`, those names) and maybe others besides: a saved name is
- * exported only if it was; any other keeps the mark it has. An array name's
- * scalar goes, as a name lives in one table.
+ * saved with (`scalars`, those names) and maybe others besides (a
+ * workspace's). Every name the saved state binds (a scalar, an array, a mark)
+ * is as it was saved: its scalar only if it had one, exported only if it
+ * was. Any other keeps what it has.
  */
 export function restoreAttributes(
   store: VariableStore & { readonly readonlyNames: Set<string> },
   attributes: VariableAttributes,
-  saved: Iterable<string>,
+  scalars: Iterable<string>,
 ): void {
+  const saved = new Set(scalars);
   const exported = new Set(attributes.exported);
-  for (const name of saved) if (!exported.has(name)) store.exportedNames.delete(name);
-  for (const name of exported) store.exportedNames.add(name);
+  const bound = new Set([...saved, ...exported, ...attributes.readonly, ...attributes.declared, ...Object.keys(attributes.arrays)]);
+  for (const name of bound) {
+    if (!saved.has(name)) delete store.env[name];
+    if (exported.has(name)) store.exportedNames.add(name);
+    else store.exportedNames.delete(name);
+  }
   for (const name of attributes.readonly) store.readonlyNames.add(name);
   for (const name of attributes.declared) store.declaredNames.add(name);
   for (const [name, elements] of Object.entries(attributes.arrays)) {
     const array: (string | undefined)[] = [];
     for (const [index, value] of elements) array[index] = value;
-    delete store.env[name];
     store.arrays.set(name, array);
   }
 }

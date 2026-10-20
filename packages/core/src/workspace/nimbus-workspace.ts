@@ -705,9 +705,10 @@ export class NimbusWorkspace {
     );
     const hostSignals = this.shell.getHostProcessSignals();
     if (hostSignals) shell.setHostProcessSignals(hostSignals);
-    // A saved shell's attributes, over the variables it was saved with (named-shells.ts).
-    if (state.vars !== undefined) shell.restoreVariableAttributes(state.vars, Object.keys(state.env ?? {}));
     shell.setCwd(state.cwd);
+    // A saved shell's bindings, over the variables it was saved with (named-shells.ts), after
+    // setCwd's PWD: an array named PWD is the saved state's.
+    if (state.vars !== undefined) shell.restoreVariableAttributes(state.vars, Object.keys(state.env ?? {}));
     return shell;
   }
 

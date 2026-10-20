@@ -105,6 +105,22 @@ try {
   assert.equal(Object.hasOwn(attributed.vars.arrays, 'PIPESTATUS'), false, 'PIPESTATUS, as $?, is not shell state');
   assert.deepEqual(attributed.vars.readonly, ['r']);
 
+  // A saved binding of a workspace name (HOME here) is the saved one: an unexported array, a declared-unset name.
+  const bindings = (command, options = {}) => ws.exec(command, { shellId: 'bindings', ...options });
+  assert.equal((await bindings('export -n HOME; HOME=(one two); declare -n 2>/dev/null; unset USER; declare USER')).exitCode, 0);
+  const restored = await bindings('declare -p HOME USER');
+  assert.equal(restored.stdout, 'declare -a HOME=([0]="one" [1]="two")\ndeclare -- USER\n');
+  const settled = await ws.shellState('bindings');
+  await bindings('true');
+  assert.equal(digest(await ws.shellState('bindings')), digest(settled), 'a call that changes nothing leaves its saved bindings as they were');
+  // An array named PWD stays the array; an index past 2^53 round-trips.
+  await bindings('PWD=(p w); big[9007199254740992]=x');
+  assert.equal((await bindings('declare -p PWD; echo "${big[9007199254740992]}"')).stdout, 'declare -a PWD=([0]="p" [1]="w")\nx\n');
+  // A call's env binds a name for the call alone, an array's too.
+  await bindings('arr=(saved)');
+  assert.equal((await bindings('echo "$arr ${#arr[@]}"', { env: { arr: 'call' } })).stdout, 'call 1\n');
+  assert.equal((await bindings('declare -p arr')).stdout, 'declare -a arr=([0]="saved")\n', 'the saved array is back after the call');
+
   // A state whose every variable is an exported scalar is saved without `vars`, and digests as before them.
   const runPlain = (command) => ws.exec(command, { shellId: 'plain' });
   await runPlain('export B=1');

@@ -77,7 +77,8 @@ const isString = (value: unknown): value is string => typeof value === 'string';
 const NameListSchema = z.array(z.string());
 /** An array's elements, `[index, value]` in index order. */
 const isElements = (value: unknown): value is Array<[number, string]> => Array.isArray(value) && value.every((element) => (
-  Array.isArray(element) && element.length === 2 && Number.isSafeInteger(element[0]) && element[0] >= 0 && typeof element[1] === 'string'
+  // Any index lifo's arrays take (an assignment's arithmetic), however high.
+  Array.isArray(element) && element.length === 2 && Number.isInteger(element[0]) && element[0] >= 0 && typeof element[1] === 'string'
 ));
 const VariableAttributesSchema: z.ZodType<VariableAttributes> = z.object({
   exported: NameListSchema,
