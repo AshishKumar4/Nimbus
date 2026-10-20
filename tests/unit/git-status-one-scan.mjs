@@ -78,7 +78,7 @@ const git = async (...args) => {
   }, vfs);
   assert.equal(code, 0, `git ${args.join(' ')}: ${stderr}`);
   const counters = JSON.parse(/\[git\] (\{.*\})/.exec(stderr)?.[1] ?? '{}');
-  return { stdout, counters };
+  return { stdout, stderr, counters };
 };
 await git('init', '-q');
 await git('add', '-A');
@@ -93,8 +93,28 @@ rmSync(join(disk, 'x/a.b'));
 
 const { stdout, counters } = await git('status', '--porcelain', '-uall');
 assert.equal(stdout, realGit(disk, 'status', '--porcelain', '-uall'), 'what real git answers on the same tree');
-// One readdir: the top's, which the scan's own listing of the top is checked against.
-assert.deepEqual({ readdirs: counters.readdirs, lstats: counters.lstats, scans: counters.scans }, { readdirs: 1, lstats: 0, scans: 1 }, `one scan, no call per path: ${JSON.stringify(counters)}`);
+// The top's readdir, which the scan's own listing of the top is checked against, and one for each directory
+// the index holds nothing in (y, y/z), read as read_directory reads it: no other call per path.
+assert.deepEqual({ readdirs: counters.readdirs, lstats: counters.lstats, scans: counters.scans }, { readdirs: 3, lstats: 0, scans: 1 }, `one scan, no call per path: ${JSON.stringify(counters)}`);
 assert.ok(counters.scanned >= FILES, `every entry came from the scan: ${JSON.stringify(counters)}`);
 console.log(`  ✓ git status on ${FILES + 5} files: one ordered scan (${counters.scanned} entries), real git's answer`);
+// An untracked nested repository is listed as itself, never entered: what sorts before its `.git` (an
+// unreadable `!private`, files) is neither listed nor warned of, whatever -u says.
+for (const file of ['nested/!a', 'nested/-b', 'nested/!private/f', 'nested/z']) write(file, 'n\n');
+// A repository git recognises: a HEAD naming a branch, and objects and refs directories.
+for (const file of ['nested/.git/objects/.keep', 'nested/.git/refs/heads/.keep']) write(file, '');
+write('nested/.git/HEAD', 'ref: refs/heads/main\n');
+// Untracked directories whose names sort around `/`: `a-b` before `a/` in the scan, after `a` by name.
+for (const file of ['loose/a/file', 'loose/a-b/file', 'loose/a.b', 'mixed/a-b', 'mixed/a/deep/file']) write(file, 'u\n');
+// And one below another untracked directory, which -unormal probes.
+for (const file of ['outer/inner/!private/f', 'outer/inner/z', 'outer/inner/.git/objects/.keep', 'outer/inner/.git/refs/heads/.keep']) write(file, '');
+write('outer/inner/.git/HEAD', 'ref: refs/heads/main\n');
+user.chmod(`${root}/outer/inner/!private`, 0);
+user.chmod(`${root}/nested/!private`, 0);
+// Untracked directories judged as the scan passes them: -unormal lists each one as itself, -uno none.
+for (const flags of [[], ['-uno'], ['-uall']]) {
+  const answer = await git('status', '--porcelain', ...flags);
+  assert.equal(answer.stdout, realGit(disk, 'status', '--porcelain', ...flags), `status ${flags.join(' ')} as real git's`);
+  assert.ok(!answer.stderr.includes('could not open'), `status ${flags.join(' ')} warns of nothing inside a nested repository: ${answer.stderr}`);
+}
 console.log('git-status-one-scan: ok');
