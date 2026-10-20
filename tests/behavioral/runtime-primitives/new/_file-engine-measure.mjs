@@ -224,6 +224,43 @@ async function previewServed(sid, budgetMs = 120_000) {
   return null;
 }
 
+const NODE_SERVER = `const http = require('http'), fs = require('fs');
+http.createServer((q, s) => { let n = 0; for (const f of fs.readdirSync('site')) n += fs.readFileSync('site/' + f).length; s.end('served ' + n); }).listen(3000);
+`;
+
+async function served(sid, budgetMs = 60_000, query = '') {
+  const t0 = Date.now();
+  while (Date.now() - t0 < budgetMs) {
+    const r = await fetch(`${BASE}/s/${sid}/preview/${query}`, { redirect: 'manual', headers: requestHeaders({}, sid) }).catch(() => null);
+    const body = r ? await r.text() : '';
+    if (r?.status === 200 && body.startsWith('served ')) return Date.now() - t0;
+    await sleep(100);
+  }
+  return null;
+}
+
+/** A node server (a resident) that reads its files on every request, while the shell edits them. */
+async function serverEdits() {
+  await inSession(async (t, sid) => {
+    await setup(t, 'mkdir -p site && for f in $(seq 1 50); do echo "file $f" > site/f$f; done');
+    await setup(t, heredoc('server.js', NODE_SERVER));
+    const start = new Date().toISOString();
+    await t.run('node server.js > srv.log 2>&1 &', 60_000);
+    const first = await served(sid, 120_000);
+    await served(sid, 10_000, '?__nimbus_measure=1');
+    out({ group: 'recall', scenario: 'node-server-start', sid, start, end: new Date().toISOString(), firstServedMs: first });
+    const editStart = new Date().toISOString();
+    const lags = [];
+    for (let i = 1; i <= 20; i++) {
+      await t.run(`echo "edit ${i}" >> site/f${i}`, 60_000);
+      lags.push(await served(sid, 30_000));
+    }
+    await served(sid, 10_000, '?__nimbus_measure=1');
+    out({ group: 'recall', scenario: 'node-server-under-edits', sid, start: editStart, end: new Date().toISOString(), edits: 20, servedMs: lags });
+    await t.run('kill %1; sleep 2', 60_000);
+  });
+}
+
 /** Files held by one process and changed by another: the dev server under edits, a python writer under readers, in one shell. */
 async function recall() {
   await inSession(async (t, sid) => {
@@ -267,5 +304,5 @@ async function recall() {
   });
 }
 
-const run = { host, backing, mem, workloads, recall };
+const run = { host, backing, mem, workloads, recall, serverEdits };
 for (const g of groups) await run[g]();
