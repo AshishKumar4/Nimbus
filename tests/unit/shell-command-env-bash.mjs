@@ -28,6 +28,8 @@ const LINES = [
   "declare -x d=4; typeset -x t=5; env | grep -E '^(d|t)=' | sort",
   "s=secret; ( bash -c 'echo ${s-unset}' ); echo $(bash -c 'echo ${s-unset}'); bash -c 'echo ${s-unset}' | cat",
   "export q=1; unset q; env | grep -c '^q='; q=2; env | grep -c '^q='",
+  // A shell builtin looks names up on the shell's PATH, exported or not; a program's PATH is its environment's.
+  "mkdir -p bin; printf '#!/bin/sh\\necho t\\n' > bin/tool; chmod +x bin/tool; export -n PATH; PATH=$PWD/bin; p=$(command -v tool); echo \"${p##*/}\"; t=$(type tool); echo \"${t%% *}\"",
 ];
 
 /** bash's diagnostic prefix: `bash: line 1: `, `bash: -c: line 1: `, a script's `./s.sh: line 1: `, and in a function 5.2's `environment: line 1: `. */

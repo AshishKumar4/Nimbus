@@ -6,7 +6,7 @@
  * of the shell that runs it (BuiltinExecutionContext.shell).
  */
 import type { JobTable } from './jobs.js';
-import { assignVariable, cloneArrays, cloneEnv } from './variables.js';
+import { assignVariable, cloneArrays, cloneEnv, type VariableAttributes } from './variables.js';
 
 export interface ShellOptions {
   errexit: boolean;
@@ -57,6 +57,12 @@ export function startupAttributes(names: Iterable<string>): { readonly exported:
   exported.add('PWD');
   exported.add('OLDPWD');
   return { exported, declared };
+}
+
+/** startupAttributes as VariableAttributes: what a saved state without its attributes restores to. */
+export function startupVariableAttributes(names: Iterable<string>): VariableAttributes {
+  const { exported, declared } = startupAttributes(names);
+  return { exported: [...exported].sort(), readonly: [], declared: [...declared].sort(), arrays: {} };
 }
 
 /** A shell's state at `cwd`, its variables `env` (PWD set), nothing else defined. */

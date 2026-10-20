@@ -71,7 +71,8 @@ import { adoptCtxExports, composeFabric, type CtxExports, type FabricComposition
 import { createSupervisorOpHandler, type SupervisorOpEnvelope, type SupervisorOpHandler } from './supervisor-op.js';
 import { NamedShells, SHELLS_TABLE, type NamedShell, type NamedShellOptions, type ShellState } from './named-shells.js';
 
-export { parseShellState, type NamedShell, type NamedShellOptions, type ShellState } from './named-shells.js';
+export { parseShellState, parseVariableAttributes, type NamedShell, type NamedShellOptions, type ShellState } from './named-shells.js';
+export type { VariableAttributes } from '../substrate/lifo/shell/variables.js';
 
 /** {@link NimbusWorkspace.exec}'s options: the command's, and which shell runs it. */
 export interface WorkspaceExecOptions extends RunOptions {
