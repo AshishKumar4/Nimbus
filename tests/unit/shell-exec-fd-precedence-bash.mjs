@@ -28,6 +28,9 @@ const LINES = [
   `exec 3>o; f() { exec 3>&-; }; f 3>i; echo after >&3; exec 3>&-; ${show.replace('FILES', 'o i')}`,
   'exec 2>outer; f() { echo $((08)); }; f 2>inner\nexec 2>&-; grep -c "value too great" inner outer',
   `exec 2>outer; ( echo sub >&2 ) 2>inner; echo plain >&2 2>inner2; exec 2>&-; ${show.replace('FILES', 'outer inner inner2')}`,
+  // A descriptor an inner exec copies from an installed one keeps its file open; one it takes is let go after.
+  'exec 2>outer; { exec 4>&2; } 2>&2; exec 2>&-; echo x >&4; exec 4>&-; cat outer',
+  `exec 3>outer; exec 4>&3; echo a >&3; { exec 3>&4; echo b >&3; } 3>inner; echo c >&4; exec 3>&- 4>&-; ${show.replace('FILES', 'outer inner')}`,
   `exec 2>outer; eval 'echo e >&2' 2>inner; printf 'echo s >&2\\n' > s.sh; . ./s.sh 2>inner2; exec 2>&-; ${show.replace('FILES', 'outer inner inner2')}`,
 ];
 

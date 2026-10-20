@@ -1974,8 +1974,10 @@ export class Interpreter {
    * function call's, a builtin's redirections) in this shell's table, over
    * what `exec` left there, as bash applies a redirection; then put each back
    * as it was, whatever `body` did to it (an `exec` inside is undone with
-   * the redirection, as bash undoes it), letting go of a file such an `exec`
-   * took a reference to.
+   * the redirection, as bash undoes it). An installed descriptor holds a
+   * reference on its file, as `exec`'s do, so one an inner `exec` copies
+   * stays open; the reference each holds at the end is let go, and the
+   * shadowed one, held all along, is put back.
    */
   private async withInstalledFds<T>(fds: FdState, body: () => Promise<T>): Promise<T> {
     if (fds.changedOutputFds.size === 0 && fds.changedInputFds.size === 0) return (await body());
@@ -1992,26 +1994,46 @@ export class Interpreter {
       handle: this.persistentInputHandles.get(fd),
       terminal: this.persistentTerminalInputFds.has(fd),
     }));
-    for (const { fd } of outputs) this.installOutputFd(fd, fds.outputFds.get(fd), fds.terminalOutputFds.has(fd));
-    for (const { fd } of inputs) this.installInputFd(fd, fds.inputFds.has(fd), fds.inputFds.get(fd), fds.terminalInputFds.has(fd));
+    // The files behind what is installed: the shadowed ones too (`2>&2` names fd 2's own file).
+    const shadowed = [...outputs, ...inputs].flatMap(({ handle }) => (handle === undefined ? [] : [handle]));
+    const fileOf = (stream: CommandInputStream | CommandOutputStream | undefined): OpenFile | undefined => (stream === undefined
+      ? undefined
+      : [...this.persistentHandles(), ...shadowed].find((open) => open.stream === stream) ?? fds.opened.get(stream) ?? fds.enclosing.get(stream));
+    for (const { fd } of outputs) {
+      const stream = fds.outputFds.get(fd);
+      this.installOutputFd(fd, stream, fds.terminalOutputFds.has(fd));
+      this.holdHandle(this.persistentOutputHandles, fd, fileOf(stream));
+    }
+    for (const { fd } of inputs) {
+      const stream = fds.inputFds.get(fd);
+      this.installInputFd(fd, fds.inputFds.has(fd), stream, fds.terminalInputFds.has(fd));
+      this.holdHandle(this.persistentInputHandles, fd, fds.terminalInputFds.has(fd) ? undefined : fileOf(stream));
+    }
     try {
       return (await body());
     } finally {
       const released: OpenFile[] = [];
       for (const saved of outputs) {
         const held = this.persistentOutputHandles.get(saved.fd);
-        if (held !== undefined && held !== saved.handle) released.push(held);
+        if (held !== undefined) released.push(held);
         this.installOutputFd(saved.fd, saved.stream, saved.terminal);
-        if (saved.handle !== undefined) this.persistentOutputHandles.set(saved.fd, saved.handle);
+        this.holdHandle(this.persistentOutputHandles, saved.fd, saved.handle, false);
       }
       for (const saved of inputs) {
         const held = this.persistentInputHandles.get(saved.fd);
-        if (held !== undefined && held !== saved.handle) released.push(held);
+        if (held !== undefined) released.push(held);
         this.installInputFd(saved.fd, saved.present, saved.stream, saved.terminal);
-        if (saved.handle !== undefined) this.persistentInputHandles.set(saved.fd, saved.handle);
+        this.holdHandle(this.persistentInputHandles, saved.fd, saved.handle, false);
       }
       await this.release(released);
     }
+  }
+
+  /** `fd`'s handle in `handles`: `file` (a new reference on it, unless `take` is false: one held already), or none. */
+  private holdHandle(handles: Map<number, OpenFile>, fd: number, file: OpenFile | undefined, take = true): void {
+    if (file === undefined) return;
+    if (take) file.refs++;
+    handles.set(fd, file);
   }
 
   /**
@@ -2027,7 +2049,7 @@ export class Interpreter {
     if (held !== undefined) await this.release([held]);
   }
 
-  /** Table entry `fd` for output: `stream`, or none (closed); its handle (the file `exec` holds) dropped from the table. */
+  /** Table entry `fd` for output: `stream`, or none (closed); its handle dropped from the table, not let go (the caller's). */
   private installOutputFd(fd: number, stream: CommandOutputStream | undefined, terminal: boolean): void {
     if (stream) this.persistentOutputFds.set(fd, stream);
     else this.persistentOutputFds.delete(fd);
