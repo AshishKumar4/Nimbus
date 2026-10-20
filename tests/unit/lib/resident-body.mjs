@@ -161,10 +161,9 @@ export function createAuthority(vfsOptions, { sequenced = false } = {}) {
     incarnate(entries) {
       const next = incarnation();
       const filler = () => next.root.writeFile('home/user/.filler', new Uint8Array(0));
-      // Each made in one change, as the session user made it where it is the user's: a revision apiece.
+      // Made by root, whatever the modes and owners above it, then given to its owner.
       for (const entry of entries) {
-        const users = (entry.uid ?? CRED_SESSION_USER.uid) === CRED_SESSION_USER.uid && (entry.gid ?? CRED_SESSION_USER.gid) === CRED_SESSION_USER.gid;
-        const as = users ? next.kfs : next.root;
+        const as = next.root;
         if (entry.type === 'file' && entry.rev !== undefined) {
           // What its write spends, measured on a probe of the same bytes (a large one spends more than one revision).
           let cost = 1;
@@ -178,7 +177,7 @@ export function createAuthority(vfsOptions, { sequenced = false } = {}) {
         }
         if (entry.type === 'dir') as.mkdir(entry.key, { mode: entry.mode ?? 0o755 });
         else as.writeFile(entry.key, entry.content, { mode: entry.mode ?? 0o644 });
-        if (!users) next.root.chown(entry.key, entry.uid, entry.gid);
+        next.root.chown(entry.key, entry.uid ?? CRED_SESSION_USER.uid, entry.gid ?? CRED_SESSION_USER.gid);
       }
       current = next;
       host.sqliteFs = next.rawVfs;

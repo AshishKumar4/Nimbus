@@ -24,6 +24,10 @@
  *                          flight, could pass for this one's;
  *   ['aligned', rel]       the last restart kept `rel` at its revision (a
  *                          schedule that needs the same revision says so).
+ * A restart takes from the process what the last incarnation gave it: a
+ * descriptor read across one may be refused (EBADF), and a change of its
+ * own begun after one may be refused (EIO) so long as the session holds
+ * nothing of it.
  * Reads are stat, readFile, readdir, (awaited) opendir, a directory read
  * through its descriptor, and (awaited) pread, a file's bytes at an offset
  * read through its descriptor; a file past what a process holds whole
@@ -411,7 +415,7 @@ export function createModel(tree = SEED_TREE) {
       const post = applied(base, step);
       if (post === null) return null;
       // A write the process makes is an open that truncates, then the bytes: while it is in flight, the file may be empty.
-      const partial = way === 'own' && op === 'write' ? new Map([...post, [a, { ...post.get(a), content: '' }]]) : null;
+      const partial = way === 'own' && op === 'write' ? new Map([...post, [a, { ...post.get(a), content: '', size: 0 }]]) : null;
       const decides = own && DECIDED.includes(op);
       const record = { domain: domainOf(step), own, decides, post, partial, begun: seq(), done: null, landing: null };
       changes.push(record);
@@ -539,6 +543,7 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
   const refusable = (op, rel, from, to) => (op === 'readFile' && owedBytes(rel) ? false
     : lazy || poisoned || transport.inFlight('listing') > 0 || (op === 'readFile' && model.readable(rel, from, to)));
   const judge = (at, way, op, rel, answer, from, to, offset = 0) => {
+    if (answer?.code === 'EBADF' && (op === 'pread' || op === 'opendir') && restarts.some((i) => i >= from && i <= to)) return;
     if (answer?.code === 'EAGAIN' && way === 'sync' && refusable(op, rel, from, to)) return;
     if (gaps.refusedAsDirectory && way === 'sync' && answer?.code === 'EISDIR' && model.worldsSeen(rel, from, to).some((world) => world.get(rel)?.type === 'dir')) return;
     if (gaps.absentWhileRelisted && way === 'sync' && answer === null && transport.inFlight('listing') > 0) return;
@@ -629,6 +634,10 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
     const published = publishes === null ? Promise.resolve() : engine.publish().then(() => { unpublished = unpublished.filter((root) => !publishes.includes(root)); });
     return track(published.then(() => change(way, step)).then(finish, (error) => {
       model.drop(record);
+      if (!outside(way) && error?.code === 'EIO' && restarts.some((i) => i <= record.begun)) {
+        note(`  (step ${at}: refused after a restart: ${step[1]} ${step.slice(2).join(' ')})`);
+        return;
+      }
       failures.push(new Finding(`${way} ${step[1]} ${step.slice(2).join(' ')} failed: ${error?.code ?? error?.message ?? error}`, at));
     }));
   };
@@ -669,6 +678,8 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
    */
   /** Each name's revision before the last restart. */
   const revsBefore = new Map();
+  /** The states the session started again at. */
+  const restarts = [];
   /** The revision the session holds `rel` at. */
   const revisionOf = (rel) => Number(engine.authority.rawVfs.revision(key(rel), CRED_KERNEL));
   const restart = async (at) => {
@@ -700,6 +711,7 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
     for (const item of byRev) make(item);
     engine.authority.incarnate(entries);
     model.restart(next);
+    restarts.push(seq());
     peerAt.push({ done: seq(), domain: [''] });
     resident.clear();
     poisoned = true;
