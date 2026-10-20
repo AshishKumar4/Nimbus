@@ -375,6 +375,41 @@ await runScenarios(import.meta.path, {
       }
     }
   },
+  async 'a fill whose rows a bulk drop took writes no more, and leaves none behind'() {
+    const size = FS_READ_BATCH_REQUEST_BYTES + 1_000_000;
+    for (const backing of ['heap', 'sql']) {
+      for (const drop of ['dropDated', 'dropDatedFiles', 'dropOwn']) {
+        const s = await storeSession({ big: 'b'.repeat(size), small: 's' }, { eager: true, backing });
+        const path = `${ROOT}/big`;
+        const { revision } = await s.authority.stat(k('big'));
+        const epoch = s.store.coherence.cursor().epoch;
+        const t = s.store.coherence.require();
+        // The store holds another file, dated, which the drops judge as they will.
+        assert.equal(dec.decode(await s.fs.readFile(k('small'))), 's');
+        let batches = 0;
+        const second = Promise.withResolvers();
+        const supervisor = {
+          fsReadBatch: async (requests) => {
+            if (++batches === 2) await second.promise;
+            return Promise.all(requests.map(async (request) => ({ bytes: await s.authority.readRange(`/${request.path}`, request.offset, request.length) })));
+          },
+        };
+        const fetching = s.store.transport.fetchFiles(supervisor, [{ path, size, rev: revision, epoch }]);
+        for (let i = 0; i < 500 && batches < 2; i++) await sleep(2);
+        assert.equal(batches, 2, `${backing}, ${drop}: the second batch is asked`);
+        assert.ok(t.chunkParts(path).length > 0, `${backing}, ${drop}: the first batch's rows are in, with no head`);
+        assert.equal(t.fileHead(path), undefined);
+        t[drop]();
+        const kept = t.bytes();
+        // The late reply: the rest of the fill lands.
+        second.resolve();
+        await fetching;
+        assert.equal(t.fileHead(path), undefined, `${backing}, ${drop}: no head published`);
+        assert.equal(t.chunkParts(path).length, 0, `${backing}, ${drop}: no rows of it left`);
+        assert.equal(t.bytes(), kept, `${backing}, ${drop}: what the store takes is what it keeps`);
+      }
+    }
+  },
   async 'a delivery\'s arguments keep the process\'s own debt through the session\'s parse'() {
     const authority = createAuthority();
     const acquired = await rpc._acquireOnDelivery(authority.host, { epoch: authority.rawVfs.epoch, cursor: authority.rawVfs.revision(), begin: 4, own: 3 });
