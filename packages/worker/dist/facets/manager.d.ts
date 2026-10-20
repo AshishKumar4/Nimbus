@@ -1354,8 +1354,8 @@ export declare class FacetManager {
      *   whose binding env nothing can give back (no embedder
      *   resolveWorkerLaunch) is not restarted, and the session is told. A
      *   blob a reset cut short, which no reader can use, is unlinked too;
-     * - a Node resident's generated source, in the image directory or below
-     *   /var/lib/nimbus where releases through 0.19 wrote it: unlinked.
+     * - a Node resident's generated entry in an image directory, as a recipe
+     *   (dropGeneratedNodeEntries): unlinked.
      * A filesystem snapshot or export taken before keeps what it held.
      */
     private _dropEnvironmentsAtRest;

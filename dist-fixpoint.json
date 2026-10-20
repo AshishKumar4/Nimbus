@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "0bd1f934c9125d98e37d8f8c9a2cc802c478fdd92925a120a3565aa3c9a8af81",
+  "fingerprint": "5369df63c75d06109d8221e5575724cd34501b38a1015c4fa8f26fe7e0ddc10f",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2383,9 +2383,9 @@
     "packages/worker/dist/facets/launch-learning-store.d.ts": "b17e0171127930415b4066d0bc994efbdfa3bd01ac6ce15d96fe0ef28c44ad5b",
     "packages/worker/dist/facets/launch-learning-store.d.ts.map": "03f0435b9c6bfcd09415824066ec4c09cde49837c041956f19f149bbda4be8ba",
     "packages/worker/dist/facets/launch-learning-store.js": "f3f3eb5b8d842939155efbdf4b8ba62e698796baf22365866954029e7d9ccd1a",
-    "packages/worker/dist/facets/manager.d.ts": "26a185f0725ca4906a67513e39700b137b765bc46204963ad8cca8fd2f84bcda",
-    "packages/worker/dist/facets/manager.d.ts.map": "70933c0e81d0a7d1535a262582c6ebce9299178531b1414f42b711ae423c5cee",
-    "packages/worker/dist/facets/manager.js": "94e1e5151c197adc0dc77dba25099f634212051a8009edb28a71740c4ec70e2b",
+    "packages/worker/dist/facets/manager.d.ts": "114dd1c55ba7e8e4dead7751700add4c75132ed26e154d6519e74d1e35ef4e33",
+    "packages/worker/dist/facets/manager.d.ts.map": "631ec9387a18e69f58381bb2d5502276a84cd0f5cddc5d8dcf71c7ef2878eaf8",
+    "packages/worker/dist/facets/manager.js": "ec0d9c9820bbc44bc78d452c5a6f94fa468ba064ed404ff12154f2d48c31be7f",
     "packages/worker/dist/facets/opencode-staging.d.ts": "7a83ce67292a83867d1ca558503da58bcb08c56a9ef6137d28bc0c24935f9281",
     "packages/worker/dist/facets/opencode-staging.d.ts.map": "48d7a9e0c373c2586a766239eea03d9c19baef67a1a4c5176664c47e0ff2808d",
     "packages/worker/dist/facets/opencode-staging.js": "ae91e9f638d7e4fee03140b119b6365954ea062983b4005ed7620058afec8d71",
@@ -3272,7 +3272,7 @@
     "packages/worker/src/facets/helper-facet.ts": "571ad3b51685af1ad96e101809c311a8bdc60a8f0881853aac2da3db430145a9",
     "packages/worker/src/facets/kernel-store-root.ts": "6b1dea3b831ed5e3a1218b7cd2a94abe50f78c6baf4132e4ac14b1b31fd96ca4",
     "packages/worker/src/facets/launch-learning-store.ts": "0ba1ebe8b6e30ff694f70db7de5e06c0b536beed882c3f9e3db3068ec49851d8",
-    "packages/worker/src/facets/manager.ts": "07df2e8d7b0a77c222574a7af70e8abbc2fa217564ee6334fe2bd49d38b613c7",
+    "packages/worker/src/facets/manager.ts": "b5b8184ec4327921c20cb6d9d88e862982fb67e5fa96e1d7db1c2083a974c072",
     "packages/worker/src/facets/opencode-staging.ts": "0c7ed5a12d9dcef89a6fcfacf17f67e868bbb9a360f56ca683269316e821c6e2",
     "packages/worker/src/facets/oxc-transform.ts": "d26db4231afd29e1400fa44693fc23223b12292dac93eaa1a580e7fa23f4b418",
     "packages/worker/src/facets/prebundle-pool.ts": "2fe8d2f7617b1302492bcf0d1adafd999750867248d8cdc6be9d22ac83148210",
