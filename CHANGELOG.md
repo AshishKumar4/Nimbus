@@ -5,6 +5,15 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: Nimbus no longer deletes an embedder's images in
+  `/.nimbus/facet-images`. The store that holds a resident process's
+  generated modules removed every file there that no running process booted
+  from, an embedder's own images included (a durable worker's runner and its
+  text modules, named by `facetImagePath`). After a reset, the first launch
+  could remove a durable app's text module, and the app's next restart then
+  failed with ENOENT. The store now writes to its own directory,
+  `/.nimbus/process-images`, and removes files only there. Images an earlier
+  release wrote to `/.nimbus/facet-images` stay where they are.
 - Fixed: a nested shell stops with its caller. `bash -c`, `sh -c` and `bash script` pass their command's signal to the shell that runs the program, and a hosted workspace's child shell stops on either that signal or its own. Before, an aborted or timed-out `bash -c 'while :; do :; done'` was reported stopped while its loop ran on, burning the session's CPU.
 - Fixed: a Node program that renamed a file over another (`fs.promises.rename` or `fs.renameSync`, the atomic-save pattern) and then read the destination with `fs.readFileSync` could get the replaced file's bytes, while `fs.statSync` already described the renamed one. The replaced file's bytes now go with the rename, as an unlink's do. 
 - Fixed: a Node program that renamed, deleted or made a file and then listed its directory with `fs.promises.readdir`, `fs.readdir` or `fs.opendir` could be shown the directory without that change while it was still on its way to the session. These listings now wait for what the program did before them, as `readdirSync` already shows it.

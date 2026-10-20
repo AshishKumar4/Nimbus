@@ -21,8 +21,10 @@ import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import {
   FACET_IMAGE_DIR,
+  PROCESS_IMAGE_DIR,
   facetImageDigest,
   facetImagePath,
+  processImagePath,
   encodeCodePack,
   decodeCodePackBytes,
   residentLoaderConfig,
@@ -59,7 +61,7 @@ manager.setVfs(sessionVfs, processFiles(sessionVfs));
 const fs = sessionVfs.as(CRED_KERNEL);
 
 const storedImages = () => {
-  try { return fs.readdir(FACET_IMAGE_DIR).map((e) => e.name).sort(); }
+  try { return fs.readdir(PROCESS_IMAGE_DIR).map((e) => e.name).sort(); }
   catch { return []; }
 };
 const spawn = (code, name) => manager.spawnNode(code, {
@@ -75,7 +77,7 @@ const name = (path) => path.split('/').pop();
 const a1 = await spawn('const a = 1;', 'a.js');
 const imageA = await bootedImage();
 const packA = await bootedPack();
-assert.match(imageA, /^\/\.nimbus\/facet-images\/[0-9a-f]{64}\.js$/,
+assert.match(imageA, /^\/\.nimbus\/process-images\/[0-9a-f]{64}\.js$/,
   'the image is named by the digest of its own bytes');
 assert.deepEqual(storedImages(), [name(imageA), name(packA)].sort(),
   'the spawn materialized exactly its main module and its code pack in the store');
@@ -84,7 +86,7 @@ assert.ok(Object.values(configs().at(-1).modules).some((m) => m?.cjs?.includes('
 
 // The bytes the loader saw are the bytes on disk, not a copy carried alongside.
 const storedSource = fs.readFileString(imageA.replace(/^\/+/, ''));
-assert.equal(imageA, facetImagePath(await facetImageDigest(storedSource)), 'the recipe is named by its own bytes');
+assert.equal(imageA, processImagePath(await facetImageDigest(storedSource)), 'the recipe is named by its own bytes');
 assert.deepEqual(await storedBootModules(world, fs), processImageModules(configs().at(-1)),
   'the facet booted from the stored recipe and shared assets, read when it loaded');
 const cells = decodeCodePackBytes(fs.readFileUncached(packA));

@@ -215,7 +215,9 @@ export type ResidentBootSpec =
 // ── Boot-image store ────────────────────────────────────────────────────────
 
 /**
- * Where a generated module source is materialized so a boot spec can name it.
+ * Where the image store (image-store.ts) materializes a generated module
+ * source so a boot spec can name it: the store's own directory, whose sweep
+ * removes what the store wrote and nothing else.
  *
  * Outside any user working tree on purpose. The passes that build a node
  * facet's snapshot enumerate the process's cwd, so an image written under one
@@ -229,6 +231,14 @@ export type ResidentBootSpec =
  * and leaves the bytes beyond reach of the user whose program they encode.
  * Below `/.nimbus`, the kernel's own directory in root's `/`: no user can
  * replace a directory on the way to it (KERNEL_STORE_ROOT, manager.ts).
+ */
+export const PROCESS_IMAGE_DIR = '.nimbus/process-images';
+
+/**
+ * Where an embedder keeps content-addressed images of its own (a durable
+ * worker's runner, its `vfsTextModules`), named by facetImagePath and read as
+ * the store's are, verified against their digest. They are the embedder's to
+ * remove: nothing in Nimbus sweeps this directory.
  */
 export const FACET_IMAGE_DIR = '.nimbus/facet-images';
 
@@ -255,6 +265,11 @@ export async function facetImageDigest(image: string | Uint8Array): Promise<stri
 
 export function facetImagePath(digest: string): string {
   return `/${FACET_IMAGE_DIR}/${digest}.js`;
+}
+
+/** The store's own image of `digest` (PROCESS_IMAGE_DIR). */
+export function processImagePath(digest: string): string {
+  return `/${PROCESS_IMAGE_DIR}/${digest}.js`;
 }
 
 /**
