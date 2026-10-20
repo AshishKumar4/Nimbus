@@ -85,11 +85,11 @@ export function createPages(coherence: Coherence, admission: Admission, namespac
     const cursor = coherence.cursor();
     if (cursor === null || typeof supervisor.fsReadBatch !== 'function') return null;
     // A page is its epoch's: another incarnation of the session holds other bytes at the same revision.
-    const at = cursor.epoch + '\u0000' + k;
+    const keyed = cursor.epoch + '\u0000' + k;
     const out: Uint8Array[] = new Array(last - first + 1);
     const missing: number[] = [];
     for (let part = first; part <= last; part++) {
-      const page = get(at, rev, part);
+      const page = get(keyed, rev, part);
       if (page !== undefined) out[part - first] = page;
       else missing.push(part);
     }
@@ -112,7 +112,7 @@ export function createPages(coherence: Coherence, admission: Admission, namespac
         const bytes = residentBytes(entry.bytes);
         if (bytes.byteLength !== ranges[i]!.length) return null;
         out[batch[i]! - first] = bytes;
-        if (learning.installs(k)) put(at, rev, batch[i]!, bytes);
+        if (learning.installs(k)) put(keyed, rev, batch[i]!, bytes);
       }
     }
     return { pages: out, fetched: missing.length };
