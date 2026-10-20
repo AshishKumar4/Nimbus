@@ -38,12 +38,9 @@ export interface Admitted {
     /** An answer older than the store's cursor: nothing was applied. */
     stale?: boolean;
 }
-/** One fill's token (transport.fetchFiles): the paths whose chunk rows it started writing. */
+/** One fill's token (cells.beginFill): its own, compared by identity. */
 export interface ResidentFill {
-    readonly started: {
-        has(path: string): boolean;
-        add(path: string): unknown;
-    };
+    readonly fill: number;
 }
 export interface Cells {
     /**
@@ -66,18 +63,19 @@ export interface Cells {
     /** Write one cell as `rev`, or as an own write when `rev` is not a number (see put below). */
     put(t: ResidentTables, path: string, cell: ResidentCell | ArrayBuffer, rev?: number, ckey?: unknown): boolean;
     /**
-     * One chunk of a fill (`fill`, a token of its own): the path's chunk rows are
-     * the fill's that last started writing them over the head as it stood, and
-     * it writes no more of them (false) once another fill started after it or
-     * anything changed the head (headChanged).
+     * A fill about to ask for `paths`: each one's chunk rows are its own, over
+     * the head as it stands, until another fill begins for it or anything
+     * changes its head (headChanged).
      */
+    beginFill(paths: ArrayLike<string>): ResidentFill;
+    /** One chunk of `fill`: written only while the path's chunk rows are its own (false otherwise). */
     putChunk(t: ResidentTables, path: string, part: number, bytes: Uint8Array, fill: ResidentFill): boolean;
     /** The fill's file, once all its chunks are in: held as `rev`, if its chunk rows are still its (false otherwise). */
     publishFill(t: ResidentTables, path: string, kind: number, size: number, chunks: number, rev: number, ckey: unknown, fill: ResidentFill): boolean;
     /** A fill that did not finish `path`: the chunk rows it wrote, and the head they were written over, go, if they are still its. */
     abandonFill(t: ResidentTables, path: string, fill: ResidentFill): void;
-    /** The head of `path` changed (tables.ts, whoever changed it): a fill writing its chunks no longer owns them. */
-    headChanged(path: string): void;
+    /** The head of `path` (every head: undefined) changed (tables.ts, whoever changed it): a fill writing its chunks no longer owns them. */
+    headChanged(path?: string): void;
     copyByKey(t: ResidentTables, path: string, ckey: unknown, rev: number): boolean;
     delete(t: ResidentTables, path: string): boolean;
     provenance(path: string): number | undefined;

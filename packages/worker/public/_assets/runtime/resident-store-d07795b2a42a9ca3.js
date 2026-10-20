@@ -411,6 +411,10 @@ var __nimbusResidentModule = (() => {
   var rowsOf = (rows) => [...rows];
   function sqlTables(sql, headChanged = () => {
   }) {
+    const writeHead = (path, query, ...bindings) => {
+      headChanged(path);
+      sql.exec(query, ...bindings);
+    };
     let schema = null;
     for (const _row of sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'meta'")) schema = "";
     if (schema !== null) for (const row of sql.exec("SELECT v FROM meta WHERE k = 'schema'")) schema = String(row.v);
@@ -470,19 +474,16 @@ var __nimbusResidentModule = (() => {
         return row === void 0 ? void 0 : num(row.size);
       },
       filePut(path, kind, size, chunks, rev, ckey) {
-        headChanged(path);
-        sql.exec("INSERT OR REPLACE INTO file (path, kind, size, chunks, rev, ckey) VALUES (?, ?, ?, ?, ?, ?)", path, kind, size, chunks, rev, ckey);
+        writeHead(path, "INSERT OR REPLACE INTO file (path, kind, size, chunks, rev, ckey) VALUES (?, ?, ?, ?, ?, ?)", path, kind, size, chunks, rev, ckey);
       },
       fileSetRev(path, rev) {
-        headChanged(path);
-        sql.exec("UPDATE file SET rev = ? WHERE path = ?", rev, path);
+        writeHead(path, "UPDATE file SET rev = ? WHERE path = ?", rev, path);
       },
       fileStampOwn(path, rev) {
-        sql.exec("UPDATE file SET rev = ? WHERE path = ? AND rev = ?", rev, path, RK_OWN_WRITE);
+        writeHead(path, "UPDATE file SET rev = ? WHERE path = ? AND rev = ?", rev, path, RK_OWN_WRITE);
       },
       fileDelete(path) {
-        headChanged(path);
-        sql.exec("DELETE FROM file WHERE path = ?", path);
+        writeHead(path, "DELETE FROM file WHERE path = ?", path);
       },
       fileByKey(ckey, notPath) {
         return rowOf(sql.exec("SELECT path, kind, size, chunks FROM file WHERE ckey = ? AND rev >= 0 AND path <> ? LIMIT 1", ckey, notPath));
@@ -533,19 +534,19 @@ var __nimbusResidentModule = (() => {
       },
       dropOwn() {
         sql.exec("DELETE FROM chunk WHERE path IN (SELECT path FROM file WHERE rev = ?)", RK_OWN_WRITE);
-        sql.exec("DELETE FROM file WHERE rev = ?", RK_OWN_WRITE);
+        writeHead(void 0, "DELETE FROM file WHERE rev = ?", RK_OWN_WRITE);
       },
       dropDated() {
         sql.exec("DELETE FROM chunk WHERE path NOT IN (SELECT path FROM file WHERE rev = ?)", RK_OWN_WRITE);
-        sql.exec("DELETE FROM file WHERE rev <> ?", RK_OWN_WRITE);
+        writeHead(void 0, "DELETE FROM file WHERE rev <> ?", RK_OWN_WRITE);
       },
       dropDatedFiles() {
         sql.exec("DELETE FROM chunk WHERE path IN (SELECT path FROM file WHERE rev <> ?)", RK_OWN_WRITE);
-        sql.exec("DELETE FROM file WHERE rev <> ?", RK_OWN_WRITE);
+        writeHead(void 0, "DELETE FROM file WHERE rev <> ?", RK_OWN_WRITE);
       },
       clear() {
         sql.exec("DELETE FROM chunk");
-        sql.exec("DELETE FROM file");
+        writeHead(void 0, "DELETE FROM file");
         sql.exec("DELETE FROM ns");
         sql.exec("DELETE FROM meta WHERE k <> 'schema'");
         sql.exec("DELETE FROM page");
@@ -635,6 +636,10 @@ var __nimbusResidentModule = (() => {
   }
   function heapTables(headChanged = () => {
   }) {
+    const writeHead = (path, write) => {
+      headChanged(path);
+      write();
+    };
     const files = new SafeMap();
     const chunks = new SafeMap();
     const meta = new SafeMap();
@@ -703,14 +708,14 @@ var __nimbusResidentModule = (() => {
       });
       chunks.delete(path);
     };
-    const dropFile = (path) => {
+    const dropFile = (path) => writeHead(path, () => {
       const row = files.get(path);
       if (row === void 0) return;
       unkey(path, row);
       files.delete(path);
       sorted = null;
       used -= RESIDENT_ROW_BYTES;
-    };
+    });
     const addChunk = (path, part, cell, replace) => {
       let parts = chunks.get(path);
       if (!parts) {
@@ -797,34 +802,37 @@ var __nimbusResidentModule = (() => {
       },
       filePut(path, kind, size, chunkCount, rev, ckey) {
         if (!(rev >= -1)) throw new Error2("CHECK constraint failed: rev >= -1");
-        headChanged(path);
-        const had = files.get(path);
-        if (had === void 0) {
-          sorted = null;
-          used += RESIDENT_ROW_BYTES;
-        } else unkey(path, had);
-        const row = { kind: NumberOf(kind), size: NumberOf(size), chunks: NumberOf(chunkCount), rev: NumberOf(rev), ckey: ckey == null ? null : stringOf(ckey) };
-        files.set(path, row);
-        if (row.ckey !== null) {
-          let set = byKey.get(row.ckey);
-          if (!set) {
-            set = new SafeSet();
-            byKey.set(row.ckey, set);
+        writeHead(path, () => {
+          const had = files.get(path);
+          if (had === void 0) {
+            sorted = null;
+            used += RESIDENT_ROW_BYTES;
+          } else unkey(path, had);
+          const row = { kind: NumberOf(kind), size: NumberOf(size), chunks: NumberOf(chunkCount), rev: NumberOf(rev), ckey: ckey == null ? null : stringOf(ckey) };
+          files.set(path, row);
+          if (row.ckey !== null) {
+            let set = byKey.get(row.ckey);
+            if (!set) {
+              set = new SafeSet();
+              byKey.set(row.ckey, set);
+            }
+            set.add(path);
           }
-          set.add(path);
-        }
+        });
       },
       fileSetRev(path, rev) {
-        headChanged(path);
-        const row = files.get(path);
-        if (row !== void 0) row.rev = NumberOf(rev);
+        writeHead(path, () => {
+          const row = files.get(path);
+          if (row !== void 0) row.rev = NumberOf(rev);
+        });
       },
       fileStampOwn(path, rev) {
-        const row = files.get(path);
-        if (row !== void 0 && row.rev === RK_OWN_WRITE) row.rev = NumberOf(rev);
+        writeHead(path, () => {
+          const row = files.get(path);
+          if (row !== void 0 && row.rev === RK_OWN_WRITE) row.rev = NumberOf(rev);
+        });
       },
       fileDelete(path) {
-        headChanged(path);
         dropFile(path);
       },
       fileByKey(ckey, notPath) {
@@ -946,7 +954,9 @@ var __nimbusResidentModule = (() => {
         dropWhere((row) => row.rev === RK_OWN_WRITE, (path) => !dated.has(path));
       },
       clear() {
-        files.clear();
+        writeHead(void 0, () => {
+          files.clear();
+        });
         chunks.clear();
         meta.clear();
         ns.clear();
@@ -1846,12 +1856,9 @@ var __nimbusResidentModule = (() => {
       return true;
     };
     const filling = new SafeMap();
+    let fills = 0;
     const putChunk = (t, path, part, bytes, fill) => {
-      if (filling.get(path) !== fill) {
-        if (fill.started.has(path)) return false;
-        filling.set(path, fill);
-        fill.started.add(path);
-      }
+      if (filling.get(path) !== fill) return false;
       if (part === 0) admission.release(path);
       if (!admission.fits(mathCeil(typedArrayByteLength(bytes) * 1.01) + RESIDENT_ROW_BYTES + 4096)) return false;
       t.chunkSetBin(path, part, bytes);
@@ -2105,8 +2112,14 @@ var __nimbusResidentModule = (() => {
         t.chunkDelete(path);
         t.fileDelete(path);
       },
+      beginFill(paths) {
+        const fill = { fill: ++fills };
+        for (let i = 0; i < paths.length; i++) filling.set(paths[i], fill);
+        return fill;
+      },
       headChanged(path) {
-        filling.delete(path);
+        if (path === void 0) filling.clear();
+        else filling.delete(path);
       },
       /**
        * The head row, written LAST by the streaming filler.
@@ -2871,7 +2884,9 @@ var __nimbusResidentModule = (() => {
       const landed = new SafeMap();
       let filled = 0, failed = 0, fetchedBytes = 0;
       const failedPaths = new SafeSet();
-      const fill = { started: new SafeSet() };
+      const paths = new SafeList();
+      for (let i = 0; i < files.length; i++) paths[paths.length] = files[i].path;
+      const fill = cells.beginFill(paths);
       for (let at = 0; at < ranges.length; ) {
         const batch = new SafeList();
         let bytes = 0;

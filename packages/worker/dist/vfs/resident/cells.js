@@ -208,19 +208,17 @@ export function createCells(coherence, admission, namespace, observeRead) {
     /** One chunk row, written as it arrives. The streaming filler's primitive. */
     /**
      * Whose chunk rows each path's are while a fill writes them: the fill that
-     * last started, while nothing changed the head it writes over (tables.ts
-     * tells headChanged of every head write: a put, a delete, a copy, a lease,
-     * a redate, a publish). A fill that lost them neither finishes nor drops
-     * them, so no fill decides for another's rows or a head it did not see.
+     * began last, while nothing changed the head it writes over since it was
+     * asked (tables.ts tells headChanged of every head write: a put, a delete,
+     * a copy, a lease, a stamp, a redate, a publish, a drop). A fill that lost
+     * them neither finishes nor drops them, so no fill decides for another's
+     * rows or over a head it did not see.
      */
     const filling = new SafeMap();
+    let fills = 0;
     const putChunk = (t, path, part, bytes, fill) => {
-        if (filling.get(path) !== fill) {
-            if (fill.started.has(path))
-                return false;
-            filling.set(path, fill);
-            fill.started.add(path);
-        }
+        if (filling.get(path) !== fill)
+            return false;
         if (part === 0)
             admission.release(path);
         if (!admission.fits(mathCeil(typedArrayByteLength(bytes) * 1.01) + RESIDENT_ROW_BYTES + 4096))
@@ -564,7 +562,16 @@ export function createCells(coherence, admission, namespace, observeRead) {
             t.chunkDelete(path);
             t.fileDelete(path);
         },
-        headChanged(path) { filling.delete(path); },
+        beginFill(paths) {
+            const fill = { fill: ++fills };
+            for (let i = 0; i < paths.length; i++)
+                filling.set(paths[i], fill);
+            return fill;
+        },
+        headChanged(path) { if (path === undefined)
+            filling.clear();
+        else
+            filling.delete(path); },
         /**
          * The head row, written LAST by the streaming filler.
          *

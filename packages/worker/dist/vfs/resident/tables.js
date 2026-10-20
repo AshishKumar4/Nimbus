@@ -62,6 +62,11 @@ const rowOf = (rows) => {
 };
 const rowsOf = (rows) => [...rows];
 export function sqlTables(sql, headChanged = () => { }) {
+    /** The one writer of the file table's head rows: what it changes is told first (HeadChanged). */
+    const writeHead = (path, query, ...bindings) => {
+        headChanged(path);
+        sql.exec(query, ...bindings);
+    };
     let schema = null;
     for (const _row of sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'meta'"))
         schema = '';
@@ -132,12 +137,11 @@ export function sqlTables(sql, headChanged = () => { }) {
             return row === undefined ? undefined : num(row.size);
         },
         filePut(path, kind, size, chunks, rev, ckey) {
-            headChanged(path);
-            sql.exec('INSERT OR REPLACE INTO file (path, kind, size, chunks, rev, ckey) VALUES (?, ?, ?, ?, ?, ?)', path, kind, size, chunks, rev, ckey);
+            writeHead(path, 'INSERT OR REPLACE INTO file (path, kind, size, chunks, rev, ckey) VALUES (?, ?, ?, ?, ?, ?)', path, kind, size, chunks, rev, ckey);
         },
-        fileSetRev(path, rev) { headChanged(path); sql.exec('UPDATE file SET rev = ? WHERE path = ?', rev, path); },
-        fileStampOwn(path, rev) { sql.exec('UPDATE file SET rev = ? WHERE path = ? AND rev = ?', rev, path, RK_OWN_WRITE); },
-        fileDelete(path) { headChanged(path); sql.exec('DELETE FROM file WHERE path = ?', path); },
+        fileSetRev(path, rev) { writeHead(path, 'UPDATE file SET rev = ? WHERE path = ?', rev, path); },
+        fileStampOwn(path, rev) { writeHead(path, 'UPDATE file SET rev = ? WHERE path = ? AND rev = ?', rev, path, RK_OWN_WRITE); },
+        fileDelete(path) { writeHead(path, 'DELETE FROM file WHERE path = ?', path); },
         fileByKey(ckey, notPath) {
             return rowOf(sql.exec('SELECT path, kind, size, chunks FROM file WHERE ckey = ? AND rev >= 0 AND path <> ? LIMIT 1', ckey, notPath));
         },
@@ -159,19 +163,19 @@ export function sqlTables(sql, headChanged = () => { }) {
         chunkDelete(path) { sql.exec('DELETE FROM chunk WHERE path = ?', path); },
         dropOwn() {
             sql.exec('DELETE FROM chunk WHERE path IN (SELECT path FROM file WHERE rev = ?)', RK_OWN_WRITE);
-            sql.exec('DELETE FROM file WHERE rev = ?', RK_OWN_WRITE);
+            writeHead(undefined, 'DELETE FROM file WHERE rev = ?', RK_OWN_WRITE);
         },
         dropDated() {
             sql.exec('DELETE FROM chunk WHERE path NOT IN (SELECT path FROM file WHERE rev = ?)', RK_OWN_WRITE);
-            sql.exec('DELETE FROM file WHERE rev <> ?', RK_OWN_WRITE);
+            writeHead(undefined, 'DELETE FROM file WHERE rev <> ?', RK_OWN_WRITE);
         },
         dropDatedFiles() {
             sql.exec('DELETE FROM chunk WHERE path IN (SELECT path FROM file WHERE rev <> ?)', RK_OWN_WRITE);
-            sql.exec('DELETE FROM file WHERE rev <> ?', RK_OWN_WRITE);
+            writeHead(undefined, 'DELETE FROM file WHERE rev <> ?', RK_OWN_WRITE);
         },
         clear() {
             sql.exec('DELETE FROM chunk');
-            sql.exec('DELETE FROM file');
+            writeHead(undefined, 'DELETE FROM file');
             sql.exec('DELETE FROM ns');
             // The schema stamp is the tables', not their rows': without it the next
             // binding would take the store for another schema's and drop it.
@@ -224,6 +228,11 @@ export function sqlTables(sql, headChanged = () => { }) {
  * row, and the payload's bytes), so the store's one budget rule serves both.
  */
 export function heapTables(headChanged = () => { }) {
+    /** The one writer of head rows: what it changes is told first (HeadChanged). */
+    const writeHead = (path, write) => {
+        headChanged(path);
+        write();
+    };
     // What a read asks (a row, a file's head, its first chunk) goes through
     // SafeMap's methods, as the launch captured them: module loading reads
     // here after a program may have replaced Map.prototype.get.
@@ -307,7 +316,7 @@ export function heapTables(headChanged = () => { }) {
         parts.forEach((cell) => { used -= RESIDENT_ROW_BYTES + payload(cell); });
         chunks.delete(path);
     };
-    const dropFile = (path) => {
+    const dropFile = (path) => writeHead(path, () => {
         const row = files.get(path);
         if (row === undefined)
             return;
@@ -315,7 +324,7 @@ export function heapTables(headChanged = () => { }) {
         files.delete(path);
         sorted = null;
         used -= RESIDENT_ROW_BYTES;
-    };
+    });
     const addChunk = (path, part, cell, replace) => {
         let parts = chunks.get(path);
         if (!parts) {
@@ -380,30 +389,31 @@ export function heapTables(headChanged = () => { }) {
         filePut(path, kind, size, chunkCount, rev, ckey) {
             if (!(rev >= -1))
                 throw new Error('CHECK constraint failed: rev >= -1');
-            headChanged(path);
-            const had = files.get(path);
-            if (had === undefined) {
-                sorted = null;
-                used += RESIDENT_ROW_BYTES;
-            }
-            else
-                unkey(path, had);
-            const row = { kind: NumberOf(kind), size: NumberOf(size), chunks: NumberOf(chunkCount), rev: NumberOf(rev), ckey: ckey == null ? null : stringOf(ckey) };
-            files.set(path, row);
-            if (row.ckey !== null) {
-                let set = byKey.get(row.ckey);
-                if (!set) {
-                    set = new SafeSet();
-                    byKey.set(row.ckey, set);
+            writeHead(path, () => {
+                const had = files.get(path);
+                if (had === undefined) {
+                    sorted = null;
+                    used += RESIDENT_ROW_BYTES;
                 }
-                set.add(path);
-            }
+                else
+                    unkey(path, had);
+                const row = { kind: NumberOf(kind), size: NumberOf(size), chunks: NumberOf(chunkCount), rev: NumberOf(rev), ckey: ckey == null ? null : stringOf(ckey) };
+                files.set(path, row);
+                if (row.ckey !== null) {
+                    let set = byKey.get(row.ckey);
+                    if (!set) {
+                        set = new SafeSet();
+                        byKey.set(row.ckey, set);
+                    }
+                    set.add(path);
+                }
+            });
         },
-        fileSetRev(path, rev) { headChanged(path); const row = files.get(path); if (row !== undefined)
-            row.rev = NumberOf(rev); },
-        fileStampOwn(path, rev) { const row = files.get(path); if (row !== undefined && row.rev === RK_OWN_WRITE)
-            row.rev = NumberOf(rev); },
-        fileDelete(path) { headChanged(path); dropFile(path); },
+        fileSetRev(path, rev) { writeHead(path, () => { const row = files.get(path); if (row !== undefined)
+            row.rev = NumberOf(rev); }); },
+        fileStampOwn(path, rev) { writeHead(path, () => { const row = files.get(path); if (row !== undefined && row.rev === RK_OWN_WRITE)
+            row.rev = NumberOf(rev); }); },
+        fileDelete(path) { dropFile(path); },
         fileByKey(ckey, notPath) {
             const set = byKey.get(stringOf(ckey));
             if (!set)
@@ -501,7 +511,7 @@ export function heapTables(headChanged = () => { }) {
             dropWhere((row) => row.rev === RK_OWN_WRITE, (path) => !dated.has(path));
         },
         clear() {
-            files.clear();
+            writeHead(undefined, () => { files.clear(); });
             chunks.clear();
             meta.clear();
             ns.clear();

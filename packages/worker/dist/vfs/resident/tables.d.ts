@@ -182,11 +182,13 @@ export interface ResidentSql {
     readonly databaseSize?: number;
 }
 /**
- * Told of every change to a file's head row (filePut, fileSetRev, fileDelete),
- * whoever makes it: the one point what was decided over a head (a fill
- * writing its chunks, cells.putChunk) learns it no longer stands.
+ * Told of every change to a file's head row (`path`; every head when it is
+ * undefined), whoever makes it: the one point what was decided over a head
+ * (a fill writing its chunks, cells.putChunk) learns it no longer stands.
+ * Each backing writes head rows through one function (writeHead) that tells
+ * it first, so no writer can change a head without it.
  */
-export type HeadChanged = (path: string) => void;
+export type HeadChanged = (path?: string) => void;
 export declare function sqlTables(sql: ResidentSql, headChanged?: HeadChanged): ResidentTables;
 /**
  * The one-shot backing: the same tables, in the process's heap, for the life
