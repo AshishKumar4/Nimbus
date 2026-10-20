@@ -1,15 +1,16 @@
 #!/usr/bin/env bun
-// @tier slow — builds 3,000- and 24,000-file repositories with real git and mirrors them
+// @tier slow — builds 2,000- and 20,000-file repositories with real git and mirrors them
 // git status holds what its comparisons need of the worktree, not the
 // worktree: its heap grows with the index alone, however many files the
 // tree has. Status reads the worktree in one ordered scan; holding that scan
 // whole (every entry's path, stat and listing row) cost about 0.9 KiB an
 // entry: 8.6 to 12.5 MiB of growth from 3,000 to 12,000 files (armada, 3
 // runs at 6f04a9229) against 1.5 to 4.4 before it, about 30 MiB on
-// next.js's 34,000 files. Here a status that compares every entry, at 3,000 and at 24,000 files
-// (the layout git-worktree-scale uses, two files a directory) may grow by
-// what git-worktree-scale allows a command (3x the index's growth, the pack
-// page cache, 4 MiB), and its growth per added file is reported. The heap
+// next.js's 34,000 files (measured from 3,000 to 24,000 files here: 706
+// bytes a file, against 162 with the scan merged as it goes). Here a status
+// that compares every entry, at 2,000 and at 20,000 files (the layout
+// git-worktree-scale uses, two files a directory), may grow by the index's
+// own growth and the pack's page cache, and its growth per file is reported. The heap
 // is sampled after a full collection on every 1,024 scanned entries and
 // every filesystem call.
 import assert from 'node:assert/strict';
@@ -86,17 +87,6 @@ function build(disk, count) {
   symlinkSync('m0', join(disk, 'src/link'));
   realGit(disk, 'add', '-A');
   realGit(disk, 'commit', '-q', '-m', 'seed');
-  realGit(disk, 'checkout', '-q', '-b', 'other');
-  for (let i = 0; i < 40; i++) {
-    const at = (i * 7919) % count;
-    if (i % 4 === 0) rmSync(join(disk, path(at)));
-    else writeFileSync(join(disk, path(at)), `other ${i}\n`);
-  }
-  mkdirSync(join(disk, 'added/deep'), { recursive: true });
-  writeFileSync(join(disk, 'added/deep/new.txt'), 'new\n');
-  realGit(disk, 'add', '-A');
-  realGit(disk, 'commit', '-q', '-m', 'other');
-  realGit(disk, 'checkout', '-q', 'main');
   realGit(disk, 'gc', '-q', '--prune=now');
   return path;
 }
@@ -116,8 +106,8 @@ function mirror(user, from, to) {
 }
 
 
-const SMALL = 3_000;
-const LARGE = 24_000;
+const SMALL = 2_000;
+const LARGE = 20_000;
 
 async function cleanStatusPeak(count) {
   const disk = join(scratch, `repo-${count}`);
@@ -176,8 +166,11 @@ async function cleanStatusPeak(count) {
 
 const small = await cleanStatusPeak(SMALL);
 const large = await cleanStatusPeak(LARGE);
+// What may grow with the tree: the index status read and the one it writes, each with its cache tree (3x
+// the index's growth), and the pack store's idx page cache, which fills up to 4 MiB with a pack that grows
+// with the repository. The two sizes' constant costs cancel in the difference.
 const PACK_PAGE_CACHE_MB = 4;
-const allowance = (3 * (large.indexBytes - small.indexBytes)) / MB + PACK_PAGE_CACHE_MB + 4;
+const allowance = (3 * (large.indexBytes - small.indexBytes)) / MB + PACK_PAGE_CACHE_MB;
 const growth = large.growth - small.growth;
 const perFile = (growth * MB) / (LARGE - SMALL);
 console.log(`git-status-flat-heap: clean status peak +${small.growth.toFixed(1)} MiB at ${SMALL} files, +${large.growth.toFixed(1)} MiB at ${LARGE}: ${perFile.toFixed(0)} bytes a file (allowed ${allowance.toFixed(1)} MiB)`);
