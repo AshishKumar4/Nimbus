@@ -98,7 +98,7 @@ const typing = stored();
 assert.ok(typing.slice(first.length).includes('ech'), `the line being typed is on the screen: ${JSON.stringify(typing.slice(first.length))}`);
 ws = await reattach();
 assert.equal(stored(), typing, 'a reattach adds no prompt after the line being typed');
-await type(ws, '\x7f\x7f\x7f');
+for (let k = 0; k < 3; k++) await type(ws, '\x7f');
 
 const before = stored();
 await type(ws, 'echo hi\r');
