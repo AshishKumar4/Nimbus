@@ -121,6 +121,14 @@ await spawn('const shared = 1;', 'shared.js');
 assert.equal(storedImages().includes(imageA.split('/').pop()), true,
   'an image is kept while ANY process that boots from it is still running');
 
+// An embedder keeps content-addressed images of its own beside the store's
+// (facetImagePath: a durable worker's runner, its text modules), and removes
+// them itself: the sweep is over what the store wrote.
+const embedderImage = 'export class NimbusProcess {}\n';
+const embedderPath = facetImagePath(await facetImageDigest(embedderImage)).slice(1);
+fs.mkdir(FACET_IMAGE_DIR, { recursive: true, mode: 0o755 });
+fs.writeFile(embedderPath, embedderImage, { mode: 0o644 });
+
 manager.finishProcess(a2.pid, 0);
 await spawn('const c = 3;', 'c.js');
 const imageC = await bootedImage();
@@ -130,6 +138,7 @@ assert.equal(live.includes(imageA.split('/').pop()), false,
 assert.equal(live.includes(imageB.split('/').pop()), true, 'a running process keeps its image');
 assert.equal(live.includes(imageC.split('/').pop()), true);
 assert.equal(processes.get(b.pid)?.state, 'running');
+assert.equal(fs.exists(embedderPath), true, 'an embedder\'s image beside the store survives its sweep');
 
 // ── reader: verify-on-read ─────────────────────────────────────────────────
 // The name is a promise about the bytes; the loader must check it before the
