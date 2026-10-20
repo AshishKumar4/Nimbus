@@ -42,7 +42,8 @@ try {
       JSON.stringify(ran).slice(0, 300));
   }
 } finally {
-  await box.destroy({ reason: 'nested-shell-abort-complete' }).catch(() => {});
+  const destroyed = await box.destroy({ reason: 'nested-shell-abort-complete' }).catch((error) => ({ ok: false, error: String(error) }));
+  a.check('the sandbox is destroyed', destroyed.ok === true && typeof destroyed.destroyedAt === 'number', JSON.stringify(destroyed));
 }
 
 const sid = await mintSession();
