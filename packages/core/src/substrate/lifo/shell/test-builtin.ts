@@ -73,14 +73,7 @@ export async function evaluateDoubleBracketWords(
     regex: async (i) => (await expandRegexWord(words[i] ?? [], expandCtx)),
     integer: (text) => arithmeticValue(text, expandCtx),
   };
-  try {
-    return (await evaluateTestExpression(operands, vfs, stderr, context, 'double-bracket'));
-  } catch (error) {
-    // An operand's arithmetic error is the conditional's own failure, as bash's [[ reports it.
-    if (!(error instanceof ArithmeticError)) throw error;
-    (await stderr.write(`[[: ${error.diagnostic}\n`));
-    return 1;
-  }
+  return (await evaluateTestExpression(operands, vfs, stderr, context, 'double-bracket'));
 }
 
 type TestMode = 'test' | 'double-bracket';
@@ -145,6 +138,11 @@ async function evaluateTestExpression(
     }
     return result.value ? 0 : 1;
   } catch (e) {
+    // An operand's arithmetic error is the conditional's own failure, as bash's [[ reports it.
+    if (e instanceof ArithmeticError) {
+      (await stderr.write(`[[: ${e.diagnostic}\n`));
+      return 1;
+    }
     if (!(e instanceof RegexRefused)) (await stderr.write(`test: ${e instanceof Error ? e.message : String(e)}\n`));
     return 2;
   }
