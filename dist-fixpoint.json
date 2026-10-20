@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "7579b5258dab11c7dc47931c35c2f205d7c6fda2b366173a4a01193cdd4b02a7",
+  "fingerprint": "155bab5075fbbbb1473bc9f38a76797ce468693a73e38286f9824708441f7e8d",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2886,8 +2886,8 @@
     "packages/worker/dist/runtime/stop-replay.d.ts.map": "54ac610ed30555d41582d4ef5c18eb34996d4c6e327f6fdc0f1d9929b663066e",
     "packages/worker/dist/runtime/stop-replay.js": "b4fb6ae59f7f76a9612034e6971ad9953b2800de5539cb39c616b1f1cc781ed4",
     "packages/worker/dist/runtime/tsrs.d.ts": "ef191d67b9fd86ab242a4f37282f72e59b96232536699eae655a451c77771f8e",
-    "packages/worker/dist/runtime/tsrs.d.ts.map": "32ae1376af34d5c787ba00fc1969058de9f4fbd4487f5bd47d95b1470023949d",
-    "packages/worker/dist/runtime/tsrs.js": "2d0ddd0ab096976dd4ffe4b3e60b6787dbf2a1c2af82cc9fdf76972a1c4e170e",
+    "packages/worker/dist/runtime/tsrs.d.ts.map": "ecfb840f8e684e45b75a95b74134eea5af0176dff404b264079feec93794dc28",
+    "packages/worker/dist/runtime/tsrs.js": "165a04c16fa71429819834ada44a04a298f2da7775df9219454b3ec75c5d5161",
     "packages/worker/dist/runtime/wasi/preamble.d.ts": "157e0ce6b43bdf15aa35ef1fbeb2c591158eb004849336e47749e7bcfdc44d25",
     "packages/worker/dist/runtime/wasi/preamble.d.ts.map": "0b5d489f5717c316764b536c72b6283e7cb85fe1e84a6243678fed9b9672ef02",
     "packages/worker/dist/runtime/wasi/preamble.js": "f1022246a928931c8d28434f6f998a0f7296da6805f3244d4629265a5e9e512a",
@@ -3457,7 +3457,7 @@
     "packages/worker/src/runtime/stop-replay-journal.ts": "fa309dc42e0017792e6c0cbaedcc8ad9267072ed8511222fae965f0f7dfa944d",
     "packages/worker/src/runtime/stop-replay-policy.ts": "39ae851a7c51ec0ebaca65134eeec47161ab07605674d2a6b60471ee2b4f1cf6",
     "packages/worker/src/runtime/stop-replay.ts": "0eb0286eb43a1ab872c8a7692d7b1b076ad7e42496c8fed241ffc4728a0819b1",
-    "packages/worker/src/runtime/tsrs.ts": "61a5469248b0f7e5646d3778e82db2d713896586cc99a3af9b99b4343298d142",
+    "packages/worker/src/runtime/tsrs.ts": "acd4c7879b57c73f9624dbd05f31029378331331f19edb959d71ee4bc465bde1",
     "packages/worker/src/runtime/wasi/preamble.ts": "cfa4bc63eac9063beadb25f62e391a5eba8d7be495a79fb4ccbb915fbc9a5823",
     "packages/worker/src/session/agent-contract.ts": "655117f69994495cd77942d865324aa43c69b7aaff42ede48a9ef333a35570b5",
     "packages/worker/src/session/agent-oauth.ts": "a84b7fb210138339aef1d89b794167a1084a759438522c97ff8cc541fb759d53",
@@ -3497,7 +3497,7 @@
     "packages/worker/src/session/vite-command.ts": "1a63b1f5c5ce484094c2caacaa37596a09939b47e6b06bb62ab844ae827fc1bd",
     "packages/worker/src/session/ws-relay.ts": "09c4885cd74f79077be60dfb8224c449b2ab661ba6020a1f1ccb71d132e90566",
     "packages/worker/src/session/ws.ts": "9f79f3e7fd074009afe8e80f04080d67aefd38d96a815f068f4b661dcfaf1b4d",
-    "packages/worker/src/shell/npm-bin-entrypoints.ts": "6c99e7ae19a4d93eda80419746f64758fb8a34e6a3b152824b65672376e4d3cd",
+    "packages/worker/src/shell/npm-bin-entrypoints.ts": "c10ef2cc328b4bc75712ac603c35026e325cf6e64d15fa2078a5c0822bd549d9",
     "packages/worker/src/sqlite-wasm-bundle.generated.ts": "d66507810a5cfff08991e9d496723bdee884d2f4912904c04ca6144a56053add",
     "packages/worker/src/tailwind-play.generated.ts": "5bafb935726a57df2734443f8185848a87041143bdd9bf832e2f655f4ae59956",
     "packages/worker/src/tsrs-wasm-artifact.generated.ts": "58a2f03f2f34e4c5747f1b9ca0fbba632cd3bd94f808cee79c25e70dd081bff9",
