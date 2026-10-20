@@ -50,6 +50,9 @@ const LINES = [
   // The diagnostic goes where the shell's stderr is when it is met; a redirection's target is no exception.
   'f() { echo $((08)); }; f 2>err\ngrep -c "08: value too great for base" err; echo next',
   'echo hi >"$((08))"; echo same\necho "next $?"; [ -e 08 ] || echo none',
+  '[[ 08 -eq 8 || $((09)) -eq 9 ]]; echo same\necho "next $?"',
+  '( exec 2>err; echo $((08)) ); grep -c "08: value too great for base" err; echo next',
+  'echo hi 2>err2 >"$((08))"; echo same\necho "next $?"; grep -c "08: value too great for base" err2',
 ];
 
 /** bash's diagnostic prefix: `bash: line 1: `, `bash: -c: line 1: `, and in a function 5.2's `environment: line 1: `. */

@@ -61,7 +61,6 @@ export async function evaluateDoubleBracketWords(
   context?: TestContext,
 ): Promise<number> {
   const expanded = new Map<number, TestArg>();
-  const refused: string[] = [];
   const operands: Operands = {
     length: words.length,
     literal: (i) => operatorTextOf(words[i]),
@@ -73,20 +72,18 @@ export async function evaluateDoubleBracketWords(
       return arg;
     },
     regex: async (i) => (await expandRegexWord(words[i] ?? [], expandCtx)),
-    // An operand whose arithmetic fails makes its comparison false, reported as [['s (bash's arithcomp).
-    integer: (text) => {
+    // An operand whose arithmetic fails makes its comparison false, reported as [['s there (bash's arithcomp).
+    integer: async (text) => {
       try {
         return arithmeticOf(text, expandCtx);
       } catch (error) {
         if (!(error instanceof ArithmeticError)) throw error;
-        refused.push(`[[: ${error.message}`);
+        (await stderr.write(`[[: ${error.message}\n`));
         return null;
       }
     },
   };
-  const status = await evaluateTestExpression(operands, vfs, stderr, context, 'double-bracket');
-  for (const diagnostic of refused) (await stderr.write(`${diagnostic}\n`));
-  return status;
+  return (await evaluateTestExpression(operands, vfs, stderr, context, 'double-bracket'));
 }
 
 type TestMode = 'test' | 'double-bracket';
@@ -108,7 +105,7 @@ type Operands = {
   /** `[[ ]]`'s: the operand on the right of `=~` as an extended regular expression. */
   regex?(index: number): Promise<string>;
   /** `[[ ]]`'s: an operand of `-eq` and its kind as an arithmetic expression, null where that fails; `test`'s are decimal (toInt). */
-  integer?(text: string): number | null;
+  integer?(text: string): Promise<number | null>;
 };
 
 function literalOperands(args: string[]): Operands {
@@ -181,7 +178,7 @@ async function evaluateByArgCount(
     case 3: {
       if (at(1) === '-a') return at(0).length > 0 && at(2).length > 0;
       if (at(1) === '-o') return at(0).length > 0 || at(2).length > 0;
-      const binary = evaluateBinary(at(1), literalArg(at(0)), literalArg(at(2)), 'test', toInt);
+      const binary = await evaluateBinary(at(1), literalArg(at(0)), literalArg(at(2)), 'test', decimal);
       if (binary !== undefined) return binary;
       if (at(0) === '!') {
         const inner = await evaluateByArgCount(ops, start + 1, 2, vfs, context);
@@ -273,7 +270,7 @@ async function parsePrimary(
   }
   if (op !== undefined && Object.hasOwn(BINARY_OPERATORS, op)) {
     const value = evaluate
-      ? evaluateBinary(op, await ops.value(pos), await ops.value(pos + 2), mode, ops.integer ?? toInt) ?? false
+      ? await evaluateBinary(op, await ops.value(pos), await ops.value(pos + 2), mode, ops.integer ?? decimal) ?? false
       : false;
     return { value, pos: pos + 3 };
   }
@@ -315,7 +312,9 @@ function compiledOrRefused(ere: string): CompiledRegex {
 }
 
 /** Undefined when `op` is not a binary comparison. */
-function evaluateBinary(op: string, left: TestArg, right: TestArg, mode: TestMode, integer: (text: string) => number | null): boolean | undefined {
+async function evaluateBinary(
+  op: string, left: TestArg, right: TestArg, mode: TestMode, integer: (text: string) => Promise<number | null>,
+): Promise<boolean | undefined> {
   switch (op) {
     case '=':
     case '==':
@@ -329,9 +328,9 @@ function evaluateBinary(op: string, left: TestArg, right: TestArg, mode: TestMod
   }
   const integerCompare = Object.hasOwn(INTEGER_COMPARISONS, op) ? INTEGER_COMPARISONS[op] : undefined;
   if (integerCompare === undefined) return undefined;
-  const a = integer(left.value);
+  const a = await integer(left.value);
   if (a === null) return false;
-  const b = integer(right.value);
+  const b = await integer(right.value);
   return b !== null && integerCompare(a, b);
 }
 
@@ -418,6 +417,11 @@ async function statOf(vfs: ProcessView, path: string, followSymlinks: boolean): 
   } catch {
     return null;
   }
+}
+
+/** `test`'s integer operand: decimal. */
+async function decimal(text: string): Promise<number> {
+  return toInt(text);
 }
 
 function toInt(s: string): number {

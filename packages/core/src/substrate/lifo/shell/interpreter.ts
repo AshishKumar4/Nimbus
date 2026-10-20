@@ -1681,8 +1681,9 @@ export class Interpreter {
       vfs: io.vfs ?? this.config.vfs,
       options: this.config.options,
       executeCapture: async (input) => (await this.executeCapture(input, io)),
+      // The shell's fd 2 when it is met, as a command's descriptors resolve it (createCommandFds).
       report: async (diagnostic) => {
-        (await (io.stderr ?? this.terminalSink(io)).write(`${diagnostic}\n`));
+        (await (this.persistentOutputFds.get(2) ?? io.stderr ?? this.terminalSink(io)).write(`${diagnostic}\n`));
       },
     };
   }
@@ -1815,17 +1816,24 @@ export class Interpreter {
     io: ExecutionIo,
     terminalStdin?: TerminalInputStream,
   ): Promise<void> {
+    // A target's diagnostic goes to fd 2 as the redirections before it have left it.
+    const targetCtx: ExpandContext = {
+      ...expandCtx,
+      report: async (diagnostic) => {
+        (await (fds.outputFds.get(2) ?? this.createNullWriter()).write(`${diagnostic}\n`));
+      },
+    };
     for (const redir of redirections) {
       if (redir.operator === 'heredoc') {
         const heredoc = redir.heredoc ?? { body: '', quoted: false, stripTabs: false };
         const body = heredoc.quoted
           ? heredoc.body
-          : await expandWord([{ text: heredoc.body, quoted: 'double' }], { ...expandCtx, hereDocument: true });
+          : await expandWord([{ text: heredoc.body, quoted: 'double' }], { ...targetCtx, hereDocument: true });
         this.setInputFd(fds, redir.fd ?? 0, { stream: staticStdinReader(body), terminal: false });
         continue;
       }
 
-      const target = await expandWord(redir.target, expandCtx);
+      const target = await expandWord(redir.target, targetCtx);
       switch (redir.operator) {
         case 'write':
           this.setOutputFd(fds, redir.fd ?? 1, (await this.openOutputTarget(io, target, 'write', fds, terminalStdin)));
