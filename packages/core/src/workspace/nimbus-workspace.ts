@@ -674,7 +674,8 @@ export class NimbusWorkspace {
   /**
    * A shell of its own for process `pid`, a second cwd and environment over
    * the workspace shell's filesystem, commands and kernel. It starts in
-   * `state.cwd` with the workspace shell's environment and `state.env` on
+   * `state.cwd` with the workspace shell's environment (its exported
+   * variables, as any process it started would have) and `state.env` on
    * top; with `inheritEnv: false`, with `state.env` alone (a command run again
    * as it was once run). Its commands act as `pid` (`$$`, and the credential and umask
    * {@link processes} holds for it); `sudo` and `su` go through the workspace
@@ -695,7 +696,8 @@ export class NimbusWorkspace {
       new HeadlessTerminal(),
       this.filesystem,
       this.registry,
-      { ...(state.inheritEnv === false ? {} : this.shell.getEnv()), ...state.env },
+      // The workspace shell's environment as a process it starts gets it: its exported variables.
+      { ...(state.inheritEnv === false ? {} : this.shell.getExportedEnv()), ...state.env },
       processes,
       {
         pid,

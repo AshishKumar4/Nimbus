@@ -11,7 +11,9 @@ import { textCapture } from '../utils/bytes-io.js';
 
 import { Interpreter, type BuiltinFn, type ProgramSpec, type TerminalFdState } from './interpreter.js';
 import { createShellState, restoreShellState, snapshotShellState, startupVariableAttributes, type ShellOptions, type ShellState } from './state.js';
-import { attributesOf, restoreAttributes, restoreVariable, saveVariable, type SavedVariable, type VariableAttributes } from './variables.js';
+import {
+  attributesOf, exportedEnvironment, isShellParameter, restoreAttributes, restoreVariable, saveVariable, type SavedVariable, type VariableAttributes,
+} from './variables.js';
 import { shellBuiltins } from './builtins.js';
 import { continuationState } from './lexer.js';
 import { HistoryManager } from './history.js';
@@ -263,6 +265,11 @@ export class Shell {
     return this.state.env;
   }
 
+  /** What a command or a process it starts gets as its environment: the exported variables (exportedEnvironment). */
+  getExportedEnv(): Record<string, string> {
+    return exportedEnvironment(this.state);
+  }
+
   /** Its variables' attributes and arrays, beyond {@link getEnv}'s scalars (a named shell's saved state). */
   getVariableAttributes(): VariableAttributes {
     return attributesOf(this.state);
@@ -437,7 +444,7 @@ export class Shell {
       for (const [name, value] of Object.entries(options.env)) {
         this.state.arrays.delete(name);
         this.state.env[name] = value;
-        this.state.exportedNames.add(name);
+        if (!isShellParameter(name)) this.state.exportedNames.add(name);
       }
     }
     if (options?.shellOptions) {

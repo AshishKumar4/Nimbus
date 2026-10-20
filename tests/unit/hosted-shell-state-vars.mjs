@@ -11,11 +11,16 @@
 import assert from 'node:assert/strict';
 import { loadShellState, persistShellState } from '../../packages/worker/src/session/state-store.ts';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
+import { registerShellEntrypointCommands } from '../../packages/core/src/shell/shell-entrypoints.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const ctx = { storage: { sql: harness.sql, transactionSync: harness.ctx.storage.transactionSync } };
 const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx });
+// `bash` as a session runs it: a shell of its own over the command's environment.
+registerShellEntrypointCommands(ws.registry, {
+  execute: (cmd, options) => ws.shellFor(options?.commandContext?.pid ?? 1, { cwd: options?.cwd ?? '/home/user', env: options?.env, inheritEnv: false }).execute(cmd, options),
+});
 try {
   const shell = ws.shell;
   await shell.execute('export TOKEN=t; private=p; list=(a b); readonly frozen=1');
@@ -55,6 +60,13 @@ try {
     assert.equal(ran.stdout, 'CALLVAR=c\n', `a call's env reaches its command (${shellId ?? 'own shell'})`);
   }
   assert.equal((await ws.exec("env | grep -c '^CALLVAR='", { shellId: 'named' })).stdout, '0\n', 'and is gone after the call');
+
+  // A call's shell starts from the workspace shell's exported variables, not its whole table (ticket
+  // workspace-shellfor-environment); a shell parameter is no one's environment.
+  await ws.shell.execute('wsprivate=1; export wspublic=2; set -- a b');
+  assert.equal((await ws.exec("env | grep -E '^(wsprivate|wspublic|#|@|1)=' | sort")).stdout, 'wspublic=2\n');
+  assert.equal((await ws.exec('echo "${wsprivate-unset} $wspublic"', { shellId: 'from-workspace' })).stdout, 'unset 2\n');
+  assert.equal((await ws.exec("bash -c 'env | grep -cE \"^(1|#|@)=\"' x a b")).stdout, '0\n', 'a script\'s positional parameters are not its environment');
 
   // A named shell that unset OLDPWD keeps it unset.
   await ws.exec('unset OLDPWD', { shellId: 'unset-old' });

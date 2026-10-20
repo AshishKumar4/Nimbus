@@ -6,7 +6,7 @@
  * of the shell that runs it (BuiltinExecutionContext.shell).
  */
 import type { JobTable } from './jobs.js';
-import { assignVariable, cloneArrays, cloneEnv, type VariableAttributes } from './variables.js';
+import { assignVariable, cloneArrays, cloneEnv, isShellParameter, type VariableAttributes } from './variables.js';
 
 export interface ShellOptions {
   errexit: boolean;
@@ -47,11 +47,12 @@ export interface ShellState {
 
 /**
  * The marks a shell starts with over variables named `names` (its
- * environment's), as bash's: each exported, and PWD and OLDPWD exported too,
- * OLDPWD declared where it has no value.
+ * environment's), as bash's: each exported (a shell parameter kept among
+ * them, `#` or `1`, is none), and PWD and OLDPWD exported too, OLDPWD
+ * declared where it has no value.
  */
 export function startupAttributes(names: Iterable<string>): { readonly exported: ReadonlySet<string>; readonly declared: ReadonlySet<string> } {
-  const exported = new Set(names);
+  const exported = new Set([...names].filter((name) => !isShellParameter(name)));
   const declared = new Set<string>();
   if (!exported.has('OLDPWD')) declared.add('OLDPWD');
   exported.add('PWD');

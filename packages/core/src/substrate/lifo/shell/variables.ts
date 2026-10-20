@@ -188,6 +188,17 @@ export function restoreAttributes(
 }
 
 /**
+ * A shell parameter the shell keeps among its variables (a positional one, `#`, `@`,
+ * `*`, `?`, `$`, `!`, `-`): never a variable, so never exported (bash's are not in
+ * the environment).
+ */
+export function isShellParameter(name: string): boolean {
+  return /^[0-9]+$/.test(name) || SHELL_PARAMETERS.has(name);
+}
+
+const SHELL_PARAMETERS: ReadonlySet<string> = new Set(['#', '@', '*', '?', '$', '!', '-']);
+
+/**
  * The environment a command gets: the exported variables' scalar values, in
  * the store's order (bash's export_env). An unexported variable, or an array,
  * is the shell's own.
