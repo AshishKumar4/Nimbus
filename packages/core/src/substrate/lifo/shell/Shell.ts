@@ -654,7 +654,8 @@ export class Shell {
     if (this.terminal.endsLine === false) this.terminal.write('\r\n');
     this.screenCursorRow = 0;
     this.printPrompt();
-    if (this.lineBuffer.length > 0) this.redrawLine();
+    // The editor as it is: the line being typed, or a search (LineEditorExtender) over the prompt.
+    this.redrawLine();
   }
 
   /** A newly attached client learns current readiness, never a replayed completion. */

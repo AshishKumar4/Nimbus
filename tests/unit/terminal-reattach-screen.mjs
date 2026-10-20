@@ -130,4 +130,18 @@ assert.ok(repainted.includes(`${PROMPT}ec`), `with the line being typed: ${JSON.
 const settled = stored();
 ws = await reattach();
 assert.equal(stored(), settled, 'and the next reattach adds nothing');
+
+// A search (Ctrl-R) is the editor's line: a job writing after it is followed by the search, not a plain prompt.
+for (let k = 0; k < 2; k++) await type(ws, '\x7f');
+await workspace.fs.remove('/tmp/go', { force: true });
+await type(ws, '{ while [ ! -e /tmp/go ]; do sleep 0.05; done; echo search-output; } &\r', (added) => added.includes(FRESH));
+await type(ws, '\x12', (added) => added.includes('reverse-i-search'));
+await type(ws, 'echo h', (added) => added.includes('echo hi'));
+await workspace.fs.writeFile('/tmp/go', '');
+const searched = await until((text) => text.includes('search-output\r\n'), 'the job\'s output after the search');
+ws = await reattach();
+const resumed = stored().slice(searched.length);
+assert.ok(resumed.includes("(reverse-i-search)`echo h': echo hi"), `the search is painted again below the output: ${JSON.stringify(resumed)}`);
+ws = await reattach();
+assert.equal(stored().length, searched.length + resumed.length, 'and the next reattach adds nothing');
 console.log('terminal-reattach-screen: ok');

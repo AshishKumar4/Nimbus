@@ -386,6 +386,12 @@ export class LineEditorExtender {
 
   private _patch(): void {
     this.originalHandleInput = this.shell.handleInput.bind(this.shell);
+    // A repaint of the editor (a notice above it, a screen attached again) is the search's while one runs.
+    const redrawLine = this.shell.redrawLine.bind(this.shell);
+    this.shell.redrawLine = () => {
+      if (this.rsearchActive) this._rsearchRender();
+      else redrawLine();
+    };
 
     this.shell.handleInput = (data: string, submission?: ShellInputSubmission): void | Promise<void> => {
       // Skip when a process is running — the line editor only governs
