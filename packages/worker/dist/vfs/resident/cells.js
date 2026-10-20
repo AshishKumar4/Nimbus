@@ -164,9 +164,8 @@ export function createCells(coherence, admission, namespace, observeRead) {
      * for. There is no third case: the column refuses one.
      */
     const put = (t, path, cell, rev, ckey) => {
-        // Whatever this puts supersedes a held cell, held or not, and a fill's chunk rows.
+        // Whatever this puts supersedes a held cell, held or not, and (its head write) a fill's chunk rows.
         forgetHeld(path);
-        filling.delete(path);
         // The room reserved for its fill is what it spends.
         admission.release(path);
         t.chunkDelete(path);
@@ -209,9 +208,10 @@ export function createCells(coherence, admission, namespace, observeRead) {
     /** One chunk row, written as it arrives. The streaming filler's primitive. */
     /**
      * Whose chunk rows each path's are while a fill writes them: the fill that
-     * last started. A fill that lost them (another started after it, a late
-     * reply of one the store started again past) neither finishes nor drops
-     * them, so no fill decides for another's rows.
+     * last started, while nothing changed the head it writes over (tables.ts
+     * tells headChanged of every head write: a put, a delete, a copy, a lease,
+     * a redate, a publish). A fill that lost them neither finishes nor drops
+     * them, so no fill decides for another's rows or a head it did not see.
      */
     const filling = new SafeMap();
     const putChunk = (t, path, part, bytes, fill) => {
@@ -452,7 +452,6 @@ export function createCells(coherence, admission, namespace, observeRead) {
     const deleteCell = (t, path) => {
         const had = head(path) !== undefined || held.has(path);
         forgetHeld(path);
-        filling.delete(path);
         t.chunkDelete(path);
         t.fileDelete(path);
         return had;
@@ -556,17 +555,16 @@ export function createCells(coherence, admission, namespace, observeRead) {
         publishFill(t, path, kind, size, chunks, rev, ckey, fill) {
             if (filling.get(path) !== fill)
                 return false;
-            filling.delete(path);
             t.filePut(path, kind, size, chunks, rev, ckey != null ? stringOf(ckey) : null);
             return true;
         },
         abandonFill(t, path, fill) {
             if (filling.get(path) !== fill)
                 return;
-            filling.delete(path);
             t.chunkDelete(path);
             t.fileDelete(path);
         },
+        headChanged(path) { filling.delete(path); },
         /**
          * The head row, written LAST by the streaming filler.
          *
@@ -587,7 +585,6 @@ export function createCells(coherence, admission, namespace, observeRead) {
                 return false;
             if (!admission.fits(source.size + (source.chunks + 1) * RESIDENT_ROW_BYTES))
                 return false;
-            filling.delete(path);
             t.chunkDelete(path);
             t.chunkCopy(path, source.path);
             t.filePut(path, source.kind, source.size, source.chunks, rev, stringOf(ckey));

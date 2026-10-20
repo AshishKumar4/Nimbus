@@ -67,14 +67,17 @@ export interface Cells {
     put(t: ResidentTables, path: string, cell: ResidentCell | ArrayBuffer, rev?: number, ckey?: unknown): boolean;
     /**
      * One chunk of a fill (`fill`, a token of its own): the path's chunk rows are
-     * the fill's that last started writing them, and a fill another started
-     * after writes no more of them (false).
+     * the fill's that last started writing them over the head as it stood, and
+     * it writes no more of them (false) once another fill started after it or
+     * anything changed the head (headChanged).
      */
     putChunk(t: ResidentTables, path: string, part: number, bytes: Uint8Array, fill: ResidentFill): boolean;
     /** The fill's file, once all its chunks are in: held as `rev`, if its chunk rows are still its (false otherwise). */
     publishFill(t: ResidentTables, path: string, kind: number, size: number, chunks: number, rev: number, ckey: unknown, fill: ResidentFill): boolean;
     /** A fill that did not finish `path`: the chunk rows it wrote, and the head they were written over, go, if they are still its. */
     abandonFill(t: ResidentTables, path: string, fill: ResidentFill): void;
+    /** The head of `path` changed (tables.ts, whoever changed it): a fill writing its chunks no longer owns them. */
+    headChanged(path: string): void;
     copyByKey(t: ResidentTables, path: string, ckey: unknown, rev: number): boolean;
     delete(t: ResidentTables, path: string): boolean;
     provenance(path: string): number | undefined;

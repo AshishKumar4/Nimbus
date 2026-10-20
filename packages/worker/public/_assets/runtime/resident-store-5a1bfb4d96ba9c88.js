@@ -409,7 +409,8 @@ var __nimbusResidentModule = (() => {
     return void 0;
   };
   var rowsOf = (rows) => [...rows];
-  function sqlTables(sql) {
+  function sqlTables(sql, headChanged = () => {
+  }) {
     let schema = null;
     for (const _row of sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'meta'")) schema = "";
     if (schema !== null) for (const row of sql.exec("SELECT v FROM meta WHERE k = 'schema'")) schema = String(row.v);
@@ -469,15 +470,18 @@ var __nimbusResidentModule = (() => {
         return row === void 0 ? void 0 : num(row.size);
       },
       filePut(path, kind, size, chunks, rev, ckey) {
+        headChanged(path);
         sql.exec("INSERT OR REPLACE INTO file (path, kind, size, chunks, rev, ckey) VALUES (?, ?, ?, ?, ?, ?)", path, kind, size, chunks, rev, ckey);
       },
       fileSetRev(path, rev) {
+        headChanged(path);
         sql.exec("UPDATE file SET rev = ? WHERE path = ?", rev, path);
       },
       fileStampOwn(path, rev) {
         sql.exec("UPDATE file SET rev = ? WHERE path = ? AND rev = ?", rev, path, RK_OWN_WRITE);
       },
       fileDelete(path) {
+        headChanged(path);
         sql.exec("DELETE FROM file WHERE path = ?", path);
       },
       fileByKey(ckey, notPath) {
@@ -629,7 +633,8 @@ var __nimbusResidentModule = (() => {
       }
     };
   }
-  function heapTables() {
+  function heapTables(headChanged = () => {
+  }) {
     const files = new SafeMap();
     const chunks = new SafeMap();
     const meta = new SafeMap();
@@ -792,6 +797,7 @@ var __nimbusResidentModule = (() => {
       },
       filePut(path, kind, size, chunkCount, rev, ckey) {
         if (!(rev >= -1)) throw new Error2("CHECK constraint failed: rev >= -1");
+        headChanged(path);
         const had = files.get(path);
         if (had === void 0) {
           sorted = null;
@@ -809,6 +815,7 @@ var __nimbusResidentModule = (() => {
         }
       },
       fileSetRev(path, rev) {
+        headChanged(path);
         const row = files.get(path);
         if (row !== void 0) row.rev = NumberOf(rev);
       },
@@ -817,6 +824,7 @@ var __nimbusResidentModule = (() => {
         if (row !== void 0 && row.rev === RK_OWN_WRITE) row.rev = NumberOf(rev);
       },
       fileDelete(path) {
+        headChanged(path);
         dropFile(path);
       },
       fileByKey(ckey, notPath) {
@@ -1805,7 +1813,6 @@ var __nimbusResidentModule = (() => {
     };
     const put = (t, path, cell, rev, ckey) => {
       forgetHeld(path);
-      filling.delete(path);
       admission.release(path);
       t.chunkDelete(path);
       const stamp = typeof rev === "number" ? rev : RK_OWN_WRITE;
@@ -2006,7 +2013,6 @@ var __nimbusResidentModule = (() => {
     const deleteCell = (t, path) => {
       const had = head(path) !== void 0 || held.has(path);
       forgetHeld(path);
-      filling.delete(path);
       t.chunkDelete(path);
       t.fileDelete(path);
       return had;
@@ -2091,15 +2097,16 @@ var __nimbusResidentModule = (() => {
       putChunk,
       publishFill(t, path, kind, size, chunks, rev, ckey, fill) {
         if (filling.get(path) !== fill) return false;
-        filling.delete(path);
         t.filePut(path, kind, size, chunks, rev, ckey != null ? stringOf(ckey) : null);
         return true;
       },
       abandonFill(t, path, fill) {
         if (filling.get(path) !== fill) return;
-        filling.delete(path);
         t.chunkDelete(path);
         t.fileDelete(path);
+      },
+      headChanged(path) {
+        filling.delete(path);
       },
       /**
        * The head row, written LAST by the streaming filler.
@@ -2119,7 +2126,6 @@ var __nimbusResidentModule = (() => {
         const source = t.fileByKey(stringOf(ckey), path);
         if (source === void 0) return false;
         if (!admission.fits(source.size + (source.chunks + 1) * RESIDENT_ROW_BYTES)) return false;
-        filling.delete(path);
         t.chunkDelete(path);
         t.chunkCopy(path, source.path);
         t.filePut(path, source.kind, source.size, source.chunks, rev, stringOf(ckey));
@@ -3545,10 +3551,10 @@ var __nimbusResidentModule = (() => {
             "Nimbus: this facet has no synchronous SQLite (ctx.storage.sql); the resident set cannot be served and every sync read would raise EAGAIN"
           );
         }
-        bindTables(sqlTables(sql), null);
+        bindTables(sqlTables(sql, cells.headChanged), null);
       },
       bindInMemory(budget) {
-        const t = heapTables();
+        const t = heapTables(cells.headChanged);
         bindTables(t, t);
         admission.bindHeap(budget);
       },

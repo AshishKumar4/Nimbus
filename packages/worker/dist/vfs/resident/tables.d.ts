@@ -181,7 +181,13 @@ export interface ResidentSql {
     exec(query: string, ...bindings: unknown[]): Iterable<Record<string, unknown>>;
     readonly databaseSize?: number;
 }
-export declare function sqlTables(sql: ResidentSql): ResidentTables;
+/**
+ * Told of every change to a file's head row (filePut, fileSetRev, fileDelete),
+ * whoever makes it: the one point what was decided over a head (a fill
+ * writing its chunks, cells.putChunk) learns it no longer stands.
+ */
+export type HeadChanged = (path: string) => void;
+export declare function sqlTables(sql: ResidentSql, headChanged?: HeadChanged): ResidentTables;
 /**
  * The one-shot backing: the same tables, in the process's heap, for the life
  * of one run. A one-shot is hosted by runOnce, which gives it no SQLite, and
@@ -191,5 +197,5 @@ export declare function sqlTables(sql: ResidentSql): ResidentTables;
  * `bytes()` counts what it holds in the units residentCellCost charges (a
  * row, and the payload's bytes), so the store's one budget rule serves both.
  */
-export declare function heapTables(): HeapTables;
+export declare function heapTables(headChanged?: HeadChanged): HeapTables;
 //# sourceMappingURL=tables.d.ts.map

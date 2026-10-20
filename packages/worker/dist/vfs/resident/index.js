@@ -184,10 +184,10 @@ export function createResidentStore(options = {}) {
                 throw new Error('Nimbus: this facet has no synchronous SQLite (ctx.storage.sql); '
                     + 'the resident set cannot be served and every sync read would raise EAGAIN');
             }
-            bindTables(sqlTables(sql), null);
+            bindTables(sqlTables(sql, cells.headChanged), null);
         },
         bindInMemory(budget) {
-            const t = heapTables();
+            const t = heapTables(cells.headChanged);
             bindTables(t, t);
             admission.bindHeap(budget);
         },
