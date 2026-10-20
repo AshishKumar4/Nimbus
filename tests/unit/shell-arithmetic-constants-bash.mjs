@@ -4,12 +4,16 @@
 // from 2 to 64 (digits 0-9, a-z, A-Z, @ and _; to base 36 a letter's case is
 // one value); a variable's value is read as an expression, a constant in it
 // too. A digit past its base is `value too great for base`, a base out of
-// range `invalid arithmetic base`, and an error ends the shell's line, as
-// bash's fatal expansion error does. The same constants are read in $((…)),
-// ((…)), let, an array subscript and [[ … -eq … ]]; `test`'s integers are
-// decimal. Before (ticket-lifo-arithmetic-constants), every constant was read
-// as decimal: $((0x1f)) was 0 and $((010)) 10. Host bash is the oracle
-// (stdout, status, stderr without bash's line prefix).
+// range `invalid arithmetic base`, a bare `base#` `invalid integer
+// constant`, a value that refers to itself without end `expression
+// recursion level exceeded`; such an error discards the rest of the line
+// (bash's evalerror), a function's caller's too, and ends a substitution
+// with 1; in [[ … ]] it is the conditional's failure, status 1. The same
+// constants are read in $((…)), an array subscript and [[ … -eq … ]], whose
+// operands are expressions; `test`'s integers are decimal. Before
+// (ticket-lifo-arithmetic-constants), every constant was read as decimal:
+// $((0x1f)) was 0 and $((010)) 10. Host bash is the oracle (stdout, status,
+// stderr without bash's line prefix).
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -21,19 +25,22 @@ import { hostSqlite } from './lib/host-sqlite.mjs';
 const LINES = [
   'echo $((010)) $((0x1f)) $((0X1F)) $((2#101)) $((36#z)) $((36#Z)) $((64#_)) $((64#@)) $((37#A)) $((37#a)) $((-010)) $((0)) $((00)) $((10#010))',
   'echo $((0x)) $((07 + 0x0a)) $((1 << 0x4)) $((0x10 / 010))',
-  'x=010; y=0x1f; z=2#11; echo $((x)) $((y + 1)) $((z)) $((x * y))',
+  'x=010; y=0x1f; z="2#11"; echo $((x)) $((y + 1)) $((z)) $((x * y))',
   'x="1+2"; y=x; echo $((x * 2)) $((y + 1))',
-  '((010 == 8)) && echo eight; ((0x10 == 16)) && echo sixteen',
-  'let "v = 0x10" "w = 8#17"; echo $v $w',
   'a=(); a[010]=x; a[0x1]=y; declare -p a',
   '[[ 010 -eq 8 ]] && echo double; [[ 0x10 -gt 15 ]] && echo hex; [ 010 -eq 10 ] && echo single',
-  'i=0x0f; for ((j = 0; j < 2; j++)); do i=$((i + 1)); done; echo $i',
+  'x=1; [[ x -eq 1 && 1+1 -eq 2 && 16#ff -eq 255 ]] && echo operands; [[ 08 -eq 8 ]]; echo "st=$?"\necho next',
+  'i=0x0f; j=0; while [ $j -lt 2 ]; do i=$((i + 1)); j=$((j + 1)); done; echo $i',
   'echo $((08))\necho next',
   'echo $((2#2))\necho next',
   'echo $((65#1))\necho next',
   'echo $((1#1))\necho next',
   'x=09; echo $((x + 1))\necho next',
-  '((019)); echo "st=$?"\necho next',
+  'echo $((019)); echo same\necho "next $?"',
+  'echo $((0x1g))\necho $((2#))\necho $((012#1))\necho $((9#9))\necho end',
+  'x=x; echo $((x))\necho "next $?"',
+  'x=$(echo $((08))); echo "sub $? [$x]"',
+  'f() { echo $((08)); echo in-f; }; f; echo after\necho "next $?"',
 ];
 
 /** bash's diagnostic prefix: `bash: line 1: `, `bash: -c: line 1: `, and in a function 5.2's `environment: line 1: `. */

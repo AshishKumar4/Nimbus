@@ -35,7 +35,7 @@ import { execRefusal } from '../../../shell/exec-dispatch.js';
 import { withRecall } from '../../../vfs/recall.js';
 import { parseAssignment, ParseError, ScriptLines } from './parser.js';
 import {
-  expandWords, expandWord, expandPatternWord, expandSubscript, subscriptArithmetic, ExpansionError,
+  expandWords, expandWord, expandPatternWord, expandSubscript, arithmeticValue, ExpansionError,
   type ExpandContext, type CapturedCommand,
 } from './expander.js';
 import { evaluateDoubleBracketWords } from './test-builtin.js';
@@ -55,6 +55,7 @@ import { isDecimalInteger } from './names.js';
 import { statOrThrow } from '../../../vfs/vfs.js';
 import { yieldToEventLoop } from '../utils/event-loop.js';
 import { WorkThread } from './work-thread.js';
+import { DiscardSignal } from './discard.js';
 
 // ─── Signal classes for control flow ───
 
@@ -80,17 +81,6 @@ export class ExitSignal {
 
 /** A syntax error in the text eval or `.` reads (not one met running it, a command substitution's): theirs to answer. */
 export class TextSyntaxError extends Error {}
-
-/**
- * The rest of the line it is in is discarded (bash's
- * jump_to_top_level(DISCARD)): a shell goes on with the next line it reads,
- * its own or a `source`d file's or a trap's, with $? 1; a child shell
- * (subshell, substitution, pipeline element, job) ends with 1. Neither `||`,
- * `if` nor a loop goes on.
- */
-export class DiscardSignal {
-  readonly exitCode = 1;
-}
 
 /** A function call past the nesting bound (functionNestingLimit). */
 export class FunctionNestingSignal extends DiscardSignal {}
@@ -495,6 +485,7 @@ export class Interpreter {
             exitCode = await this.executeList(list, io);
           } catch (error) {
             if (!(error instanceof DiscardSignal) || !readsLines || this.child) throw error;
+            if (error.diagnostic !== undefined) this.writeTerminal(io, `${error.diagnostic}\n`);
             exitCode = error.exitCode;
             this.lastExitCode = exitCode;
             this.setPipestatus([exitCode]);
@@ -1421,7 +1412,7 @@ export class Interpreter {
     if (assign.subscript !== undefined) {
       const subscript = await expandSubscript(assign.subscript, ctx);
       const array = arrayFor(this.config, name);
-      const index = subscript === '' ? -1 : arrayIndex(array, subscriptArithmetic(subscript, ctx));
+      const index = subscript === '' ? -1 : arrayIndex(array, arithmeticValue(subscript, ctx));
       if (index < 0) return { diagnostics: [`${name}[${assign.subscript}]: bad array subscript`], failed: true };
       array[index] = assign.append ? (array[index] ?? '') + value : value;
       return ASSIGNED;
@@ -1460,7 +1451,7 @@ export class Interpreter {
       }
       const { subscript, value } = element;
       const written = `[${subscript}]${element.append ? '+=' : '='}${value}`;
-      const index = subscript === '' || subscript === '@' || subscript === '*' ? -1 : arrayIndex(array, subscriptArithmetic(subscript, ctx));
+      const index = subscript === '' || subscript === '@' || subscript === '*' ? -1 : arrayIndex(array, arithmeticValue(subscript, ctx));
       if (index < 0) {
         refused.push(`${written}: ${subscript === '@' || subscript === '*' ? 'cannot assign to non-numeric index' : 'bad array subscript'}`);
         if (this.config.options.errexit) break;
@@ -1590,6 +1581,7 @@ export class Interpreter {
       } catch (e) {
         // An `exit` inside it ends only it; so do `set -e`, a fatal error and a discard.
         if (!(e instanceof ExitSignal) && !(e instanceof ErrexitSignal) && !(e instanceof DiscardSignal)) throw e;
+        if (e instanceof DiscardSignal && e.diagnostic !== undefined) this.writeTerminal(io, `${e.diagnostic}\n`);
         exitCode = e.exitCode;
       }
       return (await this.runExitTrap(exitCode, io, true));
@@ -1615,6 +1607,7 @@ export class Interpreter {
       if (e instanceof ExitSignal || e instanceof ErrexitSignal) return e.exitCode;
       // A discard ends the action, a child shell's too; the status stays (bash 5.2).
       if (!(e instanceof DiscardSignal)) throw e;
+      if (e.diagnostic !== undefined) this.writeTerminal(io, `${e.diagnostic}\n`);
     } finally {
       this.exitTrapDepth--;
       this.lastExitCode = savedLastExitCode;

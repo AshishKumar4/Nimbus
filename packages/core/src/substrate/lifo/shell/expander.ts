@@ -6,6 +6,7 @@ import { characterAt, characterBounds, characterWidth, escapeGlob, expandGlob, f
 import { readAnsiCQuote, readBalancedCommand, readBracedExpansion } from './lexer.js';
 import type { ShellOptions } from './state.js';
 import { arrayIndex } from './variables.js';
+import { DiscardSignal } from './discard.js';
 
 export interface ExpandContext {
   env: Record<string, string>;
@@ -45,6 +46,14 @@ export interface CapturedCommand {
  * unset parameter, or an explicit `${var:?message}`.
  */
 export class ExpansionError extends Error {}
+
+/**
+ * An arithmetic error (a constant past its base, a base out of range, a
+ * variable whose value refers to itself without end), a discard as bash's
+ * evalerror makes it; its diagnostic the expression to the end of the token
+ * in error, then why, then the token.
+ */
+export class ArithmeticError extends DiscardSignal {}
 
 const IFS_WHITESPACE = ' \t\n';
 
@@ -460,10 +469,10 @@ async function resolveParameter(ref: ParameterRef, ctx: ExpandContext): Promise<
     const value = ctx.env[name];
     if (subscript === undefined) return { kind: 'scalar', value };
     // A scalar is an array of its one value.
-    const index = subscriptArithmetic(await expandSubscript(subscript, ctx), ctx);
+    const index = arithmeticValue(await expandSubscript(subscript, ctx), ctx);
     return { kind: 'scalar', value: index === 0 || index === -1 ? value : undefined };
   }
-  const index = subscript === undefined ? 0 : arrayIndex(array, subscriptArithmetic(await expandSubscript(subscript, ctx), ctx));
+  const index = subscript === undefined ? 0 : arrayIndex(array, arithmeticValue(await expandSubscript(subscript, ctx), ctx));
   return { kind: 'scalar', value: array[index] };
 }
 
@@ -472,8 +481,8 @@ export async function expandSubscript(subscript: string, ctx: ExpandContext): Pr
   return joinPieces(await expandParameterWord(subscript, ctx, 'word'));
 }
 
-/** An expanded subscript's arithmetic, a blank one 0. */
-export function subscriptArithmetic(expanded: string, ctx: ExpandContext): number {
+/** An expanded word's arithmetic (a subscript's, a `[[ -eq ]]` operand's): a blank one is 0. */
+export function arithmeticValue(expanded: string, ctx: ExpandContext): number {
   return expanded.trim() === '' ? 0 : evaluateArithmetic(expanded, ctx.env, ctx.positionals);
 }
 
@@ -1116,10 +1125,63 @@ function replaceMatches(text: string, pattern: string, replacement: string, all:
 
 // ─── Arithmetic evaluator ───
 
-function evaluateArithmetic(expr: string, env: Record<string, string>, positionals?: readonly string[]): number {
-  const parser = new ArithParser(expr.trim(), env, positionals);
+function evaluateArithmetic(expr: string, env: Record<string, string>, positionals?: readonly string[], depth = 0): number {
+  const parser = new ArithParser(expr.trim(), env, positionals, depth);
   const result = parser.parseExpression();
   return result;
+}
+
+/** How deep a variable's value may refer on to another's (bash's MAX_EXPR_RECURSION_LEVEL). */
+const MAX_ARITHMETIC_DEPTH = 1024;
+
+/** A value that is a decimal integer as written: its expression's value is its number. */
+const DECIMAL_INTEGER = /^\s*-?(?:0|[1-9][0-9]{0,14})\s*$/;
+
+/** A number token's characters (bash's readtok): letters and digits, `#`, `@` and `_`. */
+const NUMBER_CHARACTER = /[0-9A-Za-z#@_]/;
+
+/**
+ * An integer constant's value, as bash's strlong reads one: a leading 0 is
+ * octal, 0x or 0X hexadecimal, `base#digits` any base from 2 to 64, whose
+ * digits are 0-9, a-z, A-Z, `@` and `_` (to base 36 a letter's case is one
+ * value); anything else decimal. Its errors are `why` (bash's evalerror).
+ */
+function integerConstant(text: string, error: (why: string) => ArithmeticError): number {
+  let base = 10;
+  let i = 0;
+  let foundBase = false;
+  if (text[0] === '0') {
+    if (text.length === 1) return 0;
+    i = 1;
+    if (text[1] === 'x' || text[1] === 'X') {
+      base = 16;
+      i = 2;
+    } else {
+      base = 8;
+    }
+    foundBase = true;
+  }
+  let value = 0;
+  for (; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '#') {
+      if (foundBase) throw error('invalid number');
+      if (value < 2 || value > 64) throw error('invalid arithmetic base');
+      base = value;
+      value = 0;
+      foundBase = true;
+      if (i + 1 >= text.length) throw error('invalid integer constant');
+      continue;
+    }
+    const code = ch.charCodeAt(0);
+    const digit = code <= 0x39 ? code - 0x30
+      : code >= 0x61 ? code - 0x61 + 10
+      : code >= 0x41 && code <= 0x5a ? code - 0x41 + (base <= 36 ? 10 : 36)
+      : ch === '@' ? 62 : 63;
+    if (digit >= base) throw error('value too great for base');
+    value = value * base + digit;
+  }
+  return value;
 }
 
 class ArithParser {
@@ -1127,11 +1189,19 @@ class ArithParser {
   private pos = 0;
   private env: Record<string, string>;
   private positionals?: readonly string[];
+  /** How many variables' values this expression is evaluated inside. */
+  private readonly depth: number;
 
-  constructor(expr: string, env: Record<string, string>, positionals?: readonly string[]) {
+  constructor(expr: string, env: Record<string, string>, positionals?: readonly string[], depth = 0) {
     this.expr = expr;
     this.env = env;
     this.positionals = positionals;
+    this.depth = depth;
+  }
+
+  /** bash's evalerror at the token from `start` to here: the expression through it, `why`, the token. */
+  private error(why: string, start: number): ArithmeticError {
+    return new ArithmeticError(`${this.expr.slice(0, this.pos)}: ${why} (error token is "${this.expr.slice(start, this.pos)}")`);
   }
 
   private skipSpaces(): void {
@@ -1477,12 +1547,9 @@ class ArithParser {
   }
 
   private readNumber(): number {
-    let num = '';
-    while (this.pos < this.expr.length && /[0-9]/.test(this.expr[this.pos])) {
-      num += this.expr[this.pos];
-      this.pos++;
-    }
-    return parseInt(num, 10) || 0;
+    const start = this.pos;
+    while (this.pos < this.expr.length && NUMBER_CHARACTER.test(this.expr[this.pos])) this.pos++;
+    return integerConstant(this.expr.slice(start, this.pos), (why) => this.error(why, start));
   }
 
   private readVarName(): string | null {
@@ -1494,11 +1561,16 @@ class ArithParser {
     return name || null;
   }
 
+  /** A variable's value read as an expression (bash's expr_streval): unset or empty is 0. */
   private getVar(name: string): number {
     const val = this.getParameter(name);
-    if (val === undefined) return 0;
-    const n = parseInt(val, 10);
-    return isNaN(n) ? 0 : n;
+    if (val === undefined || val.trim() === '') return 0;
+    // A decimal integer, the most a variable holds, is its value.
+    if (DECIMAL_INTEGER.test(val)) return Number(val);
+    if (this.depth >= MAX_ARITHMETIC_DEPTH) {
+      throw new ArithmeticError(`${name}: expression recursion level exceeded (error token is "${name}")`);
+    }
+    return evaluateArithmetic(val, this.env, this.positionals, this.depth + 1);
   }
 
   private getParameter(name: string): string | undefined {
