@@ -62,8 +62,7 @@ import { recordFailure } from '../runtime/stop-replay-body.js';
 // Phase 2 A'.2 — supervisor in-flight RPC payload byte tracking.
 import { rpcPayloadStart, rpcPayloadEnd } from '@nimbus-sh/platform/diag-counters.js';
 // W4: R2 cross-tenant npm cache (tarballs + packuments)
-import type { PackumentReadOptions, PackumentReadThrough } from '../npm/r2-cache.js';
-import { R2CacheClient, MAX_R2_TARBALL_BYTES } from '../npm/r2-cache.js';
+import type { PackumentReadOptions, PackumentReadThrough, R2CacheClient } from '../npm/r2-cache.js';
 import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import type { VfsAcquireOptions, VfsAcquireResult, VfsListOptions, VfsListPage, VfsListTree, VfsMutationReceipt, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle, RuntimeReadFileOptions, RuntimeReadOptions, RecallKind } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { ReadDirectoryBatchRequest, ReadDirectoryBatchResult } from '@nimbus-sh/core/runtime/read-directory-batch.js';
@@ -82,6 +81,14 @@ import type { WaveFence } from '@nimbus-sh/platform/wave-writer.js';
 // DO's: each RPC returns its events with its result (CacheStatEvent), and
 // the caller folds them where /api/_diag/cache reads them.
 import type { CacheStatEvent } from '@nimbus-sh/core/_shared/cache-stats.js';
+
+/**
+ * The npm cache client, loaded at its first use: it links the npm engine,
+ * which no other call needs, and a host Worker's isolates all evaluate what
+ * its re-exported SupervisorRPC links statically, at startup (ask 56).
+ */
+const npmCache = () => import('../npm/r2-cache.js');
+type NpmCache = Awaited<ReturnType<typeof npmCache>>;
 
 /**
  * W5 Lever 5: estimate the byte-cost of a writeBatch payload so the
@@ -290,11 +297,14 @@ export function supervisorCalls<Base extends Class>(base: Base) {
       }
       return value;
     }
-    async [CACHE_READ]<T>(plan: { ticket?: string; readOnly: boolean }, produce: (client: R2CacheClient) => Promise<T>): Promise<T> {
-      const client = new R2CacheClient((this[TRANSPORT]().env as any)?.NPM_TARBALL_CACHE ?? null, (this[TRANSPORT]().env as any)?.NPM_PACKUMENT_CACHE ?? null, plan.readOnly);
+    async [CACHE_READ]<T>(plan: { ticket?: string; readOnly: boolean }, produce: (client: R2CacheClient, cache: NpmCache) => Promise<T>): Promise<T> {
       let value: T;
-      try { value = await produce(client); }
-      catch (error) {
+      // The client's module loads inside the read: a run's ticket is answered however it fails.
+      try {
+        const cache = await npmCache();
+        const client = new cache.R2CacheClient((this[TRANSPORT]().env as any)?.NPM_TARBALL_CACHE ?? null, (this[TRANSPORT]().env as any)?.NPM_PACKUMENT_CACHE ?? null, plan.readOnly);
+        value = await produce(client, cache);
+      } catch (error) {
         if (plan.ticket) await this[CALL](this[OP]('cacheResult', [plan.ticket, { failed: true, failure: recordFailure(error) }]));
         throw error;
       }
@@ -826,7 +836,7 @@ export function supervisorCalls<Base extends Class>(base: Base) {
     ): Promise<{ bytes: Uint8Array | null; events: CacheStatEvent[] }> {
       const plan = this[INFRASTRUCTURE_CACHE]('getCachedTarball', [integrity]) ? { readOnly: false }
         : await this[CALL](this[OP]<{ ticket?: string; readOnly: boolean }>('getCachedTarball', [integrity]));
-      return this[CACHE_READ](plan, async (client) => {
+      return this[CACHE_READ](plan, async (client, { MAX_R2_TARBALL_BYTES }) => {
         const bytes = await client.getTarball(integrity);
         return { bytes: bytes?.length && bytes.length <= MAX_R2_TARBALL_BYTES ? bytes : null, events: client._cacheEvents };
       });
@@ -848,6 +858,7 @@ export function supervisorCalls<Base extends Class>(base: Base) {
       // This RPC remains a one-way write (returns bool); the L4 event
       // does NOT flow through this return path.
       if (!this[INFRASTRUCTURE_CACHE]('putCachedTarball', [integrity, bytes])) await this[CALL](this[OP]('putCachedTarball', [integrity, bytes]));
+      const { R2CacheClient } = await npmCache();
       return new R2CacheClient((this[TRANSPORT]().env as any)?.NPM_TARBALL_CACHE ?? null, null).putTarball(integrity, bytes);
     }
 

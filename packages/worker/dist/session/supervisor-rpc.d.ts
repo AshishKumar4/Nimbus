@@ -193,7 +193,7 @@ declare const SupervisorRPC_base: (abstract new (...args: any[]) => {
     [CACHE_READ]<T>(plan: {
         ticket?: string;
         readOnly: boolean;
-    }, produce: (client: import("../npm/r2-cache.js").R2CacheClient) => Promise<T>): Promise<T>;
+    }, produce: (client: import("../npm/r2-cache.js").R2CacheClient, cache: typeof import("../npm/r2-cache.js")) => Promise<T>): Promise<T>;
     [INFRASTRUCTURE_CACHE](op: import("@nimbus-sh/core/workspace/supervisor-ops.js").SupervisorOpName, args: readonly unknown[]): boolean;
     [NETWORK](): import("@nimbus-sh/core/_shared/workspace-network.js").WorkspaceNetwork;
     [PID](): number;

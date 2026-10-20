@@ -14,6 +14,24 @@ published independently in the `@nimbus-sh` npm scope.
 - Added: `tsc` works in a session with nothing installed. When no `node_modules/.bin` from the working directory up has a `tsc`, `tsc` and `tsrs` run tsrs, the Rust port of the TypeScript compiler built to WebAssembly: `@tsrs/wasm` 0.18.0-ts7.1.0-dev.20260929, which ports TypeScript 7.1.0-dev.20260929. It is experimental upstream (its diagnostics can come in a different order from tsc's). Nimbus serves it from its own assets, pinned by version and sha256, so the first `tsc` installs nothing. It type-checks and emits as tsc does, `--build` and incremental `.tsbuildinfo` included, with tsc's exit statuses (2 for type errors; 5 for a run that crashed, as on a stack overflow). It reads the project through the process's own copy of the filesystem, as every WASI program does, and runs on the session's warm workers. A project's own `typescript` still runs as installed. A `typescript` 7 project, whose compiler is a native binary that cannot run here, runs tsrs in its place, and a line says which compiler ran. `npx tsc` runs tsrs too; before, it installed npm's deprecated `tsc` package. `tsc --watch` exits 1: the wasm build has no watch mode, so install `typescript` in the project for it.
 - Changed: a session keeps as many idle warm workers per interpreter or tool (`python3`, `ruby`, `clang`, `wasm-ld`, `git`) as its runs of that tool had in flight at once, up to the platform's ten Dynamic Workers in flight per Durable Object. Before, it kept at most two, so a third concurrent `clang` or `python3` run loaded its image again every time.
 - Fixed: `git status` holds what its comparisons need of the worktree, not the worktree. Its one ordered scan of the tree is merged with the index as it goes, in the order both share, so only the directories it is in are held; its memory grows with the index alone. Before, status kept the whole scan (every entry's path, stat and listing row): about 0.6 KiB a file, 23 MiB more from 2,000 to 40,000 files, about 30 MiB on next.js's 34,000. Status also takes about a tenth less CPU on next.js's shape.
+- Changed: `SupervisorRPC` no longer links the npm engine. Every isolate
+  of a Worker evaluates, as it starts, every module its exported classes
+  link. `SupervisorRPC` linked the npm cache client, and through it core's
+  npm command, the `_shared/npm-*` tables and semver, though only its npm
+  cache calls use them; they now load at the first such call. Bundled on
+  its own, its static closure went from 133 modules (841 KiB) to 111
+  (621 KiB). The session's RPC module no longer links the opencode artifact
+  staging either: it validates a stage with a schema of its own
+  (`facets/opencode-stage-spec.ts`). A Worker that also exports
+  `NimbusSession` still links both through the session itself.
+- Changed (CI): the paired `ruby-gem-require` perf probe grades the
+  session's own time for each Ruby call, the least of 7 calls a round,
+  instead of the time its client saw for one. Measured in an A/A of one
+  commit, the client's time carried each Preview's placement (about
+  +200 ms on some Previews), which made identical code read as 34% slower,
+  and a call took over 1.5 times its round's least in 55–62% of calls. The
+  probe now says what its grading was shown to find: a +60% slowdown, in 8
+  of 8 replays and 3 of 4 live checks. A green says nothing about less.
 - Added: a session's terminals by name. A browser terminal at `/ws?terminal=<name>` (a hosted runtime: `attachTerminal(ws, { terminal })`, `terminalFrame` and `terminalClose` likewise) is a shell of its own over the same workspace: its cwd, variables and history persist as a named shell's do and outlive restarts, its screen is stored and replayed per name, and one socket holds a name at a time (names never conflict with each other or with the session's own terminal, which is unchanged). `listTerminals()` names each with its cwd, whether it is live or attached, and the line it runs; `closeTerminal(name)` hangs up everything started from it and forgets its screen, state and history (SDK: `sandbox.terminals.list()` / `.close(name)`). Names are 1 to 64 of `A-Z a-z 0-9 . _ -`; there is no count of them: a live terminal measured 0.10 to 0.30 MiB of heap idle and 0.10 to 0.20 MiB more busy, and a saved one holds only its capped screen and a 0.8 KiB row. A process now has a controlling terminal, inherited from its parent; REPLs (python, ruby, interactive bash) bind to the terminal they were started from.
 - Fixed: a reattached terminal shows the screen it left and adds nothing to it. The shell paints a prompt on reattach only when its line editor is not the last thing on the screen (a background job wrote after the prompt), and then once, on a line of its own, with the line being typed. A hosted runtime's resumed and reset notices are written above the prompt, which is painted again below them. Before, every reattach to an idle hosted terminal printed another prompt, into the screen and the stored scrollback, after a line being typed too.
 - Fixed (CI): a throwaway Preview whose upload the API does not serve, as
@@ -65,6 +83,10 @@ published independently in the `@nimbus-sh` npm scope.
   store's privacy fix ships. Pass secrets through the launch environment
   instead.
 - Fixed: the shell's commands walk their file operands as POSIX does. A `..` applies after the name before it is looked up, through a symbolic link to where it points, and a missing or non-directory name before it is ENOENT or ENOTDIR; a trailing slash asks for a directory (`cat f/` is "Not a directory"), and on a name being removed or renamed it names the entry itself, never a link's target (`rm -r link/` empties the target and refuses the link, `rmdir link/` says the link was not followed, as GNU's do). Before, `cat missing/../f` and `cat f/` read `f`, and `cat link/../x` read the `x` beside the link. Messages still name the operand as typed; `cp`'s into-itself check compares where the names lead; `mktemp` prints the name it made; logical `cd` refuses `missing/..` and keeps `PWD` logical; `mkdir -p` makes the names a following `..` leaves; `rm -r` refuses another name for `/`.
+
+## 2026-10-20 (patch): worker 0.23.1 (every other package unchanged from the 2026-10-20 release)
+
+- Fixed: `git status` holds what its comparisons need of the worktree, not the worktree. Its one ordered scan of the tree is merged with the index as it goes, in the order both share, so only the directories it is in are held; its memory grows with the index alone. Before, status kept the whole scan (every entry's path, stat and listing row): about 0.6 KiB a file, 23 MiB more from 2,000 to 40,000 files, about 30 MiB on next.js's 34,000. Status also takes about a tenth less CPU on next.js's shape.
 
 ## 2026-10-20: platform 0.14.0, core 0.25.0, fabric 0.20.0, worker 0.23.0, sdk 0.19.0, react 0.4.1, cli 0.2.10, loom 0.3.3, create-nimbus-app 0.2.6 (config 0.3.2 and the runtimes unchanged)
 
