@@ -154,9 +154,17 @@ const FOUND = {
   'a directory read through its descriptor after an own rename into it, its wave not yet sent, lists the name the rename made (2896)': {
     schedule: [['stall'], ['sync', 'rename', 'd/e/g', 'x/f'], ['own', 'opendir', 'x']],
   },
-  'a write and the removal of its file, sent in one wave behind another, leave the name gone in the process too (2700)': {
-    engines: ['node'],
-    schedule: [['hold', 'wave'], ['own', 'write', 'd/f', 'ahead'], ['own', 'write', 'top', 'raced'], ['sync', 'unlink', 'top'], ['release', 'wave'], ['settle']],
+  'a file the process wrote and then removed, both answered in one wave behind an input, is gone from its listing (2700)': {
+    engines: ['node'], park: 2700,
+    schedule: [
+      ['release', 'wave'], ['release', 'acquire'], ['release'], ['own', 'stat', 'z'], ['sync', 'mkdir', 'x/e'], ['sync', 'rmdir', 'x/e'], ['release'],
+      ['hold', 'listing'], ['own', 'stat', 'x/h'], ['own', 'stat', 'x'], ['release'], ['hold', 'lookup'], ['sync', 'readdir', 'new'],
+      ['own', 'write', 'd/e/g', 'c2700.3'], ['input'], ['input'], ['sync', 'chmod', 'd', 448], ['own', 'pread', 'mid', 70000], ['settle'],
+      ['hold', 'wave'], ['own', 'readFile', 'x'], ['sync', 'readFile', 'd/e/g'], ['sync', 'readdir', 'x/f'], ['own', 'opendir', 'd/e'],
+      ['own', 'opendir', 'd/n'], ['release', 'listing'], ['release', 'acquire'], ['sync', 'stat', 'x/f'], ['root', 'chmod', 'd', 457],
+      ['sync', 'stat', 'd/e'], ['own', 'pread', 'mid', 8400000], ['input'], ['settle'], ['release'], ['own', 'write', 'top', 'c2700.4'], ['release'],
+      ['input'], ['sync', 'stat', 'z/k'], ['sync', 'unlink', 'top'], ['peer', 'chmod', 'd', 488]
+    ],
   },
   'a file a call that cannot wait missed stays a miss until an awaited read answers it': {
     engines: ['node'],
@@ -190,6 +198,11 @@ const GAPS = {
     lacks: 'B2: node-shims refuses an awaited read under a directory its relist is on its way to (EAGAIN), where it should wait (the cutover\'s relist fence); '
       + 'meanwhile fs.promises.readFile of such a file can reject EAGAIN',
     shows: 'own readFile d/e/g answered EAGAIN',
+  },
+  'a file the process wrote and then removed, both answered in one wave behind an input, is gone from its listing (2700) [node]': {
+    lacks: 'S: what a write\'s answer installs outlives the removal the same wave carried, past every barrier since (closed by the cutover: one own state, RF\'s); '
+      + 'meanwhile a Node program\'s readdirSync can list a file it deleted with unlinkSync, which the session no longer holds',
+    shows: 'at rest, sync readdir . answered',
   },
   'a directory the process may search again shows nothing stale while it is relisted [node]': {
     lacks: 'B2: a relist answers what is under its directory as unknown until it lands (the cutover\'s relist fence); '
@@ -326,7 +339,7 @@ async function run(kind, schedule, park) {
 
 /** What the process renamed itself: Node's own renames, run apart so each file stays in the fast tier. */
 const OWN_RENAMES = new Set([
-  'a write and the removal of its file, sent in one wave behind another, leave the name gone in the process too (2700)',
+  'a file the process wrote and then removed, both answered in one wave behind an input, is gone from its listing (2700)',
   'a directory read through its descriptor after an own rename into it, its wave not yet sent, lists the name the rename made (2896)',
   'an awaited read of a file a relist is on its way to is answered, not refused',
   'a name the process renamed into place can be renamed again at once',
