@@ -134,21 +134,24 @@ const writeFile = (path, text) => ({ type: 'call', call: { call: 'writeFile', pa
   await c.settle().catch(() => undefined);
 }
 
-// ── Each head its own budget: twelve writes in turn, each refused once by a recall, all land ──
+// ── Each head its own budget: a wave of twelve, each answer applying one more op and refusing the rest for a recall, lands whole ──
 {
   const s = session();
-  const refusedAt = new Set();
-  s.refuse = (fence) => {
-    if (refusedAt.has(fence.seq)) return null;
-    refusedAt.add(fence.seq);
-    return nothingApplied(fence, { recall: true });
-  };
   const c = client(s);
-  for (let i = 0; i < 12; i++) {
-    const answer = c.submit(writeFile(`home/user/n${i}.txt`, `n${i}`));
-    await c.flush();
-    assert.equal((await answer)?.failed, undefined, `write ${i} was not failed`);
-  }
+  let answered = 0;
+  const port = s.port.writeBatchStream;
+  s.port.writeBatchStream = async (stream, fence) => {
+    const answer = await port(stream, fence);
+    if (answer.ok !== true || answered >= 11) return answer;
+    // Applied (a re-sent op the session has is applied once); answered as one more op, the rest refused for a recall.
+    answered++;
+    const cursor = Math.min(answer.sequence.cursor, fence.seq);
+    return { ...nothingApplied(fence, { recall: true }), sequence: { cursor } };
+  };
+  const answers = [];
+  for (let i = 0; i < 12; i++) answers.push(c.submit(writeFile(`home/user/n${i}.txt`, `n${i}`)));
+  await c.flush();
+  for (const [i, answer] of answers.entries()) assert.equal((await answer)?.failed, undefined, `write ${i} was not failed`);
   for (let i = 0; i < 12; i++) assert.equal(s.text(`home/user/n${i}.txt`), `n${i}`);
   await c.settle();
 }
