@@ -272,6 +272,16 @@ export declare class Interpreter {
     private executeCommand;
     private executeIf;
     private executeDoubleBracket;
+    /** `((expression))`: 0 where its value is not 0; 1 where it is 0, or an error, reported as `((`'s. */
+    private executeArithmetic;
+    /**
+     * `for ((init; test; step))`: init once; then while test is not 0 (an empty
+     * one is true), the body, then step (after a `continue` too). Its status
+     * the body's last, 0 where it never ran, 1 where an expression fails.
+     */
+    private executeArithmeticFor;
+    /** An arithmetic command's expression, expanded (as a double-quoted word, its quotes removed) and evaluated: null where that fails, reported as `((`'s. */
+    private arithmeticCommandValue;
     private loopTicks;
     /**
      * A loop whose body never waits on I/O would run entirely on microtasks,

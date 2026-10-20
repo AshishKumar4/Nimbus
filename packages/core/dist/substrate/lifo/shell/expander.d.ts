@@ -78,8 +78,8 @@ export declare function expandRegexWord(parts: WordPart[], ctx: ExpandContext): 
 export declare function expandWord(parts: WordPart[], ctx: ExpandContext): Promise<string>;
 /** A subscript's text once its expansions (`$i`, `$(…)`) are done, before its arithmetic. */
 export declare function expandSubscript(subscript: string, ctx: ExpandContext): Promise<string>;
-/** An expanded word's arithmetic (a subscript's, a `[[ -eq ]]` operand's): a blank one is 0. Throws ArithmeticError. */
-export declare function arithmeticOf(expanded: string, ctx: ExpandContext): number;
+/** An expanded word's arithmetic (a subscript's, a `[[ -eq ]]` operand's, let's): a blank one is 0. Throws ArithmeticError. */
+export declare function arithmeticOf(expanded: string, ctx: Pick<ExpandContext, 'env' | 'positionals'>): number;
 /** arithmeticOf as an expansion meets it: an error is reported, and the rest of the line discarded (bash's evalerror). */
 export declare function arithmeticValue(expanded: string, ctx: ExpandContext): Promise<number>;
 //# sourceMappingURL=expander.d.ts.map

@@ -5,7 +5,7 @@ import { syscallError } from '../../../vfs/vfs-error.js';
 import { execRefusal } from '../../../shell/exec-dispatch.js';
 import { withRecall } from '../../../vfs/recall.js';
 import { parseAssignment, ParseError, ScriptLines } from './parser.js';
-import { expandWords, expandWord, expandPatternWord, expandSubscript, arithmeticValue, ExpansionError, } from './expander.js';
+import { expandWords, expandWord, expandPatternWord, expandSubscript, arithmeticOf, arithmeticValue, ArithmeticError, ExpansionError, } from './expander.js';
 import { evaluateDoubleBracketWords } from './test-builtin.js';
 import { isPipeEnd, PipeChannel } from './pipe.js';
 import { arrayFor, arrayIndex, assignArray, assignVariable, lastIndex, restoreVariable, saveVariable, } from './variables.js';
@@ -497,6 +497,10 @@ export class Interpreter {
                 return (await this.executeSimpleCommand(cmd, io));
             case 'double_bracket':
                 return (await this.executeDoubleBracket(cmd, io));
+            case 'arithmetic':
+                return (await this.executeArithmetic(cmd, io));
+            case 'arithmetic_for':
+                return (await this.executeArithmeticFor(cmd, io));
             case 'if':
                 return (await this.executeIf(cmd, io));
             case 'for':
@@ -549,6 +553,77 @@ export class Interpreter {
             this.lastExitCode = exitCode;
             return exitCode;
         }));
+    }
+    /** `((expression))`: 0 where its value is not 0; 1 where it is 0, or an error, reported as `((`'s. */
+    async executeArithmetic(node, io) {
+        return (await this.executeWithRedirections(node.redirections, io, async (redirIo) => {
+            const value = await this.arithmeticCommandValue(node.expression, redirIo);
+            const exitCode = value === null || value === 0 ? 1 : 0;
+            this.lastExitCode = exitCode;
+            return exitCode;
+        }));
+    }
+    /**
+     * `for ((init; test; step))`: init once; then while test is not 0 (an empty
+     * one is true), the body, then step (after a `continue` too). Its status
+     * the body's last, 0 where it never ran, 1 where an expression fails.
+     */
+    async executeArithmeticFor(node, io) {
+        return (await this.executeWithRedirections(node.redirections, io, async (redirIo) => {
+            let exitCode = 0;
+            const failed = async (expression) => (expression.trim() !== '' && (await this.arithmeticCommandValue(expression, redirIo)) === null);
+            if (await failed(node.init))
+                exitCode = 1;
+            else {
+                while (true) {
+                    await this.loopTick();
+                    const abortCode = this.abortExitCode(redirIo);
+                    if (abortCode !== null)
+                        return abortCode;
+                    if (node.test.trim() !== '') {
+                        const test = await this.arithmeticCommandValue(node.test, redirIo);
+                        if (test === null)
+                            exitCode = 1;
+                        if (test === null || test === 0)
+                            break;
+                    }
+                    try {
+                        exitCode = await this.executeCompoundList(node.body, redirIo);
+                    }
+                    catch (e) {
+                        if (e instanceof BreakSignal) {
+                            if (e.levels > 1)
+                                throw new BreakSignal(e.levels - 1);
+                            break;
+                        }
+                        if (!(e instanceof ContinueSignal))
+                            throw e;
+                        if (e.levels > 1)
+                            throw new ContinueSignal(e.levels - 1);
+                    }
+                    if (await failed(node.step)) {
+                        exitCode = 1;
+                        break;
+                    }
+                }
+            }
+            this.lastExitCode = exitCode;
+            return exitCode;
+        }));
+    }
+    /** An arithmetic command's expression, expanded (as a double-quoted word, its quotes removed) and evaluated: null where that fails, reported as `((`'s. */
+    async arithmeticCommandValue(expression, io) {
+        const ctx = this.createExpandContext(io);
+        const text = await expandSubscript(expression, ctx);
+        try {
+            return arithmeticOf(text, ctx);
+        }
+        catch (error) {
+            if (!(error instanceof ArithmeticError))
+                throw error;
+            await ctx.report(`((: ${error.message}`);
+            return null;
+        }
     }
     loopTicks = 0;
     /**
