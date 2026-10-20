@@ -218,9 +218,10 @@ await runScenarios(import.meta.path, {
     await read;
     assert.notEqual(synchronously(s.fs, k('f'), 'readFile'), 'one!', 'never the bytes from before the repair');
   },
-  async 'a fill asked before a repair began installs nothing, landing while the repair lists'() {
+  async 'a fill asked before a repair began installs nothing, landing while the repair refills'() {
     const enc = new TextEncoder();
-    const s = await storeSession({ f: 'one!', other: 'o' }, { eager: true });
+    const s = await storeSession({ f: 'one!', g: 'g1', other: 'o' }, { eager: true });
+    assert.equal(dec.decode(await s.fs.readFile(k('g'))), 'g1');
     for (let i = 0; i < 40; i++) await s.kernel.writeFile(k('other'), enc.encode(`o${i}`));
     await s.kernel.writeFile(k('f'), enc.encode('two!'));
     await s.fs.catchUp();
@@ -228,13 +229,14 @@ await runScenarios(import.meta.path, {
     const read = s.fs.readFile(k('f'));
     await fill();
     // The session starts again: its revisions far below the first incarnation's.
-    await s.incarnate({ f: 'new!', other: 'o' });
-    const listing = s.hold('fsList');
+    await s.incarnate({ f: 'new!', g: 'g2', other: 'o' });
+    // The repair lists, then refills what it held (g): the first incarnation's read lands meanwhile.
+    const refill = s.hold('fsReadBatch');
     const barrier = s.fs.catchUp();
-    await listing();
+    await refill();
     s.release('fsReadBatch');
     await read.catch(() => undefined);
-    s.release('fsList');
+    s.release('fsReadBatch');
     await barrier;
     assert.notEqual(synchronously(s.fs, k('f'), 'readFile'), 'two!', 'never the first incarnation\'s bytes');
     assert.equal(dec.decode(await s.fs.readFile(k('f'))), 'new!');

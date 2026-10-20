@@ -378,6 +378,16 @@ export async function bootEngine(kind, { seed, supervise = {}, stdin = false } =
     /** What the process's view says of `path`: null where nothing is. */
     stat: async (path, options) => stat(await fs.stat(path, options).catch((error) => { if (error?.code === 'ENOENT') return null; throw error; })),
     text: async (path) => dec.decode(await fs.readFile(path)),
+    /** A directory opened and read through its descriptor (Node's opendir; a guest's open and readdir of the handle, its directory batch): its names, sorted. */
+    opendir: async (path) => {
+      if (kind === 'node') {
+        const names = [];
+        for await (const entry of await globalThis.__engineFs.promises.opendir(path)) names.push(entry.name);
+        return names.sort();
+      }
+      const opened = await fs.open(path, { read: true, directory: true });
+      try { return (await fs.readdirHandle(opened.id)).map((entry) => entry.name).sort(); } finally { await fs.close(opened.id); }
+    },
     /** Write a file as each engine's guest writes one: Node's writeFile; a WASI guest's open, write and close. */
     write: async (path, text, mode) => {
       if (kind === 'node') return fs.writeFile(path, enc.encode(text), mode === undefined ? undefined : { mode });

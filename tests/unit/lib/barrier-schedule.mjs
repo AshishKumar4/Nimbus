@@ -16,7 +16,8 @@
  *                          session (a parked reply has reached it), or go on;
  *   ['settle']             wait until nothing moves without a release;
  *   ['poison']             the next ACQUIRE is answered with a poison.
- * Reads are stat, readFile and readdir; changes write, unlink, mkdir, rmdir,
+ * Reads are stat, readFile, readdir and (awaited) opendir, a directory read
+ * through its descriptor; changes write, unlink, mkdir, rmdir,
  * rename, chmod and (root) chown, of names under the process's project
  * (UNIVERSE), judged with the process's credential: a name beneath a
  * directory it may not search is EACCES to it, as is a directory it may not
@@ -240,7 +241,7 @@ export function generate(seed, steps = 40) {
   };
   while (schedule.length < steps) {
     const r = random();
-    if (r < 0.22) schedule.push(['own', pick(['stat', 'stat', 'readFile', 'readdir']), pick(NAMES)]);
+    if (r < 0.22) schedule.push(['own', pick(['stat', 'stat', 'readFile', 'readdir', 'opendir']), pick(NAMES)]);
     else if (r < 0.40) schedule.push(['sync', pick(['stat', 'stat', 'readFile', 'readdir']), pick(NAMES)]);
     else if (r < 0.62) {
       const way = pick(['own', 'own', 'peer', 'peer', 'sync', 'root']);
@@ -300,6 +301,7 @@ function statIs(answer, state) {
 
 /** Whether `answer` (of read `op` of `rel`) is what `world` says to the process. */
 function answers(op, rel, answer, world) {
+  if (op === 'opendir') return answers('readdir', rel, answer, world);
   const blocked = unreachable(world, rel);
   if (blocked !== null) return op === 'stat' && blocked === 'ENOENT' ? answer === null : answer?.code === blocked;
   const state = world.get(rel);
@@ -501,6 +503,7 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
         const bytes = await call.readFile(path);
         return bytes === null ? { code: 'ENOENT' } : dec.decode(bytes);
       }
+      if (op === 'opendir') return await engine.opendir(path);
       return (await call.readdir(path)).map((entry) => entry.name).sort();
     } catch (error) {
       if (op === 'stat' && error?.code === 'ENOENT') return null;

@@ -162,9 +162,11 @@ export async function storeSession(tree, { eager = false, unlisted = [], delegat
     /** Park the next reply of `name`; the returned wait resolves once something asked it. */
     hold(name) {
       holds.add(name);
+      const before = parked.filter((p) => p.name === name).length;
+      const asked = () => parked.filter((p) => p.name === name).length > before;
       return async () => {
-        for (let i = 0; i < 500 && !parked.some((p) => p.name === name); i++) await sleep(2);
-        assert.ok(parked.some((p) => p.name === name), `a ${name} was asked`);
+        for (let i = 0; i < 500 && !asked(); i++) await sleep(2);
+        assert.ok(asked(), `a ${name} was asked`);
       };
     },
     release(name) { parked.splice(parked.findIndex((p) => p.name === name), 1)[0].release(); },
