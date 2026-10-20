@@ -28,6 +28,8 @@ import assert from 'node:assert/strict';
 import * as rpc from '../../packages/worker/src/session/rpc.ts';
 import { createAuthority, runScenarios, sleep } from './lib/resident-body.mjs';
 import { ROOT, k, storeSession } from './lib/store-session.mjs';
+import { RK_OWN_WRITE } from '../../packages/worker/src/vfs/resident/tables.ts';
+import { FS_READ_BATCH_REQUEST_BYTES } from '../../packages/core/src/constants.ts';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -302,6 +304,43 @@ await runScenarios(import.meta.path, {
     s.store.namespace.relisted(`${ROOT}/d/e`);
     assert.equal(s.store.namespace.isListed(`${ROOT}/d/e`), true, 'relisted, it is whole');
     assert.equal(s.store.namespace.isListed(`${ROOT}/d`), false, 'its parent, not relisted, is not');
+  },
+  async 'a fill pending its second batch leaves a head leased, redated or published over meanwhile'() {
+    const size = FS_READ_BATCH_REQUEST_BYTES + 1_000_000;
+    const s = await storeSession({ big: 'b'.repeat(size) }, { eager: true });
+    const path = `${ROOT}/big`;
+    const { revision } = await s.authority.stat(k('big'));
+    const epoch = s.store.coherence.cursor().epoch;
+    for (const [change, outcome, expect] of [
+      // The process leases the head the fill writes over; the fill then fails.
+      [(t) => s.store.cells.lease(path), 'fails', RK_OWN_WRITE],
+      // A barrier vouches for the held bytes at a newer revision (metadata only); the fill then fails.
+      [(t) => t.fileSetRev(path, revision + 7), 'fails', revision + 7],
+      // The process leases the head; the fill then lands every batch.
+      [(t) => s.store.cells.lease(path), 'lands', RK_OWN_WRITE],
+    ]) {
+      const t = s.store.coherence.require();
+      s.store.cells.put(t, path, new TextEncoder().encode('held'), revision - 1);
+      let batches = 0;
+      const gate = Promise.withResolvers();
+      const supervisor = {
+        fsReadBatch: async (requests) => {
+          if (++batches === 2) {
+            await gate.promise;
+            if (outcome === 'fails') throw new Error('Network connection lost.');
+          }
+          return Promise.all(requests.map(async (request) => ({ bytes: await s.authority.readRange(`/${request.path}`, request.offset, request.length) })));
+        },
+      };
+      const fetching = s.store.transport.fetchFiles(supervisor, [{ path, size, rev: revision, epoch }]);
+      for (let i = 0; i < 500 && batches < 2; i++) await sleep(2);
+      assert.equal(batches, 2, 'the second batch is asked');
+      change(t);
+      gate.resolve();
+      await fetching;
+      assert.equal(s.store.cells.provenance(path), expect, `the head the change left stays (${outcome})`);
+      s.store.cells.delete(t, path);
+    }
   },
   async 'a delivery\'s arguments keep the process\'s own debt through the session\'s parse'() {
     const authority = createAuthority();

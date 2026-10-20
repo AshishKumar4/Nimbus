@@ -127,4 +127,35 @@ const done = (model, step) => model.finish(model.begin(step));
   assert.ok(!model.followed('opendir', 'd', ['g'], from, to), 'never a listing it did not hold');
 }
 
+{
+  // The process's own changes land in its order: none of them lost, and a later one not either.
+  const model = createModel();
+  const from = model.seq();
+  const write = model.begin(['own', 'write', 'top', 'raced']);
+  const rename = model.begin(['own', 'rename', 'top', 'new']);
+  assert.ok(!model.admits('readFile', 'new', 't0000000', from, model.seq()), 'never the rename without the write before it');
+  model.finish(rename);
+  model.finish(write);
+  const landed = model.seq();
+  assert.ok(model.admits('readFile', 'new', 'raced', landed, landed));
+  assert.ok(!model.admits('readFile', 'top', 't0000000', landed, landed), 'losing both is refused');
+  assert.ok(!model.admits('readFile', 'new', 't0000000', landed, landed), 'losing the write is refused');
+  model.finish(model.begin(['own', 'write', 'new', 'later']));
+  const later = model.seq();
+  assert.ok(model.admits('readFile', 'new', 'later', later, later));
+  assert.ok(!model.admits('readFile', 'new', 'raced', later, later), 'losing a later write is refused');
+}
+
+{
+  // A descriptor follows what it opened, where that is only in flight: a directory made, moved and filled, none of it returned.
+  const model = createModel();
+  model.begin(['own', 'mkdir', 'z']);
+  model.begin(['own', 'rename', 'z', 'x/e']);
+  model.begin(['own', 'write', 'x/e/g', 'new']);
+  const now = model.seq();
+  assert.ok(model.followed('opendir', 'z', [], now, now), 'opened and read before the rename landed');
+  assert.ok(model.followed('opendir', 'z', ['g'], now, now), 'opened at z, read after it moved and was written');
+  assert.ok(!model.followed('opendir', 'z', ['h'], now, now), 'never a listing it did not hold');
+}
+
 console.log('barrier-oracle: ok');

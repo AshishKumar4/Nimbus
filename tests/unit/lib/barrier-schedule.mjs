@@ -369,11 +369,11 @@ export function createModel(tree = SEED_TREE) {
   const seq = () => history.length - 1;
   /**
    * Whether `later` (the process's own) must land after `earlier`: an own
-   * change before it whose names it overlaps, decided when it was called (a
-   * call that cannot wait, or Node's structural one). A write decided later
-   * than its call races what the process does meanwhile, either way.
+   * change before it whose names it overlaps. A process logs each change as
+   * it is called, awaited or not (node-shims' _logParked, a guest's one call
+   * at a time), and the session applies its log in order.
    */
-  const after = (earlier, later) => earlier !== later && earlier.own && later.own && (earlier.decides || earlier.sync) && changes.indexOf(earlier) < changes.indexOf(later) && overlaps(earlier.domain, later.domain);
+  const after = (earlier, later) => earlier !== later && earlier.own && later.own && changes.indexOf(earlier) < changes.indexOf(later) && overlaps(earlier.domain, later.domain);
   /**
    * Every world `rel` may have been seen in between states `from` and `to`:
    * at each state, the recorded world with any of the changes then in flight
@@ -382,24 +382,36 @@ export function createModel(tree = SEED_TREE) {
    * overlap, so any of them may have landed first; only four are laid, a
    * schedule rarely having more.
    */
-  const worldsSeen = (rel, from, to, decided = false) => {
-    const touching = changes.filter((change) => change.domain.some((root) => under(rel, root) || under(root, rel)));
+  /** The changes of `among` in flight at state `i` (begun by it, not yet returned): four at most, a schedule rarely having more. */
+  const flyingAt = (among, i) => among.filter((c) => c.begun <= i && (c.done === null || c.done > i)).slice(0, 4);
+  /**
+   * The worlds state `i` may be seen as with `flying` in flight: each not
+   * landed, landed, or (a write) passing through; one of the process's own
+   * only once every earlier one it overlaps has landed. Changes in flight
+   * together never overlap but for the process's own, so any may land first.
+   */
+  const worldsOf = (flying, i, decided) => {
+    let choices = [[]];
+    for (const change of flying) {
+      const effects = decided && change.decides ? [change.post] : [null, change.post, ...(change.partial === null ? [] : [change.partial])];
+      choices = choices.flatMap((chosen) => effects.map((effect) => [...chosen, effect]));
+    }
     const worlds = [];
-    for (let i = from; i <= to; i++) {
-      const flying = touching.filter((c) => c.begun <= i && (c.done === null || c.done > i)).slice(0, 4);
-      // Each change in flight: not landed (null), landed, or (a write) passing through; one of the process's own only once every earlier one it overlaps has landed.
-      let choices = [[]];
-      for (const change of flying) {
-        const effects = decided && change.decides ? [change.post] : [null, change.post, ...(change.partial === null ? [] : [change.partial])];
-        choices = choices.flatMap((chosen) => effects.map((effect) => [...chosen, effect]));
-      }
-      for (const chosen of choices) {
-        if (flying.some((later, j) => chosen[j] !== null && flying.some((earlier, k) => k < j && after(earlier, later) && chosen[k] !== earlier.post))) continue;
-        worlds.push(flying.reduce((world, change, j) => (chosen[j] === null ? world : laid(world, change.domain, chosen[j])), history[i]));
-      }
+    for (const chosen of choices) {
+      if (flying.some((later, j) => chosen[j] !== null && flying.some((earlier, k) => k < j && after(earlier, later) && chosen[k] !== earlier.post))) continue;
+      worlds.push(flying.reduce((world, change, j) => (chosen[j] === null ? world : laid(world, change.domain, chosen[j])), history[i]));
     }
     return worlds;
   };
+  /** Every world `rel` may have been seen in between states `from` and `to`, with the changes in flight that touch it. */
+  const worldsSeen = (rel, from, to, decided = false) => {
+    const touching = changes.filter((change) => change.domain.some((root) => under(rel, root) || under(root, rel)));
+    const worlds = [];
+    for (let i = from; i <= to; i++) worlds.push(...worldsOf(flyingAt(touching, i), i, decided));
+    return worlds;
+  };
+  /** Every world state `i` may be seen as, with every change then in flight. */
+  const worldsAt = (i) => worldsOf(flyingAt(changes, i), i, false);
   return {
     get world() { return world; },
     seq,
@@ -416,7 +428,7 @@ export function createModel(tree = SEED_TREE) {
       // A write the process makes is an open that truncates, then the bytes: while it is in flight, the file may be empty.
       const partial = way === 'own' && op === 'write' ? new Map([...post, [a, { ...post.get(a), content: '', size: 0 }]]) : null;
       const decides = own && DECIDED.includes(op);
-      const record = { domain: domainOf(step), own, decides, sync: way === 'sync', post, partial, begun: seq(), done: null, landing: null };
+      const record = { domain: domainOf(step), own, decides, post, partial, begun: seq(), done: null, landing: null };
       changes.push(record);
       return record;
     },
@@ -448,27 +460,29 @@ export function createModel(tree = SEED_TREE) {
      * with the access the open needed, then read at that state or a later one.
      */
     followed: (op, rel, answer, from, to, offset = 0) => {
+      const kind = op === 'opendir' ? 'dir' : 'file';
+      // Each identity the open may have found at `rel`, with the earliest state it was there.
+      const opened = new Map();
       for (let i = from; i <= to; i++) {
-        for (const opened of worldsSeen(rel, i, i)) {
-          const state = opened.get(rel);
-          if (state === undefined || unreachable(opened, rel) !== null || (bits(state) & 4) === 0) continue;
-          if (state.type !== (op === 'opendir' ? 'dir' : 'file')) continue;
-          for (let j = i; j <= to; j++) {
-            for (const [k, held] of history[j]) {
-              if (held.id !== state.id) continue;
-              for (const read of worldsSeen(k, j, j)) {
-                const now = read.get(k);
-                if (now?.id !== state.id) continue;
-                if (op === 'opendir' ? Array.isArray(answer) && answer.join('/') === childrenOf(read, k).join('/') : answer === now.content.slice(offset, offset + PREAD_BYTES)) return true;
-              }
+        for (const world of worldsAt(i)) {
+          const state = world.get(rel);
+          if (state === undefined || state.type !== kind || unreachable(world, rel) !== null || (bits(state) & 4) === 0) continue;
+          if (!opened.has(state.id)) opened.set(state.id, i);
+        }
+      }
+      // Read where it was then, in any world that state may be seen as, landed or in flight.
+      for (const [id, since] of opened) {
+        for (let j = since; j <= to; j++) {
+          for (const world of worldsAt(j)) {
+            for (const [k, now] of world) {
+              if (now.id !== id) continue;
+              if (op === 'opendir' ? Array.isArray(answer) && answer.join('/') === childrenOf(world, k).join('/') : answer === now.content.slice(offset, offset + PREAD_BYTES)) return true;
             }
           }
         }
       }
       return false;
     },
-    /** The names of the process's own changes in flight, not decided when called, that `domain` overlaps: its outcome races theirs. */
-    racing: (domain) => changes.filter((c) => c.done === null && c.own && !c.decides && !c.sync && overlaps(c.domain, domain)).flatMap((c) => c.domain),
     /** Whether any change is in flight. */
     moving: () => changes.some((change) => change.done === null),
     /** The state the latest change of `rel` (or above it) landed at; Infinity while one is in flight. */
@@ -541,8 +555,6 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
   const deferred = [];
   /** Files whose bytes a call that cannot wait was refused, and no awaited read answered since (Node's misses). */
   const missed = new Set();
-  /** Names where two of the process's own changes raced (Node: a write decided after its call, and a later change): the session says how they ended. */
-  const unsure = new Set();
   /** Wrong answers and refused changes found in flight, thrown at the next step. */
   const failures = [];
   /** The process's waves wait before they reach the session (['stall']). */
@@ -630,10 +642,8 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
       note(`  (step ${at} skipped: it would decide on an awaited change of the process's own its view does not show yet, a known gap)`);
       return null;
     }
-    const raced = !outside(way) ? model.racing(domain) : [];
     const record = model.begin(step);
     if (record === null) { note(`  (step ${at} skipped: ${JSON.stringify(step)} is not valid now)`); return null; }
-    for (const root of raced.length > 0 ? [...raced, ...domain] : []) unsure.add(root);
     const publishes = outside(way) && overlaps(unpublished, domain) ? unpublished : null;
     const finish = () => model.finish(record, () => {
       if (outside(way)) peerAt.push({ done: seq(), domain });
@@ -779,24 +789,15 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
       const owed = [...missed].filter((rel) => world.get(rel)?.type === 'file' && unreachable(world, rel) === null && (bits(world.get(rel)) & 4) !== 0).map(key).sort();
       if (ledger.join() !== owed.join()) throw new Finding(`at rest, the program's misses are [${ledger}]; unanswered are [${owed}]`, end);
     }
-    // Where the process's own changes raced, how they ended is what the session holds: the process must show that.
-    const truth = new Map(world);
     for (const rel of readable) {
-      if (![...unsure].some((root) => under(rel, root) || under(root, rel))) continue;
-      const held = normalized(await engine.authority.peerAs(CRED_KERNEL).lstat(key(rel)).catch(() => null));
-      if (held === null) { truth.delete(rel); continue; }
-      truth.set(rel, held.type === 'directory' ? { ...world.get(rel), type: 'dir', mode: held.mode & 0o777, uid: held.uid, gid: held.gid }
-        : { ...world.get(rel), type: 'file', content: dec.decode(engine.authority.rawVfs.as(CRED_KERNEL).readFile(key(rel))), size: held.size, mode: held.mode & 0o777, uid: held.uid, gid: held.gid });
-    }
-    for (const rel of readable) {
-      const state = truth.get(rel);
+      const state = world.get(rel);
       for (const way of ['own', 'sync']) {
         for (const op of ['stat', state?.type === 'dir' ? 'readdir' : 'readFile']) {
           const answer = await read(way, op, rel);
           if (answer?.code === 'EAGAIN' && way === 'sync' && (op === 'readFile' ? !owedBytes(rel) && (lazy || model.readable(rel, seq(), seq())) : lazy)) continue;
           if (answer?.code === 'EISDIR' && way === 'sync' && gaps.refusedAsDirectory && state?.type === 'dir') continue;
-          if (!answers(op, rel, answer, truth)) {
-            throw new Finding(`at rest, ${way} ${op} ${rel || '.'} answered ${JSON.stringify(answer)}; the model holds ${op === 'readdir' && state?.type === 'dir' ? `[${childrenOf(truth, rel)}]` : describe(state)}`, end);
+          if (!answers(op, rel, answer, world)) {
+            throw new Finding(`at rest, ${way} ${op} ${rel || '.'} answered ${JSON.stringify(answer)}; the model holds ${op === 'readdir' && state?.type === 'dir' ? `[${childrenOf(world, rel)}]` : describe(state)}`, end);
           }
         }
       }
