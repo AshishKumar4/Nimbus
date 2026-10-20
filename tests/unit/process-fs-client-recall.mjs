@@ -9,7 +9,10 @@
  *   from a backend's close included), and is never sent again as a success;
  * - an unfenced wave refused EAGAIN with no `recall` is lost (EIO), as before;
  * - each head of the log has its own budget: many in a row, each refused
- *   once, all land.
+ *   once, all land;
+ * - a close that consumed its description and then met a recall (its
+ *   backend's flush) took effect: the session does not mark it to go again,
+ *   and the client answers it as failed, fenced or not, never as done.
  */
 
 import assert from 'node:assert/strict';
@@ -20,6 +23,8 @@ import { SupervisorDeliveries } from '../../packages/core/src/workspace/supervis
 import { createSupervisorOpHandler } from '../../packages/core/src/workspace/supervisor-op.ts';
 import { processFsClient } from '../../packages/core/src/_shared/process-fs-client.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+import { WaveIngest } from '../../packages/core/src/runtime/wave-ingest.ts';
+import { RecallRequired } from '../../packages/core/src/vfs/recall.ts';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -154,6 +159,62 @@ const writeFile = (path, text) => ({ type: 'call', call: { call: 'writeFile', pa
   for (const [i, answer] of answers.entries()) assert.equal((await answer)?.failed, undefined, `write ${i} was not failed`);
   for (let i = 0; i < 12; i++) assert.equal(s.text(`home/user/n${i}.txt`), `n${i}`);
   await c.settle();
+}
+
+// ── A close whose description is consumed, its flush then meeting a recall: failed, never done, fenced or not ──
+for (const fenced of [true, false]) {
+  const harness = createSqliteVfsTestHarness();
+  const engine = new SqliteVFS(harness.sql, harness.ctx);
+  const waves = new WaveIngest(null);
+  const kernel = engine.as(CRED_KERNEL);
+  kernel.mkdir('home/user', { recursive: true, mode: 0o755 });
+  kernel.chown('home/user', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+  kernel.writeFile('home/user/e.txt', enc.encode(''));
+  kernel.chown('home/user/e.txt', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+  const nodes = new Map();
+  let failClose = true;
+  // The binding's descriptions: its close takes the description, then its flush meets a delegation to recall.
+  const descriptions = {
+    adopt: (id, ino, rights, path, cred) => {
+      const node = engine.describeInode(ino, path, cred, rights);
+      if (node === null) return null;
+      nodes.set(id, node);
+      return 1;
+    },
+    node: (id) => nodes.get(id),
+    mounted: () => undefined,
+    handle: (id) => (nodes.has(id) ? 1 : undefined),
+    close: (id) => {
+      const node = nodes.get(id);
+      if (node === undefined) return;
+      nodes.delete(id);
+      node.close();
+      if (failClose) {
+        failClose = false;
+        throw Object.assign(new Error('EAGAIN: close: its buffered writes wait on a recall'), { code: 'EAGAIN', cause: new RecallRequired('home/user', 'revoke', 'home/user/e.txt', async () => {}) });
+      }
+    },
+  };
+  let epochs = 0;
+  const user = engine.as(CRED_SESSION_USER);
+  const c = processFsClient({
+    session: {
+      openWriter: async () => (fenced ? `w${++epochs}` : null),
+      writeBatchStream: (stream, fence) => waves.writeStream(user, stream, {
+        ...(fenced ? { sequence: { writer: `${PID}:${fence.writer}`, first: fence.seq, ack: fence.ack ?? 0, pid: PID } } : {}),
+        descriptions,
+      }),
+    },
+    retry: RETRY,
+    grantAfter: Number.MAX_SAFE_INTEGER,
+  });
+  const label = fenced ? 'fenced' : 'unfenced';
+  await c.submit({ type: 'call', call: { call: 'open', path: 'home/user/e.txt', mode: 0o644, access: 'write', description: 'e1' } });
+  const closing = c.submit({ type: 'call', call: { call: 'close', path: 'home/user/e.txt', description: 'e1' } }).then((value) => ({ value }), (error) => ({ error }));
+  await c.flush().catch(() => undefined);
+  const closed = await closing;
+  assert.notEqual(closed.error, undefined, `${label}: a close that took effect and failed is no success: ${JSON.stringify(closed)}`);
+  await c.settle().catch(() => undefined);
 }
 
 console.log('process-fs-client-recall: ok');
