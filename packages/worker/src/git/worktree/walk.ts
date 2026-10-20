@@ -231,18 +231,18 @@ export class DirtySet {
  * differs.
  */
 export async function compareEntry(
-  tree: Worktree, dc: DirCache, i: number, path: string, st: WorktreeStat, uncleanIsDirty = false,
+  tree: Worktree, dc: DirCache, i: number, path: string, st: WorktreeStat, uncleanIsDirty = false, updates: IndexUpdates = dc,
 ): Promise<Dirty | null> {
   const changed = matchStat(dc, i, st, tree.filemode);
   if (changed & TYPE) return { change: 'T' };
   if (changed & MODE) return { change: 'M' };
   if ((dc.mode(i) & S_IFMT) === S_IFGITLINK) {
-    dc.markUptodate(i);
+    updates.markUptodate(i);
     return null;
   }
   const racy = changed === 0 && dc.isRacy(i);
   if (changed === 0 && !racy) {
-    dc.markUptodate(i);
+    updates.markUptodate(i);
     return null;
   }
   if (tree.counters.why && tree.counters.why.length < 20) {
@@ -255,8 +255,43 @@ export async function compareEntry(
   if (((changed & DATA) && dc.size(i) !== 0) || uncleanIsDirty) return { change: 'M' };
   const oid = await worktreeBlobId(tree, path, st);
   if (oid !== dc.oid(i)) return { change: 'M', oid: oid || undefined };
-  dc.refresh(i, st);
+  updates.refresh(i, st);
   return null;
+}
+
+/** What a comparison changes in the index: an entry proved up to date, an entry's stat refreshed. */
+export interface IndexUpdates {
+  markUptodate(i: number): void;
+  refresh(i: number, stat: EntryStat): void;
+}
+
+/**
+ * The updates of a walk over a scan, kept until the scan has answered to its
+ * end: a scan the tree changed under is walked again, from the index as it
+ * was. An up-to-date entry costs its number; a refresh, its stat.
+ */
+class HeldIndexUpdates implements IndexUpdates {
+  private uptodate = new Int32Array(64);
+  private count = 0;
+  private readonly refreshed: Array<{ i: number; stat: EntryStat }> = [];
+
+  markUptodate(i: number): void {
+    if (this.count === this.uptodate.length) {
+      const grown = new Int32Array(this.uptodate.length * 2);
+      grown.set(this.uptodate);
+      this.uptodate = grown;
+    }
+    this.uptodate[this.count++] = i;
+  }
+
+  refresh(i: number, stat: EntryStat): void {
+    this.refreshed.push({ i, stat });
+  }
+
+  applyTo(dc: DirCache): void {
+    for (let k = 0; k < this.count; k++) dc.markUptodate(this.uptodate[k]);
+    for (const { i, stat } of this.refreshed) dc.refresh(i, stat);
+  }
 }
 
 export interface ScanOptions {
@@ -310,10 +345,10 @@ const TRACKED_GITLINK = 4;
 /** How many times a worktree's scan is tried when the tree changes under it, before the walk by name. */
 const SCAN_ATTEMPTS = 3;
 
-/** A failure of the worktree's scan itself (not of a comparison): the walk falls back to asking by name. */
+/** A failure of the worktree's scan itself (not of a comparison): `changed` (EAGAIN) is tried again, else the walk asks by name. */
 class ScanFailure extends Error {
-  constructor(readonly failure: unknown) {
-    super('worktree scan failed');
+  constructor(readonly changed: boolean) {
+    super(changed ? 'the worktree changed under its scan' : 'worktree scan failed');
   }
 }
 
@@ -332,15 +367,18 @@ export async function scanWorktree(tree: Worktree, dc: DirCache, options: ScanOp
   const scan = tree.scan;
   if (scan !== undefined) {
     for (let attempt = 0; attempt < SCAN_ATTEMPTS; attempt++) {
+      // Each attempt reads the .gitignore files afresh: one may have changed with the tree.
+      options.excludes?.forget();
       try {
         const merged = await compare(tree, dc, options, scan);
         if (merged !== null) return merged;
         break;
       } catch (error) {
         if (!(error instanceof ScanFailure)) throw error;
-        if (!isVfsError(error.failure, 'EAGAIN')) break;
+        if (!error.changed) break;
       }
     }
+    options.excludes?.forget();
   }
   const byName = await compare(tree, dc, options, null);
   if (byName === null) throw new Error('the walk by name always answers');
@@ -360,6 +398,12 @@ async function compare(
   const result: ScanResult = { dirty: new DirtySet(dc.count), untracked: [], unmerged: [], errors: { tracked: [], untracked: [] } };
   const join = (dir: string, name: string) => (dir ? `${dir}/${name}` : name);
 
+  /** Where the untracked scan's warnings go: the result's, or an untracked directory's until its run says it is no repository. */
+  let warnings = result.errors.untracked;
+  /** What the comparisons change in the index: at once by name, held until a scan has answered to its end. */
+  const held = scan === null ? null : new HeldIndexUpdates();
+  const updates: IndexUpdates = held ?? dc;
+
   const list = async (dir: string) => await tree.fs.list(dir);
 
   /** A directory's listing, or null when it cannot be read: the untracked scan warns, as read_directory does. */
@@ -367,7 +411,7 @@ async function compare(
     try {
       return await list(dir);
     } catch (error) {
-      if (options.untracked !== 'no') result.errors.untracked.push(`warning: could not open directory '${dir}/': ${strerror(error)}`);
+      if (options.untracked !== 'no') warnings.push(`warning: could not open directory '${dir}/': ${strerror(error)}`);
       return null;
     }
   };
@@ -500,7 +544,7 @@ async function compare(
           if (st !== undefined) {
             const dirty = st === null ? { change: 'D' as const }
               : st.type === 'directory' && !gitlink ? { change: 'D' as const, directory: true }
-              : await compareEntry(tree, dc, i, path, st, options.uncleanIsDirty);
+              : await compareEntry(tree, dc, i, path, st, options.uncleanIsDirty, updates);
             if (dirty) result.dirty.set(i, dirty);
           }
         }
@@ -542,13 +586,16 @@ async function compare(
     }
     const cursor = new ScanCursor(source());
     const topNames: string[] = [];
-    await trackedDir('', new Uint8Array(0), 0, dc.count, topNames);
+    await trackedDir('', TOP, 0, dc.count, topNames);
     const names = (listing: ReadonlyArray<string>) => [...listing].sort().join('/');
-    return names(topNames) === names(top.map(({ name }) => name));
+    if (names(topNames) !== names(top.map(({ name }) => name))) return false;
+    // The scan answered to its end on one tree: what it proved goes into the index.
+    held?.applyTo(dc);
+    return true;
 
-    /** The scan's run under `prefix`, passed over. */
-    async function skipUnder(prefix: Uint8Array): Promise<void> {
-      for (let entry = await cursor.peek(); entry !== null && under(entry, prefix); entry = await cursor.peek()) cursor.take();
+    /** The scan's `run`, passed over. */
+    async function skipUnder(run: Run): Promise<void> {
+      for (let entry = await cursor.peek(); entry !== null && under(entry, run); entry = await cursor.peek()) cursor.take();
     }
 
     /**
@@ -560,17 +607,17 @@ async function compare(
      * `onDir`.
      */
     async function children<T>(
-      prefix: Uint8Array,
+      run: Run,
       dir: string,
-      before: (key: Uint8Array) => Promise<void>,
+      before: (key: Uint8Array) => void,
       onEntry: (name: string, path: string, entry: ScannedEntry, key: Uint8Array) => Promise<T>,
-      onDir: (name: string, path: string, entry: ScannedEntry | null, under: Uint8Array, key: Uint8Array, seen: T | undefined) => Promise<void>,
+      onDir: (name: string, path: string, entry: ScannedEntry | null, under: Run, key: Uint8Array, seen: T | undefined) => Promise<void>,
     ): Promise<void> {
-      const skip = prefix.length;
+      const skip = run.bytes.length;
       const pending: Array<{ name: string; path: string; key: Uint8Array; entry: ScannedEntry; seen: T }> = [];
       const open = async (name: string, path: string, entry: ScannedEntry | null, key: Uint8Array, seen: T | undefined) => {
-        await before(key);
-        await onDir(name, path, entry, concatBytes(prefix, key), key, seen);
+        before(key);
+        await onDir(name, path, entry, runOf(run, name, key), key, seen);
       };
       // The directories whose runs sort before `limit` (all, when null) are empty: each is opened as such.
       const flush = async (limit: Uint8Array | null) => {
@@ -580,12 +627,12 @@ async function compare(
           await open(next.name, next.path, next.entry, next.key, next.seen);
         }
       };
-      for (let entry = await cursor.peek(); entry !== null && under(entry, prefix); entry = await cursor.peek()) {
-        const rest = entry.bytes.subarray(skip);
+      for (let entry = await cursor.peek(); entry !== null && under(entry, run); entry = await cursor.peek()) {
+        const rest = bytesOf(entry).subarray(skip);
         const slash = rest.indexOf(0x2f);
         if (slash < 0) {
           await flush(rest);
-          await before(rest);
+          before(rest);
           cursor.take();
           const name = entry.path.slice(dir ? dir.length + 1 : 0);
           const path = join(dir, name);
@@ -614,8 +661,8 @@ async function compare(
     }
 
     /** A tracked directory: its index entries [lo, hi) merged with its run under `prefix`. */
-    async function trackedDir(dir: string, prefix: Uint8Array, lo: number, hi: number, topNames?: string[]): Promise<void> {
-      const skip = prefix.length;
+    async function trackedDir(dir: string, run: Run, lo: number, hi: number, topNames?: string[]): Promise<void> {
+      const skip = run.bytes.length;
       let ix = lo;
       /** The index entry at `i` as one name of this directory sorts: a file's name, a directory's `name/`. */
       const itemKey = (i: number) => {
@@ -624,7 +671,7 @@ async function compare(
         return slash >= 0 ? rest.subarray(0, slash + 1) : rest;
       };
       /** Index entries the worktree has nothing for, up to `key` (all, when null): as the walk by name finds them absent. */
-      const absentBefore = async (key: Uint8Array | null) => {
+      const absentBefore = (key: Uint8Array | null) => {
         while (ix < hi && (key === null || compareBytes(itemKey(ix), key) < 0)) {
           const rest = dc.pathBytes(ix).subarray(skip);
           const slash = rest.indexOf(0x2f);
@@ -646,7 +693,7 @@ async function compare(
           ix = next;
         }
       };
-      await children<number>(prefix, dir, absentBefore, async (name, path, entry, key) => {
+      await children<number>(run, dir, absentBefore, async (name, path, entry, key) => {
         topNames?.push(name);
         if (name === '.git') return 0;
         let kinds = 0;
@@ -659,7 +706,7 @@ async function compare(
             if (options.unmerged && inScope(path)) result.unmerged.push({ path, lo: ix, hi: next, stat: entry.stat });
           } else if (!dc.skipWorktree(ix) && !dc.assumeValid(ix) && inScope(path)) {
             const dirty = entry.stat.type === 'directory' && !gitlink ? { change: 'D' as const, directory: true }
-              : await compareEntry(tree, dc, ix, path, entry.stat, options.uncleanIsDirty);
+              : await compareEntry(tree, dc, ix, path, entry.stat, options.uncleanIsDirty, updates);
             if (dirty) result.dirty.set(ix, dirty);
           }
           kinds = gitlink ? TRACKED_GITLINK : TRACKED_FILE;
@@ -693,7 +740,7 @@ async function compare(
         if (options.untracked === 'no' || !reached) return await skipUnder(below);
         await untrackedDir(path, below, (kinds & TRACKED_FILE) !== 0, result.untracked);
       });
-      await absentBefore(null);
+      absentBefore(null);
     }
 
     /**
@@ -703,19 +750,26 @@ async function compare(
      * below it is untracked and not ignored; else what it holds. What it
      * holds is kept until its run ends, which says whether a `.git` was in it.
      */
-    async function untrackedDir(path: string, prefix: Uint8Array, shadowed: boolean, out: string[]): Promise<void> {
+    async function untrackedDir(path: string, run: Run, shadowed: boolean, out: string[]): Promise<void> {
       const ignored = await excluded(path, true);
-      if (ignored && !options.ignoredToo) return await skipUnder(prefix);
+      if (ignored && !options.ignoredToo) return await skipUnder(run);
       const normal = options.untracked === 'normal' && inScope(path) && !ignored;
       const below: string[] = [];
+      // What is found below, warnings too, is kept until the run says whether this is a repository.
+      const outer = warnings;
+      const heard: string[] = [];
+      warnings = heard;
       let repository = false;
       let holds = false;
-      await children<void>(prefix, path, async () => {}, async (name, child, entry) => {
+      await children<void>(run, path, () => {}, async (name, child, entry) => {
         if (name === '.git') {
+          // A nested repository: listed as itself, nothing below it kept.
           repository = true;
+          below.length = 0;
+          heard.length = 0;
           return;
         }
-        if (entry.stat.type === 'directory') return;
+        if (repository || entry.stat.type === 'directory') return;
         if (normal) {
           if (!shadowed && !holds && entry.stat.type !== 'other' && !await excluded(child, false)) holds = true;
           return;
@@ -735,10 +789,12 @@ async function compare(
         }
         await untrackedDir(child, under, false, below);
       });
+      warnings = outer;
       if (repository) {
         if (inScope(path) && !shadowed) out.push(`${path}/`);
         return;
       }
+      for (const warning of heard) warnings.push(warning);
       if (normal) {
         if (!shadowed && holds) out.push(`${path}/`);
         return;
@@ -747,13 +803,13 @@ async function compare(
     }
 
     /** -unormal's probe of a directory below an untracked one, from its run: a `.git` in it, or {@link holdsUntracked} of it. */
-    async function probe(path: string, prefix: Uint8Array, entry: ScannedEntry | null): Promise<boolean> {
+    async function probe(path: string, run: Run, entry: ScannedEntry | null): Promise<boolean> {
       if (entry?.byName) {
-        await skipUnder(prefix);
+        await skipUnder(run);
         return (await listOrWarn(path) ?? []).some((child) => child.name === '.git') || await holdsUntracked(path);
       }
       let holds = false;
-      await children<void>(prefix, path, async () => {}, async (name, child, found) => {
+      await children<void>(run, path, () => {}, async (name, child, found) => {
         if (holds || found.stat.type === 'directory') return;
         if (name === '.git' || (found.stat.type !== 'other' && !await excluded(child, false))) holds = true;
       }, async (name, child, found, under) => {
@@ -772,9 +828,27 @@ async function compare(
 /** The byte `/`. */
 const SLASH = new Uint8Array([0x2f]);
 
-/** An entry of the scan with its path's bytes, the order it comes in. */
-interface ScannedEntry extends ScannedWorktreeEntry {
+/** A directory's run in the scan: what its entries' paths start with (`dir/`; empty: the top), as text and as bytes. */
+interface Run {
+  text: string;
   bytes: Uint8Array;
+}
+
+const TOP: Run = { text: '', bytes: new Uint8Array(0) };
+
+/** The run of the directory `name/` (`key`, its bytes) inside `run`. */
+function runOf(run: Run, name: string, key: Uint8Array): Run {
+  return { text: `${run.text}${name}/`, bytes: concatBytes(run.bytes, key) };
+}
+
+/** An entry of the scan; its path's bytes (the order it comes in) taken when first asked for. */
+interface ScannedEntry extends ScannedWorktreeEntry {
+  encoded: Uint8Array | null;
+}
+
+function bytesOf(entry: ScannedEntry): Uint8Array {
+  entry.encoded ??= encoder.encode(entry.path);
+  return entry.encoded;
 }
 
 /** The scan, one entry looked at before it is taken; a failure of the scan's own is a ScanFailure. */
@@ -792,10 +866,10 @@ class ScanCursor {
       try {
         next = await this.entries.next();
       } catch (error) {
-        throw new ScanFailure(error);
+        throw new ScanFailure(isVfsError(error, 'EAGAIN'));
       }
       const value = next.done ? null : next.value;
-      this.head = value === null ? null : { path: value.path, stat: value.stat, byName: value.byName, bytes: encoder.encode(value.path) };
+      this.head = value === null ? null : { path: value.path, stat: value.stat, byName: value.byName, encoded: null };
     }
     return this.head;
   }
@@ -805,12 +879,9 @@ class ScanCursor {
   }
 }
 
-/** Whether `entry` is strictly below the directory whose run `prefix` (`dir/`, its bytes; empty: the top) is. */
-function under(entry: ScannedEntry, prefix: Uint8Array): boolean {
-  const bytes = entry.bytes;
-  if (bytes.length <= prefix.length) return prefix.length === 0 && bytes.length > 0;
-  for (let i = prefix.length - 1; i >= 0; i--) if (bytes[i] !== prefix[i]) return false;
-  return true;
+/** Whether `entry` is in `run` (strictly below its directory). */
+function under(entry: ScannedEntry, run: Run): boolean {
+  return entry.path.length > run.text.length && entry.path.startsWith(run.text);
 }
 
 function compareBytes(a: Uint8Array, b: Uint8Array): number {

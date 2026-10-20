@@ -78,7 +78,7 @@ const git = async (...args) => {
   }, vfs);
   assert.equal(code, 0, `git ${args.join(' ')}: ${stderr}`);
   const counters = JSON.parse(/\[git\] (\{.*\})/.exec(stderr)?.[1] ?? '{}');
-  return { stdout, counters };
+  return { stdout, stderr, counters };
 };
 await git('init', '-q');
 await git('add', '-A');
@@ -97,8 +97,14 @@ assert.equal(stdout, realGit(disk, 'status', '--porcelain', '-uall'), 'what real
 assert.deepEqual({ readdirs: counters.readdirs, lstats: counters.lstats, scans: counters.scans }, { readdirs: 1, lstats: 0, scans: 1 }, `one scan, no call per path: ${JSON.stringify(counters)}`);
 assert.ok(counters.scanned >= FILES, `every entry came from the scan: ${JSON.stringify(counters)}`);
 console.log(`  ✓ git status on ${FILES + 5} files: one ordered scan (${counters.scanned} entries), real git's answer`);
+// An untracked nested repository is listed as itself, never entered: what sorts before its `.git` (an
+// unreadable `!private`, files) is neither listed nor warned of, whatever -u says.
+for (const file of ['nested/!a', 'nested/-b', 'nested/!private/f', 'nested/.git/HEAD', 'nested/z']) write(file, 'n\n');
+user.chmod(`${root}/nested/!private`, 0);
 // Untracked directories judged as the scan passes them: -unormal lists each one as itself, -uno none.
-for (const flags of [[], ['-uno']]) {
-  assert.equal((await git('status', '--porcelain', ...flags)).stdout, realGit(disk, 'status', '--porcelain', ...flags), `status ${flags.join(' ')} as real git's`);
+for (const flags of [[], ['-uno'], ['-uall']]) {
+  const answer = await git('status', '--porcelain', ...flags);
+  assert.equal(answer.stdout, realGit(disk, 'status', '--porcelain', ...flags), `status ${flags.join(' ')} as real git's`);
+  assert.ok(!answer.stderr.includes('could not open'), `status ${flags.join(' ')} warns of nothing inside a nested repository: ${answer.stderr}`);
 }
 console.log('git-status-one-scan: ok');
