@@ -1,5 +1,6 @@
 /** Guest entries compiled independently of the host's runtime/bootstrap modules. */
 import { errorText } from '../_shared/error-text.js';
+import { errnoCodeOf, errnoOf, isVfsErrorCode, VFS_STRERROR } from '../vfs/vfs-error.js';
 import type { FacetBindings } from './facet-host.js';
 import type { CPythonFacetResult } from './cpython-runner.js';
 import type { RubyFacetCallArgs } from './ruby-runner.js';
@@ -484,19 +485,13 @@ export interface TsrsFacetResult {
 /** tsrs's own status for a run that crashed (a panic, or a trap: a stack overflow, running out of memory); tsc's are 0-4. */
 const TSRS_EXIT_CRASHED = 5;
 /** Text a failure is reported to tsrs as: Rust's io::Error display, "<strerror> (os error N)", as @tsrs/wasm's Node host gives it. */
-const TSRS_OS_ERRORS: Readonly<Record<string, readonly [string, number]>> = {
-    EPERM: ['Operation not permitted', 1], ENOENT: ['No such file or directory', 2], EACCES: ['Permission denied', 13],
-    EBUSY: ['Resource busy', 16], EEXIST: ['File exists', 17], ENOTDIR: ['Not a directory', 20], EISDIR: ['Is a directory', 21],
-    ENOSPC: ['No space left on device', 28], EROFS: ['Read-only file system', 30], ENAMETOOLONG: ['File name too long', 36],
-    ENOTEMPTY: ['Directory not empty', 39], ELOOP: ['Too many levels of symbolic links', 40],
-};
 function tsrsErrorText(error: unknown): string {
-    const code = typeof error === 'object' && error !== null ? Reflect.get(error, 'code') : undefined;
-    const known = typeof code === 'string' ? TSRS_OS_ERRORS[code] : undefined;
-    return known ? `${known[0]} (os error ${known[1]})` : errorText(error);
+    const code = errnoCodeOf(error);
+    const errno = code === undefined ? undefined : errnoOf(code);
+    return isVfsErrorCode(code) && errno !== undefined ? `${VFS_STRERROR[code]} (os error ${-errno})` : errorText(error);
 }
 function tsrsMissing(error: unknown): boolean {
-    return typeof error === 'object' && error !== null && Reflect.get(error, 'code') === 'ENOENT';
+    return errnoCodeOf(error) === 'ENOENT';
 }
 /** A directory entry's kind as tsrs reads it: d, f, l (a link, which it stats next), or o. */
 function tsrsKind(type: string): 'd' | 'f' | 'l' | 'o' {
