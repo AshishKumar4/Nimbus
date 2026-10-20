@@ -76,6 +76,13 @@ export declare function expandRegexWord(parts: WordPart[], ctx: ExpandContext): 
  * No field splitting and no glob expansion.
  */
 export declare function expandWord(parts: WordPart[], ctx: ExpandContext): Promise<string>;
+/**
+ * One brace-expanded word's fields: split, and each globbed as a pattern whose
+ * quoted characters match only themselves (an unquoted expansion's `*` globs,
+ * a quoted one's does not).
+ */
+export declare function expandFields(word: WordPart[], ctx: ExpandContext): Promise<string[]>;
+export declare function expandBraceWord(parts: WordPart[]): WordPart[][];
 /** A subscript's text once its expansions (`$i`, `$(…)`) are done, before its arithmetic. */
 export declare function expandSubscript(subscript: string, ctx: ExpandContext): Promise<string>;
 /** An expanded word's arithmetic (a subscript's, a `[[ -eq ]]` operand's, let's): a blank one is 0. Throws ArithmeticError. */
