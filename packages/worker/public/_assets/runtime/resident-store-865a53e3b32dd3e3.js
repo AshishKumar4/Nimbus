@@ -2140,7 +2140,7 @@ var __nimbusResidentModule = (() => {
       },
       rowsChanged(path) {
         if (filling.size === 0) return;
-        const t = coherence.require();
+        const t = coherence.tables("rowsChanged");
         const disown = (at) => {
           if (filling.delete(at) && t.fileHead(at) === void 0) t.chunkDelete(at);
         };

@@ -573,7 +573,8 @@ export function createCells(coherence, admission, namespace, observeRead) {
         rowsChanged(path) {
             if (filling.size === 0)
                 return;
-            const t = coherence.require();
+            // Maintenance, not a read: it runs while a kept store is sealed for its reconcile too.
+            const t = coherence.tables('rowsChanged');
             const disown = (at) => { if (filling.delete(at) && t.fileHead(at) === undefined)
                 t.chunkDelete(at); };
             if (path !== undefined) {
