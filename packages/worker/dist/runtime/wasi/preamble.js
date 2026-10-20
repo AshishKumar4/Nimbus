@@ -201,7 +201,7 @@ function __wasiStartResident(sup, cred) {
     // A kept store answers as it stood at its cursor: the process's first
     // answer takes the barrier from there (inbound, below), so it reads
     // everything that happened since, as a barrier inside one process does.
-    let view = kept === null ? null : store.lazy.namespaceView(supervisor, kept.device, cred);
+    let view = kept === null ? null : store.view.namespaceView(supervisor, kept.device, cred);
     if (view !== null && !view.ready())
         view = null;
     /** The process's admission listener, given to the view once there is one (ResidentNamespace.onAdmitted). */
@@ -211,9 +211,9 @@ function __wasiStartResident(sup, cred) {
     const ready = view !== null ? Promise.resolve(view) : (async () => {
         // The session's own filesystem is the one the store answers for: its root reports its device.
         const root = await authority.stat('/');
-        if (root === null || !(await store.lazy.bootLazy(supervisor)))
+        if (root === null || !(await store.view.bootLazy(supervisor)))
             return null;
-        view = store.lazy.namespaceView(supervisor, root.dev, cred);
+        view = store.view.namespaceView(supervisor, root.dev, cred);
         if (admitted !== null)
             view.onAdmitted?.(admitted);
         return view;
@@ -231,9 +231,10 @@ function __wasiStartResident(sup, cred) {
         fill: (key, entry) => (view === null ? Promise.resolve(null) : view.fill(key, entry)),
         pages: (key, revision, size, first, last) => (view === null ? Promise.resolve(null) : view.pages(key, revision, size, first, last)),
         fillMany: (files) => (view === null ? Promise.resolve() : view.fillMany(files)),
-        barrier: () => (view === null ? Promise.resolve(false) : view.barrier()),
+        barrier: (options) => (view === null ? Promise.resolve({ landed: false }) : view.barrier(options)),
+        acquireArgs: () => view?.acquireArgs() ?? null,
+        repairOwed: () => view?.repairOwed?.() ?? false,
         cursor: () => view?.cursor() ?? null,
-        admit: (answer) => view === null ? Promise.resolve(false) : view.admit(answer),
         reserve: (bytes) => view !== null && view.reserve(bytes),
         release: (bytes) => { view?.release(bytes); },
         onAdmitted: (listener) => {

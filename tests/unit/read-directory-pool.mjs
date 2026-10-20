@@ -27,11 +27,12 @@ function fixture(options = {}) {
     client, before: async () => {},
     store: {
       ready: () => true, cursor: () => cursor, entry: (key) => nodes.get(key),
-      async admit(answer) {
+      // The answer a batch carried, applied as the barrier applies one (ResidentNamespace.barrier({ answer })).
+      async barrier({ answer }) {
         if (s.admission) await s.admission(answer);
         cursor = { epoch: answer.epoch, rev: answer.rev };
         for (const change of answer.paths) if (change.stat) nodes.set(change.path, { ...change.stat, target: null });
-        return !answer.poison;
+        return { landed: true, applied: !answer.poison };
       },
     },
     async call(request) {

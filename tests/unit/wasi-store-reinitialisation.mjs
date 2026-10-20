@@ -39,7 +39,7 @@ try {
   assert.ok(first.namespace.entry('home/user/first-only.txt'));
   const firstStats = P.__wasiFsStats();
   assert.ok(firstStats.local > 0, 'the first process actually answered calls from its resident store');
-  assert.equal(await first.namespace.barrier(), true);
+  assert.equal((await first.namespace.barrier()).landed, true);
   assert.deepEqual(firstProcess.acquireRequests.at(-1), firstSession.cursor());
   assert.equal(await P.__wasiSettleWrites(), null);
   await firstProcess.close();
@@ -49,7 +49,7 @@ try {
   assert.equal(P.__wasiFsStats().local, 0, 'a new WASI process starts a fresh read profiler');
   assert.deepEqual(secondProcess.acquireRequests[0], { epoch: null, rev: 0 }, 'the new process did not offer the previous cursor');
   assert.notEqual(firstSession.cursor().epoch, secondSession.cursor().epoch);
-  assert.equal(await second.namespace.barrier(), true);
+  assert.equal((await second.namespace.barrier()).landed, true);
   assert.deepEqual(secondProcess.acquireRequests.at(-1), secondSession.cursor(), 'the next barrier uses only the second session\'s cursor');
   assert.equal(second.namespace.entry('home/user/first-only.txt'), null, 'names from the previous process are absent');
   assert.equal(second.namespace.content('home/user/first-only.txt'), undefined, 'previously filled bytes are absent too');

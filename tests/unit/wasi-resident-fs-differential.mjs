@@ -85,9 +85,9 @@ const supervisor = {
   },
 };
 store.admission.setStorage(undefined, supervisor);
-assert.equal(await store.lazy.bootLazy(supervisor), true, 'the lazy namespace boots on the authority cursor');
+assert.equal(await store.view.bootLazy(supervisor), true, 'the lazy namespace boots on the authority cursor');
 const device = (await authority.stat('/')).dev;
-const adapter = residentFilesystem(authority, store.lazy.namespaceView(supervisor, device, USER));
+const adapter = residentFilesystem(authority, store.view.namespaceView(supervisor, device, USER));
 
 // ── answers, comparable ─────────────────────────────────────────────────────
 const digest = (bytes) => (bytes === null ? null : `${bytes.byteLength}:${createHash('sha256').update(bytes).digest('hex').slice(0, 16)}`);
@@ -302,7 +302,7 @@ await compareAll('held-writes');
       return typeof value === 'function' ? value.bind(target) : value;
     },
   });
-  const full = residentFilesystem(refusing, store.lazy.namespaceView(supervisor, device, USER));
+  const full = residentFilesystem(refusing, store.view.namespaceView(supervisor, device, USER));
   const a = await full.open(beneath('full-a.txt'), { write: true, create: true, truncate: true });
   await assert.rejects(async () => full.write(a.id, null, enc.encode('lost')), { code: 'ENOSPC' }, 'the write reports its refusal');
   await full.close(a.id);

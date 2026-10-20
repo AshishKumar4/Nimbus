@@ -148,7 +148,7 @@
 import { createAdmission, type Admission } from './admission.js';
 import { createCells, type Cells } from './cells.js';
 import { createCoherence, type Coherence } from './coherence.js';
-import { createLazy, type Lazy } from './lazy.js';
+import { createView, type View } from './view.js';
 import { createPages, type Pages } from './pages.js';
 import { createNamespace, type Namespace } from './namespace.js';
 import { createSync, type Sync } from './sync.js';
@@ -187,7 +187,7 @@ export interface ResidentStore {
   readonly transport: Transport;
   readonly sync: Sync;
   readonly pages: Pages;
-  readonly lazy: Lazy;
+  readonly view: View;
 }
 
 export function createResidentStore(options: ResidentStoreOptions = {}): ResidentStore {
@@ -198,8 +198,8 @@ export function createResidentStore(options: ResidentStoreOptions = {}): Residen
   const cells = createCells(coherence, admission, namespace, observeRead);
   const transport = createTransport(coherence, admission, namespace, cells);
   const sync = createSync(coherence, admission, namespace, cells, transport);
-  const pages = createPages(coherence, admission);
-  const lazy = createLazy(coherence, admission, namespace, cells, transport, sync, pages);
+  const pages = createPages(coherence, admission, namespace);
+  const view = createView(coherence, admission, namespace, cells, transport, sync, pages);
 
   const bindTables = (t: ResidentTables, heap: HeapTables | null): void => {
     // A store can outlive its process. Own rows left by an earlier one are
@@ -221,10 +221,10 @@ export function createResidentStore(options: ResidentStoreOptions = {}): Residen
           + 'the resident set cannot be served and every sync read would raise EAGAIN',
         );
       }
-      bindTables(sqlTables(sql), null);
+      bindTables(sqlTables(sql, cells.rowsChanged), null);
     },
     bindInMemory(budget) {
-      const t = heapTables();
+      const t = heapTables(cells.rowsChanged);
       bindTables(t, t);
       admission.bindHeap(budget);
     },
@@ -236,6 +236,6 @@ export function createResidentStore(options: ResidentStoreOptions = {}): Residen
     transport,
     sync,
     pages,
-    lazy,
+    view,
   };
 }

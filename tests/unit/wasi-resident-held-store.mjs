@@ -77,9 +77,9 @@ async function processOf(session, gate = () => null, { grantInos, looked, caught
     },
   };
   storeSource.admission.setStorage(undefined, supervisor);
-  assert.equal(await storeSource.lazy.bootLazy(supervisor), true);
+  assert.equal(await storeSource.view.bootLazy(supervisor), true);
   const device = (await authority.stat('/')).dev;
-  const view = storeSource.lazy.namespaceView(supervisor, device, USER);
+  const view = storeSource.view.namespaceView(supervisor, device, USER);
   const port = {
     openWriter: async () => null,
     writeBatchStream: async (stream, _fence, owner) => {
