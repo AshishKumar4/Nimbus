@@ -115,4 +115,16 @@ const done = (model, step) => model.finish(model.begin(step));
   assert.ok(!model.admits('stat', 'x/h', file(3), now, now, true));
 }
 
+{
+  // A descriptor follows what it opened: a directory a peer renamed after the open lists where it went, with what was made there since.
+  const model = createModel();
+  const from = model.seq();
+  model.finish(model.begin(['peer', 'rename', 'd', 'x/e']));
+  model.finish(model.begin(['peer', 'write', 'x/e/g', 'new']));
+  const to = model.seq();
+  assert.ok(model.followed('opendir', 'd', ['e', 'f', 'g'], from, to), 'd, opened before the rename, read after the write');
+  assert.ok(!model.followed('opendir', 'd', ['e', 'f', 'g'], to, to), 'not opened after it moved');
+  assert.ok(!model.followed('opendir', 'd', ['g'], from, to), 'never a listing it did not hold');
+}
+
 console.log('barrier-oracle: ok');

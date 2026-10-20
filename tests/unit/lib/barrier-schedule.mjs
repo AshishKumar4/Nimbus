@@ -128,8 +128,10 @@ const under = (rel, root) => rel === root || root === '' || rel.startsWith(`${ro
 const abs = (rel) => (rel === '' ? APP : `${APP}/${rel}`);
 const key = (rel) => abs(rel).slice(1);
 
-const dirState = (mode = DIR_MODE) => ({ type: 'dir', mode, uid: USER, gid: USER });
-const fileState = (content, mode = FILE_MODE) => ({ type: 'file', content, size: content.length, mode, uid: USER, gid: USER });
+/** Each file and directory made has an identity of its own, which a rename moves and a write or chmod keeps: what a descriptor follows. */
+let identities = 0;
+const dirState = (mode = DIR_MODE) => ({ type: 'dir', mode, uid: USER, gid: USER, id: ++identities });
+const fileState = (content, mode = FILE_MODE) => ({ type: 'file', content, size: content.length, mode, uid: USER, gid: USER, id: ++identities });
 
 /** The model: each name's state; '' (the project directory) always a directory. */
 function seedWorld(tree = SEED_TREE) {
@@ -433,6 +435,32 @@ export function createModel(tree = SEED_TREE) {
     drop(record) { changes.splice(changes.indexOf(record), 1); },
     /** Whether `answer` (of read `op` of `rel`, a pread's at `offset`) is one the session's files gave between states `from` and `to` (`decided`: with every structural change of the process's own in flight shown). */
     admits: (op, rel, answer, from, to, decided = false, offset = 0) => worldsSeen(rel, from, to, decided).some((w) => answers(op, rel, answer, w, offset)),
+    /**
+     * Whether `answer` (a descriptor read, `op` opendir or pread, of `rel`)
+     * is what the file or directory it opened gave, wherever that was by the
+     * time it was read: opened at `rel` at a state between `from` and `to`,
+     * with the access the open needed, then read at that state or a later one.
+     */
+    followed: (op, rel, answer, from, to, offset = 0) => {
+      for (let i = from; i <= to; i++) {
+        for (const opened of worldsSeen(rel, i, i)) {
+          const state = opened.get(rel);
+          if (state === undefined || unreachable(opened, rel) !== null || (bits(state) & 4) === 0) continue;
+          if (state.type !== (op === 'opendir' ? 'dir' : 'file')) continue;
+          for (let j = i; j <= to; j++) {
+            for (const [k, held] of history[j]) {
+              if (held.id !== state.id) continue;
+              for (const read of worldsSeen(k, j, j)) {
+                const now = read.get(k);
+                if (now?.id !== state.id) continue;
+                if (op === 'opendir' ? Array.isArray(answer) && answer.join('/') === childrenOf(read, k).join('/') : answer === now.content.slice(offset, offset + PREAD_BYTES)) return true;
+              }
+            }
+          }
+        }
+      }
+      return false;
+    },
     /** Whether any change is in flight. */
     moving: () => changes.some((change) => change.done === null),
     /** The state the latest change of `rel` (or above it) landed at; Infinity while one is in flight. */
@@ -532,9 +560,11 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
     if (gaps.absentWhileRelisted && way === 'sync' && answer === null && transport.inFlight('listing') > 0) return;
     const decided = kind === 'node' && way === 'sync';
     if (model.admits(op, rel, answer, from, to, decided, offset)) return;
+    // A descriptor follows what it opened: a directory or file a rename moved after the open is read where it went.
+    if ((op === 'opendir' || op === 'pread') && model.followed(op, rel, answer, from, to, offset)) return;
     const shown = answer?.code ?? (answer && typeof answer === 'object' && !Array.isArray(answer) ? `${answer.type} ${(answer.mode & 0o777).toString(8)} size ${answer.size}`
       : typeof answer === 'string' ? shownText(answer) : JSON.stringify(answer));
-    const held = [...new Set(model.worldsSeen(rel, from, to, decided).map((world) => (op === 'readdir' && world.get(rel)?.type === 'dir' ? `[${childrenOf(world, rel)}]` : describe(world.get(rel)))))];
+    const held = [...new Set(model.worldsSeen(rel, from, to, decided).map((world) => ((op === 'readdir' || op === 'opendir') && world.get(rel)?.type === 'dir' ? `[${childrenOf(world, rel)}]` : describe(world.get(rel)))))];
     throw new Finding(`${way} ${op} ${rel || '.'}${op === 'pread' ? ` at ${offset}` : ''} answered ${shown}; the session held ${held.join(' | ')} (states ${from}..${to})`, at);
   };
 
@@ -745,7 +775,7 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
           if (answer?.code === 'EAGAIN' && way === 'sync' && (op === 'readFile' ? !owedBytes(rel) && (lazy || model.readable(rel, seq(), seq())) : lazy)) continue;
           if (answer?.code === 'EISDIR' && way === 'sync' && gaps.refusedAsDirectory && state?.type === 'dir') continue;
           if (!answers(op, rel, answer, world)) {
-            throw new Finding(`at rest, ${way} ${op} ${rel || '.'} answered ${JSON.stringify(answer)}; the model holds ${describe(state)}`, end);
+            throw new Finding(`at rest, ${way} ${op} ${rel || '.'} answered ${JSON.stringify(answer)}; the model holds ${op === 'readdir' && state?.type === 'dir' ? `[${childrenOf(world, rel)}]` : describe(state)}`, end);
           }
         }
       }
