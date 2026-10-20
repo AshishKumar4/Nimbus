@@ -1,8 +1,9 @@
-import { lexArrayElements, TokenReader, type ReaderMark } from './lexer.js';
+import { arithmeticForParts, lexArrayElements, TokenReader, type ReaderMark } from './lexer.js';
 import { BINARY_OPERATORS, UNARY_OPERATORS } from './conditional-operators.js';
 import {
   TokenKind,
   type Token,
+  type ArithmeticForNode,
   type ArrayElementNode,
   type AssignmentNode,
   type ScriptNode,
@@ -365,10 +366,29 @@ class Parser {
     }
 
     if (token.kind === TokenKind.LParen) {
+      const expression = this.readArithmeticCommand();
+      if (expression !== null) return { type: 'arithmetic', expression, redirections: this.parseTrailingRedirections() };
       return this.parseSubshell();
     }
 
     return this.parseSimpleCommand();
+  }
+
+  /**
+   * `((expression))` at the next token, as the reader reads it
+   * (TokenReader.readArithmeticCommand, which also says whether the two `(`
+   * are one `((`, an alias's text and the text after it joined); null where
+   * it is no such command.
+   */
+  private readArithmeticCommand(): string | null {
+    if (this.peek().kind !== TokenKind.LParen || this.peekAt(1).kind !== TokenKind.LParen) return null;
+    this.rereadFromHere();
+    const token = this.reader.readArithmeticCommand();
+    if (token === null) return null;
+    this.tokens.push(token);
+    this.marks.push(undefined);
+    this.pos++;
+    return token.value;
   }
 
   private parseDoubleBracketCommand(): DoubleBracketNode {
@@ -508,8 +528,10 @@ class Parser {
     return { type: 'if', clauses, elseBody, redirections };
   }
 
-  private parseFor(): ForNode {
+  private parseFor(): ForNode | ArithmeticForNode {
     this.expectWord('for');
+    const header = this.readArithmeticCommand();
+    if (header !== null) return this.parseArithmeticFor(header);
     const varToken = this.expect(TokenKind.Word);
     const variable = varToken.value;
     const variableError = identifierError(varToken, true);
@@ -542,6 +564,25 @@ class Parser {
     const redirections = this.parseTrailingRedirections();
 
     return { type: 'for', variable, ...(variableError === null ? {} : { variableError }), words, body, redirections };
+  }
+
+  /** `for ((init; test; step))` and its body, `do … done` or `{ … }`, as bash's parser reads them. */
+  private parseArithmeticFor(header: string): ArithmeticForNode {
+    const parts = arithmeticForParts(header);
+    if (parts === null) throw new ParseError('syntax error: arithmetic expression required', this.peek().pos);
+    const [init, test, step] = parts;
+    this.skipSeparators();
+    let body: ListNode[];
+    if (this.isWord('{')) {
+      this.advance();
+      body = this.parseCompoundList(['}']);
+      this.expectWord('}');
+    } else {
+      this.expectWord('do');
+      body = this.parseCompoundList(['done']);
+      this.expectWord('done');
+    }
+    return { type: 'arithmetic_for', init, test, step, body, redirections: this.parseTrailingRedirections() };
   }
 
   private parseLoop(keyword: LoopNode['type']): LoopNode {

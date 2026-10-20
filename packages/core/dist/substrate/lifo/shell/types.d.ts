@@ -156,11 +156,27 @@ export interface SubshellNode {
     body: ListNode[];
     redirections: RedirectionNode[];
 }
+/** `((expression))`: its status 0 where the expression's value is not 0, 1 where it is 0 or an error. */
+export interface ArithmeticCommandNode {
+    type: 'arithmetic';
+    /** As written: expanded, then evaluated, when it runs. */
+    expression: string;
+    redirections: RedirectionNode[];
+}
+/** `for ((init; test; step))`: an empty test is true. */
+export interface ArithmeticForNode {
+    type: 'arithmetic_for';
+    init: string;
+    test: string;
+    step: string;
+    body: ListNode[];
+    redirections: RedirectionNode[];
+}
 export interface DoubleBracketNode {
     type: 'double_bracket';
     words: WordPart[][];
     redirections: RedirectionNode[];
 }
-export type CompoundCommandNode = SimpleCommandNode | DoubleBracketNode | IfNode | ForNode | LoopNode | CaseNode | GroupNode | SubshellNode | FunctionDefNode;
+export type CompoundCommandNode = SimpleCommandNode | DoubleBracketNode | ArithmeticCommandNode | IfNode | ForNode | ArithmeticForNode | LoopNode | CaseNode | GroupNode | SubshellNode | FunctionDefNode;
 export type ASTNode = ScriptNode | ListNode | PipelineNode | CompoundCommandNode;
 //# sourceMappingURL=types.d.ts.map

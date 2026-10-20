@@ -10,6 +10,9 @@ published independently in the `@nimbus-sh` npm scope.
   it was not there: bytes the program's store still held under the name
   were served though the name was gone. `readFileSync` now answers as
   `statSync` does.
+- Added: the shell runs `((expression))`, `let` and `for ((init; test; step))` as bash does. `((…))` returns 0 when the value is not 0. `let`'s status comes from its last argument. The C-style `for` takes a `do … done` or `{ … }` body, and `continue` runs the step. Shell arithmetic gains the comma operator, compound assignments (`+=` through `|=`), and working `++x` and `--x`, and a division by 0 is reported as bash reports it. A backquoted substitution inside `${…}` operands, subscripts and arithmetic now runs. Before, `((…))` ran its contents as commands, `let` was not found, `for ((` was a syntax error, `++x` gave x, and a division by 0 gave 0.
+- Fixed: in the shell, a `#` inside a word is part of the word, as in bash. Only a `#` where a word begins starts a comment. `z=2#11; echo after` now assigns `2#11` and prints `after`, and `echo a#b` prints `a#b`. The check for whether an interactive line continues reads comments the same way. Before, a `#` anywhere ended the word and silently dropped the rest of the line.
+- Fixed: the shell's arithmetic reads integer constants as bash does: `010` is octal (8), `0x1f` is hexadecimal (31), and `base#digits` takes any base from 2 to 64. A variable's value is read as an expression, so `x=0x10; echo $((x))` gives 16. `[[ a -eq b ]]` reads its operands as arithmetic, while `test` keeps decimal integers. A digit past its base, a base out of range, or a value that refers to itself is reported with bash's message, and the rest of the line is discarded. Before, every constant was decimal: `$((0x1f))` gave 0 and `$((010))` gave 10.
 - Fixed: a WASI program (python, ruby, clang, bash) could lose a write,
   with `EIO` at its close or fsync, or with no error at all for a call
   that does not wait, when another process changed a file while the
@@ -17,6 +20,27 @@ published independently in the `@nimbus-sh` npm scope.
   took back the program's read lease, and the program gave the write up
   instead of sending it again once the lease was back.
 - Fixed: the shell's array literals take `[subscript]=value` elements, as bash does. `a=([0]=one [5]=z)` sets elements 0 and 5, a following word goes on after the last subscript, and `[i]+=v` appends to element i. The same holds in `declare -a`, `typeset -a` and `local -a`. A negative subscript counts back from the last element, and one before the first, an empty one, or `@` or `*` is reported and skipped. `declare -p`'s output for a sparse array now reads back as the same array. `a+=(…)` goes on after the last element that holds a value, and `a[i]=v` refuses an index before the first with `bad array subscript`. `${a[-1]}` counts back from the last element that holds a value, as writes do. A command made only of assignments that fails, through a readonly name or a bad subscript, discards the rest of its line as bash does: the next line runs with `$?` 1, including in a script (before, a script ended), and a subshell ends with 1. Under `set -e`, such an error ends the shell once it is reported, keeping what the array literal assigned before it, and a failed assignment ends an `sh` script. Before, `[i]=v` was stored as literal text at the next index.
+- Added: `/api/_diag/session`'s launch record names the session's thread
+  stalls (`stalls`): while work is in flight on its thread (a facet call, a
+  one-shot's run, a git operation, a build or
+  transform facet's call, a `wrangler dev` request, a supervisor call, or a
+  terminal input's command),
+  the session watches how late its own 50 ms ticks run, and records each
+  wait of 250 ms or more with the work in flight across it. The facets a
+  session loads share its thread, and a long slice of theirs ages the
+  session's queue until the platform refuses requests ("Durable Object is
+  overloaded. Requests queued for too long."). A probe that fails prints
+  the record. heap-correctness/diag-reports-stream-retention reads the
+  retained-write high-water mark once after its install instead of polling
+  under load with no pause, and install-parallel-memory-bounded samples one
+  read at a time and backs off after a 503, instead of adding to the queue
+  that refused them.
+- Fixed (CI): a probe's reset attribution reads a session's whole record.
+  A telemetry query that comes back full (2000 events) is read again as the
+  two halves of its span, until each comes back short. Before, the first
+  2000 were all it read, and a reset logged past them read as "no reset or
+  overload error logged". A record still reads as incomplete when one
+  millisecond alone fills a query, or after 64 queries.
 - Fixed: the shell's `node` refuses a hard link (`fs.link`, `fs.linkSync`, `fs.promises.link`) with `ENOSYS`, as the hosted `node` does: the filesystem has no hard links. Before, `linkSync` did nothing and returned, so the new name was never there. `truncate` and `ftruncate` (now also in callback form) check the length as Node does: a length that is not a number is `ERR_INVALID_ARG_TYPE`, and one that is not a safe integer is `ERR_OUT_OF_RANGE`.
 - Fixed: a Node program could be told a file, directory or link it had
   just renamed was not there (`fs.statSync` ENOENT, and renaming it again

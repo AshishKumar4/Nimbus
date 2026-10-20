@@ -46,6 +46,7 @@ import { RETRY_ATTEMPTS, isLostTransport, retryDelay } from './pack/transport.js
 import { CHECKOUT_FAILED } from './pack/mount-writer.js';
 import type { FetchPackRequest, FetchPackStep, PushPackRequest, fetchPackResume, listRefs, pushPack } from './pack/remote.js';
 import { framedGitBody, GIT_FRAMED_HEADER } from './pack/remote-body.js';
+import { holdThreadWatch } from '@nimbus-sh/fabric/thread-stalls.js';
 
 export type GitNetworkOp = 'clone' | 'fetch' | 'push' | 'fetch-objects' | 'graph-filters' | 'remote-list' | 'remote-fetch' | 'remote-push';
 
@@ -1088,6 +1089,7 @@ export async function execGitNetwork(
     // session's ledger from load to teardown — bracketed, never wrapped (see
     // beginLoaderFetch).
     const endFetch = beginLoaderFetch(ctx, `git-network:${crypto.randomUUID()}`);
+    const watched = holdThreadWatch(ctx, `git ${opts.op} pid ${opts.pid}`);
     try {
       const gitBundleSource = await unlessCancelled(fetchGitBundleSource(env), signal);
       const facetCode = (binding: unknown) => ({
@@ -1465,6 +1467,7 @@ export async function execGitNetwork(
         disposeRpcResource(load.binding);
         load.endFetch();
       }
+      watched();
       endFetch();
     }
   } catch (e: any) {

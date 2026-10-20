@@ -12,6 +12,8 @@ import type {
   GroupNode,
   SubshellNode,
   RedirectionNode,
+  ArithmeticCommandNode,
+  ArithmeticForNode,
   ArrayElementNode,
   AssignmentNode,
   WordPart,
@@ -35,7 +37,7 @@ import { execRefusal } from '../../../shell/exec-dispatch.js';
 import { withRecall } from '../../../vfs/recall.js';
 import { parseAssignment, ParseError, ScriptLines } from './parser.js';
 import {
-  expandWords, expandWord, expandPatternWord, expandSubscript, subscriptArithmetic, ExpansionError,
+  expandWords, expandWord, expandPatternWord, expandSubscript, arithmeticOf, arithmeticValue, ArithmeticError, ExpansionError,
   type ExpandContext, type CapturedCommand,
 } from './expander.js';
 import { evaluateDoubleBracketWords } from './test-builtin.js';
@@ -55,6 +57,7 @@ import { isDecimalInteger } from './names.js';
 import { statOrThrow } from '../../../vfs/vfs.js';
 import { yieldToEventLoop } from '../utils/event-loop.js';
 import { WorkThread } from './work-thread.js';
+import { DiscardSignal } from './discard.js';
 
 // ─── Signal classes for control flow ───
 
@@ -80,17 +83,6 @@ export class ExitSignal {
 
 /** A syntax error in the text eval or `.` reads (not one met running it, a command substitution's): theirs to answer. */
 export class TextSyntaxError extends Error {}
-
-/**
- * The rest of the line it is in is discarded (bash's
- * jump_to_top_level(DISCARD)): a shell goes on with the next line it reads,
- * its own or a `source`d file's or a trap's, with $? 1; a child shell
- * (subshell, substitution, pipeline element, job) ends with 1. Neither `||`,
- * `if` nor a loop goes on.
- */
-export class DiscardSignal {
-  readonly exitCode = 1;
-}
 
 /** A function call past the nesting bound (functionNestingLimit). */
 export class FunctionNestingSignal extends DiscardSignal {}
@@ -793,6 +785,10 @@ export class Interpreter {
         return (await this.executeSimpleCommand(cmd, io));
       case 'double_bracket':
         return (await this.executeDoubleBracket(cmd, io));
+      case 'arithmetic':
+        return (await this.executeArithmetic(cmd, io));
+      case 'arithmetic_for':
+        return (await this.executeArithmeticFor(cmd, io));
       case 'if':
         return (await this.executeIf(cmd, io));
       case 'for':
@@ -856,6 +852,72 @@ export class Interpreter {
       this.lastExitCode = exitCode;
       return exitCode;
     }));
+  }
+
+  /** `((expression))`: 0 where its value is not 0; 1 where it is 0, or an error, reported as `((`'s. */
+  private async executeArithmetic(node: ArithmeticCommandNode, io: ExecutionIo): Promise<number> {
+    return (await this.executeWithRedirections(node.redirections, io, async (redirIo) => {
+      const value = await this.arithmeticCommandValue(node.expression, redirIo);
+      const exitCode = value === null || value === 0 ? 1 : 0;
+      this.lastExitCode = exitCode;
+      return exitCode;
+    }));
+  }
+
+  /**
+   * `for ((init; test; step))`: init once; then while test is not 0 (an empty
+   * one is true), the body, then step (after a `continue` too). Its status
+   * the body's last, 0 where it never ran, 1 where an expression fails.
+   */
+  private async executeArithmeticFor(node: ArithmeticForNode, io: ExecutionIo): Promise<number> {
+    return (await this.executeWithRedirections(node.redirections, io, async (redirIo) => {
+      let exitCode = 0;
+      const failed = async (expression: string): Promise<boolean> => (
+        expression.trim() !== '' && (await this.arithmeticCommandValue(expression, redirIo)) === null
+      );
+      if (await failed(node.init)) exitCode = 1;
+      else {
+        while (true) {
+          await this.loopTick();
+          const abortCode = this.abortExitCode(redirIo);
+          if (abortCode !== null) return abortCode;
+          if (node.test.trim() !== '') {
+            const test = await this.arithmeticCommandValue(node.test, redirIo);
+            if (test === null) exitCode = 1;
+            if (test === null || test === 0) break;
+          }
+          try {
+            exitCode = await this.executeCompoundList(node.body, redirIo);
+          } catch (e) {
+            if (e instanceof BreakSignal) {
+              if (e.levels > 1) throw new BreakSignal(e.levels - 1);
+              break;
+            }
+            if (!(e instanceof ContinueSignal)) throw e;
+            if (e.levels > 1) throw new ContinueSignal(e.levels - 1);
+          }
+          if (await failed(node.step)) {
+            exitCode = 1;
+            break;
+          }
+        }
+      }
+      this.lastExitCode = exitCode;
+      return exitCode;
+    }));
+  }
+
+  /** An arithmetic command's expression, expanded (as a double-quoted word, its quotes removed) and evaluated: null where that fails, reported as `((`'s. */
+  private async arithmeticCommandValue(expression: string, io: ExecutionIo): Promise<number | null> {
+    const ctx = this.createExpandContext(io);
+    const text = await expandSubscript(expression, ctx);
+    try {
+      return arithmeticOf(text, ctx);
+    } catch (error) {
+      if (!(error instanceof ArithmeticError)) throw error;
+      await ctx.report(`((: ${error.message}`);
+      return null;
+    }
   }
 
   private loopTicks = 0;
@@ -1117,6 +1179,11 @@ export class Interpreter {
       try {
         await this.applyRedirections(cmd.redirections, fds, expandCtx, io, io.terminalStdin);
       } catch (error) {
+        // A discard met expanding a target (an arithmetic error's) is the line's, reported where it was met.
+        if (error instanceof DiscardSignal) {
+          await this.flushFds(fds);
+          throw error;
+        }
         const redirStderr = fds.outputFds.get(2) ?? stderr;
         (await redirStderr.write(error instanceof RedirectionOpenError
           ? redirectionDiagnostic(error)
@@ -1421,7 +1488,7 @@ export class Interpreter {
     if (assign.subscript !== undefined) {
       const subscript = await expandSubscript(assign.subscript, ctx);
       const array = arrayFor(this.config, name);
-      const index = subscript === '' ? -1 : arrayIndex(array, subscriptArithmetic(subscript, ctx));
+      const index = subscript === '' ? -1 : arrayIndex(array, await arithmeticValue(subscript, ctx));
       if (index < 0) return { diagnostics: [`${name}[${assign.subscript}]: bad array subscript`], failed: true };
       array[index] = assign.append ? (array[index] ?? '') + value : value;
       return ASSIGNED;
@@ -1460,7 +1527,7 @@ export class Interpreter {
       }
       const { subscript, value } = element;
       const written = `[${subscript}]${element.append ? '+=' : '='}${value}`;
-      const index = subscript === '' || subscript === '@' || subscript === '*' ? -1 : arrayIndex(array, subscriptArithmetic(subscript, ctx));
+      const index = subscript === '' || subscript === '@' || subscript === '*' ? -1 : arrayIndex(array, await arithmeticValue(subscript, ctx));
       if (index < 0) {
         refused.push(`${written}: ${subscript === '@' || subscript === '*' ? 'cannot assign to non-numeric index' : 'bad array subscript'}`);
         if (this.config.options.errexit) break;
@@ -1686,6 +1753,10 @@ export class Interpreter {
       vfs: io.vfs ?? this.config.vfs,
       options: this.config.options,
       executeCapture: async (input) => (await this.executeCapture(input, io)),
+      // The shell's fd 2 when it is met, as a command's descriptors resolve it (createCommandFds).
+      report: async (diagnostic) => {
+        (await (this.persistentOutputFds.get(2) ?? io.stderr ?? this.terminalSink(io)).write(`${diagnostic}\n`));
+      },
     };
   }
 
@@ -1817,17 +1888,24 @@ export class Interpreter {
     io: ExecutionIo,
     terminalStdin?: TerminalInputStream,
   ): Promise<void> {
+    // A target's diagnostic goes to fd 2 as the redirections before it have left it.
+    const targetCtx: ExpandContext = {
+      ...expandCtx,
+      report: async (diagnostic) => {
+        (await (fds.outputFds.get(2) ?? this.createNullWriter()).write(`${diagnostic}\n`));
+      },
+    };
     for (const redir of redirections) {
       if (redir.operator === 'heredoc') {
         const heredoc = redir.heredoc ?? { body: '', quoted: false, stripTabs: false };
         const body = heredoc.quoted
           ? heredoc.body
-          : await expandWord([{ text: heredoc.body, quoted: 'double' }], { ...expandCtx, hereDocument: true });
+          : await expandWord([{ text: heredoc.body, quoted: 'double' }], { ...targetCtx, hereDocument: true });
         this.setInputFd(fds, redir.fd ?? 0, { stream: staticStdinReader(body), terminal: false });
         continue;
       }
 
-      const target = await expandWord(redir.target, expandCtx);
+      const target = await expandWord(redir.target, targetCtx);
       switch (redir.operator) {
         case 'write':
           this.setOutputFd(fds, redir.fd ?? 1, (await this.openOutputTarget(io, target, 'write', fds, terminalStdin)));

@@ -50,6 +50,7 @@ import { classifyMessage } from '@nimbus-sh/platform/oom-classify.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { SYSCALL_VERDICTS } from '../vfs/vfs-error.js';
 import { parentKey } from '../vfs/path.js';
+import { DELEGATION_RECALL_TIMEOUT_MS } from '../runtime/delegations.js';
 import { memoryJournal } from './process-fs-journal.js';
 export { journalSource, memoryJournal, sqlJournal } from './process-fs-journal.js';
 /** The calls' answers (vfs-error.ts), as the write ledger spliced beside this client classifies what a program caught. */
@@ -133,11 +134,13 @@ const GRANT_BYTES = 64 * 1024 * 1024;
 /** How long one recall poll waits before asking again. */
 const RECALL_POLL_MS = 20_000;
 /**
- * How long a wave the session refused while it recalls a delegation (EAGAIN)
- * waits before each time it goes again: as many as a caller that can wait
- * passes (vfs/recall.ts withRecall), then its writes are lost (EIO).
+ * A wave the session refused while it recalls a delegation (its error's
+ * `recall`) goes again after the n-th wait (doubling to a second), for as
+ * long as a recall may take (the session's DELEGATION_RECALL_TIMEOUT_MS) and
+ * a second more; then its writes are lost (EIO).
  */
-const WAVE_RECALL_WAITS_MS = [0, 10, 25, 50, 100, 200, 400, 800];
+const recallWaitMs = (n) => Math.min(10 * 2 ** n, 1_000);
+const WAVE_RECALL_BOUND_MS = DELEGATION_RECALL_TIMEOUT_MS + 1_000;
 /** Where `key` stands to a grant held alone (not ended, closing or shared): 'held' at or beneath its root, 'above' an ancestor of it. */
 function standingOf(grant, key) {
     if (grant.ended || grant.closing || grant.shared)
@@ -284,8 +287,8 @@ export function processFsClient(options) {
     let epoch = null;
     let ack = 0;
     let wave = 0;
-    /** Times the wave at the log's head has gone again behind a recall (WAVE_RECALL_WAITS_MS). */
-    let recallWaits = 0;
+    /** The log's unanswered head a recall refused, since when, and how many times it went again (recallWaitMs). */
+    let recalled = null;
     /** Writer epochs given up whose retirement the session has not answered yet (lostEpoch). */
     const retiring = [];
     const failures = [];
@@ -553,9 +556,7 @@ export function processFsClient(options) {
         // too: its read lease, asked with a directory batch whose answer has not
         // reached it) and applied nothing after `cursor`: the recall started,
         // the rest goes again once it is over, as a caller that can wait does.
-        const recalling = !answer.ok && error?.errno === 'EAGAIN';
-        if (!recalling)
-            recallWaits = 0;
+        const recalling = error?.recall === true;
         const refused = recalling ? null : writer === null
             ? (error?.errno !== undefined && SYSCALL_VERDICTS.has(error.errno) ? { seq: cursor + 1, errno: error.errno, message: error.message } : null)
             : answer.sequence?.refused ?? null;
@@ -596,17 +597,25 @@ export function processFsClient(options) {
         const answeredThrough = back.length === 0 ? entries[entries.length - 1].jid : back[0].jid - 1;
         if (answeredThrough >= entries[0].jid)
             forget(answeredThrough, true);
-        if (back.length === 0)
+        if (back.length === 0) {
+            recalled = null;
             return;
-        if (answer.ok || refused !== null || (recalling && recallWaits < WAVE_RECALL_WAITS_MS.length)) {
+        }
+        // A recall's budget is the head's: it starts again once the head moves.
+        if (recalling && recalled?.jid !== back[0].jid)
+            recalled = { jid: back[0].jid, since: now(), waits: 0 };
+        if (!recalling)
+            recalled = null;
+        if (answer.ok || refused !== null || (recalled !== null && now() - recalled.since < WAVE_RECALL_BOUND_MS)) {
             // After a refusal, nothing more in the wave was applied: they go again, first, as numbered.
             for (const entry of back)
                 entry.lingers = false;
             queue.unshift(...back);
-            if (recalling)
-                await new Promise((resolve) => { timers.setTimeout(resolve, WAVE_RECALL_WAITS_MS[recallWaits++]); });
+            if (recalled !== null)
+                await new Promise((resolve) => { timers.setTimeout(resolve, recallWaitMs(recalled.waits++)); });
             return;
         }
+        recalled = null;
         lostEpoch(back, `the session could not apply this write: ${error?.message ?? 'no error'}`, writer);
     };
     /**

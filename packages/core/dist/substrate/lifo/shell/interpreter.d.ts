@@ -8,6 +8,7 @@ import { type CapturedCommand } from './expander.js';
 import { type ArrayLiteral } from './variables.js';
 import { type ShellState } from './state.js';
 import { WorkThread } from './work-thread.js';
+import { DiscardSignal } from './discard.js';
 export declare class BreakSignal {
     levels: number;
     constructor(levels: number);
@@ -30,16 +31,6 @@ export declare class ExitSignal {
 }
 /** A syntax error in the text eval or `.` reads (not one met running it, a command substitution's): theirs to answer. */
 export declare class TextSyntaxError extends Error {
-}
-/**
- * The rest of the line it is in is discarded (bash's
- * jump_to_top_level(DISCARD)): a shell goes on with the next line it reads,
- * its own or a `source`d file's or a trap's, with $? 1; a child shell
- * (subshell, substitution, pipeline element, job) ends with 1. Neither `||`,
- * `if` nor a loop goes on.
- */
-export declare class DiscardSignal {
-    readonly exitCode = 1;
 }
 /** A function call past the nesting bound (functionNestingLimit). */
 export declare class FunctionNestingSignal extends DiscardSignal {
@@ -281,6 +272,16 @@ export declare class Interpreter {
     private executeCommand;
     private executeIf;
     private executeDoubleBracket;
+    /** `((expression))`: 0 where its value is not 0; 1 where it is 0, or an error, reported as `((`'s. */
+    private executeArithmetic;
+    /**
+     * `for ((init; test; step))`: init once; then while test is not 0 (an empty
+     * one is true), the body, then step (after a `continue` too). Its status
+     * the body's last, 0 where it never ran, 1 where an expression fails.
+     */
+    private executeArithmeticFor;
+    /** An arithmetic command's expression, expanded (as a double-quoted word, its quotes removed) and evaluated: null where that fails, reported as `((`'s. */
+    private arithmeticCommandValue;
     private loopTicks;
     /**
      * A loop whose body never waits on I/O would run entirely on microtasks,
