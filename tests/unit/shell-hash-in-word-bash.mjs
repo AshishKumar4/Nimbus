@@ -75,6 +75,14 @@ const continued = [
   ["echo $# \"$(printf '\"')\"", null],
   ["echo ${#x} \"${y:-\"a'b\"}\" `echo '\"'`", null],
   ["echo $# \"$(printf '\"')", 'double'],
+  // One the input ends inside is read on: a quote open in it is still open.
+  ["echo $(printf 'hello", 'single'],
+  ["echo `printf 'hello", 'single'],
+  ['echo ${x:-"a', 'double'],
+  ['echo $(printf a\\', 'backslash'],
+  // $$ is the pid: a ( or { after it is text, in double quotes too.
+  ['echo "$$("', null],
+  ['echo "$${"; echo $$(', null],
 ];
 for (const [line, state] of continued) {
   if (continuationState(line) !== state) failed.push(`continuationState(${JSON.stringify(line)}): ${continuationState(line)}, not ${state}`);
