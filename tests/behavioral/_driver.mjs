@@ -354,6 +354,8 @@ export class Terminal {
     this.wsBase = base.replace(/^http/, 'ws');
     this.wsOptions = options.wsOptions ?? (base === targetOf(sid).base ? wsHeaders(sid) : undefined);
     this.keepaliveMs = options.keepaliveMs ?? SOCKET_KEEPALIVE_MS;
+    // A named terminal (`/ws?terminal=<name>`), or the session's own.
+    this.path = options.terminal ? `/ws?terminal=${encodeURIComponent(options.terminal)}` : '/ws';
     this.ws = null;
     // reset() clears the caller's view, never the shell protocol stream.
     this.stream = '';
@@ -375,7 +377,7 @@ export class Terminal {
   async connect(timeoutMs = 15_000) {
     this.submission = null;
     this.promptCursor = this.protocol.length;
-    this.ws = new WebSocket(`${this.wsBase}/s/${this.sid}/ws`, this.wsOptions);
+    this.ws = new WebSocket(`${this.wsBase}/s/${this.sid}${this.path}`, this.wsOptions);
     keepSocketAlive(this.ws, this.keepaliveMs);
     this.connected = false;
     this.closed = false;

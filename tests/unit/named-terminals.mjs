@@ -90,10 +90,10 @@ assert.ok(a.frames.some((f) => f.type === 'ready'), 'a named terminal attaches a
 await run('a', a, 'cd /tmp');
 await run('a', a, 'echo from-a');
 const b = await attach('b');
-await run('b', b, 'mkdir -p /srv/b && cd /srv/b');
+await run('b', b, 'mkdir -p ~/bdir && cd ~/bdir');
 await run('b', b, 'echo from-b');
 assert.match(await run('a', a, 'pwd'), /\/tmp\r\n/, 'a is where a went');
-assert.match(await run('b', b, 'pwd'), /\/srv\/b\r\n/, 'b is where b went');
+assert.match(await run('b', b, 'pwd'), /\/home\/user\/bdir\r\n/, 'b is where b went');
 
 // Reattached, each shows its own screen.
 const a2 = await attach('a');
@@ -116,7 +116,7 @@ assert.match(await run('a', a2, 'kill $$; echo "kill=$?"'), /kill=1/, 'kill $$ i
 assert.match(await run('a', a2, 'echo alive'), /alive\r\n/, 'and its shell runs on');
 
 const listed = await runtime.listTerminals();
-assert.deepEqual(listed.map((t) => [t.name, t.live, t.cwd]), [[null, true, '/home/user'], ['a', true, '/tmp'], ['b', true, '/srv/b']]);
+assert.deepEqual(listed.map((t) => [t.name, t.live, t.cwd]), [[null, true, '/home/user'], ['a', true, '/tmp'], ['b', true, '/home/user/bdir']]);
 assert.equal(listed.find((t) => t.name === 'a').attached, true);
 
 // Close a: what it runs is hung up, b's runs on, and a is forgotten.
@@ -133,7 +133,7 @@ assert.equal(stored('a'), '', 'a\'s screen is forgotten');
 assert.equal(workspace.terminalState('a'), null, 'and its shell state');
 assert.equal(await workspace.fs.exists('/home/user/.local/state/nimbus/terminals/a.history'), false, 'and its history');
 assert.deepEqual(await runtime.closeTerminal('a'), { closed: false }, 'a second close finds none');
-assert.match(await run('b', b, 'pwd'), /\/srv\/b\r\n/, 'b is as it was');
+assert.match(await run('b', b, 'pwd'), /\/home\/user\/bdir\r\n/, 'b is as it was');
 
 // Names follow the rule, and a session keeps at most 16.
 await assert.rejects(runtime.attachTerminal(socket(), { terminal: 'no/slash' }));
