@@ -32,6 +32,8 @@ const LINES = [
   'readonly r3; r3=(1)\necho "st=$?"; declare -p r3',
   // A declaration's assignment argument expands as an assignment does: not split, no pathname expansion.
   'touch g1 g2; y="p  q"; declare d=$y e=g* f="$y"; local 2>/dev/null; export h=~/x; declare -p d e f; echo "$h"',
+  // Brace expansion comes first; a quote in the name makes no assignment, its value then split.
+  'export x={a,b}; declare -p x; y="a b"; export w""=$y; printf "<%s>\\n" "$w"; declare -p b; x""=1; echo "st=$?"',
 ];
 
 /** bash's diagnostic prefix: `bash: line 1: `, `bash: -c: line 1: `, and in a function 5.2's `environment: line 1: `. */

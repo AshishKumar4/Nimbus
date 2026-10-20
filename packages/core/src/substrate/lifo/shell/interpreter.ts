@@ -37,7 +37,7 @@ import { execRefusal } from '../../../shell/exec-dispatch.js';
 import { withRecall } from '../../../vfs/recall.js';
 import { parseAssignment, ParseError, ScriptLines } from './parser.js';
 import {
-  expandWords, expandWord, expandPatternWord, expandSubscript, arithmeticOf, arithmeticValue, ArithmeticError, ExpansionError,
+  expandBraceWord, expandFields, expandWords, expandWord, expandPatternWord, expandSubscript, arithmeticOf, arithmeticValue, ArithmeticError, ExpansionError,
   type ExpandContext, type CapturedCommand,
 } from './expander.js';
 import { evaluateDoubleBracketWords } from './test-builtin.js';
@@ -1110,12 +1110,20 @@ export class Interpreter {
         if (assignment?.elements !== undefined && assignment.subscript === undefined && assignment.append !== true) {
           (arrayElements ??= new Map()).set(expandedArgs.length - 1, await this.arrayLiteral(assignment.name, assignment.elements, false, expandCtx));
           expandedArgs.push(`${assignment.name}=`);
-        } else if (assignment !== null && assignment.elements === undefined) {
-          // An assignment's value, as an assignment expands it: not split, no pathname expansion.
-          const subscript = assignment.subscript === undefined ? '' : `[${assignment.subscript}]`;
-          expandedArgs.push(`${assignment.name}${subscript}${assignment.append === true ? '+' : ''}=${await expandWord(assignment.value, expandCtx)}`);
-        } else {
+        } else if (index === 0) {
           expandedArgs.push(...await expandWords([parts], expandCtx));
+        } else {
+          // Brace expansion first; then each word that is an assignment expands as an
+          // assignment's value: not split, no pathname expansion. Any other is fields.
+          for (const word of expandBraceWord(parts)) {
+            const scalar = parseAssignment({ kind: TokenKind.Word, value: word.map((part) => part.text).join(''), pos: 0, parts: word });
+            if (scalar === null || scalar.elements !== undefined) {
+              expandedArgs.push(...await expandFields(word, expandCtx));
+              continue;
+            }
+            const subscript = scalar.subscript === undefined ? '' : `[${scalar.subscript}]`;
+            expandedArgs.push(`${scalar.name}${subscript}${scalar.append === true ? '+' : ''}=${await expandWord(scalar.value, expandCtx)}`);
+          }
         }
       }
     } else {

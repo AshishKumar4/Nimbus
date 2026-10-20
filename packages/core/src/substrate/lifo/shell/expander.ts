@@ -90,14 +90,7 @@ export async function expandWords(words: WordPart[][], ctx: ExpandContext): Prom
   const results: string[] = [];
 
   for (const word of words) {
-    for (const braceExpandedWord of expandBraceWord(word)) {
-      // Each field globbed as a pattern whose quoted characters match only
-      // themselves: an unquoted expansion's `*` globs, a quoted one's does not.
-      for (const field of splitFields(await expandParts(braceExpandedWord, ctx), ifsOf(ctx))) {
-        if (field.pattern === null) results.push(field.text);
-        else results.push(...await expandGlob(field.pattern, field.text, ctx.cwd, ctx.vfs));
-      }
-    }
+    for (const braceExpandedWord of expandBraceWord(word)) results.push(...await expandFields(braceExpandedWord, ctx));
   }
 
   return results;
@@ -147,7 +140,21 @@ export async function expandWord(parts: WordPart[], ctx: ExpandContext): Promise
   return joinPieces(await expandParts(parts, ctx));
 }
 
-function expandBraceWord(parts: WordPart[]): WordPart[][] {
+/**
+ * One brace-expanded word's fields: split, and each globbed as a pattern whose
+ * quoted characters match only themselves (an unquoted expansion's `*` globs,
+ * a quoted one's does not).
+ */
+export async function expandFields(word: WordPart[], ctx: ExpandContext): Promise<string[]> {
+  const results: string[] = [];
+  for (const field of splitFields(await expandParts(word, ctx), ifsOf(ctx))) {
+    if (field.pattern === null) results.push(field.text);
+    else results.push(...await expandGlob(field.pattern, field.text, ctx.cwd, ctx.vfs));
+  }
+  return results;
+}
+
+export function expandBraceWord(parts: WordPart[]): WordPart[][] {
   let combinations: WordPart[][] = [[]];
 
   for (const part of parts) {
