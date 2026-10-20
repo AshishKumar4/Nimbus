@@ -30,6 +30,7 @@ import type { BatchWritePayload } from '@nimbus-sh/platform/w7-frame.js';
 import { CompositeVFS, isAsyncMountRefusal, normalizePath, runtimeStatOf, type MountWalk } from '../vfs/composite.js';
 import { FS_LIST_PAGE_LIMIT, MOUNT_LIST_NAME_LIMIT } from '../constants.js';
 import { DevVFS } from '../vfs/dev-vfs.js';
+import { CA_CERTIFICATES_DIR, CaCertificatesVFS } from '../vfs/ca-certificates-vfs.js';
 import { ProcVFS, standardProc } from '../vfs/proc-vfs.js';
 import { sqliteFiles } from '../vfs/sqlite-files.js';
 import { isVfsError, syscallError, toVfsError, VfsError } from '../vfs/vfs-error.js';
@@ -355,6 +356,7 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     this.proc.register('mounts', (cred) => formatProcMounts(this.mounts(cred ?? CRED_KERNEL)));
     this.vfs.mount('/proc', this.proc);
     this.vfs.mount('/dev', new DevVFS());
+    this.vfs.mount(CA_CERTIFICATES_DIR, new CaCertificatesVFS(), { readOnly: true });
     // A read lease vouches for what is the engine's, which a mount or an unmount moves.
     this.vfs.watchMounts(() => engine.breakReadLeases());
     // So does a delegation's certificate (its holder answers from its view): given up before the table moves.

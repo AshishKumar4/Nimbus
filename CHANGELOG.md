@@ -5,6 +5,7 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Security: every session trusts the TLS roots this deployment serves, at `/etc/ssl/certs/ca-certificates.crt` (read-only), and CPython's and Ruby's OpenSSL read them through `SSL_CERT_FILE` unless a program names its own. The bundle is Mozilla's roots as of 2026-10-20 (curl.se's extract, pinned by sha256), which no longer trusts emSign ECC Root CA - G3 and so nothing on a path to the eMudhra intermediates whose keys were found compromised that day. Before, CPython verified against a copy staged with its runtime (Mozilla's roots of 2026-07-16), which accepted certificates those intermediates issued for any name, and a session kept its copy until it reinstalled the runtime. Updating the roots is now `bun scripts/update-ca-certificates.mjs <date> <sha256>` and a deploy.
 - Fixed: a WebAssembly program's or a worker's filesystem calls that cross to the session keep their options. Before, the hop dropped them, so:
   - a write that makes its parent directories failed with ENOENT in a new directory;
   - a write ignored the program's own umask;
