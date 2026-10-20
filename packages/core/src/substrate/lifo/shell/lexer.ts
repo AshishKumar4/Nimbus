@@ -370,13 +370,20 @@ export function continuationState(input: string): ContinuationState | null {
       i++;
       continue;
     }
-    if (quote === '"') {
-      if (ch === '"') quote = null;
-      continue;
-    }
-    // $$, the shell's pid, is two dollars: a quote after it is its own.
+    // $$, the shell's pid, is two dollars, in double quotes too: what follows it is its own.
     if (ch === '$' && input[i + 1] === '$') {
       i++;
+      continue;
+    }
+    // A closed substitution or braced expansion is one span, in double quotes too: its quotes are
+    // its own. One the input ends inside is read on, so a quote open in it is still open.
+    const span = ch === '`' || (ch === '$' && (input[i + 1] === '(' || input[i + 1] === '{')) ? closedSpanEnd(input, i) : -1;
+    if (span !== -1) {
+      i = span - 1;
+      continue;
+    }
+    if (quote === '"') {
+      if (ch === '"') quote = null;
       continue;
     }
     if (ch === '$' && input[i + 1] === "'") {
@@ -395,6 +402,16 @@ export function continuationState(input: string): ContinuationState | null {
   }
   if (quote === null) return null;
   return quote === '"' ? 'double' : 'single';
+}
+
+/** Where the backquoted substitution, `$(…)` or `${…}` at `pos` ends, just past its close; -1 where the input ends first. */
+function closedSpanEnd(input: string, pos: number): number {
+  if (input[pos] === '`') {
+    const read = readBacktickSubstitution(input, pos);
+    return read.kind === 'command' ? read.end : -1;
+  }
+  const span = input[pos + 1] === '(' ? readBalancedCommand(input, pos + 2, '(', ')') : readBalancedCommand(input, pos + 2, '{', '}');
+  return span.closed ? span.end : -1;
 }
 
 function tryOperator(input: string, pos: number): { token: Token; end: number } | null {
