@@ -8,7 +8,7 @@
  */
 
 import { CRED_KERNEL, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { engineKey, type ProcessFiles, type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
+import { engineKey, type ProcessFiles, type ProcessStat, type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import type { CredentialedVfs, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { Awaitable, VfsDirent } from '@nimbus-sh/core/vfs/vfs.js';
 import { isVfsError, syscallError } from '@nimbus-sh/core/vfs/vfs-error.js';
@@ -30,7 +30,20 @@ export type ProjectFs = {
 } & {
   /** A directory's entries, typed as the namespace types them: a mount's may name a device, or say it cannot tell. */
   readdir(key: string): Awaitable<Array<Pick<VfsDirent, 'name' | 'type'>>>;
+  /**
+   * Every entry under directory `key` with its lstat, in path order, from one
+   * paged scan (ProcessView.scan): `path` is under `key`, and `byName` marks
+   * a directory whose entries must be asked by name.
+   */
+  scan(key: string): AsyncIterable<ProjectScanned>;
 };
+
+/** An entry of ProjectFs.scan. */
+export interface ProjectScanned {
+  path: string;
+  stat: VfsStat;
+  byName: boolean;
+}
 
 /** The exact type of `entry` in `dir`, lstat'ing it where its listing could not type it; null when it has gone. */
 export function projectEntryType(
@@ -51,13 +64,14 @@ export function projectEntryType(
 /** The principal's `view` in the engine's call shape. */
 export function projectFs(view: ProcessView): ProjectFs {
   const at = (key: string) => '/' + normalizeVfsPath(key);
+  const engineStat = (st: ProcessStat): VfsStat => ({
+    dev: st.dev, ino: st.ino, nlink: st.nlink, type: st.type, size: st.size,
+    atime: st.atimeMs, ctime: st.ctimeMs, mtime: st.mtimeMs, mode: st.mode, uid: st.uid, gid: st.gid,
+  });
   const statOf = async (key: string, follow: boolean): Promise<VfsStat> => {
     const st = await view.stat(at(key), { follow });
     if (st === null) throw syscallError('ENOENT', follow ? 'stat' : 'lstat', at(key));
-    return {
-      dev: st.dev, ino: st.ino, nlink: st.nlink, type: st.type, size: st.size,
-      atime: st.atimeMs, ctime: st.ctimeMs, mtime: st.mtimeMs, mode: st.mode, uid: st.uid, gid: st.gid,
-    };
+    return engineStat(st);
   };
   return {
     exists: (key) => view.exists(at(key)),
@@ -73,6 +87,9 @@ export function projectFs(view: ProcessView): ProjectFs {
     // packs would evict the session's working set.
     readRangeUncached: (key, offset, length) => view.readRangeUncached(at(key), offset, length),
     readdir: (key) => view.readdir(at(key)),
+    scan: async function* (key) {
+      for await (const { path, stat, byName } of view.scan(at(key))) yield { path, stat: engineStat(stat), byName };
+    },
     writeFile: (key, content, options) => view.writeFile(at(key), content, options),
     mkdir: (key, options) => view.mkdir(at(key), options),
     unlink: (key) => view.unlink(at(key)),

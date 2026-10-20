@@ -117,3 +117,92 @@ export function copyArray(array: readonly (string | undefined)[]): (string | und
 export function arrayIndex(array: readonly (string | undefined)[], value: number): number {
   return value < 0 ? lastIndex(array) + 1 + value : value;
 }
+
+/**
+ * A store's variables beyond `env`'s scalar values, as plain data, from the
+ * store's own table: its export, readonly and declared marks, and its arrays,
+ * each element an `[index, value]` pair (sparse). Names in order, so equal
+ * stores give equal data. lifo keeps no other attribute (integer, case,
+ * nameref, associative arrays are not implemented).
+ */
+export interface VariableAttributes {
+  readonly exported: readonly string[];
+  readonly readonly: readonly string[];
+  readonly declared: readonly string[];
+  readonly arrays: Readonly<Record<string, ReadonlyArray<readonly [number, string]>>>;
+}
+
+/** `store`'s attributes (VariableAttributes). */
+export function attributesOf(store: VariableStore): VariableAttributes {
+  const arrays: Record<string, Array<readonly [number, string]>> = Object.create(null);
+  for (const name of [...store.arrays.keys()].sort()) {
+    const array = store.arrays.get(name) ?? [];
+    const elements: Array<readonly [number, string]> = [];
+    for (const key of Object.keys(array)) {
+      const value = array[Number(key)];
+      if (value !== undefined) elements.push([Number(key), value]);
+    }
+    arrays[name] = elements;
+  }
+  return {
+    exported: [...store.exportedNames].sort(),
+    readonly: [...store.readonlyNames].sort(),
+    declared: [...store.declaredNames].sort(),
+    arrays,
+  };
+}
+
+/**
+ * `attributes` put back into `store`, whose `env` holds the scalars they were
+ * saved with (`scalars`, those names) and maybe others besides (a
+ * workspace's). Every name the saved state binds (a scalar, an array, a mark)
+ * is as it was saved: its scalar only if it had one, exported only if it
+ * was. Any other keeps its value and mark, but a mark without a value (a
+ * declared name, an exported unset one) is only the saved state's: one a new
+ * shell starts with (OLDPWD) and the saved shell unset goes.
+ */
+export function restoreAttributes(
+  store: VariableStore & { readonly readonlyNames: Set<string> },
+  attributes: VariableAttributes,
+  scalars: Iterable<string>,
+): void {
+  const saved = new Set(scalars);
+  const exported = new Set(attributes.exported);
+  const bound = new Set([...saved, ...exported, ...attributes.readonly, ...attributes.declared, ...Object.keys(attributes.arrays)]);
+  for (const name of bound) {
+    if (!saved.has(name)) delete store.env[name];
+    if (exported.has(name)) store.exportedNames.add(name);
+    else store.exportedNames.delete(name);
+  }
+  for (const name of [...store.exportedNames]) {
+    if (!bound.has(name) && store.env[name] === undefined && !store.arrays.has(name)) store.exportedNames.delete(name);
+  }
+  store.declaredNames.clear();
+  for (const name of attributes.declared) store.declaredNames.add(name);
+  for (const name of attributes.readonly) store.readonlyNames.add(name);
+  for (const [name, elements] of Object.entries(attributes.arrays)) {
+    const array: (string | undefined)[] = [];
+    for (const [index, value] of elements) array[index] = value;
+    store.arrays.set(name, array);
+  }
+}
+
+/**
+ * A shell parameter the shell keeps among its variables (a positional one, `#`, `@`,
+ * `*`, `?`, `$`, `!`, `-`): never a variable, so never exported (bash's are not in
+ * the environment).
+ */
+export function isShellParameter(name: string): boolean {
+  return /^[0-9]+$/.test(name) || SHELL_PARAMETERS.has(name);
+}
+
+const SHELL_PARAMETERS: ReadonlySet<string> = new Set(['#', '@', '*', '?', '$', '!', '-']);
+
+/**
+ * The environment a command gets: the exported variables' scalar values, in
+ * the store's order (bash's export_env). An unexported variable, or an array,
+ * is the shell's own.
+ */
+export function exportedEnvironment(store: VariableStore): Record<string, string> {
+  return Object.fromEntries(Object.entries(store.env).filter(([name]) => store.exportedNames.has(name)));
+}

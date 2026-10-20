@@ -23,6 +23,7 @@
 import { createKillCommand, type HostProcessSignals } from '../substrate/lifo/commands/system/kill.js';
 import { Kernel } from '../substrate/lifo/kernel/index.js';
 import { Shell } from '../substrate/lifo/shell/Shell.js';
+import type { VariableAttributes } from '../substrate/lifo/shell/variables.js';
 import type { ShellCommandIdentity } from '../substrate/lifo/shell/Shell.js';
 import { createDefaultRegistry } from '../substrate/lifo/commands/registry.js';
 import type { CommandRegistry } from '../substrate/lifo/commands/registry.js';
@@ -70,7 +71,8 @@ import { adoptCtxExports, composeFabric, type CtxExports, type FabricComposition
 import { createSupervisorOpHandler, type SupervisorOpEnvelope, type SupervisorOpHandler } from './supervisor-op.js';
 import { NamedShells, SHELLS_TABLE, type NamedShell, type NamedShellOptions, type ShellState } from './named-shells.js';
 
-export { parseShellState, type NamedShell, type NamedShellOptions, type ShellState } from './named-shells.js';
+export { parseShellState, parseVariableAttributes, type NamedShell, type NamedShellOptions, type ShellState } from './named-shells.js';
+export type { VariableAttributes } from '../substrate/lifo/shell/variables.js';
 
 /** {@link NimbusWorkspace.exec}'s options: the command's, and which shell runs it. */
 export interface WorkspaceExecOptions extends RunOptions {
@@ -672,7 +674,8 @@ export class NimbusWorkspace {
   /**
    * A shell of its own for process `pid`, a second cwd and environment over
    * the workspace shell's filesystem, commands and kernel. It starts in
-   * `state.cwd` with the workspace shell's environment and `state.env` on
+   * `state.cwd` with the workspace shell's environment (its exported
+   * variables, as any process it started would have) and `state.env` on
    * top; with `inheritEnv: false`, with `state.env` alone (a command run again
    * as it was once run). Its commands act as `pid` (`$$`, and the credential and umask
    * {@link processes} holds for it); `sudo` and `su` go through the workspace
@@ -682,13 +685,19 @@ export class NimbusWorkspace {
    * process ends, {@link Shell.closeDescriptors} closes what an `exec` in it
    * left open.
    */
-  shellFor(pid: number, state: { readonly cwd: string; readonly env?: Readonly<Record<string, string>>; readonly inheritEnv?: boolean }): Shell {
+  shellFor(pid: number, state: {
+    readonly cwd: string;
+    readonly env?: Readonly<Record<string, string>>;
+    readonly vars?: VariableAttributes;
+    readonly inheritEnv?: boolean;
+  }): Shell {
     const processes = this.processes;
     const shell = new Shell(
       new HeadlessTerminal(),
       this.filesystem,
       this.registry,
-      { ...(state.inheritEnv === false ? {} : this.shell.getEnv()), ...state.env },
+      // The workspace shell's environment as a process it starts gets it: its exported variables.
+      { ...(state.inheritEnv === false ? {} : this.shell.getExportedEnv()), ...state.env },
       processes,
       {
         pid,
@@ -700,6 +709,9 @@ export class NimbusWorkspace {
     const hostSignals = this.shell.getHostProcessSignals();
     if (hostSignals) shell.setHostProcessSignals(hostSignals);
     shell.setCwd(state.cwd);
+    // A saved shell's bindings, over the variables it was saved with (named-shells.ts), after
+    // setCwd's PWD: an array named PWD is the saved state's.
+    if (state.vars !== undefined) shell.restoreVariableAttributes(state.vars, Object.keys(state.env ?? {}));
     return shell;
   }
 

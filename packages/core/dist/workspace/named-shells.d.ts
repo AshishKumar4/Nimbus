@@ -9,16 +9,24 @@
  * loser's `cd` would vanish. Calls on different names run at once.
  *
  * A call's functions, aliases, options, umask and descriptors are its
- * process's and end with it; only cwd and environment persist. The shell a
+ * process's and end with it; its cwd and variables persist, their values and
+ * their attributes (export, readonly, declared, arrays). The shell a
  * call runs in is built by the workspace for the call's own process
  * (`NimbusWorkspace.shellFor`), from the state this module keeps.
  */
 import type { Shell } from '../substrate/lifo/shell/Shell.js';
+import { type VariableAttributes } from '../substrate/lifo/shell/variables.js';
 import type { SqlDatabase } from '../runtime/os-contracts.js';
-/** Where a shell is: its working directory and its environment. */
+/**
+ * Where a shell is: its working directory, its variables' scalar values
+ * (`env`), and their attributes and arrays (`vars`). A state without `vars`
+ * is one whose every variable is a scalar in `env`, exported, and nothing
+ * else: it is saved without it, so its digest is what it was before `vars`.
+ */
 export interface ShellState {
     readonly cwd: string;
     readonly env: Readonly<Record<string, string>>;
+    readonly vars?: VariableAttributes;
 }
 /** A named shell, held by one call: see {@link NamedShells.hold}. */
 export interface NamedShell {
@@ -47,6 +55,8 @@ export interface NamedShellOptions {
     /** Release this call's ownership, without stopping it or saving its later state. */
     readonly detach?: AbortSignal;
 }
+/** Saved variable attributes (a hosted terminal's JSON), or an error naming what is wrong with them. */
+export declare function parseVariableAttributes(json: string): VariableAttributes;
 /** A saved shell state, or an error naming what is wrong with it. */
 export declare function parseShellState(value: unknown): ShellState;
 /** Where named shells are saved, one row each; made by the first call that names one. */
@@ -61,6 +71,8 @@ export declare class NamedShells {
     private readonly queues;
     private readonly idle;
     private parsedName;
+    /** Whether the table has its `vars` column (addVarsColumn); a table made again by CREATE has it. */
+    private varsColumn;
     constructor(sql: SqlDatabase, 
     /** Where a name with no saved state and no `start` begins. */
     home: string, 
@@ -78,5 +90,7 @@ export declare class NamedShells {
     read(id: string): Promise<ShellState | null>;
     private run;
     private save;
+    /** The `vars` column, on a table made before it: added once, its rows' `vars` null (read as today's). */
+    private addVarsColumn;
 }
 //# sourceMappingURL=named-shells.d.ts.map

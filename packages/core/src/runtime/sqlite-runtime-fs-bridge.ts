@@ -12,7 +12,7 @@ import { modeAllows } from '../vfs/posix-access.js';
 import { sameFileVersion } from './os-contracts.js';
 
 export { fsError, walkBeneath, type BeneathLookup } from './beneath-walk.js';
-import type { RuntimeFileHandle, RuntimeOpenedFile, RuntimeFsPath, RuntimeReadFileOptions, RuntimeReadOptions, RuntimeSynchronousFs, RuntimeFsBridge, RuntimeOpenFlags, RuntimeReopenTarget, RuntimeVfsDirEntry, RuntimeVfsStat, VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeMutationOwner, ExclusiveMutationGrant, ExclusiveMutationRequest } from './os-contracts.js';
+import type { RuntimeFileHandle, RuntimeOpenedFile, RuntimeFsPath, RuntimeReadFileOptions, RuntimeReadOptions, RuntimeSynchronousFs, RuntimeFsBridge, RuntimeOpenFlags, RuntimeReopenTarget, RuntimeVfsDirEntry, RuntimeVfsStat, VfsAcquireOptions, VfsAcquireResult, VfsListOptions, VfsListPage, VfsMutationReceipt, RuntimeMutationOwner, ExclusiveMutationGrant, ExclusiveMutationRequest } from './os-contracts.js';
 import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 
 export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
@@ -614,8 +614,8 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     return this.vfs.acquire(epoch, cursor, options);
   }
 
-  list(after?: string | null, limit?: number): VfsListPage {
-    return this.vfs.list(after ?? null, limit);
+  list(after?: string | null, limit?: number, options?: VfsListOptions): VfsListPage {
+    return this.vfs.list(after ?? null, limit, options);
   }
 
   realpath(path: RuntimeFsPath): string {

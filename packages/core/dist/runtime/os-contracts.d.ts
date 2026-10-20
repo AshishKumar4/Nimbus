@@ -445,7 +445,7 @@ export interface RuntimeFsBridge {
      * describes what it was GIVEN, so a cache enumerated from them can never
      * hold a path that was not already staged.
      */
-    list(after?: string | null, limit?: number): Awaitable<VfsListPage>;
+    list(after?: string | null, limit?: number, options?: VfsListOptions): Awaitable<VfsListPage>;
     /**
      * Watch `path` and everything under it: each change the caller's
      * namespace shows there (CompositeVFS.watchChanges), named as `list`
@@ -696,6 +696,12 @@ export interface VfsListEntry {
      * point it is on. A name under it is not absent, only not listed.
      */
     unlisted?: string;
+    /**
+     * A directory the caller may not read and search: a listing gives the
+     * names under it a lookup by name reaches, but its own readdir is refused,
+     * so a walk that reads directories asks it by name.
+     */
+    unreadable?: true;
 }
 /**
  * One page of {@link RuntimeFsBridge.list}.
@@ -712,6 +718,19 @@ export interface VfsListEntry {
  * missed. Dating rows at a cursor OLDER than their bytes costs a refetch;
  * dating them newer would serve a stale byte.
  */
+/**
+ * What a {@link RuntimeFsBridge.list} page carries beyond each entry's name
+ * and stat. A caller that only walks the tree (git's status) asks for
+ * neither: each costs a lookup per entry.
+ */
+export interface VfsListOptions {
+    /** Each entry's revision (`rev`, `stat.revision`). Default true; one not asked for may be 0, as a mounted entry's is. */
+    revisions?: boolean;
+    /** Each file's `contentKey`. Default true. */
+    contentKeys?: boolean;
+    /** Each link's `linkTarget`: a read of its content, which may not be at hand. Default true. */
+    linkTargets?: boolean;
+}
 export interface VfsListPage {
     epoch: string;
     rev: number;

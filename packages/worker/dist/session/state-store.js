@@ -43,6 +43,7 @@
  * missing columns).
  */
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
+import { parseVariableAttributes } from '@nimbus-sh/core/workspace';
 /** Module-level cap on the env-row JSON length. The whole env is one
  *  row in nimbus_session_kv; if the user's env explodes (eg every
  *  npm-install side-effects 100 vars), we want to surface that as a
@@ -92,6 +93,8 @@ export const SCROLLBACK_MAX_FRAME_BYTES = 256 * 1024;
  *  can find every site by grep. */
 export const KEY_CWD = 'cwd';
 export const KEY_ENV_JSON = 'env';
+/** The shell's variables' attributes and arrays (VariableAttributes); absent in a state saved before them. */
+export const KEY_VARS_JSON = 'vars';
 export const KEY_HYDRATED_AT = 'hydrated_at';
 /**
  * Idempotent CREATE TABLE. Safe to call on every initSession; the
@@ -146,7 +149,7 @@ export function ensureSessionStateSchema(ctx) {
 export function loadShellState(ctx) {
     const sql = ctx?.storage?.sql;
     const empty = {
-        cwd: null, env: null, hydratedAt: null, hasPersistedState: false,
+        cwd: null, env: null, vars: null, hydratedAt: null, hasPersistedState: false,
     };
     if (!sql)
         return empty;
@@ -155,9 +158,10 @@ export function loadShellState(ctx) {
     // all interesting keys in one query.
     let cwd = null;
     let env = null;
+    let vars = null;
     let hydratedAt = null;
     let any = false;
-    for (const row of sql.exec('SELECT k, v FROM nimbus_session_kv WHERE k IN (?, ?, ?)', KEY_CWD, KEY_ENV_JSON, KEY_HYDRATED_AT)) {
+    for (const row of sql.exec('SELECT k, v FROM nimbus_session_kv WHERE k IN (?, ?, ?, ?)', KEY_CWD, KEY_ENV_JSON, KEY_VARS_JSON, KEY_HYDRATED_AT)) {
         any = true;
         if (row.k === KEY_CWD) {
             cwd = String(row.v);
@@ -174,12 +178,20 @@ export function loadShellState(ctx) {
                 // from the cwd row above). Don't throw.
             }
         }
+        else if (row.k === KEY_VARS_JSON) {
+            try {
+                vars = parseVariableAttributes(String(row.v));
+            }
+            catch {
+                // Corrupt attributes → restored as a state saved before them.
+            }
+        }
         else if (row.k === KEY_HYDRATED_AT) {
             const n = Number(row.v);
             hydratedAt = Number.isFinite(n) ? n : null;
         }
     }
-    return { cwd, env, hydratedAt, hasPersistedState: any };
+    return { cwd, env, vars, hydratedAt, hasPersistedState: any };
 }
 /**
  * Atomically write the shell state. Called from the snapshot
@@ -201,22 +213,21 @@ export function persistShellState(ctx, state) {
     if (!sql)
         return;
     ensureSessionStateSchema(ctx);
-    if (state.cwd !== null) {
-        sql.exec('INSERT OR REPLACE INTO nimbus_session_kv (k, v) VALUES (?, ?)', KEY_CWD, state.cwd);
-    }
-    else {
-        sql.exec('DELETE FROM nimbus_session_kv WHERE k = ?', KEY_CWD);
-    }
-    if (state.env !== null) {
-        const json = JSON.stringify(state.env);
-        if (json.length > SESSION_ENV_MAX_BYTES) {
-            throw new Error(`[state-store] env JSON exceeds ${SESSION_ENV_MAX_BYTES} bytes ` +
-                `(got ${json.length}); refusing to persist`);
+    // Both rows are checked before either is written: values and their export marks go together, or
+    // neither does (a refused one must not pair new values with old marks).
+    const envJson = state.env === null ? null : JSON.stringify(state.env);
+    const varsJson = state.vars === null ? null : JSON.stringify(state.vars);
+    for (const [what, json] of [['env', envJson], ['vars', varsJson]]) {
+        if (json !== null && json.length > SESSION_ENV_MAX_BYTES) {
+            throw new Error(`[state-store] ${what} JSON exceeds ${SESSION_ENV_MAX_BYTES} bytes (got ${json.length}); refusing to persist`);
         }
-        sql.exec('INSERT OR REPLACE INTO nimbus_session_kv (k, v) VALUES (?, ?)', KEY_ENV_JSON, json);
     }
-    else {
-        sql.exec('DELETE FROM nimbus_session_kv WHERE k = ?', KEY_ENV_JSON);
+    // One synchronous run of writes: the storage commits them together.
+    for (const [key, value] of [[KEY_CWD, state.cwd], [KEY_ENV_JSON, envJson], [KEY_VARS_JSON, varsJson]]) {
+        if (value !== null)
+            sql.exec('INSERT OR REPLACE INTO nimbus_session_kv (k, v) VALUES (?, ?)', key, value);
+        else
+            sql.exec('DELETE FROM nimbus_session_kv WHERE k = ?', key);
     }
 }
 /**

@@ -428,7 +428,7 @@ function mkCommand(registry: CommandRegistry): Command {
       (await ctx.stderr.write('command: missing operand\n'));
       return 1;
     }
-    const from = resolveContext(ctx.cwd, ctx.env, vfs);
+    const from = lookupContext(ctx, vfs);
     if (mode === '-v' || mode === '-V') {
       const name = args[0];
       const described = await _describeCommand(registry, name, from, (builtin) => ctx.isShellBuiltin?.(builtin) ?? false);
@@ -479,12 +479,18 @@ function mkCommand(registry: CommandRegistry): Command {
  * commands module already has access to; treat any registry resolve
  * as "shell builtin" classification.
  */
+/** Where a shell builtin looks a name up: the shell's own PATH, exported or not (CommandContext.searchPath). */
+function lookupContext(ctx: CommandContext, vfs: ProcessView): ResolveContext {
+  const path = ctx.searchPath ?? ctx.env.PATH;
+  return resolveContext(ctx.cwd, path === undefined ? undefined : { PATH: path }, vfs);
+}
+
 function mkType(registry: CommandRegistry): Command {
   return async (ctx) => {
     const vfs = ctx.vfs;
     if (ctx.args.length === 0) return 0;
     let exit = 0;
-    const from = resolveContext(ctx.cwd, ctx.env, vfs);
+    const from = lookupContext(ctx, vfs);
     for (const name of ctx.args) {
       const described = await _describeCommand(registry, name, from, (builtin) => ctx.isShellBuiltin?.(builtin) ?? false);
       if (described === null) {

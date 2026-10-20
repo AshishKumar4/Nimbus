@@ -21,6 +21,7 @@
  */
 import { Kernel } from '../substrate/lifo/kernel/index.js';
 import { Shell } from '../substrate/lifo/shell/Shell.js';
+import type { VariableAttributes } from '../substrate/lifo/shell/variables.js';
 import type { ShellCommandIdentity } from '../substrate/lifo/shell/Shell.js';
 import type { CommandRegistry } from '../substrate/lifo/commands/registry.js';
 import { type EgressFor, type WorkspaceEgress, type WorkspaceNetwork } from '../_shared/workspace-network.js';
@@ -38,7 +39,8 @@ import { type RuntimePackage, type RuntimeSource } from '../runtime/runtime-pack
 import { type CtxExports, type FabricComposition } from '@nimbus-sh/platform/composition.js';
 import { type SupervisorOpEnvelope, type SupervisorOpHandler } from './supervisor-op.js';
 import { type NamedShell, type NamedShellOptions, type ShellState } from './named-shells.js';
-export { parseShellState, type NamedShell, type NamedShellOptions, type ShellState } from './named-shells.js';
+export { parseShellState, parseVariableAttributes, type NamedShell, type NamedShellOptions, type ShellState } from './named-shells.js';
+export type { VariableAttributes } from '../substrate/lifo/shell/variables.js';
 /** {@link NimbusWorkspace.exec}'s options: the command's, and which shell runs it. */
 export interface WorkspaceExecOptions extends RunOptions {
     /**
@@ -303,7 +305,8 @@ export declare class NimbusWorkspace {
     /**
      * A shell of its own for process `pid`, a second cwd and environment over
      * the workspace shell's filesystem, commands and kernel. It starts in
-     * `state.cwd` with the workspace shell's environment and `state.env` on
+     * `state.cwd` with the workspace shell's environment (its exported
+     * variables, as any process it started would have) and `state.env` on
      * top; with `inheritEnv: false`, with `state.env` alone (a command run again
      * as it was once run). Its commands act as `pid` (`$$`, and the credential and umask
      * {@link processes} holds for it); `sudo` and `su` go through the workspace
@@ -316,6 +319,7 @@ export declare class NimbusWorkspace {
     shellFor(pid: number, state: {
         readonly cwd: string;
         readonly env?: Readonly<Record<string, string>>;
+        readonly vars?: VariableAttributes;
         readonly inheritEnv?: boolean;
     }): Shell;
     /**

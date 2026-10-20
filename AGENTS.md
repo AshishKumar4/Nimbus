@@ -357,6 +357,27 @@ each arm is bundled on its own (`tests/bench/module-resolution-cpu.mjs`,
 primordials call one (`uncurryThis`) costs 4–5× a live method call. Under
 V8 it costs the same. A bun run of such a bench is context, not the gate.
 
+A bench of work a session's Durable Object does over its SQLite (the VFS,
+git's built-in commands) runs on bun's in-process SQLite, which is not the
+DO's. Measured 2026-10-20 on a throwaway over next.js's 51,402 inodes (CPU
+per call from the spans): a row costs 1.6 µs selecting the path alone, 3.3–3.9
+µs with the stat columns, 4.6–5.2 µs with all 15, and 9 µs with the content
+join; a statement costs about 70 µs, and a point lookup (an inode get on a
+cache miss) about 32 µs. That is 2–3× bun per row, but the per-statement and
+per-lookup costs dominate any walk that asks by name, so a bun bench that
+counts only calls or rows misleads. Two consequences:
+- A bench of DO-bound work states, for each arm, its rows, statements and
+  point lookups, and weighs them at the DO's costs; the bun timing is context.
+- The DO's own CPU is read from the Workers spans (`cpuTimeMs` of each
+  invocation, one variant a request), never from `Date.now()` inside the
+  DO: the clock does not advance across synchronous SQL, so a timed step
+  over `sql.exec` reads 0 ms. A probe or scratch route that measures the DO
+  makes each variant its own request and reads the spans afterwards.
+- One pair of throwaway runs is not a measurement: Previews land on hosts
+  of unequal speed (the same status took 4 s of CPU on one and 7 s on
+  another), so a DO-side A/B runs both arms side by side, more than once,
+  and reports each run.
+
 A red-first test of a hang or runaway bug bounds itself: it runs the
 failing path in a child with a timeout, so red is a clean failure.
 

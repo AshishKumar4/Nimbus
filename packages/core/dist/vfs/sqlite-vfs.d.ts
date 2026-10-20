@@ -32,7 +32,7 @@ export { RecallRequired, recallOf, withRecall } from './recall.js';
 import { type Principal, type VfsDirentType, type VfsRemoval, type VfsWriteEvent } from './vfs.js';
 import { type WaveScope, type WriteBatchStreamResult, type WriteStreamOptions } from '../runtime/wave-contracts.js';
 import { StorageLedger, type StorageLedgerView } from '../runtime/storage-ledger.js';
-import { type GrantCertificate, type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListEntry, type VfsListPage, type SqlDatabase, type TransactionHost } from '../runtime/os-contracts.js';
+import { type GrantCertificate, type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListEntry, type VfsListOptions, type VfsListPage, type SqlDatabase, type TransactionHost } from '../runtime/os-contracts.js';
 import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 /** The tables the store keeps (dropped whole by a reset of an older store; listed by an embedder's destroy). */
 export declare const STORE_TABLES: readonly ["vfs_state", "vfs_inodes", "vfs_chunks", "vfs_contents", "vfs_content_chunks", "vfs_inode_history", "vfs_tombstones", "vfs_cold_trash", "vfs_gc_queue", "vfs_snapshots", "vfs_jobs", "vfs_wave_cursors", "vfs_wave_descriptions"];
@@ -258,7 +258,7 @@ export interface CredentialedVfs {
      * Enumerate every path this credential can see, in path order, one bounded
      * page at a time. `after` resumes past a previous page's `next`.
      */
-    list(after?: string | null, limit?: number): VfsListPage;
+    list(after?: string | null, limit?: number, options?: VfsListOptions): VfsListPage;
     /**
      * The coherence barrier in this credential's path space: `invalidatedSince`
      * with each entry's current stat when `options.namespace` asks for it.
@@ -1203,7 +1203,15 @@ export declare class SqliteVFS {
      * whatever is returned, since every directory above it passed.
      */
     private hiddenBehind;
-    /** The highest directory at or above `dir` that the caller may not enter now, or null. */
+    /**
+     * The highest directory at or above `dir` (a name in the caller's view)
+     * that the caller may not enter, in `memo.tree` (the live one by default),
+     * or null: each directory judged once, by the search check resolvePath
+     * makes of each directory on a walk. A link, and everything named below
+     * it, is judged by that resolve itself (where the link leads, with the
+     * recalls a lookup through it makes); a plain directory by its own row,
+     * which `rows` may hold already (a listing's page).
+     */
     private closedAbove;
     /**
      * A watch in `cred`'s view (CredentialedVfs.subscribe), each change told

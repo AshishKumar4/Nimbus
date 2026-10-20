@@ -180,6 +180,7 @@ const FOUND = {
     schedule: [['own', 'write', 'new', 'c3219.3'], ['own', 'rename', 'new', 'top'], ['peer', 'write', 'top', 'c3219.5']],
   },
   'a file renamed over another, its rename answered, reads as the renamed file (3104, awaited)': {
+    // A WASI guest's awaited rename outside a grant shows to its next call that cannot wait only after a barrier (O9).
     engines: ['node'],
     schedule: [['own', 'rename', 'd/e/g', 'top'], ['settle'], ['sync', 'readFile', 'top'], ['sync', 'stat', 'top']],
   },
@@ -197,6 +198,11 @@ const FOUND = {
 
 /** Known gaps, by scenario: what the engine lacks, and what its failure shows. */
 const GAPS = {
+  'a file the process renamed into place reads as a peer later wrote it (3219) [node]': {
+    lacks: 'S dates a moved file\'s bytes only by a write parked under its old name: bytes held otherwise (read, or written and already sent) stay its own at the new name past every barrier, as no rename has a receipt to date them by (closed by the cutover: RF retires own state by identity); '
+      + 'meanwhile, in a program that renames a file it had read (or written and already sent), then another process overwrites it, readFileSync keeps serving the program\'s own bytes',
+    shows: 'at rest, sync readFile top answered "c3219.3"',
+  },
   'an awaited chmod outside a grant is what the next call that cannot wait reads [holder]': {
     lacks: 'O9: an awaited mutation outside a grant is decided by the provisional decisions (the cutover)',
     shows: 'sync stat top answered file 644',
@@ -231,11 +237,6 @@ const GAPS = {
     lacks: 'S: readFileSync reads a renamed-over name\'s bytes by name, not through the rename the process decided (closed by the cutover: RF reads by identity); '
       + 'meanwhile a Node program that renames a file over another and reads it before the rename is answered gets the replaced file\'s bytes, while statSync shows the renamed one',
     shows: 'sync readFile top answered "t0000000"',
-  },
-  'a file the process renamed into place reads as a peer later wrote it (3219) [node]': {
-    lacks: 'S: the bytes an own rename carried to its new name outlive a peer\'s later write of that name, past every barrier (closed by the cutover: one own state, RF\'s); '
-      + 'meanwhile a Node program keeps reading what it renamed into place after another process overwrote it',
-    shows: 'at rest, sync readFile top answered "c3219.3"',
   },
   'a directory the process may search again shows nothing stale while it is relisted [node]': {
     lacks: 'B2: a relist answers what is under its directory as unknown until it lands (the cutover\'s relist fence); '
