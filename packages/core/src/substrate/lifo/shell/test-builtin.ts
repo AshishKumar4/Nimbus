@@ -2,7 +2,10 @@ import type { ProcessView } from '../../../runtime/process-files.js';
 import type { ProcessStat } from '../../../runtime/process-files.js';
 import type { CommandOutputStream } from '../commands/types.js';
 import type { WordPart } from './types.js';
-import { expandPatternWord, expandRegexWord, type ExpandContext } from './expander.js';
+import {
+  ArithmeticError, arithmeticOf, expandPatternWord, expandRegexWord, reportWarnings, SubscriptArithmeticError, type ArithmeticScope, type ExpandContext,
+} from './expander.js';
+import { DiscardSignal } from './discard.js';
 import { compileRegcomp, execLongest, PosixRegexSyntax, type CompiledRegex } from '../utils/posix-regex.js';
 import { BINARY_OPERATORS, UNARY_OPERATORS } from './conditional-operators.js';
 import { shellMatch } from '../utils/glob.js';
@@ -71,6 +74,20 @@ export async function evaluateDoubleBracketWords(
       return arg;
     },
     regex: async (i) => (await expandRegexWord(words[i] ?? [], expandCtx)),
+    // An operand whose arithmetic fails makes its comparison false, reported as [['s there (bash's arithcomp);
+    // its warnings are reported there too.
+    integer: (text) => {
+      let failure: ArithmeticError | null = null;
+      let value: number | null = null;
+      try {
+        value = arithmeticOf(text, expandCtx);
+      } catch (error) {
+        if (!(error instanceof ArithmeticError)) throw error;
+        failure = error;
+      }
+      if (failure === null && value !== null && expandCtx.warnings.length === 0) return value;
+      return reported(stderr, expandCtx, value, failure);
+    },
   };
   return (await evaluateTestExpression(operands, vfs, stderr, context, 'double-bracket'));
 }
@@ -93,6 +110,8 @@ type Operands = {
   value(index: number): Promise<TestArg>;
   /** `[[ ]]`'s: the operand on the right of `=~` as an extended regular expression. */
   regex?(index: number): Promise<string>;
+  /** `[[ ]]`'s: an operand of `-eq` and its kind as an arithmetic expression, null once a failure is reported; `test`'s are decimal (toInt). */
+  integer?(text: string): number | Promise<number | null>;
 };
 
 function literalOperands(args: string[]): Operands {
@@ -135,6 +154,8 @@ async function evaluateTestExpression(
     }
     return result.value ? 0 : 1;
   } catch (e) {
+    // A discard met expanding an operand is the line's.
+    if (e instanceof DiscardSignal) throw e;
     if (!(e instanceof RegexRefused)) (await stderr.write(`test: ${e instanceof Error ? e.message : String(e)}\n`));
     return 2;
   }
@@ -255,7 +276,9 @@ async function parsePrimary(
   }
   if (op !== undefined && Object.hasOwn(BINARY_OPERATORS, op)) {
     const value = evaluate
-      ? evaluateBinary(op, await ops.value(pos), await ops.value(pos + 2), mode) ?? false
+      ? (ops.integer !== undefined && Object.hasOwn(INTEGER_COMPARISONS, op)
+        ? await compareIntegers(INTEGER_COMPARISONS[op], (await ops.value(pos)).value, (await ops.value(pos + 2)).value, ops.integer)
+        : evaluateBinary(op, await ops.value(pos), await ops.value(pos + 2), mode) ?? false)
       : false;
     return { value, pos: pos + 3 };
   }
@@ -296,7 +319,31 @@ function compiledOrRefused(ere: string): CompiledRegex {
   }
 }
 
-/** Undefined when `op` is not a binary comparison. */
+/** `[[ ]]`'s integer comparison: false where an operand's arithmetic fails (the left's first, as bash's arithcomp). */
+async function compareIntegers(
+  compare: ((a: number, b: number) => boolean) | undefined, left: string, right: string, integer: (text: string) => number | Promise<number | null>,
+): Promise<boolean> {
+  const first = integer(left);
+  const a = typeof first === 'number' ? first : await first;
+  if (a === null) return false;
+  const second = integer(right);
+  const b = typeof second === 'number' ? second : await second;
+  return b !== null && compare !== undefined && compare(a, b);
+}
+
+/** `value` (null where `failure`), once `scope`'s warnings and the failure, as [['s, are written. */
+async function reported(stderr: CommandOutputStream, scope: ArithmeticScope, value: number | null, failure: ArithmeticError | null): Promise<number | null> {
+  const report = async (diagnostic: string): Promise<void> => {
+    (await stderr.write(`${diagnostic}\n`));
+  };
+  await reportWarnings(scope, report);
+  if (failure !== null) await report(failure.reportedBy('[['));
+  // A subscript's error is an expansion's: the line's.
+  if (failure instanceof SubscriptArithmeticError) throw new DiscardSignal();
+  return failure === null ? value : null;
+}
+
+/** Undefined when `op` is not a binary comparison. `test`'s integers are decimal. */
 function evaluateBinary(op: string, left: TestArg, right: TestArg, mode: TestMode): boolean | undefined {
   switch (op) {
     case '=':

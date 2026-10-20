@@ -1,4 +1,5 @@
-import { expandPatternWord, expandRegexWord } from './expander.js';
+import { ArithmeticError, arithmeticOf, expandPatternWord, expandRegexWord, reportWarnings, SubscriptArithmeticError, } from './expander.js';
+import { DiscardSignal } from './discard.js';
 import { compileRegcomp, execLongest, PosixRegexSyntax } from '../utils/posix-regex.js';
 import { BINARY_OPERATORS, UNARY_OPERATORS } from './conditional-operators.js';
 import { shellMatch } from '../utils/glob.js';
@@ -42,6 +43,23 @@ export async function evaluateDoubleBracketWords(words, expandCtx, vfs, stderr, 
             return arg;
         },
         regex: async (i) => (await expandRegexWord(words[i] ?? [], expandCtx)),
+        // An operand whose arithmetic fails makes its comparison false, reported as [['s there (bash's arithcomp);
+        // its warnings are reported there too.
+        integer: (text) => {
+            let failure = null;
+            let value = null;
+            try {
+                value = arithmeticOf(text, expandCtx);
+            }
+            catch (error) {
+                if (!(error instanceof ArithmeticError))
+                    throw error;
+                failure = error;
+            }
+            if (failure === null && value !== null && expandCtx.warnings.length === 0)
+                return value;
+            return reported(stderr, expandCtx, value, failure);
+        },
     };
     return (await evaluateTestExpression(operands, vfs, stderr, context, 'double-bracket'));
 }
@@ -81,6 +99,9 @@ async function evaluateTestExpression(operands, vfs, stderr, context, mode) {
         return result.value ? 0 : 1;
     }
     catch (e) {
+        // A discard met expanding an operand is the line's.
+        if (e instanceof DiscardSignal)
+            throw e;
         if (!(e instanceof RegexRefused))
             (await stderr.write(`test: ${e instanceof Error ? e.message : String(e)}\n`));
         return 2;
@@ -180,7 +201,9 @@ async function parsePrimary(ops, pos, vfs, context, mode, evaluate) {
     }
     if (op !== undefined && Object.hasOwn(BINARY_OPERATORS, op)) {
         const value = evaluate
-            ? evaluateBinary(op, await ops.value(pos), await ops.value(pos + 2), mode) ?? false
+            ? (ops.integer !== undefined && Object.hasOwn(INTEGER_COMPARISONS, op)
+                ? await compareIntegers(INTEGER_COMPARISONS[op], (await ops.value(pos)).value, (await ops.value(pos + 2)).value, ops.integer)
+                : evaluateBinary(op, await ops.value(pos), await ops.value(pos + 2), mode) ?? false)
             : false;
         return { value, pos: pos + 3 };
     }
@@ -217,7 +240,30 @@ function compiledOrRefused(ere) {
         throw e;
     }
 }
-/** Undefined when `op` is not a binary comparison. */
+/** `[[ ]]`'s integer comparison: false where an operand's arithmetic fails (the left's first, as bash's arithcomp). */
+async function compareIntegers(compare, left, right, integer) {
+    const first = integer(left);
+    const a = typeof first === 'number' ? first : await first;
+    if (a === null)
+        return false;
+    const second = integer(right);
+    const b = typeof second === 'number' ? second : await second;
+    return b !== null && compare !== undefined && compare(a, b);
+}
+/** `value` (null where `failure`), once `scope`'s warnings and the failure, as [['s, are written. */
+async function reported(stderr, scope, value, failure) {
+    const report = async (diagnostic) => {
+        (await stderr.write(`${diagnostic}\n`));
+    };
+    await reportWarnings(scope, report);
+    if (failure !== null)
+        await report(failure.reportedBy('[['));
+    // A subscript's error is an expansion's: the line's.
+    if (failure instanceof SubscriptArithmeticError)
+        throw new DiscardSignal();
+    return failure === null ? value : null;
+}
+/** Undefined when `op` is not a binary comparison. `test`'s integers are decimal. */
 function evaluateBinary(op, left, right, mode) {
     switch (op) {
         case '=':

@@ -1,8 +1,9 @@
-import { lexArrayElements, TokenReader, type ReaderMark } from './lexer.js';
+import { arithmeticForParts, lexArrayElements, TokenReader, type ReaderMark } from './lexer.js';
 import { BINARY_OPERATORS, UNARY_OPERATORS } from './conditional-operators.js';
 import {
   TokenKind,
   type Token,
+  type ArithmeticForNode,
   type ArrayElementNode,
   type AssignmentNode,
   type ScriptNode,
@@ -365,10 +366,29 @@ class Parser {
     }
 
     if (token.kind === TokenKind.LParen) {
+      const expression = this.readArithmeticCommand();
+      if (expression !== null) return { type: 'arithmetic', expression, redirections: this.parseTrailingRedirections() };
       return this.parseSubshell();
     }
 
     return this.parseSimpleCommand();
+  }
+
+  /**
+   * `((expression))` at the next token, as the reader reads it
+   * (TokenReader.readArithmeticCommand, which also says whether the two `(`
+   * are one `((`, an alias's text and the text after it joined); null where
+   * it is no such command.
+   */
+  private readArithmeticCommand(): string | null {
+    if (this.peek().kind !== TokenKind.LParen || this.peekAt(1).kind !== TokenKind.LParen) return null;
+    this.rereadFromHere();
+    const token = this.reader.readArithmeticCommand();
+    if (token === null) return null;
+    this.tokens.push(token);
+    this.marks.push(undefined);
+    this.pos++;
+    return token.value;
   }
 
   private parseDoubleBracketCommand(): DoubleBracketNode {
@@ -508,8 +528,10 @@ class Parser {
     return { type: 'if', clauses, elseBody, redirections };
   }
 
-  private parseFor(): ForNode {
+  private parseFor(): ForNode | ArithmeticForNode {
     this.expectWord('for');
+    const header = this.readArithmeticCommand();
+    if (header !== null) return this.parseArithmeticFor(header);
     const varToken = this.expect(TokenKind.Word);
     const variable = varToken.value;
     const variableError = identifierError(varToken, true);
@@ -542,6 +564,25 @@ class Parser {
     const redirections = this.parseTrailingRedirections();
 
     return { type: 'for', variable, ...(variableError === null ? {} : { variableError }), words, body, redirections };
+  }
+
+  /** `for ((init; test; step))` and its body, `do … done` or `{ … }`, as bash's parser reads them. */
+  private parseArithmeticFor(header: string): ArithmeticForNode {
+    const parts = arithmeticForParts(header);
+    if (parts === null) throw new ParseError('syntax error: arithmetic expression required', this.peek().pos);
+    const [init, test, step] = parts;
+    this.skipSeparators();
+    let body: ListNode[];
+    if (this.isWord('{')) {
+      this.advance();
+      body = this.parseCompoundList(['}']);
+      this.expectWord('}');
+    } else {
+      this.expectWord('do');
+      body = this.parseCompoundList(['done']);
+      this.expectWord('done');
+    }
+    return { type: 'arithmetic_for', init, test, step, body, redirections: this.parseTrailingRedirections() };
   }
 
   private parseLoop(keyword: LoopNode['type']): LoopNode {
@@ -887,21 +928,31 @@ function assignmentHead(token: Token): { length: number; name: string; subscript
  * with the length of the word through the `=`. Null where they are not there.
  */
 function operatorAfter(parts: readonly WordPart[], start: number): { length: number; subscript?: string; append: boolean } | null {
-  // The characters after `start`, each with whether it is quoted.
+  // The characters after `start`, each with whether it is quoted; `crossedQuote`,
+  // whether an empty quoted part (`""`) came before it: as any quote, it makes
+  // a name or an operator no assignment's.
   let part = 0;
   let at = start;
   let length = start;
+  let crossedQuote = false;
   const next = (): { char: string; quoted: boolean } | null => {
+    crossedQuote = false;
     for (; part < parts.length; part++, at = 0) {
       const current = parts[part];
-      if (current === undefined || at >= current.text.length) continue;
+      if (current === undefined) continue;
+      const quoted = current.quoted !== 'none' || current.commandSubstitution !== undefined;
+      if (at >= current.text.length) {
+        if (quoted && current.text === '') crossedQuote = true;
+        continue;
+      }
       const char = current.text.charAt(at++);
       length++;
-      return { char, quoted: current.quoted !== 'none' || current.commandSubstitution !== undefined };
+      return { char, quoted };
     }
     return null;
   };
   let char = next();
+  if (crossedQuote) return null;
   let subscript: string | undefined;
   if (char !== null && char.char === '[' && !char.quoted) {
     let text = '';
@@ -914,11 +965,13 @@ function operatorAfter(parts: readonly WordPart[], start: number): { length: num
     if (char === null) return null;
     subscript = text;
     char = next();
+    if (crossedQuote) return null;
   }
   let append = false;
   if (char !== null && char.char === '+' && !char.quoted) {
     append = true;
     char = next();
+    if (crossedQuote) return null;
   }
   if (char === null || char.char !== '=' || char.quoted) return null;
   return { length, ...(subscript === undefined ? {} : { subscript }), append };

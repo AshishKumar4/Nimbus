@@ -19,6 +19,8 @@ import { DEFAULT_HOME } from '../../../constants.js';
 import { ExitSignal, TextSyntaxError, type BuiltinExecutionContext, type BuiltinFn } from './interpreter.js';
 import { resolveJobSpec } from './jobs.js';
 import { evaluateTest } from './test-builtin.js';
+import { ArithmeticError, arithmeticOf, reportWarnings, SubscriptArithmeticError, type ArithmeticScope } from './expander.js';
+import { DiscardSignal } from './discard.js';
 import { isVfsError, strerror } from '../../../vfs/vfs-error.js';
 import { statOrThrow } from '../../../vfs/vfs.js';
 import { runKill, type HostProcessSignals } from '../commands/system/kill.js';
@@ -77,6 +79,7 @@ const BUILTINS: Record<string, (call: BuiltinCall) => Promise<number>> = {
   source: builtinSource,
   '.': builtinSource,
   eval: builtinEval,
+  let: builtinLet,
   alias: builtinAlias,
   unalias: builtinUnalias,
   test: ({ args, stderr, context }) => evaluateTest(args, context.vfs, stderr, context),
@@ -165,7 +168,7 @@ async function builtinExport({ args, stdout, stderr, state, context }: BuiltinCa
     }
     return 0;
   }
-  for (const arg of names) {
+  for (const [offset, arg] of names.entries()) {
     if (functions) {
       // A function is marked for children this shell does not give functions to: only its name is checked.
       if (!context.isFunction(arg)) {
@@ -179,7 +182,7 @@ async function builtinExport({ args, stdout, stderr, state, context }: BuiltinCa
     // Exported with no value, a name is declared; unexported, an absent one stays absent.
     if (!unexport && eqIdx === -1 && !Object.hasOwn(state.env, key) && !state.arrays.has(key)) state.declaredNames.add(key);
     // A refused assignment (a readonly name) still takes the attribute, as bash's does.
-    if (eqIdx !== -1 && !(await assignEnv(state, key, arg.slice(eqIdx + 1), stderr))) exitCode = 1;
+    if (eqIdx !== -1 && !(await assignDeclared(state, key, context.arrayElements?.get(first + offset) ?? arg.slice(eqIdx + 1), stderr, context))) exitCode = 1;
     if (unexport) {
       state.exportedNames.delete(key);
     } else {
@@ -437,17 +440,16 @@ function setShellOptionByFlag(state: ShellState, flag: string, enabled: boolean)
 
 async function builtinReadonly({ args, stdout, stderr, state, context }: BuiltinCall): Promise<number> {
   if (args.length === 0 || (args.length === 1 && args[0] === '-p')) {
+    // Each readonly variable as a declaration bash reads back, as `declare -p` prints it.
     for (const name of Array.from(state.readonlyNames).sort()) {
-      const value = state.env[name];
-      (await stdout.write(value === undefined
-        ? `readonly ${name}\n`
-        : `readonly ${name}=${quoteSetValue(value)}\n`));
+      const declared = declarationOf(state, name);
+      if (declared !== null) (await stdout.write(`${declared}\n`));
     }
     return 0;
   }
 
   let exitCode = 0;
-  for (const arg of args) {
+  for (const [index, arg] of args.entries()) {
     if (arg.startsWith('-')) {
       (await stderr.write(`readonly: ${arg}: invalid option\n`));
       exitCode = 2;
@@ -461,7 +463,7 @@ async function builtinReadonly({ args, stdout, stderr, state, context }: Builtin
         exitCode = 1;
         continue;
       }
-      if ((await assignEnv(state, name, arg.slice(eqIdx + 1), stderr))) {
+      if ((await assignDeclared(state, name, context.arrayElements?.get(index) ?? arg.slice(eqIdx + 1), stderr, context))) {
         state.readonlyNames.add(name);
         context.promote(name);
       } else {
@@ -853,6 +855,36 @@ async function runText(name: string, stderr: CommandOutputStream, run: () => Pro
     await stderr.write(`${name}: ${error.message}\n`);
     return 2;
   }
+}
+
+/**
+ * let: each argument's arithmetic in turn; 0 where the last's value is not
+ * 0, 1 where it is. An error is let's own: reported, status 1 (bash 5.2).
+ */
+async function builtinLet({ args, stderr, state, context }: BuiltinCall): Promise<number> {
+  if (args.length === 0) {
+    (await stderr.write('let: expression expected\n'));
+    return 1;
+  }
+  let value = 0;
+  const scope: ArithmeticScope = { env: state.env, arrays: state.arrays, readonlyNames: state.readonlyNames, positionals: context.getPositionals(), warnings: [] };
+  const report = async (diagnostic: string): Promise<void> => {
+    (await stderr.write(`${diagnostic}\n`));
+  };
+  for (const arg of args) {
+    try {
+      value = arithmeticOf(arg, scope);
+    } catch (error) {
+      if (!(error instanceof ArithmeticError)) throw error;
+      await reportWarnings(scope, report);
+      await report(error.reportedBy('let'));
+      // A subscript's error is an expansion's: the line's.
+      if (error instanceof SubscriptArithmeticError) throw new DiscardSignal();
+      return 1;
+    }
+    await reportWarnings(scope, report);
+  }
+  return value === 0 ? 1 : 0;
 }
 
 /**

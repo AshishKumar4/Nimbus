@@ -111,6 +111,7 @@ import { wireReplicasOnConstruct as _w12WireReplicasOnConstruct, getReplicaState
 import type { HostActivityLease } from '@nimbus-sh/fabric/host-activity.js';
 import { wireHibernationOnConstruct as _w9WireHibernationOnConstruct, wireProcessLogPersist as _w9DoWireProcessLogPersist, ensureHibSchema as _w9DoEnsureHibSchema, scheduleHibFlush as _w9DoScheduleHibFlush, clearDestroyedTombstone as _w1ClearDestroyedTombstone, ensureResidentKeepalive as _w1EnsureResidentKeepalive, dispatchAlarm as _w9DoDispatchAlarm, flushOnClose as _w9DoFlushOnClose, noteClientActivity } from './hibernation.js';
 import { timers } from '@nimbus-sh/fabric/timers.js';
+import { holdThreadWatch } from '@nimbus-sh/fabric/thread-stalls.js';
 import { generation } from '@nimbus-sh/fabric/generation.js';
 // S6: initSession (1875 LOC of cmd registrations + boot wiring) extracted.
 // S6: initSession (1875 LOC of cmd registrations + boot wiring) extracted.
@@ -868,7 +869,8 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
   // Supervisor RPC (file/log/HMR/batch): what host stubs call, so an answer
   // leaves the session here and is counted (answerSupervisorOp).
   supervisorOp(envelope: SupervisorOpEnvelope): Promise<unknown> {
-    return answerSupervisorOp((served) => this.serveSupervisorOp(served), envelope);
+    const watched = holdThreadWatch(this.ctx, `${envelope.op} pid ${envelope.pid ?? '-'}`);
+    return answerSupervisorOp((served) => this.serveSupervisorOp(served), envelope).finally(watched);
   }
 
   /** `envelope` answered, for the session itself: a call inside another answer (session/rpc.ts _rpcFsAcquired). */
@@ -1429,8 +1431,10 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
     })();
   }
 
+  // Watched while the command it submits runs here (thread-stalls.ts): a built-in command on a large tree is the session's own slice.
   _rpcTerminalInput(frame: string, terminalId: string): Promise<void> {
-    return terminalInput(this, frame, terminalId);
+    const watched = holdThreadWatch(this.ctx, 'terminal input');
+    return terminalInput(this, frame, terminalId).finally(watched);
   }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {

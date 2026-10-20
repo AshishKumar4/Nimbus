@@ -236,6 +236,38 @@ export class TokenReader {
   }
 
   /**
+   * `((expression))`, as bash's reader reads an arithmetic command where a
+   * command begins, or after `for` (parse_dparen): the text to the `))` that
+   * closes it, parentheses nesting in it, a quoted or backslashed one its
+   * text's. Null, with nothing read, where a `)` closes it that no second
+   * `)` follows: `((echo a) )` is two subshells.
+   */
+  readArithmeticCommand(): Token | null {
+    // The text left to read, an alias's and then the text it was read in, as one.
+    const pieces: Array<{ frame: Frame; from: number; at: number }> = [];
+    let text = '';
+    for (let k = this.frames.length - 1; k >= 0; k--) {
+      const frame = this.frames[k];
+      pieces.push({ frame, from: text.length, at: frame.at });
+      text += frame.input.slice(frame.at);
+    }
+    let at = 0;
+    while (text[at] === ' ' || text[at] === '\t') at++;
+    if (text[at] !== '(' || text[at + 1] !== '(') return null;
+    const close = arithmeticClose(text, at + 2);
+    if (close === -1) return null;
+    // Read to past the `))`: the alias texts it ends beyond are read whole.
+    const end = close + 2;
+    for (const piece of pieces) {
+      const length = piece.frame.input.length - piece.at;
+      piece.frame.at = end - piece.from < length ? piece.at + (end - piece.from) : piece.frame.input.length;
+      if (end - piece.from < length) break;
+    }
+    this.checkNext = false;
+    return { kind: TokenKind.Word, value: text.slice(at + 2, close), pos: (pieces[0]?.at ?? 0) + at };
+  }
+
+  /**
    * The word after `=~`, as bash's reader reads a regular expression: up to a
    * blank or an operator, except that its parentheses nest and, inside them,
    * blanks, newlines, `#` and operators are its own, and `|` is its own
@@ -336,13 +368,20 @@ export function continuationState(input: string): ContinuationState | null {
       i++;
       continue;
     }
-    if (quote === '"') {
-      if (ch === '"') quote = null;
-      continue;
-    }
-    // $$, the shell's pid, is two dollars: a quote after it is its own.
+    // $$, the shell's pid, is two dollars, in double quotes too: what follows it is its own.
     if (ch === '$' && input[i + 1] === '$') {
       i++;
+      continue;
+    }
+    // A closed substitution or braced expansion is one span, in double quotes too: its quotes are
+    // its own. One the input ends inside is read on, so a quote open in it is still open.
+    const span = ch === '`' || (ch === '$' && (input[i + 1] === '(' || input[i + 1] === '{')) ? closedSpanEnd(input, i) : -1;
+    if (span !== -1) {
+      i = span - 1;
+      continue;
+    }
+    if (quote === '"') {
+      if (ch === '"') quote = null;
       continue;
     }
     if (ch === '$' && input[i + 1] === "'") {
@@ -355,12 +394,84 @@ export function continuationState(input: string): ContinuationState | null {
       quote = ch;
       continue;
     }
-    if (ch === '#') {
+    if (ch === '#' && (i === 0 || COMMENT_AFTER.includes(input[i - 1]))) {
       while (i + 1 < input.length && input[i + 1] !== '\n') i++;
     }
   }
   if (quote === null) return null;
   return quote === '"' ? 'double' : 'single';
+}
+
+/**
+ * The characters of arithmetic text from `start` outside its quoted,
+ * backslashed and substituted spans, and with `braces` its `${…}` spans
+ * (each read whole by the shell's readers), with the parentheses open
+ * before each; null where the input ends inside such a span.
+ */
+function* arithmeticCharacters(input: string, start: number, braces: boolean): Generator<{ ch: string; i: number; depth: number } | null> {
+  let depth = 0;
+  for (let i = start; i < input.length;) {
+    const ch = input[i];
+    const span = ch === '\\' ? (i + 1 < input.length ? i + 2 : -1)
+      : ch === "'" || ch === '"' ? quotedEnd(input, i, ch)
+      : ch === '`' || (ch === '$' && (input[i + 1] === '(' || (braces && input[i + 1] === '{'))) ? closedSpanEnd(input, i)
+      : i;
+    if (span === -1) {
+      yield null;
+      return;
+    }
+    if (span > i) {
+      i = span;
+      continue;
+    }
+    yield { ch, i, depth };
+    if (ch === '(') depth++;
+    else if (ch === ')' && depth > 0) depth--;
+    i++;
+  }
+}
+
+/** Where the quote at `pos` closes, just past it; -1 where the input ends first. */
+function quotedEnd(input: string, pos: number, quote: '"' | "'"): number {
+  const read = readQuoted(input, pos, quote);
+  return read.end > pos + 1 && input[read.end - 1] === quote ? read.end : -1;
+}
+
+/**
+ * The `))` that closes an arithmetic command's text from `start` (past its
+ * `((`), as bash 5.2's parse_dparen finds it: the index of its first `)`; -1
+ * where a `)` closes it that no second `)` follows (`((echo a) )` is two
+ * subshells), or the input ends first. A `)` in a `${…}` counts, as bash's
+ * does: `((x=1${v:+)}))` is two subshells there.
+ */
+function arithmeticClose(input: string, start: number): number {
+  for (const at of arithmeticCharacters(input, start, false)) {
+    if (at === null) return -1;
+    if (at.ch === ')' && at.depth === 0) return input[at.i + 1] === ')' ? at.i : -1;
+  }
+  return -1;
+}
+
+/** `for ((…))`'s header as its three expressions, split at its two `;` outside parentheses and spans; null where it has not three. */
+export function arithmeticForParts(header: string): [string, string, string] | null {
+  const cuts: number[] = [];
+  for (const at of arithmeticCharacters(header, 0, true)) {
+    if (at === null) return null;
+    if (at.ch === ';' && at.depth === 0) cuts.push(at.i);
+  }
+  const [first, second] = cuts;
+  if (cuts.length !== 2 || first === undefined || second === undefined) return null;
+  return [header.slice(0, first), header.slice(first + 1, second), header.slice(second + 1)];
+}
+
+/** Where the backquoted substitution, `$(…)` or `${…}` at `pos` ends, just past its close; -1 where the input ends first. */
+function closedSpanEnd(input: string, pos: number): number {
+  if (input[pos] === '`') {
+    const read = readBacktickSubstitution(input, pos);
+    return read.kind === 'command' ? read.end : -1;
+  }
+  const span = input[pos + 1] === '(' ? readBalancedCommand(input, pos + 2, '(', ')') : readBalancedCommand(input, pos + 2, '{', '}');
+  return span.closed ? span.end : -1;
 }
 
 function tryOperator(input: string, pos: number): { token: Token; end: number } | null {
@@ -823,8 +934,9 @@ function readWord(input: string, pos: number): { token: Token; end: number } | n
     }
 
     // Check for operator/break chars that end the word
-    // Special case: 2> and 2>> at word start should be handled by tryOperator
-    if (isWordBreak(ch)) {
+    // Special case: 2> and 2>> at word start should be handled by tryOperator.
+    // A `#` inside a word is the word's: only one where a word starts begins a comment.
+    if (isWordBreak(ch) && ch !== '#') {
       break;
     }
 
@@ -862,7 +974,7 @@ function writtenWord(input: string, pos: number, end: number, ansiC: ReadonlyArr
   return written + input.slice(at, end);
 }
 
-type SubstitutionRead =
+export type SubstitutionRead =
   | { kind: 'command'; text: string; command: string; end: number }
   | { kind: 'text'; text: string; end: number };
 
@@ -930,7 +1042,7 @@ function readArithmeticSubstitution(input: string, pos: number): SubstitutionRea
   return { kind: 'text', text, end: i };
 }
 
-function readBacktickSubstitution(input: string, pos: number): SubstitutionRead {
+export function readBacktickSubstitution(input: string, pos: number): SubstitutionRead {
   let i = pos + 1;
   let inner = '';
 
@@ -1089,6 +1201,15 @@ export function readBalancedCommand(
       heredocs.length = 0;
       continue;
     }
+    // An arithmetic command in a command's span is read as one: its `<<` is a shift, its `)` its own.
+    if (ch === '(' && open === '(' && !arithmetic && input[i + 1] === '(') {
+      const arithmeticEnd = arithmeticClose(input, i + 2);
+      if (arithmeticEnd !== -1) {
+        body += input.slice(i, arithmeticEnd + 2);
+        i = arithmeticEnd + 2;
+        continue;
+      }
+    }
     if (ch === open) depth++;
     else if (ch === close && --depth === 0) return { body, end: i + 1, closed: true };
     body += ch;
@@ -1121,7 +1242,7 @@ export function readAnsiCQuote(input: string, pos: number): { text: string; end:
  * backtick substitution is its own span, so a `"` inside it does not close
  * the quote (`"$(echo ")")"`).
  */
-function readQuoted(input: string, pos: number, quote: '"' | "'"): { text: string; end: number } {
+export function readQuoted(input: string, pos: number, quote: '"' | "'"): { text: string; end: number } {
   if (quote === "'") {
     const close = input.indexOf("'", pos + 1);
     const end = close === -1 ? input.length : close + 1;

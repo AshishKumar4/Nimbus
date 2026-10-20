@@ -309,6 +309,14 @@ export type WriteBatchStreamResult =
         message: string;
         /** The refusal's errno (EACCES, EEXIST, EROFS, …) when the filesystem refused; absent otherwise. */
         errno?: string;
+        /**
+         * Placing the op after the cursor met a delegation the session recalls
+         * first (vfs/recall.ts RecallRequired), the recall started, before
+         * anything of that op applied: no refusal is kept, so the same ops sent
+         * again apply once it is over. Never set where the op took effect (a
+         * close that consumed its description, a commit).
+         */
+        recall?: true;
       };
     });
 

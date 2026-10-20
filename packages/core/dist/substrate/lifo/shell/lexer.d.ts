@@ -61,6 +61,14 @@ export declare class TokenReader {
      */
     readSubscriptedWord(): Token | null;
     /**
+     * `((expression))`, as bash's reader reads an arithmetic command where a
+     * command begins, or after `for` (parse_dparen): the text to the `))` that
+     * closes it, parentheses nesting in it, a quoted or backslashed one its
+     * text's. Null, with nothing read, where a `)` closes it that no second
+     * `)` follows: `((echo a) )` is two subshells.
+     */
+    readArithmeticCommand(): Token | null;
+    /**
      * The word after `=~`, as bash's reader reads a regular expression: up to a
      * blank or an operator, except that its parentheses nest and, inside them,
      * blanks, newlines, `#` and operators are its own, and `|` is its own
@@ -85,6 +93,8 @@ export type ContinuationState = 'single' | 'double' | 'backslash';
  * Comments are skipped exactly where lex() treats `#` as one.
  */
 export declare function continuationState(input: string): ContinuationState | null;
+/** `for ((…))`'s header as its three expressions, split at its two `;` outside parentheses and spans; null where it has not three. */
+export declare function arithmeticForParts(header: string): [string, string, string] | null;
 type HeredocDelimiter = {
     delimiter: string;
     quoted: boolean;
@@ -95,6 +105,17 @@ export declare function endsHeredoc(line: string, heredoc: {
     readonly delimiter: string;
     readonly stripTabs: boolean;
 }): boolean;
+export type SubstitutionRead = {
+    kind: 'command';
+    text: string;
+    command: string;
+    end: number;
+} | {
+    kind: 'text';
+    text: string;
+    end: number;
+};
+export declare function readBacktickSubstitution(input: string, pos: number): SubstitutionRead;
 /**
  * The full `${...}` span starting at `pos`. Quotes, nested braces and command
  * substitutions inside it belong to the expansion, not to the surrounding
@@ -122,6 +143,15 @@ export declare function readBalancedCommand(input: string, pos: number, open: '(
 };
 /** The `$'...'` at `pos`: its text, escapes decoded (backslash-escapes.ts, `ansi-c`), and where it ends. */
 export declare function readAnsiCQuote(input: string, pos: number): {
+    text: string;
+    end: number;
+};
+/**
+ * The quoted span at `pos`, whole. In double quotes a `$(...)`, `${...}` or
+ * backtick substitution is its own span, so a `"` inside it does not close
+ * the quote (`"$(echo ")")"`).
+ */
+export declare function readQuoted(input: string, pos: number, quote: '"' | "'"): {
     text: string;
     end: number;
 };

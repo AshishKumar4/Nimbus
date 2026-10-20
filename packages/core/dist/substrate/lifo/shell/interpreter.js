@@ -5,7 +5,7 @@ import { syscallError } from '../../../vfs/vfs-error.js';
 import { execRefusal } from '../../../shell/exec-dispatch.js';
 import { withRecall } from '../../../vfs/recall.js';
 import { parseAssignment, ParseError, ScriptLines } from './parser.js';
-import { expandWords, expandWord, expandPatternWord, expandSubscript, subscriptArithmetic, ExpansionError, } from './expander.js';
+import { expandArithmetic, expandBraceWord, expandWords, expandWord, expandPatternWord, expandSubscript, arithmeticOf, arithmeticValue, ArithmeticError, ExpansionError, reportWarnings, SubscriptArithmeticError, } from './expander.js';
 import { evaluateDoubleBracketWords } from './test-builtin.js';
 import { isPipeEnd, PipeChannel } from './pipe.js';
 import { arrayFor, arrayIndex, assignArray, assignVariable, lastIndex, restoreVariable, saveVariable, } from './variables.js';
@@ -21,6 +21,7 @@ import { isDecimalInteger } from './names.js';
 import { statOrThrow } from '../../../vfs/vfs.js';
 import { yieldToEventLoop } from '../utils/event-loop.js';
 import { WorkThread } from './work-thread.js';
+import { DiscardSignal } from './discard.js';
 // ─── Signal classes for control flow ───
 export class BreakSignal {
     levels;
@@ -54,16 +55,6 @@ export class ExitSignal {
 }
 /** A syntax error in the text eval or `.` reads (not one met running it, a command substitution's): theirs to answer. */
 export class TextSyntaxError extends Error {
-}
-/**
- * The rest of the line it is in is discarded (bash's
- * jump_to_top_level(DISCARD)): a shell goes on with the next line it reads,
- * its own or a `source`d file's or a trap's, with $? 1; a child shell
- * (subshell, substitution, pipeline element, job) ends with 1. Neither `||`,
- * `if` nor a loop goes on.
- */
-export class DiscardSignal {
-    exitCode = 1;
 }
 /** A function call past the nesting bound (functionNestingLimit). */
 export class FunctionNestingSignal extends DiscardSignal {
@@ -121,9 +112,10 @@ function commandWordText(cmd) {
 }
 /** An assignment that did what it was asked, with nothing to report. */
 const ASSIGNED = { diagnostics: [], failed: false };
+/** bash's declaration builtins: an argument written `name=(…)` is an array assignment. */
 function isDeclarationWord(word) {
     const text = literalWordText(word);
-    return text === 'declare' || text === 'typeset' || text === 'local';
+    return text === 'declare' || text === 'typeset' || text === 'local' || text === 'export' || text === 'readonly';
 }
 function terminalStdinFd(io, stdin = io.stdin) {
     return io.terminalFds?.stdin ?? ((!stdin || stdin === io.terminalStdin) && Boolean(io.terminalStdin));
@@ -506,6 +498,10 @@ export class Interpreter {
                 return (await this.executeSimpleCommand(cmd, io));
             case 'double_bracket':
                 return (await this.executeDoubleBracket(cmd, io));
+            case 'arithmetic':
+                return (await this.executeArithmetic(cmd, io));
+            case 'arithmetic_for':
+                return (await this.executeArithmeticFor(cmd, io));
             case 'if':
                 return (await this.executeIf(cmd, io));
             case 'for':
@@ -558,6 +554,86 @@ export class Interpreter {
             this.lastExitCode = exitCode;
             return exitCode;
         }));
+    }
+    /** `((expression))`: 0 where its value is not 0; 1 where it is 0, or an error, reported as `((`'s. */
+    async executeArithmetic(node, io) {
+        return (await this.executeWithRedirections(node.redirections, io, async (redirIo) => {
+            const value = await this.arithmeticCommandValue(node.expression, redirIo);
+            const exitCode = value === null || value === 0 ? 1 : 0;
+            this.lastExitCode = exitCode;
+            return exitCode;
+        }));
+    }
+    /**
+     * `for ((init; test; step))`: init once; then while test is not 0 (an empty
+     * one is true), the body, then step (after a `continue` too). Its status
+     * the body's last, 0 where it never ran, 1 where an expression fails.
+     */
+    async executeArithmeticFor(node, io) {
+        return (await this.executeWithRedirections(node.redirections, io, async (redirIo) => {
+            let exitCode = 0;
+            const failed = async (expression) => (expression.trim() !== '' && (await this.arithmeticCommandValue(expression, redirIo)) === null);
+            if (await failed(node.init))
+                exitCode = 1;
+            else {
+                while (true) {
+                    await this.loopTick();
+                    const abortCode = this.abortExitCode(redirIo);
+                    if (abortCode !== null)
+                        return abortCode;
+                    if (node.test.trim() !== '') {
+                        const test = await this.arithmeticCommandValue(node.test, redirIo);
+                        if (test === null)
+                            exitCode = 1;
+                        if (test === null || test === 0)
+                            break;
+                    }
+                    try {
+                        exitCode = await this.executeCompoundList(node.body, redirIo);
+                    }
+                    catch (e) {
+                        if (e instanceof BreakSignal) {
+                            if (e.levels > 1)
+                                throw new BreakSignal(e.levels - 1);
+                            break;
+                        }
+                        if (!(e instanceof ContinueSignal))
+                            throw e;
+                        if (e.levels > 1)
+                            throw new ContinueSignal(e.levels - 1);
+                    }
+                    if (await failed(node.step)) {
+                        exitCode = 1;
+                        break;
+                    }
+                }
+            }
+            this.lastExitCode = exitCode;
+            return exitCode;
+        }));
+    }
+    /** An arithmetic command's expression, expanded (as a double-quoted word, its quotes removed) and evaluated: null where that fails, reported as `((`'s. */
+    async arithmeticCommandValue(expression, io) {
+        const ctx = this.createExpandContext(io);
+        const text = await expandArithmetic(expression, ctx);
+        let value;
+        let failure = null;
+        try {
+            value = arithmeticOf(text, ctx);
+        }
+        catch (error) {
+            if (!(error instanceof ArithmeticError))
+                throw error;
+            value = null;
+            failure = error;
+        }
+        await reportWarnings(ctx, ctx.report);
+        if (failure !== null)
+            await ctx.report(failure.reportedBy('(('));
+        // A subscript's error is an expansion's: the line's.
+        if (failure instanceof SubscriptArithmeticError)
+            throw new DiscardSignal();
+        return value;
     }
     loopTicks = 0;
     /**
@@ -716,7 +792,7 @@ export class Interpreter {
                     pid: io.commandIdentity.pid, cred: io.commandIdentity.cred, signal: io.signal,
                 }) };
         const expandCtx = this.createExpandContext(io);
-        // Expand words. A declaration builtin's (declare, typeset, local) array
+        // Expand words. A declaration builtin's (declare, typeset, local, export, readonly) array
         // assignments, `b=("$v" z)`, are read as an assignment's are (parseAssignment):
         // each element expanded as a word, and the argument only names the array.
         let arrayElements;
@@ -730,8 +806,24 @@ export class Interpreter {
                     (arrayElements ??= new Map()).set(expandedArgs.length - 1, await this.arrayLiteral(assignment.name, assignment.elements, false, expandCtx));
                     expandedArgs.push(`${assignment.name}=`);
                 }
-                else {
+                else if (index === 0) {
                     expandedArgs.push(...await expandWords([parts], expandCtx));
+                }
+                else {
+                    // An assignment as written, one brace expansion leaves as it is, expands as an
+                    // assignment's value: not split, no pathname expansion. Any other word, and
+                    // every word brace expansion makes, is fields (bash's subst.c keeps the flags
+                    // only for an unchanged word).
+                    const words = expandBraceWord(parts);
+                    const [only] = words;
+                    const unchanged = words.length === 1 && only !== undefined && only.map((part) => part.text).join('') === parts.map((part) => part.text).join('');
+                    if (assignment !== null && assignment.elements === undefined && unchanged) {
+                        const subscript = assignment.subscript === undefined ? '' : `[${assignment.subscript}]`;
+                        expandedArgs.push(`${assignment.name}${subscript}${assignment.append === true ? '+' : ''}=${await expandWord(assignment.value, expandCtx)}`);
+                    }
+                    else {
+                        expandedArgs.push(...await expandWords(words, expandCtx, true));
+                    }
                 }
             }
         }
@@ -807,6 +899,11 @@ export class Interpreter {
                 await this.applyRedirections(cmd.redirections, fds, expandCtx, io, io.terminalStdin);
             }
             catch (error) {
+                // A discard met expanding a target (an arithmetic error's) is the line's, reported where it was met.
+                if (error instanceof DiscardSignal) {
+                    await this.flushFds(fds);
+                    throw error;
+                }
                 const redirStderr = fds.outputFds.get(2) ?? stderr;
                 (await redirStderr.write(error instanceof RedirectionOpenError
                     ? redirectionDiagnostic(error)
@@ -1128,7 +1225,7 @@ export class Interpreter {
         if (assign.subscript !== undefined) {
             const subscript = await expandSubscript(assign.subscript, ctx);
             const array = arrayFor(this.config, name);
-            const index = subscript === '' ? -1 : arrayIndex(array, subscriptArithmetic(subscript, ctx));
+            const index = subscript === '' ? -1 : arrayIndex(array, await arithmeticValue(subscript, ctx));
             if (index < 0)
                 return { diagnostics: [`${name}[${assign.subscript}]: bad array subscript`], failed: true };
             array[index] = assign.append ? (array[index] ?? '') + value : value;
@@ -1168,7 +1265,7 @@ export class Interpreter {
             }
             const { subscript, value } = element;
             const written = `[${subscript}]${element.append ? '+=' : '='}${value}`;
-            const index = subscript === '' || subscript === '@' || subscript === '*' ? -1 : arrayIndex(array, subscriptArithmetic(subscript, ctx));
+            const index = subscript === '' || subscript === '@' || subscript === '*' ? -1 : arrayIndex(array, await arithmeticValue(subscript, ctx));
             if (index < 0) {
                 refused.push(`${written}: ${subscript === '@' || subscript === '*' ? 'cannot assign to non-numeric index' : 'bad array subscript'}`);
                 if (this.config.options.errexit)
@@ -1402,12 +1499,18 @@ export class Interpreter {
         return {
             env: this.config.env,
             arrays: this.config.arrays,
+            readonlyNames: this.config.readonlyNames,
             positionals: this.readPositionals(io),
+            warnings: [],
             lastExitCode: this.lastExitCode,
             cwd: this.config.getCwd(),
             vfs: io.vfs ?? this.config.vfs,
             options: this.config.options,
             executeCapture: async (input) => (await this.executeCapture(input, io)),
+            // The shell's fd 2 when it is met, as a command's descriptors resolve it (createCommandFds).
+            report: async (diagnostic) => {
+                (await (this.persistentOutputFds.get(2) ?? io.stderr ?? this.terminalSink(io)).write(`${diagnostic}\n`));
+            },
         };
     }
     createIoFromFds(io, fds) {
@@ -1511,16 +1614,23 @@ export class Interpreter {
         }));
     }
     async applyRedirections(redirections, fds, expandCtx, io, terminalStdin) {
+        // A target's diagnostic goes to fd 2 as the redirections before it have left it.
+        const targetCtx = {
+            ...expandCtx,
+            report: async (diagnostic) => {
+                (await (fds.outputFds.get(2) ?? this.createNullWriter()).write(`${diagnostic}\n`));
+            },
+        };
         for (const redir of redirections) {
             if (redir.operator === 'heredoc') {
                 const heredoc = redir.heredoc ?? { body: '', quoted: false, stripTabs: false };
                 const body = heredoc.quoted
                     ? heredoc.body
-                    : await expandWord([{ text: heredoc.body, quoted: 'double' }], { ...expandCtx, hereDocument: true });
+                    : await expandWord([{ text: heredoc.body, quoted: 'double' }], { ...targetCtx, hereDocument: true });
                 this.setInputFd(fds, redir.fd ?? 0, { stream: staticStdinReader(body), terminal: false });
                 continue;
             }
-            const target = await expandWord(redir.target, expandCtx);
+            const target = await expandWord(redir.target, targetCtx);
             switch (redir.operator) {
                 case 'write':
                     this.setOutputFd(fds, redir.fd ?? 1, (await this.openOutputTarget(io, target, 'write', fds, terminalStdin)));

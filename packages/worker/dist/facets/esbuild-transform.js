@@ -13,6 +13,7 @@ import { fetchOxcFacetRuntime } from '../runtime/oxc-wasm-bytes.js';
 import { OXC_FACET_WORKER_ID, oxcTransformHost } from './oxc-transform.js';
 import { rolldownBuildHost } from './build-facet.js';
 import { SharedHelperFacet } from './helper-facet.js';
+import { holdThreadWatch } from '@nimbus-sh/fabric/thread-stalls.js';
 /**
  * Everything of the facet's module but its staged parts: esbuild's JS adapter,
  * which the wasm version keys, the `esbuild` command's runner, which its
@@ -140,6 +141,7 @@ const esbuildCliFacet = new SharedHelperFacet({
 async function onEsbuildFacet(ctx, env, call, shared = esbuildFacet) {
     const stub = shared.stub(ctx, env);
     const endFetch = await beginHelperFetch(ctx, ESBUILD_FACET_WORKER_ID);
+    const watched = holdThreadWatch(ctx, 'esbuild facet');
     try {
         return await call(await stub);
     }
@@ -148,6 +150,7 @@ async function onEsbuildFacet(ctx, env, call, shared = esbuildFacet) {
         throw error;
     }
     finally {
+        watched();
         endFetch();
     }
 }
