@@ -97,6 +97,36 @@ const FOUND = {
     schedule: [['own', 'readFile', 'top'], ['settle'], ['peer', 'write', 'top', 'second!'], ['settle'], ['hold', 'lookup'], ['input'], ['settle'],
       ['peer', 'write', 'top', 'third!!!'], ['settle'], ['input'], ['settle'], ['release', 'lookup'], ['settle'], ['sync', 'readFile', 'top']],
   },
+  // The 320-seed sweep's findings (seeds 1000-1319), shrunk.
+  'a write beside a directory read through its descriptor is not refused while the batch is out': {
+    engines: ['holder'], park: 1008,
+    schedule: [['own', 'mkdir', 'x/e'], ['hold', 'listing'], ['own', 'opendir', 'x/e'], ['root', 'chown', 'd', 0], ['own', 'write', 'x/f', 'c1008.1']],
+  },
+  'a write in a directory read through its descriptor reaches the session': {
+    engines: ['holder'], park: 1298,
+    schedule: [['own', 'stat', 'x/h'], ['own', 'readFile', 'top'], ['own', 'opendir', 'd'], ['root', 'chown', 'x', 1000], ['sync', 'write', 'd/n', 'c1298.2']],
+  },
+  'a peer\'s change beside the process\'s own, after its read lease, is not refused (1230)': {
+    engines: ['eager'], park: 1230,
+    schedule: [['input'], ['own', 'write', 'new', 'c1230.1'], ['release'], ['input'], ['release'], ['peer', 'write', 'top', 'c1230.2'], ['sync', 'chmod', 'd/e', 448]],
+  },
+  'a peer\'s change beside the process\'s own, after its read lease, is not refused (1237)': {
+    engines: ['eager'], park: 1237,
+    schedule: [['input'], ['own', 'write', 'top', 'c1237.2'], ['own', 'write', 'd/n', 'c1237.3'], ['release'], ['sync', 'chmod', 'd/e/g', 420],
+      ['own', 'write', 'd/f', 'c1237.5'], ['root', 'chown', 'x', 0], ['release']],
+  },
+  'a file the process renamed is not shown at its name once a peer moved it away': {
+    engines: ['node'], park: 1006,
+    schedule: [['own', 'write', 'd/f', 'c1006.5'], ['own', 'rename', 'd/f', 'new'], ['peer', 'rename', 'new', 'x/f']],
+  },
+  'a file the process removed stays removed across a poison (1198)': {
+    engines: ['node'], park: 1198,
+    schedule: [['own', 'chmod', 'd/e/g', 420], ['poison'], ['own', 'write', 'd/f', 'c1198.6'], ['own', 'readdir', 'd/f'], ['own', 'unlink', 'top']],
+  },
+  'a file the process removed stays removed across a poison (1294)': {
+    engines: ['node'], park: 1294,
+    schedule: [['own', 'rename', 'd/e', 'x/e'], ['own', 'unlink', 'd/f'], ['poison'], ['own', 'opendir', 'new']],
+  },
   'a file a call that cannot wait missed stays a miss until an awaited read answers it': {
     engines: ['node'],
     schedule: [['peer', 'write', 'new', 'not resident'], ['settle'], ['input'], ['settle'], ['sync', 'readFile', 'new'], ['own', 'stat', 'new'], ['settle']],
@@ -133,8 +163,8 @@ const GAPS = {
 };
 
 const scenarios = {};
-for (const [name, { schedule, engines = ENGINES }] of Object.entries(FOUND)) {
-  for (const kind of engines) scenarios[`${name} [${kind}]`] = () => run(kind, schedule);
+for (const [name, { schedule, engines = ENGINES, park }] of Object.entries(FOUND)) {
+  for (const kind of engines) scenarios[`${name} [${kind}]`] = () => run(kind, schedule, park);
 }
 
 // A WASI guest makes one call at a time: a second rename before the first returned is Node's (and RF's, once Node runs on it).
@@ -249,11 +279,12 @@ scenarios['a floating awaited read finishes before a one-shot exits [node]'] = a
   assert.equal(handle.log.exit.code, 0);
 };
 
-async function run(kind, schedule) {
+/** `park`: the seed a drawn schedule parked its replies by (its other replies at random, as drawn). */
+async function run(kind, schedule, park) {
   try {
-    await runSchedule(kind, schedule);
+    await runSchedule(kind, schedule, { parkSeed: park });
   } catch (error) {
-    throw new Error(`${error.message} (${kind}; its steps are above)`);
+    throw new Error(`${error.message} (${kind}${park === undefined ? '' : `, parked by seed ${park}`}; its steps are above)`);
   }
 }
 
