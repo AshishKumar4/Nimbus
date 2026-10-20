@@ -5,6 +5,12 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a WASI program (python, ruby, clang, bash) could lose a write,
+  with `EIO` at its close or fsync, or with no error at all for a call
+  that does not wait, when another process changed a file while the
+  program was reading a directory: the session refused the write while it
+  took back the program's read lease, and the program gave the write up
+  instead of sending it again once the lease was back.
 - Fixed: the shell's array literals take `[subscript]=value` elements, as bash does. `a=([0]=one [5]=z)` sets elements 0 and 5, a following word goes on after the last subscript, and `[i]+=v` appends to element i. The same holds in `declare -a`, `typeset -a` and `local -a`. A negative subscript counts back from the last element, and one before the first, an empty one, or `@` or `*` is reported and skipped. `declare -p`'s output for a sparse array now reads back as the same array. `a+=(…)` goes on after the last element that holds a value, and `a[i]=v` refuses an index before the first with `bad array subscript`. `${a[-1]}` counts back from the last element that holds a value, as writes do. A command made only of assignments that fails, through a readonly name or a bad subscript, discards the rest of its line as bash does: the next line runs with `$?` 1, including in a script (before, a script ended), and a subshell ends with 1. Under `set -e`, such an error ends the shell once it is reported, keeping what the array literal assigned before it, and a failed assignment ends an `sh` script. Before, `[i]=v` was stored as literal text at the next index.
 - Fixed: the shell's `node` refuses a hard link (`fs.link`, `fs.linkSync`, `fs.promises.link`) with `ENOSYS`, as the hosted `node` does: the filesystem has no hard links. Before, `linkSync` did nothing and returned, so the new name was never there. `truncate` and `ftruncate` (now also in callback form) check the length as Node does: a length that is not a number is `ERR_INVALID_ARG_TYPE`, and one that is not a safe integer is `ERR_OUT_OF_RANGE`.
 - Fixed: a Node program could be told a file, directory or link it had
