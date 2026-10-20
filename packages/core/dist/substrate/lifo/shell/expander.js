@@ -369,11 +369,16 @@ async function resolveParameter(ref, ctx) {
 }
 /** A subscript is an arithmetic expression; a negative index counts from the end. */
 export async function evaluateSubscript(subscript, length, ctx) {
-    const expanded = joinPieces(await expandParameterWord(subscript, ctx, 'word'));
-    if (expanded.trim() === '')
-        return 0;
-    const index = evaluateArithmetic(expanded, ctx.env, ctx.positionals);
+    const index = subscriptArithmetic(await expandSubscript(subscript, ctx), ctx);
     return index < 0 ? length + index : index;
+}
+/** A subscript's text once its expansions (`$i`, `$(…)`) are done, before its arithmetic. */
+export async function expandSubscript(subscript, ctx) {
+    return joinPieces(await expandParameterWord(subscript, ctx, 'word'));
+}
+/** An expanded subscript's arithmetic, a blank one 0. */
+export function subscriptArithmetic(expanded, ctx) {
+    return expanded.trim() === '' ? 0 : evaluateArithmetic(expanded, ctx.env, ctx.positionals);
 }
 /** The indices `${!arr[@]}` reports: every index that holds a value. */
 function arrayIndices(ref, ctx) {

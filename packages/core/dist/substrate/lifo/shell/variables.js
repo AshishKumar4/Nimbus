@@ -24,14 +24,22 @@ export function assignVariable(store, name, value, append = false) {
         store.env[name] = append ? (store.env[name] ?? '') + value : value;
     return true;
 }
-/** `name=(value …)` (`name+=(…)` appends to the array). False for a readonly name. */
-export function assignArray(store, name, values, append = false) {
+/** `name=(…)`: `array` in place of whatever the name held. False for a readonly name. */
+export function assignArray(store, name, array) {
     if (store.readonlyNames.has(name))
         return false;
-    const existing = append ? store.arrays.get(name) ?? [] : [];
     delete store.env[name];
-    store.arrays.set(name, [...existing, ...values]);
+    store.arrays.set(name, array);
     return true;
+}
+/** The highest index that holds a value, or -1: bash's array_max_index, past which `a+=(…)` goes on. */
+export function lastIndex(array) {
+    let last = -1;
+    // An array's own keys are its indices in order, the holes skipped, however high the last.
+    for (const key of Object.keys(array))
+        if (array[Number(key)] !== undefined)
+            last = Number(key);
+    return last;
 }
 /** The array behind a subscripted assignment, promoting a scalar to its element 0 if needed. */
 export function arrayFor(store, name) {

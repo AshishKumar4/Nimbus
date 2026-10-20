@@ -25,8 +25,15 @@ export interface SavedVariable {
 export declare function cloneEnv(source: Readonly<Record<string, string>>): Record<string, string>;
 /** `name=value` (`name+=value` with `append`); on an array, its first element. False for a readonly name. */
 export declare function assignVariable(store: VariableStore, name: string, value: string, append?: boolean): boolean;
-/** `name=(value …)` (`name+=(…)` appends to the array). False for a readonly name. */
-export declare function assignArray(store: VariableStore, name: string, values: readonly string[], append?: boolean): boolean;
+/** An array literal's array, and bash's diagnostic for each element it refused and skipped. */
+export interface ArrayLiteral {
+    readonly array: (string | undefined)[];
+    readonly refused: readonly string[];
+}
+/** `name=(…)`: `array` in place of whatever the name held. False for a readonly name. */
+export declare function assignArray(store: VariableStore, name: string, array: (string | undefined)[]): boolean;
+/** The highest index that holds a value, or -1: bash's array_max_index, past which `a+=(…)` goes on. */
+export declare function lastIndex(array: readonly (string | undefined)[]): number;
 /** The array behind a subscripted assignment, promoting a scalar to its element 0 if needed. */
 export declare function arrayFor(store: VariableStore, name: string): (string | undefined)[];
 /** One variable's whole binding, so a scope can put it back exactly. */
