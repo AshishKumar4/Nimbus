@@ -36,7 +36,9 @@ export function fakeDoKv() {
     },
     kv: {
       get(key) { return rows.has(key) ? structuredClone(rows.get(key)) : undefined; },
-      *list({ start, end, prefix, reverse = false, limit = Infinity } = {}) {
+      /** @param {{ start?: string, end?: string, prefix?: string, reverse?: boolean, limit?: number }} [options] */
+      *list(options = {}) {
+        const { start, end, prefix, reverse = false, limit = Infinity } = options;
         const all = keys().filter((key) => (prefix === undefined || key.startsWith(prefix))
           && (start === undefined || utf8Order(key, start) >= 0)
           && (end === undefined || utf8Order(key, end) < 0));
