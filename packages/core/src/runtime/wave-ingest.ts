@@ -223,6 +223,10 @@ export class WaveIngest {
       receipts: [],
     };
     let phase: WriteBatchStreamFailurePhase = 'decode';
+    /** The record being placed has applied nothing yet (what came before it has committed or is pending): a recall met now is its to retry. */
+    let placing = false;
+    /** The wave moves to applying: from here a failure's outcome is the session's answer, not a recall's to retry. */
+    const entered = (next: WriteBatchStreamFailurePhase): void => { phase = next; placing = false; };
     const router = this.router;
     /** A file the namespace places on a mount, its chunks handed to the router as they arrive. */
     let routedFile: RoutedFile | null = null;
@@ -472,7 +476,7 @@ export class WaveIngest {
      * turn when the caller gives turns.
      */
     const endLeading = async (): Promise<void> => {
-      phase = 'publish';
+      entered('publish');
       scope.asWriter(queueLeading);
       while (scope.asWriter(commitLeadingStep)) {
         if (options.turn !== undefined && turnOwed && (deletesToCommit.length > 0 || directoriesToBatch !== null || directoryBatches.length > 0)) await takeTurn();
@@ -600,7 +604,7 @@ export class WaveIngest {
       const calls = pendingCalls.splice(0);
       const callBytes = pendingCallBytes;
       pendingCallBytes = 0;
-      phase = 'publish';
+      entered('publish');
       options.admit?.();
       const writer = sequence?.spec.writer ?? null;
       // A copy commits on what its names lead to now, in this turn, as the
@@ -708,7 +712,7 @@ export class WaveIngest {
         options.admit?.();
       },
       reserve: (bytes) => (bytes === 0 ? Promise.resolve(null) : acquireCredit(bytes, signal)),
-      setPhase: (next) => { phase = next; },
+      setPhase: entered,
       committed: (receipt, bytes) => {
         progress.committedGroupSequence++;
         progress.committedPathCount++;
@@ -767,6 +771,7 @@ export class WaveIngest {
         const partOfCall = record.type === 'call' || (record.type === 'file-begin' && record.inode.call !== undefined)
           || (callFile !== null && (record.type === 'file-chunk' || record.type === 'file-end'));
         if (!partOfCall) flushCalls();
+        placing = true;
         if (record.type !== 'file-chunk' && record.type !== 'file-end' && record.type !== 'batch-end') recordIndex++;
         if (sequence !== null && record.type !== 'batch-end') {
           if (record.type === 'file-chunk' || record.type === 'file-end') {
@@ -808,7 +813,7 @@ export class WaveIngest {
         if (leading && record.type !== 'delete' && record.type !== 'directory') await endLeading();
         // A call's bytes are gathered whole, and the call made at its end.
         if (record.type === 'file-begin' && record.inode.call !== undefined) {
-          phase = 'validation';
+          entered('validation');
           validateInodeShape(record.inode);
           if (record.inode.size > DATA_CALL_MAX) {
             throw vfsError('EINVAL', record.inode.path, `a data call carries at most ${DATA_CALL_MAX} bytes; this one is ${record.inode.size}`);
@@ -839,7 +844,7 @@ export class WaveIngest {
         if (callFile !== null && record.type === 'file-end') {
           const file = callFile;
           callFile = null;
-          phase = 'publish';
+          entered('publish');
           const bytes = concatBytes(file.parts);
           file.parts = [];
           // Its bytes stay charged until the call is made.
@@ -858,15 +863,15 @@ export class WaveIngest {
         const ended = scope.asWriter((): boolean => {
           switch (record.type) {
             case 'delete': {
-              phase = 'publish';
+              entered('publish');
               if (leading) leadingDeletes.push(record.path);
               else commitDelete(record.path);
               break;
             }
             case 'directory': {
-              phase = 'validation';
+              entered('validation');
               validateFileChunks(record.inode, []);
-              phase = 'publish';
+              entered('publish');
               // Records commit in their order: files the stream wrote before
               // this directory commit before it.
               if (files.pending) files.flush();
@@ -879,24 +884,24 @@ export class WaveIngest {
               break;
             }
             case 'file-begin': {
-              phase = 'validation';
+              entered('validation');
               validateInodeShape(record.inode);
-              phase = 'publish';
+              entered('publish');
               // Authorising a file reads its parent from the committed inode
               // tree, so pending directories become visible first.
               flushDirectories();
-              phase = 'validation';
+              entered('validation');
               files.begin(record.inode);
-              phase = 'stage';
+              entered('stage');
               break;
             }
             case 'file-chunk': {
-              phase = 'stage';
+              entered('stage');
               files.chunk(record);
               break;
             }
             case 'file-end': {
-              phase = 'publish';
+              entered('publish');
               files.end(record);
               break;
             }
@@ -904,13 +909,13 @@ export class WaveIngest {
             case 'truncate':
             case 'setattr': {
               // Like a delete, it observes everything the stream wrote before it.
-              phase = 'publish';
+              entered('publish');
               queueCall(record.type === 'rename' ? record.from : record.path, record, { paths: record.type === 'rename' ? 2 : 1, alone: true });
               break;
             }
             case 'call': {
               // A call observes everything the stream wrote before it.
-              phase = 'publish';
+              entered('publish');
               const call = record.call;
               // A mkdir, and an open that keeps no description (it makes or
               // empties one file, as a data call does), commit with the calls
@@ -921,7 +926,7 @@ export class WaveIngest {
               break;
             }
             case 'batch-end':
-              phase = 'publish';
+              entered('publish');
               flushDirectories();
               files.flush();
               return true;
@@ -937,8 +942,8 @@ export class WaveIngest {
       }
     } catch (caught) {
       let error = caught;
-      // Where it failed: decoding and placing a record applies nothing of it (the calls before it commit below).
-      const decoding = phase === 'decode';
+      // Where it failed: placing a record applies nothing of it (the calls before it commit below).
+      const unapplied = placing;
       // The calls decoded before a stream that failed (cut, malformed) commit
       // as they would have: a re-send then carries only what came after them.
       if (pendingCalls.length > 0) {
@@ -965,7 +970,7 @@ export class WaveIngest {
       // recall, the record not refused for good, so a re-send applies it once
       // the recall is over. Anywhere later (a close that consumed its
       // description, a commit) its outcome is the session's answer, not this.
-      const recall = decoding && error === caught && recallOf(error) !== null && progress.sequence?.refused === undefined;
+      const recall = unapplied && error === caught && recallOf(error) !== null && progress.sequence?.refused === undefined;
       return {
         ok: false,
         ...progress,
