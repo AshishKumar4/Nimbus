@@ -21,7 +21,7 @@ import assert from 'node:assert/strict';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { FACET_IMAGE_DIR } from '../../packages/fabric/src/process-fabric.ts';
+import { PROCESS_IMAGE_DIR } from '../../packages/fabric/src/process-fabric.ts';
 import { launchManager, launchSession } from './lib/facet-launch-harness.mjs';
 import { storedBootModules, processImageModules } from './lib/module-map-bundle.mjs';
 
@@ -117,8 +117,8 @@ for (let i = 0; i < 2000 && world.configs.size === 0; i++) {
 meter.endTurn();
 assert.equal(world.configs.size, 1, 'the launch built its module map and booted');
 
-const images = fs.readdir(FACET_IMAGE_DIR).map((e) => (typeof e === 'string' ? e : e.name));
-const imageBytes = images.reduce((n, name) => n + fs.lstat(`${FACET_IMAGE_DIR}/${name}`).size, 0);
+const images = fs.readdir(PROCESS_IMAGE_DIR).map((e) => (typeof e === 'string' ? e : e.name));
+const imageBytes = images.reduce((n, name) => n + fs.lstat(`${PROCESS_IMAGE_DIR}/${name}`).size, 0);
 
 // Without a big image the bound below would hold for free.
 assert.ok(

@@ -7,6 +7,15 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## 2026-10-20: platform 0.14.0, core 0.25.0, fabric 0.20.0, worker 0.23.0, sdk 0.19.0, react 0.4.1, cli 0.2.10, loom 0.3.3, create-nimbus-app 0.2.6 (config 0.3.2 and the runtimes unchanged)
 
+- Fixed: Nimbus no longer deletes an embedder's images in
+  `/.nimbus/facet-images`. The store that holds a resident process's
+  generated modules removed every file there that no running process booted
+  from, an embedder's own images included (a durable worker's runner and its
+  text modules, named by `facetImagePath`). After a reset, the first launch
+  could remove a durable app's text module, and the app's next restart then
+  failed with ENOENT. The store now writes to its own directory,
+  `/.nimbus/process-images`, and removes files only there. Images an earlier
+  release wrote to `/.nimbus/facet-images` stay where they are.
 - Fixed: a nested shell stops with its caller. `bash -c`, `sh -c` and `bash script` pass their command's signal to the shell that runs the program, and a hosted workspace's child shell stops on either that signal or its own. Before, an aborted or timed-out `bash -c 'while :; do :; done'` was reported stopped while its loop ran on, burning the session's CPU.
 - Fixed: a Node program that renamed a file over another (`fs.promises.rename` or `fs.renameSync`, the atomic-save pattern) and then read the destination with `fs.readFileSync` could get the replaced file's bytes, while `fs.statSync` already described the renamed one. The replaced file's bytes now go with the rename, as an unlink's do. 
 - Added: `NimbusWorkspaceOptions.mayChangeIdentity(from, to, command)`, the host's word on every identity change. It is asked before any process is made under a credential other than its parent's (`sudo`, `su`, any command's `runAs`, a spawn with a parent and a `cred`), in the one place a process is made; refused, the spawn fails with `EPERM: operation not permitted, uid 1000 may not become uid 0 (whoami)` and no process starts. A process the host starts with no parent is not asked. Absent, every change is allowed, as before. Before, `sudo` and `su` gave any process any uid with nothing asked.
