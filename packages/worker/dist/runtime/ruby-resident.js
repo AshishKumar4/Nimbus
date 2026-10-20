@@ -234,6 +234,8 @@ export function buildRubySocketProcessWorker(preamble) {
         '  }',
         '  async startProcess(args) {',
         '    __nimbusAdoptRubySupervisor(this.env);',
+        '    // Measurement: NIMBUS_MEASURE_STORE=sql backs its store with this facet\'s SQLite.',
+        '    globalThis.__nimbusMeasureStore = args && args.userEnv ? args.userEnv.NIMBUS_MEASURE_STORE : undefined;',
         '    return __nimbusStartRubyProcess(args || {});',
         '  }',
         '  async fetch(request) {',

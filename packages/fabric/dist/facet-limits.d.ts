@@ -68,8 +68,12 @@ export declare function effectiveFacetLimits(kind: FacetKind, requested?: Partia
 export declare function guestFacetPolicy(code: {
     limits?: Partial<FacetResourceLimits>;
 }): FacetCodePolicy;
+export declare function measureGuestTails(tail: (props: {
+    kind: FacetKind;
+}) => unknown): void;
 /** `code` with `kind`'s native limits, lowered by `requested`. Nothing else in it changes, its env included. */
 export declare function applyFacetLimits<C extends object>(kind: FacetKind, code: C, requested?: Partial<FacetResourceLimits>): C & {
+    tails?: unknown[] | undefined;
     limits: {
         cpuMs: number;
         subRequests: number;

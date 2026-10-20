@@ -52,11 +52,26 @@ export function createAdmission(coherence) {
     // A SafeList: a fill's reservation reaches it after the program may have replaced Array.prototype's methods.
     const reserveQueue = new SafeList();
     let reserveServing = false;
+    const measured = { peak: 0, refusals: 0, refusedBytes: 0 };
+    const measureRefused = (bytes) => {
+        measured.refusals++;
+        measured.refusedBytes += bytes;
+        return false;
+    };
     const tablesBytes = () => coherence.tables('a storage measure').bytes();
-    const dbBytes = () => tablesBytes()
-        + (inHeap ? heldBytes + namespaceOverlayBytes + namespaceReserveBytes + pinnedBytes : 0);
-    const refusal = (total) => (inHeap && cap !== null && total > cap
-        ? 'namespace storage budget exceeded (' + cap + ' bytes)' : null);
+    const dbBytes = () => {
+        const total = tablesBytes()
+            + (inHeap ? heldBytes + namespaceOverlayBytes + namespaceReserveBytes + pinnedBytes : 0);
+        if (total > measured.peak)
+            measured.peak = total;
+        return total;
+    };
+    const refusal = (total) => {
+        if (!(inHeap && cap !== null && total > cap))
+            return null;
+        measureRefused(total - cap);
+        return 'namespace storage budget exceeded (' + cap + ' bytes)';
+    };
     /** Hold room for `path` if `bytes` fit now: true once it is held. */
     const holdRoom = (path, bytes) => {
         if (dbBytes() + reservedBytes + bytes > cap)
@@ -100,7 +115,7 @@ export function createAdmission(coherence) {
                         refused[i] = reserveQueue[i];
                     reserveQueue.length = 0;
                     for (let i = 0; i < refused.length; i++)
-                        refused[i].resolve(false);
+                        refused[i].resolve(measureRefused(refused[i].bytes));
                     return;
                 }
             }
@@ -160,7 +175,7 @@ export function createAdmission(coherence) {
             return true;
         if (ask)
             void askGrant(bytes);
-        return false;
+        return measureRefused(bytes);
     };
     /** Room for `bytes` before an asynchronous fill writes them: true when they fit. */
     const ensureRoom = async (bytes) => {
@@ -169,6 +184,7 @@ export function createAdmission(coherence) {
         return askGrant(bytes);
     };
     return {
+        measured,
         get inHeap() { return inHeap; },
         get cap() { return cap; },
         dbBytes,

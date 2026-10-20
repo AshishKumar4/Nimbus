@@ -52,6 +52,12 @@ export interface Admission {
     ensureRoom(bytes: number): Promise<boolean>;
     roomForPushed(result: unknown): Promise<void>;
     reportSize(): Promise<void>;
+    /** Measurement: the most the cap counted at any check, and what it refused, by count and bytes. */
+    readonly measured: {
+        peak: number;
+        refusals: number;
+        refusedBytes: number;
+    };
 }
 export declare function createAdmission(coherence: Coherence): Admission;
 //# sourceMappingURL=admission.d.ts.map

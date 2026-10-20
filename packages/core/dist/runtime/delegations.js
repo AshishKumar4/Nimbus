@@ -57,6 +57,12 @@ export const READ_LEASE_MARGIN_MS = 50;
 /** The longest a process is granted no read lease after its last was recalled (Delegations.readRecalled). */
 export const READ_LEASE_HOLD_OFF_MAX_MS = 16_000;
 const NONE = new Set();
+const RECALL_SAMPLES = 512;
+const sample = (into, ms) => {
+    into.push(ms);
+    if (into.length > RECALL_SAMPLES)
+        into.shift();
+};
 export class Delegations {
     options;
     held = new Map();
@@ -64,6 +70,8 @@ export class Delegations {
         grants: 0, share: 0, revoke: 0, timedOut: 0,
         readGranted: 0, readAnswered: 0, readExpired: 0, readWaitMs: 0, readLongestWaitMs: 0,
     };
+    recallMs = [];
+    readRecallMs = [];
     /** Each holder's leases. */
     byPid = new Map();
     /**
@@ -282,6 +290,8 @@ export class Delegations {
                 granted: this.counts.readGranted, answered: this.counts.readAnswered, expired: this.counts.readExpired,
                 waitMs: this.counts.readWaitMs, longestWaitMs: this.counts.readLongestWaitMs,
             },
+            recallMs: [...this.recallMs],
+            readRecallMs: [...this.readRecallMs],
         };
     }
     recall(held, kind) {
@@ -304,7 +314,8 @@ export class Delegations {
             held.waiter(kind);
         else
             held.asked.push(kind);
-        return promise;
+        const asked = Date.now();
+        return promise.then(() => sample(this.recallMs, Date.now() - asked));
     }
     /**
      * A read lease's recall: asked of its holder, and answered, or over once
@@ -341,6 +352,7 @@ export class Delegations {
             const waited = Date.now() - asked;
             this.counts.readWaitMs += waited;
             this.counts.readLongestWaitMs = Math.max(this.counts.readLongestWaitMs, waited);
+            sample(this.readRecallMs, waited);
         });
     }
     forget(held) {

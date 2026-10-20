@@ -92,11 +92,16 @@ export interface DelegationStats {
         readonly waitMs: number;
         readonly longestWaitMs: number;
     };
+    /** Measurement: each recall's round trip (ms), asked to answered or timed out, the last RECALL_SAMPLES of each. */
+    readonly recallMs: readonly number[];
+    readonly readRecallMs: readonly number[];
 }
 export declare class Delegations {
     private readonly options;
     private readonly held;
     private readonly counts;
+    private readonly recallMs;
+    private readonly readRecallMs;
     /** Each holder's leases. */
     private readonly byPid;
     /**

@@ -89,6 +89,13 @@ export interface Cells {
         undatedSnapshot: boolean;
         cursor: Cursor | null;
     };
+    /** Measurement: content reads asked of the store, those it answered, and the fills it installed. */
+    readonly measured: {
+        reads: number;
+        hits: number;
+        fills: number;
+        filledBytes: number;
+    };
 }
 export declare function createCells(coherence: Coherence, admission: Admission, namespace: Namespace, observeRead: ((path: string) => void) | null): Cells;
 //# sourceMappingURL=cells.d.ts.map

@@ -168,9 +168,23 @@ var __nimbusResidentModule = (() => {
     let reservedBytes = 0;
     const reserveQueue = new SafeList();
     let reserveServing = false;
+    const measured = { peak: 0, refusals: 0, refusedBytes: 0 };
+    const measureRefused = (bytes) => {
+      measured.refusals++;
+      measured.refusedBytes += bytes;
+      return false;
+    };
     const tablesBytes = () => coherence.tables("a storage measure").bytes();
-    const dbBytes = () => tablesBytes() + (inHeap ? heldBytes + namespaceOverlayBytes + namespaceReserveBytes + pinnedBytes : 0);
-    const refusal = (total) => inHeap && cap !== null && total > cap ? "namespace storage budget exceeded (" + cap + " bytes)" : null;
+    const dbBytes = () => {
+      const total = tablesBytes() + (inHeap ? heldBytes + namespaceOverlayBytes + namespaceReserveBytes + pinnedBytes : 0);
+      if (total > measured.peak) measured.peak = total;
+      return total;
+    };
+    const refusal = (total) => {
+      if (!(inHeap && cap !== null && total > cap)) return null;
+      measureRefused(total - cap);
+      return "namespace storage budget exceeded (" + cap + " bytes)";
+    };
     const holdRoom = (path, bytes) => {
       if (dbBytes() + reservedBytes + bytes > cap) return false;
       release(path);
@@ -199,7 +213,7 @@ var __nimbusResidentModule = (() => {
             const refused = new SafeList();
             for (let i = 0; i < reserveQueue.length; i++) refused[i] = reserveQueue[i];
             reserveQueue.length = 0;
-            for (let i = 0; i < refused.length; i++) refused[i].resolve(false);
+            for (let i = 0; i < refused.length; i++) refused[i].resolve(measureRefused(refused[i].bytes));
             return;
           }
         }
@@ -238,13 +252,14 @@ var __nimbusResidentModule = (() => {
       if (cap === null) return true;
       if (dbBytes() + reservedBytes + bytes <= cap) return true;
       if (ask) void askGrant(bytes);
-      return false;
+      return measureRefused(bytes);
     };
     const ensureRoom = async (bytes) => {
       if (cap === null || dbBytes() + reservedBytes + bytes <= cap) return true;
       return askGrant(bytes);
     };
     return {
+      measured,
       get inHeap() {
         return inHeap;
       },
@@ -1903,7 +1918,14 @@ var __nimbusResidentModule = (() => {
       coherence.unseal();
       return { dropped: arrayCopy(dropped), kept, pushed, relist: arrayCopy(relist), cursor: { epoch, rev } };
     };
+    const measured = { reads: 0, hits: 0, fills: 0, filledBytes: 0 };
     const get = (path) => {
+      measured.reads++;
+      const cell = lookup(path);
+      if (cell !== void 0) measured.hits++;
+      return cell;
+    };
+    const lookup = (path) => {
       if (observeRead !== null) observeRead(nsKey(path));
       const found = head(path);
       if (found === void 0) {
@@ -2131,7 +2153,12 @@ var __nimbusResidentModule = (() => {
           else if (heldCell !== void 0) heldCell.rev = rev;
           return true;
         }
-        return put(t, path, cell, rev);
+        const installed = put(t, path, cell, rev);
+        if (installed) {
+          measured.fills++;
+          measured.filledBytes += typeof cell === "string" ? cell.length : cell.byteLength ?? 0;
+        }
+        return installed;
       },
       /** Every held path. Backs the Object.keys / for-in scans in the shims. */
       keys,
@@ -2201,6 +2228,7 @@ var __nimbusResidentModule = (() => {
         namespace.clear();
         coherence.seal("the store was cleared");
       },
+      measured,
       stats() {
         const t = coherence.tables("stats");
         const counted = t.fileStats();
@@ -3346,7 +3374,22 @@ var __nimbusResidentModule = (() => {
       transport,
       sync,
       pages,
-      lazy
+      lazy,
+      measure() {
+        if (!coherence.bound()) return { bound: false };
+        const stats = cells.stats();
+        return {
+          backing: admission.inHeap ? "heap" : "sql",
+          cap: admission.cap,
+          bytesNow: admission.dbBytes(),
+          ...admission.measured,
+          ...cells.measured,
+          files: stats.files,
+          fileBytes: stats.bytes,
+          names: stats.names,
+          databaseSize: stats.databaseSize
+        };
+      }
     };
   }
   return __toCommonJS(index_exports);

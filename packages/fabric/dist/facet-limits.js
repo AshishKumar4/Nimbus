@@ -82,7 +82,12 @@ export function effectiveFacetLimits(kind, requested) {
 export function guestFacetPolicy(code) {
     return { kind: 'worker', limits: effectiveFacetLimits('worker', code.limits) };
 }
+/** Measurement: the Tail Worker every fabric-created Worker reports its invocations to (their CPU, outcome and logs). */
+let guestTail = null;
+export function measureGuestTails(tail) {
+    guestTail = tail;
+}
 /** `code` with `kind`'s native limits, lowered by `requested`. Nothing else in it changes, its env included. */
 export function applyFacetLimits(kind, code, requested) {
-    return { ...code, limits: { ...effectiveFacetLimits(kind, requested) } };
+    return { ...code, limits: { ...effectiveFacetLimits(kind, requested) }, ...(guestTail === null ? {} : { tails: [guestTail({ kind })] }) };
 }

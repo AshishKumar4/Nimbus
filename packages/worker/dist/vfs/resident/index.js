@@ -200,5 +200,21 @@ export function createResidentStore(options = {}) {
         sync,
         pages,
         lazy,
+        measure() {
+            if (!coherence.bound())
+                return { bound: false };
+            const stats = cells.stats();
+            return {
+                backing: admission.inHeap ? 'heap' : 'sql',
+                cap: admission.cap,
+                bytesNow: admission.dbBytes(),
+                ...admission.measured,
+                ...cells.measured,
+                files: stats.files,
+                fileBytes: stats.bytes,
+                names: stats.names,
+                databaseSize: stats.databaseSize,
+            };
+        },
     };
 }

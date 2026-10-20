@@ -386,7 +386,15 @@ export function createCells(coherence, admission, namespace, observeRead) {
     // A read of a module's file, as of any other: through the launch's
     // captures only (SafeMap, its own loops), never a built-in the program
     // may have replaced.
+    const measured = { reads: 0, hits: 0, fills: 0, filledBytes: 0 };
     const get = (path) => {
+        measured.reads++;
+        const cell = lookup(path);
+        if (cell !== undefined)
+            measured.hits++;
+        return cell;
+    };
+    const lookup = (path) => {
         if (observeRead !== null)
             observeRead(nsKey(path));
         const found = head(path);
@@ -645,7 +653,12 @@ export function createCells(coherence, admission, namespace, observeRead) {
                     heldCell.rev = rev;
                 return true;
             }
-            return put(t, path, cell, rev);
+            const installed = put(t, path, cell, rev);
+            if (installed) {
+                measured.fills++;
+                measured.filledBytes += typeof cell === 'string' ? cell.length : cell.byteLength ?? 0;
+            }
+            return installed;
         },
         /** Every held path. Backs the Object.keys / for-in scans in the shims. */
         keys,
@@ -712,6 +725,7 @@ export function createCells(coherence, admission, namespace, observeRead) {
             namespace.clear();
             coherence.seal('the store was cleared');
         },
+        measured,
         stats() {
             const t = coherence.tables('stats');
             const counted = t.fileStats();
