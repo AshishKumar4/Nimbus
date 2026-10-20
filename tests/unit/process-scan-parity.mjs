@@ -116,13 +116,18 @@ for (const [path, st] of byNameWalk.stats) {
 assert.ok(scanned.byName.has('mnt') || scanned.listings.get('mnt')?.includes('sub'), 'the mount is listed or asked by name');
 console.log(`  ✓ the scan answers as a walk by name on ${compared} entries; asked by name: ${[...scanned.byName].sort().join(', ')}`);
 
-// A write under the tree while it is scanned: its pages are not one tree, and the scan says so.
+// A write under a tree while it is scanned, past its first page: its pages
+// are not one tree, and the scan says so. (A tree with a mount under it keeps
+// no revision, and is judged by its pages': this one has none.)
 {
+  kernel.mkdir('home/user/big', { recursive: true });
+  kernel.chown('home/user/big', 1000, 1000);
+  for (let i = 0; i < 1500; i++) user.writeFile(`home/user/big/f${String(i).padStart(4, '0')}`, `${i}`);
   let wrote = false;
   const refused = (async () => {
-    for await (const entry of view.scan(root)) {
+    for await (const entry of view.scan('/home/user/big')) {
       // Committed at once, through the filesystem itself.
-      if (!wrote) { wrote = true; user.writeFile(`${w}/a0`, 'changed while scanned'); }
+      if (!wrote) { wrote = true; user.writeFile('home/user/big/f0000', 'changed while scanned'); }
       void entry;
     }
   })();
