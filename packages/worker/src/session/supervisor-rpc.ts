@@ -5,6 +5,8 @@ import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { hostNamespaceBinding, hostOpDispatch } from '@nimbus-sh/fabric/host-dispatch.js';
 import { idempotent } from '@nimbus-sh/fabric/do-calls.js';
 import type { SupervisorOpEnvelope } from '@nimbus-sh/core/workspace/supervisor-op.js';
+import type { FILESYSTEM_METHODS, FilesystemMethod } from '@nimbus-sh/core/runtime/filesystem-methods.js';
+import type { RuntimeFsBridge, RuntimeMutationOwner } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type RecordedResponse, type RecordedBody } from '../runtime/stop-replay-contracts.js';
 import { ReplayBodyRecord, recordFailure, failureOf } from '../runtime/stop-replay-body.js';
 // Every symbol the mixin's methods are keyed by is imported, though not all
@@ -275,3 +277,24 @@ export class SupervisorRPC extends supervisorCalls(WorkerEntrypoint) {
   }
 
 }
+
+/**
+ * What a hop cannot or need not carry, so a supervisor call may leave it out
+ * of a bridge method's parameters: the mutation lease its binding presents
+ * (a process never names one), and an AbortSignal, which does not cross.
+ */
+type Uncarried = RuntimeMutationOwner & { signal?: AbortSignal };
+type Carried<P extends readonly unknown[]> = Required<P> extends [...infer Head, infer Last]
+  ? (keyof NonNullable<Last> extends keyof Uncarried ? Head : Required<P>)
+  : Required<P>;
+type Arity<P> = P extends readonly unknown[] ? { [I in keyof P]: unknown } : never;
+/** The bridge methods whose supervisor call takes fewer parameters than the bridge declares: an option each drops at the hop. */
+type Dropped = {
+  [K in FilesystemMethod]: SupervisorRPC[typeof FILESYSTEM_METHODS[K]['rpc']] extends (...args: infer A) => unknown
+    ? (Arity<Carried<Parameters<RuntimeFsBridge[K]>>> extends infer C extends readonly unknown[]
+      ? (Arity<Required<A>> extends [...C, ...unknown[]] ? never : K) : K)
+    : K
+}[FilesystemMethod];
+// Every supervisor call carries each parameter its bridge method declares; one that does not is named here, at compile time.
+const everyParameterCarried: [Dropped] extends [never] ? true : Dropped = true;
+void everyParameterCarried;

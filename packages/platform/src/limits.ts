@@ -135,6 +135,14 @@ export const WS_ATTACHMENT_LIMIT_BYTES = 16_384;
 // metadata and matches the proven on-demand facet transfer envelope.
 export const MAX_RPC_SAFE_PAYLOAD_BYTES = 28 * 1024 * 1024;
 
+// ── Dynamic Workers in flight ───────────────────────────────────────────
+//
+// Distinct Dynamic Workers one Durable Object may have with in-flight
+// requests at once, shared across all concurrent requests to that object;
+// multiple in-flight requests to one Dynamic Worker count once.
+// https://developers.cloudflare.com/changelog/post/2026-08-28-durable-objects-dynamic-workers-limit/
+export const DO_DYNAMIC_WORKER_LIMIT = 10;
+
 // ── A one-shot's module map [#13] ───────────────────────────────────────
 //
 // The largest one-shot module map (its closure's raw bytes) the session DO

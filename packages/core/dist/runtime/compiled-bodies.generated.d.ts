@@ -2,6 +2,7 @@ import { type FacetTaskSource } from "./facet-task.js";
 export declare const CPYTHON_RUN_TASK: FacetTaskSource<Parameters<typeof import("./facet-tasks.js").cpythonRunFacetFn>[0], Awaited<ReturnType<typeof import("./facet-tasks.js").cpythonRunFacetFn>>>;
 export declare const WASM_CALL_TASK: FacetTaskSource<Parameters<typeof import("./facet-tasks.js").wasmFacetCall>[0], Awaited<ReturnType<typeof import("./facet-tasks.js").wasmFacetCall>>>;
 export declare const CLANG_CALL_TASK: FacetTaskSource<Parameters<typeof import("./facet-tasks.js").clangFacetCall>[0], Awaited<ReturnType<typeof import("./facet-tasks.js").clangFacetCall>>>;
+export declare const TSRS_CALL_TASK: FacetTaskSource<Parameters<typeof import("./facet-tasks.js").tsrsFacetCall>[0], Awaited<ReturnType<typeof import("./facet-tasks.js").tsrsFacetCall>>>;
 export declare const RUBY_CALL_TASK: FacetTaskSource<Parameters<typeof import("./facet-tasks.js").rubyFacetCall>[0], Awaited<ReturnType<typeof import("./facet-tasks.js").rubyFacetCall>>>;
 export declare const BASH_STEP_TASK: FacetTaskSource<Parameters<typeof import("./facet-tasks.js").bashFacetStep>[0], Awaited<ReturnType<typeof import("./facet-tasks.js").bashFacetStep>>>;
 export declare const BASH_REQUEST_TASK: FacetTaskSource<Parameters<typeof import("./facet-tasks.js").bashRequestStep>[0], Awaited<ReturnType<typeof import("./facet-tasks.js").bashRequestStep>>>;

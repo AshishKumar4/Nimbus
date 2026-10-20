@@ -2,6 +2,8 @@ import { type ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import type { FacetManager } from '../facets/manager.js';
 import type { ServerIdentity } from '@nimbus-sh/core/runtime/server-launch.js';
 import { type ResolveContext } from '@nimbus-sh/core/substrate/lifo/commands/registry.js';
+import type { Command } from '@nimbus-sh/core/substrate/lifo/commands/types.js';
+import { z } from 'zod/v4';
 type Output = {
     write(data: string): void;
 };
@@ -11,6 +13,34 @@ type RegistryLike = {
 type RuntimeCommandHint = {
     installSpec: string;
 } | null;
+declare const NpmBinPackageMetadataSchema: z.ZodObject<{
+    name: z.ZodOptional<z.ZodString>;
+    version: z.ZodOptional<z.ZodString>;
+    keywords: z.ZodOptional<z.ZodArray<z.ZodString>>;
+    dependencies: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
+    optionalDependencies: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
+    peerDependencies: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
+    nimbus: z.ZodOptional<z.ZodObject<{
+        terminal: z.ZodOptional<z.ZodEnum<{
+            attached: "attached";
+            auto: "auto";
+            detached: "detached";
+        }>>;
+    }, z.core.$strip>>;
+}, z.core.$loose>;
+export type NpmBinPackageMetadata = z.infer<typeof NpmBinPackageMetadataSchema>;
+/**
+ * Programs Nimbus has for names a project may also install (`tsc`), asked
+ * only for `names`: `absent` answers a name no node_modules/.bin from the
+ * cwd up has; `inPlaceOf` answers an installed bin whose package (its
+ * package.json) cannot run here, however the bin was reached, or leaves it
+ * to the project (undefined).
+ */
+export interface OwnPrograms {
+    readonly names: ReadonlySet<string>;
+    absent(name: string): Command;
+    inPlaceOf(name: string, installed: NpmBinPackageMetadata): Command | undefined;
+}
 export declare function installNpmBinFallbackResolver(registry: RegistryLike, deps: {
     /** The session's namespace: bins are found in it, as the running command when one runs. */
     filesystem: ProcessFiles;
@@ -29,6 +59,7 @@ export declare function installNpmBinFallbackResolver(registry: RegistryLike, de
     }): void;
     runtimeCommandHint(name: string): Promise<RuntimeCommandHint>;
     emitShellExecDone(pid: number, command: string, exitCode: number, durationMs: number): void;
+    ownPrograms?: OwnPrograms;
 }): void;
 /**
  * How a staged-artifact (opencode) invocation runs. opencode's TUI + in-process

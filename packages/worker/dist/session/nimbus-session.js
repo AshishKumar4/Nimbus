@@ -811,8 +811,8 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcFsStorageGrant(facet, bytes, databaseSize, pid) {
         return _rpc._rpcFsStorageGrant(this, facet, bytes, databaseSize, pid);
     }
-    async _rpcFsList(after, limit, pid) {
-        return _rpc._rpcFsList(this, after, limit, pid);
+    async _rpcFsList(after, limit, options, pid) {
+        return _rpc._rpcFsList(this, after, limit, options, pid);
     }
     async _rpcFsListTree(root, maxEntries, pid) {
         return _rpc._rpcFsListTree(this, root, maxEntries, pid);

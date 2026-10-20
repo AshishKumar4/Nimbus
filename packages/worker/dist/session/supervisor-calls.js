@@ -288,16 +288,16 @@ export function supervisorCalls(base) {
          * Read a file as raw bytes. Used by the git network facet for binary
          * object/pack files where the text readFile would corrupt content.
          */
-        async readFileBytes(path) {
-            return this[CALL](this[FS_READ]('readFileBytes', [path]));
+        async readFileBytes(path, options) {
+            return this[CALL](this[FS_READ]('readFileBytes', options === undefined ? [path] : [path, options]));
         }
-        async writeFile(path, content) {
+        async writeFile(path, content, options) {
             // binary-fs wave: accept Uint8Array natively. Pre-fix this RPC was
             // string-only, which forced node-shims.ts:writeFileSync to UTF-8-
             // decode every Uint8Array write — mangling bytes ≥ 0x80 to U+FFFD
             // and corrupting binary content. RPC structured-clone handles
             // Uint8Array transparently; downstream _rpcWriteFile also accepts
-            return this[CALL](this[FS_MUTATION]('writeFile', [path, content]));
+            return this[CALL](this[FS_MUTATION]('writeFile', options === undefined ? [path, content] : [path, content, options]));
         }
         /** writeFile, answering the revision and the path's stat after it (supervisor-op.ts writeFileStat). */
         async writeFileStat(path, content) {
@@ -324,8 +324,8 @@ export function supervisorCalls(base) {
         async setUmask(mask) {
             return this[CALL](this[FS_OP]('setUmask', [mask]));
         }
-        async readdir(path) {
-            return this[CALL](this[FS_READ]('readdir', [path]));
+        async readdir(path, options) {
+            return this[CALL](this[FS_READ]('readdir', options === undefined ? [path] : [path, options]));
         }
         async exists(path) {
             return this[CALL](this[FS_READ]('exists', [path]));
@@ -391,8 +391,8 @@ export function supervisorCalls(base) {
         async fsStorageGrant(facet, bytes, databaseSize) {
             return this[CALL](this[FS_OP]('fsStorageGrant', [facet, bytes, databaseSize]));
         }
-        async fsList(after, limit) {
-            return this[CALL](this[FS_READ]('fsList', [after ?? null, limit ?? null]));
+        async fsList(after, limit, options) {
+            return this[CALL](this[FS_READ]('fsList', options === undefined ? [after ?? null, limit ?? null] : [after ?? null, limit ?? null, options]));
         }
         /** Everything beneath directory `root`, in one page and one revision; E2BIG past `maxEntries` (session/rpc.ts _rpcFsListTree). */
         async fsListTree(root, maxEntries) {
@@ -505,8 +505,8 @@ export function supervisorCalls(base) {
          * server-side handle state, so they stay correct across supervisor
          * hibernation and never rewrite whole files for partial updates.
          */
-        async fsReadRange(path, offset, length) {
-            return this[CALL](this[FS_READ]('fsReadRange', [path, offset, length]));
+        async fsReadRange(path, offset, length, options) {
+            return this[CALL](this[FS_READ]('fsReadRange', options === undefined ? [path, offset, length] : [path, offset, length, options]));
         }
         /**
          * The same read with the session's content cache bypassed, for a boot spec's
@@ -548,11 +548,11 @@ export function supervisorCalls(base) {
                 rpcPayloadEnd(payloadBytes);
             }
         }
-        async fsWriteRange(path, offset, bytes) {
-            return this[CALL](this[FS_MUTATION]('fsWriteRange', [path, offset, bytes]));
+        async fsWriteRange(path, offset, bytes, options) {
+            return this[CALL](this[FS_MUTATION]('fsWriteRange', options === undefined ? [path, offset, bytes] : [path, offset, bytes, options]));
         }
-        async fsTruncate(path, size) {
-            return this[CALL](this[FS_MUTATION]('fsTruncate', [path, size]));
+        async fsTruncate(path, size, options) {
+            return this[CALL](this[FS_MUTATION]('fsTruncate', options === undefined ? [path, size] : [path, size, options]));
         }
         /**
          * Bulk-write all inodes + chunks in ONE transactionSync on the supervisor.

@@ -66,6 +66,7 @@ import {
   type VfsAcquireOptions,
   type VfsAcquireResult,
   type VfsCred,
+  type VfsListOptions,
   type VfsListPage,
   type VfsMutationReceipt,
   type VfsListTree,
@@ -540,6 +541,7 @@ const FsAcquireArgsSchema = z.object({
 const FsListArgsSchema = z.object({
   after: z.string().max(4096).nullable(),
   limit: z.number().int().min(1).max(FS_LIST_PAGE_LIMIT).nullable(),
+  options: z.object({ revisions: z.boolean().optional(), contentKeys: z.boolean().optional(), linkTargets: z.boolean().optional() }).optional(),
 });
 
 const FsListTreeArgsSchema = z.object({
@@ -795,11 +797,12 @@ export async function _rpcFsList(
   self: RpcHost,
   after: string | null,
   limit: number | null,
+  options?: VfsListOptions,
   pid?: number,
 ): Promise<VfsListPage> {
-  const args = FsListArgsSchema.parse({ after: after ?? null, limit: limit ?? null });
+  const args = FsListArgsSchema.parse({ after: after ?? null, limit: limit ?? null, options });
   // A page that reaches another holder's delegation waits for its recall, and is read again.
-  return withRecall(() => self.supervisorBridge(pid).list(args.after, args.limit ?? undefined));
+  return withRecall(() => self.supervisorBridge(pid).list(args.after, args.limit ?? undefined, args.options));
 }
 
 /** Everything beneath directory `root` a process may see, in one answer (subtreeListing). */
