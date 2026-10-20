@@ -53,7 +53,7 @@ export declare class ArithmeticError extends Error {
  * Expand all words for a command's arguments: brace expansion, tilde,
  * parameter/arithmetic/command substitution, IFS field splitting, globbing.
  */
-export declare function expandWords(words: WordPart[][], ctx: ExpandContext): Promise<string[]>;
+export declare function expandWords(words: WordPart[][], ctx: ExpandContext, braceExpanded?: boolean): Promise<string[]>;
 /**
  * A pattern word (a case pattern, `[[ ]]`'s right-hand side) expanded, as its
  * value and as the pattern globMatch reads: each character that came from
@@ -76,6 +76,7 @@ export declare function expandRegexWord(parts: WordPart[], ctx: ExpandContext): 
  * No field splitting and no glob expansion.
  */
 export declare function expandWord(parts: WordPart[], ctx: ExpandContext): Promise<string>;
+export declare function expandBraceWord(parts: WordPart[]): WordPart[][];
 /** A subscript's text once its expansions (`$i`, `$(…)`) are done, before its arithmetic. */
 export declare function expandSubscript(subscript: string, ctx: ExpandContext): Promise<string>;
 /** An expanded word's arithmetic (a subscript's, a `[[ -eq ]]` operand's, let's): a blank one is 0. Throws ArithmeticError. */

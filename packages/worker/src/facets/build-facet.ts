@@ -22,6 +22,7 @@ import {
   stagedBinding,
 } from '../runtime/staged-bindings.js';
 import { OWN_ROLLDOWN_VERSION } from '../napi-wasm-artifacts.generated.js';
+import { holdThreadWatch } from '@nimbus-sh/fabric/thread-stalls.js';
 
 // The build of the rolldown Nimbus itself depends on, whose JavaScript the facet bundles.
 const ROLLDOWN = stagedBinding(`rolldown@${OWN_ROLLDOWN_VERSION}`);
@@ -298,7 +299,8 @@ async function beginCall(ctx: DurableObjectState, facet: SharedFacet, signal?: A
   try {
     const endFetch = await beginHelperFetch(ctx, generationId(facet.generation), signal, onWait);
     if (signal?.aborted) { endFetch(); signal.throwIfAborted(); }
-    return () => { endFetch(); finished(); };
+    const watched = holdThreadWatch(ctx, 'build facet');
+    return () => { watched(); endFetch(); finished(); };
   } catch (error) { finished(); throw error; }
 }
 
