@@ -34,6 +34,8 @@ function host() {
     env: { HOME: '/home/user' },
     getCwd() { return this.cwd; },
     getEnv() { return this.env; },
+    // Its variables' marks, which the snapshot keeps with their values.
+    getVariableAttributes() { return { exported: ['HOME'], readonly: [], declared: [], arrays: {} }; },
   };
   return {
     store,

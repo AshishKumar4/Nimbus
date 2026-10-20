@@ -284,6 +284,10 @@ async function buildSession(self, ws, options, markUsable) {
         }
         catch { /* fail-soft */ }
     }
+    // The saved variables' marks and arrays, over the values the shell was built with; a state saved
+    // before them restores as a shell starts over its variables, each exported.
+    if (persisted.env)
+        self.shell.restoreVariableAttributes(persisted.vars ?? undefined, Object.keys(persisted.env));
     await registerHostedCommands(self, workspace);
     markUsable();
     // ── Phase O: one-shot online output [B'.1] ─────────────────────────

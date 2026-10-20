@@ -103,6 +103,9 @@ const FOUND = {
     schedule: [['own', 'stat', 'x/h'], ['own', 'readFile', 'top'], ['own', 'opendir', 'd'], ['root', 'chown', 'x', 1000],
       ['sync', 'write', 'd/n', 'first'], ['sync', 'write', 'd/n', 'second!']],
   },
+  'a directory read through its descriptor after an own rename into it, its wave not yet sent, lists the name the rename made (2896)': {
+    schedule: [['stall'], ['sync', 'rename', 'd/e/g', 'x/f'], ['own', 'opendir', 'x']],
+  },
   'a file a call that cannot wait missed stays a miss until an awaited read answers it': {
     engines: ['node'],
     schedule: [['peer', 'write', 'new', 'not resident'], ['settle'], ['input'], ['settle'], ['sync', 'readFile', 'new'], ['own', 'stat', 'new'], ['settle']],
@@ -254,6 +257,7 @@ async function run(kind, schedule, park) {
 
 /** What the process renamed itself: Node's own renames, run apart so each file stays in the fast tier. */
 const OWN_RENAMES = new Set([
+  'a directory read through its descriptor after an own rename into it, its wave not yet sent, lists the name the rename made (2896)',
   'a name the process renamed into place can be renamed again at once',
   'a name the process renamed stays while a later rename of its waits on the session',
   'a name the process renamed into place stays once the session acknowledges it after a barrier reported it',

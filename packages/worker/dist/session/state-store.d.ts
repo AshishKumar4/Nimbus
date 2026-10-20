@@ -42,6 +42,7 @@
  * forward-compatible if the rehydrate path reads-with-default for
  * missing columns).
  */
+import { type VariableAttributes } from '@nimbus-sh/core/workspace';
 /** Module-level cap on the env-row JSON length. The whole env is one
  *  row in nimbus_session_kv; if the user's env explodes (eg every
  *  npm-install side-effects 100 vars), we want to surface that as a
@@ -91,11 +92,15 @@ export declare const SCROLLBACK_MAX_FRAME_BYTES: number;
  *  can find every site by grep. */
 export declare const KEY_CWD = "cwd";
 export declare const KEY_ENV_JSON = "env";
+/** The shell's variables' attributes and arrays (VariableAttributes); absent in a state saved before them. */
+export declare const KEY_VARS_JSON = "vars";
 export declare const KEY_HYDRATED_AT = "hydrated_at";
 /** A snapshot of the persisted shell state, returned by loadShellState. */
 export interface ShellStateSnapshot {
     cwd: string | null;
     env: Record<string, string> | null;
+    /** Its variables' attributes and arrays; null in a state saved before them (restored as a shell starts over `env`). */
+    vars: VariableAttributes | null;
     hydratedAt: number | null;
     /** True iff at least one of cwd/env was present in SQL. The caller
      *  uses this to decide cold-start (no row) vs. rehydrate (row present),
@@ -139,6 +144,7 @@ export declare function loadShellState(ctx: any): ShellStateSnapshot;
 export declare function persistShellState(ctx: any, state: {
     cwd: string | null;
     env: Record<string, string> | null;
+    vars: VariableAttributes | null;
 }): void;
 /**
  * Stamp the time of the most recent successful hydrate. Used by the

@@ -121,7 +121,7 @@ class RuntimeOwner {
     options.ports.setClientSocketActivity(() => noteResidentClient(this, this.keepaliveCycle));
     this.terminal = new WebSocketTerminal(null, (data) => {
       appendScrollback(options.ctx, data, Date.now());
-      persistShellState(options.ctx, { cwd: this.shell.getCwd(), env: this.shell.getEnv() });
+      persistShellState(options.ctx, { cwd: this.shell.getCwd(), env: this.shell.getEnv(), vars: this.shell.getVariableAttributes() });
     }, (send) => void this.processes.releaseOutput(this.shellProcessPid, send));
     this._cpRegistry = options.workspace.registry;
     this.services = services.bindRuntimeServices(this, {
@@ -170,7 +170,12 @@ class RuntimeOwner {
         const saved = loadShellState(this.ctx);
         this.recoveryNotice = saved.hasPersistedState;
         if (saved.cwd) this.shell.setCwd(saved.cwd);
-        if (saved.env) Object.assign(this.shell.getEnv(), saved.env);
+        if (saved.env) {
+          Object.assign(this.shell.getEnv(), saved.env);
+          // Its variables' marks and arrays; a terminal saved before them is restored as a shell
+          // starts over its variables, each exported, as each reached its programs then.
+          this.shell.restoreVariableAttributes(saved.vars ?? undefined, Object.keys(saved.env));
+        }
         await registerHostedCommands(this, this.options.workspace);
         await this.ensureFacetManager().pumpLaunches();
       })();
@@ -361,16 +366,16 @@ class RuntimeOwner {
         console.error('[nimbus] terminal input failed:', message);
         this.terminal.writeln(`terminal input failed: ${message}`);
       }).finally(() => {
-        persistShellState(this.ctx, { cwd: this.shell.getCwd(), env: this.shell.getEnv() });
+        persistShellState(this.ctx, { cwd: this.shell.getCwd(), env: this.shell.getEnv(), vars: this.shell.getVariableAttributes() });
       }));
     }
-    persistShellState(this.ctx, { cwd: this.shell.getCwd(), env: this.shell.getEnv() });
+    persistShellState(this.ctx, { cwd: this.shell.getCwd(), env: this.shell.getEnv(), vars: this.shell.getVariableAttributes() });
   }
 
   terminalClose(ws: WebSocket): void {
     if (this.terminal.ws !== ws) return;
     this.terminal.flushNow();
-    persistShellState(this.ctx, { cwd: this.shell.getCwd(), env: this.shell.getEnv() });
+    persistShellState(this.ctx, { cwd: this.shell.getCwd(), env: this.shell.getEnv(), vars: this.shell.getVariableAttributes() });
     this.terminal.detach();
     this.processes.flushLogs();
   }
