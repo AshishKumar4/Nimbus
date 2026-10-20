@@ -40,13 +40,26 @@ export function assignVariable(store: VariableStore, name: string, value: string
   return true;
 }
 
-/** `name=(value …)` (`name+=(…)` appends to the array). False for a readonly name. */
-export function assignArray(store: VariableStore, name: string, values: readonly string[], append = false): boolean {
+/** An array literal's array, and bash's diagnostic for each element it refused and skipped. */
+export interface ArrayLiteral {
+  readonly array: (string | undefined)[];
+  readonly refused: readonly string[];
+}
+
+/** `name=(…)`: `array` in place of whatever the name held. False for a readonly name. */
+export function assignArray(store: VariableStore, name: string, array: (string | undefined)[]): boolean {
   if (store.readonlyNames.has(name)) return false;
-  const existing = append ? store.arrays.get(name) ?? [] : [];
   delete store.env[name];
-  store.arrays.set(name, [...existing, ...values]);
+  store.arrays.set(name, array);
   return true;
+}
+
+/** The highest index that holds a value, or -1: bash's array_max_index, past which `a+=(…)` goes on. */
+export function lastIndex(array: readonly (string | undefined)[]): number {
+  let last = -1;
+  // An array's own keys are its indices in order, the holes skipped, however high the last.
+  for (const key of Object.keys(array)) if (array[Number(key)] !== undefined) last = Number(key);
+  return last;
 }
 
 /** The array behind a subscripted assignment, promoting a scalar to its element 0 if needed. */

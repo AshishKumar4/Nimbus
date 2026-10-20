@@ -12,6 +12,7 @@ import type {
   GroupNode,
   SubshellNode,
   RedirectionNode,
+  ArrayElementNode,
   AssignmentNode,
   WordPart,
 } from './types.js';
@@ -34,12 +35,14 @@ import { execRefusal } from '../../../shell/exec-dispatch.js';
 import { withRecall } from '../../../vfs/recall.js';
 import { parseAssignment, ParseError, ScriptLines } from './parser.js';
 import {
-  expandWords, expandWord, expandPatternWord, evaluateSubscript, ExpansionError,
+  expandWords, expandWord, expandPatternWord, expandSubscript, subscriptArithmetic, ExpansionError,
   type ExpandContext, type CapturedCommand,
 } from './expander.js';
 import { evaluateDoubleBracketWords } from './test-builtin.js';
 import { isPipeEnd, PipeChannel } from './pipe.js';
-import { arrayFor, assignArray, assignVariable, restoreVariable, saveVariable, type SavedVariable } from './variables.js';
+import {
+  arrayFor, assignArray, assignVariable, lastIndex, restoreVariable, saveVariable, type ArrayLiteral, type SavedVariable,
+} from './variables.js';
 import { forkShellState, type ShellState } from './state.js';
 import { exitCodeForAbortSignal, KILLED_BY_SIGPIPE } from './signals.js';
 import { isBrokenPipe, isRefusedWrite, textCapture } from '../utils/bytes-io.js';
@@ -129,8 +132,8 @@ function redirectionDiagnostic(error: RedirectionOpenError): string {
 
 export interface BuiltinExecutionContext {
   interactive?: boolean;
-  /** A declaration builtin's arguments written as array assignments, `name=(…)`, by index: their elements, each expanded as a word. */
-  arrayElements?: ReadonlyMap<number, readonly string[]>;
+  /** A declaration builtin's arguments written as array assignments, `name=(…)`, by index: their arrays (Interpreter.arrayLiteral). */
+  arrayElements?: ReadonlyMap<number, ArrayLiteral>;
   vfs: ProcessView;
   /** The working directory a builtin resolves its relative path operands against. */
   cwd: string;
@@ -826,7 +829,7 @@ export class Interpreter {
           // A new BASH_REMATCH, as bash 5.2 makes one: whatever the old one was, readonly too, it is gone.
           setRematch: (values) => {
             this.config.readonlyNames.delete('BASH_REMATCH');
-            assignArray(this.config, 'BASH_REMATCH', values);
+            assignArray(this.config, 'BASH_REMATCH', [...values]);
           },
         },
       )));
@@ -1014,7 +1017,7 @@ export class Interpreter {
     // Expand words. A declaration builtin's (declare, typeset, local) array
     // assignments, `b=("$v" z)`, are read as an assignment's are (parseAssignment):
     // each element expanded as a word, and the argument only names the array.
-    let arrayElements: Map<number, readonly string[]> | undefined;
+    let arrayElements: Map<number, ArrayLiteral> | undefined;
     let expandedArgs: string[];
     const [commandWord] = cmd.words;
     if (commandWord !== undefined && isDeclarationWord(commandWord)) {
@@ -1022,7 +1025,7 @@ export class Interpreter {
       for (const [index, parts] of cmd.words.entries()) {
         const assignment = index === 0 ? null : parseAssignment({ kind: TokenKind.Word, value: parts.map((part) => part.text).join(''), pos: 0, parts });
         if (assignment?.elements !== undefined && assignment.subscript === undefined && assignment.append !== true) {
-          (arrayElements ??= new Map()).set(expandedArgs.length - 1, await expandWords(assignment.elements, expandCtx));
+          (arrayElements ??= new Map()).set(expandedArgs.length - 1, await this.arrayLiteral(assignment.name, assignment.elements, false, expandCtx));
           expandedArgs.push(`${assignment.name}=`);
         } else {
           expandedArgs.push(...await expandWords([parts], expandCtx));
@@ -1034,8 +1037,9 @@ export class Interpreter {
     if (expandedArgs.length === 0 && cmd.assignments.length > 0) {
       // Bare assignment -- set env vars
       for (const assign of cmd.assignments) {
-        if (!await this.applyAssignment(assign, expandCtx)) {
-          this.writeTerminal(io, `${assign.name}: readonly variable\n`);
+        const { diagnostics, failed } = await this.applyAssignment(assign, expandCtx);
+        for (const diagnostic of diagnostics) this.writeTerminal(io, `${diagnostic}\n`);
+        if (failed) {
           if (io.scriptMode === true) throw new ErrexitSignal(1);
           return 1;
         }
@@ -1078,10 +1082,9 @@ export class Interpreter {
     try {
       for (const assign of cmd.assignments) {
         if (!saved.has(assign.name)) saved.set(assign.name, saveVariable(this.config, assign.name));
-        if (!await this.applyAssignment(assign, expandCtx)) {
-          (await (io.stderr ?? this.terminalSink(io)).write(`${assign.name}: readonly variable\n`));
-          return 1;
-        }
+        const { diagnostics, failed } = await this.applyAssignment(assign, expandCtx);
+        for (const diagnostic of diagnostics) (await (io.stderr ?? this.terminalSink(io)).write(`${diagnostic}\n`));
+        if (failed) return 1;
         this.config.exportedNames.add(assign.name);
       }
 
@@ -1377,23 +1380,77 @@ export class Interpreter {
   }
 
   /**
-   * `name=value`, `name+=value`, `name[expr]=value` and `name=(word …)`.
-   * Returns false when the name is readonly, which the caller reports.
+   * `name=value`, `name+=value`, `name[expr]=value` and `name=(element …)`.
+   * Returns the diagnostics for the caller to report, in order, and whether
+   * the assignment failed: a readonly name, or a subscript before the first
+   * element (bash's bad array subscript). An array literal's refused
+   * elements are reported, and the rest of it is assigned.
    */
-  private async applyAssignment(assign: AssignmentNode, ctx: ExpandContext): Promise<boolean> {
+  private async applyAssignment(assign: AssignmentNode, ctx: ExpandContext): Promise<{ diagnostics: readonly string[]; failed: boolean }> {
     const { name } = assign;
-    if (this.config.readonlyNames.has(name)) return false;
-    if (assign.elements !== undefined) return assignArray(this.config, name, await expandWords(assign.elements, ctx), assign.append);
+    if (this.config.readonlyNames.has(name)) return { diagnostics: [`${name}: readonly variable`], failed: true };
+    if (assign.elements !== undefined) {
+      const literal = await this.arrayLiteral(name, assign.elements, assign.append === true, ctx);
+      if (assign.append !== true) assignArray(this.config, name, literal.array);
+      return { diagnostics: literal.refused, failed: false };
+    }
 
     const value = await expandWord(assign.value, ctx);
     if (assign.subscript !== undefined) {
+      const subscript = await expandSubscript(assign.subscript, ctx);
       const array = arrayFor(this.config, name);
-      const index = await evaluateSubscript(assign.subscript, array.length, ctx);
+      const raw = subscript === '' ? -1 : subscriptArithmetic(subscript, ctx);
+      const index = raw < 0 && subscript !== '' ? lastIndex(array) + 1 + raw : raw;
+      if (index < 0) return { diagnostics: [`${name}[${assign.subscript}]: bad array subscript`], failed: true };
       array[index] = assign.append ? (array[index] ?? '') + value : value;
-      return true;
+      return { diagnostics: [], failed: false };
     }
     // On an array name, `arr=x` and `arr+=x` land on its first element.
-    return assignVariable(this.config, name, value, assign.append);
+    assignVariable(this.config, name, value, assign.append);
+    return { diagnostics: [], failed: false };
+  }
+
+  /**
+   * `name=(…)`'s array, as bash's assign_compound_array_list builds it, or
+   * with `append` (`name+=(…)`) `name`'s own, extended in place (a scalar
+   * becomes its element 0). Every element is expanded first; then a word's
+   * values go on at the next index (past the last that holds one, for
+   * `append`), and a `[subscript]=` element at its subscript's arithmetic (a
+   * negative one counted back from past the last), the next index after it.
+   * An element whose subscript is empty, `@` or `*`, or before the first is
+   * refused with bash's diagnostic and skipped.
+   */
+  private async arrayLiteral(name: string, elements: readonly ArrayElementNode[], append: boolean, ctx: ExpandContext): Promise<ArrayLiteral> {
+    const expanded: ({ values: string[] } | { subscript: string; value: string; append: boolean })[] = [];
+    for (const element of elements) {
+      expanded.push(element.subscript === undefined
+        ? { values: await expandWords([element.word], ctx) }
+        : { subscript: await expandSubscript(element.subscript, ctx), value: await expandWord(element.word, ctx), append: element.append === true });
+    }
+    const array = append ? arrayFor(this.config, name) : [];
+    const refused: string[] = [];
+    let next = append ? lastIndex(array) + 1 : 0;
+    for (const element of expanded) {
+      if ('values' in element) {
+        for (const value of element.values) array[next++] = value;
+        continue;
+      }
+      const { subscript, value } = element;
+      const written = `[${subscript}]${element.append ? '+=' : '='}${value}`;
+      if (subscript === '@' || subscript === '*') {
+        refused.push(`${written}: cannot assign to non-numeric index`);
+        continue;
+      }
+      const raw = subscript === '' ? -1 : subscriptArithmetic(subscript, ctx);
+      const index = raw < 0 && subscript !== '' ? lastIndex(array) + 1 + raw : raw;
+      if (index < 0) {
+        refused.push(`${written}: bad array subscript`);
+        continue;
+      }
+      array[index] = element.append ? (array[index] ?? '') + value : value;
+      next = index + 1;
+    }
+    return { array, refused };
   }
 
   /** Bash's PIPESTATUS: `statuses`, its array alone. */

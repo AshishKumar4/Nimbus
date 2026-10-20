@@ -468,10 +468,18 @@ async function resolveParameter(ref: ParameterRef, ctx: ExpandContext): Promise<
 export async function evaluateSubscript(
   subscript: string, length: number, ctx: ExpandContext,
 ): Promise<number> {
-  const expanded = joinPieces(await expandParameterWord(subscript, ctx, 'word'));
-  if (expanded.trim() === '') return 0;
-  const index = evaluateArithmetic(expanded, ctx.env, ctx.positionals);
+  const index = subscriptArithmetic(await expandSubscript(subscript, ctx), ctx);
   return index < 0 ? length + index : index;
+}
+
+/** A subscript's text once its expansions (`$i`, `$(…)`) are done, before its arithmetic. */
+export async function expandSubscript(subscript: string, ctx: ExpandContext): Promise<string> {
+  return joinPieces(await expandParameterWord(subscript, ctx, 'word'));
+}
+
+/** An expanded subscript's arithmetic, a blank one 0. */
+export function subscriptArithmetic(expanded: string, ctx: ExpandContext): number {
+  return expanded.trim() === '' ? 0 : evaluateArithmetic(expanded, ctx.env, ctx.positionals);
 }
 
 /** The indices `${!arr[@]}` reports: every index that holds a value. */

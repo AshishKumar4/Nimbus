@@ -3,6 +3,7 @@ import { BINARY_OPERATORS, UNARY_OPERATORS } from './conditional-operators.js';
 import {
   TokenKind,
   type Token,
+  type ArrayElementNode,
   type AssignmentNode,
   type ScriptNode,
   type ListNode,
@@ -875,10 +876,21 @@ function assignmentHead(token: Token): { length: number; name: string; subscript
   if (first === undefined || first.quoted !== 'none' || first.commandSubstitution !== undefined) return null;
   const name = /^[a-zA-Z_][a-zA-Z0-9_]*/.exec(first.text)?.[0];
   if (name === undefined) return null;
-  // The characters after the name, each with whether it is quoted.
+  const rest = operatorAfter(parts, name.length);
+  return rest === null ? null : { ...rest, name };
+}
+
+/**
+ * The `[subscript]` (if any), `+` (if any) and `=` that start at `start`
+ * characters into an assignment word, as bash's assignment() reads them: each
+ * bracket, `+` and `=` unquoted, a subscript's own characters quoted or not;
+ * with the length of the word through the `=`. Null where they are not there.
+ */
+function operatorAfter(parts: readonly WordPart[], start: number): { length: number; subscript?: string; append: boolean } | null {
+  // The characters after `start`, each with whether it is quoted.
   let part = 0;
-  let at = name.length;
-  let length = name.length;
+  let at = start;
+  let length = start;
   const next = (): { char: string; quoted: boolean } | null => {
     for (; part < parts.length; part++, at = 0) {
       const current = parts[part];
@@ -909,16 +921,29 @@ function assignmentHead(token: Token): { length: number; name: string; subscript
     char = next();
   }
   if (char === null || char.char !== '=' || char.quoted) return null;
-  return { length, name, ...(subscript === undefined ? {} : { subscript }), append };
+  return { length, ...(subscript === undefined ? {} : { subscript }), append };
 }
 
-/** `(word …)` — the words inside are lexed and expanded like any argument. */
-function parseArrayLiteral(text: string): WordPart[][] | null {
+/**
+ * `(element …)` — each a word lexed like any argument's. One that begins
+ * `[subscript]=` or `[subscript]+=`, its `[` unquoted, is written at that
+ * subscript (bash's compound assignment); `"[0]=x"` and `\[0]=x` are words.
+ */
+function parseArrayLiteral(text: string): ArrayElementNode[] | null {
   if (!text.startsWith('(') || !text.endsWith(')')) return null;
-  const elements: WordPart[][] = [];
+  const elements: ArrayElementNode[] = [];
   for (const token of lex(text.slice(1, -1))) {
     if (token.kind !== TokenKind.Word) continue;
-    elements.push(token.parts ?? [{ text: token.value, quoted: 'none' }]);
+    const parts = token.parts ?? [{ text: token.value, quoted: 'none' as const }];
+    const [first] = parts;
+    const head = first !== undefined && first.quoted === 'none' && first.commandSubstitution === undefined && first.text.startsWith('[')
+      ? operatorAfter(parts, 0)
+      : null;
+    if (head === null || head.subscript === undefined) {
+      elements.push({ word: parts });
+      continue;
+    }
+    elements.push({ word: partsAfter(token, head.length), subscript: head.subscript, ...(head.append ? { append: true } : {}) });
   }
   return elements;
 }

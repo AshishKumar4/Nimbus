@@ -1,0 +1,110 @@
+#!/usr/bin/env bun
+// An array literal's `[subscript]=value` elements, as bash 5.2 assigns them
+// (arrayfunc.c assign_compound_array_list):
+//
+//   - an element that begins with an unquoted `[subscript]=` is written at
+//     the subscript's arithmetic, its subscript expanded first (`[$i]`,
+//     `[$(cmd)]`, quoted characters inside); `[subscript]+=` appends to the
+//     element there; a quoted `"[0]=x"`, `\[0]=x`, `[1]` and `[1]x=y` are
+//     words;
+//   - a word's elements go on at the next index: 0, or past the last that
+//     holds a value for `a+=(…)`, and the index after a subscripted one;
+//   - a negative subscript counts back from past the last value; one still
+//     before the first, an empty one, and `@` or `*` are refused with bash's
+//     diagnostic and skipped, and the rest is assigned, status 0;
+//   - a value is expanded as an assignment's is: no splitting or globbing,
+//     `~` at its start, "$@" joined;
+//   - `declare -a`, `typeset -a` and `local -a` take the same literal, and
+//     `declare -p`'s output for a sparse array is read back as it was.
+//
+// `a[i]=v` follows the same index rule: a negative subscript counts back from
+// past the last value, and one before the first, or an empty one, is a bad
+// array subscript (status 1).
+//
+// Red before (ticket-lifo-indexed-array-literals): `[i]=v` was stored as the
+// literal word at consecutive indices; `a+=(…)` went on past a removed last
+// element; `a[-9]=x` set a property no expansion reads. Host bash is the
+// oracle (stdout, status, stderr without bash's line prefix).
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
+import { hostSqlite } from './lib/host-sqlite.mjs';
+
+const LINES = [
+  'a=([0]=one [5]=z); declare -p a',
+  'a=(x [3]=y z); declare -p a',
+  'a=("[0]=lit"); declare -p a',
+  'a=(\\[1]=x [1]x=y [1]); declare -p a',
+  'a=(one); a+=([4]=four); declare -p a',
+  'a=(one two); a+=([0]+=X q); declare -p a',
+  'i=2; v="p q"; a=([i+1]=$v [$i]=w); declare -p a',
+  'a=([-1]=x z); echo "st=$?"; declare -p a',
+  'a=(p [-5]=x z)\necho "st=$?"; declare -p a',
+  'a=(p q [-1]=x z); declare -p a',
+  'b=(a b c); b+=([-1]=x); declare -p b',
+  'a=([@]=x z)\necho "st=$?"; declare -p a',
+  'a=([]=x z)\necho "st=$?"; declare -p a',
+  'declare -a a=([-1]=x z)\necho "st=$?"; declare -p a',
+  'i=-5; v="p q"; a=([$i]=$v z)\necho "st=$?"; declare -p a',
+  'a=(); a[-1]=x\necho "st=$?"; declare -p a',
+  'a=(); a[]=x\necho "st=$?"; declare -p a',
+  'i=-1; a=(); a[$i]=x\necho "st=$?"; declare -p a',
+  'a=(p q r); unset "a[2]"; a[-1]=x; declare -p a',
+  'a=(p q r); unset "a[2]"; a+=([-1]=x); declare -p a',
+  'a=(p q r); unset "a[2]"; a+=(s); declare -p a',
+  'a=(p); unset "a[0]"; a+=(q); declare -p a',
+  'x=s; x+=(t); declare -p x',
+  'x=s; x+=([3]=t); declare -p x',
+  'a=([0]=~/q [1]=$HOME [2]=*); declare -p a',
+  'set -- "p q" r; a=([5]="$@" [1]=$*); declare -p a',
+  'a=(x [3]+=y); declare -p a',
+  'a=([1]=b); a+=([1]+=c d); declare -p a',
+  'a=([1]=x [1]+=y); declare -p a',
+  'a=([1]=x); a+=([1]=y); declare -p a',
+  'a=([0]=x); a=([1]=y); declare -p a',
+  'f() { local -a l=([2]=x y); declare -p l; }; f',
+  'f() { local a=([1]=x); declare -p a; }; f',
+  'declare -a d=([3]=x y); declare -p d; typeset -a t=([1]=q); declare -p t',
+  'a=([2+3]=x [010]=o [0x1f]=h [1]=one [1]=two); declare -p a',
+  "a=([$(echo 4)]=c [\"2\"]=q ['3']=s); declare -p a",
+  'a=([1]=x [3]= [4]=""); declare -p a',
+  'a=( [1]=x   [2]=y ); declare -p a',
+  'a=([1]=$(echo "u v") w); declare -p a',
+  'a=(one); a[5]=z; s=$(declare -p a); unset a; eval "$s"; declare -p a',
+  'a=([1]=x); echo "${#a[@]} ${!a[@]} ${a[1]}"; b=("${a[@]}"); declare -p b',
+  'a=([x]=1); declare -p a; x=3; b=([x]=1); declare -p b',
+  'readonly r=(1); r=([2]=x)\necho "st=$?"; declare -p r',
+];
+
+/** bash's diagnostic prefix: `bash: line 1: `, `bash: -c: line 1: `, and in a function 5.2's `environment: line 1: `. */
+const plainStderr = (text) => text.replace(/^(?:bash|environment): (?:-c: )?(?:line \d+: )?/gm, '');
+
+const want = [];
+for (const line of LINES) {
+  const dir = mkdtempSync(join(tmpdir(), 'shell-array-subscripts-'));
+  try {
+    const r = spawnSync('bash', ['--norc', '--noprofile', '-c', line], { cwd: dir, encoding: 'utf8', timeout: 10_000, env: { PATH: process.env.PATH, LC_ALL: 'C.UTF-8', HOME: '/home/user' } });
+    assert.equal(r.error, undefined, `bash ran ${JSON.stringify(line)}: ${r.error?.message}`);
+    want.push({ stdout: r.stdout, stderr: plainStderr(r.stderr), status: r.status });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const { sql, transactions } = await hostSqlite();
+const ws = await NimbusWorkspace.create({ sql, transactions, generation: 1 });
+const failed = [];
+try {
+  for (const [i, line] of LINES.entries()) {
+    const r = await ws.exec(line, { cwd: '/home/user' });
+    const ours = { stdout: r.stdout, stderr: r.stderr, status: r.exitCode };
+    if (JSON.stringify(ours) !== JSON.stringify(want[i])) failed.push(`${JSON.stringify(line)}\n  bash: ${JSON.stringify(want[i])}\n  ours: ${JSON.stringify(ours)}`);
+  }
+} finally {
+  await ws.close();
+}
+console.log(`shell-array-subscripts-bash: ${LINES.length - failed.length} of ${LINES.length} lines as bash's`);
+assert.deepEqual(failed, [], `as bash:\n${failed.join('\n')}`);

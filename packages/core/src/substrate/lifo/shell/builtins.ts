@@ -14,7 +14,7 @@ import { writeLossless } from '../utils/bytes-io.js';
 import { encodeLossless } from '../utils/lossless-text.js';
 import { singleQuote } from '../../../_shared/shell-quote.js';
 import { isDecimalInteger, isShellIdentifier } from './names.js';
-import { assignArray, assignVariable } from './variables.js';
+import { assignArray, assignVariable, type ArrayLiteral } from './variables.js';
 import { DEFAULT_HOME } from '../../../constants.js';
 import { ExitSignal, TextSyntaxError, type BuiltinExecutionContext, type BuiltinFn } from './interpreter.js';
 import { resolveJobSpec } from './jobs.js';
@@ -693,13 +693,15 @@ async function builtinDeclare(verb: 'local' | 'declare' | 'typeset', { args, std
   return exitCode;
 }
 
-/** The right-hand side of a declaration: a string, or an array assignment's elements (BuiltinExecutionContext.arrayElements). */
-async function assignDeclared(state: ShellState, name: string, value: string | readonly string[], stderr: CommandOutputStream): Promise<boolean> {
+/** The right-hand side of a declaration: a string, or an array assignment's array (BuiltinExecutionContext.arrayElements). */
+async function assignDeclared(state: ShellState, name: string, value: string | ArrayLiteral, stderr: CommandOutputStream): Promise<boolean> {
   if (state.readonlyNames.has(name)) {
     (await stderr.write(`${name}: readonly variable\n`));
     return false;
   }
-  return typeof value === 'string' ? assignVariable(state, name, value) : assignArray(state, name, value);
+  if (typeof value === 'string') return assignVariable(state, name, value);
+  for (const refused of value.refused) (await stderr.write(`${refused}\n`));
+  return assignArray(state, name, value.array);
 }
 
 async function assignEnv(state: ShellState, name: string, value: string, stderr: CommandOutputStream): Promise<boolean> {
