@@ -130,17 +130,6 @@ const PREVIEW_PARENT = 'nimbus-probe-previews';
  */
 const HOSTNAME_SETTLE_MS = 60_000;
 
-/**
- * How long after `wrangler preview` exits the API may take to serve its
- * upload as the Preview's latest deployment. Measured 2026-10-20: 20 uploads
- * to two Previews, new and redeployed, landed 273–1488 ms after wrangler
- * exited (median 330 ms), each on the first read. The failures seen before
- * (wrangler printing no deployment id; the API serving no deployment, or the
- * one before, 30 s on) were never a slow tail of that, so the bound stays
- * well past it and a miss is answered by one more upload, not a longer wait.
- */
-const LANDING_MS = 30_000;
-
 /** An API read of a Preview that failed: not an answer that it has no deployment. */
 class PreviewReadError extends Error {}
 
@@ -211,6 +200,9 @@ async function up() {
   // Whether it stands is the API's answer, and only a confirmed one: an
   // error read as absence would mint a secret over a Preview that has one.
   const token = await apiToken({ cwd: PROBE_APP, account });
+  // The parent first: under a parent that does not exist the API answers
+  // a Preview's read with the Worker's absence (10007), not the Preview's.
+  await ensurePreviewParent({ account, token });
   const presence = await previewPresence({ preview, account, token });
   if (presence.kind === 'unknown') throw new Error(`cannot tell whether Preview ${preview} stands: ${presence.reason}`);
   const created = presence.kind === 'not-found';
@@ -222,8 +214,6 @@ async function up() {
     provisioned: !created,
     rotate: Boolean(flags['rotate-secrets']),
   });
-
-  await ensurePreviewParent({ account, token });
 
   // Recorded before the deploy, not after: `wrangler preview` can create
   // the Preview and still fail before its deployment lands, and a name
@@ -430,6 +420,7 @@ async function ensurePreviewParent({ account, token }) {
 async function deployPreview({ account, token, preview, secret, before, config }) {
   // The secret travels with the deployment: each Preview deployment
   // carries its own env, so every deploy uploads it again.
+  const uploadStarted = Date.now();
   const result = withSecretsFile({ JWT_SECRET: secret }, (secretsFile) => wrangle(WRANGLER, [
     'preview', '--name', preview, '--worker-name', PREVIEW_PARENT,
     '--ignore-base-config', '--json', '--secrets-file', secretsFile, ...varOverrides, '--config', config,
@@ -440,9 +431,16 @@ async function deployPreview({ account, token, preview, secret, before, config }
     printed = JSON.parse(stdout.slice(stdout.indexOf('{')));
   } catch { /* reported below */ }
   const deploymentId = printed?.deployment?.id ?? null;
-  // Read until the API serves the upload or LANDING_MS have passed. A read
-  // the deadline cuts off is no answer: the wait ends with what was last read.
-  const settleBy = Date.now() + LANDING_MS;
+  // Read until the API serves the upload, for as long as the upload took.
+  // Measured 2026-10-20: 20 uploads to two Previews, new and redeployed,
+  // landed 273–1488 ms after wrangler exited (median 330 ms), each on the
+  // first read; the misses seen before (no deployment, or the one before,
+  // 30 s on) never landed later. So past the upload's own time, uploading
+  // again is what lands sooner. A read the deadline cuts off is no answer:
+  // the wait ends with what was last read.
+  const landingMs = Date.now() - uploadStarted;
+  const settleBy = Date.now() + landingMs;
+  const waited = `${(landingMs / 1000).toFixed(1)} s, as long as the upload took`;
   const signal = AbortSignal.timeout(Math.max(1, settleBy - Date.now()));
   let latest;
   for (;;) {
@@ -462,9 +460,9 @@ async function deployPreview({ account, token, preview, secret, before, config }
     const detail = !deploymentId
       ? '`wrangler preview` reported no deployment id'
       : latest === undefined
-        ? `the API answered no read of its latest deployment within ${LANDING_MS / 1000} s of the upload`
+        ? `the API answered no read of its latest deployment within ${waited}`
         : after !== deploymentId
-          ? `${LANDING_MS / 1000} s after the upload, the API serves ${after ?? 'no deployment'} as the latest, not ${deploymentId}`
+          ? `${waited} after it, the API serves ${after ?? 'no deployment'} as the latest, not ${deploymentId}`
           : `the latest deployment is still ${after} — nothing was deployed`;
     return { landed: false, reported: Boolean(deploymentId), detail, status: result.status };
   }

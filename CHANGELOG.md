@@ -5,16 +5,19 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
-- Fixed (CI): a throwaway Preview whose upload the API does not serve
-  within 30 s is uploaded once more, with a warning, instead of failing the
-  run. A Preview the run created keeps its signing secret through a miss
-  whose upload wrangler reported, so a later `up` of the name redeploys it
-  instead of refusing it for want of a secret (it had needed a manual
-  `down`). `up` now refuses when the API errs on whether the Preview stands
-  or on its latest deployment; it read the error as absence, which let it
-  mint a new secret over a Preview that had one. Measured on 20 uploads, the
-  API served each 273–1488 ms after `wrangler preview` exited; the misses
-  are a separate failure, not a slow tail, so the 30 s bound stays.
+- Fixed (CI): a throwaway Preview whose upload the API does not serve, as
+  long as the upload itself took, is uploaded once more, with a warning,
+  instead of failing the run. Measured on 20 uploads, the API served each
+  273–1488 ms after `wrangler preview` exited, and the misses seen never
+  landed later, so past the upload's own time another upload lands sooner
+  than waiting. A Preview the run created keeps its signing secret through
+  a miss whose upload wrangler reported, so a later `up` of the name
+  redeploys it instead of refusing it for want of a secret (it had needed a
+  manual `down`). `up` now refuses when the API errs on whether the Preview
+  stands or on its latest deployment; it read the error as absence, which
+  let it mint a new secret over a Preview that had one. On an account with
+  no parent Worker yet, `up` makes the parent before it asks whether the
+  Preview stands; it failed there, reading the Worker's absence as an error.
 - Fixed (security): a process's environment is no longer stored where
   another process can read it. Before, a Node server's environment was
   written into its generated module, and a Python or Ruby server's into its

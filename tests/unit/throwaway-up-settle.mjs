@@ -1,9 +1,7 @@
 #!/usr/bin/env bun
-// @tier slow — waits out the 30 s an upload has to show as a Preview's latest, several times
-//
 // The public throwaway `up` command, after `wrangler preview` reports a
-// deployment, reads the Preview's latest deployment until the API serves it
-// or 30 s have passed. When it never does, it uploads once more, saying so;
+// deployment, reads the Preview's latest deployment until the API serves it,
+// for as long as the upload took. When it never does, it uploads once more, saying so;
 // when that one does not land either, the command fails saying what the API
 // served instead, or that the API answered nothing in time, never with the
 // abort of its own deadline. A Preview the command created keeps its
@@ -12,6 +10,9 @@
 // secret for. The command runs unchanged in a checkout of its own; `wrangler
 // preview` there is a stand-in that reports a deployment, numbered by the
 // uploads, and the command's Cloudflare API requests reach the fixture server.
+// Under no parent Worker at all, `up` makes the parent before it asks
+// whether the Preview stands, as the API answers that read with the
+// Worker's absence (10007) until there is one.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -37,17 +38,30 @@ const ok = (result) => ({ success: true, result, errors: [] });
  * (the deployment before), `silent` once an upload is in (no answer),
  * `second-lands` (the deployment before until the second upload, then that),
  * `new` (no Preview: 404), `landed` (the last upload), `presence-500` (the
- * Preview read fails), or `latest-500` (it stands, and its latest read fails).
+ * Preview read fails), `latest-500` (it stands, and its latest read fails),
+ * or `no-parent` (no parent Worker until `up` makes one, then no Preview
+ * until the upload lands).
  */
 let mode = 'stale';
+let parentMade = false;
+const NO_WORKER = { success: false, result: null, errors: [{ code: 10007, message: 'This Worker does not exist on your account.' }] };
 let latestReads = 0;
 let checkout = null;
 const uploads = () => { try { return Number(readFileSync(join(checkout, 'uploads'), 'utf8')); } catch { return 0; } };
 const unexpected = [];
 const server = createServer((request, response) => {
   const json = (status, body) => response.writeHead(status, { 'Content-Type': 'application/json' }).end(JSON.stringify(body));
-  if (request.method === 'GET' && request.url === PARENT_PATH) return json(200, ok({ subdomain: { enabled: true, previews_enabled: true } }));
+  const parent = mode !== 'no-parent' || parentMade;
+  if (request.method === 'GET' && request.url === PARENT_PATH) {
+    return parent ? json(200, ok({ subdomain: { enabled: true, previews_enabled: true } })) : json(404, NO_WORKER);
+  }
+  if (request.method === 'POST' && request.url === `/client/v4/accounts/${ACCOUNT}/workers/workers` && mode === 'no-parent') {
+    parentMade = true;
+    return json(200, ok({ id: 'nimbus-probe-previews' }));
+  }
   if (request.method === 'GET' && request.url === PRESENCE_PATH) {
+    if (!parent) return json(404, NO_WORKER);
+    if (mode === 'no-parent') return json(404, ABSENT);
     if (mode === 'presence-500') return json(500, { success: false, result: null, errors: [{ code: 10013, message: 'an internal error' }] });
     return mode === 'new' ? json(404, ABSENT) : json(200, ok({ id: 'preview-id' }));
   }
@@ -56,8 +70,8 @@ const server = createServer((request, response) => {
     // The first read is the one before the upload; it always answers.
     if (mode === 'silent' && latestReads > 1) return;
     if (mode === 'latest-500') return json(500, { success: false, result: null, errors: [{ code: 10013, message: 'an internal error' }] });
-    if (mode === 'new') return json(404, ABSENT);
-    if (mode === 'landed' || (mode === 'second-lands' && uploads() >= 2)) return json(200, ok({ id: `deployment-uploaded-${uploads()}`, startup_time_ms: 5 }));
+    if (mode === 'new' || (mode === 'no-parent' && uploads() === 0)) return json(404, ABSENT);
+    if (mode === 'landed' || mode === 'no-parent' || (mode === 'second-lands' && uploads() >= 2)) return json(200, ok({ id: `deployment-uploaded-${uploads()}`, startup_time_ms: 5 }));
     return json(200, ok({ id: 'deployment-before', startup_time_ms: 5 }));
   }
   unexpected.push(`${request.method} ${request.url}`);
@@ -152,8 +166,8 @@ await import('./tests/behavioral/_throwaway-target.mjs');
   });
 
   for (const [name, settled, expected] of [
-    ['the API keeps serving the deployment before', 'stale', /did not land, twice: 30 s after the upload, the API serves deployment-before as the latest, not deployment-uploaded-\d/],
-    ['the API answers no read in time', 'silent', /did not land, twice: the API answered no read of its latest deployment within 30 s of the upload/],
+    ['the API keeps serving the deployment before', 'stale', /did not land, twice: [\d.]+ s, as long as the upload took after it, the API serves deployment-before as the latest, not deployment-uploaded-\d/],
+    ['the API answers no read in time', 'silent', /did not land, twice: the API answered no read of its latest deployment within [\d.]+ s, as long as the upload took/],
   ]) {
     mode = settled;
     latestReads = 0;
@@ -164,8 +178,8 @@ await import('./tests/behavioral/_throwaway-target.mjs');
     assert.match(output, /WARNING: Preview tw-up-settle of nimbus-probe-previews did not land: .*Uploading it once more\./, `${name}: up says it uploads once more\n${output}`);
     assert.match(output, expected, `${name}: up says what the API served\n${output}`);
     assert.doesNotMatch(output, /AbortError|TimeoutError|operation was aborted/, `${name}: never its own deadline's abort\n${output}`);
-    assert.ok(Date.now() - started >= 60_000, `${name}: it waited the 30 s out, twice`);
-    if (settled === 'stale') assert.ok(latestReads > 6, `${name}: it kept reading until each deadline (${latestReads} reads)`);
+    // The read before the uploads, and at least one after each.
+    assert.ok(latestReads >= 3, `${name}: it read after each upload (${latestReads} reads)`);
     console.log(`  ok  ${name}: up fails saying so, after ${Math.round((Date.now() - started) / 1000)} s and ${latestReads} reads`);
   }
 
@@ -176,7 +190,7 @@ await import('./tests/behavioral/_throwaway-target.mjs');
     const { code, stdout, stderr } = await up();
     const output = `${stdout}${stderr}`;
     assert.equal(code, 3, `up reaches readiness\n${output}`);
-    assert.match(output, /WARNING: .*did not land: 30 s after the upload, the API serves deployment-before as the latest, not deployment-uploaded-1.*Uploading it once more/, `the first miss is said\n${output}`);
+    assert.match(output, /WARNING: .*did not land: [\d.]+ s, as long as the upload took after it, the API serves deployment-before as the latest, not deployment-uploaded-1.*Uploading it once more/, `the first miss is said\n${output}`);
     assert.match(output, /deployment deployment-uploaded-2 is live at https:\/\/tw-up-settle-nimbus-probe-previews\.proof\.workers\.dev/, `up goes on with the second upload\n${output}`);
     assert.deepEqual([record().versionId, record().secret], ['deployment-uploaded-2', 'the-held-signing-secret'], 'and records it, with the secret it held');
     console.log('  ok  a second upload that lands: up goes on with it');
@@ -221,7 +235,7 @@ await import('./tests/behavioral/_throwaway-target.mjs');
     rmSync(recordPath, { force: true });
     rmSync(join(checkout, 'uploads'), { force: true });
     const missed = await up();
-    assert.match(`${missed.stdout}${missed.stderr}`, /did not land, twice: 30 s after the upload, the API serves no deployment as the latest/, `${missed.stdout}${missed.stderr}`);
+    assert.match(`${missed.stdout}${missed.stderr}`, /did not land, twice: [\d.]+ s, as long as the upload took after it, the API serves no deployment as the latest/, `${missed.stdout}${missed.stderr}`);
     const kept = record();
     assert.equal(kept.secretPushed, true, 'the secret of a Preview this run created is kept through the miss');
     mode = 'landed';
@@ -232,6 +246,18 @@ await import('./tests/behavioral/_throwaway-target.mjs');
     assert.match(output, /deployment deployment-uploaded-3 is live/, `it redeploys it\n${output}`);
     assert.equal(record().secret, kept.secret, 'with the secret its uploads carried');
     console.log('  ok  a new Preview that lands late: the next up redeploys it with its secret');
+  }
+  // No parent Worker at all: up makes it before it asks whether the Preview stands.
+  {
+    mode = 'no-parent';
+    rmSync(recordPath, { force: true });
+    rmSync(join(checkout, 'uploads'), { force: true });
+    const { code, stdout, stderr } = await up();
+    const output = `${stdout}${stderr}`;
+    assert.equal(code, 3, `up reaches readiness\n${output}`);
+    assert.match(output, /creating the Preview parent Worker nimbus-probe-previews/, `it makes the parent\n${output}`);
+    assert.match(output, /deployment deployment-uploaded-1 is live/, `and deploys the Preview, new\n${output}`);
+    console.log('  ok  no parent Worker: up makes it, then deploys the Preview');
   }
   assert.deepEqual(unexpected, [], 'up asked the API nothing else');
 } finally {
