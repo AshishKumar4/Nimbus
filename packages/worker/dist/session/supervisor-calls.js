@@ -224,11 +224,12 @@ export function supervisorCalls(base) {
             return value;
         }
         async [CACHE_READ](plan, produce) {
-            const { R2CacheClient } = await npmCache();
-            const client = new R2CacheClient(this[TRANSPORT]().env?.NPM_TARBALL_CACHE ?? null, this[TRANSPORT]().env?.NPM_PACKUMENT_CACHE ?? null, plan.readOnly);
             let value;
+            // The client's module loads inside the read: a run's ticket is answered however it fails.
             try {
-                value = await produce(client);
+                const cache = await npmCache();
+                const client = new cache.R2CacheClient(this[TRANSPORT]().env?.NPM_TARBALL_CACHE ?? null, this[TRANSPORT]().env?.NPM_PACKUMENT_CACHE ?? null, plan.readOnly);
+                value = await produce(client, cache);
             }
             catch (error) {
                 if (plan.ticket)
@@ -698,8 +699,7 @@ export function supervisorCalls(base) {
         async getCachedTarball(integrity) {
             const plan = this[INFRASTRUCTURE_CACHE]('getCachedTarball', [integrity]) ? { readOnly: false }
                 : await this[CALL](this[OP]('getCachedTarball', [integrity]));
-            const { MAX_R2_TARBALL_BYTES } = await npmCache();
-            return this[CACHE_READ](plan, async (client) => {
+            return this[CACHE_READ](plan, async (client, { MAX_R2_TARBALL_BYTES }) => {
                 const bytes = await client.getTarball(integrity);
                 return { bytes: bytes?.length && bytes.length <= MAX_R2_TARBALL_BYTES ? bytes : null, events: client._cacheEvents };
             });
