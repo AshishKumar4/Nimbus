@@ -156,6 +156,11 @@ const FOUND = {
       ['hold', 'listing'], ['root', 'chmod', 'd', 488], ['own', 'pread', 'mid', 0], ['settle'], ['peer', 'rename', 'd/e', 'x/e'], ['sync', 'write', 'x/e/g', 'c2209.1'],
       ['root', 'chmod', 'x/e', 457], ['sync', 'chmod', 'x/h', 420], ['sync', 'stat', 'z/k'], ['own', 'readFile', 'd/e/g'], ['settle']],
   },
+  'a barrier asked of the last incarnation, answered after the store started again, installs nothing (2154)': {
+    engines: ['holder', 'eager'], park: 2154,
+    schedule: [['own', 'write', 'top', 'c2154.1'], ['input'], ['input'], ['own', 'write', 'new', 'c2154.2'], ['release'], ['release', 'lookup'],
+      ['hold', 'listing'], ['release'], ['own', 'stat', 'z'], ['release'], ['release'], ['input'], ['restart'], ['input'], ['input'], ['own', 'stat', 'z/k']],
+  },
   'a file a call that cannot wait missed stays a miss until an awaited read answers it': {
     engines: ['node'],
     schedule: [['peer', 'write', 'new', 'not resident'], ['settle'], ['input'], ['settle'], ['sync', 'readFile', 'new'], ['own', 'stat', 'new'], ['settle']],
