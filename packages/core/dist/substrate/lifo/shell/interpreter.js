@@ -8,7 +8,7 @@ import { parseAssignment, ParseError, ScriptLines } from './parser.js';
 import { expandArithmetic, expandBraceWord, expandWords, expandWord, expandPatternWord, expandSubscript, arithmeticOf, arithmeticValue, ArithmeticError, ExpansionError, reportWarnings, SubscriptArithmeticError, } from './expander.js';
 import { evaluateDoubleBracketWords } from './test-builtin.js';
 import { isPipeEnd, PipeChannel } from './pipe.js';
-import { arrayFor, arrayIndex, assignArray, assignVariable, lastIndex, restoreVariable, saveVariable, } from './variables.js';
+import { arrayFor, arrayIndex, assignArray, assignVariable, exportedEnvironment, lastIndex, restoreVariable, saveVariable, } from './variables.js';
 import { forkShellState } from './state.js';
 import { exitCodeForAbortSignal, KILLED_BY_SIGPIPE } from './signals.js';
 import { isBrokenPipe, isRefusedWrite, textCapture } from '../utils/bytes-io.js';
@@ -1052,7 +1052,8 @@ export class Interpreter {
                                         commandContext: io.commandContext,
                                         identity,
                                         cwd: this.config.getCwd(),
-                                        env: { ...this.config.env },
+                                        env: exportedEnvironment(this.config),
+                                        searchPath: this.config.env.PATH,
                                         vfs: io.vfs ?? this.config.vfs,
                                         stdout,
                                         stderr,
@@ -1157,6 +1158,7 @@ export class Interpreter {
             cred: identity.cred,
             args,
             env: spec.env,
+            ...(spec.searchPath === undefined ? {} : { searchPath: spec.searchPath }),
             cwd: spec.cwd,
             vfs: spec.vfs,
             vfsUntilExit: () => bindProcessView(this.config.filesystem, { pid: identity.pid, cred: identity.cred }),

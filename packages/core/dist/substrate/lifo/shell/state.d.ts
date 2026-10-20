@@ -6,6 +6,7 @@
  * of the shell that runs it (BuiltinExecutionContext.shell).
  */
 import type { JobTable } from './jobs.js';
+import { type VariableAttributes } from './variables.js';
 export interface ShellOptions {
     errexit: boolean;
     nounset: boolean;
@@ -28,8 +29,8 @@ export interface ShellState {
      */
     readonly arrays: Map<string, (string | undefined)[]>;
     getCwd(): string;
-    /** Move the shell, and PWD with it. */
-    setCwd(cwd: string): void;
+    /** Move the shell, and PWD with it as an assignment would; false where PWD is readonly and kept its value. */
+    setCwd(cwd: string): boolean;
     readonly options: ShellOptions;
     readonly traps: TrapTable;
     readonly readonlyNames: Set<string>;
@@ -40,6 +41,18 @@ export interface ShellState {
     readonly aliases: Map<string, string>;
     readonly jobTable: JobTable;
 }
+/**
+ * The marks a shell starts with over variables named `names` (its
+ * environment's), as bash's: each exported (a shell parameter kept among
+ * them, `#` or `1`, is none), and PWD and OLDPWD exported too, OLDPWD
+ * declared where it has no value.
+ */
+export declare function startupAttributes(names: Iterable<string>): {
+    readonly exported: ReadonlySet<string>;
+    readonly declared: ReadonlySet<string>;
+};
+/** startupAttributes as VariableAttributes: what a saved state without its attributes restores to. */
+export declare function startupVariableAttributes(names: Iterable<string>): VariableAttributes;
 /** A shell's state at `cwd`, its variables `env` (PWD set), nothing else defined. */
 export declare function createShellState(env: Record<string, string>, cwd: string, jobTable: JobTable): ShellState;
 /**

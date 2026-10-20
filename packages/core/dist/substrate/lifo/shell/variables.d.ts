@@ -52,4 +52,43 @@ export declare function cloneArrays(arrays: ReadonlyMap<string, (string | undefi
 export declare function copyArray(array: readonly (string | undefined)[]): (string | undefined)[];
 /** A subscript's arithmetic as an index of `array`: a negative one counts back from past its last value (still negative where that is before the first). */
 export declare function arrayIndex(array: readonly (string | undefined)[], value: number): number;
+/**
+ * A store's variables beyond `env`'s scalar values, as plain data, from the
+ * store's own table: its export, readonly and declared marks, and its arrays,
+ * each element an `[index, value]` pair (sparse). Names in order, so equal
+ * stores give equal data. lifo keeps no other attribute (integer, case,
+ * nameref, associative arrays are not implemented).
+ */
+export interface VariableAttributes {
+    readonly exported: readonly string[];
+    readonly readonly: readonly string[];
+    readonly declared: readonly string[];
+    readonly arrays: Readonly<Record<string, ReadonlyArray<readonly [number, string]>>>;
+}
+/** `store`'s attributes (VariableAttributes). */
+export declare function attributesOf(store: VariableStore): VariableAttributes;
+/**
+ * `attributes` put back into `store`, whose `env` holds the scalars they were
+ * saved with (`scalars`, those names) and maybe others besides (a
+ * workspace's). Every name the saved state binds (a scalar, an array, a mark)
+ * is as it was saved: its scalar only if it had one, exported only if it
+ * was. Any other keeps its value and mark, but a mark without a value (a
+ * declared name, an exported unset one) is only the saved state's: one a new
+ * shell starts with (OLDPWD) and the saved shell unset goes.
+ */
+export declare function restoreAttributes(store: VariableStore & {
+    readonly readonlyNames: Set<string>;
+}, attributes: VariableAttributes, scalars: Iterable<string>): void;
+/**
+ * A shell parameter the shell keeps among its variables (a positional one, `#`, `@`,
+ * `*`, `?`, `$`, `!`, `-`): never a variable, so never exported (bash's are not in
+ * the environment).
+ */
+export declare function isShellParameter(name: string): boolean;
+/**
+ * The environment a command gets: the exported variables' scalar values, in
+ * the store's order (bash's export_env). An unexported variable, or an array,
+ * is the shell's own.
+ */
+export declare function exportedEnvironment(store: VariableStore): Record<string, string>;
 //# sourceMappingURL=variables.d.ts.map
