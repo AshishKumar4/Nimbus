@@ -140,7 +140,7 @@ function setup({ hooks = {}, storage = new Map(), world, disk, directory = fakeD
     ensureSqliteFs() {},
     async ensureRuntimeReady() {},
     // No dev servers ran before this incarnation: none to restore.
-    async restoreDevServers() { return []; },
+    async devServersRespawned() {},
     // No facet pool in this harness: cold /@modules/ misses take the legacy path.
     ensureBundlePool() { return null; },
     ensureFacetManager() {

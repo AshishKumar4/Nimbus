@@ -38,7 +38,7 @@ const self = {
   },
   async hydrateSessionBasePath() {},
   // No dev servers ran before this incarnation: none to restore.
-  async restoreDevServers() { return []; },
+  async devServersRespawned() {},
 };
 
 const job = processes.spawn('npm run dev', ['npm run dev'], '/home/user/app', { execId: 'j1' });

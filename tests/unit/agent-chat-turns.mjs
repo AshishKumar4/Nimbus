@@ -53,7 +53,7 @@ function makeHost(initialStore = new Map()) {
       ensureFacetManager() {},
       async ensureRuntimeReady() {},
       // No dev servers ran before this incarnation: none to restore.
-      async restoreDevServers() { return []; },
+      async devServersRespawned() {},
       sqliteFs: null,
     },
     store,

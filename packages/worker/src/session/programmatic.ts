@@ -47,7 +47,6 @@ import { collectExecStream, createExecStream, type ExecExit, type ExecOutput, ty
 import type { RuntimeManager } from '@nimbus-sh/core/runtime/runtime-manager.js';
 import { _acquireForRoutedRequest } from './rpc.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
-import type { DevServerRestoreFailure } from './helpers.js';
 
 export interface ProgrammaticShell {
   getEnv(): Record<string, string>;
@@ -78,8 +77,8 @@ interface ProgrammaticViteServer {
 export interface ProgrammaticHost extends TimerHost {
   readonly runtimeManager: RuntimeManager;
   ensureRuntimeReady(): Promise<void>;
-  /** This incarnation's one restore of the dev servers its previous one ran (session/dev-servers.ts). */
-  restoreDevServers(): Promise<readonly DevServerRestoreFailure[]>;
+  /** This incarnation's restore of the dev servers its previous one ran, their processes spawned again (session/dev-servers.ts). */
+  devServersRespawned(): Promise<void>;
   /** The destroy running (rpcDestroy), until it is answered. */
   destroying?: Promise<SessionDestroyResult> | null;
   _w1SessionDestroyed: boolean;
@@ -661,14 +660,14 @@ export async function rpcListRuntimes(self: ProgrammaticHost): Promise<SessionRe
 }
 
 /**
- * Ready, and what runs listed in full: the dev servers this incarnation's
- * restore runs again are in the table, as port routing waits for them. A
+ * Ready, and what runs listed in full: the dev servers this incarnation
+ * restores have their processes in the table, their commands not yet run. A
  * host's recovery asks once, and must not read "not yet" as "none coming"
  * (Kinu ask 65).
  */
 async function ensureRunningListed(self: ProgrammaticHost): Promise<void> {
   await ensureProgrammaticReady(self);
-  await self.restoreDevServers();
+  await self.devServersRespawned();
 }
 
 export async function rpcListProcesses(self: ProgrammaticHost): Promise<SessionProcess[]> {

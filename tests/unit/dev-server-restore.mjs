@@ -205,17 +205,27 @@ try {
   await settle(() => recordKeys().length === 0, 'the record to be released');
 
   // ── what runs is listed with what the restore runs again (Kinu ask 65) ──
-  const job1 = await next.runtime.exec('vite --port 5173 --no-install-check', { cwd: '/home/user/app', execId: 'job-1' });
-  assert.equal(job1.exitCode, 0, job1.stderr);
-  await next.ctx.storage.sync();
-  next = await incarnation({ restored: false });
-  // Asked at once, as an embedder's recovery asks: "none" must mean none is coming.
-  const listed = (await next.runtime.listProcesses()).find((process) => process.execId === 'job-1' && process.state === 'running');
-  assert.ok(listed, 'the restored server is listed at once, under the exec id it had');
-  assert.equal(listed.restartedFrom?.cause, 'session-restart', 'as the restart of the one before');
-  assert.ok((await next.runtime.listPorts()).some((port) => port.port === 5173 && port.pid === listed.pid), 'and its port is listed with it');
-  await next.runtime.exec('vite stop', { cwd: '/home/user/app' });
-  await settle(() => recordKeys().length === 0, 'the record to be released');
+  // Asked at once, as an embedder's recovery asks: "not listed" must mean
+  // "not coming". The listing waits for the restore's processes, never for
+  // its commands: one that lists what runs itself, and one that never ends
+  // (a dev server, then a loop, as a job may run), each answers.
+  for (const [what, line] of [
+    ['a dev server', 'vite --port 5173 --no-install-check'],
+    ['one whose line then lists the apps', 'vite --port 5173 --no-install-check; nimbus app list'],
+    ['one whose line never ends', 'vite --port 5173 --no-install-check; while true; do sleep 1; done'],
+  ]) {
+    await next.runtime.startProcess(line, { cwd: '/home/user/app', execId: 'job-1' });
+    await settle(() => next.ports.has(5173), `${what}: its port`);
+    await next.ctx.storage.sync();
+    next = await incarnation({ restored: false });
+    const listed = (await next.runtime.listProcesses()).find((process) => process.execId === 'job-1' && process.state === 'running');
+    assert.ok(listed, `${what}: listed at once, under the exec id it had`);
+    assert.equal(listed.restartedFrom?.cause, 'session-restart', `${what}: as the restart of the one before`);
+    assert.ok(Array.isArray(await next.runtime.listApps()), `${what}: the apps are listed too`);
+    await settle(() => next.ports.has(5173), `${what}: its port again`);
+    await next.runtime.killProcess(listed.pid);
+    await settle(() => recordKeys().length === 0 && !next.ports.has(5173), `${what}: its record to be released`);
+  }
 
   // ── a login file that starts one, with one to restore ───────────────────
   const recorded = await next.runtime.exec('vite --port 5173 --no-install-check', { cwd: '/home/user/app' });
