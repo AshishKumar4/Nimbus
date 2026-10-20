@@ -36,6 +36,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
+import { registerShellEntrypointCommands } from '../../packages/core/src/shell/shell-entrypoints.ts';
 import { hostSqlite } from './lib/host-sqlite.mjs';
 
 const LINES = [
@@ -114,6 +115,8 @@ for (const { line, compare } of CASES) {
 
 const { sql, transactions } = await hostSqlite();
 const ws = await NimbusWorkspace.create({ sql, transactions, generation: 1 });
+// `bash s.sh` runs the script as the session's bash does.
+registerShellEntrypointCommands(ws.registry, { execute: (cmd, options) => ws.shell.execute(cmd, options) });
 const failed = [];
 try {
   for (const [i, { line, compare }] of CASES.entries()) {
