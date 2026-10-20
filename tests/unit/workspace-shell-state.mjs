@@ -86,6 +86,51 @@ try {
   const queued = await reading;
   assert.equal(queued.env.QUEUED, '\udfff');
   assert.equal(Object.hasOwn(queued.env, '$'), false);
+
+  // A variable's attributes and arrays come back as the call left them (ticket-lifo-named-shell-attributes).
+  const attrs = (command) => ws.exec(command, { shellId: 'attributes' });
+  for (const command of ['x=1', 'export y=2', 'declare p', 'readonly r=1', 'a=(1 [5]="x y")', 'export n', 'z=3; unset z']) {
+    assert.equal((await attrs(command)).exitCode, 0, command);
+  }
+  const printed = await attrs('declare -p x y p r a n; declare -p z');
+  assert.equal(printed.stdout, [
+    'declare -- x="1"', 'declare -x y="2"', 'declare -- p', 'declare -r r="1"', 'declare -a a=([0]="1" [5]="x y")', 'declare -x n', '',
+  ].join('\n'));
+  const refused = await attrs('r=2');
+  assert.equal(refused.exitCode, 1, 'a readonly name stays readonly');
+  assert.match(refused.stderr, /r: readonly variable/);
+  assert.equal((await attrs('env')).stdout.split('\n').some((line) => line.startsWith('x=') || line.startsWith('a=')), false, 'an unexported scalar, and an array, are no child\'s environment');
+  assert.equal((await attrs('echo "$PIPESTATUS ${#PIPESTATUS[@]}"')).stdout, '0 1\n', 'a call\'s statuses are its own');
+  const attributed = await ws.shellState('attributes');
+  assert.deepEqual(attributed.vars.arrays.a, [[0, '1'], [5, 'x y']]);
+  assert.equal(Object.hasOwn(attributed.vars.arrays, 'PIPESTATUS'), false, 'PIPESTATUS, as $?, is not shell state');
+  assert.deepEqual(attributed.vars.readonly, ['r']);
+
+  // A state whose every variable is an exported scalar is saved without `vars`, and digests as before them.
+  const runPlain = (command) => ws.exec(command, { shellId: 'plain' });
+  await runPlain('export B=1');
+  const plain = await ws.shellState('plain');
+  assert.equal(Object.hasOwn(plain, 'vars'), false, 'a default state has no vars key');
+  assert.deepEqual(Object.keys(plain), ['cwd', 'env']);
+  const plainDigest = digest(plain);
+  for (const command of ['true', 'echo hi | cat', 'false']) await runPlain(command);
+  assert.equal(digest(await ws.shellState('plain')), plainDigest, 'calls that change nothing keep the digest');
+  await runPlain('local_only=1');
+  const changed = await ws.shellState('plain');
+  assert.notEqual(digest(changed), plainDigest, 'an unexported variable is state, and changes the digest');
+  assert.deepEqual(changed.vars.exported.includes('local_only'), false);
+
+  // A table from before `vars`: its rows read as today's, and the column is added once.
+  await ws.close();
+  harness.sql.exec('DROP TABLE vfs_shells');
+  harness.sql.exec('CREATE TABLE vfs_shells (id TEXT PRIMARY KEY, cwd TEXT NOT NULL, env TEXT NOT NULL)');
+  harness.sql.exec('INSERT INTO vfs_shells (id, cwd, env) VALUES (?, ?, ?)', 'old', '/tmp', JSON.stringify({ OLD: 'v', HOME: '/home/user' }));
+  ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx });
+  const old = await ws.shellState('old');
+  assert.deepEqual(old, { cwd: '/tmp', env: { OLD: 'v', HOME: '/home/user' } });
+  assert.equal(digest(old), digest({ cwd: '/tmp', env: { OLD: 'v', HOME: '/home/user' } }), 'an old row digests as it did');
+  assert.equal([...harness.sql.exec('PRAGMA table_info(vfs_shells)')].filter((column) => column.name === 'vars').length, 1);
+  assert.equal((await ws.exec('declare -p OLD', { shellId: 'old' })).stdout, 'declare -x OLD="v"\n', 'an old row\'s variables are exported, as before');
 } finally {
   await ws.close();
   harness.db.close();

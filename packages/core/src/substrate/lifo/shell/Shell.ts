@@ -11,6 +11,7 @@ import { textCapture } from '../utils/bytes-io.js';
 
 import { Interpreter, type BuiltinFn, type ProgramSpec, type TerminalFdState } from './interpreter.js';
 import { createShellState, restoreShellState, snapshotShellState, type ShellOptions, type ShellState } from './state.js';
+import { attributesOf, restoreAttributes, type VariableAttributes } from './variables.js';
 import { shellBuiltins } from './builtins.js';
 import { continuationState } from './lexer.js';
 import { HistoryManager } from './history.js';
@@ -260,6 +261,16 @@ export class Shell {
 
   getEnv(): Record<string, string> {
     return this.state.env;
+  }
+
+  /** Its variables' attributes and arrays, beyond {@link getEnv}'s scalars (a named shell's saved state). */
+  getVariableAttributes(): VariableAttributes {
+    return attributesOf(this.state);
+  }
+
+  /** Put `attributes` back, saved with the scalars named in `saved` (restoreAttributes). */
+  restoreVariableAttributes(attributes: VariableAttributes, saved: Iterable<string>): void {
+    restoreAttributes(this.state, attributes, saved);
   }
 
   getVfs(): ProcessView {

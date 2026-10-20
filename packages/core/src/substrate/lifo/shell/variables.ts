@@ -114,3 +114,61 @@ export function copyArray(array: readonly (string | undefined)[]): (string | und
 export function arrayIndex(array: readonly (string | undefined)[], value: number): number {
   return value < 0 ? lastIndex(array) + 1 + value : value;
 }
+
+/**
+ * A store's variables beyond `env`'s scalar values, as plain data, from the
+ * store's own table: its export, readonly and declared marks, and its arrays,
+ * each element an `[index, value]` pair (sparse). Names in order, so equal
+ * stores give equal data. lifo keeps no other attribute (integer, case,
+ * nameref, associative arrays are not implemented).
+ */
+export interface VariableAttributes {
+  readonly exported: readonly string[];
+  readonly readonly: readonly string[];
+  readonly declared: readonly string[];
+  readonly arrays: Readonly<Record<string, ReadonlyArray<readonly [number, string]>>>;
+}
+
+/** `store`'s attributes (VariableAttributes). */
+export function attributesOf(store: VariableStore): VariableAttributes {
+  const arrays: Record<string, Array<readonly [number, string]>> = Object.create(null);
+  for (const name of [...store.arrays.keys()].sort()) {
+    const array = store.arrays.get(name) ?? [];
+    const elements: Array<readonly [number, string]> = [];
+    for (const key of Object.keys(array)) {
+      const value = array[Number(key)];
+      if (value !== undefined) elements.push([Number(key), value]);
+    }
+    arrays[name] = elements;
+  }
+  return {
+    exported: [...store.exportedNames].sort(),
+    readonly: [...store.readonlyNames].sort(),
+    declared: [...store.declaredNames].sort(),
+    arrays,
+  };
+}
+
+/**
+ * `attributes` put back into `store`, whose `env` holds the scalars they were
+ * saved with (`saved`, those names) and maybe others besides: a saved name is
+ * exported only if it was; any other keeps the mark it has. An array name's
+ * scalar goes, as a name lives in one table.
+ */
+export function restoreAttributes(
+  store: VariableStore & { readonly readonlyNames: Set<string> },
+  attributes: VariableAttributes,
+  saved: Iterable<string>,
+): void {
+  const exported = new Set(attributes.exported);
+  for (const name of saved) if (!exported.has(name)) store.exportedNames.delete(name);
+  for (const name of exported) store.exportedNames.add(name);
+  for (const name of attributes.readonly) store.readonlyNames.add(name);
+  for (const name of attributes.declared) store.declaredNames.add(name);
+  for (const [name, elements] of Object.entries(attributes.arrays)) {
+    const array: (string | undefined)[] = [];
+    for (const [index, value] of elements) array[index] = value;
+    delete store.env[name];
+    store.arrays.set(name, array);
+  }
+}
