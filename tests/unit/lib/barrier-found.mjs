@@ -173,6 +173,12 @@ const FOUND = {
       ['release'], ['peer', 'chmod', 'd/e/g', 416], ['own', 'opendir', 'z'], ['sync', 'readFile', 'd/e/g'], ['root', 'chown', 'd/e', 0], ['sync', 'readFile', 'd/e/g'],
       ['release'], ['hold', 'lookup']],
   },
+  'a directory the process renamed away and a peer made again holds none of what it held (3378)': {
+    engines: ['node'], park: 3378,
+    schedule: [['own', 'readFile', 'z/g'], ['own', 'opendir', 'd/e/g'], ['input'], ['own', 'readdir', 'z/k'], ['own', 'rename', 'd', 'z'], ['own', 'opendir', 'd/e/g'],
+      ['input'], ['peer', 'mkdir', 'd'], ['own', 'chmod', 'x/h', 420], ['own', 'pread', 'mid', 8400000], ['release', 'wave'], ['peer', 'unlink', 'top'],
+      ['own', 'stat', 'new'], ['sync', 'readdir', 'z/k'], ['own', 'stat', 'z/g'], ['hold', 'acquire'], ['settle'], ['sync', 'stat', 'd/e/g']],
+  },
   'a file renamed over another, its rename on its way, reads as the renamed file (3104)': {
     schedule: [['own', 'rename', 'd/e/g', 'top'], ['sync', 'readFile', 'top']],
   },
@@ -232,6 +238,11 @@ const GAPS = {
     lacks: 'S: what a write\'s answer installs outlives the removal the same wave carried, past every barrier since (closed by the cutover: one own state, RF\'s); '
       + 'meanwhile a Node program\'s readdirSync can list a file it deleted with unlinkSync, which the session no longer holds',
     shows: 'at rest, sync readdir . answered',
+  },
+  'a directory the process renamed away and a peer made again holds none of what it held (3378) [node]': {
+    lacks: 'S keeps a rename of a directory as its own effect over the rows the launch listed under the old name, and leaves those rows; once a peer makes the name again they show under it (closed by the cutover: RF decides own renames in the store); '
+      + 'meanwhile, in a program that renames a directory away and another process then creates one of that name, statSync and readFileSync can answer files the old directory held',
+    shows: 'sync stat d/e/g answered file 644 size 5',
   },
   'a directory the process may search again shows nothing stale while it is relisted [node]': {
     lacks: 'B2: a relist answers what is under its directory as unknown until it lands (the cutover\'s relist fence); '
@@ -371,6 +382,7 @@ const OWN_RENAMES = new Set([
   'a file renamed over another, its rename answered, reads as the renamed file (3104, awaited)',
   'a file renamed over another in a subtree the process holds, its rename answered, reads as the renamed file (3104, held)',
   'a file renamed over another, its rename on its way, reads as the renamed file (3104)',
+  'a directory the process renamed away and a peer made again holds none of what it held (3378)',
   'a file the process renamed into place reads as a peer later wrote it (3219)',
   'a miss of a file the process may no longer reach is not owed (6404)',
   'a file the process wrote and then removed, both answered in one wave behind an input, is gone from its listing (2700)',
