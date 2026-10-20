@@ -286,6 +286,7 @@ export function createCells(coherence, admission, namespace, observeRead) {
                 const entryRev = NumberOf(entry.rev);
                 if (floor !== null && entryRev <= floor)
                     continue;
+                measured.changes++;
                 const path = entry.path;
                 if (namespaced && namespace.ready()) {
                     const again = namespace.applyEntry(t, entry);
@@ -315,6 +316,7 @@ export function createCells(coherence, admission, namespace, observeRead) {
                         const stamped = row.rev;
                         if (stamped === RK_OWN_WRITE || stamped >= entryRev)
                             continue;
+                        measured.heldChanged++;
                         t.chunkDelete(row.path);
                         t.fileDelete(row.path);
                         dropped[dropped.length] = row.path;
@@ -340,6 +342,7 @@ export function createCells(coherence, admission, namespace, observeRead) {
                 }
                 if (isHeld && (stamped === RK_OWN_WRITE || stamped >= entryRev)) {
                     kept++;
+                    measured.ownOrCurrent++;
                     continue;
                 }
                 // A cell held in memory (an own write the store had no room for) is
@@ -349,6 +352,7 @@ export function createCells(coherence, admission, namespace, observeRead) {
                 if (heldCell !== undefined) {
                     if (heldCell.rev === RK_OWN_WRITE || heldCell.rev >= entryRev) {
                         kept++;
+                        measured.ownOrCurrent++;
                         continue;
                     }
                     forgetHeld(path);
@@ -374,6 +378,8 @@ export function createCells(coherence, admission, namespace, observeRead) {
                         kept++;
                         continue;
                     }
+                    if (isHeld)
+                        measured.heldChanged++;
                     if (put(t, path, incoming, entryRev, contentKey))
                         pushed++;
                     else if (isHeld)
@@ -382,6 +388,7 @@ export function createCells(coherence, admission, namespace, observeRead) {
                 }
                 if (!isHeld)
                     continue;
+                measured.heldChanged++;
                 t.chunkDelete(path);
                 t.fileDelete(path);
                 dropped[dropped.length] = path;
@@ -402,7 +409,7 @@ export function createCells(coherence, admission, namespace, observeRead) {
     // A read of a module's file, as of any other: through the launch's
     // captures only (SafeMap, its own loops), never a built-in the program
     // may have replaced.
-    const measured = { reads: 0, hits: 0, fills: 0, filledBytes: 0 };
+    const measured = { reads: 0, hits: 0, fills: 0, filledBytes: 0, changes: 0, ownOrCurrent: 0, heldChanged: 0 };
     const get = (path) => {
         measured.reads++;
         const cell = lookup(path);

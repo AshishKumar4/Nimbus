@@ -1939,6 +1939,7 @@ var __nimbusResidentModule = (() => {
           const entry = paths[i];
           const entryRev = NumberOf(entry.rev);
           if (floor !== null && entryRev <= floor) continue;
+          measured.changes++;
           const path = entry.path;
           if (namespaced && namespace.ready()) {
             const again = namespace.applyEntry(t, entry);
@@ -1956,6 +1957,7 @@ var __nimbusResidentModule = (() => {
               const row2 = rows[j];
               const stamped2 = row2.rev;
               if (stamped2 === RK_OWN_WRITE || stamped2 >= entryRev) continue;
+              measured.heldChanged++;
               t.chunkDelete(row2.path);
               t.fileDelete(row2.path);
               dropped[dropped.length] = row2.path;
@@ -1978,12 +1980,14 @@ var __nimbusResidentModule = (() => {
           }
           if (isHeld && (stamped === RK_OWN_WRITE || stamped >= entryRev)) {
             kept++;
+            measured.ownOrCurrent++;
             continue;
           }
           const heldCell = held.get(path);
           if (heldCell !== void 0) {
             if (heldCell.rev === RK_OWN_WRITE || heldCell.rev >= entryRev) {
               kept++;
+              measured.ownOrCurrent++;
               continue;
             }
             forgetHeld(path);
@@ -2002,11 +2006,13 @@ var __nimbusResidentModule = (() => {
               kept++;
               continue;
             }
+            if (isHeld) measured.heldChanged++;
             if (put(t, path, incoming, entryRev, contentKey)) pushed++;
             else if (isHeld) dropped[dropped.length] = path;
             continue;
           }
           if (!isHeld) continue;
+          measured.heldChanged++;
           t.chunkDelete(path);
           t.fileDelete(path);
           dropped[dropped.length] = path;
@@ -2016,7 +2022,7 @@ var __nimbusResidentModule = (() => {
       coherence.unseal();
       return { dropped: arrayCopy(dropped), kept, pushed, relist: arrayCopy(relist), cursor: { epoch, rev } };
     };
-    const measured = { reads: 0, hits: 0, fills: 0, filledBytes: 0 };
+    const measured = { reads: 0, hits: 0, fills: 0, filledBytes: 0, changes: 0, ownOrCurrent: 0, heldChanged: 0 };
     const get = (path) => {
       measured.reads++;
       const cell = lookup(path);
@@ -3642,8 +3648,7 @@ var __nimbusResidentModule = (() => {
       transport,
       sync,
       pages,
-<<<<<<<< HEAD:packages/worker/public/_assets/runtime/resident-store-11c68323a94218e3.js
-      lazy,
+      view,
       measure() {
         if (!coherence.bound()) return { bound: false };
         const stats = cells.stats();
@@ -3659,9 +3664,6 @@ var __nimbusResidentModule = (() => {
           databaseSize: stats.databaseSize
         };
       }
-========
-      view
->>>>>>>> origin/main:packages/worker/public/_assets/runtime/resident-store-865a53e3b32dd3e3.js
     };
   }
   return __toCommonJS(index_exports);

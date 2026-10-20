@@ -183,6 +183,8 @@ export interface ResidentStore {
     readonly sync: Sync;
     readonly pages: Pages;
     readonly view: View;
+    /** Measurement: what the store holds against its cap, and how its reads were answered. */
+    measure(): Record<string, unknown>;
 }
 export declare function createResidentStore(options?: ResidentStoreOptions): ResidentStore;
 //# sourceMappingURL=index.d.ts.map

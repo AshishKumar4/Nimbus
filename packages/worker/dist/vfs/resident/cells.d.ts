@@ -115,6 +115,10 @@ export interface Cells {
         hits: number;
         fills: number;
         filledBytes: number;
+        /** Changes the session reported past the cursor; those that were this process's own (or already held as new); those to a file it held an older copy of (what a revocation would be for). */
+        changes: number;
+        ownOrCurrent: number;
+        heldChanged: number;
     };
 }
 export declare function createCells(coherence: Coherence, admission: Admission, namespace: Namespace, observeRead: ((path: string) => void) | null): Cells;
