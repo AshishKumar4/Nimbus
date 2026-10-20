@@ -490,8 +490,8 @@ export async function expandSubscript(subscript: string, ctx: ExpandContext): Pr
   return joinPieces(await expandParameterWord(subscript, ctx, 'word'));
 }
 
-/** An expanded word's arithmetic (a subscript's, a `[[ -eq ]]` operand's): a blank one is 0. Throws ArithmeticError. */
-export function arithmeticOf(expanded: string, ctx: ExpandContext): number {
+/** An expanded word's arithmetic (a subscript's, a `[[ -eq ]]` operand's, let's): a blank one is 0. Throws ArithmeticError. */
+export function arithmeticOf(expanded: string, ctx: Pick<ExpandContext, 'env' | 'positionals'>): number {
   return expanded.trim() === '' ? 0 : evaluateArithmetic(expanded, ctx.env, ctx.positionals);
 }
 
@@ -1149,10 +1149,14 @@ function replaceMatches(text: string, pattern: string, replacement: string, all:
 // ─── Arithmetic evaluator ───
 
 function evaluateArithmetic(expr: string, env: Record<string, string>, positionals?: readonly string[], depth = 0): number {
-  const parser = new ArithParser(expr.trim(), env, positionals, depth);
+  // Its trailing blanks are its own, as bash's diagnostics quote the expression.
+  const parser = new ArithParser(expr.trimStart(), env, positionals, depth);
   const result = parser.parseExpression();
   return result;
 }
+
+/** An arithmetic assignment's operators, the longest first. */
+const ASSIGNMENT_OPERATORS = ['<<=', '>>=', '+=', '-=', '*=', '/=', '%=', '&=', '^=', '|=', '='];
 
 /** How deep a variable's value may refer on to another's (bash's MAX_EXPR_RECURSION_LEVEL). */
 const MAX_ARITHMETIC_DEPTH = 1024;
@@ -1259,8 +1263,37 @@ class ArithParser {
     return this.expr[this.pos + 1] ?? '';
   }
 
+  /** A comma list: each expression evaluated, the last's value its own. */
   parseExpression(): number {
-    return this.parseTernary();
+    let value = this.parseTernary();
+    while (this.peek() === ',') {
+      this.pos++;
+      value = this.parseTernary();
+    }
+    return value;
+  }
+
+  /** `left op right` for a compound assignment's operator (`+=`'s `+`); a division by 0 is an error at the right operand, from `start`. */
+  private operate(op: string, left: number, right: number, start: number): number {
+    if ((op === '/' || op === '%') && right === 0) return this.divisionByZero(start);
+    switch (op) {
+      case '+': return left + right;
+      case '-': return left - right;
+      case '*': return left * right;
+      case '/': return Math.trunc(left / right);
+      case '%': return left % right;
+      case '<<': return left << right;
+      case '>>': return left >> right;
+      case '&': return left & right;
+      case '^': return left ^ right;
+      default: return left | right;
+    }
+  }
+
+  /** bash's `division by 0`: the whole expression, and the right operand onward; under noeval the operand is 1 (expr.c). */
+  private divisionByZero(start: number): number {
+    if (this.noeval > 0) return 0;
+    throw new ArithmeticError(`${this.expr}: division by 0 (error token is "${this.expr.slice(start)}")`);
   }
 
   private parseTernary(): number {
@@ -1448,16 +1481,11 @@ class ArithParser {
         this.pos++;
         const right = this.parseExponentiation();
         left = left * right;
-      } else if (ch === '/' ) {
+      } else if (ch === '/' || ch === '%') {
         this.pos++;
-        const right = this.parseExponentiation();
-        if (right === 0) return 0;
-        left = Math.trunc(left / right);
-      } else if (ch === '%') {
-        this.pos++;
-        const right = this.parseExponentiation();
-        if (right === 0) return 0;
-        left = left % right;
+        this.skipSpaces();
+        const start = this.pos;
+        left = this.operate(ch, left, this.parseExponentiation(), start);
       } else {
         break;
       }
@@ -1480,6 +1508,20 @@ class ArithParser {
     this.skipSpaces();
     const ch = this.peek();
 
+    // Pre-increment/decrement, before the unary signs they begin with
+    if ((ch === '+' || ch === '-') && this.peekNext() === ch) {
+      const start = this.pos;
+      this.pos += 2;
+      this.skipSpaces();
+      const name = this.readVarName();
+      if (name) {
+        const val = this.getVar(name) + (ch === '+' ? 1 : -1);
+        this.assign(name, String(val));
+        return val;
+      }
+      this.pos = start;
+    }
+
     if (ch === '!') {
       this.pos++;
       const val = this.parseUnary();
@@ -1498,28 +1540,6 @@ class ArithParser {
     if (ch === '+') {
       this.pos++;
       return this.parseUnary();
-    }
-
-    // Pre-increment/decrement
-    if (ch === '+' && this.peekNext() === '+') {
-      this.pos += 2;
-      this.skipSpaces();
-      const name = this.readVarName();
-      if (name) {
-        const val = this.getVar(name) + 1;
-        this.assign(name, String(val));
-        return val;
-      }
-    }
-    if (ch === '-' && this.peekNext() === '-') {
-      this.pos += 2;
-      this.skipSpaces();
-      const name = this.readVarName();
-      if (name) {
-        const val = this.getVar(name) - 1;
-        this.assign(name, String(val));
-        return val;
-      }
     }
 
     return this.parsePrimary();
@@ -1572,10 +1592,15 @@ class ArithParser {
         return val;
       }
 
-      // Assignment within arithmetic (but not == comparison)
-      if (this.expr[this.pos] === '=' && this.expr[this.pos + 1] !== '=') {
-        this.pos++;
-        const val = this.parseExpression();
+      // An assignment, `=` (not `==`) or a compound one (`+=`): its right side an
+      // assignment's, which a comma ends, as bash's expr.c reads it.
+      const operator = ASSIGNMENT_OPERATORS.find((op) => this.expr.startsWith(op, this.pos) && (op !== '=' || this.expr[this.pos + 1] !== '='));
+      if (operator !== undefined) {
+        this.pos += operator.length;
+        this.skipSpaces();
+        const start = this.pos;
+        const right = this.parseTernary();
+        const val = operator === '=' ? right : this.operate(operator.slice(0, -1), this.getVar(name), right, start);
         this.assign(name, String(val));
         return val;
       }

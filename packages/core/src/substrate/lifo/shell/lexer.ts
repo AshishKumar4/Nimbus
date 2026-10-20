@@ -236,6 +236,40 @@ export class TokenReader {
   }
 
   /**
+   * `((expression))`, as bash's reader reads an arithmetic command where a
+   * command begins, or after `for` (parse_dparen): the text to the `))` that
+   * closes it, parentheses nesting in it, a quoted or backslashed one its
+   * text's. Null, with nothing read, where a `)` closes it that no second
+   * `)` follows: `((echo a) )` is two subshells.
+   */
+  readArithmeticCommand(): string | null {
+    const frame = this.frame;
+    const input = frame.input;
+    let at = frame.at;
+    while (input[at] === ' ' || input[at] === '\t') at++;
+    if (input[at] !== '(' || input[at + 1] !== '(') return null;
+    const start = at + 2;
+    let depth = 0;
+    for (let i = start; i < input.length; i++) {
+      const ch = input[i];
+      if (ch === '\\') i++;
+      else if (ch === "'" || ch === '"') {
+        i = input.indexOf(ch, i + 1);
+        if (i === -1) return null;
+      } else if (ch === '(') depth++;
+      else if (ch === ')') {
+        if (depth > 0) depth--;
+        else if (input[i + 1] !== ')') return null;
+        else {
+          frame.at = i + 2;
+          return input.slice(start, i);
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
    * The word after `=~`, as bash's reader reads a regular expression: up to a
    * blank or an operator, except that its parentheses nest and, inside them,
    * blanks, newlines, `#` and operators are its own, and `|` is its own
