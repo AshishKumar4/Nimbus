@@ -937,6 +937,8 @@ export class WaveIngest {
       }
     } catch (caught) {
       let error = caught;
+      // Where it failed: decoding and placing a record applies nothing of it (the calls before it commit below).
+      const decoding = phase === 'decode';
       // The calls decoded before a stream that failed (cut, malformed) commit
       // as they would have: a re-send then carries only what came after them.
       if (pendingCalls.length > 0) {
@@ -959,8 +961,11 @@ export class WaveIngest {
           // Not kept: the op is unanswered, and a re-send applies it again.
         }
       }
-      // A delegation to recall, its op not refused for good: a re-send applies it once the recall is over.
-      const recall = recallOf(error) !== null && progress.sequence?.refused === undefined;
+      // Met placing a record, before anything of it applied: a delegation to
+      // recall, the record not refused for good, so a re-send applies it once
+      // the recall is over. Anywhere later (a close that consumed its
+      // description, a commit) its outcome is the session's answer, not this.
+      const recall = decoding && error === caught && recallOf(error) !== null && progress.sequence?.refused === undefined;
       return {
         ok: false,
         ...progress,
