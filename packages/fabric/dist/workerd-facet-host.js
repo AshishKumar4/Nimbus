@@ -233,6 +233,11 @@ export function deleteFacetStorage(ctx, name) {
 export function abortFacet(ctx, name, reason) {
     facetContainer(ctx).abort(name, reason);
 }
+/** The ephemeral facet name process `pid` holds in this incarnation's book, if it holds one. */
+export function heldFacetName(ctx, pid) {
+    const slot = slotBook(ctx).held.get(pid);
+    return slot === undefined ? null : residentFacetName(slot);
+}
 /**
  * The process surface of one hosting actor: how a resident process comes
  * into existence on workerd, and how a one-shot program runs to completion.
