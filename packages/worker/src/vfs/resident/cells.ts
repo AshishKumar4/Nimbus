@@ -624,7 +624,8 @@ export function createCells(
     },
     rowsChanged(path) {
       if (filling.size === 0) return;
-      const t = coherence.require();
+      // Maintenance, not a read: it runs while a kept store is sealed for its reconcile too.
+      const t = coherence.tables('rowsChanged');
       const disown = (at: string): void => { if (filling.delete(at) && t.fileHead(at) === undefined) t.chunkDelete(at); };
       if (path !== undefined) { disown(path); return; }
       const owned = new SafeList<string>();
