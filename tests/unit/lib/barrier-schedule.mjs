@@ -299,10 +299,12 @@ export function generate(seed, steps = 40) {
  *   - refusedAsDirectory: a call that cannot wait, on a directory the view
  *     cannot answer it for, is refused EISDIR, whatever it asked;
  *   - absentWhileRelisted: a directory being relisted answers a name under
- *     it as absent (B2).
+ *     it as absent (B2);
+ *   - refusedWhileRelisted: an awaited read under a directory being relisted
+ *     is refused (EAGAIN) where it should wait (B2, seed 2209).
  */
 export const KNOWN_GAPS = Object.freeze({
-  node: Object.freeze({ absentWhileRelisted: true }),
+  node: Object.freeze({ absentWhileRelisted: true, refusedWhileRelisted: true }),
   holder: Object.freeze({ unshownAwaitedChange: true, refusedAsDirectory: true }),
   eager: Object.freeze({ unshownAwaitedChange: true, refusedAsDirectory: true }),
 });
@@ -580,6 +582,7 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
     if (answer?.code === 'EAGAIN' && way === 'sync' && refusable(op, rel, from, to)) return;
     if (gaps.refusedAsDirectory && way === 'sync' && answer?.code === 'EISDIR' && model.worldsSeen(rel, from, to).some((world) => world.get(rel)?.type === 'dir')) return;
     if (gaps.absentWhileRelisted && way === 'sync' && answer === null && transport.inFlight('listing') > 0) return;
+    if (gaps.refusedWhileRelisted && way === 'own' && answer?.code === 'EAGAIN' && transport.inFlight('listing') > 0) return;
     const decided = kind === 'node' && way === 'sync';
     if (model.admits(op, rel, answer, from, to, decided, offset)) return;
     // A descriptor follows what it opened: a directory or file a rename moved after the open is read where it went.

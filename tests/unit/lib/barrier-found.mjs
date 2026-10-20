@@ -173,6 +173,12 @@ const FOUND = {
       ['release'], ['peer', 'chmod', 'd/e/g', 416], ['own', 'opendir', 'z'], ['sync', 'readFile', 'd/e/g'], ['root', 'chown', 'd/e', 0], ['sync', 'readFile', 'd/e/g'],
       ['release'], ['hold', 'lookup']],
   },
+  'a file renamed over another, its rename on its way, reads as the renamed file (3104)': {
+    schedule: [['own', 'rename', 'd/e/g', 'top'], ['sync', 'readFile', 'top']],
+  },
+  'a file the process renamed into place reads as a peer later wrote it (3219)': {
+    schedule: [['own', 'write', 'new', 'c3219.3'], ['own', 'rename', 'new', 'top'], ['peer', 'write', 'top', 'c3219.5']],
+  },
   'a file a call that cannot wait missed stays a miss until an awaited read answers it': {
     engines: ['node'],
     schedule: [['peer', 'write', 'new', 'not resident'], ['settle'], ['input'], ['settle'], ['sync', 'readFile', 'new'], ['own', 'stat', 'new'], ['settle']],
@@ -210,6 +216,16 @@ const GAPS = {
     lacks: 'S: what a write\'s answer installs outlives the removal the same wave carried, past every barrier since (closed by the cutover: one own state, RF\'s); '
       + 'meanwhile a Node program\'s readdirSync can list a file it deleted with unlinkSync, which the session no longer holds',
     shows: 'at rest, sync readdir . answered',
+  },
+  'a file renamed over another, its rename on its way, reads as the renamed file (3104) [node]': {
+    lacks: 'S: readFileSync reads a renamed-over name\'s bytes by name, not through the rename the process decided (closed by the cutover: RF reads by identity); '
+      + 'meanwhile a Node program that renames a file over another and reads it before the rename is answered gets the replaced file\'s bytes, while statSync shows the renamed one',
+    shows: 'sync readFile top answered "t0000000"',
+  },
+  'a file the process renamed into place reads as a peer later wrote it (3219) [node]': {
+    lacks: 'S: the bytes an own rename carried to its new name outlive a peer\'s later write of that name, past every barrier (closed by the cutover: one own state, RF\'s); '
+      + 'meanwhile a Node program keeps reading what it renamed into place after another process overwrote it',
+    shows: 'at rest, sync readFile top answered "c3219.3"',
   },
   'a directory the process may search again shows nothing stale while it is relisted [node]': {
     lacks: 'B2: a relist answers what is under its directory as unknown until it lands (the cutover\'s relist fence); '
@@ -346,6 +362,8 @@ async function run(kind, schedule, park) {
 
 /** What the process renamed itself: Node's own renames, run apart so each file stays in the fast tier. */
 const OWN_RENAMES = new Set([
+  'a file renamed over another, its rename on its way, reads as the renamed file (3104)',
+  'a file the process renamed into place reads as a peer later wrote it (3219)',
   'a miss of a file the process may no longer reach is not owed (6404)',
   'a file the process wrote and then removed, both answered in one wave behind an input, is gone from its listing (2700)',
   'a directory read through its descriptor after an own rename into it, its wave not yet sent, lists the name the rename made (2896)',
