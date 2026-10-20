@@ -113,9 +113,9 @@ try {
   const settled = await ws.shellState('bindings');
   await bindings('true');
   assert.equal(digest(await ws.shellState('bindings')), digest(settled), 'a call that changes nothing leaves its saved bindings as they were');
-  // An array named PWD stays the array; an index past 2^53 round-trips.
+  // An array named PWD stays the array (exported, as PWD was); an index past 2^53 round-trips.
   await bindings('PWD=(p w); big[9007199254740992]=x');
-  assert.equal((await bindings('declare -p PWD; echo "${big[9007199254740992]}"')).stdout, 'declare -a PWD=([0]="p" [1]="w")\nx\n');
+  assert.equal((await bindings('declare -p PWD; echo "${big[9007199254740992]}"')).stdout, 'declare -ax PWD=([0]="p" [1]="w")\nx\n');
   // A call's env binds a name for the call alone, an array's too.
   await bindings('arr=(saved)');
   assert.equal((await bindings('echo "$arr ${#arr[@]}"', { env: { arr: 'call' } })).stdout, 'call 1\n');
