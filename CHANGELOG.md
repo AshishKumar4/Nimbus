@@ -6,6 +6,51 @@ published independently in the `@nimbus-sh` npm scope.
 ## Unreleased
 
 - Fixed: `git status` holds what its comparisons need of the worktree, not the worktree. Its one ordered scan of the tree is merged with the index as it goes, in the order both share, so only the directories it is in are held; its memory grows with the index alone. Before, status kept the whole scan (every entry's path, stat and listing row): about 0.6 KiB a file, 23 MiB more from 2,000 to 40,000 files, about 30 MiB on next.js's 34,000. Status also takes about a tenth less CPU on next.js's shape.
+- Fixed (security): a process's environment is no longer stored where
+  another process can read it. Before, a Node server's environment was
+  written into its generated module, and a Python or Ruby server's into its
+  durable image, under `/.nimbus`, which every account on the box can read.
+  Now the environment goes to the process in memory when it starts. When a
+  process is started again (after a reset, an on-failure restart, a durable
+  app's relaunch on its port, or a dev server's restore), Nimbus asks the
+  host for its environment through the new `resolveProcessEnv` option. The
+  session keeps each such process's environment in a row of its own object,
+  outside the filesystem. An embedder of `HostedRuntime` composes
+  `resolveProcessEnv`; without it, such a restart fails and says why. A
+  durable `spawnWorker` that passes an `env` now needs a
+  `resolveWorkerLaunch` hook. The first start after the upgrade removes the
+  copies earlier releases wrote in its records and durable images. It does
+  not remove the generated program images earlier releases left in
+  `/.nimbus/facet-images` and below `/var/lib/nimbus`, which still hold
+  those processes' environments: that directory belongs to the embedder,
+  which keeps its own images there. The session says how many it found, and
+  `GET /api/_diag/session` lists them (`legacyGeneratedImages`). The hosted
+  runtime owns its sessions' `/.nimbus/facet-images` whole, so it removes
+  them there. Copies already taken in a snapshot, an export or a clone are
+  not removed either. Remove `/var/lib/nimbus` with `sudo rm -r` once no
+  durable worker boots from there. A Python or Ruby server whose image an
+  earlier release wrote, under an embedder that composes
+  `resolveProcessEnv`, is not restarted, and the session says so: start it
+  again. `/api/_diag/session` lists the shell's variable names, not their
+  values. Not fixed yet: a resident process's generated program image still
+  holds the files its process read at start, and every account can read the
+  image. A secret in such a file, such as an inline `VAR=secret` saved in
+  `~/.bash_history`, stays readable by other accounts until the image
+  store's privacy fix ships. Pass secrets through the launch environment
+  instead.
+- Fixed: the shell's commands walk their file operands as POSIX does. A `..` applies after the name before it is looked up, through a symbolic link to where it points, and a missing or non-directory name before it is ENOENT or ENOTDIR; a trailing slash asks for a directory (`cat f/` is "Not a directory"), and on a name being removed or renamed it names the entry itself, never a link's target (`rm -r link/` empties the target and refuses the link, `rmdir link/` says the link was not followed, as GNU's do). Before, `cat missing/../f` and `cat f/` read `f`, and `cat link/../x` read the `x` beside the link. Messages still name the operand as typed; `cp`'s into-itself check compares where the names lead; `mktemp` prints the name it made; logical `cd` refuses `missing/..` and keeps `PWD` logical; `mkdir -p` makes the names a following `..` leaves; `rm -r` refuses another name for `/`.
+
+## 2026-10-20: platform 0.14.0, core 0.25.0, fabric 0.20.0, worker 0.23.0, sdk 0.19.0, react 0.4.1, cli 0.2.10, loom 0.3.3, create-nimbus-app 0.2.6 (config 0.3.2 and the runtimes unchanged)
+
+- Fixed: Nimbus no longer deletes an embedder's images in
+  `/.nimbus/facet-images`. The store that holds a resident process's
+  generated modules removed every file there that no running process booted
+  from, an embedder's own images included (a durable worker's runner and its
+  text modules, named by `facetImagePath`). After a reset, the first launch
+  could remove a durable app's text module, and the app's next restart then
+  failed with ENOENT. The store now writes to its own directory,
+  `/.nimbus/process-images`, and removes files only there. Images an earlier
+  release wrote to `/.nimbus/facet-images` stay where they are.
 - Fixed: the shell's commands walk their file operands as POSIX does. A `..` applies after the name before it is looked up, through a symbolic link to where it points, and a missing or non-directory name before it is ENOENT or ENOTDIR; a trailing slash asks for a directory (`cat f/` is "Not a directory"), and on a name being removed or renamed it names the entry itself, never a link's target (`rm -r link/` empties the target and refuses the link, `rmdir link/` says the link was not followed, as GNU's do). Before, `cat missing/../f` and `cat f/` read `f`, and `cat link/../x` read the `x` beside the link. Messages still name the operand as typed; `cp`'s into-itself check compares where the names lead; `mktemp` prints the name it made; logical `cd` refuses `missing/..` and keeps `PWD` logical; `mkdir -p` makes the names a following `..` leaves; `rm -r` refuses another name for `/`.
 - Fixed: a nested shell stops with its caller. `bash -c`, `sh -c` and `bash script` pass their command's signal to the shell that runs the program, and a hosted workspace's child shell stops on either that signal or its own. Before, an aborted or timed-out `bash -c 'while :; do :; done'` was reported stopped while its loop ran on, burning the session's CPU.
 - Fixed: a Node program that renamed a file over another (`fs.promises.rename` or `fs.renameSync`, the atomic-save pattern) and then read the destination with `fs.readFileSync` could get the replaced file's bytes, while `fs.statSync` already described the renamed one. The replaced file's bytes now go with the rename, as an unlink's do. 

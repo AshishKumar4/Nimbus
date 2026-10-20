@@ -29,6 +29,7 @@ import type { CommandContext } from '@nimbus-sh/core/substrate/lifo/commands/typ
 import type { NimbusWorkspace } from '@nimbus-sh/core/workspace/nimbus-workspace.js';
 import type { DevServerRestoreFailure } from './helpers.js';
 import { type PortCapabilityHost } from './port-capability.js';
+import type { ProcessEnvHooks } from './process-env.js';
 /** How a dev server's process is spawned: the command line it runs, and the process's argv, cwd, credential and exec id. */
 export interface DevServerSpawn {
     command: string;
@@ -51,6 +52,8 @@ export interface DevServerHost {
     };
     readonly processes: SessionProcessSupervisor;
     readonly portRegistry: PortRegistry;
+    /** Who gives a restored dev server its environment back: its record holds none (session/process-env.ts). */
+    readonly processEnv: ProcessEnvHooks;
 }
 /** The spawn `entry` was made with. */
 export declare function spawnOf(entry: ProcessEntry): DevServerSpawn;
@@ -88,10 +91,10 @@ export declare function afterDevServerRestore(host: {
     restoreDevServers(): Promise<readonly DevServerRestoreFailure[]>;
 }, processes: SessionProcessSupervisor, ctx: DevServerCommandContext): Promise<void>;
 /**
- * Record how the dev server behind `pid` was spawned, with the environment
- * its command was given and the ports it serves now, until `pid` ends.
- * Synced, so a reset right after it still finds it; a process that ended
- * meanwhile leaves none.
+ * Record how the dev server behind `pid` was spawned and the ports it serves
+ * now, until `pid` ends; its command's environment goes to the host, if it
+ * keeps environments, never into the record. Synced, so a reset right after
+ * it still finds it; a process that ended meanwhile leaves none.
  */
 export declare function recordDevServer(host: DevServerHost, pid: number, spawn: DevServerSpawn & {
     env: Readonly<Record<string, string>>;

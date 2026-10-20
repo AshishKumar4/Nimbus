@@ -44,7 +44,7 @@ try {
     if (failure) throw failure;
   };
   ({ dir } = await importOpencodeRunner({
-    mode: 'attached', program: 'export async function nimbusMain() {}\n', env: { NIMBUS_ATTACHED_TTY: '1' },
+    mode: 'attached', program: 'export async function nimbusMain() {}\n', terminal: { NIMBUS_ATTACHED_TTY: '1' },
     members: { [OPENCODE_TUI_PARSER_WORKER]: { js: readFileSync(path.join(assetDir, OPENCODE_TUI_PARSER_WORKER), 'utf8') } },
   }));
   const parentConsole = { log: console.log, error: console.error, warn: console.warn };

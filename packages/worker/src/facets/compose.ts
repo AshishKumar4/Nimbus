@@ -96,6 +96,9 @@ export interface FacetManagerHostHooks {
   rewindProcessFiles?: FacetManagerHooks['rewindProcessFiles'];
   onSpawn?: FacetManagerHooks['onSpawn'];
   resolveWorkerLaunch?: FacetManagerHooks['resolveWorkerLaunch'];
+  /** Without it, no process is relaunched: Nimbus keeps no process's environment (session/process-env.ts). */
+  resolveProcessEnv?: FacetManagerHooks['resolveProcessEnv'];
+  keepProcessEnv?: FacetManagerHooks['keepProcessEnv'];
 }
 
 /** Everything a FacetManager is composed over. */
@@ -200,6 +203,8 @@ export function composeFacetManager(deps: FacetManagerDeps): ComposedFacetManage
     ...(deps.hooks.resolveWorkerLaunch !== undefined
       ? { resolveWorkerLaunch: deps.hooks.resolveWorkerLaunch }
       : {}),
+    ...(deps.hooks.resolveProcessEnv !== undefined ? { resolveProcessEnv: deps.hooks.resolveProcessEnv } : {}),
+    ...(deps.hooks.keepProcessEnv !== undefined ? { keepProcessEnv: deps.hooks.keepProcessEnv } : {}),
     resolveWorkerLaunchFallback: (recipe: WorkerRecipe) => resolveDurableWorkerImage(vfs, recipe),
   };
   const manager = new FacetManager(ctx, env, deps.processes, deps.portRegistry, processHostFor, { ...hooks, network: deps.network, supervise: deps.supervise });

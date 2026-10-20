@@ -1,14 +1,16 @@
 // A session's FacetManager as the session DO builds one, for the resident
 // launch tests: a facet world evaluating the test's program, the world's
 // LOADER and the staged ASSETS, a process table and port registry, and the
-// session's filesystem. Which SUPERVISOR double the world binds is each
-// test's (adoptCtxExports): what it asserts against differs.
+// session's filesystem, and the session's keeping of its processes'
+// environments (session/process-env.ts). Which SUPERVISOR double the world
+// binds is each test's (adoptCtxExports): what it asserts against differs.
 
 import { FacetManager } from '../../../packages/worker/src/facets/manager.ts';
 import { PortRegistry } from '../../../packages/core/src/runtime/port-registry.ts';
 import { PID_GEN_STRIDE } from '../../../packages/core/src/runtime/process-table.ts';
 import { SessionProcessSupervisor } from '../../../packages/core/src/runtime/session-process-supervisor.ts';
 import { SqliteVFS } from '../../../packages/core/src/vfs/sqlite-vfs.ts';
+import { sessionProcessEnv } from '../../../packages/worker/src/session/process-env.ts';
 import { atTestEnd, createFacetCtx, createFacetWorld, captureProcessBoots, residentRunner } from './facet-host-harness.mjs';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { processFiles } from './process-bridge.mjs';
@@ -45,7 +47,8 @@ export function launchManager(label, {
   if (generation !== undefined) processes.setPidBase(generation * PID_GEN_STRIDE);
   const ctx = createFacetCtx(world, label, session.storage, { crashable });
   const manager = new FacetManager(
-    ctx, { LOADER: world.loader, ASSETS: stagedAssets, ...env }, processes, ports, captureProcessBoots(world), hooks,
+    ctx, { LOADER: world.loader, ASSETS: stagedAssets, ...env }, processes, ports, captureProcessBoots(world),
+    { ...sessionProcessEnv(ctx.storage), ...hooks },
   );
   manager.setVfs(session.vfs, processFiles(session.vfs));
   // What the test leaves running ends with it, as a session's teardown ends its processes:

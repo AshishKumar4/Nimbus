@@ -7977,7 +7977,7 @@ function __nimbusNodeLib() {
     optionValue: __nimbusOptionValue,
     console: __consoleMod,
     workerThreads: builtins.worker_threads,
-    nodeDebug: __nimbusNodeDebugAtLaunch,
+    get nodeDebug() { return __nimbusNodeDebugAtLaunch; },
     callSites: (count, above) => __nimbusStackSites({}, count, above),
     timers: builtins.timers,
     fetch: globalThis.fetch.bind(globalThis),
@@ -11608,8 +11608,11 @@ builtins.string_decoder = __stringDecoderMod;
 builtins.sqlite = __sqliteMod;
 builtins.child_process = __childProcessMod;
 builtins.process = __processMod;
-// NODE_DEBUG as the program started with it: what util.debuglog reads (Node's bootstrap).
-const __nimbusNodeDebugAtLaunch = __processMod.env?.NODE_DEBUG;
+// NODE_DEBUG as the program started with it: what util.debuglog reads (Node's
+// bootstrap). A runner that hands the env over after this module evaluates
+// (opencode's) takes it again then (__nimbusTakeLaunchEnv).
+let __nimbusNodeDebugAtLaunch = __processMod.env?.NODE_DEBUG;
+function __nimbusTakeLaunchEnv() { __nimbusNodeDebugAtLaunch = __processMod.env?.NODE_DEBUG; }
 builtins.console = __consoleMod;
 ${NATIVE_HTTP_SOURCE}
 ${NODE_WS_UPGRADE_SOURCE}

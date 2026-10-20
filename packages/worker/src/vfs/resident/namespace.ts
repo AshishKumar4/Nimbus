@@ -109,8 +109,37 @@ export interface Namespace {
   beginLazy(): void;
   /** Whether a missing row at `k` means nothing is there (its directory is listed). */
   listedAt(k: string): boolean;
+  /**
+   * Whether every entry of directory `dir` is a row: below it a missing row is
+   * an absent name. Listed on demand, a directory is once a listing named its
+   * entries; enumerated, every directory the namespace holds is, unless a
+   * mount left it unlisted (the same fact `unknown` reads).
+   */
   isListed(dir: string): boolean;
+  /** A completed listing named every entry of `dir`: listed on demand, it is listed; enumerated, its mark goes (it is whole). */
   markListed(dir: string): void;
+  /**
+   * A row a lookup, or the listing of its parent, learned. Enumerated, a
+   * directory it makes is not whole until a listing of it names its entries:
+   * it is marked, with the mount it is on or its own name; one the table
+   * holds keeps its mark. Listed on demand, it is put as it is.
+   */
+  learn(t: ResidentTables, k: string, stat: NsStat, rev: unknown, target?: string | null): boolean;
+  /**
+   * A delta made `dir`'s listing stale and its relist is on its way: until
+   * that relist lands (`relisted`), nothing at or under it is answered,
+   * cached rows and nested directories' absences included (`fenced`).
+   */
+  fence(dir: string): void;
+  /**
+   * A relist of `dir` landed: its fence goes (another still on its way keeps
+   * its own), and a directory a learning marked is whole, every name beneath
+   * it now a row. One a mount left unlisted stays so.
+   */
+  relisted(dir: string): void;
+  fenced(k: string): boolean;
+  /** Every learning in flight installs nothing: what it was asked against is being replaced (a repair begun). */
+  spoilLearnings(): void;
   /**
    * A lookup or listing about to be asked of the session: a delta admitted
    * before its answer lands is newer than the answer at every path it names,
@@ -196,6 +225,50 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
   const learnings = new SafeSet<{ generation: number; reported: SafeList<string> }>();
 
   const ready = (): boolean => ok && coherence.serving();
+
+  /** Directories whose relists are on their way, with how many (fence): nothing at or under one is answered. */
+  let relisting = new SafeMap<string, number>();
+  const fenced = (k: string): boolean => {
+    if (relisting.size === 0) return false;
+    let hit = false;
+    relisting.forEach((_count, dir) => { if (!hit && (dir === '' || k === dir || stringStartsWith(k, dir + '/'))) hit = true; });
+    return hit;
+  };
+
+  /**
+   * Whether every entry of directory `dir` is a row, so a missing row below
+   * it is an absent name. Listed on demand: once a completed listing named
+   * them. Enumerated: a directory the table holds that carries no mark (a
+   * mount left it unlisted, or a lookup learned it without its entries) and
+   * no relist is on its way to; the top once the namespace is answering.
+   */
+  const isListed = (dir: string): boolean => {
+    if (lazy) return listed.has(dir);
+    if (!ready() || fenced(dir) || unlisted.get(dir) !== undefined) return false;
+    if (dir === '') return true;
+    const row = nsRowAt(coherence.require(), dir);
+    return row !== undefined && row.kind === NS_DIR;
+  };
+
+  const markListed = (dir: string): void => {
+    if (lazy) { listed.add(dir); return; }
+    if (dir === '' || unlisted.get(dir) === undefined) return;
+    const t = coherence.require();
+    const row = nsRowAt(t, dir);
+    if (row === undefined || row.kind !== NS_DIR) return;
+    t.nsPut(nsParent(dir), nsName(dir), row.kind, row.size, row.mode, row.uid, row.gid, row.atime, row.mtime, row.ctime, row.ino, row.rev, null, row.dev, row.nlink);
+    unlisted.delete(dir);
+  };
+
+  /** The mark a directory a learning makes takes: the mount the nearest marked directory above it is on, or its own name. */
+  const learnedMark = (k: string): string => {
+    for (let at = nsParent(k); ; at = nsParent(at)) {
+      // A directory learned without its entries is marked with its own name: that says nothing of a mount above.
+      const mount = unlisted.get(at);
+      if (mount !== undefined && mount !== at) return mount;
+      if (at === '') return k;
+    }
+  };
 
   const markReady = (t: ResidentTables, isReady: boolean, why?: string): void => {
     t.metaSet('ns', isReady ? '1' : '0');
@@ -446,6 +519,7 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
      */
     replace(t, entries) {
       generation++;
+      relisting = new SafeMap();
       const names = new SafeSet<string>();
       for (let i = 0; i < entries.length; i++) names.add(nsKey(entries[i].path));
       // Remove stale rows before admitting replacements; do not transiently
@@ -557,6 +631,7 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
     },
     clear() {
       generation++;
+      relisting = new SafeMap();
       links = new SafeSet();
       unlisted = new SafeMap();
       ok = false;
@@ -564,14 +639,27 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
     get lazy() { return lazy; },
     beginLazy() {
       generation++;
+      relisting = new SafeMap();
       lazy = true;
       listed.clear();
       links = new SafeSet();
       unlisted = new SafeMap();
     },
-    listedAt(k) { return listed.has(nsParent(k)); },
-    isListed(dir) { return listed.has(dir); },
-    markListed(dir) { listed.add(dir); },
+    listedAt(k) { return isListed(nsParent(k)); },
+    isListed,
+    markListed,
+    learn(t, k, stat, rev, target) {
+      if (lazy || stat.type !== 'directory' || nsRowAt(t, k) !== undefined) return tryPut(t, k, stat, rev, target);
+      return tryPut(t, k, stat, rev, target, learnedMark(k));
+    },
+    fence(dir) { relisting.set(dir, (relisting.get(dir) ?? 0) + 1); },
+    relisted(dir) {
+      const count = relisting.get(dir) ?? 0;
+      if (count <= 1) relisting.delete(dir); else relisting.set(dir, count - 1);
+      if (!lazy && unlisted.get(dir) === dir) markListed(dir);
+    },
+    fenced,
+    spoilLearnings() { generation++; },
     onPut(listener) {
       putListener = listener;
     },

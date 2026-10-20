@@ -369,9 +369,14 @@ database, so check for your own data rather than a non-zero size.
 ## Image store
 
 `ImageStore` writes generated boot images into a content-addressed store at
-`.nimbus/facet-images/<sha256>.js`, through an `ImageBlobStore` port you
-implement. Put `/.nimbus` where no user can replace a directory on the way
-to it: Nimbus's own sessions keep it in root's `/`, owned by root, 0755.
+`.nimbus/process-images/<sha256>.js` (`processImagePath`), through an
+`ImageBlobStore` port you implement, and its sweep removes files there only.
+`.nimbus/facet-images/<sha256>.js` (`facetImagePath`) is yours: keep your own
+content-addressed images there (a durable worker's runner, its text modules).
+Nimbus reads and verifies them, never writes or removes them. Images an
+earlier release wrote there stay until you remove them. Put `/.nimbus` where
+no user can replace a directory on the way to it: Nimbus's own sessions keep
+it in root's `/`, owned by root, 0755.
 
 It registers the whole root set before writing any byte, so a sweep never
 sees an unclaimed image. Writes are sliced to stay inside the 1 MiB

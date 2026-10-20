@@ -24,6 +24,7 @@
  * (~30 sites). RoutesHost = any pragmatic deviation, like InitHost in S6.
  */
 
+import { legacyGeneratedImages } from '../facets/legacy-images.js';
 import { handleReplicaPreflight as _w12HandleReplicaPreflight } from '../replica/routing.js';
 import { FANOUT_BENCH_TASK, SERIAL_BENCH_TASK } from '../loaders/compiled-bodies.generated.js';
 import { sanitizeUntrustedRequest } from '@nimbus-sh/core/_shared/untrusted-request.js';
@@ -715,7 +716,10 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
       const sbStats = getScrollbackStats(self.ctx);
       return Response.json({
         cwd: snap.cwd,
-        env: snap.env,
+        // Names, never values: an environment is its owner's alone (ask 62).
+        env: snap.env === null ? null : Object.keys(snap.env).sort(),
+        // What earlier releases left in the image directories, with environments in them (facets/legacy-images.ts).
+        legacyGeneratedImages: self.sqliteFs === null ? [] : legacyGeneratedImages(self.sqliteFs),
         hydratedAt: snap.hydratedAt,
         hasPersistedState: snap.hasPersistedState,
         // The namespace's mount points, as /proc/mounts lists them.

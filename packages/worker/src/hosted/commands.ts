@@ -45,7 +45,7 @@ import { makeNimbusVerbHandler } from '@nimbus-sh/core/runtime/nimbus-command.js
 
 /** Internal runtime services; callers use composeHostedRuntime, not this recipe. */
 export type RuntimeCommandHost = Pick<SessionInternal,
-  '_emitShellExecDone' | '_setCpRegistry' | '_viteShimPid' | '_viteShimPort' | 'cirrusReal' | 'ensureFacetManager' | 'facetManager' | 'ensureNpmInstaller' | 'ensureSqliteFs' | 'esbuildService' | 'nimbusWrangler' | 'portRegistry' | 'processes' | 'restoreDevServers' | 'sessionBasePath' | 'terminal' | 'viteBasePath' | 'viteDevServer' | 'wranglerAliasBannerShown'
+  '_emitShellExecDone' | '_setCpRegistry' | '_viteShimPid' | '_viteShimPort' | 'cirrusReal' | 'ensureFacetManager' | 'facetManager' | 'ensureNpmInstaller' | 'ensureSqliteFs' | 'esbuildService' | 'nimbusWrangler' | 'portRegistry' | 'processEnv' | 'processes' | 'restoreDevServers' | 'sessionBasePath' | 'terminal' | 'viteBasePath' | 'viteDevServer' | 'wranglerAliasBannerShown'
 > & {
   readonly ctx: DurableObjectState;
   readonly env: RuntimeCatalogEnv;

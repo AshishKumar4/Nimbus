@@ -7,7 +7,8 @@
 // and storage, as a reset leaves them (writes not synced are lost):
 //   - `vite` serves its port from a process of its own;
 //   - after a reset that process runs again: the same line, argv, cwd,
-//     credential, exec id and environment, restarting the old pid
+//     credential and exec id, with the environment the embedder gives back
+//     (no record holds it: ask 62), restarting the old pid
 //     ('session-restart'), serving the port, its log saying why; exposed
 //     under a name, it is the same application, on the link handed out;
 //   - `vite stop` ends it, and the next incarnation runs nothing;
@@ -55,6 +56,10 @@ const user = vfs.as(CRED_SESSION_USER);
 /** The object's storage rows: what outlives each incarnation (only what was synced). */
 const rows = new Map();
 const env = { WORKSPACES: { idFromName() {}, idFromString() {}, get() {} }, LOADER: world.loader, ASSETS: stagedAssets };
+/** The embedder's answer to a relaunch: what it ran each exec with, by exec id. */
+const asked = [];
+const launchedWith = new Map([['exec-dev-1', { DEV_MARK: 'dev-mark-7f3a' }]]);
+const resolveProcessEnv = async (request) => { asked.push(request); return launchedWith.get(request.execId) ?? {}; };
 
 const settle = async (predicate, what, tries = 2000) => {
   for (let i = 0; i < tries; i++) {
@@ -89,7 +94,7 @@ async function incarnation({ restored = true } = {}) {
   const workspace = await bundle.NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, vfs, processes, generation });
   const ports = new bundle.PortRegistry();
   const runtime = await bundle.composeHostedRuntime({
-    workspace, ctx, env, ports, lifecycle: hostedLifecycle(ctx, () => runtime),
+    workspace, ctx, env, ports, lifecycle: hostedLifecycle(ctx, () => runtime), resolveProcessEnv,
   });
   current = { ctx, processes, ports, workspace, runtime };
   runtimes.push(runtime);
@@ -105,7 +110,7 @@ try {
   user.mkdir('home/user/app/node_modules', { recursive: true });
   user.writeFile('home/user/app/index.html', '<!doctype html><title>app</title>');
   user.writeFile('home/user/app/package.json', JSON.stringify({ name: 'app', dependencies: { react: '^18.0.0' } }));
-  const started = await first.runtime.exec('vite --port 5173 --no-install-check', { cwd: '/home/user/app', env: { DEV_MARK: 'kept' }, execId: 'exec-dev-1' });
+  const started = await first.runtime.exec('vite --port 5173 --no-install-check', { cwd: '/home/user/app', env: { DEV_MARK: 'dev-mark-7f3a' }, execId: 'exec-dev-1' });
   assert.equal(started.exitCode, 0, started.stderr);
   const served = first.ports.get(5173);
   assert.ok(served, 'vite serves its port');
@@ -129,7 +134,10 @@ try {
   assert.equal(again.state, 'running', 'its command adopted the process and returned');
   assert.equal(next.ports.get(5173)?.pid, again.pid, 'and it serves the port again');
   assert.deepEqual(recordKeys(), [`dev-server:${again.pid}`], 'its record is the new process\'s');
-  assert.equal(rows.get(`dev-server:${again.pid}`).env.DEV_MARK, 'kept', 'run with the environment its command was given');
+  assert.deepEqual(asked.filter((request) => request.pid === served.pid),
+    [{ pid: served.pid, cred: server.cred, record: `dev-server:${served.pid}`, execId: 'exec-dev-1' }],
+    'run with the environment the embedder gives back');
+  assert.ok(![...rows.values()].some((row) => JSON.stringify(row).includes('dev-mark-7f3a')), 'which no stored row holds');
   const app = (await next.runtime.listApps()).find((listed) => listed.name === 'web');
   assert.deepEqual({ status: app?.status, pid: app?.pid, owner: app?.owner, execId: app?.execId },
     { status: 'running', pid: again.pid, owner: exposed.owner, execId: 'exec-dev-1' }, 'it is the same application');
