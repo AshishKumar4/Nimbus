@@ -89,6 +89,14 @@ const FOUND = {
     engines: ['holder'], park: 1298,
     schedule: [['own', 'stat', 'x/h'], ['own', 'readFile', 'top'], ['own', 'opendir', 'd'], ['root', 'chown', 'x', 1000], ['sync', 'write', 'd/n', 'c1298.2']],
   },
+  'a file the process removed stays removed across a poison (1198)': {
+    engines: ['node'], park: 1198,
+    schedule: [['own', 'chmod', 'd/e/g', 420], ['poison'], ['own', 'write', 'd/f', 'c1198.6'], ['own', 'readdir', 'd/f'], ['own', 'unlink', 'top']],
+  },
+  'a file the process removed stays removed across a poison (1294)': {
+    engines: ['node'], park: 1294,
+    schedule: [['own', 'rename', 'd/e', 'x/e'], ['own', 'unlink', 'd/f'], ['poison'], ['own', 'opendir', 'new']],
+  },
   'a file a call that cannot wait missed stays a miss until an awaited read answers it': {
     engines: ['node'],
     schedule: [['peer', 'write', 'new', 'not resident'], ['settle'], ['input'], ['settle'], ['sync', 'readFile', 'new'], ['own', 'stat', 'new'], ['settle']],
