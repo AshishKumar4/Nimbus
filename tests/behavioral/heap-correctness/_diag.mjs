@@ -18,7 +18,9 @@ export async function diagMemory(sid, signal) {
  * awaited: one read at a time, `everyMs` apart. A read refused 503 (the
  * session's queue too old: "Durable Object is overloaded") waits twice as
  * long as the last before the next, up to 4 s, since a read sent at once
- * would only add to that queue. Stop resolves to how many reads were refused.
+ * would only add to that queue; another failed read is said, and the next
+ * waits `everyMs`. Stop resolves to how many reads were refused, and
+ * rejects with what `take` threw, which ends the sampling.
  */
 export function sampleDiagMemory(sid, take, { everyMs = 250 } = {}) {
   let sampling = true;
@@ -26,16 +28,25 @@ export function sampleDiagMemory(sid, take, { everyMs = 250 } = {}) {
   const loop = (async () => {
     let pause = everyMs;
     while (sampling) {
+      let memory = null;
       try {
-        take(await diagMemory(sid));
+        memory = await diagMemory(sid);
         pause = everyMs;
       } catch (error) {
-        if (error.status === 503) refused += 1;
-        pause = error.status === 503 ? Math.min(pause * 2, 4_000) : everyMs;
+        if (error.status === 503) {
+          refused += 1;
+          pause = Math.min(pause * 2, 4_000);
+        } else {
+          console.warn(`[sampleDiagMemory] ${error.message}`);
+          pause = everyMs;
+        }
       }
+      if (memory !== null) take(memory);
       await sleep(pause);
     }
   })();
+  // Observed by stop: a failed take is not an unhandled rejection while the workload runs.
+  loop.catch(() => {});
   return async () => {
     sampling = false;
     await loop;

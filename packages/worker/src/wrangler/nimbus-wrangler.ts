@@ -30,6 +30,7 @@ import { applyD1Migrations, d1Database } from '../bindings/d1.js';
 import { hostRoute } from '@nimbus-sh/fabric/composition.js';
 import { parseWranglerJsonc, type WranglerConfig } from './wrangler-config.js';
 import type { LoaderCodeRegistry } from './loader-code-store.js';
+import { holdThreadWatch } from '@nimbus-sh/fabric/thread-stalls.js';
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -559,7 +560,11 @@ export class NimbusWrangler {
     bindings: readonly { name: string; class_name: string }[],
     superseded: () => boolean,
   ): Promise<boolean> {
-    const missing = new Set(await worker.getEntrypoint(classesEntrypoint, { limits: facetLimits('worker') }).missing(bindings.map((b) => b.class_name)));
+    const watched = holdThreadWatch(this.supervisorCtx, 'wrangler dev classes');
+    let named: string[];
+    try { named = await worker.getEntrypoint(classesEntrypoint, { limits: facetLimits('worker') }).missing(bindings.map((b) => b.class_name)); }
+    finally { watched(); }
+    const missing = new Set(named);
     if (superseded()) return false;
     for (const b of bindings) {
       if (missing.has(b.class_name)) {
@@ -899,7 +904,11 @@ export class NimbusWrangler {
         redirect: 'manual',
       });
 
-      const response = await this.workerStub.fetch(workerReq);
+      const watched = holdThreadWatch(this.supervisorCtx, 'wrangler dev request');
+      let response: Response;
+      // Awaited by this frame, as an RPC stub call must be (beginLoaderFetch); the watch only brackets it.
+      try { response = await this.workerStub.fetch(workerReq); }
+      finally { watched(); }
 
       // ── Response post-processing ─────────────────────────────────
       const newHeaders = new Headers(response.headers);

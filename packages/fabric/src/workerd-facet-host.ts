@@ -65,6 +65,7 @@ import { PROCESS_FS_JOURNAL_READER_SOURCE } from '@nimbus-sh/core/_shared/proces
 import { applyFacetLimits, facetLimits, facetLoaderKey, type FacetResourceLimits } from './facet-limits.js';
 import { withResolvers } from './turn-budget.js';
 import { enteredByRun, RUN_ENTERED } from './one-shot-entry.js';
+import { holdThreadWatch } from './thread-stalls.js';
 import type { WorkerCode } from '@nimbus-sh/platform/worker-code.js';
 
 // ── Loaded-worker entrypoint plumbing ───────────────────────────────────────
@@ -677,9 +678,12 @@ function spawnResident(
     // peer's own for the request it relays.
     handleHttpRequest: async (request: Request, scope: ResponseScope, relayed?: AbortSignal) => {
       const lease = observation.acquire();
+      // Watched while it is answered, not for the resident's life: an idle one keeps no tick running.
+      const watched = holdThreadWatch(ctx, `request pid ${params.pid}`);
       const cancel = relayed === undefined ? new AbortController() : null;
       scope.settled((delivered) => {
         lease.release();
+        watched();
         if (!delivered) cancel?.abort(new DOMException('The caller left the request', 'AbortError'));
       });
       const signal = relayed ?? cancel!.signal;
@@ -691,14 +695,19 @@ function spawnResident(
         return response.status === 410 ? await checked(response) : response;
       } catch (error) {
         lease.release();
+        watched();
         throw error;
       }
     },
     // An upgrade hands its socket to the caller at the handshake.
     handleWebSocketRequest: async (request: Request) => {
       const lease = observation.acquire();
+      const watched = holdThreadWatch(ctx, `upgrade pid ${params.pid}`);
       try { return await checked(await facet.fetch(await admitted(request))); }
-      finally { lease.release(); }
+      finally {
+        lease.release();
+        watched();
+      }
     },
     release,
     name,
@@ -816,6 +825,7 @@ async function runOneShot<T>(
   let supervisorBinding: unknown;
   let worker: LoadedWorkerStub | undefined;
   let entrypoint: LoadedWorkerEntrypointStub | undefined;
+  const watched = holdThreadWatch(ctx, `run pid ${params.pid}`);
   try {
     // Built before the capability is minted: nothing can write as this writer
     // until there is a program to do the writing, and a map that fails to
@@ -908,6 +918,7 @@ async function runOneShot<T>(
     disposeRpcResource(worker);
     disposeRpcResource(capability);
     disposeRpcResource(supervisorBinding);
+    watched();
     endFetch();
   }
 }

@@ -17,6 +17,7 @@ import { OXC_FACET_BUILD_ID } from '../oxc-facet-artifact.generated.js';
 import { AMARO_WASM_BUILD_ID } from '../amaro-wasm-artifact.generated.js';
 import { fetchAmaroWasmBytes, fetchOxcFacetRuntime, fetchOxcWasmBytes } from '../runtime/oxc-wasm-bytes.js';
 import { FacetCallDeadlineError, SharedHelperFacet } from './helper-facet.js';
+import { holdThreadWatch } from '@nimbus-sh/fabric/thread-stalls.js';
 
 /**
  * The Oxc wasm's linear memory past which the facet drops its instance after
@@ -138,6 +139,7 @@ export function oxcTransformHost(
     // launch's own worker when a launch's preparation transforms, else its
     // turn (beginHelperFetch).
     const endFetch = await beginHelperFetch(ctx, OXC_FACET_WORKER_ID);
+    const watched = holdThreadWatch(ctx, 'oxc transform facet');
     try {
       for (const slice of transformSlices(requests, (request) => request.code.length)) {
         let answered: EsbuildTransformOutcome[] | null = null;
@@ -162,6 +164,7 @@ export function oxcTransformHost(
         for (const outcome of answered) outcomes.push(outcome);
       }
     } finally {
+      watched();
       endFetch();
     }
     if (stackFallback) {

@@ -25,8 +25,8 @@ export const STALL_RECORDED_MS = 250;
 const STALLS_KEPT = 16;
 
 interface Watch {
-  /** Each piece of work in flight, by its hold. */
-  readonly inFlight: Map<symbol, string>;
+  /** Each piece of work in flight, by its release. */
+  readonly inFlight: Map<() => void, string>;
   /** The work in flight at some time since the last tick, named once each. */
   readonly sinceTick: Set<string>;
   timer: number | null;
@@ -49,6 +49,7 @@ function schedule(watch: Watch): void {
   watch.timer = setTimeout(() => tick(watch), STALL_TICK_MS);
 }
 
+/** A tick: a stall recorded if it ran late, and the next scheduled while work is in flight. */
 function tick(watch: Watch): void {
   const late = Date.now() - watch.due;
   if (late >= STALL_RECORDED_MS) {
@@ -63,22 +64,17 @@ function tick(watch: Watch): void {
 
 /**
  * `name` in flight on `ctx`'s thread until the returned release is called:
- * while anything is, `ctx` watches its thread for stalls. Released twice is
- * released once.
+ * while anything is, `ctx` watches its thread for stalls. The tick due when
+ * the last work ends still runs, once, so a stall that work caused is
+ * recorded though it ended first. Released twice is released once.
  */
 export function holdThreadWatch(ctx: object, name: string): () => void {
   const watch = watchOf(ctx);
-  const hold = Symbol(name);
-  watch.inFlight.set(hold, name);
+  const release = (): void => { watch.inFlight.delete(release); };
+  watch.inFlight.set(release, name);
   watch.sinceTick.add(name);
   if (watch.timer === null) schedule(watch);
-  return () => {
-    watch.inFlight.delete(hold);
-    if (watch.inFlight.size > 0 || watch.timer === null) return;
-    clearTimeout(watch.timer);
-    watch.timer = null;
-    watch.sinceTick.clear();
-  };
+  return release;
 }
 
 /** `ctx`'s last STALLS_KEPT stalls, oldest first. */

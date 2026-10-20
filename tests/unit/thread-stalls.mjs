@@ -38,10 +38,21 @@ const turn = (ms = 80) => new Promise((resolve) => setTimeout(resolve, ms));
 
 {
   const ctx = {};
+  const release = holdThreadWatch(ctx, 'run pid 1000003');
+  hold(STALL_RECORDED_MS + 150);
+  release();
+  await turn();
+  assert.deepEqual(recentThreadStalls(ctx).map((stall) => stall.inFlight), [['run pid 1000003']], 'the work that held the thread, though it ended before its tick ran');
+  console.log('  ✓ a stall is recorded though the only work in flight ended before its tick ran');
+}
+
+{
+  const ctx = {};
   const release = holdThreadWatch(ctx, 'facet a');
   await turn(STALL_RECORDED_MS);
   release();
   release();
+  await turn();
   hold(STALL_RECORDED_MS + 150);
   await turn();
   assert.deepEqual(recentThreadStalls(ctx), [], 'a thread held with nothing in flight, or kept busy only by its own turns, is no stall');

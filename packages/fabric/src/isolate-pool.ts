@@ -650,6 +650,8 @@ export class IsolatePool {
   private readonly network: WorkspaceNetwork;
   /** The process the pool's facets write as, when they are bound to one (supervisorPid). */
   private readonly writerPid: number | undefined;
+  /** What a stall names a call of this pool by (thread-stalls.ts): its tag, and its process. */
+  private readonly watchName: string;
   constructor(
     env: unknown,
     ctx: DurableObjectState,
@@ -673,6 +675,7 @@ export class IsolatePool {
     this.defaultRetries = Math.max(0, opts.retries ?? 0);
     this.tag = opts.tag ?? 'facet';
     this.writerPid = opts.omitSupervisor || opts.supervisorPid === undefined ? undefined : opts.supervisorPid;
+    this.watchName = `facet ${this.tag}${this.writerPid === undefined ? '' : ` pid ${this.writerPid}`}`;
     this.preamble = opts.preamble;
     // Include preamble in the cache-bucket key so changes to bundled helpers
     // invalidate warm slots. Empty preamble → '0' suffix (stable).
@@ -981,7 +984,7 @@ export class IsolatePool {
       held = endFetch;
       const began = Date.now();
       let loadMs: number | null = null;
-      const watched = holdThreadWatch(this.ctx, `facet ${this.tag}`);
+      const watched = holdThreadWatch(this.ctx, this.watchName);
       try {
         const stub = this.loader.get(id, async () => {
           const loading = Date.now();

@@ -6,15 +6,19 @@ published independently in the `@nimbus-sh` npm scope.
 ## Unreleased
 
 - Added: `/api/_diag/session`'s launch record names the session's thread
-  stalls (`stalls`): while a facet call or a supervisor call is in flight,
+  stalls (`stalls`): while work is in flight on its thread (a facet call, a
+  one-shot's run, a resident's request, a git operation, a build or
+  transform facet's call, a `wrangler dev` request, or a supervisor call),
   the session watches how late its own 50 ms ticks run, and records each
   wait of 250 ms or more with the work in flight across it. The facets a
   session loads share its thread, and a long slice of theirs ages the
   session's queue until the platform refuses requests ("Durable Object is
   overloaded. Requests queued for too long."). A probe that fails prints
-  the record. The probes that sample `/api/_diag/memory` under load now
-  sample one read at a time and back off after a 503, instead of adding to
-  the queue that refused them.
+  the record. heap-correctness/diag-reports-stream-retention reads the
+  retained-write high-water mark once after its install instead of polling
+  under load with no pause, and install-parallel-memory-bounded samples one
+  read at a time and backs off after a 503, instead of adding to the queue
+  that refused them.
 
 - Fixed: a Node program could be told a file, directory or link it had
   just renamed was not there (`fs.statSync` ENOENT, and renaming it again

@@ -2,10 +2,13 @@
 // heap-correctness/diag-reports-stream-retention — N3/N2 telemetry probe.
 //
 // Probe: assert the diag schema includes the live writeStream retention
-// fields and a real install drives them above 0 at some point.
+// fields and a real install drives them above 0 at some point: their
+// high-water mark, read once after it. (Sampled while the install ran, the
+// reads queued behind its own calls on an overloaded session, and a
+// retention that started and drained between two reads went unseen.)
 
 import { mintSession, Terminal, stripAnsi, BASE } from '../_driver.mjs';
-import { diagMemory, fmtBytes, sampleDiagMemory } from './_diag.mjs';
+import { diagMemory, fmtBytes } from './_diag.mjs';
 import assert from 'node:assert/strict';
 
 const sid = await mintSession();
@@ -26,11 +29,6 @@ const t = new Terminal(sid);
 await t.connect();
 await t.waitForPrompt(15_000);
 
-const samples = [];
-const stopSampling = sampleDiagMemory(sid, (m) => samples.push({
-  inFlight: m.heap?.breakdown?.vfsInFlightBytes ?? 0,
-  spoolBytes: m.vfsDetail?.writeStreamSpoolBytes ?? 0,
-}));
 
 let outcome = 'TIMEOUT';
 try {
@@ -48,13 +46,12 @@ try {
     if (/added\s+\d+\s+packages/.test(stripAnsi(t.buf))) outcome = 'SUCCESS';
   } catch { outcome = 'TIMEOUT'; }
 } finally {
-  const refused = await stopSampling();
-  if (refused > 0) console.log(`[diag-reports-stream-retention] ${refused} memory reads refused 503 (the session overloaded)`);
   await t.close();
 }
 
-const peakInFlight = samples.reduce((a, s) => Math.max(a, s.inFlight), 0);
-const peakSpoolBytes = samples.reduce((a, s) => Math.max(a, s.spoolBytes), 0);
+const after = (await diagMemory(sid)).vfsDetail ?? {};
+const peakInFlight = after.retainedWriteBytes?.peak ?? 0;
+const spoolBytes = after.writeStreamSpoolBytes ?? 0;
 
 const findings = {
   bug: 'N3',
@@ -62,9 +59,8 @@ const findings = {
   base: BASE,
   schemaHasFields,
   outcome,
-  samples: samples.length,
-  peakInFlightBytes: peakInFlight,
-  peakWriteStreamSpoolBytes: peakSpoolBytes,
+  peakRetainedWriteBytes: peakInFlight,
+  writeStreamSpoolBytes: spoolBytes,
 };
 
 console.log(JSON.stringify(findings, null, 2));
@@ -75,9 +71,9 @@ const verdict = (() => {
   }
   if (outcome !== 'SUCCESS') return { state: 'failing', reason: `install ${outcome}` };
   if (peakInFlight === 0) {
-    return { state: 'failing', reason: `vfsInFlightBytes peaked at 0 across ${samples.length} samples during a real install` };
+    return { state: 'failing', reason: 'retainedWriteBytes peaked at 0 through a real clone and install' };
   }
-  return { state: 'passing', reason: `vfsInFlightBytes peak=${fmtBytes(peakInFlight)} (spool=${fmtBytes(peakSpoolBytes)}); schema correct` };
+  return { state: 'passing', reason: `retainedWriteBytes peak=${fmtBytes(peakInFlight)} (spool now ${fmtBytes(spoolBytes)}); schema correct` };
 })();
 console.log(`[N3] ${verdict.state} — ${verdict.reason}`);
 process.exit(verdict.state === 'passing' ? 0 : 1);
