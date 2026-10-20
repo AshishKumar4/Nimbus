@@ -21,6 +21,13 @@ export interface ThreadStall {
 }
 
 const STALL_TICK_MS = 50;
+
+/**
+ * The engine's own timer, taken when this module is evaluated: a program
+ * that shares the realm (a one-shot run in-process) wraps the global one as
+ * a handle of its own, and a tick on it would keep that program from ending.
+ */
+const engineSetTimeout = globalThis.setTimeout;
 export const STALL_RECORDED_MS = 250;
 const STALLS_KEPT = 16;
 
@@ -46,7 +53,7 @@ function watchOf(ctx: object): Watch {
 
 function schedule(watch: Watch): void {
   watch.due = Date.now() + STALL_TICK_MS;
-  watch.timer = setTimeout(() => tick(watch), STALL_TICK_MS);
+  watch.timer = engineSetTimeout(() => tick(watch), STALL_TICK_MS);
 }
 
 /** A tick: a stall recorded if it ran late, and the next scheduled while work is in flight. */
