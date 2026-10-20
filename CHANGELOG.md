@@ -8,6 +8,19 @@ published independently in the `@nimbus-sh` npm scope.
 - Fixed: the shell's `node` makes symbolic links in the session's filesystem (`fs.symlink`, in its sync, callback and promise forms). `readlink` answers the link's text; it is `EINVAL` for a file that is no link and `ENOENT` for nothing. Before, `symlink` did nothing and `readlink` returned the path it was given. `readlink` answers in the encoding asked, and a lookup that fails on the way to a link (`ENOTDIR`, `ELOOP`) is `readlink`'s error. A path given to `fs` may be a `Buffer` or a `file:` URL, whose path is decoded (`%20` is a space); another scheme is `ERR_INVALID_URL_SCHEME`. A callback that is not a function is refused before anything is done.
 - Fixed: the shell's `node` `fs.truncate` extends a file with zero bytes as well as cutting it, clamps a negative length to 0, and reports `open`'s errors, as Node does. It now also has a callback form, and takes a descriptor; `fs.promises.truncate` takes a path only, as Node's does. Before, a longer length left the file unchanged, and a negative one cut from the end.
 - Fixed: the shell's `node` refuses a hard link (`fs.link`, `fs.linkSync`, `fs.promises.link`) with `ENOSYS`, as the hosted `node` does: the filesystem has no hard links. Before, `linkSync` did nothing and returned, so the new name was never there. `truncate` and `ftruncate` (now also in callback form) check the length as Node does: a length that is not a number is `ERR_INVALID_ARG_TYPE`, and one that is not a safe integer is `ERR_OUT_OF_RANGE`.
+- Fixed: a Node program could be told a file, directory or link it had
+  just renamed was not there (`fs.statSync` ENOENT, and renaming it again
+  refused) when input arrived while the rename was still on its way to the
+  session: the program's own record of the rename read the old name, which
+  the input's catch-up had already moved. The renamed entry is now found
+  wherever the catch-up put it, also when the program renamed it again, or
+  renamed its directory, before the first rename was answered.
+- Fixed: a WASI program (python, ruby, clang, bash) listing a directory
+  while another process changed it could be shown a listing the directory
+  never had: a directory moved away listed as empty, or a renamed file
+  missing from the directory it was renamed within. A listing is now of the
+  directory as it stood at one moment, or the session is asked instead; a
+  file or a missing name is no longer listed as an empty directory.
 - Changed: a `ruby` one-shot (`ruby -e`, `gem --version`, `bundle --version`
   and the like) runs on one of its session's warm Ruby workers, which keep
   ruby+stdlib.wasm compiled, instead of loading it into a new worker every

@@ -4327,6 +4327,7 @@ const __fsMod = (() => {
   function _nsOwnSet(k, state, extra) {
     const entry = {
       state, from: extra?.from, link: extra?.link, target: extra?.target, hide: !!extra?.hide, mode: extra?.mode,
+      ino: extra?.ino, dev: extra?.dev, via: extra?.via,
       stat: undefined, written: undefined,
       settled: extra?.settled ? _barrierBegins : null,
       word: null,
@@ -4371,7 +4372,7 @@ const __fsMod = (() => {
     switch (entry.state) {
       case "absent": case "absentTree": return _NS_ABSENT;
       case "link": return { target: entry.target };
-      case "alias": return { from: entry.from, link: entry.link };
+      case "alias": return { from: entry.from, link: entry.link, ino: entry.ino, dev: entry.dev, via: entry.via };
       case "dir": return { made: "directory", hide: entry.hide, mode: entry.mode };
       default: return { made: "file", mode: entry.mode, stat: entry.stat };
     }
@@ -4384,7 +4385,7 @@ const __fsMod = (() => {
     entry.mode = mode;
     entry.word = _nsWordOf(entry);
   }
-  function _nsOwnCost(k, entry) { return __nimbusResidentModule.namespaceRowBytes("", k, (entry.from ?? "") + (entry.link ?? "") + (entry.target ?? "")); }
+  function _nsOwnCost(k, entry) { return __nimbusResidentModule.namespaceRowBytes("", k, (entry.from ?? "") + (entry.link ?? "") + (entry.target ?? "") + (entry.via ? entry.via.join("") : "")); }
   /** Hand the overlay entries made since the last mutation to the one being queued. */
   function _nsTakeFresh() {
     const mine = _nsFresh;
@@ -8114,6 +8115,13 @@ const __fsMod = (() => {
     const nsFrom = _nsRealKey(oldN);
     const nsEntry = _nsEntryKey(oldN);
     const movedLink = nsEntry !== null && Number(__resident.namespace.rowAt(nsEntry).kind) === __nimbusResidentModule.NS_LINK ? nsEntry : undefined;
+    // The entry moved, and the names an earlier rename of it that has not
+    // landed left it under: a barrier may carry either rename to the table
+    // before this one's word retires, and the new name finds the entry
+    // wherever the table then holds it (namespace-lookup's standing).
+    const movedRow = movedLink !== undefined ? __resident.namespace.rowAt(movedLink) : nsFrom !== null ? __resident.namespace.rowAt(nsFrom) : undefined;
+    const earlier = _nsOwnGet(oldN);
+    const movedVia = nsFrom === null || nsFrom === oldN ? undefined : [oldN, ...(earlier?.state === "alias" && earlier.via ? earlier.via : [])];
     const oldPrefix = oldN + "/";
     const content = __vfsBundle?.[oldN] ?? __vfsWrites?.[oldN];
     // The file's own cell moves with its name (retired once the move is
@@ -8181,7 +8189,9 @@ const __fsMod = (() => {
     // What the new name held is replaced, and the moved records placed anew,
     // the rename's own: what an earlier mutation settles is the old placement.
     placeMoved();
-    if ((nsFrom !== null || movedLink !== undefined) && _nsOwnGet(newN) === undefined) _nsOwnSet(newN, "alias", { from: nsFrom ?? undefined, link: movedLink });
+    if ((nsFrom !== null || movedLink !== undefined) && _nsOwnGet(newN) === undefined) {
+      _nsOwnSet(newN, "alias", { from: nsFrom ?? undefined, link: movedLink, ino: movedRow?.ino, dev: movedRow?.dev, via: movedVia });
+    }
     _nsOwnSet(oldN, "absentTree");
     const queued = _queueStructuralMutation(
       sentFrom, "rename", oldP,

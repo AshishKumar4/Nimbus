@@ -1109,6 +1109,28 @@ var __nimbusResidentModule = (() => {
   var removed = (word) => objectHasOwn(word, "absent");
   var linked = (word) => objectHasOwn(word, "target");
   var moved = (word) => objectHasOwn(word, "from");
+  function standing(t, step, word) {
+    if (word === void 0 || !moved(word) || word.from === void 0) return word;
+    const ino = ownField(word, "ino");
+    if (typeof ino !== "number") return word;
+    const dev = ownField(word, "dev");
+    const named = ownField(word, "link");
+    const link = typeof named === "string" ? named : void 0;
+    const holds = (k) => {
+      const row = nsRowAt(t, k);
+      return row !== void 0 && row.ino === ino && (typeof dev !== "number" || row.dev === dev);
+    };
+    if (holds(link ?? word.from)) return word;
+    if (step !== null && holds(step)) return void 0;
+    const via = ownField(word, "via");
+    if (arrayIsArray(via)) {
+      for (let i = 0; i < via.length; i++) {
+        const at = stringOf(via[i]);
+        if (holds(at)) return link === void 0 ? { from: at } : { from: word.from, link: at };
+      }
+    }
+    return word;
+  }
   function nsParent(k) {
     const i = stringLastIndexOf(k, "/");
     return i < 0 ? "" : stringSlice(k, 0, i);
@@ -1163,7 +1185,7 @@ var __nimbusResidentModule = (() => {
         start = stop + 1;
         if (visit !== void 0 && !visit(prefix)) return "EACCES";
         const step = table === null ? null : table ? `${table}/${name}` : name;
-        const word = own === void 0 ? void 0 : own(prefix);
+        const word = own === void 0 ? void 0 : standing(t, step, own(prefix));
         let target;
         if (word !== void 0 && removed(word)) {
           return { path, table: null, row: void 0, own: word };
@@ -1174,8 +1196,8 @@ var __nimbusResidentModule = (() => {
           const named = ownField(word, "link");
           const link = typeof named === "string" ? named : void 0;
           if (link !== void 0 && leaf && !followLeaf) {
-            const at = nsRowAt(t, link) !== void 0 ? link : prefix;
-            return { path, table: at, row: nsRowAt(t, at), own: word };
+            const at = nsRowAt(t, link) !== void 0 ? link : step;
+            return { path, table: at, row: at === null ? void 0 : nsRowAt(t, at), own: word };
           }
           if (word.from === void 0) return { path, table: null, row: void 0, own: { absent: true } };
           if (link !== void 0) target = `/${word.from}`;
@@ -2861,8 +2883,7 @@ var __nimbusResidentModule = (() => {
             const answer = ownValue3(answers, j);
             if (!answer || ownValue3(answer, "error")) return false;
             const stat = ownValue3(answer, "stat");
-            if (stat === null || stat === void 0) continue;
-            if (!nsDescribes(stat)) return false;
+            if (stat === null || stat === void 0 || !nsDescribes(stat)) return false;
             stats.set(batch[j], stat);
           }
         }

@@ -8,14 +8,26 @@ const LIST_TREE_WALKS = 4;
  * revision (a walk whose pages are not all at one is walked again), and the
  * subtree whole. Past `maxEntries` it is refused (E2BIG), so the caller
  * lists it some other way rather than mistaking part of it for all of it.
+ * The root is walked as it stands, never followed: one that is not a
+ * directory (missing, a file, a symlink) has nothing beneath it to walk, and
+ * is refused (ENOENT, ENOTDIR) rather than listed as an empty directory; the
+ * caller lists what a link leads to some other way.
  * The session's fsListTree (session/rpc.ts).
  */
 export async function subtreeListing(bridge, root, maxEntries) {
     const key = normalizeVfsPath(root);
     for (let walk = 0; walk < LIST_TREE_WALKS; walk++) {
         const listed = await walkOnce(bridge, key, maxEntries);
-        if (listed !== null)
-            return listed;
+        if (listed === null)
+            continue;
+        if (listed.entries.length === 0) {
+            const at = await bridge.stat(`/${key}`, { followSymlinks: false });
+            if (at === null)
+                throw Object.assign(new Error(`ENOENT: /${key} is not there`), { code: 'ENOENT' });
+            if (at.type !== 'directory')
+                throw Object.assign(new Error(`ENOTDIR: /${key} is not a directory`), { code: 'ENOTDIR' });
+        }
+        return listed;
     }
     throw Object.assign(new Error(`EAGAIN: /${key} changed while it was listed`), { code: 'EAGAIN' });
 }
