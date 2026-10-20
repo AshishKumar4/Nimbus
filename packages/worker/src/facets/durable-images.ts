@@ -31,7 +31,7 @@ import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { base64, base64Decode } from '@nimbus-sh/core/_shared/crypto.js';
 import { storeContentBlob, type ImageBlobStore } from '@nimbus-sh/fabric/image-store.js';
-import { readContentBlob, ResidentCodeSpecSchema, type ResidentCodeSpec } from '@nimbus-sh/fabric/process-fabric.js';
+import { readContentBlob, ResidentCodeSpecSchema } from '@nimbus-sh/fabric/process-fabric.js';
 import { z } from 'zod/v4';
 import type { ResolvedWorkerLaunch, WorkerRecipe } from './manager.js';
 
@@ -54,6 +54,64 @@ const ApplicationImageSchema = z.object({
   mainModule: z.string().optional(),
   startArgs: z.json().optional(),
 });
+
+/** The session's image disk as the kernel, for work no process does: an earlier release's images rewritten. */
+export function kernelImageBlobs(vfs: SqliteVFS): ImageBlobStore {
+  const kernel = vfs.as(CRED_KERNEL);
+  return {
+    mkdirp: (dir) => kernel.mkdir(dir, { recursive: true, mode: 0o755 }),
+    sizeOf: (path) => (kernel.exists(path) ? kernel.stat(path).size : null),
+    writeFile: (path, bytes) => kernel.writeFile(path, bytes),
+    writeRange: (path, offset, bytes) => kernel.writeRange(path, offset, bytes),
+    list: (dir) => kernel.readdir(dir).map((entry) => entry.name),
+    unlink: (path) => kernel.unlink(path),
+  };
+}
+
+/**
+ * An application image an earlier release wrote with an environment in it,
+ * written again without: what every process can read holds none (ask 62).
+ * Answers the new image, the interpreter's process environment it held
+ * (`startArgs.userEnv`, for the caller to keep where its host keeps
+ * environments), and whether it held a binding env, which nothing in the
+ * session can give back. Null when it holds neither, or is not there.
+ */
+export async function rewriteWithoutEnvironment(
+  vfs: SqliteVFS,
+  image: { runner: string; application: string },
+): Promise<{ image: { runner: string; application: string }; processEnv?: Record<string, string>; bindingEnv: boolean } | null> {
+  const kernel = vfs.as(CRED_KERNEL);
+  if (!kernel.exists(imagePath(image.application))) return null;
+  const bytes = await readContentBlob({ readFile: (path: string) => kernel.readFile(path) }, imagePath(image.application), image.application);
+  const parsed = ApplicationImageSchema.safeParse(JSON.parse(new TextDecoder().decode(bytes)));
+  if (!parsed.success) return null;
+  const held = z.looseObject({ userEnv: z.record(z.string(), z.string()) }).safeParse(parsed.data.startArgs);
+  if (parsed.data.env === null && !held.success) return null;
+  const { env, startArgs, ...rest } = parsed.data;
+  let kept: unknown = startArgs;
+  if (held.success) {
+    const { userEnv: _userEnv, ...others } = held.data;
+    kept = { ...others, runtimeEnv: {} };
+  }
+  // The members written as persistDurableWorkerImage writes them, so the
+  // digest is what a launch with these inputs writes today.
+  const payload = JSON.stringify({
+    modules: rest.modules,
+    env: null,
+    vfsWasmModules: rest.vfsWasmModules ?? null,
+    ...(rest.vfsTextModules !== undefined ? { vfsTextModules: rest.vfsTextModules } : {}),
+    ...(rest.mainModule !== undefined ? { mainModule: rest.mainModule } : {}),
+    ...(kept !== undefined ? { startArgs: kept } : {}),
+  });
+  const blobs = kernelImageBlobs(vfs);
+  blobs.mkdirp(DURABLE_IMAGE_DIR);
+  const application = await storeContentBlob(blobs, payload, imagePath);
+  return {
+    image: { runner: image.runner, application: application.digest },
+    ...(held.success ? { processEnv: held.data.userEnv } : {}),
+    bindingEnv: env !== null,
+  };
+}
 
 /** Remove only the owner's blobs that no other retained recipe references. */
 export function purgeDurableWorkerImages(
@@ -87,7 +145,6 @@ export async function persistDurableWorkerImage(
   workerCode: string,
   payload: {
     modules: Record<string, InlineModule>;
-    env?: ResidentCodeSpec['env'];
     vfsWasmModules?: Record<string, string>;
     vfsTextModules?: Record<string, string>;
     /** Recorded only when the launch named one; absent means `worker.js`. */
@@ -101,9 +158,11 @@ export async function persistDurableWorkerImage(
   // launch keeps the digest it had before the member existed.
   const modules = Object.fromEntries(Object.entries(payload.modules).map(([name, member]) =>
     [name, typeof member === 'string' ? member : { wasm: base64(new Uint8Array(member.wasm)) }]));
+  // Never an env: every process can read this blob (ask 62). The member is
+  // written null so an unchanged launch keeps the digest it had.
   const applicationPayload = JSON.stringify({
     modules,
-    env: payload.env ?? null,
+    env: null,
     vfsWasmModules: payload.vfsWasmModules ?? null,
     ...(payload.vfsTextModules !== undefined ? { vfsTextModules: payload.vfsTextModules } : {}),
     ...(payload.mainModule !== undefined ? { mainModule: payload.mainModule } : {}),

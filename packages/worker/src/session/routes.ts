@@ -715,7 +715,8 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
       const sbStats = getScrollbackStats(self.ctx);
       return Response.json({
         cwd: snap.cwd,
-        env: snap.env,
+        // Names, never values: an environment is its owner's alone (ask 62).
+        env: snap.env === null ? null : Object.keys(snap.env).sort(),
         hydratedAt: snap.hydratedAt,
         hasPersistedState: snap.hasPersistedState,
         // The namespace's mount points, as /proc/mounts lists them.

@@ -245,6 +245,8 @@ export type CPythonResidentStart = (spawn: {
   /** VFS path of the interpreter. By path, not by value: it is 10.6 MiB. */
   wasmVfsPath: string;
   startArgs: Record<string, unknown>;
+  /** The environment the command was launched with, within `startArgs.userEnv`: never stored (ask 62). */
+  processEnv: Record<string, string>;
   cwd: string;
   command: string;
   /** The launching command's process: the resident carries its exec id. */
@@ -435,7 +437,7 @@ export function makeCPythonRunnerFactory(deps: {
         let spawnResult: CPythonFacetResult;
         try {
           spawnResult = await deps.startResident(
-            { wasmVfsPath: wasmVfs, startArgs: facetArgs, cwd, command, argv: [binName, ...argv], invokerPid: ctx.pid, signal: ctx.signal, write: output.write });
+            { wasmVfsPath: wasmVfs, startArgs: facetArgs, processEnv: { ...(ctx.env || {}) }, cwd, command, argv: [binName, ...argv], invokerPid: ctx.pid, signal: ctx.signal, write: output.write });
         } finally {
           await output.end();
         }

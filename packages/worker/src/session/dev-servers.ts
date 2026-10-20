@@ -35,6 +35,7 @@ import type { NimbusWorkspace } from '@nimbus-sh/core/workspace/nimbus-workspace
 import { DEV_SERVER_KEY_PREFIX } from './keys.js';
 import type { DevServerRestoreFailure } from './helpers.js';
 import { readPortCapability, readoptCapability, type PortCapabilityHost } from './port-capability.js';
+import type { ProcessEnvHooks } from './process-env.js';
 
 const DevServerRecordSchema = z.object({
   /** The line its command ran, and what its process was spawned with. */
@@ -43,7 +44,8 @@ const DevServerRecordSchema = z.object({
   cwd: z.string(),
   cred: z.custom<VfsCred>(isVfsCred),
   execId: z.string().optional(),
-  env: z.record(z.string(), z.string()),
+  /** What an earlier release recorded: its command's environment, now kept where the host keeps environments, if anywhere. */
+  env: z.record(z.string(), z.string()).optional(),
   /** What the server serves (a project or a build), for whoever reads the record. */
   root: z.string(),
   /** The ports it served: the links handed out for them are taken back by the restored server. */
@@ -77,6 +79,8 @@ export interface DevServerHost {
   readonly ctx: { readonly storage: DurableObjectStorage };
   readonly processes: SessionProcessSupervisor;
   readonly portRegistry: PortRegistry;
+  /** Who gives a restored dev server its environment back: its record holds none (session/process-env.ts). */
+  readonly processEnv: ProcessEnvHooks;
 }
 
 const recordKey = (pid: number): string => `${DEV_SERVER_KEY_PREFIX}${pid}`;
@@ -146,23 +150,25 @@ export async function afterDevServerRestore(
   await host.restoreDevServers();
 }
 
-async function release(host: Pick<DevServerHost, 'ctx'>, key: string): Promise<void> {
+async function release(host: Pick<DevServerHost, 'ctx' | 'processEnv'>, key: string): Promise<void> {
   await host.ctx.storage.delete(key);
+  await host.processEnv.keepProcessEnv?.forget(key);
   await host.ctx.storage.sync();
 }
 
 /**
- * Record how the dev server behind `pid` was spawned, with the environment
- * its command was given and the ports it serves now, until `pid` ends.
- * Synced, so a reset right after it still finds it; a process that ended
- * meanwhile leaves none.
+ * Record how the dev server behind `pid` was spawned and the ports it serves
+ * now, until `pid` ends; its command's environment goes to the host, if it
+ * keeps environments, never into the record. Synced, so a reset right after
+ * it still finds it; a process that ended meanwhile leaves none.
  */
 export async function recordDevServer(host: DevServerHost, pid: number, spawn: DevServerSpawn & { env: Readonly<Record<string, string>>; root: string }): Promise<void> {
   const key = recordKey(pid);
   const record: DevServerRecord = {
     command: spawn.command, argv: [...spawn.argv], cwd: spawn.cwd, cred: spawn.cred, ...execIdField(spawn),
-    env: { ...spawn.env }, root: spawn.root, ports: host.portRegistry.getRouteablePortsByPid(pid),
+    root: spawn.root, ports: host.portRegistry.getRouteablePortsByPid(pid),
   };
+  await host.processEnv.keepProcessEnv?.remember(key, { ...spawn.env });
   await host.ctx.storage.put(key, record);
   await host.ctx.storage.sync();
   if (host.processes.get(pid)?.state !== 'running') {
@@ -238,7 +244,11 @@ async function restoreOne(
     return { command: record.command, cwd: record.cwd, pid: null, reason: 'its start after an earlier restart of the session did not finish' };
   }
   if (!ours()) return null;
-  await host.ctx.storage.put(key, { ...record, restoring: true });
+  // A record an earlier release wrote holds its environment: kept where the
+  // host keeps environments, and not written back.
+  const { env: held, ...kept } = record;
+  if (held !== undefined) await host.processEnv.keepProcessEnv?.remember(key, held);
+  await host.ctx.storage.put(key, { ...kept, restoring: true });
   await host.ctx.storage.sync();
   // The links handed out for its ports: a registration that is not a restore retires them.
   const capabilities = new Map<number, string>();
@@ -249,8 +259,9 @@ async function restoreOne(
   let failure: DevServerRestoreFailure | null = null;
   try {
     await host.ensureRuntimeReady();
+    const env = await restoredEnv(host, key, from, record);
     // A destroy that came meanwhile made the session again: nothing of this one runs in it.
-    if (ours()) failure = await runAgain(host, record, from);
+    if (ours()) failure = await runAgain(host, record, from, env);
   } catch (error) {
     failure = { command: record.command, cwd: record.cwd, pid: null, reason: errorText(error) };
   } finally {
@@ -268,7 +279,21 @@ async function restoreOne(
  * adopts that process as its server's, as it adopts a script wrapper's; one
  * that hands its server to a process of its own leaves this one to exit.
  */
-async function runAgain(host: DevServerRestoreHost, record: DevServerRecord, from: number): Promise<DevServerRestoreFailure | null> {
+/** The environment the restored command runs with: the host's answer, or a failure that says why it has none. */
+async function restoredEnv(host: DevServerRestoreHost, key: string, from: number, record: DevServerRecord): Promise<Record<string, string>> {
+  const resolve = host.processEnv.resolveProcessEnv;
+  if (resolve === undefined) throw new Error('this host keeps no process\'s environment and composes no resolveProcessEnv');
+  let env: Record<string, string> | null;
+  try {
+    env = await resolve({ pid: from, cred: record.cred, record: key, ...execIdField(record) });
+  } catch (error) {
+    throw new Error(`the host's resolveProcessEnv failed: ${errorText(error)}`);
+  }
+  if (env === null) throw new Error('the host gave no environment for it');
+  return env;
+}
+
+async function runAgain(host: DevServerRestoreHost, record: DevServerRecord, from: number, env: Record<string, string>): Promise<DevServerRestoreFailure | null> {
   const workspace = host.runtimeWorkspace;
   if (workspace === null) throw new Error('the session has no shell to run it in');
   const processes = host.processes;
@@ -277,7 +302,7 @@ async function runAgain(host: DevServerRestoreHost, record: DevServerRecord, fro
   });
   const pid = entry.pid;
   processes.appendOutput(pid, 'stderr', `[nimbus] the session restarted: running \`${record.command}\` again in ${record.cwd}\n`);
-  const shell = workspace.shellFor(pid, { cwd: record.cwd, env: record.env, inheritEnv: false });
+  const shell = workspace.shellFor(pid, { cwd: record.cwd, env, inheritEnv: false });
   let stderr = '';
   const keep = new SinkWriter({ write: (text) => { stderr = (stderr + text).slice(-2000); } });
   const stop = new AbortController();

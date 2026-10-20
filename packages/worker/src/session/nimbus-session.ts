@@ -142,6 +142,7 @@ import { WebSocketRelay } from './ws-relay.js';
 // S9: HTTP fetch routing extracted (combined S9a + S9b).
 import * as _routes from './routes.js';
 import { restoreDevServers, type DevServerRestoreHost } from './dev-servers.js';
+import { sessionProcessEnv, type ProcessEnvHooks } from './process-env.js';
 import type { DevServerRestoreFailure } from './helpers.js';
 import * as _portCapability from './port-capability.js';
 // Programmatic SDK RPC surface.
@@ -317,6 +318,8 @@ function isTerminalInputDispatcher(stub: object): stub is TerminalInputDispatche
 
 export class NimbusSession extends CloudflareDurableObject<SessionEnv> implements SessionRouterRpc {
   #runtimeServices: ReturnType<typeof runtimeServices.bindRuntimeServices>;
+  /** The session keeps each relaunchable launch's environment itself, outside its filesystem (session/process-env.ts). */
+  readonly processEnv: ProcessEnvHooks;
   get childProcessHost() { return this.#runtimeServices.childProcessHost; }
   // this.ctx and this.env are provided by the DurableObject base class
   runtimeWorkspace: NimbusWorkspace | null = null;
@@ -543,9 +546,11 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
   constructor(ctx: DurableObjectState, env: SessionEnv) {
     super(ctx, env);
     this.supervisorDeliveries = openSupervisorDeliveries(ctx);
+    this.processEnv = sessionProcessEnv(ctx.storage);
     this.#runtimeServices = runtimeServices.bindRuntimeServices(this, {
       ctx,
       env,
+      processEnv: this.processEnv,
       notify: (line) => this._notifySession(line),
       requestLaunchTurn: (at) => this._scheduleLaunchTurn(at),
       armResidentKeepalive: () => _w1EnsureResidentKeepalive(this, ctx),
@@ -1088,6 +1093,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
       get processes() { return session.processes; },
       get portRegistry() { return session.portRegistry; },
       get runtimeWorkspace() { return session.runtimeWorkspace; },
+      processEnv: this.processEnv,
       ensureRuntimeReady: () => this.ensureRuntimeReady(),
     };
     return restoreDevServers(this.devServerHost);
