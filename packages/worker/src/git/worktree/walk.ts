@@ -548,7 +548,7 @@ async function compare(
 
     /** The scan's run under `prefix`, passed over. */
     async function skipUnder(prefix: Uint8Array): Promise<void> {
-      for (let entry = await cursor.peek(); entry !== null && under(entry.bytes, prefix); entry = await cursor.peek()) cursor.take();
+      for (let entry = await cursor.peek(); entry !== null && under(entry, prefix); entry = await cursor.peek()) cursor.take();
     }
 
     /**
@@ -580,7 +580,7 @@ async function compare(
           await open(next.name, next.path, next.entry, next.key, next.seen);
         }
       };
-      for (let entry = await cursor.peek(); entry !== null && under(entry.bytes, prefix); entry = await cursor.peek()) {
+      for (let entry = await cursor.peek(); entry !== null && under(entry, prefix); entry = await cursor.peek()) {
         const rest = entry.bytes.subarray(skip);
         const slash = rest.indexOf(0x2f);
         if (slash < 0) {
@@ -794,7 +794,8 @@ class ScanCursor {
       } catch (error) {
         throw new ScanFailure(error);
       }
-      this.head = next.done ? null : { ...next.value, bytes: encoder.encode(next.value.path) };
+      const value = next.done ? null : next.value;
+      this.head = value === null ? null : { path: value.path, stat: value.stat, byName: value.byName, bytes: encoder.encode(value.path) };
     }
     return this.head;
   }
@@ -804,10 +805,11 @@ class ScanCursor {
   }
 }
 
-/** Whether `bytes` is strictly below `prefix` (`dir/`; empty: the top). */
-function under(bytes: Uint8Array, prefix: Uint8Array): boolean {
+/** Whether `entry` is strictly below the directory whose run `prefix` (`dir/`, its bytes; empty: the top) is. */
+function under(entry: ScannedEntry, prefix: Uint8Array): boolean {
+  const bytes = entry.bytes;
   if (bytes.length <= prefix.length) return prefix.length === 0 && bytes.length > 0;
-  for (let i = 0; i < prefix.length; i++) if (bytes[i] !== prefix[i]) return false;
+  for (let i = prefix.length - 1; i >= 0; i--) if (bytes[i] !== prefix[i]) return false;
   return true;
 }
 

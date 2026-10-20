@@ -118,7 +118,13 @@ async function cleanStatusPeak(count) {
   mirror(user, disk, virtual.slice(1));
   const files = new ProcessFiles(vfs);
   let peak = 0;
-  const sample = () => { Bun.gc(true); peak = Math.max(peak, process.memoryUsage().heapUsed); };
+  // Only the measured status samples: a full collection on each of the first status's 20,000 file reads is minutes.
+  let measuring = false;
+  const sample = () => {
+    if (!measuring) return;
+    Bun.gc(true);
+    peak = Math.max(peak, process.memoryUsage().heapUsed);
+  };
   const view = files.view({ pid: 1, cred: CRED_SESSION_USER });
   const observed = new Proxy(view, {
     get(target, key) {
@@ -137,7 +143,8 @@ async function cleanStatusPeak(count) {
       return (...args) => { sample(); return value.apply(target, args); };
     },
   });
-  const status = async () => {
+  const status = async (measured) => {
+    measuring = measured;
     let stdout = '';
     let stderr = '';
     Bun.gc(true);
@@ -151,6 +158,7 @@ async function cleanStatusPeak(count) {
       vfs: observed,
     }, vfs);
     sample();
+    measuring = false;
     assert.equal(code, 0, stderr);
     assert.equal(stdout, realGit(disk, 'status', '--porcelain'), `${count} files: status as git's`);
     return (peak - base) / MB;
@@ -158,9 +166,9 @@ async function cleanStatusPeak(count) {
   // The first status refreshes the mirrored index's stat. The next, a second later, compares every entry
   // (those written in the index's second were racily clean) and writes the index again: the one measured.
   // (A status after that, with nothing changed since the index, compares nothing.)
-  await status();
+  await status(false);
   await Bun.sleep(1100);
-  const growth = await status();
+  const growth = await status(true);
   return { growth, indexBytes: user.stat(`${virtual.slice(1)}/.git/index`).size };
 }
 

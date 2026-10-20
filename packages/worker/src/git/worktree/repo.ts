@@ -30,7 +30,7 @@ import { EMPTY_TREE, treeOf, type ObjectStore } from './tree.js';
 import { UnsupportedGitOperation } from '../routing.js';
 import { DEFAULT_PATH_PROTECTION, type PathProtection } from './verify-path.js';
 import { configBool } from '../config-params.js';
-import { matchStat, newCounters, worktreeBlobId, type WalkCounters, type Worktree, type WorktreeFs, type WorktreeStat, type WorktreeType } from './walk.js';
+import { matchStat, newCounters, worktreeBlobId, type ScannedWorktreeEntry, type WalkCounters, type Worktree, type WorktreeFs, type WorktreeStat, type WorktreeType } from './walk.js';
 
 /** The cf-git calls a repository makes. */
 export interface RepoGit {
@@ -339,13 +339,20 @@ export class WorktreeRepo {
     const root = this.root;
     return {
       ...await this.worktree(),
-      scan: async function* () {
-        counters.scans++;
-        for await (const entry of vfs.scan(root)) {
-          counters.scanned++;
-          yield { path: entry.path, stat: worktreeStatOf(entry.stat), byName: entry.byName };
-        }
-      },
+      // The scan's own iterator, each entry's stat taken as the comparisons take it: no layer of its own between.
+      scan: () => ({
+        [Symbol.asyncIterator]: () => {
+          counters.scans++;
+          const entries = vfs.scan(root)[Symbol.asyncIterator]();
+          return {
+            next: () => entries.next().then((step): IteratorResult<ScannedWorktreeEntry> => {
+              if (step.done === true) return { done: true, value: undefined };
+              counters.scanned++;
+              return { done: false, value: { path: step.value.path, stat: worktreeStatOf(step.value.stat), byName: step.value.byName } };
+            }),
+          };
+        },
+      }),
     };
   }
 
