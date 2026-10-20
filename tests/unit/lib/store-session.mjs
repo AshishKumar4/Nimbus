@@ -56,8 +56,9 @@ async function incarnation(tree) {
  */
 export async function storeSession(tree, { eager = false, unlisted = [], delegated = false } = {}) {
   let current = await incarnation(tree);
+  // Its methods are the first incarnation's (a reader enumerates them, as the resident filesystem does); each call is the current one's.
   /** @type {any} */
-  const authority = new Proxy({}, {
+  const authority = new Proxy(current.authority, {
     get: (_target, name) => {
       const value = current.authority[name];
       return typeof value === 'function' ? value.bind(current.authority) : value;
