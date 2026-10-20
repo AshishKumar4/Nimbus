@@ -234,7 +234,8 @@ async function up() {
     // keeps the secret instead of refusing a name it cannot vouch for.
     if (before === null) writeState(statePath(name), { name, preview, parent: PREVIEW_PARENT, base: null, secret, secretPushed: true, createdAt });
     log(`WARNING: Preview ${preview} of ${PREVIEW_PARENT} did not land: ${deployed.detail}; wrangler exited ${deployed.status}. Uploading it once more.`);
-    deployed = await deployPreview({ account, token, preview, secret, before: await latestDeployment({ account, token, preview }), config: bundle });
+    // Against the latest before either upload: a first one that lands late has an id of its own, not the second's.
+    deployed = await deployPreview({ account, token, preview, secret, before, config: bundle });
     if (!deployed.landed) throw new Error(`Preview ${preview} of ${PREVIEW_PARENT} did not land, twice: ${deployed.detail}; wrangler exited ${deployed.status}`);
   }
   const { base, deploymentId, startupMs } = deployed;
