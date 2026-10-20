@@ -1110,6 +1110,10 @@ export class Interpreter {
         if (assignment?.elements !== undefined && assignment.subscript === undefined && assignment.append !== true) {
           (arrayElements ??= new Map()).set(expandedArgs.length - 1, await this.arrayLiteral(assignment.name, assignment.elements, false, expandCtx));
           expandedArgs.push(`${assignment.name}=`);
+        } else if (assignment !== null && assignment.elements === undefined) {
+          // An assignment's value, as an assignment expands it: not split, no pathname expansion.
+          const subscript = assignment.subscript === undefined ? '' : `[${assignment.subscript}]`;
+          expandedArgs.push(`${assignment.name}${subscript}${assignment.append === true ? '+' : ''}=${await expandWord(assignment.value, expandCtx)}`);
         } else {
           expandedArgs.push(...await expandWords([parts], expandCtx));
         }

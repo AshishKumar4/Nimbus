@@ -1,7 +1,9 @@
 #!/usr/bin/env bun
 // `export` and `readonly` are declaration builtins, as bash 5.2 has them: an
 // argument written `name=(…)` is an array assignment (its elements and
-// subscripts as an array literal's), the attribute taken with it; an
+// subscripts as an array literal's), the attribute taken with it, and one
+// written `name=value` (theirs and declare's, typeset's, local's) expands
+// as an assignment's value: not split, no pathname expansion; an
 // exported array is no child's environment; a readonly one refuses a later
 // literal; `readonly -p` prints each readonly variable as `declare -p` does,
 // a declaration bash reads back. Before
@@ -28,6 +30,8 @@ const LINES = [
   'y="1 2"; export q=($y); declare -p q',
   'export -n e2=(1); declare -p e2',
   'readonly r3; r3=(1)\necho "st=$?"; declare -p r3',
+  // A declaration's assignment argument expands as an assignment does: not split, no pathname expansion.
+  'touch g1 g2; y="p  q"; declare d=$y e=g* f="$y"; local 2>/dev/null; export h=~/x; declare -p d e f; echo "$h"',
 ];
 
 /** bash's diagnostic prefix: `bash: line 1: `, `bash: -c: line 1: `, and in a function 5.2's `environment: line 1: `. */
@@ -37,7 +41,7 @@ const want = [];
 for (const line of LINES) {
   const dir = mkdtempSync(join(tmpdir(), 'shell-export-readonly-'));
   try {
-    const r = spawnSync('bash', ['--norc', '--noprofile', '-c', line], { cwd: dir, encoding: 'utf8', timeout: 10_000, env: { PATH: process.env.PATH, LC_ALL: 'C.UTF-8' } });
+    const r = spawnSync('bash', ['--norc', '--noprofile', '-c', line], { cwd: dir, encoding: 'utf8', timeout: 10_000, env: { PATH: process.env.PATH, LC_ALL: 'C.UTF-8', HOME: '/home/user' } });
     assert.equal(r.error, undefined, `bash ran ${JSON.stringify(line)}: ${r.error?.message}`);
     want.push({ stdout: r.stdout, stderr: plainStderr(r.stderr), status: r.status });
   } finally {
