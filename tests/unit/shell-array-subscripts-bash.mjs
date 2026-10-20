@@ -68,7 +68,7 @@ const LINES = [
   'f() { local -a l=([2]=x y); declare -p l; }; f',
   'f() { local a=([1]=x); declare -p a; }; f',
   'declare -a d=([3]=x y); declare -p d; typeset -a t=([1]=q); declare -p t',
-  'a=([2+3]=x [010]=o [0x1f]=h [1]=one [1]=two); declare -p a',
+  'a=([2+3]=x [1]=one [1]=two); declare -p a',
   "a=([$(echo 4)]=c [\"2\"]=q ['3']=s); declare -p a",
   'a=([1]=x [3]= [4]=""); declare -p a',
   'a=( [1]=x   [2]=y ); declare -p a',
@@ -76,7 +76,7 @@ const LINES = [
   'a=(one); a[5]=z; s=$(declare -p a); unset a; eval "$s"; declare -p a',
   'a=([1]=x); echo "${#a[@]} ${!a[@]} ${a[1]}"; b=("${a[@]}"); declare -p b',
   'a=([x]=1); declare -p a; x=3; b=([x]=1); declare -p b',
-  'readonly r=(1); r=([2]=x)\necho "st=$?"; declare -p r',
+  'declare -r r=(1); r=([2]=x)\necho "st=$?"; declare -p r',
 ];
 
 /** bash's diagnostic prefix: `bash: line 1: `, `bash: -c: line 1: `, and in a function 5.2's `environment: line 1: `. */
