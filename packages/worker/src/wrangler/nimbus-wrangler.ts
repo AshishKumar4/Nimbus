@@ -560,10 +560,11 @@ export class NimbusWrangler {
     bindings: readonly { name: string; class_name: string }[],
     superseded: () => boolean,
   ): Promise<boolean> {
-    const watched = holdThreadWatch(this.supervisorCtx, 'wrangler dev classes');
+    // A server with no session's context (a plain Worker's) has no session thread to watch.
+    const watched = this.supervisorCtx ? holdThreadWatch(this.supervisorCtx, 'wrangler dev classes') : undefined;
     let named: string[];
     try { named = await worker.getEntrypoint(classesEntrypoint, { limits: facetLimits('worker') }).missing(bindings.map((b) => b.class_name)); }
-    finally { watched(); }
+    finally { watched?.(); }
     const missing = new Set(named);
     if (superseded()) return false;
     for (const b of bindings) {
@@ -904,11 +905,11 @@ export class NimbusWrangler {
         redirect: 'manual',
       });
 
-      const watched = holdThreadWatch(this.supervisorCtx, 'wrangler dev request');
+      const watched = this.supervisorCtx ? holdThreadWatch(this.supervisorCtx, 'wrangler dev request') : undefined;
       let response: Response;
       // Awaited by this frame, as an RPC stub call must be (beginLoaderFetch); the watch only brackets it.
       try { response = await this.workerStub.fetch(workerReq); }
-      finally { watched(); }
+      finally { watched?.(); }
 
       // ── Response post-processing ─────────────────────────────────
       const newHeaders = new Headers(response.headers);

@@ -621,6 +621,8 @@ function spawnResident(
   });
   incarnation.catch(() => {});
   let started: Promise<unknown>;
+  // Watched while it boots, until its start answers: not for its life, which an idle resident spends with no tick running.
+  const booting = holdThreadWatch(ctx, `boot pid ${params.pid}`);
   try {
     // The allowance the ledger admitted, for the facet's store to keep under.
     const startArgs = ledger !== null && params.storageBytes !== undefined && params.startArgs !== null && typeof params.startArgs === 'object'
@@ -628,9 +630,11 @@ function spawnResident(
       : params.startArgs;
     started = facet.startProcess(startArgs);
   } catch (error) {
+    booting();
     void release();
     throw error;
   }
+  started.then(booting, booting);
   started = started.then((payload) => {
     // Once the facet is up (N18) its row is the cap its store keeps under
     // (what it measures plus what it may still grow into), or what it
@@ -975,11 +979,17 @@ export function facetJournal(ctx: DurableObjectState, env: JournalReaderEnv, nam
     reader = facets.get(name, async () => ({ class: worker.getDurableObjectClass('NimbusFsJournalReader', { limits: facetLimits('process') }) })) as unknown as JournalReaderStub;
     return reader;
   };
+  // Each call watched while it runs (thread-stalls.ts): a drain at a cold start has no other work in flight.
+  const watched = async <T>(call: () => Promise<T>): Promise<T> => {
+    const release = holdThreadWatch(ctx, `journal ${name}`);
+    try { return await call(); }
+    finally { release(); }
+  };
   return {
-    numberings: async () => (await open()?.numberings()) ?? [],
-    number: async (numbering) => { await open()?.number(numbering); },
-    readAfter: async (after, maxBytes) => (await open()?.readAfter(after, maxBytes)) ?? [],
-    dropThrough: async (jid) => { await open()?.dropThrough(jid); },
+    numberings: () => watched(async () => (await open()?.numberings()) ?? []),
+    number: (numbering) => watched(async () => { await open()?.number(numbering); }),
+    readAfter: (after, maxBytes) => watched(async () => (await open()?.readAfter(after, maxBytes)) ?? []),
+    dropThrough: (jid) => watched(async () => { await open()?.dropThrough(jid); }),
   };
 }
 

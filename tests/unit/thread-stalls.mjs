@@ -66,6 +66,8 @@ const turn = (ms = 80) => new Promise((resolve) => setTimeout(resolve, ms));
     hold(STALL_RECORDED_MS + 100);
     await turn(60);
     release();
+    // The tick due as the last work ends runs once, on time.
+    await turn(60);
   }
   const stalls = recentThreadStalls(ctx);
   assert.equal(stalls.length, 16, 'the last sixteen are kept');

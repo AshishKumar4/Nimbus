@@ -62,10 +62,13 @@ try {
   await sleep(500);
   finalMemory = await diagMemory(sid);
 } finally {
-  const refused = await stopSampling?.();
-  if (refused) console.warn(`[install-parallel-memory-bounded] sampler: ${refused} memory reads refused 503 (the session overloaded)`);
-  try { await terminal.close(); } catch { /* cleanup continues */ }
-  await deleteSession(sid).catch(() => {});
+  try {
+    const refused = await stopSampling?.();
+    if (refused) console.warn(`[install-parallel-memory-bounded] sampler: ${refused} memory reads refused 503 (the session overloaded)`);
+  } finally {
+    try { await terminal.close(); } catch { /* cleanup continues */ }
+    await deleteSession(sid).catch(() => {});
+  }
 }
 
 const cloneText = stripAnsi(cloneOutput);
