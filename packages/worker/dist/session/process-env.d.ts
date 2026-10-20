@@ -3,7 +3,7 @@ import type { FacetManagerHooks } from '../facets/manager.js';
 export type ProcessEnvHooks = Pick<FacetManagerHooks, 'resolveProcessEnv' | 'keepProcessEnv'>;
 /**
  * The session's own keeping: each record's environment in a row of the
- * session object's storage, written with its record and deleted with it.
+ * session object's storage, written and deleted with its record.
  */
 export declare function sessionProcessEnv(storage: DurableObjectStorage): Required<ProcessEnvHooks>;
 //# sourceMappingURL=process-env.d.ts.map

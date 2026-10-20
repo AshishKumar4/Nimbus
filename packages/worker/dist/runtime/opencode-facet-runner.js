@@ -785,6 +785,7 @@ try { process.chdir(cwd); } catch {}
 function __ocTakeEnv(given) {
   Object.assign(env, given);
   try { Object.assign(process.env, given); } catch {}
+  __nimbusTakeLaunchEnv();
   if (env.NIMBUS_DIAG_EXEC === "1") __ocDiagOn();
 }
 

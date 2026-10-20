@@ -11,13 +11,23 @@ export interface ProcessEnvRequest {
     record: string;
 }
 export type ResolveProcessEnv = (request: ProcessEnvRequest) => Promise<Record<string, string> | null>;
-/** Where a host keeps the environments it answers resolveProcessEnv from (FacetManagerHooks.keepProcessEnv). */
-export interface ProcessEnvKeeper {
-    /** `record` was written for a launch with `env`. */
-    remember(record: string, env: Record<string, string>): Promise<void>;
-    /** `record` is gone: nothing relaunches from it. */
-    forget(record: string): Promise<void>;
+/**
+ * Where a host that keeps environments itself keeps them: beside each
+ * relaunchable record, a row of the session object's own storage, outside
+ * the filesystem (FacetManagerHooks.keepProcessEnv). The row is written and
+ * deleted in the same storage operation as its record, so neither outlives
+ * the other.
+ */
+export interface ProcessEnvKeeping {
+    /** The key of the row that holds `record`'s environment. */
+    rowOf(record: string): string;
 }
+/** The environment a kept row holds, or null when there is none. */
+export declare function keptEnv(row: unknown): Record<string, string> | null;
+/** `value` stored at `record`, with `env` beside it where `keeping` keeps environments: one storage write's entries. */
+export declare function recordWithEnv(keeping: ProcessEnvKeeping | undefined, record: string, value: unknown, env: Record<string, string> | undefined): Record<string, unknown>;
+/** The keys a delete of `record` removes: the record, and its environment's row. */
+export declare function recordKeys(keeping: ProcessEnvKeeping | undefined, record: string): string[];
 /**
  * The environment the relaunch `request` describes runs with: the host's
  * answer, or an error naming why there is none. Never an empty or a guessed

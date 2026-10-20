@@ -47,6 +47,7 @@ import { type PythonMarkerEnvironment } from './python-pip.js';
 import { type RuntimeManifest } from './runtime-manifest.js';
 import type { SessionProcessSupervisor } from './session-process-supervisor.js';
 import type { NimbusFilesystemAuthority } from './os-contracts.js';
+import { type InterpreterEnv } from './interpreter-env.js';
 /**
  * The environment markers of the CPython build `manifest` installs, as the
  * interpreter answers them (cpython-wasi-reactor.mjs runs it to check): its
@@ -91,8 +92,8 @@ export type CPythonResidentStart = (spawn: {
     /** VFS path of the interpreter. By path, not by value: it is 10.6 MiB. */
     wasmVfsPath: string;
     startArgs: Record<string, unknown>;
-    /** The environment the command was launched with, within `startArgs.userEnv`: never stored (ask 62). */
-    processEnv: Record<string, string>;
+    /** What `startArgs.userEnv` was built from: never stored, the base asked for again at a relaunch (ask 62). */
+    interpreterEnv: InterpreterEnv;
     cwd: string;
     command: string;
     /** The launching command's process: the resident carries its exec id. */

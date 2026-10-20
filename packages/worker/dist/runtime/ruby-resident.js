@@ -35,7 +35,7 @@ export function rubyResidentStart(facetMgr) {
             // value may carry — so whichever host runs this process reads it itself.
             vfsWasmModules: { 'ruby+stdlib.wasm': args.wasmVfsPath },
             startArgs: args.startArgs,
-            processEnv: args.processEnv,
+            interpreterEnv: args.interpreterEnv,
             foreground: { signal: args.signal, write: args.write },
         }).catch(() => null);
         // Interrupted while it waited to bind or exit: the process is gone with it.

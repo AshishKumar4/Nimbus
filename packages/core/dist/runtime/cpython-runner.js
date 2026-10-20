@@ -56,6 +56,7 @@ import { WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
 import { openRuntimeStdio, runtimeOutput } from './runtime-stdio.js';
 import { errorText } from '../_shared/error-text.js';
 import { warmFacetKeys } from './warm-facets.js';
+import { interpreterProcessEnv } from './interpreter-env.js';
 const PYTHON_VERSION_FLAGS = new Set(['--version', '-V']);
 const PYTHON_HELP_FLAGS = new Set(['--help', '-h']);
 /** Where `nimbus install python` stages the interpreter inside the session. */
@@ -312,17 +313,11 @@ export function makeCPythonRunnerFactory(deps) {
                 enterWorkingDirectory(binName, cwd),
             ].join('\n');
             const cacertVfs = findFile(CPYTHON_CACERT_REL);
-            const userEnv = { ...(ctx.env || {}) };
-            if (!userEnv.HOME)
-                userEnv.HOME = home;
-            if (!userEnv.PYTHONUNBUFFERED)
-                userEnv.PYTHONUNBUFFERED = '1';
-            // Without this OpenSSL has no trust anchors at all — there is no
-            // /etc/ssl on a Nimbus session — and every HTTPS request fails
-            // verification with a message about a missing local issuer rather than
-            // about a missing bundle.
-            if (!userEnv.SSL_CERT_FILE && cacertVfs)
-                userEnv.SSL_CERT_FILE = `/${cacertVfs.replace(/^\/+/, '')}`;
+            const interpreterEnv = {
+                base: { ...(ctx.env || {}) },
+                facts: { runtime: 'python', home, cacert: cacertVfs ? `/${cacertVfs.replace(/^\/+/, '')}` : null },
+            };
+            const userEnv = interpreterProcessEnv(interpreterEnv.base, interpreterEnv.facts);
             const facetArgs = {
                 bootstrapCode: prelude,
                 userCode,
@@ -352,7 +347,7 @@ export function makeCPythonRunnerFactory(deps) {
                 const output = runtimeOutput(ctx);
                 let spawnResult;
                 try {
-                    spawnResult = await deps.startResident({ wasmVfsPath: wasmVfs, startArgs: facetArgs, processEnv: { ...(ctx.env || {}) }, cwd, command, argv: [binName, ...argv], invokerPid: ctx.pid, signal: ctx.signal, write: output.write });
+                    spawnResult = await deps.startResident({ wasmVfsPath: wasmVfs, startArgs: facetArgs, interpreterEnv, cwd, command, argv: [binName, ...argv], invokerPid: ctx.pid, signal: ctx.signal, write: output.write });
                 }
                 finally {
                     await output.end();

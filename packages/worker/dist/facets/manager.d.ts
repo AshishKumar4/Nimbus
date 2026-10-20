@@ -20,6 +20,7 @@ import { type OpenCodeTransportPlan } from '../runtime/opencode-invocation.js';
 import { type RuntimeCodeEntry } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { ReadAheadBudget } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { type ProcessEntry, type ProcessRestart } from '@nimbus-sh/core/runtime/process-table.js';
+import { type InterpreterEnvFacts } from '@nimbus-sh/core/runtime/interpreter-env.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { type SignalAbortReason } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { type NodeFacetSources } from '../runtime/node-shims-artifact.js';
@@ -46,7 +47,7 @@ import { ReplaySessions } from '../runtime/replay-session.js';
 import type { ProcessInputPacket } from '@nimbus-sh/core/runtime/process-input.js';
 import { type ProcessHostFactory, type ResidentCodeSpec, type Supervise } from '@nimbus-sh/fabric/process-fabric.js';
 import { ProcessJournals } from '../session/process-journals.js';
-import { type ProcessEnvKeeper, type ResolveProcessEnv } from './process-env.js';
+import { type ProcessEnvKeeping, type ResolveProcessEnv } from './process-env.js';
 import { type FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
 import { type WasmImageRecord } from './wasm-image-digest.js';
 /**
@@ -910,13 +911,12 @@ export interface FacetManagerHooks {
      */
     resolveProcessEnv?: ResolveProcessEnv;
     /**
-     * Told each relaunchable launch's environment when its record is written,
-     * and when the record is gone: what a host that answers resolveProcessEnv
-     * from its own keeping composes (the session's, session/process-env.ts).
-     * An embedder that knows its processes' environments composes
-     * resolveProcessEnv alone.
+     * Where a host that answers resolveProcessEnv from its own keeping keeps
+     * each relaunchable launch's environment: a row beside its record, written
+     * and deleted with it (the session's, session/process-env.ts). An embedder
+     * that knows its processes' environments composes resolveProcessEnv alone.
      */
-    keepProcessEnv?: ProcessEnvKeeper;
+    keepProcessEnv?: ProcessEnvKeeping;
 }
 export interface ForegroundLaunch {
     signal: AbortSignal;
@@ -984,13 +984,13 @@ export interface LongRunningWorkerSpawnOptions {
     /** Forwarded verbatim to the runner's startProcess. */
     startArgs?: unknown;
     /**
-     * The process environment within an interpreter resident's
-     * `startArgs.userEnv`: what its command was launched with, beside what its
-     * runtime adds. Never stored: its image keeps the runtime's additions
-     * alone (`runtimeEnv`), and its relaunch asks the host for the rest
-     * (resolveProcessEnv).
+     * What an interpreter resident's `startArgs.userEnv` was built from: its
+     * command's environment (`base`) and its runtime's facts (core
+     * interpreter-env.ts). Never stored whole: its image keeps the facts
+     * (`envFacts`), and its relaunch asks the host for the base again
+     * (resolveProcessEnv) and builds the rest as the first launch did.
      */
-    processEnv?: Record<string, string>;
+    interpreterEnv?: InterpreterLaunchEnv;
     /**
      * Set for a worker a durable application owns: the launch is journalled and
      * re-driven after an instance reset through `hooks.resolveWorkerLaunch`.
@@ -1108,6 +1108,11 @@ export interface WorkerRecipe {
 export type ResidentRestartPolicy = 'never' | 'on-failure';
 /** The env var a launch reads its restart policy from — set by startProcess({ restart }) and `nimbus start --restart`. */
 export declare const RESTART_POLICY_ENV = "NIMBUS_RESTART";
+/** What an interpreter resident's environment is built from; no facts for a launch its runtime did not build (an embedder's own). */
+interface InterpreterLaunchEnv {
+    base: Record<string, string>;
+    facts: InterpreterEnvFacts | null;
+}
 /** One application as `apps.list` reports it — every stamped identity, live or not. */
 export interface ResidentAppSummary {
     owner: string;
@@ -1338,19 +1343,20 @@ export declare class FacetManager {
     constructor(ctx: DurableObjectState, env: unknown, processes: SessionProcessSupervisor, portRegistry: PortRegistry, host: ProcessHostFactory, hooks?: FacetManagerHooks);
     /**
      * What releases before ask 62 kept of their processes' environments, once
-     * per session, before anything of it is re-driven:
-     * - a Node resident's journal row held its env: kept where this host keeps
-     *   environments (keepProcessEnv), and written again without it;
-     * - a durable application's image held its interpreter's environment, or a
-     *   binding env, where every process could read it: written again without
-     *   it, its rows and its owner's images naming the new one, the old blobs
-     *   unlinked. An application whose binding env nothing can give back (no
-     *   embedder resolveWorkerLaunch) is not restarted, and the session is told;
-     * - a Node resident's generated source, in the image store or below
-     *   /var/lib/nimbus where releases through 0.19 wrote it: unlinked (its
-     *   recipe generates it again).
-     * Unlinked bytes are then collected (the VFS's content GC). A filesystem
-     * snapshot or export taken before keeps what it held.
+     * per session, before anything of it is re-driven or read. Each record
+     * moves its environment to where this host keeps environments
+     * (keepProcessEnv) in the same storage write that strips it:
+     * - a Node resident's journal row, and a dev server's record, held it;
+     * - every application blob that held an interpreter's environment, or a
+     *   binding env, where every process could read it (named by an index, a
+     *   row, or nothing): written again without it, as the facts its
+     *   environment was built from, its rows and owner indexes naming the new
+     *   blob, the old one unlinked. An application whose binding env nothing
+     *   can give back (no embedder resolveWorkerLaunch) is not restarted, and
+     *   the session is told;
+     * - a Node resident's generated source, in the image directory or below
+     *   /var/lib/nimbus where releases through 0.19 wrote it: unlinked.
+     * A filesystem snapshot or export taken before keeps what it held.
      */
     private _dropEnvironmentsAtRest;
     /**
@@ -1399,7 +1405,12 @@ export declare class FacetManager {
     /** Stop `pid`'s uptime proof: the process ended, or its proof restarts. */
     private _dropUptimeProof;
     private _onResidentTerminal;
-    /** Claim identity AND write its recovery row in one serializable storage transaction. */
+    /**
+     * Claim identity AND write its recovery row in one serializable storage
+     * transaction, with the environment its relaunch asks for (`env`, when it
+     * asks) kept beside the row where this host keeps environments. A claim
+     * again of a row already written leaves what is kept beside it.
+     */
     private _claimResident;
     private _releaseResidentClaim;
     /**
