@@ -943,10 +943,18 @@ function scalarOf(parameter: Parameter, ctx: ExpandContext): string {
  * How a word inside `${…}` is quoted: as a word (`word`), as double-quoted text
  * (`double`: a `-`, `+`, `=` or `?` word inside "…", where `'` is literal and a
  * backslash quotes only `$`, `` ` ``, `"`, itself and a newline), or as a
- * here-document's body (`heredoc`: so, and `$'…'` and `"` before a backslash
- * literal too).
+ * here-document's operand (`heredoc`: so, and `$'…'` and `"` before a backslash
+ * literal too), or as a here-document's body (`body`: as `heredoc`, its `"` and
+ * `'` literal too). Outside `word` its plain text is double-quoted text: no
+ * tilde, no splitting; a `"…"` inside any is double-quoted text, its escapes,
+ * substitutions and expansions read as such.
  */
-type ParameterWordMode = 'word' | 'double' | 'heredoc';
+type ParameterWordMode = 'word' | 'double' | 'heredoc' | 'body';
+
+/** A here-document's body expanded, as bash's: parameters, substitutions (backquoted too), and `\$`, `` \` ``, `\\` and a line's `\` end; nothing else. */
+export async function expandHereDocument(body: string, ctx: ExpandContext): Promise<string> {
+  return joinPieces(await expandParameterWord(body, { ...ctx, hereDocument: true }, 'body'));
+}
 
 /** The word inside `${p:-word}`, `${p#pattern}` and friends, expanded with quote removal, as pieces. */
 async function expandParameterWord(word: string, ctx: ExpandContext, mode: ParameterWordMode): Promise<Piece[]> {
@@ -966,7 +974,7 @@ function parameterWordParts(word: string, mode: ParameterWordMode): WordPart[] {
   let text = '';
   const flush = (): void => {
     if (text === '') return;
-    parts.push({ text, quoted: 'none' });
+    parts.push({ text, quoted: plain ? 'double' : 'none' });
     text = '';
   };
 
@@ -975,6 +983,11 @@ function parameterWordParts(word: string, mode: ParameterWordMode): WordPart[] {
     const ch = word[i];
     // In double-quoted text a backslash quotes only $, `, ", itself and a newline (not ", in a here-document); before anything else it is text.
     if (ch === '\\' && i + 1 < word.length && (!plain || (mode === 'double' ? '$`"\\\n' : '$`\\\n').includes(word[i + 1]))) {
+      // A backslash before a newline joins the lines, in double-quoted text and a here-document.
+      if (plain && word[i + 1] === '\n') {
+        i += 2;
+        continue;
+      }
       flush();
       parts.push({ text: word[i + 1], quoted: 'single' });
       i += 2;
@@ -985,7 +998,7 @@ function parameterWordParts(word: string, mode: ParameterWordMode): WordPart[] {
       i += 2;
       continue;
     }
-    if (mode !== 'heredoc' && ch === '$' && word[i + 1] === "'") {
+    if (mode !== 'heredoc' && mode !== 'body' && ch === '$' && word[i + 1] === "'") {
       flush();
       const quoted = readAnsiCQuote(word, i);
       parts.push({ text: quoted.text, quoted: 'single' });
@@ -1009,12 +1022,16 @@ function parameterWordParts(word: string, mode: ParameterWordMode): WordPart[] {
         continue;
       }
     }
-    if ((ch === "'" && !plain) || ch === '"') {
+    if ((ch === "'" && !plain) || (ch === '"' && mode !== 'body')) {
       // Its close as the lexer finds it: a quote in a substitution inside it is the substitution's.
       const end = readQuoted(word, i, ch).end;
       const close = end > i + 1 && word[end - 1] === ch ? end - 1 : word.length;
       flush();
-      parts.push({ text: word.slice(i + 1, close), quoted: ch === "'" ? 'single' : 'double' });
+      const inner = word.slice(i + 1, close);
+      if (ch === "'") parts.push({ text: inner, quoted: 'single' });
+      // Double-quoted text, its escapes and substitutions read as such; `""` is still the empty field.
+      else if (inner === '') parts.push({ text: '', quoted: 'double' });
+      else parts.push(...parameterWordParts(inner, 'double'));
       i = close + 1;
       continue;
     }

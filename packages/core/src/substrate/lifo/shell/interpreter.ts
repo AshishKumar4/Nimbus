@@ -37,7 +37,7 @@ import { execRefusal } from '../../../shell/exec-dispatch.js';
 import { withRecall } from '../../../vfs/recall.js';
 import { parseAssignment, ParseError, ScriptLines } from './parser.js';
 import {
-  expandArithmetic, expandBraceWord, expandWords, expandWord, expandPatternWord, expandSubscript, arithmeticOf, arithmeticValue, ArithmeticError, ExpansionError, reportWarnings, SubscriptArithmeticError,
+  expandArithmetic, expandBraceWord, expandHereDocument, expandWords, expandWord, expandPatternWord, expandSubscript, arithmeticOf, arithmeticValue, ArithmeticError, ExpansionError, reportWarnings, SubscriptArithmeticError,
   type ExpandContext, type CapturedCommand,
 } from './expander.js';
 import { evaluateDoubleBracketWords } from './test-builtin.js';
@@ -1924,7 +1924,7 @@ export class Interpreter {
         const heredoc = redir.heredoc ?? { body: '', quoted: false, stripTabs: false };
         const body = heredoc.quoted
           ? heredoc.body
-          : await expandWord([{ text: heredoc.body, quoted: 'double' }], { ...targetCtx, hereDocument: true });
+          : await expandHereDocument(heredoc.body, targetCtx);
         this.setInputFd(fds, redir.fd ?? 0, { stream: staticStdinReader(body), terminal: false });
         continue;
       }
