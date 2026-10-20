@@ -621,8 +621,6 @@ function spawnResident(
   });
   incarnation.catch(() => {});
   let started: Promise<unknown>;
-  // Watched while it boots, until its start answers: not for its life, which an idle resident spends with no tick running.
-  const booting = holdThreadWatch(ctx, `boot pid ${params.pid}`);
   try {
     // The allowance the ledger admitted, for the facet's store to keep under.
     const startArgs = ledger !== null && params.storageBytes !== undefined && params.startArgs !== null && typeof params.startArgs === 'object'
@@ -630,11 +628,9 @@ function spawnResident(
       : params.startArgs;
     started = facet.startProcess(startArgs);
   } catch (error) {
-    booting();
     void release();
     throw error;
   }
-  started.then(booting, booting);
   started = started.then((payload) => {
     // Once the facet is up (N18) its row is the cap its store keeps under
     // (what it measures plus what it may still grow into), or what it
