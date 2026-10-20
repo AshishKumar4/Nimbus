@@ -83,6 +83,9 @@ export const ROOT_INODE = 1;
  * shape is declared here rather than assumed present.
  */
 const nodeHost = globalThis;
+function accessMemo(tree) {
+    return { closed: new Map(), linked: new Set(), tree };
+}
 /**
  * `descriptions`, each id it adopts noted in `adopted`: an attempt that rolls
  * back closes what it adopted (waveScope.commitCalls), as the rollback closes
@@ -3171,7 +3174,7 @@ export class SqliteVFS {
         }
         // Per directory, the highest one at or above it that the caller may not
         // enter now: one lookup per directory per answer, not per entry.
-        const closedAbove = new Map();
+        const closedAbove = accessMemo(this.inodes);
         for (const entry of log) {
             if (entry.rev <= cursor)
                 continue;
@@ -3207,23 +3210,39 @@ export class SqliteVFS {
     }
     /**
      * The highest directory at or above `dir` (a name in the caller's view)
-     * that the caller may not enter, in `tree` (the live one by default), or
-     * null: each directory judged once in `memo`, by the search check
-     * resolvePath makes of each directory on a walk.
+     * that the caller may not enter, in `memo.tree` (the live one by default),
+     * or null: each directory judged once, by the search check resolvePath
+     * makes of each directory on a walk. A link, and everything named below
+     * it, is judged by that resolve itself (where the link leads, with the
+     * recalls a lookup through it makes); a plain directory by its own row,
+     * which `rows` may hold already (a listing's page).
      */
-    closedAbove(dir, cred, memo, tree = this.inodes) {
+    closedAbove(dir, cred, memo, rows = memo.tree) {
         if (dir === '')
             return null;
-        const known = memo.get(dir);
+        const known = memo.closed.get(dir);
         if (known !== undefined)
             return known;
-        let closed = this.closedAbove(parentKey(dir), cred, memo, tree);
+        const parent = parentKey(dir);
+        let closed = this.closedAbove(parent, cred, memo, rows);
         if (closed === null) {
-            const inode = tree.get(this.keyOfName(dir, this.confinedTmpRoots.get(cred.uid)));
-            if (inode === undefined || inode.kind !== 'directory' || !this.accessInode(inode, 0o1, cred))
+            const inode = memo.linked.has(parent) ? undefined : rows.get(this.keyOfName(dir, this.confinedTmpRoots.get(cred.uid)));
+            if (memo.linked.has(parent) || inode?.kind === 'symlink') {
+                memo.linked.add(dir);
+                try {
+                    this.checkAccess(dir, 0o1, cred, { tree: memo.tree });
+                }
+                catch (error) {
+                    if (error instanceof RecallRequired)
+                        throw error;
+                    closed = dir;
+                }
+            }
+            else if (inode === undefined || inode.kind !== 'directory' || !this.accessInode(inode, 0o1, cred)) {
                 closed = dir;
+            }
         }
-        memo.set(dir, closed);
+        memo.closed.set(dir, closed);
         return closed;
     }
     /**
@@ -5060,7 +5079,7 @@ export class SqliteVFS {
         // own row where the page read it (a directory's row precedes its
         // entries'), not from a lookup of its own: rows arrive in path order,
         // but a directory's entries resume after each of its subdirectories'.
-        const closed = new Map();
+        const closed = accessMemo(this.inodes);
         const listedDirectories = new Map();
         const directories = { get: (key) => listedDirectories.get(key) ?? this.inodes.get(key) };
         // The storage key of the last directory found closed: what is under it is
@@ -6544,7 +6563,7 @@ export class SqliteVFS {
                 const fits = listPageBudget(epoch, g);
                 const pageEnding = () => ({ epoch, rev: g, entries, next: entries[entries.length - 1]?.path ?? null });
                 // Each directory above a row judged once a page, from its own row (as a live page is).
-                const closed = new Map();
+                const closed = accessMemo(tree);
                 const listedDirectories = new Map();
                 const directories = { get: (key) => listedDirectories.get(key) ?? tree.get(key) };
                 const linkTargets = options?.linkTargets !== false;

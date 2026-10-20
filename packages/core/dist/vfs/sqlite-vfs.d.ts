@@ -1205,9 +1205,12 @@ export declare class SqliteVFS {
     private hiddenBehind;
     /**
      * The highest directory at or above `dir` (a name in the caller's view)
-     * that the caller may not enter, in `tree` (the live one by default), or
-     * null: each directory judged once in `memo`, by the search check
-     * resolvePath makes of each directory on a walk.
+     * that the caller may not enter, in `memo.tree` (the live one by default),
+     * or null: each directory judged once, by the search check resolvePath
+     * makes of each directory on a walk. A link, and everything named below
+     * it, is judged by that resolve itself (where the link leads, with the
+     * recalls a lookup through it makes); a plain directory by its own row,
+     * which `rows` may hold already (a listing's page).
      */
     private closedAbove;
     /**
