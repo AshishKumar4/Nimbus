@@ -95,6 +95,8 @@ const turns = async () => { for (let i = 0; i < 200; i++) await new Promise((res
   for (const instance of instances) instance.answered.length = 0;
   const first = await spawned.facet.fetch(new Request('https://worker.local/first'));
   assert.equal(first.status, 200);
+  // Read whole: the request is done, and the process sits idle.
+  await first.text();
   await turns();
   const name = world.liveFacets().find((facet) => !facet.startsWith('app-slot-'));
   world.replace(name);
