@@ -280,8 +280,10 @@ export function createTransport(coherence: Coherence, admission: Admission, name
     const landed = new SafeMap<string, number>();
     let filled = 0, failed = 0, fetchedBytes = 0;
     const failedPaths = new SafeSet<string>();
-    /** This read's own: the chunk rows it writes are its while no read started after it writes them too (cells.putChunk). */
-    const fill: ResidentFill = { started: new SafeSet<string>() };
+    /** This read's own, from before it is asked: the chunk rows it writes are its while nothing changes their heads (cells.beginFill). */
+    const paths = new SafeList<string>();
+    for (let i = 0; i < files.length; i++) paths[paths.length] = files[i].path;
+    const fill: ResidentFill = cells.beginFill(paths);
     for (let at = 0; at < ranges.length;) {
       const batch: typeof ranges = new SafeList();
       let bytes = 0;
