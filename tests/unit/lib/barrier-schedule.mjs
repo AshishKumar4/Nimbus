@@ -16,21 +16,16 @@
  *                          session (a parked reply has reached it), or go on;
  *   ['settle']             wait until nothing moves without a release;
  *   ['poison']             the next ACQUIRE is answered with a poison;
- *   ['restart']            the session starts again (another epoch, its
- *                          revisions counted from the start): every file at
- *                          the revision it had where it can be, its bytes
- *                          changed and their size not, so a page or a fill
- *                          of the last incarnation's bytes, held or in
- *                          flight, could pass for this one's;
- *   ['aligned', rel]       the last restart kept `rel` at its revision (a
- *                          schedule that needs the same revision says so).
- * A restart is the session's new incarnation (vfs rotateIncarnation, after a
- * restore to an earlier point): every cursor poisons, and the process's
- * writer is failed, so a change of its own begun after one may not reach the
- * session (refused EIO, if it waits). What the process then shows of the
- * names such a change touched is judged at rest against what the session
- * holds. A restart here also takes the process's descriptors, which a real
- * one keeps: it waits for every descriptor read in flight to land first.
+ *   ['restart']            the session's database starts a new incarnation
+ *                          (SqliteVFS rotateIncarnation): every cursor held
+ *                          against the last one poisons; its files, their
+ *                          revisions and the process's descriptors stay.
+ * A restart is only what the platform produces: one database's revisions
+ * never go back (vfs_state.gen is durable, and an answer is held until the
+ * write it names commits), so a new epoch never names a revision of the last
+ * one's with other bytes. A world where it would (a new database under a
+ * store that outlived it) is not drawn: the store keeps its invariants for
+ * it (pages keyed by epoch, a fill's own chunk rows) at no cost.
  * Reads are stat, readFile, readdir, (awaited) opendir, a directory read
  * through its descriptor, and (awaited) pread, a file's bytes at an offset
  * read through its descriptor; a file past what a process holds whole
@@ -107,13 +102,6 @@ const PREAD_BYTES = 4096;
 const PREAD_AT = Object.freeze([0, 70_000, 4_200_000, 8_400_000]);
 /** A file of `size` printable bytes, `tag` its pattern. */
 const bulk = (tag, size) => `${tag}:0123456789abcdefghijklmnopqrstuvwxyz `.repeat(Math.ceil(size / (tag.length + 38))).slice(0, size);
-/** `content` as the next incarnation holds it: every byte another, its size the same. */
-function turned(content) {
-  const bytes = Buffer.from(content, 'latin1');
-  for (let i = 0; i < bytes.length; i++) bytes[i] = 32 + ((bytes[i] - 32 + 1) % 95);
-  return bytes.toString('latin1');
-}
-
 /** The project `schedule` starts from: SEED_TREE, and the BULK files it names. */
 export function seedTreeFor(schedule) {
   const named = new Set(schedule.flat().filter((part) => typeof part === 'string'));
@@ -447,11 +435,6 @@ export function createModel(tree = SEED_TREE) {
     admits: (op, rel, answer, from, to, decided = false, offset = 0) => worldsSeen(rel, from, to, decided).some((w) => answers(op, rel, answer, w, offset)),
     /** Whether any change is in flight. */
     moving: () => changes.some((change) => change.done === null),
-    /** The session started again holding `next`: a state of its own, after every change returned. */
-    restart(next) {
-      world = next;
-      history.push(world);
-    },
     /** The state the latest change of `rel` (or above it) landed at; Infinity while one is in flight. */
     touched: (rel) => Math.max(0, ...changes.filter((c) => c.domain.some((root) => under(rel, root))).map((c) => (c.done === null ? Infinity : c.done))),
     /** The state the latest structural change of the process's own in flight at or about `rel` began at, or 0. */
@@ -498,8 +481,6 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
   const engine = await bootEngine(kind, {
     seed: (authority) => {
       for (const [rel, content] of Object.entries(tree)) {
-        // The bulk files well past what a restart spends before them, so the next incarnation can keep their revisions.
-        if (rel in BULK) for (let i = 0; i < 60; i++) authority.kfs.writeFile('home/user/.filler', '');
         if (content === null) authority.kfs.mkdir(key(rel), { mode: DIR_MODE });
         else authority.kfs.writeFile(key(rel), content);
       }
@@ -546,7 +527,6 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
   const refusable = (op, rel, from, to) => (op === 'readFile' && owedBytes(rel) ? false
     : lazy || poisoned || transport.inFlight('listing') > 0 || (op === 'readFile' && model.readable(rel, from, to)));
   const judge = (at, way, op, rel, answer, from, to, offset = 0) => {
-    if (answer?.code === 'EBADF' && (op === 'pread' || op === 'opendir') && restarts.some((i) => i >= from && i <= to)) return;
     if (answer?.code === 'EAGAIN' && way === 'sync' && refusable(op, rel, from, to)) return;
     if (gaps.refusedAsDirectory && way === 'sync' && answer?.code === 'EISDIR' && model.worldsSeen(rel, from, to).some((world) => world.get(rel)?.type === 'dir')) return;
     if (gaps.absentWhileRelisted && way === 'sync' && answer === null && transport.inFlight('listing') > 0) return;
@@ -612,7 +592,6 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
     }
     const record = model.begin(step);
     if (record === null) { note(`  (step ${at} skipped: ${JSON.stringify(step)} is not valid now)`); return null; }
-    if (!outside(way) && restarts.length > 0) for (const root of domain) unsure.add(root);
     const publishes = outside(way) && overlaps(unpublished, domain) ? unpublished : null;
     const finish = () => model.finish(record, () => {
       if (outside(way)) peerAt.push({ done: seq(), domain });
@@ -638,10 +617,6 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
     const published = publishes === null ? Promise.resolve() : engine.publish().then(() => { unpublished = unpublished.filter((root) => !publishes.includes(root)); });
     return track(published.then(() => change(way, step)).then(finish, (error) => {
       model.drop(record);
-      if (!outside(way) && error?.code === 'EIO' && restarts.some((i) => i <= record.begun)) {
-        note(`  (step ${at}: refused after a restart: ${step[1]} ${step.slice(2).join(' ')})`);
-        return;
-      }
       failures.push(new Finding(`${way} ${step[1]} ${step.slice(2).join(' ')} failed: ${error?.code ?? error?.message ?? error}`, at));
     }));
   };
@@ -672,59 +647,20 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
     if (failures.length > 0) throw failures[0];
   };
 
-  /**
-   * The session starts again: once nothing of the process's is in flight
-   * (its waves answered, what it wrote published), the next incarnation
-   * holds every name as the model does, each file at the revision it had
-   * where it can be, its bytes turned. The process learns of it with its
-   * next barrier, a poison. Node's own engine (node-shims) is not run
-   * across one: it goes with the cutover.
-   */
-  /** Each name's revision before the last restart. */
-  const revsBefore = new Map();
-  /** The states the session started again at. */
+  /** The states the session's database started a new incarnation at. */
   const restarts = [];
-  /** Descriptor reads in flight. */
-  const descriptors = new Set();
-  /** Names a change of the process's own begun after a restart touched: what it shows of them is the session's to say. */
-  const unsure = new Set();
-  /** The revision the session holds `rel` at. */
-  const revisionOf = (rel) => Number(engine.authority.rawVfs.revision(key(rel), CRED_KERNEL));
-  const restart = async (at) => {
+  /**
+   * The session's database starts a new incarnation (rotateIncarnation):
+   * its files and their revisions stay; every cursor held against the last
+   * epoch poisons, and the process learns of it with its next barrier.
+   * Node's own engine (node-shims) is not run across one: it goes with the
+   * cutover.
+   */
+  const restart = (at) => {
     if (kind === 'node') { note(`  (step ${at}: a restart is the resident filesystem's to meet)`); return; }
-    stalled = false;
-    await engine.release();
-    const published = track(engine.publish());
-    for (let i = 0; i < 1_000 && (model.moving() || inflight.has(published) || descriptors.size > 0); i++) {
-      while (transport.release('wave'));
-      if (descriptors.size > 0) while (transport.release());
-      await sleep(5);
-    }
-    if (model.moving() || inflight.has(published) || descriptors.size > 0) { note(`  (step ${at} skipped: a change or a descriptor read of the process's is still in flight)`); return; }
-    unpublished = [];
-    const next = new Map();
-    // In the order they took their revisions, a directory before what it holds.
-    const byRev = [...model.world].map(([rel, state]) => ({ rel, state, rev: revisionOf(rel) })).sort((a, b) => a.rev - b.rev);
-    const entries = [];
-    const made = new Set();
-    const make = (item) => {
-      if (made.has(item.rel)) return;
-      if (item.rel !== '') make(byRev.find((other) => other.rel === parentOf(item.rel)));
-      made.add(item.rel);
-      const { rel, state, rev } = item;
-      const content = state.type === 'file' ? turned(state.content) : undefined;
-      next.set(rel, content === undefined ? state : { ...state, content });
-      revsBefore.set(rel, rev);
-      entries.push({ key: key(rel), type: state.type, content, mode: state.mode, uid: state.uid, gid: state.gid, ...(state.type === 'file' ? { rev } : {}) });
-    };
-    for (const item of byRev) make(item);
-    engine.authority.incarnate(entries);
-    model.restart(next);
+    engine.authority.rawVfs.rotateIncarnation();
     restarts.push(seq());
-    peerAt.push({ done: seq(), domain: [''] });
-    resident.clear();
-    poisoned = true;
-    note(`  (step ${at}: the session started again, epoch ${engine.authority.cursor().epoch})`);
+    note(`  (step ${at}: the session's database started a new incarnation, epoch ${engine.authority.cursor().epoch})`);
   };
 
   const step = async (at, s) => {
@@ -736,11 +672,6 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
     if (what === 'stall') { stalled = true; return engine.stall(); }
     if (what === 'unstall') { stalled = false; return engine.release(); }
     if (what === 'restart') return restart(at);
-    if (what === 'aligned') {
-      const now = revisionOf(s[1]);
-      if (kind !== 'node' && now !== revsBefore.get(s[1])) throw new Finding(`the restart did not keep ${s[1]} at its revision (${revsBefore.get(s[1])}, now ${now}): the schedule does not test what it says`, at);
-      return undefined;
-    }
     if (what === 'input') {
       const arrived = seq();
       inputsInFlight++;
@@ -756,12 +687,7 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
         return judge(at, way, op, rel, answer, bound, seq());
       }
       const from = kind === 'node' ? seq() : bound;
-      const reading = read(way, op, rel, offset);
-      if (op === 'pread' || op === 'opendir') {
-        descriptors.add(reading);
-        reading.finally(() => descriptors.delete(reading));
-      }
-      return void track(reading.then((answer) => {
+      return void track(read(way, op, rel, offset).then((answer) => {
         judge(at, way, op, rel, answer, from, seq(), offset);
         // A file past what the process holds whole is never held: its refusals are no miss.
         if (op === 'readFile' && typeof answer === 'string' && answer.length <= WASI_RESIDENT_FILE_CAP_BYTES) {
@@ -811,31 +737,21 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
       const owed = [...missed].filter((rel) => world.get(rel)?.type === 'file').map(key).sort();
       if (ledger.join() !== owed.join()) throw new Finding(`at rest, the program's misses are [${ledger}]; unanswered are [${owed}]`, end);
     }
-    // What the session holds where a change of the process's own after a restart may not have reached it.
-    const truth = new Map(world);
     for (const rel of readable) {
-      if (![...unsure].some((root) => under(rel, root) || under(root, rel))) continue;
-      const held = normalized(await engine.authority.peerAs(CRED_KERNEL).lstat(key(rel)).catch(() => null));
-      if (held === null) { truth.delete(rel); continue; }
-      const content = held.type === 'file' ? engine.authority.rawVfs.as(CRED_KERNEL).readFile(key(rel)) : undefined;
-      truth.set(rel, held.type === 'directory' ? { type: 'dir', mode: held.mode & 0o777, uid: held.uid, gid: held.gid }
-        : { type: 'file', content: dec.decode(content), size: held.size, mode: held.mode & 0o777, uid: held.uid, gid: held.gid });
-    }
-    for (const rel of readable) {
-      const state = truth.get(rel);
+      const state = world.get(rel);
       for (const way of ['own', 'sync']) {
         for (const op of ['stat', state?.type === 'dir' ? 'readdir' : 'readFile']) {
           const answer = await read(way, op, rel);
           if (answer?.code === 'EAGAIN' && way === 'sync' && (op === 'readFile' ? !owedBytes(rel) && (lazy || model.readable(rel, seq(), seq())) : lazy)) continue;
           if (answer?.code === 'EISDIR' && way === 'sync' && gaps.refusedAsDirectory && state?.type === 'dir') continue;
-          if (!answers(op, rel, answer, truth)) {
+          if (!answers(op, rel, answer, world)) {
             throw new Finding(`at rest, ${way} ${op} ${rel || '.'} answered ${JSON.stringify(answer)}; the model holds ${describe(state)}`, end);
           }
         }
       }
       // What the session holds is what the model says, as root sees it: nothing the process wrote was lost.
       const held = normalized(await engine.authority.peerAs(CRED_KERNEL).lstat(key(rel)).catch(() => null));
-      if (!statIs(held, world.get(rel)) && truth.get(rel) === world.get(rel)) throw new Finding(`at rest, the session holds ${JSON.stringify(held)} at ${rel || '.'}; the model says ${describe(state)}`, end);
+      if (!statIs(held, state)) throw new Finding(`at rest, the session holds ${JSON.stringify(held)} at ${rel || '.'}; the model says ${describe(state)}`, end);
     }
   } finally {
     transport.drain();

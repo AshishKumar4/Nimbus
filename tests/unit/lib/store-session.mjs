@@ -48,9 +48,11 @@ async function incarnation(tree) {
  * paths and each read's. `delegated`: the process is a delegation's holder
  * (its waves and grants through the same session), which asks a read lease
  * with each barrier; it takes no subtree, so each change it makes is one
- * outside a grant. `incarnate(tree)` starts the session again (its next
- * incarnation: another epoch, its revisions counted from the start) holding
- * `tree`; `kernel` and `authority` are always the session's current ones.
+ * outside a grant. `incarnate(tree)` gives the session a new database
+ * (another epoch, its revisions counted from the start) holding `tree`, under
+ * the store as it is: a world the platform does not produce (one database's
+ * revisions never go back), kept to hold the store's invariants for it;
+ * `kernel` and `authority` are always the session's current ones.
  * @param {Record<string, string | null>} tree
  * @param {{ eager?: boolean, unlisted?: string[], delegated?: boolean }} [options]
  */

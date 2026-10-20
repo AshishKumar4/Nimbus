@@ -104,27 +104,24 @@ const dec = new TextDecoder();
  * native/routed line an op is on.
  */
 export function createAuthority(vfsOptions, { sequenced = false } = {}) {
-  /** One incarnation of the session's filesystem: a SqliteVFS of its own (its own epoch, its revisions counted from the start). */
-  const incarnation = () => {
-    const harness = createSqliteVfsTestHarness();
-    const rawVfs = new SqliteVFS(harness.sql, harness.ctx, undefined, vfsOptions);
-    const root = rawVfs.as(CRED_KERNEL);
-    root.mkdir('home/user', { recursive: true, mode: 0o755 });
-    root.chown('home/user', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
-    // What seedBaseFilesystem gives a session: top-level directories the
-    // kernel makes (`/` is 0755 root) and hands to the session user.
-    for (const top of ['opt', 'tmp', 'var', 'usr']) {
-      root.mkdir(top, { mode: 0o755 });
-      root.chown(top, CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
-    }
-    // The session's filesystem authority, as the session holds it: where an embedder mounts.
-    return { rawVfs, root, kfs: rawVfs.as(CRED_SESSION_USER), files: new ProcessFiles(rawVfs) };
-  };
-  let current = incarnation();
+  const harness = createSqliteVfsTestHarness();
+  const rawVfs = new SqliteVFS(harness.sql, harness.ctx, undefined, vfsOptions);
+  const root = rawVfs.as(CRED_KERNEL);
+  root.mkdir('home/user', { recursive: true, mode: 0o755 });
+  root.chown('home/user', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+  // What seedBaseFilesystem gives a session: top-level directories the
+  // kernel makes (`/` is 0755 root) and hands to the session user.
+  for (const top of ['opt', 'tmp', 'var', 'usr']) {
+    root.mkdir(top, { mode: 0o755 });
+    root.chown(top, CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+  }
+  const kfs = rawVfs.as(CRED_SESSION_USER);
+  // The session's filesystem authority, as the session holds it: where an embedder mounts.
+  const files = new ProcessFiles(rawVfs);
   const processes = new SessionProcessSupervisor();
   // As a workspace composes them (nimbus-workspace.ts): a process's end and release reach its filesystem.
-  processes.setRelease((pid) => current.files.releaseProcess(pid), (pid) => current.files.processEnded(pid));
-  const host = { sqliteFs: current.rawVfs, processes, ensureSqliteFs() {}, getFilesystemAuthority: () => current.files };
+  processes.setRelease((pid) => files.releaseProcess(pid), (pid) => files.processEnded(pid));
+  const host = { sqliteFs: rawVfs, processes, ensureSqliteFs() {}, getFilesystemAuthority: () => files };
   // `sequenced`: a process's waves are numbered under a writer epoch, as the session's deliveries number them.
   if (sequenced) Reflect.set(host, 'supervisorDeliveries', new SupervisorDeliveries());
   const routed = Object.fromEntries(Object.values(SUPERVISOR_OP_ROUTES).map(({ method }) => {
@@ -141,50 +138,15 @@ export function createAuthority(vfsOptions, { sequenced = false } = {}) {
       : target[name]),
   });
   return {
-    get rawVfs() { return current.rawVfs; },
-    get files() { return current.files; },
-    get kfs() { return current.kfs; },
-    get peer() { return peerOf(current.kfs); },
+    rawVfs,
+    files,
+    kfs,
+    peer: peerOf(kfs),
     /** A peer with credential `cred` (root's, for a change the session user may not make). */
-    peerAs: (cred) => peerOf(current.rawVfs.as(cred)),
+    peerAs: (cred) => peerOf(rawVfs.as(cred)),
     host,
-    cursor: () => ({ epoch: current.rawVfs.epoch, rev: current.rawVfs.revision() }),
-    read: (path) => dec.decode(current.kfs.readFile(path)),
-    /**
-     * The session starts again (its next incarnation: another epoch, its
-     * revisions counted from the start) holding `entries` ({ key, type
-     * 'dir' | 'file', content, mode, uid, gid }, parents first). Each entry
-     * that names `rev` gets that revision where the count has not passed it
-     * (a file of `home/user/.filler` takes the revisions between): the same
-     * name at the same revision, with whatever bytes it now holds.
-     */
-    incarnate(entries) {
-      const next = incarnation();
-      const filler = () => next.root.writeFile('home/user/.filler', new Uint8Array(0));
-      // Made by root, whatever the modes and owners above it, then given to its owner.
-      for (const entry of entries) {
-        const as = next.root;
-        if (entry.type === 'file' && entry.rev !== undefined) {
-          // What its write spends, measured on a probe of the same bytes (a large one spends more than one revision).
-          let cost = 1;
-          if (entry.content.length > 65_536) {
-            const before = next.rawVfs.revision();
-            as.writeFile('home/user/.probe', entry.content, { mode: entry.mode ?? 0o644 });
-            cost = next.rawVfs.revision() - before;
-            next.root.unlink('home/user/.probe');
-          }
-          // Its owner given after: one revision more.
-          while (next.rawVfs.revision() + cost + 1 < entry.rev) filler();
-        }
-        if (entry.type === 'dir') as.mkdir(entry.key, { mode: entry.mode ?? 0o755 });
-        else as.writeFile(entry.key, entry.content, { mode: entry.mode ?? 0o644 });
-        next.root.chown(entry.key, entry.uid ?? CRED_SESSION_USER.uid, entry.gid ?? CRED_SESSION_USER.gid);
-      }
-      current = next;
-      host.sqliteFs = next.rawVfs;
-      // The session's ops are its incarnation's, as a session that started again builds them.
-      attachSupervisorOps(host, buildSessionSupervisorOps(/** @type {any} */ (host), undefined, routed));
-    },
+    cursor: () => ({ epoch: rawVfs.epoch, rev: rawVfs.revision() }),
+    read: (path) => dec.decode(kfs.readFile(path)),
   };
 }
 

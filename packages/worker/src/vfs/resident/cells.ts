@@ -284,7 +284,12 @@ export function createCells(
   };
 
   /** One chunk row, written as it arrives. The streaming filler's primitive. */
-  /** Whose chunk rows each path's are while a fill writes them: the fill that last started. */
+  /**
+   * Whose chunk rows each path's are while a fill writes them: the fill that
+   * last started. A fill that lost them (another started after it, a late
+   * reply of one the store started again past) neither finishes nor drops
+   * them, so no fill decides for another's rows.
+   */
   const filling = new SafeMap<string, ResidentFill>();
 
   const putChunk = (t: ResidentTables, path: string, part: number, bytes: Uint8Array, fill: ResidentFill): boolean => {
