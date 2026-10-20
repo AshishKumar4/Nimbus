@@ -5,6 +5,11 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a Node program could read a file it had deleted with
+  `fs.readFileSync` after the session restarted, while `fs.statSync` said
+  it was not there: bytes the program's store still held under the name
+  were served though the name was gone. `readFileSync` now answers as
+  `statSync` does.
 - Fixed: a WASI program (python, ruby, clang, bash) could lose a write,
   with `EIO` at its close or fsync, or with no error at all for a call
   that does not wait, when another process changed a file while the
