@@ -111,7 +111,7 @@ export function installNpmBinFallbackResolver(
     if (name.startsWith('/') || name.startsWith('./') || name.startsWith('../')) {
       const bin = await probe(() => resolveNpmBinPath(inspector, cwd, name));
       if (!bin) return await upstreamResolve(name, context);
-      return binHandler(bin.name, async (vfs) => await resolveNpmBinPath(vfs, cwd, name), true);
+      return await ownInPlaceOf(inspector, bin) ?? binHandler(bin.name, async (vfs) => await resolveNpmBinPath(vfs, cwd, name), true);
     }
 
     // Registered commands, then PATH (searched upstream), then the bins of
@@ -134,8 +134,15 @@ export function installNpmBinFallbackResolver(
       });
     }
 
-    return binHandler(name, async (vfs) => await resolveNpmBin(vfs, cwd, name), false);
+    return await ownInPlaceOf(inspector, bin) ?? binHandler(name, async (vfs) => await resolveNpmBin(vfs, cwd, name), false);
   };
+
+  /** Nimbus's own program in place of installed bin `bin`, by name or by path (an npm script's PATH), when its package cannot run here. */
+  async function ownInPlaceOf(inspector: ProjectFs, bin: NpmBinResolution): Promise<Command | undefined> {
+    if (!deps.ownPrograms?.names.has(bin.name)) return undefined;
+    const installed = await readNpmBinPackageMetadata(inspector, bin.packagePath);
+    return installed === null ? undefined : deps.ownPrograms.inPlaceOf(bin.name, installed);
+  }
 
   /**
    * The command that runs an npm bin. `executesShim`: the shim file is what
@@ -174,13 +181,6 @@ export function installNpmBinFallbackResolver(
           ctx.stderr.write(`/${bin.shimPath}: Permission denied\n`);
           return 126;
         }
-      }
-      // An installed program that cannot run here, by name or by path (an
-      // npm script's PATH), is Nimbus's own where it has one.
-      if (deps.ownPrograms?.names.has(name)) {
-        const installed = await readNpmBinPackageMetadata(vfs, bin.packagePath);
-        const own = installed === null ? undefined : deps.ownPrograms.inPlaceOf(name, installed);
-        if (own) return await (own as FallbackCommandHandler)(ctx);
       }
 
       const argv = Array.isArray(ctx.args) ? ctx.args.map(String) : [];
