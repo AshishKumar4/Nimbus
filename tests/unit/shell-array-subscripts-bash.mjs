@@ -93,7 +93,7 @@ const LINES = [
   'f() { a=(); a[-1]=x; echo in; }; f; echo "after $?"\necho "next $?"',
   '(a=(); a[-1]=x; echo in); echo "paren $?"; x=$(a=(); a[-1]=x; echo in); echo "sub $? [$x]"',
   'a=(); eval "a[-1]=x; echo in\necho in2 \\$?"; echo "after $?"',
-  'a=([$( : ]=; echo 2)]=v [`echo [1]`]=w); declare -p a',
+  'a=([$( : ]=; echo 2)]=v [`: ]; echo 1`]=w); declare -p a',
   // Under `set -e` an error the shell reports ends it, an `if`'s condition too (bash's report_error).
   'set -e; a=(); a[-1]=x\necho next',
   'set -e; a=([-1]=x z)\necho "next $?"',
