@@ -89,7 +89,7 @@ const walk = async (dir) => {
   for (const name of names) {
     const path = dir === '' ? name : `${dir}/${name}`;
     let st;
-    try { st = await view.lstat(`${root}/${path}`); }
+    try { st = await view.stat(`${root}/${path}`, { follow: false }); }
     catch (error) { if (error.code === 'EACCES') continue; throw error; }
     byNameWalk.stats.set(path, st);
     if (st.type === 'directory') await walk(path);

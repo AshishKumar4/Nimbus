@@ -320,6 +320,18 @@ export declare class ProcessView implements VFS {
     readdirStat(path: string): Promise<Array<ProcessStat & {
         name: string;
     }>>;
+    /**
+     * Every entry strictly under directory `path` with its lstat, in path
+     * order (which is a git index's order): one paged scan of the filesystem
+     * (`list`, which recalls each delegation an lstat of an entry would)
+     * instead of a listing per directory and a stat per entry. A directory a
+     * walk by name would answer differently is marked `byName`, for the
+     * caller to ask by name: one on a mount whose names the scan does not
+     * list (`unlisted`), or one the caller may not read and search
+     * (`unreadable`), whose readdir is refused. Between pages the thread is given up for a turn: a page of SCAN_PAGE
+     * entries is one bounded slice of the session's thread.
+     */
+    scan(path: string): AsyncGenerator<ScannedEntry>;
     /** access(2): `mode` is F_OK or any of R_OK, W_OK, X_OK. */
     access(path: string, mode: number): Promise<void>;
     realpath(path: string): Promise<string>;
@@ -385,6 +397,12 @@ export declare function withOpenFiles<T>(view: ProcessView, use: (open: OpenFile
  * from (a shell's bash, a git that leaves its facet warm, a REPL).
  */
 export declare function hostImage(authority: NimbusFilesystemAuthority, cred: Readonly<VfsCred>, path: string): Promise<FacetImage>;
+/** An entry of ProcessView.scan: its path under the scanned directory, its lstat, and whether its entries must be asked by name. */
+export interface ScannedEntry {
+    path: string;
+    stat: ProcessStat;
+    byName: boolean;
+}
 /** A process's stat: everything stat(2) answers, which the bridge always has. */
 export interface ProcessStat extends VfsStat {
     mode: number;

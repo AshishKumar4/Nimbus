@@ -3154,7 +3154,7 @@ async function statusCommand(ctx, git, vfs, fs, parsed) {
         renames = configured === 'copies' || configured === 'copy' || (configBool(configured) ?? true);
     }
     const dc = await wrepo.readIndex();
-    const status = await collectStatus(wrepo.store, await wrepo.worktree(), dc, await wrepo.headTree(), {
+    const status = await collectStatus(wrepo.store, await wrepo.scannedWorktree(), dc, await wrepo.headTree(), {
         specs: repoPaths(pathArgs, ctx.cwd, root),
         untracked,
         excludes: untracked === 'no' ? null : await wrepo.excludes(dc),

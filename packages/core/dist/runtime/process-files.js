@@ -188,7 +188,7 @@ class GuardedProcessBridge {
         }
         return lease === null ? answer : { ...answer, readLease: lease };
     }
-    list(after, limit) { this.guard(); return this.target.list(after, limit); }
+    list(after, limit, options) { this.guard(); return this.target.list(after, limit, options); }
     realpath(path) { this.guard(); return this.target.realpath(path); }
     remove(path, options) { this.guard(); return this.target.remove(path, options); }
     copyFile(from, to, options) { this.guard(); return this.target.copyFile(from, to, options); }
@@ -729,6 +729,18 @@ export class ProcessFiles {
 }
 /** The kernel's own filesystems: never walked, and never in a process's listing, which is SQLite's and its embedder's. */
 const KERNEL_MOUNT_POINTS = { '/proc': true, '/dev': true };
+/**
+ * Entries one page of ProcessView.scan reads in one slice of the thread.
+ * Measured 2026-10-20 on armada (bun:sqlite, a 34,302-file tree): about
+ * 2.5 µs an entry; a session's SQLite runs about 3–4× bun's, so about
+ * 10 ms a page, well under the slice that ages the session's queue.
+ */
+const SCAN_PAGE = 1024;
+/**
+ * The engine's own timer, taken when this module is evaluated: a program
+ * that shares the realm wraps the global one as a handle of its own.
+ */
+const engineSetTimeout = globalThis.setTimeout;
 /** A mount an embedder made (a Drive, a container, a device). */
 function isEmbedderMount(point) {
     return point !== '/' && KERNEL_MOUNT_POINTS[point] !== true;
@@ -822,7 +834,7 @@ class AwaitingProcessBridge {
      * and /dev are left out, as SQLite's page leaves them out. A mounted entry
      * carries revision 0: a mount never moves the SQLite clock.
      */
-    list(after, limit) {
+    list(after, limit, options) {
         if (!mountsBeyondSqlite(this.namespace)) {
             // A later mount must invalidate this SQLite-only listing too.
             const listing = after === null || after === undefined ? this.listing(true) : undefined;
@@ -830,7 +842,7 @@ class AwaitingProcessBridge {
                 listing.table = null;
                 listing.sqliteGeneration = this.namespace.mountGeneration();
             }
-            return this.bridge.list(after, limit);
+            return this.bridge.list(after, limit, options);
         }
         this.authority();
         return this.listMounted(after ?? null, Math.min(Math.max(1, Math.trunc(limit ?? FS_LIST_PAGE_LIMIT)), FS_LIST_PAGE_LIMIT));
@@ -861,11 +873,14 @@ class AwaitingProcessBridge {
             if (underKernelMount(entry.path))
                 continue;
             const path = entry.path.slice(1);
-            if (!fits(entry, path)) {
+            // A mounted directory judged as this bridge judges a mount's (access): SQLite marked its own.
+            const unreadable = entry.kind === 'directory' && entry.unreadable === undefined && !modeAllows(entry.stat, 0o5, this.cred);
+            const listed = unreadable ? { ...entry, path, unreadable: true } : { ...entry, path };
+            if (!fits(listed, path)) {
                 next = entries[entries.length - 1].path;
                 break;
             }
-            entries.push({ ...entry, path });
+            entries.push(listed);
         }
         if (listing)
             listing.held = next === null ? null : { walk, next };
@@ -1522,6 +1537,37 @@ export class ProcessView {
                 out.push({ ...stat, name: entry.name });
         }
         return out;
+    }
+    /**
+     * Every entry strictly under directory `path` with its lstat, in path
+     * order (which is a git index's order): one paged scan of the filesystem
+     * (`list`, which recalls each delegation an lstat of an entry would)
+     * instead of a listing per directory and a stat per entry. A directory a
+     * walk by name would answer differently is marked `byName`, for the
+     * caller to ask by name: one on a mount whose names the scan does not
+     * list (`unlisted`), or one the caller may not read and search
+     * (`unreadable`), whose readdir is refused. Between pages the thread is given up for a turn: a page of SCAN_PAGE
+     * entries is one bounded slice of the session's thread.
+     */
+    async *scan(path) {
+        const key = normalizeVfsPath(path);
+        const prefix = key === '' ? '' : `${key}/`;
+        let after = key === '' ? null : prefix;
+        for (;;) {
+            const page = await this.call('scandir', path, () => this.fs.list(after, SCAN_PAGE, { revisions: false, contentKeys: false }));
+            for (const entry of page.entries) {
+                const at = normalizeVfsPath(entry.path);
+                if (at === key)
+                    continue;
+                if (!at.startsWith(prefix))
+                    return;
+                yield { path: at.slice(prefix.length), stat: vfsStatOf(entry.stat), byName: entry.unlisted !== undefined || entry.unreadable === true };
+            }
+            if (page.next === null)
+                return;
+            after = page.next;
+            await new Promise((resolve) => engineSetTimeout(resolve, 0));
+        }
     }
     /** access(2): `mode` is F_OK or any of R_OK, W_OK, X_OK. */
     async access(path, mode) { await this.call('access', path, () => this.fs.access(path, mode)); }

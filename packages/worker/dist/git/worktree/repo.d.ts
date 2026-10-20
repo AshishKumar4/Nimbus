@@ -138,6 +138,17 @@ export declare class WorktreeRepo {
     sparseMatcher(): Promise<SparseMatcher | null>;
     /** core.protectHFS and core.protectNTFS as the command's config reads them (-c, the repository's, the global), else git's defaults (verify-path.ts). */
     pathProtection(): Promise<PathProtection>;
+    /**
+     * The worktree as one ordered scan of its tree reads it (ProjectFs.scan):
+     * its listings and lstats answered from the scan, what the scan marks
+     * `byName` (a directory on an unlisted mount, or one the caller may not
+     * read) asked by name, its contents read as {@link worktree} reads them.
+     * On next.js's 34,302 files, status's 51,000 calls by name were all of
+     * its 3.5 s on a session's thread; the scan is a page of entries a slice.
+     * The scan is held whole, so a command that walks a tree too large to
+     * hold (add -A, under its memory bound) keeps {@link worktree}.
+     */
+    scannedWorktree(): Promise<Worktree>;
     /** The worktree with the settings its comparisons take. */
     worktree(): Promise<Worktree>;
     /** The index, as git's repo_read_index leaves it: see clearPresentSkips. */
