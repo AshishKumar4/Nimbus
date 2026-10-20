@@ -1,11 +1,11 @@
 #!/usr/bin/env bun
-// The resident store's two backings answer alike. The store decides and
-// its tables only store: sqlTables (a process facet's SQLite)
-// and heapTables (a one-shot's heap) sit behind the same
-// operations. Seeded random sequences of those operations (puts,
-// deletes, revision changes, the dated drops, chunk copies, namespace
-// edits) run on both, and every answer must be equal: rows, key order,
-// byte content and counts.
+// The resident store's three backings answer alike. The store decides and
+// its tables only store: sqlTables (a process facet's SQLite), kvTables (its
+// key-value storage, written unconfirmed so the output gate holds nothing)
+// and heapTables (a one-shot's heap) sit behind the same operations. Seeded
+// random sequences of those operations (puts, deletes, revision changes, the
+// dated drops, chunk copies, namespace edits) run on all three, and every
+// answer must be equal: rows, key order, byte content and counts.
 //
 // The one thing allowed to differ is bytes(): SQLite counts pages, the
 // heap counts its rows and payload. The in-memory backing's own count is
@@ -17,6 +17,8 @@ import assert from 'node:assert/strict';
 
 import { createResidentStore } from '../../packages/worker/src/vfs/resident/index.ts';
 import { heapTables, sqlTables, RK_OWN_WRITE } from '../../packages/worker/src/vfs/resident/tables.ts';
+import { kvTables } from '../../packages/worker/src/vfs/resident/kv-tables.ts';
+import { fakeDoKv } from './lib/fake-do-kv.mjs';
 import { RESIDENT_ROW_BYTES, utf8Length } from '../../packages/worker/src/vfs/resident/cell-cost.ts';
 import { prefixEnd } from '../../packages/worker/src/vfs/resident/namespace.ts';
 import { FACET_OWN_WRITE_MEMORY_BYTES } from '../../packages/platform/src/limits.ts';
@@ -149,24 +151,33 @@ for (let seed = 1; seed <= SEQUENCES; seed++) {
   const rand = prng(seed);
   const sql = sqlTables(createSqliteVfsTestHarness().sql);
   const heap = heapTables();
+  const kv = kvTables(fakeDoKv());
   const ops = [];
   for (let i = 0; i < STEPS; i++) {
     const op = randomOp(rand);
     ops.push(op);
     let sqlError = null;
     let heapError = null;
+    let kvError = null;
     let sqlAnswer;
     let heapAnswer;
-    try { sqlAnswer = step(sql, op); } catch (error) { sqlError = String(error.message).includes('UNIQUE') ? 'unique' : String(error.message).includes('CHECK') ? 'check' : error.message; }
-    try { heapAnswer = step(heap, op); } catch (error) { heapError = String(error.message).includes('UNIQUE') ? 'unique' : String(error.message).includes('CHECK') ? 'check' : error.message; }
+    let kvAnswer;
+    const failure = (error) => (String(error.message).includes('UNIQUE') ? 'unique' : String(error.message).includes('CHECK') ? 'check' : error.message);
+    try { sqlAnswer = step(sql, op); } catch (error) { sqlError = failure(error); }
+    try { heapAnswer = step(heap, op); } catch (error) { heapError = failure(error); }
+    try { kvAnswer = step(kv, op); } catch (error) { kvError = failure(error); }
     const where = () => `seed ${seed} step ${i}: ${JSON.stringify(ops.slice(-6), (_k, v) => (v instanceof Uint8Array ? [...v] : v))}`;
     assert.equal(heapError, sqlError, `${where()}: the backings fail differently`);
     assert.equal(heapAnswer, sqlAnswer, `${where()}: the backings answer the step differently`);
+    assert.equal(kvError, sqlError, `${where()}: kv fails differently`);
+    assert.equal(kvAnswer, sqlAnswer, `${where()}: kv answers the step differently`);
     const readSeed = Math.floor(rand() * 2 ** 31);
     const fromHeap = plain(reads(heap, prng(readSeed)));
     const fromSql = plain(reads(sql, prng(readSeed)));
+    const fromKv = plain(reads(kv, prng(readSeed)));
     for (const key of Object.keys(fromSql)) {
       assert.deepEqual(fromHeap[key], fromSql[key], `${where()}: the backings answer ${key} differently: heap ${JSON.stringify(fromHeap[key])}, sqlite ${JSON.stringify(fromSql[key])}`);
+      assert.deepEqual(fromKv[key], fromSql[key], `${where()}: kv answers ${key} differently: kv ${JSON.stringify(fromKv[key])}, sqlite ${JSON.stringify(fromSql[key])}`);
     }
     assert.equal(heap.bytes(), heldBytes(heap), `${where()}: the heap's byte count is not what it holds`);
     compared++;
@@ -284,4 +295,26 @@ for (let seed = 1; seed <= SEQUENCES; seed++) {
   assert.deepEqual(parts.map((part) => part.txt), ['a', 'b'], 'in part order');
 }
 
-console.log(`resident-store-backings: ${compared} states compared across ${SEQUENCES} sequences; the heap answers as SQLite does`);
+// The kv backing writes nothing the gate holds: every write is unconfirmed (the fake refuses any other).
+{
+  const storage = fakeDoKv();
+  const kv = kvTables(storage);
+  kv.filePut('home/user/a.js', 0, 3, 1, 4, 'k1');
+  kv.chunkAddText('home/user/a.js', 0, 'abc');
+  kv.nsPut('home/user', 'a.js', 0, 3, 0o644, 1000, 1000, 1, 2, 3, 9, 4, null, 1, 1);
+  kv.pagePut('home/user/big', 4, 0, new Uint8Array(8), 1);
+  kv.dropDated();
+  kv.clear();
+  assert.ok(storage.writes > 0);
+  // A store kept across a restart reads its rows back: a second binding over the same storage answers as the first.
+  const kept = fakeDoKv();
+  const first = kvTables(kept);
+  first.filePut('home/user/b.js', 0, 2, 1, 5, null);
+  first.chunkAddText('home/user/b.js', 0, 'hi');
+  first.metaSet('epoch', 'e1');
+  const second = kvTables(kept);
+  assert.deepEqual(plain(second.chunkParts('home/user/b.js')), plain(first.chunkParts('home/user/b.js')));
+  assert.equal(second.metaGet('epoch'), 'e1', 'the cursor survives with the rows it describes');
+}
+
+console.log(`resident-store-backings: ${compared} states compared across ${SEQUENCES} sequences; the heap and kv answer as SQLite does`);
