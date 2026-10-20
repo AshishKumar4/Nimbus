@@ -44,7 +44,7 @@ try {
 
   // Where a session finds it, and that it is the deployment's, not the session's to change.
   const listed = await ws.exec(`ls -l ${FILE}; ls /etc/ssl/certs; grep ' /etc/ssl/certs ' /proc/mounts`);
-  assert.match(listed.stdout, /^-rw-r--r-- 1 root root \d+ .* \/etc\/ssl\/certs\/ca-certificates\.crt$/m, listed.stdout);
+  assert.match(listed.stdout, /^-rw-r--r-- +1 root root 200116 .* \/etc\/ssl\/certs\/ca-certificates\.crt$/m, listed.stdout);
   assert.match(listed.stdout, /^ca-certificates\.crt$/m);
   assert.match(listed.stdout, /^ca-certificates \/etc\/ssl\/certs ca-certificates ro/m, listed.stdout);
   const write = await ws.exec(`echo forged >> ${FILE}; rm -f ${FILE}; touch /etc/ssl/certs/extra.pem`);
