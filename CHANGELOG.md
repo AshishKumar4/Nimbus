@@ -18,6 +18,9 @@ published independently in the `@nimbus-sh` npm scope.
   let it mint a new secret over a Preview that had one. On an account with
   no parent Worker yet, `up` makes the parent before it asks whether the
   Preview stands; it failed there, reading the Worker's absence as an error.
+  `down` no longer waits up to 60 s for a deleted Preview's hostname to stop
+  answering: the API's answer proves the deletion, and `list` says whether
+  the hostname still serves it.
 - Fixed (security): a process's environment is no longer stored where
   another process can read it. Before, a Node server's environment was
   written into its generated module, and a Python or Ruby server's into its

@@ -123,13 +123,6 @@ const DEFAULT_TTL_MS = 3 * 60 * 60 * 1000;
  */
 const PREVIEW_PARENT = 'nimbus-probe-previews';
 
-/**
- * How long the workers.dev edge may keep serving a deleted Preview.
- * Declared here rather than beside its use: the commands run at module
- * top level, before a `const` further down has initialised.
- */
-const HOSTNAME_SETTLE_MS = 60_000;
-
 /** An API read of a Preview that failed: not an answer that it has no deployment. */
 class PreviewReadError extends Error {}
 
@@ -303,7 +296,7 @@ async function down() {
       });
     }
     const gone = existing.kind === 'unknown' ? { ok: false, reason: existing.reason }
-      : await confirmDeleted({ name, preview, account, token });
+      : await confirmDeleted({ preview, account, token });
     if (!gone.ok) {
       console.error(`FAILED to confirm ${name} is gone: ${gone.reason}; receipt kept at ${statePath(name)}`);
       process.exitCode = 1;
@@ -500,41 +493,17 @@ async function previewPresence({ preview, account, token }) {
  * .../previews/<name> stops answering it. A 404 on its hostname is not the
  * same claim, which is why it cannot stand in for this check.
  *
- * The hostname is polled afterwards for the operator's benefit, not as
- * evidence. It lags: measured 2026-08-05, a deleted Worker kept answering
- * 200 for ~30s after the API had stopped listing it.
+ * The hostname lags: measured 2026-08-05, a deleted Worker kept answering
+ * 200 for ~30s after the API had stopped listing it. `down` records the
+ * Preview (recordDeleted), and `list` says whether its hostname still
+ * answers.
  */
-async function confirmDeleted({ name, preview, account, token }) {
+async function confirmDeleted({ preview, account, token }) {
   const presence = await previewPresence({ preview, account, token });
   if (presence.kind === 'exists') return { ok: false, reason: `the API still answers Preview ${preview} (HTTP ${presence.status})` };
   if (presence.kind === 'unknown') return { ok: false, reason: presence.reason };
 
-  const base = readState(statePath(name))?.base;
-  const absent = `Preview ${preview} is not found (HTTP 404, code 10025)`;
-  if (!base) return { ok: true, reason: absent };
-
-  const status = await waitForHostnameGone(base);
-  return {
-    ok: true,
-    reason: status === null
-      ? `${absent} and the hostname no longer serves it`
-      : `${absent}; ${base} still answers ${status} after `
-        + `${HOSTNAME_SETTLE_MS}ms of edge propagation`,
-  };
-}
-
-/**
- * Poll until the hostname stops serving the Preview. Returns null once it
- * 404s or stops answering at all, otherwise the last status seen.
- */
-async function waitForHostnameGone(base) {
-  const deadline = Date.now() + HOSTNAME_SETTLE_MS;
-  for (;;) {
-    const status = await fetch(base, { redirect: 'manual' }).then((r) => r.status, () => 404);
-    if (status === 404) return null;
-    if (Date.now() >= deadline) return status;
-    await new Promise((r) => setTimeout(r, 3000));
-  }
+  return { ok: true, reason: `Preview ${preview} is not found (HTTP 404, code 10025)` };
 }
 
 // ── State ────────────────────────────────────────────────────────────
