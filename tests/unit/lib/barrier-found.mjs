@@ -233,11 +233,6 @@ const GAPS = {
       + 'meanwhile a Node program\'s readdirSync can list a file it deleted with unlinkSync, which the session no longer holds',
     shows: 'at rest, sync readdir . answered',
   },
-  'a file renamed over another, its rename on its way, reads as the renamed file (3104) [node]': {
-    lacks: 'S: readFileSync reads a renamed-over name\'s bytes by name, not through the rename the process decided (closed by the cutover: RF reads by identity); '
-      + 'meanwhile a Node program that renames a file over another and reads it before the rename is answered gets the replaced file\'s bytes, while statSync shows the renamed one',
-    shows: 'sync readFile top answered "t0000000"',
-  },
   'a directory the process may search again shows nothing stale while it is relisted [node]': {
     lacks: 'B2: a relist answers what is under its directory as unknown until it lands (the cutover\'s relist fence); '
       + 'meanwhile a call that cannot wait sees a false ENOENT for a name the session holds there',
