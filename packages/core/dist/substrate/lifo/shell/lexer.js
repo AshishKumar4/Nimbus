@@ -557,31 +557,12 @@ function isOperatorBreak(ch) {
 }
 /**
  * The index of the `]` that closes the `[` at `open`, as bash's skipsubscript
- * finds it: brackets nest, and a quoted or backslashed one is not counted.
- * -1 where it is not closed.
+ * finds it: brackets nest, and one quoted, backslashed or in a substitution
+ * is not counted (readBalancedCommand). -1 where it is not closed.
  */
 function subscriptEnd(input, open) {
-    let depth = 0;
-    for (let i = open; i < input.length; i++) {
-        const ch = input[i];
-        if (ch === '\\')
-            i++;
-        else if (ch === "'") {
-            i = input.indexOf("'", i + 1);
-            if (i === -1)
-                return -1;
-        }
-        else if (ch === '"') {
-            for (i++; i < input.length && input[i] !== '"'; i++)
-                if (input[i] === '\\')
-                    i++;
-        }
-        else if (ch === '[')
-            depth++;
-        else if (ch === ']' && --depth === 0)
-            return i;
-    }
-    return -1;
+    const span = readBalancedCommand(input, open + 1, '[', ']');
+    return span.closed ? span.end - 1 : -1;
 }
 function isWordBreak(ch) {
     return ch === ' ' || ch === '\t' || ch === '|' || ch === '&' || ch === ';'
@@ -913,6 +894,7 @@ function stopTable(chars) {
 const SPAN_STOPS = {
     '(': stopTable('\\\'"$`#()<\n'),
     '{': stopTable('\\\'"$`#{}'),
+    '[': stopTable('\\\'"$`[]'),
 };
 /** Where a double-quoted span's scan must look. */
 const DOUBLE_QUOTED_STOPS = stopTable('"\\$`');
@@ -927,8 +909,9 @@ function nextStop(input, i, stops) {
 }
 /**
  * The body of a balanced `open`...`close` span whose body starts at `pos`
- * (just past `open`), and where it ends (just past `close`, or the input's
- * end when it never closes). Quotes and nested `$(...)` inside it are
+ * (just past `open`): a command's, a parameter expansion's or a subscript's;
+ * and where it ends (just past `close`, or the input's end when it never
+ * closes). Quotes and nested `$(...)` inside it are
  * skipped whole, so a `close` inside them does not end it. In a command's
  * span, a here-document's body is too: read at the newline after its `<<`,
  * as the shell's reader reads it, so its `'` or `)` is text. An arithmetic

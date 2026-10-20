@@ -27,6 +27,8 @@ export interface ExpandContext {
      * text, inside a parameter's `-`, `+`, `=` and `?` words too.
      */
     hereDocument?: boolean;
+    /** Write `diagnostic` where the shell reports an error met expanding: its stderr then (bash writes before it discards). */
+    report(diagnostic: string): Promise<void>;
 }
 export interface CapturedCommand {
     output: string;
@@ -37,6 +39,15 @@ export interface CapturedCommand {
  * unset parameter, or an explicit `${var:?message}`.
  */
 export declare class ExpansionError extends Error {
+}
+/**
+ * An arithmetic error (a constant past its base, a base out of range, a
+ * variable whose value refers to itself without end): as bash's evalerror
+ * words it, the expression to the end of the token in error, then why, then
+ * the token. Met expanding, it is reported and the line discarded
+ * (arithmeticValue); in `[[ ]]` it makes its comparison false.
+ */
+export declare class ArithmeticError extends Error {
 }
 /**
  * Expand all words for a command's arguments: brace expansion, tilde,
@@ -67,6 +78,8 @@ export declare function expandRegexWord(parts: WordPart[], ctx: ExpandContext): 
 export declare function expandWord(parts: WordPart[], ctx: ExpandContext): Promise<string>;
 /** A subscript's text once its expansions (`$i`, `$(…)`) are done, before its arithmetic. */
 export declare function expandSubscript(subscript: string, ctx: ExpandContext): Promise<string>;
-/** An expanded subscript's arithmetic, a blank one 0. */
-export declare function subscriptArithmetic(expanded: string, ctx: ExpandContext): number;
+/** An expanded word's arithmetic (a subscript's, a `[[ -eq ]]` operand's): a blank one is 0. Throws ArithmeticError. */
+export declare function arithmeticOf(expanded: string, ctx: ExpandContext): number;
+/** arithmeticOf as an expansion meets it: an error is reported, and the rest of the line discarded (bash's evalerror). */
+export declare function arithmeticValue(expanded: string, ctx: ExpandContext): Promise<number>;
 //# sourceMappingURL=expander.d.ts.map

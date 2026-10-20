@@ -8,6 +8,7 @@ import { type CapturedCommand } from './expander.js';
 import { type ArrayLiteral } from './variables.js';
 import { type ShellState } from './state.js';
 import { WorkThread } from './work-thread.js';
+import { DiscardSignal } from './discard.js';
 export declare class BreakSignal {
     levels: number;
     constructor(levels: number);
@@ -31,16 +32,6 @@ export declare class ExitSignal {
 /** A syntax error in the text eval or `.` reads (not one met running it, a command substitution's): theirs to answer. */
 export declare class TextSyntaxError extends Error {
 }
-/**
- * The rest of the line it is in is discarded (bash's
- * jump_to_top_level(DISCARD)): a shell goes on with the next line it reads,
- * its own or a `source`d file's or a trap's, with $? 1; a child shell
- * (subshell, substitution, pipeline element, job) ends with 1. Neither `||`,
- * `if` nor a loop goes on.
- */
-export declare class DiscardSignal {
-    readonly exitCode = 1;
-}
 /** A function call past the nesting bound (functionNestingLimit). */
 export declare class FunctionNestingSignal extends DiscardSignal {
 }
@@ -54,6 +45,8 @@ export interface BuiltinExecutionContext {
     interactive?: boolean;
     /** A declaration builtin's arguments written as array assignments, `name=(…)`, by index: their arrays (Interpreter.arrayLiteral). */
     arrayElements?: ReadonlyMap<number, ArrayLiteral>;
+    /** bash's report_error, after a builtin reports an error the shell's own: under `set -e` the shell ends there. */
+    reportedError?(): void;
     vfs: ProcessView;
     /** The working directory a builtin resolves its relative path operands against. */
     cwd: string;
@@ -327,7 +320,9 @@ export declare class Interpreter {
      * `append`), and a `[subscript]=` element at its subscript's arithmetic (a
      * negative one counted back from past the last), the next index after it.
      * An element whose subscript is empty, `@` or `*`, or before the first is
-     * refused with bash's diagnostic and skipped.
+     * refused with bash's diagnostic and skipped; under `set -e` the first
+     * refusal ends the assignment, what it assigned before kept, as the shell
+     * ends there (exitOnReportedError).
      */
     private arrayLiteral;
     /** Bash's PIPESTATUS: `statuses`, its array alone. */
@@ -426,6 +421,8 @@ export declare class Interpreter {
     private createNullWriter;
     private createEmptyReader;
     private isFdTerminal;
+    /** bash's report_error: under `set -e`, an error the shell reports ends it, wherever it is (an `if`'s condition too). */
+    private exitOnReportedError;
     private enforceErrexit;
     private withErrexitSuppressed;
     private abortExitCode;

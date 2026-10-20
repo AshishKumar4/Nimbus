@@ -1,4 +1,5 @@
-import { expandPatternWord, expandRegexWord } from './expander.js';
+import { ArithmeticError, arithmeticOf, expandPatternWord, expandRegexWord } from './expander.js';
+import { DiscardSignal } from './discard.js';
 import { compileRegcomp, execLongest, PosixRegexSyntax } from '../utils/posix-regex.js';
 import { BINARY_OPERATORS, UNARY_OPERATORS } from './conditional-operators.js';
 import { shellMatch } from '../utils/glob.js';
@@ -42,6 +43,18 @@ export async function evaluateDoubleBracketWords(words, expandCtx, vfs, stderr, 
             return arg;
         },
         regex: async (i) => (await expandRegexWord(words[i] ?? [], expandCtx)),
+        // An operand whose arithmetic fails makes its comparison false, reported as [['s there (bash's arithcomp).
+        integer: async (text) => {
+            try {
+                return arithmeticOf(text, expandCtx);
+            }
+            catch (error) {
+                if (!(error instanceof ArithmeticError))
+                    throw error;
+                (await stderr.write(`[[: ${error.message}\n`));
+                return null;
+            }
+        },
     };
     return (await evaluateTestExpression(operands, vfs, stderr, context, 'double-bracket'));
 }
@@ -81,6 +94,9 @@ async function evaluateTestExpression(operands, vfs, stderr, context, mode) {
         return result.value ? 0 : 1;
     }
     catch (e) {
+        // A discard met expanding an operand is the line's.
+        if (e instanceof DiscardSignal)
+            throw e;
         if (!(e instanceof RegexRefused))
             (await stderr.write(`test: ${e instanceof Error ? e.message : String(e)}\n`));
         return 2;
@@ -110,7 +126,7 @@ async function evaluateByArgCount(ops, start, count, vfs, context) {
                 return at(0).length > 0 && at(2).length > 0;
             if (at(1) === '-o')
                 return at(0).length > 0 || at(2).length > 0;
-            const binary = evaluateBinary(at(1), literalArg(at(0)), literalArg(at(2)), 'test');
+            const binary = await evaluateBinary(at(1), literalArg(at(0)), literalArg(at(2)), 'test', decimal);
             if (binary !== undefined)
                 return binary;
             if (at(0) === '!') {
@@ -180,7 +196,7 @@ async function parsePrimary(ops, pos, vfs, context, mode, evaluate) {
     }
     if (op !== undefined && Object.hasOwn(BINARY_OPERATORS, op)) {
         const value = evaluate
-            ? evaluateBinary(op, await ops.value(pos), await ops.value(pos + 2), mode) ?? false
+            ? await evaluateBinary(op, await ops.value(pos), await ops.value(pos + 2), mode, ops.integer ?? decimal) ?? false
             : false;
         return { value, pos: pos + 3 };
     }
@@ -218,7 +234,7 @@ function compiledOrRefused(ere) {
     }
 }
 /** Undefined when `op` is not a binary comparison. */
-function evaluateBinary(op, left, right, mode) {
+async function evaluateBinary(op, left, right, mode, integer) {
     switch (op) {
         case '=':
         case '==':
@@ -231,7 +247,13 @@ function evaluateBinary(op, left, right, mode) {
             return left.value > right.value;
     }
     const integerCompare = Object.hasOwn(INTEGER_COMPARISONS, op) ? INTEGER_COMPARISONS[op] : undefined;
-    return integerCompare?.(toInt(left.value), toInt(right.value));
+    if (integerCompare === undefined)
+        return undefined;
+    const a = await integer(left.value);
+    if (a === null)
+        return false;
+    const b = await integer(right.value);
+    return b !== null && integerCompare(a, b);
 }
 async function evaluateUnary(op, operand, vfs, context) {
     switch (op) {
@@ -310,6 +332,10 @@ async function statOf(vfs, path, followSymlinks) {
     catch {
         return null;
     }
+}
+/** `test`'s integer operand: decimal. */
+async function decimal(text) {
+    return toInt(text);
 }
 function toInt(s) {
     const n = parseInt(s, 10);
