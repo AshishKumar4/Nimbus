@@ -229,6 +229,7 @@ async function eagerBridge(stub, sql) {
     readLeases: () => true,
   });
   // Its own calls answer as they are; the contract's are awaited, as a codec awaits them.
+  /** @type {Set<string | symbol>} */
   const direct = new Set(['acquireArgs', 'catchUp', 'inbound', 'stats']);
   return new Proxy(fs, {
     get: (target, name) => (name === 'copyFile' ? async (from, to) => target.copyFile(from, to, { keepMode: true })

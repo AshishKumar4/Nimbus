@@ -5,6 +5,12 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a WASI program (python, ruby, clang, bash) reading a large file
+  while the session restarted could later be served the file's bytes from
+  before the restart: a read asked of the old session that answered after
+  the new one was in use was kept, and the old file's revision outranked
+  the new one's. Bytes and pages asked before the process's store started
+  again are now never kept.
 - Fixed: the shell's `node` refuses a hard link (`fs.link`, `fs.linkSync`, `fs.promises.link`) with `ENOSYS`, as the hosted `node` does: the filesystem has no hard links. Before, `linkSync` did nothing and returned, so the new name was never there. `truncate` and `ftruncate` (now also in callback form) check the length as Node does: a length that is not a number is `ERR_INVALID_ARG_TYPE`, and one that is not a safe integer is `ERR_OUT_OF_RANGE`.
 - Fixed: a Node program could be told a file, directory or link it had
   just renamed was not there (`fs.statSync` ENOENT, and renaming it again
