@@ -174,7 +174,14 @@ const rowOf = <T>(rows: Iterable<Record<string, unknown>>): T | undefined => {
 };
 const rowsOf = <T>(rows: Iterable<Record<string, unknown>>): T[] => [...rows] as T[];
 
-export function sqlTables(sql: ResidentSql): ResidentTables {
+/**
+ * Told of every change to a file's head row (filePut, fileSetRev, fileDelete),
+ * whoever makes it: the one point what was decided over a head (a fill
+ * writing its chunks, cells.putChunk) learns it no longer stands.
+ */
+export type HeadChanged = (path: string) => void;
+
+export function sqlTables(sql: ResidentSql, headChanged: HeadChanged = () => {}): ResidentTables {
   let schema: string | null = null;
   for (const _row of sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'meta'")) schema = '';
   if (schema !== null) for (const row of sql.exec("SELECT v FROM meta WHERE k = 'schema'")) schema = String(row.v);
@@ -246,11 +253,12 @@ export function sqlTables(sql: ResidentSql): ResidentTables {
       return row === undefined ? undefined : num(row.size);
     },
     filePut(path, kind, size, chunks, rev, ckey) {
+      headChanged(path);
       sql.exec('INSERT OR REPLACE INTO file (path, kind, size, chunks, rev, ckey) VALUES (?, ?, ?, ?, ?, ?)', path, kind, size, chunks, rev, ckey);
     },
-    fileSetRev(path, rev) { sql.exec('UPDATE file SET rev = ? WHERE path = ?', rev, path); },
+    fileSetRev(path, rev) { headChanged(path); sql.exec('UPDATE file SET rev = ? WHERE path = ?', rev, path); },
     fileStampOwn(path, rev) { sql.exec('UPDATE file SET rev = ? WHERE path = ? AND rev = ?', rev, path, RK_OWN_WRITE); },
-    fileDelete(path) { sql.exec('DELETE FROM file WHERE path = ?', path); },
+    fileDelete(path) { headChanged(path); sql.exec('DELETE FROM file WHERE path = ?', path); },
     fileByKey(ckey, notPath) {
       return rowOf<FileByKey>(sql.exec('SELECT path, kind, size, chunks FROM file WHERE ckey = ? AND rev >= 0 AND path <> ? LIMIT 1', ckey, notPath));
     },
@@ -344,7 +352,7 @@ interface HeapChunk { txt: string | null; bin: Uint8Array | null }
  * `bytes()` counts what it holds in the units residentCellCost charges (a
  * row, and the payload's bytes), so the store's one budget rule serves both.
  */
-export function heapTables(): HeapTables {
+export function heapTables(headChanged: HeadChanged = () => {}): HeapTables {
   // What a read asks (a row, a file's head, its first chunk) goes through
   // SafeMap's methods, as the launch captured them: module loading reads
   // here after a program may have replaced Map.prototype.get.
@@ -474,15 +482,16 @@ export function heapTables(): HeapTables {
     fileOwnSize(path) { const row = files.get(path); return row !== undefined && row.rev === RK_OWN_WRITE ? row.size : undefined; },
     filePut(path, kind, size, chunkCount, rev, ckey) {
       if (!(rev >= -1)) throw new Error('CHECK constraint failed: rev >= -1');
+      headChanged(path);
       const had = files.get(path);
       if (had === undefined) { sorted = null; used += RESIDENT_ROW_BYTES; } else unkey(path, had);
       const row: HeapFile = { kind: NumberOf(kind), size: NumberOf(size), chunks: NumberOf(chunkCount), rev: NumberOf(rev), ckey: ckey == null ? null : stringOf(ckey) };
       files.set(path, row);
       if (row.ckey !== null) { let set = byKey.get(row.ckey); if (!set) { set = new SafeSet(); byKey.set(row.ckey, set); } set.add(path); }
     },
-    fileSetRev(path, rev) { const row = files.get(path); if (row !== undefined) row.rev = NumberOf(rev); },
+    fileSetRev(path, rev) { headChanged(path); const row = files.get(path); if (row !== undefined) row.rev = NumberOf(rev); },
     fileStampOwn(path, rev) { const row = files.get(path); if (row !== undefined && row.rev === RK_OWN_WRITE) row.rev = NumberOf(rev); },
-    fileDelete(path) { dropFile(path); },
+    fileDelete(path) { headChanged(path); dropFile(path); },
     fileByKey(ckey, notPath) {
       const set = byKey.get(stringOf(ckey));
       if (!set) return undefined;
