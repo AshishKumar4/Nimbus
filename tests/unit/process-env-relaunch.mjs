@@ -21,8 +21,9 @@
 //      /var/lib/nimbus, an env owning `__proto__` too), are gone before
 //      anything is re-driven, and the relaunch gets the env back from the
 //      session's keeping. Module text that declares the same arguments (in
-//      a block comment, a template) stays, and so does a recipe the kernel
-//      does not own;
+//      a block comment, a template, an array expression) stays, and so does
+//      a recipe the kernel does not own; a durable worker whose text module
+//      that is relaunches with it;
 //   6. a python resident's environment is built again on the host's answer
 //      as its first launch built it (an empty PYTHONUNBUFFERED is '1'
 //      again), and its image keeps no env. One an earlier release wrote
@@ -155,7 +156,7 @@ console.log('  [3] a host that answers null, throws or composes no resolver fail
 
 // ── 5: what an earlier release left is gone before anything re-drives ───────
 {
-  const { session, pid } = await sessionRunning({});
+  const { session, gen1, pid } = await sessionRunning({});
   // The row as an earlier release wrote it, its env inside, and nothing kept beside it.
   const key = `resident-launch:${pid}`;
   const row = session.storage.get(key);
@@ -191,16 +192,25 @@ console.log('  [3] a host that answers null, throws or composes no resolver fail
   // What only looks generated: module text declaring the same arguments in
   // a block comment and in a template, and a recipe the kernel does not own.
   const commented = await imageAt('.nimbus/facet-images', `/*\nconst __NIMBUS_ARGS = ${JSON.stringify(args)};\n*/\nexport const answer = 42;\n`);
+  // An array expression that reads like a recipe's start, naming the
+  // secret too, a durable worker's text module: it stays, and the worker
+  // relaunches with it.
+  const arrayModule = `["\\nconst __NIMBUS_ARGS = ", ${JSON.stringify(FIRST)}]; export const helper = 1;\n`;
+  const arrayPath = await imageAt('.nimbus/facet-images', arrayModule);
+  await gen1.manager.spawnWorker('export class NimbusProcess {}', 'durable helper', '/home/user/app', {
+    vfsTextModules: { 'helper.js': `/${arrayPath}` }, durable: { owner: 'helper-app' },
+  });
   const templated = await imageAt('.nimbus/facet-images', `export const doc = \`\nconst __NIMBUS_ARGS = ${JSON.stringify(args)};\n\`;\n`);
   const usersOwn = await imageAt('var/lib/nimbus/facet-images', entry(JSON.stringify(args)) + ' ');
   kernel.chown(usersOwn, 1000, 1000);
 
   const gen2 = instance(session, 2);
   await gen2.manager.pumpResidentLaunches();
-  await until(() => gen2.starts.length === 1, 'the re-drive to start');
-  assert.equal(gen2.starts[0].env.SECRET, FIRST, 'the relaunch gets the env the row held, from the session\'s keeping');
-  assert.deepEqual(filesHolding(session.vfs, FIRST).sort(), [commented, templated, usersOwn].sort(),
+  await until(() => gen2.starts.some((args) => args?.env !== undefined), 'the node re-drive to start');
+  assert.equal(gen2.starts.find((args) => args?.env !== undefined).env.SECRET, FIRST, 'the relaunch gets the env the row held, from the session\'s keeping');
+  assert.deepEqual(filesHolding(session.vfs, FIRST).sort(), [arrayPath, commented, templated, usersOwn].sort(),
     'the generated entries and the blobs that held it are gone; module text, and a recipe the kernel does not own, stay');
+  await until(() => [...gen2.world.configs.values()].some((config) => config.modules?.['helper.js'] === arrayModule), 'the durable worker to relaunch with its text module');
   assert.deepEqual(session.storage.get('dev-server:7'), { command: 'vite' }, 'the dev server\'s record holds no env');
   assert.deepEqual(session.storage.get('process-env:dev-server:7'), { env: { SECRET: FIRST } }, 'which the session keeps beside it');
   assert.equal([...session.storage.entries()].some(([name, value]) => !name.startsWith('process-env:') && JSON.stringify(value).includes(FIRST)), false,
