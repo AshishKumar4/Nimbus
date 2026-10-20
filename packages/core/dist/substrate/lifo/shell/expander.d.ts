@@ -115,4 +115,6 @@ export declare function expandSubscript(subscript: string, ctx: ExpandContext): 
 export declare function arithmeticOf(expanded: string, scope: ArithmeticScope): number;
 /** arithmeticOf as an expansion meets it: an error is reported, and the rest of the line discarded (bash's evalerror). */
 export declare function arithmeticValue(expanded: string, ctx: ExpandContext): Promise<number>;
+/** A here-document's body expanded, as bash's: parameters, substitutions (backquoted too), and `\$`, `` \` ``, `\\` and a line's `\` end; nothing else. */
+export declare function expandHereDocument(body: string, ctx: ExpandContext): Promise<string>;
 //# sourceMappingURL=expander.d.ts.map

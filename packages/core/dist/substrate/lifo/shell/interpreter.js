@@ -5,7 +5,7 @@ import { syscallError } from '../../../vfs/vfs-error.js';
 import { execRefusal } from '../../../shell/exec-dispatch.js';
 import { withRecall } from '../../../vfs/recall.js';
 import { parseAssignment, ParseError, ScriptLines } from './parser.js';
-import { expandArithmetic, expandBraceWord, expandWords, expandWord, expandPatternWord, expandSubscript, arithmeticOf, arithmeticValue, ArithmeticError, ExpansionError, reportWarnings, SubscriptArithmeticError, } from './expander.js';
+import { expandArithmetic, expandBraceWord, expandHereDocument, expandWords, expandWord, expandPatternWord, expandSubscript, arithmeticOf, arithmeticValue, ArithmeticError, ExpansionError, reportWarnings, SubscriptArithmeticError, } from './expander.js';
 import { evaluateDoubleBracketWords } from './test-builtin.js';
 import { isPipeEnd, PipeChannel } from './pipe.js';
 import { arrayFor, arrayIndex, assignArray, assignVariable, exportedEnvironment, lastIndex, restoreVariable, saveVariable, } from './variables.js';
@@ -1628,7 +1628,7 @@ export class Interpreter {
                 const heredoc = redir.heredoc ?? { body: '', quoted: false, stripTabs: false };
                 const body = heredoc.quoted
                     ? heredoc.body
-                    : await expandWord([{ text: heredoc.body, quoted: 'double' }], { ...targetCtx, hereDocument: true });
+                    : await expandHereDocument(heredoc.body, targetCtx);
                 this.setInputFd(fds, redir.fd ?? 0, { stream: staticStdinReader(body), terminal: false });
                 continue;
             }

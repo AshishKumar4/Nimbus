@@ -797,6 +797,10 @@ function scalarOf(parameter, ctx) {
         return parameter.values.join(characterAt(ctx.env['IFS'] ?? ' ', 0));
     return parameter.value ?? '';
 }
+/** A here-document's body expanded, as bash's: parameters, substitutions (backquoted too), and `\$`, `` \` ``, `\\` and a line's `\` end; nothing else. */
+export async function expandHereDocument(body, ctx) {
+    return joinPieces(await expandParameterWord(body, { ...ctx, hereDocument: true }, 'body'));
+}
 /** The word inside `${p:-word}`, `${p#pattern}` and friends, expanded with quote removal, as pieces. */
 async function expandParameterWord(word, ctx, mode) {
     if (word === '')
@@ -815,14 +819,19 @@ function parameterWordParts(word, mode) {
     const flush = () => {
         if (text === '')
             return;
-        parts.push({ text, quoted: 'none' });
+        parts.push({ text, quoted: plain ? 'double' : 'none' });
         text = '';
     };
     let i = 0;
     while (i < word.length) {
         const ch = word[i];
         // In double-quoted text a backslash quotes only $, `, ", itself and a newline (not ", in a here-document); before anything else it is text.
-        if (ch === '\\' && i + 1 < word.length && (!plain || (mode === 'double' ? '$`"\\\n' : '$`\\\n').includes(word[i + 1]))) {
+        if (ch === '\\' && i + 1 < word.length && (!plain || (mode === 'double' || mode === 'quoted' ? '$`"\\\n' : '$`\\\n').includes(word[i + 1]))) {
+            // A backslash before a newline joins the lines, in double-quoted text and a here-document.
+            if (plain && word[i + 1] === '\n') {
+                i += 2;
+                continue;
+            }
             flush();
             parts.push({ text: word[i + 1], quoted: 'single' });
             i += 2;
@@ -833,7 +842,7 @@ function parameterWordParts(word, mode) {
             i += 2;
             continue;
         }
-        if (mode !== 'heredoc' && ch === '$' && word[i + 1] === "'") {
+        if ((mode === 'word' || mode === 'double') && ch === '$' && word[i + 1] === "'") {
             flush();
             const quoted = readAnsiCQuote(word, i);
             parts.push({ text: quoted.text, quoted: 'single' });
@@ -857,12 +866,17 @@ function parameterWordParts(word, mode) {
                 continue;
             }
         }
-        if ((ch === "'" && !plain) || ch === '"') {
+        if ((ch === "'" && !plain) || (ch === '"' && mode !== 'body')) {
             // Its close as the lexer finds it: a quote in a substitution inside it is the substitution's.
             const end = readQuoted(word, i, ch).end;
             const close = end > i + 1 && word[end - 1] === ch ? end - 1 : word.length;
             flush();
-            parts.push({ text: word.slice(i + 1, close), quoted: ch === "'" ? 'single' : 'double' });
+            const inner = word.slice(i + 1, close);
+            // Double-quoted text, its escapes and substitutions read as such; `""` is still the empty field.
+            const quoted = ch === "'" ? [{ text: inner, quoted: 'single' }] : parameterWordParts(inner, 'quoted');
+            if (quoted.length === 0)
+                quoted.push({ text: '', quoted: 'double' });
+            parts.push(...quoted);
             i = close + 1;
             continue;
         }
