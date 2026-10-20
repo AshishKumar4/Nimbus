@@ -173,7 +173,8 @@ export function createAuthority(vfsOptions, { sequenced = false } = {}) {
             cost = next.rawVfs.revision() - before;
             next.root.unlink('home/user/.probe');
           }
-          while (next.rawVfs.revision() + cost < entry.rev) filler();
+          // Its owner given after: one revision more.
+          while (next.rawVfs.revision() + cost + 1 < entry.rev) filler();
         }
         if (entry.type === 'dir') as.mkdir(entry.key, { mode: entry.mode ?? 0o755 });
         else as.writeFile(entry.key, entry.content, { mode: entry.mode ?? 0o644 });
