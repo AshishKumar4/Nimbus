@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "c5d890c933fcdee809af32e0f837a6902b075a344cabd902eb42f6f4a70b27ce",
+  "fingerprint": "904b8ab743975fecdc37a0747fdd199ec9221fa26c0f7a12a81ad815499fde6a",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2900,8 +2900,8 @@
     "packages/worker/dist/session/ai.d.ts.map": "604ac7e36993d3f0191a488637658d40b36bb1c390715876360edda2080faee8",
     "packages/worker/dist/session/ai.js": "dcc1c0b69c733e6e4cf6b4b8bb8c72d7983c16a0303e38fbff3a55774fb681e6",
     "packages/worker/dist/session/dev-servers.d.ts": "c7e3872723464e716d493fd0a7fbb27248088ed282a9b1927d589e765cdb3cf0",
-    "packages/worker/dist/session/dev-servers.d.ts.map": "0d73172eb7fc6e191a575c300006790a28d692073bfd382d137f3c3b5ad5ef91",
-    "packages/worker/dist/session/dev-servers.js": "0c928629b9b2113440498d75dabc900e9c9960cba5c8fbce91717d559d36c730",
+    "packages/worker/dist/session/dev-servers.d.ts.map": "55be9ca07b12b2597ebc43d48dc602095eb66b75cdf21c75ffef648a4352d941",
+    "packages/worker/dist/session/dev-servers.js": "387ecb44db9ad74ae0720623e6e995ac1e8e62c5fc278bd7d825ee77530b56f9",
     "packages/worker/dist/session/diag.d.ts": "abfb9b66b77d2dfdf1b4c36fd511f297bc8f8334620265ac0d00ff3ce037f72d",
     "packages/worker/dist/session/diag.d.ts.map": "7e54d6e3a68c67265e2522d7ae49107953cc3b16a40de91a264a23b9591f18d6",
     "packages/worker/dist/session/diag.js": "a001d6bf18349aa91684aaef80281215ee0a7660700c4f690ab8899c4632338b",
@@ -3454,7 +3454,7 @@
     "packages/worker/src/session/agent-oauth.ts": "a84b7fb210138339aef1d89b794167a1084a759438522c97ff8cc541fb759d53",
     "packages/worker/src/session/agent.ts": "6c926ac2fbc3f4c42d9fae12c412c8b8a8ccd8e554fff32d11ed26aad78438ef",
     "packages/worker/src/session/ai.ts": "67b8b9b1de74d29ade7cfcc58a6170529bd2cbe86e59a3d8d8c094223e4d81a8",
-    "packages/worker/src/session/dev-servers.ts": "ba5b67e4094bab011fbe4234c347dc956b65ffbc4eef6501dd7c4584c7e6e979",
+    "packages/worker/src/session/dev-servers.ts": "51910a3a7f9c1c5e469ebe6c6caefe4736cf11d60286ffec3a19600986fdbc17",
     "packages/worker/src/session/diag.ts": "ecd8324047d0a2b0d2abae588b6363faca7e109dbe5482ed01dd6c25e82d6dcf",
     "packages/worker/src/session/editor-fs.ts": "91a52b737a2d13f69aad53f8b13d571f1e722915e2b29b2d0d3bc5a779f4928c",
     "packages/worker/src/session/fs-watch.ts": "45f87ee1a4fa61f48204669b54f42ac7f49d2d3246b45a8dde77b40b97c9f8c5",

@@ -246,7 +246,7 @@ interface Respawned {
   env: Record<string, string>;
 }
 
-async function restoreAll(host: DevServerRestoreHost, base: number, respawned: ReturnType<typeof withResolvers>): Promise<readonly DevServerRestoreFailure[]> {
+async function restoreAll(host: DevServerRestoreHost, base: number, respawned: ReturnType<typeof withResolvers<void>>): Promise<readonly DevServerRestoreFailure[]> {
   // The session it began in is still the host's: a destroy made it again, and
   // then this restore runs nothing more and writes nothing but releases.
   const ours = (): boolean => host.processes.pidBase === base;

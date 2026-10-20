@@ -22,6 +22,7 @@
  * launches, so it is never in it.
  */
 import { z } from 'zod/v4';
+import { withResolvers } from '@nimbus-sh/fabric/turn-budget.js';
 import { SinkWriter } from '@nimbus-sh/core/_shared/byte-stream.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { shellEscape } from '@nimbus-sh/core/_shared/shell-quote.js';
@@ -166,7 +167,7 @@ function restoreOf(host) {
     const base = host.processes.pidBase;
     let restore = restores.get(host);
     if (restore === undefined || restore.base !== base) {
-        const respawned = Promise.withResolvers();
+        const respawned = withResolvers();
         // A caller that only runs commands may never ask whether they respawned.
         respawned.promise.catch(() => { });
         restore = { base, respawned: respawned.promise, done: restoreAll(host, base, respawned) };
