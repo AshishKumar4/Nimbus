@@ -179,6 +179,16 @@ const FOUND = {
   'a file the process renamed into place reads as a peer later wrote it (3219)': {
     schedule: [['own', 'write', 'new', 'c3219.3'], ['own', 'rename', 'new', 'top'], ['peer', 'write', 'top', 'c3219.5']],
   },
+  'a file renamed over another, its rename answered, reads as the renamed file (3104, awaited)': {
+    engines: ['node'],
+    schedule: [['own', 'rename', 'd/e/g', 'top'], ['settle'], ['sync', 'readFile', 'top'], ['sync', 'stat', 'top']],
+  },
+  'a file renamed over another in a subtree the process holds, its rename answered, reads as the renamed file (3104, held)': {
+    engines: ['node'],
+    schedule: [['own', 'write', 'x/f', 'a1'], ['settle'], ['own', 'write', 'x/f', 'a2'], ['settle'], ['own', 'write', 'x/f', 'a3'], ['settle'],
+      ['own', 'write', 'x/f', 'a4'], ['settle'], ['own', 'write', 'x/f', 'a5'], ['settle'], ['own', 'write', 'x/f', 'a6'], ['settle'],
+      ['own', 'write', 'x/f', 'saved'], ['settle'], ['own', 'rename', 'x/f', 'x/h'], ['settle'], ['sync', 'readFile', 'x/h'], ['sync', 'stat', 'x/h']],
+  },
   'a file a call that cannot wait missed stays a miss until an awaited read answers it': {
     engines: ['node'],
     schedule: [['peer', 'write', 'new', 'not resident'], ['settle'], ['input'], ['settle'], ['sync', 'readFile', 'new'], ['own', 'stat', 'new'], ['settle']],
@@ -362,6 +372,8 @@ async function run(kind, schedule, park) {
 
 /** What the process renamed itself: Node's own renames, run apart so each file stays in the fast tier. */
 const OWN_RENAMES = new Set([
+  'a file renamed over another, its rename answered, reads as the renamed file (3104, awaited)',
+  'a file renamed over another in a subtree the process holds, its rename answered, reads as the renamed file (3104, held)',
   'a file renamed over another, its rename on its way, reads as the renamed file (3104)',
   'a file the process renamed into place reads as a peer later wrote it (3219)',
   'a miss of a file the process may no longer reach is not owed (6404)',
