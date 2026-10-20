@@ -108,10 +108,11 @@ assert.equal(prompts(added), 1, `and one prompt: ${JSON.stringify(added)}`);
 ws = await reattach();
 assert.equal(stored(), before + added, 'a reattach after it adds nothing');
 
-await type(ws, '{ sleep 0.2; echo late-output; } &\r');
+// The line being typed when the job writes: the job's output lands after it.
+await type(ws, '{ sleep 0.3; echo late-output; } &\r');
+await type(ws, 'ec');
 await settle(600);
 runtime.terminal.flushNow();
-await type(ws, 'ec');
 const late = stored();
 assert.ok(late.lastIndexOf('late-output') > late.lastIndexOf(PROMPT), `the job wrote after the prompt: ${JSON.stringify(late.slice(before.length + added.length))}`);
 ws = await reattach();
