@@ -2,6 +2,7 @@ import { isShellIdentifier } from './names.js';
 import { DEFAULT_HOME } from '../../../constants.js';
 import { characterAt, characterBounds, characterWidth, escapeGlob, expandGlob, fixedMatchLength, shellMatch, shellUnits } from '../utils/glob.js';
 import { readAnsiCQuote, readBalancedCommand, readBracedExpansion } from './lexer.js';
+import { arrayIndex } from './variables.js';
 /**
  * A parameter expansion that aborts the command it belongs to: `set -u` on an
  * unset parameter, or an explicit `${var:?message}`.
@@ -362,18 +363,20 @@ async function resolveParameter(ref, ctx) {
         const value = ctx.env[name];
         if (subscript === undefined)
             return { kind: 'scalar', value };
-        return { kind: 'scalar', value: await evaluateSubscript(subscript, 1, ctx) === 0 ? value : undefined };
+        // A scalar is an array of its one value.
+        const index = subscriptArithmetic(await expandSubscript(subscript, ctx), ctx);
+        return { kind: 'scalar', value: index === 0 || index === -1 ? value : undefined };
     }
-    const index = subscript === undefined ? 0 : await evaluateSubscript(subscript, array.length, ctx);
+    const index = subscript === undefined ? 0 : arrayIndex(array, subscriptArithmetic(await expandSubscript(subscript, ctx), ctx));
     return { kind: 'scalar', value: array[index] };
 }
-/** A subscript is an arithmetic expression; a negative index counts from the end. */
-export async function evaluateSubscript(subscript, length, ctx) {
-    const expanded = joinPieces(await expandParameterWord(subscript, ctx, 'word'));
-    if (expanded.trim() === '')
-        return 0;
-    const index = evaluateArithmetic(expanded, ctx.env, ctx.positionals);
-    return index < 0 ? length + index : index;
+/** A subscript's text once its expansions (`$i`, `$(…)`) are done, before its arithmetic. */
+export async function expandSubscript(subscript, ctx) {
+    return joinPieces(await expandParameterWord(subscript, ctx, 'word'));
+}
+/** An expanded subscript's arithmetic, a blank one 0. */
+export function subscriptArithmetic(expanded, ctx) {
+    return expanded.trim() === '' ? 0 : evaluateArithmetic(expanded, ctx.env, ctx.positionals);
 }
 /** The indices `${!arr[@]}` reports: every index that holds a value. */
 function arrayIndices(ref, ctx) {

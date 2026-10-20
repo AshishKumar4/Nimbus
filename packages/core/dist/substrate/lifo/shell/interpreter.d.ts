@@ -5,6 +5,7 @@ import { type CommandRegistry } from '../commands/registry.js';
 import type { ChildExit, CommandOutputStream, CommandInputStream, CommandRunAsHost, TerminalInputStream } from '../commands/types.js';
 import type { VfsCred } from '../../../runtime/os-contracts.js';
 import { type CapturedCommand } from './expander.js';
+import { type ArrayLiteral } from './variables.js';
 import { type ShellState } from './state.js';
 import { WorkThread } from './work-thread.js';
 export declare class BreakSignal {
@@ -31,19 +32,28 @@ export declare class ExitSignal {
 export declare class TextSyntaxError extends Error {
 }
 /**
- * A function call past the nesting bound (functionNestingLimit): the rest of
- * the line it is in is discarded (bash's jump_to_top_level(DISCARD)): a
- * shell goes on with the next line it reads, its own or a `source`d file's
- * or a trap's, with $? 1; a child shell (subshell, substitution, pipeline
- * element, job) ends with 1. Neither `||`, `if` nor a loop goes on.
+ * The rest of the line it is in is discarded (bash's
+ * jump_to_top_level(DISCARD)): a shell goes on with the next line it reads,
+ * its own or a `source`d file's or a trap's, with $? 1; a child shell
+ * (subshell, substitution, pipeline element, job) ends with 1. Neither `||`,
+ * `if` nor a loop goes on.
  */
-export declare class FunctionNestingSignal {
+export declare class DiscardSignal {
     readonly exitCode = 1;
+}
+/** A function call past the nesting bound (functionNestingLimit). */
+export declare class FunctionNestingSignal extends DiscardSignal {
+}
+/**
+ * A command of assignments alone that could not assign (a readonly name, a
+ * bad array subscript), as bash's expand_word_list_internal discards it.
+ */
+export declare class AssignmentErrorSignal extends DiscardSignal {
 }
 export interface BuiltinExecutionContext {
     interactive?: boolean;
-    /** A declaration builtin's arguments written as array assignments, `name=(…)`, by index: their elements, each expanded as a word. */
-    arrayElements?: ReadonlyMap<number, readonly string[]>;
+    /** A declaration builtin's arguments written as array assignments, `name=(…)`, by index: their arrays (Interpreter.arrayLiteral). */
+    arrayElements?: ReadonlyMap<number, ArrayLiteral>;
     vfs: ProcessView;
     /** The working directory a builtin resolves its relative path operands against. */
     cwd: string;
@@ -302,10 +312,24 @@ export declare class Interpreter {
     private runCommand;
     private assignEnv;
     /**
-     * `name=value`, `name+=value`, `name[expr]=value` and `name=(word …)`.
-     * Returns false when the name is readonly, which the caller reports.
+     * `name=value`, `name+=value`, `name[expr]=value` and `name=(element …)`.
+     * Returns the diagnostics for the caller to report, in order, and whether
+     * the assignment failed: a readonly name, or a subscript before the first
+     * element (bash's bad array subscript). An array literal's refused
+     * elements are reported, and the rest of it is assigned.
      */
     private applyAssignment;
+    /**
+     * `name=(…)`'s array, as bash's assign_compound_array_list builds it, or
+     * with `append` (`name+=(…)`) `name`'s own, extended in place (a scalar
+     * becomes its element 0). Every element is expanded first; then a word's
+     * values go on at the next index (past the last that holds one, for
+     * `append`), and a `[subscript]=` element at its subscript's arithmetic (a
+     * negative one counted back from past the last), the next index after it.
+     * An element whose subscript is empty, `@` or `*`, or before the first is
+     * refused with bash's diagnostic and skipped.
+     */
+    private arrayLiteral;
     /** Bash's PIPESTATUS: `statuses`, its array alone. */
     private setPipestatus;
     /**

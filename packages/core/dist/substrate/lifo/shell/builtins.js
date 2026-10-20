@@ -674,13 +674,17 @@ async function builtinDeclare(verb, { args, stdout, stderr, state, context }) {
     }
     return exitCode;
 }
-/** The right-hand side of a declaration: a string, or an array assignment's elements (BuiltinExecutionContext.arrayElements). */
+/** The right-hand side of a declaration: a string, or an array assignment's array (BuiltinExecutionContext.arrayElements). */
 async function assignDeclared(state, name, value, stderr) {
     if (state.readonlyNames.has(name)) {
         (await stderr.write(`${name}: readonly variable\n`));
         return false;
     }
-    return typeof value === 'string' ? assignVariable(state, name, value) : assignArray(state, name, value);
+    if (typeof value === 'string')
+        return assignVariable(state, name, value);
+    for (const refused of value.refused)
+        (await stderr.write(`${refused}\n`));
+    return assignArray(state, name, value.array);
 }
 async function assignEnv(state, name, value, stderr) {
     if (assignVariable(state, name, value))

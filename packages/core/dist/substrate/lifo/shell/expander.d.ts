@@ -65,6 +65,8 @@ export declare function expandRegexWord(parts: WordPart[], ctx: ExpandContext): 
  * No field splitting and no glob expansion.
  */
 export declare function expandWord(parts: WordPart[], ctx: ExpandContext): Promise<string>;
-/** A subscript is an arithmetic expression; a negative index counts from the end. */
-export declare function evaluateSubscript(subscript: string, length: number, ctx: ExpandContext): Promise<number>;
+/** A subscript's text once its expansions (`$i`, `$(…)`) are done, before its arithmetic. */
+export declare function expandSubscript(subscript: string, ctx: ExpandContext): Promise<string>;
+/** An expanded subscript's arithmetic, a blank one 0. */
+export declare function subscriptArithmetic(expanded: string, ctx: ExpandContext): number;
 //# sourceMappingURL=expander.d.ts.map
