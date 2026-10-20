@@ -48,7 +48,8 @@ export interface BeneathReached {
  */
 export function handedSpelling(handoff: { base: string; rest: readonly string[] } | null, reached: string, trailing: boolean): string {
   if (handoff === null) return reached;
-  return `${handoff.base === '/' ? '' : handoff.base}/${handoff.rest.join('/')}${trailing ? '/' : ''}`;
+  const spelling = `${handoff.base === '/' ? '' : handoff.base}/${handoff.rest.join('/')}`;
+  return trailing && !spelling.endsWith('/') ? spelling + '/' : spelling;
 }
 type BeneathAnswer = { type: string; mode?: number; uid?: number; gid?: number } | string | null;
 
@@ -138,5 +139,5 @@ export function* walkBeneath(
   }
   const reached = resolved.join('/');
   if (root !== '' && reached !== root && !reached.startsWith(root + '/')) throw fsError('ENOTCAPABLE', 'path', path);
-  return { reached, spelling: handedSpelling(handoff, named(reached), false) };
+  return { reached, spelling: handedSpelling(handoff, named(reached), name.endsWith('/')) };
 }

@@ -808,7 +808,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     // Where names began going to a backend that resolves its own paths, for its spelling (handedSpelling).
     let handoff: { base: string; rest: readonly string[] } | null = null;
     let scanned: readonly string[] | null = null;
-    const reached = walkVfsPath(spelled, (prefix, final, components, at) => {
+    const walk = () => walkVfsPath(spelled, (prefix, final, components, at) => {
       if (scanned !== components) { scanned = components; handoff = null; }
       const composed = this.namespace?.composes(prefix) === true;
       const parent = prefix.slice(0, prefix.lastIndexOf('/'));
@@ -818,9 +818,20 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       }
       if (final && !followSymlinks) return null;
       const mounted = this.mounted;
-      const stat = composed && mounted !== undefined
-        ? mounted.stat(prefix, { follow: false })
-        : this.vfs.statIfPresent(prefix, false, 'ENOTDIR');
+      const next = components[at + 1];
+      // Plain mounted descent is the final backend call's to judge; a component cancelled or ended here must be checked before reduction.
+      const directory = !final && (!composed || next === '' || next === '.' || next === '..');
+      let stat: ReturnType<CredentialedVfs['statIfPresent']> | ReturnType<CompositeVFS['sync']['stat']>;
+      try {
+        stat = composed && mounted !== undefined
+          ? mounted.stat(prefix, { follow: false })
+          : this.vfs.statIfPresent(prefix, false, 'ENOTDIR');
+      } catch (error) {
+        if (!composed || (!hasErrorCode(error, 'ENOENT') && !hasErrorCode(error, 'ENOTDIR'))) throw error;
+        if (!directory) return null;
+        if (hasErrorCode(error, 'ENOTDIR')) throw fsError('ENOTDIR', 'path', path);
+        stat = null;
+      }
       if (stat?.type === 'symlink') {
         if (composed && mounted?.readlink !== undefined) {
           const target = this.linkLeadsTo(prefix, mounted.readlink(prefix));
@@ -834,7 +845,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
           };
         }
       }
-      if (!final) {
+      if (directory) {
         if (stat === null) {
           if (creating === undefined) throw fsError('ENOENT', 'path', path);
           // mkdir -p makes even a missing name that a following `..` leaves behind.
@@ -846,8 +857,15 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         }
       }
       return null;
-    }, () => { throw fsError('ELOOP', 'path', path); });
-    return { reached: reached.slice(1), spelling: handedSpelling(handoff, reached, false) };
+    }, () => { throw LINK_LOOP; });
+    let reached: string;
+    try {
+      reached = walk();
+    } catch (error) {
+      if (error === LINK_LOOP) return null;
+      throw error;
+    }
+    return { reached: reached.slice(1), spelling: handedSpelling(handoff, reached, spelled.endsWith('/')) };
   }
 
   /** Where the link at `path`, reading `link`, leads: the namespace's link-root rule (CompositeVFS.linkLeadsTo); SQLite alone, its text. */
@@ -994,6 +1012,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
 
 /** A `..` component in a path's spelling. */
 const DOT_DOT_SEGMENT = /(?:^|\/)\.\.(?:\/|$)/;
+const LINK_LOOP = Symbol('link loop');
 
 /** A confined path, and whether a mount other than the SQLite root owns it. */
 type Located =
@@ -1036,13 +1055,15 @@ function callError(code: string, call: FsCall, options?: { detail?: string; caus
  * engine's own errors carry a code and name neither a call nor a path (their
  * message names a storage key): each is named for the call's syscall and the
  * caller's paths, keeps its reason (`detail`) and its own marks, and is the
- * cause. An error naming a call or a path (the bridge's own refusals, a
- * mount's, a pending import's) or carrying no code leaves as it is.
+ * cause. A path walk's refusal (`syscall: 'path'`) is named for this call.
+ * Other errors naming a call or a path (the bridge's own refusals, a mount's,
+ * a pending import's) or carrying no code leave as they are.
  */
 function failure(error: unknown, call: FsCall): unknown {
   if (typeof error !== 'object' || error === null || !('code' in error) || typeof error.code !== 'string') return error;
   const named = ('syscall' in error && typeof error.syscall === 'string') || ('path' in error && typeof error.path === 'string');
-  if (named) return error;
+  const walking = 'syscall' in error && error.syscall === 'path';
+  if (named && !walking) return error;
   const detail = 'detail' in error && typeof error.detail === 'string' ? error.detail : undefined;
   const marks = Object.fromEntries(Object.entries(error).filter(([key]) => !NAMING_FIELDS.has(key)));
   return Object.assign(callError(error.code, call, { detail, cause: error }), marks);

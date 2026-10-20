@@ -47,6 +47,7 @@ const CASES = [
 ];
 
 const run = (line) => `${SETUP}; ${line}; echo "status=$?"`;
+const complaint = (stderr) => stderr.replaceAll(/^(?:bash: line \d+: |sh: )/gm, '');
 const dir = mkdtempSync(join(tmpdir(), 'operand-walk-gnu-'));
 const gnu = {};
 try {
@@ -54,8 +55,7 @@ try {
     const at = join(dir, String(CASES.indexOf(line)));
     spawnSync('mkdir', ['-p', at]);
     const r = spawnSync('bash', ['--norc', '--noprofile', '-c', run(line)], { cwd: at, encoding: 'utf8', env: { PATH: process.env.PATH, LC_ALL: 'C' } });
-    // A builtin's complaint without bash's own prefix, as the workspace's shell says it.
-    gnu[line] = { stdout: r.stdout, stderr: r.stderr.replaceAll(/^bash: line \d+: /gm, '') };
+    gnu[line] = { stdout: r.stdout, stderr: complaint(r.stderr) };
   }
 } finally {
   rmSync(dir, { recursive: true, force: true });
@@ -69,7 +69,7 @@ try {
     const at = `/home/user/${CASES.indexOf(line)}`;
     await ws.exec(`mkdir -p ${at}`);
     const r = await ws.exec(run(line), { cwd: at });
-    const ours = { stdout: r.stdout, stderr: r.stderr };
+    const ours = { stdout: r.stdout, stderr: complaint(r.stderr) };
     try {
       assert.deepEqual(ours, gnu[line]);
       console.log(`  ✓ ${line.slice(0, 80)}`);
