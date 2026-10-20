@@ -15,6 +15,7 @@
 import assert from 'node:assert/strict';
 import { mock } from 'bun:test';
 import { mkdtemp, rm } from 'node:fs/promises';
+import { builtinModules } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -32,7 +33,8 @@ async function staticClosure(entry) {
       entryPoints: [entry],
       bundle: true, splitting: true, format: 'esm', platform: 'browser', outdir: scratch, metafile: true, logLevel: 'silent',
       conditions: ['workerd', 'worker', 'browser'],
-      external: ['cloudflare:*', 'node:*'],
+      // The platform's own modules, and Node's under nodejs_compat, bare names too.
+      external: ['cloudflare:*', 'node:*', ...builtinModules],
     });
     const outputs = result.metafile.outputs;
     const entryOutput = Object.keys(outputs).find((path) => outputs[path].entryPoint === entry);
