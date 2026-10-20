@@ -129,15 +129,20 @@ class Parser {
    * that text in its place, as bash's reader does, before any reserved word
    * is recognized. Whether it did.
    */
-  private expandAliases(keeps?: (token: Token) => boolean): boolean {
-    let expanded = false;
+  private expandAliases(operand = false): boolean {
+    let expanded: string | null = null;
     for (;;) {
       const token = this.peek();
-      // A word the reader takes for what it is before any alias (`keeps`: a conditional's `]]`).
-      if (keeps?.(token) === true) return expanded;
+      if (operand) {
+        // A conditional's `]]` ends it before any alias of that name (bash's special_case_tokens). Past an
+        // alias, its text's first word is checked again, and a word after it only if its text ended in a
+        // blank (an empty one's did not: `e y` leaves y as it is).
+        if (isUnquotedLiteralWord(token, ']]')) return expanded !== null;
+        if (expanded !== null && token.aliases?.has(expanded) !== true && token.aliasCheck !== true) return true;
+      }
       const name = aliasName(token);
       const value = name === null || token.aliases?.has(name) === true ? undefined : this.aliases?.(name);
-      if (name === null || value === undefined) return expanded;
+      if (name === null || value === undefined) return expanded !== null;
       // Forget the word, and anything read after it, and read the alias's text after where the word ended.
       const after = this.marks[this.pos + 1];
       if (this.tokens.length > this.pos + 1) {
@@ -147,7 +152,7 @@ class Parser {
       this.tokens.length = this.pos;
       this.marks.length = this.pos;
       this.reader.pushAlias(name, value);
-      expanded = true;
+      expanded = name;
     }
   }
 
@@ -407,7 +412,7 @@ class Parser {
     while (!this.isAtEnd()) {
       // A word after an alias whose text ended in a blank is checked for an alias too, an operand's as any
       // (bash 5.2); `]]` is the conditional's end first, as bash's special_case_tokens has it.
-      if (this.peek().aliasCheck === true) this.expandAliases((token) => isUnquotedLiteralWord(token, ']]'));
+      if (this.peek().aliasCheck === true) this.expandAliases(true);
       const token = this.advance();
       if (isUnquotedLiteralWord(token, ']]')) {
         if (at === 'operand') throw new ParseError(`unexpected argument \`]]' to conditional ${operator} operator`, token.pos);
@@ -463,6 +468,8 @@ class Parser {
       inUse.add(name);
       this.reader.pushAlias(name, value);
       regex = this.reader.readRegexWord();
+      // Read from its text, or past a blank one, the regex is checked again; past an empty one, not.
+      if (value === '') break;
     }
     // Nothing there, or the conditional's own `]]`: no operand.
     if (regex === null || unquotedLiteral(regex.token) === ']]') throw new ParseError('unexpected argument to conditional binary operator', this.peek().pos);

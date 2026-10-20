@@ -50,6 +50,8 @@ const CASES = [
   { line: "alias u='[[ -n '\nalias e=''\nu e ]]; echo $?", compare: "out" },
   // The whole regex word is looked up, not a prefix; `]]` ends the conditional before any alias of that name.
   { line: "alias r='[[ x =~ '\nalias y=z\nr y|x ]]; echo $?\nalias b='[[ x '\nalias ']]'=ignored\nb ]]; echo $?", compare: "all" },
+  // Past an empty alias the next word is not checked; past a blank one it is; an alias's own first word is.
+  { line: "alias r='[[ x =~ '\nalias e=''\nalias y=x\nr e y ]]; echo $?\nalias q='[[ x == '\nq e y ]]; echo $?\nalias f=' '\nq f y ]]; echo $?\nr f y ]]; echo $?\nalias w='y '\nq w ]]; echo $?", compare: "all" },
   { line: "[[ -n ]]; echo $?", compare: "out" },
   { line: "[[ x == ]]; echo $?", compare: "out" },
 ];
