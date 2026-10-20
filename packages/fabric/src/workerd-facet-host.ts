@@ -385,6 +385,12 @@ export function abortFacet(ctx: DurableObjectState, name: string, reason: Error)
   facetContainer(ctx).abort(name, reason);
 }
 
+/** The ephemeral facet name process `pid` holds in this incarnation's book, if it holds one. */
+export function heldFacetName(ctx: DurableObjectState, pid: number): string | null {
+  const slot = slotBook(ctx).held.get(pid);
+  return slot === undefined ? null : residentFacetName(slot);
+}
+
 
 
 /**
