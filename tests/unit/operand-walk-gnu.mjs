@@ -1,0 +1,76 @@
+#!/usr/bin/env bun
+// A command's operand is walked as POSIX walks a path (Kinu ask 54): each
+// `..` after the name before it is looked up, through a symbolic link to
+// where it points, and a trailing slash on a file is "Not a directory". The
+// shell joined an operand to its directory and reduced it lexically before
+// any lookup, so `cat missing/../f` read f, `cat f/` read the file, and
+// `cat link/../x` read the x beside the link rather than beside its target.
+// Checked against the host's GNU tools under bash, over the same tree:
+//   f, x: files; d/f2: a file in a directory; t/x, t/sub/: the link's side;
+//   link -> t/sub.
+// Ordinary spellings (`d/../f`, `./f`, `d/./f2`) answer as before.
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
+import { hostSqlite } from './lib/host-sqlite.mjs';
+
+const SETUP = 'printf F > f; printf X > x; mkdir -p d t/sub; printf D > d/f2; printf T > t/x; ln -s t/sub link';
+const CASES = [
+  'cat ./missing/../f',
+  'cat f/',
+  'cat link/../x',
+  'cat d/../f ./f d/./f2 link/../sub/../x',
+  'head -c1 link/../x; echo; head -c1 missing/../f',
+  'wc -c link/../x missing/../f f/',
+  'grep -H . link/../x missing/../f',
+  'stat -c %s link/../x; stat -c %n missing/../f f/',
+  'ls link/..; ls missing/..; ls f/',
+  'test -e missing/../f; echo "e=$?"; test -f f/; echo "f=$?"; test -f link/../x; echo "x=$?"',
+  'cp link/../x c1; cat c1; cp missing/../f c2; cp f/ c3',
+  'mkdir missing/../m; mkdir link/../m2; ls t',
+  'touch missing/../n f/; touch link/../n2; ls t',
+  'chmod 600 missing/../f f/; chmod 600 link/../x; stat -c %a t/x',
+  'rm missing/../f f/; rm link/../x; ls t',
+  'mv missing/../f g; mv link/../x g2; ls t; cat g2',
+  'cd missing/.. && echo in; cd link/.. && ls; cd -P link/.. && ls',
+];
+
+const run = (line) => `${SETUP}; ${line}; echo "status=$?"`;
+const dir = mkdtempSync(join(tmpdir(), 'operand-walk-gnu-'));
+const gnu = {};
+try {
+  for (const line of CASES) {
+    const at = join(dir, String(CASES.indexOf(line)));
+    spawnSync('mkdir', ['-p', at]);
+    const r = spawnSync('bash', ['--norc', '--noprofile', '-c', run(line)], { cwd: at, encoding: 'utf8', env: { PATH: process.env.PATH, LC_ALL: 'C' } });
+    gnu[line] = { stdout: r.stdout, stderr: r.stderr.replaceAll(/^bash: line \d+: /gm, 'bash: ') };
+  }
+} finally {
+  rmSync(dir, { recursive: true, force: true });
+}
+
+const { sql, transactions } = await hostSqlite();
+const ws = await NimbusWorkspace.create({ sql, transactions, generation: 1 });
+const failed = [];
+try {
+  for (const line of CASES) {
+    const at = `/home/user/${CASES.indexOf(line)}`;
+    await ws.exec(`mkdir -p ${at}`);
+    const r = await ws.exec(run(line), { cwd: at });
+    const ours = { stdout: r.stdout, stderr: r.stderr.replaceAll(/^(?:bash|sh|nimbus)?(?: line \d+)?: /gm, 'bash: ') };
+    try {
+      assert.deepEqual(ours, gnu[line]);
+      console.log(`  ✓ ${line.slice(0, 80)}`);
+    } catch {
+      failed.push(`${line}\n  gnu:  ${JSON.stringify(gnu[line])}\n  ours: ${JSON.stringify(ours)}`);
+      console.log(`  ✗ ${line.slice(0, 80)}`);
+    }
+  }
+} finally {
+  await ws.close();
+}
+assert.deepEqual(failed, [], `as GNU:\n${failed.join('\n')}`);
+console.log('operand-walk-gnu: ok');
