@@ -126,7 +126,8 @@ try {
   harness.sql.exec('INSERT INTO vfs_shells (id, cwd, env) VALUES (?, ?, ?)', 'old', '/tmp', JSON.stringify({ OLD: 'v', HOME: '/home/user' }));
   ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx });
   const old = await ws.shellState('old');
-  assert.deepEqual(old, { cwd: '/tmp', env: { OLD: 'v', HOME: '/home/user' } });
+  assert.deepEqual(Object.keys(old), ['cwd', 'env'], 'an old row has no vars');
+  assert.deepEqual({ cwd: old.cwd, env: { ...old.env } }, { cwd: '/tmp', env: { OLD: 'v', HOME: '/home/user' } });
   assert.equal(digest(old), digest({ cwd: '/tmp', env: { OLD: 'v', HOME: '/home/user' } }), 'an old row digests as it did');
   assert.equal([...harness.sql.exec('PRAGMA table_info(vfs_shells)')].filter((column) => column.name === 'vars').length, 1);
   assert.equal((await ws.exec('declare -p OLD', { shellId: 'old' })).stdout, 'declare -x OLD="v"\n', 'an old row\'s variables are exported, as before');
