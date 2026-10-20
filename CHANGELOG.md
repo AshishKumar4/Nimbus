@@ -5,6 +5,14 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Changed: `git status` reads its worktree in one ordered scan of the
+  session's filesystem instead of a listing per directory and an lstat per
+  file. On next.js (34,302 files), measured on throwaway Previews, the
+  session's CPU per `git status` went from 3.8–4.2 s to 1.0–1.6 s, and from
+  7.4 s to 2.5 s (medians) on a slower placement; the wall time from
+  4.7–5.5 s to 1.5–1.9 s. `list` itself judges each directory once, from
+  its own row, so every walk of it is cheaper.
+
 - Fixed: a Node program could be told a file, directory or link it had
   just renamed was not there (`fs.statSync` ENOENT, and renaming it again
   refused) when input arrived while the rename was still on its way to the
