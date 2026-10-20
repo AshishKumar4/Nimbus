@@ -24,6 +24,7 @@ import {
 } from '@nimbus-sh/worker/auth';
 
 import { WorkerEntrypoint } from 'cloudflare:workers';
+import { measureGuestTails } from '@nimbus-sh/fabric/facet-limits.js';
 import { MemoryVFS } from '@nimbus-sh/core/vfs/memory.js';
 import { CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { processHostMode } from '../../../packages/worker/src/loaders/process-host.js';
@@ -237,8 +238,45 @@ export class TestTlsEgress extends TestEgress implements WorkspaceEgressTls {
   }
 }
 
+/**
+ * Measurement: every Worker the fabric creates reports here (measureGuestTails),
+ * so each guest invocation's CPU, wall time, outcome and measure lines land in
+ * this Worker's logs, read back by the observability API.
+ */
+export class GuestTail extends WorkerEntrypoint<Cloudflare.Env, { kind: string }> {
+  tail(events: TraceItem[]): void {
+    for (const event of events) {
+      const logs: string[] = [];
+      for (const log of event.logs) {
+        const text = log.message.map((part) => (typeof part === 'string' ? part : JSON.stringify(part))).join(' ');
+        if (text.startsWith('[fs-measure]') || text.startsWith('[mem-probe]')) logs.push(text);
+      }
+      const info = event.event as { rpcMethod?: string; request?: { url?: string } } | null;
+      console.log(JSON.stringify({
+        guestTail: this.ctx.props.kind,
+        at: event.eventTimestamp,
+        cpuMs: event.cpuTime,
+        wallMs: event.wallTime,
+        outcome: event.outcome,
+        entrypoint: event.entrypoint ?? null,
+        model: event.executionModel,
+        rpc: info?.rpcMethod ?? null,
+        url: info?.request?.url ?? null,
+        exceptions: event.exceptions.slice(0, 3).map((e) => `${e.name}: ${e.message}`.slice(0, 300)),
+        logs,
+      }));
+    }
+  }
+}
+
 /** The SDK's session under the embedder's per-session test egress. */
 export class NimbusSession extends SdkNimbusSession {
+  constructor(...args: ConstructorParameters<typeof SdkNimbusSession>) {
+    super(...args);
+    const ctx = args[0] as unknown as { exports: { GuestTail(options: { props: { kind: string } }): Fetcher } };
+    measureGuestTails((props) => ctx.exports.GuestTail({ props }));
+  }
+
   private requireProbeDiagnostics(): void {
     if (!this.nimbusDebug) throw new Error('probe diagnostics are disabled');
   }

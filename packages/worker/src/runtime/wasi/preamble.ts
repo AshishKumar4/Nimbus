@@ -280,7 +280,10 @@ function __wasiStartResident(sup: WasiSupervisorStub, cred: WasiCred): { store: 
   if (view !== null && !view.ready()) view = null;
   /** The process's admission listener, given to the view once there is one (ResidentNamespace.onAdmitted). */
   let admitted: ((key: string, dev: number, ino: number) => void) | null = null;
-  if (view === null) store.bindInMemory(WASI_RESIDENT_STORE_BYTES);
+  const journalSql: JournalSql | undefined = Reflect.get(globalThis, '__nimbusFsJournalSql');
+  // Measurement: NIMBUS_MEASURE_STORE=sql (a resident's) backs the store with its facet's SQLite.
+  if (view === null && journalSql !== undefined && Reflect.get(globalThis, '__nimbusMeasureStore') === 'sql') store.bind({ storage: { sql: journalSql } });
+  else if (view === null) store.bindInMemory(WASI_RESIDENT_STORE_BYTES);
   const ready = view !== null ? Promise.resolve(view) : (async () => {
     // The session's own filesystem is the one the store answers for: its root reports its device.
     const root = await authority.stat('/');
@@ -331,7 +334,6 @@ function __wasiStartResident(sup: WasiSupervisorStub, cred: WasiCred): { store: 
   };
   // A resident's facet keeps the log of what it sends in its own store
   // (process-fs-journal.ts), drained by the session once the process is gone.
-  const journalSql: JournalSql | undefined = Reflect.get(globalThis, '__nimbusFsJournalSql');
   const fs = residentFilesystem(authority, booting, {
     session,
     ...(typeof sup.fsReadDirectories === 'function' ? {
@@ -402,6 +404,12 @@ export async function __wasiSettleWrites(): Promise<string | null> {
     if (__wasiResident !== null) {
       const resident = __wasiResident;
       const failures = await resident.fs.settle();
+      try {
+        console.log('[fs-measure] ' + JSON.stringify({
+          kind: Reflect.get(globalThis, '__nimbusFsJournalSql') === undefined ? 'wasi-oneshot' : 'wasi-resident',
+          pid: __wasiFS.pid, store: resident.store.measure(), fs: resident.fs.stats(),
+        }));
+      } catch (e) { console.log('[fs-measure] failed ' + (e as Error)?.message); }
       if (failures.length > 0) failed = failures
         .map((f) => `${f.path}: not written (${f.error instanceof Error ? f.error.message : String(f.error)})`)
         .join('; ');

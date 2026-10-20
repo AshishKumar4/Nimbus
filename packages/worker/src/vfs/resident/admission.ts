@@ -56,6 +56,8 @@ export interface Admission {
   ensureRoom(bytes: number): Promise<boolean>;
   roomForPushed(result: unknown): Promise<void>;
   reportSize(): Promise<void>;
+  /** Measurement: the most the cap counted at any check, and what it refused, by count and bytes. */
+  readonly measured: { peak: number; refusals: number; refusedBytes: number };
 }
 
 export function createAdmission(coherence: Coherence): Admission {
@@ -100,11 +102,24 @@ export function createAdmission(coherence: Coherence): Admission {
   const reserveQueue = new SafeList<{ path: string; bytes: number; resolve: (held: boolean) => void }>();
   let reserveServing = false;
 
+  const measured = { peak: 0, refusals: 0, refusedBytes: 0 };
+  const measureRefused = (bytes: number): false => {
+    measured.refusals++;
+    measured.refusedBytes += bytes;
+    return false;
+  };
   const tablesBytes = (): number => coherence.tables('a storage measure').bytes();
-  const dbBytes = (): number => tablesBytes()
-    + (inHeap ? heldBytes + namespaceOverlayBytes + namespaceReserveBytes + pinnedBytes : 0);
-  const refusal = (total: number): string | null => (inHeap && cap !== null && total > cap
-    ? 'namespace storage budget exceeded (' + cap + ' bytes)' : null);
+  const dbBytes = (): number => {
+    const total = tablesBytes()
+      + (inHeap ? heldBytes + namespaceOverlayBytes + namespaceReserveBytes + pinnedBytes : 0);
+    if (total > measured.peak) measured.peak = total;
+    return total;
+  };
+  const refusal = (total: number): string | null => {
+    if (!(inHeap && cap !== null && total > cap)) return null;
+    measureRefused(total - cap);
+    return 'namespace storage budget exceeded (' + cap + ' bytes)';
+  };
 
   /** Hold room for `path` if `bytes` fit now: true once it is held. */
   const holdRoom = (path: string, bytes: number): boolean => {
@@ -144,7 +159,7 @@ export function createAdmission(coherence: Coherence): Admission {
           const refused = new SafeList<{ path: string; bytes: number; resolve: (held: boolean) => void }>();
           for (let i = 0; i < reserveQueue.length; i++) refused[i] = reserveQueue[i];
           reserveQueue.length = 0;
-          for (let i = 0; i < refused.length; i++) refused[i].resolve(false);
+          for (let i = 0; i < refused.length; i++) refused[i].resolve(measureRefused(refused[i].bytes));
           return;
         }
       }
@@ -198,7 +213,7 @@ export function createAdmission(coherence: Coherence): Admission {
     if (cap === null) return true;
     if (dbBytes() + reservedBytes + bytes <= cap) return true;
     if (ask) void askGrant(bytes);
-    return false;
+    return measureRefused(bytes);
   };
 
   /** Room for `bytes` before an asynchronous fill writes them: true when they fit. */
@@ -208,6 +223,7 @@ export function createAdmission(coherence: Coherence): Admission {
   };
 
   return {
+    measured,
     get inHeap() { return inHeap; },
     get cap() { return cap; },
     dbBytes,

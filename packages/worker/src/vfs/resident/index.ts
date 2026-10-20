@@ -188,6 +188,8 @@ export interface ResidentStore {
   readonly sync: Sync;
   readonly pages: Pages;
   readonly lazy: Lazy;
+  /** Measurement: what the store holds against its cap, and how its reads were answered. */
+  measure(): Record<string, unknown>;
 }
 
 export function createResidentStore(options: ResidentStoreOptions = {}): ResidentStore {
@@ -237,5 +239,20 @@ export function createResidentStore(options: ResidentStoreOptions = {}): Residen
     sync,
     pages,
     lazy,
+    measure() {
+      if (!coherence.bound()) return { bound: false };
+      const stats = cells.stats();
+      return {
+        backing: admission.inHeap ? 'heap' : 'sql',
+        cap: admission.cap,
+        bytesNow: admission.dbBytes(),
+        ...admission.measured,
+        ...cells.measured,
+        files: stats.files,
+        fileBytes: stats.bytes,
+        names: stats.names,
+        databaseSize: stats.databaseSize,
+      };
+    },
   };
 }

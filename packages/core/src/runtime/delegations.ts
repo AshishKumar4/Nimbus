@@ -123,7 +123,16 @@ export interface DelegationStats {
     readonly waitMs: number;
     readonly longestWaitMs: number;
   };
+  /** Measurement: each recall's round trip (ms), asked to answered or timed out, the last RECALL_SAMPLES of each. */
+  readonly recallMs: readonly number[];
+  readonly readRecallMs: readonly number[];
 }
+
+const RECALL_SAMPLES = 512;
+const sample = (into: number[], ms: number): void => {
+  into.push(ms);
+  if (into.length > RECALL_SAMPLES) into.shift();
+};
 
 export class Delegations {
   private readonly held = new Map<string, Held>();
@@ -131,6 +140,8 @@ export class Delegations {
     grants: 0, share: 0, revoke: 0, timedOut: 0,
     readGranted: 0, readAnswered: 0, readExpired: 0, readWaitMs: 0, readLongestWaitMs: 0,
   };
+  private readonly recallMs: number[] = [];
+  private readonly readRecallMs: number[] = [];
   /** Each holder's leases. */
   private readonly byPid = new Map<number, Set<string>>();
   /**
@@ -355,6 +366,8 @@ export class Delegations {
         granted: this.counts.readGranted, answered: this.counts.readAnswered, expired: this.counts.readExpired,
         waitMs: this.counts.readWaitMs, longestWaitMs: this.counts.readLongestWaitMs,
       },
+      recallMs: [...this.recallMs],
+      readRecallMs: [...this.readRecallMs],
     };
   }
 
@@ -375,7 +388,8 @@ export class Delegations {
     held.pending = { kind, done: resolve, cancel: () => sessionTimers.clearTimeout(timer) };
     if (held.waiter !== null) held.waiter(kind);
     else held.asked.push(kind);
-    return promise;
+    const asked = Date.now();
+    return promise.then(() => sample(this.recallMs, Date.now() - asked));
   }
 
   /**
@@ -411,6 +425,7 @@ export class Delegations {
       const waited = Date.now() - asked;
       this.counts.readWaitMs += waited;
       this.counts.readLongestWaitMs = Math.max(this.counts.readLongestWaitMs, waited);
+      sample(this.readRecallMs, waited);
     });
   }
 

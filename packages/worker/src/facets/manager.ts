@@ -1361,6 +1361,20 @@ ${RESIDENCY_MISS_REPORT}
       __rpcWriteChain = __task.then(__rpcWriteSettled, __rpcWriteSettled);
     };
 
+    // Measurement: the platform's console, whose lines reach the guest tail.
+    globalThis.__nimbusHostConsole ??= globalThis.console;
+    globalThis.__nimbusMeasureLog = (kind) => {
+      try {
+        const store = globalThis.__nimbusMeasureResident;
+        globalThis.__nimbusHostConsole.log("[fs-measure] " + JSON.stringify({
+          kind, pid: (globalThis.process && globalThis.process.pid) ?? null, argv: (globalThis.process && globalThis.process.argv || []).slice(1, 3),
+          store: store ? store.measure() : null,
+          coherence: globalThis.__nimbusVfsCoherence || null,
+          fsRpcReads: globalThis.__nimbusFsRpcReads || 0,
+          residencyMisses: (globalThis.__nimbusVfsResidencyMisses || new Set()).size,
+        }));
+      } catch (e) { try { globalThis.__nimbusHostConsole.log("[fs-measure] failed " + (e && e.message)); } catch {} }
+    };
     try { globalThis.console = __consoleMod; } catch {}
     try { globalThis.process = __processMod; } catch {}
     try { globalThis.Buffer = __BufferMod; } catch {}
@@ -1478,6 +1492,7 @@ ${VFS_CURSOR_SEED_SOURCE}
     // empty store.
     const __resident = __nimbusResidentModule.createResidentStore();
     __resident.bindInMemory(${ONE_SHOT_STORE_MEMORY_BYTES});
+    globalThis.__nimbusMeasureResident = __resident;
     __resident.admission.setStorage(undefined, __supervisor);
     __resident.namespace.setCred(cred);
     __resident.sync.setPlan(dataPlan);
@@ -1605,6 +1620,7 @@ ${nodeProgramRuntime(sources, entry.esModule)}
                  __rpcDropBytes + " bytes lost" +
                  (__rpcLastError ? "; last error: " + __rpcLastError : "") + "]\\n";
       }
+      globalThis.__nimbusMeasureLog?.("node-oneshot");
       try { await __supervisor.reportExit(exitCode, __tail); } catch {}
     }
 
@@ -1915,8 +1931,12 @@ ${VFS_CURSOR_SEED_SOURCE}
     // the bytes have to sit somewhere a synchronous call can already reach;
     // \`ctx.storage.sql.exec\` returns a Cursor, not a Promise. See
     // vfs/resident.
-    __resident.bind(workerCtx);
-    __resident.admission.setStorage(__startArgs && __startArgs.storage, __supervisor);
+    // Measurement: NIMBUS_MEASURE_STORE=heap holds this resident's store in its heap, at the one-shot's cap.
+    const __measureHeap = !!(env && env.NIMBUS_MEASURE_STORE === "heap");
+    if (__measureHeap) __resident.bindInMemory(${ONE_SHOT_STORE_MEMORY_BYTES});
+    else __resident.bind(workerCtx);
+    globalThis.__nimbusMeasureResident = __resident;
+    __resident.admission.setStorage(__measureHeap ? undefined : __startArgs && __startArgs.storage, __supervisor);
     __resident.namespace.setCred(cred);
     __resident.sync.setPlan(__startArgs && __startArgs.dataPlan);
     // What an import() of a module only an import() reaches reads
@@ -2075,6 +2095,7 @@ ${nodeProgramRuntime(sources, entry.esModule)}
         code = 1;
         await __nimbusReleaseStderr(__replayShort);
       }
+      globalThis.__nimbusMeasureLog?.("node-resident");
       await __supervisor.reportExit(code, reason || "", __nimbusDataReadMisses(), [...(__nimbusProfileStaged || [])], __nimbusRuntimeCodeLedger(), __nimbusExecutedModuleMisses());
       __nimbusProcessExitReported = true;
     };

@@ -96,7 +96,13 @@ export function guestFacetPolicy(code: { limits?: Partial<FacetResourceLimits> }
   return { kind: 'worker', limits: effectiveFacetLimits('worker', code.limits) };
 }
 
+/** Measurement: the Tail Worker every fabric-created Worker reports its invocations to (their CPU, outcome and logs). */
+let guestTail: ((props: { kind: FacetKind }) => unknown) | null = null;
+export function measureGuestTails(tail: (props: { kind: FacetKind }) => unknown): void {
+  guestTail = tail;
+}
+
 /** `code` with `kind`'s native limits, lowered by `requested`. Nothing else in it changes, its env included. */
 export function applyFacetLimits<C extends object>(kind: FacetKind, code: C, requested?: Partial<FacetResourceLimits>) {
-  return { ...code, limits: { ...effectiveFacetLimits(kind, requested) } };
+  return { ...code, limits: { ...effectiveFacetLimits(kind, requested) }, ...(guestTail === null ? {} : { tails: [guestTail({ kind })] }) };
 }

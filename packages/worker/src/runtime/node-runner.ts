@@ -137,6 +137,8 @@ export async function runFresh(
   // program attached to the terminal holds it until it exits.
   const wantsLongRunning =
     opts.forceLongRunning ||
+    // Measurement: the same program in a resident facet rather than a Loader worker.
+    opts.env?.NIMBUS_MEASURE_HOST === 'facet' ||
     opts.attachedTty === true ||
     // Node's options are its execArgv now, not its argv (node-cli.ts).
     isLongRunningInvocation([...(opts.node?.execArgv ?? []), ...args]) ||
