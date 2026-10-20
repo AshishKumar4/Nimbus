@@ -694,6 +694,12 @@ function spawnResident(
     // body and all, for its caller to run again (HostLoss.request).
     handleHttpRequest: async (request: Request, scope: ResponseScope, leg: { relayed?: AbortSignal; sending?: () => void } = {}) => {
       const lease = observation.acquire();
+      try {
+        if (!observation.validated()) await unsentUntilValidated(lease);
+      } catch (error) {
+        lease.release();
+        throw error;
+      }
       const cancel = leg.relayed === undefined ? new AbortController() : null;
       scope.settled((delivered) => {
         lease.release();
@@ -701,7 +707,6 @@ function spawnResident(
       });
       const signal = leg.relayed ?? cancel!.signal;
       try {
-        if (!observation.validated()) await unsentUntilValidated(lease);
         leg.sending?.();
         // Unencoded: the registry decodes a coding once, as it did the bytes an RPC hop carried.
         const response = await facet.fetch(request, { signal, encodeResponseBody: 'manual' });
