@@ -80,8 +80,7 @@ try {
   a.check('the second account exists', who.text.includes('1001'), who.text.slice(-200));
   const search = await run(`sudo -u alice grep -rl -e ${NODE_SECRET} -e ${PYTHON_SECRET} /.nimbus /var; echo "SEARCHED $?"`, 120_000);
   const found = search.text.split('\n').filter((line) => line.startsWith('/.nimbus') || line.startsWith('/var'));
-  // A directory alice may not read is no place she finds them: grep says so (status 2), and finds nothing.
-  a.check('another account finds neither secret anywhere under /.nimbus or /var', /SEARCHED [12]/.test(search.text) && found.length === 0,
+  a.check('another account finds neither secret anywhere under /.nimbus or /var', /SEARCHED 1/.test(search.text) && found.length === 0,
     `found in: ${found.join(', ') || '(none)'}; ${search.text.slice(-300)}`);
 
   // ── The session's diagnostics name the shell's environment only ───────
