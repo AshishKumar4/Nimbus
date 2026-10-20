@@ -29,7 +29,7 @@ const LINES = [
   'x="1+2"; y=x; echo $((x * 2)) $((y + 1))',
   'a=(); a[010]=x; a[0x1]=y; declare -p a',
   '[[ 010 -eq 8 ]] && echo double; [[ 0x10 -gt 15 ]] && echo hex; [ 010 -eq 10 ] && echo single',
-  'x=1; [[ x -eq 1 && 1+1 -eq 2 && 16#ff -eq 255 ]] && echo operands; [[ 08 -eq 8 ]]; echo "st=$?"\necho next',
+  'x=1; [[ x -eq 1 && 1+1 -eq 2 && 0xff -eq 255 ]] && echo operands; [[ 08 -eq 8 ]]; echo "st=$?"\necho next',
   'i=0x0f; j=0; while [ $j -lt 2 ]; do i=$((i + 1)); j=$((j + 1)); done; echo $i',
   'echo $((08))\necho next',
   'echo $((2#2))\necho next',
