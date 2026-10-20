@@ -328,6 +328,12 @@ export type WriteBatchStreamResult = (WriteBatchStreamProgress & {
         message: string;
         /** The refusal's errno (EACCES, EEXIST, EROFS, …) when the filesystem refused; absent otherwise. */
         errno?: string;
+        /**
+         * What the wave met is a delegation the session recalls first (vfs/recall.ts
+         * RecallRequired), the recall started: nothing after the cursor applied and
+         * no refusal is kept, so the same ops sent again apply once it is over.
+         */
+        recall?: true;
     };
 });
 /**

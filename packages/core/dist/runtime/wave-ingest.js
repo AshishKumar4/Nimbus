@@ -13,6 +13,7 @@ import { decodeWriteBatchStream, encodeWriteBatchStream, openAccessRights } from
 import { concatBytes, nameDec } from '../_shared/bytes.js';
 import { SYSCALL_VERDICTS, errnoCodeOf, vfsError } from '../vfs/vfs-error.js';
 import { parentKey } from '../vfs/path.js';
+import { recallOf } from '../vfs/recall.js';
 import { CALL_GROUP_BYTES, CALL_GROUP_OPS, DATA_CALL_MAX, ROUTED_FILE_MAX, ROUTED_LINK_TARGET_MAX, untilAborted, validateFileChunks, validateInodeShape, withUmask, } from './wave-contracts.js';
 /** A mounted description's answer, as the engine's is (WriteStreamReceipt): its file's stat now, and an open's descriptor. */
 function receiptOf(path, now, handle) {
@@ -917,6 +918,8 @@ export class WaveIngest {
                     // Not kept: the op is unanswered, and a re-send applies it again.
                 }
             }
+            // A delegation to recall, its op not refused for good: a re-send applies it once the recall is over.
+            const recall = recallOf(error) !== null && progress.sequence?.refused === undefined;
             return {
                 ok: false,
                 ...progress,
@@ -925,6 +928,7 @@ export class WaveIngest {
                     phase,
                     message: error instanceof Error ? error.message : String(error),
                     ...(errno === undefined ? {} : { errno }),
+                    ...(recall ? { recall: true } : {}),
                 },
             };
         }
