@@ -5,6 +5,7 @@ import type { ProcessView } from '../../../runtime/process-files.js';
 import { characterAt, characterBounds, characterWidth, escapeGlob, expandGlob, fixedMatchLength, shellMatch, shellUnits } from '../utils/glob.js';
 import { readAnsiCQuote, readBalancedCommand, readBracedExpansion } from './lexer.js';
 import type { ShellOptions } from './state.js';
+import { arrayIndex } from './variables.js';
 
 export interface ExpandContext {
   env: Record<string, string>;
@@ -458,18 +459,12 @@ async function resolveParameter(ref: ParameterRef, ctx: ExpandContext): Promise<
   if (array === undefined) {
     const value = ctx.env[name];
     if (subscript === undefined) return { kind: 'scalar', value };
-    return { kind: 'scalar', value: await evaluateSubscript(subscript, 1, ctx) === 0 ? value : undefined };
+    // A scalar is an array of its one value.
+    const index = subscriptArithmetic(await expandSubscript(subscript, ctx), ctx);
+    return { kind: 'scalar', value: index === 0 || index === -1 ? value : undefined };
   }
-  const index = subscript === undefined ? 0 : await evaluateSubscript(subscript, array.length, ctx);
+  const index = subscript === undefined ? 0 : arrayIndex(array, subscriptArithmetic(await expandSubscript(subscript, ctx), ctx));
   return { kind: 'scalar', value: array[index] };
-}
-
-/** A subscript is an arithmetic expression; a negative index counts from the end. */
-export async function evaluateSubscript(
-  subscript: string, length: number, ctx: ExpandContext,
-): Promise<number> {
-  const index = subscriptArithmetic(await expandSubscript(subscript, ctx), ctx);
-  return index < 0 ? length + index : index;
 }
 
 /** A subscript's text once its expansions (`$i`, `$(…)`) are done, before its arithmetic. */

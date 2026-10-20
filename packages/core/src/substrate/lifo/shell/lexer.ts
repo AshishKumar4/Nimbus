@@ -13,6 +13,28 @@ export function lex(input: string): Token[] {
   }
 }
 
+/**
+ * An array literal's words (the text between its parentheses), as bash's
+ * reader reads a compound assignment: as anywhere, except that a word
+ * beginning `[subscript]=` or `[subscript]+=` reads its subscript whole
+ * (TokenReader.readSubscriptedWord).
+ */
+export function lexArrayElements(input: string): Token[] {
+  const reader = new TokenReader(input);
+  const tokens: Token[] = [];
+  for (;;) {
+    const subscripted = reader.readSubscriptedWord();
+    if (subscripted !== null) {
+      tokens.push(subscripted);
+      continue;
+    }
+    for (const token of reader.next()) {
+      if (token.kind === TokenKind.EOF) return tokens;
+      tokens.push(token);
+    }
+  }
+}
+
 /** Text a reader reads: the input, or an alias's text read in place of its name (`alias`; `blank`: it ends in a blank). */
 interface Frame {
   readonly input: string;
@@ -168,6 +190,49 @@ export class TokenReader {
       frame.at++;
     }
     return [{ kind: TokenKind.EOF, value: '', pos: this.frame.at }];
+  }
+
+  /**
+   * An array literal's `[subscript]=value` (or `+=`) word, read here when one
+   * begins at the next word: its subscript to the matching `]`, whose blanks,
+   * parentheses and operators are its own and whose quotes are kept as a
+   * word's (`[i + 1]`, `[(1+2)]`, `["a]b"]`), then the value as a word. Null,
+   * with nothing read but blanks, where the next word is not one.
+   */
+  readSubscriptedWord(): Token | null {
+    const frame = this.frame;
+    const input = frame.input;
+    while (input[frame.at] === ' ' || input[frame.at] === '\t' || (input[frame.at] === '\\' && input[frame.at + 1] === '\n')) {
+      frame.at += input[frame.at] === '\\' ? 2 : 1;
+    }
+    const pos = frame.at;
+    if (input[pos] !== '[') return null;
+    const close = subscriptEnd(input, pos);
+    if (close === -1) return null;
+    const operator = input.startsWith('+=', close + 1) ? '+=' : input[close + 1] === '=' ? '=' : null;
+    if (operator === null) return null;
+    const parts: WordPart[] = [{ text: '[', quoted: 'none' }];
+    // The subscript's words, as far as the `]`; a character no word begins with is its own.
+    const subscript = input.slice(0, close);
+    for (let i = pos + 1; i < close;) {
+      const word = isWordBreak(subscript[i]) ? null : readWord(subscript, i);
+      if (word === null) {
+        parts.push({ text: subscript[i], quoted: 'none' });
+        i++;
+        continue;
+      }
+      parts.push(...(word.token.parts ?? [{ text: word.token.value, quoted: 'none' }]));
+      i = word.end;
+    }
+    parts.push({ text: `]${operator}`, quoted: 'none' });
+    let end = close + 1 + operator.length;
+    const value = isWordBreak(input[end] ?? ' ') ? null : readWord(input, end);
+    if (value !== null) {
+      parts.push(...(value.token.parts ?? [{ text: value.token.value, quoted: 'none' }]));
+      end = value.end;
+    }
+    frame.at = end;
+    return { kind: TokenKind.Word, value: parts.map((part) => part.text).join(''), pos, parts, source: input.slice(pos, end) };
   }
 
   /**
@@ -540,6 +605,27 @@ function isDigit(ch: string | undefined): boolean {
 function isOperatorBreak(ch: string): boolean {
   return ch === ' ' || ch === '\t' || ch === '|' || ch === '&' || ch === ';'
     || ch === '>' || ch === '<' || ch === '\n' || ch === '(' || ch === ')';
+}
+
+/**
+ * The index of the `]` that closes the `[` at `open`, as bash's skipsubscript
+ * finds it: brackets nest, and a quoted or backslashed one is not counted.
+ * -1 where it is not closed.
+ */
+function subscriptEnd(input: string, open: number): number {
+  let depth = 0;
+  for (let i = open; i < input.length; i++) {
+    const ch = input[i];
+    if (ch === '\\') i++;
+    else if (ch === "'") {
+      i = input.indexOf("'", i + 1);
+      if (i === -1) return -1;
+    } else if (ch === '"') {
+      for (i++; i < input.length && input[i] !== '"'; i++) if (input[i] === '\\') i++;
+    } else if (ch === '[') depth++;
+    else if (ch === ']' && --depth === 0) return i;
+  }
+  return -1;
 }
 
 function isWordBreak(ch: string): boolean {

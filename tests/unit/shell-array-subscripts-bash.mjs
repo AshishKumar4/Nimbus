@@ -17,9 +17,14 @@
 //   - `declare -a`, `typeset -a` and `local -a` take the same literal, and
 //     `declare -p`'s output for a sparse array is read back as it was.
 //
-// `a[i]=v` follows the same index rule: a negative subscript counts back from
-// past the last value, and one before the first, or an empty one, is a bad
-// array subscript (status 1).
+// `a[i]=v` and `${a[i]}` follow the same index rule: a negative subscript
+// counts back from past the last value; for `a[i]=v`, one before the first,
+// or an empty one, is a bad array subscript. A command of assignments alone
+// that cannot assign (that, or a readonly name) discards the rest of its
+// line, as bash's DISCARD does: the next line runs with $? 1, in a script, a
+// function's caller's line, eval's text; a subshell ends with 1. A prefix
+// `a+=(…)` leaves the array as it was after its command. The subscript of a
+// `[subscript]=` element is read whole: `[i + 1]`, `[(1+2)*2]`.
 //
 // Red before (ticket-lifo-indexed-array-literals): `[i]=v` was stored as the
 // literal word at consecutive indices; `a+=(…)` went on past a removed last
@@ -77,18 +82,31 @@ const LINES = [
   'a=([1]=x); echo "${#a[@]} ${!a[@]} ${a[1]}"; b=("${a[@]}"); declare -p b',
   'a=([x]=1); declare -p a; x=3; b=([x]=1); declare -p b',
   'declare -r r=(1); r=([2]=x)\necho "st=$?"; declare -p r',
+  'i=2; a=([i + 1]=x [(1+2)*2]=y [ 0 ]=w [ i ]+=v); declare -p a',
+  'a=(old); a+=(new) true; declare -p a',
+  'a=(p q r); unset "a[2]"; a[-1]=x; echo "${a[-1]} ${a[-2]}"; b=(p q r); unset "b[2]"; echo "${b[-1]}"',
+  // A command of assignments alone that cannot assign discards the rest of its line; the next line runs, $? 1.
+  'a=(); a[-1]=x; echo same\necho "next $?"; readonly r=1; r=2; echo same\necho "next $?"',
+  'f() { a=(); a[-1]=x; echo in; }; f; echo "after $?"\necho "next $?"',
+  '(a=(); a[-1]=x; echo in); echo "paren $?"; x=$(a=(); a[-1]=x; echo in); echo "sub $? [$x]"',
+  'a=(); eval "a[-1]=x; echo in\necho in2 \\$?"; echo "after $?"',
+  // As a script runs (its diagnostics name the script and line, so only its output and status are compared).
+  { line: 'printf \'a=()\\na[-1]=x; echo same\\necho "next $?"\\nreadonly r=1\\nr=2; echo same\\necho "next $?"\\n\' > s.sh; bash s.sh; echo "exit $?"', compare: 'out' },
 ];
 
 /** bash's diagnostic prefix: `bash: line 1: `, `bash: -c: line 1: `, and in a function 5.2's `environment: line 1: `. */
 const plainStderr = (text) => text.replace(/^(?:bash|environment): (?:-c: )?(?:line \d+: )?/gm, '');
 
+const CASES = LINES.map((c) => (typeof c === 'string' ? { line: c, compare: 'all' } : c));
+const compared = (result, compare) => (compare === 'out' ? { stdout: result.stdout, status: result.status } : result);
+
 const want = [];
-for (const line of LINES) {
+for (const { line, compare } of CASES) {
   const dir = mkdtempSync(join(tmpdir(), 'shell-array-subscripts-'));
   try {
     const r = spawnSync('bash', ['--norc', '--noprofile', '-c', line], { cwd: dir, encoding: 'utf8', timeout: 10_000, env: { PATH: process.env.PATH, LC_ALL: 'C.UTF-8', HOME: '/home/user' } });
     assert.equal(r.error, undefined, `bash ran ${JSON.stringify(line)}: ${r.error?.message}`);
-    want.push({ stdout: r.stdout, stderr: plainStderr(r.stderr), status: r.status });
+    want.push(compared({ stdout: r.stdout, stderr: plainStderr(r.stderr), status: r.status }, compare));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -98,13 +116,13 @@ const { sql, transactions } = await hostSqlite();
 const ws = await NimbusWorkspace.create({ sql, transactions, generation: 1 });
 const failed = [];
 try {
-  for (const [i, line] of LINES.entries()) {
+  for (const [i, { line, compare }] of CASES.entries()) {
     const r = await ws.exec(line, { cwd: '/home/user' });
-    const ours = { stdout: r.stdout, stderr: r.stderr, status: r.exitCode };
+    const ours = compared({ stdout: r.stdout, stderr: r.stderr, status: r.exitCode }, compare);
     if (JSON.stringify(ours) !== JSON.stringify(want[i])) failed.push(`${JSON.stringify(line)}\n  bash: ${JSON.stringify(want[i])}\n  ours: ${JSON.stringify(ours)}`);
   }
 } finally {
   await ws.close();
 }
-console.log(`shell-array-subscripts-bash: ${LINES.length - failed.length} of ${LINES.length} lines as bash's`);
+console.log(`shell-array-subscripts-bash: ${CASES.length - failed.length} of ${CASES.length} lines as bash's`);
 assert.deepEqual(failed, [], `as bash:\n${failed.join('\n')}`);

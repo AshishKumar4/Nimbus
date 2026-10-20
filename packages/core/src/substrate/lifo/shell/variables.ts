@@ -75,9 +75,10 @@ export function arrayFor(store: VariableStore, name: string): (string | undefine
   return array;
 }
 
-/** One variable's whole binding, so a scope can put it back exactly. */
+/** One variable's whole binding, so a scope can put it back exactly: its array a copy, as what the scope does to it in place is not kept. */
 export function saveVariable(store: VariableStore, name: string): SavedVariable {
-  return { scalar: store.env[name], array: store.arrays.get(name), exported: store.exportedNames.has(name), declared: store.declaredNames.has(name) };
+  const array = store.arrays.get(name);
+  return { scalar: store.env[name], array: array === undefined ? undefined : copyArray(array), exported: store.exportedNames.has(name), declared: store.declaredNames.has(name) };
 }
 
 /**
@@ -99,5 +100,17 @@ export function restoreVariable(store: VariableStore, name: string, saved: Saved
 
 /** A copy of `arrays` whose arrays are copies too: what a subshell or a saved shell state holds. */
 export function cloneArrays(arrays: ReadonlyMap<string, (string | undefined)[]>): Map<string, (string | undefined)[]> {
-  return new Map(Array.from(arrays, ([name, elements]) => [name, [...elements]]));
+  return new Map(Array.from(arrays, ([name, elements]) => [name, copyArray(elements)]));
+}
+
+/** A copy of `array`, its holes kept, however high its last index. */
+export function copyArray(array: readonly (string | undefined)[]): (string | undefined)[] {
+  const copy: (string | undefined)[] = [];
+  for (const key of Object.keys(array)) copy[Number(key)] = array[Number(key)];
+  return copy;
+}
+
+/** A subscript's arithmetic as an index of `array`: a negative one counts back from past its last value (still negative where that is before the first). */
+export function arrayIndex(array: readonly (string | undefined)[], value: number): number {
+  return value < 0 ? lastIndex(array) + 1 + value : value;
 }

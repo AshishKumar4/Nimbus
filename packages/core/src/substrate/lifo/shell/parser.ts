@@ -1,4 +1,4 @@
-import { lex, TokenReader, type ReaderMark } from './lexer.js';
+import { lexArrayElements, TokenReader, type ReaderMark } from './lexer.js';
 import { BINARY_OPERATORS, UNARY_OPERATORS } from './conditional-operators.js';
 import {
   TokenKind,
@@ -932,7 +932,7 @@ function operatorAfter(parts: readonly WordPart[], start: number): { length: num
 function parseArrayLiteral(text: string): ArrayElementNode[] | null {
   if (!text.startsWith('(') || !text.endsWith(')')) return null;
   const elements: ArrayElementNode[] = [];
-  for (const token of lex(text.slice(1, -1))) {
+  for (const token of lexArrayElements(text.slice(1, -1))) {
     if (token.kind !== TokenKind.Word) continue;
     const parts = token.parts ?? [{ text: token.value, quoted: 'none' as const }];
     const [first] = parts;
