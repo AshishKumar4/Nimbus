@@ -79,8 +79,10 @@ export async function storeSession(tree, { eager = false, unlisted = [], delegat
       failing.set(name, fails - 1);
       throw new Error('Network connection lost.');
     }
+    // Whether it waits is decided as it is asked: a hold placed while a call is in flight is the next one's.
+    const parks = holds.delete(name);
     const answer = await compute();
-    if (!holds.delete(name)) return answer;
+    if (!parks) return answer;
     const release = Promise.withResolvers();
     parked.push({ name, release: release.resolve });
     await release.promise;
@@ -159,7 +161,7 @@ export async function storeSession(tree, { eager = false, unlisted = [], delegat
     poison() { poisonNext = true; },
     /** The next `times` calls of `name` fail, as a dropped connection does. */
     fail(name, times = 1) { failing.set(name, times); },
-    /** Park the next reply of `name`; the returned wait resolves once something asked it. */
+    /** Park the reply of the next call of `name` asked; the returned wait resolves once something asked it. */
     hold(name) {
       holds.add(name);
       const before = parked.filter((p) => p.name === name).length;
