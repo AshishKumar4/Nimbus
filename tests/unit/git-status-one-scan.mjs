@@ -99,7 +99,10 @@ assert.ok(counters.scanned >= FILES, `every entry came from the scan: ${JSON.str
 console.log(`  ✓ git status on ${FILES + 5} files: one ordered scan (${counters.scanned} entries), real git's answer`);
 // An untracked nested repository is listed as itself, never entered: what sorts before its `.git` (an
 // unreadable `!private`, files) is neither listed nor warned of, whatever -u says.
-for (const file of ['nested/!a', 'nested/-b', 'nested/!private/f', 'nested/.git/HEAD', 'nested/z']) write(file, 'n\n');
+for (const file of ['nested/!a', 'nested/-b', 'nested/!private/f', 'nested/z']) write(file, 'n\n');
+// A repository git recognises: a HEAD naming a branch, and objects and refs directories.
+for (const file of ['nested/.git/objects/.keep', 'nested/.git/refs/heads/.keep']) write(file, '');
+write('nested/.git/HEAD', 'ref: refs/heads/main\n');
 user.chmod(`${root}/nested/!private`, 0);
 // Untracked directories judged as the scan passes them: -unormal lists each one as itself, -uno none.
 for (const flags of [[], ['-uno'], ['-uall']]) {
