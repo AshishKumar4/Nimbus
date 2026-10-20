@@ -110,6 +110,8 @@ const FOUND = {
     schedule: [['own', 'rename', 'd/e/g', 'top'], ['sync', 'readFile', 'top']],
   },
   'a file renamed over another, its rename answered, reads as the renamed file (3104, awaited)': {
+    // A WASI guest's awaited rename outside a grant shows to its next call that cannot wait only after a barrier (O9).
+    engines: ['node'],
     schedule: [['own', 'rename', 'd/e/g', 'top'], ['settle'], ['sync', 'readFile', 'top'], ['sync', 'stat', 'top']],
   },
   'a file the process renamed into place reads as a peer later wrote it (3219)': {
@@ -123,6 +125,11 @@ const FOUND = {
 
 /** Known gaps, by scenario: what the engine lacks, and what its failure shows. */
 const GAPS = {
+  'a file the process renamed into place reads as a peer later wrote it (3219) [node]': {
+    lacks: 'S dates a moved file\'s bytes only by a write parked under its old name: bytes held otherwise (read, or written and already sent) stay its own at the new name past every barrier, as no rename has a receipt to date them by (closed by the cutover: RF retires own state by identity); '
+      + 'meanwhile a Node program that renamed a file it had read or written, then saw another process overwrite it, keeps reading its own bytes with readFileSync',
+    shows: 'at rest, sync readFile top answered "c3219.3"',
+  },
   'an awaited chmod outside a grant is what the next call that cannot wait reads [holder]': {
     lacks: 'O9: an awaited mutation outside a grant is decided by the provisional decisions (the cutover)',
     shows: 'sync stat top answered file 644',
