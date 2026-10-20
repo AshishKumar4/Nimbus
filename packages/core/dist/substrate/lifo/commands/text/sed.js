@@ -1,4 +1,4 @@
-import { resolve } from '../../utils/path.js';
+import { operandPath } from '../../utils/path.js';
 import { decodeLossless, encodeLossless, readAllInput, writeBytes } from '../../utils/bytes-io.js';
 import { PosixRegexSyntax, translate } from '../../utils/posix-regex.js';
 import { strerror } from '../../../../vfs/vfs-error.js';
@@ -590,7 +590,7 @@ export async function runSed(ctx) {
                     scripts.push({ text: inline ?? args[++i] ?? '', label: `-e expression #${++expressionCount}` });
                 else if (name === 'file') {
                     const file = inline ?? args[++i] ?? '';
-                    scripts.push({ text: decodeLossless(await ctx.vfs.readFile(resolve(ctx.cwd, file))).replace(/\n$/, ''), label: `file ${file} line 1` });
+                    scripts.push({ text: decodeLossless(await ctx.vfs.readFile(operandPath(ctx.cwd, file))).replace(/\n$/, ''), label: `file ${file} line 1` });
                 }
                 else if (name === 'line-length')
                     lineWidth = Number(inline ?? args[++i]);
@@ -614,7 +614,7 @@ export async function runSed(ctx) {
                     if (flag === 'e')
                         scripts.push({ text: value, label: `-e expression #${++expressionCount}` });
                     else if (flag === 'f')
-                        scripts.push({ text: decodeLossless(await ctx.vfs.readFile(resolve(ctx.cwd, value))).replace(/\n$/, ''), label: `file ${value} line 1` });
+                        scripts.push({ text: decodeLossless(await ctx.vfs.readFile(operandPath(ctx.cwd, value))).replace(/\n$/, ''), label: `file ${value} line 1` });
                     else
                         lineWidth = Number(value);
                     break;
@@ -688,7 +688,7 @@ export async function runSed(ctx) {
         try {
             const bytes = file === '-'
                 ? await readAllInput({ cwd: ctx.cwd, vfs: ctx.vfs, stdin: ctx.stdin }, '-')
-                : await ctx.vfs.readFile(resolve(ctx.cwd, file));
+                : await ctx.vfs.readFile(operandPath(ctx.cwd, file));
             const { lines, terminated } = splitLines(decodeLossless(bytes), delim);
             return { name: file, lines, terminated };
         }
@@ -969,7 +969,7 @@ export async function runSed(ctx) {
                             break cycle;
                         case 'r': {
                             try {
-                                append.push(decodeLossless(await ctx.vfs.readFile(resolve(ctx.cwd, cmd.file))));
+                                append.push(decodeLossless(await ctx.vfs.readFile(operandPath(ctx.cwd, cmd.file))));
                             }
                             catch { /* an unreadable file adds nothing */ }
                             break;
@@ -979,7 +979,7 @@ export async function runSed(ctx) {
                             if (!cursor) {
                                 let lines = [];
                                 try {
-                                    lines = splitLines(decodeLossless(await ctx.vfs.readFile(resolve(ctx.cwd, cmd.file))), '\n').lines;
+                                    lines = splitLines(decodeLossless(await ctx.vfs.readFile(operandPath(ctx.cwd, cmd.file))), '\n').lines;
                                 }
                                 catch { /* nothing to read */ }
                                 rCursors.set(cmd.file, cursor = { lines, at: 0 });
@@ -1086,12 +1086,12 @@ export async function runSed(ctx) {
             throw error;
         }
         if (target !== null && target !== undefined) {
-            const path = resolve(ctx.cwd, target);
+            const path = operandPath(ctx.cwd, target);
             if (inPlace) {
                 const base = target.slice(target.lastIndexOf('/') + 1);
                 const backup = inPlace.includes('*') ? inPlace.replaceAll('*', base) : target + inPlace;
                 try {
-                    await ctx.vfs.writeFile(resolve(ctx.cwd, backup.includes('/') ? backup : target.slice(0, target.lastIndexOf('/') + 1) + backup), await ctx.vfs.readFile(path));
+                    await ctx.vfs.writeFile(operandPath(ctx.cwd, backup.includes('/') ? backup : target.slice(0, target.lastIndexOf('/') + 1) + backup), await ctx.vfs.readFile(path));
                 }
                 catch (error) {
                     await ctx.stderr.write(`sed: couldn't open file ${backup}: ${strerror(error)}\n`);
@@ -1105,7 +1105,7 @@ export async function runSed(ctx) {
     }
     for (const [file, w] of writeFiles) {
         try {
-            await ctx.vfs.writeFile(resolve(ctx.cwd, file), encodeLossless(w.chunks.join('')));
+            await ctx.vfs.writeFile(operandPath(ctx.cwd, file), encodeLossless(w.chunks.join('')));
         }
         catch (error) {
             await ctx.stderr.write(`sed: couldn't open file ${file}: ${strerror(error)}\n`);

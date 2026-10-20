@@ -14,6 +14,7 @@
 import assert from 'node:assert/strict';
 
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
+import { sessionProcessEnv } from '../../packages/worker/src/session/process-env.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
@@ -68,6 +69,7 @@ function setup({ hooks = {}, storage = new Map(), world, disk } = {}) {
   if (!disk) disk = createSqliteVfsTestHarness();
   const vfs = new SqliteVFS(disk.sql, disk.ctx);
   const fm = new FacetManager(ctx, env, processes, portRegistry, processHostFor, {
+    ...sessionProcessEnv(ctx.storage),
     notify: () => {},
     resolveWorkerLaunchFallback: (recipe) => resolveDurableWorkerImage(vfs, recipe),
     ...hooks,

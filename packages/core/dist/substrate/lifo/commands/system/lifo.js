@@ -13,7 +13,7 @@
 import { ISOLATE_NETWORK } from '../../../../_shared/workspace-network.js';
 import { npmGlobalPrefix, npmGlobalPrefixOf, npmInstallGlobal, packagesIn } from './npm.js';
 import { RegistrySearchResponseSchema, renderSearchTable } from './registry-schemas.js';
-import { resolve, join } from '../../utils/path.js';
+import { operandPath, resolve, join } from '../../utils/path.js';
 import { linkPackage, unlinkPackage, readDevLinks, loadDevLinks, } from '../../pkg/lifo-dev.js';
 import { readLifoManifest, registerLifoManifestCommands, } from '../../pkg/lifo-runtime.js';
 /** Where npm installs globally for this command (npmGlobalPrefix): lifo's packages are there. */
@@ -176,17 +176,17 @@ async function lifoInit(ctx) {
         await ctx.stderr.write('Usage: lifo init <name>\n');
         return 1;
     }
-    const pkgDir = resolve(ctx.cwd, name);
+    const pkgDir = operandPath(ctx.cwd, name);
     const npmName = name.startsWith('lifo-pkg-') ? name : `lifo-pkg-${name}`;
     const cmdName = name.replace(/^lifo-pkg-/, '');
     // Check if directory already exists
     if ((await ctx.vfs.exists(pkgDir))) {
-        await ctx.stderr.write(`lifo init: ${pkgDir} already exists\n`);
+        await ctx.stderr.write(`lifo init: ${resolve('/', pkgDir)} already exists\n`);
         return 1;
     }
     // Create directory structure
     (await ctx.vfs.mkdir(pkgDir, { recursive: true }));
-    (await ctx.vfs.mkdir(join(pkgDir, 'commands'), { recursive: true }));
+    (await ctx.vfs.mkdir(operandPath(pkgDir, 'commands'), { recursive: true }));
     // package.json
     const packageJson = {
         name: npmName,
@@ -200,7 +200,7 @@ async function lifoInit(ctx) {
         keywords: ['lifo-pkg', cmdName],
         license: 'MIT',
     };
-    (await ctx.vfs.writeFile(join(pkgDir, 'package.json'), JSON.stringify(packageJson, null, 2) + '\n'));
+    (await ctx.vfs.writeFile(operandPath(pkgDir, 'package.json'), JSON.stringify(packageJson, null, 2) + '\n'));
     // Command entry template
     const commandTemplate = `/**
  * ${cmdName} -- lifo command
@@ -233,7 +233,7 @@ ctx.stdout.write('Hello from ${cmdName}!\\n');
 return 0;
 };
 `;
-    (await ctx.vfs.writeFile(join(pkgDir, 'commands', `${cmdName}.js`), commandTemplate));
+    (await ctx.vfs.writeFile(operandPath(pkgDir, `commands/${cmdName}.js`), commandTemplate));
     // README
     const readme = `# ${npmName}
 
@@ -257,8 +257,8 @@ npm publish
 
 Users install with: \`lifo install ${cmdName}\`
 `;
-    (await ctx.vfs.writeFile(join(pkgDir, 'README.md'), readme));
-    await ctx.stdout.write(`Created ${pkgDir}/\n`);
+    (await ctx.vfs.writeFile(operandPath(pkgDir, 'README.md'), readme));
+    await ctx.stdout.write(`Created ${resolve('/', pkgDir)}/\n`);
     await ctx.stdout.write(`  package.json\n`);
     await ctx.stdout.write(`  commands/${cmdName}.js\n`);
     await ctx.stdout.write(`  README.md\n`);
@@ -272,14 +272,14 @@ Users install with: \`lifo install ${cmdName}\`
 // ─── link ───
 async function lifoLink(ctx, registry) {
     const pathArg = ctx.args[1] || '.';
-    const pkgDir = resolve(ctx.cwd, pathArg);
-    if (!(await ctx.vfs.exists(join(pkgDir, 'package.json')))) {
-        await ctx.stderr.write(`lifo link: no package.json found in ${pkgDir}\n`);
+    const pkgDir = operandPath(ctx.cwd, pathArg);
+    if (!(await ctx.vfs.exists(operandPath(pkgDir, 'package.json')))) {
+        await ctx.stderr.write(`lifo link: no package.json found in ${resolve('/', pkgDir)}\n`);
         return 1;
     }
     try {
         const commands = (await linkPackage(ctx.vfs, registry, pkgDir));
-        await ctx.stdout.write(`Linked ${pkgDir}\n`);
+        await ctx.stdout.write(`Linked ${resolve('/', pkgDir)}\n`);
         for (const cmd of commands) {
             await ctx.stdout.write(`  registered command: ${cmd}\n`);
         }

@@ -1,5 +1,5 @@
 import type { Command } from '../types.js';
-import { resolve } from '../../utils/path.js';
+import { operandPath } from '../../utils/path.js';
 import { isVfsError, strerror } from '../../../../vfs/vfs-error.js';
 import { statOrThrow } from '../../../../vfs/vfs.js';
 import { adjustMode, compileMode } from '../../utils/mode-change.js';
@@ -45,7 +45,7 @@ const command: Command = async (ctx) => {
 
   for (const file of files) {
     try {
-      (await applyChmod(resolve(ctx.cwd, file)));
+      (await applyChmod(operandPath(ctx.cwd, file)));
     } catch (e) {
       // GNU's words: a name that is not there cannot be accessed; a change
       // the filesystem refuses is a change of permissions that failed.

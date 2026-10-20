@@ -58,6 +58,7 @@ import { errorText } from '../_shared/error-text.js';
 import { openRuntimeStdio, runtimeOutput } from './runtime-stdio.js';
 import { unsettledNoteOf } from '../_shared/process-fs-client.js';
 import { warmFacetKeys } from './warm-facets.js';
+import { interpreterProcessEnv } from './interpreter-env.js';
 const RUBY_RUNTIME_BIN_NAMES = new Set(['ruby', 'ruby3', 'gem', 'bundle', 'bundler']);
 const RUBY_VERSION_FLAGS = new Set(['--version', '-v']);
 /** Idle warm Ruby workers a session keeps: each holds the compiled ruby+stdlib.wasm (30 MB). */
@@ -177,22 +178,12 @@ export function makeRubyRunnerFactory(deps) {
                 progName = parsed.scriptPath;
                 rbArgv = [parsed.scriptPath, ...parsed.scriptArgs];
             }
-            const userEnv = { ...(ctx.env || {}) };
-            if (!userEnv.HOME)
-                userEnv.HOME = home;
-            if (!userEnv.LANG)
-                userEnv.LANG = 'C.UTF-8';
-            userEnv.GEM_HOME ||= '/' + gemHomeFor(home);
-            userEnv.GEM_PATH ||= userEnv.GEM_HOME;
             const gems = await installedGemLoadPath(vfs, gemHomeFor(home));
-            userEnv.NIMBUS_GEM_LIBS = gems.libs.join(':');
-            if (gems.activates)
-                userEnv.NIMBUS_GEM_ACTIVATE = '1';
-            // Ruby looks for charset hints via these vars; set sensible
-            // defaults so puts of non-ASCII strings doesn't trip on the
-            // wasi default of "ASCII-8BIT".
-            if (!userEnv.LC_ALL)
-                userEnv.LC_ALL = 'C.UTF-8';
+            const interpreterEnv = {
+                base: { ...(ctx.env || {}) },
+                facts: { runtime: 'ruby', home, gemHome: '/' + gemHomeFor(home), gemLibs: gems.libs, gemActivates: gems.activates },
+            };
+            const userEnv = interpreterProcessEnv(interpreterEnv.base, interpreterEnv.facts);
             const facetArgs = {
                 wasmVfsPath: wasmVfs,
                 userCode,
@@ -216,6 +207,7 @@ export function makeRubyRunnerFactory(deps) {
                     result = await deps.startResident({
                         wasmVfsPath: facetArgs.wasmVfsPath,
                         startArgs: toRubyCallArgs(facetArgs),
+                        interpreterEnv,
                         cwd,
                         command: formatRubyCommand(binName, argv),
                         argv: [binName, ...argv],

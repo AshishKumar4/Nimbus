@@ -7015,6 +7015,10 @@ const __fsMod = (() => {
           await _flushLocalPathToSupervisor("/" + localPath, supervisor);
         }
       }
+      // The session lists what it holds: the process's own changes logged
+      // before this call (a rename, an unlink, a mkdir its wave has not
+      // carried yet) are there first, as program order has it.
+      await globalThis.__nimbusProcessFs?.flush();
       const entries = await _fsRpc(supervisor.readdir(absPath), "scandir", p, (result) => result);
       if (Array.isArray(entries)) {
         // Every local mutation under this directory was just flushed, so the
@@ -8128,6 +8132,14 @@ const __fsMod = (() => {
     const movedVia = nsFrom === null || nsFrom === oldN ? undefined : [oldN, ...(earlier?.state === "alias" && earlier.via ? earlier.via : [])];
     const oldPrefix = oldN + "/";
     const content = __vfsBundle?.[oldN] ?? __vfsWrites?.[oldN];
+    // The file the rename replaces goes, as an unlink's does: its bytes are
+    // not the name's once the move is decided, whether or not this process
+    // holds the moved file's (a name it does not hold is read anew).
+    if (newN !== oldN) {
+      if (__vfsBundle) delete __vfsBundle[newN];
+      if (__vfsWrites) delete __vfsWrites[newN];
+      delete __vfsBundleRevisions[newN];
+    }
     // The file's own cell moves with its name (retired once the move is
     // answered, below); one that is only an append's bytes cannot stand for
     // the file, and its new name reads from the authority once the move lands.
@@ -11861,7 +11873,7 @@ function __nimbusNodeLib() {
     optionValue: __nimbusOptionValue,
     console: __consoleMod,
     workerThreads: builtins.worker_threads,
-    nodeDebug: __nimbusNodeDebugAtLaunch,
+    get nodeDebug() { return __nimbusNodeDebugAtLaunch; },
     callSites: (count, above) => __nimbusStackSites({}, count, above),
     timers: builtins.timers,
     fetch: globalThis.fetch.bind(globalThis),
@@ -16318,8 +16330,11 @@ builtins.string_decoder = __stringDecoderMod;
 builtins.sqlite = __sqliteMod;
 builtins.child_process = __childProcessMod;
 builtins.process = __processMod;
-// NODE_DEBUG as the program started with it: what util.debuglog reads (Node's bootstrap).
-const __nimbusNodeDebugAtLaunch = __processMod.env?.NODE_DEBUG;
+// NODE_DEBUG as the program started with it: what util.debuglog reads (Node's
+// bootstrap). A runner that hands the env over after this module evaluates
+// (opencode's) takes it again then (__nimbusTakeLaunchEnv).
+let __nimbusNodeDebugAtLaunch = __processMod.env?.NODE_DEBUG;
+function __nimbusTakeLaunchEnv() { __nimbusNodeDebugAtLaunch = __processMod.env?.NODE_DEBUG; }
 builtins.console = __consoleMod;
 
 

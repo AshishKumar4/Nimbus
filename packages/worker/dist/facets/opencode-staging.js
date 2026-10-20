@@ -43,7 +43,8 @@ import { SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES } from '@nimbus-sh/platfor
 export const OpencodeStageSpecSchema = z.object({
     mode: z.enum(['oneshot', 'attached', 'server']),
     argv: z.array(z.string()),
-    env: z.record(z.string(), z.string()),
+    /** The attached TUI's terminal (OpencodeRunnerOptions.terminal); never the launch's env. */
+    terminal: z.record(z.string(), z.string()),
     cred: z.object({
         uid: z.number().int().nonnegative(),
         gid: z.number().int().nonnegative(),
@@ -164,7 +165,7 @@ async function assemble(assets, spec) {
     ]);
     const runner = generateOpencodeRunnerCode({
         argv: spec.argv,
-        env: spec.env,
+        terminal: spec.terminal,
         cred: spec.cred,
         cwd: spec.cwd,
         stdin: spec.stdin,

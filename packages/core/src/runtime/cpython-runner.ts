@@ -70,6 +70,7 @@ import type { NimbusFilesystemAuthority } from './os-contracts.js';
 import { openRuntimeStdio, runtimeOutput } from './runtime-stdio.js';
 import { errorText } from '../_shared/error-text.js';
 import { warmFacetKeys } from './warm-facets.js';
+import { interpreterProcessEnv, type InterpreterEnv } from './interpreter-env.js';
 
 const PYTHON_VERSION_FLAGS = new Set(['--version', '-V']);
 const PYTHON_HELP_FLAGS = new Set(['--help', '-h']);
@@ -245,6 +246,8 @@ export type CPythonResidentStart = (spawn: {
   /** VFS path of the interpreter. By path, not by value: it is 10.6 MiB. */
   wasmVfsPath: string;
   startArgs: Record<string, unknown>;
+  /** What `startArgs.userEnv` was built from: never stored, the base asked for again at a relaunch (ask 62). */
+  interpreterEnv: InterpreterEnv;
   cwd: string;
   command: string;
   /** The launching command's process: the resident carries its exec id. */
@@ -391,14 +394,11 @@ export function makeCPythonRunnerFactory(deps: {
       ].join('\n');
 
       const cacertVfs = findFile(CPYTHON_CACERT_REL);
-      const userEnv: Record<string, string> = { ...(ctx.env || {}) };
-      if (!userEnv.HOME) userEnv.HOME = home;
-      if (!userEnv.PYTHONUNBUFFERED) userEnv.PYTHONUNBUFFERED = '1';
-      // Without this OpenSSL has no trust anchors at all — there is no
-      // /etc/ssl on a Nimbus session — and every HTTPS request fails
-      // verification with a message about a missing local issuer rather than
-      // about a missing bundle.
-      if (!userEnv.SSL_CERT_FILE && cacertVfs) userEnv.SSL_CERT_FILE = `/${cacertVfs.replace(/^\/+/, '')}`;
+      const interpreterEnv: InterpreterEnv = {
+        base: { ...(ctx.env || {}) },
+        facts: { runtime: 'python', home, cacert: cacertVfs ? `/${cacertVfs.replace(/^\/+/, '')}` : null },
+      };
+      const userEnv = interpreterProcessEnv(interpreterEnv.base, interpreterEnv.facts);
 
       const facetArgs = {
         bootstrapCode: prelude,
@@ -435,7 +435,7 @@ export function makeCPythonRunnerFactory(deps: {
         let spawnResult: CPythonFacetResult;
         try {
           spawnResult = await deps.startResident(
-            { wasmVfsPath: wasmVfs, startArgs: facetArgs, cwd, command, argv: [binName, ...argv], invokerPid: ctx.pid, signal: ctx.signal, write: output.write });
+            { wasmVfsPath: wasmVfs, startArgs: facetArgs, interpreterEnv, cwd, command, argv: [binName, ...argv], invokerPid: ctx.pid, signal: ctx.signal, write: output.write });
         } finally {
           await output.end();
         }

@@ -14,6 +14,7 @@ type ShellCommandContext = {
     env?: Record<string, string>;
     stdin?: unknown;
     terminalStdin?: TerminalInputStream;
+    signal: AbortSignal;
     isFdTerminal?: (fd: number) => boolean;
     pid: number;
     cred: VfsCred;
@@ -40,6 +41,8 @@ export type ShellEntrypointExecutor = {
         };
         commandContext?: Record<string, unknown>;
         runAs?: CommandRunAsHost;
+        /** The command's own signal: the nested shell stops with it. */
+        signal?: AbortSignal;
     }): Promise<{
         exitCode: number;
     }>;

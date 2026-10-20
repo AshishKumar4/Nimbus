@@ -87,12 +87,13 @@ try {
   ]);
   assert.equal(first.stdout, 'first\n', 'a concurrent call does not overwrite its variable mid-run');
   assert.equal(second.stdout, 'unset\n', 'nor see it');
-  // It starts from the session shell's state, and its own cwd and env.
-  ws.shell.getEnv().SESSION_VAR = 'from-session';
-  const inherited = await rpcExec(host, 'echo "$SESSION_VAR $CALL_VAR"; pwd', { cwd: '/home/user/build', env: { CALL_VAR: 'from-call' } });
-  assert.equal(inherited.stdout, 'from-session from-call\n/home/user/build\n');
+  // It starts from the session shell's environment (its exported variables, as a process it started
+  // would have), and its own cwd and env; the session shell's unexported variables are its own.
+  await ws.shell.execute('export SESSION_VAR=from-session; SESSION_PRIVATE=private');
+  const inherited = await rpcExec(host, 'echo "$SESSION_VAR $CALL_VAR ${SESSION_PRIVATE-unset}"; pwd', { cwd: '/home/user/build', env: { CALL_VAR: 'from-call' } });
+  assert.equal(inherited.stdout, 'from-session from-call unset\n/home/user/build\n');
   assert.equal(ws.shell.getEnv().CALL_VAR, undefined, 'and leaves it as it was');
-  delete ws.shell.getEnv().SESSION_VAR;
+  await ws.shell.execute('unset SESSION_VAR SESSION_PRIVATE');
   const together = await Promise.all([rpcExec(host, 'barrier'), rpcExec(host, 'barrier')]);
   assert.deepEqual(together.map((r) => r.exitCode), [0, 0], 'two unnamed calls run at once');
 

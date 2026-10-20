@@ -31,7 +31,7 @@ import { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { SqlDatabase, TransactionHost } from '../runtime/os-contracts.js';
 import { ProcessFiles } from '../runtime/process-files.js';
 import { WorkspaceFs } from './workspace-fs.js';
-import { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
+import { SessionProcessSupervisor, type IdentityChangePolicy } from '../runtime/session-process-supervisor.js';
 import { ChildProcessManager, type ChildProcessHost } from '../runtime/child-process-manager.js';
 import type { FacetHost } from '../runtime/facet-host.js';
 import { RuntimeManager } from '../runtime/runtime-manager.js';
@@ -39,7 +39,9 @@ import { type RuntimePackage, type RuntimeSource } from '../runtime/runtime-pack
 import { type CtxExports, type FabricComposition } from '@nimbus-sh/platform/composition.js';
 import { type SupervisorOpEnvelope, type SupervisorOpHandler } from './supervisor-op.js';
 import { type NamedShell, type NamedShellOptions, type ShellState } from './named-shells.js';
-export { parseShellState, type NamedShell, type NamedShellOptions, type ShellState } from './named-shells.js';
+export { parseShellState, parseVariableAttributes, type NamedShell, type NamedShellOptions, type ShellState } from './named-shells.js';
+export type { VariableAttributes } from '../substrate/lifo/shell/variables.js';
+export type { IdentityChangePolicy } from '../runtime/session-process-supervisor.js';
 /** {@link NimbusWorkspace.exec}'s options: the command's, and which shell runs it. */
 export interface WorkspaceExecOptions extends RunOptions {
     /**
@@ -222,6 +224,15 @@ export interface NimbusWorkspaceOptions {
      * `processes`; a process is still asked for once.
      */
     readonly egressFor?: EgressFor;
+    /**
+     * Whether a process running as `from` may start `command` as `to`: asked
+     * before every process made under a credential other than its parent's
+     * (sudo, su, any command's runAs), whichever path makes it. Refused, the
+     * spawn fails with EPERM, naming both uids and the command. A process the
+     * host starts with no parent (an exec, a restart) is the host's own choice
+     * and not asked. Absent: every change is allowed.
+     */
+    readonly mayChangeIdentity?: IdentityChangePolicy;
 }
 /**
  * A durable filesystem and a shell over it.
@@ -304,7 +315,8 @@ export declare class NimbusWorkspace {
     /**
      * A shell of its own for process `pid`, a second cwd and environment over
      * the workspace shell's filesystem, commands and kernel. It starts in
-     * `state.cwd` with the workspace shell's environment and `state.env` on
+     * `state.cwd` with the workspace shell's environment (its exported
+     * variables, as any process it started would have) and `state.env` on
      * top; with `inheritEnv: false`, with `state.env` alone (a command run again
      * as it was once run). Its commands act as `pid` (`$$`, and the credential and umask
      * {@link processes} holds for it); `sudo` and `su` go through the workspace

@@ -1,6 +1,6 @@
 import { getopt, type GetoptSpec } from '../../utils/args.js';
 import type { Command } from '../types.js';
-import { resolve } from '../../utils/path.js';
+import { operandPath } from '../../utils/path.js';
 import { asciiBytes, asciiUpper, concatBytes, readAllInput, skipBlankField, splitRecords, writeBytes } from '../../utils/bytes-io.js';
 import { strerror } from '../../../../vfs/vfs-error.js';
 
@@ -132,7 +132,7 @@ const command: Command = async (ctx) => {
   const bytes = concatBytes(out);
   if (operands[1] !== undefined && operands[1] !== '-') {
     try {
-      await ctx.vfs.writeFile(resolve(ctx.cwd, operands[1]), bytes);
+      await ctx.vfs.writeFile(operandPath(ctx.cwd, operands[1]), bytes);
     } catch (error) {
       await ctx.stderr.write(`uniq: ${operands[1]}: ${strerror(error)}\n`);
       return 1;

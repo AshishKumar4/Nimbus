@@ -95,6 +95,11 @@ const CRED_OTHER = Object.freeze({
     async () => denied.readRange('/visible/directory', 0, 1),
     (error) => error.code === 'EISDIR',
   );
+  await assert.rejects(
+    async () => denied.readRange('/private/../visible/denied.txt', 0, 1),
+    { code: 'EACCES', syscall: 'read', path: '/private/../visible/denied.txt' },
+    'a walk refusal names the read that met it, not an internal path operation',
+  );
   assert.equal(await denied.stat('/visible/missing.txt'), null);
   assert.equal(await denied.readFile('/visible/missing.txt'), null);
   assert.equal(await denied.readRange('/visible/missing.txt', 0, 1), null);
@@ -255,8 +260,14 @@ const CRED_OTHER = Object.freeze({
 
   await bridge.symlink('two', '/loop/one');
   await bridge.symlink('one', '/loop/two');
-  await assert.rejects(async () => bridge.stat('/loop/one'), { code: 'ELOOP' }, 'a link loop is ELOOP, as stat(2) says');
+  await assert.rejects(async () => bridge.stat('/loop/one'), { code: 'ELOOP', syscall: 'stat', path: '/loop/one' }, 'a link loop is ELOOP, as stat(2) says');
   assert.equal(await bridge.readFile('/loop/one'), null);
+  await assert.rejects(async () => bridge.readlink('/loop/one/child'), { code: 'ELOOP', syscall: 'readlink', path: '/loop/one/child' });
+
+  await assert.rejects(async () => bridge.writeFile('/real/missing/../side.txt', 'no'),
+    { code: 'ENOENT', syscall: 'write', path: '/real/missing/../side.txt' });
+  await assert.rejects(async () => bridge.readRange('/real/dir/file.txt/../side.txt', 0, 1),
+    { code: 'ENOTDIR', syscall: 'read', path: '/real/dir/file.txt/../side.txt' });
 
   // A target's `..` comes after the link before it, as in the kernel:
   // /links/dir is /real/dir, so /links/dir/../side.txt is /real/side.txt.

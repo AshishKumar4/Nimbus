@@ -1,5 +1,5 @@
 import type { Command, CommandOutputStream } from '../types.js';
-import { resolve } from '../../utils/path.js';
+import { operandPath } from '../../utils/path.js';
 import { CLEAR, HOME, HIDE_CURSOR, SHOW_CURSOR, ERASE_LINE, INVERT, BOLD, RST, moveTo, parseKey, type KeyEvent } from '../term-screen.js';
 import { isVfsError } from '../../../../vfs/vfs-error.js';
 
@@ -199,7 +199,7 @@ const command: Command = async (ctx) => {
   let fileName: string;
 
   if (ctx.args.length > 0) {
-    const path = resolve(ctx.cwd, ctx.args[0]);
+    const path = operandPath(ctx.cwd, ctx.args[0]);
     try {
       content = (await ctx.vfs.readFileString(path));
       fileName = ctx.args[0];

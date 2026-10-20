@@ -93,7 +93,7 @@ async function opencodeOneShot(program) {
   const send = opSender((envelope) => authority.host.supervisorOp({ ...envelope, pid }));
   const supervisor = supervisorDouble((name, args) => send(name, args));
   const { runner } = await importOpencodeRunner({ mode: 'oneshot', program, vfsCursor: JSON.stringify(authority.cursor()) });
-  const response = await runner.default.fetch(new Request('http://facet/run', { method: 'POST' }), { SUPERVISOR: supervisor });
+  const response = await runner.default.fetch(new Request('http://facet/run', { method: 'POST', body: JSON.stringify({ env: {} }) }), { SUPERVISOR: supervisor });
   let caught = null;
   try { caught = authority.read('home/user/caught.txt'); } catch { /* the program wrote none */ }
   return { result: await response.json(), caught };
@@ -172,10 +172,10 @@ await runScenarios(import.meta.path, {
         builtins.process.stderr.write("</ERR>");
         process.exit(0);
       `),
-      env: { NIMBUS_ATTACHED_TTY: '1', NIMBUS_CP_CHILD_PID: String(pid) },
+      terminal: { NIMBUS_ATTACHED_TTY: '1', NIMBUS_CP_CHILD_PID: String(pid) },
       vfsCursor: JSON.stringify(authority.cursor()),
     });
-    await new runner.NimbusProcess({ storage: { sql: facetSql() }, waitUntil() {}, id: { toString: () => 'output-capture' } }, { SUPERVISOR: supervisor }).startProcess();
+    await new runner.NimbusProcess({ storage: { sql: facetSql() }, waitUntil() {}, id: { toString: () => 'output-capture' } }, { SUPERVISOR: supervisor }).startProcess({ env: {} });
     assert.equal(await exited.promise, 0);
     // The TUI draws on the terminal too: what the program printed is what lies between its own marks.
     assert.deepEqual(framed(sent.stdout, '<OUT>', '</OUT>'), [0xc3, 0xa9]);

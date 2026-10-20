@@ -1,5 +1,5 @@
 import type { Command } from '../types.js';
-import { resolve } from '../../utils/path.js';
+import { operandPath } from '../../utils/path.js';
 import { createZip, collectFiles } from '../../utils/archive.js';
 import type { ZipEntry } from '../../utils/archive.js';
 import { parseArgs } from '../../utils/args.js';
@@ -37,7 +37,7 @@ const command: Command = async (ctx) => {
     return 1;
   }
 
-  const archivePath = resolve(ctx.cwd, archiveFile);
+  const archivePath = operandPath(ctx.cwd, archiveFile);
 
   try {
     const tarEntries = (await collectFiles(ctx.vfs, ctx.cwd, files));

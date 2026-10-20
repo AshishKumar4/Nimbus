@@ -19,6 +19,8 @@ import { registerHostedCommands } from './commands.js';
 import { HostedSession } from './session.js';
 import { z } from 'zod/v4';
 import { adoptCtxExports, supervisorEntrypoint } from '@nimbus-sh/fabric/composition.js';
+import { onColdStart } from '@nimbus-sh/fabric/generation.js';
+import { removeLegacyGeneratedImages } from '../facets/legacy-images.js';
 import { hostNamespaceBinding } from '@nimbus-sh/fabric/host-dispatch.js';
 import { restoreDevServers } from '../session/dev-servers.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
@@ -30,6 +32,8 @@ const InputFrame = z.discriminatedUnion('type', [
 class RuntimeOwner {
     options;
     terminal;
+    /** The embedder's answer, and no keeping of its own: Nimbus keeps no process's environment (session/process-env.ts). */
+    processEnv;
     _cpRegistry;
     _storedShellsAdopted;
     _cirrusHmrWsClients = new Map();
@@ -68,6 +72,7 @@ class RuntimeOwner {
     supervisorDeliveries;
     constructor(options) {
         this.options = options;
+        this.processEnv = options.resolveProcessEnv === undefined ? {} : { resolveProcessEnv: options.resolveProcessEnv };
         hostNamespaceBinding(options.env, 'HostedRuntime');
         this.supervisorDeliveries = openSupervisorDeliveries(options.ctx);
         const exports = Reflect.get(options.ctx, 'exports');
@@ -76,12 +81,18 @@ class RuntimeOwner {
         }
         adoptCtxExports(exports);
         ensureSessionStateSchema(options.ctx);
+        // This host owns /.nimbus/facet-images whole: it writes no image there
+        // (its process images go to the store's own directory, its durable apps'
+        // to /.nimbus/images), and only the kernel can. So it removes what
+        // earlier releases left there, generated entries with environments in
+        // them (ask 62). An embedder that keeps images there decides for itself.
+        onColdStart(options.ctx, async () => { removeLegacyGeneratedImages(options.workspace.vfs); });
         // A process's answers leave as the rest of its output does: once what it wrote is published.
         options.ports.setOutput(options.workspace.processes);
         options.ports.setClientSocketActivity(() => noteResidentClient(this, this.keepaliveCycle));
         this.terminal = new WebSocketTerminal(null, (data) => {
             appendScrollback(options.ctx, data, Date.now());
-            persistShellState(options.ctx, { cwd: this.shell.getCwd(), env: this.shell.getEnv() });
+            persistShellState(options.ctx, { cwd: this.shell.getCwd(), env: this.shell.getEnv(), vars: this.shell.getVariableAttributes() });
         }, (send) => void this.processes.releaseOutput(this.shellProcessPid, send));
         this._cpRegistry = options.workspace.registry;
         this.services = services.bindRuntimeServices(this, {
@@ -90,6 +101,7 @@ class RuntimeOwner {
             notify: (line) => this._notifySession(line),
             requestLaunchTurn: (at) => this._scheduleLaunchTurn(at),
             resolveWorkerLaunch: options.resolveWorkerLaunch,
+            processEnv: this.processEnv,
             filesystem: () => options.workspace.filesystem,
             network: () => options.workspace.network,
             armResidentKeepalive: () => armResidentKeepalive(this, this.keepaliveCycle),
@@ -129,8 +141,12 @@ class RuntimeOwner {
                 this.recoveryNotice = saved.hasPersistedState;
                 if (saved.cwd)
                     this.shell.setCwd(saved.cwd);
-                if (saved.env)
+                if (saved.env) {
                     Object.assign(this.shell.getEnv(), saved.env);
+                    // Its variables' marks and arrays; a terminal saved before them is restored as a shell
+                    // starts over its variables, each exported, as each reached its programs then.
+                    this.shell.restoreVariableAttributes(saved.vars ?? undefined, Object.keys(saved.env));
+                }
                 await registerHostedCommands(this, this.options.workspace);
                 await this.ensureFacetManager().pumpLaunches();
             })();
@@ -159,6 +175,7 @@ class RuntimeOwner {
             get processes() { return owner.processes; },
             get portRegistry() { return owner.portRegistry; },
             get runtimeWorkspace() { return owner.runtimeWorkspace; },
+            processEnv: this.processEnv,
             ensureRuntimeReady: () => this.ensureUsable(),
         };
         return restoreDevServers(this.devServerHost);
@@ -320,16 +337,16 @@ class RuntimeOwner {
                 console.error('[nimbus] terminal input failed:', message);
                 this.terminal.writeln(`terminal input failed: ${message}`);
             }).finally(() => {
-                persistShellState(this.ctx, { cwd: this.shell.getCwd(), env: this.shell.getEnv() });
+                persistShellState(this.ctx, { cwd: this.shell.getCwd(), env: this.shell.getEnv(), vars: this.shell.getVariableAttributes() });
             }));
         }
-        persistShellState(this.ctx, { cwd: this.shell.getCwd(), env: this.shell.getEnv() });
+        persistShellState(this.ctx, { cwd: this.shell.getCwd(), env: this.shell.getEnv(), vars: this.shell.getVariableAttributes() });
     }
     terminalClose(ws) {
         if (this.terminal.ws !== ws)
             return;
         this.terminal.flushNow();
-        persistShellState(this.ctx, { cwd: this.shell.getCwd(), env: this.shell.getEnv() });
+        persistShellState(this.ctx, { cwd: this.shell.getCwd(), env: this.shell.getEnv(), vars: this.shell.getVariableAttributes() });
         this.terminal.detach();
         this.processes.flushLogs();
     }

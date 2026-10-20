@@ -52,8 +52,8 @@ const supervisor = {
   },
 };
 store.admission.setStorage(undefined, supervisor);
-assert.equal(await store.lazy.bootLazy(supervisor), true);
-const view = store.lazy.namespaceView(supervisor, (await authority.stat('/')).dev, USER);
+assert.equal(await store.view.bootLazy(supervisor), true);
+const view = store.view.namespaceView(supervisor, (await authority.stat('/')).dev, USER);
 try {
   assert.equal(await view.lookup(['home', 'home/user', 'home/user/index'], false), true);
   const before = view.entry('home/user/index');
@@ -64,7 +64,7 @@ try {
   await new Promise((resolve) => setTimeout(resolve, 5));
   // A same-size rewrite, and a barrier that admits it, while the old read is in flight.
   await kernel.writeFile('/home/user/index', enc.encode('new!'));
-  assert.equal(await view.barrier(), true);
+  assert.equal((await view.barrier()).landed, true);
   open();
   await late;
   gate = null;

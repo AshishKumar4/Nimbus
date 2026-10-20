@@ -158,12 +158,14 @@ function snapshotShellState(self) {
     catch { /* best-effort */ }
     if (!cwd && !env)
         return;
-    const envJson = env ? JSON.stringify(env) : null;
+    // Its variables' marks and arrays, which a command's environment follows.
+    const vars = shell.getVariableAttributes();
+    const envJson = env ? JSON.stringify(env) + JSON.stringify(vars) : null;
     const last = lastShellSnapshot.get(self);
     if (last && last.cwd === cwd && last.envJson === envJson)
         return;
     try {
-        persistShellState(ctx, { cwd, env });
+        persistShellState(ctx, { cwd, env, vars });
         lastShellSnapshot.set(self, { cwd, envJson });
     }
     catch (e) {

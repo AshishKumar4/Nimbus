@@ -18,6 +18,7 @@
 import assert from 'node:assert/strict';
 
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
+import { sessionProcessEnv } from '../../packages/worker/src/session/process-env.ts';
 import { resolveDurableWorkerImage } from '../../packages/worker/src/facets/durable-images.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
@@ -70,6 +71,7 @@ function createInstance(generation) {
   };
   const ctx = createFacetCtx(world, 'exec-id-reset', storage);
   const manager = new FacetManager(ctx, env, processes, new PortRegistry(), processHostFor, {
+    ...sessionProcessEnv(ctx.storage),
     requestLaunchTurn: () => { setTimeout(() => { void manager.pumpResidentLaunches(); }, 0); },
     notify: () => {},
     onSpawn: (pid, command) => { spawns.push({ pid, command }); },

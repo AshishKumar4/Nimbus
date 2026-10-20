@@ -1,5 +1,5 @@
 import { DEFAULT_HOME } from '../../../constants.js';
-import { resolve } from '../utils/path.js';
+import { operandPath } from '../utils/path.js';
 import { direntTypeIn } from '../../../vfs/dirent-type.js';
 export async function complete(ctx) {
     const { line, cursorPos } = ctx;
@@ -105,7 +105,7 @@ async function listEntries(word, ctx, dirsOnly) {
     let prefix;
     if (expandedWord.includes('/')) {
         const lastSlash = expandedWord.lastIndexOf('/');
-        dir = resolve(ctx.cwd, expandedWord.slice(0, lastSlash + 1));
+        dir = operandPath(ctx.cwd, expandedWord.slice(0, lastSlash + 1));
         prefix = expandedWord.slice(lastSlash + 1);
     }
     else {

@@ -409,7 +409,12 @@ var __nimbusResidentModule = (() => {
     return void 0;
   };
   var rowsOf = (rows) => [...rows];
-  function sqlTables(sql) {
+  function sqlTables(sql, rowsChanged = () => {
+  }) {
+    const writeRows = (path, write) => {
+      rowsChanged(path);
+      write();
+    };
     let schema = null;
     for (const _row of sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'meta'")) schema = "";
     if (schema !== null) for (const row of sql.exec("SELECT v FROM meta WHERE k = 'schema'")) schema = String(row.v);
@@ -469,16 +474,24 @@ var __nimbusResidentModule = (() => {
         return row === void 0 ? void 0 : num(row.size);
       },
       filePut(path, kind, size, chunks, rev, ckey) {
-        sql.exec("INSERT OR REPLACE INTO file (path, kind, size, chunks, rev, ckey) VALUES (?, ?, ?, ?, ?, ?)", path, kind, size, chunks, rev, ckey);
+        writeRows(path, () => {
+          sql.exec("INSERT OR REPLACE INTO file (path, kind, size, chunks, rev, ckey) VALUES (?, ?, ?, ?, ?, ?)", path, kind, size, chunks, rev, ckey);
+        });
       },
       fileSetRev(path, rev) {
-        sql.exec("UPDATE file SET rev = ? WHERE path = ?", rev, path);
+        writeRows(path, () => {
+          sql.exec("UPDATE file SET rev = ? WHERE path = ?", rev, path);
+        });
       },
       fileStampOwn(path, rev) {
-        sql.exec("UPDATE file SET rev = ? WHERE path = ? AND rev = ?", rev, path, RK_OWN_WRITE);
+        writeRows(path, () => {
+          sql.exec("UPDATE file SET rev = ? WHERE path = ? AND rev = ?", rev, path, RK_OWN_WRITE);
+        });
       },
       fileDelete(path) {
-        sql.exec("DELETE FROM file WHERE path = ?", path);
+        writeRows(path, () => {
+          sql.exec("DELETE FROM file WHERE path = ?", path);
+        });
       },
       fileByKey(ckey, notPath) {
         return rowOf(sql.exec("SELECT path, kind, size, chunks FROM file WHERE ckey = ? AND rev >= 0 AND path <> ? LIMIT 1", ckey, notPath));
@@ -525,23 +538,33 @@ var __nimbusResidentModule = (() => {
         sql.exec("INSERT INTO chunk (path, part, txt, bin) SELECT ?, part, txt, bin FROM chunk WHERE path = ?", to, from);
       },
       chunkDelete(path) {
-        sql.exec("DELETE FROM chunk WHERE path = ?", path);
+        writeRows(path, () => {
+          sql.exec("DELETE FROM chunk WHERE path = ?", path);
+        });
       },
       dropOwn() {
-        sql.exec("DELETE FROM chunk WHERE path IN (SELECT path FROM file WHERE rev = ?)", RK_OWN_WRITE);
-        sql.exec("DELETE FROM file WHERE rev = ?", RK_OWN_WRITE);
+        writeRows(void 0, () => {
+          sql.exec("DELETE FROM chunk WHERE path IN (SELECT path FROM file WHERE rev = ?)", RK_OWN_WRITE);
+          sql.exec("DELETE FROM file WHERE rev = ?", RK_OWN_WRITE);
+        });
       },
       dropDated() {
-        sql.exec("DELETE FROM chunk WHERE path NOT IN (SELECT path FROM file WHERE rev = ?)", RK_OWN_WRITE);
-        sql.exec("DELETE FROM file WHERE rev <> ?", RK_OWN_WRITE);
+        writeRows(void 0, () => {
+          sql.exec("DELETE FROM chunk WHERE path NOT IN (SELECT path FROM file WHERE rev = ?)", RK_OWN_WRITE);
+          sql.exec("DELETE FROM file WHERE rev <> ?", RK_OWN_WRITE);
+        });
       },
       dropDatedFiles() {
-        sql.exec("DELETE FROM chunk WHERE path IN (SELECT path FROM file WHERE rev <> ?)", RK_OWN_WRITE);
-        sql.exec("DELETE FROM file WHERE rev <> ?", RK_OWN_WRITE);
+        writeRows(void 0, () => {
+          sql.exec("DELETE FROM chunk WHERE path IN (SELECT path FROM file WHERE rev <> ?)", RK_OWN_WRITE);
+          sql.exec("DELETE FROM file WHERE rev <> ?", RK_OWN_WRITE);
+        });
       },
       clear() {
-        sql.exec("DELETE FROM chunk");
-        sql.exec("DELETE FROM file");
+        writeRows(void 0, () => {
+          sql.exec("DELETE FROM chunk");
+          sql.exec("DELETE FROM file");
+        });
         sql.exec("DELETE FROM ns");
         sql.exec("DELETE FROM meta WHERE k <> 'schema'");
         sql.exec("DELETE FROM page");
@@ -629,7 +652,12 @@ var __nimbusResidentModule = (() => {
       }
     };
   }
-  function heapTables() {
+  function heapTables(rowsChanged = () => {
+  }) {
+    const writeRows = (path, write) => {
+      rowsChanged(path);
+      write();
+    };
     const files = new SafeMap();
     const chunks = new SafeMap();
     const meta = new SafeMap();
@@ -698,14 +726,14 @@ var __nimbusResidentModule = (() => {
       });
       chunks.delete(path);
     };
-    const dropFile = (path) => {
+    const dropFile = (path) => writeRows(path, () => {
       const row = files.get(path);
       if (row === void 0) return;
       unkey(path, row);
       files.delete(path);
       sorted = null;
       used -= RESIDENT_ROW_BYTES;
-    };
+    });
     const addChunk = (path, part, cell, replace) => {
       let parts = chunks.get(path);
       if (!parts) {
@@ -746,14 +774,14 @@ var __nimbusResidentModule = (() => {
       });
       ns.delete(parent);
     };
-    const dropWhere = (keepFile, keepChunkPath) => {
+    const dropWhere = (keepFile, keepChunkPath) => writeRows(void 0, () => {
       chunks.forEach((_parts, path) => {
         if (!keepChunkPath(path)) dropChunks(path);
       });
       files.forEach((row, path) => {
         if (!keepFile(row)) dropFile(path);
       });
-    };
+    });
     const sortedNames = (dir) => {
       const out = new SafeList();
       dir.forEach((_row, name) => {
@@ -792,29 +820,35 @@ var __nimbusResidentModule = (() => {
       },
       filePut(path, kind, size, chunkCount, rev, ckey) {
         if (!(rev >= -1)) throw new Error2("CHECK constraint failed: rev >= -1");
-        const had = files.get(path);
-        if (had === void 0) {
-          sorted = null;
-          used += RESIDENT_ROW_BYTES;
-        } else unkey(path, had);
-        const row = { kind: NumberOf(kind), size: NumberOf(size), chunks: NumberOf(chunkCount), rev: NumberOf(rev), ckey: ckey == null ? null : stringOf(ckey) };
-        files.set(path, row);
-        if (row.ckey !== null) {
-          let set = byKey.get(row.ckey);
-          if (!set) {
-            set = new SafeSet();
-            byKey.set(row.ckey, set);
+        writeRows(path, () => {
+          const had = files.get(path);
+          if (had === void 0) {
+            sorted = null;
+            used += RESIDENT_ROW_BYTES;
+          } else unkey(path, had);
+          const row = { kind: NumberOf(kind), size: NumberOf(size), chunks: NumberOf(chunkCount), rev: NumberOf(rev), ckey: ckey == null ? null : stringOf(ckey) };
+          files.set(path, row);
+          if (row.ckey !== null) {
+            let set = byKey.get(row.ckey);
+            if (!set) {
+              set = new SafeSet();
+              byKey.set(row.ckey, set);
+            }
+            set.add(path);
           }
-          set.add(path);
-        }
+        });
       },
       fileSetRev(path, rev) {
-        const row = files.get(path);
-        if (row !== void 0) row.rev = NumberOf(rev);
+        writeRows(path, () => {
+          const row = files.get(path);
+          if (row !== void 0) row.rev = NumberOf(rev);
+        });
       },
       fileStampOwn(path, rev) {
-        const row = files.get(path);
-        if (row !== void 0 && row.rev === RK_OWN_WRITE) row.rev = NumberOf(rev);
+        writeRows(path, () => {
+          const row = files.get(path);
+          if (row !== void 0 && row.rev === RK_OWN_WRITE) row.rev = NumberOf(rev);
+        });
       },
       fileDelete(path) {
         dropFile(path);
@@ -914,7 +948,9 @@ var __nimbusResidentModule = (() => {
         });
       },
       chunkDelete(path) {
-        dropChunks(path);
+        writeRows(path, () => {
+          dropChunks(path);
+        });
       },
       dropOwn() {
         const own = new SafeSet();
@@ -938,8 +974,10 @@ var __nimbusResidentModule = (() => {
         dropWhere((row) => row.rev === RK_OWN_WRITE, (path) => !dated.has(path));
       },
       clear() {
-        files.clear();
-        chunks.clear();
+        writeRows(void 0, () => {
+          files.clear();
+          chunks.clear();
+        });
         meta.clear();
         ns.clear();
         byKey.clear();
@@ -1262,6 +1300,41 @@ var __nimbusResidentModule = (() => {
     let generation = 0;
     const learnings = new SafeSet();
     const ready = () => ok && coherence.serving();
+    let relisting = new SafeMap();
+    const fenced = (k) => {
+      if (relisting.size === 0) return false;
+      let hit = false;
+      relisting.forEach((_count, dir) => {
+        if (!hit && (dir === "" || k === dir || stringStartsWith(k, dir + "/"))) hit = true;
+      });
+      return hit;
+    };
+    const isListed = (dir) => {
+      if (lazy) return listed.has(dir);
+      if (!ready() || fenced(dir) || unlisted.get(dir) !== void 0) return false;
+      if (dir === "") return true;
+      const row = nsRowAt(coherence.require(), dir);
+      return row !== void 0 && row.kind === NS_DIR;
+    };
+    const markListed = (dir) => {
+      if (lazy) {
+        listed.add(dir);
+        return;
+      }
+      if (dir === "" || unlisted.get(dir) === void 0) return;
+      const t = coherence.require();
+      const row = nsRowAt(t, dir);
+      if (row === void 0 || row.kind !== NS_DIR) return;
+      t.nsPut(nsParent(dir), nsName(dir), row.kind, row.size, row.mode, row.uid, row.gid, row.atime, row.mtime, row.ctime, row.ino, row.rev, null, row.dev, row.nlink);
+      unlisted.delete(dir);
+    };
+    const learnedMark = (k) => {
+      for (let at = nsParent(k); ; at = nsParent(at)) {
+        const mount = unlisted.get(at);
+        if (mount !== void 0 && mount !== at) return mount;
+        if (at === "") return k;
+      }
+    };
     const markReady = (t, isReady, why) => {
       t.metaSet("ns", isReady ? "1" : "0");
       ok = !!isReady;
@@ -1504,6 +1577,7 @@ var __nimbusResidentModule = (() => {
        */
       replace(t, entries) {
         generation++;
+        relisting = new SafeMap();
         const names = new SafeSet();
         for (let i = 0; i < entries.length; i++) names.add(nsKey(entries[i].path));
         const rows = t.nsKeys();
@@ -1608,6 +1682,7 @@ var __nimbusResidentModule = (() => {
       },
       clear() {
         generation++;
+        relisting = new SafeMap();
         links = new SafeSet();
         unlisted = new SafeMap();
         ok = false;
@@ -1617,19 +1692,33 @@ var __nimbusResidentModule = (() => {
       },
       beginLazy() {
         generation++;
+        relisting = new SafeMap();
         lazy = true;
         listed.clear();
         links = new SafeSet();
         unlisted = new SafeMap();
       },
       listedAt(k) {
-        return listed.has(nsParent(k));
+        return isListed(nsParent(k));
       },
-      isListed(dir) {
-        return listed.has(dir);
+      isListed,
+      markListed,
+      learn(t, k, stat, rev, target) {
+        if (lazy || stat.type !== "directory" || nsRowAt(t, k) !== void 0) return tryPut(t, k, stat, rev, target);
+        return tryPut(t, k, stat, rev, target, learnedMark(k));
       },
-      markListed(dir) {
-        listed.add(dir);
+      fence(dir) {
+        relisting.set(dir, (relisting.get(dir) ?? 0) + 1);
+      },
+      relisted(dir) {
+        const count = relisting.get(dir) ?? 0;
+        if (count <= 1) relisting.delete(dir);
+        else relisting.set(dir, count - 1);
+        if (!lazy && unlisted.get(dir) === dir) markListed(dir);
+      },
+      fenced,
+      spoilLearnings() {
+        generation++;
       },
       onPut(listener) {
         putListener = listener;
@@ -1786,7 +1875,10 @@ var __nimbusResidentModule = (() => {
       t.filePut(path, kind, size, chunks, stamp, stamp === RK_OWN_WRITE || ckey == null ? null : stringOf(ckey));
       return true;
     };
-    const putChunk = (t, path, part, bytes) => {
+    const filling = new SafeMap();
+    let fills = 0;
+    const putChunk = (t, path, part, bytes, fill) => {
+      if (filling.get(path) !== fill) return false;
       if (part === 0) admission.release(path);
       if (!admission.fits(mathCeil(typedArrayByteLength(bytes) * 1.01) + RESIDENT_ROW_BYTES + 4096)) return false;
       t.chunkSetBin(path, part, bytes);
@@ -1835,7 +1927,10 @@ var __nimbusResidentModule = (() => {
           const path = entry.path;
           if (namespaced && namespace.ready()) {
             const again = namespace.applyEntry(t, entry);
-            if (again !== null) relist[relist.length] = again;
+            if (again !== null) {
+              relist[relist.length] = again;
+              namespace.fence(again);
+            }
           }
           const subtree = ownValue2(entry, "subtree");
           const stat = ownValue2(entry, "stat");
@@ -1854,7 +1949,10 @@ var __nimbusResidentModule = (() => {
               if (!stringStartsWith(heldPath, path + "/") || heldCell2.rev === RK_OWN_WRITE || heldCell2.rev >= entryRev) return;
               forgetHeld(heldPath);
             });
-            if (namespaced && !namespace.lazy && subtree && stat && stat.type === "directory") relist[relist.length] = path;
+            if (namespaced && !namespace.lazy && subtree && stat && stat.type === "directory") {
+              relist[relist.length] = path;
+              namespace.fence(path);
+            }
           }
           let isHeld = false, stamped = 0, heldKey = null;
           const row = t.fileRevKey(path);
@@ -2024,6 +2122,38 @@ var __nimbusResidentModule = (() => {
       get,
       put,
       putChunk,
+      publishFill(t, path, kind, size, chunks, rev, ckey, fill) {
+        if (filling.get(path) !== fill) return false;
+        filling.delete(path);
+        t.filePut(path, kind, size, chunks, rev, ckey != null ? stringOf(ckey) : null);
+        return true;
+      },
+      abandonFill(t, path, fill) {
+        if (filling.get(path) !== fill) return;
+        t.chunkDelete(path);
+        t.fileDelete(path);
+      },
+      beginFill(paths) {
+        const fill = { fill: ++fills };
+        for (let i = 0; i < paths.length; i++) filling.set(paths[i], fill);
+        return fill;
+      },
+      rowsChanged(path) {
+        if (filling.size === 0) return;
+        const t = coherence.tables("rowsChanged");
+        const disown = (at) => {
+          if (filling.delete(at) && t.fileHead(at) === void 0) t.chunkDelete(at);
+        };
+        if (path !== void 0) {
+          disown(path);
+          return;
+        }
+        const owned = new SafeList();
+        filling.forEach((_fill, at) => {
+          owned[owned.length] = at;
+        });
+        for (let i = 0; i < owned.length; i++) disown(owned[i]);
+      },
       /**
        * The head row, written LAST by the streaming filler.
        *
@@ -2033,16 +2163,6 @@ var __nimbusResidentModule = (() => {
        * file leaves chunks nothing can read, never a short file something can.
        * Writing the head first would invert that into a truncated read.
        */
-      putHead(t, path, kind, size, chunks, rev, ckey) {
-        t.filePut(
-          path,
-          kind,
-          size,
-          chunks,
-          typeof rev === "number" ? rev : RK_OWN_WRITE,
-          typeof rev === "number" && ckey != null ? stringOf(ckey) : null
-        );
-      },
       /**
        * Hold `path` with the bytes of a dated row whose content identity is
        * `ckey`, by copying rows inside this store: equal keys are equal bytes, so
@@ -2280,9 +2400,10 @@ var __nimbusResidentModule = (() => {
     };
   }
 
-  // src/vfs/resident/lazy.ts
+  // src/vfs/resident/view.ts
   var LOOKUP_CONTENT_BYTES = 256 * 1024;
-  function createLazy(coherence, admission, namespace, cells, transport, sync, pages) {
+  var REPAIR_JOINS_MAX = 4;
+  function createView(coherence, admission, namespace, cells, transport, sync, pages) {
     const beginLazy = (t, cursor) => {
       namespace.beginLazy();
       t.clear();
@@ -2305,46 +2426,169 @@ var __nimbusResidentModule = (() => {
       beginLazy(coherence.tables("bootLazy"), { epoch: answer.epoch, rev: answer.rev });
       return true;
     };
-    const lazyBarrier = async (supervisor) => {
-      const t = coherence.tables("lazyBarrier");
+    const current = (answer) => {
       const cursor = coherence.cursor();
-      let answer = null;
-      if (cursor !== null) {
-        try {
-          answer = await supervisor.fsAcquire(cursor.epoch, cursor.rev, { namespace: true });
-        } catch {
-          answer = null;
-        }
-      }
-      if (answer && typeof answer.epoch === "string" && typeof answer.rev === "number") {
-        if (!answer.poison) {
-          await sync.applyAcquire(supervisor, answer);
-          if (namespace.ready()) return true;
-          beginLazy(t, coherence.cursor());
-          return true;
-        }
-        beginLazy(t, { epoch: answer.epoch, rev: answer.rev });
-        return true;
-      }
-      return bootLazy(supervisor);
+      if (cursor === null || answer.poison === true || answer.epoch !== cursor.epoch) return answer;
+      if (answer.rev <= cursor.rev) return { ...answer, rev: cursor.rev, paths: [] };
+      const paths = answer.paths.filter((entry) => entry.rev > cursor.rev);
+      return paths.length === answer.paths.length ? answer : { ...answer, paths };
+    };
+    const delivered = (given) => {
+      if (!given || typeof given !== "object") return null;
+      const { args, answer } = given;
+      const cursor = coherence.cursor();
+      if (cursor === null || !args || !answer || answer.poison === true || !Array.isArray(answer.paths)) return null;
+      if (typeof answer.rev !== "number" || answer.epoch !== cursor.epoch || args.epoch !== cursor.epoch) return null;
+      if (!(args.cursor <= cursor.rev)) return null;
+      return current(answer);
     };
     return {
       bootLazy,
       /**
-       * The store as a WASI process's filesystem adapter reads it (core
-       * runtime/wasi/resident-filesystem.ts, ResidentNamespace): names as lstats,
-       * listed on demand, file bytes held or fetched, and the barrier. `device` is
-       * the session's SQLite device, the only one the adapter answers for.
+       * The store as a process's filesystem adapter reads it: names as lstats,
+       * file bytes held or fetched, and the barrier. `device` is the session's
+       * SQLite device, the only one the adapter answers for.
        */
       namespaceView(supervisor, device, cred) {
         namespace.setCred(cred);
         const encoder3 = new TextEncoder();
         const typeOf = (kind) => kind === NS_DIR ? "directory" : kind === NS_LINK ? "symlink" : "file";
+        const argsNow = () => {
+          const cursor = coherence.cursor();
+          return cursor === null ? null : { epoch: cursor.epoch, cursor: cursor.rev, options: sync.acquireOptions() };
+        };
+        const acquire = async (lease) => {
+          for (let asks = 0; asks < 2; asks++) {
+            const args = argsNow();
+            if (args === null || typeof supervisor.fsAcquire !== "function") return null;
+            let answer = null;
+            try {
+              answer = await supervisor.fsAcquire(args.epoch, args.cursor, lease ? { ...args.options, lease: true } : args.options);
+            } catch {
+              return null;
+            }
+            if (!answer || typeof answer.epoch !== "string" || typeof answer.rev !== "number") return null;
+            if (coherence.cursor()?.epoch !== args.epoch) continue;
+            if (lease && answer.readLease) lease.answered(answer.readLease);
+            return current(answer);
+          }
+          return null;
+        };
+        const restart = async (answer, applied) => {
+          if (answer === null) return bootLazy(supervisor);
+          if (applied && namespace.ready()) return true;
+          beginLazy(coherence.tables("restart"), applied ? coherence.cursor() : { epoch: answer.epoch, rev: answer.rev });
+          return true;
+        };
+        let repairOwed = false;
+        let repairing = null;
+        const repairFromFloor = async (answer) => {
+          if (typeof supervisor.fsAcquire !== "function" || !namespace.ready()) return false;
+          if (answer !== null && answer.poison === true) return false;
+          const floor = coherence.cursor();
+          if (floor === null || answer !== null && answer.epoch !== floor.epoch) return false;
+          let delta = null;
+          try {
+            delta = await supervisor.fsAcquire(floor.epoch, floor.rev, { namespace: true });
+          } catch {
+            return false;
+          }
+          if (!delta || delta.poison === true || typeof delta.rev !== "number" || delta.epoch !== floor.epoch) return false;
+          const applied = await sync.applyAcquire(supervisor, delta);
+          if (!namespace.ready()) return false;
+          await sync.refillFromNamespace(supervisor, applied.dropped);
+          repairOwed = false;
+          return true;
+        };
+        const runRepair = async (answer) => {
+          namespace.spoilLearnings();
+          if (await repairFromFloor(answer)) return;
+          let repaired = null;
+          try {
+            repaired = await sync.synchronize(supervisor);
+          } catch {
+            repaired = null;
+          }
+          if (!repaired || !repaired.cursor) {
+            if (answer !== null) cells.admit(answer);
+            else cells.dropDated();
+            try {
+              repaired = await sync.synchronize(supervisor);
+            } catch {
+              repaired = null;
+            }
+          }
+          repairOwed = !(repaired && repaired.cursor);
+        };
+        const repair = (answer) => {
+          if (repairing === null) repairing = runRepair(answer).finally(() => {
+            repairing = null;
+          });
+          return repairing;
+        };
+        const refetching = /* @__PURE__ */ new Map();
+        const refetch = (keys) => {
+          if (keys.length === 0) return [];
+          const read = sync.refillFromNamespace(supervisor, keys).catch(() => void 0);
+          const t = coherence.require();
+          return keys.map((k) => {
+            const record = { rev: nsRowAt(t, k)?.rev ?? 0, read, done: Promise.resolve() };
+            record.done = read.then(() => {
+              const newer = refetching.get(k);
+              return Promise.all([newer !== void 0 && newer !== record ? newer.read : void 0, repairing ?? void 0]);
+            }).then(() => void 0, () => void 0).finally(() => {
+              if (refetching.get(k) === record) refetching.delete(k);
+            });
+            refetching.set(k, record);
+            return record.done;
+          });
+        };
+        const enumerated = async (first, lease) => {
+          const joined = [...refetching.values()].map((record) => record.done);
+          let answer = first;
+          let namespaceAsked = false;
+          let repaired = false;
+          for (let joins = 0; ; joins++) {
+            const joining = repairing !== null;
+            const namespaceOwed = !namespaceAsked && !namespace.ready();
+            const needsRepair = answer === null || answer.poison === true || repairOwed || namespaceOwed;
+            if (!joining && !needsRepair) break;
+            repaired = true;
+            if (namespaceOwed) namespaceAsked = true;
+            await (joining ? repairing : repair(answer));
+            if (!joining) {
+              if (repairOwed) return { landed: false };
+              answer = await acquire(lease);
+              if (answer === null || answer.poison === true) return { landed: namespace.ready() };
+              continue;
+            }
+            if (joins + 1 >= REPAIR_JOINS_MAX) {
+              cells.dropDated();
+              repairOwed = true;
+              return { landed: false };
+            }
+            answer = await acquire(lease);
+          }
+          const applied = await sync.applyAcquire(supervisor, answer);
+          if (!namespace.ready()) return { landed: false };
+          const named = answer.paths.map((entry) => nsKey(entry.path));
+          const overtaken = [...refetching.keys()].filter((k) => !applied.dropped.includes(k) && named.some((at) => at === k || at === "" || k.startsWith(at + "/")));
+          await Promise.all([...refetch([...applied.dropped, ...overtaken]), ...joined]);
+          return answer.readLease ? { landed: true, applied: !repaired, readLease: answer.readLease } : { landed: true, applied: !repaired };
+        };
+        const lazily = async (answer) => {
+          if (answer === null || answer.poison === true) return { landed: await restart(answer, false), applied: false };
+          await sync.applyAcquire(supervisor, answer);
+          const applied = namespace.ready();
+          const landed = await restart(answer, true);
+          return applied && answer.readLease ? { landed, applied, readLease: answer.readLease } : { landed, applied };
+        };
         const view = {
           device: Number(device),
           cred: { uid: Number(cred.uid), gid: Number(cred.gid), groups: (cred.groups || []).map(Number) },
-          ready: () => namespace.lazy && namespace.ready(),
+          ready: () => namespace.ready(),
           entry(k) {
+            if (namespace.fenced(k)) return void 0;
             const row = nsRowAt(coherence.require(), k);
             if (row === void 0) return namespace.listedAt(k) ? null : void 0;
             return {
@@ -2393,18 +2637,15 @@ var __nimbusResidentModule = (() => {
             if (cursor === null || files.length === 0) return;
             await transport.fetchFiles(supervisor, files.map(([k, entry]) => ({ path: k, size: entry.size, rev: entry.revision, epoch: cursor.epoch, ckey: null, version: entry })));
           },
-          barrier: () => lazyBarrier(supervisor),
-          cursor: () => coherence.cursor(),
-          // An ACQUIRE answer the caller took itself, applied as the barrier applies one.
-          async admit(answer) {
-            if (!answer || typeof answer.epoch !== "string" || typeof answer.rev !== "number") return false;
-            const before = coherence.cursor();
-            if (before && answer.epoch === before.epoch && answer.rev < before.rev) return false;
-            await sync.applyAcquire(supervisor, answer);
-            if (!answer.poison && namespace.ready()) return true;
-            beginLazy(coherence.tables("admit"), { epoch: answer.epoch, rev: answer.rev });
-            return false;
+          acquireArgs: () => argsNow(),
+          repairOwed: () => repairOwed,
+          async barrier(options = {}) {
+            const standIn = options.answer === void 0 ? delivered(options.delivered) : null;
+            const answer = options.answer !== void 0 ? current(options.answer) : standIn ?? await acquire(options.lease);
+            const result = namespace.lazy ? await lazily(answer) : await enumerated(answer, options.lease);
+            return standIn === null ? result : { ...result, fromDelivery: true };
           },
+          cursor: () => coherence.cursor(),
           reserve: (bytes) => admission.pin(bytes),
           release: (bytes) => admission.unpin(bytes),
           // Each row as it is put, the process's (one listener: this view's process, a later one replacing it).
@@ -2418,7 +2659,7 @@ var __nimbusResidentModule = (() => {
   }
 
   // src/vfs/resident/pages.ts
-  function createPages(coherence, admission) {
+  function createPages(coherence, admission, namespace) {
     let clock = null;
     let total = null;
     const held = () => total ??= coherence.require().pageBytes();
@@ -2457,42 +2698,51 @@ var __nimbusResidentModule = (() => {
       total = held() + size - replaced;
       return true;
     };
+    const readWith = async (learning, supervisor, k, rev, size, first, last) => {
+      const cursor = coherence.cursor();
+      if (cursor === null || typeof supervisor.fsReadBatch !== "function") return null;
+      const keyed = cursor.epoch + "\0" + k;
+      const out = new Array(last - first + 1);
+      const missing = [];
+      for (let part = first; part <= last; part++) {
+        const page = get(keyed, rev, part);
+        if (page !== void 0) out[part - first] = page;
+        else missing.push(part);
+      }
+      const perBatch = Math.max(1, Math.min(FS_READ_BATCH_PATH_LIMIT, Math.floor(FS_READ_BATCH_REQUEST_BYTES / RESIDENT_PAGE_BYTES)));
+      for (let at = 0; at < missing.length; at += perBatch) {
+        const batch = missing.slice(at, at + perBatch);
+        const ranges = batch.map((part) => {
+          const offset = part * RESIDENT_PAGE_BYTES;
+          return { path: "/" + k, offset, length: Math.min(RESIDENT_PAGE_BYTES, Math.max(0, size - offset)), expectedEpoch: cursor.epoch, expectedRevision: rev };
+        });
+        await admission.ensureRoom(ranges.reduce((n, r) => n + r.length + RESIDENT_ROW_BYTES, 0));
+        let results;
+        try {
+          results = await supervisor.fsReadBatch(ranges);
+        } catch {
+          return null;
+        }
+        if (!Array.isArray(results) || results.length !== ranges.length) return null;
+        for (let i = 0; i < batch.length; i++) {
+          const entry = results[i];
+          if (!entry || entry.error || entry.bytes == null) return null;
+          const bytes = residentBytes(entry.bytes);
+          if (bytes.byteLength !== ranges[i].length) return null;
+          out[batch[i] - first] = bytes;
+          if (learning.installs(k)) put(keyed, rev, batch[i], bytes);
+        }
+      }
+      return { pages: out, fetched: missing.length };
+    };
     return {
       async read(supervisor, k, rev, size, first, last) {
-        const cursor = coherence.cursor();
-        if (cursor === null || typeof supervisor.fsReadBatch !== "function") return null;
-        const out = new Array(last - first + 1);
-        const missing = [];
-        for (let part = first; part <= last; part++) {
-          const page = get(k, rev, part);
-          if (page !== void 0) out[part - first] = page;
-          else missing.push(part);
+        const learning = namespace.learning();
+        try {
+          return await readWith(learning, supervisor, k, rev, size, first, last);
+        } finally {
+          learning.end();
         }
-        const perBatch = Math.max(1, Math.min(FS_READ_BATCH_PATH_LIMIT, Math.floor(FS_READ_BATCH_REQUEST_BYTES / RESIDENT_PAGE_BYTES)));
-        for (let at = 0; at < missing.length; at += perBatch) {
-          const batch = missing.slice(at, at + perBatch);
-          const ranges = batch.map((part) => {
-            const offset = part * RESIDENT_PAGE_BYTES;
-            return { path: "/" + k, offset, length: Math.min(RESIDENT_PAGE_BYTES, Math.max(0, size - offset)), expectedEpoch: cursor.epoch, expectedRevision: rev };
-          });
-          await admission.ensureRoom(ranges.reduce((n, r) => n + r.length + RESIDENT_ROW_BYTES, 0));
-          let results;
-          try {
-            results = await supervisor.fsReadBatch(ranges);
-          } catch {
-            return null;
-          }
-          if (!Array.isArray(results) || results.length !== ranges.length) return null;
-          for (let i = 0; i < batch.length; i++) {
-            const entry = results[i];
-            if (!entry || entry.error || entry.bytes == null) return null;
-            const bytes = residentBytes(entry.bytes);
-            if (bytes.byteLength !== ranges[i].length) return null;
-            out[batch[i] - first] = bytes;
-            put(k, rev, batch[i], bytes);
-          }
-        }
-        return { pages: out, fetched: missing.length };
       },
       reset() {
         clock = null;
@@ -2505,6 +2755,7 @@ var __nimbusResidentModule = (() => {
   var BATCH_PATHS = FS_READ_BATCH_PATH_LIMIT;
   var BATCH_BYTES = FS_READ_BATCH_REQUEST_BYTES;
   var MAX_LIST_PAGES = 4096;
+  var RELIST_ATTEMPTS = 3;
   function ownValue3(record, key) {
     return objectHasOwn(record, key) ? record[key] : void 0;
   }
@@ -2523,6 +2774,18 @@ var __nimbusResidentModule = (() => {
         namespace.markReady(t, false, "the session cannot list its filesystem");
         return;
       }
+      for (let attempt = 0; attempt < RELIST_ATTEMPTS; attempt++) {
+        const learning = namespace.learning();
+        try {
+          const listed = await relistWith(learning, t, supervisor, fsList, dir);
+          if (listed !== "overtaken") return;
+        } finally {
+          learning.end();
+        }
+      }
+      namespace.markReady(t, false, "a listing of /" + dir + " was overtaken by every barrier since");
+    };
+    const relistWith = async (learning, t, supervisor, fsList, dir) => {
       const prefix = dir + "/";
       const seen = new SafeList();
       let replaceBytes = 0;
@@ -2585,17 +2848,28 @@ var __nimbusResidentModule = (() => {
           return;
         }
       }
+      if (!learning.lists(dir)) return "overtaken";
       namespace.deleteTree(t, dir, false);
       for (let i = 0; i < seen.length; i++) {
         const entry = seen[i];
         namespace.put(t, nsKey(entry.path), entry.stat, entry.rev, ownValue3(entry, "linkTarget"), ownValue3(entry, "unlisted") ?? null);
       }
+      namespace.relisted(dir);
     };
-    const outdated = (t, path, rev) => {
+    const outdated = (t, learning, path, rev) => {
+      if (!learning.installs(path)) return true;
       const listed = t.nsGet(nsParent(path), nsName(path));
       return listed !== void 0 && NumberOf(listed.rev) > rev;
     };
     const fetchFiles = async (supervisor, wantedFiles) => {
+      const learning = namespace.learning();
+      try {
+        return await fetchWith(learning, supervisor, wantedFiles);
+      } finally {
+        learning.end();
+      }
+    };
+    const fetchWith = async (learning, supervisor, wantedFiles) => {
       const t = coherence.tables("fetchFiles");
       const requested = wantedFiles.length;
       let copied = 0;
@@ -2643,11 +2917,9 @@ var __nimbusResidentModule = (() => {
       const landed = new SafeMap();
       let filled = 0, failed = 0, fetchedBytes = 0;
       const failedPaths = new SafeSet();
-      const revOf = new SafeMap();
-      for (let i = 0; i < ranges.length; i++) {
-        const range = ranges[i];
-        revOf.set(range.path, range.rev);
-      }
+      const paths = new SafeList();
+      for (let i = 0; i < files.length; i++) paths[paths.length] = files[i].path;
+      const fill = cells.beginFill(paths);
       for (let at = 0; at < ranges.length; ) {
         const batch = new SafeList();
         let bytes = 0;
@@ -2698,34 +2970,30 @@ var __nimbusResidentModule = (() => {
             failedPaths.add(range.path);
             continue;
           }
-          if (outdated(t, range.path, range.rev)) {
+          if (outdated(t, learning, range.path, range.rev)) {
             failedPaths.add(range.path);
             continue;
           }
           fetchedBytes += chunkBytes;
-          if (!cells.putChunk(t, range.path, range.part, chunk)) {
+          if (!cells.putChunk(t, range.path, range.part, chunk, fill)) {
             failedPaths.add(range.path);
             continue;
           }
           const seen = (landed.get(range.path) || 0) + 1;
           landed.set(range.path, seen);
           if (seen === range.parts && !failedPaths.has(range.path)) {
-            cells.putHead(t, range.path, RK_BINARY, range.size, range.parts, range.rev, range.ckey);
-            filled++;
+            if (cells.publishFill(t, range.path, RK_BINARY, range.size, range.parts, range.rev, range.ckey, fill)) filled++;
+            else failedPaths.add(range.path);
           }
         }
       }
       failedPaths.forEach((path) => {
         failed++;
-        const held = t.fileRev(path);
-        const rev = revOf.get(path);
-        if (held !== void 0 && (held === RK_OWN_WRITE || rev !== void 0 && held >= rev)) return;
-        t.chunkDelete(path);
-        t.fileDelete(path);
+        cells.abandonFill(t, path, fill);
       });
       for (let i = 0; i < later.length; i++) {
         const file = later[i];
-        if (!outdated(t, file.path, file.rev) && cells.copyByKey(t, file.path, ownValue3(file, "ckey"), file.rev)) copied++;
+        if (!outdated(t, learning, file.path, file.rev) && cells.copyByKey(t, file.path, ownValue3(file, "ckey"), file.rev)) copied++;
         else failed++;
       }
       if (ranges.length > 0) await admission.reportSize();
@@ -2826,7 +3094,7 @@ var __nimbusResidentModule = (() => {
             }
             if (typeof target !== "string") break;
           }
-          if (!learning.installs(batch[i]) || !namespace.tryPut(t, batch[i], stat, NumberOf(stat.revision) || 0, target)) return false;
+          if (!learning.installs(batch[i]) || !namespace.learn(t, batch[i], stat, NumberOf(stat.revision) || 0, target)) return false;
           if (i === batch.length - 1) reachedLast = true;
           if (stat.type !== "directory") break;
         }
@@ -2917,7 +3185,7 @@ var __nimbusResidentModule = (() => {
         for (let i = 0; i < statKeys.length; i++) {
           const k = statKeys[i];
           const stat = stats.get(k);
-          if (stat !== void 0 && !namespace.tryPut(t, k, stat, NumberOf(stat.revision) || 0, targets.get(k))) return false;
+          if (stat !== void 0 && !namespace.learn(t, k, stat, NumberOf(stat.revision) || 0, targets.get(k))) return false;
         }
         namespace.markListed(dir);
         return true;
@@ -3314,8 +3582,8 @@ var __nimbusResidentModule = (() => {
     const cells = createCells(coherence, admission, namespace, observeRead);
     const transport = createTransport(coherence, admission, namespace, cells);
     const sync = createSync(coherence, admission, namespace, cells, transport);
-    const pages = createPages(coherence, admission);
-    const lazy = createLazy(coherence, admission, namespace, cells, transport, sync, pages);
+    const pages = createPages(coherence, admission, namespace);
+    const view = createView(coherence, admission, namespace, cells, transport, sync, pages);
     const bindTables = (t, heap) => {
       t.dropOwn();
       coherence.bind(t, heap);
@@ -3331,10 +3599,10 @@ var __nimbusResidentModule = (() => {
             "Nimbus: this facet has no synchronous SQLite (ctx.storage.sql); the resident set cannot be served and every sync read would raise EAGAIN"
           );
         }
-        bindTables(sqlTables(sql), null);
+        bindTables(sqlTables(sql, cells.rowsChanged), null);
       },
       bindInMemory(budget) {
-        const t = heapTables();
+        const t = heapTables(cells.rowsChanged);
         bindTables(t, t);
         admission.bindHeap(budget);
       },
@@ -3346,7 +3614,7 @@ var __nimbusResidentModule = (() => {
       transport,
       sync,
       pages,
-      lazy
+      view
     };
   }
   return __toCommonJS(index_exports);

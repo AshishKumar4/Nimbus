@@ -67,7 +67,8 @@ export interface OpencodeAssetsEnv {
 export const OpencodeStageSpecSchema = z.object({
   mode: z.enum(['oneshot', 'attached', 'server']),
   argv: z.array(z.string()),
-  env: z.record(z.string(), z.string()),
+  /** The attached TUI's terminal (OpencodeRunnerOptions.terminal); never the launch's env. */
+  terminal: z.record(z.string(), z.string()),
   cred: z.object({
     uid: z.number().int().nonnegative(),
     gid: z.number().int().nonnegative(),
@@ -225,7 +226,7 @@ async function assemble(assets: OpencodeAssetsEnv, spec: OpencodeStageSpec): Pro
 
   const runner = generateOpencodeRunnerCode({
     argv: spec.argv,
-    env: spec.env,
+    terminal: spec.terminal,
     cred: spec.cred,
     cwd: spec.cwd,
     stdin: spec.stdin,

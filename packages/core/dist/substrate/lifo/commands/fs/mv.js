@@ -1,4 +1,4 @@
-import { resolve, basename } from '../../utils/path.js';
+import { operandPath, resolve, basename } from '../../utils/path.js';
 import { parseArgs } from '../../utils/args.js';
 import { resolveCopyTargets } from './copy-targets.js';
 import { move } from '../../../../vfs/move.js';
@@ -32,7 +32,7 @@ const command = async (ctx) => {
     const { sources, rawDest, destIsDir } = targets;
     let exitCode = 0;
     for (const source of sources) {
-        const src = resolve(ctx.cwd, source);
+        const src = operandPath(ctx.cwd, source);
         const target = targets.targetFor(src);
         if (flags['no-clobber'] && (await ctx.vfs.exists(target)))
             continue;
@@ -55,7 +55,7 @@ const command = async (ctx) => {
                 const named = destIsDir ? `${rawDest.replace(/\/+$/, '')}/${basename(src)}` : rawDest;
                 await ctx.stderr.write(unstatable
                     ? `mv: cannot stat '${source}': ${strerror(unstatable)}\n`
-                    : target.startsWith(`${src}/`)
+                    : resolve('/', target).startsWith(`${resolve(ctx.cwd, source)}/`)
                         ? `mv: cannot move '${source}' to a subdirectory of itself, '${named}'\n`
                         : `mv: cannot move '${source}' to '${named}': ${strerror(e)}\n`);
                 exitCode = 1;

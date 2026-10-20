@@ -54,6 +54,7 @@ import type { HostedHttpRequest, PeerHost } from '@nimbus-sh/fabric/peer-host.js
 import type { FanoutShardOptions } from '@nimbus-sh/fabric/fanout.js';
 import type { D1QueryResponse, D1QuerySql, KvCall, R2Call } from '@nimbus-sh/fabric/inner-storage-env.js';
 import { WebSocketRelay } from './ws-relay.js';
+import { type ProcessEnvHooks } from './process-env.js';
 import type { DevServerRestoreFailure } from './helpers.js';
 import * as _portCapability from './port-capability.js';
 import { ServedReads } from '../facets/read-profile.js';
@@ -81,6 +82,8 @@ export declare function renderWelcomeMarkdown(version: string): string;
 type SessionEnv = runtimeServices.HostedRuntimeEnv & SessionAiHost['env'];
 export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> implements SessionRouterRpc {
     #private;
+    /** The session keeps each relaunchable launch's environment itself, outside its filesystem (session/process-env.ts). */
+    readonly processEnv: ProcessEnvHooks;
     get childProcessHost(): import("@nimbus-sh/core/runtime/child-process-manager.js").ChildProcessHost;
     runtimeWorkspace: NimbusWorkspace | null;
     get runtimeManager(): RuntimeManager;

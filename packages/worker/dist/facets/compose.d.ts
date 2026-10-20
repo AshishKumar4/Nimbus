@@ -67,6 +67,9 @@ export interface FacetManagerHostHooks {
     rewindProcessFiles?: FacetManagerHooks['rewindProcessFiles'];
     onSpawn?: FacetManagerHooks['onSpawn'];
     resolveWorkerLaunch?: FacetManagerHooks['resolveWorkerLaunch'];
+    /** Without it, no process is relaunched: Nimbus keeps no process's environment (session/process-env.ts). */
+    resolveProcessEnv?: FacetManagerHooks['resolveProcessEnv'];
+    keepProcessEnv?: FacetManagerHooks['keepProcessEnv'];
 }
 /** Everything a FacetManager is composed over. */
 export interface FacetManagerDeps {

@@ -43,10 +43,10 @@ function compiledImage(asset) {
  * `dir` names it.
  */
 export async function importOpencodeRunner({
-  mode, program, argv = [], env = {}, cwd = '/home/user', vfsBundle = '{}', vfsCursor = 'null', members = {},
+  mode, program, argv = [], terminal = {}, cwd = '/home/user', vfsBundle = '{}', vfsCursor = 'null', members = {},
 }) {
   const generated = generateOpencodeRunnerCode({
-    argv, env, cred: CRED, cwd, stdin: '', mode, sources: nodeFacetSources(generateShimsCode()), vfsBundle, vfsCursor,
+    argv, terminal, cred: CRED, cwd, stdin: '', mode, sources: nodeFacetSources(generateShimsCode()), vfsBundle, vfsCursor,
   });
   const modules = generatedModuleSet({ esModules: {}, ...generated }, 'runner.mjs');
   // A bare specifier is a map member to the loader; to a file import it is

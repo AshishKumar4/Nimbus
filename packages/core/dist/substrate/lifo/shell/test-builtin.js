@@ -3,7 +3,7 @@ import { DiscardSignal } from './discard.js';
 import { compileRegcomp, execLongest, PosixRegexSyntax } from '../utils/posix-regex.js';
 import { BINARY_OPERATORS, UNARY_OPERATORS } from './conditional-operators.js';
 import { shellMatch } from '../utils/glob.js';
-import { resolve } from '../utils/path.js';
+import { operandPath } from '../utils/path.js';
 import { S_IFCHR, S_IFMT } from '../../../vfs/vfs.js';
 import { lstatOrThrow, statOrThrow } from '../../../vfs/vfs.js';
 /** A regular expression glibc refuses: bash 5.2 says nothing of it, and `[[ ]]`'s status is 2. */
@@ -313,7 +313,7 @@ function literalArg(value) {
  * sitting right there — silently taking the wrong branch rather than failing.
  */
 async function evaluateFileTest(flag, operand, vfs, cwd) {
-    const path = cwd === undefined ? operand : resolve(cwd, operand);
+    const path = cwd === undefined ? operand : operandPath(cwd, operand);
     if (flag === 'h' || flag === 'L') {
         return (await statOf(vfs, path, false))?.type === 'symlink';
     }

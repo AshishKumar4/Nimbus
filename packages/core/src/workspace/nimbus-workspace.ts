@@ -48,7 +48,7 @@ import { ProcessFiles } from '../runtime/process-files.js';
 import { ProcessView } from '../runtime/process-files.js';
 import { WorkspaceFs } from './workspace-fs.js';
 import { PID_GEN_STRIDE, type ProcessEntry } from '../runtime/process-table.js';
-import { isKillRefusal, SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
+import { isKillRefusal, SessionProcessSupervisor, type IdentityChangePolicy } from '../runtime/session-process-supervisor.js';
 import { ChildProcessManager, type ChildProcessHost } from '../runtime/child-process-manager.js';
 import { resolveWorkspaceChild } from './child-process-runner.js';
 import { exitCodeForSignal, signalAbortReason, signalAbortReasonOf, signalDisposition, signalOfStatus } from '../substrate/lifo/shell/signals.js';
@@ -71,7 +71,9 @@ import { adoptCtxExports, composeFabric, type CtxExports, type FabricComposition
 import { createSupervisorOpHandler, type SupervisorOpEnvelope, type SupervisorOpHandler } from './supervisor-op.js';
 import { NamedShells, SHELLS_TABLE, type NamedShell, type NamedShellOptions, type ShellState } from './named-shells.js';
 
-export { parseShellState, type NamedShell, type NamedShellOptions, type ShellState } from './named-shells.js';
+export { parseShellState, parseVariableAttributes, type NamedShell, type NamedShellOptions, type ShellState } from './named-shells.js';
+export type { VariableAttributes } from '../substrate/lifo/shell/variables.js';
+export type { IdentityChangePolicy } from '../runtime/session-process-supervisor.js';
 
 /** {@link NimbusWorkspace.exec}'s options: the command's, and which shell runs it. */
 export interface WorkspaceExecOptions extends RunOptions {
@@ -254,6 +256,15 @@ export interface NimbusWorkspaceOptions {
    * `processes`; a process is still asked for once.
    */
   readonly egressFor?: EgressFor;
+  /**
+   * Whether a process running as `from` may start `command` as `to`: asked
+   * before every process made under a credential other than its parent's
+   * (sudo, su, any command's runAs), whichever path makes it. Refused, the
+   * spawn fails with EPERM, naming both uids and the command. A process the
+   * host starts with no parent (an exec, a restart) is the host's own choice
+   * and not asked. Absent: every change is allowed.
+   */
+  readonly mayChangeIdentity?: IdentityChangePolicy;
 }
 
 /**
@@ -381,6 +392,7 @@ export class NimbusWorkspace {
     // Only a supervisor this workspace created gets its pid base set here; a
     // host-supplied one keeps the base its owner configured.
     if (!options.processes) processes.setPidBase((options.generation ?? 1) * PID_GEN_STRIDE);
+    if (options.mayChangeIdentity !== undefined) processes.governIdentityChanges(options.mayChangeIdentity);
     if (options.egressFor !== undefined && options.egress === undefined) {
       throw new TypeError('NimbusWorkspace: egressFor refines egress, the workspace\'s own network; give both');
     }
@@ -673,7 +685,8 @@ export class NimbusWorkspace {
   /**
    * A shell of its own for process `pid`, a second cwd and environment over
    * the workspace shell's filesystem, commands and kernel. It starts in
-   * `state.cwd` with the workspace shell's environment and `state.env` on
+   * `state.cwd` with the workspace shell's environment (its exported
+   * variables, as any process it started would have) and `state.env` on
    * top; with `inheritEnv: false`, with `state.env` alone (a command run again
    * as it was once run). Its commands act as `pid` (`$$`, and the credential and umask
    * {@link processes} holds for it); `sudo` and `su` go through the workspace
@@ -694,7 +707,8 @@ export class NimbusWorkspace {
       new HeadlessTerminal(),
       this.filesystem,
       this.registry,
-      { ...(state.inheritEnv === false ? {} : this.shell.getEnv()), ...state.env },
+      // The workspace shell's environment as a process it starts gets it: its exported variables.
+      { ...(state.inheritEnv === false ? {} : this.shell.getExportedEnv()), ...state.env },
       processes,
       {
         pid,

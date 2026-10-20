@@ -15,7 +15,58 @@ published independently in the `@nimbus-sh` npm scope.
   mint a new secret over a Preview that had one. Measured on 20 uploads, the
   API served each 273–1488 ms after `wrangler preview` exited; the misses
   are a separate failure, not a slow tail, so the 30 s bound stays.
+- Fixed (security): a process's environment is no longer stored where
+  another process can read it. Before, a Node server's environment was
+  written into its generated module, and a Python or Ruby server's into its
+  durable image, under `/.nimbus`, which every account on the box can read.
+  Now the environment goes to the process in memory when it starts. When a
+  process is started again (after a reset, an on-failure restart, a durable
+  app's relaunch on its port, or a dev server's restore), Nimbus asks the
+  host for its environment through the new `resolveProcessEnv` option. The
+  session keeps each such process's environment in a row of its own object,
+  outside the filesystem. An embedder of `HostedRuntime` composes
+  `resolveProcessEnv`; without it, such a restart fails and says why. A
+  durable `spawnWorker` that passes an `env` now needs a
+  `resolveWorkerLaunch` hook. The first start after the upgrade removes the
+  copies earlier releases wrote in its records and durable images. It does
+  not remove the generated program images earlier releases left in
+  `/.nimbus/facet-images` and below `/var/lib/nimbus`, which still hold
+  those processes' environments: that directory belongs to the embedder,
+  which keeps its own images there. The session says how many it found, and
+  `GET /api/_diag/session` lists them (`legacyGeneratedImages`). The hosted
+  runtime owns its sessions' `/.nimbus/facet-images` whole, so it removes
+  them there. Copies already taken in a snapshot, an export or a clone are
+  not removed either. Remove `/var/lib/nimbus` with `sudo rm -r` once no
+  durable worker boots from there. A Python or Ruby server whose image an
+  earlier release wrote, under an embedder that composes
+  `resolveProcessEnv`, is not restarted, and the session says so: start it
+  again. `/api/_diag/session` lists the shell's variable names, not their
+  values. Not fixed yet: a resident process's generated program image still
+  holds the files its process read at start, and every account can read the
+  image. A secret in such a file, such as an inline `VAR=secret` saved in
+  `~/.bash_history`, stays readable by other accounts until the image
+  store's privacy fix ships. Pass secrets through the launch environment
+  instead.
+- Fixed: the shell's commands walk their file operands as POSIX does. A `..` applies after the name before it is looked up, through a symbolic link to where it points, and a missing or non-directory name before it is ENOENT or ENOTDIR; a trailing slash asks for a directory (`cat f/` is "Not a directory"), and on a name being removed or renamed it names the entry itself, never a link's target (`rm -r link/` empties the target and refuses the link, `rmdir link/` says the link was not followed, as GNU's do). Before, `cat missing/../f` and `cat f/` read `f`, and `cat link/../x` read the `x` beside the link. Messages still name the operand as typed; `cp`'s into-itself check compares where the names lead; `mktemp` prints the name it made; logical `cd` refuses `missing/..` and keeps `PWD` logical; `mkdir -p` makes the names a following `..` leaves; `rm -r` refuses another name for `/`.
 
+## 2026-10-20: platform 0.14.0, core 0.25.0, fabric 0.20.0, worker 0.23.0, sdk 0.19.0, react 0.4.1, cli 0.2.10, loom 0.3.3, create-nimbus-app 0.2.6 (config 0.3.2 and the runtimes unchanged)
+
+- Fixed: Nimbus no longer deletes an embedder's images in
+  `/.nimbus/facet-images`. The store that holds a resident process's
+  generated modules removed every file there that no running process booted
+  from, an embedder's own images included (a durable worker's runner and its
+  text modules, named by `facetImagePath`). After a reset, the first launch
+  could remove a durable app's text module, and the app's next restart then
+  failed with ENOENT. The store now writes to its own directory,
+  `/.nimbus/process-images`, and removes files only there. Images an earlier
+  release wrote to `/.nimbus/facet-images` stay where they are.
+- Fixed: the shell's commands walk their file operands as POSIX does. A `..` applies after the name before it is looked up, through a symbolic link to where it points, and a missing or non-directory name before it is ENOENT or ENOTDIR; a trailing slash asks for a directory (`cat f/` is "Not a directory"), and on a name being removed or renamed it names the entry itself, never a link's target (`rm -r link/` empties the target and refuses the link, `rmdir link/` says the link was not followed, as GNU's do). Before, `cat missing/../f` and `cat f/` read `f`, and `cat link/../x` read the `x` beside the link. Messages still name the operand as typed; `cp`'s into-itself check compares where the names lead; `mktemp` prints the name it made; logical `cd` refuses `missing/..` and keeps `PWD` logical; `mkdir -p` makes the names a following `..` leaves; `rm -r` refuses another name for `/`.
+- Fixed: a nested shell stops with its caller. `bash -c`, `sh -c` and `bash script` pass their command's signal to the shell that runs the program, and a hosted workspace's child shell stops on either that signal or its own. Before, an aborted or timed-out `bash -c 'while :; do :; done'` was reported stopped while its loop ran on, burning the session's CPU.
+- Fixed: a Node program that renamed a file over another (`fs.promises.rename` or `fs.renameSync`, the atomic-save pattern) and then read the destination with `fs.readFileSync` could get the replaced file's bytes, while `fs.statSync` already described the renamed one. The replaced file's bytes now go with the rename, as an unlink's do. 
+- Added: `NimbusWorkspaceOptions.mayChangeIdentity(from, to, command)`, the host's word on every identity change. It is asked before any process is made under a credential other than its parent's (`sudo`, `su`, any command's `runAs`, a spawn with a parent and a `cred`), in the one place a process is made; refused, the spawn fails with `EPERM: operation not permitted, uid 1000 may not become uid 0 (whoami)` and no process starts. A process the host starts with no parent is not asked. Absent, every change is allowed, as before. Before, `sudo` and `su` gave any process any uid with nothing asked.
+- Fixed: a Node program that renamed, deleted or made a file and then listed its directory with `fs.promises.readdir`, `fs.readdir` or `fs.opendir` could be shown the directory without that change while it was still on its way to the session. These listings now wait for what the program did before them, as `readdirSync` already shows it.
+- Fixed: in the shell, a `[[ ]]` operand that follows an alias ending in a blank is checked for an alias, the regex after `=~` included, as bash does. An operator in `[[ ]]` whose operand never comes (`[[ -n ]]`, `[[ x == ]]`) is a syntax error, as in bash. Before, `[[ -n ]]` was true.
+- Fixed: the shell's redirections and `exec` share one descriptor table, as in bash. A redirection on a function call, a `{ }`, `while`, `if` or subshell, or `eval`'s or `.`'s text now applies over what `exec` set and is undone afterwards, including an `exec` made inside it. A pipeline element writes to its pipe, and `$(…)` captures its output, even after `exec >file`. Before, `exec`'s descriptors overrode every enclosing redirection: `exec >log; cmd | grep x` sent `cmd`'s output straight to `log`, bypassing the pipe, and `exec 2>log; f 2>other` wrote `f`'s errors to `log`.
 - Fixed: the shell's arithmetic reads and assigns array elements, as bash does: `$((a[1] + a[-1]))`, `((a[i]++))` and `let 'a[0] = 3'`, in `[[ -eq ]]` and `for ((…))` too. `a` alone is its first element, and an element of a scalar turns the scalar into an array. A subscript of `@`, `*` or one before the first element is warned of as a bad array subscript, and the command goes on. Arithmetic refuses to assign a readonly name: `((…))` and `let` fail, and `$((…))` discards the line. `${t[-1]}` of a scalar is a bad subscript too. `$((…))` expands its text before evaluating it, as in double quotes, so `$(( ${#a[@]} - 1 ))` counts the array. An operand that is not one, or text left over after the expression, is a syntax error. Before, `a[1]` was read as `a`, arithmetic wrote readonly names, `$(( ${#a[@]} - 1 ))` gave 0, and leftover text was ignored.
 - Changed: `git status` reads its worktree in one ordered scan of the
   session's filesystem instead of a listing per directory and an lstat per
@@ -30,6 +81,7 @@ published independently in the `@nimbus-sh` npm scope.
   it was not there: bytes the program's store still held under the name
   were served though the name was gone. `readFileSync` now answers as
   `statSync` does.
+- Fixed (security): a command's environment in the shell holds only exported variables, as in bash. Before, every variable the shell held, exported or not, reached every command and program it ran, so `token=…` set without `export` was visible to `env`, `node` and any child shell. Prefix assignments (`x=1 cmd`) still reach their command, and `PWD` and `OLDPWD` are exported from the start, as bash exports them. A call's own `env` (`exec(…, { env })`) is exported for that call. `command -v` and `type` search the shell's own `PATH` even when it is unexported. A hosted terminal now saves its variables' export marks and arrays with their values. A terminal saved before this change restores with all its variables exported, as they all reached its programs then. A workspace call's shell (`exec`, a named shell's first call, a child shell) now starts from the workspace shell's exported variables, not every variable it holds. Shell parameters kept among the variables (`#`, `@`, positional digits, `$`) are never exported.
 - Changed (core, public API): a named shell (`exec` with `shellId`, `withNamedShell`) now keeps its variables' attributes and arrays between calls: export marks, readonly, declared-without-value, and indexed arrays. Before, every variable came back exported, and arrays, readonly and declared names were lost. `ShellState` (`shellState(id)`, `parseShellState`) gains an optional `vars` with `exported`, `readonly` and `declared` name lists and `arrays` of `[index, value]` pairs. A state in which every variable is an exported scalar is saved and read without `vars`, so its JSON and any digest over it are unchanged. Once a call leaves an unexported variable, an array, or a readonly or declared name, the state has `vars` and its digest changes. `$` and `PIPESTATUS` belong to the call and are not saved. Rows from before `vars` read as before; the `vfs_shells.vars` column is added once. A call's own `env` and `cwd` now override a variable's whole binding, an array's too, and give it back afterwards.
 - Fixed: the shell's `cd` sets `PWD` and `OLDPWD` the way an assignment does: an array's first element, and a readonly one keeps its value. In that case `cd` reports `PWD: readonly variable` (or `OLDPWD`) and returns 1, though the directory still changes, as in bash.
 - Added: the shell runs `((expression))`, `let` and `for ((init; test; step))` as bash does. `((…))` returns 0 when the value is not 0. `let`'s status comes from its last argument. The C-style `for` takes a `do … done` or `{ … }` body, and `continue` runs the step. Shell arithmetic gains the comma operator, compound assignments (`+=` through `|=`), and working `++x` and `--x`, and a division by 0 is reported as bash reports it. A backquoted substitution inside `${…}` operands, subscripts and arithmetic now runs. Before, `((…))` ran its contents as commands, `let` was not found, `for ((` was a syntax error, `++x` gave x, and a division by 0 gave 0.

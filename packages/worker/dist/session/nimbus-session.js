@@ -68,6 +68,7 @@ import { openSupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-d
 // S9: HTTP fetch routing extracted (combined S9a + S9b).
 import * as _routes from './routes.js';
 import { restoreDevServers } from './dev-servers.js';
+import { sessionProcessEnv } from './process-env.js';
 import * as _portCapability from './port-capability.js';
 // Programmatic SDK RPC surface.
 import * as _programmatic from './programmatic.js';
@@ -216,6 +217,8 @@ function isTerminalInputDispatcher(stub) {
 }
 export class NimbusSession extends CloudflareDurableObject {
     #runtimeServices;
+    /** The session keeps each relaunchable launch's environment itself, outside its filesystem (session/process-env.ts). */
+    processEnv;
     get childProcessHost() { return this.#runtimeServices.childProcessHost; }
     // this.ctx and this.env are provided by the DurableObject base class
     runtimeWorkspace = null;
@@ -434,9 +437,11 @@ export class NimbusSession extends CloudflareDurableObject {
     constructor(ctx, env) {
         super(ctx, env);
         this.supervisorDeliveries = openSupervisorDeliveries(ctx);
+        this.processEnv = sessionProcessEnv(ctx.storage);
         this.#runtimeServices = runtimeServices.bindRuntimeServices(this, {
             ctx,
             env,
+            processEnv: this.processEnv,
             notify: (line) => this._notifySession(line),
             requestLaunchTurn: (at) => this._scheduleLaunchTurn(at),
             armResidentKeepalive: () => _w1EnsureResidentKeepalive(this, ctx),
@@ -949,6 +954,7 @@ export class NimbusSession extends CloudflareDurableObject {
             get processes() { return session.processes; },
             get portRegistry() { return session.portRegistry; },
             get runtimeWorkspace() { return session.runtimeWorkspace; },
+            processEnv: this.processEnv,
             ensureRuntimeReady: () => this.ensureRuntimeReady(),
         };
         return restoreDevServers(this.devServerHost);

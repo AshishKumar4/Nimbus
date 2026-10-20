@@ -7,7 +7,7 @@
  */
 
 import type { NodeFilesystem as VFS } from './filesystem.js';
-import { resolve } from '../utils/path.js';
+import { operandPath } from '../utils/path.js';
 import { isVfsError } from '../../../vfs/vfs-error.js';
 
 export interface RimrafOptions {
@@ -19,7 +19,7 @@ export interface RimrafOptions {
 
 export function createRimraf(vfs: VFS, cwd: string) {
   function removeSync(p: string): void {
-    const abs = resolve(cwd, p);
+    const abs = operandPath(cwd, p);
     // The path itself, as rimraf lstats it: a link is unlinked, never followed, and a dangling one is still there to remove.
     let stat: ReturnType<VFS['lstat']>;
     try {

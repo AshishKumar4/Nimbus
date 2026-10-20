@@ -43,12 +43,12 @@ import {
 import { evaluateDoubleBracketWords } from './test-builtin.js';
 import { isPipeEnd, PipeChannel } from './pipe.js';
 import {
-  arrayFor, arrayIndex, assignArray, assignVariable, lastIndex, restoreVariable, saveVariable, type ArrayLiteral, type SavedVariable,
+  arrayFor, arrayIndex, assignArray, assignVariable, exportedEnvironment, lastIndex, restoreVariable, saveVariable, type ArrayLiteral, type SavedVariable,
 } from './variables.js';
 import { forkShellState, type ShellState } from './state.js';
 import { exitCodeForAbortSignal, KILLED_BY_SIGPIPE } from './signals.js';
 import { isBrokenPipe, isRefusedWrite, textCapture } from '../utils/bytes-io.js';
-import { resolve } from '../utils/path.js';
+import { operandPath } from '../utils/path.js';
 import { encode } from '../utils/encoding.js';
 import { shellMatch } from '../utils/glob.js';
 import { staticStdinReader } from '../../../shell/stdin-adapter.js';
@@ -339,6 +339,8 @@ export interface ProgramSpec {
 interface CommandSpec extends ProgramSpec {
   readonly vfs: ProcessView;
   readonly shellBuiltin: boolean;
+  /** CommandContext.searchPath. */
+  readonly searchPath?: string;
   /** The command says its program takes the shell's signals (CommandContext.takesSignals). */
   readonly takesSignals?: () => void;
 }
@@ -735,10 +737,14 @@ export class Interpreter {
         cmdIo.positionals = this.forkPositionals(io);
         // Each element is a thread of its own, which the pipeline's waits on.
         cmdIo.workThread = io.workThread?.fork();
-        // Each element runs in a child shell (bash forks every one).
+        // Each element runs in a child shell (bash forks every one), its pipe ends its own fd 0 and 1
+        // over what it inherited (an `exec`'s among it).
         const element = cmd.type === 'simple_command' ? this.inTrapAction(this.fork()) : this.fork();
         const cmdPromise = (async (): Promise<number> => {
           try {
+            const inherited = [stdin && element.dupChildFd(0, { input: stdin }), stdout && element.dupChildFd(1, { output: stdout })]
+              .filter((file): file is OpenFile => file !== undefined);
+            if (inherited.length > 0) await element.release(inherited);
             return await element.finishChild(async () => (await element.executeCommand(cmd, cmdIo)), cmdIo);
           } catch (e) {
             if (e instanceof ExitSignal) {
@@ -1251,7 +1257,7 @@ export class Interpreter {
               (await stderr.write(`${name}: maximum function nesting level exceeded (${this.localFrames.length})\n`));
               throw new FunctionNestingSignal();
             }
-            exitCode = await this.executeFunction(funcBody, args, this.createIoFromFds(io, fds));
+            exitCode = await this.withInstalledFds(fds, async () => (await this.executeFunction(funcBody, args, this.createIoFromFds(io, fds))));
           } else {
             // Check builtins
             const builtin = this.config.builtins.get(name);
@@ -1282,7 +1288,8 @@ export class Interpreter {
                   executeInline: async (input, options) => {
                     ranText = true;
                     try {
-                      return (await this.executeInline(input, builtinIo, options));
+                      // Its text runs over the builtin's redirections in the shell's table (`eval … 2>f`).
+                      return (await this.withInstalledFds(fds, async () => (await this.executeInline(input, builtinIo, options))));
                     } catch (error) {
                       // A syntax error while eval or `.` is still the builtin last dispatched (no
                       // other command of the text has been, or one was, an eval or `.`) is the
@@ -1345,7 +1352,8 @@ export class Interpreter {
                     commandContext: io.commandContext,
                     identity,
                     cwd: this.config.getCwd(),
-                    env: { ...this.config.env },
+                    env: exportedEnvironment(this.config),
+                    searchPath: this.config.env.PATH,
                     vfs: io.vfs ?? this.config.vfs,
                     stdout,
                     stderr,
@@ -1444,6 +1452,7 @@ export class Interpreter {
       cred: identity.cred,
       args,
       env: spec.env,
+      ...(spec.searchPath === undefined ? {} : { searchPath: spec.searchPath }),
       cwd: spec.cwd,
       vfs: spec.vfs,
       vfsUntilExit: () => bindProcessView(this.config.filesystem, { pid: identity.pid, cred: identity.cred }),
@@ -1624,9 +1633,13 @@ export class Interpreter {
     const captureIo = this.createCommandIo(io);
     captureIo.stdout = capture.stream;
     captureIo.positionals = this.forkPositionals(io);
-    // $( ) runs in a child shell.
+    // $( ) runs in a child shell, its capture its fd 1.
     const child = this.inTrapAction(this.fork());
-    const exitCode = await child.finishChild(async () => (await child.executeLineWithIo(input, captureIo)), captureIo);
+    const exitCode = await child.finishChild(async () => {
+      const inherited = child.dupChildFd(1, { output: capture.stream });
+      if (inherited !== undefined) await child.release([inherited]);
+      return (await child.executeLineWithIo(input, captureIo));
+    }, captureIo);
     capture.end();
 
     return { output: captured, exitCode };
@@ -1901,7 +1914,7 @@ export class Interpreter {
         this.lastExitCode = 1;
         return 1;
       }
-      return (await execute(this.createIoFromFds(io, fds)));
+      return (await this.withInstalledFds(fds, async () => (await execute(this.createIoFromFds(io, fds)))));
     }));
   }
 
@@ -1960,6 +1973,109 @@ export class Interpreter {
           break;
       }
     }
+  }
+
+  /**
+   * Run `body` with the descriptors `fds` changed (a compound command's, a
+   * function call's, a builtin's redirections) in this shell's table, over
+   * what `exec` left there, as bash applies a redirection; then put each back
+   * as it was, whatever `body` did to it (an `exec` inside is undone with
+   * the redirection, as bash undoes it). An installed descriptor holds a
+   * reference on its file, as `exec`'s do, so one an inner `exec` copies
+   * stays open; the reference each holds at the end is let go, and the
+   * shadowed one, held all along, is put back.
+   */
+  private withInstalledFds<T>(fds: FdState, body: () => Promise<T>): Promise<T> {
+    // Nothing to install (most function calls): `body`'s own promise, no step of its own.
+    if (fds.changedOutputFds.size === 0 && fds.changedInputFds.size === 0) return body();
+    return this.runInstalled(fds, body);
+  }
+
+  private async runInstalled<T>(fds: FdState, body: () => Promise<T>): Promise<T> {
+    const outputs = [...fds.changedOutputFds].map((fd) => ({
+      fd,
+      stream: this.persistentOutputFds.get(fd),
+      handle: this.persistentOutputHandles.get(fd),
+      terminal: this.persistentTerminalOutputFds.has(fd),
+    }));
+    const inputs = [...fds.changedInputFds].map((fd) => ({
+      fd,
+      present: this.persistentInputFds.has(fd),
+      stream: this.persistentInputFds.get(fd),
+      handle: this.persistentInputHandles.get(fd),
+      terminal: this.persistentTerminalInputFds.has(fd),
+    }));
+    // The files behind what is installed: the shadowed ones too (`2>&2` names fd 2's own file).
+    const shadowed = [...outputs, ...inputs].flatMap(({ handle }) => (handle === undefined ? [] : [handle]));
+    const fileOf = (stream: CommandInputStream | CommandOutputStream | undefined): OpenFile | undefined => (
+      stream === undefined ? undefined : this.fileBehind(stream, fds, shadowed)
+    );
+    for (const { fd } of outputs) {
+      const stream = fds.outputFds.get(fd);
+      this.installOutputFd(fd, stream, fds.terminalOutputFds.has(fd));
+      this.holdHandle(this.persistentOutputHandles, fd, fileOf(stream));
+    }
+    for (const { fd } of inputs) {
+      const stream = fds.inputFds.get(fd);
+      this.installInputFd(fd, fds.inputFds.has(fd), stream, fds.terminalInputFds.has(fd));
+      this.holdHandle(this.persistentInputHandles, fd, fds.terminalInputFds.has(fd) ? undefined : fileOf(stream));
+    }
+    try {
+      return (await body());
+    } finally {
+      const released: OpenFile[] = [];
+      for (const saved of outputs) {
+        const held = this.persistentOutputHandles.get(saved.fd);
+        if (held !== undefined) released.push(held);
+        this.installOutputFd(saved.fd, saved.stream, saved.terminal);
+        this.holdHandle(this.persistentOutputHandles, saved.fd, saved.handle, false);
+      }
+      for (const saved of inputs) {
+        const held = this.persistentInputHandles.get(saved.fd);
+        if (held !== undefined) released.push(held);
+        this.installInputFd(saved.fd, saved.present, saved.stream, saved.terminal);
+        this.holdHandle(this.persistentInputHandles, saved.fd, saved.handle, false);
+      }
+      await this.release(released);
+    }
+  }
+
+  /** `fd`'s handle in `handles`: `file` (a new reference on it, unless `take` is false: one held already), or none. */
+  private holdHandle(handles: Map<number, OpenFile>, fd: number, file: OpenFile | undefined, take = true): void {
+    if (file === undefined) return;
+    if (take) file.refs++;
+    handles.set(fd, file);
+  }
+
+  /**
+   * A child's own descriptor `fd` (a pipe's end, a substitution's capture),
+   * as dup2(2) makes it over what the child inherited: where `exec` left an
+   * entry for it (otherwise the child's io already is the stream). The file
+   * the entry held, if any, for the caller to let go.
+   */
+  private dupChildFd(fd: number, end: { readonly output: CommandOutputStream } | { readonly input: CommandInputStream }): OpenFile | undefined {
+    const output = 'output' in end;
+    if (!(output ? this.persistentOutputFds : this.persistentInputFds).has(fd)) return undefined;
+    const held = (output ? this.persistentOutputHandles : this.persistentInputHandles).get(fd);
+    if ('output' in end) this.installOutputFd(fd, end.output, false);
+    else this.installInputFd(fd, true, end.input, false);
+    return held;
+  }
+
+  /** Table entry `fd` for output: `stream`, or none (closed); its handle dropped from the table, not let go (the caller's). */
+  private installOutputFd(fd: number, stream: CommandOutputStream | undefined, terminal: boolean): void {
+    if (stream) this.persistentOutputFds.set(fd, stream);
+    else this.persistentOutputFds.delete(fd);
+    this.persistentOutputHandles.delete(fd);
+    setMembership(this.persistentTerminalOutputFds, fd, terminal);
+  }
+
+  /** Table entry `fd` for input, as persistFdState keeps one: present (a terminal's with no stream), or none. */
+  private installInputFd(fd: number, present: boolean, stream: CommandInputStream | undefined, terminal: boolean): void {
+    if (present) this.persistentInputFds.set(fd, terminal ? undefined : stream);
+    else this.persistentInputFds.delete(fd);
+    this.persistentInputHandles.delete(fd);
+    setMembership(this.persistentTerminalInputFds, fd, terminal);
   }
 
   private async persistFdState(fds: FdState): Promise<void> {
@@ -2029,6 +2145,17 @@ export class Interpreter {
    * redirection holds (`{ exec 3>&1; } >f`), or one another descriptor names
    * (`exec 4>&3`). The file it named before goes to `released`.
    */
+  /**
+   * The open file behind `stream`: one a descriptor of the table holds, or
+   * one in `held` (references just taken out of it), or one the command's
+   * redirections opened, or one an enclosing redirection holds.
+   */
+  private fileBehind(stream: CommandInputStream | CommandOutputStream, fds: FdState, held: readonly OpenFile[]): OpenFile | undefined {
+    return [...this.persistentHandles(), ...held].find((open) => open.stream === stream)
+      ?? fds.opened.get(stream)
+      ?? fds.enclosing.get(stream);
+  }
+
   private repointPersistentHandle(
     handles: Map<number, OpenFile>,
     fd: number,
@@ -2043,9 +2170,7 @@ export class Interpreter {
       released.push(held);
     }
     if (stream === undefined) return;
-    const file = [...this.persistentHandles(), ...released].find((open) => open.stream === stream)
-      ?? fds.opened.get(stream)
-      ?? fds.enclosing.get(stream);
+    const file = this.fileBehind(stream, fds, released);
     if (!file) return;
     file.refs++;
     handles.set(fd, file);
@@ -2103,7 +2228,7 @@ export class Interpreter {
     // files. Writing them into the device provider would silently discard.
     if (target === '/dev/stdout') return this.resolveOutputFd('1', fds.outputFds, fds.terminalOutputFds);
     if (target === '/dev/stderr') return this.resolveOutputFd('2', fds.outputFds, fds.terminalOutputFds);
-    const targetPath = resolve(this.config.getCwd(), target);
+    const targetPath = operandPath(this.config.getCwd(), target);
     const vfs = io.vfs ?? this.config.vfs;
     try {
       // Each call is made again once a delegation it meets is recalled
@@ -2154,7 +2279,7 @@ export class Interpreter {
       return { stream: terminalStdin, terminal: true };
     }
     if (target === '/dev/stdin') return this.resolveInputFd('0', fds.inputFds, fds.terminalInputFds);
-    const targetPath = resolve(this.config.getCwd(), target);
+    const targetPath = operandPath(this.config.getCwd(), target);
     const vfs = io.vfs ?? this.config.vfs;
     try {
       // Open-authorize before the command runs, the way open(2) would: a

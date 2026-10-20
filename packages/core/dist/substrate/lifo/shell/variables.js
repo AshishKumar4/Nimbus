@@ -125,7 +125,9 @@ export function attributesOf(store) {
  * saved with (`scalars`, those names) and maybe others besides (a
  * workspace's). Every name the saved state binds (a scalar, an array, a mark)
  * is as it was saved: its scalar only if it had one, exported only if it
- * was. Any other keeps what it has.
+ * was. Any other keeps its value and mark, but a mark without a value (a
+ * declared name, an exported unset one) is only the saved state's: one a new
+ * shell starts with (OLDPWD) and the saved shell unset goes.
  */
 export function restoreAttributes(store, attributes, scalars) {
     const saved = new Set(scalars);
@@ -139,14 +141,36 @@ export function restoreAttributes(store, attributes, scalars) {
         else
             store.exportedNames.delete(name);
     }
-    for (const name of attributes.readonly)
-        store.readonlyNames.add(name);
+    for (const name of [...store.exportedNames]) {
+        if (!bound.has(name) && store.env[name] === undefined && !store.arrays.has(name))
+            store.exportedNames.delete(name);
+    }
+    store.declaredNames.clear();
     for (const name of attributes.declared)
         store.declaredNames.add(name);
+    for (const name of attributes.readonly)
+        store.readonlyNames.add(name);
     for (const [name, elements] of Object.entries(attributes.arrays)) {
         const array = [];
         for (const [index, value] of elements)
             array[index] = value;
         store.arrays.set(name, array);
     }
+}
+/**
+ * A shell parameter the shell keeps among its variables (a positional one, `#`, `@`,
+ * `*`, `?`, `$`, `!`, `-`): never a variable, so never exported (bash's are not in
+ * the environment).
+ */
+export function isShellParameter(name) {
+    return /^[0-9]+$/.test(name) || SHELL_PARAMETERS.has(name);
+}
+const SHELL_PARAMETERS = new Set(['#', '@', '*', '?', '$', '!', '-']);
+/**
+ * The environment a command gets: the exported variables' scalar values, in
+ * the store's order (bash's export_env). An unexported variable, or an array,
+ * is the shell's own.
+ */
+export function exportedEnvironment(store) {
+    return Object.fromEntries(Object.entries(store.env).filter(([name]) => store.exportedNames.has(name)));
 }

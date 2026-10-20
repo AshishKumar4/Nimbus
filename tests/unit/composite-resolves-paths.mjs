@@ -328,17 +328,28 @@ async function only(backend, expected, label, run) {
   /** Whether every backend call since `calls` was cleared was on `path` itself. */
   const onlyOn = (calls, path) => calls.length > 0 && calls.every((call) => call.endsWith(` ${path}`));
   pc.calls.length = 0;
-  assert.equal(await run('cat /pc/home/me/a/b/c.txt && cat /pc/home/me/a/../a/b/c.txt'), 'hello c\nhello c\n');
+  assert.equal(await run('cat /pc/home/me/a/b/c.txt'), 'hello c\n');
   assert.ok(onlyOn(pc.calls, '/home/me/a/b/c.txt'), `cat asks the device of nothing but the file: ${pc.calls.join(', ')}`);
+  pc.calls.length = 0;
+  assert.equal(await run('cat /pc/home/me/a/../a/b/c.txt'), 'hello c\n');
+  assert.ok(onlyOn(pc.calls, '/home/me/a/../a/b/c.txt'), `the backend walks the operand, with no ancestor calls: ${pc.calls.join(', ')}`);
 
   // A device with a synchronous face is read through the process's
   // synchronous bridge, whose own walk looks up the mount point (the
   // device's root, refused and so made a directory) and nothing past it.
   const sy = remote(tree(), { consented: '/home/me', sync: true });
   ws.filesystem.vfs.mount('/sy', sy.vfs, { resolvesPaths: true });
-  assert.equal(await run('cat /sy/home/me/a/b/c.txt && cat /sy/home/me/a/../a/b/c.txt'), 'hello c\nhello c\n');
+  assert.equal(await run('cat /sy/home/me/a/b/c.txt'), 'hello c\n');
   assert.ok(onlyOn(sy.calls.filter((call) => call !== 'lstat /' && call !== 'stat /'), '/home/me/a/b/c.txt'),
     `nor does the synchronous bridge: ${sy.calls.join(', ')}`);
+  sy.calls.length = 0;
+  assert.equal(await run('cat /sy/home/me/a/../a/b/c.txt'), 'hello c\n');
+  assert.ok(onlyOn(sy.calls.filter((call) => call !== 'lstat /' && call !== 'stat /'), '/home/me/a/../a/b/c.txt'),
+    `the synchronous handoff keeps the operand too: ${sy.calls.join(', ')}`);
+  sy.calls.length = 0;
+  assert.equal(await run('ls -d /sy/home/me/a/b/'), '/sy/home/me/a/b/\n');
+  assert.ok(onlyOn(sy.calls.filter((call) => call !== 'lstat /' && call !== 'stat /'), '/home/me/a/b/'),
+    `a trailing separator reaches the backend as its directory constraint: ${sy.calls.join(', ')}`);
   assert.equal(await run('cd /sy/home/me/a && ls ../a/b && cat b/c.txt'), 'c.txt\nhello c\n');
 
   // ws.fs: the embedder's own calls.

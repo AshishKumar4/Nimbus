@@ -127,10 +127,16 @@ export declare class Shell {
     getCwd(): string;
     setCwd(cwd: string): void;
     getEnv(): Record<string, string>;
+    /** What a command or a process it starts gets as its environment: the exported variables (exportedEnvironment). */
+    getExportedEnv(): Record<string, string>;
     /** Its variables' attributes and arrays, beyond {@link getEnv}'s scalars (a named shell's saved state). */
     getVariableAttributes(): VariableAttributes;
-    /** Put `attributes` back, saved with the scalars named in `saved` (restoreAttributes). */
-    restoreVariableAttributes(attributes: VariableAttributes, saved: Iterable<string>): void;
+    /**
+     * Put `attributes` back, saved with the scalars named in `saved`
+     * (restoreAttributes); absent (a state saved before them), the marks a
+     * shell starts with over those scalars.
+     */
+    restoreVariableAttributes(attributes: VariableAttributes | undefined, saved: Iterable<string>): void;
     getVfs(): ProcessView;
     /** Transfer terminal I/O without replacing shell state or sourcing login files. */
     bindTerminal(terminal: ITerminal): void;

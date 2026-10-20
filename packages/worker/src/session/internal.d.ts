@@ -79,6 +79,8 @@ export interface SessionInternal extends Pick<SessionRouterRpc,
 > {
   routeLoopback(port: number, request: Request): Promise<Response | null>;
   runtimeWorkspace: NimbusWorkspace | null;
+  /** Who gives a relaunched process its environment back (session/process-env.ts). */
+  readonly processEnv: import('./process-env.js').ProcessEnvHooks;
   /** The dev servers a previous incarnation ran, started again once (dev-servers.ts). */
   restoreDevServers(): Promise<readonly import('./helpers.js').DevServerRestoreFailure[]>;
   // ── Core session state (always set after first request) ─────────────

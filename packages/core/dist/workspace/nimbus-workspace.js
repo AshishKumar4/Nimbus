@@ -54,7 +54,7 @@ import { installPathExecResolver } from '../shell/exec-dispatch.js';
 import { adoptCtxExports, composeFabric } from '@nimbus-sh/platform/composition.js';
 import { createSupervisorOpHandler } from './supervisor-op.js';
 import { NamedShells, SHELLS_TABLE } from './named-shells.js';
-export { parseShellState } from './named-shells.js';
+export { parseShellState, parseVariableAttributes } from './named-shells.js';
 /**
  * A durable filesystem and a shell over it.
  *
@@ -178,6 +178,8 @@ export class NimbusWorkspace {
         // host-supplied one keeps the base its owner configured.
         if (!options.processes)
             processes.setPidBase((options.generation ?? 1) * PID_GEN_STRIDE);
+        if (options.mayChangeIdentity !== undefined)
+            processes.governIdentityChanges(options.mayChangeIdentity);
         if (options.egressFor !== undefined && options.egress === undefined) {
             throw new TypeError('NimbusWorkspace: egressFor refines egress, the workspace\'s own network; give both');
         }
@@ -466,7 +468,8 @@ export class NimbusWorkspace {
     /**
      * A shell of its own for process `pid`, a second cwd and environment over
      * the workspace shell's filesystem, commands and kernel. It starts in
-     * `state.cwd` with the workspace shell's environment and `state.env` on
+     * `state.cwd` with the workspace shell's environment (its exported
+     * variables, as any process it started would have) and `state.env` on
      * top; with `inheritEnv: false`, with `state.env` alone (a command run again
      * as it was once run). Its commands act as `pid` (`$$`, and the credential and umask
      * {@link processes} holds for it); `sudo` and `su` go through the workspace
@@ -478,7 +481,9 @@ export class NimbusWorkspace {
      */
     shellFor(pid, state) {
         const processes = this.processes;
-        const shell = new Shell(new HeadlessTerminal(), this.filesystem, this.registry, { ...(state.inheritEnv === false ? {} : this.shell.getEnv()), ...state.env }, processes, {
+        const shell = new Shell(new HeadlessTerminal(), this.filesystem, this.registry, 
+        // The workspace shell's environment as a process it starts gets it: its exported variables.
+        { ...(state.inheritEnv === false ? {} : this.shell.getExportedEnv()), ...state.env }, processes, {
             pid,
             get cred() { return processes.cred(pid); },
             setUmask: (mask) => processes.setUmask(pid, mask),
