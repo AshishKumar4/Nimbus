@@ -164,8 +164,9 @@ export function createCells(coherence, admission, namespace, observeRead) {
      * for. There is no third case: the column refuses one.
      */
     const put = (t, path, cell, rev, ckey) => {
-        // Whatever this puts supersedes a held cell, held or not.
+        // Whatever this puts supersedes a held cell, held or not, and a fill's chunk rows.
         forgetHeld(path);
+        filling.delete(path);
         // The room reserved for its fill is what it spends.
         admission.release(path);
         t.chunkDelete(path);
@@ -206,7 +207,15 @@ export function createCells(coherence, admission, namespace, observeRead) {
         return true;
     };
     /** One chunk row, written as it arrives. The streaming filler's primitive. */
-    const putChunk = (t, path, part, bytes) => {
+    /** Whose chunk rows each path's are while a fill writes them: the fill that last started. */
+    const filling = new SafeMap();
+    const putChunk = (t, path, part, bytes, fill) => {
+        if (filling.get(path) !== fill) {
+            if (fill.started.has(path))
+                return false;
+            filling.set(path, fill);
+            fill.started.add(path);
+        }
         if (part === 0)
             admission.release(path);
         if (!admission.fits(mathCeil(typedArrayByteLength(bytes) * 1.01) + RESIDENT_ROW_BYTES + 4096))
@@ -438,6 +447,7 @@ export function createCells(coherence, admission, namespace, observeRead) {
     const deleteCell = (t, path) => {
         const had = head(path) !== undefined || held.has(path);
         forgetHeld(path);
+        filling.delete(path);
         t.chunkDelete(path);
         t.fileDelete(path);
         return had;
@@ -538,6 +548,20 @@ export function createCells(coherence, admission, namespace, observeRead) {
         get,
         put,
         putChunk,
+        publishFill(t, path, kind, size, chunks, rev, ckey, fill) {
+            if (filling.get(path) !== fill)
+                return false;
+            filling.delete(path);
+            t.filePut(path, kind, size, chunks, rev, ckey != null ? stringOf(ckey) : null);
+            return true;
+        },
+        abandonFill(t, path, fill) {
+            if (filling.get(path) !== fill)
+                return;
+            filling.delete(path);
+            t.chunkDelete(path);
+            t.fileDelete(path);
+        },
         /**
          * The head row, written LAST by the streaming filler.
          *
@@ -547,9 +571,6 @@ export function createCells(coherence, admission, namespace, observeRead) {
          * file leaves chunks nothing can read, never a short file something can.
          * Writing the head first would invert that into a truncated read.
          */
-        putHead(t, path, kind, size, chunks, rev, ckey) {
-            t.filePut(path, kind, size, chunks, typeof rev === 'number' ? rev : RK_OWN_WRITE, typeof rev === 'number' && ckey != null ? stringOf(ckey) : null);
-        },
         /**
          * Hold `path` with the bytes of a dated row whose content identity is
          * `ckey`, by copying rows inside this store: equal keys are equal bytes, so
@@ -561,6 +582,7 @@ export function createCells(coherence, admission, namespace, observeRead) {
                 return false;
             if (!admission.fits(source.size + (source.chunks + 1) * RESIDENT_ROW_BYTES))
                 return false;
+            filling.delete(path);
             t.chunkDelete(path);
             t.chunkCopy(path, source.path);
             t.filePut(path, source.kind, source.size, source.chunks, rev, stringOf(ckey));

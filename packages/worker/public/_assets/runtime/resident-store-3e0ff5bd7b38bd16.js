@@ -1293,7 +1293,7 @@ var __nimbusResidentModule = (() => {
     const learnedMark = (k) => {
       for (let at = nsParent(k); ; at = nsParent(at)) {
         const mount = unlisted.get(at);
-        if (mount !== void 0) return mount;
+        if (mount !== void 0 && mount !== at) return mount;
         if (at === "") return k;
       }
     };
@@ -1805,6 +1805,7 @@ var __nimbusResidentModule = (() => {
     };
     const put = (t, path, cell, rev, ckey) => {
       forgetHeld(path);
+      filling.delete(path);
       admission.release(path);
       t.chunkDelete(path);
       const stamp = typeof rev === "number" ? rev : RK_OWN_WRITE;
@@ -1837,7 +1838,13 @@ var __nimbusResidentModule = (() => {
       t.filePut(path, kind, size, chunks, stamp, stamp === RK_OWN_WRITE || ckey == null ? null : stringOf(ckey));
       return true;
     };
-    const putChunk = (t, path, part, bytes) => {
+    const filling = new SafeMap();
+    const putChunk = (t, path, part, bytes, fill) => {
+      if (filling.get(path) !== fill) {
+        if (fill.started.has(path)) return false;
+        filling.set(path, fill);
+        fill.started.add(path);
+      }
       if (part === 0) admission.release(path);
       if (!admission.fits(mathCeil(typedArrayByteLength(bytes) * 1.01) + RESIDENT_ROW_BYTES + 4096)) return false;
       t.chunkSetBin(path, part, bytes);
@@ -1999,6 +2006,7 @@ var __nimbusResidentModule = (() => {
     const deleteCell = (t, path) => {
       const had = head(path) !== void 0 || held.has(path);
       forgetHeld(path);
+      filling.delete(path);
       t.chunkDelete(path);
       t.fileDelete(path);
       return had;
@@ -2081,6 +2089,18 @@ var __nimbusResidentModule = (() => {
       get,
       put,
       putChunk,
+      publishFill(t, path, kind, size, chunks, rev, ckey, fill) {
+        if (filling.get(path) !== fill) return false;
+        filling.delete(path);
+        t.filePut(path, kind, size, chunks, rev, ckey != null ? stringOf(ckey) : null);
+        return true;
+      },
+      abandonFill(t, path, fill) {
+        if (filling.get(path) !== fill) return;
+        filling.delete(path);
+        t.chunkDelete(path);
+        t.fileDelete(path);
+      },
       /**
        * The head row, written LAST by the streaming filler.
        *
@@ -2090,16 +2110,6 @@ var __nimbusResidentModule = (() => {
        * file leaves chunks nothing can read, never a short file something can.
        * Writing the head first would invert that into a truncated read.
        */
-      putHead(t, path, kind, size, chunks, rev, ckey) {
-        t.filePut(
-          path,
-          kind,
-          size,
-          chunks,
-          typeof rev === "number" ? rev : RK_OWN_WRITE,
-          typeof rev === "number" && ckey != null ? stringOf(ckey) : null
-        );
-      },
       /**
        * Hold `path` with the bytes of a dated row whose content identity is
        * `ckey`, by copying rows inside this store: equal keys are equal bytes, so
@@ -2109,6 +2119,7 @@ var __nimbusResidentModule = (() => {
         const source = t.fileByKey(stringOf(ckey), path);
         if (source === void 0) return false;
         if (!admission.fits(source.size + (source.chunks + 1) * RESIDENT_ROW_BYTES)) return false;
+        filling.delete(path);
         t.chunkDelete(path);
         t.chunkCopy(path, source.path);
         t.filePut(path, source.kind, source.size, source.chunks, rev, stringOf(ckey));
@@ -2634,10 +2645,11 @@ var __nimbusResidentModule = (() => {
     const readWith = async (learning, supervisor, k, rev, size, first, last) => {
       const cursor = coherence.cursor();
       if (cursor === null || typeof supervisor.fsReadBatch !== "function") return null;
+      const keyed = cursor.epoch + "\0" + k;
       const out = new Array(last - first + 1);
       const missing = [];
       for (let part = first; part <= last; part++) {
-        const page = get(k, rev, part);
+        const page = get(keyed, rev, part);
         if (page !== void 0) out[part - first] = page;
         else missing.push(part);
       }
@@ -2662,7 +2674,7 @@ var __nimbusResidentModule = (() => {
           const bytes = residentBytes(entry.bytes);
           if (bytes.byteLength !== ranges[i].length) return null;
           out[batch[i] - first] = bytes;
-          if (learning.installs(k)) put(k, rev, batch[i], bytes);
+          if (learning.installs(k)) put(keyed, rev, batch[i], bytes);
         }
       }
       return { pages: out, fetched: missing.length };
@@ -2849,12 +2861,7 @@ var __nimbusResidentModule = (() => {
       const landed = new SafeMap();
       let filled = 0, failed = 0, fetchedBytes = 0;
       const failedPaths = new SafeSet();
-      const overtaken = new SafeSet();
-      const revOf = new SafeMap();
-      for (let i = 0; i < ranges.length; i++) {
-        const range = ranges[i];
-        revOf.set(range.path, range.rev);
-      }
+      const fill = { started: new SafeSet() };
       for (let at = 0; at < ranges.length; ) {
         const batch = new SafeList();
         let bytes = 0;
@@ -2906,30 +2913,25 @@ var __nimbusResidentModule = (() => {
             continue;
           }
           if (outdated(t, learning, range.path, range.rev)) {
-            if (!learning.installs(range.path)) overtaken.add(range.path);
             failedPaths.add(range.path);
             continue;
           }
           fetchedBytes += chunkBytes;
-          if (!cells.putChunk(t, range.path, range.part, chunk)) {
+          if (!cells.putChunk(t, range.path, range.part, chunk, fill)) {
             failedPaths.add(range.path);
             continue;
           }
           const seen = (landed.get(range.path) || 0) + 1;
           landed.set(range.path, seen);
           if (seen === range.parts && !failedPaths.has(range.path)) {
-            cells.putHead(t, range.path, RK_BINARY, range.size, range.parts, range.rev, range.ckey);
-            filled++;
+            if (cells.publishFill(t, range.path, RK_BINARY, range.size, range.parts, range.rev, range.ckey, fill)) filled++;
+            else failedPaths.add(range.path);
           }
         }
       }
       failedPaths.forEach((path) => {
         failed++;
-        const held = t.fileRev(path);
-        const rev = revOf.get(path);
-        if (held !== void 0 && (held === RK_OWN_WRITE || overtaken.has(path) || rev !== void 0 && held >= rev)) return;
-        t.chunkDelete(path);
-        t.fileDelete(path);
+        cells.abandonFill(t, path, fill);
       });
       for (let i = 0; i < later.length; i++) {
         const file = later[i];

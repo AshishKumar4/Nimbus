@@ -38,6 +38,13 @@ export interface Admitted {
     /** An answer older than the store's cursor: nothing was applied. */
     stale?: boolean;
 }
+/** One fill's token (transport.fetchFiles): the paths whose chunk rows it started writing. */
+export interface ResidentFill {
+    readonly started: {
+        has(path: string): boolean;
+        add(path: string): unknown;
+    };
+}
 export interface Cells {
     /**
      * The resident set, as the shims have always seen it: `k in b`, `b[k]`,
@@ -58,8 +65,16 @@ export interface Cells {
     get(path: string): ResidentCell | undefined;
     /** Write one cell as `rev`, or as an own write when `rev` is not a number (see put below). */
     put(t: ResidentTables, path: string, cell: ResidentCell | ArrayBuffer, rev?: number, ckey?: unknown): boolean;
-    putChunk(t: ResidentTables, path: string, part: number, bytes: Uint8Array): boolean;
-    putHead(t: ResidentTables, path: string, kind: number, size: number, chunks: number, rev: number | undefined, ckey: unknown): void;
+    /**
+     * One chunk of a fill (`fill`, a token of its own): the path's chunk rows are
+     * the fill's that last started writing them, and a fill another started
+     * after writes no more of them (false).
+     */
+    putChunk(t: ResidentTables, path: string, part: number, bytes: Uint8Array, fill: ResidentFill): boolean;
+    /** The fill's file, once all its chunks are in: held as `rev`, if its chunk rows are still its (false otherwise). */
+    publishFill(t: ResidentTables, path: string, kind: number, size: number, chunks: number, rev: number, ckey: unknown, fill: ResidentFill): boolean;
+    /** A fill that did not finish `path`: the chunk rows it wrote, and the head they were written over, go, if they are still its. */
+    abandonFill(t: ResidentTables, path: string, fill: ResidentFill): void;
     copyByKey(t: ResidentTables, path: string, ckey: unknown, rev: number): boolean;
     delete(t: ResidentTables, path: string): boolean;
     provenance(path: string): number | undefined;

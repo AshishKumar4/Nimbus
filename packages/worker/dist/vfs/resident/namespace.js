@@ -150,8 +150,9 @@ export function createNamespace(coherence, admission) {
     /** The mark a directory a learning makes takes: the mount the nearest marked directory above it is on, or its own name. */
     const learnedMark = (k) => {
         for (let at = nsParent(k);; at = nsParent(at)) {
+            // A directory learned without its entries is marked with its own name: that says nothing of a mount above.
             const mount = unlisted.get(at);
-            if (mount !== undefined)
+            if (mount !== undefined && mount !== at)
                 return mount;
             if (at === '')
                 return k;
