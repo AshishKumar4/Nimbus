@@ -6091,7 +6091,7 @@ export class SqliteVFS {
     const listedDirectories = new Map<string, INode>();
     const directories: InodeLookup = { get: (key) => listedDirectories.get(key) ?? this.inodes.get(key) };
     // The storage key of the last directory found closed: what is under it is
-    // passed over, by the cursor where a batch ends inside it, not judged row by row.
+    // passed over unjudged, and nothing of it kept.
     let hidden: string | null = null;
     const tmpRoot = this.confinedTmpRoots.get(cred.uid);
     for (;;) {
@@ -6162,9 +6162,7 @@ export class SqliteVFS {
         entries.push(entry);
       }
       if (visited <= limit) return { epoch, rev, entries, next: null };
-      // A batch that ends inside a closed subtree resumes past it: U+10FFFF
-      // sorts above every name's first character.
-      cursor = hidden !== null && lastStoragePath.startsWith(`${hidden}/`) ? `${hidden}/\u{10FFFF}` : lastStoragePath;
+      cursor = lastStoragePath;
     }
   }
 
@@ -7569,8 +7567,7 @@ export class SqliteVFS {
             entries.push(entry);
           }
           if (page.length <= pageLimit) return { epoch, rev: g, entries, next: null };
-          const last = page[page.length - 1]!.path;
-          cursor = hidden !== null && last.startsWith(`${hidden}/`) ? `${hidden}/\u{10FFFF}` : last;
+          cursor = page[page.length - 1]!.path;
         }
       },
       acquire: unchanged,
