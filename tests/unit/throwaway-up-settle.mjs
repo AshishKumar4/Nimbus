@@ -127,8 +127,8 @@ const origin = ${JSON.stringify(origin)};
 globalThis.fetch = (input, options) => {
   const url = new URL(input instanceof Request ? input.url : input);
   if (url.origin === 'https://api.cloudflare.com') return realFetch(origin + url.pathname + url.search, options);
-  // A landed Preview's readiness: past what this test proves.
-  if (url.hostname.endsWith('.proof.workers.dev')) throw new Error('readiness is not in the fixture');
+  // A landed Preview's readiness is past what this test proves: up ends there, its record written.
+  if (url.hostname.endsWith('.proof.workers.dev')) { console.error('readiness: past the fixture'); process.exit(3); }
   throw new Error('unexpected external request to ' + url.origin);
 };
 await import('./tests/behavioral/_throwaway-target.mjs');
@@ -163,8 +163,9 @@ await import('./tests/behavioral/_throwaway-target.mjs');
   {
     mode = 'second-lands';
     rmSync(join(checkout, 'uploads'), { force: true });
-    const { stdout, stderr } = await up();
+    const { code, stdout, stderr } = await up();
     const output = `${stdout}${stderr}`;
+    assert.equal(code, 3, `up reaches readiness\n${output}`);
     assert.match(output, /WARNING: .*did not land: 30 s after the upload, the API serves deployment-before as the latest, not deployment-uploaded-1.*Uploading it once more/, `the first miss is said\n${output}`);
     assert.match(output, /deployment deployment-uploaded-2 is live at https:\/\/tw-up-settle-nimbus-probe-previews\.proof\.workers\.dev/, `up goes on with the second upload\n${output}`);
     assert.deepEqual([record().versionId, record().secret], ['deployment-uploaded-2', 'the-held-signing-secret'], 'and records it, with the secret it held');
@@ -182,8 +183,9 @@ await import('./tests/behavioral/_throwaway-target.mjs');
     const kept = record();
     assert.equal(kept.secretPushed, true, 'the secret of a Preview this run created is kept through the miss');
     mode = 'landed';
-    const { stdout, stderr } = await up();
+    const { code, stdout, stderr } = await up();
     const output = `${stdout}${stderr}`;
+    assert.equal(code, 3, `up reaches readiness\n${output}`);
     assert.doesNotMatch(output, /no live signing secret/, `the next up does not refuse the name\n${output}`);
     assert.match(output, /deployment deployment-uploaded-3 is live/, `it redeploys it\n${output}`);
     assert.equal(record().secret, kept.secret, 'with the secret its uploads carried');
