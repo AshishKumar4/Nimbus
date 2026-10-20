@@ -99,7 +99,7 @@ try {
   const refused = await attrs('r=2');
   assert.equal(refused.exitCode, 1, 'a readonly name stays readonly');
   assert.match(refused.stderr, /r: readonly variable/);
-  assert.equal((await attrs('echo "$PIPESTATUS ${#PIPESTATUS[@]}"')).stdout, '0 1\n', 'a call\'s statuses are its own');
+  assert.equal((await attrs('echo "$PIPESTATUS ${#PIPESTATUS[@]}"')).stdout, ' 0\n', 'a call starts with no statuses, as with no $?: the last call\'s are its own');
   const attributed = await ws.shellState('attributes');
   assert.deepEqual(attributed.vars.arrays.a, [[0, '1'], [5, 'x y']]);
   assert.equal(Object.hasOwn(attributed.vars.arrays, 'PIPESTATUS'), false, 'PIPESTATUS, as $?, is not shell state');
