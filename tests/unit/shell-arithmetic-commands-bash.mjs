@@ -20,6 +20,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { hostSqlite } from './lib/host-sqlite.mjs';
+import { runBoundedProcess } from '../../scripts/lib/bounded-process.mjs';
 
 const LINES = [
   '((010 == 8)) && echo eight; ((0x10 == 16)) && echo sixteen',
@@ -43,16 +44,43 @@ const LINES = [
   'n=0; while ((n < 3)); do ((n++)); done; echo $n; until ((n == 0)); do ((n--)); done; echo $n',
   'set -e; i=0; ((i++)); echo "not reached"',
   '((x = 7)) >/dev/null 2>&1; echo $x; f() { ((x *= 2)); }; f; echo $x',
+  '((1))',
+  '((0))',
+  // A compound assignment's left value is read before its right side; a ternary's middle is a comma list.
+  'x=2; echo $((x += x++)); echo $x; x=0; echo $((0 ? 1, x=2 : 3)); echo $x',
+  // A substitution, an expansion and a quote are read whole: their ( ) ; are their own.
+  'echo "$( ((1 << 2))\necho ok\n)"',
+  'unset v; ((x=1${v:+)})); echo "$x"; unset v; for ((i=0${v:+;}; i<1; i++)); do echo "$i"; done',
+  '((x = `echo 3`)); echo "$x"; ((y = $(echo "(2)") + 1)); echo $y',
+  "alias a='(( '\na x=1 )); echo \"${x-unset}\"",
 ];
 
 /** bash's diagnostic prefix: `bash: line 1: `, `bash: -c: line 1: `, and in a function 5.2's `environment: line 1: `. */
 const plainStderr = (text) => text.replace(/^(?:bash|environment): (?:-c: )?(?:line \d+: )?/gm, '');
 
+if (process.argv[2] === '--session') {
+  // The child: each line run in the session, answered as JSON on stdout. A loop that never ends
+  // (an `until ((…))` before the arithmetic command) ends with the child's bound, not the suite's.
+  const { sql, transactions } = await hostSqlite();
+  const ws = await NimbusWorkspace.create({ sql, transactions, generation: 1 });
+  const answers = [];
+  try {
+    for (const line of LINES) {
+      const r = await ws.exec(line, { cwd: '/home/user' });
+      answers.push({ stdout: r.stdout, stderr: r.stderr, status: r.exitCode });
+    }
+  } finally {
+    await ws.close();
+  }
+  process.stdout.write(JSON.stringify(answers));
+  process.exit(0);
+}
+
 const want = [];
 for (const line of LINES) {
   const dir = mkdtempSync(join(tmpdir(), 'shell-arithmetic-commands-'));
   try {
-    const r = spawnSync('bash', ['--norc', '--noprofile', '-c', line], { cwd: dir, encoding: 'utf8', timeout: 10_000, env: { PATH: process.env.PATH, LC_ALL: 'C.UTF-8' } });
+    const r = spawnSync('bash', ['--norc', '--noprofile', '-O', 'expand_aliases', '-c', line], { cwd: dir, encoding: 'utf8', timeout: 10_000, env: { PATH: process.env.PATH, LC_ALL: 'C.UTF-8' } });
     assert.equal(r.error, undefined, `bash ran ${JSON.stringify(line)}: ${r.error?.message}`);
     want.push({ stdout: r.stdout, stderr: plainStderr(r.stderr), status: r.status });
   } finally {
@@ -60,17 +88,12 @@ for (const line of LINES) {
   }
 }
 
-const { sql, transactions } = await hostSqlite();
-const ws = await NimbusWorkspace.create({ sql, transactions, generation: 1 });
+const child = await runBoundedProcess(process.execPath, [new URL(import.meta.url).pathname, '--session'], { timeoutMs: 120_000, maxOutputBytes: 1 << 20 });
+assert.ok(child.ok, `the session's lines finished (${child.reason}): ${child.stderr.slice(-2000)}`);
+const ours = JSON.parse(child.stdout);
 const failed = [];
-try {
-  for (const [i, line] of LINES.entries()) {
-    const r = await ws.exec(line, { cwd: '/home/user' });
-    const ours = { stdout: r.stdout, stderr: r.stderr, status: r.exitCode };
-    if (JSON.stringify(ours) !== JSON.stringify(want[i])) failed.push(`${JSON.stringify(line)}\n  bash: ${JSON.stringify(want[i])}\n  ours: ${JSON.stringify(ours)}`);
-  }
-} finally {
-  await ws.close();
-}
+LINES.forEach((line, i) => {
+  if (JSON.stringify(ours[i]) !== JSON.stringify(want[i])) failed.push(`${JSON.stringify(line)}\n  bash: ${JSON.stringify(want[i])}\n  ours: ${JSON.stringify(ours[i])}`);
+});
 console.log(`shell-arithmetic-commands-bash: ${LINES.length - failed.length} of ${LINES.length} lines as bash's`);
 assert.deepEqual(failed, [], `as bash:\n${failed.join('\n')}`);

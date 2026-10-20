@@ -3,7 +3,7 @@ import { isShellIdentifier } from './names.js';
 import { DEFAULT_HOME } from '../../../constants.js';
 import type { ProcessView } from '../../../runtime/process-files.js';
 import { characterAt, characterBounds, characterWidth, escapeGlob, expandGlob, fixedMatchLength, shellMatch, shellUnits } from '../utils/glob.js';
-import { readAnsiCQuote, readBalancedCommand, readBracedExpansion } from './lexer.js';
+import { readAnsiCQuote, readBacktickSubstitution, readBalancedCommand, readBracedExpansion } from './lexer.js';
 import type { ShellOptions } from './state.js';
 import { arrayIndex } from './variables.js';
 import { DiscardSignal } from './discard.js';
@@ -936,6 +936,16 @@ function parameterWordParts(word: string, mode: ParameterWordMode): WordPart[] {
       i = quoted.end;
       continue;
     }
+    // A backquoted substitution, as a word's (readWord): one command substitution.
+    if (ch === '`') {
+      const subst = readBacktickSubstitution(word, i);
+      if (subst.kind === 'command') {
+        flush();
+        parts.push({ text: subst.text, quoted: plain ? 'double' : 'none', commandSubstitution: subst.command });
+        i = subst.end;
+        continue;
+      }
+    }
     if ((ch === "'" && !plain) || ch === '"') {
       const end = word.indexOf(ch, i + 1);
       const close = end === -1 ? word.length : end;
@@ -1301,7 +1311,7 @@ class ArithParser {
     this.skipSpaces();
     if (this.peek() === '?') {
       this.pos++;
-      const truePart = this.branch(cond === 0, () => this.parseTernary());
+      const truePart = this.branch(cond === 0, () => this.parseExpression());
       this.skipSpaces();
       if (this.peek() === ':') {
         this.pos++;
@@ -1599,8 +1609,10 @@ class ArithParser {
         this.pos += operator.length;
         this.skipSpaces();
         const start = this.pos;
+        // A compound one's left value is read before its right side runs (bash's expassign).
+        const left = operator === '=' ? 0 : this.getVar(name);
         const right = this.parseTernary();
-        const val = operator === '=' ? right : this.operate(operator.slice(0, -1), this.getVar(name), right, start);
+        const val = operator === '=' ? right : this.operate(operator.slice(0, -1), left, right, start);
         this.assign(name, String(val));
         return val;
       }

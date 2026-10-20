@@ -242,31 +242,29 @@ export class TokenReader {
    * text's. Null, with nothing read, where a `)` closes it that no second
    * `)` follows: `((echo a) )` is two subshells.
    */
-  readArithmeticCommand(): string | null {
-    const frame = this.frame;
-    const input = frame.input;
-    let at = frame.at;
-    while (input[at] === ' ' || input[at] === '\t') at++;
-    if (input[at] !== '(' || input[at + 1] !== '(') return null;
-    const start = at + 2;
-    let depth = 0;
-    for (let i = start; i < input.length; i++) {
-      const ch = input[i];
-      if (ch === '\\') i++;
-      else if (ch === "'" || ch === '"') {
-        i = input.indexOf(ch, i + 1);
-        if (i === -1) return null;
-      } else if (ch === '(') depth++;
-      else if (ch === ')') {
-        if (depth > 0) depth--;
-        else if (input[i + 1] !== ')') return null;
-        else {
-          frame.at = i + 2;
-          return input.slice(start, i);
-        }
-      }
+  readArithmeticCommand(): Token | null {
+    // The text left to read, an alias's and then the text it was read in, as one.
+    const pieces: Array<{ frame: Frame; from: number; at: number }> = [];
+    let text = '';
+    for (let k = this.frames.length - 1; k >= 0; k--) {
+      const frame = this.frames[k];
+      pieces.push({ frame, from: text.length, at: frame.at });
+      text += frame.input.slice(frame.at);
     }
-    return null;
+    let at = 0;
+    while (text[at] === ' ' || text[at] === '\t') at++;
+    if (text[at] !== '(' || text[at + 1] !== '(') return null;
+    const close = arithmeticClose(text, at + 2);
+    if (close === -1) return null;
+    // Read to past the `))`: the alias texts it ends beyond are read whole.
+    const end = close + 2;
+    for (const piece of pieces) {
+      const length = piece.frame.input.length - piece.at;
+      piece.frame.at = end - piece.from < length ? piece.at + (end - piece.from) : piece.frame.input.length;
+      if (end - piece.from < length) break;
+    }
+    this.checkNext = false;
+    return { kind: TokenKind.Word, value: text.slice(at + 2, close), pos: (pieces[0]?.at ?? 0) + at };
   }
 
   /**
@@ -402,6 +400,67 @@ export function continuationState(input: string): ContinuationState | null {
   }
   if (quote === null) return null;
   return quote === '"' ? 'double' : 'single';
+}
+
+/**
+ * The characters of arithmetic text from `start` outside its quoted,
+ * backslashed, substituted and expanded spans (each read whole by the
+ * shell's readers), with the parentheses open before each; null where the
+ * input ends inside such a span.
+ */
+function* arithmeticCharacters(input: string, start: number): Generator<{ ch: string; i: number; depth: number } | null> {
+  let depth = 0;
+  for (let i = start; i < input.length;) {
+    const ch = input[i];
+    const span = ch === '\\' ? (i + 1 < input.length ? i + 2 : -1)
+      : ch === "'" || ch === '"' ? quotedEnd(input, i, ch)
+      : ch === '`' || (ch === '$' && (input[i + 1] === '(' || input[i + 1] === '{')) ? closedSpanEnd(input, i)
+      : i;
+    if (span === -1) {
+      yield null;
+      return;
+    }
+    if (span > i) {
+      i = span;
+      continue;
+    }
+    yield { ch, i, depth };
+    if (ch === '(') depth++;
+    else if (ch === ')' && depth > 0) depth--;
+    i++;
+  }
+}
+
+/** Where the quote at `pos` closes, just past it; -1 where the input ends first. */
+function quotedEnd(input: string, pos: number, quote: '"' | "'"): number {
+  const read = readQuoted(input, pos, quote);
+  return read.end > pos + 1 && input[read.end - 1] === quote ? read.end : -1;
+}
+
+/**
+ * The `))` that closes an arithmetic command's text from `start` (past its
+ * `((`), as bash's parse_dparen finds it: the index of its first `)`; -1
+ * where a `)` closes it that no second `)` follows (`((echo a) )` is two
+ * subshells), or the input ends first.
+ */
+function arithmeticClose(input: string, start: number): number {
+  for (const at of arithmeticCharacters(input, start)) {
+    if (at === null) return -1;
+    if (at.ch === ')' && at.depth === 0) return input[at.i + 1] === ')' ? at.i : -1;
+  }
+  return -1;
+}
+
+/** `for ((…))`'s header as its three expressions, split at its two `;` outside parentheses and spans; null where it has not three. */
+export function arithmeticForParts(header: string): [string, string, string] | null {
+  const cuts: number[] = [];
+  for (const at of arithmeticCharacters(header, 0)) {
+    if (at === null) return null;
+    if (at.ch === ';' && at.depth === 0) cuts.push(at.i);
+  }
+  const [first, second] = cuts;
+  if (cuts.length !== 2 || first === undefined || second === undefined) return null;
+  return [header.slice(0, first), header.slice(first + 1, second), header.slice(second + 1)];
 }
 
 /** Where the backquoted substitution, `$(…)` or `${…}` at `pos` ends, just past its close; -1 where the input ends first. */
@@ -914,7 +973,7 @@ function writtenWord(input: string, pos: number, end: number, ansiC: ReadonlyArr
   return written + input.slice(at, end);
 }
 
-type SubstitutionRead =
+export type SubstitutionRead =
   | { kind: 'command'; text: string; command: string; end: number }
   | { kind: 'text'; text: string; end: number };
 
@@ -982,7 +1041,7 @@ function readArithmeticSubstitution(input: string, pos: number): SubstitutionRea
   return { kind: 'text', text, end: i };
 }
 
-function readBacktickSubstitution(input: string, pos: number): SubstitutionRead {
+export function readBacktickSubstitution(input: string, pos: number): SubstitutionRead {
   let i = pos + 1;
   let inner = '';
 
@@ -1140,6 +1199,15 @@ export function readBalancedCommand(
       }
       heredocs.length = 0;
       continue;
+    }
+    // An arithmetic command in a command's span is read as one: its `<<` is a shift, its `)` its own.
+    if (ch === '(' && open === '(' && !arithmetic && input[i + 1] === '(') {
+      const arithmeticEnd = arithmeticClose(input, i + 2);
+      if (arithmeticEnd !== -1) {
+        body += input.slice(i, arithmeticEnd + 2);
+        i = arithmeticEnd + 2;
+        continue;
+      }
     }
     if (ch === open) depth++;
     else if (ch === close && --depth === 0) return { body, end: i + 1, closed: true };

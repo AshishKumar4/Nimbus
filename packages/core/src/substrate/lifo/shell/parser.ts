@@ -1,4 +1,4 @@
-import { lexArrayElements, TokenReader, type ReaderMark } from './lexer.js';
+import { arithmeticForParts, lexArrayElements, TokenReader, type ReaderMark } from './lexer.js';
 import { BINARY_OPERATORS, UNARY_OPERATORS } from './conditional-operators.js';
 import {
   TokenKind,
@@ -380,7 +380,12 @@ class Parser {
     const next = this.peekAt(1);
     if (open.kind !== TokenKind.LParen || next.kind !== TokenKind.LParen || next.pos !== open.pos + 1) return null;
     this.rereadFromHere();
-    return this.reader.readArithmeticCommand();
+    const token = this.reader.readArithmeticCommand();
+    if (token === null) return null;
+    this.tokens.push(token);
+    this.marks.push(undefined);
+    this.pos++;
+    return token.value;
   }
 
   private parseDoubleBracketCommand(): DoubleBracketNode {
@@ -955,29 +960,6 @@ function operatorAfter(parts: readonly WordPart[], start: number): { length: num
   }
   if (char === null || char.char !== '=' || char.quoted) return null;
   return { length, ...(subscript === undefined ? {} : { subscript }), append };
-}
-
-/** `for ((…))`'s header as its three expressions, split at its two `;` outside parentheses and quotes; null where it has not three. */
-function arithmeticForParts(header: string): [string, string, string] | null {
-  const parts: string[] = [];
-  let depth = 0;
-  let from = 0;
-  for (let i = 0; i < header.length; i++) {
-    const ch = header[i];
-    if (ch === '\\') i++;
-    else if (ch === "'" || ch === '"') {
-      const close = header.indexOf(ch, i + 1);
-      i = close === -1 ? header.length : close;
-    } else if (ch === '(') depth++;
-    else if (ch === ')') depth--;
-    else if (ch === ';' && depth === 0) {
-      parts.push(header.slice(from, i));
-      from = i + 1;
-    }
-  }
-  parts.push(header.slice(from));
-  const [init, test, step] = parts;
-  return parts.length === 3 && init !== undefined && test !== undefined && step !== undefined ? [init, test, step] : null;
 }
 
 /**
