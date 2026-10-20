@@ -16,6 +16,7 @@ import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { resolveContext, type ResolveContext } from '@nimbus-sh/core/substrate/lifo/commands/registry.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { runtimeInstallHint } from '@nimbus-sh/core/shell/exec-dispatch.js';
+import type { Command } from '@nimbus-sh/core/substrate/lifo/commands/types.js';
 import { z } from 'zod/v4';
 import { classifyOpenCodeInvocation, buildOpenCodeTransportPlan, type OpenCodeTransportPlan } from '../runtime/opencode-invocation.js';
 
@@ -56,7 +57,18 @@ const NpmBinPackageMetadataSchema = z.object({
   }).optional(),
 }).passthrough();
 
-type NpmBinPackageMetadata = z.infer<typeof NpmBinPackageMetadataSchema>;
+export type NpmBinPackageMetadata = z.infer<typeof NpmBinPackageMetadataSchema>;
+
+/**
+ * Programs Nimbus has for names a project may also install (`tsc`). Asked
+ * only for `names`: `resolve` answers a name no node_modules/.bin from the
+ * cwd up has (`installed` null), or one whose installed package cannot run
+ * here (`installed` its package.json), or leaves it to the project.
+ */
+export interface OwnPrograms {
+  readonly names: ReadonlySet<string>;
+  resolve(name: string, installed: NpmBinPackageMetadata | null): Command | undefined;
+}
 
 export function installNpmBinFallbackResolver(
   registry: RegistryLike,
@@ -71,6 +83,7 @@ export function installNpmBinFallbackResolver(
     notifyTerminalEvent(event: { type: 'spawn' | 'exit'; pid: number; command: string; longRunning?: boolean; attachedTty?: boolean; code?: number }): void;
     runtimeCommandHint(name: string): Promise<RuntimeCommandHint>;
     emitShellExecDone(pid: number, command: string, exitCode: number, durationMs: number): void;
+    ownPrograms?: OwnPrograms;
   },
 ): void {
   const upstreamResolve = registry.resolve.bind(registry);
@@ -100,11 +113,18 @@ export function installNpmBinFallbackResolver(
     }
 
     // Registered commands, then PATH (searched upstream), then the bins of
-    // the node_modules directories from the cwd up.
+    // the node_modules directories from the cwd up, then Nimbus's own
+    // program for the name, if it has one.
     const upstream = await upstreamResolve(name, context);
     if (upstream) return upstream;
 
-    if (!context.search || !await probe(() => resolveNpmBin(inspector, cwd, name))) {
+    const bin = context.search ? await probe(() => resolveNpmBin(inspector, cwd, name)) : null;
+    if (context.search && deps.ownPrograms?.names.has(name)) {
+      const installed = bin === null ? null : await readNpmBinPackageMetadata(inspector, bin.packagePath);
+      const own = deps.ownPrograms.resolve(name, installed);
+      if (own) return own;
+    }
+    if (bin === null) {
       let hint: RuntimeCommandHint = null;
       try { hint = await deps.runtimeCommandHint(name); } catch { hint = null; }
       if (!hint) return undefined;

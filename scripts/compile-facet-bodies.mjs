@@ -22,6 +22,7 @@ const outputs = [
       ['CPYTHON_RUN_TASK', './facet-tasks.js', 'cpythonRunFacetFn'],
       ['WASM_CALL_TASK', './facet-tasks.js', 'wasmFacetCall'],
       ['CLANG_CALL_TASK', './facet-tasks.js', 'clangFacetCall'],
+      ['TSRS_CALL_TASK', './facet-tasks.js', 'tsrsFacetCall'],
       ['RUBY_CALL_TASK', './facet-tasks.js', 'rubyFacetCall'],
       ['BASH_STEP_TASK', './facet-tasks.js', 'bashFacetStep'],
       ['BASH_REQUEST_TASK', './facet-tasks.js', 'bashRequestStep'],

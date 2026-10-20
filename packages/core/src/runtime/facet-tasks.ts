@@ -5,8 +5,8 @@ import type { CPythonFacetResult } from './cpython-runner.js';
 import type { RubyFacetCallArgs } from './ruby-runner.js';
 import type { BashBootArgs, BashFeedArgs } from './bash/types.js';
 import type { WasiAbi, WasiFsSnapshot } from './wasi-instance.js';
-import type { WasiInitOptions, WasiInstanceBundle, WasiMakeImportsOptions } from './wasi/types.js';
-import type { VfsCred } from './os-contracts.js';
+import type { WasiInitOptions, WasiInstanceBundle, WasiMakeImportsOptions, WasiParking, WasiRunResult } from './wasi/types.js';
+import type { RuntimeFsBridge, RuntimeVfsStat, VfsCred } from './os-contracts.js';
 import type { ResidentFilesystemStats } from './wasi/resident-filesystem.js';
 export type BashStepArgs = BashBootArgs | BashFeedArgs;
 /** The step the classic submit transport carries: args object in, slice out.
@@ -147,6 +147,9 @@ declare const __wasiSupervisorOutput: (sup: unknown) => {
     brokenPipe(): boolean;
 };
 declare const __wasiFsStats: (() => ResidentFilesystemStats | null) | undefined;
+declare const __wasiFilesystem: (parking: WasiParking) => RuntimeFsBridge | null;
+declare const __wasiSettled: <R extends WasiRunResult>(result: R) => Promise<R>;
+declare const __wasiReusable: () => boolean;
 /** The green-thread scheduler — see runtime/wasi-threads.ts. */
 interface WasiThreadScheduler {
     hostImports: () => Record<string, WebAssembly.ModuleImports>;
@@ -458,3 +461,203 @@ type WasmInstantiateResult = WebAssembly.Instance | {
     instance: WebAssembly.Instance;
     module: WebAssembly.Module;
 };
+
+/** What a tsrs run is: its command line, its directory and environment, and who runs it. */
+export interface TsrsFacetArgs {
+    argv: string[];
+    cwd: string;
+    env: Record<string, string>;
+    cred: VfsCred;
+    /** The session pid the compiler runs as (its runtime process). */
+    processPid: number;
+}
+/** How a tsrs run ended; its output went to the session as it was written. */
+export interface TsrsFacetResult {
+    exitCode: number;
+    error?: string;
+    /** The compiler's linear memory at its end: its peak, since a wasm memory never shrinks. */
+    memoryBytes?: number;
+    fsStats?: ResidentFilesystemStats | null;
+    /** Whether another run may take this worker (__wasiReusable): no syscall of this one was abandoned. */
+    reusable?: boolean;
+}
+/** tsrs's own status for a run that crashed (a panic, or a trap: a stack overflow, running out of memory); tsc's are 0-4. */
+const TSRS_EXIT_CRASHED = 5;
+/** Text a failure is reported to tsrs as: Rust's io::Error display, "<strerror> (os error N)", as @tsrs/wasm's Node host gives it. */
+const TSRS_OS_ERRORS: Readonly<Record<string, readonly [string, number]>> = {
+    EPERM: ['Operation not permitted', 1], ENOENT: ['No such file or directory', 2], EACCES: ['Permission denied', 13],
+    EBUSY: ['Resource busy', 16], EEXIST: ['File exists', 17], ENOTDIR: ['Not a directory', 20], EISDIR: ['Is a directory', 21],
+    ENOSPC: ['No space left on device', 28], EROFS: ['Read-only file system', 30], ENAMETOOLONG: ['File name too long', 36],
+    ENOTEMPTY: ['Directory not empty', 39], ELOOP: ['Too many levels of symbolic links', 40],
+};
+function tsrsErrorText(error: unknown): string {
+    const code = typeof error === 'object' && error !== null ? Reflect.get(error, 'code') : undefined;
+    const known = typeof code === 'string' ? TSRS_OS_ERRORS[code] : undefined;
+    return known ? `${known[0]} (os error ${known[1]})` : errorText(error);
+}
+function tsrsMissing(error: unknown): boolean {
+    return typeof error === 'object' && error !== null && Reflect.get(error, 'code') === 'ENOENT';
+}
+/** A directory entry's kind as tsrs reads it: d, f, l (a link, which it stats next), or o. */
+function tsrsKind(type: string): 'd' | 'f' | 'l' | 'o' {
+    return type === 'directory' ? 'd' : type === 'file' ? 'f' : type === 'symlink' ? 'l' : 'o';
+}
+/**
+ * One of tsrs's file operations (its `tsrs_host.fs` import, @tsrs/wasm's
+ * core.js), answered from `fs`: the bytes to hand back, or null for a path
+ * that does not exist. `request` is the operation's path, and for a write
+ * the path, a NUL and the bytes; the times of a chtimes follow its path the
+ * same way, as two NUL-separated decimal nanosecond counts.
+ */
+export async function tsrsFileOperation(fs: RuntimeFsBridge, op: number, request: Uint8Array): Promise<Uint8Array | string | null> {
+    const decoder = new TextDecoder('utf-8', { ignoreBOM: true });
+    const nul = request.indexOf(0);
+    const path = decoder.decode(nul < 0 ? request : request.subarray(0, nul));
+    const rest = nul < 0 ? new Uint8Array(0) : request.subarray(nul + 1);
+    try {
+        switch (op) {
+            case 0: return await fs.readFile(path);
+            case 1: {
+                const stat = await fs.stat(path);
+                return stat === null ? null : `${tsrsKind(stat.type)} ${stat.size} ${BigInt(Math.round(stat.mtime * 1e6))}`;
+            }
+            case 2: {
+                const entries = await fs.readdir(path);
+                const kinds: string[] = [];
+                for (const entry of entries) {
+                    // A backend that cannot tell an entry's type without a stat (DT_UNKNOWN) is asked for it.
+                    let kind = tsrsKind(entry.type);
+                    if (entry.type === 'unknown') {
+                        const stat: RuntimeVfsStat | null = await fs.stat(`${path.replace(/\/+$/, '')}/${entry.name}`, { followSymlinks: false });
+                        if (stat !== null) kind = tsrsKind(stat.type);
+                    }
+                    kinds.push(`${kind}${entry.name}\0`);
+                }
+                return kinds.join('');
+            }
+            case 3: return await fs.realpath(path);
+            case 4: {
+                // A write makes the directories it lands in, as tsrs's own host does.
+                await fs.writeFile(path, rest.slice(), { createParents: true });
+                return '';
+            }
+            case 5: {
+                const handle = await fs.open(path, { write: true, append: true, create: true }).catch(async (error: unknown) => {
+                    if (!tsrsMissing(error)) throw error;
+                    await fs.mkdir(path.slice(0, path.lastIndexOf('/')) || '/', { recursive: true });
+                    return await fs.open(path, { write: true, append: true, create: true });
+                });
+                try { await fs.write(handle.id, null, rest.slice()); } finally { await fs.close(handle.id); }
+                return '';
+            }
+            case 6: {
+                await fs.remove(path, { recursive: true, force: true });
+                return '';
+            }
+            case 7: {
+                const [atime, mtime] = decoder.decode(rest).split('\0').map((ns) => Number(BigInt(ns)) / 1e6);
+                await fs.utimes(path, atime, mtime);
+                return '';
+            }
+            default: throw new Error(`unknown file operation ${op}`);
+        }
+    } catch (error) {
+        if (tsrsMissing(error)) return null;
+        throw error;
+    }
+}
+/**
+ * Runs in the facet: one tsc invocation of tsrs.wasm (@tsrs/wasm), a fresh
+ * instance, the module's own `tsrs_input` / `tsrs_run` protocol. Its files
+ * are the process's resident filesystem (wasi/resident-filesystem.ts), so
+ * tsrs is a WASI guest like any other: the store answers what it holds, a
+ * miss asks the session, and what it writes settles before its exit status.
+ * The module calls its file import synchronously; the import suspends the
+ * run (JSPI) while the filesystem answers.
+ */
+export async function tsrsFacetCall(args: TsrsFacetArgs, facetEnv: FacetBindings): Promise<TsrsFacetResult> {
+    const module = (Reflect.get(globalThis, '__NIMBUS_WASM') as Record<string, unknown> | undefined)?.['tsrs.wasm'];
+    if (!(module instanceof WebAssembly.Module)) return { exitCode: 127, error: 'tsrs: the facet has no tsrs.wasm' };
+    if (typeof WebAssembly.Suspending !== 'function' || typeof WebAssembly.promising !== 'function') {
+        return { exitCode: 1, error: 'tsrs: this host cannot suspend a WebAssembly call, and tsrs waits on every file it reads' };
+    }
+    // Its own files and descriptors, none of the last process's (initFS
+    // resets them), then the call's capability. No preopens, as upstream:
+    // tsrs reaches files through its own import only.
+    __wasiInitFS({ root: '', preopens: [], cred: args.cred, pid: args.processPid });
+    __wasiAdoptSupervisor(facetEnv?.SUPERVISOR ?? null);
+    const fs = __wasiFilesystem('jspi');
+    if (fs === null) return { exitCode: 1, error: 'tsrs: the facet was opened without a filesystem' };
+    const output = __wasiSupervisorOutput(facetEnv?.SUPERVISOR);
+    let memory: WebAssembly.Memory | null = null;
+    const wasi = __wasiMakeImports({
+        argv: [], env: args.env,
+        getMemory: () => memory as WebAssembly.Memory,
+        stdoutBytes: output.stdoutBytes, stderrBytes: output.stderrBytes,
+    });
+    let staged: Uint8Array = new Uint8Array(0);
+    const encoder = new TextEncoder();
+    const stage = (answer: Uint8Array | string): number => {
+        staged = typeof answer === 'string' ? encoder.encode(answer) : answer;
+        return staged.length;
+    };
+    // The operation's bytes are copied before the first await: the module's
+    // memory may grow while the filesystem answers, which detaches the view.
+    const fileOperation = async (op: number, ptr: number, len: number): Promise<number> => {
+        const request = new Uint8Array((memory as WebAssembly.Memory).buffer, ptr, len).slice();
+        try {
+            const answer = await tsrsFileOperation(fs, op, request);
+            return answer === null ? -1 : stage(answer);
+        } catch (error) {
+            return -2 - stage(tsrsErrorText(error));
+        }
+    };
+    const importObject: Record<string, WebAssembly.ModuleImports> = {
+        tsrs_host: {
+            fs: new WebAssembly.Suspending(fileOperation),
+            fs_take: (ptr: number) => { new Uint8Array((memory as WebAssembly.Memory).buffer).set(staged, ptr); },
+        },
+        wasi_snapshot_preview1: wasi.wasiImport as unknown as WebAssembly.ModuleImports,
+    };
+    let instance: WebAssembly.Instance;
+    try {
+        instance = await WebAssembly.instantiate(module, importObject);
+    } catch (error) {
+        return { exitCode: 1, error: `tsrs: instantiate failed: ${errorText(error)}` };
+    }
+    memory = instance.exports.memory as WebAssembly.Memory;
+    const exports = instance.exports as Record<string, (...args: number[]) => number>;
+    let exitCode = 0;
+    let crashed = false;
+    try {
+        // Every entry goes through promising: an import any of them reaches may suspend.
+        if (typeof exports._initialize === 'function') await WebAssembly.promising(exports._initialize)();
+        const request = encoder.encode([args.cwd, '0', ...args.argv].join('\0'));
+        const at = await WebAssembly.promising(exports.tsrs_input)(request.length);
+        new Uint8Array(memory.buffer).set(request, at);
+        exitCode = await WebAssembly.promising(exports.tsrs_run)();
+    } catch (error) {
+        if (error && (error as object).constructor && (error as object).constructor.name === '__WasiExit') {
+            exitCode = (error as { code: number }).code;
+        } else if (error instanceof WebAssembly.RuntimeError || (error instanceof RangeError && /call stack/i.test(error.message))) {
+            // As @tsrs/wasm's own host reports a trap: a stack overflow or running out of memory.
+            crashed = true;
+            exitCode = TSRS_EXIT_CRASHED;
+            await output.stderrBytes(encoder.encode(`error: tsrs.wasm trapped (${error.name}: ${error.message}); a stack overflow on deeply nested code or running out of memory are the usual causes\n`));
+        } else {
+            throw error;
+        }
+    }
+    // What it wrote is in the session before its status is: a write the
+    // session refused fails the run, named (__wasiSettled).
+    const settled = await __wasiSettled({ exitCode });
+    const lost = await output.drain();
+    wasi.procDispose();
+    return {
+        exitCode: lost && settled.exitCode === 0 ? 1 : settled.exitCode,
+        ...(settled.error || lost ? { error: settled.error ?? lost ?? undefined } : {}),
+        memoryBytes: memory.buffer.byteLength,
+        fsStats: typeof __wasiFsStats === 'function' ? __wasiFsStats() : null,
+        reusable: !lost && !crashed && __wasiReusable(),
+    };
+}

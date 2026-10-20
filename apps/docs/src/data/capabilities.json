@@ -4,6 +4,7 @@
   { "area": "Runtimes", "status": "works", "description": "python / python3 — CPython 3.13 on wasm32-wasi (script + -c + -m + stdlib)" },
   { "area": "Runtimes", "status": "works", "description": "ruby / ruby3 — ruby.wasm-based Ruby 3.3 (script + -e + -r + stdlib)" },
   { "area": "Runtimes", "status": "works", "description": "clang — LLVM 8 → wasm32-wasi-nimbus, modern wasi-libc sysroot default, multi-TU + user headers + fopen" },
+  { "area": "Runtimes", "status": "alpha", "description": "tsc — tsrs 0.18.0, the experimental Rust port of TypeScript 7.1 built to wasm, when the project installs no typescript (check + emit, no --watch); a project's own typescript runs as installed" },
   { "area": "Runtimes", "status": "works", "description": "Interactive REPLs — python, ruby, node, bun (see REPL for state semantics)" },
   { "area": "Packages", "status": "works", "description": "npm install against the live registry, with cross-session L2 cache" },
   { "area": "Packages", "status": "works", "description": "npm alias dependencies such as alias: \"npm:<pkg>@<version>\"" },
