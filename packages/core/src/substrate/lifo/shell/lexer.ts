@@ -404,17 +404,17 @@ export function continuationState(input: string): ContinuationState | null {
 
 /**
  * The characters of arithmetic text from `start` outside its quoted,
- * backslashed, substituted and expanded spans (each read whole by the
- * shell's readers), with the parentheses open before each; null where the
- * input ends inside such a span.
+ * backslashed and substituted spans, and with `braces` its `${…}` spans
+ * (each read whole by the shell's readers), with the parentheses open
+ * before each; null where the input ends inside such a span.
  */
-function* arithmeticCharacters(input: string, start: number): Generator<{ ch: string; i: number; depth: number } | null> {
+function* arithmeticCharacters(input: string, start: number, braces: boolean): Generator<{ ch: string; i: number; depth: number } | null> {
   let depth = 0;
   for (let i = start; i < input.length;) {
     const ch = input[i];
     const span = ch === '\\' ? (i + 1 < input.length ? i + 2 : -1)
       : ch === "'" || ch === '"' ? quotedEnd(input, i, ch)
-      : ch === '`' || (ch === '$' && (input[i + 1] === '(' || input[i + 1] === '{')) ? closedSpanEnd(input, i)
+      : ch === '`' || (ch === '$' && (input[i + 1] === '(' || (braces && input[i + 1] === '{'))) ? closedSpanEnd(input, i)
       : i;
     if (span === -1) {
       yield null;
@@ -439,12 +439,13 @@ function quotedEnd(input: string, pos: number, quote: '"' | "'"): number {
 
 /**
  * The `))` that closes an arithmetic command's text from `start` (past its
- * `((`), as bash's parse_dparen finds it: the index of its first `)`; -1
+ * `((`), as bash 5.2's parse_dparen finds it: the index of its first `)`; -1
  * where a `)` closes it that no second `)` follows (`((echo a) )` is two
- * subshells), or the input ends first.
+ * subshells), or the input ends first. A `)` in a `${…}` counts, as bash's
+ * does: `((x=1${v:+)}))` is two subshells there.
  */
 function arithmeticClose(input: string, start: number): number {
-  for (const at of arithmeticCharacters(input, start)) {
+  for (const at of arithmeticCharacters(input, start, false)) {
     if (at === null) return -1;
     if (at.ch === ')' && at.depth === 0) return input[at.i + 1] === ')' ? at.i : -1;
   }
@@ -454,7 +455,7 @@ function arithmeticClose(input: string, start: number): number {
 /** `for ((…))`'s header as its three expressions, split at its two `;` outside parentheses and spans; null where it has not three. */
 export function arithmeticForParts(header: string): [string, string, string] | null {
   const cuts: number[] = [];
-  for (const at of arithmeticCharacters(header, 0)) {
+  for (const at of arithmeticCharacters(header, 0, true)) {
     if (at === null) return null;
     if (at.ch === ';' && at.depth === 0) cuts.push(at.i);
   }
