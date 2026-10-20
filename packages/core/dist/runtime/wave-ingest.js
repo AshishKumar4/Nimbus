@@ -141,6 +141,14 @@ export class WaveIngest {
             receipts: [],
         };
         let phase = 'decode';
+        /**
+         * Nothing of the record being applied has taken effect but what a failure
+         * rolls back (the engine's own transaction, which a recall refuses before
+         * it writes): a recall met now is its to retry. A close (its description
+         * is taken whatever then fails) and a routed record (its backend's
+         * effects are its own) are not.
+         */
+        let unapplied = false;
         const router = this.router;
         /** A file the namespace places on a mount, its chunks handed to the router as they arrive. */
         let routedFile = null;
@@ -528,6 +536,9 @@ export class WaveIngest {
             const callBytes = pendingCallBytes;
             pendingCallBytes = 0;
             phase = 'publish';
+            // A close among them takes its description whatever its group's commit then does.
+            if (calls.some((pending) => pending.op.type === 'call' && pending.op.call.call === 'close'))
+                unapplied = false;
             options.admit?.();
             const writer = sequence?.spec.writer ?? null;
             // A copy commits on what its names lead to now, in this turn, as the
@@ -638,7 +649,7 @@ export class WaveIngest {
                 options.admit?.();
             },
             reserve: (bytes) => (bytes === 0 ? Promise.resolve(null) : acquireCredit(bytes, signal)),
-            setPhase: (next) => { phase = next; },
+            setPhase: (next) => { phase = next; unapplied = false; },
             committed: (receipt, bytes) => {
                 progress.committedGroupSequence++;
                 progress.committedPathCount++;
@@ -702,6 +713,7 @@ export class WaveIngest {
                     || (callFile !== null && (record.type === 'file-chunk' || record.type === 'file-end'));
                 if (!partOfCall)
                     flushCalls();
+                unapplied = !(record.type === 'call' && record.call.call === 'close');
                 if (record.type !== 'file-chunk' && record.type !== 'file-end' && record.type !== 'batch-end')
                     recordIndex++;
                 if (sequence !== null && record.type !== 'batch-end') {
@@ -890,8 +902,8 @@ export class WaveIngest {
         }
         catch (caught) {
             let error = caught;
-            // Where it failed: decoding and placing a record applies nothing of it (the calls before it commit below).
-            const decoding = phase === 'decode';
+            // Whether nothing of the failing record took effect, read before the calls before it commit below.
+            const retryable = unapplied;
             // The calls decoded before a stream that failed (cut, malformed) commit
             // as they would have: a re-send then carries only what came after them.
             if (pendingCalls.length > 0) {
@@ -920,11 +932,12 @@ export class WaveIngest {
                     // Not kept: the op is unanswered, and a re-send applies it again.
                 }
             }
-            // Met placing a record, before anything of it applied: a delegation to
-            // recall, the record not refused for good, so a re-send applies it once
-            // the recall is over. Anywhere later (a close that consumed its
-            // description, a commit) its outcome is the session's answer, not this.
-            const recall = decoding && error === caught && recallOf(error) !== null && progress.sequence?.refused === undefined;
+            // A delegation to recall, met before anything of the failing record
+            // took effect and with no refusal kept: a re-send applies it once the
+            // recall is over. A close or a routed record took effect (its
+            // description taken, its backend's work done): its outcome is the
+            // session's answer, never this.
+            const recall = retryable && error === caught && recallOf(error) !== null && progress.sequence?.refused === undefined;
             return {
                 ok: false,
                 ...progress,

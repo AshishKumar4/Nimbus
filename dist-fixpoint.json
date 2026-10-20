@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "25056b62115a89ea93dfe9557b80ec021397afade6423b590016fafab1ff2550",
+  "fingerprint": "cf8afb179a7fe9901124755b78137d6e09a717fb695fb3e6971eac0c277c2a59",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -824,8 +824,8 @@
     "packages/core/dist/runtime/wave-contracts.d.ts.map": "4b0eecf87f25e050c87d365d1fe80f59c6c8f9ad006111a11c1b81d708623461",
     "packages/core/dist/runtime/wave-contracts.js": "272bb30028c1fbdc252197f906c5ec92fe0d032545522b27aad1a8b7d72f92aa",
     "packages/core/dist/runtime/wave-ingest.d.ts": "6434f6940388f4e232ddf85147a17efb665c30b5ddc96fc20b2ac8da6e60eaf5",
-    "packages/core/dist/runtime/wave-ingest.d.ts.map": "34626574fb83c3b1d4a9c998f2502e8a0d01716f6412b5ecb2ba89baff019db3",
-    "packages/core/dist/runtime/wave-ingest.js": "9645ba0c9f73cebcaedf1fd3bbc3e92f1d43dc87beff1d424a0fa3de78222c08",
+    "packages/core/dist/runtime/wave-ingest.d.ts.map": "3ade79b067f5042bc16160258deb105a89aae7511d7d0018af2e3f52794d0c84",
+    "packages/core/dist/runtime/wave-ingest.js": "1f337fdef3b10207aff8d7e2f1fbd58bba14877e829c8db57da4c3ca9984a8b4",
     "packages/core/dist/runtime/wave-router.d.ts": "7b9498d1ae9b3566256395a0f67c4f58d2701be8b712f33ab80185a6eb48146e",
     "packages/core/dist/runtime/wave-router.d.ts.map": "1f310b2d734b0aab2319530eaee9e7d932deb61477a4a9f0006ea7bf43849d02",
     "packages/core/dist/runtime/wave-router.js": "38581210c5de1d503a24ba971cd74fb9605ef8232d187e6de1f56da553acee97",
@@ -1682,7 +1682,7 @@
     "packages/core/src/runtime/wasm-memory.ts": "15338b002685f241df3a93ed6f74947a02e515e549d5513252ae4e1aeca93010",
     "packages/core/src/runtime/wasm-runner.ts": "bfb8cfa3c6d02ec5cc37c49e8555428a8f477dd77592f779b1861e5c1576290c",
     "packages/core/src/runtime/wave-contracts.ts": "9589ec8667b88ac82e3620c7c3ceba19a65536637d9e1f7f0b3c0b593473cabe",
-    "packages/core/src/runtime/wave-ingest.ts": "34d4f22f5c7dd4fddb824b46633ad5c9445c92df1a9ba76cdef710522c0ec2a6",
+    "packages/core/src/runtime/wave-ingest.ts": "3143a5163ef46358d2a2fbd59f49243e372c8a0e1b1643893a0833145d7e5cd6",
     "packages/core/src/runtime/wave-router.ts": "536a0573da82b2beabd143658fb12c23c8d241abc936086c242122e710cdff50",
     "packages/core/src/runtime/websocket-arguments.ts": "e8d63566571de229956bb6e3dee15c81f7b08b2c27a288d303f94e426172d878",
     "packages/core/src/shell/elevation-commands.ts": "673928e53f6c22eedfd1cc50c31391fe3562b365de7811bdfe4becf896fb5bc2",
