@@ -5,6 +5,10 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+## 2026-10-20 (patch): worker 0.23.1 (every other package unchanged from the 2026-10-20 release)
+
+- Fixed: `git status` holds what its comparisons need of the worktree, not the worktree. Its one ordered scan of the tree is merged with the index as it goes, in the order both share, so only the directories it is in are held; its memory grows with the index alone. Before, status kept the whole scan (every entry's path, stat and listing row): about 0.6 KiB a file, 23 MiB more from 2,000 to 40,000 files, about 30 MiB on next.js's 34,000. Status also takes about a tenth less CPU on next.js's shape.
+
 ## 2026-10-20: platform 0.14.0, core 0.25.0, fabric 0.20.0, worker 0.23.0, sdk 0.19.0, react 0.4.1, cli 0.2.10, loom 0.3.3, create-nimbus-app 0.2.6 (config 0.3.2 and the runtimes unchanged)
 
 - Fixed: Nimbus no longer deletes an embedder's images in
