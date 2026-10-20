@@ -304,5 +304,60 @@ async function recall() {
   });
 }
 
-const run = { host, backing, mem, workloads, recall, serverEdits };
+/** Writes another process makes to what a live process holds: a node server reading its tree while installs and writers change it. */
+async function sharing() {
+  await inSession(async (t, sid) => {
+    await setup(t, 'mkdir -p site && for f in $(seq 1 50); do echo "file $f" > site/f$f; done');
+    await setup(t, heredoc('server.js', NODE_SERVER));
+    await setup(t, heredoc('writer.js', "const fs=require('fs');fs.mkdirSync('site/gen',{recursive:true});for(let i=0;i<300;i++)fs.writeFileSync('site/gen/g'+i+'.js','export const v='+i+';');console.log('wrote');\n"));
+    await t.run('node server.js > srv.log 2>&1 &', 60_000);
+    await served(sid, 120_000);
+    const steps = [
+      ['npm-install-beside', 'echo \'{"name":"s","private":true,"dependencies":{"ms":"2.1.3"}}\' > package.json && npm install'],
+      ['node-writer-300', 'node writer.js'],
+      ['shell-edits-20', 'for i in $(seq 1 20); do echo "edit $i" >> site/f$i; done'],
+      ['python-writer-100', "nimbus install python >/dev/null 2>&1; python3 -c \"import os\nfor i in range(100): open('site/p%d.txt' % i, 'w').write(str(i))\""],
+    ];
+    for (const [label, line] of steps) {
+      await step(t, sid, { group: 'sharing', label }, line, 600_000);
+      await served(sid, 30_000, '?__nimbus_measure=1');
+      await sleep(1500);
+    }
+    await t.run('kill %1; sleep 2', 60_000);
+  });
+}
+
+/** What a one-shot's writes come to when it dies: in the stretch it wrote them, or after one yield. */
+async function oneshotDeath() {
+  const NODE_DIE = `const fs = require('fs');
+fs.mkdirSync('dead/' + process.argv[2], { recursive: true });
+for (let i = 0; i < 50; i++) fs.writeFileSync('dead/' + process.argv[2] + '/f' + i, 'x' + i);
+const die = () => { const a = []; for (;;) a.push(new Uint8Array(1 << 20).fill(1)); };
+if (process.argv[3] === 'yield') setTimeout(die, 0); else die();
+`;
+  const PY_DIE = `import os, sys
+os.makedirs('dead/' + sys.argv[1], exist_ok=True)
+for i in range(50):
+    open('dead/%s/f%d' % (sys.argv[1], i), 'w').write('x%d' % i)
+a = []
+while True: a.append(bytearray(1 << 20))
+`;
+  await inSession(async (t, sid) => {
+    await setup(t, 'nimbus install python');
+    await setup(t, heredoc('die.js', NODE_DIE));
+    await setup(t, heredoc('die.py', PY_DIE));
+    for (let rep = 0; rep < 10; rep++) {
+      for (const [arm, line] of [['node-same', `node die.js n${rep} same`], ['node-yield', `node die.js y${rep} yield`], ['python', `python3 die.py p${rep}`]]) {
+        await step(t, sid, { group: 'oneshot-death', arm, rep }, line, 300_000);
+        await sleep(3000);
+        const dir = arm === 'node-same' ? `n${rep}` : arm === 'node-yield' ? `y${rep}` : `p${rep}`;
+        const counted = await t.run(`ls dead/${dir} 2>/dev/null | wc -l`, 60_000);
+        const survived = Number(/^\s*(\d+)\s*$/m.exec(counted.output.split('\n').slice(1).join('\n'))?.[1] ?? NaN);
+        out({ group: 'oneshot-death', arm, rep, sid, survived });
+      }
+    }
+  });
+}
+
+const run = { host, backing, mem, workloads, recall, serverEdits, sharing, oneshotDeath };
 for (const g of groups) await run[g]();

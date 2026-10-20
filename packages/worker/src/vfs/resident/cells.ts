@@ -121,7 +121,11 @@ export interface Cells {
   clear(): void;
   stats(): { files: number; bytes: number; names: number; namespace: boolean; databaseSize: number; sealed: boolean; undatedSnapshot: boolean; cursor: Cursor | null };
   /** Measurement: content reads asked of the store, those it answered, and the fills it installed. */
-  readonly measured: { reads: number; hits: number; fills: number; filledBytes: number };
+  readonly measured: {
+    reads: number; hits: number; fills: number; filledBytes: number;
+    /** Changes the session reported past the cursor; those that were this process's own (or already held as new); those to a file it held an older copy of (what a revocation would be for). */
+    changes: number; ownOrCurrent: number; heldChanged: number;
+  };
 }
 
 export function createCells(
@@ -369,6 +373,7 @@ export function createCells(
         const entry = paths[i];
         const entryRev = NumberOf(entry.rev);
         if (floor !== null && entryRev <= floor) continue;
+        measured.changes++;
         const path = entry.path;
         if (namespaced && namespace.ready()) {
           const again = namespace.applyEntry(t, entry);
@@ -397,6 +402,7 @@ export function createCells(
             const row = rows[j];
             const stamped = row.rev;
             if (stamped === RK_OWN_WRITE || stamped >= entryRev) continue;
+            measured.heldChanged++;
             t.chunkDelete(row.path);
             t.fileDelete(row.path);
             dropped[dropped.length] = row.path;
@@ -417,13 +423,13 @@ export function createCells(
         if (row !== undefined) {
           isHeld = true; stamped = row.rev; heldKey = row.ckey;
         }
-        if (isHeld && (stamped === RK_OWN_WRITE || stamped >= entryRev)) { kept++; continue; }
+        if (isHeld && (stamped === RK_OWN_WRITE || stamped >= entryRev)) { kept++; measured.ownOrCurrent++; continue; }
         // A cell held in memory (an own write the store had no room for) is
         // judged the same way; superseded, it goes, and the report's bytes, if
         // any, are held as the store can.
         const heldCell = held.get(path);
         if (heldCell !== undefined) {
-          if (heldCell.rev === RK_OWN_WRITE || heldCell.rev >= entryRev) { kept++; continue; }
+          if (heldCell.rev === RK_OWN_WRITE || heldCell.rev >= entryRev) { kept++; measured.ownOrCurrent++; continue; }
           forgetHeld(path);
         }
         // The same bytes under a newer revision (a chmod, a touch, a rewrite
@@ -443,11 +449,13 @@ export function createCells(
           // Bytes it holds already (no content key to say so): dated, never rewritten and lost at the cap.
           const incoming = residentBytes(bytes);
           if (isHeld && holds(t, path, incoming)) { t.fileSetRev(path, entryRev); kept++; continue; }
+          if (isHeld) measured.heldChanged++;
           if (put(t, path, incoming, entryRev, contentKey)) pushed++;
           else if (isHeld) dropped[dropped.length] = path;
           continue;
         }
         if (!isHeld) continue;
+        measured.heldChanged++;
         t.chunkDelete(path);
         t.fileDelete(path);
         dropped[dropped.length] = path;
@@ -469,7 +477,7 @@ export function createCells(
   // A read of a module's file, as of any other: through the launch's
   // captures only (SafeMap, its own loops), never a built-in the program
   // may have replaced.
-  const measured = { reads: 0, hits: 0, fills: 0, filledBytes: 0 };
+  const measured = { reads: 0, hits: 0, fills: 0, filledBytes: 0, changes: 0, ownOrCurrent: 0, heldChanged: 0 };
   const get = (path: string): ResidentCell | undefined => {
     measured.reads++;
     const cell = lookup(path);
