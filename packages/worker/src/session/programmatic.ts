@@ -47,6 +47,7 @@ import { collectExecStream, createExecStream, type ExecExit, type ExecOutput, ty
 import type { RuntimeManager } from '@nimbus-sh/core/runtime/runtime-manager.js';
 import { _acquireForRoutedRequest } from './rpc.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
+import type { DevServerRestoreFailure } from './helpers.js';
 
 export interface ProgrammaticShell {
   getEnv(): Record<string, string>;
@@ -77,6 +78,8 @@ interface ProgrammaticViteServer {
 export interface ProgrammaticHost extends TimerHost {
   readonly runtimeManager: RuntimeManager;
   ensureRuntimeReady(): Promise<void>;
+  /** This incarnation's one restore of the dev servers its previous one ran (session/dev-servers.ts). */
+  restoreDevServers(): Promise<readonly DevServerRestoreFailure[]>;
   /** The destroy running (rpcDestroy), until it is answered. */
   destroying?: Promise<SessionDestroyResult> | null;
   _w1SessionDestroyed: boolean;
@@ -657,8 +660,19 @@ export async function rpcListRuntimes(self: ProgrammaticHost): Promise<SessionRe
   };
 }
 
-export async function rpcListProcesses(self: ProgrammaticHost): Promise<SessionProcess[]> {
+/**
+ * Ready, and what runs listed in full: the dev servers this incarnation's
+ * restore runs again are in the table, as port routing waits for them. A
+ * host's recovery asks once, and must not read "not yet" as "none coming"
+ * (Kinu ask 65).
+ */
+async function ensureRunningListed(self: ProgrammaticHost): Promise<void> {
   await ensureProgrammaticReady(self);
+  await self.restoreDevServers();
+}
+
+export async function rpcListProcesses(self: ProgrammaticHost): Promise<SessionProcess[]> {
+  await ensureRunningListed(self);
   return self.processes.publishedAll().map((p: ProcessEntry) => serializeProcess(p)!);
 }
 
@@ -753,7 +767,7 @@ export async function rpcProcessLogs(
 }
 
 export async function rpcListPorts(self: ProgrammaticHost): Promise<SessionPort[]> {
-  await ensureProgrammaticReady(self);
+  await ensureRunningListed(self);
   // The composed manager's copy is the one implementation — persistence
   // at tell-time included.
   return self.ensureFacetManager().apps.listPorts();
@@ -1007,7 +1021,7 @@ async function assertServingOwner(self: ProgrammaticHost, port: number, owner: s
 
 /** Every stamped identity, with the URL each is reachable at. */
 export async function rpcListApps(self: ProgrammaticHost): Promise<SessionApp[]> {
-  await ensureProgrammaticReady(self);
+  await ensureRunningListed(self);
   const apps = await self.facetManager!.listResidentApps();
   return apps.map((app) => ({
     ...app,
@@ -1510,6 +1524,7 @@ function serializeProcess(p: ProcessEntry | undefined): SessionProcess | null {
     longRunning: p.longRunning === true,
     attachedTty: p.attachedTty === true,
     ...execIdField(p),
+    ...(p.restartedFrom === undefined ? {} : { restartedFrom: p.restartedFrom }),
   };
 }
 

@@ -5,6 +5,14 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: listing what a session runs (`listProcesses`, `listPorts`,
+  `listApps`, `GET /api/processes`) waits for the dev servers its previous
+  incarnation ran to be started again, as routing to a port already did.
+  Before, a listing right after a restart could come before the restore,
+  so a host could not tell "none coming" from "not yet": Kinu failed a job
+  whose server Nimbus then started again, and the job's second start found
+  its port taken. A listed process now also says which process it restarts
+  (`restartedFrom`), as `/api/processes` did.
 - Changed: `SupervisorRPC` no longer links the npm engine. Every isolate
   of a Worker evaluates, as it starts, every module its exported classes
   link. `SupervisorRPC` linked the npm cache client, and through it core's
