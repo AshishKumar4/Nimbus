@@ -24,7 +24,6 @@
  * overlap (assembleOpencodeFacetConfig).
  */
 
-import { z } from 'zod/v4';
 import { fetchNodeFacetSources } from '../runtime/node-shims-artifact.js';
 import { fetchSqliteWasmBytes } from '../runtime/sqlite-wasm-bytes.js';
 import { memoizeUntilRejected } from '../runtime/staged-source.js';
@@ -54,40 +53,12 @@ import type { WorkerCode } from '@nimbus-sh/fabric/vendor/types.js';
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
 import { withSupervisorLoadAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES } from '@nimbus-sh/platform/limits.js';
+import { OpencodeStageSpecSchema, type OpencodeStageSpec } from './opencode-stage-spec.js';
 
 export interface OpencodeAssetsEnv {
   ASSETS: { fetch(req: Request): Promise<Response> };
 }
 
-/**
- * Everything a facet spawn needs beyond the artifact sources themselves.
- * Small enough to ride in NimbusLoadedEntrypoint props (the VFS snapshot is
- * the only variable-size member; it is bounded by the prefetch-bundle caps).
- */
-export const OpencodeStageSpecSchema = z.object({
-  mode: z.enum(['oneshot', 'attached', 'server']),
-  argv: z.array(z.string()),
-  /** The attached TUI's terminal (OpencodeRunnerOptions.terminal); never the launch's env. */
-  terminal: z.record(z.string(), z.string()),
-  cred: z.object({
-    uid: z.number().int().nonnegative(),
-    gid: z.number().int().nonnegative(),
-    groups: z.array(z.number().int().nonnegative()),
-    umask: z.number().int().nonnegative(),
-  }),
-  cwd: z.string(),
-  stdin: z.string(),
-  /** Serialized VFS snapshot bundle (`_serializeBundleForFacet` output). */
-  vfsBundle: z.string(),
-  /**
-   * The coherence cursor the bundle above was read at, as a JSON literal
-   * (`null` when the stage carries no VFS). Without it the facet's first
-   * ACQUIRE poisons and drops the whole snapshot — see _shared/facet-vfs-cursor.
-   */
-  vfsCursor: z.string(),
-});
-
-export type OpencodeStageSpec = z.infer<typeof OpencodeStageSpecSchema>;
 
 function requireAssets(env: Partial<OpencodeAssetsEnv>, what: string): OpencodeAssetsEnv {
   if (!env.ASSETS) {

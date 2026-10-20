@@ -5,6 +5,16 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Changed: `SupervisorRPC` no longer links the npm engine. Every isolate
+  of a Worker evaluates, as it starts, every module its exported classes
+  link. `SupervisorRPC` linked the npm cache client, and through it core's
+  npm command, the `_shared/npm-*` tables and semver, though only its npm
+  cache calls use them; they now load at the first such call. Bundled on
+  its own, its static closure went from 133 modules (841 KiB) to 111
+  (621 KiB). The session's RPC module no longer links the opencode artifact
+  staging either: it validates a stage with a schema of its own
+  (`facets/opencode-stage-spec.ts`). A Worker that also exports
+  `NimbusSession` still links both through the session itself.
 - Added: a session's terminals by name. A browser terminal at `/ws?terminal=<name>` (a hosted runtime: `attachTerminal(ws, { terminal })`, `terminalFrame` and `terminalClose` likewise) is a shell of its own over the same workspace: its cwd, variables and history persist as a named shell's do and outlive restarts, its screen is stored and replayed per name, and one socket holds a name at a time (names never conflict with each other or with the session's own terminal, which is unchanged). `listTerminals()` names each with its cwd, whether it is live or attached, and the line it runs; `closeTerminal(name)` hangs up everything started from it and forgets its screen, state and history (SDK: `sandbox.terminals.list()` / `.close(name)`). Names are 1 to 64 of `A-Z a-z 0-9 . _ -`; there is no count of them: a live terminal measured 0.10 to 0.30 MiB of heap idle and 0.10 to 0.20 MiB more busy, and a saved one holds only its capped screen and a 0.8 KiB row. A process now has a controlling terminal, inherited from its parent; REPLs (python, ruby, interactive bash) bind to the terminal they were started from.
 - Fixed: a reattached terminal shows the screen it left and adds nothing to it. The shell paints a prompt on reattach only when its line editor is not the last thing on the screen (a background job wrote after the prompt), and then once, on a line of its own, with the line being typed. A hosted runtime's resumed and reset notices are written above the prompt, which is painted again below them. Before, every reattach to an idle hosted terminal printed another prompt, into the screen and the stored scrollback, after a line being typed too.
 - Fixed (CI): a throwaway Preview whose upload the API does not serve, as

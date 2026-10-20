@@ -147,7 +147,8 @@ import { REPLAY_PREFIX_MAX_BYTES, REPLAY_JOURNAL_MAX_ENTRIES, REPLAY_READ_RECEIP
 import { ReplaySessions } from '../runtime/replay-session.js';
 import { openSupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import type { ProcessInputPacket } from '@nimbus-sh/core/runtime/process-input.js';
-import { sqliteWasmModuleEntry, type OpencodeStageSpec } from './opencode-staging.js';
+import { sqliteWasmModuleEntry } from './opencode-staging.js';
+import type { OpencodeStageSpec } from './opencode-stage-spec.js';
 import {
   FACET_IMAGE_WRITE_SLICE_BYTES,
   ImageStore,
