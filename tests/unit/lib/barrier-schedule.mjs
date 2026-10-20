@@ -492,7 +492,7 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
     seed: (authority) => {
       for (const [rel, content] of Object.entries(tree)) {
         // The bulk files well past what a restart spends before them, so the next incarnation can keep their revisions.
-        if (rel in BULK) for (let i = 0; i < 60 && !Object.keys(tree).some((other) => other in BULK && other < rel); i++) authority.kfs.writeFile('home/user/.filler', '');
+        if (rel in BULK) for (let i = 0; i < 60; i++) authority.kfs.writeFile('home/user/.filler', '');
         if (content === null) authority.kfs.mkdir(key(rel), { mode: DIR_MODE });
         else authority.kfs.writeFile(key(rel), content);
       }

@@ -165,7 +165,17 @@ export function createAuthority(vfsOptions, { sequenced = false } = {}) {
       for (const entry of entries) {
         const users = (entry.uid ?? CRED_SESSION_USER.uid) === CRED_SESSION_USER.uid && (entry.gid ?? CRED_SESSION_USER.gid) === CRED_SESSION_USER.gid;
         const as = users ? next.kfs : next.root;
-        if (entry.type === 'file') while (entry.rev !== undefined && next.rawVfs.revision() + 1 < entry.rev) filler();
+        if (entry.type === 'file' && entry.rev !== undefined) {
+          // What its write spends, measured on a probe of the same bytes (a large one spends more than one revision).
+          let cost = 1;
+          if (entry.content.length > 65_536) {
+            const before = next.rawVfs.revision();
+            as.writeFile('home/user/.probe', entry.content, { mode: entry.mode ?? 0o644 });
+            cost = next.rawVfs.revision() - before;
+            next.root.unlink('home/user/.probe');
+          }
+          while (next.rawVfs.revision() + cost < entry.rev) filler();
+        }
         if (entry.type === 'dir') as.mkdir(entry.key, { mode: entry.mode ?? 0o755 });
         else as.writeFile(entry.key, entry.content, { mode: entry.mode ?? 0o644 });
         if (!users) next.root.chown(entry.key, entry.uid, entry.gid);
