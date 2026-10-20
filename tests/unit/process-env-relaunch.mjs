@@ -15,15 +15,16 @@
 //   4. the kept environment goes with its record: a killed process leaves
 //      none;
 //   5. a session an earlier release left: the env its journal row held, a
-//      dev server's record held, an application blob held (named by nothing,
-//      too, or cut short by a reset), and the generated entries holding it
-//      (composed recipes, as the store wrote them, in /.nimbus and below
-//      /var/lib/nimbus, an env owning `__proto__` too), are gone before
-//      anything is re-driven, and the relaunch gets the env back from the
-//      session's keeping. Module text that declares the same arguments (in
-//      a block comment, a template, an array expression) stays, and so does
-//      a recipe the kernel does not own; a durable worker whose text module
-//      that is relaunches with it;
+//      dev server's record held, and an application blob held (named by
+//      nothing, too, or cut short by a reset), are gone before anything is
+//      re-driven, and the relaunch gets the env back from the session's
+//      keeping. The generated entries holding it in the image directories
+//      (composed recipes, an env owning `__proto__` too) are the embedder's
+//      directory's: listed (legacy-images.ts), and the session told how many,
+//      never removed here. Module text that declares the same arguments (a
+//      block comment, a template, an array expression, one with a trailing
+//      comma) is not listed, nor a recipe the kernel does not own; a durable
+//      worker whose text module that is relaunches with it;
 //   6. a python resident's environment is built again on the host's answer
 //      as its first launch built it (an empty PYTHONUNBUFFERED is '1'
 //      again), and its image keeps no env. One an earlier release wrote
@@ -40,6 +41,7 @@ import { interpreterProcessEnv } from '../../packages/core/src/runtime/interpret
 import { ImmutableModuleSource, moduleSource } from '../../packages/platform/src/module-source.ts';
 import { PROCESS_ENV_DROPPED_KEY } from '../../packages/worker/src/session/keys.ts';
 import { resolveDurableWorkerImage } from '../../packages/worker/src/facets/durable-images.ts';
+import { legacyGeneratedImages } from '../../packages/worker/src/facets/legacy-images.ts';
 import { launchManager, launchSession } from './lib/facet-launch-harness.mjs';
 
 adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
@@ -177,9 +179,11 @@ console.log('  [3] a host that answers null, throws or composes no resolver fail
     kernel.writeFile(path, image, { mode: 0o644 });
     return path;
   };
-  await imageAt('.nimbus/facet-images', entry(JSON.stringify(args)));
-  await imageAt('.nimbus/facet-images', entry(`{"argv":[],"env":{["__proto__"]:"x","SECRET":${JSON.stringify(FIRST)}}}`));
-  await imageAt('var/lib/nimbus/facet-images', entry(JSON.stringify(args)));
+  const generated = [
+    await imageAt('.nimbus/facet-images', entry(JSON.stringify(args))),
+    await imageAt('.nimbus/facet-images', entry(`{"argv":[],"env":{["__proto__"]:"x","SECRET":${JSON.stringify(FIRST)}}}`)),
+    await imageAt('var/lib/nimbus/facet-images', entry(JSON.stringify(args))),
+  ];
   // A dev server's record, an application blob no index or row names, and
   // one a reset cut short (its bytes not yet what its name says), each with
   // the env in it.
@@ -197,6 +201,7 @@ console.log('  [3] a host that answers null, throws or composes no resolver fail
   // relaunches with it.
   const arrayModule = `["\\nconst __NIMBUS_ARGS = ", ${JSON.stringify(FIRST)}]; export const helper = 1;\n`;
   const arrayPath = await imageAt('.nimbus/facet-images', arrayModule);
+  const trailing = await imageAt('.nimbus/facet-images', `["\\nconst __NIMBUS_ARGS = ", ${JSON.stringify(FIRST)},]\n`);
   await gen1.manager.spawnWorker('export class NimbusProcess {}', 'durable helper', '/home/user/app', {
     vfsTextModules: { 'helper.js': `/${arrayPath}` }, durable: { owner: 'helper-app' },
   });
@@ -208,8 +213,10 @@ console.log('  [3] a host that answers null, throws or composes no resolver fail
   await gen2.manager.pumpResidentLaunches();
   await until(() => gen2.starts.some((args) => args?.env !== undefined), 'the node re-drive to start');
   assert.equal(gen2.starts.find((args) => args?.env !== undefined).env.SECRET, FIRST, 'the relaunch gets the env the row held, from the session\'s keeping');
-  assert.deepEqual(filesHolding(session.vfs, FIRST).sort(), [arrayPath, commented, templated, usersOwn].sort(),
-    'the generated entries and the blobs that held it are gone; module text, and a recipe the kernel does not own, stay');
+  assert.deepEqual(filesHolding(session.vfs, FIRST).sort(), [...generated, arrayPath, trailing, commented, templated, usersOwn].sort(),
+    'the blobs that held it are gone; nothing in the image directories is removed');
+  assert.deepEqual(legacyGeneratedImages(session.vfs).sort(), [...generated].sort(), 'the generated entries are listed, and nothing else');
+  assert.match(gen2.notices.join(''), /earlier releases left 3 generated program image\(s\)/, 'and the session is told how many');
   await until(() => [...gen2.world.configs.values()].some((config) => config.modules?.['helper.js'] === arrayModule), 'the durable worker to relaunch with its text module');
   assert.deepEqual(session.storage.get('dev-server:7'), { command: 'vite' }, 'the dev server\'s record holds no env');
   assert.deepEqual(session.storage.get('process-env:dev-server:7'), { env: { SECRET: FIRST } }, 'which the session keeps beside it');

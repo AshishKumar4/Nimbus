@@ -33,6 +33,8 @@ import { registerHostedCommands } from './commands.js';
 import { HostedSession, type HostedSessionScope } from './session.js';
 import { z } from 'zod/v4';
 import { adoptCtxExports, supervisorEntrypoint } from '@nimbus-sh/fabric/composition.js';
+import { onColdStart } from '@nimbus-sh/fabric/generation.js';
+import { removeLegacyGeneratedImages } from '../facets/legacy-images.js';
 import { hostNamespaceBinding } from '@nimbus-sh/fabric/host-dispatch.js';
 import type { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import { restoreDevServers, type DevServerRestoreHost } from '../session/dev-servers.js';
@@ -127,6 +129,12 @@ class RuntimeOwner {
     }
     adoptCtxExports(exports);
     ensureSessionStateSchema(options.ctx);
+    // This host owns /.nimbus/facet-images whole: it writes no image there
+    // (its process images go to the store's own directory, its durable apps'
+    // to /.nimbus/images), and only the kernel can. So it removes what
+    // earlier releases left there, generated entries with environments in
+    // them (ask 62). An embedder that keeps images there decides for itself.
+    onColdStart(options.ctx, async () => { removeLegacyGeneratedImages(options.workspace.vfs); });
     // A process's answers leave as the rest of its output does: once what it wrote is published.
     options.ports.setOutput(options.workspace.processes);
     options.ports.setClientSocketActivity(() => noteResidentClient(this, this.keepaliveCycle));
