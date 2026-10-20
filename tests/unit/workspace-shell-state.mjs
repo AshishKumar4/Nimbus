@@ -119,6 +119,10 @@ try {
   const pwdArray = await ws.shellState('bindings');
   assert.equal((await bindings('true', { cwd: '/tmp' })).exitCode, 0);
   assert.equal(digest(await ws.shellState('bindings')), digest(pwdArray), 'a call\'s own cwd leaves the saved PWD array as it was');
+  // A readonly PWD keeps its value; cd moves the shell and fails, as bash's does.
+  const readonlyPwd = await bindings('readonly PWD; cd /usr; echo "st=$? ${PWD[*]}"; pwd');
+  assert.equal(readonlyPwd.stdout, 'st=1 p w\n/usr\n');
+  assert.equal(readonlyPwd.stderr, 'PWD: readonly variable\n');
   // A call's env binds a name for the call alone, an array's too.
   await bindings('arr=(saved)');
   assert.equal((await bindings('echo "$arr ${#arr[@]}"', { env: { arr: 'call' } })).stdout, 'call 1\n');

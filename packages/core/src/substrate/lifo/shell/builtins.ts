@@ -113,8 +113,12 @@ async function builtinCd({ args, stderr, state, host }: BuiltinCall): Promise<nu
       (await stderr.write(`cd: ${target}: Not a directory\n`));
       return 1;
     }
-    state.env['OLDPWD'] = state.getCwd();
-    state.setCwd(newPath);
+    assignVariable(state, 'OLDPWD', state.getCwd());
+    // The shell moves either way; a readonly PWD keeps its value, and cd fails, as bash's does.
+    if (!state.setCwd(newPath)) {
+      (await stderr.write('PWD: readonly variable\n'));
+      return 1;
+    }
     return 0;
   } catch (e) {
     if (isVfsError(e)) {
