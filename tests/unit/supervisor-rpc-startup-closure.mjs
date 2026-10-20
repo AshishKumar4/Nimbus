@@ -6,8 +6,9 @@
 //   1. SupervisorRPC's static closure holds no part of the npm engine (core's
 //      npm command, _shared/npm-*, semver) nor the npm cache client;
 //   2. the session's RPC module's holds no opencode artifact staging;
-//   3. the npm cache still works through SupervisorRPC: a tarball it stores
-//      at its first use it reads back, verified, from the same bucket.
+//   3. the npm cache still works through SupervisorRPC: what one caller
+//      stores at its first use (a tarball; a packument the registry
+//      answered), another reads back from R2, with a binding of its own.
 //
 // Red before: supervisor-calls.ts linked npm/r2-cache.ts, and through it the
 // npm engine; rpc.ts linked opencode-staging.ts, and the artifacts.
@@ -77,32 +78,65 @@ async function staticClosure(entry) {
   console.log('  [2] none of them opencode staging');
 }
 
-// ── 3. the npm cache loads at its first use, and works ─────────────────────
+// ── 3. the npm cache loads at its first use, and reads and fills R2 ────────
 {
-  const store = new Map();
-  const bucket = {
-    async get(key) {
-      const value = store.get(key);
-      return value ? { arrayBuffer: async () => value.slice().buffer } : null;
-    },
-    async put(key, body) { store.set(key, new Uint8Array(body)); },
-    async delete(key) { store.delete(key); },
-  };
   mock.module('cloudflare:workers', () => ({
     WorkerEntrypoint: class {
       constructor(ctx, env) { this.ctx = ctx; this.env = env; }
     },
   }));
   const { SupervisorRPC } = await import('../../packages/worker/src/session/supervisor-rpc.ts');
+  /** An R2 bucket's objects, shared by every isolate; each caller gets a binding of its own over them, its reads in `reads`. */
+  const tarballs = new Map();
+  const packuments = new Map();
+  const binding = (objects, reads) => ({
+    async get(key) {
+      reads.push(key);
+      const object = objects.get(key);
+      return object ? {
+        arrayBuffer: async () => object.bytes.slice().buffer,
+        text: async () => new TextDecoder().decode(object.bytes),
+        customMetadata: object.metadata,
+        uploaded: object.uploaded,
+      } : null;
+    },
+    async put(key, body, options) {
+      objects.set(key, { bytes: typeof body === 'string' ? new TextEncoder().encode(body) : new Uint8Array(body), metadata: options?.customMetadata ?? {}, uploaded: new Date() });
+      return {};
+    },
+    async delete(key) { objects.delete(key); },
+  });
   // A binding no run acts through: its cache calls ask the session nothing.
-  const rpc = new SupervisorRPC({ props: { doId: 'session', pid: 0, bindingKind: 'infrastructure' } }, { NPM_TARBALL_CACHE: bucket });
+  const caller = (reads = []) => new SupervisorRPC(
+    { props: { doId: 'session', pid: 0, bindingKind: 'infrastructure' } },
+    { NPM_TARBALL_CACHE: binding(tarballs, reads), NPM_PACKUMENT_CACHE: binding(packuments, reads) },
+  );
+
   const tarball = packageTarball({ 'package/package.json': '{"name":"first-use","version":"1.0.0"}' });
   const integrity = await sriOf(tarball);
-  assert.equal(await rpc.putCachedTarball(integrity, tarball), true, 'the first cache call stores the tarball');
-  assert.equal(store.size, 1);
-  const { bytes } = await rpc.getCachedTarball(integrity);
-  assert.deepEqual(bytes, tarball, 'and reads it back, verified, from the same bucket');
-  console.log('  [3] the npm cache, loaded at its first use, stores and reads a tarball through SupervisorRPC');
+  assert.equal(await caller().putCachedTarball(integrity, tarball), true, 'the first cache call fills R2 with the tarball');
+  const tarballReads = [];
+  const { bytes } = await caller(tarballReads).getCachedTarball(integrity);
+  assert.deepEqual(bytes, tarball, 'and another caller reads it back from R2, verified');
+  assert.equal(tarballReads.length, 1, 'with one read of the bucket');
+
+  const fetched = [];
+  const registryFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    fetched.push(String(input instanceof Request ? input.url : input));
+    return new Response(JSON.stringify({ name: 'first-use', 'dist-tags': { latest: '1.0.0' }, versions: { '1.0.0': { name: 'first-use', version: '1.0.0', dist: { integrity, tarball: 'https://registry.npmjs.org/first-use/-/first-use-1.0.0.tgz' } } } }), { headers: { etag: '"first-use-1"' } });
+  };
+  try {
+    const filled = await caller().getPackument('first-use');
+    assert.deepEqual([filled.source, fetched.length], ['network', 1], 'a packument read the cache cannot answer asks the registry, and fills R2');
+    const packumentReads = [];
+    const read = await caller(packumentReads).getPackument('first-use');
+    assert.deepEqual([read.source, fetched.length], ['r2-cache', 1], 'another caller reads it from R2, the registry not asked again');
+    assert.ok(packumentReads.length > 0, 'through its bucket');
+  } finally {
+    globalThis.fetch = registryFetch;
+  }
+  console.log('  [3] the npm cache, loaded at its first use, fills R2 and reads it back through SupervisorRPC');
 }
 
 console.log('supervisor-rpc-startup-closure: SupervisorRPC and the session RPC link neither the npm engine nor opencode staging');

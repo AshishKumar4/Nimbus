@@ -88,6 +88,7 @@ import type { CacheStatEvent } from '@nimbus-sh/core/_shared/cache-stats.js';
  * its re-exported SupervisorRPC links statically, at startup (ask 56).
  */
 const npmCache = () => import('../npm/r2-cache.js');
+type NpmCache = Awaited<ReturnType<typeof npmCache>>;
 
 /**
  * W5 Lever 5: estimate the byte-cost of a writeBatch payload so the
@@ -296,12 +297,14 @@ export function supervisorCalls<Base extends Class>(base: Base) {
       }
       return value;
     }
-    async [CACHE_READ]<T>(plan: { ticket?: string; readOnly: boolean }, produce: (client: R2CacheClient) => Promise<T>): Promise<T> {
-      const { R2CacheClient } = await npmCache();
-      const client = new R2CacheClient((this[TRANSPORT]().env as any)?.NPM_TARBALL_CACHE ?? null, (this[TRANSPORT]().env as any)?.NPM_PACKUMENT_CACHE ?? null, plan.readOnly);
+    async [CACHE_READ]<T>(plan: { ticket?: string; readOnly: boolean }, produce: (client: R2CacheClient, cache: NpmCache) => Promise<T>): Promise<T> {
       let value: T;
-      try { value = await produce(client); }
-      catch (error) {
+      // The client's module loads inside the read: a run's ticket is answered however it fails.
+      try {
+        const cache = await npmCache();
+        const client = new cache.R2CacheClient((this[TRANSPORT]().env as any)?.NPM_TARBALL_CACHE ?? null, (this[TRANSPORT]().env as any)?.NPM_PACKUMENT_CACHE ?? null, plan.readOnly);
+        value = await produce(client, cache);
+      } catch (error) {
         if (plan.ticket) await this[CALL](this[OP]('cacheResult', [plan.ticket, { failed: true, failure: recordFailure(error) }]));
         throw error;
       }
@@ -833,8 +836,7 @@ export function supervisorCalls<Base extends Class>(base: Base) {
     ): Promise<{ bytes: Uint8Array | null; events: CacheStatEvent[] }> {
       const plan = this[INFRASTRUCTURE_CACHE]('getCachedTarball', [integrity]) ? { readOnly: false }
         : await this[CALL](this[OP]<{ ticket?: string; readOnly: boolean }>('getCachedTarball', [integrity]));
-      const { MAX_R2_TARBALL_BYTES } = await npmCache();
-      return this[CACHE_READ](plan, async (client) => {
+      return this[CACHE_READ](plan, async (client, { MAX_R2_TARBALL_BYTES }) => {
         const bytes = await client.getTarball(integrity);
         return { bytes: bytes?.length && bytes.length <= MAX_R2_TARBALL_BYTES ? bytes : null, events: client._cacheEvents };
       });
