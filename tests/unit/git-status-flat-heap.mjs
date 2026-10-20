@@ -1,16 +1,18 @@
 #!/usr/bin/env bun
-// @tier slow — builds 2,000- and 20,000-file repositories with real git and mirrors them
+// @tier slow — builds 2,000- and 40,000-file repositories with real git and mirrors them
 // git status holds what its comparisons need of the worktree, not the
 // worktree: its heap grows with the index alone, however many files the
 // tree has. Status reads the worktree in one ordered scan; holding that scan
 // whole (every entry's path, stat and listing row) cost about 0.9 KiB an
 // entry: 8.6 to 12.5 MiB of growth from 3,000 to 12,000 files (armada, 3
 // runs at 6f04a9229) against 1.5 to 4.4 before it, about 30 MiB on
-// next.js's 34,000 files (measured from 3,000 to 24,000 files here: 706
-// bytes a file, against 162 with the scan merged as it goes). Here a status
-// that compares every entry, at 2,000 and at 20,000 files (the layout
-// git-worktree-scale uses, two files a directory), may grow by the index's
-// own growth and the pack's page cache, and its growth per file is reported. The heap
+// next.js's 34,000 files (armada, 3 runs from 2,000 to 20,000 files: 538
+// to 627 bytes a file, against none with the scan merged as it goes). Here
+// a status that compares every entry, at 2,000 and at 40,000 files (the
+// layout git-worktree-scale uses, two files a directory), may grow by the
+// index's own growth (read, and written again, each with its cache tree: 3x)
+// and the pack's page cache (up to 4 MiB): 15 MiB, against about 22 the
+// held scan took. Its growth per file is reported. The heap
 // is sampled after a full collection on every 1,024 scanned entries and
 // every filesystem call.
 import assert from 'node:assert/strict';
@@ -107,7 +109,7 @@ function mirror(user, from, to) {
 
 
 const SMALL = 2_000;
-const LARGE = 20_000;
+const LARGE = 40_000;
 
 async function cleanStatusPeak(count) {
   const disk = join(scratch, `repo-${count}`);
