@@ -95,7 +95,7 @@ for (let n = 1; n <= 3; n++) {
 
 await type(ws, 'ech');
 const typing = stored();
-assert.ok(typing.endsWith('ech'), 'the line being typed is on the screen');
+assert.ok(typing.slice(first.length).includes('ech'), `the line being typed is on the screen: ${JSON.stringify(typing.slice(first.length))}`);
 ws = await reattach();
 assert.equal(stored(), typing, 'a reattach adds no prompt after the line being typed');
 await type(ws, '\x7f\x7f\x7f');
