@@ -12,8 +12,8 @@ published independently in the `@nimbus-sh` npm scope.
   the kernel's, mode 0644, so every account on the box could read it. Now
   each image belongs to the uid its process runs as, mode 0400, in a
   directory per uid (`/.nimbus/process-images/<uid>`), as are the wasm
-  images Nimbus stages from a program's code (`/.nimbus/inline-wasm/<uid>`).
-  A durable application's image is the kernel's alone. The first start
+  images Nimbus stages from a program's code (`/.nimbus/inline-wasm/<uid>`)
+  and a durable application's image (`/.nimbus/images`). The first start
   after the upgrade closes what earlier releases left open: their process
   images go, a durable application's blobs become the kernel's alone, and
   a staged wasm image becomes its durable application's uid's (one nothing

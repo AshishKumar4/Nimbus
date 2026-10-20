@@ -4866,12 +4866,13 @@ export class FacetManager {
             const wasmDir = stripLeadingSlashes(INLINE_WASM_DIR);
             if (kernel.exists(wasmDir)) {
                 const bootedBy = new Map();
-                for (const row of (await this.launchJournal.rows()).values()) {
-                    if (row.recipe.kind !== 'worker')
+                for (const { recipe, cred } of (await this.launchJournal.rows()).values()) {
+                    // A row with no credential is not re-driven (ResidentLaunchRecord.cred).
+                    if (recipe.kind !== 'worker' || cred === undefined)
                         continue;
-                    const resolved = await resolveDurableWorkerImage(vfs, row.recipe);
+                    const resolved = await resolveDurableWorkerImage(vfs, recipe);
                     for (const path of Object.values(resolved?.vfsWasmModules ?? {}))
-                        bootedBy.set(stripLeadingSlashes(path), row.cred);
+                        bootedBy.set(stripLeadingSlashes(path), cred);
                 }
                 for (const { name } of kernel.readdir(wasmDir)) {
                     const path = `${wasmDir}/${name}`;
