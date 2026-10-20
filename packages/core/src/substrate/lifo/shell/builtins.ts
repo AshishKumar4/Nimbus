@@ -19,7 +19,8 @@ import { DEFAULT_HOME } from '../../../constants.js';
 import { ExitSignal, TextSyntaxError, type BuiltinExecutionContext, type BuiltinFn } from './interpreter.js';
 import { resolveJobSpec } from './jobs.js';
 import { evaluateTest } from './test-builtin.js';
-import { ArithmeticError, arithmeticOf } from './expander.js';
+import { ArithmeticError, arithmeticOf, reportWarnings, SubscriptArithmeticError, type ArithmeticScope } from './expander.js';
+import { DiscardSignal } from './discard.js';
 import { isVfsError, strerror } from '../../../vfs/vfs-error.js';
 import { statOrThrow } from '../../../vfs/vfs.js';
 import { runKill, type HostProcessSignals } from '../commands/system/kill.js';
@@ -866,14 +867,22 @@ async function builtinLet({ args, stderr, state, context }: BuiltinCall): Promis
     return 1;
   }
   let value = 0;
+  const scope: ArithmeticScope = { env: state.env, arrays: state.arrays, readonlyNames: state.readonlyNames, positionals: context.getPositionals(), warnings: [] };
+  const report = async (diagnostic: string): Promise<void> => {
+    (await stderr.write(`${diagnostic}\n`));
+  };
   for (const arg of args) {
     try {
-      value = arithmeticOf(arg, { env: state.env, positionals: context.getPositionals() });
+      value = arithmeticOf(arg, scope);
     } catch (error) {
       if (!(error instanceof ArithmeticError)) throw error;
-      (await stderr.write(`let: ${error.message}\n`));
+      await reportWarnings(scope, report);
+      await report(error.reportedBy('let'));
+      // A subscript's error is an expansion's: the line's.
+      if (error instanceof SubscriptArithmeticError) throw new DiscardSignal();
       return 1;
     }
+    await reportWarnings(scope, report);
   }
   return value === 0 ? 1 : 0;
 }
