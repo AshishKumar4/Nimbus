@@ -101,7 +101,7 @@ const processes = new SessionProcessSupervisor();
 const host = attachSupervisorOps({ sqliteFs: raw, processes, ensureSqliteFs() {} });
 const { pid } = processes.spawn('node', ['node'], '/', { cred: A });
 const supervisor = {
-  fsList: (after, limit) => _rpcFsList(host, after ?? null, limit ?? null, pid),
+  fsList: (after, limit) => _rpcFsList(host, after ?? null, limit ?? null, undefined, pid),
   fsReadBatch: (requests) => _rpcFsReadBatch(host, requests, pid),
   fsAcquire: (epoch, cursor) => _rpcFsAcquire(host, epoch, cursor, undefined, pid),
 };

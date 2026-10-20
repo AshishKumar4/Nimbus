@@ -20,8 +20,6 @@ function bridge() {
   const files = new Map([['/src/a.ts', 'export {};\n'], ['/locked', 'x']]);
   const dirs = new Set(['/', '/src']);
   const times = new Map();
-  let handles = 0;
-  const open = new Map();
   const parentOf = (path) => path.slice(0, path.lastIndexOf('/')) || '/';
   return {
     files, dirs, times,
@@ -46,20 +44,23 @@ function bridge() {
       if (dirs.has(path) || files.has(path)) return path;
       throw fail('ENOENT');
     },
-    writeFile: async (path, bytes) => {
-      if (!dirs.has(parentOf(path))) throw fail('ENOENT');
+    writeFile: async (path, bytes, options) => {
+      if (!dirs.has(parentOf(path))) {
+        if (!options?.createParents) throw fail('ENOENT');
+        for (let at = parentOf(path); !dirs.has(at); at = parentOf(at)) dirs.add(at);
+      }
       files.set(path, dec.decode(bytes));
       return 1;
     },
-    mkdir: async (path) => { for (let at = path; !dirs.has(at); at = parentOf(at)) dirs.add(at); },
-    open: async (path) => {
-      if (!dirs.has(parentOf(path))) throw fail('ENOENT');
-      if (!files.has(path)) files.set(path, '');
-      open.set(++handles, path);
-      return { id: handles };
+    writeRange: async (path, offset, bytes, options) => {
+      if (!dirs.has(parentOf(path))) {
+        if (!options?.createParents) throw fail('ENOENT');
+        for (let at = parentOf(path); !dirs.has(at); at = parentOf(at)) dirs.add(at);
+      }
+      const now = files.get(path) ?? '';
+      files.set(path, now.slice(0, offset).padEnd(offset, '\0') + dec.decode(bytes) + now.slice(offset + bytes.length));
+      return { revision: 1 };
     },
-    write: async (id, _offset, bytes) => { const path = open.get(id); files.set(path, files.get(path) + dec.decode(bytes)); return bytes.length; },
-    close: async (id) => { open.delete(id); },
     remove: async (path) => {
       for (const p of [...files.keys()]) if (p === path || p.startsWith(`${path}/`)) files.delete(p);
       for (const p of [...dirs]) if (p === path || p.startsWith(`${path}/`)) dirs.delete(p);

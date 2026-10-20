@@ -65,7 +65,7 @@ import { rpcPayloadStart, rpcPayloadEnd } from '@nimbus-sh/platform/diag-counter
 import type { PackumentReadOptions, PackumentReadThrough } from '../npm/r2-cache.js';
 import { R2CacheClient, MAX_R2_TARBALL_BYTES } from '../npm/r2-cache.js';
 import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsListTree, VfsMutationReceipt, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle, RecallKind } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { VfsAcquireOptions, VfsAcquireResult, VfsListOptions, VfsListPage, VfsListTree, VfsMutationReceipt, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle, RuntimeReadFileOptions, RuntimeReadOptions, RecallKind } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { ReadDirectoryBatchRequest, ReadDirectoryBatchResult } from '@nimbus-sh/core/runtime/read-directory-batch.js';
 import {
   isSupervisorAnsweredMethod,
@@ -356,17 +356,17 @@ export function supervisorCalls<Base extends Class>(base: Base) {
      * Read a file as raw bytes. Used by the git network facet for binary
      * object/pack files where the text readFile would corrupt content.
      */
-    async readFileBytes(path: RuntimeFsPath): Promise<Uint8Array | null> {
-      return this[CALL](this[FS_READ]('readFileBytes', [path]));
+    async readFileBytes(path: RuntimeFsPath, options?: RuntimeReadFileOptions): Promise<Uint8Array | null> {
+      return this[CALL](this[FS_READ]('readFileBytes', options === undefined ? [path] : [path, options]));
     }
 
-    async writeFile(path: RuntimeFsPath, content: string | Uint8Array): Promise<number> {
+    async writeFile(path: RuntimeFsPath, content: string | Uint8Array, options?: Parameters<RuntimeFsBridge['writeFile']>[2]): Promise<number> {
       // binary-fs wave: accept Uint8Array natively. Pre-fix this RPC was
       // string-only, which forced node-shims.ts:writeFileSync to UTF-8-
       // decode every Uint8Array write — mangling bytes ≥ 0x80 to U+FFFD
       // and corrupting binary content. RPC structured-clone handles
       // Uint8Array transparently; downstream _rpcWriteFile also accepts
-      return this[CALL](this[FS_MUTATION]('writeFile', [path, content]));
+      return this[CALL](this[FS_MUTATION]('writeFile', options === undefined ? [path, content] : [path, content, options]));
     }
 
     /** writeFile, answering the revision and the path's stat after it (supervisor-op.ts writeFileStat). */
@@ -407,8 +407,8 @@ export function supervisorCalls<Base extends Class>(base: Base) {
       return this[CALL](this[FS_OP]('setUmask', [mask]));
     }
 
-    async readdir(path: RuntimeFsPath): Promise<{ name: string; type: string }[]> {
-      return this[CALL](this[FS_READ]('readdir', [path]));
+    async readdir(path: RuntimeFsPath, options?: { followSymlinks?: boolean }): Promise<{ name: string; type: string }[]> {
+      return this[CALL](this[FS_READ]('readdir', options === undefined ? [path] : [path, options]));
     }
 
     async exists(path: string): Promise<boolean> {
@@ -486,8 +486,8 @@ export function supervisorCalls<Base extends Class>(base: Base) {
       return this[CALL](this[FS_OP]('fsStorageGrant', [facet, bytes, databaseSize]));
     }
 
-    async fsList(after?: string | null, limit?: number | null): Promise<VfsListPage> {
-      return this[CALL](this[FS_READ]('fsList', [after ?? null, limit ?? null]));
+    async fsList(after?: string | null, limit?: number | null, options?: VfsListOptions): Promise<VfsListPage> {
+      return this[CALL](this[FS_READ]('fsList', options === undefined ? [after ?? null, limit ?? null] : [after ?? null, limit ?? null, options]));
     }
 
     /** Everything beneath directory `root`, in one page and one revision; E2BIG past `maxEntries` (session/rpc.ts _rpcFsListTree). */
@@ -613,8 +613,8 @@ export function supervisorCalls<Base extends Class>(base: Base) {
      * server-side handle state, so they stay correct across supervisor
      * hibernation and never rewrite whole files for partial updates.
      */
-    async fsReadRange(path: string, offset: number, length: number): Promise<Uint8Array | null> {
-      return this[CALL](this[FS_READ]('fsReadRange', [path, offset, length]));
+    async fsReadRange(path: string, offset: number, length: number, options?: RuntimeReadOptions): Promise<Uint8Array | null> {
+      return this[CALL](this[FS_READ]('fsReadRange', options === undefined ? [path, offset, length] : [path, offset, length, options]));
     }
 
     /**
@@ -658,12 +658,12 @@ export function supervisorCalls<Base extends Class>(base: Base) {
       }
     }
 
-    async fsWriteRange(path: string, offset: number, bytes: Uint8Array | ArrayBuffer): Promise<VfsMutationReceipt> {
-      return this[CALL](this[FS_MUTATION]('fsWriteRange', [path, offset, bytes]));
+    async fsWriteRange(path: string, offset: number, bytes: Uint8Array | ArrayBuffer, options?: Parameters<RuntimeFsBridge['writeRange']>[3]): Promise<VfsMutationReceipt> {
+      return this[CALL](this[FS_MUTATION]('fsWriteRange', options === undefined ? [path, offset, bytes] : [path, offset, bytes, options]));
     }
 
-    async fsTruncate(path: string, size: number): Promise<VfsMutationReceipt> {
-      return this[CALL](this[FS_MUTATION]('fsTruncate', [path, size]));
+    async fsTruncate(path: string, size: number, options?: Parameters<RuntimeFsBridge['truncate']>[2]): Promise<VfsMutationReceipt> {
+      return this[CALL](this[FS_MUTATION]('fsTruncate', options === undefined ? [path, size] : [path, size, options]));
     }
 
     /**

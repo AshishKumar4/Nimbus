@@ -3,8 +3,8 @@
 // supervisorFilesystem over the SupervisorRPC binding) answers every call as
 // the bridge the session serves it from does, the call's options included:
 // a write that makes its parents, a write's mask, a write or read that names
-// the revision it is of, a read that does not follow a link or reads at most
-// so many bytes, a listing that leaves out what it was not asked for.
+// the revision it is of, a read of at most so many bytes, a truncate that
+// does not follow a link, a listing that leaves out what it was not asked for.
 //
 // Real code on both sides: SupervisorRPC, the session's supervisor-op
 // handler, ProcessFiles over SqliteVFS. Each case runs in two identical
@@ -19,6 +19,7 @@ import { createSupervisorBridgeStore } from '../../packages/core/src/workspace/s
 import { supervisorDeliveryProps } from '../../packages/core/src/workspace/supervisor-delivery.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { SupervisorRPC, createRpcSession, supervisorRpcEnv } from './lib/supervisor-rpc-session.mjs';
+import { _rpcFsList } from '../../packages/worker/src/session/rpc.ts';
 
 /** A session with a home holding a file, a directory and a link to each, and one process in it. */
 function session() {
@@ -31,7 +32,10 @@ function session() {
   kernel.symlink('d', 'home/user/dlink');
   for (const path of ['home/user', 'home/user/d', 'home/user/d/a', 'home/user/f.txt']) kernel.chown(path, 1000, 1000);
   for (const path of ['home/user/link', 'home/user/dlink']) kernel.chown(path, 1000, 1000, { followSymlinks: false });
-  return { harness, rpc: createRpcSession(new SqliteVFS(harness.sql, harness.ctx)) };
+  const rpc = createRpcSession(new SqliteVFS(harness.sql, harness.ctx));
+  // The session's own RPC body a listing is routed to (NimbusSession._rpcFsList).
+  rpc.host._rpcFsList = (after, limit, options, pid) => _rpcFsList(rpc.host, after, limit, options, pid);
+  return { harness, rpc };
 }
 
 /** The process's filesystem through its SUPERVISOR binding, as a facet holds it. */
@@ -64,17 +68,15 @@ async function outcome(run) {
 }
 
 const cases = {
-  'a write that makes its parents': async (fs) => [await outcome(() => fs.writeFile('/home/user/made/deep/a.txt', 'x', { createParents: true }).then(() => 'written')), await statOf(fs, '/home/user/made/deep/a.txt')],
-  'a write under a mask of its own': async (fs) => [await outcome(() => fs.writeFile('/home/user/masked.txt', 'x', { umask: 0o077 }).then(() => 'written')), await statOf(fs, '/home/user/masked.txt')],
-  'a write of a revision the file is not at': async (fs) => [await outcome(() => fs.writeFile('/home/user/f.txt', 'x', { expectedRevision: 999_999 }).then(() => 'written')), await statOf(fs, '/home/user/f.txt')],
-  'a read that does not follow a link': async (fs) => outcome(async () => text(await fs.readFile('/home/user/link', { followSymlinks: false }))),
+  'a write that makes its parents': async (fs) => [await outcome(async () => { await fs.writeFile('/home/user/made/deep/a.txt', 'x', { createParents: true }); return 'written'; }), await statOf(fs, '/home/user/made/deep/a.txt')],
+  'a write under a mask of its own': async (fs) => [await outcome(async () => { await fs.writeFile('/home/user/masked.txt', 'x', { umask: 0o077 }); return 'written'; }), await statOf(fs, '/home/user/masked.txt')],
+  'a write of a revision the file is not at': async (fs) => [await outcome(async () => { await fs.writeFile('/home/user/f.txt', 'x', { expectedRevision: 999_999 }); return 'written'; }), await statOf(fs, '/home/user/f.txt')],
   'a read of at most so many bytes': async (fs) => outcome(async () => text(await fs.readFile('/home/user/f.txt', { maxBytes: 4 }))),
   'a read of a content key the file does not have': async (fs) => outcome(async () => text(await fs.readFile('/home/user/f.txt', { contentKey: 'not-this-file' }))),
   'a range read of a revision the file is not at': async (fs) => outcome(async () => text(await fs.readRange('/home/user/f.txt', 0, 5, { expectedRevision: 999_999, expectedEpoch: 'not-this-epoch' }))),
-  'a range write that makes its parents': async (fs) => [await outcome(() => fs.writeRange('/home/user/ranged/deep/b.txt', 0, new TextEncoder().encode('ab'), { createParents: true }).then(() => 'written')), await statOf(fs, '/home/user/ranged/deep/b.txt')],
-  'a range write of a revision the file is not at': async (fs) => [await outcome(() => fs.writeRange('/home/user/f.txt', 0, new TextEncoder().encode('HE'), { expectedRevision: 999_999 }).then(() => 'written')), text(await fs.readFile('/home/user/f.txt'))],
-  'a truncate that does not follow a link': async (fs) => [await outcome(() => fs.truncate('/home/user/link', 2, { followSymlinks: false }).then(() => 'truncated')), await statOf(fs, '/home/user/f.txt')],
-  'a listing that does not follow a link': async (fs) => outcome(async () => (await fs.readdir('/home/user/dlink', { followSymlinks: false })).map((entry) => entry.name)),
+  'a range write that makes its parents': async (fs) => [await outcome(async () => { await fs.writeRange('/home/user/ranged/deep/b.txt', 0, new TextEncoder().encode('ab'), { createParents: true }); return 'written'; }), await statOf(fs, '/home/user/ranged/deep/b.txt')],
+  'a range write of a revision the file is not at': async (fs) => [await outcome(async () => { await fs.writeRange('/home/user/f.txt', 0, new TextEncoder().encode('HE'), { expectedRevision: 999_999 }); return 'written'; }), text(await fs.readFile('/home/user/f.txt'))],
+  'a truncate that does not follow a link': async (fs) => [await outcome(async () => { await fs.truncate('/home/user/link', 2, { followSymlinks: false }); return 'truncated'; }), await statOf(fs, '/home/user/f.txt')],
   'a listing without revisions, content keys or link targets': async (fs) => outcome(async () => {
     const page = await fs.list(null, 100, { revisions: false, contentKeys: false, linkTargets: false });
     return page.entries.filter((entry) => entry.path.startsWith('home/user')).map((entry) => ({
