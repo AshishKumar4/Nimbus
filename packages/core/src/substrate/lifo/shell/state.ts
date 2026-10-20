@@ -88,7 +88,10 @@ function withCwd(state: Omit<ShellState, 'getCwd' | 'setCwd'>, cwd: string): She
     getCwd: () => current,
     setCwd: (next) => {
       current = next;
-      state.env.PWD = next;
+      // PWD as an assignment sets it: an array's first element (a name lives in one table).
+      const array = state.arrays.get('PWD');
+      if (array !== undefined) array[0] = next;
+      else state.env.PWD = next;
     },
   };
 }

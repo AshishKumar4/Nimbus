@@ -400,8 +400,9 @@ export class Shell {
       return { stdout: stdoutBuf, stderr: stderrBuf, exitCode };
     };
 
-    // Save current state
+    // Save current state: a call's cwd is its own, and PWD's binding (an array's too) comes back after it.
     const prevCwd = options?.cwd ? this.state.getCwd() : undefined;
+    const prevPwd = options?.cwd ? saveVariable(this.state, 'PWD') : undefined;
     const savedShellState = options?.isolateShellState
       ? { state: snapshotShellState(this.state), functions: this.interpreter.saveFunctions() }
       : null;
@@ -489,6 +490,7 @@ export class Shell {
       }
       if (prevCwd !== undefined) {
         this.setCwd(prevCwd);
+        if (prevPwd !== undefined) restoreVariable(this.state, 'PWD', prevPwd, false);
       }
     }
   }

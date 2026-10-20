@@ -116,6 +116,9 @@ try {
   // An array named PWD stays the array (exported, as PWD was); an index past 2^53 round-trips.
   await bindings('PWD=(p w); big[9007199254740992]=x');
   assert.equal((await bindings('declare -p PWD; echo "${big[9007199254740992]}"')).stdout, 'declare -ax PWD=([0]="p" [1]="w")\nx\n');
+  const pwdArray = await ws.shellState('bindings');
+  assert.equal((await bindings('true', { cwd: '/tmp' })).exitCode, 0);
+  assert.equal(digest(await ws.shellState('bindings')), digest(pwdArray), 'a call\'s own cwd leaves the saved PWD array as it was');
   // A call's env binds a name for the call alone, an array's too.
   await bindings('arr=(saved)');
   assert.equal((await bindings('echo "$arr ${#arr[@]}"', { env: { arr: 'call' } })).stdout, 'call 1\n');
