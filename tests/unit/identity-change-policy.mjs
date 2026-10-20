@@ -23,7 +23,7 @@ const ws = await NimbusWorkspace.create({
     return allowed;
   },
 });
-ws.registry.register('elevate', async (ctx) => (await ctx.runAs(CRED_KERNEL, ['id', '-u'])).status);
+ws.registry.register('elevate', async (ctx) => (await ctx.runAs(CRED_KERNEL, ['whoami'])).status);
 const run = async (line) => {
   asked.length = 0;
   const result = await ws.exec(line);
@@ -31,22 +31,22 @@ const run = async (line) => {
 };
 try {
   // Refused: the session user (uid 1000) becomes root by no path.
-  assert.deepEqual(await run('sudo id -u'), {
-    out: ['', 'sudo: EPERM: operation not permitted, uid 1000 may not become uid 0 (id -u)\n', 1],
-    asked: [[1000, 0, 'id -u']],
+  assert.deepEqual(await run('sudo whoami'), {
+    out: ['', 'sudo: EPERM: operation not permitted, uid 1000 may not become uid 0 (whoami)\n', 1],
+    asked: [[1000, 0, 'whoami']],
   }, 'sudo, refused');
-  assert.deepEqual(await run('su -c "id -u"'), {
-    out: ['', 'su: EPERM: operation not permitted, uid 1000 may not become uid 0 (sh -c id -u)\n', 1],
-    asked: [[1000, 0, 'sh -c id -u']],
+  assert.deepEqual(await run('su -c "whoami"'), {
+    out: ['', 'su: EPERM: operation not permitted, uid 1000 may not become uid 0 (sh -c whoami)\n', 1],
+    asked: [[1000, 0, 'sh -c whoami']],
   }, 'su, refused');
   const elevate = await run('elevate');
   assert.equal(elevate.out[0], '', 'a command\'s ctx.runAs, refused: nothing ran as root');
   assert.notEqual(elevate.out[2], 0);
-  assert.match(elevate.out[1], /EPERM: operation not permitted, uid 1000 may not become uid 0 \(id -u\)/);
-  assert.deepEqual(elevate.asked, [[1000, 0, 'id -u']]);
+  assert.match(elevate.out[1], /EPERM: operation not permitted, uid 1000 may not become uid 0 \(whoami\)/);
+  assert.deepEqual(elevate.asked, [[1000, 0, 'whoami']]);
 
   // The same identity is no change: not asked.
-  assert.deepEqual(await run('sudo -u user id -u'), { out: ['1000\n', '', 0], asked: [] }, 'sudo to oneself');
+  assert.deepEqual(await run('sudo -u user whoami'), { out: ['user\n', '', 0], asked: [] }, 'sudo to oneself');
 
   // A raw spawn with a parent and another cred is refused; a parentless one is the host's own choice.
   asked.length = 0;
@@ -61,10 +61,10 @@ try {
 
   // Allowed: as before, and root's own change is asked too.
   allowed = true;
-  assert.deepEqual(await run('sudo id -u'), { out: ['0\n', '', 0], asked: [[1000, 0, 'id -u']] }, 'sudo, allowed');
-  assert.deepEqual(await run('sudo sh -c "sudo -u user id -u"'), {
-    out: ['1000\n', '', 0],
-    asked: [[1000, 0, 'sh -c sudo -u user id -u'], [0, 1000, 'id -u']],
+  assert.deepEqual(await run('sudo whoami'), { out: ['root\n', '', 0], asked: [[1000, 0, 'whoami']] }, 'sudo, allowed');
+  assert.deepEqual(await run('sudo sh -c "sudo -u user whoami"'), {
+    out: ['user\n', '', 0],
+    asked: [[1000, 0, 'sh -c sudo -u user whoami'], [0, 1000, 'whoami']],
   }, 'root becoming the user');
 } finally {
   await ws.close();
@@ -74,8 +74,8 @@ try {
 {
   const plain = await NimbusWorkspace.create({ sql: createSqliteVfsTestHarness().sql, transactions: createSqliteVfsTestHarness().ctx });
   try {
-    const result = await plain.exec('sudo id -u');
-    assert.deepEqual([result.stdout, result.exitCode], ['0\n', 0]);
+    const result = await plain.exec('sudo whoami');
+    assert.deepEqual([result.stdout, result.exitCode], ['root\n', 0]);
   } finally {
     await plain.close();
   }
