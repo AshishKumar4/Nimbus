@@ -355,7 +355,7 @@ export function continuationState(input: string): ContinuationState | null {
       quote = ch;
       continue;
     }
-    if (ch === '#') {
+    if (ch === '#' && (i === 0 || COMMENT_AFTER.includes(input[i - 1]))) {
       while (i + 1 < input.length && input[i + 1] !== '\n') i++;
     }
   }
@@ -823,8 +823,9 @@ function readWord(input: string, pos: number): { token: Token; end: number } | n
     }
 
     // Check for operator/break chars that end the word
-    // Special case: 2> and 2>> at word start should be handled by tryOperator
-    if (isWordBreak(ch)) {
+    // Special case: 2> and 2>> at word start should be handled by tryOperator.
+    // A `#` inside a word is the word's: only one where a word starts begins a comment.
+    if (isWordBreak(ch) && ch !== '#') {
       break;
     }
 
