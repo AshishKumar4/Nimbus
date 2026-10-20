@@ -5,7 +5,7 @@ import { syscallError } from '../../../vfs/vfs-error.js';
 import { execRefusal } from '../../../shell/exec-dispatch.js';
 import { withRecall } from '../../../vfs/recall.js';
 import { parseAssignment, ParseError, ScriptLines } from './parser.js';
-import { expandBraceWord, expandWords, expandWord, expandPatternWord, expandSubscript, arithmeticOf, arithmeticValue, ArithmeticError, ExpansionError, } from './expander.js';
+import { expandArithmetic, expandBraceWord, expandWords, expandWord, expandPatternWord, expandSubscript, arithmeticOf, arithmeticValue, ArithmeticError, ExpansionError, reportWarnings, SubscriptArithmeticError, } from './expander.js';
 import { evaluateDoubleBracketWords } from './test-builtin.js';
 import { isPipeEnd, PipeChannel } from './pipe.js';
 import { arrayFor, arrayIndex, assignArray, assignVariable, lastIndex, restoreVariable, saveVariable, } from './variables.js';
@@ -615,16 +615,25 @@ export class Interpreter {
     /** An arithmetic command's expression, expanded (as a double-quoted word, its quotes removed) and evaluated: null where that fails, reported as `((`'s. */
     async arithmeticCommandValue(expression, io) {
         const ctx = this.createExpandContext(io);
-        const text = await expandSubscript(expression, ctx);
+        const text = await expandArithmetic(expression, ctx);
+        let value;
+        let failure = null;
         try {
-            return arithmeticOf(text, ctx);
+            value = arithmeticOf(text, ctx);
         }
         catch (error) {
             if (!(error instanceof ArithmeticError))
                 throw error;
-            await ctx.report(`((: ${error.message}`);
-            return null;
+            value = null;
+            failure = error;
         }
+        await reportWarnings(ctx, ctx.report);
+        if (failure !== null)
+            await ctx.report(failure.reportedBy('(('));
+        // A subscript's error is an expansion's: the line's.
+        if (failure instanceof SubscriptArithmeticError)
+            throw new DiscardSignal();
+        return value;
     }
     loopTicks = 0;
     /**
@@ -1490,7 +1499,9 @@ export class Interpreter {
         return {
             env: this.config.env,
             arrays: this.config.arrays,
+            readonlyNames: this.config.readonlyNames,
             positionals: this.readPositionals(io),
+            warnings: [],
             lastExitCode: this.lastExitCode,
             cwd: this.config.getCwd(),
             vfs: io.vfs ?? this.config.vfs,
