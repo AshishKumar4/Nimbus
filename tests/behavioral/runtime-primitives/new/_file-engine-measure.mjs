@@ -76,11 +76,12 @@ print('work', total)
 // Allocates 1 MiB at a time, yielding each time so what it said reaches the
 // session, until the isolate dies; the last count is its headroom.
 const NODE_MEM = `const fs = require('fs');
+const max = Number(process.env.MAX || 2048);
 let held = 0;
 if (process.env.FILL) for (const d of fs.readdirSync('tree')) for (const f of fs.readdirSync('tree/' + d)) held += fs.readFileSync('tree/' + d + '/' + f).length;
 const blocks = [];
 (async () => {
-  for (let i = 1; i <= 2048; i++) {
+  for (let i = 1; i <= max; i++) {
     blocks.push(new Uint8Array(1 << 20).fill(i & 255));
     globalThis.__nimbusHostConsole?.log('[mem-probe] ' + i);
     process.stdout.write('M ' + i + '\\n');
@@ -168,6 +169,8 @@ async function mem() {
       await inSession(async (t, sid) => {
         await setup(t, TREE);
         await setup(t, heredoc('mem.js', NODE_MEM));
+        // What a one-shot reads synchronously is staged by its next run (the residency ledger): learned first.
+        await setup(t, `MAX=1 ${line}`, 300_000);
         const r = await step(t, sid, { group: 'mem', arm, rep }, line, 300_000);
         const counts = [...r.output.matchAll(/^M (\d+)/gm)].map((m) => Number(m[1]));
         out({ group: 'mem', arm, rep, sid, headroomMiB: counts.length ? Math.max(...counts) : null });
@@ -184,7 +187,7 @@ async function workloads() {
     { name: 'gem-install', setupLines: ['nimbus install ruby'], steps: [['gem install rack', 1], ["ruby -e \"require 'rack'; puts Rack::RELEASE\"", 2]] },
     { name: 'clang', setupLines: ['nimbus install clang', heredoc('hello.c', HELLO_C)], steps: [['clang -O1 -o hello hello.c -lm', 3], ['./hello', 1]] },
     { name: 'bash', setupLines: ['nimbus install bash', heredoc('script.sh', BASH_SCRIPT)], steps: [['rm -rf bdir; bash script.sh', 3]] },
-    { name: 'git', setupLines: [], steps: [['git clone https://github.com/AshishKumar4/markflow.git mf', 1], ['cd mf && git status && cd ..', 3], ['cd mf && echo x >> README.md && git status --short && git checkout README.md && cd ..', 1]] },
+    { name: 'git', setupLines: ['nimbus install git', 'git config --global user.name M && git config --global user.email m@example.invalid'], steps: [['git clone https://github.com/AshishKumar4/markflow.git mf', 1], ['cd mf && git status && cd ..', 3], ['cd mf && echo x >> README.md && git status --short && git checkout README.md && cd ..', 1]] },
     { name: 'npm-install', setupLines: [], steps: [['cd example-app && npm install; cd ..', 1], ['cd example-app && rm -rf node_modules && npm install; cd ..', 1]] },
   ];
   for (const w of list) {
@@ -212,55 +215,42 @@ async function previewServed(sid, budgetMs = 120_000) {
   return null;
 }
 
-/** Files held by one process and changed by another: the dev server under edits, a writer under readers. */
+/** Files held by one process and changed by another: the dev server under edits, a python writer under readers, in one shell. */
 async function recall() {
   await inSession(async (t, sid) => {
     await setup(t, 'cd example-app && npm install', 600_000);
     const before = await delegations(sid);
     const start = new Date().toISOString();
-    t.reset();
-    t.cmd('npm run dev');
+    await t.run('npm run dev > dev.log 2>&1 &', 60_000);
     const firstPaint = await previewServed(sid);
     out({ group: 'recall', scenario: 'dev-server-start', sid, start, end: new Date().toISOString(), firstPaintMs: firstPaint, delegations: { before, after: await delegations(sid) } });
-    const tab = new Terminal(sid);
-    await tab.connect();
-    await tab.waitForPrompt(60_000);
-    try {
-      const files = (await tab.run('ls src', 30_000)).output;
-      const source = /\b(main\.[jt]sx?|App\.[jt]sx?|index\.[jt]sx?)\b/.exec(files)?.[1] ?? 'main.js';
-      const edits = await delegations(sid);
-      const editStart = new Date().toISOString();
-      for (let i = 0; i < 10; i++) {
-        await tab.run(`echo '// edit ${i}' >> src/${source}`, 60_000);
-        await previewServed(sid, 30_000);
-        await sleep(500);
-      }
-      out({ group: 'recall', scenario: 'edits-under-dev-server', sid, start: editStart, end: new Date().toISOString(), source, delegations: { before: edits, after: await delegations(sid) } });
-      const statusBefore = await delegations(sid);
-      const statusStart = new Date().toISOString();
-      for (let i = 0; i < 3; i++) await tab.run('git init -q 2>/dev/null; git status --short | head -3', 120_000);
-      out({ group: 'recall', scenario: 'git-status-under-dev-server', sid, start: statusStart, end: new Date().toISOString(), delegations: { before: statusBefore, after: await delegations(sid) } });
-    } finally {
-      await tab.close().catch(() => {});
+    const files = (await t.run('ls src', 30_000)).output;
+    const source = /\b(main\.[jt]sx?|App\.[jt]sx?|index\.[jt]sx?)\b/.exec(files)?.[1] ?? 'main.js';
+    const edits = await delegations(sid);
+    const editStart = new Date().toISOString();
+    for (let i = 0; i < 10; i++) {
+      await t.run(`echo '// edit ${i}' >> src/${source}`, 60_000);
+      await previewServed(sid, 30_000);
+      await sleep(500);
     }
+    out({ group: 'recall', scenario: 'edits-under-dev-server', sid, start: editStart, end: new Date().toISOString(), source, delegations: { before: edits, after: await delegations(sid) } });
+    const statusBefore = await delegations(sid);
+    const statusStart = new Date().toISOString();
+    for (let i = 0; i < 3; i++) await t.run('ls -la src | head -3; cat package.json | head -3', 120_000);
+    out({ group: 'recall', scenario: 'reads-under-dev-server', sid, start: statusStart, end: new Date().toISOString(), delegations: { before: statusBefore, after: await delegations(sid) } });
+    const stopStart = new Date().toISOString();
+    await t.run('kill %1; sleep 3', 60_000);
+    out({ group: 'recall', scenario: 'dev-server-stop', sid, start: stopStart, end: new Date().toISOString() });
   });
   await inSession(async (t, sid) => {
     await setup(t, 'nimbus install python');
     await setup(t, heredoc('writer.py', "import time\nfor i in range(40):\n    with open('shared.txt', 'w') as h: h.write('v%d\\n' % i)\n    time.sleep(0.25)\nprint('done')\n"));
     const before = await delegations(sid);
     const start = new Date().toISOString();
-    t.reset();
-    t.cmd('python3 writer.py');
-    const tab = new Terminal(sid);
-    await tab.connect();
-    await tab.waitForPrompt(60_000);
-    try {
-      await sleep(1000);
-      for (let i = 0; i < 16; i++) { await tab.run('cat shared.txt', 30_000); await sleep(400); }
-    } finally {
-      await tab.close().catch(() => {});
-    }
-    await t.waitFor((text) => /done/.test(text), 120_000, 'writer done').catch(() => {});
+    await t.run('python3 writer.py > writer.log 2>&1 &', 60_000);
+    await sleep(1000);
+    for (let i = 0; i < 16; i++) { await t.run('cat shared.txt', 30_000); await sleep(400); }
+    await t.run('wait; cat writer.log', 120_000);
     out({ group: 'recall', scenario: 'reader-under-python-writer', sid, start, end: new Date().toISOString(), delegations: { before, after: await delegations(sid) } });
   });
 }

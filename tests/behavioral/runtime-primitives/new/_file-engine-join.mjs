@@ -7,7 +7,9 @@ import { readFileSync } from 'node:fs';
 import { telemetry } from '../../../../scripts/ci/lib/reset-attribution.mjs';
 
 const [slug, file] = process.argv.slice(2);
-const records = readFileSync(file, 'utf8').split('\n').filter((l) => l.startsWith('{')).map((l) => JSON.parse(l)).filter((r) => r.start && r.end);
+const all = readFileSync(file, 'utf8').split('\n').filter((l) => l.startsWith('{')).map((l) => JSON.parse(l));
+const records = all.filter((r) => r.start && r.end);
+for (const r of all) if (!(r.start && r.end)) console.log(JSON.stringify(r));
 const reader = telemetry({ account: process.env.CLOUDFLARE_ACCOUNT_ID });
 if (!reader) throw new Error('no observability token');
 
@@ -37,8 +39,11 @@ const parse = (event) => {
 };
 
 const tails = (await span([], 'guestTail')).map(parse).filter(Boolean);
-const session = (await span([['$workers.entrypoint', 'NimbusSession']])).map((e) => ({ at: e.timestamp, cpuMs: Number(e.$workers?.cpuTimeMs ?? 0), wallMs: Number(e.$workers?.wallTimeMs ?? 0), type: e.$workers?.eventType }));
-console.error(`tail lines ${tails.length}, session invocations ${session.length}`);
+const invocation = (e) => ({ at: e.timestamp, cpuMs: Number(e.$workers?.cpuTimeMs ?? 0), wallMs: Number(e.$workers?.wallTimeMs ?? 0), type: e.$workers?.eventType });
+const session = (await span([['$workers.entrypoint', 'NimbusSession']])).map(invocation);
+// A guest's filesystem calls reach the session through its SupervisorRPC: one invocation each.
+const supervisorRpc = (await span([['$workers.entrypoint', 'SupervisorRPC']])).map(invocation);
+console.error(`tail lines ${tails.length}, session invocations ${session.length}, supervisor calls ${supervisorRpc.length}`);
 
 for (const r of records) {
   const a = Date.parse(r.start) - PAD_MS;
@@ -64,6 +69,8 @@ for (const r of records) {
     exceptions: mine.flatMap((x) => x.exceptions ?? []).slice(0, 3),
     sessionCpuMs: Math.round(sess.reduce((s, x) => s + x.cpuMs, 0)),
     sessionInvocations: sess.length,
+    supervisorRpcCalls: supervisorRpc.filter((x) => x.at >= a && x.at <= b).length,
+    supervisorRpcCpuMs: Math.round(supervisorRpc.filter((x) => x.at >= a && x.at <= b).reduce((s, x) => s + x.cpuMs, 0)),
     measures,
     memProbeMax: memProbe.length ? Math.max(...memProbe) : null,
   }));
