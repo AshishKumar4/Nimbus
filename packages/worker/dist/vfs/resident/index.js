@@ -165,7 +165,7 @@ export function createResidentStore(options = {}) {
     const cells = createCells(coherence, admission, namespace, observeRead);
     const transport = createTransport(coherence, admission, namespace, cells);
     const sync = createSync(coherence, admission, namespace, cells, transport);
-    const pages = createPages(coherence, admission);
+    const pages = createPages(coherence, admission, namespace);
     const view = createView(coherence, admission, namespace, cells, transport, sync, pages);
     const bindTables = (t, heap) => {
         // A store can outlive its process. Own rows left by an earlier one are

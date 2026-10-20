@@ -2582,7 +2582,7 @@ var __nimbusResidentModule = (() => {
   }
 
   // src/vfs/resident/pages.ts
-  function createPages(coherence, admission) {
+  function createPages(coherence, admission, namespace) {
     let clock = null;
     let total = null;
     const held = () => total ??= coherence.require().pageBytes();
@@ -2621,42 +2621,50 @@ var __nimbusResidentModule = (() => {
       total = held() + size - replaced;
       return true;
     };
+    const readWith = async (learning, supervisor, k, rev, size, first, last) => {
+      const cursor = coherence.cursor();
+      if (cursor === null || typeof supervisor.fsReadBatch !== "function") return null;
+      const out = new Array(last - first + 1);
+      const missing = [];
+      for (let part = first; part <= last; part++) {
+        const page = get(k, rev, part);
+        if (page !== void 0) out[part - first] = page;
+        else missing.push(part);
+      }
+      const perBatch = Math.max(1, Math.min(FS_READ_BATCH_PATH_LIMIT, Math.floor(FS_READ_BATCH_REQUEST_BYTES / RESIDENT_PAGE_BYTES)));
+      for (let at = 0; at < missing.length; at += perBatch) {
+        const batch = missing.slice(at, at + perBatch);
+        const ranges = batch.map((part) => {
+          const offset = part * RESIDENT_PAGE_BYTES;
+          return { path: "/" + k, offset, length: Math.min(RESIDENT_PAGE_BYTES, Math.max(0, size - offset)), expectedEpoch: cursor.epoch, expectedRevision: rev };
+        });
+        await admission.ensureRoom(ranges.reduce((n, r) => n + r.length + RESIDENT_ROW_BYTES, 0));
+        let results;
+        try {
+          results = await supervisor.fsReadBatch(ranges);
+        } catch {
+          return null;
+        }
+        if (!Array.isArray(results) || results.length !== ranges.length) return null;
+        for (let i = 0; i < batch.length; i++) {
+          const entry = results[i];
+          if (!entry || entry.error || entry.bytes == null) return null;
+          const bytes = residentBytes(entry.bytes);
+          if (bytes.byteLength !== ranges[i].length) return null;
+          out[batch[i] - first] = bytes;
+          if (learning.installs(k)) put(k, rev, batch[i], bytes);
+        }
+      }
+      return { pages: out, fetched: missing.length };
+    };
     return {
       async read(supervisor, k, rev, size, first, last) {
-        const cursor = coherence.cursor();
-        if (cursor === null || typeof supervisor.fsReadBatch !== "function") return null;
-        const out = new Array(last - first + 1);
-        const missing = [];
-        for (let part = first; part <= last; part++) {
-          const page = get(k, rev, part);
-          if (page !== void 0) out[part - first] = page;
-          else missing.push(part);
+        const learning = namespace.learning();
+        try {
+          return await readWith(learning, supervisor, k, rev, size, first, last);
+        } finally {
+          learning.end();
         }
-        const perBatch = Math.max(1, Math.min(FS_READ_BATCH_PATH_LIMIT, Math.floor(FS_READ_BATCH_REQUEST_BYTES / RESIDENT_PAGE_BYTES)));
-        for (let at = 0; at < missing.length; at += perBatch) {
-          const batch = missing.slice(at, at + perBatch);
-          const ranges = batch.map((part) => {
-            const offset = part * RESIDENT_PAGE_BYTES;
-            return { path: "/" + k, offset, length: Math.min(RESIDENT_PAGE_BYTES, Math.max(0, size - offset)), expectedEpoch: cursor.epoch, expectedRevision: rev };
-          });
-          await admission.ensureRoom(ranges.reduce((n, r) => n + r.length + RESIDENT_ROW_BYTES, 0));
-          let results;
-          try {
-            results = await supervisor.fsReadBatch(ranges);
-          } catch {
-            return null;
-          }
-          if (!Array.isArray(results) || results.length !== ranges.length) return null;
-          for (let i = 0; i < batch.length; i++) {
-            const entry = results[i];
-            if (!entry || entry.error || entry.bytes == null) return null;
-            const bytes = residentBytes(entry.bytes);
-            if (bytes.byteLength !== ranges[i].length) return null;
-            out[batch[i] - first] = bytes;
-            put(k, rev, batch[i], bytes);
-          }
-        }
-        return { pages: out, fetched: missing.length };
       },
       reset() {
         clock = null;
@@ -3488,7 +3496,7 @@ var __nimbusResidentModule = (() => {
     const cells = createCells(coherence, admission, namespace, observeRead);
     const transport = createTransport(coherence, admission, namespace, cells);
     const sync = createSync(coherence, admission, namespace, cells, transport);
-    const pages = createPages(coherence, admission);
+    const pages = createPages(coherence, admission, namespace);
     const view = createView(coherence, admission, namespace, cells, transport, sync, pages);
     const bindTables = (t, heap) => {
       t.dropOwn();
