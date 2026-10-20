@@ -6067,6 +6067,7 @@ export class SqliteVFS {
   ): VfsListPage {
     const contentKeys = options.contentKeys !== false;
     const revisions = options.revisions !== false;
+    const linkTargets = options.linkTargets !== false;
     // A page is of what is published: one walked while a commit is held waits for it.
     this.recallHeld(null);
     // Before the walk, deliberately — see VfsListPage.
@@ -6089,6 +6090,10 @@ export class SqliteVFS {
     const closed = new Map<string, string | null>();
     const listedDirectories = new Map<string, INode>();
     const directories: InodeLookup = { get: (key) => listedDirectories.get(key) ?? this.inodes.get(key) };
+    // The storage key of the last directory found closed: what is under it is
+    // passed over, by the cursor where a batch ends inside it, not judged row by row.
+    let hidden: string | null = null;
+    const tmpRoot = this.confinedTmpRoots.get(cred.uid);
     for (;;) {
       const rows = this.sql.exec(
         contentKeys
@@ -6108,6 +6113,7 @@ export class SqliteVFS {
         lastStoragePath = String(row.path);
         if (entries.length >= limit) return pageEnding();
         const path = String(row.path);
+        if (hidden !== null && path.startsWith(`${hidden}/`)) continue;
         // Reported in the caller's OWN path space. Enumerating raw storage keys
         // would name a private root the caller cannot address and does not know
         // it has, and a caller feeding such a path back would be asking about
@@ -6118,7 +6124,6 @@ export class SqliteVFS {
         // Read from the row rather than through the cache: one page of an
         // enumeration says nothing about which inodes will be used next.
         const inode = this.inodes.peek(path) ?? this.inodeFromRow(row);
-        if (inode.kind === 'directory') listedDirectories.set(path, inode);
         // What checkAccess(path, 0, cred, { followLeaf: false }) asks of an
         // entry that exists: every directory above it, as the caller names
         // them, is traversable. A confined caller's /tmp answers for its own
@@ -6128,7 +6133,13 @@ export class SqliteVFS {
         // taken for one the caller cannot reach: its names would be omitted
         // as absent while its holder may still be sending them.
         if (this.exclusiveMutationLeases.size > 0) this.recallReads(path);
-        if (this.closedAbove(parentKey(logical), cred, closed, directories) !== null) continue;
+        const closedAt = this.closedAbove(parentKey(logical), cred, closed, directories);
+        if (closedAt !== null) {
+          hidden = this.keyOfName(closedAt, tmpRoot);
+          continue;
+        }
+        // Its entries are judged from this row.
+        if (inode.kind === 'directory') listedDirectories.set(path, inode);
         // The storage key's revision, the one revision() reports for the name
         // this entry is listed under: a confined caller's /tmp/x is its own
         // file, not the shared one at the same name.
@@ -6143,7 +6154,7 @@ export class SqliteVFS {
           // The row's own target. Re-resolving the listed name would follow the
           // directories above it, and a row they no longer lead to (one left
           // under a link) made the whole enumeration throw ENOENT.
-          ...(inode.kind === 'symlink' ? { linkTarget: nameDec.decode(this.readWhole(inode)) } : {}),
+          ...(inode.kind === 'symlink' && linkTargets ? { linkTarget: nameDec.decode(this.readWhole(inode)) } : {}),
           ...(inode.kind === 'file' && contentKeys ? { contentKey: this.listedContentKey(inode, row) } : {}),
           ...(inode.kind === 'directory' && !this.accessInode(inode, 0o5, cred) ? { unreadable: true } : {}),
         };
@@ -6151,7 +6162,9 @@ export class SqliteVFS {
         entries.push(entry);
       }
       if (visited <= limit) return { epoch, rev, entries, next: null };
-      cursor = lastStoragePath;
+      // A batch that ends inside a closed subtree resumes past it: U+10FFFF
+      // sorts above every name's first character.
+      cursor = hidden !== null && lastStoragePath.startsWith(`${hidden}/`) ? `${hidden}/\u{10FFFF}` : lastStoragePath;
     }
   }
 
@@ -7512,7 +7525,7 @@ export class SqliteVFS {
           for (const child of this.childrenAt(dir, g)) results.push({ name: child.path.slice(child.path.lastIndexOf('/') + 1), type: child.kind });
         });
       },
-      list: (after, limit) => {
+      list: (after, limit, options) => {
         pinned();
         const pageLimit = Math.min(Math.max(1, Math.trunc(limit ?? FS_LIST_PAGE_LIMIT)), FS_LIST_PAGE_LIMIT);
         const from = after === null || after === undefined ? '' : this.lexicalKey(after, bound).value;
@@ -7525,29 +7538,39 @@ export class SqliteVFS {
         const closed = new Map<string, string | null>();
         const listedDirectories = new Map<string, INode>();
         const directories: InodeLookup = { get: (key) => listedDirectories.get(key) ?? tree.get(key) };
+        const linkTargets = options?.linkTargets !== false;
+        // As a live page passes a closed subtree.
+        let hidden: string | null = null;
+        const tmpRoot = this.confinedTmpRoots.get(bound.uid);
         let cursor = from;
         for (;;) {
           const page = this.pageAt(g, cursor, pageLimit + 1);
           for (const inode of page) {
             if (entries.length >= pageLimit) return pageEnding();
+            if (hidden !== null && inode.path.startsWith(`${hidden}/`)) continue;
             const logical = this.logicalPath(inode.path, bound);
             if (logical === null) continue;
+            const closedAt = bound.uid === 0 ? null : this.closedAbove(parentKey(logical), bound, closed, directories);
+            if (closedAt !== null) {
+              hidden = this.keyOfName(closedAt, tmpRoot);
+              continue;
+            }
             if (inode.kind === 'directory') listedDirectories.set(inode.path, inode);
-            if (bound.uid !== 0 && this.closedAbove(parentKey(logical), bound, closed, directories) !== null) continue;
             const entry: VfsListEntry = {
               path: logical,
               kind: inode.kind,
               size: inode.size,
               rev: g,
               stat: { ...this.statOf(inode), revision: g },
-              ...(inode.kind === 'symlink' ? { linkTarget: nameDec.decode(this.readContent(inode, 0, inode.size, true)) } : {}),
+              ...(inode.kind === 'symlink' && linkTargets ? { linkTarget: nameDec.decode(this.readContent(inode, 0, inode.size, true)) } : {}),
               ...(inode.kind === 'directory' && !this.accessInode(inode, 0o5, bound) ? { unreadable: true } : {}),
             };
             if (!fits(entry)) return pageEnding();
             entries.push(entry);
           }
           if (page.length <= pageLimit) return { epoch, rev: g, entries, next: null };
-          cursor = page[page.length - 1]!.path;
+          const last = page[page.length - 1]!.path;
+          cursor = hidden !== null && last.startsWith(`${hidden}/`) ? `${hidden}/\u{10FFFF}` : last;
         }
       },
       acquire: unchanged,

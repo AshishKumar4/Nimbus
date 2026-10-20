@@ -764,6 +764,8 @@ export interface VfsListOptions {
   revisions?: boolean;
   /** Each file's `contentKey`. Default true. */
   contentKeys?: boolean;
+  /** Each link's `linkTarget`: a read of its content, which may not be at hand. Default true. */
+  linkTargets?: boolean;
 }
 
 export interface VfsListPage {

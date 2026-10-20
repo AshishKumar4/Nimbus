@@ -115,4 +115,17 @@ for (const [path, st] of byNameWalk.stats) {
 }
 assert.ok(scanned.byName.has('mnt') || scanned.listings.get('mnt')?.includes('sub'), 'the mount is listed or asked by name');
 console.log(`  ✓ the scan answers as a walk by name on ${compared} entries; asked by name: ${[...scanned.byName].sort().join(', ')}`);
+
+// A write under the tree while it is scanned: its pages are not one tree, and the scan says so.
+{
+  let wrote = false;
+  const refused = (async () => {
+    for await (const entry of view.scan(root)) {
+      if (!wrote) { wrote = true; await view.writeFile(`${root}/a0`, 'changed while scanned'); }
+      void entry;
+    }
+  })();
+  await assert.rejects(refused, (error) => error.code === 'EAGAIN', 'a scan the tree changed under is refused');
+  console.log('  ✓ a tree changed while it is scanned is refused EAGAIN');
+}
 console.log('process-scan-parity: ok');

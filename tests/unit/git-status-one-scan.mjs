@@ -7,7 +7,8 @@
 // what real git answers on the same tree.
 //
 // Red before: the counters said readdirs and lstats, one per directory and
-// one per file.
+// one per file. A sibling whose name extends the worktree's (repo-backup,
+// repo.old) sorts between it and its entries: the scan passes it.
 
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
@@ -57,6 +58,10 @@ const write = (file, content) => {
   user.mkdir(`${root}/${file.slice(0, file.lastIndexOf('/'))}`, { recursive: true });
   user.writeFile(`${root}/${file}`, content);
 };
+// Siblings whose names extend the worktree's sort between it and its entries: the scan passes them.
+user.mkdir('home/user/repo-backup/deep', { recursive: true });
+user.writeFile('home/user/repo-backup/deep/f', 'sibling');
+user.writeFile('home/user/repo.old', 'sibling');
 // Two files a directory, four levels deep, and names that sort across '/': a-b, a/b, a.b, a0.
 for (let i = 0; i < FILES; i++) { const d = Math.floor(i / 2); write(`src/a${d % 16}/b${Math.floor(d / 16) % 64}/f${i}.txt`, `file ${i}\n`); }
 for (const name of ['x/a-b', 'x/a/b', 'x/a.b', 'x/a0', 'x/a/c/d']) write(name, `${name}\n`);
@@ -88,7 +93,8 @@ rmSync(join(disk, 'x/a.b'));
 
 const { stdout, counters } = await git('status', '--porcelain', '-uall');
 assert.equal(stdout, realGit(disk, 'status', '--porcelain', '-uall'), 'what real git answers on the same tree');
-assert.deepEqual({ readdirs: counters.readdirs, lstats: counters.lstats }, { readdirs: 0, lstats: 0 }, `one scan, no call per path: ${JSON.stringify(counters)}`);
+// One readdir: the top's, which the scan's own listing of the top is checked against.
+assert.deepEqual({ readdirs: counters.readdirs, lstats: counters.lstats, scans: counters.scans }, { readdirs: 1, lstats: 0, scans: 1 }, `one scan, no call per path: ${JSON.stringify(counters)}`);
 assert.ok(counters.scanned >= FILES, `every entry came from the scan: ${JSON.stringify(counters)}`);
 console.log(`  ✓ git status on ${FILES + 5} files: one ordered scan (${counters.scanned} entries), real git's answer`);
 console.log('git-status-one-scan: ok');
