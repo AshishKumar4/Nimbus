@@ -29,7 +29,6 @@
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { type ImageBlobStore } from '@nimbus-sh/fabric/image-store.js';
 import type { ResolvedWorkerLaunch, WorkerRecipe } from './manager.js';
-import { type InterpreterEnvFacts } from '@nimbus-sh/core/runtime/interpreter-env.js';
 /** The directory every durable application's image blobs live under. */
 export declare const DURABLE_IMAGE_DIR = ".nimbus/images";
 /** An inline module as the launch has it, and as its application blob holds it. */
@@ -39,29 +38,30 @@ type InlineModule = string | {
 /** An application blob an earlier release wrote with an environment in it. */
 export interface ApplicationHoldingEnv {
     digest: string;
-    /** What its launch's process ran with, the runtime's additions in it (`startArgs.userEnv`). */
+    /** What its launch's process ran with, its runtime's additions in it (`startArgs.userEnv`). */
     processEnv: Record<string, string> | null;
     /** Whether it held a binding env, which nothing in the session can give back. */
     bindingEnv: boolean;
 }
 /**
- * Every application blob in the store (an earlier release's included, an
- * index or row naming it or not), read: the ones that hold an environment,
- * and every path any of them names (`vfsTextModules`, `vfsWasmModules`),
- * which their launches read. Runner blobs are code, not application JSON,
- * and are not read.
+ * Every blob in the store, an earlier release's included, an index or row
+ * naming it or not, read: the application blobs that hold an environment,
+ * and the blobs whose bytes are not what their name says (a write a reset
+ * cut short), which no reader can use, since every one verifies the digest.
+ * A runner blob is code, not application JSON, and holds no environment.
  */
-export declare function readApplicationImages(vfs: SqliteVFS): Promise<{
+export declare function readStoredImages(vfs: SqliteVFS): Promise<{
     holdingEnv: ApplicationHoldingEnv[];
-    namedPaths: Set<string>;
+    corrupt: string[];
 }>;
 /**
  * `application`, written again without an environment: what every process
- * can read holds none (ask 62). An interpreter's environment is kept as the
- * facts it was built from (`envFacts`, read back from it for `runtime`), as
- * a launch writes it today. Answers the new application digest.
+ * can read holds none (ask 62). It keeps no facts to build an interpreter's
+ * environment from: an earlier release kept the environment whole, so its
+ * relaunch runs with the host's answer as it is (the session's keeping holds
+ * that whole environment). Answers the new application digest.
  */
-export declare function rewriteWithoutEnvironment(vfs: SqliteVFS, application: string, runtime: InterpreterEnvFacts['runtime'] | null): Promise<string>;
+export declare function rewriteWithoutEnvironment(vfs: SqliteVFS, application: string): Promise<string>;
 /** Remove only the owner's blobs that no other retained recipe references. */
 export declare function purgeDurableWorkerImages(vfs: SqliteVFS, owned: Iterable<{
     runner: string;

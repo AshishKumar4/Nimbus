@@ -114,6 +114,10 @@ declare const ModuleSourceAssetSchema: z.ZodObject<{
     path: z.ZodString;
     sha256: z.ZodString;
 }, z.core.$strip>;
+export declare const ModuleSourceRecipeSchema: z.ZodArray<z.ZodUnion<readonly [z.ZodString, z.ZodObject<{
+    path: z.ZodString;
+    sha256: z.ZodString;
+}, z.core.$strip>]>>;
 export declare const ResidentCodeSpecSchema: z.ZodObject<{
     compatibilityDate: z.ZodString;
     compatibilityFlags: z.ZodArray<z.ZodString>;

@@ -1349,11 +1349,11 @@ export declare class FacetManager {
      * - a Node resident's journal row, and a dev server's record, held it;
      * - every application blob that held an interpreter's environment, or a
      *   binding env, where every process could read it (named by an index, a
-     *   row, or nothing): written again without it, as the facts its
-     *   environment was built from, its rows and owner indexes naming the new
-     *   blob, the old one unlinked. An application whose binding env nothing
-     *   can give back (no embedder resolveWorkerLaunch) is not restarted, and
-     *   the session is told;
+     *   row, or nothing): written again without it, its rows and owner
+     *   indexes naming the new blob, the old one unlinked. An application
+     *   whose binding env nothing can give back (no embedder
+     *   resolveWorkerLaunch) is not restarted, and the session is told. A
+     *   blob a reset cut short, which no reader can use, is unlinked too;
      * - a Node resident's generated source, in the image directory or below
      *   /var/lib/nimbus where releases through 0.19 wrote it: unlinked.
      * A filesystem snapshot or export taken before keeps what it held.

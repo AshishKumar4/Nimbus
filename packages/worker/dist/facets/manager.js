@@ -88,13 +88,13 @@ import { openSupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-d
 import { sqliteWasmModuleEntry } from './opencode-staging.js';
 import { FACET_IMAGE_WRITE_SLICE_BYTES, ImageStore, } from '@nimbus-sh/fabric/image-store.js';
 import { fetchStagedBindingAsset, NAPI_WASM_LOADER, NAPI_WASM_TRAMPOLINE, STAGED_BINDING_LOADER_MODULE, STAGED_BINDING_TRAMPOLINE_MODULE, stagedBinding, stagedBindingsFacetImport, stagedBindingsRequiredBy, stagedBindingsDeclaredBy, STAGED_BINDINGS, } from '../runtime/staged-bindings.js';
-import { encodeCodePack, FACET_IMAGE_DIR, ProcessFabric, ProcessHostLost, } from '@nimbus-sh/fabric/process-fabric.js';
+import { encodeCodePack, FACET_IMAGE_DIR, ModuleSourceRecipeSchema, ProcessFabric, ProcessHostLost, } from '@nimbus-sh/fabric/process-fabric.js';
 import { deleteFacetStorage, facetJournal, reservedFacetNames, } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { drainProcessFsJournal, UNSETTLED_END_NOTE } from '@nimbus-sh/core/_shared/process-fs-client.js';
 import { journalDrainSession } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import { ProcessJournals } from '../session/process-journals.js';
 import { acquireDurableFacetSlot, freeDurableFacetSlot, } from './durable-slots.js';
-import { persistDurableWorkerImage, readApplicationImages, purgeDurableWorkerImages, rewriteWithoutEnvironment, unlinkDurableImages, } from './durable-images.js';
+import { persistDurableWorkerImage, readStoredImages, purgeDurableWorkerImages, rewriteWithoutEnvironment, unlinkDurableImages, } from './durable-images.js';
 import { deleteRecord, putRecord, relaunchEnv } from './process-env.js';
 import { SQLITE_WASM_MODULE_NAME, } from '../runtime/opencode-facet-runner.js';
 import { parsePortFromArgv, resolveLongRunningPort } from '@nimbus-sh/core/runtime/long-running-handle.js';
@@ -4434,20 +4434,47 @@ function relaunchInterpreter(stored, base) {
 }
 /** Where releases through worker 0.19 wrote a resident's generated source. */
 const LEGACY_FACET_IMAGE_DIR = 'var/lib/nimbus/facet-images';
-/** How the Node generator of every earlier release opened a source's arguments, its environment among them: as JSON, or as JSON read by JSON.parse. */
-const GENERATED_ARGS_OPENINGS = ['const __NIMBUS_ARGS = {"argv":', 'const __NIMBUS_ARGS = JSON.parse("{\\"argv\\":'];
-const GENERATED_ARGS_OVERLAP = Math.max(...GENERATED_ARGS_OPENINGS.map((opening) => opening.length));
+/** Where the Node generator of every earlier release declared a source's arguments, its environment among them. */
+const GENERATED_ARGS_DECLARATION = 'const __NIMBUS_ARGS = ';
+/** The arguments a generated Node entry declares, as JSON or as JSON read by JSON.parse, at the start of a line. */
+const GeneratedArgsSchema = z.looseObject({ argv: z.array(z.string()), env: z.record(z.string(), z.string()) });
 /**
- * Every Node resident's generated source an earlier release wrote, its
- * environment in its arguments, unlinked: its recipe generates it again.
- * Only a file the kernel wrote (a regular file the kernel owns, named by a
- * digest, in a directory the kernel owns) that opens its arguments as the
- * generator did, and that no application image names (`kept`). This
- * release's sources are in the image store's own directory, not here. Read
- * a slice at a time, as an image can be tens of MiB: the store's own write
- * slice, whole chunks within one storage transaction.
+ * The environment a generated Node resident entry holds, read from an image
+ * as an earlier release wrote it (a ModuleSourceRecipe's JSON, or the plain
+ * text before recipes): its arguments' declaration, decoded and validated.
+ * Null when the image is not such an entry, or its environment is empty.
  */
-function dropGeneratedNodeSources(vfs, kept) {
+function generatedEntryEnv(text) {
+    const recipe = ModuleSourceRecipeSchema.safeParse(jsonOrNull(text));
+    const source = recipe.success ? recipe.data.flatMap((part) => (typeof part === 'string' ? [part] : [])).join('') : text;
+    const declared = new RegExp(`\\n${GENERATED_ARGS_DECLARATION}(.*);\\n`).exec(source);
+    if (declared === null)
+        return null;
+    const literal = /^JSON\.parse\((.*)\)$/.exec(declared[1]);
+    const json = literal === null ? declared[1] : jsonOrNull(literal[1]);
+    const args = GeneratedArgsSchema.safeParse(typeof json === 'string' ? jsonOrNull(json) : null);
+    return args.success && Object.keys(args.data.env).length > 0 ? args.data.env : null;
+}
+/** `text` parsed as JSON, or null when it is not JSON. */
+function jsonOrNull(text) {
+    try {
+        return JSON.parse(text);
+    }
+    catch {
+        return null;
+    }
+}
+/**
+ * Every Node resident's generated entry an earlier release wrote with an
+ * environment in its arguments, unlinked: its recipe generates it again,
+ * and this release writes its own to the image store's directory. Only a
+ * regular file the kernel owns, named by a digest, in a directory the kernel
+ * owns, that decodes as such an entry. Each file is scanned for the
+ * declaration a slice at a time first (an image can be tens of MiB: the
+ * store's own write slice, whole chunks within one storage transaction), and
+ * read whole only when it holds one.
+ */
+function dropGeneratedNodeSources(vfs) {
     const kernel = vfs.as(CRED_KERNEL);
     const kernelOwned = (path, type) => {
         if (!kernel.exists(path))
@@ -4455,22 +4482,25 @@ function dropGeneratedNodeSources(vfs, kept) {
         const stat = kernel.lstat(path);
         return stat.type === type && stat.uid === CRED_KERNEL.uid;
     };
+    const declares = (path) => {
+        const size = kernel.stat(path).size;
+        for (let offset = 0; offset < size; offset += FACET_IMAGE_WRITE_SLICE_BYTES) {
+            // Each slice overlaps the next by the declaration's length, so one across their boundary is seen.
+            const slice = kernel.readRangeUncached(path, offset, Math.min(FACET_IMAGE_WRITE_SLICE_BYTES + GENERATED_ARGS_DECLARATION.length, size - offset));
+            if (new TextDecoder().decode(slice).includes(GENERATED_ARGS_DECLARATION))
+                return true;
+        }
+        return false;
+    };
     for (const dir of [FACET_IMAGE_DIR, LEGACY_FACET_IMAGE_DIR]) {
         if (!kernelOwned(dir, 'directory'))
             continue;
         for (const { name } of kernel.readdir(dir)) {
             const path = `${dir}/${name}`;
-            if (!/^[0-9a-f]{64}\.js$/.test(name) || kept.has(`/${path}`) || !kernelOwned(path, 'file'))
+            if (!/^[0-9a-f]{64}\.js$/.test(name) || !kernelOwned(path, 'file') || !declares(path))
                 continue;
-            const size = kernel.stat(path).size;
-            for (let offset = 0; offset < size; offset += FACET_IMAGE_WRITE_SLICE_BYTES) {
-                // Each slice overlaps the next by an opening's length, so one across their boundary is seen.
-                const text = new TextDecoder().decode(kernel.readRangeUncached(path, offset, Math.min(FACET_IMAGE_WRITE_SLICE_BYTES + GENERATED_ARGS_OVERLAP, size - offset)));
-                if (GENERATED_ARGS_OPENINGS.some((opening) => text.includes(opening))) {
-                    kernel.unlink(path);
-                    break;
-                }
-            }
+            if (generatedEntryEnv(kernel.readFileString(path)) !== null)
+                kernel.unlink(path);
         }
     }
 }
@@ -4856,11 +4886,11 @@ export class FacetManager {
      * - a Node resident's journal row, and a dev server's record, held it;
      * - every application blob that held an interpreter's environment, or a
      *   binding env, where every process could read it (named by an index, a
-     *   row, or nothing): written again without it, as the facts its
-     *   environment was built from, its rows and owner indexes naming the new
-     *   blob, the old one unlinked. An application whose binding env nothing
-     *   can give back (no embedder resolveWorkerLaunch) is not restarted, and
-     *   the session is told;
+     *   row, or nothing): written again without it, its rows and owner
+     *   indexes naming the new blob, the old one unlinked. An application
+     *   whose binding env nothing can give back (no embedder
+     *   resolveWorkerLaunch) is not restarted, and the session is told. A
+     *   blob a reset cut short, which no reader can use, is unlinked too;
      * - a Node resident's generated source, in the image directory or below
      *   /var/lib/nimbus where releases through 0.19 wrote it: unlinked.
      * A filesystem snapshot or export taken before keeps what it held.
@@ -4887,12 +4917,11 @@ export class FacetManager {
         }
         const vfs = this.vfs;
         if (vfs !== null) {
-            const { holdingEnv, namedPaths } = await readApplicationImages(vfs);
+            const { holdingEnv, corrupt } = await readStoredImages(vfs);
             const rewritten = new Map();
             for (const held of holdingEnv) {
                 const naming = [...rows].flatMap(([key, row]) => (row.recipe.kind === 'worker' && row.recipe.image.application === held.digest ? [{ key, row, recipe: row.recipe }] : []));
-                const runtime = naming.find(({ recipe }) => recipe.resident !== undefined)?.recipe.resident?.runtime ?? null;
-                const application = await rewriteWithoutEnvironment(vfs, held.digest, runtime);
+                const application = await rewriteWithoutEnvironment(vfs, held.digest);
                 rewritten.set(held.digest, application);
                 for (const { key, row, recipe } of naming) {
                     if (held.bindingEnv && recipe.resident === undefined && this.hooks.resolveWorkerLaunch === undefined) {
@@ -4911,8 +4940,8 @@ export class FacetManager {
                     continue;
                 await this.ctx.storage.put(ownerKey, images.map((image) => ({ runner: image.runner, application: rewritten.get(image.application) ?? image.application })));
             }
-            unlinkDurableImages(vfs, rewritten.keys());
-            dropGeneratedNodeSources(vfs, namedPaths);
+            unlinkDurableImages(vfs, [...rewritten.keys(), ...corrupt]);
+            dropGeneratedNodeSources(vfs);
         }
         await this.ctx.storage.put(PROCESS_ENV_DROPPED_KEY, true);
         await this.ctx.storage.sync();

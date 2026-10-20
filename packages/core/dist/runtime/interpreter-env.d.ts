@@ -18,10 +18,4 @@ export interface InterpreterEnv {
 }
 /** The environment an interpreter runs with: `base`, and what its runtime adds, from `facts`. */
 export declare function interpreterProcessEnv(base: Readonly<Record<string, string>>, facts: InterpreterEnvFacts): Record<string, string>;
-/**
- * The facts an environment an earlier release stored whole (the base with
- * its runtime's additions in it) was built from, read back from it: null
- * when it does not hold them.
- */
-export declare function interpreterEnvFactsOf(runtime: InterpreterEnvFacts['runtime'], built: Readonly<Record<string, string>>): InterpreterEnvFacts | null;
 //# sourceMappingURL=interpreter-env.d.ts.map

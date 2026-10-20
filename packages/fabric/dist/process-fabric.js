@@ -99,7 +99,7 @@ export const RESIDENT_SETTLE_DEADLINE_MS = 100;
  * resident in the coordinator's heap.
  */
 const ModuleSourceAssetSchema = z.object({ path: z.string().startsWith('/'), sha256: z.string().regex(/^[0-9a-f]{64}$/) });
-const ModuleSourceRecipeSchema = z.array(z.union([z.string(), ModuleSourceAssetSchema]));
+export const ModuleSourceRecipeSchema = z.array(z.union([z.string(), ModuleSourceAssetSchema]));
 export const ResidentCodeSpecSchema = z.object({
     compatibilityDate: z.string().min(1),
     compatibilityFlags: z.array(z.string()),
