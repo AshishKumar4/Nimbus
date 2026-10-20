@@ -15,6 +15,14 @@ published independently in the `@nimbus-sh` npm scope.
   staging either: it validates a stage with a schema of its own
   (`facets/opencode-stage-spec.ts`). A Worker that also exports
   `NimbusSession` still links both through the session itself.
+- Changed (CI): the paired `ruby-gem-require` perf probe grades the
+  session's own time for each Ruby call, the least of 7 calls a round,
+  instead of the time its client saw for one. Measured in an A/A of one
+  commit, the client's time carried each Preview's placement (about
+  +200 ms on some Previews), which made identical code read as 34% slower,
+  and a call took over 1.5 times its round's least in 55–62% of calls. The
+  probe now says what its grading was shown to find: a +60% slowdown, in 8
+  of 8 replays and 3 of 4 live checks. A green says nothing about less.
 - Added: a session's terminals by name. A browser terminal at `/ws?terminal=<name>` (a hosted runtime: `attachTerminal(ws, { terminal })`, `terminalFrame` and `terminalClose` likewise) is a shell of its own over the same workspace: its cwd, variables and history persist as a named shell's do and outlive restarts, its screen is stored and replayed per name, and one socket holds a name at a time (names never conflict with each other or with the session's own terminal, which is unchanged). `listTerminals()` names each with its cwd, whether it is live or attached, and the line it runs; `closeTerminal(name)` hangs up everything started from it and forgets its screen, state and history (SDK: `sandbox.terminals.list()` / `.close(name)`). Names are 1 to 64 of `A-Z a-z 0-9 . _ -`; there is no count of them: a live terminal measured 0.10 to 0.30 MiB of heap idle and 0.10 to 0.20 MiB more busy, and a saved one holds only its capped screen and a 0.8 KiB row. A process now has a controlling terminal, inherited from its parent; REPLs (python, ruby, interactive bash) bind to the terminal they were started from.
 - Fixed: a reattached terminal shows the screen it left and adds nothing to it. The shell paints a prompt on reattach only when its line editor is not the last thing on the screen (a background job wrote after the prompt), and then once, on a line of its own, with the line being typed. A hosted runtime's resumed and reset notices are written above the prompt, which is painted again below them. Before, every reattach to an idle hosted terminal printed another prompt, into the screen and the stored scrollback, after a line being typed too.
 - Fixed (CI): a throwaway Preview whose upload the API does not serve, as
