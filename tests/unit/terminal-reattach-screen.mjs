@@ -113,7 +113,7 @@ await settle(600);
 runtime.terminal.flushNow();
 await type(ws, 'ec');
 const late = stored();
-assert.ok(late.lastIndexOf('late-output') > late.lastIndexOf(PROMPT), 'the job wrote after the prompt');
+assert.ok(late.lastIndexOf('late-output') > late.lastIndexOf(PROMPT), `the job wrote after the prompt: ${JSON.stringify(late.slice(before.length + added.length))}`);
 ws = await reattach();
 const repainted = stored().slice(late.length);
 assert.equal(prompts(repainted), 1, `one fresh prompt after the job's output: ${JSON.stringify(repainted)}`);
