@@ -71,6 +71,10 @@ const continued = [
   ["echo a #'b", null],
   ["#'a", null],
   ["echo x;#'a", null],
+  // A substitution's quotes are its own, after a `$#` or a `${#x}` too.
+  ["echo $# \"$(printf '\"')\"", null],
+  ["echo ${#x} \"${y:-\"a'b\"}\" `echo '\"'`", null],
+  ["echo $# \"$(printf '\"')", 'double'],
 ];
 for (const [line, state] of continued) {
   if (continuationState(line) !== state) failed.push(`continuationState(${JSON.stringify(line)}): ${continuationState(line)}, not ${state}`);

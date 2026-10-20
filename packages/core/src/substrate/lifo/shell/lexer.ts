@@ -336,6 +336,13 @@ export function continuationState(input: string): ContinuationState | null {
       i++;
       continue;
     }
+    // A substitution or a braced expansion is one span, in double quotes too: its quotes are its own.
+    if (ch === '`' || (ch === '$' && (input[i + 1] === '(' || input[i + 1] === '{'))) {
+      i = (ch === '`' ? readBacktickSubstitution(input, i).end
+        : input[i + 1] === '(' ? readBalancedCommand(input, i + 2, '(', ')').end
+        : readBracedExpansion(input, i).end) - 1;
+      continue;
+    }
     if (quote === '"') {
       if (ch === '"') quote = null;
       continue;
