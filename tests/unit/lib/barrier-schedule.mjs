@@ -15,9 +15,18 @@
  *   ['stall'], ['unstall'] the process's waves wait before they reach the
  *                          session (a parked reply has reached it), or go on;
  *   ['settle']             wait until nothing moves without a release;
- *   ['poison']             the next ACQUIRE is answered with a poison.
- * Reads are stat, readFile, readdir and (awaited) opendir, a directory read
- * through its descriptor; changes write, unlink, mkdir, rmdir,
+ *   ['poison']             the next ACQUIRE is answered with a poison;
+ *   ['restart']            the session starts again (another epoch, its
+ *                          revisions counted from the start): every file at
+ *                          the revision it had where it can be, its bytes
+ *                          changed and their size not, so a page or a fill
+ *                          of the last incarnation's bytes, held or in
+ *                          flight, could pass for this one's.
+ * Reads are stat, readFile, readdir, (awaited) opendir, a directory read
+ * through its descriptor, and (awaited) pread, a file's bytes at an offset
+ * read through its descriptor; a file past what a process holds whole
+ * (BULK: 'big') is paged that way, one past a fill's batch ('mid') fetched
+ * in more than one. Changes write, unlink, mkdir, rmdir,
  * rename, chmod and (root) chown, of names under the process's project
  * (UNIVERSE), judged with the process's credential: a name beneath a
  * directory it may not search is EACCES to it, as is a directory it may not
@@ -74,12 +83,33 @@ import { scheduleTransport, KINDS } from './schedule-transport.mjs';
 import { sleep } from './resident-body.mjs';
 import { writeSync } from 'node:fs';
 import { CRED_KERNEL } from '../../../packages/core/src/runtime/os-contracts.ts';
+import { FS_READ_BATCH_REQUEST_BYTES, WASI_RESIDENT_FILE_CAP_BYTES } from '../../../packages/core/src/constants.ts';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
 /** The project a schedule starts from: '' is the project directory, a string a file's content, null a directory. */
 export const SEED_TREE = Object.freeze({ d: null, 'd/e': null, x: null, 'd/f': 'f0', 'd/e/g': 'g0000', 'x/h': 'h00', top: 't0000000' });
+
+/** Files a schedule that names them starts with too, of their sizes: one fetched in two batches, one paged. */
+const BULK = Object.freeze({ mid: FS_READ_BATCH_REQUEST_BYTES + 1_000_000, big: WASI_RESIDENT_FILE_CAP_BYTES + 1_000_000 });
+/** What a pread reads, and where. */
+const PREAD_BYTES = 4096;
+const PREAD_AT = Object.freeze([0, 70_000, 4_200_000, 8_400_000]);
+/** A file of `size` printable bytes, `tag` its pattern. */
+const bulk = (tag, size) => `${tag}:0123456789abcdefghijklmnopqrstuvwxyz `.repeat(Math.ceil(size / (tag.length + 38))).slice(0, size);
+/** `content` as the next incarnation holds it: every byte another, its size the same. */
+function turned(content) {
+  const bytes = Buffer.from(content, 'latin1');
+  for (let i = 0; i < bytes.length; i++) bytes[i] = 32 + ((bytes[i] - 32 + 1) % 95);
+  return bytes.toString('latin1');
+}
+
+/** The project `schedule` starts from: SEED_TREE, and the BULK files it names. */
+export function seedTreeFor(schedule) {
+  const named = new Set(schedule.flat().filter((part) => typeof part === 'string'));
+  return { ...SEED_TREE, ...Object.fromEntries(Object.entries(BULK).filter(([rel]) => named.has(rel)).map(([rel, size]) => [rel, bulk(rel, size)])) };
+}
 
 /** The names a schedule reads and changes. */
 export const UNIVERSE = Object.freeze({
@@ -102,12 +132,12 @@ const abs = (rel) => (rel === '' ? APP : `${APP}/${rel}`);
 const key = (rel) => abs(rel).slice(1);
 
 const dirState = (mode = DIR_MODE) => ({ type: 'dir', mode, uid: USER, gid: USER });
-const fileState = (content, mode = FILE_MODE) => ({ type: 'file', content, mode, uid: USER, gid: USER });
+const fileState = (content, mode = FILE_MODE) => ({ type: 'file', content, size: content.length, mode, uid: USER, gid: USER });
 
 /** The model: each name's state; '' (the project directory) always a directory. */
-function seedWorld() {
+function seedWorld(tree = SEED_TREE) {
   const world = new Map([['', dirState()]]);
-  for (const [rel, content] of Object.entries(SEED_TREE)) world.set(rel, content === null ? dirState() : fileState(content));
+  for (const [rel, content] of Object.entries(tree)) world.set(rel, content === null ? dirState() : fileState(content));
   return world;
 }
 
@@ -157,7 +187,7 @@ function applied(world, change) {
     case 'write':
       if (parent?.type !== 'dir' || at?.type === 'dir') return null;
       if (!root && (at === undefined ? !mayChangeIn(world, a) : (bits(at) & 2) === 0)) return null;
-      next.set(a, at === undefined ? fileState(b) : { ...at, content: b });
+      next.set(a, at === undefined ? fileState(b) : { ...at, content: b, size: b.length });
       return next;
     case 'unlink':
       if (at?.type !== 'file' || (!root && !mayChangeIn(world, a))) return null;
@@ -218,6 +248,7 @@ export function generate(seed, steps = 40) {
   let world = seedWorld();
   const schedule = [];
   let content = 0;
+  const bulkRead = () => (random() < 0.5 ? ['own', 'pread', pick(Object.keys(BULK)), pick(PREAD_AT)] : [pick(['own', 'sync']), 'readFile', 'mid']);
   const change = (way) => {
     for (let tries = 0; tries < 20; tries++) {
       if (way === 'root') {
@@ -241,7 +272,8 @@ export function generate(seed, steps = 40) {
   };
   while (schedule.length < steps) {
     const r = random();
-    if (r < 0.22) schedule.push(['own', pick(['stat', 'stat', 'readFile', 'readdir', 'opendir']), pick(NAMES)]);
+    if (r < 0.03) schedule.push(bulkRead());
+    else if (r < 0.22) schedule.push(['own', pick(['stat', 'stat', 'readFile', 'readdir', 'opendir']), pick(NAMES)]);
     else if (r < 0.40) schedule.push(['sync', pick(['stat', 'stat', 'readFile', 'readdir']), pick(NAMES)]);
     else if (r < 0.62) {
       const way = pick(['own', 'own', 'peer', 'peer', 'sync', 'root']);
@@ -251,8 +283,9 @@ export function generate(seed, steps = 40) {
     else if (r < 0.86) schedule.push(random() < 0.5 ? ['release'] : ['release', pick(Object.values(KINDS))]);
     else if (r < 0.91) schedule.push(['hold', pick(Object.values(KINDS))]);
     else if (r < 0.94) schedule.push([random() < 0.5 ? 'stall' : 'unstall']);
-    else if (r < 0.985) schedule.push(['settle']);
-    else schedule.push(['poison']);
+    else if (r < 0.98) schedule.push(['settle']);
+    else if (r < 0.99) schedule.push(['poison']);
+    else schedule.push(['restart']);
   }
   return schedule;
 }
@@ -281,8 +314,9 @@ class Finding extends Error {
   }
 }
 
+const shownText = (text) => (text.length > 40 ? `${JSON.stringify(text.slice(0, 24))}… (${text.length} bytes)` : JSON.stringify(text));
 const describe = (state) => (state === undefined ? 'absent'
-  : `${state.type === 'file' ? `file ${JSON.stringify(state.content)}` : 'dir'} ${state.mode.toString(8)}${state.uid === USER ? '' : ` uid ${state.uid}`}`);
+  : `${state.type === 'file' ? `file ${shownText(state.content)}` : 'dir'} ${state.mode.toString(8)}${state.uid === USER ? '' : ` uid ${state.uid}`}`);
 
 /** `world` with `effect` (a world a change leaves) laid over the names under `domain`. */
 function laid(world, domain, effect) {
@@ -296,12 +330,17 @@ function laid(world, domain, effect) {
 function statIs(answer, state) {
   if (state === undefined) return answer === null;
   if (answer === null || answer.type !== (state.type === 'dir' ? 'directory' : 'file') || (answer.mode & 0o777) !== state.mode || answer.uid !== state.uid) return false;
-  return state.type !== 'file' || answer.size === enc.encode(state.content).byteLength;
+  return state.type !== 'file' || answer.size === state.size;
 }
 
-/** Whether `answer` (of read `op` of `rel`) is what `world` says to the process. */
-function answers(op, rel, answer, world) {
+/** Whether `answer` (of read `op` of `rel`; a pread's at `offset`) is what `world` says to the process. */
+function answers(op, rel, answer, world, offset = 0) {
   if (op === 'opendir') return answers('readdir', rel, answer, world);
+  if (op === 'pread') {
+    const state = world.get(rel);
+    if (state?.type === 'file' && unreachable(world, rel) === null && (bits(state) & 4) !== 0) return answer === state.content.slice(offset, offset + PREAD_BYTES);
+    return answers('readFile', rel, answer, world);
+  }
   const blocked = unreachable(world, rel);
   if (blocked !== null) return op === 'stat' && blocked === 'ENOENT' ? answer === null : answer?.code === blocked;
   const state = world.get(rel);
@@ -322,8 +361,8 @@ function answers(op, rel, answer, world) {
  * they have had (state i: after i changes returned), and every change begun.
  * runSchedule drives it; a test drives it with no engine (barrier-oracle.mjs).
  */
-export function createModel() {
-  let world = seedWorld();
+export function createModel(tree = SEED_TREE) {
+  let world = seedWorld(tree);
   const history = [world];
   /** Every change begun, in program order: its names, whether it is the process's own, the world it leaves (and, a write of the process's, the one it passes through), the states it began and landed at. */
   const changes = [];
@@ -395,8 +434,15 @@ export function createModel() {
     },
     /** `record` was refused: it changed nothing. */
     drop(record) { changes.splice(changes.indexOf(record), 1); },
-    /** Whether `answer` (of read `op` of `rel`) is one the session's files gave between states `from` and `to` (`decided`: with every structural change of the process's own in flight shown). */
-    admits: (op, rel, answer, from, to, decided = false) => worldsSeen(rel, from, to, decided).some((w) => answers(op, rel, answer, w)),
+    /** Whether `answer` (of read `op` of `rel`, a pread's at `offset`) is one the session's files gave between states `from` and `to` (`decided`: with every structural change of the process's own in flight shown). */
+    admits: (op, rel, answer, from, to, decided = false, offset = 0) => worldsSeen(rel, from, to, decided).some((w) => answers(op, rel, answer, w, offset)),
+    /** Whether any change is in flight. */
+    moving: () => changes.some((change) => change.done === null),
+    /** The session started again holding `next`: a state of its own, after every change returned. */
+    restart(next) {
+      world = next;
+      history.push(world);
+    },
     /** The state the latest change of `rel` (or above it) landed at; Infinity while one is in flight. */
     touched: (rel) => Math.max(0, ...changes.filter((c) => c.domain.some((root) => under(rel, root))).map((c) => (c.done === null ? Infinity : c.done))),
     /** The state the latest structural change of the process's own in flight at or about `rel` began at, or 0. */
@@ -439,9 +485,10 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
     note: (line) => { if (booted) note(line); },
     poisoned: () => { poisoned = true; },
   });
+  const tree = seedTreeFor(schedule);
   const engine = await bootEngine(kind, {
     seed: (authority) => {
-      for (const [rel, content] of Object.entries(SEED_TREE)) {
+      for (const [rel, content] of Object.entries(tree)) {
         if (content === null) authority.kfs.mkdir(key(rel), { mode: DIR_MODE });
         else authority.kfs.writeFile(key(rel), content);
       }
@@ -452,8 +499,10 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
   booted = true;
   const deadline = Date.now() + deadlineMs;
 
-  const model = createModel();
+  const model = createModel(tree);
   const seq = model.seq;
+  /** Every name a schedule may read: the universe's, and its bulk files. */
+  const readable = ['', ...NAMES, ...Object.keys(tree).filter((rel) => rel in BULK)];
   /** Calls in flight: settled when their promise does. */
   const inflight = new Set();
   let completions = 0;
@@ -485,21 +534,26 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
     && model.world.get(rel)?.type === 'file' && model.touched(rel) <= landed;
   const refusable = (op, rel, from, to) => (op === 'readFile' && owedBytes(rel) ? false
     : lazy || poisoned || transport.inFlight('listing') > 0 || (op === 'readFile' && model.readable(rel, from, to)));
-  const judge = (at, way, op, rel, answer, from, to) => {
+  const judge = (at, way, op, rel, answer, from, to, offset = 0) => {
     if (answer?.code === 'EAGAIN' && way === 'sync' && refusable(op, rel, from, to)) return;
     if (gaps.refusedAsDirectory && way === 'sync' && answer?.code === 'EISDIR' && model.worldsSeen(rel, from, to).some((world) => world.get(rel)?.type === 'dir')) return;
     if (gaps.absentWhileRelisted && way === 'sync' && answer === null && transport.inFlight('listing') > 0) return;
     const decided = kind === 'node' && way === 'sync';
-    if (model.admits(op, rel, answer, from, to, decided)) return;
-    const shown = answer?.code ?? (answer && typeof answer === 'object' && !Array.isArray(answer) ? `${answer.type} ${(answer.mode & 0o777).toString(8)} size ${answer.size}` : JSON.stringify(answer));
+    if (model.admits(op, rel, answer, from, to, decided, offset)) return;
+    const shown = answer?.code ?? (answer && typeof answer === 'object' && !Array.isArray(answer) ? `${answer.type} ${(answer.mode & 0o777).toString(8)} size ${answer.size}`
+      : typeof answer === 'string' ? shownText(answer) : JSON.stringify(answer));
     const held = [...new Set(model.worldsSeen(rel, from, to, decided).map((world) => (op === 'readdir' && world.get(rel)?.type === 'dir' ? `[${childrenOf(world, rel)}]` : describe(world.get(rel)))))];
-    throw new Finding(`${way} ${op} ${rel || '.'} answered ${shown}; the session held ${held.join(' | ')} (states ${from}..${to})`, at);
+    throw new Finding(`${way} ${op} ${rel || '.'}${op === 'pread' ? ` at ${offset}` : ''} answered ${shown}; the session held ${held.join(' | ')} (states ${from}..${to})`, at);
   };
 
-  const read = async (way, op, rel) => {
+  const read = async (way, op, rel, offset = 0) => {
     const path = abs(rel);
     const call = way === 'sync' ? engine.sync : engine.fs;
     try {
+      if (op === 'pread') {
+        const opened = await engine.fs.open(path, { read: true });
+        try { return dec.decode(await engine.fs.read(opened.id, offset, PREAD_BYTES)); } finally { await engine.fs.close(opened.id); }
+      }
       if (op === 'stat') return normalized(await (way === 'sync' ? engine.sync.stat(path) : engine.stat(path)));
       if (op === 'readFile') {
         const bytes = await call.readFile(path);
@@ -601,6 +655,47 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
     if (failures.length > 0) throw failures[0];
   };
 
+  /**
+   * The session starts again: once nothing of the process's is in flight
+   * (its waves answered, what it wrote published), the next incarnation
+   * holds every name as the model does, each file at the revision it had
+   * where it can be, its bytes turned. The process learns of it with its
+   * next barrier, a poison. Node's own engine (node-shims) is not run
+   * across one: it goes with the cutover.
+   */
+  const restart = async (at) => {
+    if (kind === 'node') { note(`  (step ${at}: a restart is the resident filesystem's to meet)`); return; }
+    stalled = false;
+    await engine.release();
+    const published = track(engine.publish());
+    for (let i = 0; i < 1_000 && (model.moving() || inflight.has(published)); i++) {
+      while (transport.release('wave'));
+      await sleep(5);
+    }
+    if (model.moving() || inflight.has(published)) { note(`  (step ${at} skipped: a change of the process's is still in flight)`); return; }
+    unpublished = [];
+    const root = engine.authority.rawVfs.as(CRED_KERNEL);
+    const next = new Map();
+    const entries = [];
+    const files = [];
+    for (const [rel, state] of [...model.world].sort(([a], [b]) => a.split('/').length - b.split('/').length || (a < b ? -1 : 1))) {
+      if (state.type === 'dir') {
+        next.set(rel, state);
+        if (rel !== '') entries.push({ key: key(rel), type: 'dir', mode: state.mode, uid: state.uid, gid: state.gid });
+        continue;
+      }
+      const content = turned(state.content);
+      next.set(rel, { ...state, content });
+      files.push({ key: key(rel), type: 'file', content, mode: state.mode, uid: state.uid, gid: state.gid, rev: Number(root.lstat(key(rel)).revision) });
+    }
+    engine.authority.incarnate([{ key: key(''), type: 'dir', mode: model.world.get('').mode }, ...entries, ...files.sort((a, b) => a.rev - b.rev)]);
+    model.restart(next);
+    peerAt.push({ done: seq(), domain: [''] });
+    resident.clear();
+    poisoned = true;
+    note(`  (step ${at}: the session started again, epoch ${engine.authority.cursor().epoch})`);
+  };
+
   const step = async (at, s) => {
     const [what] = s;
     if (what === 'hold') return transport.hold(s[1], s[2]);
@@ -609,13 +704,14 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
     if (what === 'poison') return transport.poison();
     if (what === 'stall') { stalled = true; return engine.stall(); }
     if (what === 'unstall') { stalled = false; return engine.release(); }
+    if (what === 'restart') return restart(at);
     if (what === 'input') {
       const arrived = seq();
       inputsInFlight++;
       return void track(engine.input().then(() => { landed = Math.max(landed, arrived); poisoned = false; }).finally(() => { inputsInFlight--; }));
     }
-    const [way, op, rel] = s;
-    if (op === 'stat' || op === 'readFile' || op === 'readdir' || op === 'opendir') {
+    const [way, op, rel, offset = 0] = s;
+    if (op === 'stat' || op === 'readFile' || op === 'readdir' || op === 'opendir' || op === 'pread') {
       const bound = Math.max(landed, kind === 'node' && way === 'sync' ? model.decidedSince(rel) : 0,
         ...[...ownAt].filter(([root]) => under(rel, root) || under(root, rel)).map(([, i]) => i));
       if (way === 'sync') {
@@ -624,9 +720,10 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
         return judge(at, way, op, rel, answer, bound, seq());
       }
       const from = kind === 'node' ? seq() : bound;
-      return void track(read(way, op, rel).then((answer) => {
-        judge(at, way, op, rel, answer, from, seq());
-        if (op === 'readFile' && typeof answer === 'string') {
+      return void track(read(way, op, rel, offset).then((answer) => {
+        judge(at, way, op, rel, answer, from, seq(), offset);
+        // A file past what the process holds whole is never held: its refusals are no miss.
+        if (op === 'readFile' && typeof answer === 'string' && answer.length <= WASI_RESIDENT_FILE_CAP_BYTES) {
           missed.delete(rel);
           if (model.touched(rel) !== Infinity) resident.add(rel);
         }
@@ -673,7 +770,7 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
       const owed = [...missed].filter((rel) => world.get(rel)?.type === 'file').map(key).sort();
       if (ledger.join() !== owed.join()) throw new Finding(`at rest, the program's misses are [${ledger}]; unanswered are [${owed}]`, end);
     }
-    for (const rel of ['', ...NAMES]) {
+    for (const rel of readable) {
       const state = world.get(rel);
       for (const way of ['own', 'sync']) {
         for (const op of ['stat', state?.type === 'dir' ? 'readdir' : 'readFile']) {

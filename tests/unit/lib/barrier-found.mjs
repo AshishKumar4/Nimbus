@@ -133,6 +133,22 @@ const FOUND = {
     schedule: [['own', 'stat', 'x/h'], ['own', 'readFile', 'top'], ['own', 'opendir', 'd'], ['root', 'chown', 'x', 1000],
       ['sync', 'write', 'd/n', 'first'], ['sync', 'write', 'd/n', 'second!']],
   },
+  // A session that started again: another epoch, its files at the revisions they had, other bytes.
+  'a page held of the last incarnation is not this one\'s, at the same revision': {
+    engines: ['holder', 'eager'],
+    schedule: [['own', 'pread', 'big', 70_000], ['settle'], ['restart'], ['input'], ['settle'], ['own', 'pread', 'big', 70_000], ['settle']],
+  },
+  'a fill asked of the last incarnation, landing late, leaves this one\'s fill whole': {
+    engines: ['holder', 'eager'],
+    schedule: [['hold', 'lookup'], ['own', 'readFile', 'mid'], ['settle'], ['restart'], ['input'], ['settle'],
+      ['hold', 'lookup', 1], ['own', 'readFile', 'mid'], ['settle'], ['release', 'lookup'], ['settle'], ['release', 'lookup'], ['settle'],
+      ['sync', 'readFile', 'mid'], ['own', 'readFile', 'mid']],
+  },
+  'what a process held of the last incarnation is not served for this one\'s': {
+    engines: ['holder', 'eager'],
+    schedule: [['own', 'readFile', 'top'], ['own', 'readFile', 'd/f'], ['settle'], ['restart'], ['input'], ['settle'],
+      ['sync', 'readFile', 'top'], ['sync', 'stat', 'd/f'], ['own', 'readFile', 'd/f']],
+  },
   'a file a call that cannot wait missed stays a miss until an awaited read answers it': {
     engines: ['node'],
     schedule: [['peer', 'write', 'new', 'not resident'], ['settle'], ['input'], ['settle'], ['sync', 'readFile', 'new'], ['own', 'stat', 'new'], ['settle']],
