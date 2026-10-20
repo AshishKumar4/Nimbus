@@ -127,8 +127,8 @@ export class Shell {
             shellEnv['0'] = 'nimbus-sh';
         shellEnv['$'] = String(this.commandIdentity.pid);
         // Initialize history manager
-        // bash's HISTFILE, else its default.
-        this.historyManager = new HistoryManager(() => this.vfs, () => this.state.env.HISTFILE || `${this.state.env.HOME ?? DEFAULT_HOME}/.bash_history`);
+        // bash's HISTFILE (empty: no history file), else its default.
+        this.historyManager = new HistoryManager(() => this.vfs, () => this.state.env.HISTFILE ?? `${this.state.env.HOME ?? DEFAULT_HOME}/.bash_history`);
         this.builtins = shellBuiltins({
             vfs: () => this.vfs,
             registry,

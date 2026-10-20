@@ -89,6 +89,8 @@ export interface ProgrammaticHost extends TimerHost {
         write(text: string): void;
         close(): void;
     }) | null;
+    /** The session's named terminals (named-terminals.ts). */
+    readonly terminals: NamedTerminals;
     kernel?: unknown;
     childProcessManager?: ChildProcessManager | null;
     esbuildService?: unknown;

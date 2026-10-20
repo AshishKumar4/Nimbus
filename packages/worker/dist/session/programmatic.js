@@ -1162,6 +1162,8 @@ async function quiesceInMemorySessionState(self) {
         catch { }
         self._w9FlushTimer = null;
     }
+    // The named terminals go with the session's own: none outlives its workspace.
+    self.terminals.dispose();
     try {
         self.terminal?.close?.();
     }
@@ -1259,6 +1261,8 @@ async function resetInMemorySessionState(self) {
         self._cirrusHmrWsClients?.clear?.();
     }
     catch { }
+    // The named terminals go with the session's own: none outlives its workspace.
+    self.terminals.dispose();
     try {
         self.terminal?.close?.();
     }

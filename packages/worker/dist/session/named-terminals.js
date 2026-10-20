@@ -14,7 +14,7 @@ import { HeredocHandler, LineEditorExtender } from '@nimbus-sh/core/shell/featur
 import { TerminalNameSchema } from '@nimbus-sh/core/workspace';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
-import { appendScrollback, forgetScrollback, loadScrollback } from './state-store.js';
+import { appendScrollback, forgetScrollback, loadScrollback, writeShellSnapshot } from './state-store.js';
 /** How many named terminals a session keeps, live or saved: what bounds their stored screens. */
 export const NAMED_TERMINAL_LIMIT = 16;
 const RESUMED_NOTICE = '[Runtime resumed; files and shell settings restored. Previous interpreter state was not retained.]\r\n';
@@ -33,6 +33,10 @@ export class NamedTerminals {
     host;
     live = new Map();
     opening = new Map();
+    /** A name's close in progress: nothing of that name opens until it has finished. */
+    closing = new Map();
+    /** Bumped by dispose: an opening begun before it does not publish its terminal. */
+    epoch = 0;
     constructor(host) {
         this.host = host;
     }
@@ -58,8 +62,11 @@ export class NamedTerminals {
      */
     async attach(name, ws, resume = 'reconnect') {
         const entry = await this.open(name);
-        if (entry.terminal.ws === ws)
+        if (entry.terminal.ws === ws) {
+            // Its start comes before anything it is sent.
+            await entry.started;
             return;
+        }
         entry.terminal.attach(ws);
         if (resume === 'reconnect')
             entry.terminal.replay(loadScrollback(this.host.ctx, entry.name));
@@ -145,8 +152,16 @@ export class NamedTerminals {
      * closed, its stored screen, shell state and history forgotten. False when
      * there was no such terminal.
      */
-    async close(name) {
+    close(name) {
         const valid = TerminalNameSchema.parse(name);
+        const running = this.closing.get(valid);
+        if (running !== undefined)
+            return running;
+        const closing = this.closeNow(valid).finally(() => this.closing.delete(valid));
+        this.closing.set(valid, closing);
+        return closing;
+    }
+    async closeNow(valid) {
         await this.opening.get(valid)?.catch(() => undefined);
         const entry = this.live.get(valid);
         const known = entry !== undefined || this.host.workspace().terminalNames().includes(valid);
@@ -161,8 +176,14 @@ export class NamedTerminals {
         await this.host.workspace().forgetTerminalShell(valid);
         return known;
     }
-    /** Every live terminal let go (the session closing): its socket closed; its saved state kept. */
+    /**
+     * Every live terminal let go (the session closing, or destroyed): its
+     * socket closed, its saved state kept; an opening still on its way is
+     * abandoned.
+     */
     dispose() {
+        this.epoch++;
+        this.opening.clear();
         for (const entry of this.live.values()) {
             entry.terminal.flushNow();
             this.save(entry);
@@ -172,33 +193,54 @@ export class NamedTerminals {
     }
     /** Whether the terminal `name` may be opened: it is live or saved, or the session holds fewer than the limit. */
     admits(name) {
-        if (this.live.has(name))
+        if (this.live.has(name) || this.opening.has(name))
             return true;
         const saved = this.host.workspace().terminalNames();
-        return saved.includes(name) || new Set([...saved, ...this.live.keys()]).size < NAMED_TERMINAL_LIMIT;
+        return saved.includes(name) || new Set([...saved, ...this.live.keys(), ...this.opening.keys()]).size < NAMED_TERMINAL_LIMIT;
     }
     open(name) {
         const valid = TerminalNameSchema.parse(name);
         const live = this.live.get(valid);
         if (live !== undefined)
             return Promise.resolve(live);
+        const closing = this.closing.get(valid);
+        if (closing !== undefined)
+            return closing.then(() => this.open(valid));
         let opening = this.opening.get(valid);
         if (opening === undefined) {
-            opening = this.start(valid).finally(() => this.opening.delete(valid));
-            this.opening.set(valid, opening);
+            // Counted against the limit from now (admits), not once its shell is built.
+            if (!this.admits(valid))
+                return Promise.reject(new TerminalLimitError());
+            const started = this.start(valid);
+            opening = started.finally(() => {
+                if (this.opening.get(valid) === started)
+                    this.opening.delete(valid);
+            });
+            this.opening.set(valid, started);
         }
         return opening;
     }
     async start(name) {
         const workspace = this.host.workspace();
-        if (!this.admits(name))
-            throw new TerminalLimitError();
+        const epoch = this.epoch;
         const saved = workspace.terminalNames();
         const process = workspace.processes.spawn('sh', ['sh'], workspace.fs.cwd, { parentPid: workspace.shellProcessPid, terminal: name });
-        const shell = await workspace.terminalShell(name, process.pid);
+        let shell;
+        try {
+            shell = await workspace.terminalShell(name, process.pid);
+            if (this.epoch !== epoch)
+                throw new Error(`terminal ${name}: the session's terminals were closed while it opened`);
+        }
+        catch (error) {
+            // No terminal came of it: its process ends here.
+            workspace.processes.exit(process.pid, 1);
+            throw error;
+        }
         const terminal = new WebSocketTerminal(null, (data) => {
             appendScrollback(this.host.ctx, data, Date.now(), name);
-            workspace.saveTerminalShell(name, shell);
+            const entry = this.live.get(name);
+            if (entry !== undefined)
+                this.save(entry);
         }, (send) => void workspace.processes.releaseOutput(process.pid, send));
         shell.bindTerminal(terminal);
         makeInteractive(shell, terminal);
@@ -209,8 +251,9 @@ export class NamedTerminals {
         return entry;
     }
     save(entry) {
-        if (this.live.get(entry.name) === entry)
-            this.host.workspace().saveTerminalShell(entry.name, entry.shell);
+        if (this.live.get(entry.name) !== entry)
+            return;
+        writeShellSnapshot(entry, entry.shell, () => this.host.workspace().saveTerminalShell(entry.name, entry.shell));
     }
 }
 /** Whether a terminal's socket is one a peer still has (a closed one may stay referenced until the next attach). */

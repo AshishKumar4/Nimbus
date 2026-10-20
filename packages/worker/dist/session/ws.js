@@ -36,7 +36,7 @@ import { dec } from '@nimbus-sh/core/_shared/bytes.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId, recordRecoveryEvent } from '@nimbus-sh/platform/oom-discriminator.js';
 import { generation } from '@nimbus-sh/fabric/generation.js';
-import { appendScrollback, persistShellState } from './state-store.js';
+import { appendScrollback, persistShellState, writeShellSnapshot } from './state-store.js';
 import { handleFsWatchSubscribe, handleFsWatchUnsubscribe, cleanupFsWatchOnClose, } from './fs-watch.js';
 import { parseProcessLogClientFrame } from '@nimbus-sh/core/runtime/process-io-protocol.js';
 import { applyProcessClientFrame } from '@nimbus-sh/core/runtime/process-input-routing.js';
@@ -111,8 +111,6 @@ export async function bindShellSocket(self, ws) {
         self.terminal.attach(ws, shellTerminalTee(self));
     return true;
 }
-/** The shell state each instance last wrote, so an unchanged state costs no SQL. */
-const lastShellSnapshot = new WeakMap();
 /**
  * Snapshot the live Shell state and write it through to DO SQLite
  * [Phase 3 B'.1].
@@ -141,36 +139,7 @@ function snapshotShellState(self) {
     const ctx = self.ctx;
     if (!ctx?.storage?.sql)
         return;
-    let cwd = null;
-    let env = null;
-    try {
-        cwd = shell.getCwd() || null;
-    }
-    catch { /* best-effort */ }
-    try {
-        const rawEnv = shell.getEnv();
-        if (rawEnv && typeof rawEnv === 'object') {
-            // Defensive copy. The Shell mutates this.env in place on
-            // export; we want the SQL write to reflect a stable view.
-            env = { ...rawEnv };
-        }
-    }
-    catch { /* best-effort */ }
-    if (!cwd && !env)
-        return;
-    // Its variables' marks and arrays, which a command's environment follows.
-    const vars = shell.getVariableAttributes();
-    const envJson = env ? JSON.stringify(env) + JSON.stringify(vars) : null;
-    const last = lastShellSnapshot.get(self);
-    if (last && last.cwd === cwd && last.envJson === envJson)
-        return;
-    try {
-        persistShellState(ctx, { cwd, env, vars });
-        lastShellSnapshot.set(self, { cwd, envJson });
-    }
-    catch (e) {
-        console.warn('[nimbus/B\'.1] persistShellState failed:', e?.message || e);
-    }
+    writeShellSnapshot(self, shell, (state) => persistShellState(ctx, state));
 }
 /**
  * What every output frame of the shell terminal feeds besides the socket:

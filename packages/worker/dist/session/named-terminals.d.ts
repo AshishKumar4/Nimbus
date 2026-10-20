@@ -36,6 +36,10 @@ export declare class NamedTerminals {
     private readonly host;
     private readonly live;
     private readonly opening;
+    /** A name's close in progress: nothing of that name opens until it has finished. */
+    private readonly closing;
+    /** Bumped by dispose: an opening begun before it does not publish its terminal. */
+    private epoch;
     constructor(host: NamedTerminalsHost);
     /** The live named terminal `pid` belongs to (its controlling terminal), if it is one's. */
     of(pid: number): {
@@ -76,7 +80,12 @@ export declare class NamedTerminals {
      * there was no such terminal.
      */
     close(name: string): Promise<boolean>;
-    /** Every live terminal let go (the session closing): its socket closed; its saved state kept. */
+    private closeNow;
+    /**
+     * Every live terminal let go (the session closing, or destroyed): its
+     * socket closed, its saved state kept; an opening still on its way is
+     * abandoned.
+     */
     dispose(): void;
     /** Whether the terminal `name` may be opened: it is live or saved, or the session holds fewer than the limit. */
     admits(name: string): boolean;

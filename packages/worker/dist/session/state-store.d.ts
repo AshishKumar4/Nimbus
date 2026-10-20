@@ -200,4 +200,20 @@ export declare function getScrollbackStats(ctx: any): {
     bytes: number;
     maxBytes: number;
 };
+/**
+ * The change-detected snapshot rule [Phase 3 B'.1]: `write` gets `shell`'s
+ * cwd, variables and their attributes only when they differ from what it
+ * last wrote for `owner`, so a per-flush call during a chatty command costs
+ * a string compare. What `write` throws (an environment over its cap) is
+ * warned about; the next snapshot retries.
+ */
+export declare function writeShellSnapshot(owner: object, shell: {
+    getCwd(): string;
+    getEnv(): Record<string, string>;
+    getVariableAttributes(): VariableAttributes;
+}, write: (state: {
+    cwd: string | null;
+    env: Record<string, string> | null;
+    vars: VariableAttributes;
+}) => void): void;
 //# sourceMappingURL=state-store.d.ts.map

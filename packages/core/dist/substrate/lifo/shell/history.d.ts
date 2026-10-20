@@ -4,7 +4,7 @@ export declare class HistoryManager {
     private readonly file;
     private entries;
     private loaded;
-    /** `file`: where the history is kept (bash's HISTFILE). */
+    /** `file`: where the history is kept (bash's HISTFILE); empty, nowhere. */
     constructor(filesystem: () => ProcessView, file: () => string);
     load(): Promise<void>;
     private readHistory;
