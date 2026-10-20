@@ -25,7 +25,7 @@ if (!response.ok) throw new Error(`${source}: HTTP ${response.status}`);
 const bytes = new Uint8Array(await response.arrayBuffer());
 const sha256 = createHash('sha256').update(bytes).digest('hex');
 if (sha256 !== pinned) throw new Error(`${source}: sha256 ${sha256}, not the pinned ${pinned}`);
-const text = new TextDecoder('ascii', { fatal: true }).decode(bytes);
+const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
 const asOf = /^## Certificate data from Mozilla as of: (.+)$/m.exec(text)?.[1] ?? 'unknown';
 const roots = text.split('-----BEGIN CERTIFICATE-----').length - 1;
 
