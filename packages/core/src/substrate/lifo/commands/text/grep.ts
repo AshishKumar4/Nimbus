@@ -1,6 +1,6 @@
 import type { Command, CommandInputStream } from '../types.js';
 import type { ProcessView } from '../../../../runtime/process-files.js';
-import { resolve } from '../../utils/path.js';
+import { operandPath } from '../../utils/path.js';
 import { concatBytes, inputChunks, readAllInput } from '../../utils/bytes-io.js';
 import { globMatch as fnmatch } from '../../utils/glob.js';
 import { NOT_WORD, PosixRegexSyntax, WORD, translate, literal } from '../../utils/posix-regex.js';
@@ -272,7 +272,7 @@ export async function runGrep(ctx: GrepContext): Promise<number> {
   for (const { kind, file } of o.files) {
     let text: string;
     try {
-      text = utf8.decode(file === '-' ? await readAllInput(ctx, '-') : await ctx.vfs.readFile(resolve(ctx.cwd, file)));
+      text = utf8.decode(file === '-' ? await readAllInput(ctx, '-') : await ctx.vfs.readFile(operandPath(ctx.cwd, file)));
     } catch (error) {
       await ctx.stderr.write(`grep: ${file}: ${errorText(error)}\n`);
       return 2;
@@ -530,7 +530,7 @@ export async function runGrep(ctx: GrepContext): Promise<number> {
     }
     // `grep -r PAT` with no operand names what it finds without a "./".
     const display = noOperands && recursive ? '' : operand;
-    await walk(display, resolve(ctx.cwd, operand), true);
+    await walk(display, operandPath(ctx.cwd, operand), true);
   }
   await flush();
   if (o.quiet && selectedAny) return 0;

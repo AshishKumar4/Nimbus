@@ -1,4 +1,4 @@
-import { resolve } from '../../utils/path.js';
+import { operandPath } from '../../utils/path.js';
 import { compressGzip, decompressGzip } from '../../utils/archive.js';
 import { parseArgs } from '../../utils/args.js';
 import { isVfsError } from '../../../../vfs/vfs-error.js';
@@ -26,7 +26,7 @@ export async function gzipFiles(ctx, files, options) {
             exitCode = 2;
     };
     for (const file of files) {
-        const path = resolve(ctx.cwd, file);
+        const path = operandPath(ctx.cwd, file);
         try {
             if (options.decompress && !path.endsWith('.gz')) {
                 await warn(`${file}: unknown suffix -- ignored`, true);

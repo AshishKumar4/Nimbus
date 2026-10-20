@@ -1,4 +1,4 @@
-import { resolve } from '../../utils/path.js';
+import { operandPath } from '../../utils/path.js';
 import { dispatchWorkspaceRequest, hopInit, sendHop, walkRedirects, workspaceRequestPort } from './kernel-fetch.js';
 import { MAX_REDIRECTS } from '../../../../runtime/http-redirect-policy.js';
 import { NIMBUS_AI_TOKEN_ENV, requestCarriesSessionAiToken } from '../../../../_shared/ai-egress.js';
@@ -44,7 +44,7 @@ class CurlHeaderSink {
         if (this.target === null || this.target === '-')
             return;
         try {
-            (await this.ctx.vfs.writeFile(resolve(this.ctx.cwd, this.target), ''));
+            (await this.ctx.vfs.writeFile(operandPath(this.ctx.cwd, this.target), ''));
         }
         catch (error) {
             throw new CurlHeaderWriteError('create', this.target, error);
@@ -61,7 +61,7 @@ class CurlHeaderSink {
                 return;
             }
             this.contents.push(block);
-            (await this.ctx.vfs.writeFile(resolve(this.ctx.cwd, this.target), this.contents.join('')));
+            (await this.ctx.vfs.writeFile(operandPath(this.ctx.cwd, this.target), this.contents.join('')));
         }
         catch (error) {
             throw new CurlHeaderWriteError('write', this.target, error);
@@ -345,7 +345,7 @@ async function resolveCurlData(ctx, parts) {
             }
             else {
                 try {
-                    value = (await ctx.vfs.readFileString(resolve(ctx.cwd, value)));
+                    value = (await ctx.vfs.readFileString(operandPath(ctx.cwd, value)));
                 }
                 catch (error) {
                     throw new Error(`Failed to open ${part.value}: ${error instanceof Error ? error.message : String(error)}`);
@@ -485,7 +485,7 @@ async function writeCurlOutput(ctx, options, body) {
         cancelStreamBody(body);
         throw new Error('curl: internal error — streaming body cannot be written to an output file');
     }
-    (await ctx.vfs.writeFile(resolve(ctx.cwd, options.outputFile), body));
+    (await ctx.vfs.writeFile(operandPath(ctx.cwd, options.outputFile), body));
 }
 /**
  * Relay a streaming body to stdout chunk-by-chunk as bytes arrive — this is

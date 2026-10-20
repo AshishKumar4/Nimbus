@@ -1,4 +1,4 @@
-import { resolve } from '../../utils/path.js';
+import { operandPath } from '../../utils/path.js';
 import { CLEAR, HOME, HIDE_CURSOR, SHOW_CURSOR, ERASE_LINE, INVERT, BOLD, RST, moveTo, parseKey } from '../term-screen.js';
 import { isVfsError } from '../../../../vfs/vfs-error.js';
 // ─── Content height (screen minus status bar) ───
@@ -209,7 +209,7 @@ const command = async (ctx) => {
     let content;
     let fileName;
     if (ctx.args.length > 0) {
-        const path = resolve(ctx.cwd, ctx.args[0]);
+        const path = operandPath(ctx.cwd, ctx.args[0]);
         try {
             content = (await ctx.vfs.readFileString(path));
             fileName = ctx.args[0];

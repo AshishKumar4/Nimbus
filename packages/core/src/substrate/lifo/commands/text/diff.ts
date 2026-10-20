@@ -1,7 +1,7 @@
 import type { Command } from '../types.js';
 import { getopt, type GetoptSpec } from '../../utils/args.js';
 import { concatBytes, readAllInput, writeBytes } from '../../utils/bytes-io.js';
-import { basename, resolve } from '../../utils/path.js';
+import { basename, operandPath } from '../../utils/path.js';
 import { isVfsError, strerror } from '../../../../vfs/vfs-error.js';
 import { statOrThrow, type VfsStat } from '../../../../vfs/vfs.js';
 import { shellEscape } from '../../../../_shared/shell-quote.js';
@@ -273,7 +273,7 @@ const command: Command = async (ctx) => {
   };
   const inspect = async (f: 0 | 1) => {
     try {
-      stats[f] = names[f] === '-' ? null : await statOrThrow(ctx.vfs, resolve(ctx.cwd, names[f]));
+      stats[f] = names[f] === '-' ? null : await statOrThrow(ctx.vfs, operandPath(ctx.cwd, names[f]));
     } catch (error) {
       await failed(names[f], error);
     }

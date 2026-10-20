@@ -1,4 +1,4 @@
-import { resolve } from '../../utils/path.js';
+import { operandPath } from '../../utils/path.js';
 import { isVfsError } from '../../../../vfs/vfs-error.js';
 function extractStrings(data, minLen) {
     const results = [];
@@ -47,7 +47,7 @@ const command = async (ctx) => {
         return 1;
     }
     for (const file of files) {
-        const path = resolve(ctx.cwd, file);
+        const path = operandPath(ctx.cwd, file);
         try {
             const data = (await ctx.vfs.readFile(path));
             for (const s of extractStrings(data, minLen)) {

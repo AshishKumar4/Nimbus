@@ -5,8 +5,8 @@ import { WaveIngest } from './wave-ingest.js';
 import { runtimeStatOf } from '../vfs/composite.js';
 import { abandon, andThen, isCharacterDevice, isPromise, readDeclaredSource, readRangeOrWhole, syncValue } from '../vfs/vfs.js';
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
-import { entryVfsPath } from '../vfs/path-walk.js';
-import { fsError, handedSpelling, MAX_LINK_HOPS, walkBeneath } from './beneath-walk.js';
+import { entryVfsPath, walkVfsPath } from '../vfs/path-walk.js';
+import { fsError, handedSpelling, walkBeneath } from './beneath-walk.js';
 import { modeAllows } from '../vfs/posix-access.js';
 import { sameFileVersion } from './os-contracts.js';
 export { fsError, walkBeneath } from './beneath-walk.js';
@@ -50,12 +50,12 @@ export class SqliteRuntimeFsBridge {
      * consulted with the fully resolved path, so a `..` or an absolute path
      * inside a capability can never reach `/proc` or `/dev` sideways.
      */
-    locate(path, followSymlinks) {
+    locate(path, followSymlinks, creating) {
         // The namespace declined the walk's first name, and with it every name below.
         const walked = this.walkOnSqlite(path, followSymlinks);
         if (walked !== null)
             return walked.end === 'absent' ? { path: walked.name, absent: true } : { path: walked.name };
-        const found = this.resolveDataPath(path, followSymlinks);
+        const found = this.resolveDataPath(path, followSymlinks, creating);
         if (found === null)
             return null;
         const resolved = found.reached;
@@ -67,10 +67,8 @@ export class SqliteRuntimeFsBridge {
     /**
      * The path resolved in one walk on SQLite (SqliteVFS.resolveName), or null
      * for the walk component by component (resolveDataPath): for a walk
-     * beneath a root, for a spelling with `..` (that walk takes `..`
-     * physically, after the link before it, where the engine's names take it
-     * lexically), and where the namespace lays a mount or a directory above
-     * one.
+     * beneath a root, for a spelling with `..`, and where the namespace lays a
+     * mount or a directory above one. Plain SQLite names keep their one walk.
      */
     walkOnSqlite(path, followSymlinks) {
         if (typeof path !== 'string' && path.beneath)
@@ -495,9 +493,10 @@ export class SqliteRuntimeFsBridge {
     mkdir(path, options = {}) {
         return called({ syscall: 'mkdir', path }, () => {
             const owner = options.mutationOwner;
+            const operand = typeof path === 'string' ? entryVfsPath(path).path : { ...path, path: entryVfsPath(path.path).path };
             let located;
             if (options.recursive) {
-                const found = this.locate(path, false);
+                const found = this.locate(operand, false, options);
                 if (found === null) {
                     this.leaseAllows(this.pathArgument(path), owner);
                     throw callError('ELOOP', { syscall: 'mkdir', path });
@@ -507,7 +506,7 @@ export class SqliteRuntimeFsBridge {
                 // owner holds a subtree beside it. It stats the name, following links,
                 // as coreutils and Node do after EEXIST: a link to a directory is
                 // already there.
-                if (this.mayExist(found) && this.stat(path)?.type === 'directory')
+                if (this.mayExist(found) && this.stat(operand)?.type === 'directory')
                     return;
                 // A lease on a directory also covers names inside it that resolve
                 // elsewhere through a symlink, so the literal path is checked as well.
@@ -515,7 +514,7 @@ export class SqliteRuntimeFsBridge {
                 located = this.reached(found, owner);
             }
             else {
-                located = this.locateMutation(path, false, 'mkdir', owner);
+                located = this.locateMutation(operand, false, 'mkdir', owner);
             }
             if (located.mount) {
                 located.mount.mkdir(located.path, { recursive: !!options.recursive, mode: options.mode });
@@ -577,7 +576,12 @@ export class SqliteRuntimeFsBridge {
         const call = { syscall: 'rename', path: from, dest: to };
         return called(call, () => {
             const source = this.locateMutation(from, false, call, options.mutationOwner);
-            const target = this.locateMutation(to, false, call, options.mutationOwner);
+            const target = this.locateMutation(to, false, call, options.mutationOwner, true);
+            // A new name ending in `/` is a directory's: anything else renamed to it is ENOTDIR (rename(2)).
+            const moved = this.stat(from, { followSymlinks: false });
+            if (entryVfsPath(typeof to === 'string' ? to : to.path).directory && moved !== null && moved.type !== 'directory') {
+                throw callError('ENOTDIR', call);
+            }
             // A name on a mount is renamed by the namespace: within one mount by that
             // mount, and otherwise refused in the namespace's order (EBUSY for a
             // mount point, then EXDEV between two filesystems and on a backend with
@@ -600,8 +604,9 @@ export class SqliteRuntimeFsBridge {
     readlink(path) {
         return called({ syscall: 'readlink', path }, () => {
             const located = this.locate(path, false);
+            // The links before it loop (readlink(2)'s ELOOP).
             if (located === null)
-                return null;
+                throw callError('ELOOP', { syscall: 'readlink', path });
             if (located.mount)
                 return mountOp(located.mount.readlink, 'readlink', path)(located.path);
             const p = located.path;
@@ -837,7 +842,7 @@ export class SqliteRuntimeFsBridge {
         return this.descriptors.path(directory) + '/' + path.path;
     }
     /** The walk component by component: the name reached and its spelling for the namespace (walkBeneath's BeneathReached). */
-    resolveDataPath(path, followSymlinks) {
+    resolveDataPath(path, followSymlinks, creating) {
         if (typeof path !== 'string' && path.beneath) {
             // The root is found by name, so every directory above it must grant
             // search (VFS-COMP-006) before anything is looked up beneath it.
@@ -856,114 +861,109 @@ export class SqliteRuntimeFsBridge {
             }
         }
         const spelled = this.pathArgument(path);
-        const pending = spelled.split('/').filter(Boolean);
-        const resolved = [];
-        let hops = 0;
         // Where names began going to a backend that resolves its own paths, for its spelling (handedSpelling).
         let handoff = null;
-        while (pending.length > 0) {
-            const segment = pending.shift();
-            if (segment === undefined)
-                break;
-            if (segment === '.')
-                continue;
-            if (segment === '..') {
-                resolved.pop();
-                continue;
-            }
-            const candidate = [...resolved, segment].join('/');
-            const isFinal = pending.length === 0;
-            if (!followSymlinks && isFinal) {
-                // Not followed, the last name is no link to read; handed to a backend that resolves its own paths, it keeps its spelling.
-                if (handoff === null && this.namespace?.composes('/' + candidate) && this.namespace.resolvedByBackend('/' + candidate, '/', '/' + candidate)) {
-                    handoff = { base: '/' + resolved.join('/'), rest: [segment] };
-                }
-                resolved.push(segment);
-                continue;
-            }
-            // On a mount, or a directory above one, the namespace answers whether
-            // this component is a link (the SQLite rows it covers, links among
-            // them, are never followed). The walk itself stays here, except on a
-            // mount whose backend resolves its own paths: its links are its own.
-            if (this.namespace?.composes('/' + candidate)) {
-                const to = '/' + [...resolved, segment, ...pending].join('/');
-                const handed = this.namespace.resolvedByBackend('/' + candidate, '/', to);
-                if (handed)
-                    handoff ??= { base: '/' + resolved.join('/'), rest: [segment, ...pending] };
-                const link = handed ? null : this.mountedLink('/' + candidate);
-                if (link === null) {
-                    resolved.push(segment);
-                    continue;
-                }
-                if (++hops > MAX_LINK_HOPS)
-                    return null;
-                if (link.startsWith('/'))
-                    resolved.length = 0;
-                pending.unshift(...link.split('/').filter(Boolean));
+        let scanned = null;
+        const walk = () => walkVfsPath(spelled, (prefix, final, components, at) => {
+            if (scanned !== components) {
+                scanned = components;
                 handoff = null;
-                continue;
             }
-            if (!followSymlinks && isFinal) {
-                resolved.push(segment);
-                continue;
-            }
-            if (this.vfs.kind(candidate) !== 'symlink') {
-                resolved.push(segment);
-                continue;
-            }
-            // The link's own target, walked here component by component as the
-            // rest of the path is: it may lead onto a mount, which SQLite cannot
-            // resolve inside itself (a link to /m/dir/x answered ENOENT at m).
-            // Hops are counted, as Linux does (40): a link met again on a longer
-            // path is one more hop, not a cycle.
-            if (++hops > MAX_LINK_HOPS)
+            const composed = this.namespace?.composes(prefix) === true;
+            const parent = prefix.slice(0, prefix.lastIndexOf('/'));
+            if (composed && this.namespace?.resolvedByBackend(prefix, '/', `${prefix}/${components.slice(at + 1).join('/')}`)) {
+                handoff ??= { base: parent, rest: components.slice(at) };
                 return null;
-            const target = this.vfs.readlink(candidate);
-            // A relative target is taken from the link's directory under the
-            // name the engine gives it: a confined caller may spell its own /tmp
-            // by its storage name, and the engine names it /tmp.
-            const from = target.startsWith('/') ? '' : this.vfs.resolveName(resolved.join('/'), false)?.name ?? resolved.join('/');
-            resolved.length = 0;
-            resolved.push(...from.split('/').filter(Boolean));
-            pending.unshift(...target.split('/').filter(Boolean));
-            handoff = null;
-        }
-        const reached = resolved.join('/');
-        return { reached, spelling: handedSpelling(handoff, '/' + reached, spelled.endsWith('/')) };
-    }
-    /**
-     * A mounted (or composed) entry's link target, or null when it is not a
-     * link or not there, or when the namespace has no name for where it leads
-     * (linkLeadsTo): then the walk keeps the link's own name, and the
-     * namespace hands it to the backend that follows it.
-     */
-    mountedLink(path) {
-        let stat;
+            }
+            if (final && !followSymlinks)
+                return null;
+            const mounted = this.mounted;
+            const next = components[at + 1];
+            // Plain mounted descent is the final backend call's to judge; a component cancelled or ended here must be checked before reduction.
+            const directory = !final && (!composed || next === '' || next === '.' || next === '..');
+            let stat;
+            try {
+                stat = composed && mounted !== undefined
+                    ? mounted.stat(prefix, { follow: false })
+                    : this.vfs.statIfPresent(prefix, false, 'ENOTDIR');
+            }
+            catch (error) {
+                if (!composed || (!hasErrorCode(error, 'ENOENT') && !hasErrorCode(error, 'ENOTDIR')))
+                    throw error;
+                if (!directory)
+                    return null;
+                if (hasErrorCode(error, 'ENOTDIR'))
+                    throw fsError('ENOTDIR', 'path', path);
+                stat = null;
+            }
+            if (stat?.type === 'symlink') {
+                if (composed && mounted?.readlink !== undefined) {
+                    const target = this.linkLeadsTo(prefix, mounted.readlink(prefix));
+                    if (target !== null)
+                        return () => target;
+                }
+                else {
+                    return () => {
+                        const target = this.vfs.readlink(prefix);
+                        // Confined storage names are read back in the engine's caller names.
+                        const from = target.startsWith('/') ? '' : this.vfs.resolveName(parent, false)?.name ?? parent;
+                        return target.startsWith('/') ? target : `/${from.replace(/^\/+/, '')}/${target}`;
+                    };
+                }
+            }
+            if (directory) {
+                if (stat === null) {
+                    if (creating === undefined)
+                        throw fsError('ENOENT', 'path', path);
+                    // mkdir -p makes even a missing name that a following `..` leaves behind.
+                    this.leaseAllows(spelled, creating.mutationOwner);
+                    this.mkdir(prefix, { ...creating, recursive: true });
+                }
+                else {
+                    if (stat.type !== 'directory')
+                        throw fsError('ENOTDIR', 'path', path);
+                    if (!modeAllows(stat, 1, this.vfs.cred))
+                        throw fsError('EACCES', 'path', path);
+                }
+            }
+            return null;
+        }, () => { throw LINK_LOOP; });
+        let reached;
         try {
-            stat = this.mounted.stat(path, { follow: false });
+            reached = walk();
         }
         catch (error) {
-            const code = error.code;
-            if (code === 'ENOENT' || code === 'ENOTDIR')
+            if (error === LINK_LOOP)
                 return null;
             throw error;
         }
-        if (stat === null || stat.type !== 'symlink' || typeof this.mounted.readlink !== 'function')
-            return null;
-        return this.linkLeadsTo(path, this.mounted.readlink(path));
+        return { reached: reached.slice(1), spelling: handedSpelling(handoff, reached, spelled.endsWith('/')) };
     }
     /** Where the link at `path`, reading `link`, leads: the namespace's link-root rule (CompositeVFS.linkLeadsTo); SQLite alone, its text. */
     linkLeadsTo(path, link) {
         return this.namespace === undefined ? link : this.namespace.linkLeadsTo(path, link);
     }
     /** `call`: the syscall a refusal names, or the whole call when it names two paths. */
-    locateMutation(path, followSymlinks, call, owner) {
+    /** `absentDirectory`: an absent entry named with a trailing slash may be made here (a directory renamed to it); otherwise it is ENOENT, only mkdir makes one. */
+    locateMutation(path, followSymlinks, call, owner, absentDirectory = false) {
         // A lease on a directory also covers names inside it that resolve
         // elsewhere through a symlink, so the literal path is checked as well.
         this.leaseAllows(this.pathArgument(path), owner);
-        const located = this.locate(path, followSymlinks);
+        const failure = typeof call === 'string' ? { syscall: call, path } : call;
+        // An entry's trailing slash (unlink, rmdir, rename, rm of `link/`) names the
+        // entry itself, never a link's target; it only asks that the entry be a directory.
+        const entry = followSymlinks ? null : entryVfsPath(typeof path === 'string' ? path : path.path);
+        const lookup = entry === null || !entry.directory ? path : typeof path === 'string' ? entry.path : { ...path, path: entry.path };
+        const located = this.locate(lookup, followSymlinks);
         if (located === null)
-            throw callError('ELOOP', typeof call === 'string' ? { syscall: call, path } : call);
+            throw callError('ELOOP', failure);
+        if (entry?.directory) {
+            const stat = this.stat(lookup, { followSymlinks: false });
+            if (stat === null && !absentDirectory)
+                throw callError('ENOENT', failure);
+            if (stat !== null && stat.type !== 'directory')
+                throw callError('ENOTDIR', failure);
+        }
         return this.reached(located, owner);
     }
     /** The name a mutation by `owner` reaches, checked against the leases on a mount as on SQLite. */
@@ -1100,6 +1100,7 @@ export class SqliteRuntimeFsBridge {
 }
 /** A `..` component in a path's spelling. */
 const DOT_DOT_SEGMENT = /(?:^|\/)\.\.(?:\/|$)/;
+const LINK_LOOP = Symbol('link loop');
 /** A mounted backend's optional operation, or ENOTSUP when it has none. */
 function mountOp(fn, ...args) {
     if (typeof fn !== 'function')
@@ -1123,14 +1124,16 @@ function callError(code, call, options) {
  * engine's own errors carry a code and name neither a call nor a path (their
  * message names a storage key): each is named for the call's syscall and the
  * caller's paths, keeps its reason (`detail`) and its own marks, and is the
- * cause. An error naming a call or a path (the bridge's own refusals, a
- * mount's, a pending import's) or carrying no code leaves as it is.
+ * cause. A path walk's refusal (`syscall: 'path'`) is named for this call.
+ * Other errors naming a call or a path (the bridge's own refusals, a mount's,
+ * a pending import's) or carrying no code leave as they are.
  */
 function failure(error, call) {
     if (typeof error !== 'object' || error === null || !('code' in error) || typeof error.code !== 'string')
         return error;
     const named = ('syscall' in error && typeof error.syscall === 'string') || ('path' in error && typeof error.path === 'string');
-    if (named)
+    const walking = 'syscall' in error && error.syscall === 'path';
+    if (named && !walking)
         return error;
     const detail = 'detail' in error && typeof error.detail === 'string' ? error.detail : undefined;
     const marks = Object.fromEntries(Object.entries(error).filter(([key]) => !NAMING_FIELDS.has(key)));

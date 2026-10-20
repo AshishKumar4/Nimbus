@@ -1,4 +1,4 @@
-import { resolve, basename } from '../../utils/path.js';
+import { operandPath, basename } from '../../utils/path.js';
 import { isVfsError, VFS_STRERROR } from '../../../../vfs/vfs-error.js';
 /**
  * cp's and mv's operands, as GNU's read them: `-t DIR SOURCE...` or
@@ -12,7 +12,7 @@ export async function resolveCopyTargets(ctx, positional, targetDirectory) {
     const rawDest = targetDirectory ?? positional[positional.length - 1];
     if (sources.length === 0 || rawDest === undefined)
         return null;
-    const dest = resolve(ctx.cwd, rawDest);
+    const dest = operandPath(ctx.cwd, rawDest);
     let stat;
     try {
         stat = await ctx.vfs.stat(dest);
@@ -27,5 +27,5 @@ export async function resolveCopyTargets(ctx, positional, targetDirectory) {
     if ((sources.length > 1 || targetDirectory) && !destIsDir) {
         return `target ${targetDirectory ? 'directory ' : ''}'${rawDest}': ${VFS_STRERROR[stat === null ? 'ENOENT' : 'ENOTDIR']}`;
     }
-    return { sources, rawDest, destIsDir, targetFor: (src) => (destIsDir ? resolve(dest, basename(src)) : dest) };
+    return { sources, rawDest, destIsDir, targetFor: (src) => (destIsDir ? operandPath(dest, basename(src)) : dest) };
 }

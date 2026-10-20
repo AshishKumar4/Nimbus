@@ -23,7 +23,8 @@ export function fsError(code, syscall, path, dest, options = {}) {
 export function handedSpelling(handoff, reached, trailing) {
     if (handoff === null)
         return reached;
-    return `${handoff.base === '/' ? '' : handoff.base}/${handoff.rest.join('/')}${trailing ? '/' : ''}`;
+    const spelling = `${handoff.base === '/' ? '' : handoff.base}/${handoff.rest.join('/')}`;
+    return trailing && !spelling.endsWith('/') ? spelling + '/' : spelling;
 }
 /**
  * A lookup beneath `root` (RESOLVE_BENEATH, a WASI preopen), as the
@@ -61,12 +62,14 @@ export function* walkBeneath(root, path, follow, cred, handedOver, rootSpelling 
         yield { stat: rootSpelling };
     if (name.startsWith('/'))
         throw fsError('ENOTCAPABLE', 'path', path);
-    const pending = name.split('/').filter(Boolean);
+    const pending = name.split('/');
     const resolved = root === '' ? [] : root.split('/');
     let hops = 0;
     let handoff = null;
     while (pending.length > 0) {
         const segment = pending.shift();
+        if (segment === undefined)
+            break;
         const dir = resolved.join('/');
         const candidate = dir === '' ? segment : `${dir}/${segment}`;
         const to = '/' + [dir, segment, ...pending].filter(Boolean).join('/');
@@ -80,7 +83,7 @@ export function* walkBeneath(root, path, follow, cred, handedOver, rootSpelling 
             if (!modeAllows({ ...searched, type: 'directory' }, 1, cred))
                 throw fsError('EACCES', 'path', path);
         }
-        if (segment === '.')
+        if (segment === '' || segment === '.')
             continue;
         if (segment === '..') {
             if (dir === root)
@@ -114,7 +117,7 @@ export function* walkBeneath(root, path, follow, cred, handedOver, rootSpelling 
             resolved.length = 0;
             fromRoot = false;
         }
-        pending.unshift(...target.split('/').filter(Boolean));
+        pending.unshift(...target.split('/'));
         // A link followed after a handoff: the rest as written is no longer what is reached.
         handoff = null;
     }

@@ -1,5 +1,5 @@
 import type { Command, CommandContext, CommandOutputStream } from '../types.js';
-import { resolve } from '../../utils/path.js';
+import { operandPath } from '../../utils/path.js';
 import { CLEAR, HOME, HIDE_CURSOR, SHOW_CURSOR, ERASE_LINE, INVERT, BOLD, RST, moveTo, parseKey, type KeyEvent } from '../term-screen.js';
 import { isVfsError } from '../../../../vfs/vfs-error.js';
 
@@ -306,7 +306,7 @@ function handleEditKey(s: State, key: KeyEvent): boolean {
 async function handleSavePrompt(s: State, key: KeyEvent, ctx: CommandContext): Promise<boolean> { switch (key.type) {
   case 'enter':
     try {
-      const path = resolve(ctx.cwd, s.promptBuf);
+      const path = operandPath(ctx.cwd, s.promptBuf);
       (await saveFile(ctx, path, s.lines));
       s.filePath = path;
       s.modified = false;
@@ -371,7 +371,7 @@ const command: Command = async (ctx) => {
     return 1;
   }
 
-  const filePath = resolve(ctx.cwd, ctx.args[0]);
+  const filePath = operandPath(ctx.cwd, ctx.args[0]);
   const rows = parseInt(ctx.env['LINES'] || '24', 10);
   const cols = parseInt(ctx.env['COLUMNS'] || '80', 10);
 
