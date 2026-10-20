@@ -1359,6 +1359,20 @@ export declare class FacetManager {
      *   session is told how many look generated (legacy-images.ts).
      * A filesystem snapshot or export taken before keeps what it held.
      */
+    /**
+     * The images earlier releases left readable by every account, each made
+     * one principal's, once per session. An image holds what its process could
+     * read, as _imageBlobs leaves the ones it writes:
+     * - a durable application's blobs (DURABLE_IMAGE_DIR): the kernel's alone,
+     *   0400, as only the kernel reads them (resolveDurableWorkerImage);
+     * - a wasm image staged at the top of INLINE_WASM_DIR: the uid of each
+     *   durable application that boots from it, 0400, as that process reads
+     *   it; unlinked when none does, as a launch stages it again.
+     * Process images at the top of PROCESS_IMAGE_DIR go with the image store's
+     * sweep (ImageStore.ensureDir). A filesystem snapshot or export taken
+     * before keeps what it held.
+     */
+    private _closeEarlierImages;
     private _dropEnvironmentsAtRest;
     /**
      * A signal's default action: the process ends with 128+signo whether its

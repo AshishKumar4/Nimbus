@@ -201,15 +201,19 @@ export type ResidentBootSpec = {
  * would be swept into the next snapshot — and that snapshot is what produced
  * the image, so each spawn would grow the thing it just wrote.
  *
- * Kernel-owned and world-readable: the generator writes as CRED_KERNEL, and
- * every process reads through a supervisor binding that enforces its own
- * credential. Mode 0644 is what makes the read succeed for any process by
- * construction rather than by a privilege carve-out in the permission layer,
- * and leaves the bytes beyond reach of the user whose program they encode.
- * Below `/.nimbus`, the kernel's own directory in root's `/`: no user can
- * replace a directory on the way to it (KERNEL_STORE_ROOT, manager.ts).
+ * One directory per uid (processImageDir). An image holds what its process
+ * could read (its program, the files it read at start, a 0600 one among
+ * them), so it is that uid's alone, as the files were: the generator writes
+ * as CRED_KERNEL, and the store's port (ImageBlobStore) leaves each image
+ * owned by its process's uid, mode 0400. A process reads its own through a
+ * supervisor binding that enforces its credential, as a peer host's boot
+ * does. Two uids that run the same program keep a copy each. Below
+ * `/.nimbus`, the kernel's own directory in root's `/`: no user can replace
+ * a directory on the way to it (KERNEL_STORE_ROOT, manager.ts).
  */
 export declare const PROCESS_IMAGE_DIR = ".nimbus/process-images";
+/** The directory of uid `owner`'s process images. */
+export declare function processImageDir(owner: number): string;
 /**
  * Where an embedder keeps content-addressed images of its own (a durable
  * worker's runner, its `vfsTextModules`), named by facetImagePath and read as
@@ -235,8 +239,8 @@ export declare const FACET_IMAGE_DIR = ".nimbus/facet-images";
  */
 export declare function facetImageDigest(image: string | Uint8Array): Promise<string>;
 export declare function facetImagePath(digest: string): string;
-/** The store's own image of `digest` (PROCESS_IMAGE_DIR). */
-export declare function processImagePath(digest: string): string;
+/** The store's image of `digest` for uid `owner`'s processes (processImageDir). */
+export declare function processImagePath(owner: number, digest: string): string;
 /**
  * The digest an image path claims, for the reader's verify-on-read. Content
  * addressing only holds if the bytes are checked against the name they were
