@@ -44,6 +44,14 @@ const CASES = [
   'sort link/../x missing/../f f/; uniq link/../x; sed -n p link/../x',
   'cat < link/../x; cat < missing/../f; printf A > link/../written; cat t/written',
   'before=$PWD; cd d/..; test "$PWD" = "$before"; echo "d=$?"; cd link/..; test "$PWD" = "$before"; echo "link=$?"; cd f/..',
+  // A trailing slash on an entry being removed or renamed names the entry, not a link's target.
+  'mkdir -p d2/in; ln -s d2 l2; rm -r l2/; echo "rm=$?"; ls -1 d2 l2',
+  'mkdir -p d3; ln -s d3 l3; rmdir l3/; echo "rmdir=$?"; ls -1d d3 l3',
+  'mkdir -p d4; ln -s d4 l4; mv l4/ m4; echo "mv=$?"; ls -1d d4 l4',
+  // cp's into-itself check is by where the names lead; mktemp's name is where it made the file; cd needs no search of what .. cancels.
+  'mkdir -p o/sub o/dd; ln -s o/sub l5; cp -r l5/../dd .; echo "cp=$?"; ls -1d dd',
+  'mkdir -p o/sub; ln -s o/sub l6; t=$(mktemp -p l6/..); test -f "$t"; echo "made=$?"; ls o | grep -c tmp',
+  'mkdir locked; chmod 000 locked; cd locked/.. && echo in; chmod 755 locked',
 ];
 
 const run = (line) => `${SETUP}; ${line}; echo "status=$?"`;

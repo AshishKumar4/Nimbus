@@ -114,7 +114,8 @@ async function builtinCd({ args, stderr, state, host }: BuiltinCall): Promise<nu
     for (let at = 0; at < components.length; at++) {
       if (components[at] !== '..') continue;
       const before = resolve('/', ...components.slice(0, at));
-      const stat = await statOrThrow(host.vfs(), operandPath(before, '.'));
+      // That it is a directory, as bash's canonicalizer asks: not that it may be searched.
+      const stat = await statOrThrow(host.vfs(), before);
       if (stat.type !== 'directory') {
         await stderr.write(`cd: ${target}: Not a directory\n`);
         return 1;

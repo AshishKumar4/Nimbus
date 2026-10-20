@@ -1,6 +1,6 @@
 import type { Command } from '../types.js';
 import { parseArgs } from '../../utils/args.js';
-import { operandPath, resolve } from '../../utils/path.js';
+import { operandPath } from '../../utils/path.js';
 import { statOrThrow } from '../../../../vfs/vfs.js';
 
 const spec = {
@@ -46,7 +46,8 @@ const command: Command = async (ctx) => {
       (await ctx.vfs.writeFile(fullPath, ''));
     }
 
-    await ctx.stdout.write(resolve('/', fullPath) + '\n');
+    // The name it was made at: a link before a `..` in the directory is walked, not reduced away.
+    await ctx.stdout.write(fullPath + '\n');
     return 0;
   } catch (e) {
     await ctx.stderr.write(`mktemp: failed to create ${flags.directory ? 'directory' : 'file'}: ${(e as Error).message}\n`);

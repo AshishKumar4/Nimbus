@@ -74,9 +74,12 @@ const command: Command = async (ctx) => {
           exitCode = 1;
           continue;
         }
-        const sourceName = resolve(ctx.cwd, source);
-        const targetName = resolve('/', target);
-        if (targetName === sourceName || targetName.startsWith(`${sourceName}/`)) {
+        // Where they are, through their links: the names as spelled may say either.
+        const sourceAt = await ctx.vfs.realpath(src);
+        const parent = target.slice(0, target.lastIndexOf('/')) || '/';
+        const parentAt = await ctx.vfs.realpath(parent).catch(() => null);
+        const targetAt = parentAt === null ? null : `${parentAt === '/' ? '' : parentAt}/${target.slice(target.lastIndexOf('/') + 1)}`;
+        if (targetAt !== null && (targetAt === sourceAt || targetAt.startsWith(`${sourceAt}/`))) {
           await ctx.stderr.write(`cp: cannot copy a directory, '${source}', into itself, '${rawDest}'\n`);
           exitCode = 1;
           continue;

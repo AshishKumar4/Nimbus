@@ -879,8 +879,17 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     // A lease on a directory also covers names inside it that resolve
     // elsewhere through a symlink, so the literal path is checked as well.
     this.leaseAllows(this.pathArgument(path), owner);
-    const located = this.locate(path, followSymlinks);
-    if (located === null) throw callError('ELOOP', typeof call === 'string' ? { syscall: call, path } : call);
+    const failure = typeof call === 'string' ? { syscall: call, path } : call;
+    // An entry's trailing slash (unlink, rmdir, rename, rm of `link/`) names the
+    // entry itself, never a link's target; it only asks that the entry be a directory.
+    const entry = followSymlinks ? null : entryVfsPath(typeof path === 'string' ? path : path.path);
+    const lookup = entry === null || !entry.directory ? path : typeof path === 'string' ? entry.path : { ...path, path: entry.path };
+    const located = this.locate(lookup, followSymlinks);
+    if (located === null) throw callError('ELOOP', failure);
+    if (entry?.directory) {
+      const stat = this.stat(lookup, { followSymlinks: false });
+      if (stat !== null && stat.type !== 'directory') throw callError('ENOTDIR', failure);
+    }
     return this.reached(located, owner);
   }
 
