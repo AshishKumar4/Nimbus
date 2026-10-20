@@ -50,4 +50,29 @@ export declare function cloneArrays(arrays: ReadonlyMap<string, (string | undefi
 export declare function copyArray(array: readonly (string | undefined)[]): (string | undefined)[];
 /** A subscript's arithmetic as an index of `array`: a negative one counts back from past its last value (still negative where that is before the first). */
 export declare function arrayIndex(array: readonly (string | undefined)[], value: number): number;
+/**
+ * A store's variables beyond `env`'s scalar values, as plain data, from the
+ * store's own table: its export, readonly and declared marks, and its arrays,
+ * each element an `[index, value]` pair (sparse). Names in order, so equal
+ * stores give equal data. lifo keeps no other attribute (integer, case,
+ * nameref, associative arrays are not implemented).
+ */
+export interface VariableAttributes {
+    readonly exported: readonly string[];
+    readonly readonly: readonly string[];
+    readonly declared: readonly string[];
+    readonly arrays: Readonly<Record<string, ReadonlyArray<readonly [number, string]>>>;
+}
+/** `store`'s attributes (VariableAttributes). */
+export declare function attributesOf(store: VariableStore): VariableAttributes;
+/**
+ * `attributes` put back into `store`, whose `env` holds the scalars they were
+ * saved with (`scalars`, those names) and maybe others besides (a
+ * workspace's). Every name the saved state binds (a scalar, an array, a mark)
+ * is as it was saved: its scalar only if it had one, exported only if it
+ * was. Any other keeps what it has.
+ */
+export declare function restoreAttributes(store: VariableStore & {
+    readonly readonlyNames: Set<string>;
+}, attributes: VariableAttributes, scalars: Iterable<string>): void;
 //# sourceMappingURL=variables.d.ts.map
