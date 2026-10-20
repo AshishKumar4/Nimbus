@@ -24,10 +24,13 @@
  *                          flight, could pass for this one's;
  *   ['aligned', rel]       the last restart kept `rel` at its revision (a
  *                          schedule that needs the same revision says so).
- * A restart takes from the process what the last incarnation gave it: a
- * descriptor read across one may be refused (EBADF), and a change of its
- * own begun after one may be refused (EIO) so long as the session holds
- * nothing of it.
+ * A restart is the session's new incarnation (vfs rotateIncarnation, after a
+ * restore to an earlier point): every cursor poisons, and the process's
+ * writer is failed, so a change of its own begun after one may not reach the
+ * session (refused EIO, if it waits). What the process then shows of the
+ * names such a change touched is judged at rest against what the session
+ * holds. A restart here also takes the process's descriptors, which a real
+ * one keeps: it waits for every descriptor read in flight to land first.
  * Reads are stat, readFile, readdir, (awaited) opendir, a directory read
  * through its descriptor, and (awaited) pread, a file's bytes at an offset
  * read through its descriptor; a file past what a process holds whole
@@ -609,6 +612,7 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
     }
     const record = model.begin(step);
     if (record === null) { note(`  (step ${at} skipped: ${JSON.stringify(step)} is not valid now)`); return null; }
+    if (!outside(way) && restarts.length > 0) for (const root of domain) unsure.add(root);
     const publishes = outside(way) && overlaps(unpublished, domain) ? unpublished : null;
     const finish = () => model.finish(record, () => {
       if (outside(way)) peerAt.push({ done: seq(), domain });
@@ -680,6 +684,10 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
   const revsBefore = new Map();
   /** The states the session started again at. */
   const restarts = [];
+  /** Descriptor reads in flight. */
+  const descriptors = new Set();
+  /** Names a change of the process's own begun after a restart touched: what it shows of them is the session's to say. */
+  const unsure = new Set();
   /** The revision the session holds `rel` at. */
   const revisionOf = (rel) => Number(engine.authority.rawVfs.revision(key(rel), CRED_KERNEL));
   const restart = async (at) => {
@@ -687,8 +695,9 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
     stalled = false;
     await engine.release();
     const published = track(engine.publish());
-    for (let i = 0; i < 1_000 && (model.moving() || inflight.has(published)); i++) {
+    for (let i = 0; i < 1_000 && (model.moving() || inflight.has(published) || descriptors.size > 0); i++) {
       while (transport.release('wave'));
+      if (descriptors.size > 0) while (transport.release('lookup') || transport.release('listing'));
       await sleep(5);
     }
     if (model.moving() || inflight.has(published)) { note(`  (step ${at} skipped: a change of the process's is still in flight)`); return; }
@@ -747,7 +756,12 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
         return judge(at, way, op, rel, answer, bound, seq());
       }
       const from = kind === 'node' ? seq() : bound;
-      return void track(read(way, op, rel, offset).then((answer) => {
+      const reading = read(way, op, rel, offset);
+      if (op === 'pread' || op === 'opendir') {
+        descriptors.add(reading);
+        reading.finally(() => descriptors.delete(reading));
+      }
+      return void track(reading.then((answer) => {
         judge(at, way, op, rel, answer, from, seq(), offset);
         // A file past what the process holds whole is never held: its refusals are no miss.
         if (op === 'readFile' && typeof answer === 'string' && answer.length <= WASI_RESIDENT_FILE_CAP_BYTES) {
@@ -797,21 +811,31 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
       const owed = [...missed].filter((rel) => world.get(rel)?.type === 'file').map(key).sort();
       if (ledger.join() !== owed.join()) throw new Finding(`at rest, the program's misses are [${ledger}]; unanswered are [${owed}]`, end);
     }
+    // What the session holds where a change of the process's own after a restart may not have reached it.
+    const truth = new Map(world);
     for (const rel of readable) {
-      const state = world.get(rel);
+      if (![...unsure].some((root) => under(rel, root) || under(root, rel))) continue;
+      const held = normalized(await engine.authority.peerAs(CRED_KERNEL).lstat(key(rel)).catch(() => null));
+      if (held === null) { truth.delete(rel); continue; }
+      const content = held.type === 'file' ? engine.authority.rawVfs.as(CRED_KERNEL).readFile(key(rel)) : undefined;
+      truth.set(rel, held.type === 'directory' ? { type: 'dir', mode: held.mode & 0o777, uid: held.uid, gid: held.gid }
+        : { type: 'file', content: dec.decode(content), size: held.size, mode: held.mode & 0o777, uid: held.uid, gid: held.gid });
+    }
+    for (const rel of readable) {
+      const state = truth.get(rel);
       for (const way of ['own', 'sync']) {
         for (const op of ['stat', state?.type === 'dir' ? 'readdir' : 'readFile']) {
           const answer = await read(way, op, rel);
           if (answer?.code === 'EAGAIN' && way === 'sync' && (op === 'readFile' ? !owedBytes(rel) && (lazy || model.readable(rel, seq(), seq())) : lazy)) continue;
           if (answer?.code === 'EISDIR' && way === 'sync' && gaps.refusedAsDirectory && state?.type === 'dir') continue;
-          if (!answers(op, rel, answer, world)) {
+          if (!answers(op, rel, answer, truth)) {
             throw new Finding(`at rest, ${way} ${op} ${rel || '.'} answered ${JSON.stringify(answer)}; the model holds ${describe(state)}`, end);
           }
         }
       }
       // What the session holds is what the model says, as root sees it: nothing the process wrote was lost.
       const held = normalized(await engine.authority.peerAs(CRED_KERNEL).lstat(key(rel)).catch(() => null));
-      if (!statIs(held, state)) throw new Finding(`at rest, the session holds ${JSON.stringify(held)} at ${rel || '.'}; the model says ${describe(state)}`, end);
+      if (!statIs(held, world.get(rel)) && truth.get(rel) === world.get(rel)) throw new Finding(`at rest, the session holds ${JSON.stringify(held)} at ${rel || '.'}; the model says ${describe(state)}`, end);
     }
   } finally {
     transport.drain();
