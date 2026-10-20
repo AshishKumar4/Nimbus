@@ -85,6 +85,10 @@ const FOUND = {
     schedule: [['own', 'stat', 'd/f'], ['settle'], ['hold', 'wave'], ['own', 'rename', 'd/f', 'd/n'], ['settle'], ['stall'], ['own', 'rename', 'd', 'z'],
       ['input'], ['settle'], ['sync', 'stat', 'z/n'], ['sync', 'stat', 'd/n'], ['unstall'], ['release', 'wave'], ['settle'], ['sync', 'stat', 'z/n']],
   },
+  'a write in a directory read through its descriptor reaches the session': {
+    engines: ['holder'], park: 1298,
+    schedule: [['own', 'stat', 'x/h'], ['own', 'readFile', 'top'], ['own', 'opendir', 'd'], ['root', 'chown', 'x', 1000], ['sync', 'write', 'd/n', 'c1298.2']],
+  },
   'a file a call that cannot wait missed stays a miss until an awaited read answers it': {
     engines: ['node'],
     schedule: [['peer', 'write', 'new', 'not resident'], ['settle'], ['input'], ['settle'], ['sync', 'readFile', 'new'], ['own', 'stat', 'new'], ['settle']],
@@ -109,8 +113,8 @@ const GAPS = {
 };
 
 const scenarios = {};
-for (const [name, { schedule, engines = ENGINES }] of Object.entries(FOUND)) {
-  for (const kind of engines) scenarios[`${name} [${kind}]`] = () => run(kind, schedule);
+for (const [name, { schedule, engines = ENGINES, park }] of Object.entries(FOUND)) {
+  for (const kind of engines) scenarios[`${name} [${kind}]`] = () => run(kind, schedule, park);
 }
 
 // A WASI guest makes one call at a time: a second rename before the first returned is Node's (and RF's, once Node runs on it).
@@ -225,11 +229,12 @@ scenarios['a floating awaited read finishes before a one-shot exits [node]'] = a
   assert.equal(handle.log.exit.code, 0);
 };
 
-async function run(kind, schedule) {
+/** `park`: the seed a drawn schedule parked its replies by (its other replies at random, as drawn). */
+async function run(kind, schedule, park) {
   try {
-    await runSchedule(kind, schedule);
+    await runSchedule(kind, schedule, { parkSeed: park });
   } catch (error) {
-    throw new Error(`${error.message} (${kind}; its steps are above)`);
+    throw new Error(`${error.message} (${kind}${park === undefined ? '' : `, parked by seed ${park}`}; its steps are above)`);
   }
 }
 
