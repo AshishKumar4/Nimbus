@@ -1426,8 +1426,9 @@ class ArithParser {
     return new ArithmeticError(`${this.expr.slice(0, this.pos)}: ${why} (error token is "${this.expr.slice(start, this.pos)}")`);
   }
 
+  /** Blanks and newlines, as bash's arithmetic skips them (cr_whitespace). */
   private skipSpaces(): void {
-    while (this.pos < this.expr.length && (this.expr[this.pos] === ' ' || this.expr[this.pos] === '\t')) {
+    while (this.pos < this.expr.length && (this.expr[this.pos] === ' ' || this.expr[this.pos] === '\t' || this.expr[this.pos] === '\n' || this.expr[this.pos] === '\r')) {
       this.pos++;
     }
   }

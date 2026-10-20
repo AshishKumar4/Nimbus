@@ -62,6 +62,7 @@ const LINES = [
   'a=(10 20); i=1; e=\'a[$i]\'; echo $((e)); f=\'a["1"]\'; echo $((f))',
   // An operand that is not one, and text left after the expression, are errors.
   { line: 'echo $(( 1 + @ ))\necho $(( 2 3 ))\nx="1 2"; echo $((x))\necho end', script: 'bash' },
+  'echo $((1 +\n2 \n)) $(( 3\t*\t2 ))',
 ];
 
 /** bash's diagnostic prefix: `bash: line 1: `, `bash: -c: line 1: `, a script's `./s.sh: line 1: `, and in a function 5.2's `environment: line 1: `. */
