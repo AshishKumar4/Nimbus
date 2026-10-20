@@ -16,6 +16,7 @@
  */
 import { z } from 'zod/v4';
 import { cloneEnv } from '../substrate/lifo/shell/variables.js';
+import { startupAttributes } from '../substrate/lifo/shell/state.js';
 /** A shell's name, the rule an `execId` follows. */
 const ShellIdSchema = z.string().min(1).max(160).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/);
 /** A plain object whose every value `entry` accepts, its own names kept (`__proto__` too), on a null prototype. */
@@ -49,6 +50,10 @@ const ShellStateSchema = z.object({
     env: nameRecord(isString).transform(cloneEnv),
     vars: VariableAttributesSchema.optional(),
 }).strict();
+/** Saved variable attributes (a hosted terminal's JSON), or an error naming what is wrong with them. */
+export function parseVariableAttributes(json) {
+    return VariableAttributesSchema.parse(JSON.parse(json));
+}
 /** A saved shell state, or an error naming what is wrong with it. */
 export function parseShellState(value) {
     return ShellStateSchema.parse(value);
@@ -180,9 +185,12 @@ function withoutCallVariables(vars) {
         arrays,
     };
 }
-/** Whether `vars` says no more than a state without it: every variable of `env` exported, and nothing else. */
+/** Whether `vars` says no more than a state without it: the marks a shell starts with over `env` (startupAttributes), and nothing else. */
 function isDefault(vars, env) {
-    const names = Object.keys(env);
-    return vars.readonly.length === 0 && vars.declared.length === 0 && Object.keys(vars.arrays).length === 0
-        && vars.exported.length === names.length && vars.exported.every((name) => Object.hasOwn(env, name));
+    const startup = startupAttributes(Object.keys(env));
+    return vars.readonly.length === 0 && Object.keys(vars.arrays).length === 0
+        && sameNames(vars.exported, startup.exported) && sameNames(vars.declared, startup.declared);
+}
+function sameNames(names, set) {
+    return names.length === set.size && names.every((name) => set.has(name));
 }
