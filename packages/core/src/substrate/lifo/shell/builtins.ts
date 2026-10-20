@@ -14,11 +14,12 @@ import { writeLossless } from '../utils/bytes-io.js';
 import { encodeLossless } from '../utils/lossless-text.js';
 import { singleQuote } from '../../../_shared/shell-quote.js';
 import { isDecimalInteger, isShellIdentifier } from './names.js';
-import { assignArray, assignVariable } from './variables.js';
+import { assignArray, assignVariable, type ArrayLiteral } from './variables.js';
 import { DEFAULT_HOME } from '../../../constants.js';
 import { ExitSignal, TextSyntaxError, type BuiltinExecutionContext, type BuiltinFn } from './interpreter.js';
 import { resolveJobSpec } from './jobs.js';
 import { evaluateTest } from './test-builtin.js';
+import { ArithmeticError, arithmeticOf } from './expander.js';
 import { isVfsError, strerror } from '../../../vfs/vfs-error.js';
 import { statOrThrow } from '../../../vfs/vfs.js';
 import { runKill, type HostProcessSignals } from '../commands/system/kill.js';
@@ -77,6 +78,7 @@ const BUILTINS: Record<string, (call: BuiltinCall) => Promise<number>> = {
   source: builtinSource,
   '.': builtinSource,
   eval: builtinEval,
+  let: builtinLet,
   alias: builtinAlias,
   unalias: builtinUnalias,
   test: ({ args, stderr, context }) => evaluateTest(args, context.vfs, stderr, context),
@@ -683,7 +685,7 @@ async function builtinDeclare(verb: 'local' | 'declare' | 'typeset', { args, std
       return 1;
     }
 
-    if (eq !== -1 && !(await assignDeclared(state, name, context.arrayElements?.get(index) ?? arg.slice(eq + 1), stderr))) exitCode = 1;
+    if (eq !== -1 && !(await assignDeclared(state, name, context.arrayElements?.get(index) ?? arg.slice(eq + 1), stderr, context))) exitCode = 1;
     // Declared with no value (a local too, which a callee sees): it exists, unset.
     if (eq === -1 && !Object.hasOwn(state.env, name) && !state.arrays.has(name)) state.declaredNames.add(name);
     if (readonlyFlag) state.readonlyNames.add(name);
@@ -693,13 +695,20 @@ async function builtinDeclare(verb: 'local' | 'declare' | 'typeset', { args, std
   return exitCode;
 }
 
-/** The right-hand side of a declaration: a string, or an array assignment's elements (BuiltinExecutionContext.arrayElements). */
-async function assignDeclared(state: ShellState, name: string, value: string | readonly string[], stderr: CommandOutputStream): Promise<boolean> {
+/** The right-hand side of a declaration: a string, or an array assignment's array (BuiltinExecutionContext.arrayElements). */
+async function assignDeclared(
+  state: ShellState, name: string, value: string | ArrayLiteral, stderr: CommandOutputStream, context: BuiltinExecutionContext,
+): Promise<boolean> {
   if (state.readonlyNames.has(name)) {
     (await stderr.write(`${name}: readonly variable\n`));
     return false;
   }
-  return typeof value === 'string' ? assignVariable(state, name, value) : assignArray(state, name, value);
+  if (typeof value === 'string') return assignVariable(state, name, value);
+  for (const refused of value.refused) (await stderr.write(`${refused}\n`));
+  const assigned = assignArray(state, name, value.array);
+  // What it assigned before a refusal is its value when `set -e` ends the shell at it.
+  if (value.refused.length > 0) context.reportedError?.();
+  return assigned;
 }
 
 async function assignEnv(state: ShellState, name: string, value: string, stderr: CommandOutputStream): Promise<boolean> {
@@ -846,6 +855,28 @@ async function runText(name: string, stderr: CommandOutputStream, run: () => Pro
     await stderr.write(`${name}: ${error.message}\n`);
     return 2;
   }
+}
+
+/**
+ * let: each argument's arithmetic in turn; 0 where the last's value is not
+ * 0, 1 where it is. An error is let's own: reported, status 1 (bash 5.2).
+ */
+async function builtinLet({ args, stderr, state, context }: BuiltinCall): Promise<number> {
+  if (args.length === 0) {
+    (await stderr.write('let: expression expected\n'));
+    return 1;
+  }
+  let value = 0;
+  for (const arg of args) {
+    try {
+      value = arithmeticOf(arg, { env: state.env, positionals: context.getPositionals() });
+    } catch (error) {
+      if (!(error instanceof ArithmeticError)) throw error;
+      (await stderr.write(`let: ${error.message}\n`));
+      return 1;
+    }
+  }
+  return value === 0 ? 1 : 0;
 }
 
 /**

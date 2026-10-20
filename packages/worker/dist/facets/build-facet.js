@@ -7,6 +7,7 @@ import { fetchStagedText, stagedAsset } from '../runtime/staged-source.js';
 import { untilAborted } from '@nimbus-sh/core/runtime/wave-contracts.js';
 import { NAPI_WASM_LOADER, NAPI_WASM_TRAMPOLINE, fetchStagedBindingAsset, stagedBinding, } from '../runtime/staged-bindings.js';
 import { OWN_ROLLDOWN_VERSION } from '../napi-wasm-artifacts.generated.js';
+import { holdThreadWatch } from '@nimbus-sh/fabric/thread-stalls.js';
 // The build of the rolldown Nimbus itself depends on, whose JavaScript the facet bundles.
 const ROLLDOWN = stagedBinding(`rolldown@${OWN_ROLLDOWN_VERSION}`);
 /**
@@ -247,7 +248,8 @@ async function beginCall(ctx, facet, signal, onWait) {
             endFetch();
             signal.throwIfAborted();
         }
-        return () => { endFetch(); finished(); };
+        const watched = holdThreadWatch(ctx, 'build facet');
+        return () => { watched(); endFetch(); finished(); };
     }
     catch (error) {
         finished();

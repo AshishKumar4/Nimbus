@@ -1,4 +1,4 @@
-import { lex, TokenReader } from './lexer.js';
+import { arithmeticForParts, lexArrayElements, TokenReader } from './lexer.js';
 import { BINARY_OPERATORS, UNARY_OPERATORS } from './conditional-operators.js';
 import { TokenKind, } from './types.js';
 export class ParseError extends Error {
@@ -298,9 +298,30 @@ class Parser {
             }
         }
         if (token.kind === TokenKind.LParen) {
+            const expression = this.readArithmeticCommand();
+            if (expression !== null)
+                return { type: 'arithmetic', expression, redirections: this.parseTrailingRedirections() };
             return this.parseSubshell();
         }
         return this.parseSimpleCommand();
+    }
+    /**
+     * `((expression))` at the next token, as the reader reads it
+     * (TokenReader.readArithmeticCommand, which also says whether the two `(`
+     * are one `((`, an alias's text and the text after it joined); null where
+     * it is no such command.
+     */
+    readArithmeticCommand() {
+        if (this.peek().kind !== TokenKind.LParen || this.peekAt(1).kind !== TokenKind.LParen)
+            return null;
+        this.rereadFromHere();
+        const token = this.reader.readArithmeticCommand();
+        if (token === null)
+            return null;
+        this.tokens.push(token);
+        this.marks.push(undefined);
+        this.pos++;
+        return token.value;
     }
     parseDoubleBracketCommand() {
         this.advance();
@@ -433,6 +454,9 @@ class Parser {
     }
     parseFor() {
         this.expectWord('for');
+        const header = this.readArithmeticCommand();
+        if (header !== null)
+            return this.parseArithmeticFor(header);
         const varToken = this.expect(TokenKind.Word);
         const variable = varToken.value;
         const variableError = identifierError(varToken, true);
@@ -461,6 +485,26 @@ class Parser {
         this.expectWord('done');
         const redirections = this.parseTrailingRedirections();
         return { type: 'for', variable, ...(variableError === null ? {} : { variableError }), words, body, redirections };
+    }
+    /** `for ((init; test; step))` and its body, `do … done` or `{ … }`, as bash's parser reads them. */
+    parseArithmeticFor(header) {
+        const parts = arithmeticForParts(header);
+        if (parts === null)
+            throw new ParseError('syntax error: arithmetic expression required', this.peek().pos);
+        const [init, test, step] = parts;
+        this.skipSeparators();
+        let body;
+        if (this.isWord('{')) {
+            this.advance();
+            body = this.parseCompoundList(['}']);
+            this.expectWord('}');
+        }
+        else {
+            this.expectWord('do');
+            body = this.parseCompoundList(['done']);
+            this.expectWord('done');
+        }
+        return { type: 'arithmetic_for', init, test, step, body, redirections: this.parseTrailingRedirections() };
     }
     parseLoop(keyword) {
         this.expectWord(keyword);
@@ -746,10 +790,20 @@ function assignmentHead(token) {
     const name = /^[a-zA-Z_][a-zA-Z0-9_]*/.exec(first.text)?.[0];
     if (name === undefined)
         return null;
-    // The characters after the name, each with whether it is quoted.
+    const rest = operatorAfter(parts, name.length);
+    return rest === null ? null : { ...rest, name };
+}
+/**
+ * The `[subscript]` (if any), `+` (if any) and `=` that start at `start`
+ * characters into an assignment word, as bash's assignment() reads them: each
+ * bracket, `+` and `=` unquoted, a subscript's own characters quoted or not;
+ * with the length of the word through the `=`. Null where they are not there.
+ */
+function operatorAfter(parts, start) {
+    // The characters after `start`, each with whether it is quoted.
     let part = 0;
-    let at = name.length;
-    let length = name.length;
+    let at = start;
+    let length = start;
     const next = () => {
         for (; part < parts.length; part++, at = 0) {
             const current = parts[part];
@@ -785,17 +839,30 @@ function assignmentHead(token) {
     }
     if (char === null || char.char !== '=' || char.quoted)
         return null;
-    return { length, name, ...(subscript === undefined ? {} : { subscript }), append };
+    return { length, ...(subscript === undefined ? {} : { subscript }), append };
 }
-/** `(word …)` — the words inside are lexed and expanded like any argument. */
+/**
+ * `(element …)` — each a word lexed like any argument's. One that begins
+ * `[subscript]=` or `[subscript]+=`, its `[` unquoted, is written at that
+ * subscript (bash's compound assignment); `"[0]=x"` and `\[0]=x` are words.
+ */
 function parseArrayLiteral(text) {
     if (!text.startsWith('(') || !text.endsWith(')'))
         return null;
     const elements = [];
-    for (const token of lex(text.slice(1, -1))) {
+    for (const token of lexArrayElements(text.slice(1, -1))) {
         if (token.kind !== TokenKind.Word)
             continue;
-        elements.push(token.parts ?? [{ text: token.value, quoted: 'none' }]);
+        const parts = token.parts ?? [{ text: token.value, quoted: 'none' }];
+        const [first] = parts;
+        const head = first !== undefined && first.quoted === 'none' && first.commandSubstitution === undefined && first.text.startsWith('[')
+            ? operatorAfter(parts, 0)
+            : null;
+        if (head === null || head.subscript === undefined) {
+            elements.push({ word: parts });
+            continue;
+        }
+        elements.push({ word: partsAfter(token, head.length), subscript: head.subscript, ...(head.append ? { append: true } : {}) });
     }
     return elements;
 }

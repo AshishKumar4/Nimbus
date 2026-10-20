@@ -12,6 +12,9 @@ import type {
   GroupNode,
   SubshellNode,
   RedirectionNode,
+  ArithmeticCommandNode,
+  ArithmeticForNode,
+  ArrayElementNode,
   AssignmentNode,
   WordPart,
 } from './types.js';
@@ -34,12 +37,14 @@ import { execRefusal } from '../../../shell/exec-dispatch.js';
 import { withRecall } from '../../../vfs/recall.js';
 import { parseAssignment, ParseError, ScriptLines } from './parser.js';
 import {
-  expandWords, expandWord, expandPatternWord, evaluateSubscript, ExpansionError,
+  expandWords, expandWord, expandPatternWord, expandSubscript, arithmeticOf, arithmeticValue, ArithmeticError, ExpansionError,
   type ExpandContext, type CapturedCommand,
 } from './expander.js';
 import { evaluateDoubleBracketWords } from './test-builtin.js';
 import { isPipeEnd, PipeChannel } from './pipe.js';
-import { arrayFor, assignArray, assignVariable, restoreVariable, saveVariable, type SavedVariable } from './variables.js';
+import {
+  arrayFor, arrayIndex, assignArray, assignVariable, lastIndex, restoreVariable, saveVariable, type ArrayLiteral, type SavedVariable,
+} from './variables.js';
 import { forkShellState, type ShellState } from './state.js';
 import { exitCodeForAbortSignal, KILLED_BY_SIGPIPE } from './signals.js';
 import { isBrokenPipe, isRefusedWrite, textCapture } from '../utils/bytes-io.js';
@@ -52,6 +57,7 @@ import { isDecimalInteger } from './names.js';
 import { statOrThrow } from '../../../vfs/vfs.js';
 import { yieldToEventLoop } from '../utils/event-loop.js';
 import { WorkThread } from './work-thread.js';
+import { DiscardSignal } from './discard.js';
 
 // ─── Signal classes for control flow ───
 
@@ -78,16 +84,14 @@ export class ExitSignal {
 /** A syntax error in the text eval or `.` reads (not one met running it, a command substitution's): theirs to answer. */
 export class TextSyntaxError extends Error {}
 
+/** A function call past the nesting bound (functionNestingLimit). */
+export class FunctionNestingSignal extends DiscardSignal {}
+
 /**
- * A function call past the nesting bound (functionNestingLimit): the rest of
- * the line it is in is discarded (bash's jump_to_top_level(DISCARD)): a
- * shell goes on with the next line it reads, its own or a `source`d file's
- * or a trap's, with $? 1; a child shell (subshell, substitution, pipeline
- * element, job) ends with 1. Neither `||`, `if` nor a loop goes on.
+ * A command of assignments alone that could not assign (a readonly name, a
+ * bad array subscript), as bash's expand_word_list_internal discards it.
  */
-export class FunctionNestingSignal {
-  readonly exitCode = 1;
-}
+export class AssignmentErrorSignal extends DiscardSignal {}
 
 /**
  * The deepest shell functions nest where FUNCNEST does not lower it. Bash
@@ -129,8 +133,10 @@ function redirectionDiagnostic(error: RedirectionOpenError): string {
 
 export interface BuiltinExecutionContext {
   interactive?: boolean;
-  /** A declaration builtin's arguments written as array assignments, `name=(…)`, by index: their elements, each expanded as a word. */
-  arrayElements?: ReadonlyMap<number, readonly string[]>;
+  /** A declaration builtin's arguments written as array assignments, `name=(…)`, by index: their arrays (Interpreter.arrayLiteral). */
+  arrayElements?: ReadonlyMap<number, ArrayLiteral>;
+  /** bash's report_error, after a builtin reports an error the shell's own: under `set -e` the shell ends there. */
+  reportedError?(): void;
   vfs: ProcessView;
   /** The working directory a builtin resolves its relative path operands against. */
   cwd: string;
@@ -272,6 +278,15 @@ function commandWordText(cmd: SimpleCommandNode): string | null {
 }
 
 /** A declaration builtin's name, written unquoted: its compound array assignments are arrays. */
+/** What an assignment leaves its caller to report (Interpreter.applyAssignment). */
+interface AssignmentOutcome {
+  readonly diagnostics: readonly string[];
+  readonly failed: boolean;
+}
+
+/** An assignment that did what it was asked, with nothing to report. */
+const ASSIGNED: AssignmentOutcome = { diagnostics: [], failed: false };
+
 function isDeclarationWord(word: readonly WordPart[]): boolean {
   const text = literalWordText(word);
   return text === 'declare' || text === 'typeset' || text === 'local';
@@ -471,7 +486,7 @@ export class Interpreter {
           try {
             exitCode = await this.executeList(list, io);
           } catch (error) {
-            if (!(error instanceof FunctionNestingSignal) || !readsLines || this.child) throw error;
+            if (!(error instanceof DiscardSignal) || !readsLines || this.child) throw error;
             exitCode = error.exitCode;
             this.lastExitCode = exitCode;
             this.setPipestatus([exitCode]);
@@ -770,6 +785,10 @@ export class Interpreter {
         return (await this.executeSimpleCommand(cmd, io));
       case 'double_bracket':
         return (await this.executeDoubleBracket(cmd, io));
+      case 'arithmetic':
+        return (await this.executeArithmetic(cmd, io));
+      case 'arithmetic_for':
+        return (await this.executeArithmeticFor(cmd, io));
       case 'if':
         return (await this.executeIf(cmd, io));
       case 'for':
@@ -826,13 +845,79 @@ export class Interpreter {
           // A new BASH_REMATCH, as bash 5.2 makes one: whatever the old one was, readonly too, it is gone.
           setRematch: (values) => {
             this.config.readonlyNames.delete('BASH_REMATCH');
-            assignArray(this.config, 'BASH_REMATCH', values);
+            assignArray(this.config, 'BASH_REMATCH', [...values]);
           },
         },
       )));
       this.lastExitCode = exitCode;
       return exitCode;
     }));
+  }
+
+  /** `((expression))`: 0 where its value is not 0; 1 where it is 0, or an error, reported as `((`'s. */
+  private async executeArithmetic(node: ArithmeticCommandNode, io: ExecutionIo): Promise<number> {
+    return (await this.executeWithRedirections(node.redirections, io, async (redirIo) => {
+      const value = await this.arithmeticCommandValue(node.expression, redirIo);
+      const exitCode = value === null || value === 0 ? 1 : 0;
+      this.lastExitCode = exitCode;
+      return exitCode;
+    }));
+  }
+
+  /**
+   * `for ((init; test; step))`: init once; then while test is not 0 (an empty
+   * one is true), the body, then step (after a `continue` too). Its status
+   * the body's last, 0 where it never ran, 1 where an expression fails.
+   */
+  private async executeArithmeticFor(node: ArithmeticForNode, io: ExecutionIo): Promise<number> {
+    return (await this.executeWithRedirections(node.redirections, io, async (redirIo) => {
+      let exitCode = 0;
+      const failed = async (expression: string): Promise<boolean> => (
+        expression.trim() !== '' && (await this.arithmeticCommandValue(expression, redirIo)) === null
+      );
+      if (await failed(node.init)) exitCode = 1;
+      else {
+        while (true) {
+          await this.loopTick();
+          const abortCode = this.abortExitCode(redirIo);
+          if (abortCode !== null) return abortCode;
+          if (node.test.trim() !== '') {
+            const test = await this.arithmeticCommandValue(node.test, redirIo);
+            if (test === null) exitCode = 1;
+            if (test === null || test === 0) break;
+          }
+          try {
+            exitCode = await this.executeCompoundList(node.body, redirIo);
+          } catch (e) {
+            if (e instanceof BreakSignal) {
+              if (e.levels > 1) throw new BreakSignal(e.levels - 1);
+              break;
+            }
+            if (!(e instanceof ContinueSignal)) throw e;
+            if (e.levels > 1) throw new ContinueSignal(e.levels - 1);
+          }
+          if (await failed(node.step)) {
+            exitCode = 1;
+            break;
+          }
+        }
+      }
+      this.lastExitCode = exitCode;
+      return exitCode;
+    }));
+  }
+
+  /** An arithmetic command's expression, expanded (as a double-quoted word, its quotes removed) and evaluated: null where that fails, reported as `((`'s. */
+  private async arithmeticCommandValue(expression: string, io: ExecutionIo): Promise<number | null> {
+    const ctx = this.createExpandContext(io);
+    const text = await expandSubscript(expression, ctx);
+    try {
+      return arithmeticOf(text, ctx);
+    } catch (error) {
+      if (!(error instanceof ArithmeticError)) throw error;
+      await ctx.report(`((: ${error.message}`);
+      return null;
+    }
   }
 
   private loopTicks = 0;
@@ -1014,7 +1099,7 @@ export class Interpreter {
     // Expand words. A declaration builtin's (declare, typeset, local) array
     // assignments, `b=("$v" z)`, are read as an assignment's are (parseAssignment):
     // each element expanded as a word, and the argument only names the array.
-    let arrayElements: Map<number, readonly string[]> | undefined;
+    let arrayElements: Map<number, ArrayLiteral> | undefined;
     let expandedArgs: string[];
     const [commandWord] = cmd.words;
     if (commandWord !== undefined && isDeclarationWord(commandWord)) {
@@ -1022,7 +1107,7 @@ export class Interpreter {
       for (const [index, parts] of cmd.words.entries()) {
         const assignment = index === 0 ? null : parseAssignment({ kind: TokenKind.Word, value: parts.map((part) => part.text).join(''), pos: 0, parts });
         if (assignment?.elements !== undefined && assignment.subscript === undefined && assignment.append !== true) {
-          (arrayElements ??= new Map()).set(expandedArgs.length - 1, await expandWords(assignment.elements, expandCtx));
+          (arrayElements ??= new Map()).set(expandedArgs.length - 1, await this.arrayLiteral(assignment.name, assignment.elements, false, expandCtx));
           expandedArgs.push(`${assignment.name}=`);
         } else {
           expandedArgs.push(...await expandWords([parts], expandCtx));
@@ -1034,11 +1119,13 @@ export class Interpreter {
     if (expandedArgs.length === 0 && cmd.assignments.length > 0) {
       // Bare assignment -- set env vars
       for (const assign of cmd.assignments) {
-        if (!await this.applyAssignment(assign, expandCtx)) {
-          this.writeTerminal(io, `${assign.name}: readonly variable\n`);
-          if (io.scriptMode === true) throw new ErrexitSignal(1);
-          return 1;
+        const { diagnostics, failed } = await this.applyAssignment(assign, expandCtx);
+        for (const diagnostic of diagnostics) {
+          this.writeTerminal(io, `${diagnostic}\n`);
+          this.exitOnReportedError();
         }
+        // A non-interactive POSIX shell ends (bash's FORCE_EOF); any other discards the line.
+        if (failed) throw io.scriptMode === true && this.config.options.posix ? new ErrexitSignal(1) : new AssignmentErrorSignal();
       }
       // A command that is only assignments exits with the status of the last
       // command substitution it ran, so `out="$(cmd)" || die` sees cmd fail.
@@ -1078,10 +1165,9 @@ export class Interpreter {
     try {
       for (const assign of cmd.assignments) {
         if (!saved.has(assign.name)) saved.set(assign.name, saveVariable(this.config, assign.name));
-        if (!await this.applyAssignment(assign, expandCtx)) {
-          (await (io.stderr ?? this.terminalSink(io)).write(`${assign.name}: readonly variable\n`));
-          return 1;
-        }
+        const { diagnostics, failed } = await this.applyAssignment(assign, expandCtx);
+        for (const diagnostic of diagnostics) (await (io.stderr ?? this.terminalSink(io)).write(`${diagnostic}\n`));
+        if (failed) return 1;
         this.config.exportedNames.add(assign.name);
       }
 
@@ -1093,6 +1179,11 @@ export class Interpreter {
       try {
         await this.applyRedirections(cmd.redirections, fds, expandCtx, io, io.terminalStdin);
       } catch (error) {
+        // A discard met expanding a target (an arithmetic error's) is the line's, reported where it was met.
+        if (error instanceof DiscardSignal) {
+          await this.flushFds(fds);
+          throw error;
+        }
         const redirStderr = fds.outputFds.get(2) ?? stderr;
         (await redirStderr.write(error instanceof RedirectionOpenError
           ? redirectionDiagnostic(error)
@@ -1162,6 +1253,7 @@ export class Interpreter {
                   },
                   scriptMode: io.scriptMode,
                   ...(arrayElements === undefined || name !== commandWordText(cmd) ? {} : { arrayElements }),
+                  reportedError: () => this.exitOnReportedError(),
                   isFdTerminal: (fd) => this.isFdTerminal(fds, fd),
                   getPositionals: () => this.readPositionals(builtinIo),
                   setPositionals: (nextArgs) => this.writePositionals(builtinIo, nextArgs),
@@ -1377,23 +1469,74 @@ export class Interpreter {
   }
 
   /**
-   * `name=value`, `name+=value`, `name[expr]=value` and `name=(word …)`.
-   * Returns false when the name is readonly, which the caller reports.
+   * `name=value`, `name+=value`, `name[expr]=value` and `name=(element …)`.
+   * Returns the diagnostics for the caller to report, in order, and whether
+   * the assignment failed: a readonly name, or a subscript before the first
+   * element (bash's bad array subscript). An array literal's refused
+   * elements are reported, and the rest of it is assigned.
    */
-  private async applyAssignment(assign: AssignmentNode, ctx: ExpandContext): Promise<boolean> {
+  private async applyAssignment(assign: AssignmentNode, ctx: ExpandContext): Promise<AssignmentOutcome> {
     const { name } = assign;
-    if (this.config.readonlyNames.has(name)) return false;
-    if (assign.elements !== undefined) return assignArray(this.config, name, await expandWords(assign.elements, ctx), assign.append);
+    if (this.config.readonlyNames.has(name)) return { diagnostics: [`${name}: readonly variable`], failed: true };
+    if (assign.elements !== undefined) {
+      const literal = await this.arrayLiteral(name, assign.elements, assign.append === true, ctx);
+      if (assign.append !== true) assignArray(this.config, name, literal.array);
+      return { diagnostics: literal.refused, failed: false };
+    }
 
     const value = await expandWord(assign.value, ctx);
     if (assign.subscript !== undefined) {
+      const subscript = await expandSubscript(assign.subscript, ctx);
       const array = arrayFor(this.config, name);
-      const index = await evaluateSubscript(assign.subscript, array.length, ctx);
+      const index = subscript === '' ? -1 : arrayIndex(array, await arithmeticValue(subscript, ctx));
+      if (index < 0) return { diagnostics: [`${name}[${assign.subscript}]: bad array subscript`], failed: true };
       array[index] = assign.append ? (array[index] ?? '') + value : value;
-      return true;
+      return ASSIGNED;
     }
     // On an array name, `arr=x` and `arr+=x` land on its first element.
-    return assignVariable(this.config, name, value, assign.append);
+    assignVariable(this.config, name, value, assign.append);
+    return ASSIGNED;
+  }
+
+  /**
+   * `name=(…)`'s array, as bash's assign_compound_array_list builds it, or
+   * with `append` (`name+=(…)`) `name`'s own, extended in place (a scalar
+   * becomes its element 0). Every element is expanded first; then a word's
+   * values go on at the next index (past the last that holds one, for
+   * `append`), and a `[subscript]=` element at its subscript's arithmetic (a
+   * negative one counted back from past the last), the next index after it.
+   * An element whose subscript is empty, `@` or `*`, or before the first is
+   * refused with bash's diagnostic and skipped; under `set -e` the first
+   * refusal ends the assignment, what it assigned before kept, as the shell
+   * ends there (exitOnReportedError).
+   */
+  private async arrayLiteral(name: string, elements: readonly ArrayElementNode[], append: boolean, ctx: ExpandContext): Promise<ArrayLiteral> {
+    const expanded: ({ values: string[] } | { subscript: string; value: string; append: boolean })[] = [];
+    for (const element of elements) {
+      expanded.push(element.subscript === undefined
+        ? { values: await expandWords([element.word], ctx) }
+        : { subscript: await expandSubscript(element.subscript, ctx), value: await expandWord(element.word, ctx), append: element.append === true });
+    }
+    const array = append ? arrayFor(this.config, name) : [];
+    const refused: string[] = [];
+    let next = append ? lastIndex(array) + 1 : 0;
+    for (const element of expanded) {
+      if ('values' in element) {
+        for (const value of element.values) array[next++] = value;
+        continue;
+      }
+      const { subscript, value } = element;
+      const written = `[${subscript}]${element.append ? '+=' : '='}${value}`;
+      const index = subscript === '' || subscript === '@' || subscript === '*' ? -1 : arrayIndex(array, await arithmeticValue(subscript, ctx));
+      if (index < 0) {
+        refused.push(`${written}: ${subscript === '@' || subscript === '*' ? 'cannot assign to non-numeric index' : 'bad array subscript'}`);
+        if (this.config.options.errexit) break;
+        continue;
+      }
+      array[index] = element.append ? (array[index] ?? '') + value : value;
+      next = index + 1;
+    }
+    return { array, refused };
   }
 
   /** Bash's PIPESTATUS: `statuses`, its array alone. */
@@ -1512,8 +1655,8 @@ export class Interpreter {
       try {
         exitCode = await run();
       } catch (e) {
-        // An `exit` inside it ends only it; so do `set -e` and a fatal error, and a call past the nesting bound.
-        if (!(e instanceof ExitSignal) && !(e instanceof ErrexitSignal) && !(e instanceof FunctionNestingSignal)) throw e;
+        // An `exit` inside it ends only it; so do `set -e`, a fatal error and a discard.
+        if (!(e instanceof ExitSignal) && !(e instanceof ErrexitSignal) && !(e instanceof DiscardSignal)) throw e;
         exitCode = e.exitCode;
       }
       return (await this.runExitTrap(exitCode, io, true));
@@ -1537,8 +1680,8 @@ export class Interpreter {
       await this.executeLineWithIo(action, io, { readsLines: true, inline: true });
     } catch (e) {
       if (e instanceof ExitSignal || e instanceof ErrexitSignal) return e.exitCode;
-      // A call past the nesting bound ends the action, a child shell's too; the status stays (bash 5.2).
-      if (!(e instanceof FunctionNestingSignal)) throw e;
+      // A discard ends the action, a child shell's too; the status stays (bash 5.2).
+      if (!(e instanceof DiscardSignal)) throw e;
     } finally {
       this.exitTrapDepth--;
       this.lastExitCode = savedLastExitCode;
@@ -1610,6 +1753,10 @@ export class Interpreter {
       vfs: io.vfs ?? this.config.vfs,
       options: this.config.options,
       executeCapture: async (input) => (await this.executeCapture(input, io)),
+      // The shell's fd 2 when it is met, as a command's descriptors resolve it (createCommandFds).
+      report: async (diagnostic) => {
+        (await (this.persistentOutputFds.get(2) ?? io.stderr ?? this.terminalSink(io)).write(`${diagnostic}\n`));
+      },
     };
   }
 
@@ -1741,17 +1888,24 @@ export class Interpreter {
     io: ExecutionIo,
     terminalStdin?: TerminalInputStream,
   ): Promise<void> {
+    // A target's diagnostic goes to fd 2 as the redirections before it have left it.
+    const targetCtx: ExpandContext = {
+      ...expandCtx,
+      report: async (diagnostic) => {
+        (await (fds.outputFds.get(2) ?? this.createNullWriter()).write(`${diagnostic}\n`));
+      },
+    };
     for (const redir of redirections) {
       if (redir.operator === 'heredoc') {
         const heredoc = redir.heredoc ?? { body: '', quoted: false, stripTabs: false };
         const body = heredoc.quoted
           ? heredoc.body
-          : await expandWord([{ text: heredoc.body, quoted: 'double' }], { ...expandCtx, hereDocument: true });
+          : await expandWord([{ text: heredoc.body, quoted: 'double' }], { ...targetCtx, hereDocument: true });
         this.setInputFd(fds, redir.fd ?? 0, { stream: staticStdinReader(body), terminal: false });
         continue;
       }
 
-      const target = await expandWord(redir.target, expandCtx);
+      const target = await expandWord(redir.target, targetCtx);
       switch (redir.operator) {
         case 'write':
           this.setOutputFd(fds, redir.fd ?? 1, (await this.openOutputTarget(io, target, 'write', fds, terminalStdin)));
@@ -2167,6 +2321,11 @@ export class Interpreter {
   private isFdTerminal(fds: FdState, fd: number): boolean {
     if (fd === 0) return fds.terminalInputFds.has(fd);
     return fds.terminalOutputFds.has(fd);
+  }
+
+  /** bash's report_error: under `set -e`, an error the shell reports ends it, wherever it is (an `if`'s condition too). */
+  private exitOnReportedError(): void {
+    if (this.config.options.errexit) throw new ErrexitSignal(1);
   }
 
   private enforceErrexit(connector: '&&' | '||' | null, exitCode: number): void {

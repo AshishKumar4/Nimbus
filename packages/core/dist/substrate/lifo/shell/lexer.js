@@ -13,6 +13,28 @@ export function lex(input) {
     }
 }
 /**
+ * An array literal's words (the text between its parentheses), as bash's
+ * reader reads a compound assignment: as anywhere, except that a word
+ * beginning `[subscript]=` or `[subscript]+=` reads its subscript whole
+ * (TokenReader.readSubscriptedWord).
+ */
+export function lexArrayElements(input) {
+    const reader = new TokenReader(input);
+    const tokens = [];
+    for (;;) {
+        const subscripted = reader.readSubscriptedWord();
+        if (subscripted !== null) {
+            tokens.push(subscripted);
+            continue;
+        }
+        for (const token of reader.next()) {
+            if (token.kind === TokenKind.EOF)
+                return tokens;
+            tokens.push(token);
+        }
+    }
+}
+/**
  * The shell's reader: `input`'s tokens a batch at a time (a token, or a
  * newline and the here-document bodies it opens), as its parser asks for
  * them, so that the parser can go back to where a token began and read a
@@ -146,6 +168,86 @@ export class TokenReader {
         return [{ kind: TokenKind.EOF, value: '', pos: this.frame.at }];
     }
     /**
+     * An array literal's `[subscript]=value` (or `+=`) word, read here when one
+     * begins at the next word: its subscript to the matching `]`, whose blanks,
+     * parentheses and operators are its own and whose quotes are kept as a
+     * word's (`[i + 1]`, `[(1+2)]`, `["a]b"]`), then the value as a word. Null,
+     * with nothing read but blanks, where the next word is not one.
+     */
+    readSubscriptedWord() {
+        const frame = this.frame;
+        const input = frame.input;
+        while (input[frame.at] === ' ' || input[frame.at] === '\t' || (input[frame.at] === '\\' && input[frame.at + 1] === '\n')) {
+            frame.at += input[frame.at] === '\\' ? 2 : 1;
+        }
+        const pos = frame.at;
+        if (input[pos] !== '[')
+            return null;
+        const close = subscriptEnd(input, pos);
+        if (close === -1)
+            return null;
+        const operator = input.startsWith('+=', close + 1) ? '+=' : input[close + 1] === '=' ? '=' : null;
+        if (operator === null)
+            return null;
+        const parts = [{ text: '[', quoted: 'none' }];
+        // The subscript's words, as far as the `]`; a character no word begins with is its own.
+        const subscript = input.slice(0, close);
+        for (let i = pos + 1; i < close;) {
+            const word = isWordBreak(subscript[i]) ? null : readWord(subscript, i);
+            if (word === null) {
+                parts.push({ text: subscript[i], quoted: 'none' });
+                i++;
+                continue;
+            }
+            parts.push(...(word.token.parts ?? [{ text: word.token.value, quoted: 'none' }]));
+            i = word.end;
+        }
+        parts.push({ text: `]${operator}`, quoted: 'none' });
+        let end = close + 1 + operator.length;
+        const value = isWordBreak(input[end] ?? ' ') ? null : readWord(input, end);
+        if (value !== null) {
+            parts.push(...(value.token.parts ?? [{ text: value.token.value, quoted: 'none' }]));
+            end = value.end;
+        }
+        frame.at = end;
+        return { kind: TokenKind.Word, value: parts.map((part) => part.text).join(''), pos, parts, source: input.slice(pos, end) };
+    }
+    /**
+     * `((expression))`, as bash's reader reads an arithmetic command where a
+     * command begins, or after `for` (parse_dparen): the text to the `))` that
+     * closes it, parentheses nesting in it, a quoted or backslashed one its
+     * text's. Null, with nothing read, where a `)` closes it that no second
+     * `)` follows: `((echo a) )` is two subshells.
+     */
+    readArithmeticCommand() {
+        // The text left to read, an alias's and then the text it was read in, as one.
+        const pieces = [];
+        let text = '';
+        for (let k = this.frames.length - 1; k >= 0; k--) {
+            const frame = this.frames[k];
+            pieces.push({ frame, from: text.length, at: frame.at });
+            text += frame.input.slice(frame.at);
+        }
+        let at = 0;
+        while (text[at] === ' ' || text[at] === '\t')
+            at++;
+        if (text[at] !== '(' || text[at + 1] !== '(')
+            return null;
+        const close = arithmeticClose(text, at + 2);
+        if (close === -1)
+            return null;
+        // Read to past the `))`: the alias texts it ends beyond are read whole.
+        const end = close + 2;
+        for (const piece of pieces) {
+            const length = piece.frame.input.length - piece.at;
+            piece.frame.at = end - piece.from < length ? piece.at + (end - piece.from) : piece.frame.input.length;
+            if (end - piece.from < length)
+                break;
+        }
+        this.checkNext = false;
+        return { kind: TokenKind.Word, value: text.slice(at + 2, close), pos: (pieces[0]?.at ?? 0) + at };
+    }
+    /**
      * The word after `=~`, as bash's reader reads a regular expression: up to a
      * blank or an operator, except that its parentheses nest and, inside them,
      * blanks, newlines, `#` and operators are its own, and `|` is its own
@@ -252,14 +354,21 @@ export function continuationState(input) {
             i++;
             continue;
         }
+        // $$, the shell's pid, is two dollars, in double quotes too: what follows it is its own.
+        if (ch === '$' && input[i + 1] === '$') {
+            i++;
+            continue;
+        }
+        // A closed substitution or braced expansion is one span, in double quotes too: its quotes are
+        // its own. One the input ends inside is read on, so a quote open in it is still open.
+        const span = ch === '`' || (ch === '$' && (input[i + 1] === '(' || input[i + 1] === '{')) ? closedSpanEnd(input, i) : -1;
+        if (span !== -1) {
+            i = span - 1;
+            continue;
+        }
         if (quote === '"') {
             if (ch === '"')
                 quote = null;
-            continue;
-        }
-        // $$, the shell's pid, is two dollars: a quote after it is its own.
-        if (ch === '$' && input[i + 1] === '$') {
-            i++;
             continue;
         }
         if (ch === '$' && input[i + 1] === "'") {
@@ -273,7 +382,7 @@ export function continuationState(input) {
             quote = ch;
             continue;
         }
-        if (ch === '#') {
+        if (ch === '#' && (i === 0 || COMMENT_AFTER.includes(input[i - 1]))) {
             while (i + 1 < input.length && input[i + 1] !== '\n')
                 i++;
         }
@@ -281,6 +390,80 @@ export function continuationState(input) {
     if (quote === null)
         return null;
     return quote === '"' ? 'double' : 'single';
+}
+/**
+ * The characters of arithmetic text from `start` outside its quoted,
+ * backslashed and substituted spans, and with `braces` its `${…}` spans
+ * (each read whole by the shell's readers), with the parentheses open
+ * before each; null where the input ends inside such a span.
+ */
+function* arithmeticCharacters(input, start, braces) {
+    let depth = 0;
+    for (let i = start; i < input.length;) {
+        const ch = input[i];
+        const span = ch === '\\' ? (i + 1 < input.length ? i + 2 : -1)
+            : ch === "'" || ch === '"' ? quotedEnd(input, i, ch)
+                : ch === '`' || (ch === '$' && (input[i + 1] === '(' || (braces && input[i + 1] === '{'))) ? closedSpanEnd(input, i)
+                    : i;
+        if (span === -1) {
+            yield null;
+            return;
+        }
+        if (span > i) {
+            i = span;
+            continue;
+        }
+        yield { ch, i, depth };
+        if (ch === '(')
+            depth++;
+        else if (ch === ')' && depth > 0)
+            depth--;
+        i++;
+    }
+}
+/** Where the quote at `pos` closes, just past it; -1 where the input ends first. */
+function quotedEnd(input, pos, quote) {
+    const read = readQuoted(input, pos, quote);
+    return read.end > pos + 1 && input[read.end - 1] === quote ? read.end : -1;
+}
+/**
+ * The `))` that closes an arithmetic command's text from `start` (past its
+ * `((`), as bash 5.2's parse_dparen finds it: the index of its first `)`; -1
+ * where a `)` closes it that no second `)` follows (`((echo a) )` is two
+ * subshells), or the input ends first. A `)` in a `${…}` counts, as bash's
+ * does: `((x=1${v:+)}))` is two subshells there.
+ */
+function arithmeticClose(input, start) {
+    for (const at of arithmeticCharacters(input, start, false)) {
+        if (at === null)
+            return -1;
+        if (at.ch === ')' && at.depth === 0)
+            return input[at.i + 1] === ')' ? at.i : -1;
+    }
+    return -1;
+}
+/** `for ((…))`'s header as its three expressions, split at its two `;` outside parentheses and spans; null where it has not three. */
+export function arithmeticForParts(header) {
+    const cuts = [];
+    for (const at of arithmeticCharacters(header, 0, true)) {
+        if (at === null)
+            return null;
+        if (at.ch === ';' && at.depth === 0)
+            cuts.push(at.i);
+    }
+    const [first, second] = cuts;
+    if (cuts.length !== 2 || first === undefined || second === undefined)
+        return null;
+    return [header.slice(0, first), header.slice(first + 1, second), header.slice(second + 1)];
+}
+/** Where the backquoted substitution, `$(…)` or `${…}` at `pos` ends, just past its close; -1 where the input ends first. */
+function closedSpanEnd(input, pos) {
+    if (input[pos] === '`') {
+        const read = readBacktickSubstitution(input, pos);
+        return read.kind === 'command' ? read.end : -1;
+    }
+    const span = input[pos + 1] === '(' ? readBalancedCommand(input, pos + 2, '(', ')') : readBalancedCommand(input, pos + 2, '{', '}');
+    return span.closed ? span.end : -1;
 }
 function tryOperator(input, pos) {
     const ch = input[pos];
@@ -488,6 +671,15 @@ function isOperatorBreak(ch) {
     return ch === ' ' || ch === '\t' || ch === '|' || ch === '&' || ch === ';'
         || ch === '>' || ch === '<' || ch === '\n' || ch === '(' || ch === ')';
 }
+/**
+ * The index of the `]` that closes the `[` at `open`, as bash's skipsubscript
+ * finds it: brackets nest, and one quoted, backslashed or in a substitution
+ * is not counted (readBalancedCommand). -1 where it is not closed.
+ */
+function subscriptEnd(input, open) {
+    const span = readBalancedCommand(input, open + 1, '[', ']');
+    return span.closed ? span.end - 1 : -1;
+}
 function isWordBreak(ch) {
     return ch === ' ' || ch === '\t' || ch === '|' || ch === '&' || ch === ';'
         || ch === '>' || ch === '<' || ch === '#' || ch === '\n' || ch === '(' || ch === ')';
@@ -690,8 +882,9 @@ function readWord(input, pos) {
             continue;
         }
         // Check for operator/break chars that end the word
-        // Special case: 2> and 2>> at word start should be handled by tryOperator
-        if (isWordBreak(ch)) {
+        // Special case: 2> and 2>> at word start should be handled by tryOperator.
+        // A `#` inside a word is the word's: only one where a word starts begins a comment.
+        if (isWordBreak(ch) && ch !== '#') {
             break;
         }
         // Check for redirect operators that could appear mid-stream
@@ -775,7 +968,7 @@ function readArithmeticSubstitution(input, pos) {
     }
     return { kind: 'text', text, end: i };
 }
-function readBacktickSubstitution(input, pos) {
+export function readBacktickSubstitution(input, pos) {
     let i = pos + 1;
     let inner = '';
     while (i < input.length) {
@@ -818,6 +1011,7 @@ function stopTable(chars) {
 const SPAN_STOPS = {
     '(': stopTable('\\\'"$`#()<\n'),
     '{': stopTable('\\\'"$`#{}'),
+    '[': stopTable('\\\'"$`[]'),
 };
 /** Where a double-quoted span's scan must look. */
 const DOUBLE_QUOTED_STOPS = stopTable('"\\$`');
@@ -832,8 +1026,9 @@ function nextStop(input, i, stops) {
 }
 /**
  * The body of a balanced `open`...`close` span whose body starts at `pos`
- * (just past `open`), and where it ends (just past `close`, or the input's
- * end when it never closes). Quotes and nested `$(...)` inside it are
+ * (just past `open`): a command's, a parameter expansion's or a subscript's;
+ * and where it ends (just past `close`, or the input's end when it never
+ * closes). Quotes and nested `$(...)` inside it are
  * skipped whole, so a `close` inside them does not end it. In a command's
  * span, a here-document's body is too: read at the newline after its `<<`,
  * as the shell's reader reads it, so its `'` or `)` is text. An arithmetic
@@ -920,6 +1115,15 @@ export function readBalancedCommand(input, pos, open, close) {
             }
             heredocs.length = 0;
             continue;
+        }
+        // An arithmetic command in a command's span is read as one: its `<<` is a shift, its `)` its own.
+        if (ch === '(' && open === '(' && !arithmetic && input[i + 1] === '(') {
+            const arithmeticEnd = arithmeticClose(input, i + 2);
+            if (arithmeticEnd !== -1) {
+                body += input.slice(i, arithmeticEnd + 2);
+                i = arithmeticEnd + 2;
+                continue;
+            }
         }
         if (ch === open)
             depth++;

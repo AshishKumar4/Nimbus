@@ -60,12 +60,24 @@ export interface PipelineNode {
     commands: CompoundCommandNode[];
     negated: boolean;
 }
+/**
+ * One element of an array literal: a word, expanded like an argument (into as
+ * many elements as it gives), or `[subscript]=value` (`+=`), its value expanded
+ * like an assignment's and written at the subscript.
+ */
+export interface ArrayElementNode {
+    word: WordPart[];
+    /** `[subscript]=` — raw subscript text, expanded and evaluated at run time; `word` is then the value. */
+    subscript?: string;
+    /** `[subscript]+=` — appended to the element there. */
+    append?: boolean;
+}
 export interface AssignmentNode {
     name: string;
     /** The scalar right-hand side. Empty when `elements` carries the value. */
     value: WordPart[];
-    /** `name=(word …)` — each element is one word, expanded like an argument. */
-    elements?: WordPart[][];
+    /** `name=(element …)`. */
+    elements?: ArrayElementNode[];
     /** `name[expr]=` — raw subscript text, expanded and evaluated at run time. */
     subscript?: string;
     /** `name+=` — append to the scalar, or to the end of the array. */
@@ -144,11 +156,27 @@ export interface SubshellNode {
     body: ListNode[];
     redirections: RedirectionNode[];
 }
+/** `((expression))`: its status 0 where the expression's value is not 0, 1 where it is 0 or an error. */
+export interface ArithmeticCommandNode {
+    type: 'arithmetic';
+    /** As written: expanded, then evaluated, when it runs. */
+    expression: string;
+    redirections: RedirectionNode[];
+}
+/** `for ((init; test; step))`: an empty test is true. */
+export interface ArithmeticForNode {
+    type: 'arithmetic_for';
+    init: string;
+    test: string;
+    step: string;
+    body: ListNode[];
+    redirections: RedirectionNode[];
+}
 export interface DoubleBracketNode {
     type: 'double_bracket';
     words: WordPart[][];
     redirections: RedirectionNode[];
 }
-export type CompoundCommandNode = SimpleCommandNode | DoubleBracketNode | IfNode | ForNode | LoopNode | CaseNode | GroupNode | SubshellNode | FunctionDefNode;
+export type CompoundCommandNode = SimpleCommandNode | DoubleBracketNode | ArithmeticCommandNode | IfNode | ForNode | ArithmeticForNode | LoopNode | CaseNode | GroupNode | SubshellNode | FunctionDefNode;
 export type ASTNode = ScriptNode | ListNode | PipelineNode | CompoundCommandNode;
 //# sourceMappingURL=types.d.ts.map

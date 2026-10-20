@@ -3,8 +3,10 @@ import { isShellIdentifier } from './names.js';
 import { DEFAULT_HOME } from '../../../constants.js';
 import type { ProcessView } from '../../../runtime/process-files.js';
 import { characterAt, characterBounds, characterWidth, escapeGlob, expandGlob, fixedMatchLength, shellMatch, shellUnits } from '../utils/glob.js';
-import { readAnsiCQuote, readBalancedCommand, readBracedExpansion } from './lexer.js';
+import { readAnsiCQuote, readBacktickSubstitution, readBalancedCommand, readBracedExpansion } from './lexer.js';
 import type { ShellOptions } from './state.js';
+import { arrayIndex } from './variables.js';
+import { DiscardSignal } from './discard.js';
 
 export interface ExpandContext {
   env: Record<string, string>;
@@ -32,6 +34,8 @@ export interface ExpandContext {
    * text, inside a parameter's `-`, `+`, `=` and `?` words too.
    */
   hereDocument?: boolean;
+  /** Write `diagnostic` where the shell reports an error met expanding: its stderr then (bash writes before it discards). */
+  report(diagnostic: string): Promise<void>;
 }
 
 export interface CapturedCommand {
@@ -44,6 +48,15 @@ export interface CapturedCommand {
  * unset parameter, or an explicit `${var:?message}`.
  */
 export class ExpansionError extends Error {}
+
+/**
+ * An arithmetic error (a constant past its base, a base out of range, a
+ * variable whose value refers to itself without end): as bash's evalerror
+ * words it, the expression to the end of the token in error, then why, then
+ * the token. Met expanding, it is reported and the line discarded
+ * (arithmeticValue); in `[[ ]]` it makes its comparison false.
+ */
+export class ArithmeticError extends Error {}
 
 const IFS_WHITESPACE = ' \t\n';
 
@@ -363,7 +376,13 @@ async function expandDollar(
   // $((...)) -- arithmetic expansion
   if (next === '(' && text[pos + 2] === '(') {
     const arithmetic = readArithmeticExpansion(text, pos);
-    const result = evaluateArithmetic(arithmetic.expression, ctx.env, ctx.positionals);
+    // Evaluated in place: a loop's $((i + 1)) awaits nothing unless it fails.
+    let result: number;
+    try {
+      result = arithmeticOf(arithmetic.expression, ctx);
+    } catch (error) {
+      return await discardArithmetic(error, ctx);
+    }
     return { pieces: [valuePiece(String(result), quoted)], end: arithmetic.end };
   }
 
@@ -458,20 +477,38 @@ async function resolveParameter(ref: ParameterRef, ctx: ExpandContext): Promise<
   if (array === undefined) {
     const value = ctx.env[name];
     if (subscript === undefined) return { kind: 'scalar', value };
-    return { kind: 'scalar', value: await evaluateSubscript(subscript, 1, ctx) === 0 ? value : undefined };
+    // A scalar is an array of its one value.
+    const index = await arithmeticValue(await expandSubscript(subscript, ctx), ctx);
+    return { kind: 'scalar', value: index === 0 || index === -1 ? value : undefined };
   }
-  const index = subscript === undefined ? 0 : await evaluateSubscript(subscript, array.length, ctx);
+  const index = subscript === undefined ? 0 : arrayIndex(array, await arithmeticValue(await expandSubscript(subscript, ctx), ctx));
   return { kind: 'scalar', value: array[index] };
 }
 
-/** A subscript is an arithmetic expression; a negative index counts from the end. */
-export async function evaluateSubscript(
-  subscript: string, length: number, ctx: ExpandContext,
-): Promise<number> {
-  const expanded = joinPieces(await expandParameterWord(subscript, ctx, 'word'));
-  if (expanded.trim() === '') return 0;
-  const index = evaluateArithmetic(expanded, ctx.env, ctx.positionals);
-  return index < 0 ? length + index : index;
+/** A subscript's text once its expansions (`$i`, `$(…)`) are done, before its arithmetic. */
+export async function expandSubscript(subscript: string, ctx: ExpandContext): Promise<string> {
+  return joinPieces(await expandParameterWord(subscript, ctx, 'word'));
+}
+
+/** An expanded word's arithmetic (a subscript's, a `[[ -eq ]]` operand's, let's): a blank one is 0. Throws ArithmeticError. */
+export function arithmeticOf(expanded: string, ctx: Pick<ExpandContext, 'env' | 'positionals'>): number {
+  return expanded.trim() === '' ? 0 : evaluateArithmetic(expanded, ctx.env, ctx.positionals);
+}
+
+/** arithmeticOf as an expansion meets it: an error is reported, and the rest of the line discarded (bash's evalerror). */
+export async function arithmeticValue(expanded: string, ctx: ExpandContext): Promise<number> {
+  try {
+    return arithmeticOf(expanded, ctx);
+  } catch (error) {
+    return await discardArithmetic(error, ctx);
+  }
+}
+
+/** An arithmetic error met expanding: reported, and the rest of the line discarded. Anything else is thrown as it is. */
+async function discardArithmetic(error: unknown, ctx: ExpandContext): Promise<never> {
+  if (!(error instanceof ArithmeticError)) throw error;
+  await ctx.report(error.message);
+  throw new DiscardSignal();
 }
 
 /** The indices `${!arr[@]}` reports: every index that holds a value. */
@@ -678,9 +715,7 @@ function sliceRange<T>(values: readonly T[], offset: number, length: number | nu
 }
 
 async function evaluateSliceIndex(text: string, ctx: ExpandContext): Promise<number> {
-  const expanded = joinPieces(await expandParameterWord(text, ctx, 'word'));
-  if (expanded.trim() === '') return 0;
-  return evaluateArithmetic(expanded, ctx.env, ctx.positionals);
+  return await arithmeticValue(joinPieces(await expandParameterWord(text, ctx, 'word')), ctx);
 }
 
 function topLevelColon(spec: string): number {
@@ -901,6 +936,23 @@ function parameterWordParts(word: string, mode: ParameterWordMode): WordPart[] {
       i = quoted.end;
       continue;
     }
+    // A nested expansion is its own to expand, a substitution in it too (expandBraced).
+    if (ch === '$' && word[i + 1] === '{') {
+      const end = readBracedExpansion(word, i).end;
+      text += word.slice(i, end);
+      i = end;
+      continue;
+    }
+    // A backquoted substitution, as a word's (readWord): one command substitution.
+    if (ch === '`') {
+      const subst = readBacktickSubstitution(word, i);
+      if (subst.kind === 'command') {
+        flush();
+        parts.push({ text: subst.text, quoted: plain ? 'double' : 'none', commandSubstitution: subst.command });
+        i = subst.end;
+        continue;
+      }
+    }
     if ((ch === "'" && !plain) || ch === '"') {
       const end = word.indexOf(ch, i + 1);
       const close = end === -1 ? word.length : end;
@@ -1113,10 +1165,67 @@ function replaceMatches(text: string, pattern: string, replacement: string, all:
 
 // ─── Arithmetic evaluator ───
 
-function evaluateArithmetic(expr: string, env: Record<string, string>, positionals?: readonly string[]): number {
-  const parser = new ArithParser(expr.trim(), env, positionals);
+function evaluateArithmetic(expr: string, env: Record<string, string>, positionals?: readonly string[], depth = 0): number {
+  // Its trailing blanks are its own, as bash's diagnostics quote the expression.
+  const parser = new ArithParser(expr.trimStart(), env, positionals, depth);
   const result = parser.parseExpression();
   return result;
+}
+
+/** An arithmetic assignment's operators, the longest first. */
+const ASSIGNMENT_OPERATORS = ['<<=', '>>=', '+=', '-=', '*=', '/=', '%=', '&=', '^=', '|=', '='];
+
+/** How deep a variable's value may refer on to another's (bash's MAX_EXPR_RECURSION_LEVEL). */
+const MAX_ARITHMETIC_DEPTH = 1024;
+
+/** A value that is a decimal integer as written: its expression's value is its number. */
+const DECIMAL_INTEGER = /^\s*-?(?:0|[1-9][0-9]{0,14})\s*$/;
+
+/** A number token's characters (bash's readtok): letters and digits, `#`, `@` and `_`. */
+const NUMBER_CHARACTER = /[0-9A-Za-z#@_]/;
+
+/**
+ * An integer constant's value, as bash's strlong reads one: a leading 0 is
+ * octal, 0x or 0X hexadecimal, `base#digits` any base from 2 to 64, whose
+ * digits are 0-9, a-z, A-Z, `@` and `_` (to base 36 a letter's case is one
+ * value); anything else decimal. Its errors are `why` (bash's evalerror).
+ */
+function integerConstant(text: string, error: (why: string) => ArithmeticError): number {
+  let base = 10;
+  let i = 0;
+  let foundBase = false;
+  if (text[0] === '0') {
+    if (text.length === 1) return 0;
+    i = 1;
+    if (text[1] === 'x' || text[1] === 'X') {
+      base = 16;
+      i = 2;
+    } else {
+      base = 8;
+    }
+    foundBase = true;
+  }
+  let value = 0;
+  for (; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '#') {
+      if (foundBase) throw error('invalid number');
+      if (value < 2 || value > 64) throw error('invalid arithmetic base');
+      base = value;
+      value = 0;
+      foundBase = true;
+      if (i + 1 >= text.length) throw error('invalid integer constant');
+      continue;
+    }
+    const code = ch.charCodeAt(0);
+    const digit = code <= 0x39 ? code - 0x30
+      : code >= 0x61 ? code - 0x61 + 10
+      : code >= 0x41 && code <= 0x5a ? code - 0x41 + (base <= 36 ? 10 : 36)
+      : ch === '@' ? 62 : 63;
+    if (digit >= base) throw error('value too great for base');
+    value = value * base + digit;
+  }
+  return value;
 }
 
 class ArithParser {
@@ -1124,11 +1233,36 @@ class ArithParser {
   private pos = 0;
   private env: Record<string, string>;
   private positionals?: readonly string[];
+  /** How many variables' values this expression is evaluated inside. */
+  private readonly depth: number;
+  /** Inside a branch `&&`, `||` or `?:` skips (bash's noeval): read, its variables neither evaluated nor assigned. */
+  private noeval = 0;
 
-  constructor(expr: string, env: Record<string, string>, positionals?: readonly string[]) {
+  constructor(expr: string, env: Record<string, string>, positionals?: readonly string[], depth = 0) {
     this.expr = expr;
     this.env = env;
     this.positionals = positionals;
+    this.depth = depth;
+  }
+
+  /** `parse`'s value, read without evaluation where `skip` (noeval). */
+  private branch(skip: boolean, parse: () => number): number {
+    if (!skip) return parse();
+    this.noeval++;
+    try {
+      return parse();
+    } finally {
+      this.noeval--;
+    }
+  }
+
+  private assign(name: string, value: string): void {
+    if (this.noeval === 0) this.env[name] = value;
+  }
+
+  /** bash's evalerror at the token from `start` to here: the expression through it, `why`, the token. */
+  private error(why: string, start: number): ArithmeticError {
+    return new ArithmeticError(`${this.expr.slice(0, this.pos)}: ${why} (error token is "${this.expr.slice(start, this.pos)}")`);
   }
 
   private skipSpaces(): void {
@@ -1146,8 +1280,37 @@ class ArithParser {
     return this.expr[this.pos + 1] ?? '';
   }
 
+  /** A comma list: each expression evaluated, the last's value its own. */
   parseExpression(): number {
-    return this.parseTernary();
+    let value = this.parseTernary();
+    while (this.peek() === ',') {
+      this.pos++;
+      value = this.parseTernary();
+    }
+    return value;
+  }
+
+  /** `left op right` for a compound assignment's operator (`+=`'s `+`); a division by 0 is an error at the right operand, from `start`. */
+  private operate(op: string, left: number, right: number, start: number): number {
+    if ((op === '/' || op === '%') && right === 0) return this.divisionByZero(start);
+    switch (op) {
+      case '+': return left + right;
+      case '-': return left - right;
+      case '*': return left * right;
+      case '/': return Math.trunc(left / right);
+      case '%': return left % right;
+      case '<<': return left << right;
+      case '>>': return left >> right;
+      case '&': return left & right;
+      case '^': return left ^ right;
+      default: return left | right;
+    }
+  }
+
+  /** bash's `division by 0`: the whole expression, and the right operand onward; under noeval the operand is 1 (expr.c). */
+  private divisionByZero(start: number): number {
+    if (this.noeval > 0) return 0;
+    throw new ArithmeticError(`${this.expr}: division by 0 (error token is "${this.expr.slice(start)}")`);
   }
 
   private parseTernary(): number {
@@ -1155,11 +1318,11 @@ class ArithParser {
     this.skipSpaces();
     if (this.peek() === '?') {
       this.pos++;
-      const truePart = this.parseTernary();
+      const truePart = this.branch(cond === 0, () => this.parseExpression());
       this.skipSpaces();
       if (this.peek() === ':') {
         this.pos++;
-        const falsePart = this.parseTernary();
+        const falsePart = this.branch(cond !== 0, () => this.parseTernary());
         return cond ? truePart : falsePart;
       }
     }
@@ -1172,7 +1335,7 @@ class ArithParser {
       this.skipSpaces();
       if (this.pos + 1 < this.expr.length && this.expr[this.pos] === '|' && this.expr[this.pos + 1] === '|') {
         this.pos += 2;
-        const right = this.parseLogicalAnd();
+        const right = this.branch(left !== 0, () => this.parseLogicalAnd());
         left = (left || right) ? 1 : 0;
       } else {
         break;
@@ -1187,7 +1350,7 @@ class ArithParser {
       this.skipSpaces();
       if (this.pos + 1 < this.expr.length && this.expr[this.pos] === '&' && this.expr[this.pos + 1] === '&') {
         this.pos += 2;
-        const right = this.parseBitwiseOr();
+        const right = this.branch(left === 0, () => this.parseBitwiseOr());
         left = (left && right) ? 1 : 0;
       } else {
         break;
@@ -1335,16 +1498,11 @@ class ArithParser {
         this.pos++;
         const right = this.parseExponentiation();
         left = left * right;
-      } else if (ch === '/' ) {
+      } else if (ch === '/' || ch === '%') {
         this.pos++;
-        const right = this.parseExponentiation();
-        if (right === 0) return 0;
-        left = Math.trunc(left / right);
-      } else if (ch === '%') {
-        this.pos++;
-        const right = this.parseExponentiation();
-        if (right === 0) return 0;
-        left = left % right;
+        this.skipSpaces();
+        const start = this.pos;
+        left = this.operate(ch, left, this.parseExponentiation(), start);
       } else {
         break;
       }
@@ -1367,6 +1525,20 @@ class ArithParser {
     this.skipSpaces();
     const ch = this.peek();
 
+    // Pre-increment/decrement, before the unary signs they begin with
+    if ((ch === '+' || ch === '-') && this.peekNext() === ch) {
+      const start = this.pos;
+      this.pos += 2;
+      this.skipSpaces();
+      const name = this.readVarName();
+      if (name) {
+        const val = this.getVar(name) + (ch === '+' ? 1 : -1);
+        this.assign(name, String(val));
+        return val;
+      }
+      this.pos = start;
+    }
+
     if (ch === '!') {
       this.pos++;
       const val = this.parseUnary();
@@ -1385,28 +1557,6 @@ class ArithParser {
     if (ch === '+') {
       this.pos++;
       return this.parseUnary();
-    }
-
-    // Pre-increment/decrement
-    if (ch === '+' && this.peekNext() === '+') {
-      this.pos += 2;
-      this.skipSpaces();
-      const name = this.readVarName();
-      if (name) {
-        const val = this.getVar(name) + 1;
-        this.env[name] = String(val);
-        return val;
-      }
-    }
-    if (ch === '-' && this.peekNext() === '-') {
-      this.pos += 2;
-      this.skipSpaces();
-      const name = this.readVarName();
-      if (name) {
-        const val = this.getVar(name) - 1;
-        this.env[name] = String(val);
-        return val;
-      }
     }
 
     return this.parsePrimary();
@@ -1449,21 +1599,28 @@ class ArithParser {
       if (this.pos + 1 < this.expr.length && this.expr[this.pos] === '+' && this.expr[this.pos + 1] === '+') {
         this.pos += 2;
         const val = this.getVar(name);
-        this.env[name] = String(val + 1);
+        this.assign(name, String(val + 1));
         return val;
       }
       if (this.pos + 1 < this.expr.length && this.expr[this.pos] === '-' && this.expr[this.pos + 1] === '-') {
         this.pos += 2;
         const val = this.getVar(name);
-        this.env[name] = String(val - 1);
+        this.assign(name, String(val - 1));
         return val;
       }
 
-      // Assignment within arithmetic (but not == comparison)
-      if (this.expr[this.pos] === '=' && this.expr[this.pos + 1] !== '=') {
-        this.pos++;
-        const val = this.parseExpression();
-        this.env[name] = String(val);
+      // An assignment, `=` (not `==`) or a compound one (`+=`): its right side an
+      // assignment's, which a comma ends, as bash's expr.c reads it.
+      const operator = ASSIGNMENT_OPERATORS.find((op) => this.expr.startsWith(op, this.pos) && (op !== '=' || this.expr[this.pos + 1] !== '='));
+      if (operator !== undefined) {
+        this.pos += operator.length;
+        this.skipSpaces();
+        const start = this.pos;
+        // A compound one's left value is read before its right side runs (bash's expassign).
+        const left = operator === '=' ? 0 : this.getVar(name);
+        const right = this.parseTernary();
+        const val = operator === '=' ? right : this.operate(operator.slice(0, -1), left, right, start);
+        this.assign(name, String(val));
         return val;
       }
 
@@ -1474,12 +1631,9 @@ class ArithParser {
   }
 
   private readNumber(): number {
-    let num = '';
-    while (this.pos < this.expr.length && /[0-9]/.test(this.expr[this.pos])) {
-      num += this.expr[this.pos];
-      this.pos++;
-    }
-    return parseInt(num, 10) || 0;
+    const start = this.pos;
+    while (this.pos < this.expr.length && NUMBER_CHARACTER.test(this.expr[this.pos])) this.pos++;
+    return integerConstant(this.expr.slice(start, this.pos), (why) => this.error(why, start));
   }
 
   private readVarName(): string | null {
@@ -1491,11 +1645,16 @@ class ArithParser {
     return name || null;
   }
 
+  /** A variable's value read as an expression (bash's expr_streval): unset or empty is 0. */
   private getVar(name: string): number {
     const val = this.getParameter(name);
-    if (val === undefined) return 0;
-    const n = parseInt(val, 10);
-    return isNaN(n) ? 0 : n;
+    if (val === undefined || val.trim() === '' || this.noeval > 0) return 0;
+    // A decimal integer, the most a variable holds, is its value.
+    if (DECIMAL_INTEGER.test(val)) return Number(val);
+    if (this.depth >= MAX_ARITHMETIC_DEPTH) {
+      throw new ArithmeticError(`${name}: expression recursion level exceeded (error token is "${name}")`);
+    }
+    return evaluateArithmetic(val, this.env, this.positionals, this.depth + 1);
   }
 
   private getParameter(name: string): string | undefined {

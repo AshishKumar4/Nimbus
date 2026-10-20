@@ -40,13 +40,28 @@ export function assignVariable(store: VariableStore, name: string, value: string
   return true;
 }
 
-/** `name=(value …)` (`name+=(…)` appends to the array). False for a readonly name. */
-export function assignArray(store: VariableStore, name: string, values: readonly string[], append = false): boolean {
+/** An array literal's array, and bash's diagnostic for each element it refused and skipped. */
+export interface ArrayLiteral {
+  readonly array: (string | undefined)[];
+  readonly refused: readonly string[];
+}
+
+/** `name=(…)`: `array` in place of whatever the name held. False for a readonly name. */
+export function assignArray(store: VariableStore, name: string, array: (string | undefined)[]): boolean {
   if (store.readonlyNames.has(name)) return false;
-  const existing = append ? store.arrays.get(name) ?? [] : [];
   delete store.env[name];
-  store.arrays.set(name, [...existing, ...values]);
+  store.arrays.set(name, array);
   return true;
+}
+
+/** The highest index that holds a value, or -1: bash's array_max_index, past which `a+=(…)` goes on. */
+export function lastIndex(array: readonly (string | undefined)[]): number {
+  const end = array.length - 1;
+  if (end < 0 || array[end] !== undefined) return end;
+  // Past a removed last element: an array's own keys are its indices in order, the holes skipped, however high.
+  let last = -1;
+  for (const key of Object.keys(array)) if (array[Number(key)] !== undefined) last = Number(key);
+  return last;
 }
 
 /** The array behind a subscripted assignment, promoting a scalar to its element 0 if needed. */
@@ -60,9 +75,10 @@ export function arrayFor(store: VariableStore, name: string): (string | undefine
   return array;
 }
 
-/** One variable's whole binding, so a scope can put it back exactly. */
+/** One variable's whole binding, so a scope can put it back exactly: its array a copy, as what the scope does to it in place is not kept. */
 export function saveVariable(store: VariableStore, name: string): SavedVariable {
-  return { scalar: store.env[name], array: store.arrays.get(name), exported: store.exportedNames.has(name), declared: store.declaredNames.has(name) };
+  const array = store.arrays.get(name);
+  return { scalar: store.env[name], array: array === undefined ? undefined : copyArray(array), exported: store.exportedNames.has(name), declared: store.declaredNames.has(name) };
 }
 
 /**
@@ -84,5 +100,17 @@ export function restoreVariable(store: VariableStore, name: string, saved: Saved
 
 /** A copy of `arrays` whose arrays are copies too: what a subshell or a saved shell state holds. */
 export function cloneArrays(arrays: ReadonlyMap<string, (string | undefined)[]>): Map<string, (string | undefined)[]> {
-  return new Map(Array.from(arrays, ([name, elements]) => [name, [...elements]]));
+  return new Map(Array.from(arrays, ([name, elements]) => [name, copyArray(elements)]));
+}
+
+/** A copy of `array`, its holes kept, however high its last index. */
+export function copyArray(array: readonly (string | undefined)[]): (string | undefined)[] {
+  const copy: (string | undefined)[] = [];
+  for (const key of Object.keys(array)) copy[Number(key)] = array[Number(key)];
+  return copy;
+}
+
+/** A subscript's arithmetic as an index of `array`: a negative one counts back from past its last value (still negative where that is before the first). */
+export function arrayIndex(array: readonly (string | undefined)[], value: number): number {
+  return value < 0 ? lastIndex(array) + 1 + value : value;
 }

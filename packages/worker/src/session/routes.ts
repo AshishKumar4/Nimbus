@@ -33,6 +33,7 @@ import {
 import { readDiagCounters } from '@nimbus-sh/platform/diag-counters.js';
 import { readSupervisorAllocationBudget } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { recentFacetCalls } from '@nimbus-sh/fabric/isolate-pool.js';
+import { recentThreadStalls } from '@nimbus-sh/fabric/thread-stalls.js';
 import { readIsolateId } from './diag.js';
 import {
   getFailures, getLastRpcFrame, getLastFacetId,
@@ -257,6 +258,8 @@ async function launchDiagnosis(self: RoutesHost): Promise<Record<string, unknown
     budget: readSupervisorAllocationBudget(),
     // What its last facet calls cost: a cold worker's code read, compile and preamble, or a warm one's run.
     facetCalls: recentFacetCalls(self.ctx),
+    // When its thread was held while work was in flight, and that work (thread-stalls.ts).
+    stalls: recentThreadStalls(self.ctx),
   };
 }
 

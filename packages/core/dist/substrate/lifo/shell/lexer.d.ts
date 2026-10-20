@@ -1,6 +1,13 @@
 import { TokenKind, type Token } from './types.js';
 /** Every token of `input`, read at once. */
 export declare function lex(input: string): Token[];
+/**
+ * An array literal's words (the text between its parentheses), as bash's
+ * reader reads a compound assignment: as anywhere, except that a word
+ * beginning `[subscript]=` or `[subscript]+=` reads its subscript whole
+ * (TokenReader.readSubscriptedWord).
+ */
+export declare function lexArrayElements(input: string): Token[];
 /** Text a reader reads: the input, or an alias's text read in place of its name (`alias`; `blank`: it ends in a blank). */
 interface Frame {
     readonly input: string;
@@ -46,6 +53,22 @@ export declare class TokenReader {
     next(): Token[];
     private read;
     /**
+     * An array literal's `[subscript]=value` (or `+=`) word, read here when one
+     * begins at the next word: its subscript to the matching `]`, whose blanks,
+     * parentheses and operators are its own and whose quotes are kept as a
+     * word's (`[i + 1]`, `[(1+2)]`, `["a]b"]`), then the value as a word. Null,
+     * with nothing read but blanks, where the next word is not one.
+     */
+    readSubscriptedWord(): Token | null;
+    /**
+     * `((expression))`, as bash's reader reads an arithmetic command where a
+     * command begins, or after `for` (parse_dparen): the text to the `))` that
+     * closes it, parentheses nesting in it, a quoted or backslashed one its
+     * text's. Null, with nothing read, where a `)` closes it that no second
+     * `)` follows: `((echo a) )` is two subshells.
+     */
+    readArithmeticCommand(): Token | null;
+    /**
      * The word after `=~`, as bash's reader reads a regular expression: up to a
      * blank or an operator, except that its parentheses nest and, inside them,
      * blanks, newlines, `#` and operators are its own, and `|` is its own
@@ -70,6 +93,8 @@ export type ContinuationState = 'single' | 'double' | 'backslash';
  * Comments are skipped exactly where lex() treats `#` as one.
  */
 export declare function continuationState(input: string): ContinuationState | null;
+/** `for ((…))`'s header as its three expressions, split at its two `;` outside parentheses and spans; null where it has not three. */
+export declare function arithmeticForParts(header: string): [string, string, string] | null;
 type HeredocDelimiter = {
     delimiter: string;
     quoted: boolean;
@@ -80,6 +105,17 @@ export declare function endsHeredoc(line: string, heredoc: {
     readonly delimiter: string;
     readonly stripTabs: boolean;
 }): boolean;
+export type SubstitutionRead = {
+    kind: 'command';
+    text: string;
+    command: string;
+    end: number;
+} | {
+    kind: 'text';
+    text: string;
+    end: number;
+};
+export declare function readBacktickSubstitution(input: string, pos: number): SubstitutionRead;
 /**
  * The full `${...}` span starting at `pos`. Quotes, nested braces and command
  * substitutions inside it belong to the expansion, not to the surrounding
@@ -92,14 +128,15 @@ export declare function readBracedExpansion(input: string, pos: number): {
 };
 /**
  * The body of a balanced `open`...`close` span whose body starts at `pos`
- * (just past `open`), and where it ends (just past `close`, or the input's
- * end when it never closes). Quotes and nested `$(...)` inside it are
+ * (just past `open`): a command's, a parameter expansion's or a subscript's;
+ * and where it ends (just past `close`, or the input's end when it never
+ * closes). Quotes and nested `$(...)` inside it are
  * skipped whole, so a `close` inside them does not end it. In a command's
  * span, a here-document's body is too: read at the newline after its `<<`,
  * as the shell's reader reads it, so its `'` or `)` is text. An arithmetic
  * span, `$((…))` (its body at the second `(`), has no here-document: `<<` shifts.
  */
-export declare function readBalancedCommand(input: string, pos: number, open: '(' | '{', close: ')' | '}'): {
+export declare function readBalancedCommand(input: string, pos: number, open: '(' | '{' | '[', close: ')' | '}' | ']'): {
     body: string;
     end: number;
     closed: boolean;
