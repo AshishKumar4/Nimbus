@@ -162,6 +162,18 @@ try {
     assert.match(describeAttribution(result)[0], /a query came back full/);
   }
 
+  // However many traces a record holds, a session's attribution makes at most
+  // 64 queries past its object's lookup, and then reads as incomplete.
+  {
+    const traced = [
+      event({ object: 'obj-8', sid: 'tall-pine-0008', seconds: 1, message: 'GET /ws' }),
+      ...Array.from({ length: 200 }, (_, i) => event({ object: 'obj-8', seconds: 2 + i, level: 'error', outcome: 'exception', trace: `t-${i}`, message: 'NimbusSession.jsrpc' })),
+    ];
+    const { result, queries } = await attribute(traced, row({ sids: ['tall-pine-0008'] }));
+    assert.equal(queries.length, 1 + 64, `the object's lookup, then 64 reads: ${queries.length}`);
+    assert.equal(result.sessions[0].complete, false);
+  }
+
   // The symptom alone is never a class: a session whose object logged no reset
   // is unattributed, and one no log names yet has no object.
   {

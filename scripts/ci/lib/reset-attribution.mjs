@@ -36,7 +36,7 @@ export const RESET_CLASSES = [
 export const showsResetSymptom = (row) => (row.sessions ?? []).some((session) => session.abnormalCloses.length > 0)
   || row.output.includes('E_NIMBUS_DO_OVERLOADED');
 
-/** The telemetry queries one session's attribution may make, its full ones paged by halving their span. */
+/** The telemetry queries one session's attribution makes at most (its object's lookup aside): its reads, its full ones paged by halving their span, and its traces. */
 const ATTRIBUTION_QUERIES = 64;
 
 /** Workers Logs filters for the objects of `base`'s Worker: a Preview by its slug, a Worker by its name. */
@@ -93,11 +93,15 @@ export async function attributeSession(reader, { sid, at, base }, until) {
   let complete = true;
   let queries = 0;
   const read = async (filters, options = {}, start = from, end = until) => {
+    if (queries >= ATTRIBUTION_QUERIES) {
+      complete = false;
+      return [];
+    }
     const limit = options.limit ?? 2000;
     const events = await reader.query(start, end, filters, { ...options, limit });
     queries += 1;
     if (events.length < limit) return events;
-    if (end <= start || queries >= ATTRIBUTION_QUERIES) {
+    if (end <= start) {
       complete = false;
       return events;
     }
