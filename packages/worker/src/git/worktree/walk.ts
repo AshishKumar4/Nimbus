@@ -808,18 +808,27 @@ async function compare(
         await skipUnder(run);
         return (await listOrWarn(path) ?? []).some((child) => child.name === '.git') || await holdsUntracked(path);
       }
+      // As holdsUntracked: a `.git` here answers before anything below is looked at, so what was heard below goes.
+      const outer = warnings;
+      const heard: string[] = [];
+      warnings = heard;
+      let repository = false;
       let holds = false;
       await children<void>(run, path, () => {}, async (name, child, found) => {
-        if (holds || found.stat.type === 'directory') return;
-        if (name === '.git' || (found.stat.type !== 'other' && !await excluded(child, false))) holds = true;
-      }, async (name, child, found, under) => {
-        if (holds || name === '.git') {
-          holds = true;
-          return await skipUnder(under);
+        if (name === '.git') {
+          repository = true;
+          heard.length = 0;
         }
+        if (holds || repository || found.stat.type === 'directory') return;
+        if (found.stat.type !== 'other' && !await excluded(child, false)) holds = true;
+      }, async (name, child, found, under) => {
+        if (holds || repository || name === '.git') return await skipUnder(under);
         if (await excluded(child, true)) return await skipUnder(under);
         if (await probe(child, under, found)) holds = true;
       });
+      warnings = outer;
+      if (repository) return true;
+      for (const warning of heard) warnings.push(warning);
       return holds;
     }
   }

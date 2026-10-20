@@ -103,6 +103,10 @@ for (const file of ['nested/!a', 'nested/-b', 'nested/!private/f', 'nested/z']) 
 // A repository git recognises: a HEAD naming a branch, and objects and refs directories.
 for (const file of ['nested/.git/objects/.keep', 'nested/.git/refs/heads/.keep']) write(file, '');
 write('nested/.git/HEAD', 'ref: refs/heads/main\n');
+// And one below another untracked directory, which -unormal probes.
+for (const file of ['outer/inner/!private/f', 'outer/inner/z', 'outer/inner/.git/objects/.keep', 'outer/inner/.git/refs/heads/.keep']) write(file, '');
+write('outer/inner/.git/HEAD', 'ref: refs/heads/main\n');
+user.chmod(`${root}/outer/inner/!private`, 0);
 user.chmod(`${root}/nested/!private`, 0);
 // Untracked directories judged as the scan passes them: -unormal lists each one as itself, -uno none.
 for (const flags of [[], ['-uno'], ['-uall']]) {
