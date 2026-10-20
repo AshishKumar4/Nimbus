@@ -31,19 +31,20 @@ const { routeToSessionPort } = await importWorkerBundle({
 });
 
 const PORT = 20961;
-/** Each instance of a guest, and the requests each answered as which process. */
+/** Each instance of a guest: how often a process started on it, and the requests it answered, each with that count. */
 const instances = [];
 const evaluate = () => {
-  const instance = { started: null, answered: [] };
+  const instance = { starts: 0, answered: [] };
   instances.push(instance);
   return {
-    async startProcess(args) { instance.started = args?.pid ?? null; return { ok: true }; },
+    async startProcess() { instance.starts++; return { ok: true }; },
     async handleHttpRequest(request) {
-      instance.answered.push(new URL(request.url).pathname);
-      return new Response(`instance ${instances.indexOf(instance)} as pid ${instance.started}`);
+      instance.answered.push({ path: new URL(request.url).pathname, starts: instance.starts });
+      return new Response(`instance ${instances.indexOf(instance)} started ${instance.starts}`);
     },
   };
 };
+const answered = (path) => instances.flatMap((instance, index) => instance.answered.filter((at) => at.path === path).map((at) => ({ index, starts: at.starts })));
 
 const launched = launchManager('not-admitted-rerun', {
   evaluate,
@@ -72,11 +73,11 @@ const turns = async () => { for (let i = 0; i < 200; i++) await new Promise((res
   });
   const first = await viaPort('/first');
   assert.equal(first.status, 200);
-  assert.match(await first.text(), new RegExp(`as pid ${pid}$`));
+  assert.equal(await first.text(), 'instance 0 started 1');
   await turns();
   const [name] = world.liveFacets();
   world.replace(name);
-  const replacement = instances.at(-1);
+  const replacement = instances.length - 1;
 
   const again = await viaPort('/after-idle');
   const body = await again.text();
@@ -85,15 +86,16 @@ const turns = async () => { for (let i = 0; i < 200; i++) await new Promise((res
   assert.equal(processes.get(pid)?.exitCode, 137);
   const served = ports.get(PORT)?.pid;
   assert.ok(served !== undefined && served !== pid, 'a new process serves the port');
-  assert.match(body, new RegExp(`as pid ${served}$`), 'and answered it');
-  assert.equal(replacement.answered.filter((path) => path === '/after-idle').length, replacement.started === served ? 1 : 0,
-    'the replacement ran it only as the new process');
+  assert.deepEqual(answered('/after-idle'), [{ index: replacement, starts: 1 }],
+    'it ran once, on the replacement, after the new process started there: never as the lost process');
+  assert.equal(body, `instance ${replacement} started 1`);
   console.log('  [1] a request to the port of a process whose idle host was replaced runs once on a new process');
 }
 
 // ── 2. through the process's own facet ──────────────────────────────────────
 {
   const spawned = await manager.spawnWorker('export class NimbusProcess {}', 'private slate', '/home/user', {});
+  for (const instance of instances) instance.answered.length = 0;
   const first = await spawned.facet.fetch(new Request('https://worker.local/first'));
   assert.equal(first.status, 200);
   await turns();
@@ -109,8 +111,7 @@ const turns = async () => { for (let i = 0; i < 200; i++) await new Promise((res
     'the embedder is told the request ran nowhere',
   );
   assert.equal(stateAtRefusal, 'exited', 'and the pid had ended when it was told');
-  assert.ok(instances.every((instance) => !instance.answered.includes('/after-idle') || instance.started !== spawned.pid),
-    'no instance ran it as the lost process');
+  assert.deepEqual(answered('/after-idle'), [], 'it ran nowhere');
   console.log('  [2] the embedder\'s own request is refused typed, after the pid ended');
 }
 
