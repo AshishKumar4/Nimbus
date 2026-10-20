@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "155bab5075fbbbb1473bc9f38a76797ce468693a73e38286f9824708441f7e8d",
+  "fingerprint": "15f09060fd1135e5d36dcee350fa9a431cb76cd682490474649539f00bc612bc",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -3004,7 +3004,7 @@
     "packages/worker/dist/session/ws.js": "20e3b12fd3a058a973662ff7f3684e3775e3d000a5aca33c5778af515eb09bfe",
     "packages/worker/dist/shell/npm-bin-entrypoints.d.ts": "5ad2db33e730b8e35a737e8f86b6df7ee57537fcf089da29ef2cdc33411d7f9c",
     "packages/worker/dist/shell/npm-bin-entrypoints.d.ts.map": "4e2139eb2a3b22546f524af5b66f769ca0ab36068dc85ae5e2657941d325e010",
-    "packages/worker/dist/shell/npm-bin-entrypoints.js": "4862fd57914eebcb420860e502231ee03b46625ba102ee6182cf0482abb5a855",
+    "packages/worker/dist/shell/npm-bin-entrypoints.js": "44502b5fabe74aa3fdb68719a79a65ff56c30557980711489cf2e250be777df1",
     "packages/worker/dist/sqlite-wasm-bundle.generated.d.ts": "ba0d9b5d0e3d9759784da3af2184d87d9be219e9233212c5339c2bde0f51b7fd",
     "packages/worker/dist/sqlite-wasm-bundle.generated.d.ts.map": "6a6cd96df702eabdf89185aabe0c9d6bfe326f8dfa5e13ededec11978677fa9e",
     "packages/worker/dist/sqlite-wasm-bundle.generated.js": "351d9f9568a2eec800cc27516fd6732084a41374791bb61948e9846eb86dbd8f",
@@ -3497,7 +3497,7 @@
     "packages/worker/src/session/vite-command.ts": "1a63b1f5c5ce484094c2caacaa37596a09939b47e6b06bb62ab844ae827fc1bd",
     "packages/worker/src/session/ws-relay.ts": "09c4885cd74f79077be60dfb8224c449b2ab661ba6020a1f1ccb71d132e90566",
     "packages/worker/src/session/ws.ts": "9f79f3e7fd074009afe8e80f04080d67aefd38d96a815f068f4b661dcfaf1b4d",
-    "packages/worker/src/shell/npm-bin-entrypoints.ts": "c10ef2cc328b4bc75712ac603c35026e325cf6e64d15fa2078a5c0822bd549d9",
+    "packages/worker/src/shell/npm-bin-entrypoints.ts": "f261078bfb552ce86fec68f83268096672942ef11c9f3bf34e2a00c912ad5b77",
     "packages/worker/src/sqlite-wasm-bundle.generated.ts": "d66507810a5cfff08991e9d496723bdee884d2f4912904c04ca6144a56053add",
     "packages/worker/src/tailwind-play.generated.ts": "5bafb935726a57df2734443f8185848a87041143bdd9bf832e2f655f4ae59956",
     "packages/worker/src/tsrs-wasm-artifact.generated.ts": "58a2f03f2f34e4c5747f1b9ca0fbba632cd3bd94f808cee79c25e70dd081bff9",
