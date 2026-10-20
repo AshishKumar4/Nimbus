@@ -224,7 +224,8 @@ console.log('  [3] a host that answers null, throws or composes no resolver fail
   const legacy = JSON.stringify({ ...blob, startArgs: { ...startArgs, userEnv: interpreterProcessEnv(base, facts) } });
   const legacyDigest = await facetImageDigest(legacy);
   kernel.writeFile(`.nimbus/images/${legacyDigest}`, legacy, { mode: 0o644 });
-  session.storage.set(key, { ...row, recipe: { ...row.recipe, image: { ...row.recipe.image, application: legacyDigest } } });
+  // A first launch's row (attempt 0): not a restart loop the re-drive guard stops.
+  session.storage.set(key, { ...row, attempt: 0, recipe: { ...row.recipe, image: { ...row.recipe.image, application: legacyDigest } } });
   session.storage.delete(`process-env:${key}`);
   session.storage.delete(PROCESS_ENV_DROPPED_KEY);
   const gen3 = instance(session, 3, { resolveProcessEnv: async () => answer });
