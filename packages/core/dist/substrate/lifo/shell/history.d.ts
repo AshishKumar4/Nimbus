@@ -1,10 +1,11 @@
 import type { ProcessView } from '../../../runtime/process-files.js';
 export declare class HistoryManager {
     private readonly filesystem;
-    private readonly home;
+    private readonly file;
     private entries;
     private loaded;
-    constructor(filesystem: () => ProcessView, home: () => string);
+    /** `file`: where the history is kept (bash's HISTFILE). */
+    constructor(filesystem: () => ProcessView, file: () => string);
     load(): Promise<void>;
     private readHistory;
     save(): Promise<void>;

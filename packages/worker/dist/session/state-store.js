@@ -133,6 +133,18 @@ export function ensureSessionStateSchema(ctx) {
         }
         catch { /* race: concurrent ensure already added it */ }
     }
+    // Which terminal each row is: '' the session's own (every row before named
+    // terminals), a name a named terminal's. Each is capped on its own.
+    let hasTerminal = false;
+    for (const row of sql.exec('PRAGMA table_info(nimbus_terminal_scrollback)')) {
+        if (String(row.name) === 'terminal') {
+            hasTerminal = true;
+            break;
+        }
+    }
+    if (!hasTerminal)
+        sql.exec("ALTER TABLE nimbus_terminal_scrollback ADD COLUMN terminal TEXT NOT NULL DEFAULT ''");
+    sql.exec('CREATE INDEX IF NOT EXISTS nimbus_terminal_scrollback_terminal ON nimbus_terminal_scrollback (terminal, seq)');
 }
 /**
  * Load the persisted shell state. Returns a snapshot with `null`
@@ -308,7 +320,7 @@ const _scrollbackEnc = new TextEncoder();
  * Fail-soft: any thrown error is swallowed by the caller — losing
  * scrollback is annoying but not session-fatal.
  */
-export function appendScrollback(ctx, data, atMs) {
+export function appendScrollback(ctx, data, atMs, terminal = '') {
     if (!data || data.length === 0)
         return;
     const sql = ctx?.storage?.sql;
@@ -330,7 +342,7 @@ export function appendScrollback(ctx, data, atMs) {
     }
     let insertedSeq = null;
     try {
-        sql.exec('INSERT INTO nimbus_terminal_scrollback (ts, data, bytes) VALUES (?, ?, ?)', atMs, payload, bytes);
+        sql.exec('INSERT INTO nimbus_terminal_scrollback (ts, data, bytes, terminal) VALUES (?, ?, ?, ?)', atMs, payload, bytes, terminal);
         // Capture the seq we just wrote so the eviction loop can avoid
         // deleting it. SQLite's last_insert_rowid() returns the row id of
         // the most recent insert on this connection.
@@ -358,7 +370,7 @@ export function appendScrollback(ctx, data, atMs) {
     // a belt-and-suspenders defence against future mis-tuning of the
     // two constants.
     let total = 0;
-    for (const row of sql.exec('SELECT COALESCE(SUM(bytes), 0) AS n FROM nimbus_terminal_scrollback')) {
+    for (const row of sql.exec('SELECT COALESCE(SUM(bytes), 0) AS n FROM nimbus_terminal_scrollback WHERE terminal = ?', terminal)) {
         total = Number(row.n) || 0;
         break;
     }
@@ -367,7 +379,7 @@ export function appendScrollback(ctx, data, atMs) {
     for (;;) {
         let oldestSeq = null;
         let oldestBytes = 0;
-        for (const row of sql.exec('SELECT seq, bytes FROM nimbus_terminal_scrollback ORDER BY seq ASC LIMIT 1')) {
+        for (const row of sql.exec('SELECT seq, bytes FROM nimbus_terminal_scrollback WHERE terminal = ? ORDER BY seq ASC LIMIT 1', terminal)) {
             oldestSeq = Number(row.seq);
             oldestBytes = Number(row.bytes) || 0;
             break;
@@ -394,16 +406,24 @@ export function appendScrollback(ctx, data, atMs) {
  * Returns empty string when the table is empty (cold start, or
  * after explicit reset).
  */
-export function loadScrollback(ctx) {
+export function loadScrollback(ctx, terminal = '') {
     const sql = ctx?.storage?.sql;
     if (!sql)
         return '';
     ensureSessionStateSchema(ctx);
     const parts = [];
-    for (const row of sql.exec('SELECT data FROM nimbus_terminal_scrollback ORDER BY seq ASC')) {
+    for (const row of sql.exec('SELECT data FROM nimbus_terminal_scrollback WHERE terminal = ? ORDER BY seq ASC', terminal)) {
         parts.push(String(row.data));
     }
     return parts.join('');
+}
+/** The named terminal `terminal`'s stored screen forgotten (its close). */
+export function forgetScrollback(ctx, terminal) {
+    const sql = ctx?.storage?.sql;
+    if (!sql)
+        return;
+    ensureSessionStateSchema(ctx);
+    sql.exec('DELETE FROM nimbus_terminal_scrollback WHERE terminal = ?', terminal);
 }
 /** Stats for /api/_diag/session: row count + total bytes + cap. */
 export function getScrollbackStats(ctx) {

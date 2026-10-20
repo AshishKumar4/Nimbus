@@ -182,7 +182,7 @@ export declare function countSessionStateKeys(ctx: any): number;
  * Fail-soft: any thrown error is swallowed by the caller — losing
  * scrollback is annoying but not session-fatal.
  */
-export declare function appendScrollback(ctx: any, data: string, atMs: number): void;
+export declare function appendScrollback(ctx: any, data: string, atMs: number, terminal?: string): void;
 /**
  * Read all scrollback rows in seq (chronological) order and return
  * the concatenated payload. Used by the rehydrate path to emit a
@@ -191,7 +191,9 @@ export declare function appendScrollback(ctx: any, data: string, atMs: number): 
  * Returns empty string when the table is empty (cold start, or
  * after explicit reset).
  */
-export declare function loadScrollback(ctx: any): string;
+export declare function loadScrollback(ctx: any, terminal?: string): string;
+/** The named terminal `terminal`'s stored screen forgotten (its close). */
+export declare function forgetScrollback(ctx: any, terminal: string): void;
 /** Stats for /api/_diag/session: row count + total bytes + cap. */
 export declare function getScrollbackStats(ctx: any): {
     rows: number;

@@ -43,8 +43,10 @@ export declare const SHELL_OWNER_LIVENESS_MS = 120000;
 export interface AutoResponseHost {
     getWebSocketAutoResponseTimestamp?(ws: WebSocket): Date | null;
 }
-/** Tag a freshly accepted terminal socket as this session's shell owner. */
-export declare function tagShellSocket(ws: WebSocket, now?: number): void;
+/** The named terminal a shell socket is (`/ws?terminal=`): undefined for the session's own, or another socket. */
+export declare function shellSocketTerminal(ws: WebSocket): string | undefined;
+/** Tag a freshly accepted terminal socket as its terminal's owner: the session's own, or the named `terminal`. */
+export declare function tagShellSocket(ws: WebSocket, now?: number, terminal?: string): void;
 /**
  * Drop the evidence that a peer was on this socket.
  *
@@ -64,7 +66,7 @@ export declare function clearShellSocketStamp(ws: WebSocket): void;
  */
 export declare function noteShellSocketActivity(ws: WebSocket, now?: number): void;
 /** True when another browser terminal currently holds this session. */
-export declare function hasLiveShellOwner(ctx: AutoResponseHost | undefined, sockets: readonly WebSocket[], now?: number): boolean;
+export declare function hasLiveShellOwner(ctx: AutoResponseHost | undefined, sockets: readonly WebSocket[], now?: number, terminal?: string): boolean;
 /**
  * Close the shell sockets no peer holds any more.
  *
@@ -72,5 +74,5 @@ export declare function hasLiveShellOwner(ctx: AutoResponseHost | undefined, soc
  * whose tab is gone stays accepted for the life of the object, and every
  * warm rejoin adds another one.
  */
-export declare function closeStaleShellSockets(ctx: AutoResponseHost | undefined, sockets: readonly WebSocket[], now?: number): void;
+export declare function closeStaleShellSockets(ctx: AutoResponseHost | undefined, sockets: readonly WebSocket[], now?: number, terminal?: string): void;
 //# sourceMappingURL=shell-socket.d.ts.map

@@ -15,6 +15,15 @@ export declare const SessionProcessSchema: z.ZodObject<{
     execId: z.ZodOptional<z.ZodString>;
 }, z.core.$strip>;
 export type SessionProcess = z.infer<typeof SessionProcessSchema>;
+/** A session's terminal as a list shows it: its own is `name: null`; a named one's is `/ws?terminal=<name>`. */
+export declare const SessionTerminalSchema: z.ZodObject<{
+    name: z.ZodNullable<z.ZodString>;
+    live: z.ZodBoolean;
+    attached: z.ZodBoolean;
+    running: z.ZodNullable<z.ZodString>;
+    cwd: z.ZodString;
+}, z.core.$strip>;
+export type SessionTerminal = z.infer<typeof SessionTerminalSchema>;
 export declare const SessionPortSchema: z.ZodObject<{
     port: z.ZodNumber;
     pid: z.ZodNumber;
@@ -347,6 +356,16 @@ declare const SessionResultSchemas: {
         ok: z.ZodBoolean;
         pid: z.ZodNumber;
     }, z.core.$strip>;
+    listTerminals: z.ZodArray<z.ZodObject<{
+        name: z.ZodNullable<z.ZodString>;
+        live: z.ZodBoolean;
+        attached: z.ZodBoolean;
+        running: z.ZodNullable<z.ZodString>;
+        cwd: z.ZodString;
+    }, z.core.$strip>>;
+    closeTerminal: z.ZodObject<{
+        closed: z.ZodBoolean;
+    }, z.core.$strip>;
     writeProcessInput: z.ZodObject<{
         ok: z.ZodBoolean;
         pid: z.ZodNumber;
@@ -589,6 +608,8 @@ export interface SessionRpc {
     _rpcListRuntimes(): Promise<SessionResult<'listRuntimes'>>;
     _rpcListProcesses(): Promise<SessionProcess[]>;
     _rpcKillProcess(pid: number): Promise<SessionResult<'killProcess'>>;
+    _rpcListTerminals(): Promise<SessionTerminal[]>;
+    _rpcCloseTerminal(name: string): Promise<SessionResult<'closeTerminal'>>;
     _rpcWriteProcessInput(pid: number, data: string): Promise<SessionResult<'writeProcessInput'>>;
     _rpcEndProcessInput(pid: number): Promise<SessionResult<'endProcessInput'>>;
     _rpcResizeProcess(pid: number, size: SessionTerminalSize): Promise<SessionResult<'resizeProcess'>>;

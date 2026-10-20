@@ -40,7 +40,9 @@ import { estimateSupervisorHeap, WORKERD_EVICTION_LABELS } from '@nimbus-sh/plat
 import { loadShellState, getScrollbackStats, clearSessionState, loadScrollback } from './state-store.js';
 import { classifyWsUpgrade, joinExistingSession } from './init-phases.js';
 import { shellTerminalTee } from './ws.js';
-import { closeStaleShellSockets, tagShellSocket } from './shell-socket.js';
+import { closeStaleShellSockets, hasLiveShellOwner, tagShellSocket } from './shell-socket.js';
+import { NAMED_TERMINAL_LIMIT } from './named-terminals.js';
+import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { notifyTerminalEvent, wireProcessLogSocketBroadcast } from '../runtime/process-logs-api.js';
@@ -62,7 +64,7 @@ import { devServerRestoreFailedResponse, renderNoDevServerHtml } from './helpers
 import { handleAgentRequest } from './agent.js';
 import { captureSessionAiCredential } from './ai.js';
 import { CRED_KERNEL, CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { seedBaseFilesystem } from '@nimbus-sh/core/workspace';
+import { seedBaseFilesystem, TerminalNameSchema } from '@nimbus-sh/core/workspace';
 // The L2 key builders are imported rather than re-derived so the bench
 // endpoints below can never drift from the key shape the cache actually
 // uses (they did: the packument purge used a stale `/p/` segment).
@@ -334,6 +336,11 @@ async function routeFetch(self, request) {
             catch { }
             return new Response(null, { status: 101, webSocket: client });
         }
+        // A named terminal (`?terminal=<name>`): one live socket per name, as the
+        // session's own has; names never conflict with each other or with it.
+        const named = url.searchParams.get('terminal');
+        if (named)
+            return namedTerminalUpgrade(self, named);
         // [B'.5] Three-way decision on a /ws upgrade — see
         // classifyWsUpgrade. Decide before accepting/tagging the incoming
         // server socket so it cannot be mistaken for the incumbent.
@@ -1647,4 +1654,40 @@ async function handleFanoutTestEndpoint(self, url, request) {
         return Response.json({ n, sleepMs, wallTimeMs: t1 - t0 });
     }
     return new Response('unknown fanout _test endpoint', { status: 404 });
+}
+/**
+ * The `/ws?terminal=<name>` upgrade: refused (409) while another live socket
+ * holds that name, or when a new name would pass the session's limit; else
+ * the session built, the socket accepted as the name's, and given its
+ * terminal (started if it is not live), its stored screen replayed.
+ */
+async function namedTerminalUpgrade(self, name) {
+    if (!TerminalNameSchema.safeParse(name).success) {
+        return Response.json({ error: 'invalid terminal name', hint: 'a name is 1 to 64 of A-Z a-z 0-9 . _ -' }, { status: 400 });
+    }
+    const priorSockets = self.ctx.getWebSockets();
+    if (hasLiveShellOwner(self.ctx, priorSockets, Date.now(), name)) {
+        return Response.json({ error: `terminal ${name} already has an active socket` }, { status: 409 });
+    }
+    await self.ensureRuntimeReady();
+    if (!self.terminals.admits(name)) {
+        return Response.json({ error: 'too many terminals', hint: `a session keeps at most ${NAMED_TERMINAL_LIMIT}; close one first` }, { status: 409 });
+    }
+    closeStaleShellSockets(self.ctx, priorSockets, Date.now(), name);
+    const pair = new WebSocketPair();
+    const [client, server] = Object.values(pair);
+    self.ctx.acceptWebSocket(server);
+    tagShellSocket(server, Date.now(), name);
+    try {
+        await self.terminals.attach(name, server, 'reconnect');
+    }
+    catch (error) {
+        console.error(`terminal ${name} attach failed:`, errorText(error));
+        try {
+            server.close(1011, 'terminal attach failed');
+        }
+        catch { /* already closing */ }
+        return new Response(`Terminal attach failed: ${errorText(error)}`, { status: 500 });
+    }
+    return new Response(null, { status: 101, webSocket: client });
 }

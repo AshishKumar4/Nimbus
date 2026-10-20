@@ -331,6 +331,14 @@ export class LineEditorExtender {
     }
     _patch() {
         this.originalHandleInput = this.shell.handleInput.bind(this.shell);
+        // A repaint of the editor (a notice above it, a screen attached again) is the search's while one runs.
+        const redrawLine = this.shell.redrawLine.bind(this.shell);
+        this.shell.redrawLine = () => {
+            if (this.rsearchActive)
+                this._rsearchRender();
+            else
+                redrawLine();
+        };
         this.shell.handleInput = (data, submission) => {
             // Skip when a process is running — the line editor only governs
             // shell-prompt input. Process-stdin input has its own model
@@ -753,6 +761,8 @@ export class LineEditorExtender {
         else {
             this.terminal.write(`(failed reverse-i-search)\`${this.rsearchQuery}': `);
         }
+        // The search is the editor's line now: a screen attached again shows it as it is.
+        this.shell.markEditor();
     }
     /**
      * Exit the search sub-mode. If `restoreLine` is true, the line

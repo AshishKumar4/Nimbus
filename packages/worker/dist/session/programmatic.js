@@ -23,7 +23,8 @@ import { isPreviewHostName, isPreviewHostSafeSid, previewHostUrl, readPreviewHos
 import { RESTART_POLICY_ENV } from '../facets/manager.js';
 import { adoptGeneration, generation, raiseGeneration, releaseGeneration } from '@nimbus-sh/fabric/generation.js';
 import { timers } from '@nimbus-sh/fabric/timers.js';
-import { parseShellState } from '@nimbus-sh/core/workspace';
+import { parseShellState, TerminalNameSchema } from '@nimbus-sh/core/workspace';
+import { socketOpen } from './named-terminals.js';
 import { enc } from '@nimbus-sh/core/_shared/bytes.js';
 import { singleQuote } from '@nimbus-sh/core/_shared/shell-quote.js';
 import { collectExecStream, createExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
@@ -471,6 +472,23 @@ export async function rpcListRuntimes(self) {
 export async function rpcListProcesses(self) {
     await ensureProgrammaticReady(self);
     return self.processes.publishedAll().map((p) => serializeProcess(p));
+}
+/** The session's terminals: its own first (`name: null`), then the named ones by name. */
+export async function rpcListTerminals(self) {
+    await self.ensureRuntimeReady();
+    const shell = self.shell;
+    const own = shell === null
+        ? []
+        : [{ name: null, live: true, attached: socketOpen(self.terminal?.ws), running: shell.foreground, cwd: shell.getCwd() }];
+    return [...own, ...self.terminals.list()];
+}
+/** Close the named terminal `name` (NamedTerminals.close): whether there was one. The session's own is not closed. */
+export async function rpcCloseTerminal(self, name) {
+    const parsed = TerminalNameSchema.safeParse(name);
+    if (!parsed.success)
+        throw new TypeError(`closeTerminal: a terminal name is 1 to 64 of A-Z a-z 0-9 . _ -, got ${JSON.stringify(name)}`);
+    await self.ensureRuntimeReady();
+    return { closed: await self.terminals.close(parsed.data) };
 }
 export async function rpcKillProcess(self, pid) {
     await ensureProgrammaticReady(self);

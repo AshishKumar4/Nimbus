@@ -79,11 +79,12 @@ function readShellStamp(ws, now) {
     const record = attachment;
     if (record.kind !== SHELL_KIND)
         return null;
+    const terminal = typeof record.terminal === 'string' ? record.terminal : undefined;
     const seenAt = record.seenAt;
     if (typeof seenAt !== 'number' || !Number.isFinite(seenAt) || seenAt > now + CLOCK_SKEW_MS) {
-        return { seenAt: null };
+        return { seenAt: null, terminal };
     }
-    return { seenAt };
+    return { seenAt, terminal };
 }
 /** When the runtime last answered a ping on this socket, if it ever did. */
 function autoResponseAt(ctx, ws, now) {
@@ -105,20 +106,28 @@ function ownsTerminal(ctx, ws, stamp, now) {
     return heard !== null && now - heard < SHELL_OWNER_LIVENESS_MS;
 }
 /** The open shell sockets, each with the stamp it carries. */
-function openShellSockets(sockets, now) {
+/** The open shell sockets of one terminal: the session's own (`terminal` undefined) or a named one. */
+function openShellSockets(sockets, now, terminal) {
     const found = [];
     for (const ws of sockets) {
         if (ws.readyState !== WebSocket.OPEN)
             continue;
         const stamp = readShellStamp(ws, now);
-        if (stamp)
+        if (stamp && stamp.terminal === terminal)
             found.push({ ws, stamp });
     }
     return found;
 }
-/** Tag a freshly accepted terminal socket as this session's shell owner. */
-export function tagShellSocket(ws, now = Date.now()) {
-    writeAttachment(ws, { kind: SHELL_KIND, seenAt: now });
+function shellAttachment(seenAt, terminal) {
+    return { kind: SHELL_KIND, ...(seenAt === undefined ? {} : { seenAt }), ...(terminal === undefined ? {} : { terminal }) };
+}
+/** The named terminal a shell socket is (`/ws?terminal=`): undefined for the session's own, or another socket. */
+export function shellSocketTerminal(ws) {
+    return readShellStamp(ws, Date.now())?.terminal;
+}
+/** Tag a freshly accepted terminal socket as its terminal's owner: the session's own, or the named `terminal`. */
+export function tagShellSocket(ws, now = Date.now(), terminal) {
+    writeAttachment(ws, shellAttachment(now, terminal));
 }
 /**
  * Drop the evidence that a peer was on this socket.
@@ -130,9 +139,10 @@ export function tagShellSocket(ws, now = Date.now()) {
  * A peer that turns out to be alive re-stamps on its next frame.
  */
 export function clearShellSocketStamp(ws) {
-    if (readShellStamp(ws, Date.now()) === null)
+    const stamp = readShellStamp(ws, Date.now());
+    if (stamp === null)
         return;
-    writeAttachment(ws, { kind: SHELL_KIND });
+    writeAttachment(ws, shellAttachment(undefined, stamp.terminal));
 }
 /**
  * Record that the peer on this socket is still there.
@@ -147,11 +157,11 @@ export function noteShellSocketActivity(ws, now = Date.now()) {
         return;
     if (stamp.seenAt !== null && now - stamp.seenAt < STAMP_INTERVAL_MS)
         return;
-    writeAttachment(ws, { kind: SHELL_KIND, seenAt: now });
+    writeAttachment(ws, shellAttachment(now, stamp.terminal));
 }
 /** True when another browser terminal currently holds this session. */
-export function hasLiveShellOwner(ctx, sockets, now = Date.now()) {
-    return openShellSockets(sockets, now).some(({ ws, stamp }) => ownsTerminal(ctx, ws, stamp, now));
+export function hasLiveShellOwner(ctx, sockets, now = Date.now(), terminal) {
+    return openShellSockets(sockets, now, terminal).some(({ ws, stamp }) => ownsTerminal(ctx, ws, stamp, now));
 }
 /**
  * Close the shell sockets no peer holds any more.
@@ -160,8 +170,8 @@ export function hasLiveShellOwner(ctx, sockets, now = Date.now()) {
  * whose tab is gone stays accepted for the life of the object, and every
  * warm rejoin adds another one.
  */
-export function closeStaleShellSockets(ctx, sockets, now = Date.now()) {
-    for (const { ws, stamp } of openShellSockets(sockets, now)) {
+export function closeStaleShellSockets(ctx, sockets, now = Date.now(), terminal) {
+    for (const { ws, stamp } of openShellSockets(sockets, now, terminal)) {
         if (ownsTerminal(ctx, ws, stamp, now))
             continue;
         try {
