@@ -398,8 +398,6 @@ async function compare(
   const result: ScanResult = { dirty: new DirtySet(dc.count), untracked: [], unmerged: [], errors: { tracked: [], untracked: [] } };
   const join = (dir: string, name: string) => (dir ? `${dir}/${name}` : name);
 
-  /** Where the untracked scan's warnings go: the result's, or an untracked directory's until its run says it is no repository. */
-  let warnings = result.errors.untracked;
   /** What the comparisons change in the index: at once by name, held until a scan has answered to its end. */
   const held = scan === null ? null : new HeldIndexUpdates();
   const updates: IndexUpdates = held ?? dc;
@@ -411,7 +409,7 @@ async function compare(
     try {
       return await list(dir);
     } catch (error) {
-      if (options.untracked !== 'no') warnings.push(`warning: could not open directory '${dir}/': ${strerror(error)}`);
+      if (options.untracked !== 'no') result.errors.untracked.push(`warning: could not open directory '${dir}/': ${strerror(error)}`);
       return null;
     }
   };
@@ -448,28 +446,28 @@ async function compare(
    * index holds a file at its name (`shadowed`): git drops such a name from
    * what it lists (index_name_is_other), though not the files below it.
    */
-  const untracked = async (path: string, type: WorktreeType, shadowed = false, out = result.untracked): Promise<void> => {
+  const untracked = async (path: string, type: WorktreeType, shadowed = false): Promise<void> => {
     if (type === 'other') return;
     const ignored = await excluded(path, type === 'directory');
     if (ignored && !options.ignoredToo) return;
     if (type !== 'directory') {
-      if (inScope(path)) out.push(path);
+      if (inScope(path)) result.untracked.push(path);
       return;
     }
     // A nested repository is listed as its directory, never entered.
     const entries = await listOrWarn(path) ?? [];
     if (entries.some((entry) => entry.name === '.git')) {
-      if (inScope(path) && !shadowed) out.push(`${path}/`);
+      if (inScope(path) && !shadowed) result.untracked.push(`${path}/`);
       return;
     }
     if (options.untracked === 'normal' && inScope(path) && !ignored) {
-      if (!shadowed && await holdsUntracked(path)) out.push(`${path}/`);
+      if (!shadowed && await holdsUntracked(path)) result.untracked.push(`${path}/`);
       return;
     }
     for (const entry of entries) {
       if (entry.name === '.git') continue;
       const child = join(path, entry.name);
-      if (inScope(child) || (entry.type === 'directory' && onTheWay(child))) await untracked(child, entry.type, false, out);
+      if (inScope(child) || (entry.type === 'directory' && onTheWay(child))) await untracked(child, entry.type);
     }
   };
 
@@ -726,111 +724,18 @@ async function compare(
         }
         if (name === '.git' || (kinds & TRACKED_GITLINK) !== 0) return await skipUnder(below);
         const reached = inScope(path) || onTheWay(path);
-        if (entry?.byName) {
-          // What the scan cannot list is asked by name, as the walk by name asks it.
-          await skipUnder(below);
-          if (runHi > runLo) {
-            if (reached) await walk(path, runLo, runHi);
-          } else if (options.untracked !== 'no' && reached) {
-            await untracked(path, 'directory', (kinds & TRACKED_FILE) !== 0);
-          }
-          return;
-        }
-        if (runHi > runLo) return reached ? await trackedDir(path, below, runLo, runHi) : await skipUnder(below);
-        if (options.untracked === 'no' || !reached) return await skipUnder(below);
-        await untrackedDir(path, below, (kinds & TRACKED_FILE) !== 0, result.untracked);
+        if (runHi > runLo && reached && !entry?.byName) return await trackedDir(path, below, runLo, runHi);
+        // The rest is asked by name, as the walk by name asks it: what the scan cannot list, and a
+        // directory the index holds nothing in. That is read_directory's: its listing order decides what
+        // -unormal's probe stops at, and a nested repository is known before anything in it is looked at.
+        await skipUnder(below);
+        if (!reached) return;
+        if (runHi > runLo) await walk(path, runLo, runHi);
+        else if (options.untracked !== 'no') await untracked(path, 'directory', (kinds & TRACKED_FILE) !== 0);
       });
       absentBefore(null);
     }
 
-    /**
-     * An untracked directory, from its run under `prefix`, as {@link untracked}
-     * judges it: an ignored one passed over; a nested repository (a `.git`
-     * in it) listed as itself; under -unormal listed as itself if anything
-     * below it is untracked and not ignored; else what it holds. What it
-     * holds is kept until its run ends, which says whether a `.git` was in it.
-     */
-    async function untrackedDir(path: string, run: Run, shadowed: boolean, out: string[]): Promise<void> {
-      const ignored = await excluded(path, true);
-      if (ignored && !options.ignoredToo) return await skipUnder(run);
-      const normal = options.untracked === 'normal' && inScope(path) && !ignored;
-      const below: string[] = [];
-      // What is found below, warnings too, is kept until the run says whether this is a repository.
-      const outer = warnings;
-      const heard: string[] = [];
-      warnings = heard;
-      let repository = false;
-      let holds = false;
-      await children<void>(run, path, () => {}, async (name, child, entry) => {
-        if (name === '.git') {
-          // A nested repository: listed as itself, nothing below it kept.
-          repository = true;
-          below.length = 0;
-          heard.length = 0;
-          return;
-        }
-        if (repository || entry.stat.type === 'directory') return;
-        if (normal) {
-          if (!shadowed && !holds && entry.stat.type !== 'other' && !await excluded(child, false)) holds = true;
-          return;
-        }
-        if (inScope(child)) await untracked(child, entry.stat.type, false, below);
-      }, async (name, child, entry, under) => {
-        if (name === '.git' || repository) return await skipUnder(under);
-        if (normal) {
-          if (shadowed || holds || await excluded(child, true)) return await skipUnder(under);
-          if (await probe(child, under, entry)) holds = true;
-          return;
-        }
-        if (!(inScope(child) || onTheWay(child))) return await skipUnder(under);
-        if (entry?.byName) {
-          await skipUnder(under);
-          return await untracked(child, 'directory', false, below);
-        }
-        await untrackedDir(child, under, false, below);
-      });
-      warnings = outer;
-      if (repository) {
-        if (inScope(path) && !shadowed) out.push(`${path}/`);
-        return;
-      }
-      for (const warning of heard) warnings.push(warning);
-      if (normal) {
-        if (!shadowed && holds) out.push(`${path}/`);
-        return;
-      }
-      for (const found of below) out.push(found);
-    }
-
-    /** -unormal's probe of a directory below an untracked one, from its run: a `.git` in it, or {@link holdsUntracked} of it. */
-    async function probe(path: string, run: Run, entry: ScannedEntry | null): Promise<boolean> {
-      if (entry?.byName) {
-        await skipUnder(run);
-        return (await listOrWarn(path) ?? []).some((child) => child.name === '.git') || await holdsUntracked(path);
-      }
-      // As holdsUntracked: a `.git` here answers before anything below is looked at, so what was heard below goes.
-      const outer = warnings;
-      const heard: string[] = [];
-      warnings = heard;
-      let repository = false;
-      let holds = false;
-      await children<void>(run, path, () => {}, async (name, child, found) => {
-        if (name === '.git') {
-          repository = true;
-          heard.length = 0;
-        }
-        if (holds || repository || found.stat.type === 'directory') return;
-        if (found.stat.type !== 'other' && !await excluded(child, false)) holds = true;
-      }, async (name, child, found, under) => {
-        if (holds || repository || name === '.git') return await skipUnder(under);
-        if (await excluded(child, true)) return await skipUnder(under);
-        if (await probe(child, under, found)) holds = true;
-      });
-      warnings = outer;
-      if (repository) return true;
-      for (const warning of heard) warnings.push(warning);
-      return holds;
-    }
   }
 }
 
