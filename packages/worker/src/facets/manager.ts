@@ -202,7 +202,7 @@ import {
   rewriteWithoutEnvironment,
   unlinkDurableImages,
 } from './durable-images.js';
-import { recordKeys, recordWithEnv, relaunchEnv, type ProcessEnvKeeping, type ProcessEnvRequest, type ResolveProcessEnv } from './process-env.js';
+import { deleteRecord, putRecord, relaunchEnv, type ProcessEnvKeeping, type ProcessEnvRequest, type ResolveProcessEnv } from './process-env.js';
 import {
   SQLITE_WASM_MODULE_NAME,
   type OpencodeRunnerMode,
@@ -5414,11 +5414,11 @@ interface InterpreterLaunchEnv {
   facts: InterpreterEnvFacts | null;
 }
 
-/** An interpreter resident's start payload, as its environment members parse. */
+/** An interpreter resident's start payload, as its environment members parse; a launch given none has none. */
 const InterpreterStartArgsSchema = z.looseObject({
   userEnv: z.record(z.string(), z.string()).optional(),
   envFacts: InterpreterEnvFactsSchema.optional(),
-});
+}).default({});
 
 function interpreterStartArgs(startArgs: unknown): z.infer<typeof InterpreterStartArgsSchema> {
   const parsed = InterpreterStartArgsSchema.safeParse(startArgs);
@@ -5854,7 +5854,7 @@ export class FacetManager {
     // supersession) is a delete through here.
     const journalStorage: FencedWorkStorage = {
       put: (key, value) => ctx.storage.put(key, value),
-      delete: async (key) => (await ctx.storage.delete(recordKeys(this.hooks.keepProcessEnv, key))) > 0,
+      delete: (key) => ctx.storage.transaction((txn) => deleteRecord(txn, this.hooks.keepProcessEnv, key)),
       list: <T>(options: { prefix: string }) => ctx.storage.list<T>(options),
       sync: () => ctx.storage.sync(),
     };
@@ -5954,13 +5954,13 @@ export class FacetManager {
       const { env, ...opts } = row.recipe.opts;
       const rewritten: ResidentLaunchRecord = { ...row, recipe: { ...row.recipe, opts } };
       rows.set(key, rewritten);
-      await this.ctx.storage.put(recordWithEnv(keeping, key, rewritten, env));
+      await this.ctx.storage.transaction((txn) => putRecord(txn, keeping, key, rewritten, env));
     }
     for (const [key, row] of await this.ctx.storage.list({ prefix: DEV_SERVER_KEY_PREFIX })) {
       const held = RecordHoldingEnvSchema.safeParse(row);
       if (!held.success) continue;
       const { env, ...record } = held.data;
-      await this.ctx.storage.put(recordWithEnv(keeping, key, record, env));
+      await this.ctx.storage.transaction((txn) => putRecord(txn, keeping, key, record, env));
     }
     const vfs = this.vfs;
     if (vfs !== null) {
@@ -5973,14 +5973,14 @@ export class FacetManager {
         rewritten.set(held.digest, application);
         for (const { key, row, recipe } of naming) {
           if (held.bindingEnv && recipe.resident === undefined && this.hooks.resolveWorkerLaunch === undefined) {
-            await this.ctx.storage.delete(recordKeys(keeping, key));
+            await this.ctx.storage.transaction((txn) => deleteRecord(txn, keeping, key));
             rows.delete(key);
             this.hooks.notify?.(`\x1b[33m[nimbus: "${row.command}" is not restarted: its image held its environment, which Nimbus no longer keeps; start it again]\x1b[0m\r\n`);
             continue;
           }
           const moved: ResidentLaunchRecord = { ...row, recipe: { ...recipe, image: { runner: recipe.image.runner, application } } };
           rows.set(key, moved);
-          await this.ctx.storage.put(recordWithEnv(keeping, key, moved, recipe.resident === undefined ? undefined : held.processEnv ?? undefined));
+          await this.ctx.storage.transaction((txn) => putRecord(txn, keeping, key, moved, recipe.resident === undefined ? undefined : held.processEnv ?? undefined));
         }
       }
       for (const [ownerKey, images] of await this.ctx.storage.list<Array<{ runner: string; application: string }>>({ prefix: DURABLE_IMAGES_KEY_PREFIX })) {
@@ -6150,7 +6150,8 @@ export class FacetManager {
       const held = await txn.get<number>(key);
       if (held !== undefined && held !== record.pid && held > this.processes.pidBase
         && this.processes.get(held)?.state === 'running') return held;
-      await txn.put({ [key]: record.pid, ...recordWithEnv(this.hooks.keepProcessEnv, `${FENCED_WORK_KEY_PREFIX}${record.pid}`, record, env) });
+      await txn.put(key, record.pid);
+      await putRecord(txn, this.hooks.keepProcessEnv, `${FENCED_WORK_KEY_PREFIX}${record.pid}`, record, env);
       return null;
     });
     if (duplicate === null) {

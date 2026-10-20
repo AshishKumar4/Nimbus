@@ -36,7 +36,7 @@ import { DEV_SERVER_KEY_PREFIX } from './keys.js';
 import type { DevServerRestoreFailure } from './helpers.js';
 import { readPortCapability, readoptCapability, type PortCapabilityHost } from './port-capability.js';
 import type { ProcessEnvHooks } from './process-env.js';
-import { recordKeys, recordWithEnv, relaunchEnv } from '../facets/process-env.js';
+import { deleteRecord, putRecord, relaunchEnv } from '../facets/process-env.js';
 
 const DevServerRecordSchema = z.object({
   /** The line its command ran, and what its process was spawned with. */
@@ -150,7 +150,7 @@ export async function afterDevServerRestore(
 }
 
 async function release(host: Pick<DevServerHost, 'ctx' | 'processEnv'>, key: string): Promise<void> {
-  await host.ctx.storage.delete(recordKeys(host.processEnv.keepProcessEnv, key));
+  await host.ctx.storage.transaction((txn) => deleteRecord(txn, host.processEnv.keepProcessEnv, key));
   await host.ctx.storage.sync();
 }
 
@@ -166,7 +166,7 @@ export async function recordDevServer(host: DevServerHost, pid: number, spawn: D
     command: spawn.command, argv: [...spawn.argv], cwd: spawn.cwd, cred: spawn.cred, ...execIdField(spawn),
     root: spawn.root, ports: host.portRegistry.getRouteablePortsByPid(pid),
   };
-  await host.ctx.storage.put(recordWithEnv(host.processEnv.keepProcessEnv, key, record, spawn.env));
+  await host.ctx.storage.transaction((txn) => putRecord(txn, host.processEnv.keepProcessEnv, key, record, spawn.env));
   await host.ctx.storage.sync();
   if (host.processes.get(pid)?.state !== 'running') {
     await release(host, key);
