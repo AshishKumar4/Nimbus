@@ -51,8 +51,22 @@ export interface WalkCounters {
 }
 export declare function newCounters(): WalkCounters;
 /** One worktree in its repository's terms. */
+/** An entry of the worktree's ordered scan: its repo-relative path, its lstat, and whether what is below it must be asked by name. */
+export interface ScannedWorktreeEntry {
+    path: string;
+    stat: WorktreeStat;
+    /** A directory the scan does not list (an unlisted mount, one the caller may not read and search). */
+    byName: boolean;
+}
 export interface Worktree {
     fs: WorktreeFs;
+    /**
+     * The worktree in one scan, every entry in byte order of its path (the
+     * index's order), a directory before what it holds. Absent: the walk asks
+     * by name. A scan that fails throws from the iterator; EAGAIN when the
+     * tree changed under it.
+     */
+    scan?: () => AsyncIterable<ScannedWorktreeEntry>;
     /** core.filemode: the owner's exec bit is a change. */
     filemode: boolean;
     /** core.autocrlf=true: a valid UTF-8 file is hashed with CRLF as LF, as cf-git adds it. */
@@ -100,7 +114,12 @@ export declare class DirtySet {
  * (its stat refreshed in `dc` when the content had to decide), else how it
  * differs.
  */
-export declare function compareEntry(tree: Worktree, dc: DirCache, i: number, path: string, st: WorktreeStat, uncleanIsDirty?: boolean): Promise<Dirty | null>;
+export declare function compareEntry(tree: Worktree, dc: DirCache, i: number, path: string, st: WorktreeStat, uncleanIsDirty?: boolean, updates?: IndexUpdates): Promise<Dirty | null>;
+/** What a comparison changes in the index: an entry proved up to date, an entry's stat refreshed. */
+export interface IndexUpdates {
+    markUptodate(i: number): void;
+    refresh(i: number, stat: EntryStat): void;
+}
 export interface ScanOptions {
     /** Repo-relative literal pathspecs; none, or '', is the whole tree. */
     specs?: readonly string[];
@@ -149,6 +168,11 @@ export interface ScanResult {
  * every tracked entry that differs, and what is untracked. Unmerged entries
  * (stage > 0) are left to the caller; skip-worktree and assume-unchanged
  * entries are never looked at, as git never looks at them.
+ *
+ * A worktree with a `scan` is read in that one ordered pass, merged with
+ * the index as it goes; it is asked by name where the scan cannot answer (a
+ * top it does not list as a readdir of the top does, a tree that changed
+ * under it SCAN_ATTEMPTS times, a scan that failed).
  */
 export declare function scanWorktree(tree: Worktree, dc: DirCache, options: ScanOptions): Promise<ScanResult>;
 //# sourceMappingURL=walk.d.ts.map
