@@ -17,7 +17,7 @@ for (const [name, task] of Object.entries({ ...core, ...worker })) {
   if (task?.kind !== 'nimbus-facet-task') continue;
   const preamble = name === 'NPM_RESOLVE_ONE_TASK' ? NPM_RESOLVE_PREAMBLE
     : name === 'NPM_INSTALL_BATCH_TASK' ? [TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE, WAVE_WRITER_PREAMBLE, NPM_INSTALL_PREAMBLE].join('\n')
-    : name === 'WASM_CALL_TASK' ? WASI_INSTANCE_PREAMBLE_SRC : '';
+    : name === 'WASM_CALL_TASK' || name === 'TSRS_CALL_TASK' ? WASI_INSTANCE_PREAMBLE_SRC : '';
   const module = assembleLoaderWorkerModuleSource({ fnSource: task.source, preamble, hasBindings: true });
   const absent = [...freeNames(module, { sourceType: 'module' })].filter((key) => !FACET_GLOBALS.has(key) && !(key in globalThis) && key !== 'WebAssembly');
   assert.deepEqual(absent, [], `${name} may read only the actual guest's bindings`);

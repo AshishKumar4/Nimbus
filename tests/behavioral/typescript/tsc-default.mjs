@@ -3,8 +3,7 @@
 // the Rust port of TypeScript 7 built to wasm, as a WASI process: it reports
 // a type error as tsc does (exit 2), emits JavaScript for a clean project,
 // and refuses --watch, which its wasm build lacks. A project that installs
-// its own `typescript` runs that one; a `typescript` whose compiler is a
-// native binary (7.x) runs tsrs instead, and says so.
+// its own `typescript` runs that one (a native one: bin-tsc-native).
 
 import { mintSession, deleteSession, Terminal, makeAsserter, stripAnsi } from '../_driver.mjs';
 
@@ -61,17 +60,6 @@ try {
     a.check('the project\'s own typescript runs as pinned', exitCode === 0 && /^Version 6\.0\.3\s*$/m.test(output), output.slice(-400));
     const checked = await run('tsc --noEmit');
     a.check('and reports the error itself', checked.exitCode !== 0 && /error TS2322/.test(checked.output), checked.output.slice(-600));
-  }
-
-  await run('cd .. && mkdir -p native/src && cd native && echo \'{"name":"native","private":true}\' > package.json');
-  await t.writeFile('tsconfig.json', TSCONFIG);
-  await t.writeFile('src/bad.ts', 'export const n: number = "seven";\n');
-  {
-    const install = await run('npm i -D typescript@7.0.2', 300_000);
-    a.check('typescript 7.0.2 installs in the project', install.exitCode === 0, install.output.slice(-600));
-    const { output, exitCode } = await run('tsc --noEmit');
-    a.check('a typescript whose compiler is native runs tsrs, and says so', /typescript 7\.0\.2 .*native.*tsrs 0\.18\.0/.test(output), output.slice(-600));
-    a.check('and the error is reported with exit 2', exitCode === 2 && /error TS2322/.test(output), `exit ${exitCode}: ${output.slice(-400)}`);
   }
 
   {
