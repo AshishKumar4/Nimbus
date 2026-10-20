@@ -48,6 +48,8 @@ const CASES = [
   { line: "alias r='[[ x =~ '\nalias y=x\nr y ]]; echo $?\nalias q='[[ x == '\nq y ]]; echo $?\nalias b='[[ '\nb y == x ]]; echo $?", compare: "all" },
   { line: "alias y=x\n[[ y == x ]]; echo $?\nalias r='[[ x =~ '\nalias z='x|z'\nr z ]]; echo $?", compare: "all" },
   { line: "alias u='[[ -n '\nalias e=''\nu e ]]; echo $?", compare: "out" },
+  { line: "[[ -n ]]; echo $?", compare: "out" },
+  { line: "[[ x == ]]; echo $?", compare: "out" },
 ];
 
 /** bash's diagnostic prefix: `bash: line 1: `, `bash: -c: line 1: `. */

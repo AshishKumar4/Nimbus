@@ -399,12 +399,15 @@ class Parser {
     // (after a unary or a binary operator); and how many of its groups are open.
     let at: 'term' | 'first' | 'operand' | 'done' = 'term';
     let groups = 0;
+    // The operator whose operand is due (at 'operand'): a unary one's or a binary one's.
+    let operator: 'unary' | 'binary' = 'unary';
 
     while (!this.isAtEnd()) {
       // A word after an alias whose text ended in a blank is checked for an alias too, an operand's as any (bash 5.2).
       if (this.peek().aliasCheck === true) this.expandAliases();
       const token = this.advance();
       if (isUnquotedLiteralWord(token, ']]')) {
+        if (at === 'operand') throw new ParseError(`unexpected argument \`]]' to conditional ${operator} operator`, token.pos);
         return {
           type: 'double_bracket',
           words,
@@ -418,14 +421,20 @@ class Parser {
         // The binary operator =~: its operand is a regular expression.
         words.push(this.parseRegexWord(groups > 0));
         at = 'done';
-      } else if (at === 'first' && word !== null && Object.hasOwn(BINARY_OPERATORS, word)) at = 'operand';
+      } else if (at === 'first' && word !== null && Object.hasOwn(BINARY_OPERATORS, word)) {
+        at = 'operand';
+        operator = 'binary';
+      }
       else if (token.kind === TokenKind.And || token.kind === TokenKind.Or) at = 'term';
       else if (token.kind === TokenKind.RParen) {
         groups = Math.max(0, groups - 1);
         at = 'done';
       } else if (at === 'term') {
         if (token.kind === TokenKind.LParen) groups++;
-        else if (word !== '!') at = word !== null && Object.hasOwn(UNARY_OPERATORS, word) ? 'operand' : 'first';
+        else if (word !== '!') {
+          at = word !== null && Object.hasOwn(UNARY_OPERATORS, word) ? 'operand' : 'first';
+          operator = 'unary';
+        }
       } else at = 'done';
     }
 
