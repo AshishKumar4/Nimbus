@@ -23,7 +23,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { hostSqlite } from './lib/host-sqlite.mjs';
 
@@ -74,7 +74,7 @@ const ws = await NimbusWorkspace.create({ sql, transactions, generation: 1 });
 const failed = [];
 try {
   for (const [name, text] of Object.entries(FILES)) {
-    await ws.fs.mkdir(`/home/user/${name}/..`, { recursive: true });
+    await ws.fs.mkdir(dirname(`/home/user/${name}`), { recursive: true });
     await ws.fs.writeFile(`/home/user/${name}`, text);
   }
   for (const line of CASES) {

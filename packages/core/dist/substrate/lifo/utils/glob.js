@@ -1,4 +1,4 @@
-import { resolve } from './path.js';
+import { operandPath } from './path.js';
 import { decodeLossless, encodeLossless, firstLosslessByte } from './lossless-text.js';
 /**
  * Match a glob pattern against a text string, as fnmatch(3) without flags:
@@ -178,7 +178,7 @@ export async function expandGlob(pattern, text, cwd, vfs) {
         return [text];
     }
     // The working directory's name matches only itself: escaped, as the pattern's quoted characters are.
-    const absPattern = pattern.startsWith('/') ? pattern : resolve(escapeGlob(cwd), pattern);
+    const absPattern = pattern.startsWith('/') ? pattern : operandPath(escapeGlob(cwd), pattern);
     const parts = absPattern.split('/').filter(Boolean);
     const isAbsolute = pattern.startsWith('/');
     let candidates = ['/'];

@@ -1,4 +1,4 @@
-import { resolve, dirname } from '../../utils/path.js';
+import { operandPath, dirname } from '../../utils/path.js';
 import { createTar, parseTar, compressGzip, decompressGzip, collectFiles } from '../../utils/archive.js';
 import { isVfsError } from '../../../../vfs/vfs-error.js';
 const command = async (ctx) => {
@@ -80,8 +80,8 @@ const command = async (ctx) => {
         await ctx.stderr.write('tar: -f is required\n');
         return 1;
     }
-    const archivePath = resolve(ctx.cwd, archiveFile);
-    const targetDir = changeDir ? resolve(ctx.cwd, changeDir) : ctx.cwd;
+    const archivePath = operandPath(ctx.cwd, archiveFile);
+    const targetDir = changeDir ? operandPath(ctx.cwd, changeDir) : ctx.cwd;
     try {
         if (create) {
             if (files.length === 0) {
@@ -114,7 +114,7 @@ const command = async (ctx) => {
                 catch { /* exists */ }
             }
             for (const entry of entries) {
-                const entryPath = resolve(targetDir, entry.path);
+                const entryPath = operandPath(targetDir, entry.path);
                 if (entry.type === 'directory') {
                     try {
                         (await ctx.vfs.mkdir(entryPath, { recursive: true }));
@@ -123,7 +123,7 @@ const command = async (ctx) => {
                 }
                 else {
                     // Ensure parent dir exists
-                    const parent = dirname(entryPath);
+                    const parent = operandPath(targetDir, dirname(entry.path));
                     try {
                         (await ctx.vfs.mkdir(parent, { recursive: true }));
                     }

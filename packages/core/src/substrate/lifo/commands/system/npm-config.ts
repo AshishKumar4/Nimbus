@@ -18,7 +18,7 @@
 import { npmDefinitions, envReplace, parseField, typeDefs, typeDescription, ini, nopt } from '../../../../_shared/npm-libs.js';
 
 import type { ProcessView as VFS } from '../../../../runtime/process-files.js';
-import { dirname, resolve } from '../../utils/path.js';
+import { dirname, operandPath, resolve } from '../../utils/path.js';
 
 const { definitions, shorthands } = npmDefinitions;
 
@@ -138,14 +138,14 @@ export async function loadNpmConfig(vfs: VFS, cwd: string, env: Record<string, s
     }
     localPrefix ||= cwd;
   }
-  const userconfig = (): string => String(get('userconfig') ?? resolve(home, '.npmrc'));
-  const projectFile = resolve(localPrefix, '.npmrc');
+  const userconfig = (): string => String(get('userconfig') ?? operandPath(home, '.npmrc'));
+  const projectFile = operandPath(localPrefix, '.npmrc');
   const global = get('global') === true || get('location') === 'global';
-  if (!global && projectFile !== userconfig()) layer('project', projectFile, await readRc(projectFile));
+  if (!global && resolve('/', projectFile) !== resolve('/', userconfig())) layer('project', projectFile, await readRc(projectFile));
   const userFile = userconfig();
   layer('user', userFile, await readRc(userFile));
   const prefix = String(get('prefix') ?? globalPrefix);
-  const globalFile = String(get('globalconfig') || resolve(prefix, 'etc/npmrc'));
+  const globalFile = String(get('globalconfig') || operandPath(prefix, 'etc/npmrc'));
   layer('global', globalFile, await readRc(globalFile));
   layer('default', 'default values', { ...defaults, prefix: globalPrefix });
 

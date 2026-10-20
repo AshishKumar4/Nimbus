@@ -1,5 +1,5 @@
 import type { Command } from '../types.js';
-import { resolve } from '../../utils/path.js';
+import { operandPath } from '../../utils/path.js';
 import { inputChunks, writeBytes } from '../../utils/bytes-io.js';
 import { withOpenFiles, type ProcessFile } from '../../../../runtime/process-files.js';
 import { strerror } from '../../../../vfs/vfs-error.js';
@@ -44,7 +44,7 @@ const command: Command = async (ctx) => {
     for (const file of files) {
       if (file === '-') { outputs.push({ file, open: null }); continue; }
       try {
-        const opened = await open(resolve(ctx.cwd, file), { write: true, create: true, append, truncate: !append });
+        const opened = await open(operandPath(ctx.cwd, file), { write: true, create: true, append, truncate: !append });
         operand.set(opened, file);
         outputs.push({ file, open: opened });
       } catch (error) {

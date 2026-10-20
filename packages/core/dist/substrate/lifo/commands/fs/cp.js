@@ -1,4 +1,4 @@
-import { resolve, dirname } from '../../utils/path.js';
+import { operandPath, resolve } from '../../utils/path.js';
 import { parseArgs } from '../../utils/args.js';
 import { resolveCopyTargets } from './copy-targets.js';
 import { isVfsError, strerror, syscallError } from '../../../../vfs/vfs-error.js';
@@ -51,7 +51,7 @@ const command = async (ctx) => {
         failed: async (message) => { await ctx.stderr.write(`cp: ${message}\n`); exitCode = 1; },
     };
     for (const source of sources) {
-        const src = resolve(ctx.cwd, source);
+        const src = operandPath(ctx.cwd, source);
         const target = targets.targetFor(src);
         const stat = await statOrThrow(ctx.vfs, src, { follow: followOperand }).catch(async (e) => {
             if (!isVfsError(e))
@@ -70,7 +70,12 @@ const command = async (ctx) => {
                     exitCode = 1;
                     continue;
                 }
-                if (target === src || target.startsWith(`${src}/`)) {
+                // Where they are, through their links: the names as spelled may say either.
+                const sourceAt = await ctx.vfs.realpath(src);
+                const parent = target.slice(0, target.lastIndexOf('/')) || '/';
+                const parentAt = await ctx.vfs.realpath(parent).catch(() => null);
+                const targetAt = parentAt === null ? null : `${parentAt === '/' ? '' : parentAt}/${target.slice(target.lastIndexOf('/') + 1)}`;
+                if (targetAt !== null && (targetAt === sourceAt || targetAt.startsWith(`${sourceAt}/`))) {
                     await ctx.stderr.write(`cp: cannot copy a directory, '${source}', into itself, '${rawDest}'\n`);
                     exitCode = 1;
                     continue;
@@ -83,7 +88,7 @@ const command = async (ctx) => {
                 await copyEntry(copying, src, target, stat);
             }
             if (flags.verbose)
-                await ctx.stdout.write(`'${source}' -> '${target}'\n`);
+                await ctx.stdout.write(`'${source}' -> '${resolve('/', target)}'\n`);
         }
         catch (e) {
             if (isVfsError(e)) {
@@ -122,8 +127,8 @@ async function copyTree(copying, src, target) {
     else if ((await lstatOrThrow(ctx.vfs, target)).type !== 'directory')
         throw syscallError('ENOTDIR', 'cp', src, { dest: target });
     for (const entry of await ctx.vfs.readdir(src)) {
-        const from = resolve(src, entry.name);
-        const to = resolve(target, entry.name);
+        const from = operandPath(src, entry.name);
+        const to = operandPath(target, entry.name);
         const child = await lstatOrThrow(ctx.vfs, from);
         if (child.type === 'directory')
             await copyTree(copying, from, to);
@@ -135,7 +140,8 @@ async function copyTree(copying, src, target) {
 }
 async function copyEntry(copying, src, target, stat) {
     const { ctx, preserve } = copying;
-    if (!(await ctx.vfs.exists(dirname(target))))
+    const parent = target.slice(0, target.lastIndexOf('/')) || '/';
+    if (!(await ctx.vfs.exists(parent)))
         throw syscallError('ENOENT', 'copyfile', src, { dest: target });
     if (stat.type === 'symlink') {
         const link = await ctx.vfs.readlink(src);

@@ -5,11 +5,11 @@
  * and the modern rimraf v4+ promise-based API, all backed by the VFS
  * fs shim's recursive rmdir.
  */
-import { resolve } from '../utils/path.js';
+import { operandPath } from '../utils/path.js';
 import { isVfsError } from '../../../vfs/vfs-error.js';
 export function createRimraf(vfs, cwd) {
     function removeSync(p) {
-        const abs = resolve(cwd, p);
+        const abs = operandPath(cwd, p);
         // The path itself, as rimraf lstats it: a link is unlinked, never followed, and a dangling one is still there to remove.
         let stat;
         try {

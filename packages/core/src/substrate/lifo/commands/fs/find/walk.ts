@@ -20,7 +20,7 @@
 import type { ProcessStat, ProcessView } from '../../../../../runtime/process-files.js';
 import type { VfsDirent, VfsDirentType } from '../../../../../vfs/vfs.js';
 import { isVfsError, syscallError, VFS_STRERROR, type VfsError } from '../../../../../vfs/vfs-error.js';
-import { resolve } from '../../../utils/path.js';
+import { operandPath } from '../../../utils/path.js';
 import { quote } from './errors.js';
 import type { SymlinkMode } from './expression.js';
 import { baseName } from './format.js';
@@ -454,7 +454,7 @@ export class FindEntry {
     const trimmed = this.start.replace(/\/+$/, '');
     const slash = trimmed.lastIndexOf('/');
     const directory = trimmed === '' ? '/' : slash === -1 ? '.' : trimmed.slice(0, slash).replace(/\/+$/, '') || '/';
-    return { directory: resolve(this.walker.options.cwd, directory), argument };
+    return { directory: operandPath(this.walker.options.cwd, directory), argument };
   }
 }
 
@@ -546,7 +546,7 @@ export class Walker {
       const start = starts[i];
       const trimmed = start.replace(/\/+$/, '');
       const entry = new FindEntry(
-        this, [i], start, resolve(this.options.cwd, start),
+        this, [i], start, operandPath(this.options.cwd, start),
         trimmed === '' ? (start === '' ? '' : '/') : trimmed.slice(trimmed.lastIndexOf('/') + 1),
         0, start, null, null,
       );

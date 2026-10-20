@@ -1,6 +1,6 @@
 import { getopt } from '../../utils/args.js';
 import { concatBytes, readAllInput, writeBytes } from '../../utils/bytes-io.js';
-import { basename, resolve } from '../../utils/path.js';
+import { basename, operandPath } from '../../utils/path.js';
 import { isVfsError, strerror } from '../../../../vfs/vfs-error.js';
 import { statOrThrow } from '../../../../vfs/vfs.js';
 import { shellEscape } from '../../../../_shared/shell-quote.js';
@@ -285,7 +285,7 @@ const command = async (ctx) => {
     };
     const inspect = async (f) => {
         try {
-            stats[f] = names[f] === '-' ? null : await statOrThrow(ctx.vfs, resolve(ctx.cwd, names[f]));
+            stats[f] = names[f] === '-' ? null : await statOrThrow(ctx.vfs, operandPath(ctx.cwd, names[f]));
         }
         catch (error) {
             await failed(names[f], error);
