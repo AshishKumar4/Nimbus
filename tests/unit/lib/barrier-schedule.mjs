@@ -384,27 +384,28 @@ export function createModel(tree = SEED_TREE) {
    * overlap, so any of them may have landed first; only four are laid, a
    * schedule rarely having more.
    */
-  /** The changes of `among` in flight at state `i` (begun by it, not yet returned): four at most, a schedule rarely having more. */
-  const flyingAt = (among, i) => among.filter((c) => c.begun <= i && (c.done === null || c.done > i)).slice(0, 4);
+  /** The changes of `among` in flight at state `i` (begun by it, not yet returned): `cap` at most, a schedule rarely having more. */
+  const flyingAt = (among, i, cap = 4) => among.filter((c) => c.begun <= i && (c.done === null || c.done > i)).slice(0, cap);
   /**
    * The worlds state `i` may be seen as with `flying` in flight: each not
    * landed, landed, or (a write) passing through; one of the process's own
    * only once every earlier one it overlaps has landed. Changes in flight
    * together never overlap but for the process's own, so any may land first.
    */
-  const worldsOf = (flying, i, decided) => {
+  const alternativesOf = (flying, i, decided) => {
     let choices = [[]];
     for (const change of flying) {
       const effects = decided && change.decides ? [change.post] : [null, change.post, ...(change.partial === null ? [] : [change.partial])];
       choices = choices.flatMap((chosen) => effects.map((effect) => [...chosen, effect]));
     }
-    const worlds = [];
+    const alternatives = [];
     for (const chosen of choices) {
       if (flying.some((later, j) => chosen[j] !== null && flying.some((earlier, k) => k < j && after(earlier, later) && chosen[k] !== earlier.post))) continue;
-      worlds.push(flying.reduce((world, change, j) => (chosen[j] === null ? world : laid(world, change.domain, chosen[j])), history[i]));
+      alternatives.push({ flying, chosen, world: flying.reduce((world, change, j) => (chosen[j] === null ? world : laid(world, change.domain, chosen[j])), history[i]) });
     }
-    return worlds;
+    return alternatives;
   };
+  const worldsOf = (flying, i, decided) => alternativesOf(flying, i, decided).map((alternative) => alternative.world);
   /** Every world `rel` may have been seen in between states `from` and `to`, with the changes in flight that touch it. */
   const worldsSeen = (rel, from, to, decided = false) => {
     const touching = changes.filter((change) => change.domain.some((root) => under(rel, root) || under(root, rel)));
@@ -412,8 +413,19 @@ export function createModel(tree = SEED_TREE) {
     for (let i = from; i <= to; i++) worlds.push(...worldsOf(flyingAt(touching, i), i, decided));
     return worlds;
   };
-  /** Every world state `i` may be seen as, with every change then in flight. */
-  const worldsAt = (i) => worldsOf(flyingAt(changes, i), i, false);
+  /** How far along `change` is in an alternative: not landed, passing through (a write), landed. */
+  const stage = (change, effect) => (effect === null ? 0 : effect === change.post ? 2 : 1);
+  /**
+   * Whether alternative `later`, at state `j`, can follow alternative
+   * `earlier` on one execution: nothing `earlier` had landed (or begun to)
+   * goes back, unless it has returned by `j`.
+   */
+  const forward = (earlier, j, later) => earlier.flying.every((change, n) => {
+    const was = stage(change, earlier.chosen[n]);
+    if (was === 0 || (change.done !== null && change.done <= j)) return true;
+    const m = later.flying.indexOf(change);
+    return m !== -1 && stage(change, later.chosen[m]) >= was;
+  });
   return {
     get world() { return world; },
     seq,
@@ -463,22 +475,19 @@ export function createModel(tree = SEED_TREE) {
      */
     followed: (op, rel, answer, from, to, offset = 0) => {
       const kind = op === 'opendir' ? 'dir' : 'file';
-      // Each identity the open may have found at `rel`, with the earliest state it was there.
-      const opened = new Map();
+      const at = (i) => alternativesOf(flyingAt(changes, i, 6), i, false);
+      // Opened at `rel` in one alternative, then read wherever its identity is in one forward of it, on the same execution.
       for (let i = from; i <= to; i++) {
-        for (const world of worldsAt(i)) {
-          const state = world.get(rel);
-          if (state === undefined || state.type !== kind || unreachable(world, rel) !== null || (bits(state) & 4) === 0) continue;
-          if (!opened.has(state.id)) opened.set(state.id, i);
-        }
-      }
-      // Read where it was then, in any world that state may be seen as, landed or in flight.
-      for (const [id, since] of opened) {
-        for (let j = since; j <= to; j++) {
-          for (const world of worldsAt(j)) {
-            for (const [k, now] of world) {
-              if (now.id !== id) continue;
-              if (op === 'opendir' ? Array.isArray(answer) && answer.join('/') === childrenOf(world, k).join('/') : answer === now.content.slice(offset, offset + PREAD_BYTES)) return true;
+        for (const opened of at(i)) {
+          const state = opened.world.get(rel);
+          if (state === undefined || state.type !== kind || unreachable(opened.world, rel) !== null || (bits(state) & 4) === 0) continue;
+          for (let j = i; j <= to; j++) {
+            for (const read of at(j)) {
+              if (!forward(opened, j, read)) continue;
+              for (const [k, now] of read.world) {
+                if (now.id !== state.id) continue;
+                if (op === 'opendir' ? Array.isArray(answer) && answer.join('/') === childrenOf(read.world, k).join('/') : answer === now.content.slice(offset, offset + PREAD_BYTES)) return true;
+              }
             }
           }
         }

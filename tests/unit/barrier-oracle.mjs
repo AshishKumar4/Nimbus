@@ -158,4 +158,16 @@ const done = (model, step) => model.finish(model.begin(step));
   assert.ok(!model.followed('opendir', 'z', ['h'], now, now), 'never a listing it did not hold');
 }
 
+{
+  // An open and its read are one execution: a descriptor opened where only later changes put its file reads none of what they replaced.
+  const model = createModel();
+  model.begin(['own', 'write', 'new', 'old']);
+  model.begin(['own', 'write', 'new', 'latest']);
+  model.begin(['own', 'rename', 'new', 'd/n']);
+  const now = model.seq();
+  assert.ok(model.followed('pread', 'd/n', 'latest', now, now), 'opened once the rename landed, after the second write');
+  assert.ok(!model.followed('pread', 'd/n', 'old', now, now), 'never the bytes the second write replaced before the rename existed');
+  assert.ok(!model.followed('pread', 'd/n', '', now, now), 'nor the second write passing through: the rename lands only after it');
+}
+
 console.log('barrier-oracle: ok');

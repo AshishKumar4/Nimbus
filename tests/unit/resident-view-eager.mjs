@@ -342,6 +342,39 @@ await runScenarios(import.meta.path, {
       s.store.cells.delete(t, path);
     }
   },
+  async 'a fill asked before a lease, its first chunk landing after it, leaves the head the lease and its stamp made'() {
+    const size = FS_READ_BATCH_REQUEST_BYTES + 1_000_000;
+    for (const backing of ['heap', 'sql']) {
+      for (const outcome of ['fails', 'lands']) {
+        const s = await storeSession({ big: 'b'.repeat(size) }, { eager: true, backing });
+        const path = `${ROOT}/big`;
+        const { revision } = await s.authority.stat(k('big'));
+        const epoch = s.store.coherence.cursor().epoch;
+        const t = s.store.coherence.require();
+        s.store.cells.put(t, path, new TextEncoder().encode('held'), revision - 1);
+        let batches = 0;
+        const first = Promise.withResolvers();
+        const supervisor = {
+          fsReadBatch: async (requests) => {
+            if (++batches === 1) await first.promise;
+            if (batches === 2 && outcome === 'fails') throw new Error('Network connection lost.');
+            return Promise.all(requests.map(async (request) => ({ bytes: await s.authority.readRange(`/${request.path}`, request.offset, request.length) })));
+          },
+        };
+        const fetching = s.store.transport.fetchFiles(supervisor, [{ path, size, rev: revision, epoch }]);
+        for (let i = 0; i < 500 && batches < 1; i++) await sleep(2);
+        // An own metadata change of the file: its lease, before the fill's first chunk lands; its acknowledgement after.
+        assert.notEqual(s.store.cells.lease(path), undefined, `${backing}: the held file is leased`);
+        first.resolve();
+        for (let i = 0; i < 500 && batches < 2 && outcome === 'lands'; i++) await sleep(2);
+        s.store.cells.stamp(path, revision + 3);
+        await fetching;
+        assert.equal(s.store.cells.provenance(path), revision + 3, `${backing}, ${outcome}: the acknowledged head stays`);
+        const held = s.store.cells.get(path);
+        assert.equal(typeof held === 'string' ? held : new TextDecoder().decode(held), 'held', `${backing}, ${outcome}: with its bytes`);
+      }
+    }
+  },
   async 'a delivery\'s arguments keep the process\'s own debt through the session\'s parse'() {
     const authority = createAuthority();
     const acquired = await rpc._acquireOnDelivery(authority.host, { epoch: authority.rawVfs.epoch, cursor: authority.rawVfs.revision(), begin: 4, own: 3 });

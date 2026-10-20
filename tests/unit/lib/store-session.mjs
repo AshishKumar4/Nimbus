@@ -7,6 +7,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { Database } from 'bun:sqlite';
 import { SqliteVFS } from '../../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ProcessFiles } from '../../../packages/core/src/runtime/process-files.ts';
 import { CRED_KERNEL } from '../../../packages/core/src/runtime/os-contracts.ts';
@@ -21,6 +22,21 @@ export const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze(
 export const ROOT = 'home/user';
 /** The absolute path of `p` under the user's home. */
 export const k = (p) => `/${ROOT}/${p}`;
+
+/** A SQLite database of its own for a store's tables, as a facet's ctx.storage.sql answers. */
+function residentSql() {
+  const db = new Database(':memory:');
+  return {
+    exec(query, ...params) {
+      if (/^\s*(CREATE|INSERT|UPDATE|DELETE|REPLACE)/i.test(query)) {
+        db.query(query).run(...params);
+        return [];
+      }
+      return db.query(query).all(...params);
+    },
+    get databaseSize() { return 0; },
+  };
+}
 
 /** One incarnation of the session, holding `tree` under the user's home. */
 async function incarnation(tree) {
@@ -54,9 +70,11 @@ async function incarnation(tree) {
  * revisions never go back), kept to hold the store's invariants for it;
  * `kernel` and `authority` are always the session's current ones.
  * @param {Record<string, string | null>} tree
- * @param {{ eager?: boolean, unlisted?: string[], delegated?: boolean }} [options]
+ * `backing`: the store's tables in the heap (bindInMemory) or in a SQLite
+ * database of their own (bind, as a facet's are).
+ * @param {{ eager?: boolean, unlisted?: string[], delegated?: boolean, backing?: 'heap' | 'sql' }} [options]
  */
-export async function storeSession(tree, { eager = false, unlisted = [], delegated = false } = {}) {
+export async function storeSession(tree, { eager = false, unlisted = [], delegated = false, backing = 'heap' } = {}) {
   let current = await incarnation(tree);
   // Its methods are the first incarnation's (a reader enumerates them, as the resident filesystem does); each call is the current one's.
   /** @type {any} */
@@ -123,7 +141,8 @@ export async function storeSession(tree, { eager = false, unlisted = [], delegat
     }),
   };
   const store = createResidentStore();
-  store.bindInMemory(64 * 1024 * 1024);
+  if (backing === 'sql') store.bind({ storage: { sql: residentSql() } });
+  else store.bindInMemory(64 * 1024 * 1024);
   store.admission.setStorage(undefined, supervisor);
   if (eager) {
     const { epoch, rev } = await authority.acquire(null, 0, { namespace: true });
