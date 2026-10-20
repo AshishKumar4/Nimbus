@@ -27,11 +27,16 @@ published independently in the `@nimbus-sh` npm scope.
   runtime owns its sessions' `/.nimbus/facet-images` whole, so it removes
   them there. Copies already taken in a snapshot, an export or a clone are
   not removed either. Remove `/var/lib/nimbus` with `sudo rm -r` once no
-  durable worker boots from there. A
-  Python or Ruby server whose image an earlier release wrote, under an
-  embedder that composes `resolveProcessEnv`, is not restarted, and the
-  session says so: start it again. `/api/_diag/session` lists the shell's
-  variable names, not their values.
+  durable worker boots from there. A Python or Ruby server whose image an
+  earlier release wrote, under an embedder that composes
+  `resolveProcessEnv`, is not restarted, and the session says so: start it
+  again. `/api/_diag/session` lists the shell's variable names, not their
+  values. Not fixed yet: a resident process's generated program image still
+  holds the files its process read at start, and every account can read the
+  image. A secret in such a file, such as an inline `VAR=secret` saved in
+  `~/.bash_history`, stays readable by other accounts until the image
+  store's privacy fix ships. Pass secrets through the launch environment
+  instead.
 - Fixed: Nimbus no longer deletes an embedder's images in
   `/.nimbus/facet-images`. The store that holds a resident process's
   generated modules removed every file there that no running process booted
