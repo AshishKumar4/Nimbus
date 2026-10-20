@@ -28,14 +28,15 @@ export function projectEntryType(fs, dir, entry) {
 /** The principal's `view` in the engine's call shape. */
 export function projectFs(view) {
     const at = (key) => '/' + normalizeVfsPath(key);
+    const engineStat = (st) => ({
+        dev: st.dev, ino: st.ino, nlink: st.nlink, type: st.type, size: st.size,
+        atime: st.atimeMs, ctime: st.ctimeMs, mtime: st.mtimeMs, mode: st.mode, uid: st.uid, gid: st.gid,
+    });
     const statOf = async (key, follow) => {
         const st = await view.stat(at(key), { follow });
         if (st === null)
             throw syscallError('ENOENT', follow ? 'stat' : 'lstat', at(key));
-        return {
-            dev: st.dev, ino: st.ino, nlink: st.nlink, type: st.type, size: st.size,
-            atime: st.atimeMs, ctime: st.ctimeMs, mtime: st.mtimeMs, mode: st.mode, uid: st.uid, gid: st.gid,
-        };
+        return engineStat(st);
     };
     return {
         exists: (key) => view.exists(at(key)),
@@ -51,6 +52,10 @@ export function projectFs(view) {
         // packs would evict the session's working set.
         readRangeUncached: (key, offset, length) => view.readRangeUncached(at(key), offset, length),
         readdir: (key) => view.readdir(at(key)),
+        scan: async function* (key) {
+            for await (const { path, stat, byName } of view.scan(at(key)))
+                yield { path, stat: engineStat(stat), byName };
+        },
         writeFile: (key, content, options) => view.writeFile(at(key), content, options),
         mkdir: (key, options) => view.mkdir(at(key), options),
         unlink: (key) => view.unlink(at(key)),

@@ -655,8 +655,8 @@ export class SqliteRuntimeFsBridge {
     acquire(epoch, cursor, options) {
         return this.vfs.acquire(epoch, cursor, options);
     }
-    list(after, limit) {
-        return this.vfs.list(after ?? null, limit);
+    list(after, limit, options) {
+        return this.vfs.list(after ?? null, limit, options);
     }
     realpath(path) {
         return called({ syscall: 'realpath', path }, () => {

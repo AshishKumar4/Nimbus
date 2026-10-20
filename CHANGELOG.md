@@ -17,6 +17,13 @@ published independently in the `@nimbus-sh` npm scope.
   are a separate failure, not a slow tail, so the 30 s bound stays.
 
 - Fixed: the shell's arithmetic reads and assigns array elements, as bash does: `$((a[1] + a[-1]))`, `((a[i]++))` and `let 'a[0] = 3'`, in `[[ -eq ]]` and `for ((…))` too. `a` alone is its first element, and an element of a scalar turns the scalar into an array. A subscript of `@`, `*` or one before the first element is warned of as a bad array subscript, and the command goes on. Arithmetic refuses to assign a readonly name: `((…))` and `let` fail, and `$((…))` discards the line. `${t[-1]}` of a scalar is a bad subscript too. `$((…))` expands its text before evaluating it, as in double quotes, so `$(( ${#a[@]} - 1 ))` counts the array. An operand that is not one, or text left over after the expression, is a syntax error. Before, `a[1]` was read as `a`, arithmetic wrote readonly names, `$(( ${#a[@]} - 1 ))` gave 0, and leftover text was ignored.
+- Changed: `git status` reads its worktree in one ordered scan of the
+  session's filesystem instead of a listing per directory and an lstat per
+  file. On next.js (34,302 files), measured on throwaway Previews, the
+  session's CPU per `git status` went from 3.8–4.2 s to 1.0–1.6 s, and from
+  7.4 s to 2.5 s (medians) on a slower placement; the wall time from
+  4.7–5.5 s to 1.5–1.9 s. `list` itself judges each directory once, from
+  its own row, so every walk of it is cheaper.
 - Fixed: the shell's `export` and `readonly` are declaration builtins, as in bash: `readonly r=(1 2)` and `export e=([1]=x)` make arrays. A `name=value` argument to them, and to `declare`, `typeset` and `local`, expands as an assignment's value, without word splitting or pathname expansion, so `export x=$y` keeps `y`'s spaces. `readonly -p` prints declarations that bash reads back. Before, `readonly r=(1 2)` made the string `(1 2)`, `declare x=$y` split `y`, and `readonly -p` printed `readonly name=value`.
 - Fixed: a Node program could read a file it had deleted with
   `fs.readFileSync` after the session restarted, while `fs.statSync` said

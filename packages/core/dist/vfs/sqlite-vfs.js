@@ -83,6 +83,9 @@ export const ROOT_INODE = 1;
  * shape is declared here rather than assumed present.
  */
 const nodeHost = globalThis;
+function accessMemo(tree) {
+    return { closed: new Map(), linked: new Set(), tree };
+}
 /**
  * `descriptions`, each id it adopts noted in `adopted`: an attempt that rolls
  * back closes what it adopted (waveScope.commitCalls), as the rollback closes
@@ -2414,7 +2417,7 @@ export class SqliteVFS {
             getDefaultAcl: (path) => this.getDefaultAcl(path, bound),
             chown: (path, uid, gid, options) => this.chown(path, uid, gid, bound, options?.followSymlinks !== false),
             readdir: (path) => this.readdir(path, bound),
-            list: (after, limit) => this.list(after ?? null, Math.min(Math.max(1, Math.trunc(limit ?? FS_LIST_PAGE_LIMIT)), FS_LIST_PAGE_LIMIT), bound),
+            list: (after, limit, options) => this.list(after ?? null, Math.min(Math.max(1, Math.trunc(limit ?? FS_LIST_PAGE_LIMIT)), FS_LIST_PAGE_LIMIT), bound, options),
             acquire: (epoch, cursor, options) => this.acquire(epoch, cursor, bound, options),
             unlink: (path) => this.unlink(path, bound),
             rmdir: (path) => this.rmdir(path, bound),
@@ -3171,7 +3174,7 @@ export class SqliteVFS {
         }
         // Per directory, the highest one at or above it that the caller may not
         // enter now: one lookup per directory per answer, not per entry.
-        const closedAbove = new Map();
+        const closedAbove = accessMemo(this.inodes);
         for (const entry of log) {
             if (entry.rev <= cursor)
                 continue;
@@ -3205,20 +3208,41 @@ export class SqliteVFS {
         }
         return behind;
     }
-    /** The highest directory at or above `dir` that the caller may not enter now, or null. */
-    closedAbove(dir, cred, memo) {
+    /**
+     * The highest directory at or above `dir` (a name in the caller's view)
+     * that the caller may not enter, in `memo.tree` (the live one by default),
+     * or null: each directory judged once, by the search check resolvePath
+     * makes of each directory on a walk. A link, and everything named below
+     * it, is judged by that resolve itself (where the link leads, with the
+     * recalls a lookup through it makes); a plain directory by its own row,
+     * which `rows` may hold already (a listing's page).
+     */
+    closedAbove(dir, cred, memo, rows = memo.tree) {
         if (dir === '')
             return null;
-        const known = memo.get(dir);
+        const known = memo.closed.get(dir);
         if (known !== undefined)
             return known;
-        let closed = this.closedAbove(parentKey(dir), cred, memo);
+        const parent = parentKey(dir);
+        let closed = this.closedAbove(parent, cred, memo, rows);
         if (closed === null) {
-            const inode = this.inodes.get(this.keyOfName(dir, this.confinedTmpRoots.get(cred.uid)));
-            if (inode === undefined || inode.kind !== 'directory' || !this.accessInode(inode, 0o1, cred))
+            const inode = memo.linked.has(parent) ? undefined : rows.get(this.keyOfName(dir, this.confinedTmpRoots.get(cred.uid)));
+            if (memo.linked.has(parent) || inode?.kind === 'symlink') {
+                memo.linked.add(dir);
+                try {
+                    this.checkAccess(dir, 0o1, cred, { tree: memo.tree });
+                }
+                catch (error) {
+                    if (error instanceof RecallRequired)
+                        throw error;
+                    closed = dir;
+                }
+            }
+            else if (inode === undefined || inode.kind !== 'directory' || !this.accessInode(inode, 0o1, cred)) {
                 closed = dir;
+            }
         }
-        memo.set(dir, closed);
+        memo.closed.set(dir, closed);
         return closed;
     }
     /**
@@ -5032,7 +5056,10 @@ export class SqliteVFS {
      * Reporting the path instead would leak the existence of files the process
      * has no permission to see.
      */
-    list(after, limit, cred) {
+    list(after, limit, cred, options = {}) {
+        const contentKeys = options.contentKeys !== false;
+        const revisions = options.revisions !== false;
+        const linkTargets = options.linkTargets !== false;
         // A page is of what is published: one walked while a commit is held waits for it.
         this.recallHeld(null);
         // Before the walk, deliberately — see VfsListPage.
@@ -5048,16 +5075,25 @@ export class SqliteVFS {
             return { epoch, rev, entries, next: last === undefined ? null : last.path };
         };
         let cursor = from;
-        // Rows arrive in path order, so a run of entries in one directory shares
-        // one check of the directories above it.
-        let checkedParent = null;
-        let parentReachable = false;
+        // Each directory above a row judged once a page (closedAbove), from its
+        // own row where the page read it (a directory's row precedes its
+        // entries'), not from a lookup of its own: rows arrive in path order,
+        // but a directory's entries resume after each of its subdirectories'.
+        const closed = accessMemo(this.inodes);
+        const listedDirectories = new Map();
+        const directories = { get: (key) => listedDirectories.get(key) ?? this.inodes.get(key) };
+        // The storage key of the last directory found closed: what is under it is
+        // passed over unjudged, and nothing of it kept.
+        let hidden = null;
+        const tmpRoot = this.confinedTmpRoots.get(cred.uid);
         for (;;) {
-            const rows = this.sql.exec(`SELECT ${INODE_SELECT_COLUMNS_AS_I}, c.hash AS chunk_hash, ct.digest AS content_digest
-         FROM vfs_inodes i
-         LEFT JOIN vfs_chunks c ON c.id = i.chunk_id
-         LEFT JOIN vfs_contents ct ON ct.id = i.content_id
-         WHERE i.path > ? ORDER BY i.path LIMIT ?`, cursor, limit + 1);
+            const rows = this.sql.exec(contentKeys
+                ? `SELECT ${INODE_SELECT_COLUMNS_AS_I}, c.hash AS chunk_hash, ct.digest AS content_digest
+             FROM vfs_inodes i
+             LEFT JOIN vfs_chunks c ON c.id = i.chunk_id
+             LEFT JOIN vfs_contents ct ON ct.id = i.content_id
+             WHERE i.path > ? ORDER BY i.path LIMIT ?`
+                : `SELECT ${INODE_SELECT_COLUMNS} FROM vfs_inodes WHERE path > ? ORDER BY path LIMIT ?`, cursor, limit + 1);
             let visited = 0;
             let lastStoragePath = cursor;
             for (const row of rows) {
@@ -5066,6 +5102,8 @@ export class SqliteVFS {
                 if (entries.length >= limit)
                     return pageEnding();
                 const path = String(row.path);
+                if (hidden !== null && path.startsWith(`${hidden}/`))
+                    continue;
                 // Reported in the caller's OWN path space. Enumerating raw storage keys
                 // would name a private root the caller cannot address and does not know
                 // it has, and a caller feeding such a path back would be asking about
@@ -5074,36 +5112,32 @@ export class SqliteVFS {
                 const logical = this.logicalPath(path, cred);
                 if (logical === null)
                     continue;
+                // Read from the row rather than through the cache: one page of an
+                // enumeration says nothing about which inodes will be used next.
+                const inode = this.inodes.peek(path) ?? this.inodeFromRow(row);
                 // What checkAccess(path, 0, cred, { followLeaf: false }) asks of an
                 // entry that exists: every directory above it, as the caller names
                 // them, is traversable. A confined caller's /tmp answers for its own
                 // root, never for the storage directories that happen to hold it.
-                const parent = parentKey(logical);
-                if (parent !== checkedParent) {
-                    checkedParent = parent;
-                    try {
-                        if (parent !== '')
-                            this.checkAccess(parent, 0o1, cred);
-                        parentReachable = true;
-                    }
-                    catch (error) {
-                        // Another holder's delegation is recalled, never taken for a
-                        // directory the caller cannot reach: its names would be omitted
-                        // as absent while that holder may still be sending them.
-                        if (error instanceof RecallRequired)
-                            throw error;
-                        parentReachable = false;
-                    }
-                }
-                if (!parentReachable)
+                // A delegated entry, or one under a delegated directory, is recalled
+                // before it is judged, as an lstat of it is (resolvePath), never
+                // taken for one the caller cannot reach: its names would be omitted
+                // as absent while its holder may still be sending them.
+                if (this.exclusiveMutationLeases.size > 0)
+                    this.recallReads(path);
+                const closedAt = this.closedAbove(parentKey(logical), cred, closed, directories);
+                if (closedAt !== null) {
+                    hidden = this.keyOfName(closedAt, tmpRoot);
                     continue;
-                // Read from the row rather than through the cache: one page of an
-                // enumeration says nothing about which inodes will be used next.
-                const inode = this.inodes.peek(path) ?? this.inodeFromRow(row);
+                }
+                // Its entries are judged from this row.
+                if (inode.kind === 'directory')
+                    listedDirectories.set(path, inode);
                 // The storage key's revision, the one revision() reports for the name
                 // this entry is listed under: a confined caller's /tmp/x is its own
                 // file, not the shared one at the same name.
-                const pathRevision = this.pathRevision(path, inode);
+                // 0 when the caller did not ask, as a mounted entry's is.
+                const pathRevision = revisions ? this.pathRevision(path, inode) : 0;
                 const entry = {
                     path: logical,
                     kind: inode.kind,
@@ -5113,8 +5147,9 @@ export class SqliteVFS {
                     // The row's own target. Re-resolving the listed name would follow the
                     // directories above it, and a row they no longer lead to (one left
                     // under a link) made the whole enumeration throw ENOENT.
-                    ...(inode.kind === 'symlink' ? { linkTarget: nameDec.decode(this.readWhole(inode)) } : {}),
-                    ...(inode.kind === 'file' ? { contentKey: this.listedContentKey(inode, row) } : {}),
+                    ...(inode.kind === 'symlink' && linkTargets ? { linkTarget: nameDec.decode(this.readWhole(inode)) } : {}),
+                    ...(inode.kind === 'file' && contentKeys ? { contentKey: this.listedContentKey(inode, row) } : {}),
+                    ...(inode.kind === 'directory' && !this.accessInode(inode, 0o5, cred) ? { unreadable: true } : {}),
                 };
                 if (!fits(entry))
                     return pageEnding();
@@ -6518,7 +6553,7 @@ export class SqliteVFS {
                         results.push({ name: child.path.slice(child.path.lastIndexOf('/') + 1), type: child.kind });
                 });
             },
-            list: (after, limit) => {
+            list: (after, limit, options) => {
                 pinned();
                 const pageLimit = Math.min(Math.max(1, Math.trunc(limit ?? FS_LIST_PAGE_LIMIT)), FS_LIST_PAGE_LIMIT);
                 const from = after === null || after === undefined ? '' : this.lexicalKey(after, bound).value;
@@ -6527,39 +6562,40 @@ export class SqliteVFS {
                 // Bounded by its encoded bytes as a live page is (listPageBudget).
                 const fits = listPageBudget(epoch, g);
                 const pageEnding = () => ({ epoch, rev: g, entries, next: entries[entries.length - 1]?.path ?? null });
-                const searchableDirs = new Map();
+                // Each directory above a row judged once a page, from its own row (as a live page is).
+                const closed = accessMemo(tree);
+                const listedDirectories = new Map();
+                const directories = { get: (key) => listedDirectories.get(key) ?? tree.get(key) };
+                const linkTargets = options?.linkTargets !== false;
+                // As a live page passes a closed subtree.
+                let hidden = null;
+                const tmpRoot = this.confinedTmpRoots.get(bound.uid);
                 let cursor = from;
                 for (;;) {
                     const page = this.pageAt(g, cursor, pageLimit + 1);
                     for (const inode of page) {
                         if (entries.length >= pageLimit)
                             return pageEnding();
+                        if (hidden !== null && inode.path.startsWith(`${hidden}/`))
+                            continue;
                         const logical = this.logicalPath(inode.path, bound);
                         if (logical === null)
                             continue;
-                        const parent = parentKey(inode.path);
-                        if (parent !== '' && bound.uid !== 0) {
-                            let searchable = searchableDirs.get(parent);
-                            if (searchable === undefined) {
-                                try {
-                                    this.checkAccess(parent, 0o1, bound, { tree });
-                                    searchable = true;
-                                }
-                                catch {
-                                    searchable = false;
-                                }
-                                searchableDirs.set(parent, searchable);
-                            }
-                            if (!searchable)
-                                continue;
+                        const closedAt = bound.uid === 0 ? null : this.closedAbove(parentKey(logical), bound, closed, directories);
+                        if (closedAt !== null) {
+                            hidden = this.keyOfName(closedAt, tmpRoot);
+                            continue;
                         }
+                        if (inode.kind === 'directory')
+                            listedDirectories.set(inode.path, inode);
                         const entry = {
                             path: logical,
                             kind: inode.kind,
                             size: inode.size,
                             rev: g,
                             stat: { ...this.statOf(inode), revision: g },
-                            ...(inode.kind === 'symlink' ? { linkTarget: nameDec.decode(this.readContent(inode, 0, inode.size, true)) } : {}),
+                            ...(inode.kind === 'symlink' && linkTargets ? { linkTarget: nameDec.decode(this.readContent(inode, 0, inode.size, true)) } : {}),
+                            ...(inode.kind === 'directory' && !this.accessInode(inode, 0o5, bound) ? { unreadable: true } : {}),
                         };
                         if (!fits(entry))
                             return pageEnding();

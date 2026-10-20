@@ -1,5 +1,5 @@
 import { FS_LIST_PAGE_LIMIT } from '../constants.js';
-import { normalizeVfsPath } from '../vfs/path.js';
+import { beforeSubtree, normalizeVfsPath } from '../vfs/path.js';
 import type { RuntimeFsBridge, VfsListEntry, VfsListTree } from './os-contracts.js';
 
 /** Walks a subtree's listing begins before it is refused (EAGAIN): each met a change between its pages. */
@@ -44,7 +44,7 @@ async function walkOnce(bridge: Pick<RuntimeFsBridge, 'list'>, key: string, maxE
     else if (page.epoch !== at.epoch || page.rev !== at.rev) return null;
     for (const entry of page.entries) {
       const path = normalizeVfsPath(entry.path);
-      if (path === key) continue;
+      if (path === key || beforeSubtree(path, key)) continue;
       if (!path.startsWith(prefix)) return { ...at, entries };
       if (entries.length === maxEntries) {
         throw Object.assign(new Error(`E2BIG: /${key} holds more than ${maxEntries} entries`), { code: 'E2BIG' });

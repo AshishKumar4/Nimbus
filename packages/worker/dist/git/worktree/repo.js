@@ -34,6 +34,29 @@ function looseBytes(type, data) {
     // Copied out: deflateSync's result is a view of a 16 KiB buffer (measured, Bun and Node).
     return new Uint8Array(deflateSync(raw, { level: LOOSE_COMPRESSION }));
 }
+/** Scans of a worktree status makes before it walks by name: each one the tree changed under is made again. */
+const SCAN_ATTEMPTS = 3;
+/** Whether `path` is under one of the `byName` directories. */
+function askedUnder(byName, path) {
+    if (byName.size === 0)
+        return false;
+    for (let cut = path.lastIndexOf('/'); cut > 0; cut = path.lastIndexOf('/', cut - 1))
+        if (byName.has(path.slice(0, cut)))
+            return true;
+    return false;
+}
+/** Whether `path` is inside a `.git` directory (the worktree's or a nested repository's): its entry is kept, what it holds is not. */
+function insideGitDir(path) {
+    return path.startsWith('.git/') || path.includes('/.git/');
+}
+/** A worktree entry's stat as the comparisons take it: a type the walk knows, else `other`. */
+function worktreeStatOf(st) {
+    const type = st.type === 'file' || st.type === 'directory' || st.type === 'symlink' ? st.type : 'other';
+    return {
+        type, mode: st.mode, size: st.size, mtimeMs: st.mtime, ctimeMs: st.ctime,
+        dev: st.dev, ino: st.ino, uid: st.uid, gid: st.gid,
+    };
+}
 /** ENOENT or ENOTDIR: the path is not there, which is an answer; anything else is a failure. */
 function isAbsent(error) {
     return isVfsError(error, 'ENOENT') || isVfsError(error, 'ENOTDIR')
@@ -75,6 +98,7 @@ export class WorktreeRepo {
         const at = (path) => (path ? `${root}/${path}` : root);
         this.fs = {
             list: async (dir) => {
+                counters.readdirs++;
                 let entries;
                 // Nothing there is no listing; any other failure (EACCES, EIO) is the caller's to report.
                 try {
@@ -97,6 +121,7 @@ export class WorktreeRepo {
                 return out;
             },
             lstat: async (path) => {
+                counters.lstats++;
                 let st;
                 try {
                     st = await vfs.lstat(at(path));
@@ -106,11 +131,7 @@ export class WorktreeRepo {
                         return null;
                     throw error;
                 }
-                const type = st.type === 'file' || st.type === 'directory' || st.type === 'symlink' ? st.type : 'other';
-                return {
-                    type, mode: st.mode, size: st.size, mtimeMs: st.mtime, ctimeMs: st.ctime,
-                    dev: st.dev, ino: st.ino, uid: st.uid, gid: st.gid,
-                };
+                return worktreeStatOf(st);
             },
             // Read once to be hashed or stored: past the content cache, which keeps the session's working set.
             readFile: async (path) => await vfs.readFileUncached(at(path)),
@@ -293,6 +314,78 @@ export class WorktreeRepo {
             hfs: await setting('core.protecthfs') ?? DEFAULT_PATH_PROTECTION.hfs,
             ntfs: await setting('core.protectntfs') ?? DEFAULT_PATH_PROTECTION.ntfs,
         };
+    }
+    /**
+     * The worktree as one ordered scan of its tree reads it (ProjectFs.scan):
+     * its listings and lstats answered from the scan, what the scan marks
+     * `byName` (a directory on an unlisted mount, or one the caller may not
+     * read) asked by name, its contents read as {@link worktree} reads them.
+     * Measured on next.js's 34,302 files (throwaway Previews, the spans'
+     * session CPU): status took 3.8–4.2 s of the session's CPU walking by
+     * name and 1.0–1.6 s from the scan. The walk by name stands where the
+     * scan cannot: a top it does not list as a readdir of the top does (a
+     * top on a mount it does not name, one the caller may not read), a tree
+     * that changed under it SCAN_ATTEMPTS times, or a scan that failed,
+     * whose errors the walk reports entry by entry. The scan is held whole (not `.git`'s
+     * contents, which no walk reads), so a command that walks a tree too
+     * large to hold (add -A, under its memory bound) keeps {@link worktree}.
+     */
+    async scannedWorktree() {
+        const byNameWalk = await this.worktree();
+        let top;
+        try {
+            top = await this.fs.list('');
+        }
+        catch {
+            return byNameWalk;
+        }
+        for (let attempt = 0; attempt < SCAN_ATTEMPTS; attempt++) {
+            let scanned;
+            try {
+                scanned = await this.scanTree();
+            }
+            catch (error) {
+                if (isVfsError(error, 'EAGAIN'))
+                    continue;
+                return byNameWalk;
+            }
+            const names = (listing) => listing.map(({ name }) => name).sort().join('/');
+            if (names(scanned.listings.get('') ?? []) !== names(top))
+                return byNameWalk;
+            const { listings, stats, byName } = scanned;
+            const askedByName = (path) => askedUnder(byName, path);
+            return {
+                ...byNameWalk,
+                fs: {
+                    ...this.fs,
+                    // Nothing there, or not a directory, is no listing (WorktreeFs.list).
+                    list: async (dir) => byName.has(dir) || askedByName(dir) ? await this.fs.list(dir) : listings.get(dir) ?? [],
+                    lstat: async (path) => askedByName(path) ? await this.fs.lstat(path) : stats.get(path) ?? null,
+                },
+            };
+        }
+        return byNameWalk;
+    }
+    /** One scan of the worktree into the tables scannedWorktree answers from. */
+    async scanTree() {
+        const tree = { listings: new Map([['', []]]), stats: new Map(), byName: new Set() };
+        this.counters.scans++;
+        for await (const entry of this.vfs.scan(this.root)) {
+            this.counters.scanned++;
+            if (askedUnder(tree.byName, entry.path) || insideGitDir(entry.path))
+                continue;
+            const st = worktreeStatOf(entry.stat);
+            const cut = entry.path.lastIndexOf('/');
+            tree.listings.get(cut < 0 ? '' : entry.path.slice(0, cut))?.push({ name: entry.path.slice(cut + 1), type: st.type });
+            tree.stats.set(entry.path, st);
+            if (st.type !== 'directory')
+                continue;
+            if (entry.byName)
+                tree.byName.add(entry.path);
+            else
+                tree.listings.set(entry.path, []);
+        }
+        return tree;
     }
     /** The worktree with the settings its comparisons take. */
     async worktree() {

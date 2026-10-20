@@ -5,7 +5,7 @@ import { WaveIngest } from './wave-ingest.js';
 import { type CompositeVFS } from '../vfs/composite.js';
 import { type Awaitable, type VfsRemoval } from '../vfs/vfs.js';
 export { fsError, walkBeneath, type BeneathLookup } from './beneath-walk.js';
-import type { RuntimeFileHandle, RuntimeOpenedFile, RuntimeFsPath, RuntimeReadFileOptions, RuntimeReadOptions, RuntimeSynchronousFs, RuntimeFsBridge, RuntimeOpenFlags, RuntimeReopenTarget, RuntimeVfsDirEntry, RuntimeVfsStat, VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeMutationOwner, ExclusiveMutationGrant, ExclusiveMutationRequest } from './os-contracts.js';
+import type { RuntimeFileHandle, RuntimeOpenedFile, RuntimeFsPath, RuntimeReadFileOptions, RuntimeReadOptions, RuntimeSynchronousFs, RuntimeFsBridge, RuntimeOpenFlags, RuntimeReopenTarget, RuntimeVfsDirEntry, RuntimeVfsStat, VfsAcquireOptions, VfsAcquireResult, VfsListOptions, VfsListPage, VfsMutationReceipt, RuntimeMutationOwner, ExclusiveMutationGrant, ExclusiveMutationRequest } from './os-contracts.js';
 import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     private readonly rawVfs;
@@ -120,7 +120,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     revision(path?: RuntimeFsPath): number;
     contentKey(path: RuntimeFsPath): string;
     acquire(epoch: string | null, cursor: number, options?: VfsAcquireOptions): VfsAcquireResult;
-    list(after?: string | null, limit?: number): VfsListPage;
+    list(after?: string | null, limit?: number, options?: VfsListOptions): VfsListPage;
     realpath(path: RuntimeFsPath): string;
     remove(path: RuntimeFsPath, options?: {
         recursive?: boolean;

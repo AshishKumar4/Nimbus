@@ -33,7 +33,7 @@ import { DevVFS } from '../vfs/dev-vfs.js';
 import { ProcVFS, standardProc } from '../vfs/proc-vfs.js';
 import { sqliteFiles } from '../vfs/sqlite-files.js';
 import { isVfsError, syscallError, toVfsError, VfsError } from '../vfs/vfs-error.js';
-import { normalizeVfsPath } from '../vfs/path.js';
+import { beforeSubtree, normalizeVfsPath } from '../vfs/path.js';
 import { abandon, andThen, readDeclaredSource, readRangeOrWhole, readText, type Awaitable } from '../vfs/vfs.js';
 import type { VFS, VfsCopyOptions, VfsDirent, VfsRemoval, VfsRemovalFailure, VfsStat } from '../vfs/vfs.js';
 import { formatProcMounts } from '../shell/mount-commands.js';
@@ -65,6 +65,7 @@ import {
   type VfsCred,
   type VfsInvalidatedPath,
   type VfsListEntry,
+  type VfsListOptions,
   type VfsListPage,
   type VfsMutationReceipt,
   type RuntimeMutationOwner,
@@ -210,7 +211,7 @@ class GuardedProcessBridge implements RuntimeFsBridge {
     }
     return lease === null ? answer : { ...answer, readLease: lease };
   }
-  list(after?: string | null, limit?: number): VfsListPage { this.guard(); return this.target.list(after, limit); }
+  list(after?: string | null, limit?: number, options?: VfsListOptions): VfsListPage { this.guard(); return this.target.list(after, limit, options); }
   realpath(path: RuntimeFsPath): string { this.guard(); return this.target.realpath(path); }
   remove(path: RuntimeFsPath, options?: { recursive?: boolean; force?: boolean; report?: boolean; keepVanishedAncestors?: boolean }): void | VfsRemoval { this.guard(); return this.target.remove(path, options); }
   copyFile(from: RuntimeFsPath, to: RuntimeFsPath, options?: { keepMode?: boolean; preserve?: boolean }): void { this.guard(); return this.target.copyFile(from, to, options); }
@@ -770,6 +771,20 @@ interface MountListing {
 /** The kernel's own filesystems: never walked, and never in a process's listing, which is SQLite's and its embedder's. */
 const KERNEL_MOUNT_POINTS: Record<string, true> = { '/proc': true, '/dev': true };
 
+/**
+ * Entries one page of ProcessView.scan reads in one slice of the thread.
+ * Measured 2026-10-20 on armada (bun:sqlite, a 34,302-file tree): about
+ * 2.5 µs an entry; a session's SQLite runs about 3–4× bun's, so about
+ * 10 ms a page, well under the slice that ages the session's queue.
+ */
+const SCAN_PAGE = 1024;
+
+/**
+ * The engine's own timer, taken when this module is evaluated: a program
+ * that shares the realm wraps the global one as a handle of its own.
+ */
+const engineSetTimeout = globalThis.setTimeout;
+
 /** A mount an embedder made (a Drive, a container, a device). */
 function isEmbedderMount(point: string): boolean {
   return point !== '/' && KERNEL_MOUNT_POINTS[point] !== true;
@@ -875,7 +890,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
    * and /dev are left out, as SQLite's page leaves them out. A mounted entry
    * carries revision 0: a mount never moves the SQLite clock.
    */
-  list(after?: string | null, limit?: number): VfsListPage | Promise<VfsListPage> {
+  list(after?: string | null, limit?: number, options?: VfsListOptions): VfsListPage | Promise<VfsListPage> {
     if (!mountsBeyondSqlite(this.namespace)) {
       // A later mount must invalidate this SQLite-only listing too.
       const listing = after === null || after === undefined ? this.listing(true) : undefined;
@@ -883,7 +898,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
         listing.table = null;
         listing.sqliteGeneration = this.namespace.mountGeneration();
       }
-      return this.bridge.list(after, limit);
+      return this.bridge.list(after, limit, options);
     }
     this.authority();
     return this.listMounted(after ?? null, Math.min(Math.max(1, Math.trunc(limit ?? FS_LIST_PAGE_LIMIT)), FS_LIST_PAGE_LIMIT));
@@ -914,8 +929,11 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
     for (const entry of page.entries) {
       if (underKernelMount(entry.path)) continue;
       const path = entry.path.slice(1);
-      if (!fits(entry, path)) { next = entries[entries.length - 1].path; break; }
-      entries.push({ ...entry, path });
+      // A mounted directory judged as this bridge judges a mount's (access): SQLite marked its own.
+      const unreadable = entry.kind === 'directory' && entry.unreadable === undefined && !modeAllows(entry.stat, 0o5, this.cred);
+      const listed: VfsListEntry = unreadable ? { ...entry, path, unreadable: true } : { ...entry, path };
+      if (!fits(listed, path)) { next = entries[entries.length - 1].path; break; }
+      entries.push(listed);
     }
     if (listing) listing.held = next === null ? null : { walk, next };
     return { epoch: root.epoch, rev: root.cursor, entries, next };
@@ -1575,6 +1593,42 @@ export class ProcessView implements VFS {
     }
     return out;
   }
+  /**
+   * Every entry strictly under directory `path` with its lstat, in path
+   * order (which is a git index's order): one paged scan of the filesystem
+   * (`list`, which recalls each delegation an lstat of an entry would)
+   * instead of a listing per directory and a stat per entry. A directory a
+   * walk by name would answer differently is marked `byName`, for the
+   * caller to ask by name: one on a mount whose names the scan does not
+   * list (`unlisted`), or one the caller may not read and search
+   * (`unreadable`), whose readdir is refused. A subtree changed between the
+   * first page and the last is refused EAGAIN, its pages not one tree: by
+   * its revision, or where it keeps none (a mount under it: 0), by every
+   * page's being of the filesystem's same revision. Between pages the thread is given up for a turn: a page of SCAN_PAGE
+   * entries is one bounded slice of the session's thread.
+   */
+  async *scan(path: string): AsyncGenerator<ScannedEntry> {
+    const key = normalizeVfsPath(path);
+    const prefix = key === '' ? '' : `${key}/`;
+    const revision = await this.call('scandir', path, () => this.fs.revision(path));
+    let at: { epoch: string; rev: number } | null = null;
+    let after: string | null = key === '' ? null : prefix;
+    pages: for (;;) {
+      const page = await this.call('scandir', path, () => this.fs.list(after, SCAN_PAGE, { revisions: false, contentKeys: false, linkTargets: false }));
+      if (at === null) at = { epoch: page.epoch, rev: page.rev };
+      else if (revision === 0 && (page.epoch !== at.epoch || page.rev !== at.rev)) throw syscallError('EAGAIN', 'scandir', path);
+      for (const entry of page.entries) {
+        const at = normalizeVfsPath(entry.path);
+        if (at === key || beforeSubtree(at, key)) continue;
+        if (!at.startsWith(prefix)) break pages;
+        yield { path: at.slice(prefix.length), stat: vfsStatOf(entry.stat), byName: entry.unlisted !== undefined || entry.unreadable === true };
+      }
+      if (page.next === null) break;
+      after = page.next;
+      await new Promise((resolve) => engineSetTimeout(resolve, 0));
+    }
+    if (revision !== 0 && await this.call('scandir', path, () => this.fs.revision(path)) !== revision) throw syscallError('EAGAIN', 'scandir', path);
+  }
   /** access(2): `mode` is F_OK or any of R_OK, W_OK, X_OK. */
   async access(path: string, mode: number): Promise<void> { await this.call('access', path, () => this.fs.access(path, mode)); }
   async realpath(path: string): Promise<string> { return await this.call('realpath', path, () => this.fs.realpath(path)); }
@@ -1758,6 +1812,13 @@ async function openFacetImage(through: <T>(use: (view: ProcessView) => Promise<T
  */
 export async function hostImage(authority: NimbusFilesystemAuthority, cred: Readonly<VfsCred>, path: string): Promise<FacetImage> {
   return await openFacetImage((use) => withHostView(authority, cred, use), path);
+}
+
+/** An entry of ProcessView.scan: its path under the scanned directory, its lstat, and whether its entries must be asked by name. */
+export interface ScannedEntry {
+  path: string;
+  stat: ProcessStat;
+  byName: boolean;
 }
 
 /** A process's stat: everything stat(2) answers, which the bridge always has. */
