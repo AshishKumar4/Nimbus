@@ -290,7 +290,7 @@ var __nimbusResidentModule = (() => {
         return available;
       },
       pin(bytes) {
-        if (!inHeap || !fits(bytes, false)) return false;
+        if (inHeap && !fits(bytes, false)) return false;
         pinnedBytes += bytes;
         return true;
       },

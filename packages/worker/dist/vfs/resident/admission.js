@@ -208,7 +208,8 @@ export function createAdmission(coherence) {
         storageCap() { return cap; },
         get available() { return available; },
         pin(bytes) {
-            if (!inHeap || !fits(bytes, false))
+            // Measurement: a store on SQLite pins in the heap beside it, with no budget of its own.
+            if (inHeap && !fits(bytes, false))
                 return false;
             pinnedBytes += bytes;
             return true;
