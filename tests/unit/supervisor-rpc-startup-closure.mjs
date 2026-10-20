@@ -24,7 +24,10 @@ import { packageTarball, sriOf } from './lib/tarball-fixture.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 
-/** The inputs `entry` links statically: its bundle and the chunks it imports by statement, never those it loads with import(). */
+/**
+ * The inputs `entry` links statically, and their bundled bytes: its bundle
+ * and the chunks it imports by statement, never those it loads with import().
+ */
 async function staticClosure(entry) {
   const scratch = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), 'nimbus-startup-closure-'));
   try {
@@ -45,7 +48,10 @@ async function staticClosure(entry) {
       for (const edge of outputs[path].imports) if (edge.kind === 'import-statement') visit(edge.path);
     };
     visit(entryOutput);
-    return [...reached].flatMap((path) => Object.keys(outputs[path].inputs));
+    return {
+      inputs: [...reached].flatMap((path) => Object.keys(outputs[path].inputs)),
+      bytes: [...reached].reduce((sum, path) => sum + outputs[path].bytes, 0),
+    };
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }
@@ -53,20 +59,22 @@ async function staticClosure(entry) {
 
 // ── 1. SupervisorRPC links no part of the npm engine ───────────────────────
 {
-  const inputs = await staticClosure('packages/worker/src/session/supervisor-rpc.ts');
+  const { inputs, bytes } = await staticClosure('packages/worker/src/session/supervisor-rpc.ts');
+  console.log(`  SupervisorRPC's static closure: ${inputs.length} modules, ${(bytes / 1024).toFixed(0)} KiB bundled`);
   assert.ok(inputs.some((input) => input.endsWith('session/supervisor-calls.ts')), 'the closure is SupervisorRPC\'s');
   const engine = inputs.filter((input) => /_shared\/npm-|commands\/system\/npm\.|npm\/r2-cache\.|node_modules\/semver\//.test(input));
   assert.deepEqual(engine, [], 'SupervisorRPC links no part of the npm engine, nor the npm cache client');
-  console.log(`  [1] SupervisorRPC's static closure: ${inputs.length} modules, none of the npm engine`);
+  console.log('  [1] none of them the npm engine');
 }
 
 // ── 2. the session's RPC module links no opencode artifact staging ─────────
 {
-  const inputs = await staticClosure('packages/worker/src/session/rpc.ts');
+  const { inputs, bytes } = await staticClosure('packages/worker/src/session/rpc.ts');
+  console.log(`  the session RPC module's static closure: ${inputs.length} modules, ${(bytes / 1024).toFixed(0)} KiB bundled`);
   assert.ok(inputs.some((input) => input.endsWith('facets/opencode-stage-spec.ts')), 'it validates the stage it is handed');
   const staging = inputs.filter((input) => /facets\/opencode-staging\.|opencode-artifact|opentui-wasm/.test(input));
   assert.deepEqual(staging, [], 'and links none of the artifacts that build one');
-  console.log(`  [2] the session's RPC module's static closure: ${inputs.length} modules, no opencode staging`);
+  console.log('  [2] none of them opencode staging');
 }
 
 // ── 3. the npm cache loads at its first use, and works ─────────────────────
