@@ -85,7 +85,7 @@ export interface Cells {
   /**
    * A fill about to ask for `paths`: each one's chunk rows are its own, over
    * the head as it stands, until another fill begins for it or anything
-   * changes its head (headChanged).
+   * changes its rows (rowsChanged).
    */
   beginFill(paths: ArrayLike<string>): ResidentFill;
   /** One chunk of `fill`: written only while the path's chunk rows are its own (false otherwise). */
@@ -94,8 +94,12 @@ export interface Cells {
   publishFill(t: ResidentTables, path: string, kind: number, size: number, chunks: number, rev: number, ckey: unknown, fill: ResidentFill): boolean;
   /** A fill that did not finish `path`: the chunk rows it wrote, and the head they were written over, go, if they are still its. */
   abandonFill(t: ResidentTables, path: string, fill: ResidentFill): void;
-  /** The head of `path` (every head: undefined) changed (tables.ts, whoever changed it): a fill writing its chunks no longer owns them. */
-  headChanged(path?: string): void;
+  /**
+   * The rows of `path` (every path: undefined) are about to change (tables.ts,
+   * whoever changes them): the fill writing there is disowned, and what it
+   * wrote with no head over it goes with it, bytes and accounting.
+   */
+  rowsChanged(path?: string): void;
   copyByKey(t: ResidentTables, path: string, ckey: unknown, rev: number): boolean;
   delete(t: ResidentTables, path: string): boolean;
   provenance(path: string): number | undefined;
@@ -290,10 +294,10 @@ export function createCells(
   /**
    * Whose chunk rows each path's are while a fill writes them: the fill that
    * began last, while nothing changed the head it writes over since it was
-   * asked (tables.ts tells headChanged of every head write: a put, a delete,
-   * a copy, a lease, a stamp, a redate, a publish, a drop). A fill that lost
-   * them neither finishes nor drops them, so no fill decides for another's
-   * rows or over a head it did not see.
+   * asked (tables.ts tells rowsChanged of every head write and chunk removal,
+   * single or bulk). Disowning a fill removes the rows it wrote with no head
+   * over them, and removing them disowns it: one operation, so no rows are
+   * left unowned and no fill writes on after its rows went.
    */
   const filling = new SafeMap<string, ResidentFill>();
   let fills = 0;
@@ -603,6 +607,8 @@ export function createCells(
     putChunk,
     publishFill(t, path, kind, size, chunks, rev, ckey, fill) {
       if (filling.get(path) !== fill) return false;
+      // Its rows are a file now: no longer a fill's to drop.
+      filling.delete(path);
       t.filePut(path, kind, size, chunks, rev, ckey != null ? stringOf(ckey) : null);
       return true;
     },
@@ -616,7 +622,15 @@ export function createCells(
       for (let i = 0; i < paths.length; i++) filling.set(paths[i]!, fill);
       return fill;
     },
-    headChanged(path) { if (path === undefined) filling.clear(); else filling.delete(path); },
+    rowsChanged(path) {
+      if (filling.size === 0) return;
+      const t = coherence.require();
+      const disown = (at: string): void => { if (filling.delete(at) && t.fileHead(at) === undefined) t.chunkDelete(at); };
+      if (path !== undefined) { disown(path); return; }
+      const owned = new SafeList<string>();
+      filling.forEach((_fill, at) => { owned[owned.length] = at; });
+      for (let i = 0; i < owned.length; i++) disown(owned[i]!);
+    },
     /**
      * The head row, written LAST by the streaming filler.
      *
