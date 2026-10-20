@@ -48,8 +48,8 @@ const LINES = [
   '[[ ! 08 -eq 8 ]] && echo neg; [[ 08 -eq 8 || 1 -eq 1 ]] && echo or',
   '[[ $((08)) -eq 8 ]]; echo same\necho "next $?"',
   // The diagnostic goes where the shell's stderr is when it is met; a redirection's target is no exception.
-  'f() { echo $((08)); }; f 2>err\ncat err; echo next',
-  'echo hi >"$((08))"; echo same\necho "next $?"; ls',
+  'f() { echo $((08)); }; f 2>err\ngrep -c "08: value too great for base" err; echo next',
+  'echo hi >"$((08))"; echo same\necho "next $?"; [ -e 08 ] || echo none',
 ];
 
 /** bash's diagnostic prefix: `bash: line 1: `, `bash: -c: line 1: `, and in a function 5.2's `environment: line 1: `. */
