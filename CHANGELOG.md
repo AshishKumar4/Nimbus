@@ -5,6 +5,14 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Changed: a host Worker that re-exports `SupervisorRPC` no longer loads
+  the npm engine at startup. Every isolate of a Worker evaluates, as it
+  starts, every module its exported classes link. `SupervisorRPC` linked
+  the npm cache client, and through it core's npm command, the
+  `_shared/npm-*` tables and semver, though only its npm cache calls use
+  them. They now load at the first such call. The session's RPC module no
+  longer links the opencode artifact staging either: it validates a stage
+  with a schema of its own (`facets/opencode-stage-spec.ts`).
 - Fixed (security): a process's environment is no longer stored where
   another process can read it. Before, a Node server's environment was
   written into its generated module, and a Python or Ruby server's into its
