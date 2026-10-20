@@ -6,8 +6,8 @@ import { WaveIngest } from './wave-ingest.js';
 import { runtimeStatOf, type CompositeVFS } from '../vfs/composite.js';
 import { abandon, andThen, isCharacterDevice, isPromise, readDeclaredSource, readRangeOrWhole, syncValue, type Awaitable, type SyncVFS, type VfsRemoval } from '../vfs/vfs.js';
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
-import { entryVfsPath } from '../vfs/path-walk.js';
-import { fsError, handedSpelling, MAX_LINK_HOPS, walkBeneath, type BeneathReached, type FsError } from './beneath-walk.js';
+import { entryVfsPath, walkVfsPath } from '../vfs/path-walk.js';
+import { fsError, handedSpelling, walkBeneath, type BeneathReached, type FsError } from './beneath-walk.js';
 import { modeAllows } from '../vfs/posix-access.js';
 import { sameFileVersion } from './os-contracts.js';
 
@@ -53,11 +53,11 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
    * consulted with the fully resolved path, so a `..` or an absolute path
    * inside a capability can never reach `/proc` or `/dev` sideways.
    */
-  private locate(path: RuntimeFsPath, followSymlinks: boolean): Located | null {
+  private locate(path: RuntimeFsPath, followSymlinks: boolean, creating?: { mode?: number; umask?: number } & RuntimeMutationOwner): Located | null {
     // The namespace declined the walk's first name, and with it every name below.
     const walked = this.walkOnSqlite(path, followSymlinks);
     if (walked !== null) return walked.end === 'absent' ? { path: walked.name, absent: true } : { path: walked.name };
-    const found = this.resolveDataPath(path, followSymlinks);
+    const found = this.resolveDataPath(path, followSymlinks, creating);
     if (found === null) return null;
     const resolved = found.reached;
     const mounted = this.mounted;
@@ -68,10 +68,8 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   /**
    * The path resolved in one walk on SQLite (SqliteVFS.resolveName), or null
    * for the walk component by component (resolveDataPath): for a walk
-   * beneath a root, for a spelling with `..` (that walk takes `..`
-   * physically, after the link before it, where the engine's names take it
-   * lexically), and where the namespace lays a mount or a directory above
-   * one.
+   * beneath a root, for a spelling with `..`, and where the namespace lays a
+   * mount or a directory above one. Plain SQLite names keep their one walk.
    */
   private walkOnSqlite(path: RuntimeFsPath, followSymlinks: boolean): VfsNameResolution | null {
     if (typeof path !== 'string' && path.beneath) return null;
@@ -473,9 +471,10 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   mkdir(path: RuntimeFsPath, options: { recursive?: boolean; mode?: number; umask?: number } & RuntimeMutationOwner = {}): void {
     return called({ syscall: 'mkdir', path }, () => {
       const owner = options.mutationOwner;
+      const operand = typeof path === 'string' ? entryVfsPath(path).path : { ...path, path: entryVfsPath(path.path).path };
       let located: Located;
       if (options.recursive) {
-        const found = this.locate(path, false);
+        const found = this.locate(operand, false, options);
         if (found === null) {
           this.leaseAllows(this.pathArgument(path), owner);
           throw callError('ELOOP', { syscall: 'mkdir', path });
@@ -485,13 +484,13 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         // owner holds a subtree beside it. It stats the name, following links,
         // as coreutils and Node do after EEXIST: a link to a directory is
         // already there.
-        if (this.mayExist(found) && this.stat(path)?.type === 'directory') return;
+        if (this.mayExist(found) && this.stat(operand)?.type === 'directory') return;
         // A lease on a directory also covers names inside it that resolve
         // elsewhere through a symlink, so the literal path is checked as well.
         this.leaseAllows(this.pathArgument(path), owner);
         located = this.reached(found, owner);
       } else {
-        located = this.locateMutation(path, false, 'mkdir', owner);
+        located = this.locateMutation(operand, false, 'mkdir', owner);
       }
       if (located.mount) { located.mount.mkdir(located.path, { recursive: !!options.recursive, mode: options.mode }); return; }
       // mkdir of what is there is EEXIST, as mkdir(2) says, before any
@@ -788,7 +787,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   }
 
   /** The walk component by component: the name reached and its spelling for the namespace (walkBeneath's BeneathReached). */
-  private resolveDataPath(path: RuntimeFsPath, followSymlinks: boolean): BeneathReached | null {
+  private resolveDataPath(path: RuntimeFsPath, followSymlinks: boolean, creating?: { mode?: number; umask?: number } & RuntimeMutationOwner): BeneathReached | null {
     if (typeof path !== 'string' && path.beneath) {
       // The root is found by name, so every directory above it must grant
       // search (VFS-COMP-006) before anything is looked up beneath it.
@@ -806,96 +805,49 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       }
     }
     const spelled = this.pathArgument(path);
-    const pending = spelled.split('/').filter(Boolean);
-    const resolved: string[] = [];
-    let hops = 0;
     // Where names began going to a backend that resolves its own paths, for its spelling (handedSpelling).
-    let handoff: { base: string; rest: string[] } | null = null;
-
-    while (pending.length > 0) {
-      const segment = pending.shift();
-      if (segment === undefined) break;
-      if (segment === '.') continue;
-      if (segment === '..') {
-        resolved.pop();
-        continue;
+    let handoff: { base: string; rest: readonly string[] } | null = null;
+    let scanned: readonly string[] | null = null;
+    const reached = walkVfsPath(spelled, (prefix, final, components, at) => {
+      if (scanned !== components) { scanned = components; handoff = null; }
+      const composed = this.namespace?.composes(prefix) === true;
+      const parent = prefix.slice(0, prefix.lastIndexOf('/'));
+      if (composed && this.namespace?.resolvedByBackend(prefix, '/', `${prefix}/${components.slice(at + 1).join('/')}`)) {
+        handoff ??= { base: parent, rest: components.slice(at) };
+        return null;
       }
-      const candidate = [...resolved, segment].join('/');
-      const isFinal = pending.length === 0;
-      if (!followSymlinks && isFinal) {
-        // Not followed, the last name is no link to read; handed to a backend that resolves its own paths, it keeps its spelling.
-        if (handoff === null && this.namespace?.composes('/' + candidate) && this.namespace.resolvedByBackend('/' + candidate, '/', '/' + candidate)) {
-          handoff = { base: '/' + resolved.join('/'), rest: [segment] };
+      if (final && !followSymlinks) return null;
+      const mounted = this.mounted;
+      const stat = composed && mounted !== undefined
+        ? mounted.stat(prefix, { follow: false })
+        : this.vfs.statIfPresent(prefix, false, 'ENOTDIR');
+      if (stat?.type === 'symlink') {
+        if (composed && mounted?.readlink !== undefined) {
+          const target = this.linkLeadsTo(prefix, mounted.readlink(prefix));
+          if (target !== null) return () => target;
+        } else {
+          return () => {
+            const target = this.vfs.readlink(prefix);
+            // Confined storage names are read back in the engine's caller names.
+            const from = target.startsWith('/') ? '' : this.vfs.resolveName(parent, false)?.name ?? parent;
+            return target.startsWith('/') ? target : `/${from.replace(/^\/+/, '')}/${target}`;
+          };
         }
-        resolved.push(segment);
-        continue;
       }
-      // On a mount, or a directory above one, the namespace answers whether
-      // this component is a link (the SQLite rows it covers, links among
-      // them, are never followed). The walk itself stays here, except on a
-      // mount whose backend resolves its own paths: its links are its own.
-      if (this.namespace?.composes('/' + candidate)) {
-        const to = '/' + [...resolved, segment, ...pending].join('/');
-        const handed = this.namespace.resolvedByBackend('/' + candidate, '/', to);
-        if (handed) handoff ??= { base: '/' + resolved.join('/'), rest: [segment, ...pending] };
-        const link = handed ? null : this.mountedLink('/' + candidate);
-        if (link === null) {
-          resolved.push(segment);
-          continue;
+      if (!final) {
+        if (stat === null) {
+          if (creating === undefined) throw fsError('ENOENT', 'path', path);
+          // mkdir -p makes even a missing name that a following `..` leaves behind.
+          this.leaseAllows(spelled, creating.mutationOwner);
+          this.mkdir(prefix, { ...creating, recursive: true });
+        } else {
+          if (stat.type !== 'directory') throw fsError('ENOTDIR', 'path', path);
+          if (!modeAllows(stat, 1, this.vfs.cred)) throw fsError('EACCES', 'path', path);
         }
-        if (++hops > MAX_LINK_HOPS) return null;
-        if (link.startsWith('/')) resolved.length = 0;
-        pending.unshift(...link.split('/').filter(Boolean));
-        handoff = null;
-        continue;
       }
-      if (!followSymlinks && isFinal) {
-        resolved.push(segment);
-        continue;
-      }
-
-      if (this.vfs.kind(candidate) !== 'symlink') {
-        resolved.push(segment);
-        continue;
-      }
-      // The link's own target, walked here component by component as the
-      // rest of the path is: it may lead onto a mount, which SQLite cannot
-      // resolve inside itself (a link to /m/dir/x answered ENOENT at m).
-      // Hops are counted, as Linux does (40): a link met again on a longer
-      // path is one more hop, not a cycle.
-      if (++hops > MAX_LINK_HOPS) return null;
-      const target = this.vfs.readlink(candidate);
-      // A relative target is taken from the link's directory under the
-      // name the engine gives it: a confined caller may spell its own /tmp
-      // by its storage name, and the engine names it /tmp.
-      const from = target.startsWith('/') ? '' : this.vfs.resolveName(resolved.join('/'), false)?.name ?? resolved.join('/');
-      resolved.length = 0;
-      resolved.push(...from.split('/').filter(Boolean));
-      pending.unshift(...target.split('/').filter(Boolean));
-      handoff = null;
-    }
-
-    const reached = resolved.join('/');
-    return { reached, spelling: handedSpelling(handoff, '/' + reached, spelled.endsWith('/')) };
-  }
-
-  /**
-   * A mounted (or composed) entry's link target, or null when it is not a
-   * link or not there, or when the namespace has no name for where it leads
-   * (linkLeadsTo): then the walk keeps the link's own name, and the
-   * namespace hands it to the backend that follows it.
-   */
-  private mountedLink(path: string): string | null {
-    let stat;
-    try {
-      stat = this.mounted!.stat(path, { follow: false });
-    } catch (error) {
-      const code = (error as { code?: string }).code;
-      if (code === 'ENOENT' || code === 'ENOTDIR') return null;
-      throw error;
-    }
-    if (stat === null || stat.type !== 'symlink' || typeof this.mounted!.readlink !== 'function') return null;
-    return this.linkLeadsTo(path, this.mounted!.readlink(path));
+      return null;
+    }, () => { throw fsError('ELOOP', 'path', path); });
+    return { reached: reached.slice(1), spelling: handedSpelling(handoff, reached, false) };
   }
 
   /** Where the link at `path`, reading `link`, leads: the namespace's link-root rule (CompositeVFS.linkLeadsTo); SQLite alone, its text. */

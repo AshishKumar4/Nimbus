@@ -37,7 +37,7 @@ import tacCommand from '../substrate/lifo/commands/text/tac.js';
 import teeCommand from '../substrate/lifo/commands/io/tee.js';
 import { parseArgs } from '../substrate/lifo/utils/args.js';
 import { echoOutput, expandBackslashEscapes } from '../substrate/lifo/utils/backslash-escapes.js';
-import { dirname, resolve } from '../substrate/lifo/utils/path.js';
+import { dirname, operandPath, resolve } from '../substrate/lifo/utils/path.js';
 import { encode } from '../substrate/lifo/utils/encoding.js';
 import {
   findUnixGroupName,
@@ -104,14 +104,6 @@ async function unixGroupLabel(vfs: ProcessView, gid: number): Promise<string> {
 
 
 // ── Helpers ─────────────────────────────────────────────────────────────
-
-/**
- * `p` as an absolute path, against `cwd`: the path a command's operand
- * names, which is also what its errors name (never a storage key).
- */
-function resolvePath(cwd: string, p: string): string {
-  return resolve(cwd || '/home/user', p);
-}
 
 async function readSymlinkTarget(vfs: ProcessView, path: string): Promise<string | null> {
   return await vfs.isSymlink(path) ? (await vfs.readlink(path)) : null;
@@ -564,7 +556,7 @@ function mkSetfacl(sqliteVfs: SqliteVFS): Command {
       return 2;
     }
     for (const target of targets) {
-      const path = resolvePath(ctx.cwd, target);
+      const path = operandPath(ctx.cwd, target);
       try {
         if (remove) { vfs.setDefaultAcl(path, null); continue; }
         let perms = vfs.getDefaultAcl(path) ?? 0o755;
@@ -592,12 +584,12 @@ function mkGetfacl(sqliteVfs: SqliteVFS): Command {
     const vfs = sqliteVfs.as(cred);
     let status = 0;
     for (const target of ctx.args.filter((arg) => !arg.startsWith('-'))) {
-      const path = resolvePath(ctx.cwd, target);
+      const path = operandPath(ctx.cwd, target);
       try {
         const stat = vfs.stat(path);
         const perms = stat.mode & 0o777;
         const lines = [
-          `# file: ${path.replace(/^\/+/, '')}`, `# owner: ${stat.uid}`, `# group: ${stat.gid}`,
+          `# file: ${resolve('/', path).replace(/^\/+/, '')}`, `# owner: ${stat.uid}`, `# group: ${stat.gid}`,
           ...(stat.mode & 0o7000 ? [`# flags: ${stat.mode & 0o4000 ? 's' : '-'}${stat.mode & 0o2000 ? 's' : '-'}${stat.mode & 0o1000 ? 't' : '-'}`] : []),
           `user::${aclTriple(perms >> 6)}`, `group::${aclTriple(perms >> 3)}`, `other::${aclTriple(perms)}`,
         ];
@@ -779,7 +771,7 @@ function mkTree(): Command {
     const dirsOnly = ctx.args.includes('-d');
     // `-L n` takes the next word; the first other non-option word is the directory.
     const operand = ctx.args.find((a, i) => !a.startsWith('-') && (level === -1 || i !== level + 1)) ?? '.';
-    const root = resolvePath(ctx.cwd, operand);
+    const root = operandPath(ctx.cwd, operand);
     const maxDepth = level === -1 ? Infinity : parseInt(ctx.args[level + 1]) || Infinity;
     const MAX_ENTRIES = 2000; // Safety limit to prevent hanging on huge repos
     let dirs = 0, files = 0, total = 0;
@@ -802,7 +794,7 @@ function mkTree(): Command {
           (await ctx.stdout.write(prefix + connector + e.name + '\n'));
           if (e.directory) {
             dirs++;
-            (await walk(resolvePath(path, e.name), prefix + childPrefix, depth + 1));
+            (await walk(operandPath(path, e.name), prefix + childPrefix, depth + 1));
           } else { files++; }
         }
       } catch {}
@@ -893,7 +885,7 @@ function mkAwk(): Command {
     // A file operand is the input; stdin only without one.
     let input = '';
     if (fileArgs.length > 0) {
-      try { input = (await vfs.readFileString(resolvePath(ctx.cwd, fileArgs[0]))); }
+      try { input = (await vfs.readFileString(operandPath(ctx.cwd, fileArgs[0]))); }
       catch { (await ctx.stderr.write(`awk: ${fileArgs[0]}: No such file\n`)); return 1; }
     } else {
       input = (await stdinText(ctx)) || '';
@@ -1908,7 +1900,7 @@ function mkDu(): Command {
       return { size, dir: true };
     }
     for (const operand of operands) {
-      grand += (await walk(resolvePath(ctx.cwd, operand), operand, 0)).size;
+      grand += (await walk(operandPath(ctx.cwd, operand), operand, 0)).size;
     }
     if (total) await ctx.stdout.write(`${fmt(grand)}\ttotal${end}`);
     return failed ? 1 : 0;
@@ -2057,7 +2049,7 @@ function mkLs(): Command {
     let exit = 0;
 
     async function listDir(dirPath: string): Promise<Entry[]> {
-      const fp = resolvePath(ctx.cwd, dirPath);
+      const fp = operandPath(ctx.cwd, dirPath);
       const out: Entry[] = [];
       // One listing for every entry: ctx.vfs handles mounts like /dev, and a
       // host authority reports legacy registry symlinks here too.
@@ -2113,7 +2105,7 @@ function mkLs(): Command {
     const fileEntries: Entry[] = [];
     const dirArgs: string[] = [];
     for (const arg of targets) {
-      const fp = resolvePath(ctx.cwd, arg);
+      const fp = operandPath(ctx.cwd, arg);
       // A link operand is shown as the link itself unless followed (above).
       const target = (await readSymlinkTarget(vfs, fp));
       const followed = target !== null && (followOperands || (followDirOperands && (await vfs.isDirectory(fp))));
@@ -2199,8 +2191,9 @@ function mkRm(): Command {
     if (!targets.length) { if (force) return 0; await ctx.stderr.write('rm: missing operand\n'); return 1; }
     let code = 0;
     for (const target of targets) {
-      const path = resolvePath(ctx.cwd, target);
-      if (recursive && preserveRoot && path === '/') {
+      const path = operandPath(ctx.cwd, target);
+      const normalized = resolve(ctx.cwd, target);
+      if (recursive && preserveRoot && normalized === '/') {
         await ctx.stderr.write("rm: it is dangerous to operate recursively on '/'\nrm: use --no-preserve-root to override this failsafe\n");
         code = 1;
         continue;
@@ -2209,14 +2202,14 @@ function mkRm(): Command {
         if (!recursive) { await vfs.remove(path, { force }); continue; }
         const report = await vfs.removeRecursive(path, { keepVanishedAncestors: !force });
         for (const failure of report.failures) {
-          const named = failure.path === path || failure.path.startsWith(`${path}/`) ? target + failure.path.slice(path.length) : failure.path;
+          const named = failure.path === normalized || failure.path.startsWith(`${normalized}/`) ? target + failure.path.slice(normalized.length) : failure.path;
           const reason = failure.error.detail === undefined ? VFS_STRERROR[failure.error.code]
             : `${VFS_STRERROR[failure.error.code]}: ${failure.error.detail}`;
           await ctx.stderr.write(`rm: cannot remove '${named}': ${reason}\n`);
           code = 1;
         }
         if (!force) for (const gone of report.vanished ?? []) {
-          const named = gone === path || gone.startsWith(`${path}/`) ? target + gone.slice(path.length) : gone;
+          const named = gone === normalized || gone.startsWith(`${normalized}/`) ? target + gone.slice(normalized.length) : gone;
           await ctx.stderr.write(`rm: cannot remove '${named}': No such file or directory\n`);
           code = 1;
         }
@@ -2318,7 +2311,7 @@ function mkTouch(): Command {
     let atime: FsTime = 'now', mtime: FsTime = 'now';
     if (reference !== null) {
       try {
-        const st = await statOrThrow(targetVfs, resolvePath(ctx.cwd, reference));
+        const st = await statOrThrow(targetVfs, operandPath(ctx.cwd, reference));
         atime = st.atimeMs;
         mtime = st.mtimeMs;
       } catch {
@@ -2344,7 +2337,7 @@ function mkTouch(): Command {
     for (const f of files) {
       // `-` is standard output: its times are the terminal's, not a file named '-'.
       if (f === '-') continue;
-      const fp = resolvePath(ctx.cwd, f);
+      const fp = operandPath(ctx.cwd, f);
       try {
         if (noDereference) {
           // -h: a link's own times (lutimes), never its target's, and nothing
@@ -2874,7 +2867,7 @@ function mkRealpath(): Command {
     if (operands.length === 0) return refuse('missing operand');
 
     const canonical = (arg: string): Promise<string> =>
-      canonicalizePath(ctx.vfs, arg.startsWith('/') ? arg : `/${resolvePath(ctx.cwd, '.')}/${arg}`, {
+      canonicalizePath(ctx.vfs, operandPath(ctx.cwd, arg), {
         mode, logical, noSymlinks,
       });
     let exit = 0;
@@ -3246,12 +3239,12 @@ function mkReadlink(): Command {
     const end = zero ? '\0' : noNewline && targets.length === 1 ? '' : '\n';
     let exit = 0;
     for (const t of targets) {
-      const fp = resolvePath(ctx.cwd, t);
+      const fp = operandPath(ctx.cwd, t);
       try {
         const answer = mode === null
           ? await readSymlinkTarget(vfs, fp)
           // The name as given, so a trailing slash still asks for a directory.
-          : await canonicalizePath(ctx.vfs, t.startsWith('/') ? t : `${resolvePath(ctx.cwd, '.')}/${t}`, { mode, logical: false, noSymlinks: false });
+          : await canonicalizePath(ctx.vfs, operandPath(ctx.cwd, t), { mode, logical: false, noSymlinks: false });
         if (answer !== null) { (await ctx.stdout.write(answer + end)); continue; }
         // Not a link: EINVAL, as readlink(2) says, once the name is known to exist.
         await statOrThrow(vfs, fp);
@@ -3270,7 +3263,7 @@ function mkFile(): Command {
   return async (ctx) => {
     const vfs = ctx.vfs;
     for (const f of ctx.args.filter(a => !a.startsWith('-'))) {
-      const fp = resolvePath(ctx.cwd, f);
+      const fp = operandPath(ctx.cwd, f);
       try {
         if ((await vfs.isDirectory(fp))) { (await ctx.stdout.write(`${f}: directory\n`)); continue; }
         if ((await statOrThrow(vfs, fp)).size === 0) { (await ctx.stdout.write(`${f}: empty\n`)); continue; }
@@ -3818,7 +3811,7 @@ class DumpByteSource {
         // Named operands read through ctx.vfs — the mount-aware seam the
         // host handed the command — so /dev and other mounts resolve while
         // an embedder's credentialed view keeps its authorization.
-        this.currentPath = resolvePath(this.ctx.cwd, file);
+        this.currentPath = operandPath(this.ctx.cwd, file);
         (await this.ctx.vfs.readRange(this.currentPath, 0, 1));
         this.cursor = 0;
         this.haveOpen = true;
@@ -4488,7 +4481,7 @@ function mkXxd(): Command {
     // routes through ctx.vfs like every other named path, so dumps may land
     // on devices and mounts as they do on Unix.
     const output = operands[1];
-    const outAbs = output !== undefined && output !== '-' ? resolvePath(ctx.cwd, output) : null;
+    const outAbs = output !== undefined && output !== '-' ? operandPath(ctx.cwd, output) : null;
 
     let offset = 0;
     let fileOffset = 0;
@@ -4686,7 +4679,7 @@ export function registerUnixCommands(
     const operands = ctx.args.filter(arg => !arg.startsWith('-'));
     if (operands.length !== 2) { await ctx.stderr.write('ln: expected target and link path\n'); return 1; }
     if (!symbolic) { await ctx.stderr.write('ln: hard links are not supported\n'); return 1; }
-    const path = resolvePath(ctx.cwd, operands[1]);
+    const path = operandPath(ctx.cwd, operands[1]);
     try {
       if (force) await ctx.vfs.remove(path, { force: true });
       await ctx.vfs.symlink(operands[0], path);

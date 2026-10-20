@@ -1,6 +1,6 @@
 import type { Command } from '../types.js';
 import { parseArgs } from '../../utils/args.js';
-import { resolve, dirname } from '../../utils/path.js';
+import { operandPath } from '../../utils/path.js';
 import { isVfsError, VFS_STRERROR } from '../../../../vfs/vfs-error.js';
 
 const spec = {
@@ -18,17 +18,18 @@ const command: Command = async (ctx) => {
   let exitCode = 0;
 
   for (const arg of positional) {
-    const path = resolve(ctx.cwd, arg);
+    const path = operandPath(ctx.cwd, arg);
     try {
       (await ctx.vfs.rmdir(path));
 
       if (flags.parents) {
         // Walk up removing empty parent directories
-        let parent = dirname(path);
+        const entry = path.replace(/\/+$/, '');
+        let parent = entry.slice(0, entry.lastIndexOf('/')) || '/';
         while (parent !== '/' && parent !== '.') {
           try {
             (await ctx.vfs.rmdir(parent));
-            parent = dirname(parent);
+            parent = parent.slice(0, parent.lastIndexOf('/')) || '/';
           } catch {
             break;
           }

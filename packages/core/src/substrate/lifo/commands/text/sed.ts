@@ -1,5 +1,5 @@
 import type { Command, CommandInputStream, CommandOutputStream } from '../types.js';
-import { resolve } from '../../utils/path.js';
+import { operandPath } from '../../utils/path.js';
 import { decodeLossless, encodeLossless, readAllInput, writeBytes } from '../../utils/bytes-io.js';
 import { PosixRegexSyntax, translate } from '../../utils/posix-regex.js';
 import type { ProcessView } from '../../../../runtime/process-files.js';
@@ -505,7 +505,7 @@ export async function runSed(ctx: SedExecutionContext): Promise<number> {
         else if (name === 'expression') scripts.push({ text: inline ?? args[++i] ?? '', label: `-e expression #${++expressionCount}` });
         else if (name === 'file') {
           const file = inline ?? args[++i] ?? '';
-          scripts.push({ text: decodeLossless(await ctx.vfs.readFile(resolve(ctx.cwd, file))).replace(/\n$/, ''), label: `file ${file} line 1` });
+          scripts.push({ text: decodeLossless(await ctx.vfs.readFile(operandPath(ctx.cwd, file))).replace(/\n$/, ''), label: `file ${file} line 1` });
         } else if (name === 'line-length') lineWidth = Number(inline ?? args[++i]);
         else if (['posix', 'debug', 'follow-symlinks', 'unbuffered', 'binary', 'sandbox'].includes(name)) { /* no effect here */ }
         else return usageError(`unrecognized option '--${name}'`);
@@ -519,7 +519,7 @@ export async function runSed(ctx: SedExecutionContext): Promise<number> {
           if (value === '') value = args[++i];
           if (value === undefined) return usageError(`option requires an argument -- '${flag}'`);
           if (flag === 'e') scripts.push({ text: value, label: `-e expression #${++expressionCount}` });
-          else if (flag === 'f') scripts.push({ text: decodeLossless(await ctx.vfs.readFile(resolve(ctx.cwd, value))).replace(/\n$/, ''), label: `file ${value} line 1` });
+          else if (flag === 'f') scripts.push({ text: decodeLossless(await ctx.vfs.readFile(operandPath(ctx.cwd, value))).replace(/\n$/, ''), label: `file ${value} line 1` });
           else lineWidth = Number(value);
           break;
         }
@@ -575,7 +575,7 @@ export async function runSed(ctx: SedExecutionContext): Promise<number> {
     try {
       const bytes = file === '-'
         ? await readAllInput({ cwd: ctx.cwd, vfs: ctx.vfs as unknown as ProcessView, stdin: ctx.stdin }, '-')
-        : await ctx.vfs.readFile(resolve(ctx.cwd, file));
+        : await ctx.vfs.readFile(operandPath(ctx.cwd, file));
       const { lines, terminated } = splitLines(decodeLossless(bytes), delim);
       return { name: file, lines, terminated };
     } catch (error) {
@@ -759,14 +759,14 @@ export async function runSed(ctx: SedExecutionContext): Promise<number> {
             case 'q': quitCode = cmd.code; break cycle;
             case 'Q': quitCode = cmd.code; autoprint = false; break cycle;
             case 'r': {
-              try { append.push(decodeLossless(await ctx.vfs.readFile(resolve(ctx.cwd, cmd.file)))); } catch { /* an unreadable file adds nothing */ }
+              try { append.push(decodeLossless(await ctx.vfs.readFile(operandPath(ctx.cwd, cmd.file)))); } catch { /* an unreadable file adds nothing */ }
               break;
             }
             case 'R': {
               let cursor = rCursors.get(cmd.file);
               if (!cursor) {
                 let lines: string[] = [];
-                try { lines = splitLines(decodeLossless(await ctx.vfs.readFile(resolve(ctx.cwd, cmd.file))), '\n').lines; } catch { /* nothing to read */ }
+                try { lines = splitLines(decodeLossless(await ctx.vfs.readFile(operandPath(ctx.cwd, cmd.file))), '\n').lines; } catch { /* nothing to read */ }
                 rCursors.set(cmd.file, cursor = { lines, at: 0 });
               }
               if (cursor.at < cursor.lines.length) append.push(cursor.lines[cursor.at++] + '\n');
@@ -845,11 +845,11 @@ export async function runSed(ctx: SedExecutionContext): Promise<number> {
       throw error;
     }
     if (target !== null && target !== undefined) {
-      const path = resolve(ctx.cwd, target);
+      const path = operandPath(ctx.cwd, target);
       if (inPlace) {
         const base = target.slice(target.lastIndexOf('/') + 1);
         const backup = inPlace.includes('*') ? inPlace.replaceAll('*', base) : target + inPlace;
-        try { await ctx.vfs.writeFile(resolve(ctx.cwd, backup.includes('/') ? backup : target.slice(0, target.lastIndexOf('/') + 1) + backup), await ctx.vfs.readFile(path)); }
+        try { await ctx.vfs.writeFile(operandPath(ctx.cwd, backup.includes('/') ? backup : target.slice(0, target.lastIndexOf('/') + 1) + backup), await ctx.vfs.readFile(path)); }
         catch (error) { await ctx.stderr.write(`sed: couldn't open file ${backup}: ${strerror(error)}\n`); return 4; }
       }
       await ctx.vfs.writeFile(path, encodeLossless(out.join('')));
@@ -858,7 +858,7 @@ export async function runSed(ctx: SedExecutionContext): Promise<number> {
     await flushOut();
   }
   for (const [file, w] of writeFiles) {
-    try { await ctx.vfs.writeFile(resolve(ctx.cwd, file), encodeLossless(w.chunks.join(''))); }
+    try { await ctx.vfs.writeFile(operandPath(ctx.cwd, file), encodeLossless(w.chunks.join(''))); }
     catch (error) { await ctx.stderr.write(`sed: couldn't open file ${file}: ${strerror(error)}\n`); status = 4; }
   }
   return quitCode ?? status;

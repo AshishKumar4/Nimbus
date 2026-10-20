@@ -48,7 +48,7 @@ import {
 import { forkShellState, type ShellState } from './state.js';
 import { exitCodeForAbortSignal, KILLED_BY_SIGPIPE } from './signals.js';
 import { isBrokenPipe, isRefusedWrite, textCapture } from '../utils/bytes-io.js';
-import { resolve } from '../utils/path.js';
+import { operandPath } from '../utils/path.js';
 import { encode } from '../utils/encoding.js';
 import { shellMatch } from '../utils/glob.js';
 import { staticStdinReader } from '../../../shell/stdin-adapter.js';
@@ -2107,7 +2107,7 @@ export class Interpreter {
     // files. Writing them into the device provider would silently discard.
     if (target === '/dev/stdout') return this.resolveOutputFd('1', fds.outputFds, fds.terminalOutputFds);
     if (target === '/dev/stderr') return this.resolveOutputFd('2', fds.outputFds, fds.terminalOutputFds);
-    const targetPath = resolve(this.config.getCwd(), target);
+    const targetPath = operandPath(this.config.getCwd(), target);
     const vfs = io.vfs ?? this.config.vfs;
     try {
       // Each call is made again once a delegation it meets is recalled
@@ -2158,7 +2158,7 @@ export class Interpreter {
       return { stream: terminalStdin, terminal: true };
     }
     if (target === '/dev/stdin') return this.resolveInputFd('0', fds.inputFds, fds.terminalInputFds);
-    const targetPath = resolve(this.config.getCwd(), target);
+    const targetPath = operandPath(this.config.getCwd(), target);
     const vfs = io.vfs ?? this.config.vfs;
     try {
       // Open-authorize before the command runs, the way open(2) would: a

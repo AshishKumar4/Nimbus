@@ -1,6 +1,6 @@
 import type { Command } from '../types.js';
 import { parseArgs } from '../../utils/args.js';
-import { resolve } from '../../utils/path.js';
+import { operandPath, resolve } from '../../utils/path.js';
 import { statOrThrow } from '../../../../vfs/vfs.js';
 
 const spec = {
@@ -20,7 +20,7 @@ function randomChars(n: number): string {
 const command: Command = async (ctx) => {
   const { flags, positional } = parseArgs(ctx.args, spec);
 
-  const dir = (flags.tmpdir as string) || '/tmp';
+  const dir = typeof flags.tmpdir === 'string' && flags.tmpdir ? operandPath(ctx.cwd, flags.tmpdir) : '/tmp';
   const template = positional[0] || 'tmp.XXXXXXXXXX';
 
   // Replace X's at end with random chars
@@ -30,7 +30,7 @@ const command: Command = async (ctx) => {
     ? template.slice(0, -xCount) + randomChars(xCount)
     : template + '.' + randomChars(10);
 
-  const fullPath = resolve(dir, name);
+  const fullPath = operandPath(dir, name);
 
   try {
     // Ensure parent dir exists
@@ -46,7 +46,7 @@ const command: Command = async (ctx) => {
       (await ctx.vfs.writeFile(fullPath, ''));
     }
 
-    await ctx.stdout.write(fullPath + '\n');
+    await ctx.stdout.write(resolve('/', fullPath) + '\n');
     return 0;
   } catch (e) {
     await ctx.stderr.write(`mktemp: failed to create ${flags.directory ? 'directory' : 'file'}: ${(e as Error).message}\n`);

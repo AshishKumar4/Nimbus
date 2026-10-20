@@ -1,6 +1,6 @@
 import type { Command, CommandContext } from '../types.js';
 import { parseArgs } from '../../utils/args.js';
-import { resolve } from '../../utils/path.js';
+import { operandPath } from '../../utils/path.js';
 import { isVfsError, VFS_STRERROR } from '../../../../vfs/vfs-error.js';
 
 const spec = {
@@ -17,7 +17,7 @@ async function notADirectory(ctx: CommandContext, arg: string): Promise<string> 
   for (let end = 1; end <= parts.length; end++) {
     const prefix = parts.slice(0, end).join('/');
     if (prefix === '' || prefix.endsWith('/')) continue;
-    const stat = await ctx.vfs.stat(resolve(ctx.cwd, prefix)).catch(() => null);
+    const stat = await ctx.vfs.stat(operandPath(ctx.cwd, prefix)).catch(() => null);
     if (stat === null) return arg;
     if (stat.type !== 'directory') return prefix;
   }
@@ -35,9 +35,9 @@ const command: Command = async (ctx) => {
   let exitCode = 0;
 
   for (const arg of positional) {
-    const path = resolve(ctx.cwd, arg);
+    const path = operandPath(ctx.cwd, arg);
     try {
-      (await ctx.vfs.mkdir(path, { recursive: flags.parents as boolean }));
+      (await ctx.vfs.mkdir(path, { recursive: flags.parents === true }));
     } catch (e) {
       if (isVfsError(e)) {
         const named = flags.parents && e.code === 'ENOTDIR' ? await notADirectory(ctx, arg) : arg;
