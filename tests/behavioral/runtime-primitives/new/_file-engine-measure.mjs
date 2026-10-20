@@ -311,7 +311,7 @@ async function sharing() {
     await setup(t, heredoc('server.js', NODE_SERVER));
     await setup(t, heredoc('writer.js', "const fs=require('fs');fs.mkdirSync('site/gen',{recursive:true});for(let i=0;i<300;i++)fs.writeFileSync('site/gen/g'+i+'.js','export const v='+i+';');console.log('wrote');\n"));
     await t.run('node server.js > srv.log 2>&1 &', 60_000);
-    await served(sid, 120_000);
+    out({ group: 'sharing', label: 'server-up', servedMs: await served(sid, 120_000) });
     const steps = [
       ['npm-install-beside', 'echo \'{"name":"s","private":true,"dependencies":{"ms":"2.1.3"}}\' > package.json && npm install'],
       ['node-writer-300', 'node writer.js'],
@@ -320,9 +320,10 @@ async function sharing() {
     ];
     for (const [label, line] of steps) {
       await step(t, sid, { group: 'sharing', label }, line, 600_000);
-      await served(sid, 30_000, '?__nimbus_measure=1');
+      out({ group: 'sharing', label: `${label}-measured`, at: new Date().toISOString(), servedMs: await served(sid, 30_000, '?__nimbus_measure=1') });
       await sleep(1500);
     }
+    out({ group: 'sharing', label: 'srv.log', log: (await t.run('cat srv.log | tail -5; jobs', 30_000)).output.slice(-600) });
     await t.run('kill %1; sleep 2', 60_000);
   });
 }
@@ -336,9 +337,10 @@ const die = () => { const a = []; for (;;) a.push(new Uint8Array(1 << 20).fill(1
 if (process.argv[3] === 'yield') setTimeout(die, 0); else die();
 `;
   const PY_DIE = `import os, sys
-os.makedirs('dead/' + sys.argv[1], exist_ok=True)
+name = sys.argv[-1]
+os.makedirs('dead/' + name, exist_ok=True)
 for i in range(50):
-    open('dead/%s/f%d' % (sys.argv[1], i), 'w').write('x%d' % i)
+    open('dead/%s/f%d' % (name, i), 'w').write('x%d' % i)
 a = []
 while True: a.append(bytearray(1 << 20))
 `;
@@ -347,12 +349,12 @@ while True: a.append(bytearray(1 << 20))
     await setup(t, heredoc('die.js', NODE_DIE));
     await setup(t, heredoc('die.py', PY_DIE));
     for (let rep = 0; rep < 10; rep++) {
-      for (const [arm, line] of [['node-same', `node die.js n${rep} same`], ['node-yield', `node die.js y${rep} yield`], ['python', `python3 die.py p${rep}`]]) {
+      for (const [arm, line] of [['node-same', `node die.js n${rep} same`], ['node-yield', `node die.js y${rep} yield`], ['python', `python3 -c "exec(open('die.py').read())" p${rep}`]]) {
         await step(t, sid, { group: 'oneshot-death', arm, rep }, line, 300_000);
         await sleep(3000);
         const dir = arm === 'node-same' ? `n${rep}` : arm === 'node-yield' ? `y${rep}` : `p${rep}`;
-        const counted = await t.run(`ls dead/${dir} 2>/dev/null | wc -l`, 60_000);
-        const survived = Number(/^\s*(\d+)\s*$/m.exec(counted.output.split('\n').slice(1).join('\n'))?.[1] ?? NaN);
+        const counted = await t.run(`echo "COUNT=$(ls dead/${dir} 2>/dev/null | wc -l)"`, 60_000);
+        const survived = Number(/COUNT=(\d+)/.exec(counted.output.split('\n').slice(1).join('\n'))?.[1] ?? NaN);
         out({ group: 'oneshot-death', arm, rep, sid, survived });
       }
     }
