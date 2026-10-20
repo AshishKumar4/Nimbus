@@ -86,13 +86,14 @@ type ParameterRef = { name: string; subscript?: string };
  * Expand all words for a command's arguments: brace expansion, tilde,
  * parameter/arithmetic/command substitution, IFS field splitting, globbing.
  */
-export async function expandWords(words: WordPart[][], ctx: ExpandContext): Promise<string[]> {
+export async function expandWords(words: WordPart[][], ctx: ExpandContext, braceExpanded = false): Promise<string[]> {
   const results: string[] = [];
 
   for (const word of words) {
-    for (const braceExpandedWord of expandBraceWord(word)) {
-      // Each field globbed as a pattern whose quoted characters match only
-      // themselves: an unquoted expansion's `*` globs, a quoted one's does not.
+    // Each field globbed as a pattern whose quoted characters match only
+    // themselves: an unquoted expansion's `*` globs, a quoted one's does not.
+    // Words brace expansion made already (`braceExpanded`) are not expanded again.
+    for (const braceExpandedWord of braceExpanded ? [word] : expandBraceWord(word)) {
       for (const field of splitFields(await expandParts(braceExpandedWord, ctx), ifsOf(ctx))) {
         if (field.pattern === null) results.push(field.text);
         else results.push(...await expandGlob(field.pattern, field.text, ctx.cwd, ctx.vfs));
@@ -147,7 +148,7 @@ export async function expandWord(parts: WordPart[], ctx: ExpandContext): Promise
   return joinPieces(await expandParts(parts, ctx));
 }
 
-function expandBraceWord(parts: WordPart[]): WordPart[][] {
+export function expandBraceWord(parts: WordPart[]): WordPart[][] {
   let combinations: WordPart[][] = [[]];
 
   for (const part of parts) {
