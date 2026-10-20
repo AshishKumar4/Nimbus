@@ -91,6 +91,8 @@ export declare class NamedTerminals {
     admits(name: string): boolean;
     private open;
     private start;
+    /** A terminal closed or let go while an attach waited is not attached to (its socket is the caller's to refuse). */
+    private assertCurrent;
     private save;
 }
 /** Whether a terminal's socket is one a peer still has (a closed one may stay referenced until the next attach). */

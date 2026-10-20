@@ -62,9 +62,11 @@ export class NamedTerminals {
      */
     async attach(name, ws, resume = 'reconnect') {
         const entry = await this.open(name);
+        this.assertCurrent(entry);
         if (entry.terminal.ws === ws) {
             // Its start comes before anything it is sent.
             await entry.started;
+            this.assertCurrent(entry);
             return;
         }
         entry.terminal.attach(ws);
@@ -83,8 +85,10 @@ export class NamedTerminals {
         }
         else {
             await entry.started;
+            this.assertCurrent(entry);
             entry.shell.resumePrompt();
         }
+        this.assertCurrent(entry);
         entry.terminal.flushNow();
         ws.send(JSON.stringify({ type: 'ready' }));
     }
@@ -211,11 +215,12 @@ export class NamedTerminals {
             // Counted against the limit from now (admits), not once its shell is built.
             if (!this.admits(valid))
                 return Promise.reject(new TerminalLimitError());
-            const started = this.start(valid);
-            opening = started.finally(() => {
+            // One promise for every waiter: they resume in the order they asked.
+            const started = this.start(valid).finally(() => {
                 if (this.opening.get(valid) === started)
                     this.opening.delete(valid);
             });
+            opening = started;
             this.opening.set(valid, started);
         }
         return opening;
@@ -249,6 +254,11 @@ export class NamedTerminals {
         const entry = { name, pid: process.pid, shell, terminal, notice: saved.includes(name), started: null };
         this.live.set(name, entry);
         return entry;
+    }
+    /** A terminal closed or let go while an attach waited is not attached to (its socket is the caller's to refuse). */
+    assertCurrent(entry) {
+        if (this.live.get(entry.name) !== entry || entry.terminal.signal.aborted)
+            throw new Error(`terminal ${entry.name} was closed`);
     }
     save(entry) {
         if (this.live.get(entry.name) !== entry)

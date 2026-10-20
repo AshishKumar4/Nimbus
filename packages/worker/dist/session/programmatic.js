@@ -1163,7 +1163,7 @@ async function quiesceInMemorySessionState(self) {
         self._w9FlushTimer = null;
     }
     // The named terminals go with the session's own: none outlives its workspace.
-    self.terminals.dispose();
+    self.terminals?.dispose();
     try {
         self.terminal?.close?.();
     }
@@ -1262,7 +1262,7 @@ async function resetInMemorySessionState(self) {
     }
     catch { }
     // The named terminals go with the session's own: none outlives its workspace.
-    self.terminals.dispose();
+    self.terminals?.dispose();
     try {
         self.terminal?.close?.();
     }
