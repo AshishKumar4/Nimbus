@@ -18,6 +18,7 @@
 import { z } from 'zod/v4';
 import type { Shell } from '../substrate/lifo/shell/Shell.js';
 import { cloneEnv, type VariableAttributes } from '../substrate/lifo/shell/variables.js';
+import { startupAttributes } from '../substrate/lifo/shell/state.js';
 import type { SqlDatabase } from '../runtime/os-contracts.js';
 
 /**
@@ -222,9 +223,13 @@ function withoutCallVariables(vars: VariableAttributes): VariableAttributes {
   };
 }
 
-/** Whether `vars` says no more than a state without it: every variable of `env` exported, and nothing else. */
+/** Whether `vars` says no more than a state without it: the marks a shell starts with over `env` (startupAttributes), and nothing else. */
 function isDefault(vars: VariableAttributes, env: Readonly<Record<string, string>>): boolean {
-  const names = Object.keys(env);
-  return vars.readonly.length === 0 && vars.declared.length === 0 && Object.keys(vars.arrays).length === 0
-    && vars.exported.length === names.length && vars.exported.every((name) => Object.hasOwn(env, name));
+  const startup = startupAttributes(Object.keys(env));
+  return vars.readonly.length === 0 && Object.keys(vars.arrays).length === 0
+    && sameNames(vars.exported, startup.exported) && sameNames(vars.declared, startup.declared);
+}
+
+function sameNames(names: readonly string[], set: ReadonlySet<string>): boolean {
+  return names.length === set.size && names.every((name) => set.has(name));
 }

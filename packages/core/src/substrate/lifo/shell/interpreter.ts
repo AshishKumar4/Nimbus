@@ -43,7 +43,7 @@ import {
 import { evaluateDoubleBracketWords } from './test-builtin.js';
 import { isPipeEnd, PipeChannel } from './pipe.js';
 import {
-  arrayFor, arrayIndex, assignArray, assignVariable, lastIndex, restoreVariable, saveVariable, type ArrayLiteral, type SavedVariable,
+  arrayFor, arrayIndex, assignArray, assignVariable, exportedEnvironment, lastIndex, restoreVariable, saveVariable, type ArrayLiteral, type SavedVariable,
 } from './variables.js';
 import { forkShellState, type ShellState } from './state.js';
 import { exitCodeForAbortSignal, KILLED_BY_SIGPIPE } from './signals.js';
@@ -1345,7 +1345,7 @@ export class Interpreter {
                     commandContext: io.commandContext,
                     identity,
                     cwd: this.config.getCwd(),
-                    env: { ...this.config.env },
+                    env: exportedEnvironment(this.config),
                     vfs: io.vfs ?? this.config.vfs,
                     stdout,
                     stderr,

@@ -180,3 +180,12 @@ export function restoreAttributes(
     store.arrays.set(name, array);
   }
 }
+
+/**
+ * The environment a command gets: the exported variables' scalar values, in
+ * the store's order (bash's export_env). An unexported variable, or an array,
+ * is the shell's own.
+ */
+export function exportedEnvironment(store: VariableStore): Record<string, string> {
+  return Object.fromEntries(Object.entries(store.env).filter(([name]) => store.exportedNames.has(name)));
+}
