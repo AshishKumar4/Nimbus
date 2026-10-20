@@ -136,6 +136,50 @@ const scenarios = {
     assert.equal(await s.view.listTree(`${ROOT}/d`), false, 'nothing is listed at a name that is not there');
     await assert.rejects(async () => s.fs.readdir(k('d')), (error) => error.code === 'ENOENT', 'the directory');
   },
+  async 'bytes asked of one incarnation of the session are not served after the store started again in the next'() {
+    // Larger than a lookup reads with the name, so its bytes are a fill of their own.
+    const big = (c) => c.repeat(300_000);
+    const s = await storeSession({ f: big('a'), other: 'o' });
+    const enc = new TextEncoder();
+    for (let i = 0; i < 40; i++) await s.kernel.writeFile(k('other'), enc.encode(`o${i}`));
+    await s.kernel.writeFile(k('f'), enc.encode(big('b')));
+    assert.equal((await s.fs.stat(k('f'))).size, 300_000);
+    const asked = s.hold('fsReadBatch');
+    const read = s.fs.readFile(k('f'));
+    await asked();
+    // The session starts again holding other bytes there, at revisions far below the first incarnation's.
+    await s.incarnate({ f: big('c'), other: 'o' });
+    s.fs.inbound();
+    await s.fs.stat(k('other'));
+    s.release('fsReadBatch');
+    await read.catch(() => undefined);
+    let seen;
+    try { seen = s.fs.synchronous.readFile(k('f')); } catch (error) { seen = error?.code; }
+    assert.ok(seen === 'EAGAIN' || seen?.[0] === 'c'.charCodeAt(0), `what a call that cannot wait reads of it: ${typeof seen === 'string' ? seen : String.fromCharCode(seen?.[0])}`);
+    assert.equal(new TextDecoder().decode((await s.fs.readFile(k('f'))).subarray(0, 1)), 'c', 'what an awaited read reads of it');
+  },
+  async 'a page asked of one incarnation of the session is not held after the store started again in the next'() {
+    const big = (c) => c.repeat(300_000);
+    const enc = new TextEncoder();
+    const s = await storeSession({ f: big('a'), other: 'o' });
+    for (let i = 0; i < 40; i++) await s.kernel.writeFile(k('other'), enc.encode(`o${i}`));
+    await s.kernel.writeFile(k('f'), enc.encode(big('b')));
+    const { revision, size } = await s.authority.stat(k('f'));
+    const asked = s.hold('fsReadBatch');
+    const first = s.view.pages(`${ROOT}/f`, revision, size, 0, 0);
+    await asked();
+    // The next incarnation holds other bytes at the same name and revision.
+    await s.incarnate({ f: big('a'), other: 'o' });
+    while ((await s.authority.stat(k('other'))).revision + 1 < revision) await s.kernel.writeFile(k('other'), enc.encode('o'));
+    await s.kernel.writeFile(k('f'), enc.encode(big('c')));
+    assert.equal((await s.authority.stat(k('f'))).revision, revision, 'the same revision, in another epoch');
+    s.fs.inbound();
+    await s.fs.stat(k('other'));
+    s.release('fsReadBatch');
+    assert.equal(String.fromCharCode((await first).pages[0][0]), 'b', 'the page its asker was answered');
+    const again = await s.view.pages(`${ROOT}/f`, revision, size, 0, 0);
+    assert.equal(String.fromCharCode(again.pages[0][0]), 'c', 'the page read now');
+  },
   async 'a learned name under a directory a peer made unsearchable is refused after the barrier'() {
     const s = await storeSession({ d: null, 'd/f': 'f', other: 'o' });
     assert.notEqual(await s.fs.stat(k('d/f')), null);

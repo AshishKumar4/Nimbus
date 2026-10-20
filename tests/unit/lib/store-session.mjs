@@ -22,6 +22,22 @@ export const ROOT = 'home/user';
 /** The absolute path of `p` under the user's home. */
 export const k = (p) => `/${ROOT}/${p}`;
 
+/** One incarnation of the session, holding `tree` under the user's home. */
+async function incarnation(tree) {
+  const harness = createSqliteVfsTestHarness();
+  const files = new ProcessFiles(new SqliteVFS(harness.sql, harness.ctx));
+  const kernel = files.bind({ pid: 1, cred: CRED_KERNEL });
+  const authority = files.bind({ pid: 2, cred: USER });
+  for (const dir of ['/home', `/${ROOT}`]) await kernel.mkdir(dir, { recursive: true });
+  await kernel.chown(`/${ROOT}`, 1000, 1000);
+  for (const [path, content] of Object.entries(tree)) {
+    if (content === null) await kernel.mkdir(k(path), { recursive: true });
+    else await kernel.writeFile(k(path), enc.encode(content));
+    await kernel.chown(k(path), 1000, 1000);
+  }
+  return { kernel, authority };
+}
+
 /**
  * A session with `tree` (path → content, or null for a directory) under the
  * user's home, and the resident filesystem over a store: listed on demand,
@@ -32,23 +48,21 @@ export const k = (p) => `/${ROOT}/${p}`;
  * paths and each read's. `delegated`: the process is a delegation's holder
  * (its waves and grants through the same session), which asks a read lease
  * with each barrier; it takes no subtree, so each change it makes is one
- * outside a grant.
+ * outside a grant. `incarnate(tree)` starts the session again (its next
+ * incarnation: another epoch, its revisions counted from the start) holding
+ * `tree`; `kernel` and `authority` are always the session's current ones.
  * @param {Record<string, string | null>} tree
  * @param {{ eager?: boolean, unlisted?: string[], delegated?: boolean }} [options]
  */
 export async function storeSession(tree, { eager = false, unlisted = [], delegated = false } = {}) {
-  const harness = createSqliteVfsTestHarness();
-  const engine = new SqliteVFS(harness.sql, harness.ctx);
-  const files = new ProcessFiles(engine);
-  const kernel = files.bind({ pid: 1, cred: CRED_KERNEL });
-  const authority = files.bind({ pid: 2, cred: USER });
-  for (const dir of ['/home', `/${ROOT}`]) await kernel.mkdir(dir, { recursive: true });
-  await kernel.chown(`/${ROOT}`, 1000, 1000);
-  for (const [path, content] of Object.entries(tree)) {
-    if (content === null) await kernel.mkdir(k(path), { recursive: true });
-    else await kernel.writeFile(k(path), enc.encode(content));
-    await kernel.chown(k(path), 1000, 1000);
-  }
+  let current = await incarnation(tree);
+  /** @type {any} */
+  const authority = new Proxy({}, {
+    get: (_target, name) => {
+      const value = current.authority[name];
+      return typeof value === 'function' ? value.bind(current.authority) : value;
+    },
+  });
   const holds = new Set();
   /** @type {Map<string, number>} */
   const failing = new Map();
@@ -131,8 +145,10 @@ export async function storeSession(tree, { eager = false, unlisted = [], delegat
     isHomeRoot: (key) => key === ROOT,
   }) : undefined);
   return {
-    kernel,
+    get kernel() { return current.kernel; },
     authority,
+    /** The session starts again, holding `next`. */
+    async incarnate(next) { current = await incarnation(next); },
     store,
     view,
     fs,
