@@ -54,7 +54,11 @@ import { installPathExecResolver } from '../shell/exec-dispatch.js';
 import { adoptCtxExports, composeFabric } from '@nimbus-sh/platform/composition.js';
 import { createSupervisorOpHandler } from './supervisor-op.js';
 import { NamedShells, SHELLS_TABLE } from './named-shells.js';
-export { parseShellState, parseVariableAttributes } from './named-shells.js';
+export { parseShellState, parseVariableAttributes, TerminalNameSchema } from './named-shells.js';
+/** Where a named terminal's history is kept unless it names a file of its own. */
+function terminalHistory(home, name) {
+    return `${home}/.local/state/nimbus/terminals/${name}.history`;
+}
 /**
  * A durable filesystem and a shell over it.
  *
@@ -527,13 +531,53 @@ export class NimbusWorkspace {
      * files, and either may name a command the host has yet to supply.
      */
     async start() {
+        await this.startShell(this.shell);
+    }
+    /** A terminal's shell started as the workspace's is: its login files, then its first prompt. */
+    async startShell(shell) {
         // Sources /etc/profile and the first user rc file it finds, then prompts.
-        const started = this.shell.start();
+        const started = shell.start();
         // Nimbus's own rc file, which the shell's list predates.
-        await this.shell.sourceFile(`${this.shell.getEnv().HOME ?? DEFAULT_HOME}/.nimbusrc`);
+        await shell.sourceFile(`${shell.getEnv().HOME ?? DEFAULT_HOME}/.nimbusrc`);
         // Settled only once the shell has prompted, so a host that awaits this
         // can hand the shell input that belongs after the prompt.
         await started;
+    }
+    /**
+     * The named terminal `name`'s shell, for its own process `pid`: where it
+     * last was (its saved state), else where the workspace started, with its
+     * history in a file of its own (HISTFILE, unexported, as bash's is) unless
+     * it names one.
+     */
+    async terminalShell(name, pid) {
+        const shell = this.shellFor(pid, this.namedShells.terminalState(name) ?? { cwd: this.fs.cwd });
+        const env = shell.getEnv();
+        if (env.HISTFILE === undefined) {
+            const history = terminalHistory(env.HOME ?? DEFAULT_HOME, name);
+            await shell.getVfs().mkdir(history.slice(0, history.lastIndexOf('/')), { recursive: true });
+            env.HISTFILE = history;
+        }
+        return shell;
+    }
+    /** Save where the named terminal `name`'s shell is now: its cwd and variables. */
+    saveTerminalShell(name, shell) {
+        this.namedShells.saveTerminalState(name, { cwd: shell.getCwd(), env: shell.getEnv(), vars: shell.getVariableAttributes() });
+    }
+    /** The named terminal `name`'s saved state forgotten, and the history file it was given removed. */
+    async forgetTerminalShell(name) {
+        const saved = this.namedShells.terminalState(name);
+        this.namedShells.forgetTerminal(name);
+        const history = saved?.env.HISTFILE;
+        if (history !== undefined && history === terminalHistory(saved?.env.HOME ?? DEFAULT_HOME, name))
+            await this.fs.remove(history, { force: true });
+    }
+    /** The named terminals with saved state. */
+    terminalNames() {
+        return this.namedShells.terminalNames();
+    }
+    /** Where the named terminal `name`'s shell was last saved, or null. */
+    terminalState(name) {
+        return this.namedShells.terminalState(name);
     }
     /**
      * Files, directories and bytes this workspace occupies.

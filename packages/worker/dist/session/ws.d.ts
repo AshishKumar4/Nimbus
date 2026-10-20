@@ -32,7 +32,9 @@
  * `host as any` patterns where required (here only `safePersistRing`
  * touches ctx.waitUntil; uses `(host.ctx as any)` cast).
  */
+import type { NamedTerminals } from './named-terminals.js';
 import { type FsWatchSub } from './fs-watch.js';
+import { z } from 'zod/v4';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
@@ -45,7 +47,9 @@ import type { Kernel, Shell } from '@nimbus-sh/core/substrate/lifo/index.js';
  * drop `private` on the class. `ctx` NOT on the interface (D1).
  */
 export interface WsHost {
-    dispatchTerminalInput(frame: string): void;
+    dispatchTerminalInput(frame: string, terminal?: string): void;
+    readonly terminals: NamedTerminals;
+    ensureRuntimeReady(): Promise<void>;
     sqliteFs: SqliteVFS | null;
     /** The session's namespace and process bindings (fs-watch watches the namespace). */
     getFilesystemAuthority(): ProcessFiles;
@@ -150,6 +154,17 @@ interface WsAttachment {
     clientId?: string;
     pid?: number;
 }
+export declare const TerminalMessageSchema: z.ZodObject<{
+    type: z.ZodString;
+    data: z.ZodOptional<z.ZodString>;
+    submissionId: z.ZodOptional<z.ZodString>;
+    cols: z.ZodOptional<z.ZodNumber>;
+    rows: z.ZodOptional<z.ZodNumber>;
+    path: z.ZodOptional<z.ZodString>;
+    content: z.ZodOptional<z.ZodString>;
+    dir: z.ZodOptional<z.ZodString>;
+    recursive: z.ZodOptional<z.ZodBoolean>;
+}, z.core.$loose>;
 export declare function wsKind(ws: WebSocket): WsAttachment;
 export declare function wsMessage(self: WsHost, ws: WebSocket, message: string | ArrayBuffer): Promise<void>;
 export declare function terminalInput(self: Pick<WsHost, 'terminal' | 'shell'>, frame: string, terminalId: string): Promise<void>;

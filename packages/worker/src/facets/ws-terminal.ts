@@ -103,7 +103,16 @@ export class WebSocketTerminal {
   get cols(): number { return this._cols; }
   get rows(): number { return this._rows; }
 
+  /** ITerminal.writes. */
+  private written = 0;
+  private lineEnded = true;
+  get writes(): number { return this.written; }
+  get endsLine(): boolean { return this.lineEnded; }
+
   write(data: string): void {
+    if (data.length === 0) return;
+    this.written++;
+    this.lineEnded = data.endsWith('\n');
     this.buffer.push(data);
     if (!this.flushScheduled) {
       this.flushScheduled = true;

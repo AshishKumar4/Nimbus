@@ -283,6 +283,10 @@ async function dispatchRemoteRpc(ctx) {
             return ctx.stub._rpcListProcesses();
         case 'killProcess':
             return ctx.stub._rpcKillProcess(numberArg(args[0], 'pid'));
+        case 'listTerminals':
+            return ctx.stub._rpcListTerminals();
+        case 'closeTerminal':
+            return ctx.stub._rpcCloseTerminal(stringArg(args[0], 'name'));
         case 'writeProcessInput':
             return ctx.stub._rpcWriteProcessInput(numberArg(args[0], 'pid'), stringArg(args[1], 'data'));
         case 'endProcessInput':

@@ -3,19 +3,23 @@ import { TokenKind } from './types.js';
 const MAX_HISTORY = 1000;
 export class HistoryManager {
     filesystem;
-    home;
+    file;
     entries = [];
     loaded;
-    constructor(filesystem, home) {
+    /** `file`: where the history is kept (bash's HISTFILE); empty, nowhere. */
+    constructor(filesystem, file) {
         this.filesystem = filesystem;
-        this.home = home;
+        this.file = file;
     }
     async load() {
         return this.loaded ??= this.readHistory();
     }
     async readHistory() {
+        const file = this.file();
+        if (file === '')
+            return;
         try {
-            const content = await this.filesystem().readFileString(`${this.home()}/.bash_history`);
+            const content = await this.filesystem().readFileString(file);
             this.entries = content.split('\n').filter(Boolean);
         }
         catch (error) {
@@ -25,7 +29,9 @@ export class HistoryManager {
         }
     }
     async save() {
-        await this.filesystem().writeFile(`${this.home()}/.bash_history`, this.entries.join('\n') + '\n');
+        const file = this.file();
+        if (file !== '')
+            await this.filesystem().writeFile(file, this.entries.join('\n') + '\n');
     }
     async add(line) {
         await this.load();

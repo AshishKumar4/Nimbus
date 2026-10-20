@@ -112,6 +112,8 @@ export class HostedSession extends RpcTarget {
     _rpcListRuntimes() { return operations.rpcListRuntimes(this.#client()); }
     _rpcListProcesses() { return operations.rpcListProcesses(this.#client()); }
     _rpcKillProcess(pid) { return operations.rpcKillProcess(this.#client(), pid); }
+    _rpcListTerminals() { return operations.rpcListTerminals(this.#client()); }
+    _rpcCloseTerminal(name) { return operations.rpcCloseTerminal(this.#client(), name); }
     _rpcWriteProcessInput(pid, data) { return operations.rpcWriteProcessInput(this.#client(), pid, data); }
     _rpcEndProcessInput(pid) { return operations.rpcEndProcessInput(this.#client(), pid); }
     _rpcResizeProcess(pid, size) { return operations.rpcResizeProcess(this.#client(), pid, size); }

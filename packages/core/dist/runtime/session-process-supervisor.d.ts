@@ -43,6 +43,8 @@ export interface ProcessSpawnOptions {
     cred?: VfsCred;
     /** The exec id of a process that does not take its parent's (`ProcessEntry.execId`). */
     execId?: string;
+    /** The controlling terminal of a process that does not take its parent's (`ProcessEntry.terminal`): a terminal's shell. */
+    terminal?: string;
     /** The process this one restarts (`ProcessEntry.restartedFrom`). */
     restartedFrom?: ProcessRestart;
 }
@@ -238,6 +240,12 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
     maySignal(caller: Readonly<VfsCred>, pid: number): boolean;
     /** {@link kill}, as `caller`: refused with EPERM where {@link maySignal} refuses it (isKillRefusal). */
     killAs(caller: Readonly<VfsCred>, pid: number, exitCode?: number, reason?: SignalAbortReason): boolean;
+    /** `pid`'s controlling terminal (ProcessEntry.terminal), or undefined when it has none or is not in the table. */
+    terminalOf(pid: number): string | undefined;
+    /** A shell made before its terminal takes it as its controlling terminal (ProcessTable.setTerminal). */
+    setControllingTerminal(pid: number, terminal: string): void;
+    /** The running processes whose controlling terminal is `terminal`: what closing it hangs up. */
+    onTerminal(terminal: string): ProcessEntry[];
     /** `pid` and the processes above it, nearest first, as the table has them now. */
     lineage(pid: number): number[];
     liveCred(pid: number): VfsCred;

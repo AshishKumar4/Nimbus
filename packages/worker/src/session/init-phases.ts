@@ -113,7 +113,7 @@ export function joinExistingSession(
     _b4Phase: SessionState | null;
     _b4WarmJoinCount: number;
   },
-  shell: { announcePrompt(): void },
+  shell: { resumePrompt(): void },
   terminal: { attach(ws: WebSocket, onFlush?: (data: string) => void): void; replay(s: string): void },
   ws: WebSocket,
   tee: (frame: string) => void,
@@ -138,7 +138,7 @@ export function joinExistingSession(
   } catch (e: any) {
     try { console.warn("[B'.3] scrollback replay failed:", e?.message || e); } catch {}
   }
-  shell.announcePrompt();
+  shell.resumePrompt();
 
   // Phase O is SKIPPED on warm rejoin (just like warm path of
   // initSession). The original cold-start banner is in the replay.

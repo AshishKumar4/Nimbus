@@ -8,6 +8,8 @@ interface ShellLike {
     queuePasteInput(data: string, submission?: ShellInputSubmission): void;
     rejectQueuedInput(): void;
     redrawLine(): void;
+    /** Its line editor has just painted itself (Shell.markEditor). */
+    markEditor(): void;
     running: boolean;
     readonly history: readonly string[];
     lineBuffer: string;

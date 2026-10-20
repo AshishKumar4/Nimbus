@@ -71,6 +71,8 @@ export class Shell {
     savedLine = '';
     // Running command
     running = false;
+    /** The line it is running, while it runs one: a terminal list's foreground. */
+    foreground = null;
     abortController = null;
     terminalStdin = null;
     stdinLineBuffer = '';
@@ -92,6 +94,8 @@ export class Shell {
     activeInput;
     lineInputs = [];
     promptMode = 'unprinted';
+    /** The terminal's write count when the line editor last painted itself (ITerminal.writes); -1 before. */
+    editorMark = -1;
     exitNotices = new Map();
     exitNoticeSource;
     renderExitNotice;
@@ -123,7 +127,8 @@ export class Shell {
             shellEnv['0'] = 'nimbus-sh';
         shellEnv['$'] = String(this.commandIdentity.pid);
         // Initialize history manager
-        this.historyManager = new HistoryManager(() => this.vfs, () => this.state.env.HOME ?? DEFAULT_HOME);
+        // bash's HISTFILE (empty: no history file), else its default.
+        this.historyManager = new HistoryManager(() => this.vfs, () => this.state.env.HISTFILE ?? `${this.state.env.HOME ?? DEFAULT_HOME}/.bash_history`);
         this.builtins = shellBuiltins({
             vfs: () => this.vfs,
             registry,
@@ -502,6 +507,9 @@ export class Shell {
         this.exitNotices.clear();
         this.terminal.write(PROMPT_START + formatShellPrompt(this.state.env, this.state.getCwd()) + PROMPT_END);
         this.promptMode = 'primary';
+        // A fresh prompt is the editor's first row, whatever row a pasted line wrapped to.
+        this.screenCursorRow = 0;
+        this.markEditor();
         this.announcePrompt();
         const submission = this.lineSubmission;
         this.lineSubmission = undefined;
@@ -510,6 +518,41 @@ export class Shell {
             input.prompt();
             release();
         }
+    }
+    /** Whether the line editor is the last thing on the screen: nothing was written after it painted itself. */
+    get atPrompt() {
+        return this.terminal.writes !== undefined && this.terminal.writes === this.editorMark;
+    }
+    /** The line editor has just painted itself (a prompt, the line being edited, a search): the last thing on the screen. */
+    markEditor() {
+        this.editorMark = this.terminal.writes ?? -1;
+    }
+    /** A write of the editor's that paints nothing new (a cursor move, a bell): the editor stays last if it was. */
+    editorWrite(text) {
+        const last = this.atPrompt;
+        this.terminal.write(text);
+        if (last)
+            this.markEditor();
+    }
+    /**
+     * A screen attached again, its stored output replayed: an idle shell whose
+     * line editor is not the last thing on it (a job wrote after the prompt)
+     * paints a fresh prompt, with the line being typed, on a line of its own
+     * below that output; otherwise nothing is painted, and the client learns
+     * the shell's readiness. A running command, a continuation prompt or a
+     * REPL is never given a shell prompt.
+     */
+    resumePrompt() {
+        if (this.running || this.promptMode !== 'primary' || this.atPrompt) {
+            this.announcePrompt();
+            return;
+        }
+        if (this.terminal.endsLine === false)
+            this.terminal.write('\r\n');
+        this.screenCursorRow = 0;
+        this.printPrompt();
+        // The editor as it is: the line being typed, or a search (LineEditorExtender) over the prompt.
+        this.redrawLine();
     }
     /** A newly attached client learns current readiness, never a replayed completion. */
     announcePrompt() {
@@ -736,7 +779,7 @@ export class Shell {
         const currentWord = this.lineBuffer.slice(result.replacementStart, result.replacementEnd);
         if (result.completions.length === 0) {
             // No completions -- bell
-            this.terminal.write('\x07');
+            this.editorWrite('\x07');
             return;
         }
         if (result.completions.length === 1) {
@@ -760,11 +803,11 @@ export class Shell {
             this.terminal.write('\r\n');
             this.writeToTerminal(result.completions.join('  ') + '\n');
             this.printPrompt();
-            this.terminal.write(this.lineBuffer);
+            this.editorWrite(this.lineBuffer);
             // Move cursor to correct position
             const diff = this.lineBuffer.length - this.cursorPos;
             if (diff > 0) {
-                this.terminal.write(`\x1b[${diff}D`);
+                this.editorWrite(`\x1b[${diff}D`);
             }
             this.tabCount = 0;
         }
@@ -878,7 +921,8 @@ export class Shell {
      */
     writeNotice(text) {
         if (this.running) {
-            this.terminal.write(text);
+            // A line of its own, after whatever the command left unfinished.
+            this.terminal.write(this.terminal.endsLine === false ? `\r\n${text}` : text);
             return;
         }
         if (this.screenCursorRow > 0)
@@ -927,6 +971,7 @@ export class Shell {
         }
         // Track where we left the cursor
         this.screenCursorRow = desiredRow;
+        this.markEditor();
     }
     /**
      * Replay buffered type-ahead through the line editor. Stops the moment a
@@ -971,25 +1016,25 @@ export class Shell {
     moveCursorLeft() {
         if (this.cursorPos > 0) {
             this.cursorPos--;
-            this.terminal.write('\x1b[D');
+            this.editorWrite('\x1b[D');
         }
     }
     moveCursorRight() {
         if (this.cursorPos < this.lineBuffer.length) {
             this.cursorPos++;
-            this.terminal.write('\x1b[C');
+            this.editorWrite('\x1b[C');
         }
     }
     moveCursorHome() {
         if (this.cursorPos > 0) {
-            this.terminal.write(`\x1b[${this.cursorPos}D`);
+            this.editorWrite(`\x1b[${this.cursorPos}D`);
             this.cursorPos = 0;
         }
     }
     moveCursorEnd() {
         const diff = this.lineBuffer.length - this.cursorPos;
         if (diff > 0) {
-            this.terminal.write(`\x1b[${diff}C`);
+            this.editorWrite(`\x1b[${diff}C`);
             this.cursorPos = this.lineBuffer.length;
         }
     }
@@ -1069,6 +1114,7 @@ export class Shell {
         // History expansion
         const expanded = this.historyManager.expand(line);
         const actualLine = expanded ?? line;
+        this.foreground = actualLine;
         if (expanded !== null) {
             // Show the expanded command
             this.writeToTerminal(actualLine + '\n');
@@ -1112,6 +1158,7 @@ export class Shell {
             this.stdinLineBuffer = '';
             this.stdinCursorPos = 0;
             this.running = false;
+            this.foreground = null;
             this.abortController = null;
             this.terminal.write(commandEnd(status));
             execution?.finish(status);

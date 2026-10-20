@@ -36,9 +36,9 @@ export interface HostedSessionScope {
   readonly cred?: VfsCred;
 }
 
-export interface HostedSessionOwner extends operations.ProgrammaticHost {
+export type HostedSessionOwner = operations.ProgrammaticHost & operations.TerminalsHost & {
   noteClientActivity(): void;
-}
+};
 
 export class HostedSession extends RpcTarget implements SessionRpc {
   private readonly scope: HostedSessionScope | null;
@@ -134,6 +134,8 @@ export class HostedSession extends RpcTarget implements SessionRpc {
 
   _rpcListProcesses() { return operations.rpcListProcesses(this.#client()); }
   _rpcKillProcess(pid: number) { return operations.rpcKillProcess(this.#client(), pid); }
+  _rpcListTerminals() { return operations.rpcListTerminals(this.#client()); }
+  _rpcCloseTerminal(name: string) { return operations.rpcCloseTerminal(this.#client(), name); }
   _rpcWriteProcessInput(pid: number, data: string) { return operations.rpcWriteProcessInput(this.#client(), pid, data); }
   _rpcEndProcessInput(pid: number) { return operations.rpcEndProcessInput(this.#client(), pid); }
   _rpcResizeProcess(pid: number, size: SessionTerminalSize) { return operations.rpcResizeProcess(this.#client(), pid, size); }
