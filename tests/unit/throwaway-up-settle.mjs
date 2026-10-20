@@ -92,8 +92,8 @@ try {
   // `wrangler preview` stands in reporting a deployment, as the real one prints it, numbered by the uploads.
   writeFileSync(join(checkout, 'node_modules/.bin/wrangler'), `#!/bin/sh
 [ "$1" = preview ] || exit 1
-n=$(( $(cat uploads 2>/dev/null || echo 0) + 1 ))
-echo $n > uploads
+n=$(( $(cat '${join(checkout, 'uploads')}' 2>/dev/null || echo 0) + 1 ))
+echo $n > '${join(checkout, 'uploads')}'
 echo '{"deployment":{"id":"deployment-uploaded-'$n'"},"preview":{"urls":["https://${PREVIEW}-nimbus-probe-previews.proof.workers.dev"]}}'
 `);
   chmodSync(join(checkout, 'node_modules/.bin/wrangler'), 0o755);
