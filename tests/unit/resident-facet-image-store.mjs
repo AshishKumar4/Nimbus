@@ -95,14 +95,14 @@ for (const [module, member] of Object.entries(world.bootSpecs.at(-1).code.assetM
   assert.equal(storedImages().includes(member.source.sha256 + '.js'), false, 'a library is not written as a process image');
 }
 
-// The image holds what its process could read (a 0600 file of its user's
-// among them): no other account can find one. Its boot reads it by name.
+// The image is the kernel's alone: its boot reads it as the kernel, and it
+// holds what its process could read (a 0600 file of its user's among them),
+// which no other account may.
 const meta = fs.lstat(imageA.replace(/^\/+/, ''));
 assert.equal(meta.uid, CRED_KERNEL.uid, 'the image belongs to the kernel, not to the program it encodes');
-const other = sessionVfs.as({ uid: 1001, gid: 1001, groups: [1001], umask: 0o022 });
-assert.throws(() => other.readdir(PROCESS_IMAGE_DIR), /EACCES/, 'another account cannot list the images');
-assert.equal(new TextDecoder().decode(sessionVfs.as({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }).readFile(imageA.replace(/^\/+/, ''))).length > 0, true,
-  'a process reads its own by name, as a peer host\'s boot does');
+assert.equal(fs.lstat(PROCESS_IMAGE_DIR).mode & 0o077, 0, 'and its directory admits no other account');
+assert.throws(() => sessionVfs.as({ uid: 1001, gid: 1001, groups: [1001], umask: 0o022 }).readFile(imageA.replace(/^\/+/, '')), /EACCES/,
+  'so another account cannot read it');
 
 // ── identical program, identical image ─────────────────────────────────────
 const afterA = storedImages();

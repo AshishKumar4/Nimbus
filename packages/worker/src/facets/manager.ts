@@ -5441,9 +5441,6 @@ function relaunchInterpreter(stored: unknown, base: Record<string, string>): { s
   };
 }
 
-/** The process image directory: the kernel lists and writes it; every account may pass through it to a name it knows. */
-const IMAGE_DIR_MODE = 0o711;
-
 /** A relaunch's environment carrying its record's restart policy: Nimbus's own setting, which the host's answer need not. */
 function withRestartPolicy(env: Record<string, string>, restart: ResidentRestartPolicy | undefined): Record<string, string> {
   return restart === 'on-failure' ? { ...env, [RESTART_POLICY_ENV]: 'on-failure' } : env;
@@ -6249,15 +6246,14 @@ export class FacetManager {
     const fs = this._kernelStoreFor(pid);
     const at = (path: string) => `/${stripLeadingSlashes(path)}`;
     return {
-      // Listed by the kernel alone: an image holds what its process could
-      // read (its prefetched files, a 0600 one among them), which no other
-      // account may find (ask 62). A process reads its own by name (a peer
-      // host's boot reads as the process): the name is the digest of what
-      // the image holds, known only to whoever knows the bytes. A directory
-      // an earlier release left listable is closed as it is used.
+      // The kernel's alone: a boot reads its images as the kernel
+      // (_residentDisk's readImage), and an image holds what its process
+      // could read (its prefetched files, a 0600 one among them), which no
+      // other account may (ask 62). A directory an earlier release made
+      // open to every account is closed as it is used.
       mkdirp: (dir) => {
-        fs.mkdir(at(dir), { recursive: true, mode: IMAGE_DIR_MODE });
-        if (((fs.stat(at(dir), { followSymlinks: false })?.mode ?? 0) & 0o777) !== IMAGE_DIR_MODE) fs.chmod(at(dir), IMAGE_DIR_MODE);
+        fs.mkdir(at(dir), { recursive: true, mode: 0o700 });
+        if (((fs.stat(at(dir), { followSymlinks: false })?.mode ?? 0) & 0o077) !== 0) fs.chmod(at(dir), 0o700);
       },
       sizeOf: (path) => fs.stat(at(path), { followSymlinks: false })?.size ?? null,
       writeFile: (path, bytes) => { fs.writeFile(at(path), bytes); },

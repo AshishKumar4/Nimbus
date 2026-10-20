@@ -224,12 +224,11 @@ export type ResidentBootSpec =
  * would be swept into the next snapshot — and that snapshot is what produced
  * the image, so each spawn would grow the thing it just wrote.
  *
- * Listed by the kernel alone: the generator writes as CRED_KERNEL, and an
- * image holds what its process could read, files of its user's that no
- * other account may, so no other account can find one. A boot reads its
- * images by name (as the kernel, or on a peer as the process): the name is
- * the digest of the bytes, known only to whoever knows them. The user whose
- * program an image encodes cannot rewrite it. Below `/.nimbus`, the
+ * The kernel's alone: the generator writes as CRED_KERNEL, a boot reads as
+ * it (ResidentDiskReader.readImage), and the directory admits no other
+ * account. An image holds what its process could read, files of its user's
+ * that no other account may, so no other account reads an image; and the
+ * user whose program it encodes cannot rewrite it. Below `/.nimbus`, the
  * kernel's own directory in root's `/`: no user can replace a directory on
  * the way to it (KERNEL_STORE_ROOT, manager.ts).
  */
