@@ -16,6 +16,7 @@ import { concatBytes, nameDec } from '../_shared/bytes.js';
 import type { CredentialedVfs } from '../vfs/sqlite-vfs.js';
 import { SYSCALL_VERDICTS, errnoCodeOf, vfsError, type VfsErrorCode } from '../vfs/vfs-error.js';
 import { parentKey } from '../vfs/path.js';
+import { recallOf } from '../vfs/recall.js';
 import {
   CALL_GROUP_BYTES,
   CALL_GROUP_OPS,
@@ -958,6 +959,8 @@ export class WaveIngest {
           // Not kept: the op is unanswered, and a re-send applies it again.
         }
       }
+      // A delegation to recall, its op not refused for good: a re-send applies it once the recall is over.
+      const recall = recallOf(error) !== null && progress.sequence?.refused === undefined;
       return {
         ok: false,
         ...progress,
@@ -966,6 +969,7 @@ export class WaveIngest {
           phase,
           message: error instanceof Error ? error.message : String(error),
           ...(errno === undefined ? {} : { errno }),
+          ...(recall ? { recall: true as const } : {}),
         },
       };
     } finally {
