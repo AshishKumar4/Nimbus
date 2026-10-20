@@ -42,14 +42,15 @@ const TSRS_WASM_ASSET = stagedAsset({
   requiredBy: 'tsc', stagedBy: 'scripts/bundle-tsrs-wasm.mjs',
 });
 
-/** tsrs.wasm, read (and verified against its pin) when a worker is built for it. */
-export function tsrsImage(env: StagedSourceEnv): FacetImage {
+/** tsrs.wasm, read from `env`'s ASSETS (and verified against its pin) when a worker is built for it. */
+export function tsrsImage(env: unknown): FacetImage {
+  const assets: StagedSourceEnv = { ASSETS: Reflect.get(Object(env), 'ASSETS') };
   return {
     path: TSRS_WASM_ASSET_PATH,
     identity: `sha256:${TSRS_WASM_SHA256}`,
     size: TSRS_WASM_BYTES,
     peak: TSRS_WASM_BYTES,
-    read: async () => new Uint8Array(await fetchStagedBytes(env, TSRS_WASM_ASSET)),
+    read: async () => new Uint8Array(await fetchStagedBytes(assets, TSRS_WASM_ASSET)),
   };
 }
 
