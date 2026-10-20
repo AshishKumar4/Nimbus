@@ -21,6 +21,7 @@
 import assert from 'node:assert/strict';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { resolveDurableWorkerImage } from '../../packages/worker/src/facets/durable-images.ts';
+import { reservePort } from '../../packages/worker/src/session/port-capability.ts';
 import { launchManager } from './lib/facet-launch-harness.mjs';
 import { importWorkerBundle } from './lib/worker-bundle.mjs';
 
@@ -65,6 +66,7 @@ const turns = async () => { for (let i = 0; i < 200; i++) await new Promise((res
 
 // ── 1. through the port ─────────────────────────────────────────────────────
 {
+  await reservePort(ctx, { owner: 'slate-app', preferredPort: PORT, occupiedPorts: new Set() });
   const { pid } = await manager.spawnWorker('export class NimbusProcess {}', 'slate app', '/home/user', {
     port: PORT, durable: { owner: 'slate-app' },
   });
