@@ -1251,8 +1251,10 @@ export class NimbusSession extends CloudflareDurableObject {
             }
         })();
     }
+    // Watched while the command it submits runs here (thread-stalls.ts): a built-in command on a large tree is the session's own slice.
     _rpcTerminalInput(frame, terminalId) {
-        return terminalInput(this, frame, terminalId);
+        const watched = holdThreadWatch(this.ctx, 'terminal input');
+        return terminalInput(this, frame, terminalId).finally(watched);
     }
     async webSocketMessage(ws, message) {
         const { kind } = wsKind(ws);
