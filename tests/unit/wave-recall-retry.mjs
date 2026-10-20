@@ -41,9 +41,11 @@ await runScenarios(import.meta.path, {
     const { engine, asked, open } = await parkedBatches((authority) => {
       authority.kfs.mkdir('home/user/app/d/e', { recursive: true, mode: 0o755 });
       authority.kfs.mkdir('home/user/app/x', { mode: 0o755 });
+      authority.kfs.writeFile('home/user/app/x/h', 'h');
+      authority.kfs.writeFile('home/user/app/top', 't');
     });
-    // Listed, so a call that cannot wait may make a name there.
-    await engine.fs.readdir(`${APP}/d`);
+    await engine.stat(`${APP}/x/h`);
+    await engine.fs.readFile(`${APP}/top`);
     // The read lease is the process's at the session once the batch is asked; it learns of it with the batch's answer.
     const opening = engine.fs.open(`${APP}/d`, { read: true, directory: true });
     await until(() => asked() > 0, 'the directory batch asked');
