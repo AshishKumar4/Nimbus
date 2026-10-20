@@ -106,6 +106,17 @@ const FOUND = {
   'a directory read through its descriptor after an own rename into it, its wave not yet sent, lists the name the rename made (2896)': {
     schedule: [['stall'], ['sync', 'rename', 'd/e/g', 'x/f'], ['own', 'opendir', 'x']],
   },
+  'a file renamed over another, its rename on its way, reads as the renamed file (3104)': {
+    schedule: [['own', 'rename', 'd/e/g', 'top'], ['sync', 'readFile', 'top']],
+  },
+  'a file renamed over another, its rename answered, reads as the renamed file (3104, awaited)': {
+    // A WASI guest's awaited rename outside a grant shows to its next call that cannot wait only after a barrier (O9).
+    engines: ['node'],
+    schedule: [['own', 'rename', 'd/e/g', 'top'], ['settle'], ['sync', 'readFile', 'top'], ['sync', 'stat', 'top']],
+  },
+  'a file the process renamed into place reads as a peer later wrote it (3219)': {
+    schedule: [['own', 'write', 'new', 'c3219.3'], ['own', 'rename', 'new', 'top'], ['peer', 'write', 'top', 'c3219.5']],
+  },
   'a file a call that cannot wait missed stays a miss until an awaited read answers it': {
     engines: ['node'],
     schedule: [['peer', 'write', 'new', 'not resident'], ['settle'], ['input'], ['settle'], ['sync', 'readFile', 'new'], ['own', 'stat', 'new'], ['settle']],
@@ -114,6 +125,11 @@ const FOUND = {
 
 /** Known gaps, by scenario: what the engine lacks, and what its failure shows. */
 const GAPS = {
+  'a file the process renamed into place reads as a peer later wrote it (3219) [node]': {
+    lacks: 'S dates a moved file\'s bytes only by a write parked under its old name: bytes held otherwise (read, or written and already sent) stay its own at the new name past every barrier, as no rename has a receipt to date them by (closed by the cutover: RF retires own state by identity); '
+      + 'meanwhile, in a program that renames a file it had read (or written and already sent), then another process overwrites it, readFileSync keeps serving the program\'s own bytes',
+    shows: 'at rest, sync readFile top answered "c3219.3"',
+  },
   'an awaited chmod outside a grant is what the next call that cannot wait reads [holder]': {
     lacks: 'O9: an awaited mutation outside a grant is decided by the provisional decisions (the cutover)',
     shows: 'sync stat top answered file 644',
@@ -257,6 +273,9 @@ async function run(kind, schedule, park) {
 
 /** What the process renamed itself: Node's own renames, run apart so each file stays in the fast tier. */
 const OWN_RENAMES = new Set([
+  'a file renamed over another, its rename on its way, reads as the renamed file (3104)',
+  'a file renamed over another, its rename answered, reads as the renamed file (3104, awaited)',
+  'a file the process renamed into place reads as a peer later wrote it (3219)',
   'a directory read through its descriptor after an own rename into it, its wave not yet sent, lists the name the rename made (2896)',
   'a name the process renamed into place can be renamed again at once',
   'a name the process renamed stays while a later rename of its waits on the session',
