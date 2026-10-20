@@ -48,7 +48,8 @@ export interface BeneathReached {
  */
 export function handedSpelling(handoff: { base: string; rest: readonly string[] } | null, reached: string, trailing: boolean): string {
   if (handoff === null) return reached;
-  return `${handoff.base === '/' ? '' : handoff.base}/${handoff.rest.join('/')}${trailing ? '/' : ''}`;
+  const spelling = `${handoff.base === '/' ? '' : handoff.base}/${handoff.rest.join('/')}`;
+  return trailing && !spelling.endsWith('/') ? spelling + '/' : spelling;
 }
 type BeneathAnswer = { type: string; mode?: number; uid?: number; gid?: number } | string | null;
 
@@ -89,12 +90,13 @@ export function* walkBeneath(
     : reached.length === root.length ? rootSpelling : `${rootSpelling === '/' ? '' : rootSpelling}${reached.slice(root.length)}`);
   if (root !== '') yield { stat: rootSpelling };
   if (name.startsWith('/')) throw fsError('ENOTCAPABLE', 'path', path);
-  const pending = name.split('/').filter(Boolean);
+  const pending = name.split('/');
   const resolved = root === '' ? [] : root.split('/');
   let hops = 0;
   let handoff: { base: string; rest: string[] } | null = null;
   while (pending.length > 0) {
-    const segment = pending.shift()!;
+    const segment = pending.shift();
+    if (segment === undefined) break;
     const dir = resolved.join('/');
     const candidate = dir === '' ? segment : `${dir}/${segment}`;
     const to = '/' + [dir, segment, ...pending].filter(Boolean).join('/');
@@ -105,7 +107,7 @@ export function* walkBeneath(
       if (searched.type !== 'directory') throw fsError('ENOTDIR', 'path', path);
       if (!modeAllows({ ...searched, type: 'directory' }, 1, cred)) throw fsError('EACCES', 'path', path);
     }
-    if (segment === '.') continue;
+    if (segment === '' || segment === '.') continue;
     if (segment === '..') {
       if (dir === root) throw fsError('ENOTCAPABLE', 'path', path);
       resolved.pop();
@@ -131,7 +133,7 @@ export function* walkBeneath(
     // its backend covers it) cannot be followed beneath the root.
     if (target === null) throw fsError('ENOTCAPABLE', 'path', path);
     if (target.startsWith('/')) { resolved.length = 0; fromRoot = false; }
-    pending.unshift(...target.split('/').filter(Boolean));
+    pending.unshift(...target.split('/'));
     // A link followed after a handoff: the rest as written is no longer what is reached.
     handoff = null;
   }

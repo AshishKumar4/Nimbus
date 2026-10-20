@@ -45,6 +45,12 @@ export function resolve(cwd, ...segments) {
     }
     return normalize(result);
 }
+/** A filesystem operand: the walk, not a string reduction, interprets its components. */
+export function operandPath(cwd, operand) {
+    if (operand === '')
+        return cwd;
+    return isAbsolute(operand) ? operand : `${cwd === '/' ? '' : cwd}/${operand}`;
+}
 export function dirname(path) {
     const normalized = normalize(path);
     const lastSlash = normalized.lastIndexOf('/');

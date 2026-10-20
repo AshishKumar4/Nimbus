@@ -1,5 +1,5 @@
 import { parseArgs } from '../../utils/args.js';
-import { resolve } from '../../utils/path.js';
+import { operandPath } from '../../utils/path.js';
 import { statOrThrow } from '../../../../vfs/vfs.js';
 const spec = {
     directory: { type: 'boolean', short: 'd' },
@@ -15,7 +15,7 @@ function randomChars(n) {
 }
 const command = async (ctx) => {
     const { flags, positional } = parseArgs(ctx.args, spec);
-    const dir = flags.tmpdir || '/tmp';
+    const dir = typeof flags.tmpdir === 'string' && flags.tmpdir ? operandPath(ctx.cwd, flags.tmpdir) : '/tmp';
     const template = positional[0] || 'tmp.XXXXXXXXXX';
     // Replace X's at end with random chars
     const xMatch = template.match(/X+$/);
@@ -23,7 +23,7 @@ const command = async (ctx) => {
     const name = xCount > 0
         ? template.slice(0, -xCount) + randomChars(xCount)
         : template + '.' + randomChars(10);
-    const fullPath = resolve(dir, name);
+    const fullPath = operandPath(dir, name);
     try {
         // Ensure parent dir exists
         try {
@@ -38,6 +38,7 @@ const command = async (ctx) => {
         else {
             (await ctx.vfs.writeFile(fullPath, ''));
         }
+        // The name it was made at: a link before a `..` in the directory is walked, not reduced away.
         await ctx.stdout.write(fullPath + '\n');
         return 0;
     }

@@ -5,7 +5,7 @@ import type { NodeFilesystem as VFS, NodeWatch } from './filesystem.js';
 
 import type { RuntimeOpenFlags, RuntimeVfsStat as VfsStat } from '../../../runtime/os-contracts.js';
 import type { VfsEvent } from '../../../vfs/events.js';
-import { resolve, basename } from '../utils/path.js';
+import { operandPath, basename } from '../utils/path.js';
 import { encode, decode } from '../utils/encoding.js';
 import { errnoCodeOf, fsError, isVfsError, type FsError } from '../../../vfs/vfs-error.js';
 import { DIRENT_TYPES, direntTypeOfStat } from '../../../vfs/dirent-type.js';
@@ -147,7 +147,7 @@ function pathText(p: string | URL | Uint8Array): string {
 }
 
 function resolvePath(cwd: string, p: string | URL | Uint8Array): string {
-  return resolve(cwd, pathText(p));
+  return operandPath(cwd, pathText(p));
 }
 
 /** A truncate length as Node takes one (validateInteger, a safe integer), a negative one 0; none is 0. */

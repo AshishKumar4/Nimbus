@@ -1,5 +1,5 @@
 import type { CommandContext } from '../types.js';
-import { resolve, basename } from '../../utils/path.js';
+import { operandPath, basename } from '../../utils/path.js';
 import { isVfsError, VFS_STRERROR } from '../../../../vfs/vfs-error.js';
 
 /** Where cp's or mv's sources go: each source's target, from one look at the destination. */
@@ -27,7 +27,7 @@ export async function resolveCopyTargets(
   const sources = targetDirectory ? positional : positional.slice(0, -1);
   const rawDest = targetDirectory ?? positional[positional.length - 1];
   if (sources.length === 0 || rawDest === undefined) return null;
-  const dest = resolve(ctx.cwd, rawDest);
+  const dest = operandPath(ctx.cwd, rawDest);
   let stat: Awaited<ReturnType<typeof ctx.vfs.stat>>;
   try {
     stat = await ctx.vfs.stat(dest);
@@ -40,5 +40,5 @@ export async function resolveCopyTargets(
   if ((sources.length > 1 || targetDirectory) && !destIsDir) {
     return `target ${targetDirectory ? 'directory ' : ''}'${rawDest}': ${VFS_STRERROR[stat === null ? 'ENOENT' : 'ENOTDIR']}`;
   }
-  return { sources, rawDest, destIsDir, targetFor: (src) => (destIsDir ? resolve(dest, basename(src)) : dest) };
+  return { sources, rawDest, destIsDir, targetFor: (src) => (destIsDir ? operandPath(dest, basename(src)) : dest) };
 }

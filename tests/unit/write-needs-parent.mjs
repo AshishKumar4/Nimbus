@@ -31,6 +31,9 @@ for (const dir of ['/home/user', '/mnt/m']) {
   const fs = ws.filesystem.bind({ pid: dir === '/mnt/m' ? 71 : 70, cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 } });
   assert.equal(await code(() => fs.writeFile(`${dir}/p/q.txt`, 'x')), 'ENOENT');
   assert.equal(await code(() => fs.open(`${dir}/p/q.txt`, { write: true, create: true })), 'ENOENT');
+  await assert.rejects(async () => fs.writeFile(`${dir}/missing/../not-created.txt`, 'x'),
+    { code: 'ENOENT', syscall: 'write', path: `${dir}/missing/../not-created.txt` },
+    'a missing component is checked before reduction, on a mount as on SQLite');
   await fs.writeFile(`${dir}/p/q.txt`, 'x', { createParents: true });
   assert.equal(await readText(ws.fs, `${dir}/p/q.txt`), 'x');
 }
