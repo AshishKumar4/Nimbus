@@ -18,14 +18,14 @@ import {
 } from '@nimbus-sh/core/_shared/primordials.js';
 import type { FsReadBatchRequest } from '../../session/rpc.js';
 import type { Admission } from './admission.js';
-import type { Cells } from './cells.js';
+import type { Cells, ResidentFill } from './cells.js';
 import { RESIDENT_ROW_BYTES, namespaceRowBytes, residentBytes, residentCellCost } from './cell-cost.js';
 import type { Coherence, Cursor } from './coherence.js';
 import { nsDescribes, nsKey, type Learning, type Namespace } from './namespace.js';
 import { nsName, nsParent } from './namespace-lookup.js';
 import { RESIDENT_CHUNK_BYTES } from '../facet-resident-limits.js';
 import type { ResidentSupervisor } from './supervisor.js';
-import { RK_BINARY, RK_OWN_WRITE, type ResidentTables } from './tables.js';
+import { RK_BINARY, type ResidentTables } from './tables.js';
 
 /**
  * The `fsReadBatch` bounds, as the filler must respect them.
@@ -276,19 +276,12 @@ export function createTransport(coherence: Coherence, admission: Admission, name
     }
 
     // Per-file landed-part counts, so a head row is written only once every
-    // range of that file is in. See cells.putHead.
+    // range of that file is in. See cells.publishFill.
     const landed = new SafeMap<string, number>();
     let filled = 0, failed = 0, fetchedBytes = 0;
     const failedPaths = new SafeSet<string>();
-    /** Paths a later delta or a store started again took from this read: what is held there is not its to judge. */
-    const overtaken = new SafeSet<string>();
-    /** The revision each path is read at. */
-    const revOf = new SafeMap<string, number>();
-    for (let i = 0; i < ranges.length; i++) {
-      const range = ranges[i];
-      revOf.set(range.path, range.rev);
-    }
-
+    /** This read's own: the chunk rows it writes are its while no read started after it writes them too (cells.putChunk). */
+    const fill: ResidentFill = { started: new SafeSet<string>() };
     for (let at = 0; at < ranges.length;) {
       const batch: typeof ranges = new SafeList();
       let bytes = 0;
@@ -347,35 +340,25 @@ export function createTransport(coherence: Coherence, admission: Admission, name
         const chunkBytes = typedArrayByteLength(chunk);
         if (chunkBytes !== range.length) { failedPaths.add(range.path); continue; }
         // Not a byte of it beneath a newer revision of the file (another fill's head and chunks).
-        if (outdated(t, learning, range.path, range.rev)) {
-          if (!learning.installs(range.path)) overtaken.add(range.path);
-          failedPaths.add(range.path);
-          continue;
-        }
+        if (outdated(t, learning, range.path, range.rev)) { failedPaths.add(range.path); continue; }
         fetchedBytes += chunkBytes;
-        if (!cells.putChunk(t, range.path, range.part, chunk)) { failedPaths.add(range.path); continue; }
+        if (!cells.putChunk(t, range.path, range.part, chunk, fill)) { failedPaths.add(range.path); continue; }
         const seen = (landed.get(range.path) || 0) + 1;
         landed.set(range.path, seen);
         if (seen === range.parts && !failedPaths.has(range.path)) {
-          cells.putHead(t, range.path, RK_BINARY, range.size, range.parts, range.rev, range.ckey);
-          filled++;
+          if (cells.publishFill(t, range.path, RK_BINARY, range.size, range.parts, range.rev, range.ckey, fill)) filled++;
+          else failedPaths.add(range.path);
         }
       }
     }
 
     // A file whose ranges did not all land has chunk rows and no head, so it is
-    // unreadable rather than short. Drop them so the slot does not carry bytes
-    // nothing will ever serve.
+    // unreadable rather than short. The rows this read wrote go, with any head
+    // they were written over, unless a later read, a fill or a write of the
+    // process's took the path since: those are not this read's to drop.
     failedPaths.forEach((path) => {
       failed++;
-      // A head at this read's revision or later (another fill, own bytes) is
-      // not this read's to drop; an older one may sit over chunks this read
-      // wrote, and goes with them.
-      const held = t.fileRev(path);
-      const rev = revOf.get(path);
-      if (held !== undefined && (held === RK_OWN_WRITE || overtaken.has(path) || (rev !== undefined && held >= rev))) return;
-      t.chunkDelete(path);
-      t.fileDelete(path);
+      cells.abandonFill(t, path, fill);
     });
 
     for (let i = 0; i < later.length; i++) {

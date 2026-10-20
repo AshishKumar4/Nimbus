@@ -57,6 +57,11 @@ export interface Admitted {
   stale?: boolean;
 }
 
+/** One fill's token (transport.fetchFiles): the paths whose chunk rows it started writing. */
+export interface ResidentFill {
+  readonly started: { has(path: string): boolean; add(path: string): unknown };
+}
+
 export interface Cells {
   /**
    * The resident set, as the shims have always seen it: `k in b`, `b[k]`,
@@ -77,8 +82,16 @@ export interface Cells {
   get(path: string): ResidentCell | undefined;
   /** Write one cell as `rev`, or as an own write when `rev` is not a number (see put below). */
   put(t: ResidentTables, path: string, cell: ResidentCell | ArrayBuffer, rev?: number, ckey?: unknown): boolean;
-  putChunk(t: ResidentTables, path: string, part: number, bytes: Uint8Array): boolean;
-  putHead(t: ResidentTables, path: string, kind: number, size: number, chunks: number, rev: number | undefined, ckey: unknown): void;
+  /**
+   * One chunk of a fill (`fill`, a token of its own): the path's chunk rows are
+   * the fill's that last started writing them, and a fill another started
+   * after writes no more of them (false).
+   */
+  putChunk(t: ResidentTables, path: string, part: number, bytes: Uint8Array, fill: ResidentFill): boolean;
+  /** The fill's file, once all its chunks are in: held as `rev`, if its chunk rows are still its (false otherwise). */
+  publishFill(t: ResidentTables, path: string, kind: number, size: number, chunks: number, rev: number, ckey: unknown, fill: ResidentFill): boolean;
+  /** A fill that did not finish `path`: the chunk rows it wrote, and the head they were written over, go, if they are still its. */
+  abandonFill(t: ResidentTables, path: string, fill: ResidentFill): void;
   copyByKey(t: ResidentTables, path: string, ckey: unknown, rev: number): boolean;
   delete(t: ResidentTables, path: string): boolean;
   provenance(path: string): number | undefined;
@@ -229,8 +242,9 @@ export function createCells(
    * for. There is no third case: the column refuses one.
    */
   const put = (t: ResidentTables, path: string, cell: ResidentCell | ArrayBuffer, rev?: number, ckey?: unknown): boolean => {
-    // Whatever this puts supersedes a held cell, held or not.
+    // Whatever this puts supersedes a held cell, held or not, and a fill's chunk rows.
     forgetHeld(path);
+    filling.delete(path);
     // The room reserved for its fill is what it spends.
     admission.release(path);
     t.chunkDelete(path);
@@ -270,7 +284,15 @@ export function createCells(
   };
 
   /** One chunk row, written as it arrives. The streaming filler's primitive. */
-  const putChunk = (t: ResidentTables, path: string, part: number, bytes: Uint8Array): boolean => {
+  /** Whose chunk rows each path's are while a fill writes them: the fill that last started. */
+  const filling = new SafeMap<string, ResidentFill>();
+
+  const putChunk = (t: ResidentTables, path: string, part: number, bytes: Uint8Array, fill: ResidentFill): boolean => {
+    if (filling.get(path) !== fill) {
+      if (fill.started.has(path)) return false;
+      filling.set(path, fill);
+      fill.started.add(path);
+    }
     if (part === 0) admission.release(path);
     if (!admission.fits(mathCeil(typedArrayByteLength(bytes) * 1.01) + RESIDENT_ROW_BYTES + 4096)) return false;
     t.chunkSetBin(path, part, bytes);
@@ -476,6 +498,7 @@ export function createCells(
   const deleteCell = (t: ResidentTables, path: string): boolean => {
     const had = head(path) !== undefined || held.has(path);
     forgetHeld(path);
+    filling.delete(path);
     t.chunkDelete(path);
     t.fileDelete(path);
     return had;
@@ -572,6 +595,18 @@ export function createCells(
     get,
     put,
     putChunk,
+    publishFill(t, path, kind, size, chunks, rev, ckey, fill) {
+      if (filling.get(path) !== fill) return false;
+      filling.delete(path);
+      t.filePut(path, kind, size, chunks, rev, ckey != null ? stringOf(ckey) : null);
+      return true;
+    },
+    abandonFill(t, path, fill) {
+      if (filling.get(path) !== fill) return;
+      filling.delete(path);
+      t.chunkDelete(path);
+      t.fileDelete(path);
+    },
     /**
      * The head row, written LAST by the streaming filler.
      *
@@ -581,12 +616,6 @@ export function createCells(
      * file leaves chunks nothing can read, never a short file something can.
      * Writing the head first would invert that into a truncated read.
      */
-    putHead(t, path, kind, size, chunks, rev, ckey) {
-      t.filePut(
-        path, kind, size, chunks, typeof rev === 'number' ? rev : RK_OWN_WRITE,
-        typeof rev === 'number' && ckey != null ? stringOf(ckey) : null,
-      );
-    },
     /**
      * Hold `path` with the bytes of a dated row whose content identity is
      * `ckey`, by copying rows inside this store: equal keys are equal bytes, so
@@ -596,6 +625,7 @@ export function createCells(
       const source = t.fileByKey(stringOf(ckey), path);
       if (source === undefined) return false;
       if (!admission.fits(source.size + (source.chunks + 1) * RESIDENT_ROW_BYTES)) return false;
+      filling.delete(path);
       t.chunkDelete(path);
       t.chunkCopy(path, source.path);
       t.filePut(path, source.kind, source.size, source.chunks, rev, stringOf(ckey));
