@@ -4031,6 +4031,10 @@ const __fsMod = (() => {
           await _flushLocalPathToSupervisor("/" + localPath, supervisor);
         }
       }
+      // The session lists what it holds: the process's own changes logged
+      // before this call (a rename, an unlink, a mkdir its wave has not
+      // carried yet) are there first, as program order has it.
+      await globalThis.__nimbusProcessFs?.flush();
       const entries = await _fsRpc(supervisor.readdir(absPath), "scandir", p, (result) => result);
       if (Array.isArray(entries)) {
         // Every local mutation under this directory was just flushed, so the
