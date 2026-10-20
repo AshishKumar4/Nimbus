@@ -93,8 +93,9 @@ rmSync(join(disk, 'x/a.b'));
 
 const { stdout, counters } = await git('status', '--porcelain', '-uall');
 assert.equal(stdout, realGit(disk, 'status', '--porcelain', '-uall'), 'what real git answers on the same tree');
-// One readdir: the top's, which the scan's own listing of the top is checked against.
-assert.deepEqual({ readdirs: counters.readdirs, lstats: counters.lstats, scans: counters.scans }, { readdirs: 1, lstats: 0, scans: 1 }, `one scan, no call per path: ${JSON.stringify(counters)}`);
+// The top's readdir, which the scan's own listing of the top is checked against, and one for each directory
+// the index holds nothing in (y, y/z), read as read_directory reads it: no other call per path.
+assert.deepEqual({ readdirs: counters.readdirs, lstats: counters.lstats, scans: counters.scans }, { readdirs: 3, lstats: 0, scans: 1 }, `one scan, no call per path: ${JSON.stringify(counters)}`);
 assert.ok(counters.scanned >= FILES, `every entry came from the scan: ${JSON.stringify(counters)}`);
 console.log(`  ✓ git status on ${FILES + 5} files: one ordered scan (${counters.scanned} entries), real git's answer`);
 // An untracked nested repository is listed as itself, never entered: what sorts before its `.git` (an
