@@ -43,10 +43,13 @@ export interface WorktreeFs {
   readlink(path: string): Promise<string>;
 }
 
-/** What reading the worktree cost, for the measurements. */
+/** What reading the worktree cost, for the measurements: the filesystem's calls. */
 export interface WalkCounters {
   readdirs: number;
   lstats: number;
+  /** Ordered scans of the worktree (ProjectFs.scan), and the entries they gave. */
+  scans: number;
+  scanned: number;
   filesRead: number;
   bytesRead: number;
   /** Objects read from the store: trees, mostly. */
@@ -56,7 +59,7 @@ export interface WalkCounters {
 }
 
 export function newCounters(): WalkCounters {
-  return { readdirs: 0, lstats: 0, filesRead: 0, bytesRead: 0, objectsRead: 0 };
+  return { readdirs: 0, lstats: 0, scans: 0, scanned: 0, filesRead: 0, bytesRead: 0, objectsRead: 0 };
 }
 
 /** One worktree in its repository's terms. */
@@ -302,10 +305,7 @@ export async function scanWorktree(tree: Worktree, dc: DirCache, options: ScanOp
   const result: ScanResult = { dirty: new DirtySet(dc.count), untracked: [], unmerged: [], errors: { tracked: [], untracked: [] } };
   const join = (dir: string, name: string) => (dir ? `${dir}/${name}` : name);
 
-  const list = async (dir: string) => {
-    tree.counters.readdirs++;
-    return await tree.fs.list(dir);
-  };
+  const list = async (dir: string) => await tree.fs.list(dir);
 
   /** A directory's listing, or null when it cannot be read: the untracked scan warns, as read_directory does. */
   const listOrWarn = async (dir: string) => {
@@ -319,7 +319,6 @@ export async function scanWorktree(tree: Worktree, dc: DirCache, options: ScanOp
 
   /** An entry's lstat; a failure other than absence is reported (`<path>: <strerror>`) and the entry left alone. */
   const lstat = async (path: string): Promise<WorktreeStat | null | undefined> => {
-    tree.counters.lstats++;
     try {
       return await tree.fs.lstat(path);
     } catch (error) {
@@ -411,7 +410,6 @@ export async function scanWorktree(tree: Worktree, dc: DirCache, options: ScanOp
         if (inScope(path) || onTheWay(path)) {
           let type = listing?.get(name);
           if (listing === null) {
-            tree.counters.lstats++;
             try {
               type = (await tree.fs.lstat(path))?.type;
             } catch (error) {

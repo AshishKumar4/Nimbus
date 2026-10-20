@@ -6374,8 +6374,9 @@ export class FacetManager {
     trace(`${learned.length} learned; listing`);
     let pages = 0;
     const plan = await planFacetData({
+      // A page that meets another holder's delegation waits for its recall (a listing recalls as an lstat would).
       list: async (after) => {
-        const page = await vfs.list(after, FS_LIST_PAGE_LIMIT);
+        const page = await withRecall(() => vfs.list(after, FS_LIST_PAGE_LIMIT));
         trace(`page ${++pages}: ${page.entries.length} entries`);
         return { entries: page.entries, next: page.next };
       },
@@ -6495,7 +6496,7 @@ export class FacetManager {
     const files: Record<string, [contentKey: string, text: string]> = {};
     let bytes = 0;
     for (let after: string | null = null; ;) {
-      const page = await vfs.list(after, FS_LIST_PAGE_LIMIT);
+      const page = await withRecall(() => vfs.list(after, FS_LIST_PAGE_LIMIT));
       await pacer.spend(page.entries.length * 64);
       for (const listed of page.entries) {
         const k = stripLeadingSlashes(listed.path);

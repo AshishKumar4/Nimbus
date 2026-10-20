@@ -20,7 +20,7 @@ import { objectIdPrefix, oidToHex } from '../pack/format.js';
 import { EMPTY_BLOB, S_IFGITLINK, S_IFLNK, S_IFMT, S_IFREG, decodePath, objectId } from './dircache.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 export function newCounters() {
-    return { readdirs: 0, lstats: 0, filesRead: 0, bytesRead: 0, objectsRead: 0 };
+    return { readdirs: 0, lstats: 0, scans: 0, scanned: 0, filesRead: 0, bytesRead: 0, objectsRead: 0 };
 }
 const textDecoder = new TextDecoder('utf-8', { fatal: true });
 const encoder = new TextEncoder();
@@ -206,10 +206,7 @@ export async function scanWorktree(tree, dc, options) {
     const onTheWay = (dir) => specs.some((spec) => spec.startsWith(`${dir}/`));
     const result = { dirty: new DirtySet(dc.count), untracked: [], unmerged: [], errors: { tracked: [], untracked: [] } };
     const join = (dir, name) => (dir ? `${dir}/${name}` : name);
-    const list = async (dir) => {
-        tree.counters.readdirs++;
-        return await tree.fs.list(dir);
-    };
+    const list = async (dir) => await tree.fs.list(dir);
     /** A directory's listing, or null when it cannot be read: the untracked scan warns, as read_directory does. */
     const listOrWarn = async (dir) => {
         try {
@@ -223,7 +220,6 @@ export async function scanWorktree(tree, dc, options) {
     };
     /** An entry's lstat; a failure other than absence is reported (`<path>: <strerror>`) and the entry left alone. */
     const lstat = async (path) => {
-        tree.counters.lstats++;
         try {
             return await tree.fs.lstat(path);
         }
@@ -328,7 +324,6 @@ export async function scanWorktree(tree, dc, options) {
                 if (inScope(path) || onTheWay(path)) {
                     let type = listing?.get(name);
                     if (listing === null) {
-                        tree.counters.lstats++;
                         try {
                             type = (await tree.fs.lstat(path))?.type;
                         }

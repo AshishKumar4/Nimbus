@@ -35,10 +35,13 @@ export interface WorktreeFs {
     readRange(path: string, offset: number, length: number): Promise<Uint8Array>;
     readlink(path: string): Promise<string>;
 }
-/** What reading the worktree cost, for the measurements. */
+/** What reading the worktree cost, for the measurements: the filesystem's calls. */
 export interface WalkCounters {
     readdirs: number;
     lstats: number;
+    /** Ordered scans of the worktree (ProjectFs.scan), and the entries they gave. */
+    scans: number;
+    scanned: number;
     filesRead: number;
     bytesRead: number;
     /** Objects read from the store: trees, mostly. */

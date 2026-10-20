@@ -117,3 +117,13 @@ export function vfsPathExtension(path: string): string {
   const dot = base.lastIndexOf('.');
   return dot > 0 ? base.slice(dot) : '';
 }
+
+/**
+ * Whether `path` is a sibling of directory `key` whose name extends `key`'s
+ * with a character below '/' (`key-x`, `key.x`): it sorts between `key` and
+ * `key/`, so a walk of `key` from the cursor `key/` (which names `key`) meets
+ * it first, and its own subtree, before `key`'s entries.
+ */
+export function beforeSubtree(path: string, key: string): boolean {
+  return key !== '' && path.length > key.length && path.startsWith(key) && path.charCodeAt(key.length) < 0x2f;
+}

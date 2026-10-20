@@ -8,7 +8,7 @@
  */
 import { type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type ProcessFiles, type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
-import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { CredentialedVfs, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { Awaitable, VfsDirent } from '@nimbus-sh/core/vfs/vfs.js';
 import { type KnownDirentType } from '@nimbus-sh/core/vfs/dirent-type.js';
 type ProjectFsOp = 'exists' | 'isFile' | 'isDirectory' | 'stat' | 'lstat' | 'readFile' | 'readFileString' | 'readFileUncached' | 'readRangeUncached' | 'writeFile' | 'mkdir' | 'unlink' | 'rename' | 'rmdir' | 'removeRecursive' | 'symlink' | 'readlink' | 'chmod';
@@ -23,7 +23,19 @@ export type ProjectFs = {
 } & {
     /** A directory's entries, typed as the namespace types them: a mount's may name a device, or say it cannot tell. */
     readdir(key: string): Awaitable<Array<Pick<VfsDirent, 'name' | 'type'>>>;
+    /**
+     * Every entry under directory `key` with its lstat, in path order, from one
+     * paged scan (ProcessView.scan): `path` is under `key`, and `byName` marks
+     * a directory whose entries must be asked by name.
+     */
+    scan(key: string): AsyncIterable<ProjectScanned>;
 };
+/** An entry of ProjectFs.scan. */
+export interface ProjectScanned {
+    path: string;
+    stat: VfsStat;
+    byName: boolean;
+}
 /** The exact type of `entry` in `dir`, lstat'ing it where its listing could not type it; null when it has gone. */
 export declare function projectEntryType(fs: Pick<ProjectFs, 'lstat'>, dir: string, entry: Pick<VfsDirent, 'name' | 'type'>): Promise<KnownDirentType | null>;
 /** The principal's `view` in the engine's call shape. */
