@@ -205,13 +205,18 @@ async function up() {
   // Also before the build: a Preview already standing that this checkout
   // holds no secret for belongs to somebody else's run, and taking it
   // over is the one thing `up` must not do by accident.
+  // Whether it stands is the API's answer, and only a confirmed one: an
+  // error read as absence would mint a secret over a Preview that has one.
   const token = await apiToken({ cwd: PROBE_APP, account });
-  const before = await latestDeployment({ account, token, preview });
+  const presence = await previewPresence({ preview, account, token });
+  if (presence.kind === 'unknown') throw new Error(`cannot tell whether Preview ${preview} stands: ${presence.reason}`);
+  const created = presence.kind === 'not-found';
+  const before = created ? null : await latestDeployment({ account, token, preview });
   assertCredentialHeld({
     name,
     statePath: statePath(name),
     hasSecret: reuseSecret,
-    provisioned: before !== null,
+    provisioned: !created,
     rotate: Boolean(flags['rotate-secrets']),
   });
 
@@ -230,12 +235,15 @@ async function up() {
   let deployed = await deployPreview({ account, token, preview, secret, before, config: bundle });
   if (!deployed.landed) {
     // A Preview this run created holds nothing but its uploads, each with
-    // this secret, however late one lands: a retry, here or by a later `up`,
-    // keeps the secret instead of refusing a name it cannot vouch for.
-    if (before === null) writeState(statePath(name), { name, preview, parent: PREVIEW_PARENT, base: null, secret, secretPushed: true, createdAt });
+    // this secret: one wrangler reported a deployment for carried it, however
+    // late it lands, so a retry, here or by a later `up`, keeps the secret
+    // instead of refusing a name it cannot vouch for. An upload with no id
+    // may have failed before its deployment, and proves nothing.
+    if (created && deployed.reported) writeState(statePath(name), { name, preview, parent: PREVIEW_PARENT, base: null, secret, secretPushed: true, createdAt });
     log(`WARNING: Preview ${preview} of ${PREVIEW_PARENT} did not land: ${deployed.detail}; wrangler exited ${deployed.status}. Uploading it once more.`);
     // Against the latest before either upload: a first one that lands late has an id of its own, not the second's.
     deployed = await deployPreview({ account, token, preview, secret, before, config: bundle });
+    if (!deployed.landed && created && deployed.reported) writeState(statePath(name), { name, preview, parent: PREVIEW_PARENT, base: null, secret, secretPushed: true, createdAt });
     if (!deployed.landed) throw new Error(`Preview ${preview} of ${PREVIEW_PARENT} did not land, twice: ${deployed.detail}; wrangler exited ${deployed.status}`);
   }
   const { base, deploymentId, startupMs } = deployed;
@@ -374,9 +382,19 @@ function previewName(name) {
 }
 
 /** The latest deployment of `preview`, or null when there is no such Preview. */
+/** An API read of a Preview that failed: not an answer that it has no deployment. */
+class PreviewReadError extends Error {}
+
+/**
+ * The Preview's latest deployment, or null when it has none (404). Any other
+ * failure throws PreviewReadError: read as "none", it would pass a Preview
+ * that stands for one this run may create.
+ */
 async function latestDeployment({ account, token, preview, signal = undefined }) {
   const got = await cfApi(`/workers/workers/${PREVIEW_PARENT}/previews/${encodeURIComponent(preview)}/deployments/latest`, { account, token, signal });
-  return got.ok ? got.result : null;
+  if (got.ok) return got.result;
+  if (got.status === 404) return null;
+  throw new PreviewReadError(`the latest deployment of Preview ${preview} answered HTTP ${got.status}: ${JSON.stringify(got.errors)}`);
 }
 
 /**
@@ -431,8 +449,9 @@ async function deployPreview({ account, token, preview, secret, before, config }
     try {
       latest = await latestDeployment({ account, token, preview, signal });
     } catch (error) {
-      if (!signal.aborted) throw error;
-      break;
+      if (signal.aborted) break;
+      // One read the API failed is no answer: the next may give one, before the deadline.
+      if (!(error instanceof PreviewReadError)) throw error;
     }
     if (!deploymentId || latest?.id === deploymentId || Date.now() >= settleBy) break;
     await delay(Math.min(500, Math.max(1, settleBy - Date.now())));
@@ -447,7 +466,7 @@ async function deployPreview({ account, token, preview, secret, before, config }
         : after !== deploymentId
           ? `${LANDING_MS / 1000} s after the upload, the API serves ${after ?? 'no deployment'} as the latest, not ${deploymentId}`
           : `the latest deployment is still ${after} — nothing was deployed`;
-    return { landed: false, detail, status: result.status };
+    return { landed: false, reported: Boolean(deploymentId), detail, status: result.status };
   }
   const base = workersDevUrlOf(printed.preview?.urls);
   if (!base) throw new Error(`Preview ${preview} has no workers.dev URL (urls: ${JSON.stringify(printed.preview?.urls)})`);

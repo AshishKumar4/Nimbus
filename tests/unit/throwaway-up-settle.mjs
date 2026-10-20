@@ -27,14 +27,17 @@ const TOKEN = 'proof-api-token';
 const PREVIEW = 'tw-up-settle';
 const NAME = 'nimbus-' + PREVIEW;
 const PARENT_PATH = `/client/v4/accounts/${ACCOUNT}/workers/workers/nimbus-probe-previews`;
-const LATEST_PATH = `${PARENT_PATH}/previews/${PREVIEW}/deployments/latest`;
+const PRESENCE_PATH = `${PARENT_PATH}/previews/${PREVIEW}`;
+const LATEST_PATH = `${PRESENCE_PATH}/deployments/latest`;
+const ABSENT = { success: false, result: null, errors: [{ code: 10025, message: 'no such Preview' }] };
 const ok = (result) => ({ success: true, result, errors: [] });
 
 /**
- * What the API answers for the Preview's latest deployment: `stale` (the
- * deployment before), `silent` once an upload is in (no answer),
+ * What the API answers for the Preview and its latest deployment: `stale`
+ * (the deployment before), `silent` once an upload is in (no answer),
  * `second-lands` (the deployment before until the second upload, then that),
- * `new` (no Preview: 404), or `landed` (the last upload).
+ * `new` (no Preview: 404), `landed` (the last upload), `presence-500` (the
+ * Preview read fails), or `latest-500` (it stands, and its latest read fails).
  */
 let mode = 'stale';
 let latestReads = 0;
@@ -44,11 +47,16 @@ const unexpected = [];
 const server = createServer((request, response) => {
   const json = (status, body) => response.writeHead(status, { 'Content-Type': 'application/json' }).end(JSON.stringify(body));
   if (request.method === 'GET' && request.url === PARENT_PATH) return json(200, ok({ subdomain: { enabled: true, previews_enabled: true } }));
+  if (request.method === 'GET' && request.url === PRESENCE_PATH) {
+    if (mode === 'presence-500') return json(500, { success: false, result: null, errors: [{ code: 10013, message: 'an internal error' }] });
+    return mode === 'new' ? json(404, ABSENT) : json(200, ok({ id: 'preview-id' }));
+  }
   if (request.method === 'GET' && request.url === LATEST_PATH) {
     latestReads++;
     // The first read is the one before the upload; it always answers.
     if (mode === 'silent' && latestReads > 1) return;
-    if (mode === 'new') return json(404, { success: false, result: null, errors: [{ code: 10025, message: 'no such Preview' }] });
+    if (mode === 'latest-500') return json(500, { success: false, result: null, errors: [{ code: 10013, message: 'an internal error' }] });
+    if (mode === 'new') return json(404, ABSENT);
     if (mode === 'landed' || (mode === 'second-lands' && uploads() >= 2)) return json(200, ok({ id: `deployment-uploaded-${uploads()}`, startup_time_ms: 5 }));
     return json(200, ok({ id: 'deployment-before', startup_time_ms: 5 }));
   }
@@ -92,6 +100,8 @@ try {
   // `wrangler preview` stands in reporting a deployment, as the real one prints it, numbered by the uploads.
   writeFileSync(join(checkout, 'node_modules/.bin/wrangler'), `#!/bin/sh
 [ "$1" = preview ] || exit 1
+# Failing before its deployment, as wrangler does when it cannot assemble one: no id, no secret sent.
+[ -f '${join(checkout, 'noid')}' ] && { echo 'wrangler failed before its deployment' >&2; exit 1; }
 n=$(( $(cat '${join(checkout, 'uploads')}' 2>/dev/null || echo 0) + 1 ))
 echo $n > '${join(checkout, 'uploads')}'
 echo '{"deployment":{"id":"deployment-uploaded-'$n'"},"preview":{"urls":["https://${PREVIEW}-nimbus-probe-previews.proof.workers.dev"]}}'
@@ -170,6 +180,38 @@ await import('./tests/behavioral/_throwaway-target.mjs');
     assert.match(output, /deployment deployment-uploaded-2 is live at https:\/\/tw-up-settle-nimbus-probe-previews\.proof\.workers\.dev/, `up goes on with the second upload\n${output}`);
     assert.deepEqual([record().versionId, record().secret], ['deployment-uploaded-2', 'the-held-signing-secret'], 'and records it, with the secret it held');
     console.log('  ok  a second upload that lands: up goes on with it');
+  }
+
+  // The API errs on whether the Preview stands, or on its latest deployment:
+  // up refuses, uploading nothing, rather than read an error as absence.
+  for (const [settled, expected] of [
+    ['presence-500', /cannot tell whether Preview tw-up-settle stands: Preview tw-up-settle: HTTP 500/],
+    ['latest-500', /the latest deployment of Preview tw-up-settle answered HTTP 500/],
+  ]) {
+    mode = settled;
+    const held = record();
+    const before = uploads();
+    const { code, stdout, stderr } = await up();
+    const output = `${stdout}${stderr}`;
+    assert.ok(code !== 0 && code !== 3, `${settled}: up refuses\n${output}`);
+    assert.match(output, expected, `${settled}: up says why\n${output}`);
+    assert.equal(uploads(), before, `${settled}: and uploads nothing`);
+    assert.deepEqual(record(), held, `${settled}: and changes no record`);
+    console.log(`  ok  ${settled}: up refuses, uploading nothing`);
+  }
+
+  // A new Preview whose uploads fail before their deployment (no id): nothing
+  // proves a secret reached it, so none is recorded as pushed.
+  {
+    mode = 'new';
+    rmSync(recordPath, { force: true });
+    writeFileSync(join(checkout, 'noid'), '');
+    const { stdout, stderr } = await up();
+    rmSync(join(checkout, 'noid'));
+    const output = `${stdout}${stderr}`;
+    assert.match(output, /did not land, twice: `wrangler preview` reported no deployment id/, output);
+    assert.equal(record().secretPushed, false, 'no secret is recorded as pushed by an upload that reported no deployment');
+    console.log('  ok  a new Preview whose uploads fail before deploying: no secret recorded as pushed');
   }
 
   // A Preview this run creates, whose uploads land only after up gave up:
