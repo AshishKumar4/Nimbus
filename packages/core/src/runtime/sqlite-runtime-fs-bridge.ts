@@ -543,7 +543,8 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       const source = this.locateMutation(from, false, call, options.mutationOwner);
       const target = this.locateMutation(to, false, call, options.mutationOwner, true);
       // A new name ending in `/` is a directory's: anything else renamed to it is ENOTDIR (rename(2)).
-      if (entryVfsPath(typeof to === 'string' ? to : to.path).directory && this.stat(from, { followSymlinks: false })?.type !== 'directory') {
+      const moved = this.stat(from, { followSymlinks: false });
+      if (entryVfsPath(typeof to === 'string' ? to : to.path).directory && moved !== null && moved.type !== 'directory') {
         throw callError('ENOTDIR', call);
       }
       // A name on a mount is renamed by the namespace: within one mount by that

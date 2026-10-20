@@ -2198,8 +2198,10 @@ function mkRm(): Command {
         code = 1;
         continue;
       }
-      // Another name for the root (a link to it, `link/`) is refused as the root is.
-      if (recursive && preserveRoot && await vfs.realpath(path).catch(() => null) === '/') {
+      // Another name for the root (`link/`, a walk through a link) is refused as the root is; a link
+      // itself named (no trailing slash) is only unlinked.
+      const walked = target.endsWith('/') || !(await vfs.isSymlink(path));
+      if (recursive && preserveRoot && walked && await vfs.realpath(path).catch(() => null) === '/') {
         await ctx.stderr.write(`rm: it is dangerous to operate recursively on '${target}' (same as '/')\nrm: use --no-preserve-root to override this failsafe\n`);
         code = 1;
         continue;
