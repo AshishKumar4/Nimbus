@@ -63,10 +63,11 @@ const port = 4096;
 const staged = {
   pid,
   stageSpec: {
-    mode: 'server', argv: ['serve', '--port', '4096'], env: {}, cwd: '/home/user',
+    mode: 'server', argv: ['serve', '--port', '4096'], terminal: {}, cwd: '/home/user',
     cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
     stdin: '', vfsBundle: '{}', vfsManifest: '{}', vfsMetadata: '{}',
   },
+  env: {},
 };
 
 const result = await fm._startStagedResident(staged, port);

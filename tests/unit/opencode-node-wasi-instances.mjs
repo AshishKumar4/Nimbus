@@ -36,7 +36,7 @@ root.chown('home/user/shared.txt', 1000, 1000);
 const nodeProcess = processInstanceSupervisor(nodeSession, nodeCred);
 const wasiProcess = processInstanceSupervisor(wasiSession, wasiCred);
 const generated = generateOpencodeRunnerCode({
-  argv: [], env: {}, cred: nodeCred, cwd: '/home/user', stdin: '', mode: 'attached',
+  argv: [], terminal: {}, cred: nodeCred, cwd: '/home/user', stdin: '', mode: 'attached',
   sources: nodeFacetSources(generateShimsCode()),
   vfsBundle: JSON.stringify({ 'home/user/node-only.txt': 'Node bytes', 'home/user/shared.txt': 'Node secret' }),
   vfsCursor: JSON.stringify(nodeSession.cursor()), vfsManifest: '{}', vfsMetadata: '{}',

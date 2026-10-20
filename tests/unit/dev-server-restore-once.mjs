@@ -16,6 +16,7 @@ import { importWorkerBundle } from './lib/worker-bundle.mjs';
 
 const bundle = await importWorkerBundle({
   'packages/worker/src/session/dev-servers.ts': ['devServerProcess', 'recordDevServer', 'restoreDevServers', 'spawnOf'],
+  'packages/worker/src/session/process-env.ts': ['sessionProcessEnv'],
   'packages/core/src/workspace/nimbus-workspace.ts': ['NimbusWorkspace'],
   'packages/core/src/runtime/session-process-supervisor.ts': ['SessionProcessSupervisor'],
   'packages/core/src/runtime/port-registry.ts': ['PortRegistry'],
@@ -34,8 +35,10 @@ async function incarnation(generation) {
   const processes = new bundle.SessionProcessSupervisor();
   processes.setPidBase(generation * bundle.PID_GEN_STRIDE);
   const workspace = await bundle.NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, vfs, processes, generation });
+  const ctx = createFacetCtx(world, 'dev-server-restore-once', rows);
   const host = {
-    ctx: createFacetCtx(world, 'dev-server-restore-once', rows),
+    ctx,
+    processEnv: bundle.sessionProcessEnv(ctx.storage),
     processes,
     portRegistry: new bundle.PortRegistry(),
     runtimeWorkspace: workspace,

@@ -36,6 +36,7 @@ import { DEV_SERVER_KEY_PREFIX } from './keys.js';
 import type { DevServerRestoreFailure } from './helpers.js';
 import { readPortCapability, readoptCapability, type PortCapabilityHost } from './port-capability.js';
 import type { ProcessEnvHooks } from './process-env.js';
+import { relaunchEnv } from '../facets/process-env.js';
 
 const DevServerRecordSchema = z.object({
   /** The line its command ran, and what its process was spawned with. */
@@ -259,7 +260,7 @@ async function restoreOne(
   let failure: DevServerRestoreFailure | null = null;
   try {
     await host.ensureRuntimeReady();
-    const env = await restoredEnv(host, key, from, record);
+    const env = await relaunchEnv(host.processEnv.resolveProcessEnv, { pid: from, cred: record.cred, record: key, ...execIdField(record) });
     // A destroy that came meanwhile made the session again: nothing of this one runs in it.
     if (ours()) failure = await runAgain(host, record, from, env);
   } catch (error) {
@@ -279,20 +280,6 @@ async function restoreOne(
  * adopts that process as its server's, as it adopts a script wrapper's; one
  * that hands its server to a process of its own leaves this one to exit.
  */
-/** The environment the restored command runs with: the host's answer, or a failure that says why it has none. */
-async function restoredEnv(host: DevServerRestoreHost, key: string, from: number, record: DevServerRecord): Promise<Record<string, string>> {
-  const resolve = host.processEnv.resolveProcessEnv;
-  if (resolve === undefined) throw new Error('this host keeps no process\'s environment and composes no resolveProcessEnv');
-  let env: Record<string, string> | null;
-  try {
-    env = await resolve({ pid: from, cred: record.cred, record: key, ...execIdField(record) });
-  } catch (error) {
-    throw new Error(`the host's resolveProcessEnv failed: ${errorText(error)}`);
-  }
-  if (env === null) throw new Error('the host gave no environment for it');
-  return env;
-}
-
 async function runAgain(host: DevServerRestoreHost, record: DevServerRecord, from: number, env: Record<string, string>): Promise<DevServerRestoreFailure | null> {
   const workspace = host.runtimeWorkspace;
   if (workspace === null) throw new Error('the session has no shell to run it in');
