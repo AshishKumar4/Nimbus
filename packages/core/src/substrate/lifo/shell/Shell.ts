@@ -11,6 +11,7 @@ import { textCapture } from '../utils/bytes-io.js';
 
 import { Interpreter, type BuiltinFn, type ProgramSpec, type TerminalFdState } from './interpreter.js';
 import { createShellState, restoreShellState, snapshotShellState, type ShellOptions, type ShellState } from './state.js';
+import { attributesOf, restoreAttributes, restoreVariable, saveVariable, type SavedVariable, type VariableAttributes } from './variables.js';
 import { shellBuiltins } from './builtins.js';
 import { continuationState } from './lexer.js';
 import { HistoryManager } from './history.js';
@@ -262,6 +263,16 @@ export class Shell {
     return this.state.env;
   }
 
+  /** Its variables' attributes and arrays, beyond {@link getEnv}'s scalars (a named shell's saved state). */
+  getVariableAttributes(): VariableAttributes {
+    return attributesOf(this.state);
+  }
+
+  /** Put `attributes` back, saved with the scalars named in `saved` (restoreAttributes). */
+  restoreVariableAttributes(attributes: VariableAttributes, saved: Iterable<string>): void {
+    restoreAttributes(this.state, attributes, saved);
+  }
+
   getVfs(): ProcessView {
     return this.vfs;
   }
@@ -389,13 +400,15 @@ export class Shell {
       return { stdout: stdoutBuf, stderr: stderrBuf, exitCode };
     };
 
-    // Save current state
+    // Save current state: a call's cwd is its own, and PWD's binding (an array's too) comes back after it.
     const prevCwd = options?.cwd ? this.state.getCwd() : undefined;
+    const prevPwd = options?.cwd ? saveVariable(this.state, 'PWD') : undefined;
     const savedShellState = options?.isolateShellState
       ? { state: snapshotShellState(this.state), functions: this.interpreter.saveFunctions() }
       : null;
+    // A call's env binds each name for the call alone: its whole binding (scalar or array) saved, and given back after.
     const envOverrideSnapshot = !savedShellState && options?.env
-      ? snapshotEnvKeys(this.state.env, Object.keys(options.env))
+      ? new Map<string, SavedVariable>(Object.keys(options.env).map((name) => [name, saveVariable(this.state, name)]))
       : null;
     const optionSnapshot = !savedShellState && options?.shellOptions ? { ...this.state.options } : null;
     const abortController = new AbortController();
@@ -415,7 +428,10 @@ export class Shell {
       this.setCwd(options.cwd);
     }
     if (options?.env) {
-      Object.assign(this.state.env, options.env);
+      for (const [name, value] of Object.entries(options.env)) {
+        this.state.arrays.delete(name);
+        this.state.env[name] = value;
+      }
     }
     if (options?.shellOptions) {
       Object.assign(this.state.options, options.shellOptions);
@@ -469,11 +485,12 @@ export class Shell {
         restoreShellState(this.state, savedShellState.state);
         this.interpreter.restoreFunctions(savedShellState.functions);
       } else {
-        if (envOverrideSnapshot) restoreEnvKeys(this.state.env, envOverrideSnapshot);
+        if (envOverrideSnapshot) for (const [name, saved] of envOverrideSnapshot) restoreVariable(this.state, name, saved, false);
         if (optionSnapshot) Object.assign(this.state.options, optionSnapshot);
       }
       if (prevCwd !== undefined) {
         this.setCwd(prevCwd);
+        if (prevPwd !== undefined) restoreVariable(this.state, 'PWD', prevPwd, false);
       }
     }
   }
@@ -1279,19 +1296,6 @@ export class Shell {
 
 function isTerminalControlSequence(data: string): boolean {
   return data.startsWith('\x1b[') || data.startsWith('\x1b(') || data.startsWith('\x1b)');
-}
-
-function snapshotEnvKeys(env: Record<string, string>, keys: string[]): Map<string, string | undefined> {
-  const snapshot = new Map<string, string | undefined>();
-  for (const key of keys) snapshot.set(key, env[key]);
-  return snapshot;
-}
-
-function restoreEnvKeys(env: Record<string, string>, snapshot: Map<string, string | undefined>): void {
-  for (const [key, value] of snapshot.entries()) {
-    if (value === undefined) delete env[key];
-    else env[key] = value;
-  }
 }
 
 /** A shell's own process in `processes`, as the session's user, when no host gives it one. */

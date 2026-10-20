@@ -1,4 +1,4 @@
-import { cloneArrays, cloneEnv } from './variables.js';
+import { assignVariable, cloneArrays, cloneEnv } from './variables.js';
 /** A shell's state at `cwd`, its variables `env` (PWD set), nothing else defined. */
 export function createShellState(env, cwd, jobTable) {
     const shellEnv = cloneEnv(env);
@@ -40,7 +40,7 @@ function withCwd(state, cwd) {
         getCwd: () => current,
         setCwd: (next) => {
             current = next;
-            state.env.PWD = next;
+            return assignVariable(state, 'PWD', next);
         },
     };
 }

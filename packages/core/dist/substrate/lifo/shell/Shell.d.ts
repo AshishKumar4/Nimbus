@@ -7,6 +7,7 @@ import { type NimbusFilesystemAuthority, type VfsCred } from '../../../runtime/o
 import type { TerminalInputStream } from '../commands/types.js';
 import { type ProgramSpec, type TerminalFdState } from './interpreter.js';
 import { type ShellOptions } from './state.js';
+import { type VariableAttributes } from './variables.js';
 import { JobTable, type ShellProcesses } from './jobs.js';
 import type { HostProcessSignals } from '../commands/system/kill.js';
 import { ShellInputSubmission, type ShellQueuedInput } from '../../../shell/input-submission.js';
@@ -126,6 +127,10 @@ export declare class Shell {
     getCwd(): string;
     setCwd(cwd: string): void;
     getEnv(): Record<string, string>;
+    /** Its variables' attributes and arrays, beyond {@link getEnv}'s scalars (a named shell's saved state). */
+    getVariableAttributes(): VariableAttributes;
+    /** Put `attributes` back, saved with the scalars named in `saved` (restoreAttributes). */
+    restoreVariableAttributes(attributes: VariableAttributes, saved: Iterable<string>): void;
     getVfs(): ProcessView;
     /** Transfer terminal I/O without replacing shell state or sourcing login files. */
     bindTerminal(terminal: ITerminal): void;
