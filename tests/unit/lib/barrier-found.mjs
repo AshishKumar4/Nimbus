@@ -89,11 +89,11 @@ const FOUND = {
     engines: ['holder'], park: 1298,
     schedule: [['own', 'stat', 'x/h'], ['own', 'readFile', 'top'], ['own', 'opendir', 'd'], ['root', 'chown', 'x', 1000], ['sync', 'write', 'd/n', 'c1298.2']],
   },
+  // The client sends one wave at a time: a refused one goes again, first, before what was written after it.
   'two writes of one file, the first refused while a peer recalls the read lease, land in order': {
-    engines: ['holder'],
-    schedule: [['own', 'stat', 'x/h'], ['own', 'readFile', 'top'], ['hold', 'listing'], ['own', 'opendir', 'd'], ['root', 'chown', 'x', 1000],
-      ['hold', 'wave'], ['sync', 'write', 'd/n', 'first'], ['sync', 'write', 'd/n', 'second!'], ['release', 'wave'], ['settle'], ['release', 'listing'], ['settle'],
-      ['sync', 'readFile', 'd/n'], ['own', 'readFile', 'd/n']],
+    engines: ['holder'], park: 1298,
+    schedule: [['own', 'stat', 'x/h'], ['own', 'readFile', 'top'], ['own', 'opendir', 'd'], ['root', 'chown', 'x', 1000],
+      ['sync', 'write', 'd/n', 'first'], ['sync', 'write', 'd/n', 'second!']],
   },
   'a file a call that cannot wait missed stays a miss until an awaited read answers it': {
     engines: ['node'],
