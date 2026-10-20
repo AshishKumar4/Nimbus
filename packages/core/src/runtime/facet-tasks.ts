@@ -542,10 +542,11 @@ export async function tsrsFileOperation(fs: RuntimeFsBridge, op: number, request
                 return '';
             }
             case 5: {
-                const handle = await fs.open(path, { write: true, append: true, create: true }).catch(async (error: unknown) => {
+                const flags = { write: true, append: true, create: true };
+                const handle = await Promise.resolve(fs.open(path, flags)).catch(async (error: unknown) => {
                     if (!tsrsMissing(error)) throw error;
                     await fs.mkdir(path.slice(0, path.lastIndexOf('/')) || '/', { recursive: true });
-                    return await fs.open(path, { write: true, append: true, create: true });
+                    return await fs.open(path, flags);
                 });
                 try { await fs.write(handle.id, null, rest.slice()); } finally { await fs.close(handle.id); }
                 return '';
@@ -650,7 +651,7 @@ export async function tsrsFacetCall(args: TsrsFacetArgs, facetEnv: FacetBindings
     }
     // What it wrote is in the session before its status is: a write the
     // session refused fails the run, named (__wasiSettled).
-    const settled = await __wasiSettled({ exitCode });
+    const settled: WasiRunResult = await __wasiSettled({ exitCode });
     const lost = await output.drain();
     wasi.procDispose();
     return {
