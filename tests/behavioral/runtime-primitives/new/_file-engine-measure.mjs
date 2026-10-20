@@ -225,7 +225,7 @@ async function previewServed(sid, budgetMs = 120_000) {
 }
 
 const NODE_SERVER = `const http = require('http'), fs = require('fs');
-http.createServer((q, s) => { let n = 0; for (const f of fs.readdirSync('site')) n += fs.readFileSync('site/' + f).length; s.end('served ' + n); }).listen(3000);
+http.createServer((q, s) => { let n = 0; for (const f of fs.readdirSync('site', { withFileTypes: true })) if (f.isFile()) n += fs.readFileSync('site/' + f.name).length; s.end('served ' + n); }).listen(3000);
 `;
 
 async function served(sid, budgetMs = 60_000, query = '') {
