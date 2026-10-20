@@ -180,6 +180,27 @@ const scenarios = {
     const again = await s.view.pages(`${ROOT}/f`, revision, size, 0, 0);
     assert.equal(String.fromCharCode(again.pages[0][0]), 'c', 'the page read now');
   },
+  async 'bytes asked of one incarnation of the session leave those the next one gave the store'() {
+    const big = (c) => c.repeat(300_000);
+    const enc = new TextEncoder();
+    const s = await storeSession({ f: big('a'), other: 'o' });
+    for (let i = 0; i < 40; i++) await s.kernel.writeFile(k('other'), enc.encode(`o${i}`));
+    await s.kernel.writeFile(k('f'), enc.encode(big('b')));
+    assert.equal((await s.fs.stat(k('f'))).size, 300_000);
+    const asked = s.hold('fsReadBatch');
+    const stale = s.fs.readFile(k('f'));
+    await asked();
+    await s.incarnate({ f: big('c'), other: 'o' });
+    s.fs.inbound();
+    await s.fs.stat(k('other'));
+    // The next incarnation's bytes are held before the first's land.
+    assert.equal(String.fromCharCode((await s.fs.readFile(k('f')))[0]), 'c');
+    s.release('fsReadBatch');
+    await stale.catch(() => undefined);
+    let seen;
+    try { seen = s.fs.synchronous.readFile(k('f')); } catch (error) { seen = error?.code; }
+    assert.equal(typeof seen === 'string' ? seen : String.fromCharCode(seen[0]), 'c', 'what a call that cannot wait reads of it: still held');
+  },
   async 'a learned name under a directory a peer made unsearchable is refused after the barrier'() {
     const s = await storeSession({ d: null, 'd/f': 'f', other: 'o' });
     assert.notEqual(await s.fs.stat(k('d/f')), null);

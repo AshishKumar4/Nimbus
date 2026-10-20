@@ -218,6 +218,27 @@ await runScenarios(import.meta.path, {
     await read;
     assert.notEqual(synchronously(s.fs, k('f'), 'readFile'), 'one!', 'never the bytes from before the repair');
   },
+  async 'a fill asked before a repair began installs nothing, landing while the repair lists'() {
+    const enc = new TextEncoder();
+    const s = await storeSession({ f: 'one!', other: 'o' }, { eager: true });
+    for (let i = 0; i < 40; i++) await s.kernel.writeFile(k('other'), enc.encode(`o${i}`));
+    await s.kernel.writeFile(k('f'), enc.encode('two!'));
+    await s.fs.catchUp();
+    const fill = s.hold('fsReadBatch');
+    const read = s.fs.readFile(k('f'));
+    await fill();
+    // The session starts again: its revisions far below the first incarnation's.
+    await s.incarnate({ f: 'new!', other: 'o' });
+    const listing = s.hold('fsList');
+    const barrier = s.fs.catchUp();
+    await listing();
+    s.release('fsReadBatch');
+    await read.catch(() => undefined);
+    s.release('fsList');
+    await barrier;
+    assert.notEqual(synchronously(s.fs, k('f'), 'readFile'), 'two!', 'never the first incarnation\'s bytes');
+    assert.equal(dec.decode(await s.fs.readFile(k('f'))), 'new!');
+  },
   async 'under a trusted read lease, input alone takes no barrier'() {
     const s = await storeSession({ f: 'one' }, { eager: true, delegated: true });
     await s.fs.catchUp();
