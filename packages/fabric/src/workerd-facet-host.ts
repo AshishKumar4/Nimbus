@@ -65,6 +65,7 @@ import { PROCESS_FS_JOURNAL_READER_SOURCE } from '@nimbus-sh/core/_shared/proces
 import { applyFacetLimits, facetLimits, facetLoaderKey, type FacetResourceLimits } from './facet-limits.js';
 import { withResolvers } from './turn-budget.js';
 import { enteredByRun, RUN_ENTERED } from './one-shot-entry.js';
+import { holdThreadWatch } from './thread-stalls.js';
 import type { WorkerCode } from '@nimbus-sh/platform/worker-code.js';
 
 // ── Loaded-worker entrypoint plumbing ───────────────────────────────────────
@@ -816,6 +817,7 @@ async function runOneShot<T>(
   let supervisorBinding: unknown;
   let worker: LoadedWorkerStub | undefined;
   let entrypoint: LoadedWorkerEntrypointStub | undefined;
+  const watched = holdThreadWatch(ctx, `run pid ${params.pid}`);
   try {
     // Built before the capability is minted: nothing can write as this writer
     // until there is a program to do the writing, and a map that fails to
@@ -908,6 +910,7 @@ async function runOneShot<T>(
     disposeRpcResource(worker);
     disposeRpcResource(capability);
     disposeRpcResource(supervisorBinding);
+    watched();
     endFetch();
   }
 }
@@ -964,11 +967,17 @@ export function facetJournal(ctx: DurableObjectState, env: JournalReaderEnv, nam
     reader = facets.get(name, async () => ({ class: worker.getDurableObjectClass('NimbusFsJournalReader', { limits: facetLimits('process') }) })) as unknown as JournalReaderStub;
     return reader;
   };
+  // Each call watched while it runs (thread-stalls.ts): a drain at a cold start has no other work in flight.
+  const watched = async <T>(call: () => Promise<T>): Promise<T> => {
+    const release = holdThreadWatch(ctx, `journal ${name}`);
+    try { return await call(); }
+    finally { release(); }
+  };
   return {
-    numberings: async () => (await open()?.numberings()) ?? [],
-    number: async (numbering) => { await open()?.number(numbering); },
-    readAfter: async (after, maxBytes) => (await open()?.readAfter(after, maxBytes)) ?? [],
-    dropThrough: async (jid) => { await open()?.dropThrough(jid); },
+    numberings: () => watched(async () => (await open()?.numberings()) ?? []),
+    number: (numbering) => watched(async () => { await open()?.number(numbering); }),
+    readAfter: (after, maxBytes) => watched(async () => (await open()?.readAfter(after, maxBytes)) ?? []),
+    dropThrough: (jid) => watched(async () => { await open()?.dropThrough(jid); }),
   };
 }
 
