@@ -166,6 +166,13 @@ const FOUND = {
       ['input'], ['sync', 'stat', 'z/k'], ['sync', 'unlink', 'top'], ['peer', 'chmod', 'd', 488]
     ],
   },
+  'a miss of a file the process may no longer reach is not owed (6404)': {
+    engines: ['node'], park: 6404,
+    schedule: [['hold', 'wave'], ['sync', 'stat', 'z/k'], ['own', 'readFile', 'd/e'], ['own', 'readFile', 'mid'], ['own', 'readFile', 'x/h'], ['own', 'unlink', 'd/e/g'],
+      ['hold', 'delivery'], ['restart'], ['own', 'rename', 'x/h', 'd/e/g'], ['sync', 'readdir', 'x/h'], ['stall'], ['root', 'chmod', 'd/e', 488], ['release', 'lookup'],
+      ['release'], ['peer', 'chmod', 'd/e/g', 416], ['own', 'opendir', 'z'], ['sync', 'readFile', 'd/e/g'], ['root', 'chown', 'd/e', 0], ['sync', 'readFile', 'd/e/g'],
+      ['release'], ['hold', 'lookup']],
+  },
   'a file a call that cannot wait missed stays a miss until an awaited read answers it': {
     engines: ['node'],
     schedule: [['peer', 'write', 'new', 'not resident'], ['settle'], ['input'], ['settle'], ['sync', 'readFile', 'new'], ['own', 'stat', 'new'], ['settle']],
@@ -339,6 +346,7 @@ async function run(kind, schedule, park) {
 
 /** What the process renamed itself: Node's own renames, run apart so each file stays in the fast tier. */
 const OWN_RENAMES = new Set([
+  'a miss of a file the process may no longer reach is not owed (6404)',
   'a file the process wrote and then removed, both answered in one wave behind an input, is gone from its listing (2700)',
   'a directory read through its descriptor after an own rename into it, its wave not yet sent, lists the name the rename made (2896)',
   'an awaited read of a file a relist is on its way to is answered, not refused',

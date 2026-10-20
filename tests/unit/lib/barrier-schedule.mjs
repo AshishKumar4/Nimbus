@@ -55,7 +55,8 @@
  *     answers as the session holds it, both ways, and the session holds what
  *     the model says (no write lost). Node's ledger of program misses holds
  *     exactly the files a call that cannot wait was refused the bytes of, no
- *     awaited read of which has answered since, that are still there.
+ *     awaited read of which has answered since, that are still there and
+ *     the process may still read.
  * What the store keeps against its budget is not judged here: neither
  * engine shows the store's own total, and its accounting is the budget's
  * own tests' (resident-fs-model).
@@ -775,7 +776,7 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
     if (kind === 'node') {
       await globalThis.__nimbusVfsResidencySettle?.();
       const ledger = [...(globalThis.__nimbusVfsResidencyMisses ?? [])].sort();
-      const owed = [...missed].filter((rel) => world.get(rel)?.type === 'file').map(key).sort();
+      const owed = [...missed].filter((rel) => world.get(rel)?.type === 'file' && unreachable(world, rel) === null && (bits(world.get(rel)) & 4) !== 0).map(key).sort();
       if (ledger.join() !== owed.join()) throw new Finding(`at rest, the program's misses are [${ledger}]; unanswered are [${owed}]`, end);
     }
     // Where the process's own changes raced, how they ended is what the session holds: the process must show that.
