@@ -11,7 +11,6 @@
 import type { FacetImage } from '@nimbus-sh/core/runtime/facet-host.js';
 import type { Command } from '@nimbus-sh/core/substrate/lifo/commands/types.js';
 import type { OwnPrograms } from '../shell/npm-bin-entrypoints.js';
-import { type StagedSourceEnv } from './staged-source.js';
 /**
  * tsc and tsrs as Nimbus's own programs (shell/npm-bin-entrypoints.ts): tsrs
  * when no node_modules/.bin answers the name, and in place of an installed
@@ -19,6 +18,6 @@ import { type StagedSourceEnv } from './staged-source.js';
  * session's tsrs command.
  */
 export declare function tsrsPrograms(tsrs: (binName: string) => Command): OwnPrograms;
-/** tsrs.wasm, read (and verified against its pin) when a worker is built for it. */
-export declare function tsrsImage(env: StagedSourceEnv): FacetImage;
+/** tsrs.wasm, read from `env`'s ASSETS (and verified against its pin) when a worker is built for it. */
+export declare function tsrsImage(env: unknown): FacetImage;
 //# sourceMappingURL=tsrs.d.ts.map
