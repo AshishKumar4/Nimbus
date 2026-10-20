@@ -46,7 +46,7 @@ const LINES = [
   'a=(5 6); echo $((a[ ])); ((a[ ]=9)); declare -p a',
   "a=(10 20); echo $((a[\"1\"])); e='a[\"1\"]'; echo $((e)); x=0; let '0 && a[\"]\"], x=1'; echo \"$x\"",
   // A subscript's error is an expansion's: the line is discarded, in ((, let and [[ too, as a script
-  // runs (`bash -c` ends instead), its diagnostics naming the script, so its output and status are compared.
+  // runs it (`bash -c` ends instead).
   { line: 'a=(1); ((a[1/0])); echo same\necho "next $?"; let "a[1/0]"; echo same\necho "next $?"; [[ a[1/0] -eq 1 ]]; echo same\necho "next $?"', script: 'bash' },
   { line: 'a=(1); readonly r=1; ((a[r=2])); echo same\necho "next $?"; f() { ((a[1/0])); echo in; }; f; echo after\necho "next $?"', script: 'bash' },
   '(a=(1); ((a[1/0])); echo in); echo "after $?"; x=$(a=(1); ((a[1/0])); echo in); echo "sub $? [$x]"',
@@ -54,13 +54,20 @@ const LINES = [
   't=5; ((t[-1]=7)); declare -p t',
   // $((…))'s text is expanded before it is evaluated.
   'a=(1 2 3); echo $(( ${#a[@]} - 1 )) $(( $(echo 2) * 3 )); j=1+1; echo $((2*$j)) $((2*j))',
+  // A read-then-write whose read index is bad binds its subscript again after the right side.
+  'a=(1); ((a[-2] += (a[1]=5))); declare -p a; t=5; ((t[-1]++)); declare -p t',
+  // As in double quotes: a single quote is the expression's, an operand error; double quotes are removed.
+  { line: 'i=0; echo $(( \'i++\' ))\necho "i=$i"; echo $(( "1" + 2 )); a=(5 6); ((x = a["1"])); echo "$x"', script: 'bash' },
+  // A value's subscript is expanded too; a name in it is read.
+  'a=(10 20); i=1; e=\'a[$i]\'; echo $((e)); f=\'a["1"]\'; echo $((f))',
+  // An operand that is not one, and text left after the expression, are errors.
+  { line: 'echo $(( 1 + @ ))\necho $(( 2 3 ))\nx="1 2"; echo $((x))\necho end', script: 'bash' },
 ];
 
-/** bash's diagnostic prefix: `bash: line 1: `, `bash: -c: line 1: `, and in a function 5.2's `environment: line 1: `. */
-const plainStderr = (text) => text.replace(/^(?:bash|environment): (?:-c: )?(?:line \d+: )?/gm, '');
+/** bash's diagnostic prefix: `bash: line 1: `, `bash: -c: line 1: `, a script's `./s.sh: line 1: `, and in a function 5.2's `environment: line 1: `. */
+const plainStderr = (text) => text.replace(/^(?:bash|environment|\.\/s\.sh): (?:-c: )?(?:line \d+: )?/gm, '');
 
 const CASES = LINES.map((c) => (typeof c === 'string' ? { line: c, script: null } : c));
-const compared = (result, script) => (script === null ? result : { stdout: result.stdout, status: result.status });
 
 const want = [];
 for (const { line, script } of CASES) {
@@ -70,7 +77,7 @@ for (const { line, script } of CASES) {
     const argv = script === null ? ['--norc', '--noprofile', '-c', line] : ['./s.sh'];
     const r = spawnSync('bash', argv, { cwd: dir, encoding: 'utf8', timeout: 10_000, env: { PATH: process.env.PATH, LC_ALL: 'C.UTF-8', HOME: '/home/user' } });
     assert.equal(r.error, undefined, `bash ran ${JSON.stringify(line)}: ${r.error?.message}`);
-    want.push(compared({ stdout: r.stdout, stderr: plainStderr(r.stderr), status: r.status }, script));
+    want.push({ stdout: r.stdout, stderr: plainStderr(r.stderr), status: r.status });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -87,7 +94,7 @@ try {
     await ws.exec(`mkdir -p ${dir}`, { cwd: '/home/user' });
     if (script !== null) await ws.fs.writeFile(`${dir}/s.sh`, `${line}\n`);
     const r = await ws.exec(script === null ? line : `${script} ./s.sh`, { cwd: dir });
-    const ours = compared({ stdout: r.stdout, stderr: r.stderr, status: r.exitCode }, script);
+    const ours = { stdout: r.stdout, stderr: r.stderr, status: r.exitCode };
     if (JSON.stringify(ours) !== JSON.stringify(want[i])) failed.push(`${JSON.stringify(line)}\n  bash: ${JSON.stringify(want[i])}\n  ours: ${JSON.stringify(ours)}`);
   }
 } finally {

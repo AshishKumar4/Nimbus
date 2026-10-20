@@ -424,7 +424,7 @@ async function expandDollar(
     // Its text expanded first, as bash's expand_arith_string does it (parameters,
     // substitutions, quotes removed); text with nothing to expand is evaluated in
     // place: a loop's $((i + 1)) awaits nothing unless it fails.
-    const expression = ARITHMETIC_EXPANDS.test(arithmetic.expression) ? await expandSubscript(arithmetic.expression, ctx) : arithmetic.expression;
+    const expression = ARITHMETIC_EXPANDS.test(arithmetic.expression) ? await expandArithmetic(arithmetic.expression, ctx) : arithmetic.expression;
     let result: number;
     try {
       result = arithmeticOf(expression, ctx);
@@ -532,6 +532,15 @@ async function resolveParameter(ref: ParameterRef, ctx: ExpandContext): Promise<
     return { kind: 'scalar', value: undefined };
   }
   return { kind: 'scalar', value: array === undefined ? (index === 0 ? ctx.env[name] : undefined) : array[index] };
+}
+
+/**
+ * Arithmetic text once its expansions are done, as bash's expand_arith_string
+ * does them: as in double quotes (a single quote is the expression's, and an
+ * error there), its double quotes removed.
+ */
+export async function expandArithmetic(text: string, ctx: ExpandContext): Promise<string> {
+  return joinPieces(await expandParameterWord(text, ctx, 'double'));
 }
 
 /** A subscript's text once its expansions (`$i`, `$(…)`) are done, before its arithmetic. */
@@ -1222,8 +1231,12 @@ function evaluateArithmetic(expr: string, scope: ArithmeticScope, depth = 0): nu
   // Its trailing blanks are its own, as bash's diagnostics quote the expression.
   const parser = new ArithParser(expr.trimStart(), scope, depth);
   const result = parser.parseExpression();
+  parser.expectEnd();
   return result;
 }
+
+/** What an operand begins with: a number, a name, `$` or `(`. */
+const OPERAND_START = /[0-9A-Za-z_$(]/;
 
 /** Arithmetic text with something to expand before it is evaluated. */
 const ARITHMETIC_EXPANDS = /[$`"'\\]/;
@@ -1323,7 +1336,8 @@ class ArithParser {
     const trimmed = text.trim();
     if (text === '' || trimmed === '@' || trimmed === '*') return null;
     if (this.noeval > 0 || trimmed === '') return 0;
-    const expression = /["'\\]/.test(text) ? parameterWordParts(text, 'word').map((part) => part.text).join('') : text;
+    // Its quotes removed as arithmetic's are (expandArithmetic); an expansion left in it (a value's) is an operand error.
+    const expression = /["\\]/.test(text) ? parameterWordParts(text, 'double').map((part) => part.text).join('') : text;
     try {
       return evaluateArithmetic(expression, this.scope, this.depth);
     } catch (error) {
@@ -1381,6 +1395,11 @@ class ArithParser {
     else arrayFor(this.scope, name)[index] = String(value);
   }
 
+  /** Where a read-then-write binds: the index its read found, or, where that was bad, its subscript found again (bash's expassign). */
+  private bindIndex(name: string, subscript: string | undefined, index: number | null | undefined): number | null | undefined {
+    return index === null && subscript !== undefined ? this.writeIndex(name, subscript) : index;
+  }
+
   /** The `[subscript]` after a name, its text as written (read whole, its quotes and substitutions its own); none where none follows. */
   private readSubscript(): string | undefined {
     if (this.peek() !== '[') return undefined;
@@ -1388,6 +1407,18 @@ class ArithParser {
     if (!span.closed) return undefined;
     this.pos = span.end;
     return span.body;
+  }
+
+  /** bash's syntax evalerror: the whole expression, `why`, and the rest from here, the token in error. */
+  private syntaxError(why: string): ArithmeticError {
+    return new ArithmeticError(`${this.expr}: ${why} (error token is "${this.expr.slice(this.pos)}")`);
+  }
+
+  /** Nothing left once the expression is read: an operand there is a second one, anything else no operator. */
+  expectEnd(): void {
+    this.skipSpaces();
+    if (this.pos >= this.expr.length) return;
+    throw this.syntaxError(OPERAND_START.test(this.peek()) ? 'syntax error in expression' : 'syntax error: invalid arithmetic operator');
   }
 
   /** bash's evalerror at the token from `start` to here: the expression through it, `why`, the token. */
@@ -1665,7 +1696,7 @@ class ArithParser {
         const subscript = this.readSubscript();
         const index = subscript === undefined ? undefined : this.readIndex(name, subscript);
         const val = this.read(name, index) + (ch === '+' ? 1 : -1);
-        this.store(name, index, val);
+        this.store(name, this.bindIndex(name, subscript, index), val);
         return val;
       }
       this.pos = start;
@@ -1714,11 +1745,13 @@ class ArithParser {
 
     // $VAR reference -- skip the $ and read variable name
     if (ch === '$') {
+      const start = this.pos;
       this.pos++;
       this.skipSpaces();
       const name = this.readVarName();
       if (name) return this.read(name);
-      return 0;
+      this.pos = start;
+      throw this.syntaxError('syntax error: operand expected');
     }
 
     // Variable reference (possibly with post-increment)
@@ -1734,7 +1767,7 @@ class ArithParser {
         this.pos += 2;
         const index = subscript === undefined ? undefined : this.readIndex(name, subscript);
         const val = this.read(name, index);
-        this.store(name, index, val + step);
+        this.store(name, this.bindIndex(name, subscript, index), val + step);
         return val;
       }
 
@@ -1755,13 +1788,15 @@ class ArithParser {
         const index = subscript === undefined ? undefined : this.readIndex(name, subscript);
         const left = this.read(name, index);
         const val = this.operate(operator.slice(0, -1), left, this.parseTernary(), start);
-        this.store(name, index, val);
+        this.store(name, this.bindIndex(name, subscript, index), val);
         return val;
       }
 
       return this.read(name, subscript === undefined ? undefined : this.readIndex(name, subscript));
     }
 
+    // Anything else where an operand is due is an error; the end of the text is 0.
+    if (this.pos < this.expr.length) throw this.syntaxError('syntax error: operand expected');
     return 0;
   }
 
