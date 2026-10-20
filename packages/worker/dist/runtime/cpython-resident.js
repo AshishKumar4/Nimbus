@@ -99,6 +99,7 @@ export function cpythonResidentStart(facetMgr) {
             // RPC value may carry, so whichever host runs this process reads it itself.
             vfsWasmModules: { 'python.wasm': args.wasmVfsPath },
             startArgs: args.startArgs,
+            processEnv: args.processEnv,
         }).catch(() => null);
         if (!spawned)
             return { exitCode: 1, stdout: '', stderr: 'python process boot failed\n' };

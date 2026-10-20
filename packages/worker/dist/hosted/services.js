@@ -62,6 +62,7 @@ export function ensureFacetManager(self, runtimeContext) {
                 rewindProcessFiles: (pid) => self.supervisorRewindBridge(pid),
                 requestLaunchTurn: (notBefore) => runtimeContext.requestLaunchTurn(notBefore),
                 resolveWorkerLaunch: runtimeContext.resolveWorkerLaunch,
+                ...runtimeContext.processEnv,
                 notify: (line) => runtimeContext.notify(line),
                 onSpawn: (pid, command, longRunning) => {
                     const attachedTty = self.processes.get(pid)?.attachedTty === true;

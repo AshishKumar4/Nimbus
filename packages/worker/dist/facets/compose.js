@@ -60,6 +60,8 @@ export function composeFacetManager(deps) {
         ...(deps.hooks.resolveWorkerLaunch !== undefined
             ? { resolveWorkerLaunch: deps.hooks.resolveWorkerLaunch }
             : {}),
+        ...(deps.hooks.resolveProcessEnv !== undefined ? { resolveProcessEnv: deps.hooks.resolveProcessEnv } : {}),
+        ...(deps.hooks.keepProcessEnv !== undefined ? { keepProcessEnv: deps.hooks.keepProcessEnv } : {}),
         resolveWorkerLaunchFallback: (recipe) => resolveDurableWorkerImage(vfs, recipe),
     };
     const manager = new FacetManager(ctx, env, deps.processes, deps.portRegistry, processHostFor, { ...hooks, network: deps.network, supervise: deps.supervise });

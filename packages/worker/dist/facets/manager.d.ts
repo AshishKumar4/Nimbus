@@ -275,7 +275,6 @@ export declare function generateLongRunningNodeCode(userCode: string, vfsState: 
     argv?: string[];
     /** A node program's command line: its options, conditions, preloads and `-e`/`-p` code (core runtime/node-cli.ts). */
     node?: NodeLaunch;
-    env?: Record<string, string>;
     cwd?: string;
     filename?: string;
     dirname?: string;
@@ -902,6 +901,40 @@ export interface FacetManagerHooks {
      * is refused unless the embedder hook exists.
      */
     resolveWorkerLaunchFallback?: (recipe: WorkerRecipe) => Promise<ResolvedWorkerLaunch | null>;
+    /**
+     * The environment a process was launched with, asked for again when it is
+     * relaunched: a re-drive after a reset, an on-failure restart, a durable
+     * application's relaunch on its port, a dev server's restore. Nimbus keeps
+     * no process's environment in any record, image or source (ask 62): a host
+     * that answers `null`, throws or composes none fails that relaunch, named.
+     */
+    resolveProcessEnv?: (request: ProcessEnvRequest) => Promise<Record<string, string> | null>;
+    /**
+     * Told each relaunchable launch's environment when its record is written,
+     * and when the record is gone: what a host that answers resolveProcessEnv
+     * from its own keeping composes (the session's, session/process-env-store.ts).
+     * An embedder that knows its processes' environments composes
+     * resolveProcessEnv alone.
+     */
+    keepProcessEnv?: ProcessEnvKeeper;
+}
+/** What a relaunch asks its host for: the process it relaunches, and the record that relaunches it. */
+export interface ProcessEnvRequest {
+    /** The pid the record names: the process being relaunched, of this or an earlier instance. */
+    pid: number;
+    /** Its exec id (`ProcessEntry.execId`), when it has one. */
+    execId?: string;
+    /** Who it runs as. */
+    cred: VfsCred;
+    /** The record's storage key (`resident-launch:<pid>`, `dev-server:<pid>`): what a keeper keys by. */
+    record: string;
+}
+/** Where a host keeps the environments it answers resolveProcessEnv from (FacetManagerHooks.keepProcessEnv). */
+export interface ProcessEnvKeeper {
+    /** `record` was written for a launch with `env`. */
+    remember(record: string, env: Record<string, string>): Promise<void>;
+    /** `record` is gone: nothing relaunches from it. */
+    forget(record: string): Promise<void>;
 }
 export interface ForegroundLaunch {
     signal: AbortSignal;
@@ -968,6 +1001,14 @@ export interface LongRunningWorkerSpawnOptions {
     globalOutbound?: ResidentCodeSpec['globalOutbound'];
     /** Forwarded verbatim to the runner's startProcess. */
     startArgs?: unknown;
+    /**
+     * The process environment within an interpreter resident's
+     * `startArgs.userEnv`: what its command was launched with, beside what its
+     * runtime adds. Never stored: its image keeps the runtime's additions
+     * alone (`runtimeEnv`), and its relaunch asks the host for the rest
+     * (resolveProcessEnv).
+     */
+    processEnv?: Record<string, string>;
     /**
      * Set for a worker a durable application owns: the launch is journalled and
      * re-driven after an instance reset through `hooks.resolveWorkerLaunch`.
@@ -1313,6 +1354,23 @@ export declare class FacetManager {
     private ephemeralPids;
     private residentClaims;
     constructor(ctx: DurableObjectState, env: unknown, processes: SessionProcessSupervisor, portRegistry: PortRegistry, host: ProcessHostFactory, hooks?: FacetManagerHooks);
+    /**
+     * What releases before ask 62 kept of their processes' environments, once
+     * per session, before anything of it is re-driven:
+     * - a Node resident's journal row held its env: kept where this host keeps
+     *   environments (keepProcessEnv), and written again without it;
+     * - a durable application's image held its interpreter's environment, or a
+     *   binding env, where every process could read it: written again without
+     *   it, its rows and its owner's images naming the new one, the old blobs
+     *   unlinked. An application whose binding env nothing can give back (no
+     *   embedder resolveWorkerLaunch) is not restarted, and the session is told;
+     * - a resident's generated source, in an image no live process boots from
+     *   (the store's sweep), or below /var/lib/nimbus where releases through
+     *   0.19 wrote it: unlinked.
+     * Unlinked bytes are then collected (the VFS's content GC). A filesystem
+     * snapshot or export taken before keeps what it held.
+     */
+    private _dropEnvironmentsAtRest;
     /**
      * A signal's default action: the process ends with 128+signo whether its
      * facet is still being built (the launch stops at its next ownership gate)
@@ -2074,11 +2132,17 @@ export declare class FacetManager {
     /**
      * Re-drive a journalled launch after an instance reset. What the journal
      * row carries is the recipe, and who the launch ran as (its credential and
-     * exec id); env and secrets are never written to storage, so a worker
-     * launch's are re-resolved by the embedder through
-     * `hooks.resolveWorkerLaunch`.
+     * exec id); never its environment, which the host gives again
+     * (`hooks.resolveProcessEnv`), and a worker launch's bindings are
+     * re-resolved by the embedder through `hooks.resolveWorkerLaunch`.
      */
     private _redrive;
+    /**
+     * The environment `pid`, relaunched from `record`, was launched with: the
+     * host's answer (resolveProcessEnv), or a failure that names why it has
+     * none. Never an empty or a guessed environment.
+     */
+    private _relaunchEnv;
     /**
      * The process-table entry of a resident launch: a child of its invoker,
      * under its credential, as exec's. A re-drive has no invoker (the journal

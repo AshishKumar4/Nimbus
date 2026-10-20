@@ -5465,7 +5465,7 @@ function dropLegacyFacetSources(vfs: SqliteVFS): void {
 }
 
 /** A relaunch's environment carrying its record's restart policy: Nimbus's own setting, which the host's answer need not. */
-function withRestartPolicy(env: Record<string, string>, restart: ResidentRestartPolicy): Record<string, string> {
+function withRestartPolicy(env: Record<string, string>, restart: ResidentRestartPolicy | undefined): Record<string, string> {
   return restart === 'on-failure' ? { ...env, [RESTART_POLICY_ENV]: 'on-failure' } : env;
 }
 

@@ -352,7 +352,7 @@ export function makeCPythonRunnerFactory(deps) {
                 const output = runtimeOutput(ctx);
                 let spawnResult;
                 try {
-                    spawnResult = await deps.startResident({ wasmVfsPath: wasmVfs, startArgs: facetArgs, cwd, command, argv: [binName, ...argv], invokerPid: ctx.pid, signal: ctx.signal, write: output.write });
+                    spawnResult = await deps.startResident({ wasmVfsPath: wasmVfs, startArgs: facetArgs, processEnv: { ...(ctx.env || {}) }, cwd, command, argv: [binName, ...argv], invokerPid: ctx.pid, signal: ctx.signal, write: output.write });
                 }
                 finally {
                     await output.end();

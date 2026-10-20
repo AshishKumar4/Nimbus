@@ -109,6 +109,8 @@ export type RubyResidentStart = (spawn: {
     /** VFS path of the interpreter. By path, not by value: it is 34.3 MiB. */
     wasmVfsPath: string;
     startArgs: RubyFacetCallArgs;
+    /** The environment the command was launched with, within `startArgs.userEnv`: never stored (ask 62). */
+    processEnv: Record<string, string>;
     cwd: string;
     command: string;
     /** The launching command's process: the resident carries its exec id. */

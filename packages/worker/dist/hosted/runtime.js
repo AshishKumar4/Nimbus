@@ -30,6 +30,8 @@ const InputFrame = z.discriminatedUnion('type', [
 class RuntimeOwner {
     options;
     terminal;
+    /** The embedder's answer, and no keeping of its own: Nimbus keeps no process's environment (session/process-env.ts). */
+    processEnv;
     _cpRegistry;
     _storedShellsAdopted;
     _cirrusHmrWsClients = new Map();
@@ -68,6 +70,7 @@ class RuntimeOwner {
     supervisorDeliveries;
     constructor(options) {
         this.options = options;
+        this.processEnv = options.resolveProcessEnv === undefined ? {} : { resolveProcessEnv: options.resolveProcessEnv };
         hostNamespaceBinding(options.env, 'HostedRuntime');
         this.supervisorDeliveries = openSupervisorDeliveries(options.ctx);
         const exports = Reflect.get(options.ctx, 'exports');
@@ -90,6 +93,7 @@ class RuntimeOwner {
             notify: (line) => this._notifySession(line),
             requestLaunchTurn: (at) => this._scheduleLaunchTurn(at),
             resolveWorkerLaunch: options.resolveWorkerLaunch,
+            processEnv: this.processEnv,
             filesystem: () => options.workspace.filesystem,
             network: () => options.workspace.network,
             armResidentKeepalive: () => armResidentKeepalive(this, this.keepaliveCycle),
@@ -163,6 +167,7 @@ class RuntimeOwner {
             get processes() { return owner.processes; },
             get portRegistry() { return owner.portRegistry; },
             get runtimeWorkspace() { return owner.runtimeWorkspace; },
+            processEnv: this.processEnv,
             ensureRuntimeReady: () => this.ensureUsable(),
         };
         return restoreDevServers(this.devServerHost);

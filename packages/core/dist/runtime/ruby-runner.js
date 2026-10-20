@@ -216,6 +216,7 @@ export function makeRubyRunnerFactory(deps) {
                     result = await deps.startResident({
                         wasmVfsPath: facetArgs.wasmVfsPath,
                         startArgs: toRubyCallArgs(facetArgs),
+                        processEnv: { ...(ctx.env || {}) },
                         cwd,
                         command: formatRubyCommand(binName, argv),
                         argv: [binName, ...argv],

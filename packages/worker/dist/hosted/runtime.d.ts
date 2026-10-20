@@ -29,6 +29,13 @@ export interface HostedRuntimeOptions {
     ports: PortRegistry;
     lifecycle: HostedRuntimeLifecycle;
     resolveWorkerLaunch?: FacetManagerHostHooks['resolveWorkerLaunch'];
+    /**
+     * The environment a process was launched with, asked for when it is
+     * relaunched (a reset's re-drive, a restart, a durable app's relaunch, a
+     * dev server's restore). Nimbus keeps no process's environment: without
+     * this, or when it answers `null`, the relaunch fails, saying why.
+     */
+    resolveProcessEnv?: FacetManagerHostHooks['resolveProcessEnv'];
     basePath?: string;
     origin?: string;
 }

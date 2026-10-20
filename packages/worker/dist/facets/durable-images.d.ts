@@ -28,7 +28,6 @@
  */
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { type ImageBlobStore } from '@nimbus-sh/fabric/image-store.js';
-import { type ResidentCodeSpec } from '@nimbus-sh/fabric/process-fabric.js';
 import type { ResolvedWorkerLaunch, WorkerRecipe } from './manager.js';
 /** The directory every durable application's image blobs live under. */
 export declare const DURABLE_IMAGE_DIR = ".nimbus/images";
@@ -36,6 +35,27 @@ export declare const DURABLE_IMAGE_DIR = ".nimbus/images";
 type InlineModule = string | {
     wasm: ArrayBuffer;
 };
+/** The session's image disk as the kernel, for work no process does: an earlier release's images rewritten. */
+export declare function kernelImageBlobs(vfs: SqliteVFS): ImageBlobStore;
+/**
+ * An application image an earlier release wrote with an environment in it,
+ * written again without: what every process can read holds none (ask 62).
+ * Answers the new image, the interpreter's process environment it held
+ * (`startArgs.userEnv`, for the caller to keep where its host keeps
+ * environments), and whether it held a binding env, which nothing in the
+ * session can give back. Null when it holds neither, or is not there.
+ */
+export declare function rewriteWithoutEnvironment(vfs: SqliteVFS, image: {
+    runner: string;
+    application: string;
+}): Promise<{
+    image: {
+        runner: string;
+        application: string;
+    };
+    processEnv?: Record<string, string>;
+    bindingEnv: boolean;
+} | null>;
 /** Remove only the owner's blobs that no other retained recipe references. */
 export declare function purgeDurableWorkerImages(vfs: SqliteVFS, owned: Iterable<{
     runner: string;
@@ -53,7 +73,6 @@ export declare function purgeDurableWorkerImages(vfs: SqliteVFS, owned: Iterable
  */
 export declare function persistDurableWorkerImage(blobs: ImageBlobStore, workerCode: string, payload: {
     modules: Record<string, InlineModule>;
-    env?: ResidentCodeSpec['env'];
     vfsWasmModules?: Record<string, string>;
     vfsTextModules?: Record<string, string>;
     /** Recorded only when the launch named one; absent means `worker.js`. */
