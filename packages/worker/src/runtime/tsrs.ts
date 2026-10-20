@@ -11,6 +11,7 @@
 
 import type { FacetImage } from '@nimbus-sh/core/runtime/facet-host.js';
 import { MEMORY_LIMIT_GROWTH_BYTES, withMemoryLimit } from '@nimbus-sh/core/runtime/wasm-memory.js';
+import { WASI_RESIDENT_STORE_BYTES } from '@nimbus-sh/platform/limits.js';
 import type { Command } from '@nimbus-sh/core/substrate/lifo/commands/types.js';
 import type { NpmBinPackageMetadata, OwnPrograms } from '../shell/npm-bin-entrypoints.js';
 import { TSRS_TYPESCRIPT_VERSION, TSRS_VERSION, TSRS_WASM_ASSET_PATH, TSRS_WASM_BYTES, TSRS_WASM_SHA256 } from '../tsrs-wasm-artifact.generated.js';
@@ -47,13 +48,18 @@ const TSRS_WASM_ASSET = stagedAsset({
  * The most linear memory tsrs may grow to: past it, its allocator fails and
  * the run ends as tsc's crash (exit 5, "out of memory"), its writes settled;
  * without it, the worker is killed and what it last wrote may be lost.
- * Measured on two throwaway Previews (2026-10-20), growing tsrs's memory a
- * MiB at a time after a run: its Loader worker was killed ("exceeded memory
- * limit") as the memory reached 220-251 MiB (n=8), the least in a reused
- * worker after a react-ts build. 208 MiB is that least, rounded down to a
- * 16 MiB step. A react-ts build peaks at 134 MiB, a 310-file check at 111.
+ *
+ * What a Loader worker can hold, less what else a tsrs worker holds: its
+ * resident store at most WASI_RESIDENT_STORE_BYTES, and 28 MiB of its own
+ * (module code, heap, buffers). Both measured on throwaway Previews
+ * (2026-10-20): a worker dies at about 254 MiB in all (file-engine
+ * measurements), and a reused tsrs worker whose store held next to nothing
+ * died as its linear memory grew past 225-226 MiB (n=4), so 28 MiB is its
+ * own. Rounded down to a 16 MiB step: 192 MiB with today's 32 MiB store. A
+ * react-ts build peaks at 134 MiB, a 310-file check at 111.
  */
-const TSRS_MEMORY_LIMIT_BYTES = 208 * 1024 * 1024;
+const MiB = 1024 * 1024;
+const TSRS_MEMORY_LIMIT_BYTES = Math.floor((254 * MiB - 28 * MiB - WASI_RESIDENT_STORE_BYTES) / (16 * MiB)) * 16 * MiB;
 
 /** tsrs.wasm, read from `env`'s ASSETS (and verified against its pin) when a worker is built for it, its memory bounded. */
 export function tsrsImage(env: unknown): FacetImage {

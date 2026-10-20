@@ -180,7 +180,7 @@ export function installNpmBinFallbackResolver(
       if (deps.ownPrograms?.names.has(name)) {
         const installed = await readNpmBinPackageMetadata(vfs, bin.packagePath);
         const own = installed === null ? undefined : deps.ownPrograms.inPlaceOf(name, installed);
-        if (own) return await own(ctx);
+        if (own) return await (own as FallbackCommandHandler)(ctx);
       }
 
       const argv = Array.isArray(ctx.args) ? ctx.args.map(String) : [];
