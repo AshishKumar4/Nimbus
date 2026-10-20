@@ -8,7 +8,7 @@
 //     it runs (a job behind a `sh -c` too) and forgets its screen, state and
 //     history; the other runs on;
 //   - a name's shell outlives `kill $$`, as the session's own does;
-//   - names follow the rule (1 to 64 of A-Z a-z 0-9 . _ -), at most 16.
+//   - names follow the rule (1 to 64 of A-Z a-z 0-9 . _ -); two attaches of a new name open one.
 import assert from 'node:assert/strict';
 
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
@@ -136,14 +136,14 @@ assert.equal(await workspace.fs.exists('/home/user/.local/state/nimbus/terminals
 assert.deepEqual(await runtime.closeTerminal('a'), { closed: false }, 'a second close finds none');
 assert.match(await run('b', b, 'pwd'), /\/home\/user\/bdir\r\n/, 'b is as it was');
 
-// Names follow the rule, and a session keeps at most 16.
+// Names follow the rule.
 await assert.rejects(runtime.attachTerminal(socket(), { terminal: 'no/slash' }));
 await assert.rejects(runtime.closeTerminal('x'.repeat(65)), TypeError);
-for (let n = 1; n <= 14; n++) await attach(`t${n}`);
-// Two new names at once for the last place: one gets it, an opening counts from its start.
-const raced = await Promise.allSettled([attach('race-1'), attach('race-2')]);
-assert.deepEqual(raced.map((r) => r.status).sort(), ['fulfilled', 'rejected'], 'one of two openings at once takes the last place');
-await assert.rejects(attach('one-too-many'), /at most 16 named terminals/);
+// Two attaches of one new name at once open one terminal: the later socket has it.
+const [first, second] = [socket(), socket()];
+await Promise.all([runtime.attachTerminal(first, { terminal: 'both' }), runtime.attachTerminal(second, { terminal: 'both' })]);
+assert.equal((await runtime.listTerminals()).filter((t) => t.name === 'both').length, 1);
+assert.match(await run('both', second, 'echo second-has-it'), /second-has-it/);
 console.log('named-terminals: ok');
 } finally {
   // Its jobs (b's sleep) end with it, so nothing keeps the test's process alive.
