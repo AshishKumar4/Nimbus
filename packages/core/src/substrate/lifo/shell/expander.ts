@@ -1349,7 +1349,7 @@ class ArithParser {
     try {
       // Its own evaluation is a level deeper, as a value's is: a subscript naming itself ends.
       if (this.depth >= MAX_ARITHMETIC_DEPTH) {
-        throw new ArithmeticError(`${text}: expression recursion level exceeded (error token is "${text}")`);
+        throw new ArithmeticError(`${expression}: expression recursion level exceeded (error token is "${expression}")`);
       }
       return evaluateArithmetic(expression, this.scope, this.depth + 1);
     } catch (error) {
