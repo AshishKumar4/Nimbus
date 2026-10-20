@@ -20,6 +20,7 @@ import { createWaveWriter } from '@nimbus-sh/platform/wave-writer.js';
 import { concatBytes } from '@nimbus-sh/core/_shared/bytes.js';
 
 import type { ProjectFs } from '../../runtime/project-fs.js';
+import type { VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { GitPacksSeam } from '../pack/store.js';
 import { objectIdPrefix, type GitObjectType } from '../pack/format.js';
 import { coneMatcher, parseConeSparseCheckout, type SparseMatcher } from '../pack/sparse.js';
@@ -82,6 +83,15 @@ interface ObjectSink {
   flush(): Promise<void>;
 }
 
+/** A worktree entry's stat as the comparisons take it: a type the walk knows, else `other`. */
+function worktreeStatOf(st: VfsStat): WorktreeStat {
+  const type = st.type === 'file' || st.type === 'directory' || st.type === 'symlink' ? st.type : 'other';
+  return {
+    type, mode: st.mode, size: st.size, mtimeMs: st.mtime, ctimeMs: st.ctime,
+    dev: st.dev, ino: st.ino, uid: st.uid, gid: st.gid,
+  };
+}
+
 /** ENOENT or ENOTDIR: the path is not there, which is an answer; anything else is a failure. */
 function isAbsent(error: unknown): boolean {
   return isVfsError(error, 'ENOENT') || isVfsError(error, 'ENOTDIR')
@@ -120,6 +130,7 @@ export class WorktreeRepo {
     const at = (path: string) => (path ? `${root}/${path}` : root);
     this.fs = {
       list: async (dir) => {
+        counters.readdirs++;
         let entries: Awaited<ReturnType<ProjectFs['readdir']>>;
         // Nothing there is no listing; any other failure (EACCES, EIO) is the caller's to report.
         try { entries = await vfs.readdir(at(dir)); } catch (error) { if (isAbsent(error)) return []; throw error; }
@@ -132,13 +143,10 @@ export class WorktreeRepo {
         return out;
       },
       lstat: async (path) => {
+        counters.lstats++;
         let st: Awaited<ReturnType<ProjectFs['lstat']>>;
         try { st = await vfs.lstat(at(path)); } catch (error) { if (isAbsent(error)) return null; throw error; }
-        const type = st.type === 'file' || st.type === 'directory' || st.type === 'symlink' ? st.type : 'other';
-        return {
-          type, mode: st.mode, size: st.size, mtimeMs: st.mtime, ctimeMs: st.ctime,
-          dev: st.dev, ino: st.ino, uid: st.uid, gid: st.gid,
-        } satisfies WorktreeStat;
+        return worktreeStatOf(st);
       },
       // Read once to be hashed or stored: past the content cache, which keeps the session's working set.
       readFile: async (path) => await vfs.readFileUncached(at(path)),
@@ -314,6 +322,50 @@ export class WorktreeRepo {
     return {
       hfs: await setting('core.protecthfs') ?? DEFAULT_PATH_PROTECTION.hfs,
       ntfs: await setting('core.protectntfs') ?? DEFAULT_PATH_PROTECTION.ntfs,
+    };
+  }
+
+  /**
+   * The worktree as one ordered scan of its tree reads it (ProjectFs.scan):
+   * its listings and lstats answered from the scan, what the scan marks
+   * `byName` (a directory on an unlisted mount, or one the caller may not
+   * read) asked by name, its contents read as {@link worktree} reads them.
+   * On next.js's 34,302 files, status's 51,000 calls by name were all of
+   * its 3.5 s on a session's thread; the scan is a page of entries a slice.
+   * The scan is held whole, so a command that walks a tree too large to
+   * hold (add -A, under its memory bound) keeps {@link worktree}.
+   */
+  async scannedWorktree(): Promise<Worktree> {
+    const listings = new Map<string, Array<{ name: string; type: WorktreeType }>>([['', []]]);
+    const stats = new Map<string, WorktreeStat>();
+    const byName = new Set<string>();
+    /** Whether `path` is under a directory the scan marked byName: asked by name. */
+    const askedByName = (path: string) => {
+      if (byName.size === 0) return false;
+      for (let cut = path.lastIndexOf('/'); cut > 0; cut = path.lastIndexOf('/', cut - 1)) if (byName.has(path.slice(0, cut))) return true;
+      return false;
+    };
+    this.counters.scans++;
+    for await (const entry of this.vfs.scan(this.root)) {
+      this.counters.scanned++;
+      if (askedByName(entry.path)) continue;
+      const st = worktreeStatOf(entry.stat);
+      const cut = entry.path.lastIndexOf('/');
+      listings.get(cut < 0 ? '' : entry.path.slice(0, cut))?.push({ name: entry.path.slice(cut + 1), type: st.type });
+      stats.set(entry.path, st);
+      if (st.type !== 'directory') continue;
+      if (entry.byName) byName.add(entry.path);
+      else listings.set(entry.path, []);
+    }
+    const asked = (path: string) => byName.has(path) || askedByName(path);
+    return {
+      ...await this.worktree(),
+      fs: {
+        ...this.fs,
+        // Nothing there, or not a directory, is no listing (WorktreeFs.list).
+        list: async (dir) => asked(dir) ? await this.fs.list(dir) : listings.get(dir) ?? [],
+        lstat: async (path) => askedByName(path) ? await this.fs.lstat(path) : stats.get(path) ?? null,
+      },
     };
   }
 
