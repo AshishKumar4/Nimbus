@@ -127,7 +127,7 @@ const FOUND = {
 const GAPS = {
   'a file the process renamed into place reads as a peer later wrote it (3219) [node]': {
     lacks: 'S dates a moved file\'s bytes only by a write parked under its old name: bytes held otherwise (read, or written and already sent) stay its own at the new name past every barrier, as no rename has a receipt to date them by (closed by the cutover: RF retires own state by identity); '
-      + 'meanwhile a Node program that renamed a file it had read or written, then saw another process overwrite it, keeps reading its own bytes with readFileSync',
+      + 'meanwhile, in a program that renames a file it had read (or written and already sent), then another process overwrites it, readFileSync keeps serving the program\'s own bytes',
     shows: 'at rest, sync readFile top answered "c3219.3"',
   },
   'an awaited chmod outside a grant is what the next call that cannot wait reads [holder]': {
