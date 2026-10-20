@@ -160,6 +160,8 @@ export class Shell {
   private activeInput: ShellInputExecution | undefined;
   private lineInputs: Array<{ submission: ShellInputSubmission; release: () => void }> = [];
   private promptMode: 'unprinted' | 'primary' | 'continuation' = 'unprinted';
+  /** The terminal's write count when the line editor last painted itself (ITerminal.writes); -1 before. */
+  private editorMark = -1;
   private readonly exitNotices = new Map<number, ProcessExitNotice>();
   private exitNoticeSource: ProcessExitNoticeSource | undefined;
   private renderExitNotice: ((notice: ProcessExitNotice, source: ProcessExitNoticeSource) => string) | undefined;
@@ -606,6 +608,7 @@ export class Shell {
 
     this.terminal.write(PROMPT_START + formatShellPrompt(this.state.env, this.state.getCwd()) + PROMPT_END);
     this.promptMode = 'primary';
+    this.markEditor();
     this.announcePrompt();
     const submission = this.lineSubmission;
     this.lineSubmission = undefined;
@@ -614,6 +617,34 @@ export class Shell {
       input.prompt();
       release();
     }
+  }
+
+  /** Whether the line editor is the last thing on the screen: nothing was written after it painted itself. */
+  get atPrompt(): boolean {
+    return this.terminal.writes !== undefined && this.terminal.writes === this.editorMark;
+  }
+
+  private markEditor(): void {
+    this.editorMark = this.terminal.writes ?? -1;
+  }
+
+  /**
+   * A screen attached again, its stored output replayed: an idle shell whose
+   * line editor is not the last thing on it (a job wrote after the prompt)
+   * paints a fresh prompt, with the line being typed, on a line of its own
+   * below that output; otherwise nothing is painted, and the client learns
+   * the shell's readiness. A running command, a continuation prompt or a
+   * REPL is never given a shell prompt.
+   */
+  resumePrompt(): void {
+    if (this.running || this.promptMode !== 'primary' || this.atPrompt) {
+      this.announcePrompt();
+      return;
+    }
+    if (this.terminal.endsLine === false) this.terminal.write('\r\n');
+    this.screenCursorRow = 0;
+    this.printPrompt();
+    if (this.lineBuffer.length > 0) this.redrawLine();
   }
 
   /** A newly attached client learns current readiness, never a replayed completion. */
@@ -636,6 +667,13 @@ export class Shell {
   }
 
   async handleInput(data: string, submission?: ShellInputSubmission): Promise<void> {
+    // An edit of a line the editor painted last leaves it the last thing on the screen.
+    const atPrompt = !this.running && this.atPrompt;
+    await this.editInput(data, submission);
+    if (atPrompt && !this.running && this.promptMode === 'primary') this.markEditor();
+  }
+
+  private async editInput(data: string, submission?: ShellInputSubmission): Promise<void> {
     // Raw mode: bypass all shell line editing, deliver keypresses directly
     if (this.running && this.terminalStdin?.rawMode) {
       this.terminalStdin.feed(data);
@@ -1039,6 +1077,7 @@ export class Shell {
 
     // Track where we left the cursor
     this.screenCursorRow = desiredRow;
+    this.markEditor();
   }
 
   /**

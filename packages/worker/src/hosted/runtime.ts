@@ -342,15 +342,16 @@ class RuntimeOwner {
     if (this.terminal.ws === ws) return;
     this.terminal.attach(ws);
     if (resume === 'reconnect') this.terminal.replay(loadScrollback(this.ctx));
+    // Said once, above the prompt, which is painted again below them.
     if (this.recoveryNotice) {
-      this.terminal.write('\r\n[Runtime resumed; files and shell settings restored. Previous interpreter state was not retained.]\r\n');
+      this.shell.writeNotice('[Runtime resumed; files and shell settings restored. Previous interpreter state was not retained.]\r\n');
       this.recoveryNotice = false;
     }
     if (this.legacyNotice) {
-      this.terminal.write(`\r\n[${this.legacyNotice}]\r\n`);
+      this.shell.writeNotice(`[${this.legacyNotice}]\r\n`);
       this.legacyNotice = null;
     }
-    if (!this.shell.running) this.shell.printPrompt();
+    this.shell.resumePrompt();
     this.terminal.flushNow();
     ws.send(JSON.stringify({ type: 'ready' }));
   }
