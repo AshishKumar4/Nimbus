@@ -281,6 +281,8 @@ async function buildSession(
     self.portRegistry.setOutput(workspace.processes);
     self.portRegistry.setClientSocketActivity(() => noteClientActivity(self, self.ctx));
     self.shellProcessPid = workspace.shellProcessPid;
+    // The session's own shell, and everything it starts, are its terminal's.
+    workspace.processes.setControllingTerminal(workspace.shellProcessPid, '');
     self.kernel = workspace.kernel;
     self.shell = workspace.shell;
 

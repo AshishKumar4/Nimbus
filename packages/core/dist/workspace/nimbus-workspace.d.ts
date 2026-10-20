@@ -39,7 +39,7 @@ import { type RuntimePackage, type RuntimeSource } from '../runtime/runtime-pack
 import { type CtxExports, type FabricComposition } from '@nimbus-sh/platform/composition.js';
 import { type SupervisorOpEnvelope, type SupervisorOpHandler } from './supervisor-op.js';
 import { type NamedShell, type NamedShellOptions, type ShellState } from './named-shells.js';
-export { parseShellState, parseVariableAttributes, type NamedShell, type NamedShellOptions, type ShellState } from './named-shells.js';
+export { parseShellState, parseVariableAttributes, TerminalNameSchema, type NamedShell, type NamedShellOptions, type ShellState } from './named-shells.js';
 export type { VariableAttributes } from '../substrate/lifo/shell/variables.js';
 export type { IdentityChangePolicy } from '../runtime/session-process-supervisor.js';
 /** {@link NimbusWorkspace.exec}'s options: the command's, and which shell runs it. */
@@ -354,6 +354,23 @@ export declare class NimbusWorkspace {
      * files, and either may name a command the host has yet to supply.
      */
     start(): Promise<void>;
+    /** A terminal's shell started as the workspace's is: its login files, then its first prompt. */
+    startShell(shell: Shell): Promise<void>;
+    /**
+     * The named terminal `name`'s shell, for its own process `pid`: where it
+     * last was (its saved state), else where the workspace started, with its
+     * history in a file of its own (HISTFILE, unexported, as bash's is) unless
+     * it names one.
+     */
+    terminalShell(name: string, pid: number): Promise<Shell>;
+    /** Save where the named terminal `name`'s shell is now: its cwd and variables. */
+    saveTerminalShell(name: string, shell: Shell): void;
+    /** The named terminal `name`'s saved state forgotten, and the history file it was given removed. */
+    forgetTerminalShell(name: string): Promise<void>;
+    /** The named terminals with saved state. */
+    terminalNames(): string[];
+    /** Where the named terminal `name`'s shell was last saved, or null. */
+    terminalState(name: string): ShellState | null;
     /**
      * Files, directories and bytes this workspace occupies.
      *

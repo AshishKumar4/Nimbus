@@ -12,6 +12,8 @@ interface ShellLike {
   queuePasteInput(data: string, submission?: ShellInputSubmission): void;
   rejectQueuedInput(): void;
   redrawLine(): void;
+  /** Its line editor has just painted itself (Shell.markEditor). */
+  markEditor(): void;
   running: boolean;
   readonly history: readonly string[];
   lineBuffer: string;
@@ -384,6 +386,12 @@ export class LineEditorExtender {
 
   private _patch(): void {
     this.originalHandleInput = this.shell.handleInput.bind(this.shell);
+    // A repaint of the editor (a notice above it, a screen attached again) is the search's while one runs.
+    const redrawLine = this.shell.redrawLine.bind(this.shell);
+    this.shell.redrawLine = () => {
+      if (this.rsearchActive) this._rsearchRender();
+      else redrawLine();
+    };
 
     this.shell.handleInput = (data: string, submission?: ShellInputSubmission): void | Promise<void> => {
       // Skip when a process is running — the line editor only governs
@@ -823,6 +831,8 @@ export class LineEditorExtender {
     } else {
       this.terminal.write(`(failed reverse-i-search)\`${this.rsearchQuery}': `);
     }
+    // The search is the editor's line now: a screen attached again shows it as it is.
+    this.shell.markEditor();
   }
 
   /**

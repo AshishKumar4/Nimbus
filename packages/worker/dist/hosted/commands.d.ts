@@ -1,4 +1,5 @@
 import { NimbusWorkspace } from '@nimbus-sh/core/workspace';
+import { type NamedTerminals } from '../session/named-terminals.js';
 import type { SessionInternal } from '../session/internal.js';
 import type { RuntimeCatalogEnv } from '../runtime/runtime-catalog.js';
 /** Internal runtime services; callers use composeHostedRuntime, not this recipe. */
@@ -8,6 +9,8 @@ export type RuntimeCommandHost = Pick<SessionInternal, '_emitShellExecDone' | '_
     routeLoopback: SessionInternal['routeLoopback'];
     ensureGlobalPrefixDirs: SessionInternal['ensureGlobalPrefixDirs'];
     _ensureChildProcessManager: SessionInternal['_ensureChildProcessManager'];
+    /** The session's named terminals: which one a command was started from, and their shells. */
+    readonly terminals: NamedTerminals;
 };
 export declare function registerHostedCommands(self: RuntimeCommandHost, workspace: NimbusWorkspace): Promise<void>;
 //# sourceMappingURL=commands.d.ts.map

@@ -18,6 +18,19 @@ export const SessionProcessSchema = z.object({
 });
 export type SessionProcess = z.infer<typeof SessionProcessSchema>;
 
+/** A session's terminal as a list shows it: its own is `name: null`; a named one's is `/ws?terminal=<name>`. */
+export const SessionTerminalSchema = z.object({
+  name: z.string().nullable(),
+  /** Its shell runs in this incarnation of the session. */
+  live: z.boolean(),
+  /** A socket has it now. */
+  attached: z.boolean(),
+  /** The line its shell is running, if it is running one. */
+  running: z.string().nullable(),
+  cwd: z.string(),
+});
+export type SessionTerminal = z.infer<typeof SessionTerminalSchema>;
+
 export const SessionPortSchema = z.object({
   port: z.number(),
   pid: z.number(),
@@ -186,6 +199,8 @@ const SessionResultSchemas = {
   listRuntimes: z.object({ installed: z.array(SessionRuntimeSummarySchema), available: z.array(SessionAvailableRuntimeSchema) }),
   listProcesses: z.array(SessionProcessSchema),
   killProcess: ProcessControlResultSchema,
+  listTerminals: z.array(SessionTerminalSchema),
+  closeTerminal: z.object({ closed: z.boolean() }),
   writeProcessInput: ProcessControlResultSchema,
   endProcessInput: ProcessControlResultSchema,
   resizeProcess: ProcessControlResultSchema,
@@ -283,6 +298,8 @@ export interface SessionRpc {
   _rpcListRuntimes(): Promise<SessionResult<'listRuntimes'>>;
   _rpcListProcesses(): Promise<SessionProcess[]>;
   _rpcKillProcess(pid: number): Promise<SessionResult<'killProcess'>>;
+  _rpcListTerminals(): Promise<SessionTerminal[]>;
+  _rpcCloseTerminal(name: string): Promise<SessionResult<'closeTerminal'>>;
   _rpcWriteProcessInput(pid: number, data: string): Promise<SessionResult<'writeProcessInput'>>;
   _rpcEndProcessInput(pid: number): Promise<SessionResult<'endProcessInput'>>;
   _rpcResizeProcess(pid: number, size: SessionTerminalSize): Promise<SessionResult<'resizeProcess'>>;

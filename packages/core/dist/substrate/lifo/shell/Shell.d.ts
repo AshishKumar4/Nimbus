@@ -70,6 +70,8 @@ export declare class Shell {
     historyIndex: number;
     private savedLine;
     running: boolean;
+    /** The line it is running, while it runs one: a terminal list's foreground. */
+    foreground: string | null;
     private abortController;
     private terminalStdin;
     private stdinLineBuffer;
@@ -88,6 +90,8 @@ export declare class Shell {
     private activeInput;
     private lineInputs;
     private promptMode;
+    /** The terminal's write count when the line editor last painted itself (ITerminal.writes); -1 before. */
+    private editorMark;
     private readonly exitNotices;
     private exitNoticeSource;
     private renderExitNotice;
@@ -184,6 +188,21 @@ export declare class Shell {
     start(): Promise<void>;
     private sourceRcFiles;
     printPrompt(): void;
+    /** Whether the line editor is the last thing on the screen: nothing was written after it painted itself. */
+    get atPrompt(): boolean;
+    /** The line editor has just painted itself (a prompt, the line being edited, a search): the last thing on the screen. */
+    markEditor(): void;
+    /** A write of the editor's that paints nothing new (a cursor move, a bell): the editor stays last if it was. */
+    private editorWrite;
+    /**
+     * A screen attached again, its stored output replayed: an idle shell whose
+     * line editor is not the last thing on it (a job wrote after the prompt)
+     * paints a fresh prompt, with the line being typed, on a line of its own
+     * below that output; otherwise nothing is painted, and the client learns
+     * the shell's readiness. A running command, a continuation prompt or a
+     * REPL is never given a shell prompt.
+     */
+    resumePrompt(): void;
     /** A newly attached client learns current readiness, never a replayed completion. */
     announcePrompt(): void;
     printContinuationPrompt(): void;

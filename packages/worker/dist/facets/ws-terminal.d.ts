@@ -50,6 +50,11 @@ export declare class WebSocketTerminal {
     close(): void;
     get cols(): number;
     get rows(): number;
+    /** ITerminal.writes. */
+    private written;
+    private lineEnded;
+    get writes(): number;
+    get endsLine(): boolean;
     write(data: string): void;
     writeln(data: string): void;
     /**

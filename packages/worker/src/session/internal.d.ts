@@ -73,7 +73,7 @@ import type { W12EnableResult } from './replica-routes.js';
 export interface SessionInternal extends Pick<SessionRouterRpc,
   | '_rpcReady' | '_rpcBootProbe' | '_rpcExecStream' | '_rpcStartProcess' | '_rpcRunCode'
   | '_rpcInstallRuntime' | '_rpcEnsureRuntimes' | '_rpcListRuntimes' | '_rpcListProcesses'
-  | '_rpcKillProcess' | '_rpcWriteProcessInput' | '_rpcEndProcessInput' | '_rpcResizeProcess'
+  | '_rpcKillProcess' | '_rpcListTerminals' | '_rpcCloseTerminal' | '_rpcWriteProcessInput' | '_rpcEndProcessInput' | '_rpcResizeProcess'
   | '_rpcSignalProcess' | '_rpcProcessLogs' | '_rpcListPorts' | '_rpcExposePort'
   | '_rpcEnsureDurableApp' | '_rpcUnexposePort' | '_rpcDeleteFile'
 > {
@@ -91,7 +91,12 @@ export interface SessionInternal extends Pick<SessionRouterRpc,
   shell: Shell | null;
   shellProcessPid: number | null;
   terminal: WebSocketTerminal | null;
-  dispatchTerminalInput(frame: string): void;
+  /** Built (or being built, past its commands' registration): what anything that needs the session waits for. */
+  ensureRuntimeReady(): Promise<void>;
+  /** The session's named terminals (`/ws?terminal=`), beside `terminal`. */
+  readonly terminals: import('./named-terminals.js').NamedTerminals;
+  /** A frame for the session's own terminal, or for the named `terminal`. */
+  dispatchTerminalInput(frame: string, terminal?: string): void;
   facetManagerComposed: ComposedFacetManager | null;
   readonly facetManager: FacetManager | null;
   /** W8: child_process broker; lazy. */

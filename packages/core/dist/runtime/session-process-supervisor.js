@@ -403,6 +403,18 @@ export class SessionProcessSupervisor {
             throw Object.assign(new Error(`EPERM: operation not permitted, kill ${pid}`), { code: 'EPERM', errno: -1 });
         return this.kill(pid, exitCode, reason);
     }
+    /** `pid`'s controlling terminal (ProcessEntry.terminal), or undefined when it has none or is not in the table. */
+    terminalOf(pid) {
+        return this.table.get(pid)?.terminal;
+    }
+    /** A shell made before its terminal takes it as its controlling terminal (ProcessTable.setTerminal). */
+    setControllingTerminal(pid, terminal) {
+        this.table.setTerminal(pid, terminal);
+    }
+    /** The running processes whose controlling terminal is `terminal`: what closing it hangs up. */
+    onTerminal(terminal) {
+        return this.table.onTerminal(terminal);
+    }
     /** `pid` and the processes above it, nearest first, as the table has them now. */
     lineage(pid) {
         const chain = [];

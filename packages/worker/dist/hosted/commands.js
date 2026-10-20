@@ -19,7 +19,8 @@ import { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
 import { loaderCodeRegistry } from '../wrangler/loader-code-store.js';
 import { filterWranglerFlags, detectBundlerBin, checkNodeModulesGuard, detectUnsupportedWranglerConfig, refusedNextSubcommand, NEXT_REFUSAL_MESSAGE } from '../session/helpers.js';
 import { createViteCommand } from '../session/vite-command.js';
-import { HeredocHandler, LineEditorExtender } from '@nimbus-sh/core/shell/features.js';
+import { HeredocHandler } from '@nimbus-sh/core/shell/features.js';
+import { makeInteractive } from '../session/named-terminals.js';
 import { registerShellEntrypointCommands } from '@nimbus-sh/core/shell/shell-entrypoints.js';
 import { makeChshCommand } from '@nimbus-sh/core/substrate/lifo/shell/default-shell.js';
 import { installNpmBinFallbackResolver } from '../shell/npm-bin-entrypoints.js';
@@ -65,8 +66,8 @@ export async function registerHostedCommands(self, workspace) {
                 return 'not-permitted';
             if (signal === '0')
                 return 'delivered';
-            // The terminal's shell outlives every line it runs.
-            if (pid === workspace.shellProcessPid)
+            // A terminal's shell outlives every line it runs: the session's own, and each named one's.
+            if (pid === workspace.shellProcessPid || self.terminals.isShell(pid))
                 return 'not-permitted';
             const disposition = signalDisposition(signal);
             // A default-ignored signal to a process of the session's own (a shell's
@@ -189,23 +190,25 @@ export async function registerHostedCommands(self, workspace) {
         // one-shot dispatch's pool) and drives a ReplSession.
         if (argv.length === 0 && terminal) {
             const { runPythonRepl } = await import('../runtime/python-repl.js');
+            // The terminal it was started from: a named one's, else the session's own.
+            const from = self.terminals.of(ctx.pid) ?? { shell, terminal };
             return await runPythonRepl({
                 facetMgr,
                 authority: workspace.filesystem,
-                terminal: terminal,
+                terminal: from.terminal,
                 installRoot,
-                home: ctx.env?.HOME || shell.getEnv().HOME || DEFAULT_HOME,
+                home: ctx.env?.HOME || from.shell.getEnv().HOME || DEFAULT_HOME,
                 manifest,
                 // REPL-R7-1: thread the shell so ReplSession can drain
                 // shell.pasteQueue on attach (multi-line WS frames like
                 // `python\nexit(7)` would otherwise drop the tail input).
-                shell: shell,
+                shell: from.shell,
                 // The supervisor derives the write credential from this; without
                 // it the prompt cannot write to the session filesystem.
                 pid: ctx.pid,
                 cred: requireVfsCred(ctx.cred, 'Python REPL'),
                 restartsWaits,
-                start: { cwd: ctx.cwd || shell.getCwd(), binName },
+                start: { cwd: ctx.cwd || from.shell.getCwd(), binName },
             });
         }
         // Args present (one-shot mode: -c, script, -m, -). Fall through to the
@@ -249,16 +252,17 @@ export async function registerHostedCommands(self, workspace) {
         const argv = ctx.args || [];
         if (argv.length === 0 && terminal) {
             const { runRubyRepl } = await import('../runtime/ruby-repl.js');
+            const from = self.terminals.of(ctx.pid) ?? { shell, terminal };
             return await runRubyRepl({
                 facetMgr,
                 authority: workspace.filesystem,
-                terminal: terminal,
+                terminal: from.terminal,
                 installRoot,
                 // The caller's filesystem and credential, from its working directory.
                 pid: ctx.pid,
                 cred: requireVfsCred(ctx.cred, 'Ruby REPL'),
-                home: ctx.env?.HOME || shell.getEnv().HOME || DEFAULT_HOME,
-                cwd: ctx.cwd || shell.getCwd(),
+                home: ctx.env?.HOME || from.shell.getEnv().HOME || DEFAULT_HOME,
+                cwd: ctx.cwd || from.shell.getCwd(),
                 binName,
             });
         }
@@ -291,10 +295,11 @@ export async function registerHostedCommands(self, workspace) {
         const terminalStdin = ctx.isFdTerminal?.(0) ?? !ctx.stdin;
         if (terminal && (explicitInteractive || (argv.length === 0 && terminalStdin))) {
             const { runBashRepl } = await import('../runtime/bash-repl.js');
+            const from = self.terminals.of(ctx.pid) ?? { shell, terminal };
             return await runBashRepl({
                 facetMgr,
                 authority: workspace.filesystem,
-                terminal: terminal,
+                terminal: from.terminal,
                 installRoot,
                 manifest,
                 cred: ctx.cred,
@@ -303,7 +308,7 @@ export async function registerHostedCommands(self, workspace) {
                 filesystem: workspace.filesystem.bind({ pid: ctx.pid, cred: ctx.cred, signal: ctx.signal }),
                 env: ctx.env,
                 cwd: ctx.cwd || '/home/user',
-                shell: shell ?? undefined,
+                shell: from.shell,
             });
         }
         const { makeBashRunnerFactory } = await import('@nimbus-sh/core/runtime/bash-runner.js');
@@ -880,13 +885,8 @@ export async function registerHostedCommands(self, workspace) {
             ctx.stdout.write(summary.stdout);
         return result.failed.length > 0 ? 1 : 0;
     });
-    HeredocHandler.install(shell, terminal);
-    // ── Readline-parity keybindings (Ctrl+K, Ctrl+W, Alt+B, Alt+F, Alt+D,
-    //    Ctrl+Y, Ctrl+T, Ctrl+L, Ctrl+R, Alt+. , Ctrl+←/→, Alt+←/→, Linux
-    //    Home/End variants, Ctrl+B/F/N/P, …). Installed AFTER Heredoc so
-    //    its handleInput wrapper takes precedence when heredoc mode is
-    //    active. ──
-    LineEditorExtender.install(shell, terminal);
+    // Here-documents, then readline-parity keybindings (Ctrl+K, Ctrl+W, Alt+B, …) over them: a named terminal's too.
+    makeInteractive(shell, terminal);
     const shellEntrypointExecutor = {
         execute: async (cmd, options) => {
             const parentPid = options?.commandContext?.['pid'];

@@ -36,12 +36,12 @@ import { dec } from '@nimbus-sh/core/_shared/bytes.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId, recordRecoveryEvent } from '@nimbus-sh/platform/oom-discriminator.js';
 import { generation } from '@nimbus-sh/fabric/generation.js';
-import { appendScrollback, persistShellState } from './state-store.js';
+import { appendScrollback, persistShellState, writeShellSnapshot } from './state-store.js';
 import { handleFsWatchSubscribe, handleFsWatchUnsubscribe, cleanupFsWatchOnClose, } from './fs-watch.js';
 import { parseProcessLogClientFrame } from '@nimbus-sh/core/runtime/process-io-protocol.js';
 import { applyProcessClientFrame } from '@nimbus-sh/core/runtime/process-input-routing.js';
 import { z } from 'zod/v4';
-import { clearShellSocketStamp, noteShellSocketActivity } from './shell-socket.js';
+import { clearShellSocketStamp, noteShellSocketActivity, shellSocketTerminal } from './shell-socket.js';
 import { PRIOR_GENERATION_EXIT_REASON } from './rpc.js';
 /**
  * Give the shell socket a frame arrived on a live session to land in.
@@ -111,8 +111,6 @@ export async function bindShellSocket(self, ws) {
         self.terminal.attach(ws, shellTerminalTee(self));
     return true;
 }
-/** The shell state each instance last wrote, so an unchanged state costs no SQL. */
-const lastShellSnapshot = new WeakMap();
 /**
  * Snapshot the live Shell state and write it through to DO SQLite
  * [Phase 3 B'.1].
@@ -141,36 +139,7 @@ function snapshotShellState(self) {
     const ctx = self.ctx;
     if (!ctx?.storage?.sql)
         return;
-    let cwd = null;
-    let env = null;
-    try {
-        cwd = shell.getCwd() || null;
-    }
-    catch { /* best-effort */ }
-    try {
-        const rawEnv = shell.getEnv();
-        if (rawEnv && typeof rawEnv === 'object') {
-            // Defensive copy. The Shell mutates this.env in place on
-            // export; we want the SQL write to reflect a stable view.
-            env = { ...rawEnv };
-        }
-    }
-    catch { /* best-effort */ }
-    if (!cwd && !env)
-        return;
-    // Its variables' marks and arrays, which a command's environment follows.
-    const vars = shell.getVariableAttributes();
-    const envJson = env ? JSON.stringify(env) + JSON.stringify(vars) : null;
-    const last = lastShellSnapshot.get(self);
-    if (last && last.cwd === cwd && last.envJson === envJson)
-        return;
-    try {
-        persistShellState(ctx, { cwd, env, vars });
-        lastShellSnapshot.set(self, { cwd, envJson });
-    }
-    catch (e) {
-        console.warn('[nimbus/B\'.1] persistShellState failed:', e?.message || e);
-    }
+    writeShellSnapshot(self, shell, (state) => persistShellState(ctx, state));
 }
 /**
  * What every output frame of the shell terminal feeds besides the socket:
@@ -240,7 +209,7 @@ const FsWatchClientFrameSchema = z.discriminatedUnion('type', [
 ]);
 /** `WebSocket.readyState` for an open socket; the constant name differs between workerd and Node. */
 const WS_READY_STATE_OPEN = 1;
-const TerminalMessageSchema = z.object({
+export const TerminalMessageSchema = z.object({
     type: z.string(),
     data: z.string().optional(),
     submissionId: z.string().min(1).max(160).optional(),
@@ -287,6 +256,11 @@ export async function wsMessage(self, ws, message) {
         // Rate-limited inside; see src/session/shell-socket.ts.
         if (attach?.kind === 'shell') {
             noteShellSocketActivity(ws);
+            const named = shellSocketTerminal(ws);
+            if (named !== undefined) {
+                await namedTerminalMessage(self, ws, named, message);
+                return;
+            }
             // Before the frame is parsed: a woken instance has no session to
             // hand ANY shell-socket frame to, the liveness probe included.
             if (!(await bindShellSocket(self, ws)))
@@ -351,6 +325,32 @@ export async function wsMessage(self, ws, message) {
         // Never let a message parsing error crash the DO
         console.error('[nimbus] webSocketMessage error:', e?.message);
     }
+}
+/**
+ * A frame on a named terminal's socket: the session built (a woken instance
+ * builds it), the socket given its terminal as a wake gives it (no replay),
+ * and the frame handed to it as the session's own terminal's are, outside
+ * this handler.
+ */
+async function namedTerminalMessage(self, ws, name, message) {
+    if (ws.readyState !== WS_READY_STATE_OPEN)
+        return;
+    try {
+        await self.ensureRuntimeReady();
+        await self.terminals.attach(name, ws, 'wake');
+    }
+    catch (error) {
+        const reason = `terminal ${name} unavailable: ${errorText(error)}`;
+        console.error('[nimbus]', reason);
+        try {
+            ws.close(1011, reason.slice(0, 123));
+        }
+        catch { /* closing */ }
+        return;
+    }
+    const frame = TerminalMessageSchema.safeParse(JSON.parse(typeof message === 'string' ? message : dec.decode(message)));
+    if (frame.success)
+        self.dispatchTerminalInput(JSON.stringify(frame.data), name);
 }
 export async function terminalInput(self, frame, terminalId) {
     const terminal = self.terminal;
@@ -489,6 +489,14 @@ function endSocket(self, ws, trigger, error) {
     // shell/terminal, and don't flush.
     if (att.kind === 'process-logs' || att.kind === 'fs-watch')
         return false;
+    // A named terminal's socket lets its terminal go; the session's own state is not its.
+    const named = shellSocketTerminal(ws);
+    if (named !== undefined) {
+        clearShellSocketStamp(ws);
+        self.terminals.detach(named, ws);
+        self._w9FlushOnClose();
+        return false;
+    }
     if (att.kind === 'cirrus-hmr') {
         // HMR socket ended. Detach from the bridge + drop from the map.
         // Do NOT touch shell/terminal/kernel — the user's terminal tab
