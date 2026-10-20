@@ -510,12 +510,9 @@ function spawnResident(ctx, env, disk, supervisor, params) {
         // peer's own for the request it relays.
         handleHttpRequest: async (request, scope, relayed) => {
             const lease = observation.acquire();
-            // Watched while it is answered, not for the resident's life: an idle one keeps no tick running.
-            const watched = holdThreadWatch(ctx, `request pid ${params.pid}`);
             const cancel = relayed === undefined ? new AbortController() : null;
             scope.settled((delivered) => {
                 lease.release();
-                watched();
                 if (!delivered)
                     cancel?.abort(new DOMException('The caller left the request', 'AbortError'));
             });
@@ -530,20 +527,17 @@ function spawnResident(ctx, env, disk, supervisor, params) {
             }
             catch (error) {
                 lease.release();
-                watched();
                 throw error;
             }
         },
         // An upgrade hands its socket to the caller at the handshake.
         handleWebSocketRequest: async (request) => {
             const lease = observation.acquire();
-            const watched = holdThreadWatch(ctx, `upgrade pid ${params.pid}`);
             try {
                 return await checked(await facet.fetch(await admitted(request)));
             }
             finally {
                 lease.release();
-                watched();
             }
         },
         release,
