@@ -1113,16 +1113,18 @@ export class Interpreter {
         } else if (index === 0) {
           expandedArgs.push(...await expandWords([parts], expandCtx));
         } else {
-          // Brace expansion first; then each word that is an assignment expands as an
-          // assignment's value: not split, no pathname expansion. Any other is fields.
-          for (const word of expandBraceWord(parts)) {
-            const scalar = parseAssignment({ kind: TokenKind.Word, value: word.map((part) => part.text).join(''), pos: 0, parts: word });
-            if (scalar === null || scalar.elements !== undefined) {
-              expandedArgs.push(...await expandFields(word, expandCtx));
-              continue;
-            }
-            const subscript = scalar.subscript === undefined ? '' : `[${scalar.subscript}]`;
-            expandedArgs.push(`${scalar.name}${subscript}${scalar.append === true ? '+' : ''}=${await expandWord(scalar.value, expandCtx)}`);
+          // An assignment as written, one brace expansion leaves as it is, expands as an
+          // assignment's value: not split, no pathname expansion. Any other word, and
+          // every word brace expansion makes, is fields (bash's subst.c keeps the flags
+          // only for an unchanged word).
+          const words = expandBraceWord(parts);
+          const [only] = words;
+          const unchanged = words.length === 1 && only !== undefined && only.map((part) => part.text).join('') === parts.map((part) => part.text).join('');
+          if (assignment !== null && assignment.elements === undefined && unchanged) {
+            const subscript = assignment.subscript === undefined ? '' : `[${assignment.subscript}]`;
+            expandedArgs.push(`${assignment.name}${subscript}${assignment.append === true ? '+' : ''}=${await expandWord(assignment.value, expandCtx)}`);
+          } else {
+            for (const word of words) expandedArgs.push(...await expandFields(word, expandCtx));
           }
         }
       }

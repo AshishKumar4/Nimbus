@@ -32,7 +32,8 @@ const LINES = [
   'readonly r3; r3=(1)\necho "st=$?"; declare -p r3',
   // A declaration's assignment argument expands as an assignment does: not split, no pathname expansion.
   'touch g1 g2; y="p  q"; declare d=$y e=g* f="$y"; local 2>/dev/null; export h=~/x; declare -p d e f; echo "$h"',
-  // Brace expansion comes first; a quote in the name makes no assignment, its value then split.
+  // Brace expansion comes first, and a word it makes is fields; a quote in the name makes no assignment, its value then split.
+  'y="a b"; export {x,z}=$y; declare -p x z b',
   'export x={a,b}; declare -p x; y="a b"; export w""=$y; printf "<%s>\\n" "$w"; declare -p b; x""=1; echo "st=$?"',
 ];
 
