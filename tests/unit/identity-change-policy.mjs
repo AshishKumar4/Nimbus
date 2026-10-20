@@ -13,6 +13,7 @@ import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
+import { registerShellEntrypointCommands } from '../../packages/core/src/shell/shell-entrypoints.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const asked = [];
@@ -25,6 +26,10 @@ const ws = await NimbusWorkspace.create({
     asked.push([from.uid, to.uid, command]);
     return allowed;
   },
+});
+// `sh -c` as a session runs it: a shell of the child's own, as the child's credential.
+registerShellEntrypointCommands(ws.registry, {
+  execute: (cmd, options) => ws.shellFor(options?.commandContext?.pid ?? 1, { cwd: options?.cwd ?? '/home/user', env: options?.env, inheritEnv: false }).execute(cmd, options),
 });
 ws.registry.register('elevate', async (ctx) => (await ctx.runAs(CRED_KERNEL, ['whoami'])).status);
 const run = async (line) => {
