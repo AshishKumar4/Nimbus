@@ -350,6 +350,21 @@ interface InodeLookup {
   get(path: string): INode | undefined;
 }
 
+/**
+ * SqliteVFS.closedAbove's judgments for one walk: each directory's closed
+ * ancestor (or null), the directories reached through a link (judged by a
+ * resolve), and the tree they are of.
+ */
+interface AccessMemo {
+  readonly closed: Map<string, string | null>;
+  readonly linked: Set<string>;
+  readonly tree: InodeLookup;
+}
+
+function accessMemo(tree: InodeLookup): AccessMemo {
+  return { closed: new Map(), linked: new Set(), tree };
+}
+
 export interface VfsOpenDescription {
   /** Inode number the description currently resolves; 0 is never issued. */
   readonly ino: number;
@@ -4159,7 +4174,7 @@ export class SqliteVFS {
     }
     // Per directory, the highest one at or above it that the caller may not
     // enter now: one lookup per directory per answer, not per entry.
-    const closedAbove = new Map<string, string | null>();
+    const closedAbove = accessMemo(this.inodes);
     for (const entry of log) {
       if (entry.rev <= cursor) continue;
       const name = this.logicalPath(entry.path, cred);
@@ -4184,7 +4199,7 @@ export class SqliteVFS {
     rev: number,
     cred: VfsCred,
     removedAt: ReadonlyMap<string, number>,
-    closedAbove: Map<string, string | null>,
+    closedAbove: AccessMemo,
   ): string | null {
     const parent = parentKey(name);
     let behind = this.closedAbove(parent, cred, closedAbove);
@@ -4198,22 +4213,25 @@ export class SqliteVFS {
 
   /**
    * The highest directory at or above `dir` (a name in the caller's view)
-   * that the caller may not enter, in `tree` (the live one by default), or
-   * null: each directory judged once in `memo`, by the search check
-   * resolvePath makes of each directory on a walk, a link by where it leads.
+   * that the caller may not enter, in `memo.tree` (the live one by default),
+   * or null: each directory judged once, by the search check resolvePath
+   * makes of each directory on a walk. A link, and everything named below
+   * it, is judged by that resolve itself (where the link leads, with the
+   * recalls a lookup through it makes); a plain directory by its own row,
+   * which `rows` may hold already (a listing's page).
    */
-  private closedAbove(dir: string, cred: VfsCred, memo: Map<string, string | null>, tree: InodeLookup = this.inodes): string | null {
+  private closedAbove(dir: string, cred: VfsCred, memo: AccessMemo, rows: InodeLookup = memo.tree): string | null {
     if (dir === '') return null;
-    const known = memo.get(dir);
+    const known = memo.closed.get(dir);
     if (known !== undefined) return known;
-    let closed = this.closedAbove(parentKey(dir), cred, memo, tree);
+    const parent = parentKey(dir);
+    let closed = this.closedAbove(parent, cred, memo, rows);
     if (closed === null) {
-      const inode = tree.get(this.keyOfName(dir, this.confinedTmpRoots.get(cred.uid)));
-      if (inode?.kind === 'symlink') {
-        // A link is entered where it leads, as a lookup through it is: rows
-        // stranded under one (a build left under a link) are judged there.
+      const inode = memo.linked.has(parent) ? undefined : rows.get(this.keyOfName(dir, this.confinedTmpRoots.get(cred.uid)));
+      if (memo.linked.has(parent) || inode?.kind === 'symlink') {
+        memo.linked.add(dir);
         try {
-          this.checkAccess(dir, 0o1, cred, { tree });
+          this.checkAccess(dir, 0o1, cred, { tree: memo.tree });
         } catch (error) {
           if (error instanceof RecallRequired) throw error;
           closed = dir;
@@ -4222,7 +4240,7 @@ export class SqliteVFS {
         closed = dir;
       }
     }
-    memo.set(dir, closed);
+    memo.closed.set(dir, closed);
     return closed;
   }
 
@@ -6098,7 +6116,7 @@ export class SqliteVFS {
     // own row where the page read it (a directory's row precedes its
     // entries'), not from a lookup of its own: rows arrive in path order,
     // but a directory's entries resume after each of its subdirectories'.
-    const closed = new Map<string, string | null>();
+    const closed = accessMemo(this.inodes);
     const listedDirectories = new Map<string, INode>();
     const directories: InodeLookup = { get: (key) => listedDirectories.get(key) ?? this.inodes.get(key) };
     // The storage key of the last directory found closed: what is under it is
@@ -7544,7 +7562,7 @@ export class SqliteVFS {
         const fits = listPageBudget(epoch, g);
         const pageEnding = (): VfsListPage => ({ epoch, rev: g, entries, next: entries[entries.length - 1]?.path ?? null });
         // Each directory above a row judged once a page, from its own row (as a live page is).
-        const closed = new Map<string, string | null>();
+        const closed = accessMemo(tree);
         const listedDirectories = new Map<string, INode>();
         const directories: InodeLookup = { get: (key) => listedDirectories.get(key) ?? tree.get(key) };
         const linkTargets = options?.linkTargets !== false;
