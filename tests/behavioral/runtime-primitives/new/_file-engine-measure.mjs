@@ -231,7 +231,7 @@ http.createServer((q, s) => { let n = 0; for (const f of fs.readdirSync('site'))
 async function served(sid, budgetMs = 60_000, query = '') {
   const t0 = Date.now();
   while (Date.now() - t0 < budgetMs) {
-    const r = await fetch(`${BASE}/s/${sid}/preview/${query}`, { redirect: 'manual', headers: requestHeaders({}, sid) }).catch(() => null);
+    const r = await fetch(`${BASE}/s/${sid}/port/3000/${query}`, { redirect: 'manual', headers: requestHeaders({}, sid) }).catch(() => null);
     const body = r ? await r.text() : '';
     if (r?.status === 200 && body.startsWith('served ')) return Date.now() - t0;
     await sleep(100);
