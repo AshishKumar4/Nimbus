@@ -5,7 +5,7 @@ import { syscallError } from '../../../vfs/vfs-error.js';
 import { execRefusal } from '../../../shell/exec-dispatch.js';
 import { withRecall } from '../../../vfs/recall.js';
 import { parseAssignment, ParseError, ScriptLines } from './parser.js';
-import { expandWords, expandWord, expandPatternWord, expandSubscript, arithmeticValue, ExpansionError, } from './expander.js';
+import { expandWords, expandWord, expandPatternWord, expandSubscript, subscriptArithmetic, ExpansionError, } from './expander.js';
 import { evaluateDoubleBracketWords } from './test-builtin.js';
 import { isPipeEnd, PipeChannel } from './pipe.js';
 import { arrayFor, arrayIndex, assignArray, assignVariable, lastIndex, restoreVariable, saveVariable, } from './variables.js';
@@ -21,7 +21,6 @@ import { isDecimalInteger } from './names.js';
 import { statOrThrow } from '../../../vfs/vfs.js';
 import { yieldToEventLoop } from '../utils/event-loop.js';
 import { WorkThread } from './work-thread.js';
-import { DiscardSignal } from './discard.js';
 // ─── Signal classes for control flow ───
 export class BreakSignal {
     levels;
@@ -55,6 +54,16 @@ export class ExitSignal {
 }
 /** A syntax error in the text eval or `.` reads (not one met running it, a command substitution's): theirs to answer. */
 export class TextSyntaxError extends Error {
+}
+/**
+ * The rest of the line it is in is discarded (bash's
+ * jump_to_top_level(DISCARD)): a shell goes on with the next line it reads,
+ * its own or a `source`d file's or a trap's, with $? 1; a child shell
+ * (subshell, substitution, pipeline element, job) ends with 1. Neither `||`,
+ * `if` nor a loop goes on.
+ */
+export class DiscardSignal {
+    exitCode = 1;
 }
 /** A function call past the nesting bound (functionNestingLimit). */
 export class FunctionNestingSignal extends DiscardSignal {
@@ -798,11 +807,6 @@ export class Interpreter {
                 await this.applyRedirections(cmd.redirections, fds, expandCtx, io, io.terminalStdin);
             }
             catch (error) {
-                // A discard met expanding a target (an arithmetic error's) is the line's, reported where it was met.
-                if (error instanceof DiscardSignal) {
-                    await this.flushFds(fds);
-                    throw error;
-                }
                 const redirStderr = fds.outputFds.get(2) ?? stderr;
                 (await redirStderr.write(error instanceof RedirectionOpenError
                     ? redirectionDiagnostic(error)
@@ -1124,7 +1128,7 @@ export class Interpreter {
         if (assign.subscript !== undefined) {
             const subscript = await expandSubscript(assign.subscript, ctx);
             const array = arrayFor(this.config, name);
-            const index = subscript === '' ? -1 : arrayIndex(array, await arithmeticValue(subscript, ctx));
+            const index = subscript === '' ? -1 : arrayIndex(array, subscriptArithmetic(subscript, ctx));
             if (index < 0)
                 return { diagnostics: [`${name}[${assign.subscript}]: bad array subscript`], failed: true };
             array[index] = assign.append ? (array[index] ?? '') + value : value;
@@ -1164,7 +1168,7 @@ export class Interpreter {
             }
             const { subscript, value } = element;
             const written = `[${subscript}]${element.append ? '+=' : '='}${value}`;
-            const index = subscript === '' || subscript === '@' || subscript === '*' ? -1 : arrayIndex(array, await arithmeticValue(subscript, ctx));
+            const index = subscript === '' || subscript === '@' || subscript === '*' ? -1 : arrayIndex(array, subscriptArithmetic(subscript, ctx));
             if (index < 0) {
                 refused.push(`${written}: ${subscript === '@' || subscript === '*' ? 'cannot assign to non-numeric index' : 'bad array subscript'}`);
                 if (this.config.options.errexit)
@@ -1404,10 +1408,6 @@ export class Interpreter {
             vfs: io.vfs ?? this.config.vfs,
             options: this.config.options,
             executeCapture: async (input) => (await this.executeCapture(input, io)),
-            // The shell's fd 2 when it is met, as a command's descriptors resolve it (createCommandFds).
-            report: async (diagnostic) => {
-                (await (this.persistentOutputFds.get(2) ?? io.stderr ?? this.terminalSink(io)).write(`${diagnostic}\n`));
-            },
         };
     }
     createIoFromFds(io, fds) {
@@ -1511,23 +1511,16 @@ export class Interpreter {
         }));
     }
     async applyRedirections(redirections, fds, expandCtx, io, terminalStdin) {
-        // A target's diagnostic goes to fd 2 as the redirections before it have left it.
-        const targetCtx = {
-            ...expandCtx,
-            report: async (diagnostic) => {
-                (await (fds.outputFds.get(2) ?? this.createNullWriter()).write(`${diagnostic}\n`));
-            },
-        };
         for (const redir of redirections) {
             if (redir.operator === 'heredoc') {
                 const heredoc = redir.heredoc ?? { body: '', quoted: false, stripTabs: false };
                 const body = heredoc.quoted
                     ? heredoc.body
-                    : await expandWord([{ text: heredoc.body, quoted: 'double' }], { ...targetCtx, hereDocument: true });
+                    : await expandWord([{ text: heredoc.body, quoted: 'double' }], { ...expandCtx, hereDocument: true });
                 this.setInputFd(fds, redir.fd ?? 0, { stream: staticStdinReader(body), terminal: false });
                 continue;
             }
-            const target = await expandWord(redir.target, targetCtx);
+            const target = await expandWord(redir.target, expandCtx);
             switch (redir.operator) {
                 case 'write':
                     this.setOutputFd(fds, redir.fd ?? 1, (await this.openOutputTarget(io, target, 'write', fds, terminalStdin)));
