@@ -152,7 +152,6 @@ const FOUND = {
       ['hold', 'listing'], ['release'], ['own', 'stat', 'z'], ['release'], ['release'], ['input'], ['restart'], ['input'], ['input'], ['own', 'stat', 'z/k']],
   },
   'a directory read through its descriptor after an own rename into it, its wave not yet sent, lists the name the rename made (2896)': {
-    engines: ['node'],
     schedule: [['stall'], ['sync', 'rename', 'd/e/g', 'x/f'], ['own', 'opendir', 'x']],
   },
   'a file a call that cannot wait missed stays a miss until an awaited read answers it': {

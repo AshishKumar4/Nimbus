@@ -366,8 +366,13 @@ export function createModel(tree = SEED_TREE) {
   /** Every change begun, in program order: its names, whether it is the process's own, the world it leaves (and, a write of the process's, the one it passes through), the states it began and landed at. */
   const changes = [];
   const seq = () => history.length - 1;
-  /** Whether `later` (the process's own) must land after `earlier`: an own change before it whose names it overlaps. */
-  const after = (earlier, later) => earlier !== later && earlier.own && later.own && changes.indexOf(earlier) < changes.indexOf(later) && overlaps(earlier.domain, later.domain);
+  /**
+   * Whether `later` (the process's own) must land after `earlier`: an own
+   * change before it whose names it overlaps, decided when it was called (a
+   * call that cannot wait, or Node's structural one). A write decided later
+   * than its call races what the process does meanwhile, either way.
+   */
+  const after = (earlier, later) => earlier !== later && earlier.own && later.own && (earlier.decides || earlier.sync) && changes.indexOf(earlier) < changes.indexOf(later) && overlaps(earlier.domain, later.domain);
   /**
    * Every world `rel` may have been seen in between states `from` and `to`:
    * at each state, the recorded world with any of the changes then in flight
@@ -410,7 +415,7 @@ export function createModel(tree = SEED_TREE) {
       // A write the process makes is an open that truncates, then the bytes: while it is in flight, the file may be empty.
       const partial = way === 'own' && op === 'write' ? new Map([...post, [a, { ...post.get(a), content: '', size: 0 }]]) : null;
       const decides = own && DECIDED.includes(op);
-      const record = { domain: domainOf(step), own, decides, post, partial, begun: seq(), done: null, landing: null };
+      const record = { domain: domainOf(step), own, decides, sync: way === 'sync', post, partial, begun: seq(), done: null, landing: null };
       changes.push(record);
       return record;
     },
@@ -461,6 +466,8 @@ export function createModel(tree = SEED_TREE) {
       }
       return false;
     },
+    /** The names of the process's own changes in flight, not decided when called, that `domain` overlaps: its outcome races theirs. */
+    racing: (domain) => changes.filter((c) => c.done === null && c.own && !c.decides && !c.sync && overlaps(c.domain, domain)).flatMap((c) => c.domain),
     /** Whether any change is in flight. */
     moving: () => changes.some((change) => change.done === null),
     /** The state the latest change of `rel` (or above it) landed at; Infinity while one is in flight. */
@@ -533,6 +540,8 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
   const deferred = [];
   /** Files whose bytes a call that cannot wait was refused, and no awaited read answered since (Node's misses). */
   const missed = new Set();
+  /** Names where two of the process's own changes raced (Node: a write decided after its call, and a later change): the session says how they ended. */
+  const unsure = new Set();
   /** Wrong answers and refused changes found in flight, thrown at the next step. */
   const failures = [];
   /** The process's waves wait before they reach the session (['stall']). */
@@ -620,8 +629,10 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
       note(`  (step ${at} skipped: it would decide on an awaited change of the process's own its view does not show yet, a known gap)`);
       return null;
     }
+    const raced = !outside(way) ? model.racing(domain) : [];
     const record = model.begin(step);
     if (record === null) { note(`  (step ${at} skipped: ${JSON.stringify(step)} is not valid now)`); return null; }
+    for (const root of raced.length > 0 ? [...raced, ...domain] : []) unsure.add(root);
     const publishes = outside(way) && overlaps(unpublished, domain) ? unpublished : null;
     const finish = () => model.finish(record, () => {
       if (outside(way)) peerAt.push({ done: seq(), domain });
@@ -767,15 +778,24 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
       const owed = [...missed].filter((rel) => world.get(rel)?.type === 'file').map(key).sort();
       if (ledger.join() !== owed.join()) throw new Finding(`at rest, the program's misses are [${ledger}]; unanswered are [${owed}]`, end);
     }
+    // Where the process's own changes raced, how they ended is what the session holds: the process must show that.
+    const truth = new Map(world);
     for (const rel of readable) {
-      const state = world.get(rel);
+      if (![...unsure].some((root) => under(rel, root) || under(root, rel))) continue;
+      const held = normalized(await engine.authority.peerAs(CRED_KERNEL).lstat(key(rel)).catch(() => null));
+      if (held === null) { truth.delete(rel); continue; }
+      truth.set(rel, held.type === 'directory' ? { ...world.get(rel), type: 'dir', mode: held.mode & 0o777, uid: held.uid, gid: held.gid }
+        : { ...world.get(rel), type: 'file', content: dec.decode(engine.authority.rawVfs.as(CRED_KERNEL).readFile(key(rel))), size: held.size, mode: held.mode & 0o777, uid: held.uid, gid: held.gid });
+    }
+    for (const rel of readable) {
+      const state = truth.get(rel);
       for (const way of ['own', 'sync']) {
         for (const op of ['stat', state?.type === 'dir' ? 'readdir' : 'readFile']) {
           const answer = await read(way, op, rel);
           if (answer?.code === 'EAGAIN' && way === 'sync' && (op === 'readFile' ? !owedBytes(rel) && (lazy || model.readable(rel, seq(), seq())) : lazy)) continue;
           if (answer?.code === 'EISDIR' && way === 'sync' && gaps.refusedAsDirectory && state?.type === 'dir') continue;
-          if (!answers(op, rel, answer, world)) {
-            throw new Finding(`at rest, ${way} ${op} ${rel || '.'} answered ${JSON.stringify(answer)}; the model holds ${op === 'readdir' && state?.type === 'dir' ? `[${childrenOf(world, rel)}]` : describe(state)}`, end);
+          if (!answers(op, rel, answer, truth)) {
+            throw new Finding(`at rest, ${way} ${op} ${rel || '.'} answered ${JSON.stringify(answer)}; the model holds ${op === 'readdir' && state?.type === 'dir' ? `[${childrenOf(truth, rel)}]` : describe(state)}`, end);
           }
         }
       }
