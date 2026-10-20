@@ -130,6 +130,17 @@ const PREVIEW_PARENT = 'nimbus-probe-previews';
  */
 const HOSTNAME_SETTLE_MS = 60_000;
 
+/**
+ * How long after `wrangler preview` exits the API may take to serve its
+ * upload as the Preview's latest deployment. Measured 2026-10-20: 20 uploads
+ * to two Previews, new and redeployed, landed 273–1488 ms after wrangler
+ * exited (median 330 ms), each on the first read. The failures seen before
+ * (wrangler printing no deployment id; the API serving no deployment, or the
+ * one before, 30 s on) were never a slow tail of that, so the bound stays
+ * well past it and a miss is answered by one more upload, not a longer wait.
+ */
+const LANDING_MS = 30_000;
+
 // ── CLI ──────────────────────────────────────────────────────────────
 
 const [command, ...rest] = process.argv.slice(2);
@@ -216,7 +227,17 @@ async function up() {
 
   log(`deploying apps/probe as Preview ${preview} of ${PREVIEW_PARENT}`);
   for (let i = 0; i < varOverrides.length; i += 2) log(`var override: ${varOverrides[i + 1]}`);
-  const { base, deploymentId, startupMs } = await deployPreview({ account, token, preview, secret, before, config: bundle });
+  let deployed = await deployPreview({ account, token, preview, secret, before, config: bundle });
+  if (!deployed.landed) {
+    // A Preview this run created holds nothing but its uploads, each with
+    // this secret, however late one lands: a retry, here or by a later `up`,
+    // keeps the secret instead of refusing a name it cannot vouch for.
+    if (before === null) writeState(statePath(name), { name, preview, parent: PREVIEW_PARENT, base: null, secret, secretPushed: true, createdAt });
+    log(`WARNING: Preview ${preview} of ${PREVIEW_PARENT} did not land: ${deployed.detail}; wrangler exited ${deployed.status}. Uploading it once more.`);
+    deployed = await deployPreview({ account, token, preview, secret, before: await latestDeployment({ account, token, preview }), config: bundle });
+    if (!deployed.landed) throw new Error(`Preview ${preview} of ${PREVIEW_PARENT} did not land, twice: ${deployed.detail}; wrangler exited ${deployed.status}`);
+  }
+  const { base, deploymentId, startupMs } = deployed;
   writeState(statePath(name), { name, preview, parent: PREVIEW_PARENT, base, secret, secretPushed: true, createdAt, versionId: deploymentId });
   // The platform's own measure of the script's startup, limit 1 s
   // (https://developers.cloudflare.com/workers/platform/limits/#worker-startup-time).
@@ -384,7 +405,8 @@ async function ensurePreviewParent({ account, token }) {
  * `wrangler preview`, then prove it. The same three facts as a Worker
  * deploy (_deploy-target.mjs deployAndVerify): the command reported a
  * deployment id, the API serves that id as the Preview's latest, and it
- * differs from the latest before.
+ * differs from the latest before. Answers `{ landed: false, detail, status }`
+ * when they do not hold, for `up` to upload once more.
  */
 async function deployPreview({ account, token, preview, secret, before, config }) {
   // The secret travels with the deployment: each Preview deployment
@@ -399,9 +421,9 @@ async function deployPreview({ account, token, preview, secret, before, config }
     printed = JSON.parse(stdout.slice(stdout.indexOf('{')));
   } catch { /* reported below */ }
   const deploymentId = printed?.deployment?.id ?? null;
-  // Read until the API serves the upload or 30 s have passed. A read the
-  // deadline cuts off is no answer: the wait ends with what was last read.
-  const settleBy = Date.now() + 30_000;
+  // Read until the API serves the upload or LANDING_MS have passed. A read
+  // the deadline cuts off is no answer: the wait ends with what was last read.
+  const settleBy = Date.now() + LANDING_MS;
   const signal = AbortSignal.timeout(Math.max(1, settleBy - Date.now()));
   let latest;
   for (;;) {
@@ -420,15 +442,15 @@ async function deployPreview({ account, token, preview, secret, before, config }
     const detail = !deploymentId
       ? '`wrangler preview` reported no deployment id'
       : latest === undefined
-        ? 'the API answered no read of its latest deployment within 30 s of the upload'
+        ? `the API answered no read of its latest deployment within ${LANDING_MS / 1000} s of the upload`
         : after !== deploymentId
-          ? `30 s after the upload, the API serves ${after ?? 'no deployment'} as the latest, not ${deploymentId}`
+          ? `${LANDING_MS / 1000} s after the upload, the API serves ${after ?? 'no deployment'} as the latest, not ${deploymentId}`
           : `the latest deployment is still ${after} — nothing was deployed`;
-    throw new Error(`Preview ${preview} of ${PREVIEW_PARENT} did not land: ${detail}; wrangler exited ${result.status}`);
+    return { landed: false, detail, status: result.status };
   }
   const base = workersDevUrlOf(printed.preview?.urls);
   if (!base) throw new Error(`Preview ${preview} has no workers.dev URL (urls: ${JSON.stringify(printed.preview?.urls)})`);
-  return { base, deploymentId, startupMs: latest.startup_time_ms };
+  return { landed: true, base, deploymentId, startupMs: latest.startup_time_ms };
 }
 
 /** The workers.dev URL among a Preview's URLs, without a trailing slash. */

@@ -5,6 +5,14 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed (CI): a throwaway Preview whose upload the API does not serve
+  within 30 s is uploaded once more, with a warning, instead of failing the
+  run. A Preview the run created keeps its signing secret through a miss,
+  so a later `up` of the name redeploys it instead of refusing it for want
+  of a secret (it had needed a manual `down`). Measured on 20 uploads, the
+  API served each 273–1488 ms after `wrangler preview` exited; the misses
+  are a separate failure, not a slow tail, so the 30 s bound stays.
+
 - Fixed: the shell's arithmetic reads and assigns array elements, as bash does: `$((a[1] + a[-1]))`, `((a[i]++))` and `let 'a[0] = 3'`, in `[[ -eq ]]` and `for ((…))` too. `a` alone is its first element, and an element of a scalar turns the scalar into an array. A subscript of `@`, `*` or one before the first element is warned of as a bad array subscript, and the command goes on. Arithmetic refuses to assign a readonly name: `((…))` and `let` fail, and `$((…))` discards the line. `${t[-1]}` of a scalar is a bad subscript too. `$((…))` expands its text before evaluating it, as in double quotes, so `$(( ${#a[@]} - 1 ))` counts the array. An operand that is not one, or text left over after the expression, is a syntax error. Before, `a[1]` was read as `a`, arithmetic wrote readonly names, `$(( ${#a[@]} - 1 ))` gave 0, and leftover text was ignored.
 - Fixed: the shell's `export` and `readonly` are declaration builtins, as in bash: `readonly r=(1 2)` and `export e=([1]=x)` make arrays. A `name=value` argument to them, and to `declare`, `typeset` and `local`, expands as an assignment's value, without word splitting or pathname expansion, so `export x=$y` keeps `y`'s spaces. `readonly -p` prints declarations that bash reads back. Before, `readonly r=(1 2)` made the string `(1 2)`, `declare x=$y` split `y`, and `readonly -p` printed `readonly name=value`.
 - Added: the shell runs `((expression))`, `let` and `for ((init; test; step))` as bash does. `((…))` returns 0 when the value is not 0. `let`'s status comes from its last argument. The C-style `for` takes a `do … done` or `{ … }` body, and `continue` runs the step. Shell arithmetic gains the comma operator, compound assignments (`+=` through `|=`), and working `++x` and `--x`, and a division by 0 is reported as bash reports it. A backquoted substitution inside `${…}` operands, subscripts and arithmetic now runs. Before, `((…))` ran its contents as commands, `let` was not found, `for ((` was a syntax error, `++x` gave x, and a division by 0 gave 0.
