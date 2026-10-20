@@ -16,39 +16,28 @@
 
 import { DEV_SERVER_KEY_PREFIX, PROCESS_ENV_KEY_PREFIX } from './keys.js';
 import { FENCED_WORK_KEY_PREFIX } from '@nimbus-sh/fabric/fenced-work.js';
-import { z } from 'zod/v4';
+import { keptEnv } from '../facets/process-env.js';
 import type { FacetManagerHooks } from '../facets/manager.js';
 
 /** How a host answers ask 62: the relaunch's question, and, for a host that keeps environments itself, where it keeps them. */
 export type ProcessEnvHooks = Pick<FacetManagerHooks, 'resolveProcessEnv' | 'keepProcessEnv'>;
 
-const KeptEnvSchema = z.object({ env: z.record(z.string(), z.string()) });
-
-/** The records whose environments a keeper keeps: a resident launch's journal row, and a dev server's. */
+/** The records whose environments the session keeps: a resident launch's journal row, and a dev server's. */
 const KEPT_RECORD = new RegExp(`^(${FENCED_WORK_KEY_PREFIX}|${DEV_SERVER_KEY_PREFIX})\\d+$`);
-
-const keptKey = (record: string): string => {
-  if (!KEPT_RECORD.test(record)) throw new Error(`Nimbus: no environment is kept for ${record}`);
-  return `${PROCESS_ENV_KEY_PREFIX}${record}`;
-};
 
 /**
  * The session's own keeping: each record's environment in a row of the
- * session object's storage, written with its record and deleted with it.
+ * session object's storage, written and deleted with its record.
  */
 export function sessionProcessEnv(storage: DurableObjectStorage): Required<ProcessEnvHooks> {
+  const keeping = {
+    rowOf(record: string): string {
+      if (!KEPT_RECORD.test(record)) throw new Error(`Nimbus: no environment is kept for ${record}`);
+      return `${PROCESS_ENV_KEY_PREFIX}${record}`;
+    },
+  };
   return {
-    async resolveProcessEnv(request) {
-      const kept = KeptEnvSchema.safeParse(await storage.get(keptKey(request.record)));
-      return kept.success ? kept.data.env : null;
-    },
-    keepProcessEnv: {
-      async remember(record, env) {
-        await storage.put(keptKey(record), { env: { ...env } });
-      },
-      async forget(record) {
-        if (KEPT_RECORD.test(record)) await storage.delete(keptKey(record));
-      },
-    },
+    resolveProcessEnv: async (request) => keptEnv(await storage.get(keeping.rowOf(request.record))),
+    keepProcessEnv: keeping,
   };
 }

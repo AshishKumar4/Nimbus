@@ -39,6 +39,7 @@ import { moduleImporterUrl } from '@nimbus-sh/core/_shared/module-importer.js';
 import { isTypescriptDeclarationFile, stripsTypeScript } from '@nimbus-sh/core/_shared/typescript-specifiers.js';
 import { ReadAheadBudget, STDIN_SYNC_READ_BYTES, type ReadAheadAccount } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { execIdField, parseExecId, type ProcessEntry, type ProcessRestart } from '@nimbus-sh/core/runtime/process-table.js';
+import { InterpreterEnvFactsSchema, interpreterProcessEnv, type InterpreterEnvFacts } from '@nimbus-sh/core/runtime/interpreter-env.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { exitCodeForSignal, type SignalAbortReason } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { ensureKernelStoreRoot, KERNEL_STORE_ROOT } from './kernel-store-root.js';
@@ -72,7 +73,7 @@ import {
 } from '../session/port-capability.js';
 import { deriveResidentOwner, launchArgv } from './resident-identity.js';
 import { z } from 'zod/v4';
-import { RESIDENT_OWNER_KEY_PREFIX, DURABLE_IMAGES_KEY_PREFIX, PROCESS_ENV_DROPPED_KEY } from '../session/keys.js';
+import { RESIDENT_OWNER_KEY_PREFIX, DURABLE_IMAGES_KEY_PREFIX, DEV_SERVER_KEY_PREFIX, PROCESS_ENV_DROPPED_KEY } from '../session/keys.js';
 import { PORT_CAPABILITY_KEY_PREFIX } from '../session/keys.js';
 import { sessionIdentity, unbindPublicPortCapability } from '../router/public-directory.js';
 import {
@@ -195,11 +196,13 @@ import {
 } from './durable-slots.js';
 import {
   persistDurableWorkerImage,
+  readApplicationImages,
   resolveDurableWorkerImage,
   purgeDurableWorkerImages,
   rewriteWithoutEnvironment,
+  unlinkDurableImages,
 } from './durable-images.js';
-import { relaunchEnv, type ProcessEnvKeeper, type ProcessEnvRequest, type ResolveProcessEnv } from './process-env.js';
+import { recordKeys, recordWithEnv, relaunchEnv, type ProcessEnvKeeping, type ProcessEnvRequest, type ResolveProcessEnv } from './process-env.js';
 import {
   SQLITE_WASM_MODULE_NAME,
   type OpencodeRunnerMode,
@@ -5146,13 +5149,12 @@ export interface FacetManagerHooks {
    */
   resolveProcessEnv?: ResolveProcessEnv;
   /**
-   * Told each relaunchable launch's environment when its record is written,
-   * and when the record is gone: what a host that answers resolveProcessEnv
-   * from its own keeping composes (the session's, session/process-env.ts).
-   * An embedder that knows its processes' environments composes
-   * resolveProcessEnv alone.
+   * Where a host that answers resolveProcessEnv from its own keeping keeps
+   * each relaunchable launch's environment: a row beside its record, written
+   * and deleted with it (the session's, session/process-env.ts). An embedder
+   * that knows its processes' environments composes resolveProcessEnv alone.
    */
-  keepProcessEnv?: ProcessEnvKeeper;
+  keepProcessEnv?: ProcessEnvKeeping;
 }
 
 export interface ForegroundLaunch {
@@ -5212,13 +5214,13 @@ export interface LongRunningWorkerSpawnOptions {
   /** Forwarded verbatim to the runner's startProcess. */
   startArgs?: unknown;
   /**
-   * The process environment within an interpreter resident's
-   * `startArgs.userEnv`: what its command was launched with, beside what its
-   * runtime adds. Never stored: its image keeps the runtime's additions
-   * alone (`runtimeEnv`), and its relaunch asks the host for the rest
-   * (resolveProcessEnv).
+   * What an interpreter resident's `startArgs.userEnv` was built from: its
+   * command's environment (`base`) and its runtime's facts (core
+   * interpreter-env.ts). Never stored whole: its image keeps the facts
+   * (`envFacts`), and its relaunch asks the host for the base again
+   * (resolveProcessEnv) and builds the rest as the first launch did.
    */
-  processEnv?: Record<string, string>;
+  interpreterEnv?: InterpreterLaunchEnv;
   /**
    * Set for a worker a durable application owns: the launch is journalled and
    * re-driven after an instance reset through `hooks.resolveWorkerLaunch`.
@@ -5403,67 +5405,75 @@ function residentRestartPolicy(env: Record<string, string> | undefined): Residen
   return env?.[RESTART_POLICY_ENV] === 'on-failure' ? 'on-failure' : 'never';
 }
 
-/** An interpreter resident's start payload, as its environment-holding member parses. */
+/** A record an earlier release wrote with the environment its process ran with in it. */
+const RecordHoldingEnvSchema = z.looseObject({ env: z.record(z.string(), z.string()) });
+
+/** What an interpreter resident's environment is built from; no facts for a launch its runtime did not build (an embedder's own). */
+interface InterpreterLaunchEnv {
+  base: Record<string, string>;
+  facts: InterpreterEnvFacts | null;
+}
+
+/** An interpreter resident's start payload, as its environment members parse. */
 const InterpreterStartArgsSchema = z.looseObject({
   userEnv: z.record(z.string(), z.string()).optional(),
-  runtimeEnv: z.record(z.string(), z.string()).optional(),
+  envFacts: InterpreterEnvFactsSchema.optional(),
 });
 
-/**
- * An interpreter resident's start payload as its image keeps it: `userEnv`
- * reduced to what its runtime added to `processEnv` (`runtimeEnv`), never
- * the process environment itself. A payload with no `processEnv` given (an
- * embedder's own) is kept as it is.
- */
-function storedStartArgs(startArgs: unknown, processEnv: Record<string, string> | undefined): unknown {
-  if (processEnv === undefined) return startArgs;
+function interpreterStartArgs(startArgs: unknown): z.infer<typeof InterpreterStartArgsSchema> {
   const parsed = InterpreterStartArgsSchema.safeParse(startArgs);
-  if (!parsed.success || parsed.data.userEnv === undefined) return startArgs;
-  const { userEnv, ...rest } = parsed.data;
-  return { ...rest, runtimeEnv: Object.fromEntries(Object.entries(userEnv).filter(([name, value]) => processEnv[name] !== value)) };
+  if (!parsed.success) throw new Error(`Nimbus: an interpreter resident's start payload is malformed: ${parsed.error.message}`);
+  return parsed.data;
 }
 
-/** The process environment an image an earlier release wrote holds whole (`userEnv`), if it does. */
-function legacyUserEnv(startArgs: unknown): Record<string, string> | undefined {
-  const parsed = InterpreterStartArgsSchema.safeParse(startArgs);
-  return parsed.success ? parsed.data.userEnv : undefined;
+/** An interpreter resident's start payload as its image keeps it: what its environment is built from, never the environment. */
+function storedStartArgs(startArgs: unknown, interpreterEnv: InterpreterLaunchEnv | undefined): unknown {
+  const { userEnv: _built, envFacts: _facts, ...rest } = interpreterStartArgs(startArgs);
+  return interpreterEnv?.facts ? { ...rest, envFacts: interpreterEnv.facts } : rest;
 }
 
-/** The start payload an interpreter resident is relaunched with: its runtime's additions, under the host's answer. */
-function relaunchStartArgs(stored: unknown, processEnv: Record<string, string>): unknown {
-  const parsed = InterpreterStartArgsSchema.safeParse(stored);
-  if (!parsed.success) return stored;
-  const { userEnv: _held, runtimeEnv, ...rest } = parsed.data;
-  return { ...rest, userEnv: { ...runtimeEnv, ...processEnv } };
+/** What an interpreter resident is relaunched with: its image's payload, its environment built again on the host's answer. */
+function relaunchInterpreter(stored: unknown, base: Record<string, string>): { startArgs: unknown; interpreterEnv: InterpreterLaunchEnv } {
+  const { envFacts, ...rest } = interpreterStartArgs(stored);
+  return {
+    startArgs: { ...rest, userEnv: envFacts === undefined ? base : interpreterProcessEnv(base, envFacts) },
+    interpreterEnv: { base, facts: envFacts ?? null },
+  };
 }
 
 /** Where releases through worker 0.19 wrote a resident's generated source. */
 const LEGACY_FACET_IMAGE_DIR = 'var/lib/nimbus/facet-images';
-/** What a generated Node resident source holds: its arguments, which an earlier release's included its environment. */
-const GENERATED_ARGS_MARK = 'const __NIMBUS_ARGS = ';
-const IMAGE_SCAN_BYTES = 1 << 20;
+/** How the Node generator of every earlier release opened a source's arguments, its environment among them: as JSON, or as JSON read by JSON.parse. */
+const GENERATED_ARGS_OPENINGS = ['const __NIMBUS_ARGS = {"argv":', 'const __NIMBUS_ARGS = JSON.parse("{\\"argv\\":'];
+const GENERATED_ARGS_OVERLAP = Math.max(...GENERATED_ARGS_OPENINGS.map((opening) => opening.length));
 
 /**
  * Every Node resident's generated source an earlier release wrote, its
- * environment in it, unlinked: its recipe generates it again. One a process
- * of this release boots from (`live`, the store's roots) is this release's,
- * which holds none. Nothing else in the image directories goes: an
- * embedder's text modules and a durable worker's sources are named by
- * journal rows, and no launch writes them again. Read a slice at a time, as
- * an image can be tens of MiB.
+ * environment in its arguments, unlinked: its recipe generates it again.
+ * Only a file the kernel wrote (a regular file the kernel owns, named by a
+ * digest, in a directory the kernel owns) that opens its arguments as the
+ * generator did, and that nothing still names (`kept`: what an application
+ * image names, what a running process boots from). Read a slice at a time,
+ * as an image can be tens of MiB: the store's own write slice, whole chunks
+ * within one storage transaction.
  */
-function dropGeneratedNodeSources(vfs: SqliteVFS, live: ReadonlySet<string>): void {
+function dropGeneratedNodeSources(vfs: SqliteVFS, kept: ReadonlySet<string>): void {
   const kernel = vfs.as(CRED_KERNEL);
+  const kernelOwned = (path: string, type: VfsStat['type']): boolean => {
+    if (!kernel.exists(path)) return false;
+    const stat = kernel.lstat(path);
+    return stat.type === type && stat.uid === CRED_KERNEL.uid;
+  };
   for (const dir of [FACET_IMAGE_DIR, LEGACY_FACET_IMAGE_DIR]) {
-    if (!kernel.exists(dir)) continue;
+    if (!kernelOwned(dir, 'directory')) continue;
     for (const { name } of kernel.readdir(dir)) {
       const path = `${dir}/${name}`;
-      if (live.has(`/${path}`)) continue;
+      if (!/^[0-9a-f]{64}\.js$/.test(name) || kept.has(`/${path}`) || !kernelOwned(path, 'file')) continue;
       const size = kernel.stat(path).size;
-      for (let offset = 0; offset < size; offset += IMAGE_SCAN_BYTES) {
-        // Each slice overlaps the next by the mark's length, so a mark across their boundary is seen.
-        const slice = kernel.readRangeUncached(path, offset, Math.min(IMAGE_SCAN_BYTES + GENERATED_ARGS_MARK.length, size - offset));
-        if (new TextDecoder().decode(slice).includes(GENERATED_ARGS_MARK)) { kernel.unlink(path); break; }
+      for (let offset = 0; offset < size; offset += FACET_IMAGE_WRITE_SLICE_BYTES) {
+        // Each slice overlaps the next by an opening's length, so one across their boundary is seen.
+        const text = new TextDecoder().decode(kernel.readRangeUncached(path, offset, Math.min(FACET_IMAGE_WRITE_SLICE_BYTES + GENERATED_ARGS_OVERLAP, size - offset)));
+        if (GENERATED_ARGS_OPENINGS.some((opening) => text.includes(opening))) { kernel.unlink(path); break; }
       }
     }
   }
@@ -5839,16 +5849,12 @@ export class FacetManager {
     this.readProfile = profiles && typeof profiles === 'object'
       ? new ReadProfile(profiles as ReadProfileBucket, Date.now, () => { this.readProfileConflicts++; })
       : null;
-    // A row's delete forgets the environment kept for it, with the row's own
-    // sync: every way a row goes (release, purge, abandonment, supersession)
-    // is a delete through here.
+    // A row's delete takes the environment kept beside it in the same
+    // storage operation: every way a row goes (release, purge, abandonment,
+    // supersession) is a delete through here.
     const journalStorage: FencedWorkStorage = {
       put: (key, value) => ctx.storage.put(key, value),
-      delete: async (key) => {
-        const deleted = await ctx.storage.delete(key);
-        await this.hooks.keepProcessEnv?.forget(key);
-        return deleted;
-      },
+      delete: async (key) => (await ctx.storage.delete(recordKeys(this.hooks.keepProcessEnv, key))) > 0,
       list: <T>(options: { prefix: string }) => ctx.storage.list<T>(options),
       sync: () => ctx.storage.sync(),
     };
@@ -5924,68 +5930,65 @@ export class FacetManager {
 
   /**
    * What releases before ask 62 kept of their processes' environments, once
-   * per session, before anything of it is re-driven:
-   * - a Node resident's journal row held its env: kept where this host keeps
-   *   environments (keepProcessEnv), and written again without it;
-   * - a durable application's image held its interpreter's environment, or a
-   *   binding env, where every process could read it: written again without
-   *   it, its rows and its owner's images naming the new one, the old blobs
-   *   unlinked. An application whose binding env nothing can give back (no
-   *   embedder resolveWorkerLaunch) is not restarted, and the session is told;
-   * - a Node resident's generated source, in the image store or below
-   *   /var/lib/nimbus where releases through 0.19 wrote it: unlinked (its
-   *   recipe generates it again).
-   * Unlinked bytes are then collected (the VFS's content GC). A filesystem
-   * snapshot or export taken before keeps what it held.
+   * per session, before anything of it is re-driven or read. Each record
+   * moves its environment to where this host keeps environments
+   * (keepProcessEnv) in the same storage write that strips it:
+   * - a Node resident's journal row, and a dev server's record, held it;
+   * - every application blob that held an interpreter's environment, or a
+   *   binding env, where every process could read it (named by an index, a
+   *   row, or nothing): written again without it, as the facts its
+   *   environment was built from, its rows and owner indexes naming the new
+   *   blob, the old one unlinked. An application whose binding env nothing
+   *   can give back (no embedder resolveWorkerLaunch) is not restarted, and
+   *   the session is told;
+   * - a Node resident's generated source, in the image directory or below
+   *   /var/lib/nimbus where releases through 0.19 wrote it: unlinked.
+   * A filesystem snapshot or export taken before keeps what it held.
    */
   private async _dropEnvironmentsAtRest(): Promise<void> {
     if (await this.ctx.storage.get(PROCESS_ENV_DROPPED_KEY) === true) return;
-    const keep = this.hooks.keepProcessEnv;
+    const keeping = this.hooks.keepProcessEnv;
     const rows = await this.ctx.storage.list<ResidentLaunchRecord>({ prefix: FENCED_WORK_KEY_PREFIX });
     for (const [key, row] of rows) {
       if (row.recipe.kind !== 'node' || row.recipe.opts.env === undefined) continue;
       const { env, ...opts } = row.recipe.opts;
-      await keep?.remember(key, env);
       const rewritten: ResidentLaunchRecord = { ...row, recipe: { ...row.recipe, opts } };
       rows.set(key, rewritten);
-      await this.ctx.storage.put(key, rewritten);
+      await this.ctx.storage.put(recordWithEnv(keeping, key, rewritten, env));
+    }
+    for (const [key, row] of await this.ctx.storage.list({ prefix: DEV_SERVER_KEY_PREFIX })) {
+      const held = RecordHoldingEnvSchema.safeParse(row);
+      if (!held.success) continue;
+      const { env, ...record } = held.data;
+      await this.ctx.storage.put(recordWithEnv(keeping, key, record, env));
     }
     const vfs = this.vfs;
     if (vfs !== null) {
-      const owners = await this.ctx.storage.list<Array<{ runner: string; application: string }>>({ prefix: DURABLE_IMAGES_KEY_PREFIX });
-      const dropped: Array<{ runner: string; application: string }> = [];
-      for (const [ownerKey, images] of owners) {
-        const kept: Array<{ runner: string; application: string }> = [];
-        for (const image of images) {
-          const rewritten = await rewriteWithoutEnvironment(vfs, image);
-          if (rewritten === null) { kept.push(image); continue; }
-          dropped.push(image);
-          const naming = [...rows].filter(([, row]) => row.recipe.kind === 'worker'
-            && row.recipe.image.runner === image.runner && row.recipe.image.application === image.application);
-          const lost = rewritten.bindingEnv && this.hooks.resolveWorkerLaunch === undefined;
-          for (const [key, row] of naming) {
-            if (row.recipe.kind !== 'worker') continue;
-            if (lost && row.recipe.resident === undefined) {
-              await this.ctx.storage.delete(key);
-              await keep?.forget(key);
-              rows.delete(key);
-              this.hooks.notify?.(`\x1b[33m[nimbus: "${row.command}" is not restarted: its image held its environment, which Nimbus no longer keeps; start it again]\x1b[0m\r\n`);
-              continue;
-            }
-            if (rewritten.processEnv !== undefined) await keep?.remember(key, rewritten.processEnv);
-            const moved: ResidentLaunchRecord = { ...row, recipe: { ...row.recipe, image: rewritten.image } };
-            rows.set(key, moved);
-            await this.ctx.storage.put(key, moved);
+      const { holdingEnv, namedPaths } = await readApplicationImages(vfs);
+      const rewritten = new Map<string, string>();
+      for (const held of holdingEnv) {
+        const naming = [...rows].flatMap(([key, row]) => (row.recipe.kind === 'worker' && row.recipe.image.application === held.digest ? [{ key, row, recipe: row.recipe }] : []));
+        const runtime = naming.find(({ recipe }) => recipe.resident !== undefined)?.recipe.resident?.runtime ?? null;
+        const application = await rewriteWithoutEnvironment(vfs, held.digest, runtime);
+        rewritten.set(held.digest, application);
+        for (const { key, row, recipe } of naming) {
+          if (held.bindingEnv && recipe.resident === undefined && this.hooks.resolveWorkerLaunch === undefined) {
+            await this.ctx.storage.delete(recordKeys(keeping, key));
+            rows.delete(key);
+            this.hooks.notify?.(`\x1b[33m[nimbus: "${row.command}" is not restarted: its image held its environment, which Nimbus no longer keeps; start it again]\x1b[0m\r\n`);
+            continue;
           }
-          kept.push(rewritten.image);
+          const moved: ResidentLaunchRecord = { ...row, recipe: { ...recipe, image: { runner: recipe.image.runner, application } } };
+          rows.set(key, moved);
+          await this.ctx.storage.put(recordWithEnv(keeping, key, moved, recipe.resident === undefined ? undefined : held.processEnv ?? undefined));
         }
-        owners.set(ownerKey, kept);
-        await this.ctx.storage.put(ownerKey, kept);
       }
-      purgeDurableWorkerImages(vfs, dropped, [...owners.values()].flat());
-      dropGeneratedNodeSources(vfs, this.imageStore.liveImages());
-      // What was unlinked is collected now, not at the GC's next turn.
-      for (let pass = 0; pass < 64 && vfs.runContentMaintenance(16).transactions > 0; pass++);
+      for (const [ownerKey, images] of await this.ctx.storage.list<Array<{ runner: string; application: string }>>({ prefix: DURABLE_IMAGES_KEY_PREFIX })) {
+        if (!images.some((image) => rewritten.has(image.application))) continue;
+        await this.ctx.storage.put(ownerKey, images.map((image) => ({ runner: image.runner, application: rewritten.get(image.application) ?? image.application })));
+      }
+      unlinkDurableImages(vfs, rewritten.keys());
+      dropGeneratedNodeSources(vfs, new Set([...namedPaths, ...this.imageStore.liveImages()]));
     }
     await this.ctx.storage.put(PROCESS_ENV_DROPPED_KEY, true);
     await this.ctx.storage.sync();
@@ -6133,8 +6136,13 @@ export class FacetManager {
       : { kind: 'host-reset' });
   }
 
-  /** Claim identity AND write its recovery row in one serializable storage transaction. */
-  private async _claimResident(record: ResidentLaunchRecord): Promise<number | null> {
+  /**
+   * Claim identity AND write its recovery row in one serializable storage
+   * transaction, with the environment its relaunch asks for (`env`, when it
+   * asks) kept beside the row where this host keeps environments. A claim
+   * again of a row already written leaves what is kept beside it.
+   */
+  private async _claimResident(record: ResidentLaunchRecord, env?: Record<string, string>): Promise<number | null> {
     const owner = residentOwner(record);
     if (owner === undefined) throw new Error('resident launch has no owner');
     const duplicate = await this.ctx.storage.transaction(async (txn) => {
@@ -6142,8 +6150,7 @@ export class FacetManager {
       const held = await txn.get<number>(key);
       if (held !== undefined && held !== record.pid && held > this.processes.pidBase
         && this.processes.get(held)?.state === 'running') return held;
-      await txn.put(key, record.pid);
-      await txn.put(`${FENCED_WORK_KEY_PREFIX}${record.pid}`, record);
+      await txn.put({ [key]: record.pid, ...recordWithEnv(this.hooks.keepProcessEnv, `${FENCED_WORK_KEY_PREFIX}${record.pid}`, record, env) });
       return null;
     });
     if (duplicate === null) {
@@ -9218,9 +9225,6 @@ export class FacetManager {
     const key = `${FENCED_WORK_KEY_PREFIX}${record.pid}`;
     switch (recipe.kind) {
       case 'node': {
-        // A row an earlier release wrote holds its env: kept where this host
-        // keeps environments, and never read from the row again.
-        if (recipe.opts.env !== undefined) await this.hooks.keepProcessEnv?.remember(key, recipe.opts.env);
         const env = await relaunchEnv(this.hooks.resolveProcessEnv, relaunchRequest(key, record.pid, identity));
         return this._spawnResident(recipe.code, { ...recipe.opts, env: withRestartPolicy(env, record.restart) }, attempt, identity);
       }
@@ -9243,22 +9247,18 @@ export class FacetManager {
         const mainModule = resolved.mainModule ?? recipe.mainModule ?? DEFAULT_WORKER_MAIN_MODULE;
         const { [mainModule]: workerCode, ...modules } = resolved.modules;
         if (typeof workerCode !== 'string') throw new Error(`resolved worker launch carries no ${mainModule} main module source`);
-        // An interpreter resident's process environment is the host's answer,
-        // over what its runtime added; one an earlier release kept in the
-        // image is kept where this host keeps environments, and the image is
-        // written again without it (no `image`: the spawn persists one).
+        // An interpreter resident's environment is built again on the host's
+        // answer, as its first launch built it (no `image`: the spawn
+        // persists one).
         let startArgs = resolved.startArgs ?? recipe.startArgs;
-        let processEnv: Record<string, string> | undefined;
+        let interpreterEnv: InterpreterLaunchEnv | undefined;
         if (recipe.resident) {
-          const kept = legacyUserEnv(startArgs);
-          if (kept !== undefined) await this.hooks.keepProcessEnv?.remember(key, kept);
-          processEnv = await relaunchEnv(this.hooks.resolveProcessEnv, relaunchRequest(key, record.pid, identity));
-          startArgs = relaunchStartArgs(startArgs, processEnv);
+          ({ startArgs, interpreterEnv } = relaunchInterpreter(startArgs, await relaunchEnv(this.hooks.resolveProcessEnv, relaunchRequest(key, record.pid, identity))));
         }
         return this._spawnWorker(workerCode, record.command, recipe.cwd, {
           port: recipe.resident ? record.port : recipe.port > 0 ? recipe.port : undefined, modules, compatibilityDate: recipe.compatibilityDate,
           compatibilityFlags: recipe.compatibilityFlags, startArgs,
-          ...(processEnv !== undefined ? { processEnv } : {}),
+          ...(interpreterEnv !== undefined ? { interpreterEnv } : {}),
           resident: recipe.resident, restart: record.restart,
           env: resolved.env ?? undefined, globalOutbound: resolved.globalOutbound,
           vfsWasmModules: resolved.vfsWasmModules,
@@ -9483,7 +9483,7 @@ export class FacetManager {
     let durableFacetName: string | undefined;
     let launchEnv: Record<string, string> | undefined;
     try {
-      duplicateOf = await this._claimResident(initial);
+      duplicateOf = await this._claimResident(initial, opts.env ?? {});
       this._assertLaunchStillOwned(entry.pid);
       // The reservation the identity holds, if any: its port is what `$PORT`
       // is set to and what the facet's durable slot is bound for, so the
@@ -9523,10 +9523,7 @@ export class FacetManager {
       ...ranAs,
     };
     try {
-      if (!ephemeral) {
-        await this.hooks.keepProcessEnv?.remember(`${FENCED_WORK_KEY_PREFIX}${entry.pid}`, opts.env ?? {});
-        await this.launchJournal.journal(record);
-      }
+      if (!ephemeral) await this.launchJournal.journal(record);
     } catch (e: unknown) {
       // A resident that cannot be journalled does not start; the failure is
       // reported the way a boot failure is.
@@ -10038,9 +10035,10 @@ export class FacetManager {
               + 'cannot be journalled without an embedder resolveWorkerLaunch hook',
           );
         }
-        // Nor an env: what the image store holds every process can read, so
-        // it holds no environment, and only the embedder can give one back.
-        if (opts.env !== undefined && opts.durable.image === undefined && this.hooks.resolveWorkerLaunch === undefined) {
+        // Nor an env, `{}` included (it is the isolate's whole binding map):
+        // what the image store holds every process can read, so it holds no
+        // environment, and only the embedder can give one back.
+        if (opts.env !== undefined && this.hooks.resolveWorkerLaunch === undefined) {
           throw new Error(
             'Nimbus: a durable spawn carrying an env cannot be journalled without an embedder resolveWorkerLaunch hook: '
               + 'its image is readable by every process, so it never holds an environment',
@@ -10059,7 +10057,7 @@ export class FacetManager {
             vfsWasmModules: opts.vfsWasmModules,
             vfsTextModules: opts.vfsTextModules,
             ...(opts.mainModule !== undefined ? { mainModule: opts.mainModule } : {}),
-            startArgs: storedStartArgs(opts.startArgs, opts.processEnv),
+            startArgs: opts.resident === undefined ? opts.startArgs : storedStartArgs(opts.startArgs, opts.interpreterEnv),
           });
         await this.ctx.storage.transaction(async (txn) => {
           const key = `${DURABLE_IMAGES_KEY_PREFIX}${opts.durable!.owner}`;
@@ -10101,10 +10099,7 @@ export class FacetManager {
         // land on the same `app-slot-<n>`, which is the only thing that keeps
         // the retained SQLite bound to this application.
         // An interpreter resident's relaunch asks for its environment, an empty one included.
-        const envRecord = `${FENCED_WORK_KEY_PREFIX}${entry.pid}`;
-        if (opts.resident !== undefined) await this.hooks.keepProcessEnv?.remember(envRecord, opts.processEnv ?? {});
-        const duplicate = await this._claimResident(record);
-        if (duplicate !== null && opts.resident !== undefined) await this.hooks.keepProcessEnv?.forget(envRecord);
+        const duplicate = await this._claimResident(record, opts.resident === undefined ? undefined : opts.interpreterEnv?.base ?? {});
         if (duplicate !== null) {
           this.ephemeralPids.set(entry.pid, opts.durable.owner);
           this.hooks.notify?.(`\x1b[2m[nimbus: second instance of "${command}" is not the durable one — pid ${duplicate} keeps the identity]\x1b[0m\r\n`);

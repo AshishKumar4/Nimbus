@@ -214,10 +214,9 @@ async function restoreOne(host, ours, key, from, parsed) {
     let failure = null;
     try {
         await host.ensureRuntimeReady();
-        const env = await relaunchEnv(host.processEnv.resolveProcessEnv, { pid: from, cred: record.cred, record: key, ...execIdField(record) });
         // A destroy that came meanwhile made the session again: nothing of this one runs in it.
         if (ours())
-            failure = await runAgain(host, record, from, env);
+            failure = await runAgain(host, record, from, await relaunchEnv(host.processEnv.resolveProcessEnv, { pid: from, cred: record.cred, record: key, ...execIdField(record) }));
     }
     catch (error) {
         failure = { command: record.command, cwd: record.cwd, pid: null, reason: errorText(error) };

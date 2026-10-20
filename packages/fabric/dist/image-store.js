@@ -128,6 +128,20 @@ export class ImageStore {
         console.log('[image-store] pid=' + pid + ' materialized ' + count + ' image(s) in ' + pacer.chunks + ' turn(s)');
         return paths;
     }
+    /** The images a running process boots from, or a launch is writing: the store's roots. */
+    liveImages() {
+        const live = new Set();
+        for (const [pid, paths] of this.residentImages) {
+            if (this.isLive(pid)) {
+                for (const path of paths)
+                    live.add(path);
+            }
+            else {
+                this.residentImages.delete(pid);
+            }
+        }
+        return live;
+    }
     /**
      * Drop every image no running process boots from.
      *
@@ -140,16 +154,7 @@ export class ImageStore {
      * a DO reset the table is empty so every orphan goes.
      */
     sweep(fs) {
-        const live = new Set();
-        for (const [pid, paths] of this.residentImages) {
-            if (this.isLive(pid)) {
-                for (const path of paths)
-                    live.add(path);
-            }
-            else {
-                this.residentImages.delete(pid);
-            }
-        }
+        const live = this.liveImages();
         let names;
         try {
             names = fs.list(FACET_IMAGE_DIR);

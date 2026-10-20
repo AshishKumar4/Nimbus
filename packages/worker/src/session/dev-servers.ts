@@ -36,7 +36,7 @@ import { DEV_SERVER_KEY_PREFIX } from './keys.js';
 import type { DevServerRestoreFailure } from './helpers.js';
 import { readPortCapability, readoptCapability, type PortCapabilityHost } from './port-capability.js';
 import type { ProcessEnvHooks } from './process-env.js';
-import { relaunchEnv } from '../facets/process-env.js';
+import { recordKeys, recordWithEnv, relaunchEnv } from '../facets/process-env.js';
 
 const DevServerRecordSchema = z.object({
   /** The line its command ran, and what its process was spawned with. */
@@ -45,8 +45,6 @@ const DevServerRecordSchema = z.object({
   cwd: z.string(),
   cred: z.custom<VfsCred>(isVfsCred),
   execId: z.string().optional(),
-  /** What an earlier release recorded: its command's environment, now kept where the host keeps environments, if anywhere. */
-  env: z.record(z.string(), z.string()).optional(),
   /** What the server serves (a project or a build), for whoever reads the record. */
   root: z.string(),
   /** The ports it served: the links handed out for them are taken back by the restored server. */
@@ -152,8 +150,7 @@ export async function afterDevServerRestore(
 }
 
 async function release(host: Pick<DevServerHost, 'ctx' | 'processEnv'>, key: string): Promise<void> {
-  await host.ctx.storage.delete(key);
-  await host.processEnv.keepProcessEnv?.forget(key);
+  await host.ctx.storage.delete(recordKeys(host.processEnv.keepProcessEnv, key));
   await host.ctx.storage.sync();
 }
 
@@ -169,8 +166,7 @@ export async function recordDevServer(host: DevServerHost, pid: number, spawn: D
     command: spawn.command, argv: [...spawn.argv], cwd: spawn.cwd, cred: spawn.cred, ...execIdField(spawn),
     root: spawn.root, ports: host.portRegistry.getRouteablePortsByPid(pid),
   };
-  await host.processEnv.keepProcessEnv?.remember(key, { ...spawn.env });
-  await host.ctx.storage.put(key, record);
+  await host.ctx.storage.put(recordWithEnv(host.processEnv.keepProcessEnv, key, record, spawn.env));
   await host.ctx.storage.sync();
   if (host.processes.get(pid)?.state !== 'running') {
     await release(host, key);
@@ -245,11 +241,7 @@ async function restoreOne(
     return { command: record.command, cwd: record.cwd, pid: null, reason: 'its start after an earlier restart of the session did not finish' };
   }
   if (!ours()) return null;
-  // A record an earlier release wrote holds its environment: kept where the
-  // host keeps environments, and not written back.
-  const { env: held, ...kept } = record;
-  if (held !== undefined) await host.processEnv.keepProcessEnv?.remember(key, held);
-  await host.ctx.storage.put(key, { ...kept, restoring: true });
+  await host.ctx.storage.put(key, { ...record, restoring: true });
   await host.ctx.storage.sync();
   // The links handed out for its ports: a registration that is not a restore retires them.
   const capabilities = new Map<number, string>();

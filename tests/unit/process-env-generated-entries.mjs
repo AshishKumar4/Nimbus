@@ -2,7 +2,8 @@
 // A process's environment never enters the module that runs it (ask 62):
 // generated modules are content-addressed into images every process on the
 // box can read. Through each complete generated entry, the program reads the
-// env its start or its run hands over, and no module text holds it:
+// env its start or its run hands over (util.debuglog too, which reads
+// NODE_DEBUG as the program starts), and no module text holds it:
 //
 //   - a resident node, started with its env;
 //   - an opencode one-shot, run with its env;
@@ -20,6 +21,10 @@ import { join } from 'node:path';
 import { runScenarios } from './lib/resident-body.mjs';
 
 const SECRET = 'ask62-sentinel-5e1d';
+const ENV = { SECRET, NODE_DEBUG: 'ask62' };
+/** What each program writes: the env it reads, and whether util.debuglog is on for NODE_DEBUG's section. */
+const READ = `String(process.env.SECRET) + " " + String(builtins.util.debuglog("ask62").enabled)`;
+const EXPECTED = `${SECRET} true`;
 
 /** Every file below `dir`, as text: the module set a runner was imported from. */
 const filesBelow = (dir) => readdirSync(dir, { recursive: true })
@@ -30,17 +35,17 @@ const filesBelow = (dir) => readdirSync(dir, { recursive: true })
 // An opencode bundle's program: it writes what it was given to a file, as
 // opencode's own import of node:fs reaches the session.
 const writesEnv = `
-const fs = globalThis.__nimbusOpencodeBuiltins.fs;
+const builtins = globalThis.__nimbusOpencodeBuiltins;
 export async function nimbusMain() {
-  fs.writeFileSync("/home/user/env.txt", String(process.env.SECRET));
+  builtins.fs.writeFileSync("/home/user/env.txt", ${READ});
 }
 `;
 // A server: its main resolves once it serves, and it writes and exits later.
 const servesEnv = `
-const fs = globalThis.__nimbusOpencodeBuiltins.fs;
+const builtins = globalThis.__nimbusOpencodeBuiltins;
 export async function nimbusMain() {
   setTimeout(() => {
-    fs.writeFileSync("/home/user/env.txt", String(process.env.SECRET));
+    builtins.fs.writeFileSync("/home/user/env.txt", ${READ});
     process.exit(0);
   }, 0);
 }
@@ -70,32 +75,32 @@ await runScenarios(import.meta.path, {
     const authority = createAuthority();
     const { supervisor, log } = facetSupervisor(authority);
     const { generated } = await launchResident({
-      program: 'process.stdout.write(String(process.env.SECRET));',
+      program: `const builtins = { util: require("util") }; process.stdout.write(${READ});`,
       env: { SUPERVISOR: supervisor },
-      processEnv: { SECRET },
+      processEnv: ENV,
       authority,
     });
-    await until(() => log.stdout === SECRET, 'the program to print its env', 10_000);
+    await until(() => log.stdout === EXPECTED, 'the program to print its env', 10_000);
     assert.equal(JSON.stringify(generated).includes(SECRET), false, 'no module of the resident holds its env');
   },
   async 'opencode one-shot: the env comes with its run'() {
     const { authority, supervisor, runner, dir } = await opencodeRunner('oneshot', writesEnv);
     const response = await runner.default.fetch(
-      new Request('http://facet/run', { method: 'POST', body: JSON.stringify({ env: { SECRET } }) }),
+      new Request('http://facet/run', { method: 'POST', body: JSON.stringify({ env: ENV }) }),
       { SUPERVISOR: supervisor },
     );
     const result = await response.json();
     assert.equal(result.exitCode, 0, result.stderr);
-    assert.equal(authority.read('home/user/env.txt'), SECRET, 'the program read the env its run handed over');
+    assert.equal(authority.read('home/user/env.txt'), EXPECTED, 'the program read the env its run handed over');
     assert.equal(filesBelow(dir).some((text) => text.includes(SECRET)), false, 'no module of the runner holds it');
   },
   async 'opencode serve: the env comes with its start'() {
     const { facetSql } = await import('./lib/resident-body.mjs');
     const { authority, supervisor, runner, dir, exited } = await opencodeRunner('server', servesEnv);
     const serve = new runner.NimbusProcess({ storage: { sql: facetSql() }, waitUntil() {}, id: { toString: () => 'process-env' } }, { SUPERVISOR: supervisor });
-    await serve.startProcess({ env: { SECRET } });
+    await serve.startProcess({ env: ENV });
     assert.equal(await exited, 0);
-    assert.equal(authority.read('home/user/env.txt'), SECRET, 'the program read the env its start handed over');
+    assert.equal(authority.read('home/user/env.txt'), EXPECTED, 'the program read the env its start handed over');
     assert.equal(filesBelow(dir).some((text) => text.includes(SECRET)), false, 'no module of the runner holds it');
   },
 });

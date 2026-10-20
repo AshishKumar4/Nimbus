@@ -259,4 +259,18 @@ function kernelBlobs(vfs) {
   assert.ok(spawned.pid > 0, 'the embedder hook admits a binding it can re-mint');
 }
 
+// ── 5. a durable spawn carrying an env needs the embedder's hook, its image
+//      supplied or not, `{}` included (the isolate's whole binding map) ──────
+{
+  const { fm, storage } = setup();
+  for (const env of [{ TOKEN: 'x' }, {}]) {
+    await assert.rejects(
+      () => fm.spawnWorker('export default {}', 'with-env', '/app', { env, durable: { owner: 'E', image: { runner: 'r', application: 'a' } } }),
+      /carrying an env cannot be journalled without an embedder resolveWorkerLaunch hook/,
+      `a supplied image does not admit env ${JSON.stringify(env)}`,
+    );
+  }
+  assert.equal([...storage.keys()].filter((k) => k.startsWith('resident-launch:')).length, 0, 'nothing was journalled');
+}
+
 console.log('ok - durable image store (digests real, no env, fallback re-drive restores modules, embedder overrides, outbound and env refused)');
