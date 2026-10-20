@@ -195,7 +195,8 @@ function kernelBlobs(vfs) {
 
 // ── 3. an embedder's resolver overrides the image-store fallback ─────────────
 {
-  const { fm, ctx, storage, world, disk } = setup();
+  // The embedder that spawns with a binding env gives it back (resolveWorkerLaunch).
+  const { fm, ctx, storage, world, disk } = setup({ hooks: { resolveWorkerLaunch: async () => null } });
   await fm.spawnWorker('export default {}', 'embedder-owned', '/app', {
     env: { FROM: 'image' },
     durable: { owner: 'E', image: { runner: 'r-e', application: 'app-e' } },

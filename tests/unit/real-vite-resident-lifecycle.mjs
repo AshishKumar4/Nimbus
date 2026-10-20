@@ -109,6 +109,8 @@ const ended = async (pid, code, facet, what) => {
   assert.equal(processes.get(pid)?.exitCode, code, `${what}: exit ${code}`);
   assert.equal(ports.get(PORT), undefined, `${what}: its port is free`);
   assert.equal(world.liveFacets().includes(facet), false, `${what}: its facet is released`);
+  // Its record goes with its end, in the session's next storage transaction.
+  for (let i = 0; i < 100 && await recordOf(pid) !== undefined; i++) await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(await recordOf(pid), undefined, `${what}: nothing runs it again`);
 };
 

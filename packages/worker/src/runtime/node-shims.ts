@@ -5148,6 +5148,14 @@ const __fsMod = (() => {
     const movedVia = nsFrom === null || nsFrom === oldN ? undefined : [oldN, ...(earlier?.state === "alias" && earlier.via ? earlier.via : [])];
     const oldPrefix = oldN + "/";
     const content = __vfsBundle?.[oldN] ?? __vfsWrites?.[oldN];
+    // The file the rename replaces goes, as an unlink's does: its bytes are
+    // not the name's once the move is decided, whether or not this process
+    // holds the moved file's (a name it does not hold is read anew).
+    if (newN !== oldN) {
+      if (__vfsBundle) delete __vfsBundle[newN];
+      if (__vfsWrites) delete __vfsWrites[newN];
+      delete __vfsBundleRevisions[newN];
+    }
     // The file's own cell moves with its name (retired once the move is
     // answered, below); one that is only an append's bytes cannot stand for
     // the file, and its new name reads from the authority once the move lands.

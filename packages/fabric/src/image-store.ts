@@ -20,7 +20,7 @@
 
 import { sha256Incremental } from '@nimbus-sh/core/_shared/crypto.js';
 import { MAX_TX_BLOB_BYTES, CHUNK_SIZE } from '@nimbus-sh/platform/limits.js';
-import { FACET_IMAGE_DIR, facetImagePath } from './process-fabric.js';
+import { PROCESS_IMAGE_DIR, processImagePath } from './process-fabric.js';
 import type { TurnBudget } from './turn-budget.js';
 
 /**
@@ -105,7 +105,7 @@ export class ImageStore {
   ensureDir(pid: number): void {
     if (this.dirReady) return;
     this.dirReady = true;
-    try { this.blobs(pid).mkdirp(FACET_IMAGE_DIR); }
+    try { this.blobs(pid).mkdirp(PROCESS_IMAGE_DIR); }
     catch { /* a session whose disk is not writable has no images to store */ }
   }
 
@@ -144,10 +144,10 @@ export class ImageStore {
     // identity is what makes an append visible — do not replace it.
     const rooted: string[] = [];
     this.residentImages.set(pid, rooted);
-    fs.mkdirp(FACET_IMAGE_DIR);
+    fs.mkdirp(PROCESS_IMAGE_DIR);
     let count = 0;
     for await (const [moduleName, source] of images) {
-      const { path, bytes } = await storeContentBlob(fs, source, facetImagePath, { pacer, root: (named) => rooted.push(named) });
+      const { path, bytes } = await storeContentBlob(fs, source, processImagePath, { pacer, root: (named) => rooted.push(named) });
       paths[moduleName] = path;
       count++;
       console.log(
@@ -161,21 +161,10 @@ export class ImageStore {
     return paths;
   }
 
-  /** The images a running process boots from, or a launch is writing: the store's roots. */
-  liveImages(): Set<string> {
-    const live = new Set<string>();
-    for (const [pid, paths] of this.residentImages) {
-      if (this.isLive(pid)) {
-        for (const path of paths) live.add(path);
-      } else {
-        this.residentImages.delete(pid);
-      }
-    }
-    return live;
-  }
-
   /**
-   * Drop every image no running process boots from.
+   * Drop every image of the store's (PROCESS_IMAGE_DIR) no running process
+   * boots from. Only the store's: an embedder's images in FACET_IMAGE_DIR are
+   * its own to remove, and a durable worker's re-drive reads them.
    *
    * Content addressing means a changed program writes a NEW image rather than
    * replacing one, so a watch loop — or simply a session that runs a few
@@ -186,12 +175,19 @@ export class ImageStore {
    * a DO reset the table is empty so every orphan goes.
    */
   private sweep(fs: ImageBlobStore): void {
-    const live = this.liveImages();
+    const live = new Set<string>();
+    for (const [pid, paths] of this.residentImages) {
+      if (this.isLive(pid)) {
+        for (const path of paths) live.add(path);
+      } else {
+        this.residentImages.delete(pid);
+      }
+    }
     let names: string[];
-    try { names = fs.list(FACET_IMAGE_DIR); } catch { return; }
+    try { names = fs.list(PROCESS_IMAGE_DIR); } catch { return; }
     for (const name of names) {
-      if (live.has(`/${FACET_IMAGE_DIR}/${name}`)) continue;
-      try { fs.unlink(`${FACET_IMAGE_DIR}/${name}`); } catch { /* already gone */ }
+      if (live.has(`/${PROCESS_IMAGE_DIR}/${name}`)) continue;
+      try { fs.unlink(`${PROCESS_IMAGE_DIR}/${name}`); } catch { /* already gone */ }
     }
   }
 }

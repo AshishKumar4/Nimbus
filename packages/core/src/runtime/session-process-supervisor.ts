@@ -91,10 +91,27 @@ interface SignalBox {
   taker: ((signal: ProcessSignalName | null) => void) | null;
 }
 
+/** Whether `a` and `b` are one identity: uid, gid and supplementary groups (as a set); a umask is not one. */
+function sameIdentity(a: Readonly<VfsCred>, b: Readonly<VfsCred>): boolean {
+  if (a === b) return true;
+  if (a.uid !== b.uid || a.gid !== b.gid) return false;
+  const groups = new Set(a.groups);
+  return b.groups.every((gid) => groups.has(gid)) && new Set(b.groups).size === groups.size;
+}
+
+/**
+ * Whether a process running as `from` may start `command` (its command line)
+ * as `to`, a credential other than its own: the host's word on every identity
+ * change (sudo, su, any command's runAs).
+ */
+export type IdentityChangePolicy = (from: Readonly<VfsCred>, to: Readonly<VfsCred>, command: string) => boolean;
+
 export class SessionProcessSupervisor implements ProcessOutput {
   private readonly table = new ProcessTable();
   /** Why no process is admitted any more (closeAdmission); null while they are. */
   private refusal: Error | null = null;
+  /** What every spawn as another identity asks first; see governIdentityChanges. */
+  private identityPolicy: IdentityChangePolicy | null = null;
   private readonly input = new ProcessInputStore();
   private logs = new ProcessLogStore();
 
@@ -145,13 +162,33 @@ export class SessionProcessSupervisor implements ProcessOutput {
 
   // ── Lifecycle / PID authority ─────────────────────────────────────────
 
-  /** Allocate a PID and register a new process. */
+  /**
+   * Allocate a PID and register a new process. One with a parent and a
+   * credential other than the parent's is made only if the identity policy
+   * allows the change: refused, it is EPERM and no process.
+   */
   spawn(command: string, argv: string[], cwd: string, opts: ProcessSpawnOptions = {}): ProcessEntry {
     if (this.refusal !== null) throw this.refusal;
+    if (opts.parentPid !== undefined && opts.cred !== undefined && this.identityPolicy !== null) {
+      const from = this.table.credOf(opts.parentPid);
+      if (!sameIdentity(from, opts.cred) && !this.identityPolicy(from, opts.cred, command)) {
+        throw Object.assign(new Error(`EPERM: operation not permitted, uid ${from.uid} may not become uid ${opts.cred.uid} (${command})`), { code: 'EPERM', errno: -1 });
+      }
+    }
     const entry = this.table.spawn(command, argv, cwd, opts);
     if (opts.longRunning) this.table.setLongRunning(entry.pid);
     if (opts.attachedTty) this.table.setAttachedTty(entry.pid);
     return entry;
+  }
+
+  /**
+   * Ask `policy` before each spawn as another identity (spawn). One policy
+   * per supervisor: a second, other one is refused, so two workspaces over
+   * one process table cannot disagree on it.
+   */
+  governIdentityChanges(policy: IdentityChangePolicy): void {
+    if (this.identityPolicy !== null && this.identityPolicy !== policy) throw new Error('SessionProcessSupervisor: an identity policy is already installed');
+    this.identityPolicy = policy;
   }
 
   /**
