@@ -2406,17 +2406,21 @@ var __nimbusResidentModule = (() => {
           return cursor === null ? null : { epoch: cursor.epoch, cursor: cursor.rev, options: sync.acquireOptions() };
         };
         const acquire = async (lease) => {
-          const args = argsNow();
-          if (args === null || typeof supervisor.fsAcquire !== "function") return null;
-          let answer = null;
-          try {
-            answer = await supervisor.fsAcquire(args.epoch, args.cursor, lease ? { ...args.options, lease: true } : args.options);
-          } catch {
-            return null;
+          for (let asks = 0; asks < 2; asks++) {
+            const args = argsNow();
+            if (args === null || typeof supervisor.fsAcquire !== "function") return null;
+            let answer = null;
+            try {
+              answer = await supervisor.fsAcquire(args.epoch, args.cursor, lease ? { ...args.options, lease: true } : args.options);
+            } catch {
+              return null;
+            }
+            if (!answer || typeof answer.epoch !== "string" || typeof answer.rev !== "number") return null;
+            if (coherence.cursor()?.epoch !== args.epoch) continue;
+            if (lease && answer.readLease) lease.answered(answer.readLease);
+            return current(answer);
           }
-          if (!answer || typeof answer.epoch !== "string" || typeof answer.rev !== "number") return null;
-          if (lease && answer.readLease) lease.answered(answer.readLease);
-          return current(answer);
+          return null;
         };
         const restart = async (answer, applied) => {
           if (answer === null) return bootLazy(supervisor);
