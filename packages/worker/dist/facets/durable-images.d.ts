@@ -28,7 +28,6 @@
  */
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { type ImageBlobStore } from '@nimbus-sh/fabric/image-store.js';
-import { type ResidentCodeSpec } from '@nimbus-sh/fabric/process-fabric.js';
 import type { ResolvedWorkerLaunch, WorkerRecipe } from './manager.js';
 /** The directory every durable application's image blobs live under. */
 export declare const DURABLE_IMAGE_DIR = ".nimbus/images";
@@ -36,6 +35,33 @@ export declare const DURABLE_IMAGE_DIR = ".nimbus/images";
 type InlineModule = string | {
     wasm: ArrayBuffer;
 };
+/** An application blob an earlier release wrote with an environment in it. */
+export interface ApplicationHoldingEnv {
+    digest: string;
+    /** What its launch's process ran with, its runtime's additions in it (`startArgs.userEnv`). */
+    processEnv: Record<string, string> | null;
+    /** Whether it held a binding env, which nothing in the session can give back. */
+    bindingEnv: boolean;
+}
+/**
+ * Every blob in the store, an earlier release's included, an index or row
+ * naming it or not, read: the application blobs that hold an environment,
+ * and the blobs whose bytes are not what their name says (a write a reset
+ * cut short), which no reader can use, since every one verifies the digest.
+ * A runner blob is code, not application JSON, and holds no environment.
+ */
+export declare function readStoredImages(vfs: SqliteVFS): Promise<{
+    holdingEnv: ApplicationHoldingEnv[];
+    corrupt: string[];
+}>;
+/**
+ * `application`, written again without an environment: what every process
+ * can read holds none (ask 62). It keeps no facts to build an interpreter's
+ * environment from: an earlier release kept the environment whole, so its
+ * relaunch runs with the host's answer as it is (the session's keeping holds
+ * that whole environment). Answers the new application digest.
+ */
+export declare function rewriteWithoutEnvironment(vfs: SqliteVFS, application: string): Promise<string>;
 /** Remove only the owner's blobs that no other retained recipe references. */
 export declare function purgeDurableWorkerImages(vfs: SqliteVFS, owned: Iterable<{
     runner: string;
@@ -44,6 +70,8 @@ export declare function purgeDurableWorkerImages(vfs: SqliteVFS, owned: Iterable
     runner: string;
     application: string;
 }>): number;
+/** Unlink the blobs of `digests` that are there; answers how many. */
+export declare function unlinkDurableImages(vfs: SqliteVFS, digests: Iterable<string>): number;
 /**
  * Persist a launch's image blobs, minting their digests, for a self-owned
  * durable spawn, through the session's image disk (written as CRED_KERNEL):
@@ -53,7 +81,6 @@ export declare function purgeDurableWorkerImages(vfs: SqliteVFS, owned: Iterable
  */
 export declare function persistDurableWorkerImage(blobs: ImageBlobStore, workerCode: string, payload: {
     modules: Record<string, InlineModule>;
-    env?: ResidentCodeSpec['env'];
     vfsWasmModules?: Record<string, string>;
     vfsTextModules?: Record<string, string>;
     /** Recorded only when the launch named one; absent means `worker.js`. */

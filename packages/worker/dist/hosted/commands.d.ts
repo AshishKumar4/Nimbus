@@ -3,7 +3,7 @@ import { type NamedTerminals } from '../session/named-terminals.js';
 import type { SessionInternal } from '../session/internal.js';
 import type { RuntimeCatalogEnv } from '../runtime/runtime-catalog.js';
 /** Internal runtime services; callers use composeHostedRuntime, not this recipe. */
-export type RuntimeCommandHost = Pick<SessionInternal, '_emitShellExecDone' | '_setCpRegistry' | '_viteShimPid' | '_viteShimPort' | 'cirrusReal' | 'ensureFacetManager' | 'facetManager' | 'ensureNpmInstaller' | 'ensureSqliteFs' | 'esbuildService' | 'nimbusWrangler' | 'portRegistry' | 'processes' | 'restoreDevServers' | 'sessionBasePath' | 'terminal' | 'viteBasePath' | 'viteDevServer' | 'wranglerAliasBannerShown'> & {
+export type RuntimeCommandHost = Pick<SessionInternal, '_emitShellExecDone' | '_setCpRegistry' | '_viteShimPid' | '_viteShimPort' | 'cirrusReal' | 'ensureFacetManager' | 'facetManager' | 'ensureNpmInstaller' | 'ensureSqliteFs' | 'esbuildService' | 'nimbusWrangler' | 'portRegistry' | 'processEnv' | 'processes' | 'restoreDevServers' | 'sessionBasePath' | 'terminal' | 'viteBasePath' | 'viteDevServer' | 'wranglerAliasBannerShown'> & {
     readonly ctx: DurableObjectState;
     readonly env: RuntimeCatalogEnv;
     routeLoopback: SessionInternal['routeLoopback'];

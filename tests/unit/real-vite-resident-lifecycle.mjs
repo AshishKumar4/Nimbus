@@ -65,6 +65,8 @@ const ctx = {
 };
 bundle.adoptCtxExports(ctx.exports);
 const env = { WORKSPACES: { idFromName() {}, idFromString() {}, get() {} }, LOADER: world.loader, ASSETS: stagedAssets };
+/** The embedder's answer to a relaunch: what it ran exec dev-1 with. */
+const resolveProcessEnv = async (request) => (request.execId === 'dev-1' ? { NIMBUS_REAL_VITE: '1' } : null);
 
 const vfs = new bundle.SqliteVFS(harness.sql, harness.ctx);
 const processes = new bundle.SessionProcessSupervisor();
@@ -77,6 +79,7 @@ const runtime = await bundle.composeHostedRuntime({
   env,
   ports,
   lifecycle: hostedLifecycle(ctx, () => runtime),
+  resolveProcessEnv,
 });
 
 const ROOT = '/home/user/app';
@@ -106,6 +109,8 @@ const ended = async (pid, code, facet, what) => {
   assert.equal(processes.get(pid)?.exitCode, code, `${what}: exit ${code}`);
   assert.equal(ports.get(PORT), undefined, `${what}: its port is free`);
   assert.equal(world.liveFacets().includes(facet), false, `${what}: its facet is released`);
+  // Its record goes with its end, in the session's next storage transaction.
+  for (let i = 0; i < 100 && await recordOf(pid) !== undefined; i++) await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(await recordOf(pid), undefined, `${what}: nothing runs it again`);
 };
 
@@ -129,7 +134,7 @@ try {
   assert.equal(env0.CIRRUS_HMR?.hmr?.doId, 'real-vite-do', 'its HMR channel is the session\'s');
   const record = await recordOf(first.pid);
   assert.equal(record?.command, `vite --port ${PORT} --no-install-check`, 'while it runs, a new incarnation runs its command again');
-  assert.deepEqual(record?.env?.NIMBUS_REAL_VITE, '1', 'with the environment it was given');
+  assert.equal(record?.env, undefined, 'its environment the embedder gives back, never the record (ask 62)');
   assert.deepEqual(record?.ports, [PORT], 'and takes back the link of its port');
   const page = await ports.routeRequest(PORT, new Request('https://session.test/'), '/index.html');
   assert.equal(await page.text(), 'vite /index.html', 'its port routes to the process');
@@ -196,7 +201,7 @@ try {
     againProcesses.setPidBase(2 * bundle.PID_GEN_STRIDE);
     const againPorts = new bundle.PortRegistry();
     const againWorkspace = await bundle.NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, vfs, processes: againProcesses, generation: 2 });
-    const again = await bundle.composeHostedRuntime({ workspace: againWorkspace, ctx: againCtx, env, ports: againPorts, lifecycle: hostedLifecycle(againCtx, () => again) });
+    const again = await bundle.composeHostedRuntime({ workspace: againWorkspace, ctx: againCtx, env, ports: againPorts, lifecycle: hostedLifecycle(againCtx, () => again), resolveProcessEnv });
     try {
       for (let i = 0; i < 400 && againProcesses.get(againPorts.get(PORT)?.pid)?.state !== 'running'; i++) await new Promise((resolve) => setTimeout(resolve, 5));
       const serving = againProcesses.get(againPorts.get(PORT)?.pid);

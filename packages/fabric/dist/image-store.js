@@ -19,7 +19,7 @@
  */
 import { sha256Incremental } from '@nimbus-sh/core/_shared/crypto.js';
 import { MAX_TX_BLOB_BYTES, CHUNK_SIZE } from '@nimbus-sh/platform/limits.js';
-import { FACET_IMAGE_DIR, facetImagePath } from './process-fabric.js';
+import { PROCESS_IMAGE_DIR, processImagePath } from './process-fabric.js';
 /**
  * Bytes of an image written in one storage transaction.
  *
@@ -79,7 +79,7 @@ export class ImageStore {
             return;
         this.dirReady = true;
         try {
-            this.blobs(pid).mkdirp(FACET_IMAGE_DIR);
+            this.blobs(pid).mkdirp(PROCESS_IMAGE_DIR);
         }
         catch { /* a session whose disk is not writable has no images to store */ }
     }
@@ -114,10 +114,10 @@ export class ImageStore {
         // identity is what makes an append visible — do not replace it.
         const rooted = [];
         this.residentImages.set(pid, rooted);
-        fs.mkdirp(FACET_IMAGE_DIR);
+        fs.mkdirp(PROCESS_IMAGE_DIR);
         let count = 0;
         for await (const [moduleName, source] of images) {
-            const { path, bytes } = await storeContentBlob(fs, source, facetImagePath, { pacer, root: (named) => rooted.push(named) });
+            const { path, bytes } = await storeContentBlob(fs, source, processImagePath, { pacer, root: (named) => rooted.push(named) });
             paths[moduleName] = path;
             count++;
             console.log('[image-store] pid=' + pid + ' image ' + count + ' ' + moduleName + ' → '
@@ -129,7 +129,9 @@ export class ImageStore {
         return paths;
     }
     /**
-     * Drop every image no running process boots from.
+     * Drop every image of the store's (PROCESS_IMAGE_DIR) no running process
+     * boots from. Only the store's: an embedder's images in FACET_IMAGE_DIR are
+     * its own to remove, and a durable worker's re-drive reads them.
      *
      * Content addressing means a changed program writes a NEW image rather than
      * replacing one, so a watch loop — or simply a session that runs a few
@@ -152,16 +154,16 @@ export class ImageStore {
         }
         let names;
         try {
-            names = fs.list(FACET_IMAGE_DIR);
+            names = fs.list(PROCESS_IMAGE_DIR);
         }
         catch {
             return;
         }
         for (const name of names) {
-            if (live.has(`/${FACET_IMAGE_DIR}/${name}`))
+            if (live.has(`/${PROCESS_IMAGE_DIR}/${name}`))
                 continue;
             try {
-                fs.unlink(`${FACET_IMAGE_DIR}/${name}`);
+                fs.unlink(`${PROCESS_IMAGE_DIR}/${name}`);
             }
             catch { /* already gone */ }
         }

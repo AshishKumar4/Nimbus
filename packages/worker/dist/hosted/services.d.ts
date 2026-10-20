@@ -1,5 +1,6 @@
 import type { WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { type ComposedFacetManager, type FacetManagerHostHooks } from "../facets/compose.js";
+import type { ProcessEnvHooks } from '../session/process-env.js';
 import { type ChildProcessHost } from "@nimbus-sh/core/runtime/child-process-manager.js";
 import { type NimbusFilesystemAuthority, type VfsCred } from "@nimbus-sh/core/runtime/os-contracts.js";
 import { PrebundlePool } from "../facets/prebundle-pool.js";
@@ -21,6 +22,8 @@ export interface RuntimeServiceContext {
     notify(line: string): void;
     requestLaunchTurn(notBefore?: number): Promise<void>;
     resolveWorkerLaunch?: FacetManagerHostHooks['resolveWorkerLaunch'];
+    /** Who gives a relaunched process its environment back, and where this host keeps it if it does (session/process-env.ts). */
+    readonly processEnv: ProcessEnvHooks;
     /**
      * Hold the host actor in memory while a resident process runs:
      * `armResidentKeepalive` (session/hibernation.ts) bound to the host's own

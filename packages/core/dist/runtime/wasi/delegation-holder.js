@@ -249,6 +249,8 @@ export function delegationHolder(options) {
     const client = processFsClient({
         session: options.session,
         now,
+        ...(options.timers === undefined ? {} : { timers: options.timers }),
+        ...(options.umask === undefined ? {} : { umask: options.umask }),
         ...(options.isHomeRoot === undefined ? {} : { isHomeRoot: options.isHomeRoot }),
         ...(options.grantAfter === undefined ? {} : { grantAfter: options.grantAfter }),
         ...(options.grantInos === undefined ? {} : { grantInos: options.grantInos }),

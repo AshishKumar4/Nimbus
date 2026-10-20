@@ -38,6 +38,10 @@ export interface Admitted {
     /** An answer older than the store's cursor: nothing was applied. */
     stale?: boolean;
 }
+/** One fill's token (cells.beginFill): its own, compared by identity. */
+export interface ResidentFill {
+    readonly fill: number;
+}
 export interface Cells {
     /**
      * The resident set, as the shims have always seen it: `k in b`, `b[k]`,
@@ -58,8 +62,24 @@ export interface Cells {
     get(path: string): ResidentCell | undefined;
     /** Write one cell as `rev`, or as an own write when `rev` is not a number (see put below). */
     put(t: ResidentTables, path: string, cell: ResidentCell | ArrayBuffer, rev?: number, ckey?: unknown): boolean;
-    putChunk(t: ResidentTables, path: string, part: number, bytes: Uint8Array): boolean;
-    putHead(t: ResidentTables, path: string, kind: number, size: number, chunks: number, rev: number | undefined, ckey: unknown): void;
+    /**
+     * A fill about to ask for `paths`: each one's chunk rows are its own, over
+     * the head as it stands, until another fill begins for it or anything
+     * changes its rows (rowsChanged).
+     */
+    beginFill(paths: ArrayLike<string>): ResidentFill;
+    /** One chunk of `fill`: written only while the path's chunk rows are its own (false otherwise). */
+    putChunk(t: ResidentTables, path: string, part: number, bytes: Uint8Array, fill: ResidentFill): boolean;
+    /** The fill's file, once all its chunks are in: held as `rev`, if its chunk rows are still its (false otherwise). */
+    publishFill(t: ResidentTables, path: string, kind: number, size: number, chunks: number, rev: number, ckey: unknown, fill: ResidentFill): boolean;
+    /** A fill that did not finish `path`: the chunk rows it wrote, and the head they were written over, go, if they are still its. */
+    abandonFill(t: ResidentTables, path: string, fill: ResidentFill): void;
+    /**
+     * The rows of `path` (every path: undefined) are about to change (tables.ts,
+     * whoever changes them): the fill writing there is disowned, and what it
+     * wrote with no head over it goes with it, bytes and accounting.
+     */
+    rowsChanged(path?: string): void;
     copyByKey(t: ResidentTables, path: string, ckey: unknown, rev: number): boolean;
     delete(t: ResidentTables, path: string): boolean;
     provenance(path: string): number | undefined;

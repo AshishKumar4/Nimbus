@@ -27,6 +27,10 @@ export declare const W5_RING_STORAGE_KEY = "w5_oom_ring_v1";
 /** Storage key prefix of a running dev server's spawn, one row per pid
  *  (dev-servers.ts): what a new incarnation of the session runs again. */
 export declare const DEV_SERVER_KEY_PREFIX = "dev-server:";
+/** The environment the session keeps for one relaunchable record (session/process-env.ts): `process-env:<record key>`. */
+export declare const PROCESS_ENV_KEY_PREFIX = "process-env:";
+/** Set once a session's records and images an earlier release wrote hold no process environment (FacetManager._dropEnvironmentsAtRest). */
+export declare const PROCESS_ENV_DROPPED_KEY = "process-env-dropped";
 /**
  * Destroyed-session tombstone. Written AFTER `storage.deleteAll()` in the
  * destroy flow so a straggler facet RPC that wakes the dead DO cannot re-arm

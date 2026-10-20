@@ -67,9 +67,9 @@ const supervisor = {
   },
 };
 storeSource.admission.setStorage(undefined, supervisor);
-assert.equal(await storeSource.lazy.bootLazy(supervisor), true);
+assert.equal(await storeSource.view.bootLazy(supervisor), true);
 const device = (await authority.stat('/')).dev;
-const view = storeSource.lazy.namespaceView(supervisor, device, USER);
+const view = storeSource.view.namespaceView(supervisor, device, USER);
 
 /** A session that refuses every write with ENOSPC, as a full store does. */
 const refusing = new Proxy(authority, {
@@ -206,7 +206,7 @@ await check('a revision pinned for two descriptors is one buffer, charged once a
 
 await check('the barrier stays owed until one lands', async () => {
   let failNext = false;
-  const flaky = { ...view, ready: () => view.ready(), entry: (key) => view.entry(key), children: (key) => view.children(key), barrier: () => (failNext ? (failNext = false, Promise.resolve(false)) : view.barrier()) };
+  const flaky = { ...view, ready: () => view.ready(), entry: (key) => view.entry(key), children: (key) => view.children(key), barrier: (options) => (failNext ? (failNext = false, Promise.resolve({ landed: false })) : view.barrier(options)) };
   Object.defineProperty(flaky, 'device', { get: () => view.device });
   const fs = residentFilesystem(authority, flaky);
   await kernel.writeFile(k('fresh.txt'), enc.encode('one'));

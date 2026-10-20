@@ -169,7 +169,7 @@ export async function nimbusMain() {
       mode: 'oneshot', program, cwd: `/${DIR}`,
       vfsBundle: JSON.stringify({ [`${DIR}/data.txt`]: 'staged' }), vfsCursor: JSON.stringify(cursor),
     });
-    const response = await runner.default.fetch(new Request('http://facet/run', { method: 'POST' }), { SUPERVISOR: supervisor });
+    const response = await runner.default.fetch(new Request('http://facet/run', { method: 'POST', body: JSON.stringify({ env: {} }) }), { SUPERVISOR: supervisor });
     const result = await response.json();
     assert.equal(result.exitCode, 0, `the run exits 0: ${result.stderr}`);
     assertCoherent('opencode', seen, cursor, result.stdout.trim());

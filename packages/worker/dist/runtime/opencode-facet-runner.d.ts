@@ -19,7 +19,8 @@
  *      empty, read-only nodejs_compat filesystem (EPERM on mkdir).
  *   2. Installs the Bun-global polyfill (Bun.stdin.text, Bun.stringWidth,
  *      Bun.file, Bun.write, Bun.hash) — opencode references `Bun.*` even on node target.
- *   3. Seeds process.argv / env / cwd from the per-invocation constants.
+ *   3. Seeds process.argv / cwd from the per-invocation constants, and
+ *      process.env from the env its start or its run hands over.
  *   4. Captures stdout/stderr and process.exit.
  *   5. Imports the opencode bundle and invokes its exported nimbusMain()
  *      INSIDE the fetch handler. The bundle is built so its CLI is a deferred
@@ -68,7 +69,13 @@ export declare function opencodeBuiltinBridgeModules(mode: OpencodeRunnerMode): 
 }>;
 export interface OpencodeRunnerOptions {
     argv: string[];
-    env: Record<string, string>;
+    /**
+     * The terminal an attached TUI draws on (its TTY flags, geometry and TERM),
+     * which the shims and the OpenTUI backend read as the module evaluates.
+     * Never the launch's env: that is handed over with the start or the run,
+     * in memory (ask 62).
+     */
+    terminal: Record<string, string>;
     cred: {
         uid: number;
         gid: number;
@@ -95,9 +102,9 @@ export interface OpencodeRunnerOptions {
      *                stream LIVE to the SUPERVISOR (→ xterm), the live stdin pump
      *                (SUPERVISOR.cpReadStdin → process.stdin, with setRawMode/
      *                resize/signal) feeds keystrokes, and the facet stays alive on
-     *                workerCtx.waitUntil until opencode exits. The env must carry
-     *                NIMBUS_ATTACHED_TTY=1 + NIMBUS_CP_CHILD_PID so the shim TTY
-     *                activates its raw-mode stdin and columns/rows.
+     *                workerCtx.waitUntil until opencode exits. The terminal must
+     *                carry NIMBUS_ATTACHED_TTY=1 + NIMBUS_CP_CHILD_PID so the shim
+     *                TTY activates its raw-mode stdin and columns/rows.
      *   - 'server'   run a headless `opencode serve` HTTP server: no renderer, no
      *                stdin pump, logs stream live, the facet stays resident, and
      *                routed HTTP (the in-session loopback + external /port/<n>)

@@ -7,6 +7,51 @@ published independently in the `@nimbus-sh` npm scope.
 
 - Added: a session's terminals by name. A browser terminal at `/ws?terminal=<name>` (a hosted runtime: `attachTerminal(ws, { terminal })`, `terminalFrame` and `terminalClose` likewise) is a shell of its own over the same workspace: its cwd, variables and history persist as a named shell's do and outlive restarts, its screen is stored and replayed per name, and one socket holds a name at a time (names never conflict with each other or with the session's own terminal, which is unchanged). `listTerminals()` names each with its cwd, whether it is live or attached, and the line it runs; `closeTerminal(name)` hangs up everything started from it and forgets its screen, state and history (SDK: `sandbox.terminals.list()` / `.close(name)`). Names are 1 to 64 of `A-Z a-z 0-9 . _ -`; there is no count of them: a live terminal measured 0.10 to 0.30 MiB of heap idle and 0.10 to 0.20 MiB more busy, and a saved one holds only its capped screen and a 0.8 KiB row. A process now has a controlling terminal, inherited from its parent; REPLs (python, ruby, interactive bash) bind to the terminal they were started from.
 - Fixed: a reattached terminal shows the screen it left and adds nothing to it. The shell paints a prompt on reattach only when its line editor is not the last thing on the screen (a background job wrote after the prompt), and then once, on a line of its own, with the line being typed. A hosted runtime's resumed and reset notices are written above the prompt, which is painted again below them. Before, every reattach to an idle hosted terminal printed another prompt, into the screen and the stored scrollback, after a line being typed too.
+- Fixed (security): a process's environment is no longer stored where
+  another process can read it. Before, a Node server's environment was
+  written into its generated module, and a Python or Ruby server's into its
+  durable image, under `/.nimbus`, which every account on the box can read.
+  Now the environment goes to the process in memory when it starts. When a
+  process is started again (after a reset, an on-failure restart, a durable
+  app's relaunch on its port, or a dev server's restore), Nimbus asks the
+  host for its environment through the new `resolveProcessEnv` option. The
+  session keeps each such process's environment in a row of its own object,
+  outside the filesystem. An embedder of `HostedRuntime` composes
+  `resolveProcessEnv`; without it, such a restart fails and says why. A
+  durable `spawnWorker` that passes an `env` now needs a
+  `resolveWorkerLaunch` hook. The first start after the upgrade removes the
+  copies earlier releases wrote in its records and durable images. It does
+  not remove the generated program images earlier releases left in
+  `/.nimbus/facet-images` and below `/var/lib/nimbus`, which still hold
+  those processes' environments: that directory belongs to the embedder,
+  which keeps its own images there. The session says how many it found, and
+  `GET /api/_diag/session` lists them (`legacyGeneratedImages`). The hosted
+  runtime owns its sessions' `/.nimbus/facet-images` whole, so it removes
+  them there. Copies already taken in a snapshot, an export or a clone are
+  not removed either. Remove `/var/lib/nimbus` with `sudo rm -r` once no
+  durable worker boots from there. A Python or Ruby server whose image an
+  earlier release wrote, under an embedder that composes
+  `resolveProcessEnv`, is not restarted, and the session says so: start it
+  again. `/api/_diag/session` lists the shell's variable names, not their
+  values. Not fixed yet: a resident process's generated program image still
+  holds the files its process read at start, and every account can read the
+  image. A secret in such a file, such as an inline `VAR=secret` saved in
+  `~/.bash_history`, stays readable by other accounts until the image
+  store's privacy fix ships. Pass secrets through the launch environment
+  instead.
+- Fixed: the shell's commands walk their file operands as POSIX does. A `..` applies after the name before it is looked up, through a symbolic link to where it points, and a missing or non-directory name before it is ENOENT or ENOTDIR; a trailing slash asks for a directory (`cat f/` is "Not a directory"), and on a name being removed or renamed it names the entry itself, never a link's target (`rm -r link/` empties the target and refuses the link, `rmdir link/` says the link was not followed, as GNU's do). Before, `cat missing/../f` and `cat f/` read `f`, and `cat link/../x` read the `x` beside the link. Messages still name the operand as typed; `cp`'s into-itself check compares where the names lead; `mktemp` prints the name it made; logical `cd` refuses `missing/..` and keeps `PWD` logical; `mkdir -p` makes the names a following `..` leaves; `rm -r` refuses another name for `/`.
+
+## 2026-10-20: platform 0.14.0, core 0.25.0, fabric 0.20.0, worker 0.23.0, sdk 0.19.0, react 0.4.1, cli 0.2.10, loom 0.3.3, create-nimbus-app 0.2.6 (config 0.3.2 and the runtimes unchanged)
+
+- Fixed: Nimbus no longer deletes an embedder's images in
+  `/.nimbus/facet-images`. The store that holds a resident process's
+  generated modules removed every file there that no running process booted
+  from, an embedder's own images included (a durable worker's runner and its
+  text modules, named by `facetImagePath`). After a reset, the first launch
+  could remove a durable app's text module, and the app's next restart then
+  failed with ENOENT. The store now writes to its own directory,
+  `/.nimbus/process-images`, and removes files only there. Images an earlier
+  release wrote to `/.nimbus/facet-images` stay where they are.
 - Fixed: the shell's commands walk their file operands as POSIX does. A `..` applies after the name before it is looked up, through a symbolic link to where it points, and a missing or non-directory name before it is ENOENT or ENOTDIR; a trailing slash asks for a directory (`cat f/` is "Not a directory"), and on a name being removed or renamed it names the entry itself, never a link's target (`rm -r link/` empties the target and refuses the link, `rmdir link/` says the link was not followed, as GNU's do). Before, `cat missing/../f` and `cat f/` read `f`, and `cat link/../x` read the `x` beside the link. Messages still name the operand as typed; `cp`'s into-itself check compares where the names lead; `mktemp` prints the name it made; logical `cd` refuses `missing/..` and keeps `PWD` logical; `mkdir -p` makes the names a following `..` leaves; `rm -r` refuses another name for `/`.
 - Fixed: a nested shell stops with its caller. `bash -c`, `sh -c` and `bash script` pass their command's signal to the shell that runs the program, and a hosted workspace's child shell stops on either that signal or its own. Before, an aborted or timed-out `bash -c 'while :; do :; done'` was reported stopped while its loop ran on, burning the session's CPU.
 - Fixed: a Node program that renamed a file over another (`fs.promises.rename` or `fs.renameSync`, the atomic-save pattern) and then read the destination with `fs.readFileSync` could get the replaced file's bytes, while `fs.statSync` already described the renamed one. The replaced file's bytes now go with the rename, as an unlink's do. 

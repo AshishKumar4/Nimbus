@@ -115,4 +115,59 @@ const done = (model, step) => model.finish(model.begin(step));
   assert.ok(!model.admits('stat', 'x/h', file(3), now, now, true));
 }
 
+{
+  // A descriptor follows what it opened: a directory a peer renamed after the open lists where it went, with what was made there since.
+  const model = createModel();
+  const from = model.seq();
+  model.finish(model.begin(['peer', 'rename', 'd', 'x/e']));
+  model.finish(model.begin(['peer', 'write', 'x/e/g', 'new']));
+  const to = model.seq();
+  assert.ok(model.followed('opendir', 'd', ['e', 'f', 'g'], from, to), 'd, opened before the rename, read after the write');
+  assert.ok(!model.followed('opendir', 'd', ['e', 'f', 'g'], to, to), 'not opened after it moved');
+  assert.ok(!model.followed('opendir', 'd', ['g'], from, to), 'never a listing it did not hold');
+}
+
+{
+  // The process's own changes land in its order: none of them lost, and a later one not either.
+  const model = createModel();
+  const from = model.seq();
+  const write = model.begin(['own', 'write', 'top', 'raced']);
+  const rename = model.begin(['own', 'rename', 'top', 'new']);
+  assert.ok(!model.admits('readFile', 'new', 't0000000', from, model.seq()), 'never the rename without the write before it');
+  model.finish(rename);
+  model.finish(write);
+  const landed = model.seq();
+  assert.ok(model.admits('readFile', 'new', 'raced', landed, landed));
+  assert.ok(!model.admits('readFile', 'top', 't0000000', landed, landed), 'losing both is refused');
+  assert.ok(!model.admits('readFile', 'new', 't0000000', landed, landed), 'losing the write is refused');
+  model.finish(model.begin(['own', 'write', 'new', 'later']));
+  const later = model.seq();
+  assert.ok(model.admits('readFile', 'new', 'later', later, later));
+  assert.ok(!model.admits('readFile', 'new', 'raced', later, later), 'losing a later write is refused');
+}
+
+{
+  // A descriptor follows what it opened, where that is only in flight: a directory made, moved and filled, none of it returned.
+  const model = createModel();
+  model.begin(['own', 'mkdir', 'z']);
+  model.begin(['own', 'rename', 'z', 'x/e']);
+  model.begin(['own', 'write', 'x/e/g', 'new']);
+  const now = model.seq();
+  assert.ok(model.followed('opendir', 'z', [], now, now), 'opened and read before the rename landed');
+  assert.ok(model.followed('opendir', 'z', ['g'], now, now), 'opened at z, read after it moved and was written');
+  assert.ok(!model.followed('opendir', 'z', ['h'], now, now), 'never a listing it did not hold');
+}
+
+{
+  // An open and its read are one execution: a descriptor opened where only later changes put its file reads none of what they replaced.
+  const model = createModel();
+  model.begin(['own', 'write', 'new', 'old']);
+  model.begin(['own', 'write', 'new', 'latest']);
+  model.begin(['own', 'rename', 'new', 'd/n']);
+  const now = model.seq();
+  assert.ok(model.followed('pread', 'd/n', 'latest', now, now), 'opened once the rename landed, after the second write');
+  assert.ok(!model.followed('pread', 'd/n', 'old', now, now), 'never the bytes the second write replaced before the rename existed');
+  assert.ok(!model.followed('pread', 'd/n', '', now, now), 'nor the second write passing through: the rename lands only after it');
+}
+
 console.log('barrier-oracle: ok');

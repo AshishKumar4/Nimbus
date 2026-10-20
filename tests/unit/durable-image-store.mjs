@@ -1,12 +1,14 @@
 #!/usr/bin/env bun
 // A durable application's launch inputs are an image, not a re-ask.
 //
-// `spawnWorker` for a self-owned durable app persists the launch's code,
-// modules, and env as content-addressed blobs under `.nimbus/images/` —
-// kernel-owned, so a user process cannot rewrite or delete what its own
-// re-drive will boot from — and the journal row names the digests it wrote.
-// A reset re-drives the recipe through the session's fallback resolver, which
-// reads those blobs back and hands the launch its env and modules again.
+// `spawnWorker` for a self-owned durable app persists the launch's code and
+// modules as content-addressed blobs under `.nimbus/images/` — kernel-owned,
+// so a user process cannot rewrite or delete what its own re-drive will boot
+// from — and the journal row names the digests it wrote. Never an env: every
+// process can read the store (ask 62), so a self-owned durable spawn carrying
+// one is refused unless the embedder's resolver can give it back. A reset
+// re-drives the recipe through the session's fallback resolver, which reads
+// those blobs back and hands the launch its modules again.
 //
 // An embedder-owned durable spawn is given its digests by the embedder's own
 // bookkeeping and resolves through the EMBEDDER's `resolveWorkerLaunch` —
@@ -91,7 +93,6 @@ function kernelBlobs(vfs) {
   const blobs = kernelBlobs(vfs);
   const image = await persistDurableWorkerImage(blobs, 'export default { fetch() {} }', {
     modules: { 'extra.js': 'export const x = 1;' },
-    env: { TOKEN: 'abc' },
   });
   const kernel = vfs.as(CRED_KERNEL);
   assert.match(image.runner, /^[0-9a-f]{64}$/, 'the runner digest is a real sha256');
@@ -103,22 +104,21 @@ function kernelBlobs(vfs) {
   );
   const payload = JSON.parse(kernel.readFileString(`${DURABLE_IMAGE_DIR}/${image.application}`));
   assert.equal(payload.modules['extra.js'], 'export const x = 1;', 'the application blob carries modules');
-  assert.equal(payload.env.TOKEN, 'abc', 'the application blob carries env');
+  assert.equal(payload.env, null, 'the application blob carries no env');
 
   // A second persist of the same inputs rewrites nothing: the digests name
   // the same bytes, so the store is idempotent across a relaunch.
   blobs.writes.length = 0;
   const again = await persistDurableWorkerImage(blobs, 'export default { fetch() {} }', {
     modules: { 'extra.js': 'export const x = 1;' },
-    env: { TOKEN: 'abc' },
   });
   assert.deepEqual(again, image, 'identical inputs mint identical digests');
   assert.deepEqual(blobs.writes, [], 'and blobs already stored at them are not written again');
 
-  // The resolver hands a re-drive its modules and env back; a missing row
-  // reads as 'the application is gone', never an error a boot cannot answer.
+  // The resolver hands a re-drive its modules back; a missing row reads as
+  // 'the application is gone', never an error a boot cannot answer.
   const resolved = await resolveDurableWorkerImage(vfs, { image });
-  assert.equal(resolved.env.TOKEN, 'abc', 'the resolver restores env');
+  assert.equal(resolved.env, null, 'the resolver restores no env: there is none to restore');
   assert.equal(resolved.modules['worker.js'], 'export default { fetch() {} }');
   assert.equal(resolved.modules['extra.js'], 'export const x = 1;');
   assert.equal(resolved.globalOutbound, undefined, 'the store never carries a binding');
@@ -141,8 +141,17 @@ function kernelBlobs(vfs) {
 //      reset through the fallback resolver ───────────────────────────────────
 {
   const { fm, ctx, storage, world, vfs, disk } = setup();
+  // An env no resolver could give back is refused before anything is written.
+  await assert.rejects(
+    () => fm.spawnWorker('export default { start() {} }', 'self-owned durable', '/app', {
+      env: { MARKER: 'img-env' },
+      durable: { owner: 'self' },
+    }),
+    /carrying an env cannot be journalled without an embedder resolveWorkerLaunch hook/,
+    'a self-owned durable spawn with an env is refused',
+  );
+  assert.equal([...storage.keys()].filter((k) => k.startsWith('resident-launch:')).length, 0, 'and journals nothing');
   await fm.spawnWorker('export default { start() {} }', 'self-owned durable', '/app', {
-    env: { MARKER: 'img-env' },
     modules: { 'lib.js': 'export const v = 7;' },
     durable: { owner: 'self' },
   });
@@ -158,7 +167,7 @@ function kernelBlobs(vfs) {
     'the spawn persisted the runner blob it journalled',
   );
   const payload = JSON.parse(kernel.readFileString(`${DURABLE_IMAGE_DIR}/${recipe.image.application}`));
-  assert.equal(payload.env.MARKER, 'img-env', 'the spawn persisted env into the image');
+  assert.equal(payload.env, null, 'the spawn persisted no env into the image');
 
   // The platform reset: the facet is lost, the object is new, the storage
   // and the VFS the image lives on are the same ones.
@@ -175,10 +184,6 @@ function kernelBlobs(vfs) {
   const reboot = world.boots[world.boots.length - 1];
   assert.equal(reboot.facetName, 'app-slot-0', 'the re-drive re-attached the durable facet');
   assert.equal(
-    reboot.config.env?.MARKER, 'img-env',
-    'the fallback resolver restored env from the image',
-  );
-  assert.equal(
     reboot.config.modules['lib.js'], 'export const v = 7;',
     'the fallback resolver restored the application modules',
   );
@@ -190,7 +195,8 @@ function kernelBlobs(vfs) {
 
 // ── 3. an embedder's resolver overrides the image-store fallback ─────────────
 {
-  const { fm, ctx, storage, world, disk } = setup();
+  // The embedder that spawns with a binding env gives it back (resolveWorkerLaunch).
+  const { fm, ctx, storage, world, disk } = setup({ hooks: { resolveWorkerLaunch: async () => null } });
   await fm.spawnWorker('export default {}', 'embedder-owned', '/app', {
     env: { FROM: 'image' },
     durable: { owner: 'E', image: { runner: 'r-e', application: 'app-e' } },
@@ -254,4 +260,18 @@ function kernelBlobs(vfs) {
   assert.ok(spawned.pid > 0, 'the embedder hook admits a binding it can re-mint');
 }
 
-console.log('ok - durable image store (digests real, fallback re-drive restores env, embedder overrides, outbound refused)');
+// ── 5. a durable spawn carrying an env needs the embedder's hook, its image
+//      supplied or not, `{}` included (the isolate's whole binding map) ──────
+{
+  const { fm, storage } = setup();
+  for (const env of [{ TOKEN: 'x' }, {}]) {
+    await assert.rejects(
+      () => fm.spawnWorker('export default {}', 'with-env', '/app', { env, durable: { owner: 'E', image: { runner: 'r', application: 'a' } } }),
+      /carrying an env cannot be journalled without an embedder resolveWorkerLaunch hook/,
+      `a supplied image does not admit env ${JSON.stringify(env)}`,
+    );
+  }
+  assert.equal([...storage.keys()].filter((k) => k.startsWith('resident-launch:')).length, 0, 'nothing was journalled');
+}
+
+console.log('ok - durable image store (digests real, no env, fallback re-drive restores modules, embedder overrides, outbound and env refused)');

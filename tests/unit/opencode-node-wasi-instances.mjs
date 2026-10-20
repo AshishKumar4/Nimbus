@@ -36,7 +36,7 @@ root.chown('home/user/shared.txt', 1000, 1000);
 const nodeProcess = processInstanceSupervisor(nodeSession, nodeCred);
 const wasiProcess = processInstanceSupervisor(wasiSession, wasiCred);
 const generated = generateOpencodeRunnerCode({
-  argv: [], env: {}, cred: nodeCred, cwd: '/home/user', stdin: '', mode: 'attached',
+  argv: [], terminal: {}, cred: nodeCred, cwd: '/home/user', stdin: '', mode: 'attached',
   sources: nodeFacetSources(generateShimsCode()),
   vfsBundle: JSON.stringify({ 'home/user/node-only.txt': 'Node bytes', 'home/user/shared.txt': 'Node secret' }),
   vfsCursor: JSON.stringify(nodeSession.cursor()), vfsManifest: '{}', vfsMetadata: '{}',
@@ -88,7 +88,7 @@ try {
   const guest = await startResidentWasi(P, wasiProcess.supervisor, wasiCred);
   assert.equal(guest.namespace.ready(), true, 'the bundled WASI host really started its resident store');
   assert.deepEqual(wasiProcess.acquireRequests[0], { epoch: null, rev: 0 });
-  assert.equal(await guest.namespace.barrier(), true);
+  assert.equal((await guest.namespace.barrier()).landed, true);
   assert.deepEqual(wasiProcess.acquireRequests.at(-1), wasiSession.cursor());
   assert.notEqual(wasiSession.cursor().epoch, nodeCursor.epoch);
   assert.deepEqual(node.cursor(), nodeCursor, 'WASI boot and acquire did not replace the Node cursor');

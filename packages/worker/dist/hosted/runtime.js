@@ -5,8 +5,6 @@ import { openSupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-d
 import { isHostedWatch, isHostedWebSocket, isHostedResidency } from '@nimbus-sh/fabric/peer-host.js';
 import { hostActivity } from '@nimbus-sh/fabric/host-activity.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
-import { NamedTerminals } from '../session/named-terminals.js';
-import { exitCodeForSignal, signalAbortReason } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { nimbusDebugEnabled } from '../_shared/nimbus-debug.js';
 import { answerSupervisorOp, buildSessionSupervisorOps } from '../session/supervisor-op.js';
 import { armLogJanitor, armResidentKeepalive, endResidentKeepalive, installLogPersistence, logJanitorFired, noteResidentClient, residentKeepaliveFired } from '../session/hibernation.js';
@@ -21,6 +19,8 @@ import { registerHostedCommands } from './commands.js';
 import { HostedSession } from './session.js';
 import { z } from 'zod/v4';
 import { adoptCtxExports, supervisorEntrypoint } from '@nimbus-sh/fabric/composition.js';
+import { onColdStart } from '@nimbus-sh/fabric/generation.js';
+import { removeLegacyGeneratedImages } from '../facets/legacy-images.js';
 import { hostNamespaceBinding } from '@nimbus-sh/fabric/host-dispatch.js';
 import { restoreDevServers } from '../session/dev-servers.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
@@ -32,7 +32,8 @@ const InputFrame = z.discriminatedUnion('type', [
 class RuntimeOwner {
     options;
     terminal;
-    terminals;
+    /** The embedder's answer, and no keeping of its own: Nimbus keeps no process's environment (session/process-env.ts). */
+    processEnv;
     _cpRegistry;
     _storedShellsAdopted;
     _cirrusHmrWsClients = new Map();
@@ -71,6 +72,7 @@ class RuntimeOwner {
     supervisorDeliveries;
     constructor(options) {
         this.options = options;
+        this.processEnv = options.resolveProcessEnv === undefined ? {} : { resolveProcessEnv: options.resolveProcessEnv };
         hostNamespaceBinding(options.env, 'HostedRuntime');
         this.supervisorDeliveries = openSupervisorDeliveries(options.ctx);
         const exports = Reflect.get(options.ctx, 'exports');
@@ -79,6 +81,12 @@ class RuntimeOwner {
         }
         adoptCtxExports(exports);
         ensureSessionStateSchema(options.ctx);
+        // This host owns /.nimbus/facet-images whole: it writes no image there
+        // (its process images go to the store's own directory, its durable apps'
+        // to /.nimbus/images), and only the kernel can. So it removes what
+        // earlier releases left there, generated entries with environments in
+        // them (ask 62). An embedder that keeps images there decides for itself.
+        onColdStart(options.ctx, async () => { removeLegacyGeneratedImages(options.workspace.vfs); });
         // A process's answers leave as the rest of its output does: once what it wrote is published.
         options.ports.setOutput(options.workspace.processes);
         options.ports.setClientSocketActivity(() => noteResidentClient(this, this.keepaliveCycle));
@@ -93,15 +101,13 @@ class RuntimeOwner {
             notify: (line) => this._notifySession(line),
             requestLaunchTurn: (at) => this._scheduleLaunchTurn(at),
             resolveWorkerLaunch: options.resolveWorkerLaunch,
+            processEnv: this.processEnv,
             filesystem: () => options.workspace.filesystem,
             network: () => options.workspace.network,
             armResidentKeepalive: () => armResidentKeepalive(this, this.keepaliveCycle),
             supervisorOp: (envelope) => this.supervisorOp(envelope),
         });
         options.workspace.shell.bindTerminal(this.terminal);
-        // The session's own shell, and everything it starts, are its terminal's.
-        options.workspace.processes.setControllingTerminal(options.workspace.shellProcessPid, '');
-        this.terminals = new NamedTerminals({ ctx: options.ctx, workspace: () => options.workspace, hangUp: (pid) => this.hangUp(pid) });
         installLogPersistence(this, options.ctx, () => this.scheduleLogs(), () => armLogJanitor(this, (at) => this.scheduleJanitor(at)));
         wireProcessLogSocketBroadcast(this.processes, options.ctx);
     }
@@ -169,6 +175,7 @@ class RuntimeOwner {
             get processes() { return owner.processes; },
             get portRegistry() { return owner.portRegistry; },
             get runtimeWorkspace() { return owner.runtimeWorkspace; },
+            processEnv: this.processEnv,
             ensureRuntimeReady: () => this.ensureUsable(),
         };
         return restoreDevServers(this.devServerHost);
@@ -299,39 +306,30 @@ class RuntimeOwner {
                 this._w1JanitorAt = null;
         }
     }
-    async attachTerminal(ws, resume = 'reconnect', selection = {}) {
+    async attachTerminal(ws, resume = 'reconnect') {
         await this.ensureRuntimeReady();
-        if (selection.terminal)
-            return this.terminals.attach(selection.terminal, ws, resume);
         if (this.terminal.ws === ws)
             return;
         this.terminal.attach(ws);
         if (resume === 'reconnect')
             this.terminal.replay(loadScrollback(this.ctx));
-        // Said once, above the prompt, which is painted again below them.
         if (this.recoveryNotice) {
-            this.shell.writeNotice('[Runtime resumed; files and shell settings restored. Previous interpreter state was not retained.]\r\n');
+            this.terminal.write('\r\n[Runtime resumed; files and shell settings restored. Previous interpreter state was not retained.]\r\n');
             this.recoveryNotice = false;
         }
         if (this.legacyNotice) {
-            this.shell.writeNotice(`[${this.legacyNotice}]\r\n`);
+            this.terminal.write(`\r\n[${this.legacyNotice}]\r\n`);
             this.legacyNotice = null;
         }
-        this.shell.resumePrompt();
+        if (!this.shell.running)
+            this.shell.printPrompt();
         this.terminal.flushNow();
         ws.send(JSON.stringify({ type: 'ready' }));
     }
-    async terminalFrame(ws, frame, selection = {}) {
+    async terminalFrame(ws, frame) {
+        await this.attachTerminal(ws, 'wake');
         const text = typeof frame === 'string' ? frame : new TextDecoder().decode(frame);
         const input = InputFrame.parse(JSON.parse(text));
-        if (selection.terminal) {
-            await this.ensureRuntimeReady();
-            const { running } = await this.terminals.input(selection.terminal, ws, input);
-            if (running)
-                this.options.lifecycle.waitUntil(running.catch((error) => console.error('[nimbus] terminal input failed:', errorText(error))));
-            return;
-        }
-        await this.attachTerminal(ws, 'wake');
         const completion = this.terminal.handleMessage(input);
         if (completion) {
             this.options.lifecycle.waitUntil(completion.catch((error) => {
@@ -344,20 +342,13 @@ class RuntimeOwner {
         }
         persistShellState(this.ctx, { cwd: this.shell.getCwd(), env: this.shell.getEnv(), vars: this.shell.getVariableAttributes() });
     }
-    terminalClose(ws, selection = {}) {
-        if (selection.terminal)
-            return this.terminals.detach(selection.terminal, ws);
+    terminalClose(ws) {
         if (this.terminal.ws !== ws)
             return;
         this.terminal.flushNow();
         persistShellState(this.ctx, { cwd: this.shell.getCwd(), env: this.shell.getEnv(), vars: this.shell.getVariableAttributes() });
         this.terminal.detach();
         this.processes.flushLogs();
-    }
-    /** `pid` ended as a hang-up ends it: by its runtime when it has one, else here. */
-    hangUp(pid) {
-        if (!this.facetManager?.kill(pid, 'HUP', signalAbortReason('HUP')))
-            this.processes.kill(pid, exitCodeForSignal('HUP'), signalAbortReason('HUP'));
     }
     files(cred) {
         this.assertOpen();
@@ -387,7 +378,6 @@ class RuntimeOwner {
                     failures.push(error instanceof Error ? error : new Error(String(error)));
                 }
             };
-            await clean(() => this.terminals.dispose());
             await clean(() => this.terminal.disposeRepl());
             await clean(() => this.terminal.sendData('\x03'));
             for (const process of this.processes.getAll()) {
@@ -465,10 +455,8 @@ export async function composeHostedRuntime(options) {
             await operations.ensureProgrammaticReady(owner);
             return owner.ensureFacetManager().apps.routeCapabilityPort(...args);
         },
-        attachTerminal: (ws, selection) => owner.attachTerminal(ws, 'reconnect', selection),
-        terminalFrame: (ws, message, selection) => owner.terminalFrame(ws, message, selection),
-        listTerminals: operations.rpcListTerminals.bind(null, owner),
-        closeTerminal: operations.rpcCloseTerminal.bind(null, owner),
+        attachTerminal: (ws) => owner.attachTerminal(ws),
+        terminalFrame: (ws, message) => owner.terminalFrame(ws, message),
     });
     return {
         workspace: options.workspace,
@@ -493,7 +481,7 @@ export async function composeHostedRuntime(options) {
             return new HostedSession(owner, scope);
         },
         onScheduled: (task) => owner.onScheduled(task),
-        terminalClose: (ws, selection) => owner.terminalClose(ws, selection),
+        terminalClose: (ws) => owner.terminalClose(ws),
         close: () => owner.close(),
     };
 }

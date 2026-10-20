@@ -42,7 +42,7 @@ export declare const OpencodeStageSpecSchema: z.ZodObject<{
         server: "server";
     }>;
     argv: z.ZodArray<z.ZodString>;
-    env: z.ZodRecord<z.ZodString, z.ZodString>;
+    terminal: z.ZodRecord<z.ZodString, z.ZodString>;
     cred: z.ZodObject<{
         uid: z.ZodNumber;
         gid: z.ZodNumber;
