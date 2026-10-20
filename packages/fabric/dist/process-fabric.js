@@ -190,13 +190,13 @@ export function residentBootSpecSchema(stageSchema) {
  * would be swept into the next snapshot — and that snapshot is what produced
  * the image, so each spawn would grow the thing it just wrote.
  *
- * Kernel-owned and world-readable: the generator writes as CRED_KERNEL, and
- * every process reads through a supervisor binding that enforces its own
- * credential. Mode 0644 is what makes the read succeed for any process by
- * construction rather than by a privilege carve-out in the permission layer,
- * and leaves the bytes beyond reach of the user whose program they encode.
- * Below `/.nimbus`, the kernel's own directory in root's `/`: no user can
- * replace a directory on the way to it (KERNEL_STORE_ROOT, manager.ts).
+ * The kernel's alone: the generator writes as CRED_KERNEL, a boot reads as
+ * it (ResidentDiskReader.readImage), and the directory admits no other
+ * account. An image holds what its process could read, files of its user's
+ * that no other account may, so no other account reads an image; and the
+ * user whose program it encodes cannot rewrite it. Below `/.nimbus`, the
+ * kernel's own directory in root's `/`: no user can replace a directory on
+ * the way to it (KERNEL_STORE_ROOT, manager.ts).
  */
 export const PROCESS_IMAGE_DIR = '.nimbus/process-images';
 /**

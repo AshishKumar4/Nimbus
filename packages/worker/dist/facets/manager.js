@@ -5167,7 +5167,16 @@ export class FacetManager {
         const fs = this._kernelStoreFor(pid);
         const at = (path) => `/${stripLeadingSlashes(path)}`;
         return {
-            mkdirp: (dir) => fs.mkdir(at(dir), { recursive: true, mode: 0o755 }),
+            // The kernel's alone: a boot reads its images as the kernel
+            // (_residentDisk's readImage), and an image holds what its process
+            // could read (its prefetched files, a 0600 one among them), which no
+            // other account may (ask 62). A directory an earlier release made
+            // open to every account is closed as it is used.
+            mkdirp: (dir) => {
+                fs.mkdir(at(dir), { recursive: true, mode: 0o700 });
+                if (((fs.stat(at(dir), { followSymlinks: false })?.mode ?? 0) & 0o077) !== 0)
+                    fs.chmod(at(dir), 0o700);
+            },
             sizeOf: (path) => fs.stat(at(path), { followSymlinks: false })?.size ?? null,
             writeFile: (path, bytes) => { fs.writeFile(at(path), bytes); },
             writeRange: (path, offset, bytes) => { fs.writeRange(at(path), offset, bytes); },
