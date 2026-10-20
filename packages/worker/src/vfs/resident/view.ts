@@ -140,14 +140,21 @@ export function createView(
        * the moment it is answered, whatever the barrier does with the answer.
        */
       const acquire = async (lease: ResidentBarrierOptions['lease']): Promise<VfsAcquireResult | null> => {
-        const args = argsNow();
-        if (args === null || typeof supervisor.fsAcquire !== 'function') return null;
-        let answer: VfsAcquireResult | null | undefined = null;
-        try { answer = await supervisor.fsAcquire(args.epoch, args.cursor, lease ? { ...args.options, lease: true } : args.options); }
-        catch { return null; }
-        if (!answer || typeof answer.epoch !== 'string' || typeof answer.rev !== 'number') return null;
-        if (lease && answer.readLease) lease.answered(answer.readLease);
-        return current(answer);
+        // An answer to an ACQUIRE asked before the store started again in
+        // another epoch is the last incarnation's: it is asked again, from
+        // where the store now stands (as a delivery's would not stand in).
+        for (let asks = 0; asks < 2; asks++) {
+          const args = argsNow();
+          if (args === null || typeof supervisor.fsAcquire !== 'function') return null;
+          let answer: VfsAcquireResult | null | undefined = null;
+          try { answer = await supervisor.fsAcquire(args.epoch, args.cursor, lease ? { ...args.options, lease: true } : args.options); }
+          catch { return null; }
+          if (!answer || typeof answer.epoch !== 'string' || typeof answer.rev !== 'number') return null;
+          if (coherence.cursor()?.epoch !== args.epoch) continue;
+          if (lease && answer.readLease) lease.answered(answer.readLease);
+          return current(answer);
+        }
+        return null;
       };
 
       /**
