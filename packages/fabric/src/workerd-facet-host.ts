@@ -678,12 +678,9 @@ function spawnResident(
     // peer's own for the request it relays.
     handleHttpRequest: async (request: Request, scope: ResponseScope, relayed?: AbortSignal) => {
       const lease = observation.acquire();
-      // Watched while it is answered, not for the resident's life: an idle one keeps no tick running.
-      const watched = holdThreadWatch(ctx, `request pid ${params.pid}`);
       const cancel = relayed === undefined ? new AbortController() : null;
       scope.settled((delivered) => {
         lease.release();
-        watched();
         if (!delivered) cancel?.abort(new DOMException('The caller left the request', 'AbortError'));
       });
       const signal = relayed ?? cancel!.signal;
@@ -695,19 +692,14 @@ function spawnResident(
         return response.status === 410 ? await checked(response) : response;
       } catch (error) {
         lease.release();
-        watched();
         throw error;
       }
     },
     // An upgrade hands its socket to the caller at the handshake.
     handleWebSocketRequest: async (request: Request) => {
       const lease = observation.acquire();
-      const watched = holdThreadWatch(ctx, `upgrade pid ${params.pid}`);
       try { return await checked(await facet.fetch(await admitted(request))); }
-      finally {
-        lease.release();
-        watched();
-      }
+      finally { lease.release(); }
     },
     release,
     name,

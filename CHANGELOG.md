@@ -7,7 +7,7 @@ published independently in the `@nimbus-sh` npm scope.
 
 - Added: `/api/_diag/session`'s launch record names the session's thread
   stalls (`stalls`): while work is in flight on its thread (a facet call, a
-  one-shot's run, a resident's request, a git operation, a build or
+  one-shot's run, a git operation, a build or
   transform facet's call, a `wrangler dev` request, a supervisor call, or a
   terminal input's command),
   the session watches how late its own 50 ms ticks run, and records each
