@@ -376,7 +376,13 @@ async function expandDollar(
   // $((...)) -- arithmetic expansion
   if (next === '(' && text[pos + 2] === '(') {
     const arithmetic = readArithmeticExpansion(text, pos);
-    const result = await arithmeticValue(arithmetic.expression, ctx);
+    // Evaluated in place: a loop's $((i + 1)) awaits nothing unless it fails.
+    let result: number;
+    try {
+      result = arithmeticOf(arithmetic.expression, ctx);
+    } catch (error) {
+      return await discardArithmetic(error, ctx);
+    }
     return { pieces: [valuePiece(String(result), quoted)], end: arithmetic.end };
   }
 
@@ -494,10 +500,15 @@ export async function arithmeticValue(expanded: string, ctx: ExpandContext): Pro
   try {
     return arithmeticOf(expanded, ctx);
   } catch (error) {
-    if (!(error instanceof ArithmeticError)) throw error;
-    await ctx.report(error.message);
-    throw new DiscardSignal();
+    return await discardArithmetic(error, ctx);
   }
+}
+
+/** An arithmetic error met expanding: reported, and the rest of the line discarded. Anything else is thrown as it is. */
+async function discardArithmetic(error: unknown, ctx: ExpandContext): Promise<never> {
+  if (!(error instanceof ArithmeticError)) throw error;
+  await ctx.report(error.message);
+  throw new DiscardSignal();
 }
 
 /** The indices `${!arr[@]}` reports: every index that holds a value. */
