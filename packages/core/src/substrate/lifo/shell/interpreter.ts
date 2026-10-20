@@ -37,7 +37,7 @@ import { execRefusal } from '../../../shell/exec-dispatch.js';
 import { withRecall } from '../../../vfs/recall.js';
 import { parseAssignment, ParseError, ScriptLines } from './parser.js';
 import {
-  expandWords, expandWord, expandPatternWord, expandSubscript, arithmeticOf, arithmeticValue, ArithmeticError, ExpansionError,
+  expandBraceWord, expandWords, expandWord, expandPatternWord, expandSubscript, arithmeticOf, arithmeticValue, ArithmeticError, ExpansionError,
   type ExpandContext, type CapturedCommand,
 } from './expander.js';
 import { evaluateDoubleBracketWords } from './test-builtin.js';
@@ -287,9 +287,10 @@ interface AssignmentOutcome {
 /** An assignment that did what it was asked, with nothing to report. */
 const ASSIGNED: AssignmentOutcome = { diagnostics: [], failed: false };
 
+/** bash's declaration builtins: an argument written `name=(…)` is an array assignment. */
 function isDeclarationWord(word: readonly WordPart[]): boolean {
   const text = literalWordText(word);
-  return text === 'declare' || text === 'typeset' || text === 'local';
+  return text === 'declare' || text === 'typeset' || text === 'local' || text === 'export' || text === 'readonly';
 }
 
 function terminalStdinFd(io: ExecutionIo, stdin = io.stdin): boolean {
@@ -1096,7 +1097,7 @@ export class Interpreter {
 
     const expandCtx = this.createExpandContext(io);
 
-    // Expand words. A declaration builtin's (declare, typeset, local) array
+    // Expand words. A declaration builtin's (declare, typeset, local, export, readonly) array
     // assignments, `b=("$v" z)`, are read as an assignment's are (parseAssignment):
     // each element expanded as a word, and the argument only names the array.
     let arrayElements: Map<number, ArrayLiteral> | undefined;
@@ -1109,8 +1110,22 @@ export class Interpreter {
         if (assignment?.elements !== undefined && assignment.subscript === undefined && assignment.append !== true) {
           (arrayElements ??= new Map()).set(expandedArgs.length - 1, await this.arrayLiteral(assignment.name, assignment.elements, false, expandCtx));
           expandedArgs.push(`${assignment.name}=`);
-        } else {
+        } else if (index === 0) {
           expandedArgs.push(...await expandWords([parts], expandCtx));
+        } else {
+          // An assignment as written, one brace expansion leaves as it is, expands as an
+          // assignment's value: not split, no pathname expansion. Any other word, and
+          // every word brace expansion makes, is fields (bash's subst.c keeps the flags
+          // only for an unchanged word).
+          const words = expandBraceWord(parts);
+          const [only] = words;
+          const unchanged = words.length === 1 && only !== undefined && only.map((part) => part.text).join('') === parts.map((part) => part.text).join('');
+          if (assignment !== null && assignment.elements === undefined && unchanged) {
+            const subscript = assignment.subscript === undefined ? '' : `[${assignment.subscript}]`;
+            expandedArgs.push(`${assignment.name}${subscript}${assignment.append === true ? '+' : ''}=${await expandWord(assignment.value, expandCtx)}`);
+          } else {
+            expandedArgs.push(...await expandWords(words, expandCtx, true));
+          }
         }
       }
     } else {

@@ -134,7 +134,7 @@ async function builtinExport({ args, stdout, stderr, state, context }) {
         }
         return 0;
     }
-    for (const arg of names) {
+    for (const [offset, arg] of names.entries()) {
         if (functions) {
             // A function is marked for children this shell does not give functions to: only its name is checked.
             if (!context.isFunction(arg)) {
@@ -149,7 +149,7 @@ async function builtinExport({ args, stdout, stderr, state, context }) {
         if (!unexport && eqIdx === -1 && !Object.hasOwn(state.env, key) && !state.arrays.has(key))
             state.declaredNames.add(key);
         // A refused assignment (a readonly name) still takes the attribute, as bash's does.
-        if (eqIdx !== -1 && !(await assignEnv(state, key, arg.slice(eqIdx + 1), stderr)))
+        if (eqIdx !== -1 && !(await assignDeclared(state, key, context.arrayElements?.get(first + offset) ?? arg.slice(eqIdx + 1), stderr, context)))
             exitCode = 1;
         if (unexport) {
             state.exportedNames.delete(key);
@@ -408,16 +408,16 @@ function setShellOptionByFlag(state, flag, enabled) {
 }
 async function builtinReadonly({ args, stdout, stderr, state, context }) {
     if (args.length === 0 || (args.length === 1 && args[0] === '-p')) {
+        // Each readonly variable as a declaration bash reads back, as `declare -p` prints it.
         for (const name of Array.from(state.readonlyNames).sort()) {
-            const value = state.env[name];
-            (await stdout.write(value === undefined
-                ? `readonly ${name}\n`
-                : `readonly ${name}=${quoteSetValue(value)}\n`));
+            const declared = declarationOf(state, name);
+            if (declared !== null)
+                (await stdout.write(`${declared}\n`));
         }
         return 0;
     }
     let exitCode = 0;
-    for (const arg of args) {
+    for (const [index, arg] of args.entries()) {
         if (arg.startsWith('-')) {
             (await stderr.write(`readonly: ${arg}: invalid option\n`));
             exitCode = 2;
@@ -431,7 +431,7 @@ async function builtinReadonly({ args, stdout, stderr, state, context }) {
                 exitCode = 1;
                 continue;
             }
-            if ((await assignEnv(state, name, arg.slice(eqIdx + 1), stderr))) {
+            if ((await assignDeclared(state, name, context.arrayElements?.get(index) ?? arg.slice(eqIdx + 1), stderr, context))) {
                 state.readonlyNames.add(name);
                 context.promote(name);
             }

@@ -1190,6 +1190,9 @@ var __nimbusProcessFsModule = (() => {
     return at < 0 ? "" : key.slice(0, at);
   }
 
+  var DELEGATION_RECALL_TIMEOUT_MS = 5e3;
+  var sessionTimers = { setTimeout: globalThis.setTimeout, clearTimeout: globalThis.clearTimeout };
+
   function dataOf(op) {
     return op.type === "call" && "data" in op.call ? op.call.data : null;
   }
@@ -1405,6 +1408,8 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
   var GRANT_INOS = 4096;
   var GRANT_BYTES = 64 * 1024 * 1024;
   var RECALL_POLL_MS = 2e4;
+  var recallWaitMs = (n) => Math.min(10 * 2 ** n, 1e3);
+  var WAVE_RECALL_BOUND_MS = DELEGATION_RECALL_TIMEOUT_MS + 1e3;
   function standingOf(grant, key) {
     if (grant.ended || grant.closing || grant.shared) return void 0;
     return within(key, grant.root) ? "held" : within(grant.root, key) ? "above" : void 0;
@@ -1512,6 +1517,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
     let epoch = null;
     let ack = 0;
     let wave = 0;
+    let recalled = null;
     const retiring = [];
     const failures = [];
     let processGone = null;
@@ -1716,7 +1722,8 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       ack = Math.max(ack, cursor);
       ownHeld = answer.held === true;
       if (!ownHeld) ownThrough = Math.max(ownThrough, answer.revision ?? Infinity);
-      const refused = writer === null ? error?.errno !== void 0 && SYSCALL_VERDICTS.has(error.errno) ? { seq: cursor + 1, errno: error.errno, message: error.message } : null : answer.sequence?.refused ?? null;
+      const recalling = error?.recall === true;
+      const refused = recalling ? null : writer === null ? error?.errno !== void 0 && SYSCALL_VERDICTS.has(error.errno) ? { seq: cursor + 1, errno: error.errno, message: error.message } : null : answer.sequence?.refused ?? null;
       let receipt = 0;
       const back = [];
       const mutations2 = new Map((answer.mutations ?? []).map((mutation) => [mutation.index, mutation]));
@@ -1748,12 +1755,21 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       }
       const answeredThrough = back.length === 0 ? entries[entries.length - 1].jid : back[0].jid - 1;
       if (answeredThrough >= entries[0].jid) forget(answeredThrough, true);
-      if (back.length === 0) return;
-      if (answer.ok || refused !== null) {
-        for (const entry of back) entry.lingers = false;
-        queue.unshift(...back);
+      if (back.length === 0) {
+        recalled = null;
         return;
       }
+      if (recalling && recalled?.jid !== back[0].jid) recalled = { jid: back[0].jid, since: now(), waits: 0 };
+      if (!recalling) recalled = null;
+      if (answer.ok || refused !== null || recalled !== null && now() - recalled.since < WAVE_RECALL_BOUND_MS) {
+        for (const entry of back) entry.lingers = false;
+        queue.unshift(...back);
+        if (recalled !== null) await new Promise((resolve) => {
+          timers.setTimeout(resolve, recallWaitMs(recalled.waits++));
+        });
+        return;
+      }
+      recalled = null;
       lostEpoch(back, `the session could not apply this write: ${error?.message ?? "no error"}`, writer);
     };
     const lostEpoch = (entries, message, writer) => {
