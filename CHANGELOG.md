@@ -5,6 +5,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed (CI): a probe's reset attribution reads a session's whole record.
+  A telemetry query that comes back full (2000 events) is read again as the
+  two halves of its span, until each comes back short. Before, the first
+  2000 were all it read, and a reset logged past them read as "no reset or
+  overload error logged". A record still reads as incomplete when one
+  millisecond alone fills a query, or after 64 queries.
+
 - Fixed: a Node program could be told a file, directory or link it had
   just renamed was not there (`fs.statSync` ENOENT, and renaming it again
   refused) when input arrived while the rename was still on its way to the

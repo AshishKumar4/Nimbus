@@ -134,14 +134,29 @@ try {
     assert.equal(regrade, false);
   }
 
-  // A record that filled a query may hold a product class past it: no regrade.
+  // A record that fills a query is read again in halves of its span, so a
+  // class past the first 2000 is found, and the record is read whole.
   {
     const busy = [
       event({ object: 'obj-6', sid: 'deep-oak-0006', seconds: 1, message: 'GET /ws' }),
-      event({ object: 'obj-6', seconds: 30, level: 'warn', message: `[sqlite-vfs] writeBatch failed: ${STORAGE}` }),
-      ...Array.from({ length: 2000 }, (_, i) => event({ object: 'obj-6', seconds: 31 + i / 100, level: 'warn', message: 'noise' })),
+      ...Array.from({ length: 2500 }, (_, i) => event({ object: 'obj-6', seconds: 2 + i / 100, level: 'warn', message: 'noise' })),
+      event({ object: 'obj-6', seconds: 60, level: 'warn', message: `[B'.3] appendScrollback failed: ${MEMORY}` }),
     ];
-    const { result, regrade } = await attribute(busy, row({ sids: ['deep-oak-0006'] }));
+    const { result, queries } = await attribute(busy, row({ sids: ['deep-oak-0006'] }));
+    assert.deepEqual(result.sessions.map((s) => [s.classes.map((c) => c.kind), s.complete]), [[['isolate memory reset'], true]], JSON.stringify(result));
+    assert.ok(queries.some((q) => q.timeframe.to - q.timeframe.from < at(600) - at(-5)), 'a full query was read again over a narrower span');
+    assert.doesNotMatch(describeAttribution(result)[0], /a query came back full/);
+  }
+
+  // A record that fills a query within one millisecond cannot be paged by
+  // time: it may hold a product class past what was read, so no regrade.
+  {
+    const burst = [
+      event({ object: 'obj-7', sid: 'warm-bay-0007', seconds: 1, message: 'GET /ws' }),
+      event({ object: 'obj-7', seconds: 30, level: 'warn', message: `[sqlite-vfs] writeBatch failed: ${STORAGE}` }),
+      ...Array.from({ length: 2000 }, () => event({ object: 'obj-7', seconds: 31, level: 'warn', message: 'noise' })),
+    ];
+    const { result, regrade } = await attribute(burst, row({ sids: ['warm-bay-0007'] }));
     assert.equal(result.sessions[0].complete, false);
     assert.equal(regrade, false);
     assert.match(describeAttribution(result)[0], /a query came back full/);

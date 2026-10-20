@@ -36,6 +36,9 @@ export const RESET_CLASSES = [
 export const showsResetSymptom = (row) => (row.sessions ?? []).some((session) => session.abnormalCloses.length > 0)
   || row.output.includes('E_NIMBUS_DO_OVERLOADED');
 
+/** The telemetry queries one session's attribution may make, its full ones paged by halving their span. */
+const ATTRIBUTION_QUERIES = 64;
+
 /** Workers Logs filters for the objects of `base`'s Worker: a Preview by its slug, a Worker by its name. */
 function scopeOf(base) {
   const label = new URL(base).hostname.split('.')[0];
@@ -79,18 +82,27 @@ const errorsOf = (event) => [event.source?.message, event.$metadata?.error].filt
  * exact error that object logged, or its failed invocations' traces
  * recorded, between its mint and `until`. Resolves to { sid, object,
  * classes: [{ kind, platform, at, error }], complete }: object null when no
- * log names the session yet, complete false when a query came back full, so
- * a class may lie past what it returned.
+ * log names the session yet. A query that comes back full is read again as
+ * the two halves of its span, until each comes back short; complete is
+ * false only when that could not finish (a millisecond that alone fills a
+ * query, or ATTRIBUTION_QUERIES spent), so a class may lie past what was read.
  */
 export async function attributeSession(reader, { sid, at, base }, until) {
   const from = Date.parse(at) - 5_000;
   const scope = scopeOf(base);
   let complete = true;
-  const read = async (filters, options = {}) => {
+  let queries = 0;
+  const read = async (filters, options = {}, start = from, end = until) => {
     const limit = options.limit ?? 2000;
-    const events = await reader.query(from, until, filters, { ...options, limit });
-    if (events.length >= limit) complete = false;
-    return events;
+    const events = await reader.query(start, end, filters, { ...options, limit });
+    queries += 1;
+    if (events.length < limit) return events;
+    if (end <= start || queries >= ATTRIBUTION_QUERIES) {
+      complete = false;
+      return events;
+    }
+    const middle = Math.floor((start + end) / 2);
+    return [...await read(filters, options, start, middle), ...await read(filters, options, middle + 1, end)];
   };
   const named = await reader.query(from, until, [[scope.key, scope.value], ['$workers.executionModel', 'durableObject']], { needle: sid, limit: 50 });
   const object = named.find((event) => event.$workers?.durableObjectId)?.$workers.durableObjectId ?? null;
