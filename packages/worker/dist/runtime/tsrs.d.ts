@@ -18,6 +18,6 @@ import type { OwnPrograms } from '../shell/npm-bin-entrypoints.js';
  * session's tsrs command.
  */
 export declare function tsrsPrograms(tsrs: (binName: string) => Command): OwnPrograms;
-/** tsrs.wasm, read from `env`'s ASSETS (and verified against its pin) when a worker is built for it. */
+/** tsrs.wasm, read from `env`'s ASSETS (and verified against its pin) when a worker is built for it, its memory bounded. */
 export declare function tsrsImage(env: unknown): FacetImage;
 //# sourceMappingURL=tsrs.d.ts.map

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "c3903f3380e9a74a86171732417a1f0cc16dfc74309cfd299d89fd6554b73408",
+  "fingerprint": "a873674fe20fce7ba5941e8cbdc5b3f507fcf31fc59c5b6b0784954223c4f4d6",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2885,9 +2885,9 @@
     "packages/worker/dist/runtime/stop-replay.d.ts": "ee2ba8c5e4640ff4308fe3f941d157d7f2ad179bfc648b138b2915658872a1a9",
     "packages/worker/dist/runtime/stop-replay.d.ts.map": "54ac610ed30555d41582d4ef5c18eb34996d4c6e327f6fdc0f1d9929b663066e",
     "packages/worker/dist/runtime/stop-replay.js": "b4fb6ae59f7f76a9612034e6971ad9953b2800de5539cb39c616b1f1cc781ed4",
-    "packages/worker/dist/runtime/tsrs.d.ts": "24375ee602845ceb68e6f4191ffd46818fcc3f5bb2a2bd004f436808a3ac0a90",
-    "packages/worker/dist/runtime/tsrs.d.ts.map": "70dd3a73588b97a9de523e33183285aed524f3db58d1c7dd57cbc981b23b124d",
-    "packages/worker/dist/runtime/tsrs.js": "5503a94a704d1581257ba9854a4e913e7cbebb7d74aa28abdb87a06a4a468f96",
+    "packages/worker/dist/runtime/tsrs.d.ts": "ef191d67b9fd86ab242a4f37282f72e59b96232536699eae655a451c77771f8e",
+    "packages/worker/dist/runtime/tsrs.d.ts.map": "a1c6a97f4b5d11cd104faac87a0b0e5e90e60cc2ce7fdea1d7a1db65bcc41cae",
+    "packages/worker/dist/runtime/tsrs.js": "e043169c563468c2e97cb90bdd8c174a8ad5f3cf45d5b04cf641089fd4ad2268",
     "packages/worker/dist/runtime/wasi/preamble.d.ts": "157e0ce6b43bdf15aa35ef1fbeb2c591158eb004849336e47749e7bcfdc44d25",
     "packages/worker/dist/runtime/wasi/preamble.d.ts.map": "0b5d489f5717c316764b536c72b6283e7cb85fe1e84a6243678fed9b9672ef02",
     "packages/worker/dist/runtime/wasi/preamble.js": "f1022246a928931c8d28434f6f998a0f7296da6805f3244d4629265a5e9e512a",
@@ -3457,7 +3457,7 @@
     "packages/worker/src/runtime/stop-replay-journal.ts": "fa309dc42e0017792e6c0cbaedcc8ad9267072ed8511222fae965f0f7dfa944d",
     "packages/worker/src/runtime/stop-replay-policy.ts": "39ae851a7c51ec0ebaca65134eeec47161ab07605674d2a6b60471ee2b4f1cf6",
     "packages/worker/src/runtime/stop-replay.ts": "0eb0286eb43a1ab872c8a7692d7b1b076ad7e42496c8fed241ffc4728a0819b1",
-    "packages/worker/src/runtime/tsrs.ts": "243fa72e48e2bcfa7924bdab9e5bd3744ce773e507f7171cad6b889109cdfb19",
+    "packages/worker/src/runtime/tsrs.ts": "0dbcf3d724de9a98214b1c49ac73eb812d272a666c8ce054e01214327b55d976",
     "packages/worker/src/runtime/wasi/preamble.ts": "cfa4bc63eac9063beadb25f62e391a5eba8d7be495a79fb4ccbb915fbc9a5823",
     "packages/worker/src/session/agent-contract.ts": "655117f69994495cd77942d865324aa43c69b7aaff42ede48a9ef333a35570b5",
     "packages/worker/src/session/agent-oauth.ts": "a84b7fb210138339aef1d89b794167a1084a759438522c97ff8cc541fb759d53",
