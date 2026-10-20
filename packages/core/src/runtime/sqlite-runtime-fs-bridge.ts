@@ -564,7 +564,8 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   readlink(path: RuntimeFsPath): string | null {
     return called({ syscall: 'readlink', path }, () => {
       const located = this.locate(path, false);
-      if (located === null) return null;
+      // The links before it loop (readlink(2)'s ELOOP).
+      if (located === null) throw callError('ELOOP', { syscall: 'readlink', path });
       if (located.mount) return mountOp(located.mount.readlink, 'readlink', path)(located.path);
       const p = located.path;
       return this.vfs.isSymlink(p) ? this.vfs.readlink(p) : null;
