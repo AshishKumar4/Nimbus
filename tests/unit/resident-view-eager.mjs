@@ -198,12 +198,18 @@ await runScenarios(import.meta.path, {
     await listing();
     await s.kernel.writeFile(k('g'), enc.encode('g'));
     s.fs.inbound();
-    const asked = s.calls.fsAcquire;
+    const before = s.calls.fsAcquire;
     const second = s.view.barrier();
-    await sleep(20);
+    for (let i = 0; i < 500 && s.calls.fsAcquire === before; i++) await sleep(2);
+    assert.equal(s.calls.fsAcquire, before + 1, 'the joiner asked once, and joined the repair');
+    // The repair's own next ACQUIRE waits: the joiner must ask again of its own.
+    const followUp = s.hold('fsAcquire');
     s.release('fsList');
+    await followUp();
+    for (let i = 0; i < 500 && s.calls.fsAcquire < before + 3; i++) await sleep(2);
+    assert.equal(s.calls.fsAcquire, before + 3, 'the joiner asked again while the repair\'s next ACQUIRE waited');
+    s.release('fsAcquire');
     await Promise.all([first, second]);
-    assert.ok(s.calls.fsAcquire > asked, 'the joiner asked after the repair');
     assert.equal(synchronously(s.fs, k('g')).size, 1);
   },
   async 'a fill asked before a poison installs nothing'() {
@@ -258,18 +264,44 @@ await runScenarios(import.meta.path, {
     assert.equal(s.calls.fsAcquire, asked + 1, 'an ACQUIRE');
     assert.equal(synchronously(s.fs, k('f')).mode & 0o777, 0o600);
   },
-  async 'under a trusted read lease, a repair owed takes the barrier'() {
+  async 'under a trusted read lease, a repair owed alone takes the barrier'() {
     const s = await storeSession({ f: 'one' }, { eager: true, delegated: true });
     await s.fs.catchUp();
-    s.poison();
-    // The repair lists, and lists once more: both fail.
+    // No poison: the barrier's ACQUIRE and the repair's from the store's floor fail, then both its listings.
+    s.fail('fsAcquire', 2);
     s.fail('fsList', 2);
+    s.fs.inbound();
     await s.fs.catchUp();
-    assert.equal(s.view.repairOwed(), true);
+    assert.equal(s.view.repairOwed(), true, 'a repair is owed');
+    assert.equal(s.view.ready(), true, 'the namespace still answers');
+    const leased = s.fs.stats().leasedBarriers;
     const asked = s.calls.fsAcquire;
+    // No change of the process's own is owed: only the repair is.
+    s.fs.inbound();
     await s.fs.catchUp({ viaIo: true });
+    assert.equal(s.fs.stats().leasedBarriers, leased, 'the lease did not stand in');
     assert.ok(s.calls.fsAcquire > asked, 'the repair asks');
     assert.equal(s.view.repairOwed(), false);
+    // The lease was trusted throughout: with nothing owed, input alone takes no barrier again.
+    const again = s.calls.fsAcquire;
+    s.fs.inbound();
+    await s.fs.catchUp({ viaIo: true });
+    assert.equal(s.calls.fsAcquire, again, 'no ACQUIRE');
+    assert.equal(s.fs.stats().leasedBarriers, leased + 1);
+  },
+  async 'a directory learned under a learned one is whole once relisted'() {
+    const s = await storeSession({ f: 'f' }, { eager: true });
+    // Made after the store was enumerated, and learned without their entries, nested, with no mount above.
+    await s.kernel.mkdir(k('d/e'), { recursive: true });
+    const t = s.store.coherence.require();
+    for (const rel of ['d', 'd/e']) {
+      const stat = await s.authority.stat(k(rel));
+      assert.equal(s.store.namespace.learn(t, `${ROOT}/${rel}`, stat, stat.revision), true);
+    }
+    assert.equal(s.store.namespace.isListed(`${ROOT}/d/e`), false, 'learned, not listed');
+    s.store.namespace.relisted(`${ROOT}/d/e`);
+    assert.equal(s.store.namespace.isListed(`${ROOT}/d/e`), true, 'relisted, it is whole');
+    assert.equal(s.store.namespace.isListed(`${ROOT}/d`), false, 'its parent, not relisted, is not');
   },
   async 'a delivery\'s arguments keep the process\'s own debt through the session\'s parse'() {
     const authority = createAuthority();
