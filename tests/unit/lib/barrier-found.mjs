@@ -154,9 +154,9 @@ const FOUND = {
   'a directory read through its descriptor after an own rename into it, its wave not yet sent, lists the name the rename made (2896)': {
     schedule: [['stall'], ['sync', 'rename', 'd/e/g', 'x/f'], ['own', 'opendir', 'x']],
   },
-  'a write left in flight and a later removal of its file end as the session says (2700)': {
+  'a write and the removal of its file, sent in one wave behind another, leave the name gone in the process too (2700)': {
     engines: ['node'],
-    schedule: [['hold', 'wave'], ['own', 'write', 'top', 'raced'], ['sync', 'unlink', 'top'], ['release', 'wave'], ['settle']],
+    schedule: [['hold', 'wave'], ['own', 'write', 'd/f', 'ahead'], ['own', 'write', 'top', 'raced'], ['sync', 'unlink', 'top'], ['release', 'wave'], ['settle']],
   },
   'a file a call that cannot wait missed stays a miss until an awaited read answers it': {
     engines: ['node'],
@@ -326,7 +326,7 @@ async function run(kind, schedule, park) {
 
 /** What the process renamed itself: Node's own renames, run apart so each file stays in the fast tier. */
 const OWN_RENAMES = new Set([
-  'a write left in flight and a later removal of its file end as the session says (2700)',
+  'a write and the removal of its file, sent in one wave behind another, leave the name gone in the process too (2700)',
   'a directory read through its descriptor after an own rename into it, its wave not yet sent, lists the name the rename made (2896)',
   'an awaited read of a file a relist is on its way to is answered, not refused',
   'a name the process renamed into place can be renamed again at once',
