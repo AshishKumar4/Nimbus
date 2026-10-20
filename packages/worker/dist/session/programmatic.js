@@ -469,8 +469,18 @@ export async function rpcListRuntimes(self) {
         available: await self.runtimeManager.available(),
     };
 }
-export async function rpcListProcesses(self) {
+/**
+ * Ready, and what runs listed in full: the dev servers this incarnation's
+ * restore runs again are in the table, as port routing waits for them. A
+ * host's recovery asks once, and must not read "not yet" as "none coming"
+ * (Kinu ask 65).
+ */
+async function ensureRunningListed(self) {
     await ensureProgrammaticReady(self);
+    await self.restoreDevServers();
+}
+export async function rpcListProcesses(self) {
+    await ensureRunningListed(self);
     return self.processes.publishedAll().map((p) => serializeProcess(p));
 }
 /** The session's terminals: its own first (`name: null`), then the named ones by name. */
@@ -538,7 +548,7 @@ export async function rpcProcessLogs(self, pid, options = {}) {
     };
 }
 export async function rpcListPorts(self) {
-    await ensureProgrammaticReady(self);
+    await ensureRunningListed(self);
     // The composed manager's copy is the one implementation — persistence
     // at tell-time included.
     return self.ensureFacetManager().apps.listPorts();
@@ -780,7 +790,7 @@ async function assertServingOwner(self, port, owner, adopt) {
 }
 /** Every stamped identity, with the URL each is reachable at. */
 export async function rpcListApps(self) {
-    await ensureProgrammaticReady(self);
+    await ensureRunningListed(self);
     const apps = await self.facetManager.listResidentApps();
     return apps.map((app) => ({
         ...app,
@@ -1321,6 +1331,7 @@ function serializeProcess(p) {
         longRunning: p.longRunning === true,
         attachedTty: p.attachedTty === true,
         ...execIdField(p),
+        ...(p.restartedFrom === undefined ? {} : { restartedFrom: p.restartedFrom }),
     };
 }
 function serializePort(self, p) {
