@@ -14,13 +14,18 @@ export function keptEnv(row) {
     const kept = KeptEnvSchema.safeParse(row);
     return kept.success ? kept.data.env : null;
 }
-/** `value` stored at `record`, with `env` beside it where `keeping` keeps environments: one storage write's entries. */
-export function recordWithEnv(keeping, record, value, env) {
-    return keeping === undefined || env === undefined ? { [record]: value } : { [record]: value, [keeping.rowOf(record)]: { env: { ...env } } };
+/** Within one storage transaction: `value` at `record`, and `env` beside it where `keeping` keeps environments. */
+export async function putRecord(txn, keeping, record, value, env) {
+    await txn.put(record, value);
+    if (keeping !== undefined && env !== undefined)
+        await txn.put(keeping.rowOf(record), { env: { ...env } });
 }
-/** The keys a delete of `record` removes: the record, and its environment's row. */
-export function recordKeys(keeping, record) {
-    return keeping === undefined ? [record] : [record, keeping.rowOf(record)];
+/** Within one storage transaction: `record` deleted, and its environment's row with it. Answers whether the record was there. */
+export async function deleteRecord(txn, keeping, record) {
+    const had = await txn.delete(record);
+    if (keeping !== undefined)
+        await txn.delete(keeping.rowOf(record));
+    return had;
 }
 /**
  * The environment the relaunch `request` describes runs with: the host's

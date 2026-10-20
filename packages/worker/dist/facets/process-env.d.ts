@@ -24,10 +24,10 @@ export interface ProcessEnvKeeping {
 }
 /** The environment a kept row holds, or null when there is none. */
 export declare function keptEnv(row: unknown): Record<string, string> | null;
-/** `value` stored at `record`, with `env` beside it where `keeping` keeps environments: one storage write's entries. */
-export declare function recordWithEnv(keeping: ProcessEnvKeeping | undefined, record: string, value: unknown, env: Record<string, string> | undefined): Record<string, unknown>;
-/** The keys a delete of `record` removes: the record, and its environment's row. */
-export declare function recordKeys(keeping: ProcessEnvKeeping | undefined, record: string): string[];
+/** Within one storage transaction: `value` at `record`, and `env` beside it where `keeping` keeps environments. */
+export declare function putRecord(txn: Pick<DurableObjectTransaction, 'put'>, keeping: ProcessEnvKeeping | undefined, record: string, value: unknown, env: Readonly<Record<string, string>> | undefined): Promise<void>;
+/** Within one storage transaction: `record` deleted, and its environment's row with it. Answers whether the record was there. */
+export declare function deleteRecord(txn: Pick<DurableObjectTransaction, 'delete'>, keeping: ProcessEnvKeeping | undefined, record: string): Promise<boolean>;
 /**
  * The environment the relaunch `request` describes runs with: the host's
  * answer, or an error naming why there is none. Never an empty or a guessed
