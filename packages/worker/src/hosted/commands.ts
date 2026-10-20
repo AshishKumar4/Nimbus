@@ -994,7 +994,8 @@ const shellEntrypointExecutor = {
           setUmask: identity.setUmask,
         },
         runAs: runAsProcess,
-        signal: stop.signal,
+        // The caller's (its command's) and the child's own: either stops it.
+        signal: options?.signal ? AbortSignal.any([options.signal, stop.signal]) : stop.signal,
       });
       exitCode = result.exitCode;
       return result;

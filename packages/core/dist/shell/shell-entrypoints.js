@@ -55,6 +55,7 @@ function makeShellEntrypoint(shellName, shell) {
                 scriptMode: true,
                 stdin: inheritedStdin.stdin,
                 terminalStdin: ctx.terminalStdin,
+                signal: ctx.signal,
                 onStdout: hooks.onStdout,
                 onStderr: hooks.onStderr,
                 runExitTrap: true,
