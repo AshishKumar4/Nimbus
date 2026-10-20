@@ -16,7 +16,8 @@ export interface ProcessEntry {
     exitCode: number | null;
     startTime: number;
     endTime: number | null;
-    cred: VfsCred;
+    /** Chosen at spawn (an identity other than the parent's only as the supervisor admits it); replaced only by setUmask. */
+    readonly cred: VfsCred;
     /** Spawning process, when the spawn declared one. Roots have none. */
     parentPid?: number;
     /**

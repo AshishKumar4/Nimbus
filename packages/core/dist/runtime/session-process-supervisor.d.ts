@@ -61,10 +61,18 @@ export interface ProcessTerminalDescriptor {
     columns: number;
     rows: number;
 }
+/**
+ * Whether a process running as `from` may start `command` (its command line)
+ * as `to`, a credential other than its own: the host's word on every identity
+ * change (sudo, su, any command's runAs).
+ */
+export type IdentityChangePolicy = (from: Readonly<VfsCred>, to: Readonly<VfsCred>, command: string) => boolean;
 export declare class SessionProcessSupervisor implements ProcessOutput {
     private readonly table;
     /** Why no process is admitted any more (closeAdmission); null while they are. */
     private refusal;
+    /** What every spawn as another identity asks first; see governIdentityChanges. */
+    private identityPolicy;
     private readonly input;
     private logs;
     /** Terminators for processes whose work is a promise this session owns. */
@@ -111,8 +119,18 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
      * becomes of its table entry.
      */
     private readonly unpublishedEnds;
-    /** Allocate a PID and register a new process. */
+    /**
+     * Allocate a PID and register a new process. One with a parent and a
+     * credential other than the parent's is made only if the identity policy
+     * allows the change: refused, it is EPERM and no process.
+     */
     spawn(command: string, argv: string[], cwd: string, opts?: ProcessSpawnOptions): ProcessEntry;
+    /**
+     * Ask `policy` before each spawn as another identity (spawn). One policy
+     * per supervisor: a second, other one is refused, so two workspaces over
+     * one process table cannot disagree on it.
+     */
+    governIdentityChanges(policy: IdentityChangePolicy): void;
     /**
      * Admit no process from now on: each spawn throws `reason`. A destroy's,
      * before it takes the processes it stops, so none starts behind it.

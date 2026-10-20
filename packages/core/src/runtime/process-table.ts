@@ -19,7 +19,8 @@ export interface ProcessEntry {
   exitCode: number | null;
   startTime: number;
   endTime: number | null;
-  cred: VfsCred;
+  /** Chosen at spawn (an identity other than the parent's only as the supervisor admits it); replaced only by setUmask. */
+  readonly cred: VfsCred;
   /** Spawning process, when the spawn declared one. Roots have none. */
   parentPid?: number;
   /**
@@ -52,6 +53,9 @@ export interface ProcessEntry {
    */
   restartedFrom?: ProcessRestart;
 }
+
+/** An entry as the table holds it: its cred the table's own to replace (setUmask). */
+type TableEntry = Omit<ProcessEntry, 'cred'> & { cred: VfsCred };
 
 /** Which process a restart replaced, and why it was restarted. */
 export type ProcessRestart =
@@ -132,7 +136,7 @@ function noSuchProcess(pid: number): Error {
 export class ProcessTable {
   private nextPid = 1;
   private base = 0;
-  private processes = new Map<number, ProcessEntry>();
+  private processes = new Map<number, TableEntry>();
   private onStride: ((stride: number) => void) | null = null;
 
   /**
@@ -175,7 +179,7 @@ export class ProcessTable {
     const terminal = options.terminal ?? parent?.terminal;
     const pid = this.nextPid++;
     if (pid % PID_GEN_STRIDE === 0) this.onStride?.(pid / PID_GEN_STRIDE);
-    const entry: ProcessEntry = {
+    const entry: TableEntry = {
       pid,
       command,
       argv,

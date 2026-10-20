@@ -182,6 +182,8 @@ export class NimbusWorkspace {
         // host-supplied one keeps the base its owner configured.
         if (!options.processes)
             processes.setPidBase((options.generation ?? 1) * PID_GEN_STRIDE);
+        if (options.mayChangeIdentity !== undefined)
+            processes.governIdentityChanges(options.mayChangeIdentity);
         if (options.egressFor !== undefined && options.egress === undefined) {
             throw new TypeError('NimbusWorkspace: egressFor refines egress, the workspace\'s own network; give both');
         }
