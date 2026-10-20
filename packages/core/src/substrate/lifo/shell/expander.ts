@@ -3,7 +3,7 @@ import { isShellIdentifier } from './names.js';
 import { DEFAULT_HOME } from '../../../constants.js';
 import type { ProcessView } from '../../../runtime/process-files.js';
 import { characterAt, characterBounds, characterWidth, escapeGlob, expandGlob, fixedMatchLength, shellMatch, shellUnits } from '../utils/glob.js';
-import { readAnsiCQuote, readBacktickSubstitution, readBalancedCommand, readBracedExpansion } from './lexer.js';
+import { readAnsiCQuote, readBacktickSubstitution, readBalancedCommand, readBracedExpansion, readQuoted } from './lexer.js';
 import type { ShellOptions } from './state.js';
 import { arrayFor, arrayIndex, assignVariable, type ShellValues } from './variables.js';
 import { DiscardSignal } from './discard.js';
@@ -1016,8 +1016,9 @@ function parameterWordParts(word: string, mode: ParameterWordMode): WordPart[] {
       }
     }
     if ((ch === "'" && !plain) || ch === '"') {
-      const end = word.indexOf(ch, i + 1);
-      const close = end === -1 ? word.length : end;
+      // Its close as the lexer finds it: a quote in a substitution inside it is the substitution's.
+      const end = readQuoted(word, i, ch).end;
+      const close = end > i + 1 && word[end - 1] === ch ? end - 1 : word.length;
       flush();
       parts.push({ text: word.slice(i + 1, close), quoted: ch === "'" ? 'single' : 'double' });
       i = close + 1;
@@ -1235,8 +1236,11 @@ function evaluateArithmetic(expr: string, scope: ArithmeticScope, depth = 0): nu
   return result;
 }
 
-/** What an operand begins with: a number, a name, `$` or `(`. */
-const OPERAND_START = /[0-9A-Za-z_$(]/;
+/** What an operand begins with: a number, a name or `(`. */
+const OPERAND_START = /[0-9A-Za-z_(]/;
+
+/** A subscript's `$name`, `${name}` and `$1`, which it expands as text. */
+const SUBSCRIPT_NAME = /\$(?:\{([A-Za-z_][A-Za-z0-9_]*|[0-9]+)\}|([A-Za-z_][A-Za-z0-9_]*|[0-9]))/g;
 
 /** Arithmetic text with something to expand before it is evaluated. */
 const ARITHMETIC_EXPANDS = /[$`"'\\]/;
@@ -1336,8 +1340,10 @@ class ArithParser {
     const trimmed = text.trim();
     if (text === '' || trimmed === '@' || trimmed === '*') return null;
     if (this.noeval > 0 || trimmed === '') return 0;
-    // Its quotes removed as arithmetic's are (expandArithmetic); an expansion left in it (a value's) is an operand error.
-    const expression = /["\\]/.test(text) ? parameterWordParts(text, 'double').map((part) => part.text).join('') : text;
+    // Its names expanded as text, then its quotes removed, as arithmetic's are (expandArithmetic).
+    // Any other expansion left in it (a value's subscript) is an operand error, not a guess.
+    const named = text.includes('$') ? text.replace(SUBSCRIPT_NAME, (_, braced: string | undefined, bare: string | undefined) => this.parameterText(braced ?? bare ?? '')) : text;
+    const expression = /["\\]/.test(named) ? parameterWordParts(named, 'double').map((part) => part.text).join('') : named;
     try {
       return evaluateArithmetic(expression, this.scope, this.depth);
     } catch (error) {
@@ -1744,17 +1750,6 @@ class ArithParser {
       return this.readNumber();
     }
 
-    // $VAR reference -- skip the $ and read variable name
-    if (ch === '$') {
-      const start = this.pos;
-      this.pos++;
-      this.skipSpaces();
-      const name = this.readVarName();
-      if (name) return this.read(name);
-      this.pos = start;
-      throw this.syntaxError('syntax error: operand expected');
-    }
-
     // Variable reference (possibly with post-increment)
     if (/[a-zA-Z_]/.test(ch)) {
       const name = this.readVarName();
@@ -1825,6 +1820,11 @@ class ArithParser {
       throw new ArithmeticError(`${name}: expression recursion level exceeded (error token is "${name}")`);
     }
     return evaluateArithmetic(val, this.scope, this.depth + 1);
+  }
+
+  /** A name's value as text, as a subscript's `$name` expands it: unset is empty. */
+  private parameterText(name: string): string {
+    return this.getParameter(name) ?? '';
   }
 
   /** A name's value: a positional parameter's, a scalar's, or an array's first element. */

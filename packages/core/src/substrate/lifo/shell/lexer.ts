@@ -1242,7 +1242,7 @@ export function readAnsiCQuote(input: string, pos: number): { text: string; end:
  * backtick substitution is its own span, so a `"` inside it does not close
  * the quote (`"$(echo ")")"`).
  */
-function readQuoted(input: string, pos: number, quote: '"' | "'"): { text: string; end: number } {
+export function readQuoted(input: string, pos: number, quote: '"' | "'"): { text: string; end: number } {
   if (quote === "'") {
     const close = input.indexOf("'", pos + 1);
     const end = close === -1 ? input.length : close + 1;

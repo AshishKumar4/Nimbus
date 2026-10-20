@@ -63,6 +63,10 @@ const LINES = [
   // An operand that is not one, and text left after the expression, are errors.
   { line: 'echo $(( 1 + @ ))\necho $(( 2 3 ))\nx="1 2"; echo $((x))\necho end', script: 'bash' },
   'echo $((1 +\n2 \n)) $(( 3\t*\t2 ))',
+  // A value's subscript expands its names as text (2*$i with i=1+1 is 2*1+1); a quote in a substitution is the substitution's.
+  "a=(0 10 20 30 40); i=1+1; e='a[2*$i]'; echo $((e)); echo $(( \"$(echo \"2\")\" * 3 )); i=1; let 'a[$i] = 7'; echo ${a[1]}; x=4; echo $(( \"${x}\" + 1 ))",
+  // A $ in a value, outside a subscript, is no operand.
+  { line: "e='2*$i'; i=3; echo $((e))\necho next", script: 'bash' },
 ];
 
 /** bash's diagnostic prefix: `bash: line 1: `, `bash: -c: line 1: `, a script's `./s.sh: line 1: `, and in a function 5.2's `environment: line 1: `. */
