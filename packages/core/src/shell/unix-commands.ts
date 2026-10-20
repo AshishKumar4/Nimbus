@@ -2354,7 +2354,8 @@ function mkTouch(): Command {
         // silence.
         let openErrno: string | null = null;
         const exists = await targetVfs.exists(fp);
-        if (!noCreate) {
+        // open(O_CREAT) of a name ending in `/` is EISDIR, which GNU does not keep (as for a directory): the times say what is wrong.
+        if (!noCreate && !f.endsWith('/')) {
           if (exists) {
             try { await targetVfs.access(fp, 2); } catch (e) { openErrno = touchErrno(e); }
           } else {
