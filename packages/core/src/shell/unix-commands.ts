@@ -2198,6 +2198,12 @@ function mkRm(): Command {
         code = 1;
         continue;
       }
+      // Another name for the root (a link to it, `link/`) is refused as the root is.
+      if (recursive && preserveRoot && await vfs.realpath(path).catch(() => null) === '/') {
+        await ctx.stderr.write(`rm: it is dangerous to operate recursively on '${target}' (same as '/')\nrm: use --no-preserve-root to override this failsafe\n`);
+        code = 1;
+        continue;
+      }
       try {
         if (!recursive) { await vfs.remove(path, { force }); continue; }
         // A link named with a trailing slash is walked, as GNU's fts walks it: its

@@ -541,7 +541,11 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     const call: FsCall = { syscall: 'rename', path: from, dest: to };
     return called(call, () => {
       const source = this.locateMutation(from, false, call, options.mutationOwner);
-      const target = this.locateMutation(to, false, call, options.mutationOwner);
+      const target = this.locateMutation(to, false, call, options.mutationOwner, true);
+      // A new name ending in `/` is a directory's: anything else renamed to it is ENOTDIR (rename(2)).
+      if (entryVfsPath(typeof to === 'string' ? to : to.path).directory && this.stat(from, { followSymlinks: false })?.type !== 'directory') {
+        throw callError('ENOTDIR', call);
+      }
       // A name on a mount is renamed by the namespace: within one mount by that
       // mount, and otherwise refused in the namespace's order (EBUSY for a
       // mount point, then EXDEV between two filesystems and on a backend with
@@ -875,7 +879,8 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   }
 
   /** `call`: the syscall a refusal names, or the whole call when it names two paths. */
-  private locateMutation(path: RuntimeFsPath, followSymlinks: boolean, call: string | FsCall, owner?: string): Located {
+  /** `absentDirectory`: an absent entry named with a trailing slash may be made here (a directory renamed to it); otherwise it is ENOENT, only mkdir makes one. */
+  private locateMutation(path: RuntimeFsPath, followSymlinks: boolean, call: string | FsCall, owner?: string, absentDirectory = false): Located {
     // A lease on a directory also covers names inside it that resolve
     // elsewhere through a symlink, so the literal path is checked as well.
     this.leaseAllows(this.pathArgument(path), owner);
@@ -888,6 +893,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     if (located === null) throw callError('ELOOP', failure);
     if (entry?.directory) {
       const stat = this.stat(lookup, { followSymlinks: false });
+      if (stat === null && !absentDirectory) throw callError('ENOENT', failure);
       if (stat !== null && stat.type !== 'directory') throw callError('ENOTDIR', failure);
     }
     return this.reached(located, owner);
