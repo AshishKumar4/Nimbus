@@ -1043,13 +1043,7 @@ export class Interpreter {
       for (const [index, parts] of cmd.words.entries()) {
         const assignment = index === 0 ? null : parseAssignment({ kind: TokenKind.Word, value: parts.map((part) => part.text).join(''), pos: 0, parts });
         if (assignment?.elements !== undefined && assignment.subscript === undefined && assignment.append !== true) {
-          const literal = await this.arrayLiteral(assignment.name, assignment.elements, false, expandCtx);
-          // Its refusals are the builtin's to report, unless `set -e` ends the shell at the first.
-          if (literal.refused.length > 0 && this.config.options.errexit) {
-            (await (io.stderr ?? this.terminalSink(io)).write(`${literal.refused[0]}\n`));
-            this.exitOnReportedError();
-          }
-          (arrayElements ??= new Map()).set(expandedArgs.length - 1, literal);
+          (arrayElements ??= new Map()).set(expandedArgs.length - 1, await this.arrayLiteral(assignment.name, assignment.elements, false, expandCtx));
           expandedArgs.push(`${assignment.name}=`);
         } else {
           expandedArgs.push(...await expandWords([parts], expandCtx));
@@ -1175,6 +1169,7 @@ export class Interpreter {
               // A builtin is work of the shell's own (a `sleep`, a `read`, a
               // `wait`), never an await of a child; its thread lends it its unit.
               const endWork = io.workThread ? io.workThread.beginWork() : io.commandIdentity?.beginWork?.();
+              const declared = arrayElements === undefined || name !== commandWordText(cmd) ? undefined : arrayElements;
               try {
                 exitCode = await builtin(args, stdout, stderr, stdin, {
                   vfs: builtinIo.vfs ?? this.config.vfs,
@@ -1189,7 +1184,7 @@ export class Interpreter {
                     stderr: fds.terminalOutputFds.has(2),
                   },
                   scriptMode: io.scriptMode,
-                  ...(arrayElements === undefined || name !== commandWordText(cmd) ? {} : { arrayElements }),
+                  ...(declared === undefined ? {} : { arrayElements: declared }),
                   isFdTerminal: (fd) => this.isFdTerminal(fds, fd),
                   getPositionals: () => this.readPositionals(builtinIo),
                   setPositionals: (nextArgs) => this.writePositionals(builtinIo, nextArgs),
@@ -1223,6 +1218,8 @@ export class Interpreter {
                 return io.commandIdentity;
               },
                 });
+                // An element it refused and reported, the rest of its array assigned: under `set -e` the shell ends.
+                if (declared !== undefined) for (const literal of declared.values()) if (literal.refused.length > 0) this.exitOnReportedError();
               } catch (error) {
                 // A write the store or a device refused fails the builtin, as it
                 // fails a registered command (runCommand): its message on its
@@ -1442,7 +1439,9 @@ export class Interpreter {
    * `append`), and a `[subscript]=` element at its subscript's arithmetic (a
    * negative one counted back from past the last), the next index after it.
    * An element whose subscript is empty, `@` or `*`, or before the first is
-   * refused with bash's diagnostic and skipped.
+   * refused with bash's diagnostic and skipped; under `set -e` the first
+   * refusal ends the assignment, what it assigned before kept, as the shell
+   * ends there (exitOnReportedError).
    */
   private async arrayLiteral(name: string, elements: readonly ArrayElementNode[], append: boolean, ctx: ExpandContext): Promise<ArrayLiteral> {
     const expanded: ({ values: string[] } | { subscript: string; value: string; append: boolean })[] = [];
@@ -1461,13 +1460,10 @@ export class Interpreter {
       }
       const { subscript, value } = element;
       const written = `[${subscript}]${element.append ? '+=' : '='}${value}`;
-      if (subscript === '@' || subscript === '*') {
-        refused.push(`${written}: cannot assign to non-numeric index`);
-        continue;
-      }
-      const index = subscript === '' ? -1 : arrayIndex(array, subscriptArithmetic(subscript, ctx));
+      const index = subscript === '' || subscript === '@' || subscript === '*' ? -1 : arrayIndex(array, subscriptArithmetic(subscript, ctx));
       if (index < 0) {
-        refused.push(`${written}: bad array subscript`);
+        refused.push(`${written}: ${subscript === '@' || subscript === '*' ? 'cannot assign to non-numeric index' : 'bad array subscript'}`);
+        if (this.config.options.errexit) break;
         continue;
       }
       array[index] = element.append ? (array[index] ?? '') + value : value;

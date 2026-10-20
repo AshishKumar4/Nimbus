@@ -100,6 +100,10 @@ const LINES = [
   'set -e; readonly r=1; r=2\necho next',
   'set -e; if a=([-1]=x); then echo in-if; fi; echo after',
   'set -e; declare -a d=([-1]=x)\necho next',
+  // What it assigned before the refusal stays, for an EXIT trap to see.
+  "a=(old); trap 'declare -p a' EXIT; set -e; a=(p [-5]=x [2]=y)",
+  "a=(old); trap 'declare -p a' EXIT; set -e; declare -a a=(p [-5]=x [2]=y)",
+  "a=(old); trap 'declare -p a' EXIT; set -e; a+=(p [-9]=x [5]=y)",
   // As scripts: `bash ./s.sh` discards the line; a POSIX shell's (`sh`, bash --posix the oracle) ends.
   // Their diagnostics name the script and its line, so their output and status are compared.
   { line: 'a=()\na[-1]=x; echo same\necho "next $?"\nreadonly r=1\nr=2; echo same\necho "next $?"', script: 'bash' },
