@@ -5445,17 +5445,20 @@ const IMAGE_SCAN_BYTES = 1 << 20;
 
 /**
  * Every Node resident's generated source an earlier release wrote, its
- * environment in it, unlinked: its recipe generates it again. Nothing else
- * in the image directories goes. An embedder's text modules and a durable
- * worker's sources are named by journal rows, and no launch writes them
- * again. Read a slice at a time, as an image can be tens of MiB.
+ * environment in it, unlinked: its recipe generates it again. One a process
+ * of this release boots from (`live`, the store's roots) is this release's,
+ * which holds none. Nothing else in the image directories goes: an
+ * embedder's text modules and a durable worker's sources are named by
+ * journal rows, and no launch writes them again. Read a slice at a time, as
+ * an image can be tens of MiB.
  */
-function dropGeneratedNodeSources(vfs: SqliteVFS): void {
+function dropGeneratedNodeSources(vfs: SqliteVFS, live: ReadonlySet<string>): void {
   const kernel = vfs.as(CRED_KERNEL);
   for (const dir of [FACET_IMAGE_DIR, LEGACY_FACET_IMAGE_DIR]) {
     if (!kernel.exists(dir)) continue;
     for (const { name } of kernel.readdir(dir)) {
       const path = `${dir}/${name}`;
+      if (live.has(`/${path}`)) continue;
       const size = kernel.stat(path).size;
       for (let offset = 0; offset < size; offset += IMAGE_SCAN_BYTES) {
         // Each slice overlaps the next by the mark's length, so a mark across their boundary is seen.
@@ -5980,7 +5983,7 @@ export class FacetManager {
         await this.ctx.storage.put(ownerKey, kept);
       }
       purgeDurableWorkerImages(vfs, dropped, [...owners.values()].flat());
-      dropGeneratedNodeSources(vfs);
+      dropGeneratedNodeSources(vfs, this.imageStore.liveImages());
       // What was unlinked is collected now, not at the GC's next turn.
       for (let pass = 0; pass < 64 && vfs.runContentMaintenance(16).transactions > 0; pass++);
     }
@@ -10097,10 +10100,11 @@ export class FacetManager {
         // re-drive after a reset, an eviction's re-attach and a relaunch all
         // land on the same `app-slot-<n>`, which is the only thing that keeps
         // the retained SQLite bound to this application.
+        // An interpreter resident's relaunch asks for its environment, an empty one included.
         const envRecord = `${FENCED_WORK_KEY_PREFIX}${entry.pid}`;
-        if (opts.processEnv !== undefined) await this.hooks.keepProcessEnv?.remember(envRecord, opts.processEnv);
+        if (opts.resident !== undefined) await this.hooks.keepProcessEnv?.remember(envRecord, opts.processEnv ?? {});
         const duplicate = await this._claimResident(record);
-        if (duplicate !== null && opts.processEnv !== undefined) await this.hooks.keepProcessEnv?.forget(envRecord);
+        if (duplicate !== null && opts.resident !== undefined) await this.hooks.keepProcessEnv?.forget(envRecord);
         if (duplicate !== null) {
           this.ephemeralPids.set(entry.pid, opts.durable.owner);
           this.hooks.notify?.(`\x1b[2m[nimbus: second instance of "${command}" is not the durable one — pid ${duplicate} keeps the identity]\x1b[0m\r\n`);

@@ -4857,9 +4857,9 @@ export class FacetManager {
      *   it, its rows and its owner's images naming the new one, the old blobs
      *   unlinked. An application whose binding env nothing can give back (no
      *   embedder resolveWorkerLaunch) is not restarted, and the session is told;
-     * - a resident's generated source, in an image no live process boots from
-     *   (the store's sweep), or below /var/lib/nimbus where releases through
-     *   0.19 wrote it: unlinked.
+     * - a Node resident's generated source, in the image store or below
+     *   /var/lib/nimbus where releases through 0.19 wrote it: unlinked (its
+     *   recipe generates it again).
      * Unlinked bytes are then collected (the VFS's content GC). A filesystem
      * snapshot or export taken before keeps what it held.
      */

@@ -15,8 +15,9 @@
 //      none;
 //   5. a session an earlier release left: the env its journal row held, and
 //      the generated source holding it, are gone before anything is
-//      re-driven; the relaunch gets the env back from the session's keeping,
-//      and an embedder's text module beside that source stays.
+//      re-driven, and the relaunch gets the env back from the session's
+//      keeping. (An embedder's text module in the same directory stays:
+//      resident-worker-launch-modules re-drives from one.)
 
 import assert from 'node:assert/strict';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
@@ -142,22 +143,22 @@ console.log('  [3] a host that answers null, throws or composes no resolver fail
   session.storage.set(key, { ...row, recipe: { ...row.recipe, opts: { ...row.recipe.opts, env: { SECRET: FIRST } } } });
   session.storage.delete(`process-env:${key}`);
   session.storage.delete(PROCESS_ENV_DROPPED_KEY);
-  // Its generated source, the env in its arguments, and an embedder's text module beside it.
+  // Its generated source, the env in its arguments: in the image store, and
+  // below /var/lib/nimbus, where releases through 0.19 wrote it and no
+  // sweep of the store looks.
   const kernel = session.vfs.as(CRED_KERNEL);
-  kernel.mkdir('.nimbus/facet-images', { recursive: true, mode: 0o755 });
   const generated = `const __NIMBUS_ARGS = ${JSON.stringify({ argv: [], env: { SECRET: FIRST } })};\n`;
-  const textModule = 'export const answer = 42;\n';
-  const generatedPath = facetImagePath(await facetImageDigest(generated)).slice(1);
-  const textPath = facetImagePath(await facetImageDigest(textModule)).slice(1);
-  kernel.writeFile(generatedPath, generated, { mode: 0o644 });
-  kernel.writeFile(textPath, textModule, { mode: 0o644 });
+  const imagePath = facetImagePath(await facetImageDigest(generated)).slice(1);
+  for (const dir of ['.nimbus/facet-images', 'var/lib/nimbus/facet-images']) {
+    kernel.mkdir(dir, { recursive: true, mode: 0o755 });
+    kernel.writeFile(`${dir}/${imagePath.split('/').at(-1)}`, generated, { mode: 0o644 });
+  }
 
   const gen2 = instance(session, 2);
   await gen2.manager.pumpResidentLaunches();
   await until(() => gen2.starts.length === 1, 'the re-drive to start');
   assert.equal(gen2.starts[0].env.SECRET, FIRST, 'the relaunch gets the env the row held, from the session\'s keeping');
-  assert.deepEqual(filesHolding(session.vfs, FIRST), [], 'the generated source that held it is gone');
-  assert.equal(kernel.exists(textPath), true, 'an embedder\'s text module beside it stays');
+  assert.deepEqual(filesHolding(session.vfs, FIRST), [], 'the generated sources that held it are gone');
   assert.equal([...session.storage.entries()].some(([name, value]) => !name.startsWith('process-env:') && JSON.stringify(value).includes(FIRST)), false,
     'and no row but the session\'s keeping holds it');
   console.log('  [5] an earlier release\'s copies are gone before the re-drive, which gets the env back');

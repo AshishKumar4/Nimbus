@@ -5,6 +5,22 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed (security): a process's environment is no longer stored where
+  another process can read it. Before, a Node server's environment was
+  written into its generated module, and a Python or Ruby server's into its
+  durable image, under `/.nimbus`, which every account on the box can read.
+  Now the environment goes to the process in memory when it starts. When a
+  process is started again (after a reset, an on-failure restart, a durable
+  app's relaunch on its port, or a dev server's restore), Nimbus asks the
+  host for its environment through the new `resolveProcessEnv` option. The
+  session keeps each such process's environment in a row of its own object,
+  outside the filesystem. An embedder of `HostedRuntime` composes
+  `resolveProcessEnv`; without it, such a restart fails and says why. A
+  durable `spawnWorker` that passes an `env` now needs a
+  `resolveWorkerLaunch` hook. The first start after the upgrade removes the
+  copies earlier releases wrote. Copies already taken in a snapshot, an
+  export or a clone are not removed. `/api/_diag/session` lists the shell's
+  variable names, not their values.
 - Fixed: a Node program that renamed, deleted or made a file and then listed its directory with `fs.promises.readdir`, `fs.readdir` or `fs.opendir` could be shown the directory without that change while it was still on its way to the session. These listings now wait for what the program did before them, as `readdirSync` already shows it.
 - Fixed: the shell's arithmetic reads and assigns array elements, as bash does: `$((a[1] + a[-1]))`, `((a[i]++))` and `let 'a[0] = 3'`, in `[[ -eq ]]` and `for ((…))` too. `a` alone is its first element, and an element of a scalar turns the scalar into an array. A subscript of `@`, `*` or one before the first element is warned of as a bad array subscript, and the command goes on. Arithmetic refuses to assign a readonly name: `((…))` and `let` fail, and `$((…))` discards the line. `${t[-1]}` of a scalar is a bad subscript too. `$((…))` expands its text before evaluating it, as in double quotes, so `$(( ${#a[@]} - 1 ))` counts the array. An operand that is not one, or text left over after the expression, is a syntax error. Before, `a[1]` was read as `a`, arithmetic wrote readonly names, `$(( ${#a[@]} - 1 ))` gave 0, and leftover text was ignored.
 - Changed: `git status` reads its worktree in one ordered scan of the

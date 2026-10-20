@@ -47,7 +47,6 @@ import type { ProcessInputPacket } from '@nimbus-sh/core/runtime/process-input.j
 import { type ProcessHostFactory, type ResidentCodeSpec, type Supervise } from '@nimbus-sh/fabric/process-fabric.js';
 import { ProcessJournals } from '../session/process-journals.js';
 import { type ProcessEnvKeeper, type ResolveProcessEnv } from './process-env.js';
-import { type OpencodeRunnerOptions } from '../runtime/opencode-facet-runner.js';
 import { type FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
 import { type WasmImageRecord } from './wasm-image-digest.js';
 /**
@@ -1347,9 +1346,9 @@ export declare class FacetManager {
      *   it, its rows and its owner's images naming the new one, the old blobs
      *   unlinked. An application whose binding env nothing can give back (no
      *   embedder resolveWorkerLaunch) is not restarted, and the session is told;
-     * - a resident's generated source, in an image no live process boots from
-     *   (the store's sweep), or below /var/lib/nimbus where releases through
-     *   0.19 wrote it: unlinked.
+     * - a Node resident's generated source, in the image store or below
+     *   /var/lib/nimbus where releases through 0.19 wrote it: unlinked (its
+     *   recipe generates it again).
      * Unlinked bytes are then collected (the VFS's content GC). A filesystem
      * snapshot or export taken before keeps what it held.
      */
@@ -1943,7 +1942,11 @@ export declare class FacetManager {
      * buffered stdout/stderr/exit. node:sqlite is supplied as an override map
      * module so the static import links.
      */
-    execStagedArtifact(artifact: string, opts: Omit<OpencodeRunnerOptions, 'cred' | 'vfsBundle' | 'vfsCursor' | 'sources' | 'mode'> & {
+    execStagedArtifact(artifact: string, opts: {
+        argv: string[];
+        env: Record<string, string>;
+        cwd: string;
+        stdin: string;
         command?: string;
         attachedTty?: boolean;
         invokerPid?: number;

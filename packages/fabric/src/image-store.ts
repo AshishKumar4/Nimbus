@@ -161,6 +161,19 @@ export class ImageStore {
     return paths;
   }
 
+  /** The images a running process boots from, or a launch is writing: the store's roots. */
+  liveImages(): Set<string> {
+    const live = new Set<string>();
+    for (const [pid, paths] of this.residentImages) {
+      if (this.isLive(pid)) {
+        for (const path of paths) live.add(path);
+      } else {
+        this.residentImages.delete(pid);
+      }
+    }
+    return live;
+  }
+
   /**
    * Drop every image no running process boots from.
    *
@@ -173,14 +186,7 @@ export class ImageStore {
    * a DO reset the table is empty so every orphan goes.
    */
   private sweep(fs: ImageBlobStore): void {
-    const live = new Set<string>();
-    for (const [pid, paths] of this.residentImages) {
-      if (this.isLive(pid)) {
-        for (const path of paths) live.add(path);
-      } else {
-        this.residentImages.delete(pid);
-      }
-    }
+    const live = this.liveImages();
     let names: string[];
     try { names = fs.list(FACET_IMAGE_DIR); } catch { return; }
     for (const name of names) {
