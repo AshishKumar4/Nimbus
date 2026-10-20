@@ -409,11 +409,11 @@ var __nimbusResidentModule = (() => {
     return void 0;
   };
   var rowsOf = (rows) => [...rows];
-  function sqlTables(sql, headChanged = () => {
+  function sqlTables(sql, rowsChanged = () => {
   }) {
-    const writeHead = (path, query, ...bindings) => {
-      headChanged(path);
-      sql.exec(query, ...bindings);
+    const writeRows = (path, write) => {
+      rowsChanged(path);
+      write();
     };
     let schema = null;
     for (const _row of sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'meta'")) schema = "";
@@ -474,16 +474,24 @@ var __nimbusResidentModule = (() => {
         return row === void 0 ? void 0 : num(row.size);
       },
       filePut(path, kind, size, chunks, rev, ckey) {
-        writeHead(path, "INSERT OR REPLACE INTO file (path, kind, size, chunks, rev, ckey) VALUES (?, ?, ?, ?, ?, ?)", path, kind, size, chunks, rev, ckey);
+        writeRows(path, () => {
+          sql.exec("INSERT OR REPLACE INTO file (path, kind, size, chunks, rev, ckey) VALUES (?, ?, ?, ?, ?, ?)", path, kind, size, chunks, rev, ckey);
+        });
       },
       fileSetRev(path, rev) {
-        writeHead(path, "UPDATE file SET rev = ? WHERE path = ?", rev, path);
+        writeRows(path, () => {
+          sql.exec("UPDATE file SET rev = ? WHERE path = ?", rev, path);
+        });
       },
       fileStampOwn(path, rev) {
-        writeHead(path, "UPDATE file SET rev = ? WHERE path = ? AND rev = ?", rev, path, RK_OWN_WRITE);
+        writeRows(path, () => {
+          sql.exec("UPDATE file SET rev = ? WHERE path = ? AND rev = ?", rev, path, RK_OWN_WRITE);
+        });
       },
       fileDelete(path) {
-        writeHead(path, "DELETE FROM file WHERE path = ?", path);
+        writeRows(path, () => {
+          sql.exec("DELETE FROM file WHERE path = ?", path);
+        });
       },
       fileByKey(ckey, notPath) {
         return rowOf(sql.exec("SELECT path, kind, size, chunks FROM file WHERE ckey = ? AND rev >= 0 AND path <> ? LIMIT 1", ckey, notPath));
@@ -530,23 +538,33 @@ var __nimbusResidentModule = (() => {
         sql.exec("INSERT INTO chunk (path, part, txt, bin) SELECT ?, part, txt, bin FROM chunk WHERE path = ?", to, from);
       },
       chunkDelete(path) {
-        sql.exec("DELETE FROM chunk WHERE path = ?", path);
+        writeRows(path, () => {
+          sql.exec("DELETE FROM chunk WHERE path = ?", path);
+        });
       },
       dropOwn() {
-        sql.exec("DELETE FROM chunk WHERE path IN (SELECT path FROM file WHERE rev = ?)", RK_OWN_WRITE);
-        writeHead(void 0, "DELETE FROM file WHERE rev = ?", RK_OWN_WRITE);
+        writeRows(void 0, () => {
+          sql.exec("DELETE FROM chunk WHERE path IN (SELECT path FROM file WHERE rev = ?)", RK_OWN_WRITE);
+          sql.exec("DELETE FROM file WHERE rev = ?", RK_OWN_WRITE);
+        });
       },
       dropDated() {
-        sql.exec("DELETE FROM chunk WHERE path NOT IN (SELECT path FROM file WHERE rev = ?)", RK_OWN_WRITE);
-        writeHead(void 0, "DELETE FROM file WHERE rev <> ?", RK_OWN_WRITE);
+        writeRows(void 0, () => {
+          sql.exec("DELETE FROM chunk WHERE path NOT IN (SELECT path FROM file WHERE rev = ?)", RK_OWN_WRITE);
+          sql.exec("DELETE FROM file WHERE rev <> ?", RK_OWN_WRITE);
+        });
       },
       dropDatedFiles() {
-        sql.exec("DELETE FROM chunk WHERE path IN (SELECT path FROM file WHERE rev <> ?)", RK_OWN_WRITE);
-        writeHead(void 0, "DELETE FROM file WHERE rev <> ?", RK_OWN_WRITE);
+        writeRows(void 0, () => {
+          sql.exec("DELETE FROM chunk WHERE path IN (SELECT path FROM file WHERE rev <> ?)", RK_OWN_WRITE);
+          sql.exec("DELETE FROM file WHERE rev <> ?", RK_OWN_WRITE);
+        });
       },
       clear() {
-        sql.exec("DELETE FROM chunk");
-        writeHead(void 0, "DELETE FROM file");
+        writeRows(void 0, () => {
+          sql.exec("DELETE FROM chunk");
+          sql.exec("DELETE FROM file");
+        });
         sql.exec("DELETE FROM ns");
         sql.exec("DELETE FROM meta WHERE k <> 'schema'");
         sql.exec("DELETE FROM page");
@@ -634,10 +652,10 @@ var __nimbusResidentModule = (() => {
       }
     };
   }
-  function heapTables(headChanged = () => {
+  function heapTables(rowsChanged = () => {
   }) {
-    const writeHead = (path, write) => {
-      headChanged(path);
+    const writeRows = (path, write) => {
+      rowsChanged(path);
       write();
     };
     const files = new SafeMap();
@@ -708,7 +726,7 @@ var __nimbusResidentModule = (() => {
       });
       chunks.delete(path);
     };
-    const dropFile = (path) => writeHead(path, () => {
+    const dropFile = (path) => writeRows(path, () => {
       const row = files.get(path);
       if (row === void 0) return;
       unkey(path, row);
@@ -756,14 +774,14 @@ var __nimbusResidentModule = (() => {
       });
       ns.delete(parent);
     };
-    const dropWhere = (keepFile, keepChunkPath) => {
+    const dropWhere = (keepFile, keepChunkPath) => writeRows(void 0, () => {
       chunks.forEach((_parts, path) => {
         if (!keepChunkPath(path)) dropChunks(path);
       });
       files.forEach((row, path) => {
         if (!keepFile(row)) dropFile(path);
       });
-    };
+    });
     const sortedNames = (dir) => {
       const out = new SafeList();
       dir.forEach((_row, name) => {
@@ -802,7 +820,7 @@ var __nimbusResidentModule = (() => {
       },
       filePut(path, kind, size, chunkCount, rev, ckey) {
         if (!(rev >= -1)) throw new Error2("CHECK constraint failed: rev >= -1");
-        writeHead(path, () => {
+        writeRows(path, () => {
           const had = files.get(path);
           if (had === void 0) {
             sorted = null;
@@ -821,13 +839,13 @@ var __nimbusResidentModule = (() => {
         });
       },
       fileSetRev(path, rev) {
-        writeHead(path, () => {
+        writeRows(path, () => {
           const row = files.get(path);
           if (row !== void 0) row.rev = NumberOf(rev);
         });
       },
       fileStampOwn(path, rev) {
-        writeHead(path, () => {
+        writeRows(path, () => {
           const row = files.get(path);
           if (row !== void 0 && row.rev === RK_OWN_WRITE) row.rev = NumberOf(rev);
         });
@@ -930,7 +948,9 @@ var __nimbusResidentModule = (() => {
         });
       },
       chunkDelete(path) {
-        dropChunks(path);
+        writeRows(path, () => {
+          dropChunks(path);
+        });
       },
       dropOwn() {
         const own = new SafeSet();
@@ -954,10 +974,10 @@ var __nimbusResidentModule = (() => {
         dropWhere((row) => row.rev === RK_OWN_WRITE, (path) => !dated.has(path));
       },
       clear() {
-        writeHead(void 0, () => {
+        writeRows(void 0, () => {
           files.clear();
+          chunks.clear();
         });
-        chunks.clear();
         meta.clear();
         ns.clear();
         byKey.clear();
@@ -2104,6 +2124,7 @@ var __nimbusResidentModule = (() => {
       putChunk,
       publishFill(t, path, kind, size, chunks, rev, ckey, fill) {
         if (filling.get(path) !== fill) return false;
+        filling.delete(path);
         t.filePut(path, kind, size, chunks, rev, ckey != null ? stringOf(ckey) : null);
         return true;
       },
@@ -2117,9 +2138,21 @@ var __nimbusResidentModule = (() => {
         for (let i = 0; i < paths.length; i++) filling.set(paths[i], fill);
         return fill;
       },
-      headChanged(path) {
-        if (path === void 0) filling.clear();
-        else filling.delete(path);
+      rowsChanged(path) {
+        if (filling.size === 0) return;
+        const t = coherence.require();
+        const disown = (at) => {
+          if (filling.delete(at) && t.fileHead(at) === void 0) t.chunkDelete(at);
+        };
+        if (path !== void 0) {
+          disown(path);
+          return;
+        }
+        const owned = new SafeList();
+        filling.forEach((_fill, at) => {
+          owned[owned.length] = at;
+        });
+        for (let i = 0; i < owned.length; i++) disown(owned[i]);
       },
       /**
        * The head row, written LAST by the streaming filler.
@@ -3566,10 +3599,10 @@ var __nimbusResidentModule = (() => {
             "Nimbus: this facet has no synchronous SQLite (ctx.storage.sql); the resident set cannot be served and every sync read would raise EAGAIN"
           );
         }
-        bindTables(sqlTables(sql, cells.headChanged), null);
+        bindTables(sqlTables(sql, cells.rowsChanged), null);
       },
       bindInMemory(budget) {
-        const t = heapTables(cells.headChanged);
+        const t = heapTables(cells.rowsChanged);
         bindTables(t, t);
         admission.bindHeap(budget);
       },

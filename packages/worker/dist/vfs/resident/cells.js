@@ -209,10 +209,10 @@ export function createCells(coherence, admission, namespace, observeRead) {
     /**
      * Whose chunk rows each path's are while a fill writes them: the fill that
      * began last, while nothing changed the head it writes over since it was
-     * asked (tables.ts tells headChanged of every head write: a put, a delete,
-     * a copy, a lease, a stamp, a redate, a publish, a drop). A fill that lost
-     * them neither finishes nor drops them, so no fill decides for another's
-     * rows or over a head it did not see.
+     * asked (tables.ts tells rowsChanged of every head write and chunk removal,
+     * single or bulk). Disowning a fill removes the rows it wrote with no head
+     * over them, and removing them disowns it: one operation, so no rows are
+     * left unowned and no fill writes on after its rows went.
      */
     const filling = new SafeMap();
     let fills = 0;
@@ -553,6 +553,8 @@ export function createCells(coherence, admission, namespace, observeRead) {
         publishFill(t, path, kind, size, chunks, rev, ckey, fill) {
             if (filling.get(path) !== fill)
                 return false;
+            // Its rows are a file now: no longer a fill's to drop.
+            filling.delete(path);
             t.filePut(path, kind, size, chunks, rev, ckey != null ? stringOf(ckey) : null);
             return true;
         },
@@ -568,10 +570,21 @@ export function createCells(coherence, admission, namespace, observeRead) {
                 filling.set(paths[i], fill);
             return fill;
         },
-        headChanged(path) { if (path === undefined)
-            filling.clear();
-        else
-            filling.delete(path); },
+        rowsChanged(path) {
+            if (filling.size === 0)
+                return;
+            const t = coherence.require();
+            const disown = (at) => { if (filling.delete(at) && t.fileHead(at) === undefined)
+                t.chunkDelete(at); };
+            if (path !== undefined) {
+                disown(path);
+                return;
+            }
+            const owned = new SafeList();
+            filling.forEach((_fill, at) => { owned[owned.length] = at; });
+            for (let i = 0; i < owned.length; i++)
+                disown(owned[i]);
+        },
         /**
          * The head row, written LAST by the streaming filler.
          *
