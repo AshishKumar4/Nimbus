@@ -21,14 +21,10 @@
 import assert from 'node:assert/strict';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { resolveDurableWorkerImage } from '../../packages/worker/src/facets/durable-images.ts';
-import { reservePort } from '../../packages/worker/src/session/port-capability.ts';
+import { reservePort, routeToSessionPort } from '../../packages/worker/src/session/port-capability.ts';
 import { launchManager } from './lib/facet-launch-harness.mjs';
-import { importWorkerBundle } from './lib/worker-bundle.mjs';
 
 adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
-const { routeToSessionPort } = await importWorkerBundle({
-  'packages/worker/src/session/port-capability.ts': ['routeToSessionPort'],
-});
 
 const PORT = 20961;
 /** Each instance of a guest: how often a process started on it, and the requests it answered, each with that count. */
