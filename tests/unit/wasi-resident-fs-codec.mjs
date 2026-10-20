@@ -108,18 +108,23 @@ await check('a reader of a file written again after its writer closed reads the 
 });
 
 await check('a reader of a file being written through is the session\'s descriptor: no copy of it is held', async () => {
-  const { heapStats } = await import('bun:jsc');
-  const external = () => { Bun.gc(true); return heapStats().extraMemorySize; };
+  // What this process holds for the reader, counted where it would be made
+  // (a pin, a fill, a page); the read goes to the session's descriptor. The
+  // process's external memory is no measure here: this test's process is the
+  // session too, and its own caches move with the read.
   const guest = await residentGuest();
   const writer = await guest.open('home/user/big-held.bin', { create: true, truncate: true, write: true });
   assert.equal(await guest.writeBytes(writer, new Uint8Array(6 * MiB).fill(9)), 0);
-  const before = external();
+  const before = guest.stats();
   const reader = await guest.open('home/user/big-held.bin');
-  assert.equal(guest.stats().pinnedBytes, 0, 'a file being written was copied for a reader');
   assert.equal(await guest.pread(reader, 1), '\t', 'the reader reads what the writer sent');
+  const read = guest.stats();
+  assert.equal(read.pinnedBytes, 0, 'no pin of the file for the reader');
+  assert.equal(read.filledBytes, before.filledBytes, 'no fill of it');
+  assert.equal(read.pagesFetched, before.pagesFetched, 'no page of it');
+  assert.equal((read.delegated.read ?? 0) - (before.delegated.read ?? 0), 1, 'its read was the session\'s');
   assert.equal(await guest.close(reader), 0);
-  const after = external();
-  assert.ok(after - before < 1 * MiB, `${after - before} bytes stay after the reader closed`);
+  assert.equal(guest.stats().pinnedBytes, 0);
   assert.equal(await guest.close(writer), 0);
   await guest.dispose();
 });
