@@ -19,7 +19,12 @@ async function inSession(fn) {
   try {
     await t.connect();
     await t.waitForPrompt(60_000);
-    return await fn(t, sid);
+    const result = await fn(t, sid);
+    // A resident's trace reaches the tail when its facet goes: the session's
+    // last one goes with the session, so the session waits a moment first.
+    await t.run("node -e 0", 60_000).catch(() => {});
+    await sleep(5000);
+    return result;
   } catch (error) {
     out({ error: String(error?.message ?? error).slice(0, 2000), sid });
   } finally {
@@ -126,6 +131,7 @@ async function host() {
       await setup(t, heredoc('imports.py', PY_IMPORTS + '\n'));
       await setup(t, heredoc('requires.rb', RB_REQUIRES + '\n'));
       for (let rep = 0; rep < REPS; rep++) await step(t, sid, { group: 'host', runtime: a.runtime, label: a.label, arm: a.arm, rep, cold: rep === 0 }, a.line);
+      await setup(t, a.line);
     });
   }
 }

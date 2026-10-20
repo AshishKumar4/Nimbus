@@ -46,22 +46,22 @@ for (const r of records) {
   const mine = tails.filter((x) => x.at >= a && x.at <= b);
   const guest = {};
   for (const x of mine) {
-    const key = `${x.guestTail}:${x.model}:${x.entrypoint ?? '-'}`;
+    const key = `${x.guestTail}:${x.entrypoint ?? "-"}:${x.rpc ?? (x.url ? "fetch" : "-")}`;
     const g = guest[key] ??= { n: 0, cpuMs: 0, wallMs: 0, outcomes: {} };
     g.n++;
     g.cpuMs += x.cpuMs;
     g.wallMs += x.wallMs;
     g.outcomes[x.outcome] = (g.outcomes[x.outcome] ?? 0) + 1;
   }
-  const measures = mine.flatMap((x) => x.logs).filter((l) => l.startsWith('[fs-measure] {')).map((l) => JSON.parse(l.slice('[fs-measure] '.length)));
-  const memProbe = mine.flatMap((x) => x.logs).filter((l) => l.startsWith('[mem-probe]')).map((l) => Number(l.split(' ')[1]));
+  const measures = mine.flatMap((x) => x.logs ?? []).filter((l) => l.startsWith('[fs-measure] {')).map((l) => JSON.parse(l.slice('[fs-measure] '.length)));
+  const memProbe = mine.flatMap((x) => x.logs ?? []).filter((l) => l.startsWith('[mem-probe]')).map((l) => Number(l.split(' ')[1]));
   const sess = session.filter((x) => x.at >= a && x.at <= b);
   console.log(JSON.stringify({
     ...r,
     tail: undefined,
     guestCpuMs: Math.round(mine.reduce((s, x) => s + x.cpuMs, 0)),
     guest,
-    exceptions: mine.flatMap((x) => x.exceptions).slice(0, 3),
+    exceptions: mine.flatMap((x) => x.exceptions ?? []).slice(0, 3),
     sessionCpuMs: Math.round(sess.reduce((s, x) => s + x.cpuMs, 0)),
     sessionInvocations: sess.length,
     measures,
