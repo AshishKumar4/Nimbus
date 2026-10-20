@@ -28,6 +28,8 @@ const LINES = [
   'cat <<EOF\nline one \\\njoined\nEOF',
   'v=val; cat <<"EOF"\n$v `x` \\$v\nEOF',
   'cat <<EOF\n`echo "x y"` "q" \'s\'\nEOF',
+  'unset x; y=value; printf "<%s>\\n" "${x:-"$\'$y\'"}" ${x:-"$\'$y\'"} "${x:-$\'a\\tb\'}"',
+  'unset x; set -- ${x:-"\\\n"} tail; echo $#; set -- "${x:-"\\\n"}"; echo $#',
 ];
 
 /** bash's diagnostic prefix: `bash: line 1: `, `bash: -c: line 1: `, a script's `./s.sh: line 1: `, and in a function 5.2's `environment: line 1: `. */
