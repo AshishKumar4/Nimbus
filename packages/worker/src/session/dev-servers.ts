@@ -23,6 +23,7 @@
  */
 
 import { z } from 'zod/v4';
+import { withResolvers } from '@nimbus-sh/fabric/turn-budget.js';
 import { SinkWriter } from '@nimbus-sh/core/_shared/byte-stream.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { shellEscape } from '@nimbus-sh/core/_shared/shell-quote.js';
@@ -225,7 +226,7 @@ function restoreOf(host: DevServerRestoreHost): DevServerRestore {
   const base = host.processes.pidBase;
   let restore = restores.get(host);
   if (restore === undefined || restore.base !== base) {
-    const respawned = Promise.withResolvers<void>();
+    const respawned = withResolvers();
     // A caller that only runs commands may never ask whether they respawned.
     respawned.promise.catch(() => {});
     restore = { base, respawned: respawned.promise, done: restoreAll(host, base, respawned) };
@@ -245,7 +246,7 @@ interface Respawned {
   env: Record<string, string>;
 }
 
-async function restoreAll(host: DevServerRestoreHost, base: number, respawned: PromiseWithResolvers<void>): Promise<readonly DevServerRestoreFailure[]> {
+async function restoreAll(host: DevServerRestoreHost, base: number, respawned: ReturnType<typeof withResolvers>): Promise<readonly DevServerRestoreFailure[]> {
   // The session it began in is still the host's: a destroy made it again, and
   // then this restore runs nothing more and writes nothing but releases.
   const ours = (): boolean => host.processes.pidBase === base;
