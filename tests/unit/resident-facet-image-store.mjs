@@ -22,6 +22,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import {
   FACET_IMAGE_DIR,
   PROCESS_IMAGE_DIR,
+  processImageDir,
   facetImageDigest,
   facetImagePath,
   processImagePath,
@@ -59,11 +60,18 @@ const harness = createSqliteVfsTestHarness();
 const sessionVfs = new SqliteVFS(harness.sql, harness.ctx);
 manager.setVfs(sessionVfs, processFiles(sessionVfs));
 const fs = sessionVfs.as(CRED_KERNEL);
+// The session user's processes: their images are in uid 1000's directory.
+const USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
+const OTHER = { uid: 1001, gid: 1001, groups: [1001], umask: 0o022 };
 
 const storedImages = () => {
-  try { return fs.readdir(PROCESS_IMAGE_DIR).map((e) => e.name).sort(); }
+  try { return fs.readdir(processImageDir(USER.uid)).map((e) => e.name).sort(); }
   catch { return []; }
 };
+// An image an earlier release wrote at the top of the store, readable by every account.
+const earlier = `${PROCESS_IMAGE_DIR}/${'e'.repeat(64)}.js`;
+fs.mkdir(PROCESS_IMAGE_DIR, { recursive: true, mode: 0o755 });
+fs.writeFile(earlier, 'const __NIMBUS_ARGS = {};', { mode: 0o644 });
 const spawn = (code, name) => manager.spawnNode(code, {
   command: `node ${name}`, filename: `/home/user/${name}`, cwd: '/home/user',
 });
@@ -77,8 +85,9 @@ const name = (path) => path.split('/').pop();
 const a1 = await spawn('const a = 1;', 'a.js');
 const imageA = await bootedImage();
 const packA = await bootedPack();
-assert.match(imageA, /^\/\.nimbus\/process-images\/[0-9a-f]{64}\.js$/,
-  'the image is named by the digest of its own bytes');
+assert.match(imageA, /^\/\.nimbus\/process-images\/1000\/[0-9a-f]{64}\.js$/,
+  'the image is in its uid\'s directory, named by the digest of its own bytes');
+assert.equal(fs.exists(earlier), false, 'an earlier release\'s image at the top of the store is swept');
 assert.deepEqual(storedImages(), [name(imageA), name(packA)].sort(),
   'the spawn materialized exactly its main module and its code pack in the store');
 assert.ok(Object.values(configs().at(-1).modules).some((m) => m?.cjs?.includes('const a = 1;')),
@@ -86,7 +95,7 @@ assert.ok(Object.values(configs().at(-1).modules).some((m) => m?.cjs?.includes('
 
 // The bytes the loader saw are the bytes on disk, not a copy carried alongside.
 const storedSource = fs.readFileString(imageA.replace(/^\/+/, ''));
-assert.equal(imageA, processImagePath(await facetImageDigest(storedSource)), 'the recipe is named by its own bytes');
+assert.equal(imageA, processImagePath(USER.uid, await facetImageDigest(storedSource)), 'the recipe is named by its own bytes');
 assert.deepEqual(await storedBootModules(world, fs), processImageModules(configs().at(-1)),
   'the facet booted from the stored recipe and shared assets, read when it loaded');
 const cells = decodeCodePackBytes(fs.readFileUncached(packA));
@@ -95,12 +104,14 @@ for (const [module, member] of Object.entries(world.bootSpecs.at(-1).code.assetM
   assert.equal(storedImages().includes(member.source.sha256 + '.js'), false, 'a library is not written as a process image');
 }
 
-// The image is kernel-owned and world-readable: every process reads it through
-// a supervisor binding that enforces its own credential, so readability has to
-// hold by construction rather than by a carve-out in the permission layer.
+// The image holds what its process could read, so it is its uid's alone:
+// the process reads it through a binding that enforces its credential (as a
+// peer host's boot does), and no other account can.
 const meta = fs.lstat(imageA.replace(/^\/+/, ''));
-assert.equal(meta.uid, CRED_KERNEL.uid, 'the image belongs to the kernel, not to the program it encodes');
-assert.equal(meta.mode & 0o777, 0o644, 'and is readable by any process without a privilege exception');
+assert.equal(meta.uid, USER.uid, 'the image belongs to its process\'s uid');
+assert.equal(meta.mode & 0o777, 0o400, 'which alone may read it');
+assert.equal(sessionVfs.as(USER).readFileString(imageA.replace(/^\/+/, '')), storedSource, 'the process reads its own image');
+assert.throws(() => sessionVfs.as(OTHER).readFile(imageA.replace(/^\/+/, '')), /EACCES/, 'another account cannot');
 
 // ── identical program, identical image ─────────────────────────────────────
 const afterA = storedImages();

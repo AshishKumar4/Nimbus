@@ -19,7 +19,7 @@ import assert from 'node:assert/strict';
 
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { PROCESS_IMAGE_DIR } from '../../packages/fabric/src/process-fabric.ts';
+import { PROCESS_IMAGE_DIR, processImageDir } from '../../packages/fabric/src/process-fabric.ts';
 import { moduleMapText, storedBootModules, processImageModules } from './lib/module-map-bundle.mjs';
 import { launchManager } from './lib/facet-launch-harness.mjs';
 
@@ -159,7 +159,7 @@ async function settle(world) {
       writeRange: (path, offset, bytes) => { assert.equal(offset, files.get(path).byteLength); append(path, bytes); },
       list: (at) => [...files.keys()].filter((path) => path.startsWith(`${at}/`)).map((path) => path.slice(at.length + 1)),
       unlink: (path) => files.delete(path),
-    }), () => true);
+    }), () => true, () => 1000);
     const big = 'module.exports = 1;\n'.repeat(Math.ceil((2.5 * FACET_IMAGE_WRITE_SLICE_BYTES) / 20));
     let spends = 0;
     let suspended;
@@ -202,7 +202,7 @@ async function settle(world) {
   const store = new ImageStore(() => ({
     mkdirp() {}, sizeOf: () => null, writeFile(p, b) { written.push([p, b.byteLength]); },
     writeRange(p, o, b) { written.push([p, b.byteLength]); }, list: () => [], unlink() {},
-  }), () => true);
+  }), () => true, () => 1000);
   // Each source is produced on demand and the producer records how many it has
   // handed over, so "one at a time" is observable: the consumer must not be
   // able to ask for the next before the previous one's slices are written.
@@ -259,7 +259,7 @@ async function settle(world) {
   // Each facet's whole map must still be readable from the store: a sweep that
   // ran while the other launch was suspended must not have taken any of it.
   const present = new Set(
-    fs.readdir(PROCESS_IMAGE_DIR).map((e) => (typeof e === 'string' ? e : e.name)),
+    fs.readdir(processImageDir(1000)).map((e) => (typeof e === 'string' ? e : e.name)),
   );
   for (const config of world.configs.values()) {
     for (const [name, path] of Object.entries(config.vfsTextModules ?? {})) {
