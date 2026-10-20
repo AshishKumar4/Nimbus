@@ -101,7 +101,8 @@ export async function attributeSession(reader, { sid, at, base }, until) {
     const events = await reader.query(start, end, filters, { ...options, limit });
     queries += 1;
     if (events.length < limit) return events;
-    if (end <= start) {
+    // Unsplittable, or no budget left to read its halves: keep what this page holds.
+    if (end <= start || queries >= ATTRIBUTION_QUERIES) {
       complete = false;
       return events;
     }
