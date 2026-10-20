@@ -19,7 +19,7 @@ import assert from 'node:assert/strict';
 
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { FACET_IMAGE_DIR } from '../../packages/fabric/src/process-fabric.ts';
+import { PROCESS_IMAGE_DIR } from '../../packages/fabric/src/process-fabric.ts';
 import { moduleMapText, storedBootModules, processImageModules } from './lib/module-map-bundle.mjs';
 import { launchManager } from './lib/facet-launch-harness.mjs';
 
@@ -142,7 +142,7 @@ async function settle(world) {
   const { encodeCodePack } = await import('../../packages/fabric/src/process-fabric.ts');
   for (const shape of ['whole', 'pack']) {
     const files = new Map();
-    const dir = FACET_IMAGE_DIR;
+    const dir = PROCESS_IMAGE_DIR;
     const orphan = `${dir}/${'0'.repeat(64)}.js`;
     files.set(orphan, new Uint8Array(3));
     const append = (path, bytes) => {
@@ -259,7 +259,7 @@ async function settle(world) {
   // Each facet's whole map must still be readable from the store: a sweep that
   // ran while the other launch was suspended must not have taken any of it.
   const present = new Set(
-    fs.readdir(FACET_IMAGE_DIR).map((e) => (typeof e === 'string' ? e : e.name)),
+    fs.readdir(PROCESS_IMAGE_DIR).map((e) => (typeof e === 'string' ? e : e.name)),
   );
   for (const config of world.configs.values()) {
     for (const [name, path] of Object.entries(config.vfsTextModules ?? {})) {
