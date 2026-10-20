@@ -274,6 +274,9 @@ export class TokenReader {
         const pos = frame.at;
         if (pos >= input.length || input[pos] === '#')
             return null;
+        // Where it begins: whether it follows an alias whose text ended in a blank, and the aliases being read.
+        const aliasCheck = this.checkNext;
+        const aliases = this.aliasesInUse();
         const parts = [];
         let depth = 0;
         let i = pos;
@@ -327,7 +330,10 @@ export class TokenReader {
         // It is the word after an alias whose text ended in a blank, if one did.
         this.checkNext = false;
         return {
-            token: { kind: TokenKind.Word, value: parts.map((part) => part.text).join(''), pos, parts, source: source + input.slice(from, i) },
+            token: {
+                kind: TokenKind.Word, value: parts.map((part) => part.text).join(''), pos, parts, source: source + input.slice(from, i),
+                ...(aliasCheck ? { aliasCheck } : {}), ...(aliases === undefined ? {} : { aliases }),
+            },
             unclosed: depth > 0,
         };
     }
