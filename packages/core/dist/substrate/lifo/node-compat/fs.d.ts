@@ -113,17 +113,17 @@ export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array
     realpathSync: ((path: string | URL) => string) & {
         native: (path: string | URL) => string;
     };
-    truncateSync: (path: string | URL | Uint8Array | number, len?: number) => void;
+    truncateSync: (path: string | URL | Uint8Array | number, len?: number | null) => void;
     openSync: (path: string | URL, flags?: string | number | null, mode?: number) => number;
     closeSync: (fd: number) => void;
     readSync: (fd: number, buffer: Uint8Array, offset?: number, length?: number, position?: number | null) => number;
     writeSync: (fd: number, bufferOrString: Uint8Array | string, offsetOrPosition?: number | null, lengthOrEncoding?: number | string, position?: number | null) => number;
     fstatSync: (fd: number) => NodeStat;
-    ftruncateSync: (fd: number, len?: number) => void;
+    ftruncateSync: (fd: number, len?: number | null) => void;
     fsyncSync: (fd: number) => void;
     fdatasyncSync: (fd: number) => void;
     symlinkSync: (target: string | URL | Uint8Array, path: string | URL | Uint8Array, _type?: string | null) => void;
-    linkSync: (_existingPath: string, _newPath: string) => void;
+    linkSync: (existingPath: string | URL | Uint8Array, newPath: string | URL | Uint8Array) => void;
     readlinkSync: (path: string | URL | Uint8Array, options?: string | {
         encoding?: string | null;
     } | null) => string | Buffer;
@@ -151,10 +151,12 @@ export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array
     access: (path: string | URL, modeOrCb: number | Callback<void>, cb?: Callback<void>) => void;
     exists: (path: string | URL, cb: (exists: boolean) => void) => void;
     symlink: (target: string | URL | Uint8Array, path: string | URL | Uint8Array, ...rest: Array<string | null | undefined | Callback<void>>) => void;
+    link: (existingPath: string | URL | Uint8Array, newPath: string | URL | Uint8Array, cb?: Callback<void>) => void;
     readlink: (path: string | URL | Uint8Array, optionsOrCb: string | {
         encoding?: string | null;
     } | null | undefined | Callback<string | Buffer>, cb?: Callback<string | Buffer>) => void;
-    truncate: (path: string | URL | Uint8Array | number, lenOrCb: number | null | undefined | Callback<void>, cb?: Callback<void>) => void;
+    truncate: (path: string | URL | Uint8Array | number, lenOrCb?: number | null | Callback<void>, cb?: Callback<void>) => void;
+    ftruncate: (fd: number, lenOrCb?: number | null | Callback<void>, cb?: Callback<void>) => void;
     open: (path: string | URL, flagsOrCb: string | number | Callback<number>, modeOrCb?: number | Callback<number>, cb?: Callback<number>) => void;
     close: (fd: number, cb: Callback<void>) => void;
     read: (fd: number, buffer: Uint8Array, offset: number, length: number, position: number | null, cb: ReadCallback) => void;
@@ -291,8 +293,9 @@ export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array
         copyFile: (src: string | URL, dest: string | URL) => Promise<void>;
         access: (path: string | URL, mode?: number) => Promise<void>;
         realpath: (path: string | URL) => Promise<string>;
-        truncate: (path: string | URL | Uint8Array, len?: number) => Promise<void>;
+        truncate: (path: string | URL | Uint8Array, len?: number | null) => Promise<void>;
         symlink: (target: string | URL | Uint8Array, path: string | URL | Uint8Array, type?: string | null) => Promise<void>;
+        link: (existingPath: string | URL | Uint8Array, newPath: string | URL | Uint8Array) => Promise<void>;
         readlink: (path: string | URL | Uint8Array, options?: string | {
             encoding?: string | null;
         } | null) => Promise<string | Buffer>;
@@ -311,7 +314,7 @@ export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array
             }>;
             stat: () => Promise<NodeStat>;
             chown: (uid: number, gid: number) => Promise<void>;
-            truncate: (len?: number) => Promise<void>;
+            truncate: (len?: number | null) => Promise<void>;
         }>;
         rm: (path: string | URL, options?: {
             recursive?: boolean;
