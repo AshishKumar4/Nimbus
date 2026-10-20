@@ -202,7 +202,6 @@ import {
 import { relaunchEnv, type ProcessEnvKeeper, type ProcessEnvRequest, type ResolveProcessEnv } from './process-env.js';
 import {
   SQLITE_WASM_MODULE_NAME,
-  type OpencodeRunnerOptions,
   type OpencodeRunnerMode,
 } from '../runtime/opencode-facet-runner.js';
 import { parsePortFromArgv, resolveLongRunningPort } from '@nimbus-sh/core/runtime/long-running-handle.js';
@@ -5930,9 +5929,9 @@ export class FacetManager {
    *   it, its rows and its owner's images naming the new one, the old blobs
    *   unlinked. An application whose binding env nothing can give back (no
    *   embedder resolveWorkerLaunch) is not restarted, and the session is told;
-   * - a resident's generated source, in an image no live process boots from
-   *   (the store's sweep), or below /var/lib/nimbus where releases through
-   *   0.19 wrote it: unlinked.
+   * - a Node resident's generated source, in the image store or below
+   *   /var/lib/nimbus where releases through 0.19 wrote it: unlinked (its
+   *   recipe generates it again).
    * Unlinked bytes are then collected (the VFS's content GC). A filesystem
    * snapshot or export taken before keeps what it held.
    */
@@ -8567,7 +8566,7 @@ export class FacetManager {
    */
   async execStagedArtifact(
     artifact: string,
-    opts: Omit<OpencodeRunnerOptions, 'cred' | 'vfsBundle' | 'vfsCursor' | 'sources' | 'mode'> & { command?: string; attachedTty?: boolean; invokerPid?: number },
+    opts: { argv: string[]; env: Record<string, string>; cwd: string; stdin: string; command?: string; attachedTty?: boolean; invokerPid?: number },
   ): Promise<StagedArtifactExecResult> {
     const mode: OpencodeRunnerMode = opts.attachedTty === true ? 'attached' : 'oneshot';
     const staged = await this._stageOpencodeFacet(artifact, opts, mode);

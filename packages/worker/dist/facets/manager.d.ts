@@ -46,6 +46,7 @@ import { ReplaySessions } from '../runtime/replay-session.js';
 import type { ProcessInputPacket } from '@nimbus-sh/core/runtime/process-input.js';
 import { type ProcessHostFactory, type ResidentCodeSpec, type Supervise } from '@nimbus-sh/fabric/process-fabric.js';
 import { ProcessJournals } from '../session/process-journals.js';
+import { type ProcessEnvKeeper, type ResolveProcessEnv } from './process-env.js';
 import { type OpencodeRunnerOptions } from '../runtime/opencode-facet-runner.js';
 import { type FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
 import { type WasmImageRecord } from './wasm-image-digest.js';
@@ -908,33 +909,15 @@ export interface FacetManagerHooks {
      * no process's environment in any record, image or source (ask 62): a host
      * that answers `null`, throws or composes none fails that relaunch, named.
      */
-    resolveProcessEnv?: (request: ProcessEnvRequest) => Promise<Record<string, string> | null>;
+    resolveProcessEnv?: ResolveProcessEnv;
     /**
      * Told each relaunchable launch's environment when its record is written,
      * and when the record is gone: what a host that answers resolveProcessEnv
-     * from its own keeping composes (the session's, session/process-env-store.ts).
+     * from its own keeping composes (the session's, session/process-env.ts).
      * An embedder that knows its processes' environments composes
      * resolveProcessEnv alone.
      */
     keepProcessEnv?: ProcessEnvKeeper;
-}
-/** What a relaunch asks its host for: the process it relaunches, and the record that relaunches it. */
-export interface ProcessEnvRequest {
-    /** The pid the record names: the process being relaunched, of this or an earlier instance. */
-    pid: number;
-    /** Its exec id (`ProcessEntry.execId`), when it has one. */
-    execId?: string;
-    /** Who it runs as. */
-    cred: VfsCred;
-    /** The record's storage key (`resident-launch:<pid>`, `dev-server:<pid>`): what a keeper keys by. */
-    record: string;
-}
-/** Where a host keeps the environments it answers resolveProcessEnv from (FacetManagerHooks.keepProcessEnv). */
-export interface ProcessEnvKeeper {
-    /** `record` was written for a launch with `env`. */
-    remember(record: string, env: Record<string, string>): Promise<void>;
-    /** `record` is gone: nothing relaunches from it. */
-    forget(record: string): Promise<void>;
 }
 export interface ForegroundLaunch {
     signal: AbortSignal;
@@ -2137,12 +2120,6 @@ export declare class FacetManager {
      * re-resolved by the embedder through `hooks.resolveWorkerLaunch`.
      */
     private _redrive;
-    /**
-     * The environment `pid`, relaunched from `record`, was launched with: the
-     * host's answer (resolveProcessEnv), or a failure that names why it has
-     * none. Never an empty or a guessed environment.
-     */
-    private _relaunchEnv;
     /**
      * The process-table entry of a resident launch: a child of its invoker,
      * under its credential, as exec's. A re-drive has no invoker (the journal

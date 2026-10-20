@@ -290,7 +290,7 @@ export async function launchResident({
   const plan = dataPlan ?? (authority ? await residentDataPlan(authority, cwd, Object.keys(bundle)) : undefined);
   // The env in the start payload, as the manager hands it over: never in the generated source.
   const started = await proc.startProcess({ env: processEnv, ...(cursor ? { vfsCursor: cursor, ...(plan ? { dataPlan: plan } : {}) } : {}), ...startArgs });
-  return { proc, sql, started };
+  return { proc, sql, started, generated };
 }
 
 /** data-plan.ts over `authority` as the process's credential sees it. */

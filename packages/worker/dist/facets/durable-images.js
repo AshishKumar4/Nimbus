@@ -46,7 +46,7 @@ const ApplicationImageSchema = z.object({
     startArgs: z.json().optional(),
 });
 /** The session's image disk as the kernel, for work no process does: an earlier release's images rewritten. */
-export function kernelImageBlobs(vfs) {
+function kernelImageBlobs(vfs) {
     const kernel = vfs.as(CRED_KERNEL);
     return {
         mkdirp: (dir) => kernel.mkdir(dir, { recursive: true, mode: 0o755 }),

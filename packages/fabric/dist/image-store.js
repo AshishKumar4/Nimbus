@@ -139,14 +139,6 @@ export class ImageStore {
      * Nothing is left for a TTL or an eviction heuristic to guess at, and after
      * a DO reset the table is empty so every orphan goes.
      */
-    /**
-     * Every image no live process boots from, unlinked now rather than at the
-     * next launch's materialize: what a session upgraded from an earlier
-     * release must not keep readable (an image that held an environment).
-     */
-    sweepNow(fs) {
-        this.sweep(fs);
-    }
     sweep(fs) {
         const live = new Set();
         for (const [pid, paths] of this.residentImages) {

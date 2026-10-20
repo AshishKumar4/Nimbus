@@ -29,6 +29,7 @@ import { isVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { execIdField } from '@nimbus-sh/core/runtime/process-table.js';
 import { DEV_SERVER_KEY_PREFIX } from './keys.js';
 import { readPortCapability, readoptCapability } from './port-capability.js';
+import { relaunchEnv } from '../facets/process-env.js';
 const DevServerRecordSchema = z.object({
     /** The line its command ran, and what its process was spawned with. */
     command: z.string().min(1),
@@ -213,7 +214,7 @@ async function restoreOne(host, ours, key, from, parsed) {
     let failure = null;
     try {
         await host.ensureRuntimeReady();
-        const env = await restoredEnv(host, key, from, record);
+        const env = await relaunchEnv(host.processEnv.resolveProcessEnv, { pid: from, cred: record.cred, record: key, ...execIdField(record) });
         // A destroy that came meanwhile made the session again: nothing of this one runs in it.
         if (ours())
             failure = await runAgain(host, record, from, env);
@@ -236,22 +237,6 @@ async function restoreOne(host, ours, key, from, parsed) {
  * adopts that process as its server's, as it adopts a script wrapper's; one
  * that hands its server to a process of its own leaves this one to exit.
  */
-/** The environment the restored command runs with: the host's answer, or a failure that says why it has none. */
-async function restoredEnv(host, key, from, record) {
-    const resolve = host.processEnv.resolveProcessEnv;
-    if (resolve === undefined)
-        throw new Error('this host keeps no process\'s environment and composes no resolveProcessEnv');
-    let env;
-    try {
-        env = await resolve({ pid: from, cred: record.cred, record: key, ...execIdField(record) });
-    }
-    catch (error) {
-        throw new Error(`the host's resolveProcessEnv failed: ${errorText(error)}`);
-    }
-    if (env === null)
-        throw new Error('the host gave no environment for it');
-    return env;
-}
 async function runAgain(host, record, from, env) {
     const workspace = host.runtimeWorkspace;
     if (workspace === null)

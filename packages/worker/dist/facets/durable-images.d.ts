@@ -35,8 +35,6 @@ export declare const DURABLE_IMAGE_DIR = ".nimbus/images";
 type InlineModule = string | {
     wasm: ArrayBuffer;
 };
-/** The session's image disk as the kernel, for work no process does: an earlier release's images rewritten. */
-export declare function kernelImageBlobs(vfs: SqliteVFS): ImageBlobStore;
 /**
  * An application image an earlier release wrote with an environment in it,
  * written again without: what every process can read holds none (ask 62).
