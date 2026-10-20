@@ -716,8 +716,7 @@ async function dispatchRubyFacet(
       signal,
     });
     const result = normalizeRubyFacetResult(rawResult);
-    // A process killed mid-run may still be running on its worker: its key is not used again.
-    if (result?.reusable === true && result.error === undefined && !signal.aborted) warmKeys.give(warm);
+    if (result) warmKeys.give(warm, { reusable: result.reusable, error: result.error, killed: signal.aborted });
     return result || {
       exitCode: 1,
       stdout: '',

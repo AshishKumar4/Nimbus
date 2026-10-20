@@ -6,7 +6,9 @@ import { encode } from '../utils/encoding.js';
 import { errnoCodeOf, fsError, isVfsError } from '../../../vfs/vfs-error.js';
 import { DIRENT_TYPES, direntTypeOfStat } from '../../../vfs/dirent-type.js';
 import { S_IFMT } from '../../../vfs/vfs.js';
-import { invalidArgType, nodeError, nodeSystemError } from '../../../_shared/node-error.js';
+import { nameDec } from '../../../_shared/bytes.js';
+import { invalidArgType, invalidArgValue, nodeError, nodeSystemError } from '../../../_shared/node-error.js';
+import { fileURLToPath } from 'node:url';
 import { O_ACCMODE, O_APPEND, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_RDONLY, O_RDWR, O_SYNC, O_TRUNC, O_WRONLY, nodeOwnerId, parseFileMode, stringToFlags, } from '../../../_shared/node-arguments.js';
 /**
  * Node's Stats for a filesystem stat: its identity, links, owner, mode and
@@ -44,9 +46,25 @@ function toNodeStat(stat) {
         isSocket: () => holds === 'isSocket',
     };
 }
+/** A path argument as Node takes one: a string, a Buffer's text, or a file: URL's path (decoded; another scheme is ERR_INVALID_URL_SCHEME). */
+function pathText(p) {
+    if (typeof p === 'string')
+        return p;
+    // By shape, not by class: a program's URL or Buffer may be another realm's.
+    if (ArrayBuffer.isView(p))
+        return nameDec.decode(p);
+    if (p.protocol !== 'file:')
+        throw nodeError(TypeError, 'ERR_INVALID_URL_SCHEME', 'The URL must be of scheme file');
+    return fileURLToPath(p.href);
+}
 function resolvePath(cwd, p) {
-    const str = typeof p === 'string' ? p : p.pathname;
-    return resolve(cwd, str);
+    return resolve(cwd, pathText(p));
+}
+/** Node's callback check (makeCallback): a callback that is not a function is ERR_INVALID_ARG_TYPE, thrown before any work. */
+function callbackOf(cb) {
+    if (typeof cb !== 'function')
+        throw invalidArgType('cb', 'function', cb);
+    return cb;
 }
 // ─── Open flags ───
 /** An open's flags, as Node takes them (a string or bits), for the process's open: the decisions are its. */
@@ -277,13 +295,23 @@ export function createFs(vfs, cwd, stdin, reachStreams) {
             return vfs.realpath(abs);
         },
     });
+    /**
+     * truncate(2) as Node makes it: the file opened for writing (its errors
+     * name open), cut or zero-extended to `len` (a negative one is 0), closed.
+     * A descriptor in place of the path is ftruncate's (Node's DEP0081).
+     */
     function truncateSync(path, len) {
-        const abs = resolvePath(cwd, path);
-        const data = vfs.readFile(abs);
-        const newLen = len ?? 0;
-        if (newLen >= data.length)
+        if (typeof path === 'number') {
+            ftruncateSync(path, len);
             return;
-        vfs.writeFile(abs, data.slice(0, newLen));
+        }
+        const fd = vfs.open(resolvePath(cwd, path), openFlagsOf('r+', undefined));
+        try {
+            vfs.ftruncate(fd, Math.max(0, len ?? 0));
+        }
+        finally {
+            vfs.close(fd);
+        }
     }
     // ─── File descriptor sync API ───
     function openSync(path, flags, mode) {
@@ -333,16 +361,24 @@ export function createFs(vfs, cwd, stdin, reachStreams) {
     function fdatasyncSync(fd) {
         onDescriptor(fd, 'fdatasync', (id) => vfs.fsync(id));
     }
-    // ─── Symlink stubs ───
-    function symlinkSync(_target, _path, _type) {
-        // No-op - VFS has no symlink support yet
+    // ─── Links ───
+    /** symlink(2): the link at `path` holds `target` as given (a relative target stays relative, read from the link's directory). */
+    function symlinkSync(target, path, _type) {
+        vfs.symlink(pathText(target), resolvePath(cwd, path));
     }
     function linkSync(_existingPath, _newPath) {
         // No-op
     }
-    function readlinkSync(path) {
-        // Return the path itself since we have no symlinks
-        return resolvePath(cwd, path);
+    /** readlink(2): the link's text in `encoding` (UTF-8 by default), or its bytes with `encoding: 'buffer'`. */
+    function readlinkSync(path, options) {
+        // No encoding, or an empty one, is UTF-8, as Node takes it.
+        const encoding = (typeof options === 'string' ? options : options?.encoding) || 'utf8';
+        if (encoding !== 'buffer' && !Buffer.isEncoding(encoding))
+            throw invalidArgValue('encoding', encoding, 'is invalid encoding');
+        const text = vfs.readlink(resolvePath(cwd, path));
+        if (encoding === 'buffer')
+            return Buffer.from(text);
+        return encoding === 'utf8' ? text : Buffer.from(text).toString(encoding);
     }
     // ─── Callback API ───
     function wrapCallback(syncFn, cb) {
@@ -419,6 +455,21 @@ export function createFs(vfs, cwd, stdin, reachStreams) {
         const callback = typeof modeOrCb === 'function' ? modeOrCb : cb;
         const mode = typeof modeOrCb === 'function' ? undefined : modeOrCb;
         wrapCallback(() => accessSync(path, mode), callback);
+    }
+    /** Its callback is its last argument, as Node's symlink takes it. */
+    function symlink(target, path, ...rest) {
+        const callback = callbackOf(rest.length === 0 ? path : rest[rest.length - 1]);
+        wrapCallback(() => symlinkSync(target, path), callback);
+    }
+    function readlink(path, optionsOrCb, cb) {
+        const callback = callbackOf(typeof optionsOrCb === 'function' ? optionsOrCb : cb);
+        const options = typeof optionsOrCb === 'function' ? undefined : optionsOrCb;
+        wrapCallback(() => readlinkSync(path, options), callback);
+    }
+    function truncate(path, lenOrCb, cb) {
+        const callback = callbackOf(typeof lenOrCb === 'function' ? lenOrCb : cb);
+        const len = typeof lenOrCb === 'function' ? undefined : lenOrCb ?? undefined;
+        wrapCallback(() => truncateSync(path, len), callback);
     }
     function exists(path, cb) {
         queueMicrotask(() => {
@@ -522,7 +573,7 @@ export function createFs(vfs, cwd, stdin, reachStreams) {
         if (options.encoding && options.encoding !== 'buffer' && !Buffer.isEncoding(options.encoding)) {
             throw nodeError(TypeError, 'ERR_INVALID_ARG_VALUE', `The argument 'encoding' is invalid encoding. Received '${options.encoding}'`);
         }
-        const given = typeof filename === 'string' ? filename : filename.pathname;
+        const given = pathText(filename);
         let abs;
         try {
             if (given === '')
@@ -610,7 +661,14 @@ export function createFs(vfs, cwd, stdin, reachStreams) {
         copyFile: async (src, dest) => copyFileSync(src, dest),
         access: async (path, mode) => accessSync(path, mode),
         realpath: async (path) => realpathSync(path),
-        truncate: async (path, len) => truncateSync(path, len),
+        // A path only: a descriptor is its FileHandle's truncate.
+        truncate: async (path, len) => {
+            if (typeof path === 'number')
+                throw invalidArgType('path', ['string', 'Buffer', 'URL'], path);
+            truncateSync(path, len);
+        },
+        symlink: async (target, path, type) => symlinkSync(target, path, type),
+        readlink: async (path, options) => readlinkSync(path, options),
         chmod: async (path, mode) => chmodSync(path, mode),
         chown: async (path, uid, gid) => chownSync(path, uid, gid),
         lchown: async (path, uid, gid) => lchownSync(path, uid, gid),
@@ -698,6 +756,9 @@ export function createFs(vfs, cwd, stdin, reachStreams) {
         rename,
         access,
         exists,
+        symlink,
+        readlink,
+        truncate,
         open,
         close,
         read,

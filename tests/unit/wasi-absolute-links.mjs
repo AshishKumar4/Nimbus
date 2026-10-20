@@ -96,7 +96,7 @@ if (hasHost('python3')) {
   const filesystem = new ProcessFiles(raw);
   const submitted = [];
   const env = { LOADER: { get: () => ({ getEntrypoint: () => ({ async execute(args) { submitted.push(args); return { exitCode: 0, stdout: '', stderr: '' }; } }) }) } };
-  const run = makeCPythonRunnerFactory({ facets: loaderFacetHost(env, { id: { toString: () => 'wasi-absolute-links' }, waitUntil() {} }, ISOLATE_NETWORK), filesystem, processes: runtimeSupervisor(), network: ISOLATE_NETWORK })(
+  const run = makeCPythonRunnerFactory({ facets: loaderFacetHost(env, { id: { toString: () => 'wasi-absolute-links' }, waitUntil() {} }, ISOLATE_NETWORK), filesystem, processes: runtimeSupervisor(), network: ISOLATE_NETWORK, session: 'wasi-absolute-links' })(
     { version: '3.13.14', files: [manifestFile('share/cpython/python.wasm', new Uint8Array([0])), manifestFile('lib/python313.zip', new Uint8Array([0]))] }, '/runtime/python', 'python3', undefined);
   // What the guest runs (the runner's prelude, then the program), under a real CPython.
   const guest = async (cwd) => {

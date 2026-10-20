@@ -38,9 +38,16 @@ import { isRegularTarFile, streamTarRecords, tarBytes } from '../_shared/tarball
 import { statOrThrow } from '../vfs/vfs.js';
 import { openRuntimeStdio } from './runtime-stdio.js';
 import { errorText } from '../_shared/error-text.js';
+import { warmFacetKeys } from './warm-facets.js';
 const CLANG_VERSION_FLAGS = new Set(['--version', '-v']);
+/** Idle warm workers a session keeps per tool: each holds its compiled image (clang 31 MiB, wasm-ld 18.5 MiB). */
+const WARM_CLANG_FACETS = 2;
 /** Build the runner factory. Closes over the facet host and the filesystem authority. */
 export function makeClangRunnerFactory(deps) {
+    const warmKeys = {
+        clang: warmFacetKeys(deps.session, 'clang', WARM_CLANG_FACETS),
+        'wasm-ld': warmFacetKeys(deps.session, 'wasm-ld', WARM_CLANG_FACETS),
+    };
     return function clangRunnerFactory(manifest, installRoot, binName, binKind) {
         const clangVfsPath = installedPath(manifest, installRoot, 'bin/clang');
         const lldVfsPath = installedPath(manifest, installRoot, 'bin/wasm-ld');
@@ -139,9 +146,11 @@ export function makeClangRunnerFactory(deps) {
                 ctx.stderr.write(`${binName}: clang runtime warm-up failed: ${errorText(e)}\n`);
                 return 1;
             }
-            // Opened per invocation, not cached: the supervisor capability is bound
-            // to this process's pid when the facet opens, so one held across calls
-            // would hand every later caller the first caller's credential.
+            // Opened per invocation on one of the session's warm workers for its
+            // tool, which keeps the compiled image: the supervisor capability is the
+            // call's, never the worker's (FacetSpec.warm), and each call
+            // instantiates the tool afresh. A target's key goes back when every call
+            // on it left the worker fit for another (warm-facets.ts give).
             // A phase's target, opened when the phase first runs; null, said, when
             // its image cannot be opened. clang is opened only to compile and
             // wasm-ld only to link: a compile-only run, or one whose compile fails,
@@ -159,6 +168,7 @@ export function makeClangRunnerFactory(deps) {
                     ctx.stderr.write(`${binName}: ${primaryName} runtime warm-up failed: ${errorText(e)}\n`);
                     return null;
                 }
+                const warm = warmKeys[primaryName].take();
                 const target = {
                     primaryName,
                     pid: stdio.pid,
@@ -168,7 +178,10 @@ export function makeClangRunnerFactory(deps) {
                         syscalls: stdio.syscalls,
                         preamble: CLANG_RUNNER_PREAMBLE,
                         wasmModules: { 'primary.wasm': image },
+                        warm,
                     }),
+                    warm,
+                    ends: [],
                 };
                 opened.push(target);
                 return target;
@@ -317,8 +330,10 @@ export function makeClangRunnerFactory(deps) {
                     return 0;
                 }
                 finally {
-                    for (const target of opened)
+                    for (const target of opened) {
+                        warmKeys[target.primaryName].give(target.warm, ...target.ends);
                         target.facet.dispose();
+                    }
                     if (scratchVfs)
                         await vfs.remove(scratchVfs, { recursive: true, force: true });
                 }
@@ -564,6 +579,8 @@ function lazily() {
 }
 async function dispatchClangFacet(target, args, signal) {
     try {
+        // Killed before this phase began: it never starts.
+        signal.throwIfAborted();
         const result = await target.facet.submit(CLANG_CALL_TASK, {
             primaryName: target.primaryName,
             argv: args.argv,
@@ -574,6 +591,7 @@ async function dispatchClangFacet(target, args, signal) {
             // Ctrl-C ends the facet too, where the host can.
             signal,
         });
+        target.ends.push({ reusable: result.reusable, error: result.error, killed: signal.aborted });
         return {
             exitCode: result.exitCode,
             stdout: result.stdout || '',
@@ -583,6 +601,7 @@ async function dispatchClangFacet(target, args, signal) {
         };
     }
     catch (e) {
+        target.ends.push({ reusable: false, killed: signal.aborted });
         // Killed: the tool ends as an interrupted one does.
         if (signal.aborted)
             return { exitCode: 130, stdout: '', stderr: '' };
@@ -659,6 +678,9 @@ globalThis.__clangRun = async function __clangRun(args) {
     stderr: '',
     ...(lost ? { error: lost } : {}),
     fsStats: typeof __wasiFsStats === 'function' ? __wasiFsStats() : null,
+    // Another process may run on this worker after it: the tool ran to its
+    // end, and no syscall of it was abandoned (__wasiReusable).
+    reusable: !lost && !run.error && typeof __wasiReusable === 'function' && __wasiReusable(),
   };
 };
 

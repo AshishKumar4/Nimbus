@@ -202,7 +202,10 @@ async function __nimbusPySettled(result) {
 }
 
 // ── One-shot entry point ───────────────────────────────────────────────────
-// A fresh interpreter per call. See constraint (3).
+// A fresh interpreter per call. See constraint (3). reusable says whether
+// another process may run on this worker after it (FacetSpec.warm): it ended
+// clean, and no syscall of it was abandoned nor did it reach the network
+// (__wasiReusable).
 globalThis.__cpythonRun = async function __cpythonRun(args) {
   let result;
   try {
@@ -210,7 +213,8 @@ globalThis.__cpythonRun = async function __cpythonRun(args) {
   } catch (e) {
     result = { exitCode: 1, stdout: '', stderr: '', error: (e && e.message) || String(e) };
   }
-  return __nimbusPySettled(result);
+  const settled = await __nimbusPySettled(result);
+  return { ...settled, reusable: settled.error === undefined && typeof __wasiReusable === 'function' && __wasiReusable() };
 };
 async function __cpythonRunOnce(args) {
   const drain = () => ({ stdout: '', stderr: '' });

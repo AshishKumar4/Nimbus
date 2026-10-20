@@ -55,6 +55,7 @@ import { VIRTUAL_SOCKET_KERNEL_SRC } from './virtual-socket-kernel.generated.js'
 import { WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
 import { openRuntimeStdio, runtimeOutput } from './runtime-stdio.js';
 import { errorText } from '../_shared/error-text.js';
+import { warmFacetKeys } from './warm-facets.js';
 const PYTHON_VERSION_FLAGS = new Set(['--version', '-V']);
 const PYTHON_HELP_FLAGS = new Set(['--help', '-h']);
 /** Where `nimbus install python` stages the interpreter inside the session. */
@@ -187,7 +188,14 @@ async function buildPythonModulePipInvocation(argv, cwd, vfs, runtimeContext) {
         return { mode: 'none', code: '', exitCode: 0 };
     return await buildPipInvocation(argv.slice(2), 'pip', cwd, vfs, runtimeContext);
 }
+/** Idle warm CPython workers a session keeps, per interpreter: each holds its compiled python.wasm. */
+const WARM_CPYTHON_FACETS = 2;
 export function makeCPythonRunnerFactory(deps) {
+    // One set per interpreter: a warm worker holds the one python.wasm it compiled.
+    const warmKeys = {
+        plain: warmFacetKeys(deps.session, CPYTHON_RUNNER, WARM_CPYTHON_FACETS),
+        sci: warmFacetKeys(deps.session, `${CPYTHON_RUNNER}:sci`, WARM_CPYTHON_FACETS),
+    };
     return function cpythonRunnerFactory(manifest, installRoot, binName, _binKind) {
         const findFile = (rel) => installedPath(manifest, installRoot, rel);
         const baseWasmVfs = findFile(CPYTHON_WASM_REL);
@@ -362,6 +370,12 @@ export function makeCPythonRunnerFactory(deps) {
             facetArgs.supervisorPid = stdio.pid;
             let exitCode = 1;
             let facet = null;
+            // A warm worker of the session's keeps the compiled interpreter; each
+            // process instantiates a fresh one in it (cpython-preamble.ts). Its key
+            // goes back when the process left the worker fit for another
+            // (warm-facets.ts give).
+            const keys = wantsSci ? warmKeys.sci : warmKeys.plain;
+            const warm = keys.take();
             try {
                 facet = deps.facets.open({
                     // The variant is in the tag because a host's constructor-time wasm
@@ -378,10 +392,14 @@ export function makeCPythonRunnerFactory(deps) {
                     preamble: buildCPythonPreamble(),
                     // Opened, not read: the host reads it for the facet's load alone (FacetImage).
                     wasmModules: { 'python.wasm': await vfs.image(wasmVfs) },
+                    warm,
                 });
+                // Killed while its image was read: it never starts.
+                stdio.signal.throwIfAborted();
                 const result = await facet.submit(CPYTHON_RUN_TASK, facetArgs, {
                     signal: stdio.signal,
                 });
+                keys.give(warm, { reusable: result.reusable, error: result.error, killed: stdio.signal.aborted });
                 exitCode = result.error ? result.exitCode || 1 : result.exitCode;
                 if (result.error)
                     await ctx.stderr.write(`${binName}: ${result.error}\n`);
