@@ -30,13 +30,18 @@ function project(dir, version, optionalDependencies) {
   vfs.mkdir(`${entry.packagePath}/bin`, { recursive: true });
   vfs.writeFile(`${entry.packagePath}/package.json`, JSON.stringify({ name: 'typescript', version, bin: { tsc: './bin/tsc' }, ...(optionalDependencies ? { optionalDependencies } : {}) }));
   vfs.writeFile(entry.targetPath, '#!/usr/bin/env node\nconsole.log("installed tsc")\n');
-  vfs.writeFile(`${nodeModules}/.bin/tsc`, createNpmBinShim(entry, `${nodeModules}/.bin`));
+  vfs.writeFile(`${nodeModules}/.bin/tsc`, createNpmBinShim(entry, `${nodeModules}/.bin`), { mode: 0o755 });
   vfs.writeFile(npmBinManifestPath(nodeModules), JSON.stringify(createNpmBinManifest([entry])));
 }
 vfs.mkdir('home/user/bare', { recursive: true });
 project('home/user/js', '6.0.3');
 project('home/user/native', '7.0.2', { '@typescript/typescript-linux-x64': '7.0.2', '@typescript/typescript-darwin-arm64': '7.0.2' });
+// A project's own wrapper: a .bin/tsc shim with no package beside it to read.
+vfs.mkdir('home/user/wrapped/node_modules/.bin', { recursive: true });
+vfs.writeFile('home/user/wrapped/node_modules/.bin/tsc', '#!/bin/sh\necho wrapped\n', { mode: 0o755 });
 
+const filesystem = new ProcessFiles(rawVfs);
+const view = filesystem.view({ pid: 1, cred: CRED_KERNEL });
 const commands = new Map();
 const registry = {
   register(name, handler) { commands.set(name, handler); },
@@ -46,7 +51,7 @@ registry.register('node', async () => 0);
 let cwd = '/home/user/bare';
 const ran = [];
 installNpmBinFallbackResolver(registry, {
-  filesystem: new ProcessFiles(rawVfs),
+  filesystem,
   getCwd: () => cwd,
   getFacetManager() { throw new Error('unexpected staged artifact'); },
   async learnedServer() { return false; },
@@ -55,7 +60,7 @@ installNpmBinFallbackResolver(registry, {
   emitShellExecDone() {},
   ownPrograms: tsrsPrograms((binName) => async () => { ran.push(binName); return 42; }),
 });
-const context = () => ({ pid: 1, args: [], cwd, env: {}, stdout: { write() {} }, stderr: { write(s) { context.err.push(s); } } });
+const context = () => ({ pid: 1, args: [], cwd, env: {}, vfs: view, stdout: { write() {} }, stderr: { write(s) { context.err.push(s); } } });
 context.err = [];
 
 {
@@ -71,23 +76,34 @@ context.err = [];
   cwd = '/home/user/js/src';
   vfs.mkdir('home/user/js/src', { recursive: true });
   ran.length = 0;
+  context.err = [];
   const tsc = await registry.resolve('tsc');
-  assert.equal(typeof tsc, 'function');
-  await tsc(context()).catch(() => {});
+  assert.equal(await tsc(context()), 0, 'it runs on node');
   assert.deepEqual(ran, [], 'a project typescript in a node_modules above the cwd is the project\'s own tsc, not tsrs');
+  assert.deepEqual(context.err, []);
   console.log('  ✓ a project\'s own typescript runs as pinned');
 }
 {
   cwd = '/home/user/native';
+  const notice = `tsc: typescript 7.0.2 here is a native compiler, which cannot run in Nimbus; running tsrs ${TSRS_VERSION} (TypeScript ${TSRS_TYPESCRIPT_VERSION}) instead\n`;
+  for (const [how, name] of [['by name', 'tsc'], ['by its path, as an npm script\'s PATH finds it', '/home/user/native/node_modules/.bin/tsc']]) {
+    ran.length = 0;
+    context.err = [];
+    const tsc = await registry.resolve(name);
+    assert.equal(await tsc(context()), 42, `a typescript whose compiler is native runs tsrs, ${how}`);
+    assert.deepEqual(ran, ['tsc']);
+    assert.deepEqual(context.err, [notice], 'and says which compiler it is, before it runs');
+  }
+  console.log('  ✓ a native typescript is answered by tsrs, which says so, by name or by path');
+}
+{
+  cwd = '/home/user/wrapped';
   ran.length = 0;
-  context.err = [];
   const tsc = await registry.resolve('tsc');
-  assert.equal(await tsc(context()), 42, 'a typescript whose compiler is native runs tsrs');
-  assert.deepEqual(ran, ['tsc']);
-  assert.deepEqual(context.err, [
-    `tsc: typescript 7.0.2 here is a native compiler, which cannot run in Nimbus; running tsrs ${TSRS_VERSION} (TypeScript ${TSRS_TYPESCRIPT_VERSION}) instead\n`,
-  ], 'and says which compiler it is, before it runs');
-  console.log('  ✓ a native typescript is answered by tsrs, which says so');
+  assert.equal(typeof tsc, 'function');
+  await tsc(context()).catch(() => {});
+  assert.deepEqual(ran, [], 'a project bin with no package to read is the project\'s, not tsrs');
+  console.log('  ✓ a project\'s own wrapper runs, though no package.json stands beside it');
 }
 {
   cwd = '/home/user/bare';

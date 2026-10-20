@@ -15,7 +15,8 @@ import assert from 'node:assert/strict';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { supervisorFilesystem } from '../../packages/core/src/runtime/vfs-supervisor.ts';
-import { createSupervisorBridgeStore } from '../../packages/core/src/workspace/supervisor-op.ts';
+import { createSupervisorBridgeStore, createSupervisorOpHandler } from '../../packages/core/src/workspace/supervisor-op.ts';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { supervisorDeliveryProps } from '../../packages/core/src/workspace/supervisor-delivery.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { SupervisorRPC, createRpcSession, supervisorRpcEnv } from './lib/supervisor-rpc-session.mjs';
@@ -97,4 +98,23 @@ for (const [name, run] of Object.entries(cases)) {
   }
 }
 assert.deepEqual(differs, [], 'every option crosses the binding');
+
+// A read's lease is sized by the file whose bytes it returns: a read of a
+// link returns its target's, whatever the read's options say of following.
+{
+  const { harness } = session();
+  const vfs = new SqliteVFS(harness.sql, harness.ctx);
+  const kernel = vfs.as(CRED_KERNEL);
+  kernel.writeFile('home/user/big.bin', new Uint8Array(100_000));
+  kernel.symlink('big.bin', 'home/user/biglink');
+  const leases = [];
+  const filesystem = new ProcessFiles(vfs);
+  const op = createSupervisorOpHandler({ vfs, filesystem, readLease: (bytes, read) => { leases.push(bytes); return read(); } });
+  filesystem.bind({ pid: 77, cred: CRED_KERNEL });
+  const whole = await op({ op: 'readFileBytes', args: ['/home/user/biglink', { followSymlinks: false }], pid: 77 });
+  const range = await op({ op: 'fsReadRange', args: ['/home/user/biglink', 50_000, 40_000, { followSymlinks: false }], pid: 77 });
+  assert.deepEqual([whole.byteLength, range.byteLength], [100_000, 40_000], 'both read the target');
+  assert.deepEqual(leases, [100_000, 40_000], 'and each was leased for what it read');
+  console.log('  ✓ a read of a link is leased for the target it reads');
+}
 console.log('supervisor-rpc-options: ok');

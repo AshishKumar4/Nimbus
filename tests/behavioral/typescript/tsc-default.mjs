@@ -46,6 +46,10 @@ try {
     a.check('npx tsc runs the same tsrs', exitCode === 0 && /\(tsrs 0\.18\.0/.test(output), output.slice(-400));
   }
   {
+    const { output, exitCode } = await run('npx --package=typescript@6.0.3 tsc --version', 300_000);
+    a.check('npx asked for a typescript runs that one', exitCode === 0 && /^Version 6\.0\.3\s*$/m.test(output), output.slice(-400));
+  }
+  {
     const { output, exitCode } = await run('tsc --watch');
     a.check('--watch is refused, naming the way through', exitCode === 1 && /npm i -D typescript/.test(output), `exit ${exitCode}: ${output.slice(-400)}`);
   }

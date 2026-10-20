@@ -14,6 +14,7 @@
 //   2. `tsc` COMES BACK: an unrunnable binary never presents as a hang.
 //   3. It says what ran instead of the installed compiler, and why.
 //   4. It compiles: a type error is reported as tsc reports it, exit 2.
+//   5. An npm script's `tsc`, found on its PATH, is answered the same way.
 //
 // bin-tsc pins 5.7.3, a JavaScript compiler, which runs as installed.
 
@@ -89,6 +90,11 @@ try {
     const checked = await run(t, 'tsc; echo "exit=$?"', BIN_TIMEOUT_MS);
     const reported = /src\/bad\.ts\(1,14\): error TS2322/.test(checked.output) && /exit=2/.test(checked.output);
     check('and it compiles: the type error, exit 2', reported, reported ? '' : `output=${JSON.stringify(checked.output.slice(-500))}`);
+    // An npm script finds the installed bin on its PATH, by path: the same answer.
+    await run(t, `node -e "const f='${DIR}/package.json',p=JSON.parse(require('fs').readFileSync(f));p.scripts={check:'tsc'};require('fs').writeFileSync(f,JSON.stringify(p))"`, 30_000);
+    const script = await run(t, 'npm run check; echo "exit=$?"', BIN_TIMEOUT_MS);
+    const scripted = says && /here is a native compiler/.test(script.output) && /error TS2322/.test(script.output) && !/exit=0/.test(script.output);
+    check('and an npm script\'s `tsc` is answered the same way', scripted, scripted ? '' : `output=${JSON.stringify(script.output.slice(-500))}`);
   }
 } catch (e) {
   if (a.pass + a.fail === 0) check('probe ran', false, e.message);

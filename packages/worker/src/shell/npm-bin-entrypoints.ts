@@ -60,14 +60,16 @@ const NpmBinPackageMetadataSchema = z.object({
 export type NpmBinPackageMetadata = z.infer<typeof NpmBinPackageMetadataSchema>;
 
 /**
- * Programs Nimbus has for names a project may also install (`tsc`). Asked
- * only for `names`: `resolve` answers a name no node_modules/.bin from the
- * cwd up has (`installed` null), or one whose installed package cannot run
- * here (`installed` its package.json), or leaves it to the project.
+ * Programs Nimbus has for names a project may also install (`tsc`), asked
+ * only for `names`: `absent` answers a name no node_modules/.bin from the
+ * cwd up has; `inPlaceOf` answers an installed bin whose package (its
+ * package.json) cannot run here, however the bin was reached, or leaves it
+ * to the project (undefined).
  */
 export interface OwnPrograms {
   readonly names: ReadonlySet<string>;
-  resolve(name: string, installed: NpmBinPackageMetadata | null): Command | undefined;
+  absent(name: string): Command;
+  inPlaceOf(name: string, installed: NpmBinPackageMetadata): Command | undefined;
 }
 
 export function installNpmBinFallbackResolver(
@@ -119,11 +121,7 @@ export function installNpmBinFallbackResolver(
     if (upstream) return upstream;
 
     const bin = context.search ? await probe(() => resolveNpmBin(inspector, cwd, name)) : null;
-    if (context.search && deps.ownPrograms?.names.has(name)) {
-      const installed = bin === null ? null : await readNpmBinPackageMetadata(inspector, bin.packagePath);
-      const own = deps.ownPrograms.resolve(name, installed);
-      if (own) return own;
-    }
+    if (bin === null && context.search && deps.ownPrograms?.names.has(name)) return deps.ownPrograms.absent(name);
     if (bin === null) {
       let hint: RuntimeCommandHint = null;
       try { hint = await deps.runtimeCommandHint(name); } catch { hint = null; }
@@ -176,6 +174,13 @@ export function installNpmBinFallbackResolver(
           ctx.stderr.write(`/${bin.shimPath}: Permission denied\n`);
           return 126;
         }
+      }
+      // An installed program that cannot run here, by name or by path (an
+      // npm script's PATH), is Nimbus's own where it has one.
+      if (deps.ownPrograms?.names.has(name)) {
+        const installed = await readNpmBinPackageMetadata(vfs, bin.packagePath);
+        const own = installed === null ? undefined : deps.ownPrograms.inPlaceOf(name, installed);
+        if (own) return await own(ctx);
       }
 
       const argv = Array.isArray(ctx.args) ? ctx.args.map(String) : [];

@@ -12,7 +12,7 @@
 import type { FacetImage } from '@nimbus-sh/core/runtime/facet-host.js';
 import { MEMORY_LIMIT_GROWTH_BYTES, withMemoryLimit } from '@nimbus-sh/core/runtime/wasm-memory.js';
 import type { Command } from '@nimbus-sh/core/substrate/lifo/commands/types.js';
-import type { OwnPrograms } from '../shell/npm-bin-entrypoints.js';
+import type { NpmBinPackageMetadata, OwnPrograms } from '../shell/npm-bin-entrypoints.js';
 import { TSRS_TYPESCRIPT_VERSION, TSRS_VERSION, TSRS_WASM_ASSET_PATH, TSRS_WASM_BYTES, TSRS_WASM_SHA256 } from '../tsrs-wasm-artifact.generated.js';
 import { fetchStagedBytes, stagedAsset, type StagedSourceEnv } from './staged-source.js';
 
@@ -25,8 +25,8 @@ import { fetchStagedBytes, stagedAsset, type StagedSourceEnv } from './staged-so
 export function tsrsPrograms(tsrs: (binName: string) => Command): OwnPrograms {
   return {
     names: new Set(['tsc', 'tsrs']),
-    resolve(name, installed) {
-      if (installed === null) return tsrs(name);
+    absent: tsrs,
+    inPlaceOf(name, installed) {
       const notice = nativeCompilerNotice(name, installed);
       if (notice === null) return undefined;
       return async (ctx) => {
@@ -76,13 +76,10 @@ const NATIVE_COMPILER_SHARDS: Readonly<Record<string, string>> = { typescript: '
  * native binary (`installed`, the package of the bin that answered), or null
  * when the installed one is not.
  */
-function nativeCompilerNotice(
-  bin: string,
-  installed: { name?: string; version?: string; optionalDependencies?: Record<string, string> } | null,
-): string | null {
-  const shard = installed?.name === undefined ? undefined : NATIVE_COMPILER_SHARDS[installed.name];
-  if (shard === undefined || !Object.keys(installed?.optionalDependencies ?? {}).some((name) => name.startsWith(shard))) return null;
-  const named = installed!.version === undefined ? installed!.name : `${installed!.name} ${installed!.version}`;
+function nativeCompilerNotice(bin: string, installed: NpmBinPackageMetadata): string | null {
+  const shard = installed.name === undefined ? undefined : NATIVE_COMPILER_SHARDS[installed.name];
+  if (shard === undefined || !Object.keys(installed.optionalDependencies ?? {}).some((name) => name.startsWith(shard))) return null;
+  const named = installed.version === undefined ? installed.name : `${installed.name} ${installed.version}`;
   return `${bin}: ${named} here is a native compiler, which cannot run in Nimbus; `
     + `running tsrs ${TSRS_VERSION} (TypeScript ${TSRS_TYPESCRIPT_VERSION}) instead\n`;
 }
