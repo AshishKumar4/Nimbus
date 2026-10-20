@@ -17,10 +17,11 @@
 // `$((2*$j))` with j=1+1 is 3, as bash's.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
+import { registerShellEntrypointCommands } from '../../packages/core/src/shell/shell-entrypoints.ts';
 import { hostSqlite } from './lib/host-sqlite.mjs';
 
 const LINES = [
@@ -44,8 +45,11 @@ const LINES = [
   // A blank subscript is 0; a quoted one's quotes are removed; a quoted ] is the subscript's.
   'a=(5 6); echo $((a[ ])); ((a[ ]=9)); declare -p a',
   "a=(10 20); echo $((a[\"1\"])); e='a[\"1\"]'; echo $((e)); x=0; let '0 && a[\"]\"], x=1'; echo \"$x\"",
-  // A subscript's error is an expansion's: the line is discarded, in ((, let and [[ too.
-  'a=(1); ((a[1/0])); echo same\necho "next $?"; let "a[1/0]"; echo same\necho "next $?"; [[ a[1/0] -eq 1 ]]; echo same\necho "next $?"',
+  // A subscript's error is an expansion's: the line is discarded, in ((, let and [[ too, as a script
+  // runs (`bash -c` ends instead), its diagnostics naming the script, so its output and status are compared.
+  { line: 'a=(1); ((a[1/0])); echo same\necho "next $?"; let "a[1/0]"; echo same\necho "next $?"; [[ a[1/0] -eq 1 ]]; echo same\necho "next $?"', script: 'bash' },
+  { line: 'a=(1); readonly r=1; ((a[r=2])); echo same\necho "next $?"; f() { ((a[1/0])); echo in; }; f; echo after\necho "next $?"', script: 'bash' },
+  '(a=(1); ((a[1/0])); echo in); echo "after $?"; x=$(a=(1); ((a[1/0])); echo in); echo "sub $? [$x]"',
   // Writing a scalar's element counts back from its one value.
   't=5; ((t[-1]=7)); declare -p t',
   // $((…))'s text is expanded before it is evaluated.
@@ -55,13 +59,18 @@ const LINES = [
 /** bash's diagnostic prefix: `bash: line 1: `, `bash: -c: line 1: `, and in a function 5.2's `environment: line 1: `. */
 const plainStderr = (text) => text.replace(/^(?:bash|environment): (?:-c: )?(?:line \d+: )?/gm, '');
 
+const CASES = LINES.map((c) => (typeof c === 'string' ? { line: c, script: null } : c));
+const compared = (result, script) => (script === null ? result : { stdout: result.stdout, status: result.status });
+
 const want = [];
-for (const line of LINES) {
+for (const { line, script } of CASES) {
   const dir = mkdtempSync(join(tmpdir(), 'shell-arithmetic-arrays-'));
   try {
-    const r = spawnSync('bash', ['--norc', '--noprofile', '-c', line], { cwd: dir, encoding: 'utf8', timeout: 10_000, env: { PATH: process.env.PATH, LC_ALL: 'C.UTF-8', HOME: '/home/user' } });
+    if (script !== null) writeFileSync(join(dir, 's.sh'), `${line}\n`);
+    const argv = script === null ? ['--norc', '--noprofile', '-c', line] : ['./s.sh'];
+    const r = spawnSync('bash', argv, { cwd: dir, encoding: 'utf8', timeout: 10_000, env: { PATH: process.env.PATH, LC_ALL: 'C.UTF-8', HOME: '/home/user' } });
     assert.equal(r.error, undefined, `bash ran ${JSON.stringify(line)}: ${r.error?.message}`);
-    want.push({ stdout: r.stdout, stderr: plainStderr(r.stderr), status: r.status });
+    want.push(compared({ stdout: r.stdout, stderr: plainStderr(r.stderr), status: r.status }, script));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -69,16 +78,21 @@ for (const line of LINES) {
 
 const { sql, transactions } = await hostSqlite();
 const ws = await NimbusWorkspace.create({ sql, transactions, generation: 1 });
+// `bash s.sh` runs the script as the session's bash does.
+registerShellEntrypointCommands(ws.registry, { execute: (cmd, options) => ws.shell.execute(cmd, options) });
 const failed = [];
 try {
-  for (const [i, line] of LINES.entries()) {
-    const r = await ws.exec(line, { cwd: '/home/user' });
-    const ours = { stdout: r.stdout, stderr: r.stderr, status: r.exitCode };
+  for (const [i, { line, script }] of CASES.entries()) {
+    const dir = `/home/user/case${i}`;
+    await ws.exec(`mkdir -p ${dir}`, { cwd: '/home/user' });
+    if (script !== null) await ws.fs.writeFile(`${dir}/s.sh`, `${line}\n`);
+    const r = await ws.exec(script === null ? line : `${script} ./s.sh`, { cwd: dir });
+    const ours = compared({ stdout: r.stdout, stderr: r.stderr, status: r.exitCode }, script);
     if (JSON.stringify(ours) !== JSON.stringify(want[i])) failed.push(`${JSON.stringify(line)}\n  bash: ${JSON.stringify(want[i])}\n  ours: ${JSON.stringify(ours)}`);
   }
 } finally {
   await ws.close();
 }
 
-console.log(`shell-arithmetic-arrays-bash: ${LINES.length - failed.length} of ${LINES.length} lines as bash's`);
+console.log(`shell-arithmetic-arrays-bash: ${CASES.length - failed.length} of ${CASES.length} lines as bash's`);
 assert.deepEqual(failed, [], `as bash:\n${failed.join('\n')}`);
