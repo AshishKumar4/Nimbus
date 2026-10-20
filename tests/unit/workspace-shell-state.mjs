@@ -123,6 +123,9 @@ try {
   const readonlyPwd = await bindings('readonly PWD; cd /usr; echo "st=$? ${PWD[*]}"; pwd');
   assert.equal(readonlyPwd.stdout, 'st=1 p w\n/usr\n');
   assert.equal(readonlyPwd.stderr, 'PWD: readonly variable\n');
+  const readonlyOld = await ws.exec('readonly OLDPWD=/x; cd /tmp; echo "st=$? $OLDPWD $PWD"', { shellId: 'old-pwd' });
+  assert.equal(readonlyOld.stdout, 'st=1 /x /tmp\n');
+  assert.equal(readonlyOld.stderr, 'OLDPWD: readonly variable\n');
   // A call's env binds a name for the call alone, an array's too.
   await bindings('arr=(saved)');
   assert.equal((await bindings('echo "$arr ${#arr[@]}"', { env: { arr: 'call' } })).stdout, 'call 1\n');
