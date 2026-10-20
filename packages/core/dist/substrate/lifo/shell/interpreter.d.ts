@@ -375,6 +375,29 @@ export declare class Interpreter {
     private createCommandFds;
     private executeWithRedirections;
     private applyRedirections;
+    /**
+     * Run `body` with the descriptors `fds` changed (a compound command's, a
+     * function call's, a builtin's redirections) in this shell's table, over
+     * what `exec` left there, as bash applies a redirection; then put each back
+     * as it was, whatever `body` did to it (an `exec` inside is undone with
+     * the redirection, as bash undoes it). An installed descriptor holds a
+     * reference on its file, as `exec`'s do, so one an inner `exec` copies
+     * stays open; the reference each holds at the end is let go, and the
+     * shadowed one, held all along, is put back.
+     */
+    private withInstalledFds;
+    /** `fd`'s handle in `handles`: `file` (a new reference on it, unless `take` is false: one held already), or none. */
+    private holdHandle;
+    /**
+     * A child's own descriptor `fd` (a pipe's end, a substitution's capture),
+     * as dup2(2) makes it over what the child inherited; the reference it held
+     * on the file there before is let go.
+     */
+    private dupChildFd;
+    /** Table entry `fd` for output: `stream`, or none (closed); its handle dropped from the table, not let go (the caller's). */
+    private installOutputFd;
+    /** Table entry `fd` for input, as persistFdState keeps one: present (a terminal's with no stream), or none. */
+    private installInputFd;
     private persistFdState;
     /**
      * The shell's end: its descriptors close, as a process's do at exit(2). A
@@ -393,6 +416,12 @@ export declare class Interpreter {
      * redirection holds (`{ exec 3>&1; } >f`), or one another descriptor names
      * (`exec 4>&3`). The file it named before goes to `released`.
      */
+    /**
+     * The open file behind `stream`: one a descriptor of the table holds, or
+     * one in `held` (references just taken out of it), or one the command's
+     * redirections opened, or one an enclosing redirection holds.
+     */
+    private fileBehind;
     private repointPersistentHandle;
     private setOutputFd;
     private setInputFd;
