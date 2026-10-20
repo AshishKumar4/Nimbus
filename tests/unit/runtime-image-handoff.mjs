@@ -53,7 +53,7 @@ function assertHandedOff(raw, images, name) {
   });
   const manifest = { version: '3.13.14', files: [manifestFile('share/cpython/python.wasm', image), manifestFile('lib/python313.zip', new Uint8Array([1]))] };
   const facets = recordingFacets();
-  const run = makeCPythonRunnerFactory({ facets: facets.host, filesystem, processes: runtimeSupervisor(), network: ISOLATE_NETWORK })(manifest, '/runtime/python', 'python', undefined);
+  const run = makeCPythonRunnerFactory({ facets: facets.host, filesystem, processes: runtimeSupervisor(), network: ISOLATE_NETWORK, session: 'runtime-image-handoff' })(manifest, '/runtime/python', 'python', undefined);
 
   assert.equal(await run(context(filesystem, ['-c', 'print(1)'])), 0);
   assertHandedOff(raw, facets.images, 'python.wasm');
@@ -78,7 +78,7 @@ function assertHandedOff(raw, images, name) {
       return { async submit() { return { exitCode: 0, stdout: '', stderr: '' }; }, dispose() { disposed++; } };
     },
   };
-  const run = makeCPythonRunnerFactory({ facets: host, filesystem, processes: runtimeSupervisor([41,42]), network: ISOLATE_NETWORK })(manifest, '/runtime/python', 'python', undefined);
+  const run = makeCPythonRunnerFactory({ facets: host, filesystem, processes: runtimeSupervisor([41,42]), network: ISOLATE_NETWORK, session: 'runtime-image-handoff' })(manifest, '/runtime/python', 'python', undefined);
   assert.equal(await run(runtimeContext(filesystem, { args: ['-c', 'print(1)'], pid: 41 }).ctx), 0);
   assert.equal(await run(runtimeContext(filesystem, { args: ['-c', 'print(2)'], pid: 42 }).ctx), 0);
   assert.deepEqual(opened, [43, 44], 'each invocation opens its own facet under a fresh runtime pid');
@@ -97,7 +97,7 @@ function assertHandedOff(raw, images, name) {
   const facets = recordingFacets();
   const started = [];
   const startResident = async (spec) => { started.push(spec.wasmVfsPath); return { exitCode: 0, stdout: '', stderr: '' }; };
-  const run = makeCPythonRunnerFactory({ facets: facets.host, filesystem, processes: runtimeSupervisor(), startResident, network: ISOLATE_NETWORK })(manifest, '/runtime/python', 'python', undefined);
+  const run = makeCPythonRunnerFactory({ facets: facets.host, filesystem, processes: runtimeSupervisor(), startResident, network: ISOLATE_NETWORK, session: 'runtime-image-handoff' })(manifest, '/runtime/python', 'python', undefined);
 
   assert.equal(await run(context(filesystem, ['-m', 'http.server', '8000'])), 0);
   assert.deepEqual(started, ['/runtime/python/share/cpython/python.wasm']);

@@ -18,16 +18,30 @@ import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-netwo
   const second = keys.take();
   assert.equal(first.session, 'session-a');
   assert.notEqual(first.name, second.name, 'two processes at once take two keys');
-  keys.give(first);
+  const fit = { reusable: true, killed: false };
+  keys.give(first, fit);
   assert.equal(keys.take(), first, 'a key given back is taken again');
-  const third = keys.take();
+  for (const [end, why] of [
+    [{ reusable: false, killed: false }, 'the facet said it is unfit'],
+    [{ killed: false }, 'the facet said nothing'],
+    [{ reusable: true, error: 'lost', killed: false }, 'the call failed'],
+    [{ reusable: true, killed: true }, 'its process was killed'],
+  ]) {
+    keys.give(first, end);
+    assert.notEqual(keys.take(), first, `a key is not given back when ${why}`);
+  }
+  keys.give(first, fit, { reusable: false, killed: false });
+  assert.notEqual(keys.take(), first, 'nor when any one of its calls left it unfit');
   keys.give(first);
-  keys.give(second);
-  keys.give(third);
+  assert.equal(keys.take(), first, 'a key no call ran on is given back');
+  const third = keys.take();
+  keys.give(first, fit);
+  keys.give(second, fit);
+  keys.give(third, fit);
   const again = [keys.take(), keys.take(), keys.take()];
   assert.equal(again.filter((key) => [first, second, third].includes(key)).length, 2, 'no more than `kept` are kept idle: the third taken is new');
   assert.equal(new Set(again.map((k) => k.name)).size, 3);
-  assert.throws(() => keys.give({ session: 'session-b', name: first.name }), /another session/, 'a key of another session is refused');
+  assert.throws(() => keys.give({ session: 'session-b', name: first.name }, fit), /another session/, 'a key of another session is refused');
   assert.throws(() => warmFacetKeys('', 'git', 2), /belongs to a session/, 'a warm facet without a session is refused');
   assert.notEqual(warmFacetKeys('session-a', 'git', 2).take().name, first.name, 'another incarnation never names a key twice');
   assert.ok(warmFacetScope(first).startsWith('session-a:'), 'the scope names the session first');

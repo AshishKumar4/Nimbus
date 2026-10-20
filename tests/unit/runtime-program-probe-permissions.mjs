@@ -46,7 +46,7 @@ function invocationVfs(filesystem) {
     '/runtime/python/share/cpython/python.wasm': new Uint8Array([0]),
     '/runtime/python/lib/python313.zip': new Uint8Array(),
   }, 'home/user/locked/tool.py');
-  const run = makeCPythonRunnerFactory({ facets: unreachableFacets, network: ISOLATE_NETWORK })(
+  const run = makeCPythonRunnerFactory({ facets: unreachableFacets, network: ISOLATE_NETWORK, session: 'runtime-program-probe-permissions' })(
     {
       version: '3.13.14-3',
       files: [

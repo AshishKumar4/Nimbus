@@ -20,7 +20,12 @@ published independently in the `@nimbus-sh` npm scope.
   under load with no pause, and install-parallel-memory-bounded samples one
   read at a time and backs off after a 503, instead of adding to the queue
   that refused them.
-
+- Fixed (CI): a probe's reset attribution reads a session's whole record.
+  A telemetry query that comes back full (2000 events) is read again as the
+  two halves of its span, until each comes back short. Before, the first
+  2000 were all it read, and a reset logged past them read as "no reset or
+  overload error logged". A record still reads as incomplete when one
+  millisecond alone fills a query, or after 64 queries.
 - Fixed: a Node program could be told a file, directory or link it had
   just renamed was not there (`fs.statSync` ENOENT, and renaming it again
   refused) when input arrived while the rename was still on its way to the
@@ -34,6 +39,19 @@ published independently in the `@nimbus-sh` npm scope.
   missing from the directory it was renamed within. A listing is now of the
   directory as it stood at one moment, or the session is asked instead; a
   file or a missing name is no longer listed as an empty directory.
+- Changed: a `python3` one-shot (`-c`, a script, `-m`) and a `clang` or
+  `wasm-ld` run go to one of their session's warm workers, which keep the
+  compiled interpreter or tool, instead of loading it into a new worker
+  every time. Each process instantiates a fresh one there, so it finds
+  nothing an earlier process left. A worker is used again only after a
+  process that ended clean, was not killed, and never reached the network
+  (a socket); a session keeps at most two idle per interpreter or tool.
+  Measured on two Previews deployed side by side, 8 runs each (medians):
+  `python3 -c pass` 513 ms against 1256, `python3 -c 'import json, re'` 819
+  against 1828, `clang -c` 340 against 1929, and `clang` compile and link
+  570 against 2825.
+- Fixed: the shell's `node` makes symbolic links in the session's filesystem (`fs.symlink`, in its sync, callback and promise forms). `readlink` answers the link's text; it is `EINVAL` for a file that is no link and `ENOENT` for nothing. Before, `symlink` did nothing and `readlink` returned the path it was given. `readlink` answers in the encoding asked, and a lookup that fails on the way to a link (`ENOTDIR`, `ELOOP`) is `readlink`'s error. A path given to `fs` may be a `Buffer` or a `file:` URL, whose path is decoded (`%20` is a space); another scheme is `ERR_INVALID_URL_SCHEME`. A callback that is not a function is refused before anything is done.
+- Fixed: the shell's `node` `fs.truncate` extends a file with zero bytes as well as cutting it, clamps a negative length to 0, and reports `open`'s errors, as Node does. It now also has a callback form, and takes a descriptor; `fs.promises.truncate` takes a path only, as Node's does. Before, a longer length left the file unchanged, and a negative one cut from the end.
 - Changed: a `ruby` one-shot (`ruby -e`, `gem --version`, `bundle --version`
   and the like) runs on one of its session's warm Ruby workers, which keep
   ruby+stdlib.wasm compiled, instead of loading it into a new worker every

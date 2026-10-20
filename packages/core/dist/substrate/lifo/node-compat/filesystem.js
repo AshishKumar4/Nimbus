@@ -1,4 +1,4 @@
-import { errnoCodeOf, syscallError } from '../../../vfs/vfs-error.js';
+import { errnoCodeOf, isVfsErrorCode, syscallError } from '../../../vfs/vfs-error.js';
 /**
  * The in-process Node interpreter runs `require` synchronously, so it demands
  * the authority's synchronous capability. The demand is made on first use:
@@ -68,6 +68,25 @@ function bridgeFilesystem(bridge, umask) {
             return stat;
         },
         realpath: path => fs.realpath(path),
+        symlink: (target, path) => fs.symlink(target, path),
+        readlink(path) {
+            const text = fs.readlink(path);
+            if (text !== null)
+                return text;
+            // The bridge answers null for no link and for nothing there: readlink(2) tells them apart, and a
+            // lookup that fails on the way (ENOTDIR below a file, ELOOP) is readlink's failure too.
+            let stat;
+            try {
+                stat = fs.stat(path, { followSymlinks: false });
+            }
+            catch (error) {
+                const code = errnoCodeOf(error);
+                if (!isVfsErrorCode(code))
+                    throw error;
+                throw syscallError(code, 'readlink', path, { cause: error });
+            }
+            throw syscallError(stat === null ? 'ENOENT' : 'EINVAL', 'readlink', path);
+        },
         mkdir: (path, options) => fs.mkdir(path, { ...options, umask: umask() }),
         readdir: path => fs.readdir(path),
         unlink: path => fs.unlink(path),
@@ -77,7 +96,15 @@ function bridgeFilesystem(bridge, umask) {
         copyFile: (from, to) => fs.copyFile(from, to),
         chmod: (path, mode) => fs.chmod(path, mode),
         chown: (path, uid, gid, follow) => { fs.chown(path, uid, gid, { followSymlinks: follow }); },
-        open: (path, flags) => fs.open(path, { ...flags, umask: umask() }).id,
+        open(path, flags) {
+            const opened = fs.open(path, { ...flags, umask: umask() });
+            // A directory opens with whatever rights a WASI guest asks for; Node's open(2) refuses one for writing.
+            if (flags.write === true && opened.stat.type === 'directory') {
+                fs.close(opened.id);
+                throw syscallError('EISDIR', 'open', path);
+            }
+            return opened.id;
+        },
         read: (fd, position, length) => fs.read(fd, position, length),
         write: (fd, position, data) => fs.write(fd, position, data),
         fstat: (fd) => fs.fstat(fd),

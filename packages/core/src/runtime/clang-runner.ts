@@ -43,6 +43,7 @@ import { statOrThrow } from '../vfs/vfs.js';
 import { openRuntimeStdio } from './runtime-stdio.js';
 import type { SessionProcessSupervisor } from './session-process-supervisor.js';
 import { errorText } from '../_shared/error-text.js';
+import { warmFacetKeys, type WarmCallEnd, type WarmFacetKey } from './warm-facets.js';
 
 const CLANG_VERSION_FLAGS = new Set(['--version', '-v']);
 
@@ -54,13 +55,23 @@ export interface ClangFacet extends Pick<Facet, 'dispose'> {
   submit(task: typeof CLANG_CALL_TASK, args: Parameters<typeof clangFacetCall>[0], options?: FacetSubmitOptions): Promise<ClangFacetResult>;
 }
 
+/** Idle warm workers a session keeps per tool: each holds its compiled image (clang 31 MiB, wasm-ld 18.5 MiB). */
+const WARM_CLANG_FACETS = 2;
+
+export type ClangRunnerFactory = (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => Command;
+
 /** Build the runner factory. Closes over the facet host and the filesystem authority. */
 export function makeClangRunnerFactory(deps: {
   facets: { open(spec: FacetSpec): ClangFacet };
   filesystem: NimbusFilesystemAuthority;
   processes: SessionProcessSupervisor;
-}): (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) =>
-    Command {
+  /** The session the toolchain's processes run in: its warm facets are its own (warm-facets.ts). */
+  session: string;
+}): ClangRunnerFactory {
+  const warmKeys = {
+    clang: warmFacetKeys(deps.session, 'clang', WARM_CLANG_FACETS),
+    'wasm-ld': warmFacetKeys(deps.session, 'wasm-ld', WARM_CLANG_FACETS),
+  };
 
   return function clangRunnerFactory(manifest, installRoot, binName, binKind) {
     const clangVfsPath   = installedPath(manifest, installRoot, 'bin/clang');
@@ -162,9 +173,11 @@ export function makeClangRunnerFactory(deps: {
         return 1;
       }
 
-      // Opened per invocation, not cached: the supervisor capability is bound
-      // to this process's pid when the facet opens, so one held across calls
-      // would hand every later caller the first caller's credential.
+      // Opened per invocation on one of the session's warm workers for its
+      // tool, which keeps the compiled image: the supervisor capability is the
+      // call's, never the worker's (FacetSpec.warm), and each call
+      // instantiates the tool afresh. A target's key goes back when every call
+      // on it left the worker fit for another (warm-facets.ts give).
       // A phase's target, opened when the phase first runs; null, said, when
       // its image cannot be opened. clang is opened only to compile and
       // wasm-ld only to link: a compile-only run, or one whose compile fails,
@@ -181,6 +194,7 @@ export function makeClangRunnerFactory(deps: {
           ctx.stderr.write(`${binName}: ${primaryName} runtime warm-up failed: ${errorText(e)}\n`);
           return null;
         }
+        const warm = warmKeys[primaryName].take();
         const target: ClangFacetTarget = {
           primaryName,
           pid: stdio.pid,
@@ -190,7 +204,10 @@ export function makeClangRunnerFactory(deps: {
             syscalls: stdio.syscalls,
             preamble: CLANG_RUNNER_PREAMBLE,
             wasmModules: { 'primary.wasm': image },
+            warm,
           }),
+          warm,
+          ends: [],
         };
         opened.push(target);
         return target;
@@ -335,7 +352,10 @@ export function makeClangRunnerFactory(deps: {
         }
         return 0;
       } finally {
-        for (const target of opened) target.facet.dispose();
+        for (const target of opened) {
+          warmKeys[target.primaryName].give(target.warm, ...target.ends);
+          target.facet.dispose();
+        }
         if (scratchVfs) await vfs.remove(scratchVfs, { recursive: true, force: true });
       }
       };
@@ -566,6 +586,10 @@ interface ClangFacetTarget {
   primaryName: 'clang' | 'wasm-ld';
   pid: number;
   facet: ClangFacet;
+  /** Its worker's key, given back when every call on it left the worker fit for another. */
+  warm: WarmFacetKey;
+  /** How each call on it ended. */
+  ends: WarmCallEnd[];
 }
 
 /** A load made once, by the first call that wants it; one that failed is made again by the next. */
@@ -583,6 +607,8 @@ async function dispatchClangFacet(
   signal: AbortSignal,
 ): Promise<ClangFacetResult> {
   try {
+    // Killed before this phase began: it never starts.
+    signal.throwIfAborted();
     const result = await target.facet.submit(CLANG_CALL_TASK, {
       primaryName: target.primaryName,
       argv: args.argv,
@@ -593,6 +619,7 @@ async function dispatchClangFacet(
       // Ctrl-C ends the facet too, where the host can.
       signal,
     });
+    target.ends.push({ reusable: result.reusable, error: result.error, killed: signal.aborted });
     return {
       exitCode: result.exitCode,
       stdout: result.stdout || '',
@@ -601,6 +628,7 @@ async function dispatchClangFacet(
       fsStats: result.fsStats ?? null,
     };
   } catch (e: unknown) {
+    target.ends.push({ reusable: false, killed: signal.aborted });
     // Killed: the tool ends as an interrupted one does.
     if (signal.aborted) return { exitCode: 130, stdout: '', stderr: '' };
     return {
@@ -678,6 +706,9 @@ globalThis.__clangRun = async function __clangRun(args) {
     stderr: '',
     ...(lost ? { error: lost } : {}),
     fsStats: typeof __wasiFsStats === 'function' ? __wasiFsStats() : null,
+    // Another process may run on this worker after it: the tool ran to its
+    // end, and no syscall of it was abandoned (__wasiReusable).
+    reusable: !lost && !run.error && typeof __wasiReusable === 'function' && __wasiReusable(),
   };
 };
 

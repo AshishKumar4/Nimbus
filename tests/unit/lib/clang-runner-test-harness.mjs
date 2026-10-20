@@ -164,7 +164,7 @@ export function makeInvocationVfs(options = {}) {
   const filesystem = detachingAuthority(new ProcessFiles(raw));
   const processes = new SessionProcessSupervisor();
   processes.setPidBase(16);
-  const handler = makeClangRunnerFactory({ facets, filesystem, processes })(
+  const handler = makeClangRunnerFactory({ facets, filesystem, processes, session: 'clang-runner-test-harness' })(
     MANIFEST, '/runtime/clang', 'clang', undefined,
   );
 

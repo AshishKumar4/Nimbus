@@ -134,6 +134,8 @@ function callFilesystem(fs, method, args) {
         case 'stat': return fs.stat(pathArg(a));
         case 'lstat': return fs.lstat(pathArg(a));
         case 'realpath': return fs.realpath(pathArg(a));
+        case 'symlink': return fs.symlink(pathArg(a), pathArg(b));
+        case 'readlink': return fs.readlink(pathArg(a));
         case 'mkdir': return fs.mkdir(pathArg(a), mkdirArg(b));
         case 'readdir': return fs.readdir(pathArg(a));
         case 'unlink': return fs.unlink(pathArg(a));
