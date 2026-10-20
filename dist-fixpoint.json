@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "636e56904f64d8781fd37bae419c49ef3b11d9396d1ebe57539940679207eb48",
+  "fingerprint": "92689dd89bfa4fbf130f2085af5899d3dfca04f7ed88fb6d40efde6252c9ef71",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -3265,7 +3265,7 @@
     "packages/worker/src/facets/helper-facet.ts": "571ad3b51685af1ad96e101809c311a8bdc60a8f0881853aac2da3db430145a9",
     "packages/worker/src/facets/kernel-store-root.ts": "6b1dea3b831ed5e3a1218b7cd2a94abe50f78c6baf4132e4ac14b1b31fd96ca4",
     "packages/worker/src/facets/launch-learning-store.ts": "0ba1ebe8b6e30ff694f70db7de5e06c0b536beed882c3f9e3db3068ec49851d8",
-    "packages/worker/src/facets/manager.ts": "e59f982e5d3ef04f6f074176c719c78b0787d977844146941445c8cb6198ab7c",
+    "packages/worker/src/facets/manager.ts": "b090675877e9490b2a9a389440259a0c82ab3d842fe85b9adc9e5cfda77a29cf",
     "packages/worker/src/facets/opencode-staging.ts": "dfc02edd3c1f6fd4627c6b410575ac23899006c57d5db4188b1bc6647794e614",
     "packages/worker/src/facets/oxc-transform.ts": "d26db4231afd29e1400fa44693fc23223b12292dac93eaa1a580e7fa23f4b418",
     "packages/worker/src/facets/prebundle-pool.ts": "2fe8d2f7617b1302492bcf0d1adafd999750867248d8cdc6be9d22ac83148210",
