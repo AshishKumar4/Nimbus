@@ -735,10 +735,13 @@ export class Interpreter {
         cmdIo.positionals = this.forkPositionals(io);
         // Each element is a thread of its own, which the pipeline's waits on.
         cmdIo.workThread = io.workThread?.fork();
-        // Each element runs in a child shell (bash forks every one).
+        // Each element runs in a child shell (bash forks every one), its pipe ends its own fd 0 and 1
+        // over what it inherited (an `exec`'s among it).
         const element = cmd.type === 'simple_command' ? this.inTrapAction(this.fork()) : this.fork();
         const cmdPromise = (async (): Promise<number> => {
           try {
+            if (stdin) await element.dupChildFd(0, { input: stdin });
+            if (stdout) await element.dupChildFd(1, { output: stdout });
             return await element.finishChild(async () => (await element.executeCommand(cmd, cmdIo)), cmdIo);
           } catch (e) {
             if (e instanceof ExitSignal) {
@@ -1251,7 +1254,7 @@ export class Interpreter {
               (await stderr.write(`${name}: maximum function nesting level exceeded (${this.localFrames.length})\n`));
               throw new FunctionNestingSignal();
             }
-            exitCode = await this.executeFunction(funcBody, args, this.createIoFromFds(io, fds));
+            exitCode = await this.withInstalledFds(fds, async () => (await this.executeFunction(funcBody, args, this.createIoFromFds(io, fds))));
           } else {
             // Check builtins
             const builtin = this.config.builtins.get(name);
@@ -1282,7 +1285,8 @@ export class Interpreter {
                   executeInline: async (input, options) => {
                     ranText = true;
                     try {
-                      return (await this.executeInline(input, builtinIo, options));
+                      // Its text runs over the builtin's redirections in the shell's table (`eval … 2>f`).
+                      return (await this.withInstalledFds(fds, async () => (await this.executeInline(input, builtinIo, options))));
                     } catch (error) {
                       // A syntax error while eval or `.` is still the builtin last dispatched (no
                       // other command of the text has been, or one was, an eval or `.`) is the
@@ -1624,9 +1628,12 @@ export class Interpreter {
     const captureIo = this.createCommandIo(io);
     captureIo.stdout = capture.stream;
     captureIo.positionals = this.forkPositionals(io);
-    // $( ) runs in a child shell.
+    // $( ) runs in a child shell, its capture its fd 1.
     const child = this.inTrapAction(this.fork());
-    const exitCode = await child.finishChild(async () => (await child.executeLineWithIo(input, captureIo)), captureIo);
+    const exitCode = await child.finishChild(async () => {
+      await child.dupChildFd(1, { output: capture.stream });
+      return (await child.executeLineWithIo(input, captureIo));
+    }, captureIo);
     capture.end();
 
     return { output: captured, exitCode };
@@ -1901,7 +1908,7 @@ export class Interpreter {
         this.lastExitCode = 1;
         return 1;
       }
-      return (await execute(this.createIoFromFds(io, fds)));
+      return (await this.withInstalledFds(fds, async () => (await execute(this.createIoFromFds(io, fds)))));
     }));
   }
 
@@ -1960,6 +1967,80 @@ export class Interpreter {
           break;
       }
     }
+  }
+
+  /**
+   * Run `body` with the descriptors `fds` changed (a compound command's, a
+   * function call's, a builtin's redirections) in this shell's table, over
+   * what `exec` left there, as bash applies a redirection; then put each back
+   * as it was, whatever `body` did to it (an `exec` inside is undone with
+   * the redirection, as bash undoes it), letting go of a file such an `exec`
+   * took a reference to.
+   */
+  private async withInstalledFds<T>(fds: FdState, body: () => Promise<T>): Promise<T> {
+    if (fds.changedOutputFds.size === 0 && fds.changedInputFds.size === 0) return (await body());
+    const outputs = [...fds.changedOutputFds].map((fd) => ({
+      fd,
+      stream: this.persistentOutputFds.get(fd),
+      handle: this.persistentOutputHandles.get(fd),
+      terminal: this.persistentTerminalOutputFds.has(fd),
+    }));
+    const inputs = [...fds.changedInputFds].map((fd) => ({
+      fd,
+      present: this.persistentInputFds.has(fd),
+      stream: this.persistentInputFds.get(fd),
+      handle: this.persistentInputHandles.get(fd),
+      terminal: this.persistentTerminalInputFds.has(fd),
+    }));
+    for (const { fd } of outputs) this.installOutputFd(fd, fds.outputFds.get(fd), fds.terminalOutputFds.has(fd));
+    for (const { fd } of inputs) this.installInputFd(fd, fds.inputFds.has(fd), fds.inputFds.get(fd), fds.terminalInputFds.has(fd));
+    try {
+      return (await body());
+    } finally {
+      const released: OpenFile[] = [];
+      for (const saved of outputs) {
+        const held = this.persistentOutputHandles.get(saved.fd);
+        if (held !== undefined && held !== saved.handle) released.push(held);
+        this.installOutputFd(saved.fd, saved.stream, saved.terminal);
+        if (saved.handle !== undefined) this.persistentOutputHandles.set(saved.fd, saved.handle);
+      }
+      for (const saved of inputs) {
+        const held = this.persistentInputHandles.get(saved.fd);
+        if (held !== undefined && held !== saved.handle) released.push(held);
+        this.installInputFd(saved.fd, saved.present, saved.stream, saved.terminal);
+        if (saved.handle !== undefined) this.persistentInputHandles.set(saved.fd, saved.handle);
+      }
+      await this.release(released);
+    }
+  }
+
+  /**
+   * A child's own descriptor `fd` (a pipe's end, a substitution's capture),
+   * as dup2(2) makes it over what the child inherited; the reference it held
+   * on the file there before is let go.
+   */
+  private async dupChildFd(fd: number, end: { readonly output: CommandOutputStream } | { readonly input: CommandInputStream }): Promise<void> {
+    const handles = 'output' in end ? this.persistentOutputHandles : this.persistentInputHandles;
+    const held = handles.get(fd);
+    if ('output' in end) this.installOutputFd(fd, end.output, false);
+    else this.installInputFd(fd, true, end.input, false);
+    if (held !== undefined) await this.release([held]);
+  }
+
+  /** Table entry `fd` for output: `stream`, or none (closed); its handle (the file `exec` holds) dropped from the table. */
+  private installOutputFd(fd: number, stream: CommandOutputStream | undefined, terminal: boolean): void {
+    if (stream) this.persistentOutputFds.set(fd, stream);
+    else this.persistentOutputFds.delete(fd);
+    this.persistentOutputHandles.delete(fd);
+    setMembership(this.persistentTerminalOutputFds, fd, terminal);
+  }
+
+  /** Table entry `fd` for input, as persistFdState keeps one: present (a terminal's with no stream), or none. */
+  private installInputFd(fd: number, present: boolean, stream: CommandInputStream | undefined, terminal: boolean): void {
+    if (present) this.persistentInputFds.set(fd, terminal ? undefined : stream);
+    else this.persistentInputFds.delete(fd);
+    this.persistentInputHandles.delete(fd);
+    setMembership(this.persistentTerminalInputFds, fd, terminal);
   }
 
   private async persistFdState(fds: FdState): Promise<void> {

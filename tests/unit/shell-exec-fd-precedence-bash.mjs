@@ -28,6 +28,7 @@ const LINES = [
   `exec 3>o; f() { exec 3>&-; }; f 3>i; echo after >&3; exec 3>&-; ${show.replace('FILES', 'o i')}`,
   'exec 2>outer; f() { echo $((08)); }; f 2>inner\nexec 2>&-; grep -c "value too great" inner outer',
   `exec 2>outer; ( echo sub >&2 ) 2>inner; echo plain >&2 2>inner2; exec 2>&-; ${show.replace('FILES', 'outer inner inner2')}`,
+  `exec 2>outer; eval 'echo e >&2' 2>inner; printf 'echo s >&2\\n' > s.sh; . ./s.sh 2>inner2; exec 2>&-; ${show.replace('FILES', 'outer inner inner2')}`,
 ];
 
 /** bash's diagnostic prefix: `bash: line 1: `, `bash: -c: line 1: `, a script's `./s.sh: line 1: `, and in a function 5.2's `environment: line 1: `. */
