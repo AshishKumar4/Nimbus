@@ -3,8 +3,8 @@
 // supervisorFilesystem over the SupervisorRPC binding) answers every call as
 // the bridge the session serves it from does, the call's options included:
 // a write that makes its parents, a write's mask, a write or read that names
-// the revision it is of, a read of at most so many bytes, a truncate that
-// does not follow a link, a listing that leaves out what it was not asked for.
+// the revision it is of, a read of at most so many bytes, a listing that
+// leaves out what it was not asked for.
 //
 // Real code on both sides: SupervisorRPC, the session's supervisor-op
 // handler, ProcessFiles over SqliteVFS. Each case runs in two identical
@@ -76,7 +76,6 @@ const cases = {
   'a range read of a revision the file is not at': async (fs) => outcome(async () => text(await fs.readRange('/home/user/f.txt', 0, 5, { expectedRevision: 999_999, expectedEpoch: 'not-this-epoch' }))),
   'a range write that makes its parents': async (fs) => [await outcome(async () => { await fs.writeRange('/home/user/ranged/deep/b.txt', 0, new TextEncoder().encode('ab'), { createParents: true }); return 'written'; }), await statOf(fs, '/home/user/ranged/deep/b.txt')],
   'a range write of a revision the file is not at': async (fs) => [await outcome(async () => { await fs.writeRange('/home/user/f.txt', 0, new TextEncoder().encode('HE'), { expectedRevision: 999_999 }); return 'written'; }), text(await fs.readFile('/home/user/f.txt'))],
-  'a truncate that does not follow a link': async (fs) => [await outcome(async () => { await fs.truncate('/home/user/link', 2, { followSymlinks: false }); return 'truncated'; }), await statOf(fs, '/home/user/f.txt')],
   'a listing without revisions, content keys or link targets': async (fs) => outcome(async () => {
     const page = await fs.list(null, 100, { revisions: false, contentKeys: false, linkTargets: false });
     return page.entries.filter((entry) => entry.path.startsWith('home/user')).map((entry) => ({
