@@ -30,6 +30,7 @@ import { OXC_FACET_WORKER_ID, oxcTransformHost } from './oxc-transform.js';
 import { rolldownBuildHost } from './build-facet.js';
 import { SharedHelperFacet, type HelperFacetSpec } from './helper-facet.js';
 import type { StagedSourceEnv } from '../runtime/staged-source.js';
+import { holdThreadWatch } from '@nimbus-sh/fabric/thread-stalls.js';
 
 /**
  * Everything of the facet's module but its staged parts: esbuild's JS adapter,
@@ -181,12 +182,14 @@ async function onEsbuildFacet<T>(
 ): Promise<T> {
   const stub = shared.stub(ctx, env);
   const endFetch = await beginHelperFetch(ctx, ESBUILD_FACET_WORKER_ID);
+  const watched = holdThreadWatch(ctx, 'esbuild facet');
   try {
     return await call(await stub);
   } catch (error) {
     shared.forget(ctx, stub);
     throw error;
   } finally {
+    watched();
     endFetch();
   }
 }
