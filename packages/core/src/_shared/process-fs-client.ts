@@ -480,6 +480,12 @@ const GRANT_INOS = 4096;
 const GRANT_BYTES = 64 * 1024 * 1024;
 /** How long one recall poll waits before asking again. */
 const RECALL_POLL_MS = 20_000;
+/**
+ * How long a wave the session refused while it recalls a delegation (EAGAIN)
+ * waits before each time it goes again: as many as a caller that can wait
+ * passes (vfs/recall.ts withRecall), then its writes are lost (EIO).
+ */
+const WAVE_RECALL_WAITS_MS: readonly number[] = [0, 10, 25, 50, 100, 200, 400, 800];
 
 interface Grant extends ProcessFsGrant {
   nextIno: number;
@@ -664,6 +670,8 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   let epoch: { writer: string | null; openedAt: number; numbering: ProcessFsNumbering | null } | null = null;
   let ack = 0;
   let wave = 0;
+  /** Times the wave at the log's head has gone again behind a recall (WAVE_RECALL_WAITS_MS). */
+  let recallWaits = 0;
   /** Writer epochs given up whose retirement the session has not answered yet (lostEpoch). */
   const retiring: string[] = [];
   const failures: ProcessFsFailure[] = [];
@@ -911,7 +919,13 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     ack = Math.max(ack, cursor);
     ownHeld = answer.held === true;
     if (!ownHeld) ownThrough = Math.max(ownThrough, answer.revision ?? Infinity);
-    const refused = writer === null
+    // The session met a delegation it recalls first (one this process holds
+    // too: its read lease, asked with a directory batch whose answer has not
+    // reached it) and applied nothing after `cursor`: the recall started,
+    // the rest goes again once it is over, as a caller that can wait does.
+    const recalling = !answer.ok && error?.errno === 'EAGAIN';
+    if (!recalling) recallWaits = 0;
+    const refused = recalling ? null : writer === null
       ? (error?.errno !== undefined && SYSCALL_VERDICTS.has(error.errno as VfsErrorCode) ? { seq: cursor + 1, errno: error.errno, message: error.message } : null)
       : answer.sequence?.refused ?? null;
     let receipt = 0;
@@ -948,10 +962,11 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     const answeredThrough = back.length === 0 ? entries[entries.length - 1]!.jid : back[0]!.jid - 1;
     if (answeredThrough >= entries[0]!.jid) forget(answeredThrough, true);
     if (back.length === 0) return;
-    if (answer.ok || refused !== null) {
+    if (answer.ok || refused !== null || (recalling && recallWaits < WAVE_RECALL_WAITS_MS.length)) {
       // After a refusal, nothing more in the wave was applied: they go again, first, as numbered.
       for (const entry of back) entry.lingers = false;
       queue.unshift(...back);
+      if (recalling) await new Promise<void>((resolve) => { timers.setTimeout(resolve, WAVE_RECALL_WAITS_MS[recallWaits++]!); });
       return;
     }
     lostEpoch(back, `the session could not apply this write: ${error?.message ?? 'no error'}`, writer);
