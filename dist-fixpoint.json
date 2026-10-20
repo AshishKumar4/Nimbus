@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "904b8ab743975fecdc37a0747fdd199ec9221fa26c0f7a12a81ad815499fde6a",
+  "fingerprint": "256ed36a5364eb956b80e6ca800b78658775f5fcbfc910095f5be9fd2aea213a",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -3454,7 +3454,7 @@
     "packages/worker/src/session/agent-oauth.ts": "a84b7fb210138339aef1d89b794167a1084a759438522c97ff8cc541fb759d53",
     "packages/worker/src/session/agent.ts": "6c926ac2fbc3f4c42d9fae12c412c8b8a8ccd8e554fff32d11ed26aad78438ef",
     "packages/worker/src/session/ai.ts": "67b8b9b1de74d29ade7cfcc58a6170529bd2cbe86e59a3d8d8c094223e4d81a8",
-    "packages/worker/src/session/dev-servers.ts": "51910a3a7f9c1c5e469ebe6c6caefe4736cf11d60286ffec3a19600986fdbc17",
+    "packages/worker/src/session/dev-servers.ts": "a746ade6b2224d0e166447b7a3a777e1163ef042c9d2b77c06f04c99678d6858",
     "packages/worker/src/session/diag.ts": "ecd8324047d0a2b0d2abae588b6363faca7e109dbe5482ed01dd6c25e82d6dcf",
     "packages/worker/src/session/editor-fs.ts": "91a52b737a2d13f69aad53f8b13d571f1e722915e2b29b2d0d3bc5a779f4928c",
     "packages/worker/src/session/fs-watch.ts": "45f87ee1a4fa61f48204669b54f42ac7f49d2d3246b45a8dde77b40b97c9f8c5",
