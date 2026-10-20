@@ -181,4 +181,4 @@ const allowance = (3 * (large.indexBytes - small.indexBytes)) / MB + PACK_PAGE_C
 const growth = large.growth - small.growth;
 const perFile = (growth * MB) / (LARGE - SMALL);
 console.log(`git-status-flat-heap: clean status peak +${small.growth.toFixed(1)} MiB at ${SMALL} files, +${large.growth.toFixed(1)} MiB at ${LARGE}: ${perFile.toFixed(0)} bytes a file (allowed ${allowance.toFixed(1)} MiB)`);
-assert.ok(growth <= allowance, `git status: its peak heap grew ${growth.toFixed(1)} MiB from ${SMALL} to ${LARGE} files, ${perFile.toFixed(0)} bytes a file (allowed ${allowance.toF
+assert.ok(growth <= allowance, `git status: its peak heap grew ${growth.toFixed(1)} MiB from ${SMALL} to ${LARGE} files, ${perFile.toFixed(0)} bytes a file (allowed ${allowance.toFixed(1)} MiB)`);
