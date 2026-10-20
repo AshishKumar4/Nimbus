@@ -4442,10 +4442,10 @@ const GENERATED_ARGS_OVERLAP = Math.max(...GENERATED_ARGS_OPENINGS.map((opening)
  * environment in its arguments, unlinked: its recipe generates it again.
  * Only a file the kernel wrote (a regular file the kernel owns, named by a
  * digest, in a directory the kernel owns) that opens its arguments as the
- * generator did, and that nothing still names (`kept`: what an application
- * image names, what a running process boots from). Read a slice at a time,
- * as an image can be tens of MiB: the store's own write slice, whole chunks
- * within one storage transaction.
+ * generator did, and that no application image names (`kept`). This
+ * release's sources are in the image store's own directory, not here. Read
+ * a slice at a time, as an image can be tens of MiB: the store's own write
+ * slice, whole chunks within one storage transaction.
  */
 function dropGeneratedNodeSources(vfs, kept) {
     const kernel = vfs.as(CRED_KERNEL);
@@ -4912,7 +4912,7 @@ export class FacetManager {
                 await this.ctx.storage.put(ownerKey, images.map((image) => ({ runner: image.runner, application: rewritten.get(image.application) ?? image.application })));
             }
             unlinkDurableImages(vfs, rewritten.keys());
-            dropGeneratedNodeSources(vfs, new Set([...namedPaths, ...this.imageStore.liveImages()]));
+            dropGeneratedNodeSources(vfs, namedPaths);
         }
         await this.ctx.storage.put(PROCESS_ENV_DROPPED_KEY, true);
         await this.ctx.storage.sync();

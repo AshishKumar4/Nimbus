@@ -114,8 +114,6 @@ export declare class ImageStore {
      * first byte, so a sweep that runs while this launch is suspended sees it.
      */
     materialize(pid: number, images: AsyncIterable<readonly [string, string | string[]]> | Iterable<readonly [string, string | string[]]>, pacer: TurnBudget): Promise<Record<string, string>>;
-    /** The images a running process boots from, or a launch is writing: the store's roots. */
-    liveImages(): Set<string>;
     /**
      * Drop every image of the store's (PROCESS_IMAGE_DIR) no running process
      * boots from. Only the store's: an embedder's images in FACET_IMAGE_DIR are
