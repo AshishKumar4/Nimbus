@@ -21,12 +21,13 @@ import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { isWebSocketUpgradeRequest } from '@nimbus-sh/core/_shared/websocket-upgrade.js';
 import { z } from 'zod/v4';
 import type { HostRoute } from './composition.js';
-import { ProcessHostLost, type ResidentBootSpec, type ResidentDiskReader, type ResidentSupervisorProps } from './process-fabric.js';
+import type { ResidentBootSpec, ResidentDiskReader, ResidentSupervisorProps } from './process-fabric.js';
 import { infrastructureSupervisor, infrastructureSupervisorProps, supervisorBindingProps, type InfrastructureSupervisorProps } from './supervisor-props.js';
 import { withResolvers } from './turn-budget.js';
 import { processes, abortFacet, deleteFacetStorage, type ResidentFacet, type ResidentFacetEnv } from './workerd-facet-host.js';
 import { HandledRequests, HOST_INCARNATION_HEADER } from './host-activity.js';
 import { responseScope } from '@nimbus-sh/core/runtime/port-registry.js';
+import { ProcessNotAdmitted } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { isHostReset } from '@nimbus-sh/platform/oom-classify.js';
 
 /**
@@ -100,7 +101,8 @@ export interface HostedHttpResponse {
   headers: [string, string][];
   body: ReadableStream | null;
 }
-export type HostedReply<T> = T | { hostLost: string };
+/** A reply, or this host's loss: with the pid whose request it refused unsent (`notAdmitted`), when it did. */
+export type HostedReply<T> = T | { hostLost: string; notAdmitted?: number };
 export const HOSTED_WATCH_HEADER = 'x-nimbus-hosted-watch';
 export const HOSTED_RESIDENCY_HEADER = 'x-nimbus-hosted-residency';
 export const HOSTED_FAILURE_HEADER = 'x-nimbus-hosted-failure';
@@ -431,7 +433,7 @@ export class PeerHost {
       // request by (HandledRequests). This relay's own end is its pipe's.
       const { scope, owner } = responseScope(new AbortController().signal);
       let response: Response;
-      try { response = await facet.handleHttpRequest(new Request(wire.url, init), scope, record.handled.signal(wire)); }
+      try { response = await facet.handleHttpRequest(new Request(wire.url, init), scope, { relayed: record.handled.signal(wire) }); }
       catch (error) { owner.fail(); throw error; }
       let body: ReadableStream | null = null;
       if (response.body) {
@@ -566,10 +568,10 @@ export class PeerHost {
   private async answer<T>(key: string, work: () => Promise<T>): Promise<HostedReply<T>> {
     try { return await work(); }
     catch (error) {
+      // A request its leaf refused unsent ran nowhere, whatever else this host knows.
+      if (error instanceof ProcessNotAdmitted) return { hostLost: errorText(error.cause), notAdmitted: error.pid };
       const failure = this.records.get(key)?.failure;
-      // A replaced leaf's refusal (ProcessHostLost) names its cause, which the coordinator wraps again.
       if (failure || error instanceof LostHostedProcess || isHostReset(error)) return { hostLost: errorText(failure ?? error) };
-      if (error instanceof ProcessHostLost) return { hostLost: errorText(error.cause) };
       throw error;
     }
   }
