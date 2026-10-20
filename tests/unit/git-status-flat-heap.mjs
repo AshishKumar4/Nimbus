@@ -143,12 +143,13 @@ async function cleanStatusPeak(count) {
       return (...args) => { sample(); return value.apply(target, args); };
     },
   });
+  // The heap before any git ran: what a status holds is measured from it, what an earlier one kept included.
+  Bun.gc(true);
+  const base = process.memoryUsage().heapUsed;
   const status = async (measured) => {
     measuring = measured;
     let stdout = '';
     let stderr = '';
-    Bun.gc(true);
-    const base = process.memoryUsage().heapUsed;
     peak = base;
     const code = await runGitCommand({
       pid: 1, cred: CRED_SESSION_USER, args: ['status', '--porcelain'], cwd: virtual,
