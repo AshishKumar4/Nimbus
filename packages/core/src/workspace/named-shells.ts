@@ -93,9 +93,9 @@ const ShellStateSchema = z.object({
   vars: VariableAttributesSchema.optional(),
 }).strict();
 
-/** Saved variable attributes (a hosted terminal's), or an error naming what is wrong with them. */
-export function parseVariableAttributes(value: unknown): VariableAttributes {
-  return VariableAttributesSchema.parse(value);
+/** Saved variable attributes (a hosted terminal's JSON), or an error naming what is wrong with them. */
+export function parseVariableAttributes(json: string): VariableAttributes {
+  return VariableAttributesSchema.parse(JSON.parse(json));
 }
 
 /** A saved shell state, or an error naming what is wrong with it. */

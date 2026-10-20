@@ -41,6 +41,14 @@ try {
     await next.close();
   }
 
+  // Values and marks are refused together: an oversized attributes row writes neither.
+  persistShellState(ctx, { cwd: '/home/user', env: { TOKEN: 'old' }, vars: { exported: ['TOKEN'], readonly: [], declared: [], arrays: {} } });
+  const huge = { exported: [], readonly: [], declared: [], arrays: { big: [[0, 'x'.repeat(300 * 1024)]] } };
+  assert.throws(() => persistShellState(ctx, { cwd: '/home/user', env: { TOKEN: 'secret' }, vars: huge }), /vars JSON exceeds/);
+  const kept = loadShellState(ctx);
+  assert.equal(kept.env.TOKEN, 'old', 'the refused snapshot left its values unwritten');
+  assert.deepEqual(kept.vars.exported, ['TOKEN']);
+
   // A state saved before its attributes: every saved variable exported, as each reached its programs then.
   persistShellState(ctx, { cwd: '/tmp', env: { OLDSAVE: 'v', HOME: '/home/user' }, vars: null });
   const old = loadShellState(ctx);
