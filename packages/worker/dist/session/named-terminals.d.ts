@@ -89,6 +89,7 @@ export declare class NamedTerminals {
     dispose(): void;
     /** Whether the terminal `name` may be opened: it is live or saved, or the session holds fewer than the limit. */
     admits(name: string): boolean;
+    /** `epoch`: the one the request began in; a dispose since refuses it, however long it waited. */
     private open;
     private start;
     /** A terminal closed or let go while an attach waited is not attached to (its socket is the caller's to refuse). */

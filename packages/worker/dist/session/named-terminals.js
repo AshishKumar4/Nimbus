@@ -202,21 +202,24 @@ export class NamedTerminals {
         const saved = this.host.workspace().terminalNames();
         return saved.includes(name) || new Set([...saved, ...this.live.keys(), ...this.opening.keys()]).size < NAMED_TERMINAL_LIMIT;
     }
-    open(name) {
+    /** `epoch`: the one the request began in; a dispose since refuses it, however long it waited. */
+    open(name, epoch = this.epoch) {
         const valid = TerminalNameSchema.parse(name);
+        if (this.epoch !== epoch)
+            return Promise.reject(new Error(`terminal ${valid}: the session's terminals were closed`));
         const live = this.live.get(valid);
         if (live !== undefined)
             return Promise.resolve(live);
         const closing = this.closing.get(valid);
         if (closing !== undefined)
-            return closing.then(() => this.open(valid));
+            return closing.then(() => this.open(valid, epoch));
         let opening = this.opening.get(valid);
         if (opening === undefined) {
             // Counted against the limit from now (admits), not once its shell is built.
             if (!this.admits(valid))
                 return Promise.reject(new TerminalLimitError());
             // One promise for every waiter: they resume in the order they asked.
-            const started = this.start(valid).finally(() => {
+            const started = this.start(valid, epoch).finally(() => {
                 if (this.opening.get(valid) === started)
                     this.opening.delete(valid);
             });
@@ -225,9 +228,8 @@ export class NamedTerminals {
         }
         return opening;
     }
-    async start(name) {
+    async start(name, epoch) {
         const workspace = this.host.workspace();
-        const epoch = this.epoch;
         const saved = workspace.terminalNames();
         const process = workspace.processes.spawn('sh', ['sh'], workspace.fs.cwd, { parentPid: workspace.shellProcessPid, terminal: name });
         let shell;

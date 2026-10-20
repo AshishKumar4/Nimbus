@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "1e888dd2cc56d32b45ae84d2c249dae574b849f9ddb97443f731c6e6105e7796",
+  "fingerprint": "a35eda71bea9753d8a7b34e577834c858f3d76de9cebac92b3c5799cceee5bbb",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2919,9 +2919,9 @@
     "packages/worker/dist/session/loopback.d.ts": "a582acb99017f6378226d8602f6e03a16be7e1bf512bc5149d70257ec92f006d",
     "packages/worker/dist/session/loopback.d.ts.map": "074c0d81c2b75b6b322d29a3eec0895cc2aa062f9f6bde3b784f023466245da2",
     "packages/worker/dist/session/loopback.js": "41af1f43196b10faaf73e27463027eb2566c8fce6483a9c105821aa4a8cd7523",
-    "packages/worker/dist/session/named-terminals.d.ts": "f242a390f4d93c85ce2bdacdaf1f1c46dcb4b610a41921a317fbfdef0a036cfd",
-    "packages/worker/dist/session/named-terminals.d.ts.map": "599b358ad7de3874b2dd39ec5971bb90e46cc8c2488b5b1d96197badbdc24503",
-    "packages/worker/dist/session/named-terminals.js": "1087047df586e77e8bd0e8a3dfabb684e78fd11f1834f401d06191a5248928fa",
+    "packages/worker/dist/session/named-terminals.d.ts": "2cde313fb7e380e6f474cb4193f28d64e989d9a514ee1e4b4606555dc32acf7c",
+    "packages/worker/dist/session/named-terminals.d.ts.map": "0e7779c4820e8df17ef97cf030b2651692ad65752e901eeb7586a37cfa57b253",
+    "packages/worker/dist/session/named-terminals.js": "0001f9d965db1b56b75dd8aec8c14159b0df24b58b5b28082e02cf60631b65da",
     "packages/worker/dist/session/nimbus-session.d.ts": "e490b667609ed32cec6eff832bfd873948559839377fa7c8131664e4fb28d76a",
     "packages/worker/dist/session/nimbus-session.d.ts.map": "731fabbc2cee0fdde2f5e181afd329d2be56c8f47cf39b6889aeefd1f8f307fc",
     "packages/worker/dist/session/nimbus-session.js": "9f1a2e4d9fabed424b99e252120ecc04016d85ab4f25ab0b31b9b91f5c335a79",
@@ -3447,7 +3447,7 @@
     "packages/worker/src/session/keys.ts": "099c9b1907c1bf15b80fb488b6c3a4cb55453013cd246a54bdf6a5465c5bec20",
     "packages/worker/src/session/legacy-reset.ts": "c854721d5de634c8a94549ec7ac15b8bf76c2f5aed55bbc3ae65736f9e90a6e8",
     "packages/worker/src/session/loopback.ts": "59c88698c2952d3f2c8bb28fe993e90aa4ec29aac107bd5917e1a0000aaaa741",
-    "packages/worker/src/session/named-terminals.ts": "225f18081f6e824ab0cfdd0e3d67397f1b7a84ad1e830fedf812ef722b916ccc",
+    "packages/worker/src/session/named-terminals.ts": "a7fea193805238e2ceab7370108af610995260e8153ca909a66ff3240672ecda",
     "packages/worker/src/session/nimbus-session.ts": "3eba0be84b6b200896ed808fc2f98a21a09786104a5ab39d1626225be29f6e7f",
     "packages/worker/src/session/npm-install-port.ts": "59768a9412090f2951d0b4b7e5074c84ea4cb29955ca8f4c41e737282c32ada6",
     "packages/worker/src/session/port-capability.ts": "3d558e264e7ebad07b72d4b855f3e8a26a56abdbfccb3883c0fa79b422dac561",
