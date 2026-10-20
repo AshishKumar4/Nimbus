@@ -287,9 +287,10 @@ interface AssignmentOutcome {
 /** An assignment that did what it was asked, with nothing to report. */
 const ASSIGNED: AssignmentOutcome = { diagnostics: [], failed: false };
 
+/** bash's declaration builtins: an argument written `name=(…)` is an array assignment. */
 function isDeclarationWord(word: readonly WordPart[]): boolean {
   const text = literalWordText(word);
-  return text === 'declare' || text === 'typeset' || text === 'local';
+  return text === 'declare' || text === 'typeset' || text === 'local' || text === 'export' || text === 'readonly';
 }
 
 function terminalStdinFd(io: ExecutionIo, stdin = io.stdin): boolean {
@@ -1096,7 +1097,7 @@ export class Interpreter {
 
     const expandCtx = this.createExpandContext(io);
 
-    // Expand words. A declaration builtin's (declare, typeset, local) array
+    // Expand words. A declaration builtin's (declare, typeset, local, export, readonly) array
     // assignments, `b=("$v" z)`, are read as an assignment's are (parseAssignment):
     // each element expanded as a word, and the argument only names the array.
     let arrayElements: Map<number, ArrayLiteral> | undefined;
