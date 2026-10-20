@@ -1,7 +1,7 @@
 // The file engine's measurements, on a throwaway built from work/measure-file-engine:
 // one session at a time, every command in a window of its own, so the guest
 // tail's lines (CPU, outcome, store measures) join to it by time.
-//   BASE=… NIMBUS_PROBE_TOKEN=… GROUPS=host,backing,mem,workloads,recall REPS=6 bun _file-engine-measure.mjs
+//   BASE=… NIMBUS_PROBE_TOKEN=… MEASURE_GROUPS=host,backing,mem,workloads,recall REPS=6 bun _file-engine-measure.mjs
 // Prints one JSON line per command: {group, label, arm, rep, sid, start, end, ms, exit, tail}
 // and, for the recall group, the session's delegation stats around each scenario.
 import { mintSession, deleteSession, Terminal, sleep, requestHeaders, BASE } from '../../_driver.mjs';
@@ -9,7 +9,7 @@ import { diagMemory } from '../../heap-correctness/_diag.mjs';
 
 const REPS = Number(process.env.REPS ?? 6);
 const GAP_MS = 1500;
-const groups = (process.env.GROUPS ?? 'host,backing,mem,workloads,recall').split(',');
+const groups = (process.env.MEASURE_GROUPS ?? 'host,backing,mem,workloads,recall').split(',');
 const only = process.env.ONLY ? new Set(process.env.ONLY.split(',')) : null;
 const out = (record) => console.log(JSON.stringify(record));
 
