@@ -3,7 +3,7 @@ import type { CPythonFacetResult } from './cpython-runner.js';
 import type { RubyFacetCallArgs } from './ruby-runner.js';
 import type { BashBootArgs, BashFeedArgs } from './bash/types.js';
 import type { WasiAbi, WasiFsSnapshot } from './wasi-instance.js';
-import type { VfsCred } from './os-contracts.js';
+import type { RuntimeFsBridge, VfsCred } from './os-contracts.js';
 import type { ResidentFilesystemStats } from './wasi/resident-filesystem.js';
 export type BashStepArgs = BashBootArgs | BashFeedArgs;
 /** The step the classic submit transport carries: args object in, slice out.
@@ -88,4 +88,41 @@ export type WasmCallResult = {
     error?: string;
     fsStats?: ResidentFilesystemStats | null;
 };
+/** What a tsrs run is: its command line, its directory and environment, and who runs it. */
+export interface TsrsFacetArgs {
+    argv: string[];
+    cwd: string;
+    env: Record<string, string>;
+    cred: VfsCred;
+    /** The session pid the compiler runs as (its runtime process). */
+    processPid: number;
+}
+/** How a tsrs run ended; its output went to the session as it was written. */
+export interface TsrsFacetResult {
+    exitCode: number;
+    error?: string;
+    /** The compiler's linear memory at its end: its peak, since a wasm memory never shrinks. */
+    memoryBytes?: number;
+    fsStats?: ResidentFilesystemStats | null;
+    /** Whether another run may take this worker (__wasiReusable): no syscall of this one was abandoned. */
+    reusable?: boolean;
+}
+/**
+ * One of tsrs's file operations (its `tsrs_host.fs` import, @tsrs/wasm's
+ * core.js), answered from `fs`: the bytes to hand back, or null for a path
+ * that does not exist. `request` is the operation's path, and for a write
+ * the path, a NUL and the bytes; the times of a chtimes follow its path the
+ * same way, as two NUL-separated decimal nanosecond counts.
+ */
+export declare function tsrsFileOperation(fs: RuntimeFsBridge, op: number, request: Uint8Array): Promise<Uint8Array | string | null>;
+/**
+ * Runs in the facet: one tsc invocation of tsrs.wasm (@tsrs/wasm), a fresh
+ * instance, the module's own `tsrs_input` / `tsrs_run` protocol. Its files
+ * are the process's resident filesystem (wasi/resident-filesystem.ts), so
+ * tsrs is a WASI guest like any other: the store answers what it holds, a
+ * miss asks the session, and what it writes settles before its exit status.
+ * The module calls its file import synchronously; the import suspends the
+ * run (JSPI) while the filesystem answers.
+ */
+export declare function tsrsFacetCall(args: TsrsFacetArgs, facetEnv: FacetBindings): Promise<TsrsFacetResult>;
 //# sourceMappingURL=facet-tasks.d.ts.map

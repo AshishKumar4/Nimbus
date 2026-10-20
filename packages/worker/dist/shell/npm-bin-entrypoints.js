@@ -54,11 +54,19 @@ export function installNpmBinFallbackResolver(registry, deps) {
             return binHandler(bin.name, async (vfs) => await resolveNpmBinPath(vfs, cwd, name), true);
         }
         // Registered commands, then PATH (searched upstream), then the bins of
-        // the node_modules directories from the cwd up.
+        // the node_modules directories from the cwd up, then Nimbus's own
+        // program for the name, if it has one.
         const upstream = await upstreamResolve(name, context);
         if (upstream)
             return upstream;
-        if (!context.search || !await probe(() => resolveNpmBin(inspector, cwd, name))) {
+        const bin = context.search ? await probe(() => resolveNpmBin(inspector, cwd, name)) : null;
+        if (context.search && deps.ownPrograms?.names.has(name)) {
+            const installed = bin === null ? null : await readNpmBinPackageMetadata(inspector, bin.packagePath);
+            const own = deps.ownPrograms.resolve(name, installed);
+            if (own)
+                return own;
+        }
+        if (bin === null) {
             let hint = null;
             try {
                 hint = await deps.runtimeCommandHint(name);
