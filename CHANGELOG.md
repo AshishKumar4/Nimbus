@@ -19,7 +19,12 @@ published independently in the `@nimbus-sh` npm scope.
   durable `spawnWorker` that passes an `env` now needs a
   `resolveWorkerLaunch` hook. The first start after the upgrade removes the
   copies earlier releases wrote. Copies already taken in a snapshot, an
-  export or a clone are not removed. `/api/_diag/session` lists the shell's
+  export or a clone are not removed, and neither are the plain-text copies
+  that releases before 0.19 wrote below `/var/lib/nimbus`: remove them with
+  `sudo rm -r /var/lib/nimbus` once no durable worker boots from there. A
+  Python or Ruby server whose image an earlier release wrote, under an
+  embedder that composes `resolveProcessEnv`, is not restarted, and the
+  session says so: start it again. `/api/_diag/session` lists the shell's
   variable names, not their values.
 - Fixed: Nimbus no longer deletes an embedder's images in
   `/.nimbus/facet-images`. The store that holds a resident process's

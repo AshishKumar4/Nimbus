@@ -17,16 +17,19 @@
 //   5. a session an earlier release left: the env its journal row held, a
 //      dev server's record held, an application blob held (named by nothing,
 //      too, or cut short by a reset), and the generated entries holding it
-//      (a composed recipe, as the store wrote it, and plain text below
-//      /var/lib/nimbus), are gone before anything is re-driven, and the
-//      relaunch gets the env back from the session's keeping. A file that
-//      only mentions the declaration stays, and so does one the kernel does
-//      not own;
+//      (composed recipes, as the store wrote them, in /.nimbus and below
+//      /var/lib/nimbus, an env owning `__proto__` too), are gone before
+//      anything is re-driven, and the relaunch gets the env back from the
+//      session's keeping. Module text that declares the same arguments (in
+//      a block comment, a template) stays, and so does a recipe the kernel
+//      does not own;
 //   6. a python resident's environment is built again on the host's answer
 //      as its first launch built it (an empty PYTHONUNBUFFERED is '1'
 //      again), and its image keeps no env. One an earlier release wrote
 //      whole keeps no facts to build from: its relaunch runs with the
-//      host's answer as it is, which the session keeps whole.
+//      environment the session keeps whole; under an embedder's resolver,
+//      which answers a base nothing can build on, it is not restarted, and
+//      the user is told.
 
 import assert from 'node:assert/strict';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
@@ -159,18 +162,23 @@ console.log('  [3] a host that answers null, throws or composes no resolver fail
   session.storage.set(key, { ...row, recipe: { ...row.recipe, opts: { ...row.recipe.opts, env: { SECRET: FIRST } } } });
   session.storage.delete(`process-env:${key}`);
   session.storage.delete(PROCESS_ENV_DROPPED_KEY);
-  // Its generated entry, the env in its arguments: composed as the store
-  // wrote it (a ModuleSourceRecipe's JSON, a library by reference), and as
-  // the plain text releases through 0.19 wrote below /var/lib/nimbus.
+  // Its generated entries, the env in their arguments: composed as the
+  // store wrote them (a ModuleSourceRecipe's JSON, a library by reference),
+  // in /.nimbus and below /var/lib/nimbus, one with an env owning
+  // `__proto__` (written as a computed key).
   const kernel = session.vfs.as(CRED_KERNEL);
   const args = { argv: [], env: { SECRET: FIRST }, cwd: '/home/user/app' };
   const library = new ImmutableModuleSource(new TextEncoder().encode('export const shims = 1;\n'), { path: '/node-shims/shims.js', sha256: '0'.repeat(64) });
-  const composed = JSON.stringify(moduleSource`import { DurableObject } from "cloudflare:workers";\n${library}\nconst __NIMBUS_ARGS = ${JSON.stringify(args)};\nexport class NimbusProcess extends DurableObject {}\n`.recipe());
-  const plain = `import { DurableObject } from "cloudflare:workers";\nconst __NIMBUS_ARGS = JSON.parse(${JSON.stringify(JSON.stringify(args))});\n`;
-  for (const [dir, image] of [['.nimbus/facet-images', composed], ['var/lib/nimbus/facet-images', plain]]) {
+  const entry = (declared) => JSON.stringify(moduleSource`import { DurableObject } from "cloudflare:workers";\n${library}\nconst __NIMBUS_ARGS = ${declared};\nexport class NimbusProcess extends DurableObject {}\n`.recipe());
+  const imageAt = async (dir, image) => {
     kernel.mkdir(dir, { recursive: true, mode: 0o755 });
-    kernel.writeFile(facetImagePath(await facetImageDigest(image)).slice(1).replace('.nimbus/facet-images', dir), image, { mode: 0o644 });
-  }
+    const path = facetImagePath(await facetImageDigest(image)).slice(1).replace('.nimbus/facet-images', dir);
+    kernel.writeFile(path, image, { mode: 0o644 });
+    return path;
+  };
+  await imageAt('.nimbus/facet-images', entry(JSON.stringify(args)));
+  await imageAt('.nimbus/facet-images', entry(`{"argv":[],"env":{["__proto__"]:"x","SECRET":${JSON.stringify(FIRST)}}}`));
+  await imageAt('var/lib/nimbus/facet-images', entry(JSON.stringify(args)));
   // A dev server's record, an application blob no index or row names, and
   // one a reset cut short (its bytes not yet what its name says), each with
   // the env in it.
@@ -180,20 +188,19 @@ console.log('  [3] a host that answers null, throws or composes no resolver fail
   kernel.writeFile(`.nimbus/images/${await facetImageDigest(orphan)}`, orphan, { mode: 0o644 });
   const whole = JSON.stringify({ modules: { 'a.js': 'x'.repeat(64) }, env: { SECRET: FIRST }, vfsWasmModules: null });
   kernel.writeFile(`.nimbus/images/${await facetImageDigest(whole)}`, whole.slice(0, whole.length / 2), { mode: 0o644 });
-  // Files that only look generated: one that mentions the declaration, and one the kernel does not own.
-  const mentions = `// const __NIMBUS_ARGS = ${JSON.stringify(args)};\nexport const answer = 42;\n`;
-  const mentioning = facetImagePath(await facetImageDigest(mentions)).slice(1);
-  kernel.writeFile(mentioning, mentions, { mode: 0o644 });
-  const usersOwn = `var/lib/nimbus/facet-images/${await facetImageDigest(plain + ' ')}.js`;
-  kernel.writeFile(usersOwn, plain, { mode: 0o644 });
+  // What only looks generated: module text declaring the same arguments in
+  // a block comment and in a template, and a recipe the kernel does not own.
+  const commented = await imageAt('.nimbus/facet-images', `/*\nconst __NIMBUS_ARGS = ${JSON.stringify(args)};\n*/\nexport const answer = 42;\n`);
+  const templated = await imageAt('.nimbus/facet-images', `export const doc = \`\nconst __NIMBUS_ARGS = ${JSON.stringify(args)};\n\`;\n`);
+  const usersOwn = await imageAt('var/lib/nimbus/facet-images', entry(JSON.stringify(args)) + ' ');
   kernel.chown(usersOwn, 1000, 1000);
 
   const gen2 = instance(session, 2);
   await gen2.manager.pumpResidentLaunches();
   await until(() => gen2.starts.length === 1, 'the re-drive to start');
   assert.equal(gen2.starts[0].env.SECRET, FIRST, 'the relaunch gets the env the row held, from the session\'s keeping');
-  assert.deepEqual(filesHolding(session.vfs, FIRST).sort(), [mentioning, usersOwn].sort(),
-    'the generated entries and the blobs that held it are gone; a file that only mentions the declaration, and one the kernel does not own, stay');
+  assert.deepEqual(filesHolding(session.vfs, FIRST).sort(), [commented, templated, usersOwn].sort(),
+    'the generated entries and the blobs that held it are gone; module text, and a recipe the kernel does not own, stay');
   assert.deepEqual(session.storage.get('dev-server:7'), { command: 'vite' }, 'the dev server\'s record holds no env');
   assert.deepEqual(session.storage.get('process-env:dev-server:7'), { env: { SECRET: FIRST } }, 'which the session keeps beside it');
   assert.equal([...session.storage.entries()].some(([name, value]) => !name.startsWith('process-env:') && JSON.stringify(value).includes(FIRST)), false,
@@ -236,11 +243,32 @@ console.log('  [3] a host that answers null, throws or composes no resolver fail
   session.storage.set(key, { ...row, attempt: 0, recipe: { ...row.recipe, image: { ...row.recipe.image, application: legacyDigest } } });
   session.storage.delete(`process-env:${key}`);
   session.storage.delete(PROCESS_ENV_DROPPED_KEY);
+  const legacyRows = new Map(session.storage);
   const gen3 = instance(session, 3);
   await gen3.manager.pumpResidentLaunches();
   await until(() => gen3.starts.length === 1, 'the re-drive of the migrated image to start');
   assert.deepEqual(gen3.starts[0].userEnv, interpreterProcessEnv(base, facts), 'the migrated image runs with the environment the session keeps whole');
   assert.deepEqual(filesHolding(session.vfs, FIRST), [], 'and no file holds it');
+
+  // The same session under an embedder that keeps nothing here, and answers a base.
+  session.storage.clear();
+  for (const [name, value] of legacyRows) session.storage.set(name, value);
+  kernel.writeFile(`.nimbus/images/${legacyDigest}`, legacy, { mode: 0o644 });
+  const told = [];
+  const gen4 = launchManager('process-env-relaunch', {
+    session, generation: 4, evaluate: () => ({ async startProcess() { return { ok: true }; } }),
+    hooks: {
+      resolveProcessEnv: async () => answer,
+      keepProcessEnv: undefined,
+      resolveWorkerLaunchFallback: (recipe) => resolveDurableWorkerImage(session.vfs, recipe),
+      notify: (line) => { told.push(line); },
+    },
+  });
+  await gen4.manager.pumpResidentLaunches();
+  await until(() => told.length > 0, 'the user to be told');
+  assert.match(told.join(''), /"python app\.py" is not restarted: its image held its environment/, 'it is not restarted, and the user is told');
+  assert.equal(journalKeys(session).length, 0, 'its row is gone');
+  assert.deepEqual(filesHolding(session.vfs, FIRST), [], 'and no file holds its environment');
   console.log(`  [6] an interpreter's environment is built again on the host's answer (pid ${pid}), from a migrated image too`);
 }
 
