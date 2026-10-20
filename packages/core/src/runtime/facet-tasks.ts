@@ -503,6 +503,20 @@ function tsrsKind(type: string): 'd' | 'f' | 'l' | 'o' {
     return type === 'directory' ? 'd' : type === 'file' ? 'f' : type === 'symlink' ? 'l' : 'o';
 }
 /**
+ * `create`, and once more after making the directories `path` lands in when
+ * one is missing: tsrs's writes make them, as its own host's do (write, then
+ * mkdir -p and write again).
+ */
+async function tsrsMakingParents<T>(fs: RuntimeFsBridge, path: string, create: () => Promise<T>): Promise<T> {
+    try {
+        return await create();
+    } catch (error) {
+        if (!tsrsMissing(error)) throw error;
+        await fs.mkdir(path.slice(0, path.lastIndexOf('/')) || '/', { recursive: true });
+        return await create();
+    }
+}
+/**
  * One of tsrs's file operations (its `tsrs_host.fs` import, @tsrs/wasm's
  * core.js), answered from `fs`: the bytes to hand back, or null for a path
  * that does not exist. `request` is the operation's path, and for a write
@@ -537,17 +551,11 @@ export async function tsrsFileOperation(fs: RuntimeFsBridge, op: number, request
             }
             case 3: return await fs.realpath(path);
             case 4: {
-                // A write makes the directories it lands in, as tsrs's own host does.
-                await fs.writeFile(path, rest.slice(), { createParents: true });
+                await tsrsMakingParents(fs, path, async () => { await fs.writeFile(path, rest.slice()); });
                 return '';
             }
             case 5: {
-                const flags = { write: true, append: true, create: true };
-                const handle = await Promise.resolve(fs.open(path, flags)).catch(async (error: unknown) => {
-                    if (!tsrsMissing(error)) throw error;
-                    await fs.mkdir(path.slice(0, path.lastIndexOf('/')) || '/', { recursive: true });
-                    return await fs.open(path, flags);
-                });
+                const handle = await tsrsMakingParents(fs, path, async () => await fs.open(path, { write: true, append: true, create: true }));
                 try { await fs.write(handle.id, null, rest.slice()); } finally { await fs.close(handle.id); }
                 return '';
             }

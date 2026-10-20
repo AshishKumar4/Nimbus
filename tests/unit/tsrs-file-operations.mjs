@@ -46,11 +46,8 @@ function bridge() {
       if (dirs.has(path) || files.has(path)) return path;
       throw fail('ENOENT');
     },
-    writeFile: async (path, bytes, options) => {
-      if (!dirs.has(parentOf(path))) {
-        if (!options?.createParents) throw fail('ENOENT');
-        for (let at = parentOf(path); !dirs.has(at); at = parentOf(at)) dirs.add(at);
-      }
+    writeFile: async (path, bytes) => {
+      if (!dirs.has(parentOf(path))) throw fail('ENOENT');
       files.set(path, dec.decode(bytes));
       return 1;
     },
