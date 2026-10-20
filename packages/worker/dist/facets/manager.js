@@ -4436,24 +4436,102 @@ function relaunchInterpreter(stored, base) {
 const LEGACY_FACET_IMAGE_DIR = 'var/lib/nimbus/facet-images';
 /**
  * The declaration of a generated Node entry's arguments, its environment
- * among them, as it stands in the entry's composed recipe: JSON text, where
- * JSON.stringify writes the line break before it as `\n`, always.
+ * among them, as it stands in the entry's composed recipe: inside one of its
+ * JSON strings, where JSON.stringify writes the line break before it as the
+ * escape `\n`, always.
  */
 const RECIPE_ARGS_DECLARATION = '\\nconst __NIMBUS_ARGS = ';
+/**
+ * Whether `text`, read in order a piece at a time (`feed`), is a composed
+ * recipe declaring a generated entry's arguments: a ModuleSourceRecipe's
+ * JSON, as the store writes it for `vfsComposedModules` (an array of strings
+ * and `{ path, sha256 }` objects, nothing after it), one of its strings
+ * holding the declaration. Only the scan's state is held, never the text.
+ */
+class RecipeScan {
+    depth = 0;
+    ended = false;
+    inString = false;
+    escaped = false;
+    matched = 0;
+    declares = false;
+    refused = false;
+    feed(text) {
+        for (const char of text) {
+            if (this.refused)
+                return;
+            if (this.inString)
+                this.stringChar(char);
+            else
+                this.structureChar(char);
+        }
+    }
+    /** The whole text was fed: whether it is such a recipe. */
+    get result() {
+        return !this.refused && this.ended && this.declares;
+    }
+    stringChar(char) {
+        const startsEscape = char === '\\' && !this.escaped;
+        if (this.depth === 1 && !this.declares) {
+            const expected = RECIPE_ARGS_DECLARATION[this.matched];
+            if (char === expected && (this.matched > 0 || startsEscape))
+                this.matched++;
+            else
+                this.matched = startsEscape ? 1 : 0;
+            if (this.matched === RECIPE_ARGS_DECLARATION.length)
+                this.declares = true;
+        }
+        if (char === '"' && !this.escaped)
+            this.inString = false;
+        this.escaped = startsEscape;
+    }
+    structureChar(char) {
+        if (char === ' ' || char === '\n' || char === '\r' || char === '\t')
+            return;
+        if (this.ended) {
+            this.refused = true;
+            return;
+        }
+        if (char === '"' && this.depth > 0) {
+            this.inString = true;
+            this.matched = 0;
+            return;
+        }
+        if (char === '[' && this.depth === 0) {
+            this.depth = 1;
+            return;
+        }
+        if (char === '{' && this.depth === 1) {
+            this.depth = 2;
+            return;
+        }
+        if (char === '}' && this.depth === 2) {
+            this.depth = 1;
+            return;
+        }
+        if (char === ']' && this.depth === 1) {
+            this.depth = 0;
+            this.ended = true;
+            return;
+        }
+        if ((char === ',' && this.depth > 0) || (char === ':' && this.depth === 2))
+            return;
+        this.refused = true;
+    }
+}
 /**
  * Every generated Node entry an earlier release wrote into an image
  * directory, its environment in its arguments, unlinked: its recipe
  * generates it again, and this release writes its own to the image store's
  * directory (PROCESS_IMAGE_DIR). An entry is told by what only the
- * generator writes there: a composed recipe (a JSON array of the entry's
- * parts, `vfsComposedModules`), declaring the arguments. An embedder's own
- * images are module text, and stay. Only a regular file the kernel owns,
- * named by a digest, in a directory the kernel owns. Read a slice at a time,
- * never whole, as an entry can be tens of MiB: the store's own write slice,
- * whole chunks within one storage transaction. The plain-text entries of
- * releases before recipes are below /var/lib/nimbus, which the kernel left
- * to its user (_kernelStoreFor); they stay, and the changelog says how to
- * remove them.
+ * generator writes there, a composed recipe declaring the arguments
+ * (RecipeScan). An embedder's own images are module text, and stay. Only a
+ * regular file the kernel owns, named by a digest, in a directory the
+ * kernel owns. Read a slice at a time, never whole, as an entry can be tens
+ * of MiB: the store's own write slice, whole chunks within one storage
+ * transaction. The plain-text entries of releases before recipes are below
+ * /var/lib/nimbus, which the kernel left to its user (_kernelStoreFor);
+ * they stay, and the changelog says how to remove them.
  */
 function dropGeneratedNodeEntries(vfs) {
     const kernel = vfs.as(CRED_KERNEL);
@@ -4465,15 +4543,13 @@ function dropGeneratedNodeEntries(vfs) {
     };
     const generatedEntry = (path) => {
         const size = kernel.stat(path).size;
+        const scan = new RecipeScan();
+        const decoder = new TextDecoder();
         for (let offset = 0; offset < size; offset += FACET_IMAGE_WRITE_SLICE_BYTES) {
-            // Each slice overlaps the next by the declaration's length, so one across their boundary is seen.
-            const text = new TextDecoder().decode(kernel.readRangeUncached(path, offset, Math.min(FACET_IMAGE_WRITE_SLICE_BYTES + RECIPE_ARGS_DECLARATION.length, size - offset)));
-            if (offset === 0 && !text.startsWith('["'))
-                return false;
-            if (text.includes(RECIPE_ARGS_DECLARATION))
-                return true;
+            scan.feed(decoder.decode(kernel.readRangeUncached(path, offset, Math.min(FACET_IMAGE_WRITE_SLICE_BYTES, size - offset)), { stream: true }));
         }
-        return false;
+        scan.feed(decoder.decode());
+        return scan.result;
     };
     for (const dir of [FACET_IMAGE_DIR, LEGACY_FACET_IMAGE_DIR]) {
         if (!kernelOwned(dir, 'directory'))
