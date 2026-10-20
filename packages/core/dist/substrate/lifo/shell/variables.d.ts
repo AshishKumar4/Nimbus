@@ -14,6 +14,8 @@ export interface VariableStore {
     readonly exportedNames: Set<string>;
     readonly declaredNames: Set<string>;
 }
+/** A store's values, which assignments read and write: arithmetic's (ArithmeticScope) as well as the shell's. */
+export type ShellValues = Pick<VariableStore, 'env' | 'arrays' | 'readonlyNames'>;
 /** A variable's complete binding: its scalar value, or its array, or neither; its export mark; whether it is declared with no value. */
 export interface SavedVariable {
     readonly scalar: string | undefined;
@@ -24,7 +26,7 @@ export interface SavedVariable {
 /** A variable dictionary: prototype names are ordinary variable names too. */
 export declare function cloneEnv(source: Readonly<Record<string, string>>): Record<string, string>;
 /** `name=value` (`name+=value` with `append`); on an array, its first element. False for a readonly name. */
-export declare function assignVariable(store: VariableStore, name: string, value: string, append?: boolean): boolean;
+export declare function assignVariable(store: ShellValues, name: string, value: string, append?: boolean): boolean;
 /** An array literal's array, and bash's diagnostic for each element it refused and skipped. */
 export interface ArrayLiteral {
     readonly array: (string | undefined)[];
@@ -35,7 +37,7 @@ export declare function assignArray(store: VariableStore, name: string, array: (
 /** The highest index that holds a value, or -1: bash's array_max_index, past which `a+=(…)` goes on. */
 export declare function lastIndex(array: readonly (string | undefined)[]): number;
 /** The array behind a subscripted assignment, promoting a scalar to its element 0 if needed. */
-export declare function arrayFor(store: VariableStore, name: string): (string | undefined)[];
+export declare function arrayFor(store: ShellValues, name: string): (string | undefined)[];
 /** One variable's whole binding, so a scope can put it back exactly: its array a copy, as what the scope does to it in place is not kept. */
 export declare function saveVariable(store: VariableStore, name: string): SavedVariable;
 /**

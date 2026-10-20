@@ -5,7 +5,7 @@ import { syscallError } from '../../../vfs/vfs-error.js';
 import { execRefusal } from '../../../shell/exec-dispatch.js';
 import { withRecall } from '../../../vfs/recall.js';
 import { parseAssignment, ParseError, ScriptLines } from './parser.js';
-import { expandWords, expandWord, expandPatternWord, expandSubscript, arithmeticOf, arithmeticValue, ArithmeticError, ExpansionError, } from './expander.js';
+import { expandArithmetic, expandBraceWord, expandWords, expandWord, expandPatternWord, expandSubscript, arithmeticOf, arithmeticValue, ArithmeticError, ExpansionError, reportWarnings, SubscriptArithmeticError, } from './expander.js';
 import { evaluateDoubleBracketWords } from './test-builtin.js';
 import { isPipeEnd, PipeChannel } from './pipe.js';
 import { arrayFor, arrayIndex, assignArray, assignVariable, lastIndex, restoreVariable, saveVariable, } from './variables.js';
@@ -112,9 +112,10 @@ function commandWordText(cmd) {
 }
 /** An assignment that did what it was asked, with nothing to report. */
 const ASSIGNED = { diagnostics: [], failed: false };
+/** bash's declaration builtins: an argument written `name=(…)` is an array assignment. */
 function isDeclarationWord(word) {
     const text = literalWordText(word);
-    return text === 'declare' || text === 'typeset' || text === 'local';
+    return text === 'declare' || text === 'typeset' || text === 'local' || text === 'export' || text === 'readonly';
 }
 function terminalStdinFd(io, stdin = io.stdin) {
     return io.terminalFds?.stdin ?? ((!stdin || stdin === io.terminalStdin) && Boolean(io.terminalStdin));
@@ -614,16 +615,25 @@ export class Interpreter {
     /** An arithmetic command's expression, expanded (as a double-quoted word, its quotes removed) and evaluated: null where that fails, reported as `((`'s. */
     async arithmeticCommandValue(expression, io) {
         const ctx = this.createExpandContext(io);
-        const text = await expandSubscript(expression, ctx);
+        const text = await expandArithmetic(expression, ctx);
+        let value;
+        let failure = null;
         try {
-            return arithmeticOf(text, ctx);
+            value = arithmeticOf(text, ctx);
         }
         catch (error) {
             if (!(error instanceof ArithmeticError))
                 throw error;
-            await ctx.report(`((: ${error.message}`);
-            return null;
+            value = null;
+            failure = error;
         }
+        await reportWarnings(ctx, ctx.report);
+        if (failure !== null)
+            await ctx.report(failure.reportedBy('(('));
+        // A subscript's error is an expansion's: the line's.
+        if (failure instanceof SubscriptArithmeticError)
+            throw new DiscardSignal();
+        return value;
     }
     loopTicks = 0;
     /**
@@ -782,7 +792,7 @@ export class Interpreter {
                     pid: io.commandIdentity.pid, cred: io.commandIdentity.cred, signal: io.signal,
                 }) };
         const expandCtx = this.createExpandContext(io);
-        // Expand words. A declaration builtin's (declare, typeset, local) array
+        // Expand words. A declaration builtin's (declare, typeset, local, export, readonly) array
         // assignments, `b=("$v" z)`, are read as an assignment's are (parseAssignment):
         // each element expanded as a word, and the argument only names the array.
         let arrayElements;
@@ -796,8 +806,24 @@ export class Interpreter {
                     (arrayElements ??= new Map()).set(expandedArgs.length - 1, await this.arrayLiteral(assignment.name, assignment.elements, false, expandCtx));
                     expandedArgs.push(`${assignment.name}=`);
                 }
-                else {
+                else if (index === 0) {
                     expandedArgs.push(...await expandWords([parts], expandCtx));
+                }
+                else {
+                    // An assignment as written, one brace expansion leaves as it is, expands as an
+                    // assignment's value: not split, no pathname expansion. Any other word, and
+                    // every word brace expansion makes, is fields (bash's subst.c keeps the flags
+                    // only for an unchanged word).
+                    const words = expandBraceWord(parts);
+                    const [only] = words;
+                    const unchanged = words.length === 1 && only !== undefined && only.map((part) => part.text).join('') === parts.map((part) => part.text).join('');
+                    if (assignment !== null && assignment.elements === undefined && unchanged) {
+                        const subscript = assignment.subscript === undefined ? '' : `[${assignment.subscript}]`;
+                        expandedArgs.push(`${assignment.name}${subscript}${assignment.append === true ? '+' : ''}=${await expandWord(assignment.value, expandCtx)}`);
+                    }
+                    else {
+                        expandedArgs.push(...await expandWords(words, expandCtx, true));
+                    }
                 }
             }
         }
@@ -1473,7 +1499,9 @@ export class Interpreter {
         return {
             env: this.config.env,
             arrays: this.config.arrays,
+            readonlyNames: this.config.readonlyNames,
             positionals: this.readPositionals(io),
+            warnings: [],
             lastExitCode: this.lastExitCode,
             cwd: this.config.getCwd(),
             vfs: io.vfs ?? this.config.vfs,

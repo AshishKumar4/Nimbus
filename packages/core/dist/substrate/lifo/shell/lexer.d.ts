@@ -146,5 +146,14 @@ export declare function readAnsiCQuote(input: string, pos: number): {
     text: string;
     end: number;
 };
+/**
+ * The quoted span at `pos`, whole. In double quotes a `$(...)`, `${...}` or
+ * backtick substitution is its own span, so a `"` inside it does not close
+ * the quote (`"$(echo ")")"`).
+ */
+export declare function readQuoted(input: string, pos: number, quote: '"' | "'"): {
+    text: string;
+    end: number;
+};
 export {};
 //# sourceMappingURL=lexer.d.ts.map

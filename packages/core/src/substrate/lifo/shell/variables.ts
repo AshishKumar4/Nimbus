@@ -16,6 +16,9 @@ export interface VariableStore {
   readonly declaredNames: Set<string>;
 }
 
+/** A store's values, which assignments read and write: arithmetic's (ArithmeticScope) as well as the shell's. */
+export type ShellValues = Pick<VariableStore, 'env' | 'arrays' | 'readonlyNames'>;
+
 /** A variable's complete binding: its scalar value, or its array, or neither; its export mark; whether it is declared with no value. */
 export interface SavedVariable {
   readonly scalar: string | undefined;
@@ -32,7 +35,7 @@ export function cloneEnv(source: Readonly<Record<string, string>>): Record<strin
 }
 
 /** `name=value` (`name+=value` with `append`); on an array, its first element. False for a readonly name. */
-export function assignVariable(store: VariableStore, name: string, value: string, append = false): boolean {
+export function assignVariable(store: ShellValues, name: string, value: string, append = false): boolean {
   if (store.readonlyNames.has(name)) return false;
   const array = store.arrays.get(name);
   if (array !== undefined) array[0] = append ? (array[0] ?? '') + value : value;
@@ -65,7 +68,7 @@ export function lastIndex(array: readonly (string | undefined)[]): number {
 }
 
 /** The array behind a subscripted assignment, promoting a scalar to its element 0 if needed. */
-export function arrayFor(store: VariableStore, name: string): (string | undefined)[] {
+export function arrayFor(store: ShellValues, name: string): (string | undefined)[] {
   const existing = store.arrays.get(name);
   if (existing !== undefined) return existing;
   const scalar = store.env[name];

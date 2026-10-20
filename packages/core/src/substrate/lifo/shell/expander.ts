@@ -3,9 +3,9 @@ import { isShellIdentifier } from './names.js';
 import { DEFAULT_HOME } from '../../../constants.js';
 import type { ProcessView } from '../../../runtime/process-files.js';
 import { characterAt, characterBounds, characterWidth, escapeGlob, expandGlob, fixedMatchLength, shellMatch, shellUnits } from '../utils/glob.js';
-import { readAnsiCQuote, readBacktickSubstitution, readBalancedCommand, readBracedExpansion } from './lexer.js';
+import { readAnsiCQuote, readBacktickSubstitution, readBalancedCommand, readBracedExpansion, readQuoted } from './lexer.js';
 import type { ShellOptions } from './state.js';
-import { arrayIndex } from './variables.js';
+import { arrayFor, arrayIndex, assignVariable, type ShellValues } from './variables.js';
 import { DiscardSignal } from './discard.js';
 
 export interface ExpandContext {
@@ -15,8 +15,12 @@ export interface ExpandContext {
    * `${arr[@]}` skips and `${!arr[@]}` omits. A name lives here or in `env`,
    * never both, so `$arr` and `${arr[0]}` have one answer.
    */
-  arrays?: ReadonlyMap<string, readonly (string | undefined)[]>;
+  arrays: Map<string, (string | undefined)[]>;
+  /** The names `readonly` protects: arithmetic's assignments refuse them. */
+  readonlyNames: ReadonlySet<string>;
   positionals?: readonly string[];
+  /** Arithmetic's warnings (a bad array subscript) not yet reported (reportWarnings). */
+  warnings: string[];
   lastExitCode: number;
   cwd: string;
   vfs: ProcessView;
@@ -56,7 +60,41 @@ export class ExpansionError extends Error {}
  * the token. Met expanding, it is reported and the line discarded
  * (arithmeticValue); in `[[ ]]` it makes its comparison false.
  */
-export class ArithmeticError extends Error {}
+export class ArithmeticError extends Error {
+  /** As a command (`((`, `let`, `[[`) reports it: after its name, as bash's evalerror does. */
+  reportedBy(command: string): string {
+    return `${command}: ${this.message}`;
+  }
+}
+
+/** An arithmetic assignment to a readonly name (bash's err_readonly): its diagnostic is the name's alone, whoever reports it. */
+export class ReadonlyArithmeticError extends ArithmeticError {
+  override reportedBy(): string {
+    return this.message;
+  }
+}
+
+/**
+ * An error in an array subscript's arithmetic: an expansion's (bash's
+ * array_expand_index), its diagnostic its own, and the line discarded
+ * whoever meets it (`((`, `let` and `[[` too).
+ */
+export class SubscriptArithmeticError extends ArithmeticError {
+  override reportedBy(): string {
+    return this.message;
+  }
+}
+
+/** What arithmetic reads and writes: the shell's values, its positional parameters, and where its warnings go. */
+export interface ArithmeticScope extends ShellValues {
+  readonly positionals?: readonly string[];
+  readonly warnings: string[];
+}
+
+/** Report `scope`'s pending warnings, in order (arithmetic's, which it cannot write as it goes). */
+export async function reportWarnings(scope: ArithmeticScope, report: (diagnostic: string) => Promise<void>): Promise<void> {
+  for (const warning of scope.warnings.splice(0)) await report(warning);
+}
 
 const IFS_WHITESPACE = ' \t\n';
 
@@ -86,13 +124,14 @@ type ParameterRef = { name: string; subscript?: string };
  * Expand all words for a command's arguments: brace expansion, tilde,
  * parameter/arithmetic/command substitution, IFS field splitting, globbing.
  */
-export async function expandWords(words: WordPart[][], ctx: ExpandContext): Promise<string[]> {
+export async function expandWords(words: WordPart[][], ctx: ExpandContext, braceExpanded = false): Promise<string[]> {
   const results: string[] = [];
 
   for (const word of words) {
-    for (const braceExpandedWord of expandBraceWord(word)) {
-      // Each field globbed as a pattern whose quoted characters match only
-      // themselves: an unquoted expansion's `*` globs, a quoted one's does not.
+    // Each field globbed as a pattern whose quoted characters match only
+    // themselves: an unquoted expansion's `*` globs, a quoted one's does not.
+    // Words brace expansion made already (`braceExpanded`) are not expanded again.
+    for (const braceExpandedWord of braceExpanded ? [word] : expandBraceWord(word)) {
       for (const field of splitFields(await expandParts(braceExpandedWord, ctx), ifsOf(ctx))) {
         if (field.pattern === null) results.push(field.text);
         else results.push(...await expandGlob(field.pattern, field.text, ctx.cwd, ctx.vfs));
@@ -147,7 +186,7 @@ export async function expandWord(parts: WordPart[], ctx: ExpandContext): Promise
   return joinPieces(await expandParts(parts, ctx));
 }
 
-function expandBraceWord(parts: WordPart[]): WordPart[][] {
+export function expandBraceWord(parts: WordPart[]): WordPart[][] {
   let combinations: WordPart[][] = [[]];
 
   for (const part of parts) {
@@ -376,13 +415,17 @@ async function expandDollar(
   // $((...)) -- arithmetic expansion
   if (next === '(' && text[pos + 2] === '(') {
     const arithmetic = readArithmeticExpansion(text, pos);
-    // Evaluated in place: a loop's $((i + 1)) awaits nothing unless it fails.
+    // Its text expanded first, as bash's expand_arith_string does it (parameters,
+    // substitutions, quotes removed); text with nothing to expand is evaluated in
+    // place: a loop's $((i + 1)) awaits nothing unless it fails.
+    const expression = ARITHMETIC_EXPANDS.test(arithmetic.expression) ? await expandArithmetic(arithmetic.expression, ctx) : arithmetic.expression;
     let result: number;
     try {
-      result = arithmeticOf(arithmetic.expression, ctx);
+      result = arithmeticOf(expression, ctx);
     } catch (error) {
       return await discardArithmetic(error, ctx);
     }
+    if (ctx.warnings.length > 0) await reportWarnings(ctx, ctx.report);
     return { pieces: [valuePiece(String(result), quoted)], end: arithmetic.end };
   }
 
@@ -474,15 +517,24 @@ async function resolveParameter(ref: ParameterRef, ctx: ExpandContext): Promise<
       : ctx.env[name] === undefined ? [] : [ctx.env[name]];
     return { kind: 'list', values, star: subscript === '*' };
   }
-  if (array === undefined) {
-    const value = ctx.env[name];
-    if (subscript === undefined) return { kind: 'scalar', value };
-    // A scalar is an array of its one value.
-    const index = await arithmeticValue(await expandSubscript(subscript, ctx), ctx);
-    return { kind: 'scalar', value: index === 0 || index === -1 ? value : undefined };
+  if (subscript === undefined) return { kind: 'scalar', value: array === undefined ? ctx.env[name] : array[0] };
+  // A scalar is an array of its one value. A subscript before the first is bad (bash's array_expand_index).
+  const value = await arithmeticValue(await expandSubscript(subscript, ctx), ctx);
+  const index = array === undefined ? value : arrayIndex(array, value);
+  if (index < 0) {
+    await ctx.report(`${name}: bad array subscript`);
+    return { kind: 'scalar', value: undefined };
   }
-  const index = subscript === undefined ? 0 : arrayIndex(array, await arithmeticValue(await expandSubscript(subscript, ctx), ctx));
-  return { kind: 'scalar', value: array[index] };
+  return { kind: 'scalar', value: array === undefined ? (index === 0 ? ctx.env[name] : undefined) : array[index] };
+}
+
+/**
+ * Arithmetic text once its expansions are done, as bash's expand_arith_string
+ * does them: as in double quotes (a single quote is the expression's, and an
+ * error there), its double quotes removed.
+ */
+export async function expandArithmetic(text: string, ctx: ExpandContext): Promise<string> {
+  return joinPieces(await expandParameterWord(text, ctx, 'double'));
 }
 
 /** A subscript's text once its expansions (`$i`, `$(…)`) are done, before its arithmetic. */
@@ -491,22 +543,26 @@ export async function expandSubscript(subscript: string, ctx: ExpandContext): Pr
 }
 
 /** An expanded word's arithmetic (a subscript's, a `[[ -eq ]]` operand's, let's): a blank one is 0. Throws ArithmeticError. */
-export function arithmeticOf(expanded: string, ctx: Pick<ExpandContext, 'env' | 'positionals'>): number {
-  return expanded.trim() === '' ? 0 : evaluateArithmetic(expanded, ctx.env, ctx.positionals);
+export function arithmeticOf(expanded: string, scope: ArithmeticScope): number {
+  return expanded.trim() === '' ? 0 : evaluateArithmetic(expanded, scope);
 }
 
 /** arithmeticOf as an expansion meets it: an error is reported, and the rest of the line discarded (bash's evalerror). */
 export async function arithmeticValue(expanded: string, ctx: ExpandContext): Promise<number> {
+  let value: number;
   try {
-    return arithmeticOf(expanded, ctx);
+    value = arithmeticOf(expanded, ctx);
   } catch (error) {
     return await discardArithmetic(error, ctx);
   }
+  if (ctx.warnings.length > 0) await reportWarnings(ctx, ctx.report);
+  return value;
 }
 
 /** An arithmetic error met expanding: reported, and the rest of the line discarded. Anything else is thrown as it is. */
 async function discardArithmetic(error: unknown, ctx: ExpandContext): Promise<never> {
   if (!(error instanceof ArithmeticError)) throw error;
+  await reportWarnings(ctx, ctx.report);
   await ctx.report(error.message);
   throw new DiscardSignal();
 }
@@ -954,8 +1010,9 @@ function parameterWordParts(word: string, mode: ParameterWordMode): WordPart[] {
       }
     }
     if ((ch === "'" && !plain) || ch === '"') {
-      const end = word.indexOf(ch, i + 1);
-      const close = end === -1 ? word.length : end;
+      // Its close as the lexer finds it: a quote in a substitution inside it is the substitution's.
+      const end = readQuoted(word, i, ch).end;
+      const close = end > i + 1 && word[end - 1] === ch ? end - 1 : word.length;
       flush();
       parts.push({ text: word.slice(i + 1, close), quoted: ch === "'" ? 'single' : 'double' });
       i = close + 1;
@@ -1165,12 +1222,22 @@ function replaceMatches(text: string, pattern: string, replacement: string, all:
 
 // ─── Arithmetic evaluator ───
 
-function evaluateArithmetic(expr: string, env: Record<string, string>, positionals?: readonly string[], depth = 0): number {
+function evaluateArithmetic(expr: string, scope: ArithmeticScope, depth = 0): number {
   // Its trailing blanks are its own, as bash's diagnostics quote the expression.
-  const parser = new ArithParser(expr.trimStart(), env, positionals, depth);
+  const parser = new ArithParser(expr.trimStart(), scope, depth);
   const result = parser.parseExpression();
+  parser.expectEnd();
   return result;
 }
+
+/** What an operand begins with: a number, a name or `(`. */
+const OPERAND_START = /[0-9A-Za-z_(]/;
+
+/** A subscript's `$name`, `${name}` and `$1`, which it expands as text. */
+const SUBSCRIPT_NAME = /\$(?:\{([A-Za-z_][A-Za-z0-9_]*|[0-9]+)\}|([A-Za-z_][A-Za-z0-9_]*|[0-9]))/g;
+
+/** Arithmetic text with something to expand before it is evaluated. */
+const ARITHMETIC_EXPANDS = /[$`"'\\]/;
 
 /** An arithmetic assignment's operators, the longest first. */
 const ASSIGNMENT_OPERATORS = ['<<=', '>>=', '+=', '-=', '*=', '/=', '%=', '&=', '^=', '|=', '='];
@@ -1231,17 +1298,15 @@ function integerConstant(text: string, error: (why: string) => ArithmeticError):
 class ArithParser {
   private expr: string;
   private pos = 0;
-  private env: Record<string, string>;
-  private positionals?: readonly string[];
+  private readonly scope: ArithmeticScope;
   /** How many variables' values this expression is evaluated inside. */
   private readonly depth: number;
   /** Inside a branch `&&`, `||` or `?:` skips (bash's noeval): read, its variables neither evaluated nor assigned. */
   private noeval = 0;
 
-  constructor(expr: string, env: Record<string, string>, positionals?: readonly string[], depth = 0) {
+  constructor(expr: string, scope: ArithmeticScope, depth = 0) {
     this.expr = expr;
-    this.env = env;
-    this.positionals = positionals;
+    this.scope = scope;
     this.depth = depth;
   }
 
@@ -1256,8 +1321,110 @@ class ArithParser {
     }
   }
 
-  private assign(name: string, value: string): void {
-    if (this.noeval === 0) this.env[name] = value;
+  private warn(diagnostic: string): void {
+    if (this.noeval === 0) this.scope.warnings.push(diagnostic);
+  }
+
+  /**
+   * A subscript's arithmetic, its quotes removed first (bash's
+   * array_expand_index): null for `@`, `*` or an empty one, bad subscripts;
+   * blank is 0. Its error is an expansion's, the line's (SubscriptArithmeticError).
+   */
+  private subscriptValue(text: string): number | null {
+    const trimmed = text.trim();
+    if (text === '' || trimmed === '@' || trimmed === '*') return null;
+    if (this.noeval > 0 || trimmed === '') return 0;
+    // Its original quotes removed as arithmetic's are (expandArithmetic), and its names expanded as
+    // text, a value's characters its data; a backslash-quoted `$` is no name. Any other expansion
+    // left in it (a value's subscript) is an operand error, not a guess.
+    const expression = /["\\$]/.test(text)
+      ? parameterWordParts(text, 'double').map((part) => (part.quoted === 'single' ? part.text : this.expandNames(part.text))).join('')
+      : text;
+    try {
+      // Its own evaluation is a level deeper, as a value's is: a subscript naming itself ends.
+      if (this.depth >= MAX_ARITHMETIC_DEPTH) {
+        throw new ArithmeticError(`${expression}: expression recursion level exceeded (error token is "${expression}")`);
+      }
+      return evaluateArithmetic(expression, this.scope, this.depth + 1);
+    } catch (error) {
+      if (!(error instanceof ArithmeticError) || error instanceof SubscriptArithmeticError) throw error;
+      throw new SubscriptArithmeticError(error.message);
+    }
+  }
+
+  /** Where `name[text]` is read: an array's index counted back from past its last value, a scalar's 0 alone; null where bad, warned of. */
+  private readIndex(name: string, text: string): number | null {
+    const value = this.subscriptValue(text);
+    if (value === null) {
+      this.warn(`${name}[${text}]: bad array subscript`);
+      return null;
+    }
+    const array = this.scope.arrays.get(name);
+    const index = array === undefined ? value : arrayIndex(array, value);
+    if (index < 0) {
+      this.warn(`${name}: bad array subscript`);
+      return null;
+    }
+    return index;
+  }
+
+  /** Where `name[text]` is written: a scalar is an array of its one value, an unset name an empty one; null where bad, warned of. */
+  private writeIndex(name: string, text: string): number | null {
+    const value = this.subscriptValue(text);
+    const scalar = this.scope.env[name];
+    const existing = this.scope.arrays.get(name) ?? (scalar === undefined ? [] : [scalar]);
+    const index = value === null ? -1 : arrayIndex(existing, value);
+    if (index < 0) {
+      this.warn(`${name}[${text}]: bad array subscript`);
+      return null;
+    }
+    return index;
+  }
+
+  /** `name`'s value (its element at `index`, where it has one; none where that is null) read as an expression. */
+  private read(name: string, index?: number | null): number {
+    if (this.noeval > 0 || index === null) return 0;
+    if (index === undefined) return this.valueOf(name, this.getParameter(name));
+    const array = this.scope.arrays.get(name);
+    return this.valueOf(name, array === undefined ? (index === 0 ? this.scope.env[name] : undefined) : array[index]);
+  }
+
+  /**
+   * `value` into `name` (its element at `index`, where it has one; nothing
+   * where that is null, a bad subscript), as bash's expr_bind_variable binds
+   * it: a readonly name refuses; an element promotes a scalar.
+   */
+  private store(name: string, index: number | null | undefined, value: number): void {
+    if (this.noeval > 0 || index === null) return;
+    if (this.scope.readonlyNames.has(name)) throw new ReadonlyArithmeticError(`${name}: readonly variable`);
+    if (index === undefined) assignVariable(this.scope, name, String(value));
+    else arrayFor(this.scope, name)[index] = String(value);
+  }
+
+  /** Where a read-then-write binds: the index its read found, or, where that was bad, its subscript found again (bash's expassign). */
+  private bindIndex(name: string, subscript: string | undefined, index: number | null | undefined): number | null | undefined {
+    return index === null && subscript !== undefined ? this.writeIndex(name, subscript) : index;
+  }
+
+  /** The `[subscript]` after a name, its text as written (read whole, its quotes and substitutions its own); none where none follows. */
+  private readSubscript(): string | undefined {
+    if (this.peek() !== '[') return undefined;
+    const span = readBalancedCommand(this.expr, this.pos + 1, '[', ']');
+    if (!span.closed) return undefined;
+    this.pos = span.end;
+    return span.body;
+  }
+
+  /** bash's syntax evalerror: the whole expression, `why`, and the rest from here, the token in error. */
+  private syntaxError(why: string): ArithmeticError {
+    return new ArithmeticError(`${this.expr}: ${why} (error token is "${this.expr.slice(this.pos)}")`);
+  }
+
+  /** Nothing left once the expression is read: an operand there is a second one, anything else no operator. */
+  expectEnd(): void {
+    this.skipSpaces();
+    if (this.pos >= this.expr.length) return;
+    throw this.syntaxError(OPERAND_START.test(this.peek()) ? 'syntax error in expression' : 'syntax error: invalid arithmetic operator');
   }
 
   /** bash's evalerror at the token from `start` to here: the expression through it, `why`, the token. */
@@ -1265,8 +1432,9 @@ class ArithParser {
     return new ArithmeticError(`${this.expr.slice(0, this.pos)}: ${why} (error token is "${this.expr.slice(start, this.pos)}")`);
   }
 
+  /** Blanks and newlines, as bash's arithmetic skips them (cr_whitespace). */
   private skipSpaces(): void {
-    while (this.pos < this.expr.length && (this.expr[this.pos] === ' ' || this.expr[this.pos] === '\t')) {
+    while (this.pos < this.expr.length && (this.expr[this.pos] === ' ' || this.expr[this.pos] === '\t' || this.expr[this.pos] === '\n' || this.expr[this.pos] === '\r')) {
       this.pos++;
     }
   }
@@ -1531,9 +1699,11 @@ class ArithParser {
       this.pos += 2;
       this.skipSpaces();
       const name = this.readVarName();
-      if (name) {
-        const val = this.getVar(name) + (ch === '+' ? 1 : -1);
-        this.assign(name, String(val));
+      if (name !== null) {
+        const subscript = this.readSubscript();
+        const index = subscript === undefined ? undefined : this.readIndex(name, subscript);
+        const val = this.read(name, index) + (ch === '+' ? 1 : -1);
+        this.store(name, this.bindIndex(name, subscript, index), val);
         return val;
       }
       this.pos = start;
@@ -1580,32 +1750,20 @@ class ArithParser {
       return this.readNumber();
     }
 
-    // $VAR reference -- skip the $ and read variable name
-    if (ch === '$') {
-      this.pos++;
-      this.skipSpaces();
-      const name = this.readVarName();
-      if (name) return this.getVar(name);
-      return 0;
-    }
-
     // Variable reference (possibly with post-increment)
     if (/[a-zA-Z_]/.test(ch)) {
       const name = this.readVarName();
-      if (!name) return 0;
+      if (name === null) return 0;
+      const subscript = this.readSubscript();
       this.skipSpaces();
 
-      // Post-increment/decrement
-      if (this.pos + 1 < this.expr.length && this.expr[this.pos] === '+' && this.expr[this.pos + 1] === '+') {
+      // Post-increment/decrement: the element's index found once, for its read and its write.
+      if (this.pos + 1 < this.expr.length && (this.expr[this.pos] === '+' || this.expr[this.pos] === '-') && this.expr[this.pos + 1] === this.expr[this.pos]) {
+        const step = this.expr[this.pos] === '+' ? 1 : -1;
         this.pos += 2;
-        const val = this.getVar(name);
-        this.assign(name, String(val + 1));
-        return val;
-      }
-      if (this.pos + 1 < this.expr.length && this.expr[this.pos] === '-' && this.expr[this.pos + 1] === '-') {
-        this.pos += 2;
-        const val = this.getVar(name);
-        this.assign(name, String(val - 1));
+        const index = subscript === undefined ? undefined : this.readIndex(name, subscript);
+        const val = this.read(name, index);
+        this.store(name, this.bindIndex(name, subscript, index), val + step);
         return val;
       }
 
@@ -1616,17 +1774,25 @@ class ArithParser {
         this.pos += operator.length;
         this.skipSpaces();
         const start = this.pos;
-        // A compound one's left value is read before its right side runs (bash's expassign).
-        const left = operator === '=' ? 0 : this.getVar(name);
-        const right = this.parseTernary();
-        const val = operator === '=' ? right : this.operate(operator.slice(0, -1), left, right, start);
-        this.assign(name, String(val));
+        // `=`'s subscript is found once its right side has run; a compound one's
+        // left value, and the index it is at, before (bash's readtok and expassign).
+        if (operator === '=') {
+          const right = this.parseTernary();
+          this.store(name, subscript === undefined ? undefined : this.writeIndex(name, subscript), right);
+          return right;
+        }
+        const index = subscript === undefined ? undefined : this.readIndex(name, subscript);
+        const left = this.read(name, index);
+        const val = this.operate(operator.slice(0, -1), left, this.parseTernary(), start);
+        this.store(name, this.bindIndex(name, subscript, index), val);
         return val;
       }
 
-      return this.getVar(name);
+      return this.read(name, subscript === undefined ? undefined : this.readIndex(name, subscript));
     }
 
+    // Anything else where an operand is due is an error; the end of the text is 0.
+    if (this.pos < this.expr.length) throw this.syntaxError('syntax error: operand expected');
     return 0;
   }
 
@@ -1645,22 +1811,27 @@ class ArithParser {
     return name || null;
   }
 
-  /** A variable's value read as an expression (bash's expr_streval): unset or empty is 0. */
-  private getVar(name: string): number {
-    const val = this.getParameter(name);
-    if (val === undefined || val.trim() === '' || this.noeval > 0) return 0;
+  /** `name`'s value `val` read as an expression: unset or empty is 0. */
+  private valueOf(name: string, val: string | undefined): number {
+    if (val === undefined || val.trim() === '') return 0;
     // A decimal integer, the most a variable holds, is its value.
     if (DECIMAL_INTEGER.test(val)) return Number(val);
     if (this.depth >= MAX_ARITHMETIC_DEPTH) {
       throw new ArithmeticError(`${name}: expression recursion level exceeded (error token is "${name}")`);
     }
-    return evaluateArithmetic(val, this.env, this.positionals, this.depth + 1);
+    return evaluateArithmetic(val, this.scope, this.depth + 1);
   }
 
+  /** `text` with its `$name`, `${name}` and `$1` replaced by their values (unset, empty), as a subscript expands them. */
+  private expandNames(text: string): string {
+    return text.replace(SUBSCRIPT_NAME, (_, braced: string | undefined, bare: string | undefined) => this.getParameter(braced ?? bare ?? '') ?? '');
+  }
+
+  /** A name's value: a positional parameter's, a scalar's, or an array's first element. */
   private getParameter(name: string): string | undefined {
-    if (this.positionals !== undefined && isPositionalParameterName(name)) {
-      return this.positionals[Number.parseInt(name, 10) - 1];
+    if (this.scope.positionals !== undefined && isPositionalParameterName(name)) {
+      return this.scope.positionals[Number.parseInt(name, 10) - 1];
     }
-    return this.env[name];
+    return this.scope.env[name] ?? this.scope.arrays.get(name)?.[0];
   }
 }

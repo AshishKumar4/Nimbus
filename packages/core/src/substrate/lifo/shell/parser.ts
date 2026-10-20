@@ -928,21 +928,31 @@ function assignmentHead(token: Token): { length: number; name: string; subscript
  * with the length of the word through the `=`. Null where they are not there.
  */
 function operatorAfter(parts: readonly WordPart[], start: number): { length: number; subscript?: string; append: boolean } | null {
-  // The characters after `start`, each with whether it is quoted.
+  // The characters after `start`, each with whether it is quoted; `crossedQuote`,
+  // whether an empty quoted part (`""`) came before it: as any quote, it makes
+  // a name or an operator no assignment's.
   let part = 0;
   let at = start;
   let length = start;
+  let crossedQuote = false;
   const next = (): { char: string; quoted: boolean } | null => {
+    crossedQuote = false;
     for (; part < parts.length; part++, at = 0) {
       const current = parts[part];
-      if (current === undefined || at >= current.text.length) continue;
+      if (current === undefined) continue;
+      const quoted = current.quoted !== 'none' || current.commandSubstitution !== undefined;
+      if (at >= current.text.length) {
+        if (quoted && current.text === '') crossedQuote = true;
+        continue;
+      }
       const char = current.text.charAt(at++);
       length++;
-      return { char, quoted: current.quoted !== 'none' || current.commandSubstitution !== undefined };
+      return { char, quoted };
     }
     return null;
   };
   let char = next();
+  if (crossedQuote) return null;
   let subscript: string | undefined;
   if (char !== null && char.char === '[' && !char.quoted) {
     let text = '';
@@ -955,11 +965,13 @@ function operatorAfter(parts: readonly WordPart[], start: number): { length: num
     if (char === null) return null;
     subscript = text;
     char = next();
+    if (crossedQuote) return null;
   }
   let append = false;
   if (char !== null && char.char === '+' && !char.quoted) {
     append = true;
     char = next();
+    if (crossedQuote) return null;
   }
   if (char === null || char.char !== '=' || char.quoted) return null;
   return { length, ...(subscript === undefined ? {} : { subscript }), append };

@@ -1,6 +1,7 @@
 import type { WordPart } from './types.js';
 import type { ProcessView } from '../../../runtime/process-files.js';
 import type { ShellOptions } from './state.js';
+import { type ShellValues } from './variables.js';
 export interface ExpandContext {
     env: Record<string, string>;
     /**
@@ -8,8 +9,12 @@ export interface ExpandContext {
      * `${arr[@]}` skips and `${!arr[@]}` omits. A name lives here or in `env`,
      * never both, so `$arr` and `${arr[0]}` have one answer.
      */
-    arrays?: ReadonlyMap<string, readonly (string | undefined)[]>;
+    arrays: Map<string, (string | undefined)[]>;
+    /** The names `readonly` protects: arithmetic's assignments refuse them. */
+    readonlyNames: ReadonlySet<string>;
     positionals?: readonly string[];
+    /** Arithmetic's warnings (a bad array subscript) not yet reported (reportWarnings). */
+    warnings: string[];
     lastExitCode: number;
     cwd: string;
     vfs: ProcessView;
@@ -48,12 +53,33 @@ export declare class ExpansionError extends Error {
  * (arithmeticValue); in `[[ ]]` it makes its comparison false.
  */
 export declare class ArithmeticError extends Error {
+    /** As a command (`((`, `let`, `[[`) reports it: after its name, as bash's evalerror does. */
+    reportedBy(command: string): string;
 }
+/** An arithmetic assignment to a readonly name (bash's err_readonly): its diagnostic is the name's alone, whoever reports it. */
+export declare class ReadonlyArithmeticError extends ArithmeticError {
+    reportedBy(): string;
+}
+/**
+ * An error in an array subscript's arithmetic: an expansion's (bash's
+ * array_expand_index), its diagnostic its own, and the line discarded
+ * whoever meets it (`((`, `let` and `[[` too).
+ */
+export declare class SubscriptArithmeticError extends ArithmeticError {
+    reportedBy(): string;
+}
+/** What arithmetic reads and writes: the shell's values, its positional parameters, and where its warnings go. */
+export interface ArithmeticScope extends ShellValues {
+    readonly positionals?: readonly string[];
+    readonly warnings: string[];
+}
+/** Report `scope`'s pending warnings, in order (arithmetic's, which it cannot write as it goes). */
+export declare function reportWarnings(scope: ArithmeticScope, report: (diagnostic: string) => Promise<void>): Promise<void>;
 /**
  * Expand all words for a command's arguments: brace expansion, tilde,
  * parameter/arithmetic/command substitution, IFS field splitting, globbing.
  */
-export declare function expandWords(words: WordPart[][], ctx: ExpandContext): Promise<string[]>;
+export declare function expandWords(words: WordPart[][], ctx: ExpandContext, braceExpanded?: boolean): Promise<string[]>;
 /**
  * A pattern word (a case pattern, `[[ ]]`'s right-hand side) expanded, as its
  * value and as the pattern globMatch reads: each character that came from
@@ -76,10 +102,17 @@ export declare function expandRegexWord(parts: WordPart[], ctx: ExpandContext): 
  * No field splitting and no glob expansion.
  */
 export declare function expandWord(parts: WordPart[], ctx: ExpandContext): Promise<string>;
+export declare function expandBraceWord(parts: WordPart[]): WordPart[][];
+/**
+ * Arithmetic text once its expansions are done, as bash's expand_arith_string
+ * does them: as in double quotes (a single quote is the expression's, and an
+ * error there), its double quotes removed.
+ */
+export declare function expandArithmetic(text: string, ctx: ExpandContext): Promise<string>;
 /** A subscript's text once its expansions (`$i`, `$(…)`) are done, before its arithmetic. */
 export declare function expandSubscript(subscript: string, ctx: ExpandContext): Promise<string>;
 /** An expanded word's arithmetic (a subscript's, a `[[ -eq ]]` operand's, let's): a blank one is 0. Throws ArithmeticError. */
-export declare function arithmeticOf(expanded: string, ctx: Pick<ExpandContext, 'env' | 'positionals'>): number;
+export declare function arithmeticOf(expanded: string, scope: ArithmeticScope): number;
 /** arithmeticOf as an expansion meets it: an error is reported, and the rest of the line discarded (bash's evalerror). */
 export declare function arithmeticValue(expanded: string, ctx: ExpandContext): Promise<number>;
 //# sourceMappingURL=expander.d.ts.map
