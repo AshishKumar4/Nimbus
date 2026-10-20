@@ -31,6 +31,7 @@ import { sanitizeUntrustedHeaders } from '../_shared/untrusted-request.js';
 import { isWebSocketUpgradeRequest } from '../_shared/websocket-upgrade.js';
 import { errorText } from '../_shared/error-text.js';
 import { documentPolicyOf } from './document-policy.js';
+import { ProcessNotAdmitted } from './os-contracts.js';
 import { bytesToHex } from '@nimbus-sh/platform/hex.js';
 /**
  * Content codings this hop can undo. `DecompressionStream` decodes exactly
@@ -477,6 +478,10 @@ export class PortRegistry {
      * round-trip occurs anywhere.
      * A user-facet serving a PNG will return the exact same bytes the
      * client receives.
+     *
+     * A request the process refused unsent rejects with ProcessNotAdmitted,
+     * never a 502: it ran nowhere, and its caller may run it again, its body
+     * untouched.
      */
     async routeRequest(port, request, pathname) {
         return this.routeRequestInternal(port, request, pathname, false);
@@ -621,6 +626,9 @@ export class PortRegistry {
             return answer;
         }
         catch (error) {
+            // A request the process refused unsent is its caller's to run again.
+            if (error instanceof ProcessNotAdmitted)
+                throw error;
             // Server-side triage — users see only the 502 body, operators
             // see the full error + stack in Worker logs.
             console.error('[port-registry] routeRequest failed for port', port, ':', error);

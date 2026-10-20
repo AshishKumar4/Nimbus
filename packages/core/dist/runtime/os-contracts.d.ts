@@ -807,6 +807,18 @@ export interface ResponseScope {
      */
     settled(listener: (delivered: boolean) => void): void;
 }
+/**
+ * A request to a process that was never sent: the instance its host was
+ * pinned to at open was gone (replaced by a fresh one, as the platform does
+ * with an idle host) before the request went out, so it ran nowhere and may
+ * be run again, once, on a new process. Answered only after the process
+ * reads exited, so a relaunch never finds the lost one. A request already in
+ * flight when a host is lost may have run; it fails with the loss instead.
+ */
+export declare class ProcessNotAdmitted extends Error {
+    readonly pid: number;
+    constructor(pid: number, cause: unknown);
+}
 export interface RuntimePortBridge {
     register(port: number, processId: number, handler: (request: Request) => Promise<Response>): Promise<void>;
     unregister(port: number, processId?: number): Promise<void>;

@@ -1303,6 +1303,8 @@ export declare class FacetManager {
     private rowAmendments;
     /** A process whose host the platform reset (_endByHostLoss), until its terminal hook reads why it ended. */
     private hostLosses;
+    /** Residents whose host loss refused requests unsent: each is owed a run on a new process, at once (_onResidentTerminal). */
+    private owedRuns;
     /** Each running resident's uptime proof timer (_proveByUptime). */
     private uptimeProofs;
     /**
@@ -1341,6 +1343,12 @@ export declare class FacetManager {
      */
     private _endByHostLoss;
     /**
+     * `pid`'s route to its process (the fabric's), whose requests the process
+     * refused unsent (ProcessNotAdmitted) are answered only once the pid reads
+     * ended: a caller that starts it again never finds the lost one.
+     */
+    private _routeTarget;
+    /**
      * The process is over. Every end-of-life passes through here: a clean
      * exit, a kill, a timeout, a crash. Only one of them owes anything more
      * than the journal row's release — a crash under 'on-failure' is re-driven
@@ -1359,6 +1367,7 @@ export declare class FacetManager {
     /** Stop `pid`'s uptime proof: the process ended, or its proof restarts. */
     private _dropUptimeProof;
     private _onResidentTerminal;
+    private _afterResidentEnd;
     /** Claim identity AND write its recovery row in one serializable storage transaction. */
     private _claimResident;
     private _releaseResidentClaim;

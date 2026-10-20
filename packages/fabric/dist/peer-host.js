@@ -15,12 +15,12 @@ import { ISOLATE_NETWORK, workspaceNetwork, } from '@nimbus-sh/core/_shared/work
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { isWebSocketUpgradeRequest } from '@nimbus-sh/core/_shared/websocket-upgrade.js';
 import { z } from 'zod/v4';
-import { ProcessHostLost } from './process-fabric.js';
 import { infrastructureSupervisor, infrastructureSupervisorProps, supervisorBindingProps } from './supervisor-props.js';
 import { withResolvers } from './turn-budget.js';
 import { processes, abortFacet, deleteFacetStorage } from './workerd-facet-host.js';
 import { HandledRequests, HOST_INCARNATION_HEADER } from './host-activity.js';
 import { responseScope } from '@nimbus-sh/core/runtime/port-registry.js';
+import { ProcessNotAdmitted } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { isHostReset } from '@nimbus-sh/platform/oom-classify.js';
 /**
  * This workerd process's identity. Module scope, so two Durable Objects
@@ -360,7 +360,7 @@ export class PeerHost {
             const { scope, owner } = responseScope(new AbortController().signal);
             let response;
             try {
-                response = await facet.handleHttpRequest(new Request(wire.url, init), scope, record.handled.signal(wire));
+                response = await facet.handleHttpRequest(new Request(wire.url, init), scope, { relayed: record.handled.signal(wire) });
             }
             catch (error) {
                 owner.fail();
@@ -516,12 +516,12 @@ export class PeerHost {
             return await work();
         }
         catch (error) {
+            // A request its leaf refused unsent ran nowhere, whatever else this host knows.
+            if (error instanceof ProcessNotAdmitted)
+                return { hostLost: errorText(error.cause), notAdmitted: error.pid };
             const failure = this.records.get(key)?.failure;
-            // A replaced leaf's refusal (ProcessHostLost) names its cause, which the coordinator wraps again.
             if (failure || error instanceof LostHostedProcess || isHostReset(error))
                 return { hostLost: errorText(failure ?? error) };
-            if (error instanceof ProcessHostLost)
-                return { hostLost: errorText(error.cause) };
             throw error;
         }
     }

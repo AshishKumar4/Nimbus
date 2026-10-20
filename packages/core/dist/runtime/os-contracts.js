@@ -1,4 +1,5 @@
 import { rootClampedSegments } from '@nimbus-sh/platform/lexical-path.js';
+import { errorText } from '../_shared/error-text.js';
 export const CRED_KERNEL = Object.freeze({
     uid: 0,
     gid: 0,
@@ -78,6 +79,22 @@ export function launchNamedPaths(cwd, program, argv) {
         if (arg !== '' && !arg.startsWith('-'))
             named.push(anchor(arg));
     return named;
+}
+/**
+ * A request to a process that was never sent: the instance its host was
+ * pinned to at open was gone (replaced by a fresh one, as the platform does
+ * with an idle host) before the request went out, so it ran nowhere and may
+ * be run again, once, on a new process. Answered only after the process
+ * reads exited, so a relaunch never finds the lost one. A request already in
+ * flight when a host is lost may have run; it fails with the loss instead.
+ */
+export class ProcessNotAdmitted extends Error {
+    pid;
+    constructor(pid, cause) {
+        super(`process ${pid} did not take the request: its host was replaced before the request was sent (${errorText(cause)})`, { cause });
+        this.pid = pid;
+        this.name = 'ProcessNotAdmitted';
+    }
 }
 export const NIMBUS_OS_NAME = 'nimbus';
 export const NIMBUS_ABI_TARGET = 'wasm32-wasi-nimbus';

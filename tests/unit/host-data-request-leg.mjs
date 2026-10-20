@@ -81,9 +81,10 @@ for (const kind of ['cold', 'failed', 'closed', 'capability']) {
 }
 await host.close();
 
-// A leaf the platform replaced under a live record refuses the pinned
-// incarnation before its guest runs; that refusal is the process's host lost,
-// reported once, on both substrates.
+// A leaf the platform replaced under a live record is the process's host
+// lost, reported once, on both substrates; a request to it after it sat idle
+// waits for its watch, which finds the replacement, so it is refused unsent
+// (ProcessNotAdmitted), and the replacement never runs it.
 for (const mode of ['facet', 'peer']) {
   let instances = 0, replacementCalls = 0;
   const staleWorld = createFacetWorld(() => {
@@ -103,7 +104,7 @@ for (const mode of ['facet', 'peer']) {
   staleWorld.replace(name);
   for (let attempt = 0; attempt < 2; attempt++) {
     await assert.rejects(stale.handleHttpRequest(new Request('https://app.invalid/'), responseScope(new AbortController().signal).scope),
-      (error) => error.name === 'ProcessHostLost', mode + ': a replaced leaf is this process\'s host lost');
+      (error) => error.name === 'ProcessNotAdmitted', mode + ': a request to a replaced leaf is refused unsent');
   }
   await turns();
   assert.equal(replacementCalls, 0, mode + ': the replacement never runs the request');

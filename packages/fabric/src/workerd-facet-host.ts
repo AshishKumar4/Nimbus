@@ -662,6 +662,13 @@ function spawnResident(
     if (response.status !== 410 || response.headers.get(HOST_REQUEST_HEADER) !== watchCapability) return response;
     throw new ProcessNotAdmitted(params.pid, new Error(await response.text()));
   };
+  // A request waiting on its lease's watch: the host lost meanwhile (the
+  // watch found another instance) refuses it unsent, and anything else that
+  // ended the wait (its caller left) is that.
+  const unsentUntilValidated = async (lease: HostActivityLease): Promise<void> => {
+    try { await lease.ready; }
+    catch (error) { throw lostAlready ? new ProcessNotAdmitted(params.pid, error) : error; }
+  };
   // A request's admission rides its headers: the leaf's entry is its fetch.
   const admitted = async (request: Request, signal?: AbortSignal): Promise<Request> => {
     const headers = new Headers(request.headers);
@@ -694,7 +701,7 @@ function spawnResident(
       });
       const signal = leg.relayed ?? cancel!.signal;
       try {
-        if (!observation.validated()) await lease.ready;
+        if (!observation.validated()) await unsentUntilValidated(lease);
         leg.sending?.();
         // Unencoded: the registry decodes a coding once, as it did the bytes an RPC hop carried.
         const response = await facet.fetch(request, { signal, encodeResponseBody: 'manual' });
@@ -710,7 +717,7 @@ function spawnResident(
     handleWebSocketRequest: async (request: Request, sending?: () => void) => {
       const lease = observation.acquire();
       try {
-        if (!observation.validated()) await lease.ready;
+        if (!observation.validated()) await unsentUntilValidated(lease);
         const upgrade = await admitted(request);
         sending?.();
         return await checked(await facet.fetch(upgrade));
