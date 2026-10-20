@@ -24,11 +24,20 @@ const IFS_WHITESPACE = ' \t\n';
  * Expand all words for a command's arguments: brace expansion, tilde,
  * parameter/arithmetic/command substitution, IFS field splitting, globbing.
  */
-export async function expandWords(words, ctx) {
+export async function expandWords(words, ctx, braceExpanded = false) {
     const results = [];
     for (const word of words) {
-        for (const braceExpandedWord of expandBraceWord(word))
-            results.push(...await expandFields(braceExpandedWord, ctx));
+        // Each field globbed as a pattern whose quoted characters match only
+        // themselves: an unquoted expansion's `*` globs, a quoted one's does not.
+        // Words brace expansion made already (`braceExpanded`) are not expanded again.
+        for (const braceExpandedWord of braceExpanded ? [word] : expandBraceWord(word)) {
+            for (const field of splitFields(await expandParts(braceExpandedWord, ctx), ifsOf(ctx))) {
+                if (field.pattern === null)
+                    results.push(field.text);
+                else
+                    results.push(...await expandGlob(field.pattern, field.text, ctx.cwd, ctx.vfs));
+            }
+        }
     }
     return results;
 }
@@ -75,21 +84,6 @@ function patternOf(pieces) {
  */
 export async function expandWord(parts, ctx) {
     return joinPieces(await expandParts(parts, ctx));
-}
-/**
- * One brace-expanded word's fields: split, and each globbed as a pattern whose
- * quoted characters match only themselves (an unquoted expansion's `*` globs,
- * a quoted one's does not).
- */
-export async function expandFields(word, ctx) {
-    const results = [];
-    for (const field of splitFields(await expandParts(word, ctx), ifsOf(ctx))) {
-        if (field.pattern === null)
-            results.push(field.text);
-        else
-            results.push(...await expandGlob(field.pattern, field.text, ctx.cwd, ctx.vfs));
-    }
-    return results;
 }
 export function expandBraceWord(parts) {
     let combinations = [[]];
