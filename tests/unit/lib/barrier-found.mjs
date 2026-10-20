@@ -155,6 +155,11 @@ const GAPS = {
     lacks: 'O9: an awaited rename outside a grant is decided by the provisional decisions (the cutover)',
     shows: 'sync stat d/f answered file 644 size 2',
   },
+  'a file the process renamed is not shown at its name once a peer moved it away [node]': {
+    lacks: 'S: the bytes an own rename carried to its new name outlive a peer\'s move of that name (closed by the cutover: RF retires own state by identity); '
+      + 'meanwhile a Node program that renamed a file another process then moved still reads the file at its own new name, with readFileSync',
+    shows: 'at rest, sync readFile new answered',
+  },
   'a directory the process may search again shows nothing stale while it is relisted [node]': {
     lacks: 'B2: a relist answers what is under its directory as unknown until it lands (the cutover\'s relist fence); '
       + 'meanwhile a call that cannot wait sees a false ENOENT for a name the session holds there',
