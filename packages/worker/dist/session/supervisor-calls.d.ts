@@ -52,7 +52,7 @@ import type { SupervisorOpEnvelope, SupervisorOpName, WriteFileStatAnswer } from
 import { type SupervisorDeliveredOpName, type SupervisorJoinedReadOpName } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import type { PackumentReadOptions, PackumentReadThrough } from '../npm/r2-cache.js';
 import { R2CacheClient } from '../npm/r2-cache.js';
-import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsListTree, VfsMutationReceipt, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle, RecallKind } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { VfsAcquireOptions, VfsAcquireResult, VfsListOptions, VfsListPage, VfsListTree, VfsMutationReceipt, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle, RuntimeReadFileOptions, RuntimeReadOptions, RecallKind } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { ReadDirectoryBatchRequest, ReadDirectoryBatchResult } from '@nimbus-sh/core/runtime/read-directory-batch.js';
 import { type SupervisorAnswer, type SupervisorAnsweredMethod } from '@nimbus-sh/core/runtime/vfs-supervisor.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/runtime/wave-contracts.js';
@@ -117,8 +117,8 @@ export declare function supervisorCalls<Base extends Class>(base: Base): (abstra
      * Read a file as raw bytes. Used by the git network facet for binary
      * object/pack files where the text readFile would corrupt content.
      */
-    readFileBytes(path: RuntimeFsPath): Promise<Uint8Array | null>;
-    writeFile(path: RuntimeFsPath, content: string | Uint8Array): Promise<number>;
+    readFileBytes(path: RuntimeFsPath, options?: RuntimeReadFileOptions): Promise<Uint8Array | null>;
+    writeFile(path: RuntimeFsPath, content: string | Uint8Array, options?: Parameters<RuntimeFsBridge["writeFile"]>[2]): Promise<number>;
     /** writeFile, answering the revision and the path's stat after it (supervisor-op.ts writeFileStat). */
     writeFileStat(path: RuntimeFsPath, content: string | Uint8Array): Promise<WriteFileStatAnswer>;
     stat(path: RuntimeFsPath, options?: {
@@ -134,7 +134,9 @@ export declare function supervisorCalls<Base extends Class>(base: Base): (abstra
         followSymlinks?: boolean;
     }): Promise<VfsMutationReceipt>;
     setUmask(mask: number): Promise<number>;
-    readdir(path: RuntimeFsPath): Promise<{
+    readdir(path: RuntimeFsPath, options?: {
+        followSymlinks?: boolean;
+    }): Promise<{
         name: string;
         type: string;
     }[]>;
@@ -183,7 +185,7 @@ export declare function supervisorCalls<Base extends Class>(base: Base): (abstra
         granted: number;
         available?: number;
     }>;
-    fsList(after?: string | null, limit?: number | null): Promise<VfsListPage>;
+    fsList(after?: string | null, limit?: number | null, options?: VfsListOptions): Promise<VfsListPage>;
     /** Everything beneath directory `root`, in one page and one revision; E2BIG past `maxEntries` (session/rpc.ts _rpcFsListTree). */
     fsListTree(root: string, maxEntries: number): Promise<VfsListTree>;
     /**
@@ -248,7 +250,7 @@ export declare function supervisorCalls<Base extends Class>(base: Base): (abstra
      * server-side handle state, so they stay correct across supervisor
      * hibernation and never rewrite whole files for partial updates.
      */
-    fsReadRange(path: string, offset: number, length: number): Promise<Uint8Array | null>;
+    fsReadRange(path: string, offset: number, length: number, options?: RuntimeReadOptions): Promise<Uint8Array | null>;
     /**
      * The same read with the session's content cache bypassed, for a boot spec's
      * by-path members. They are read once, in slices, straight into a module map;
@@ -273,8 +275,8 @@ export declare function supervisorCalls<Base extends Class>(base: Base): (abstra
      * a short result, which a caller could mistake for a short file.
      */
     fsReadBatch(requests: FsReadBatchRequest[]): Promise<FsReadBatchEntry[]>;
-    fsWriteRange(path: string, offset: number, bytes: Uint8Array | ArrayBuffer): Promise<VfsMutationReceipt>;
-    fsTruncate(path: string, size: number): Promise<VfsMutationReceipt>;
+    fsWriteRange(path: string, offset: number, bytes: Uint8Array | ArrayBuffer, options?: Parameters<RuntimeFsBridge["writeRange"]>[3]): Promise<VfsMutationReceipt>;
+    fsTruncate(path: string, size: number, options?: Parameters<RuntimeFsBridge["truncate"]>[2]): Promise<VfsMutationReceipt>;
     /**
      * Bulk-write all inodes + chunks in ONE transactionSync on the supervisor.
      * Used by facets that buffer writes locally (git clone/fetch/pull).

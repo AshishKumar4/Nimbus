@@ -10,6 +10,7 @@
  */
 
 import type { FacetImage } from '@nimbus-sh/core/runtime/facet-host.js';
+import { MEMORY_LIMIT_GROWTH_BYTES, withMemoryLimit } from '@nimbus-sh/core/runtime/wasm-memory.js';
 import type { Command } from '@nimbus-sh/core/substrate/lifo/commands/types.js';
 import type { OwnPrograms } from '../shell/npm-bin-entrypoints.js';
 import { TSRS_TYPESCRIPT_VERSION, TSRS_VERSION, TSRS_WASM_ASSET_PATH, TSRS_WASM_BYTES, TSRS_WASM_SHA256 } from '../tsrs-wasm-artifact.generated.js';
@@ -42,15 +43,28 @@ const TSRS_WASM_ASSET = stagedAsset({
   requiredBy: 'tsc', stagedBy: 'scripts/bundle-tsrs-wasm.mjs',
 });
 
-/** tsrs.wasm, read from `env`'s ASSETS (and verified against its pin) when a worker is built for it. */
+/**
+ * The most linear memory tsrs may grow to: past it, its allocator fails and
+ * the run ends as tsc's crash (exit 5, "out of memory"), its writes settled;
+ * without it, the worker is killed and what it last wrote may be lost.
+ * Measured on two throwaway Previews (2026-10-20), growing tsrs's memory a
+ * MiB at a time after a run: its Loader worker was killed ("exceeded memory
+ * limit") as the memory reached 220-251 MiB (n=8), the least in a reused
+ * worker after a react-ts build. 208 MiB is that least, rounded down to a
+ * 16 MiB step. A react-ts build peaks at 134 MiB, a 310-file check at 111.
+ */
+const TSRS_MEMORY_LIMIT_BYTES = 208 * 1024 * 1024;
+
+/** tsrs.wasm, read from `env`'s ASSETS (and verified against its pin) when a worker is built for it, its memory bounded. */
 export function tsrsImage(env: unknown): FacetImage {
   const assets: StagedSourceEnv = { ASSETS: Reflect.get(Object(env), 'ASSETS') };
   return {
     path: TSRS_WASM_ASSET_PATH,
-    identity: `sha256:${TSRS_WASM_SHA256}`,
-    size: TSRS_WASM_BYTES,
-    peak: TSRS_WASM_BYTES,
-    read: async () => new Uint8Array(await fetchStagedBytes(assets, TSRS_WASM_ASSET)),
+    identity: `sha256:${TSRS_WASM_SHA256}:max-memory-${TSRS_MEMORY_LIMIT_BYTES}`,
+    size: TSRS_WASM_BYTES + MEMORY_LIMIT_GROWTH_BYTES,
+    // The fetched bytes and the bounded copy made from them.
+    peak: 2 * TSRS_WASM_BYTES + MEMORY_LIMIT_GROWTH_BYTES,
+    read: async () => withMemoryLimit(new Uint8Array(await fetchStagedBytes(assets, TSRS_WASM_ASSET)), TSRS_MEMORY_LIMIT_BYTES),
   };
 }
 

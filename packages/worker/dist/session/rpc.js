@@ -418,6 +418,7 @@ const FsAcquireArgsSchema = z.object({
 const FsListArgsSchema = z.object({
     after: z.string().max(4096).nullable(),
     limit: z.number().int().min(1).max(FS_LIST_PAGE_LIMIT).nullable(),
+    options: z.object({ revisions: z.boolean().optional(), contentKeys: z.boolean().optional(), linkTargets: z.boolean().optional() }).optional(),
 });
 const FsListTreeArgsSchema = z.object({
     root: z.string().max(4096),
@@ -605,10 +606,10 @@ export function _acquireForRoutedRequest(self, pid) {
  * is filtered by the calling process's own credential rather than the kernel's
  * — a process must not learn of a path it could not stat.
  */
-export async function _rpcFsList(self, after, limit, pid) {
-    const args = FsListArgsSchema.parse({ after: after ?? null, limit: limit ?? null });
+export async function _rpcFsList(self, after, limit, options, pid) {
+    const args = FsListArgsSchema.parse({ after: after ?? null, limit: limit ?? null, options });
     // A page that reaches another holder's delegation waits for its recall, and is read again.
-    return withRecall(() => self.supervisorBridge(pid).list(args.after, args.limit ?? undefined));
+    return withRecall(() => self.supervisorBridge(pid).list(args.after, args.limit ?? undefined, args.options));
 }
 /** Everything beneath directory `root` a process may see, in one answer (subtreeListing). */
 export async function _rpcFsListTree(self, root, maxEntries, pid) {

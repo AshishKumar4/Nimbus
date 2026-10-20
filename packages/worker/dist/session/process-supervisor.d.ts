@@ -5,8 +5,8 @@ import { TRANSPORT, OP, CALLER, FS_OP, FS_READ, FS_MUTATION, RESENT, MUTATION_OW
 declare const ProcessSupervisor_base: (abstract new (...args: any[]) => {
     answer(method: import("@nimbus-sh/core/runtime/vfs-supervisor.js").SupervisorAnsweredMethod, args: unknown[]): Promise<import("@nimbus-sh/core/runtime/vfs-supervisor.js").SupervisorAnswer>;
     readFile(path: string): Promise<string | null>;
-    readFileBytes(path: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath): Promise<Uint8Array | null>;
-    writeFile(path: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath, content: string | Uint8Array): Promise<number>;
+    readFileBytes(path: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath, options?: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeReadFileOptions): Promise<Uint8Array | null>;
+    writeFile(path: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath, content: string | Uint8Array, options?: Parameters<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["writeFile"]>[2]): Promise<number>;
     writeFileStat(path: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath, content: string | Uint8Array): Promise<import("@nimbus-sh/core/workspace/supervisor-op.js").WriteFileStatAnswer>;
     stat(path: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath, options?: {
         followSymlinks?: boolean;
@@ -21,7 +21,9 @@ declare const ProcessSupervisor_base: (abstract new (...args: any[]) => {
         followSymlinks?: boolean;
     } | undefined): Promise<import("@nimbus-sh/core/runtime/os-contracts.js").VfsMutationReceipt>;
     setUmask(mask: number): Promise<number>;
-    readdir(path: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath): Promise<{
+    readdir(path: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsPath, options?: {
+        followSymlinks?: boolean;
+    } | undefined): Promise<{
         name: string;
         type: string;
     }[]>;
@@ -39,7 +41,7 @@ declare const ProcessSupervisor_base: (abstract new (...args: any[]) => {
         granted: number;
         available?: number;
     }>;
-    fsList(after?: string | null, limit?: number | null): Promise<import("@nimbus-sh/core/runtime/os-contracts.js").VfsListPage>;
+    fsList(after?: string | null, limit?: number | null, options?: import("@nimbus-sh/core/runtime/os-contracts.js").VfsListOptions): Promise<import("@nimbus-sh/core/runtime/os-contracts.js").VfsListPage>;
     fsListTree(root: string, maxEntries: number): Promise<import("@nimbus-sh/core/runtime/os-contracts.js").VfsListTree>;
     wsOpen(url: string, protocols: string[], headers?: import("./ws-relay.js").WsRelayHeaders, refusalBody?: boolean): Promise<import("./ws-relay.js").WsRelayOpened>;
     wsPoll(id: number, waitMs: number): Promise<unknown[]>;
@@ -86,11 +88,11 @@ declare const ProcessSupervisor_base: (abstract new (...args: any[]) => {
         escape?: boolean;
     } | undefined): Promise<void>;
     fsClose(handleId: number): Promise<void>;
-    fsReadRange(path: string, offset: number, length: number): Promise<Uint8Array | null>;
+    fsReadRange(path: string, offset: number, length: number, options?: import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeReadOptions): Promise<Uint8Array | null>;
     fsReadRangeUncached(path: string, offset: number, length: number): Promise<Uint8Array | null>;
     fsReadBatch(requests: import("./rpc.js").FsReadBatchRequest[]): Promise<import("./rpc.js").FsReadBatchEntry[]>;
-    fsWriteRange(path: string, offset: number, bytes: Uint8Array | ArrayBuffer): Promise<import("@nimbus-sh/core/runtime/os-contracts.js").VfsMutationReceipt>;
-    fsTruncate(path: string, size: number): Promise<import("@nimbus-sh/core/runtime/os-contracts.js").VfsMutationReceipt>;
+    fsWriteRange(path: string, offset: number, bytes: Uint8Array | ArrayBuffer, options?: Parameters<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["writeRange"]>[3]): Promise<import("@nimbus-sh/core/runtime/os-contracts.js").VfsMutationReceipt>;
+    fsTruncate(path: string, size: number, options?: Parameters<import("@nimbus-sh/core/runtime/os-contracts.js").RuntimeFsBridge["truncate"]>[2]): Promise<import("@nimbus-sh/core/runtime/os-contracts.js").VfsMutationReceipt>;
     writeBatch(payload: any): Promise<{
         inodes: number;
         chunks: number;
