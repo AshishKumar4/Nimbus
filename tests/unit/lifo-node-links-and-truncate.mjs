@@ -86,6 +86,11 @@ const fd = fs.openSync("y", "r+"); fs.truncateSync(fd, 2); fs.closeSync(fd);
 console.log("fd", bytes("y"));
 console.log("open dir", t(() => fs.openSync("dir", "r+")), t(() => fs.openSync("dir", "w")), typeof fs.openSync("dir", "r"));
 console.log("no callback", m(() => fs.truncate("y", 0, null)), m(() => fs.truncate("y", 0)), bytes("y"));
+fs.writeFileSync("z", "abc");
+const zd = fs.openSync("z", "r+");
+console.log("length", m(() => fs.truncateSync("z", "1")), m(() => fs.truncateSync("z", 1.5)), m(() => fs.truncateSync("z", null)), m(() => fs.truncateSync("z", 2 ** 53)), t(() => fs.truncateSync("missing", "1")), bytes("z"));
+console.log("length fd", m(() => fs.ftruncateSync(zd, "1")), m(() => fs.ftruncate(zd, 1.5, () => {})), m(() => fs.truncate("z", "1", () => {})), m(() => fs.truncate("z", null, () => {})), m(() => fs.ftruncate(zd, 0, null)), bytes("z"));
+console.log("descriptor", m(() => fs.ftruncate(-1, 0, () => {})), m(() => fs.ftruncate("x", 0, () => {})), m(() => fs.ftruncate(1.5, 0, () => {})), m(() => fs.ftruncateSync(-1, 0)), m(() => fs.ftruncateSync("x", 0)), m(() => fs.ftruncateSync(-1, "x")), bytes("z"));
 (async () => {
   console.log("cb", await run((cb) => fs.truncate("y", 4, cb)), bytes("y"));
   console.log("cb none", await run((cb) => fs.truncate("y", cb)), bytes("y"));
@@ -95,7 +100,30 @@ console.log("no callback", m(() => fs.truncate("y", 0, null)), m(() => fs.trunca
   const descriptor = fs.openSync("y", "r+");
   console.log("promise fd", await fs.promises.truncate(descriptor, 0).catch((e) => e.code), bytes("y"));
   fs.closeSync(descriptor);
+  console.log("cb ftruncate", await run((cb) => fs.ftruncate(zd, 1, cb)), bytes("z"), await run((cb) => fs.ftruncate(zd, cb)), bytes("z"));
+  console.log("promise length", await fs.promises.truncate("z", "1").catch((e) => e.code), await fs.promises.truncate("missing", "1").catch((e) => e.code + " " + e.syscall));
+  const handle = await fs.promises.open("z", "r+");
+  console.log("handle length", await handle.truncate("1").catch((e) => e.code), await handle.truncate(2).then(() => bytes("z")));
+  await handle.close();
+  const closed = (e) => e.code + " " + e.syscall + " " + e.message;
+  console.log("closed handle", await handle.truncate(null).catch(closed), await handle.truncate(1.5).catch(closed), await handle.truncate(1).catch(closed), bytes("z"));
+  console.log("closed handle", await handle.read(Buffer.alloc(1), 0, 1, 0).catch(closed), await handle.stat().catch(closed), await handle.close().then(() => "closed again"));
+  fs.closeSync(zd);
 })();`;
+
+// A hard link is refused, in each form, as the hosted node refuses it
+// (node-shims-fd-syscalls.mjs): the filesystem has no hard links. Not a
+// differential: the host's Node makes the link.
+const LINK = String.raw`const fs = require("fs");
+const show = (e) => [e.code, e.errno, e.syscall, e.path, e.dest, e.message].join(" | ");
+fs.writeFileSync("f", "x");
+try { fs.linkSync("f", "g"); console.log("linked"); } catch (e) { console.log("sync", show(e)); }
+console.log("exists", fs.existsSync("g"));
+try { fs.link("f", "g"); } catch (e) { console.log("no callback", e.code); }
+fs.link("f", "g", (e) => { console.log("cb", show(e));
+  fs.promises.link("f", "g").catch((e) => console.log("promise", show(e), fs.existsSync("g"))); });`;
+const REFUSED = "ENOSYS | -38 | link | f | g | ENOSYS: function not implemented, link \x27f\x27 -> \x27g\x27";
+const LINK_REFUSED = `sync ${REFUSED}\nexists false\nno callback ERR_INVALID_ARG_TYPE\ncb ${REFUSED}\npromise ${REFUSED} false\nstatus=0\n`;
 
 const CASES = [
   [`node -e '${LINKS}'; echo "status=$?"`, 'symlink and readlink, as Node makes and reads them'],
@@ -106,6 +134,9 @@ const { sql, transactions } = await hostSqlite();
 const ws = await NimbusWorkspace.create({ sql, transactions, generation: 1 });
 const failed = [];
 try {
+  await ws.exec('mkdir -p /home/user/link', { cwd: '/home/user' });
+  const link = await ws.exec(`node -e '${LINK}'; echo "status=$?"`, { cwd: '/home/user/link', timeout: 30_000 });
+  if (link.stdout !== LINK_REFUSED || link.stderr !== '') failed.push(`link, refused\n  expected: ${JSON.stringify(LINK_REFUSED)}\n  ours: ${JSON.stringify({ stdout: link.stdout, stderr: link.stderr })}`);
   for (const [index, [line, what]] of CASES.entries()) {
     const dir = mkdtempSync(join(tmpdir(), 'lifo-node-links-'));
     let host;
@@ -125,4 +156,4 @@ try {
   await ws.close?.();
 }
 assert.deepEqual(failed, [], failed.join('\n'));
-console.log(`lifo-node-links-and-truncate: ${CASES.length} of ${CASES.length} as Node makes them`);
+console.log(`lifo-node-links-and-truncate: ${CASES.length} of ${CASES.length} as Node makes them, and link refused`);
