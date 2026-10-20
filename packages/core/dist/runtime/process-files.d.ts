@@ -329,8 +329,9 @@ export declare class ProcessView implements VFS {
      * caller to ask by name: one on a mount whose names the scan does not
      * list (`unlisted`), or one the caller may not read and search
      * (`unreadable`), whose readdir is refused. A subtree changed between the
-     * first page and the last (its revision) is refused EAGAIN: its pages are
-     * not one tree. Between pages the thread is given up for a turn: a page of SCAN_PAGE
+     * first page and the last is refused EAGAIN, its pages not one tree: by
+     * its revision, or where it keeps none (a mount under it: 0), by every
+     * page's being of the filesystem's same revision. Between pages the thread is given up for a turn: a page of SCAN_PAGE
      * entries is one bounded slice of the session's thread.
      */
     scan(path: string): AsyncGenerator<ScannedEntry>;

@@ -1547,17 +1547,23 @@ export class ProcessView {
      * caller to ask by name: one on a mount whose names the scan does not
      * list (`unlisted`), or one the caller may not read and search
      * (`unreadable`), whose readdir is refused. A subtree changed between the
-     * first page and the last (its revision) is refused EAGAIN: its pages are
-     * not one tree. Between pages the thread is given up for a turn: a page of SCAN_PAGE
+     * first page and the last is refused EAGAIN, its pages not one tree: by
+     * its revision, or where it keeps none (a mount under it: 0), by every
+     * page's being of the filesystem's same revision. Between pages the thread is given up for a turn: a page of SCAN_PAGE
      * entries is one bounded slice of the session's thread.
      */
     async *scan(path) {
         const key = normalizeVfsPath(path);
         const prefix = key === '' ? '' : `${key}/`;
         const revision = await this.call('scandir', path, () => this.fs.revision(path));
+        let at = null;
         let after = key === '' ? null : prefix;
         pages: for (;;) {
             const page = await this.call('scandir', path, () => this.fs.list(after, SCAN_PAGE, { revisions: false, contentKeys: false, linkTargets: false }));
+            if (at === null)
+                at = { epoch: page.epoch, rev: page.rev };
+            else if (revision === 0 && (page.epoch !== at.epoch || page.rev !== at.rev))
+                throw syscallError('EAGAIN', 'scandir', path);
             for (const entry of page.entries) {
                 const at = normalizeVfsPath(entry.path);
                 if (at === key || beforeSubtree(at, key))
@@ -1571,7 +1577,7 @@ export class ProcessView {
             after = page.next;
             await new Promise((resolve) => engineSetTimeout(resolve, 0));
         }
-        if (await this.call('scandir', path, () => this.fs.revision(path)) !== revision)
+        if (revision !== 0 && await this.call('scandir', path, () => this.fs.revision(path)) !== revision)
             throw syscallError('EAGAIN', 'scandir', path);
     }
     /** access(2): `mode` is F_OK or any of R_OK, W_OK, X_OK. */
