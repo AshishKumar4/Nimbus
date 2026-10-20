@@ -37,7 +37,9 @@ const command: Command = async (ctx) => {
       }
     } catch (e) {
       if (isVfsError(e)) {
-        await ctx.stderr.write(`rmdir: failed to remove '${arg}': ${VFS_STRERROR[e.code]}\n`);
+        // A link to a directory named with a trailing slash, as GNU's rmdir says it.
+        const unfollowed = e.code === 'ENOTDIR' && arg.endsWith('/') && await ctx.vfs.isSymlink(path.replace(/\/+$/, '')) && await ctx.vfs.isDirectory(path);
+        await ctx.stderr.write(`rmdir: failed to remove '${arg}': ${unfollowed ? 'Symbolic link not followed' : VFS_STRERROR[e.code]}\n`);
         exitCode = 1;
       } else {
         throw e;

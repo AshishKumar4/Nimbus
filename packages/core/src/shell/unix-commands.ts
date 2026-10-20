@@ -2200,17 +2200,27 @@ function mkRm(): Command {
       }
       try {
         if (!recursive) { await vfs.remove(path, { force }); continue; }
-        const report = await vfs.removeRecursive(path, { keepVanishedAncestors: !force });
-        for (const failure of report.failures) {
-          const named = failure.path === normalized || failure.path.startsWith(`${normalized}/`) ? target + failure.path.slice(normalized.length) : failure.path;
-          const reason = failure.error.detail === undefined ? VFS_STRERROR[failure.error.code]
-            : `${VFS_STRERROR[failure.error.code]}: ${failure.error.detail}`;
-          await ctx.stderr.write(`rm: cannot remove '${named}': ${reason}\n`);
-          code = 1;
+        // A link named with a trailing slash is walked, as GNU's fts walks it: its
+        // target's contents go; the link and its target stay (removing `link/` is ENOTDIR).
+        const throughLink = target.endsWith('/') && await vfs.isSymlink(path.replace(/\/+$/, '')) && await vfs.isDirectory(path);
+        const roots = throughLink ? (await vfs.readdir(path)).map((entry) => `${path}${entry.name}`) : [path];
+        for (const root of roots) {
+          const report = await vfs.removeRecursive(root, { keepVanishedAncestors: !force });
+          for (const failure of report.failures) {
+            const named = failure.path === normalized || failure.path.startsWith(`${normalized}/`) ? target + failure.path.slice(normalized.length) : failure.path;
+            const reason = failure.error.detail === undefined ? VFS_STRERROR[failure.error.code]
+              : `${VFS_STRERROR[failure.error.code]}: ${failure.error.detail}`;
+            await ctx.stderr.write(`rm: cannot remove '${named}': ${reason}\n`);
+            code = 1;
+          }
+          if (!force) for (const gone of report.vanished ?? []) {
+            const named = gone === normalized || gone.startsWith(`${normalized}/`) ? target + gone.slice(normalized.length) : gone;
+            await ctx.stderr.write(`rm: cannot remove '${named}': No such file or directory\n`);
+            code = 1;
+          }
         }
-        if (!force) for (const gone of report.vanished ?? []) {
-          const named = gone === normalized || gone.startsWith(`${normalized}/`) ? target + gone.slice(normalized.length) : gone;
-          await ctx.stderr.write(`rm: cannot remove '${named}': No such file or directory\n`);
+        if (throughLink && !force) {
+          await ctx.stderr.write(`rm: cannot remove '${target}': Not a directory\n`);
           code = 1;
         }
       } catch (error) {
