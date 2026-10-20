@@ -1,4 +1,4 @@
-import { resolve } from '../../utils/path.js';
+import { operandPath } from '../../utils/path.js';
 import { isVfsError, strerror } from '../../../../vfs/vfs-error.js';
 import { statOrThrow } from '../../../../vfs/vfs.js';
 import { adjustMode, compileMode } from '../../utils/mode-change.js';
@@ -39,7 +39,7 @@ const command = async (ctx) => {
     };
     for (const file of files) {
         try {
-            (await applyChmod(resolve(ctx.cwd, file)));
+            (await applyChmod(operandPath(ctx.cwd, file)));
         }
         catch (e) {
             // GNU's words: a name that is not there cannot be accessed; a change

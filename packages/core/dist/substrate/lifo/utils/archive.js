@@ -1,5 +1,5 @@
 import { crc32 } from '@nimbus-sh/platform/crc32.js';
-import { resolve } from './path.js';
+import { operandPath, resolve } from './path.js';
 import { encode, concatBytes } from './encoding.js';
 import { nameDec } from '../../../_shared/bytes.js';
 import { statOrThrow } from '../../../vfs/vfs.js';
@@ -256,8 +256,12 @@ export function parseZip(data) {
  */
 export async function collectFiles(vfs, basePath, paths) {
     const entries = [];
-    const relBase = basePath === '/' ? '/' : basePath + '/';
-    const member = (absPath) => absPath.startsWith(relBase) ? absPath.slice(relBase.length) : absPath.replace(/^\/+/, '');
+    const baseName = resolve('/', basePath);
+    const relBase = baseName === '/' ? '/' : baseName + '/';
+    const member = (absPath) => {
+        const name = resolve('/', absPath);
+        return name.startsWith(relBase) ? name.slice(relBase.length) : name.replace(/^\/+/, '');
+    };
     async function walk(absPath) {
         const stat = (await statOrThrow(vfs, absPath));
         if (stat.type === 'directory') {
@@ -284,6 +288,6 @@ export async function collectFiles(vfs, basePath, paths) {
         }
     }
     for (const p of paths)
-        (await walk(resolve(basePath, p)));
+        (await walk(operandPath(basePath, p)));
     return entries;
 }

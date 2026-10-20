@@ -1,5 +1,5 @@
 import { getopt } from '../../utils/args.js';
-import { resolve } from '../../utils/path.js';
+import { operandPath } from '../../utils/path.js';
 import { asciiUpper, concatBytes, decodeLossless, encodeLossless, isBlank, readAllInput, skipBlankField, splitRecords, writeBytes } from '../../utils/bytes-io.js';
 import { createHash } from 'node:crypto';
 import { strerror } from '../../../../vfs/vfs-error.js';
@@ -478,7 +478,7 @@ const command = async (ctx) => {
         if (randomSource !== undefined) {
             try {
                 // Its first 16 bytes, read as such: the source may be a device without end (/dev/zero) or a large file.
-                const path = resolve(ctx.cwd, randomSource);
+                const path = operandPath(ctx.cwd, randomSource);
                 const parts = [];
                 for (let got = 0; got < 16;) {
                     const chunk = await ctx.vfs.readRange(path, got, 16 - got);
@@ -579,7 +579,7 @@ const command = async (ctx) => {
     const bytes = concatBytes(out);
     if (output !== undefined && output !== '-') {
         try {
-            await ctx.vfs.writeFile(resolve(ctx.cwd, output), bytes);
+            await ctx.vfs.writeFile(operandPath(ctx.cwd, output), bytes);
         }
         catch (error) {
             await ctx.stderr.write(`sort: open failed: ${output}: ${strerror(error)}\n`);

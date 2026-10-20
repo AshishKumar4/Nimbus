@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { Buffer } from 'node:buffer';
 import realm from 'node:process';
-import { resolve, basename } from '../utils/path.js';
+import { operandPath, basename } from '../utils/path.js';
 import { encode } from '../utils/encoding.js';
 import { errnoCodeOf, fsError, isVfsError } from '../../../vfs/vfs-error.js';
 import { DIRENT_TYPES, direntTypeOfStat } from '../../../vfs/dirent-type.js';
@@ -58,7 +58,7 @@ function pathText(p) {
     return fileURLToPath(p.href);
 }
 function resolvePath(cwd, p) {
-    return resolve(cwd, pathText(p));
+    return operandPath(cwd, pathText(p));
 }
 /** A truncate length as Node takes one (validateInteger, a safe integer), a negative one 0; none is 0. */
 function lengthOf(len) {

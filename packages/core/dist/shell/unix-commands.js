@@ -31,7 +31,7 @@ import tacCommand from '../substrate/lifo/commands/text/tac.js';
 import teeCommand from '../substrate/lifo/commands/io/tee.js';
 import { parseArgs } from '../substrate/lifo/utils/args.js';
 import { echoOutput, expandBackslashEscapes } from '../substrate/lifo/utils/backslash-escapes.js';
-import { resolve } from '../substrate/lifo/utils/path.js';
+import { operandPath, resolve } from '../substrate/lifo/utils/path.js';
 import { encode } from '../substrate/lifo/utils/encoding.js';
 import { findUnixGroupName, findUnixUserName, } from './unix-accounts.js';
 import { createSuCommand, createSudoCommand, createUmaskCommand } from './elevation-commands.js';
@@ -90,13 +90,6 @@ async function unixGroupLabel(vfs, gid) {
     }
 }
 // ── Helpers ─────────────────────────────────────────────────────────────
-/**
- * `p` as an absolute path, against `cwd`: the path a command's operand
- * names, which is also what its errors name (never a storage key).
- */
-function resolvePath(cwd, p) {
-    return resolve(cwd || '/home/user', p);
-}
 async function readSymlinkTarget(vfs, path) {
     return await vfs.isSymlink(path) ? (await vfs.readlink(path)) : null;
 }
@@ -567,7 +560,7 @@ function mkSetfacl(sqliteVfs) {
             return 2;
         }
         for (const target of targets) {
-            const path = resolvePath(ctx.cwd, target);
+            const path = operandPath(ctx.cwd, target);
             try {
                 if (remove) {
                     vfs.setDefaultAcl(path, null);
@@ -599,12 +592,12 @@ function mkGetfacl(sqliteVfs) {
         const vfs = sqliteVfs.as(cred);
         let status = 0;
         for (const target of ctx.args.filter((arg) => !arg.startsWith('-'))) {
-            const path = resolvePath(ctx.cwd, target);
+            const path = operandPath(ctx.cwd, target);
             try {
                 const stat = vfs.stat(path);
                 const perms = stat.mode & 0o777;
                 const lines = [
-                    `# file: ${path.replace(/^\/+/, '')}`, `# owner: ${stat.uid}`, `# group: ${stat.gid}`,
+                    `# file: ${resolve('/', path).replace(/^\/+/, '')}`, `# owner: ${stat.uid}`, `# group: ${stat.gid}`,
                     ...(stat.mode & 0o7000 ? [`# flags: ${stat.mode & 0o4000 ? 's' : '-'}${stat.mode & 0o2000 ? 's' : '-'}${stat.mode & 0o1000 ? 't' : '-'}`] : []),
                     `user::${aclTriple(perms >> 6)}`, `group::${aclTriple(perms >> 3)}`, `other::${aclTriple(perms)}`,
                 ];
@@ -852,7 +845,7 @@ function mkTree() {
         const dirsOnly = ctx.args.includes('-d');
         // `-L n` takes the next word; the first other non-option word is the directory.
         const operand = ctx.args.find((a, i) => !a.startsWith('-') && (level === -1 || i !== level + 1)) ?? '.';
-        const root = resolvePath(ctx.cwd, operand);
+        const root = operandPath(ctx.cwd, operand);
         const maxDepth = level === -1 ? Infinity : parseInt(ctx.args[level + 1]) || Infinity;
         const MAX_ENTRIES = 2000; // Safety limit to prevent hanging on huge repos
         let dirs = 0, files = 0, total = 0;
@@ -879,7 +872,7 @@ function mkTree() {
                     (await ctx.stdout.write(prefix + connector + e.name + '\n'));
                     if (e.directory) {
                         dirs++;
-                        (await walk(resolvePath(path, e.name), prefix + childPrefix, depth + 1));
+                        (await walk(operandPath(path, e.name), prefix + childPrefix, depth + 1));
                     }
                     else {
                         files++;
@@ -974,7 +967,7 @@ function mkAwk() {
         let input = '';
         if (fileArgs.length > 0) {
             try {
-                input = (await vfs.readFileString(resolvePath(ctx.cwd, fileArgs[0])));
+                input = (await vfs.readFileString(operandPath(ctx.cwd, fileArgs[0])));
             }
             catch {
                 (await ctx.stderr.write(`awk: ${fileArgs[0]}: No such file\n`));
@@ -2237,7 +2230,7 @@ function mkDu() {
             return { size, dir: true };
         }
         for (const operand of operands) {
-            grand += (await walk(resolvePath(ctx.cwd, operand), operand, 0)).size;
+            grand += (await walk(operandPath(ctx.cwd, operand), operand, 0)).size;
         }
         if (total)
             await ctx.stdout.write(`${fmt(grand)}\ttotal${end}`);
@@ -2367,7 +2360,7 @@ function mkLs() {
         }
         let exit = 0;
         async function listDir(dirPath) {
-            const fp = resolvePath(ctx.cwd, dirPath);
+            const fp = operandPath(ctx.cwd, dirPath);
             const out = [];
             // One listing for every entry: ctx.vfs handles mounts like /dev, and a
             // host authority reports legacy registry symlinks here too.
@@ -2423,7 +2416,7 @@ function mkLs() {
         const fileEntries = [];
         const dirArgs = [];
         for (const arg of targets) {
-            const fp = resolvePath(ctx.cwd, arg);
+            const fp = operandPath(ctx.cwd, arg);
             // A link operand is shown as the link itself unless followed (above).
             const target = (await readSymlinkTarget(vfs, fp));
             const followed = target !== null && (followOperands || (followDirOperands && (await vfs.isDirectory(fp))));
@@ -2523,31 +2516,52 @@ function mkRm() {
         }
         let code = 0;
         for (const target of targets) {
-            const path = resolvePath(ctx.cwd, target);
-            if (recursive && preserveRoot && path === '/') {
+            const path = operandPath(ctx.cwd, target);
+            const normalized = resolve(ctx.cwd, target);
+            if (recursive && preserveRoot && normalized === '/') {
                 await ctx.stderr.write("rm: it is dangerous to operate recursively on '/'\nrm: use --no-preserve-root to override this failsafe\n");
                 code = 1;
                 continue;
+            }
+            // Another name for the root (`link/`, a walk through a link) is refused as the root is; a link
+            // itself named (no trailing slash) is only unlinked. A name that cannot be looked up is the removal's to report.
+            if (recursive && preserveRoot) {
+                const walked = target.endsWith('/') || !(await vfs.isSymlink(path).catch(() => false));
+                if (walked && await vfs.realpath(path).catch(() => null) === '/') {
+                    await ctx.stderr.write(`rm: it is dangerous to operate recursively on '${target}' (same as '/')\nrm: use --no-preserve-root to override this failsafe\n`);
+                    code = 1;
+                    continue;
+                }
             }
             try {
                 if (!recursive) {
                     await vfs.remove(path, { force });
                     continue;
                 }
-                const report = await vfs.removeRecursive(path, { keepVanishedAncestors: !force });
-                for (const failure of report.failures) {
-                    const named = failure.path === path || failure.path.startsWith(`${path}/`) ? target + failure.path.slice(path.length) : failure.path;
-                    const reason = failure.error.detail === undefined ? VFS_STRERROR[failure.error.code]
-                        : `${VFS_STRERROR[failure.error.code]}: ${failure.error.detail}`;
-                    await ctx.stderr.write(`rm: cannot remove '${named}': ${reason}\n`);
-                    code = 1;
-                }
-                if (!force)
-                    for (const gone of report.vanished ?? []) {
-                        const named = gone === path || gone.startsWith(`${path}/`) ? target + gone.slice(path.length) : gone;
-                        await ctx.stderr.write(`rm: cannot remove '${named}': No such file or directory\n`);
+                // A link named with a trailing slash is walked, as GNU's fts walks it: its
+                // target's contents go; the link and its target stay (removing `link/` is ENOTDIR).
+                const throughLink = target.endsWith('/') && await vfs.isSymlink(path.replace(/\/+$/, '')) && await vfs.isDirectory(path);
+                const roots = throughLink ? (await vfs.readdir(path)).map((entry) => `${path}${entry.name}`) : [path];
+                for (const root of roots) {
+                    const report = await vfs.removeRecursive(root, { keepVanishedAncestors: !force });
+                    for (const failure of report.failures) {
+                        const named = failure.path === normalized || failure.path.startsWith(`${normalized}/`) ? target + failure.path.slice(normalized.length) : failure.path;
+                        const reason = failure.error.detail === undefined ? VFS_STRERROR[failure.error.code]
+                            : `${VFS_STRERROR[failure.error.code]}: ${failure.error.detail}`;
+                        await ctx.stderr.write(`rm: cannot remove '${named}': ${reason}\n`);
                         code = 1;
                     }
+                    if (!force)
+                        for (const gone of report.vanished ?? []) {
+                            const named = gone === normalized || gone.startsWith(`${normalized}/`) ? target + gone.slice(normalized.length) : gone;
+                            await ctx.stderr.write(`rm: cannot remove '${named}': No such file or directory\n`);
+                            code = 1;
+                        }
+                }
+                if (throughLink && !force) {
+                    await ctx.stderr.write(`rm: cannot remove '${target}': Not a directory\n`);
+                    code = 1;
+                }
             }
             catch (error) {
                 // -f ignores a name not there, or one below a regular file, as coreutils' ignorable_missing does.
@@ -2683,7 +2697,7 @@ function mkTouch() {
         let atime = 'now', mtime = 'now';
         if (reference !== null) {
             try {
-                const st = await statOrThrow(targetVfs, resolvePath(ctx.cwd, reference));
+                const st = await statOrThrow(targetVfs, operandPath(ctx.cwd, reference));
                 atime = st.atimeMs;
                 mtime = st.mtimeMs;
             }
@@ -2717,7 +2731,7 @@ function mkTouch() {
             // `-` is standard output: its times are the terminal's, not a file named '-'.
             if (f === '-')
                 continue;
-            const fp = resolvePath(ctx.cwd, f);
+            const fp = operandPath(ctx.cwd, f);
             try {
                 if (noDereference) {
                     // -h: a link's own times (lutimes), never its target's, and nothing
@@ -2735,7 +2749,8 @@ function mkTouch() {
                 // silence.
                 let openErrno = null;
                 const exists = await targetVfs.exists(fp);
-                if (!noCreate) {
+                // open(O_CREAT) of a name ending in `/` is EISDIR, which GNU does not keep (as for a directory): the times say what is wrong.
+                if (!noCreate && !f.endsWith('/')) {
                     if (exists) {
                         try {
                             await targetVfs.access(fp, 2);
@@ -3250,7 +3265,7 @@ function mkRealpath() {
         }
         if (operands.length === 0)
             return refuse('missing operand');
-        const canonical = (arg) => canonicalizePath(ctx.vfs, arg.startsWith('/') ? arg : `/${resolvePath(ctx.cwd, '.')}/${arg}`, {
+        const canonical = (arg) => canonicalizePath(ctx.vfs, operandPath(ctx.cwd, arg), {
             mode, logical, noSymlinks,
         });
         let exit = 0;
@@ -3683,12 +3698,12 @@ function mkReadlink() {
         const end = zero ? '\0' : noNewline && targets.length === 1 ? '' : '\n';
         let exit = 0;
         for (const t of targets) {
-            const fp = resolvePath(ctx.cwd, t);
+            const fp = operandPath(ctx.cwd, t);
             try {
                 const answer = mode === null
                     ? await readSymlinkTarget(vfs, fp)
                     // The name as given, so a trailing slash still asks for a directory.
-                    : await canonicalizePath(ctx.vfs, t.startsWith('/') ? t : `${resolvePath(ctx.cwd, '.')}/${t}`, { mode, logical: false, noSymlinks: false });
+                    : await canonicalizePath(ctx.vfs, operandPath(ctx.cwd, t), { mode, logical: false, noSymlinks: false });
                 if (answer !== null) {
                     (await ctx.stdout.write(answer + end));
                     continue;
@@ -3713,7 +3728,7 @@ function mkFile() {
     return async (ctx) => {
         const vfs = ctx.vfs;
         for (const f of ctx.args.filter(a => !a.startsWith('-'))) {
-            const fp = resolvePath(ctx.cwd, f);
+            const fp = operandPath(ctx.cwd, f);
             try {
                 if ((await vfs.isDirectory(fp))) {
                     (await ctx.stdout.write(`${f}: directory\n`));
@@ -4322,7 +4337,7 @@ class DumpByteSource {
                 // Named operands read through ctx.vfs — the mount-aware seam the
                 // host handed the command — so /dev and other mounts resolve while
                 // an embedder's credentialed view keeps its authorization.
-                this.currentPath = resolvePath(this.ctx.cwd, file);
+                this.currentPath = operandPath(this.ctx.cwd, file);
                 (await this.ctx.vfs.readRange(this.currentPath, 0, 1));
                 this.cursor = 0;
                 this.haveOpen = true;
@@ -5020,7 +5035,7 @@ function mkXxd() {
         // routes through ctx.vfs like every other named path, so dumps may land
         // on devices and mounts as they do on Unix.
         const output = operands[1];
-        const outAbs = output !== undefined && output !== '-' ? resolvePath(ctx.cwd, output) : null;
+        const outAbs = output !== undefined && output !== '-' ? operandPath(ctx.cwd, output) : null;
         let offset = 0;
         let fileOffset = 0;
         let pending = [];
@@ -5224,7 +5239,7 @@ export function registerUnixCommands(registry, sqliteVfs) {
             await ctx.stderr.write('ln: hard links are not supported\n');
             return 1;
         }
-        const path = resolvePath(ctx.cwd, operands[1]);
+        const path = operandPath(ctx.cwd, operands[1]);
         try {
             if (force)
                 await ctx.vfs.remove(path, { force: true });
