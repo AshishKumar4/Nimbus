@@ -41,6 +41,15 @@ const LINES = [
   'x=x; echo $((x))\necho "next $?"',
   'x=$(echo $((08))); echo "sub $? [$x]"',
   'f() { echo $((08)); echo in-f; }; f; echo after\necho "next $?"',
+  // A branch &&, || or ?: skips is read, not evaluated: its variables are neither read as expressions nor assigned.
+  'x=08; echo $((1 || x)) $((0 && x)) $((1 ? 2 : x)); echo after',
+  'j=0; echo $((1 || (j=5))) $((0 && j++)) $((0 ? j++ : 3)) $j',
+  // In [[ ]] an operand's error makes its comparison false; one met expanding a word discards the line.
+  '[[ ! 08 -eq 8 ]] && echo neg; [[ 08 -eq 8 || 1 -eq 1 ]] && echo or',
+  '[[ $((08)) -eq 8 ]]; echo same\necho "next $?"',
+  // The diagnostic goes where the shell's stderr is when it is met; a redirection's target is no exception.
+  'f() { echo $((08)); }; f 2>err\ncat err; echo next',
+  'echo hi >"$((08))"; echo same\necho "next $?"; ls',
 ];
 
 /** bash's diagnostic prefix: `bash: line 1: `, `bash: -c: line 1: `, and in a function 5.2's `environment: line 1: `. */

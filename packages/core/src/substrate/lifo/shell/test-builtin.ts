@@ -2,7 +2,8 @@ import type { ProcessView } from '../../../runtime/process-files.js';
 import type { ProcessStat } from '../../../runtime/process-files.js';
 import type { CommandOutputStream } from '../commands/types.js';
 import type { WordPart } from './types.js';
-import { ArithmeticError, arithmeticValue, expandPatternWord, expandRegexWord, type ExpandContext } from './expander.js';
+import { ArithmeticError, arithmeticOf, expandPatternWord, expandRegexWord, type ExpandContext } from './expander.js';
+import { DiscardSignal } from './discard.js';
 import { compileRegcomp, execLongest, PosixRegexSyntax, type CompiledRegex } from '../utils/posix-regex.js';
 import { BINARY_OPERATORS, UNARY_OPERATORS } from './conditional-operators.js';
 import { shellMatch } from '../utils/glob.js';
@@ -60,6 +61,7 @@ export async function evaluateDoubleBracketWords(
   context?: TestContext,
 ): Promise<number> {
   const expanded = new Map<number, TestArg>();
+  const refused: string[] = [];
   const operands: Operands = {
     length: words.length,
     literal: (i) => operatorTextOf(words[i]),
@@ -71,9 +73,20 @@ export async function evaluateDoubleBracketWords(
       return arg;
     },
     regex: async (i) => (await expandRegexWord(words[i] ?? [], expandCtx)),
-    integer: (text) => arithmeticValue(text, expandCtx),
+    // An operand whose arithmetic fails makes its comparison false, reported as [['s (bash's arithcomp).
+    integer: (text) => {
+      try {
+        return arithmeticOf(text, expandCtx);
+      } catch (error) {
+        if (!(error instanceof ArithmeticError)) throw error;
+        refused.push(`[[: ${error.message}`);
+        return null;
+      }
+    },
   };
-  return (await evaluateTestExpression(operands, vfs, stderr, context, 'double-bracket'));
+  const status = await evaluateTestExpression(operands, vfs, stderr, context, 'double-bracket');
+  for (const diagnostic of refused) (await stderr.write(`${diagnostic}\n`));
+  return status;
 }
 
 type TestMode = 'test' | 'double-bracket';
@@ -94,8 +107,8 @@ type Operands = {
   value(index: number): Promise<TestArg>;
   /** `[[ ]]`'s: the operand on the right of `=~` as an extended regular expression. */
   regex?(index: number): Promise<string>;
-  /** `[[ ]]`'s: an operand of `-eq` and its kind as an arithmetic expression; `test`'s are decimal (toInt). */
-  integer?(text: string): number;
+  /** `[[ ]]`'s: an operand of `-eq` and its kind as an arithmetic expression, null where that fails; `test`'s are decimal (toInt). */
+  integer?(text: string): number | null;
 };
 
 function literalOperands(args: string[]): Operands {
@@ -138,11 +151,8 @@ async function evaluateTestExpression(
     }
     return result.value ? 0 : 1;
   } catch (e) {
-    // An operand's arithmetic error is the conditional's own failure, as bash's [[ reports it.
-    if (e instanceof ArithmeticError) {
-      (await stderr.write(`[[: ${e.diagnostic}\n`));
-      return 1;
-    }
+    // A discard met expanding an operand is the line's.
+    if (e instanceof DiscardSignal) throw e;
     if (!(e instanceof RegexRefused)) (await stderr.write(`test: ${e instanceof Error ? e.message : String(e)}\n`));
     return 2;
   }
@@ -305,7 +315,7 @@ function compiledOrRefused(ere: string): CompiledRegex {
 }
 
 /** Undefined when `op` is not a binary comparison. */
-function evaluateBinary(op: string, left: TestArg, right: TestArg, mode: TestMode, integer: (text: string) => number): boolean | undefined {
+function evaluateBinary(op: string, left: TestArg, right: TestArg, mode: TestMode, integer: (text: string) => number | null): boolean | undefined {
   switch (op) {
     case '=':
     case '==':
@@ -318,7 +328,11 @@ function evaluateBinary(op: string, left: TestArg, right: TestArg, mode: TestMod
       return left.value > right.value;
   }
   const integerCompare = Object.hasOwn(INTEGER_COMPARISONS, op) ? INTEGER_COMPARISONS[op] : undefined;
-  return integerCompare?.(integer(left.value), integer(right.value));
+  if (integerCompare === undefined) return undefined;
+  const a = integer(left.value);
+  if (a === null) return false;
+  const b = integer(right.value);
+  return b !== null && integerCompare(a, b);
 }
 
 async function evaluateUnary(

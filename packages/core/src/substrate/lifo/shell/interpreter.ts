@@ -485,7 +485,6 @@ export class Interpreter {
             exitCode = await this.executeList(list, io);
           } catch (error) {
             if (!(error instanceof DiscardSignal) || !readsLines || this.child) throw error;
-            if (error.diagnostic !== undefined) this.writeTerminal(io, `${error.diagnostic}\n`);
             exitCode = error.exitCode;
             this.lastExitCode = exitCode;
             this.setPipestatus([exitCode]);
@@ -1108,6 +1107,11 @@ export class Interpreter {
       try {
         await this.applyRedirections(cmd.redirections, fds, expandCtx, io, io.terminalStdin);
       } catch (error) {
+        // A discard met expanding a target (an arithmetic error's) is the line's, reported where it was met.
+        if (error instanceof DiscardSignal) {
+          await this.flushFds(fds);
+          throw error;
+        }
         const redirStderr = fds.outputFds.get(2) ?? stderr;
         (await redirStderr.write(error instanceof RedirectionOpenError
           ? redirectionDiagnostic(error)
@@ -1412,7 +1416,7 @@ export class Interpreter {
     if (assign.subscript !== undefined) {
       const subscript = await expandSubscript(assign.subscript, ctx);
       const array = arrayFor(this.config, name);
-      const index = subscript === '' ? -1 : arrayIndex(array, arithmeticValue(subscript, ctx));
+      const index = subscript === '' ? -1 : arrayIndex(array, await arithmeticValue(subscript, ctx));
       if (index < 0) return { diagnostics: [`${name}[${assign.subscript}]: bad array subscript`], failed: true };
       array[index] = assign.append ? (array[index] ?? '') + value : value;
       return ASSIGNED;
@@ -1451,7 +1455,7 @@ export class Interpreter {
       }
       const { subscript, value } = element;
       const written = `[${subscript}]${element.append ? '+=' : '='}${value}`;
-      const index = subscript === '' || subscript === '@' || subscript === '*' ? -1 : arrayIndex(array, arithmeticValue(subscript, ctx));
+      const index = subscript === '' || subscript === '@' || subscript === '*' ? -1 : arrayIndex(array, await arithmeticValue(subscript, ctx));
       if (index < 0) {
         refused.push(`${written}: ${subscript === '@' || subscript === '*' ? 'cannot assign to non-numeric index' : 'bad array subscript'}`);
         if (this.config.options.errexit) break;
@@ -1581,7 +1585,6 @@ export class Interpreter {
       } catch (e) {
         // An `exit` inside it ends only it; so do `set -e`, a fatal error and a discard.
         if (!(e instanceof ExitSignal) && !(e instanceof ErrexitSignal) && !(e instanceof DiscardSignal)) throw e;
-        if (e instanceof DiscardSignal && e.diagnostic !== undefined) this.writeTerminal(io, `${e.diagnostic}\n`);
         exitCode = e.exitCode;
       }
       return (await this.runExitTrap(exitCode, io, true));
@@ -1607,7 +1610,6 @@ export class Interpreter {
       if (e instanceof ExitSignal || e instanceof ErrexitSignal) return e.exitCode;
       // A discard ends the action, a child shell's too; the status stays (bash 5.2).
       if (!(e instanceof DiscardSignal)) throw e;
-      if (e.diagnostic !== undefined) this.writeTerminal(io, `${e.diagnostic}\n`);
     } finally {
       this.exitTrapDepth--;
       this.lastExitCode = savedLastExitCode;
@@ -1679,6 +1681,9 @@ export class Interpreter {
       vfs: io.vfs ?? this.config.vfs,
       options: this.config.options,
       executeCapture: async (input) => (await this.executeCapture(input, io)),
+      report: async (diagnostic) => {
+        (await (io.stderr ?? this.terminalSink(io)).write(`${diagnostic}\n`));
+      },
     };
   }
 
