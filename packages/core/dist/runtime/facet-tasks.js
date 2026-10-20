@@ -391,11 +391,12 @@ export async function tsrsFileOperation(fs, op, request) {
                 return '';
             }
             case 5: {
-                const handle = await fs.open(path, { write: true, append: true, create: true }).catch(async (error) => {
+                const flags = { write: true, append: true, create: true };
+                const handle = await Promise.resolve(fs.open(path, flags)).catch(async (error) => {
                     if (!tsrsMissing(error))
                         throw error;
                     await fs.mkdir(path.slice(0, path.lastIndexOf('/')) || '/', { recursive: true });
-                    return await fs.open(path, { write: true, append: true, create: true });
+                    return await fs.open(path, flags);
                 });
                 try {
                     await fs.write(handle.id, null, rest.slice());
