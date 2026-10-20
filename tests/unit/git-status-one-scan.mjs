@@ -97,4 +97,8 @@ assert.equal(stdout, realGit(disk, 'status', '--porcelain', '-uall'), 'what real
 assert.deepEqual({ readdirs: counters.readdirs, lstats: counters.lstats, scans: counters.scans }, { readdirs: 1, lstats: 0, scans: 1 }, `one scan, no call per path: ${JSON.stringify(counters)}`);
 assert.ok(counters.scanned >= FILES, `every entry came from the scan: ${JSON.stringify(counters)}`);
 console.log(`  ✓ git status on ${FILES + 5} files: one ordered scan (${counters.scanned} entries), real git's answer`);
+// Untracked directories judged as the scan passes them: -unormal lists each one as itself, -uno none.
+for (const flags of [[], ['-uno']]) {
+  assert.equal((await git('status', '--porcelain', ...flags)).stdout, realGit(disk, 'status', '--porcelain', ...flags), `status ${flags.join(' ')} as real git's`);
+}
 console.log('git-status-one-scan: ok');
