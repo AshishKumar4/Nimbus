@@ -452,10 +452,10 @@ export class Interpreter {
                 const element = cmd.type === 'simple_command' ? this.inTrapAction(this.fork()) : this.fork();
                 const cmdPromise = (async () => {
                     try {
-                        if (stdin)
-                            await element.dupChildFd(0, { input: stdin });
-                        if (stdout)
-                            await element.dupChildFd(1, { output: stdout });
+                        const inherited = [stdin && element.dupChildFd(0, { input: stdin }), stdout && element.dupChildFd(1, { output: stdout })]
+                            .filter((file) => file !== undefined);
+                        if (inherited.length > 0)
+                            await element.release(inherited);
                         return await element.finishChild(async () => (await element.executeCommand(cmd, cmdIo)), cmdIo);
                     }
                     catch (e) {
@@ -1349,7 +1349,9 @@ export class Interpreter {
         // $( ) runs in a child shell, its capture its fd 1.
         const child = this.inTrapAction(this.fork());
         const exitCode = await child.finishChild(async () => {
-            await child.dupChildFd(1, { output: capture.stream });
+            const inherited = child.dupChildFd(1, { output: capture.stream });
+            if (inherited !== undefined)
+                await child.release([inherited]);
             return (await child.executeLineWithIo(input, captureIo));
         }, captureIo);
         capture.end();
@@ -1681,9 +1683,13 @@ export class Interpreter {
      * stays open; the reference each holds at the end is let go, and the
      * shadowed one, held all along, is put back.
      */
-    async withInstalledFds(fds, body) {
+    withInstalledFds(fds, body) {
+        // Nothing to install (most function calls): `body`'s own promise, no step of its own.
         if (fds.changedOutputFds.size === 0 && fds.changedInputFds.size === 0)
-            return (await body());
+            return body();
+        return this.runInstalled(fds, body);
+    }
+    async runInstalled(fds, body) {
         const outputs = [...fds.changedOutputFds].map((fd) => ({
             fd,
             stream: this.persistentOutputFds.get(fd),
@@ -1742,18 +1748,20 @@ export class Interpreter {
     }
     /**
      * A child's own descriptor `fd` (a pipe's end, a substitution's capture),
-     * as dup2(2) makes it over what the child inherited; the reference it held
-     * on the file there before is let go.
+     * as dup2(2) makes it over what the child inherited: where `exec` left an
+     * entry for it (otherwise the child's io already is the stream). The file
+     * the entry held, if any, for the caller to let go.
      */
-    async dupChildFd(fd, end) {
-        const handles = 'output' in end ? this.persistentOutputHandles : this.persistentInputHandles;
-        const held = handles.get(fd);
+    dupChildFd(fd, end) {
+        const output = 'output' in end;
+        if (!(output ? this.persistentOutputFds : this.persistentInputFds).has(fd))
+            return undefined;
+        const held = (output ? this.persistentOutputHandles : this.persistentInputHandles).get(fd);
         if ('output' in end)
             this.installOutputFd(fd, end.output, false);
         else
             this.installInputFd(fd, true, end.input, false);
-        if (held !== undefined)
-            await this.release([held]);
+        return held;
     }
     /** Table entry `fd` for output: `stream`, or none (closed); its handle dropped from the table, not let go (the caller's). */
     installOutputFd(fd, stream, terminal) {

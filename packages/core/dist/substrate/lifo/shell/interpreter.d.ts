@@ -386,12 +386,14 @@ export declare class Interpreter {
      * shadowed one, held all along, is put back.
      */
     private withInstalledFds;
+    private runInstalled;
     /** `fd`'s handle in `handles`: `file` (a new reference on it, unless `take` is false: one held already), or none. */
     private holdHandle;
     /**
      * A child's own descriptor `fd` (a pipe's end, a substitution's capture),
-     * as dup2(2) makes it over what the child inherited; the reference it held
-     * on the file there before is let go.
+     * as dup2(2) makes it over what the child inherited: where `exec` left an
+     * entry for it (otherwise the child's io already is the stream). The file
+     * the entry held, if any, for the caller to let go.
      */
     private dupChildFd;
     /** Table entry `fd` for output: `stream`, or none (closed); its handle dropped from the table, not let go (the caller's). */
