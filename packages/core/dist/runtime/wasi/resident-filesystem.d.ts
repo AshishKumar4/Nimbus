@@ -38,6 +38,7 @@ import type { RuntimeFsBridge, RuntimeFsPath, RuntimeSynchronousFs, RuntimeVfsDi
 import type { ReadDirectorySupervisor } from '../read-directory-batch.js';
 import type { VfsAcquireResult } from '../os-contracts.js';
 import type { ProcessFsJournal, ProcessFsSession, ProcessFsStats } from '../../_shared/process-fs-client.js';
+import type { WaveTimers } from '@nimbus-sh/platform/wave-writer.js';
 /** A name as the store holds it: its lstat, and a symlink's text. */
 export interface ResidentEntry {
     type: 'file' | 'directory' | 'symlink';
@@ -100,14 +101,17 @@ export interface ResidentNamespace {
     } | null>;
     /** Fetch these files' bytes (each at its entry's revision) into the store in batched round trips. */
     fillMany(files: ReadonlyArray<readonly [string, ResidentEntry]>): Promise<void>;
-    /** The ACQUIRE barrier. */
-    barrier(): Promise<boolean>;
-    /** The same provenance cursor and ACQUIRE admission used by the normal barrier. */
+    /** The ACQUIRE barrier: landed when the store answers at the session's state as of it. */
+    barrier(options?: ResidentBarrierOptions): Promise<ResidentBarrier>;
+    /** What a barrier asks the session with (its cursor and options), for a delivery to answer from; null with no cursor. */
+    acquireArgs(): ResidentAcquireArgs | null;
+    /** Whether the store holds rows a repair could not vouch for: every barrier repairs until one does. */
+    repairOwed?(): boolean;
+    /** The store's provenance cursor. */
     cursor(): {
         epoch: string;
         rev: number;
     } | null;
-    admit(answer: VfsAcquireResult): Promise<boolean>;
     /** Charge `bytes` of heap held outside the store to its budget: false when they do not fit. */
     reserve(bytes: number): boolean;
     /** Return what `reserve` charged. */
@@ -122,6 +126,47 @@ export interface ResidentNamespace {
      * holds.
      */
     onAdmitted?(listener: (key: string, dev: number, ino: number) => void): void;
+}
+/**
+ * What a barrier asks the session with: the store's cursor, and its ACQUIRE
+ * options. A process's own also carry `begin`, the watermark of its own
+ * changes when they were built, and `own`, its own debt then (acquireArgs).
+ */
+export interface ResidentAcquireArgs {
+    readonly epoch: string;
+    readonly cursor: number;
+    readonly options?: object;
+    readonly begin?: number;
+    readonly own?: number;
+}
+/** A read lease's terms, as an ACQUIRE answer carries them. */
+export type ResidentReadLease = NonNullable<VfsAcquireResult['readLease']>;
+export interface ResidentBarrierOptions {
+    /** An answer the caller took itself (a directory batch's), applied as the barrier applies one. */
+    readonly answer?: VfsAcquireResult;
+    /**
+     * An answer a delivery carried, with the arguments it was asked with: it
+     * stands in for asking when it answers from a cursor the store has reached,
+     * in its epoch.
+     */
+    readonly delivered?: {
+        readonly args: ResidentAcquireArgs;
+        readonly answer: VfsAcquireResult;
+    } | null;
+    /** A read lease asked with the barrier: `answered` once the session grants it, whatever the barrier does next. */
+    readonly lease?: {
+        answered(terms: ResidentReadLease): void;
+    } | undefined;
+}
+export interface ResidentBarrier {
+    /** The store answers at the session's state as of this barrier. */
+    readonly landed: boolean;
+    /** The answer (asked, delivered or given) was applied as it was: not started again from, nor repaired past. */
+    readonly applied?: boolean;
+    /** The lease the answer granted, applied with it (vouched from now). */
+    readonly readLease?: ResidentReadLease;
+    /** The answer a delivery carried stood in for asking. */
+    readonly fromDelivery?: boolean;
 }
 /** A file's bytes, kept for a descriptor's lifetime: `release` when it closes. */
 export interface PinnedContent {
@@ -148,6 +193,25 @@ export interface ResidentFilesystem extends RuntimeFsBridge {
     pinContent(path: RuntimeFsPath, stat: RuntimeVfsStat): PinnedContent | null | Promise<PinnedContent | null>;
     /** Input from outside the process arrived: the barrier is owed before the next answer. */
     inbound(): void;
+    /**
+     * Input arrived and the program is about to run on it (a timer, a
+     * response, a relayed frame, a delivered answer): the barrier taken now,
+     * so a synchronous call in what runs next reads the session's state as of
+     * the input. `viaIo`: taken where I/O just arrived, which a trusted read
+     * lease answers without asking (nothing the process holds has changed: a
+     * change waits for the lease's recall). `delivered`: an answer the
+     * delivery carried, which stands in for asking when it can. Resolves once
+     * the barrier landed or failed (a failure is owed still).
+     */
+    catchUp(options?: {
+        viaIo?: boolean;
+        delivered?: ResidentBarrierOptions['delivered'];
+    }): Promise<void>;
+    /** What a barrier asks the session with, for a delivery to answer from (ResidentNamespace.acquireArgs), with the process's watermark and own debt then. */
+    acquireArgs(): (ResidentAcquireArgs & {
+        readonly begin: number;
+        readonly own: number;
+    }) | null;
     /** A park's deadline elapsed; never install an abandoned directory open's late answer. */
     cancelPendingDirectories(): void;
     /** Whether writes are held that the session does not have yet. */
@@ -204,6 +268,8 @@ export interface ResidentFilesystemStats {
     pagesFetched: number;
     /** ACQUIRE barriers taken. */
     barriers: number;
+    /** Barriers owed by input a trusted read lease answered without asking. */
+    leasedBarriers: number;
     /** Wall time the process spent waiting on the session for any of the above, in ms. */
     waitMs: number;
     /** Session interactions begun: calls, listings, lookups, fills, pages and barriers. */
@@ -232,6 +298,15 @@ export interface ResidentDelegation {
     readonly isHomeRoot?: (key: string) => boolean;
     /** The process's live umask, for what a caller that cannot wait makes outside a held subtree (HolderOptions.umask). */
     readonly umask?: () => number;
+    /** The timers and clock the process's filesystem runs on (HolderOptions.timers, now): the runtime's own, not a program's. */
+    readonly timers?: WaveTimers;
+    readonly now?: () => number;
+    /**
+     * Whether this run asks a read lease with each barrier (ProcessFsClient.
+     * readLeaseAsk). A run that can stop and run again takes none: when it
+     * asks, and what it is answered, are the run before's.
+     */
+    readonly readLeases?: () => boolean;
     /** The process's own store's write log (HolderOptions.journal). */
     readonly journal?: ProcessFsJournal;
     readonly readDirectories?: ReadDirectorySupervisor['fsReadDirectories'];

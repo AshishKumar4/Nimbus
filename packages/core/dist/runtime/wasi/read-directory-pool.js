@@ -119,7 +119,7 @@ export function readDirectoryPool({ call, store, client, before, endWaitMs = DIR
             : current.epoch === cursor.epoch && generation === stamp);
         let admitted;
         try {
-            admitted = applies && await store.admit(result.acquire);
+            admitted = applies && (await store.barrier({ answer: result.acquire })).applied === true;
         }
         catch (error) {
             invalidate();

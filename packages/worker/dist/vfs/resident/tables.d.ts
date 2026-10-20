@@ -181,7 +181,16 @@ export interface ResidentSql {
     exec(query: string, ...bindings: unknown[]): Iterable<Record<string, unknown>>;
     readonly databaseSize?: number;
 }
-export declare function sqlTables(sql: ResidentSql): ResidentTables;
+/**
+ * Told before any change to a path's rows (`path`; every path when it is
+ * undefined) that can end what was decided over them: a head row written or
+ * removed, chunk rows removed. Each backing makes those changes through one
+ * function (writeRows) that tells it first, single and bulk alike, so no
+ * writer can make one without it (cells.rowsChanged: a fill writing there is
+ * disowned, and what it wrote with no head over it goes with it).
+ */
+export type RowsChanged = (path?: string) => void;
+export declare function sqlTables(sql: ResidentSql, rowsChanged?: RowsChanged): ResidentTables;
 /**
  * The one-shot backing: the same tables, in the process's heap, for the life
  * of one run. A one-shot is hosted by runOnce, which gives it no SQLite, and
@@ -191,5 +200,5 @@ export declare function sqlTables(sql: ResidentSql): ResidentTables;
  * `bytes()` counts what it holds in the units residentCellCost charges (a
  * row, and the payload's bytes), so the store's one budget rule serves both.
  */
-export declare function heapTables(): HeapTables;
+export declare function heapTables(rowsChanged?: RowsChanged): HeapTables;
 //# sourceMappingURL=tables.d.ts.map

@@ -37,6 +37,10 @@ published independently in the `@nimbus-sh` npm scope.
   `~/.bash_history`, stays readable by other accounts until the image
   store's privacy fix ships. Pass secrets through the launch environment
   instead.
+- Fixed: the shell's commands walk their file operands as POSIX does. A `..` applies after the name before it is looked up, through a symbolic link to where it points, and a missing or non-directory name before it is ENOENT or ENOTDIR; a trailing slash asks for a directory (`cat f/` is "Not a directory"), and on a name being removed or renamed it names the entry itself, never a link's target (`rm -r link/` empties the target and refuses the link, `rmdir link/` says the link was not followed, as GNU's do). Before, `cat missing/../f` and `cat f/` read `f`, and `cat link/../x` read the `x` beside the link. Messages still name the operand as typed; `cp`'s into-itself check compares where the names lead; `mktemp` prints the name it made; logical `cd` refuses `missing/..` and keeps `PWD` logical; `mkdir -p` makes the names a following `..` leaves; `rm -r` refuses another name for `/`.
+
+## 2026-10-20: platform 0.14.0, core 0.25.0, fabric 0.20.0, worker 0.23.0, sdk 0.19.0, react 0.4.1, cli 0.2.10, loom 0.3.3, create-nimbus-app 0.2.6 (config 0.3.2 and the runtimes unchanged)
+
 - Fixed: Nimbus no longer deletes an embedder's images in
   `/.nimbus/facet-images`. The store that holds a resident process's
   generated modules removed every file there that no running process booted

@@ -1,14 +1,14 @@
 import type { ProcessFsClient } from '../../_shared/process-fs-client.js';
-import type { RuntimeFileHandle, RuntimeFsPath, VfsAcquireResult } from '../os-contracts.js';
+import type { RuntimeFileHandle, RuntimeFsPath } from '../os-contracts.js';
 import type { ReadDirectoryBatchRequest, ReadDirectoryBatchResult } from '../read-directory-batch.js';
-import type { ResidentEntry } from './resident-filesystem.js';
+import type { ResidentBarrier, ResidentBarrierOptions, ResidentEntry } from './resident-filesystem.js';
 export interface DirectoryPoolStore {
     ready(): boolean;
     cursor(): {
         epoch: string;
         rev: number;
     } | null;
-    admit(answer: VfsAcquireResult): Promise<boolean>;
+    barrier(options?: ResidentBarrierOptions): Promise<ResidentBarrier>;
     entry(key: string): ResidentEntry | null | undefined;
 }
 interface Options {

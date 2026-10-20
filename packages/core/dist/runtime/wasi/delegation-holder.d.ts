@@ -39,6 +39,7 @@ import type { ResidentEntry } from './resident-filesystem.js';
 import { type Provisional } from './provisional.js';
 import type { W7Attrs } from '@nimbus-sh/platform/w7-frame.js';
 import { type ProcessFsClient, type ProcessFsJournal, type ProcessFsSession } from '../../_shared/process-fs-client.js';
+import type { WaveTimers } from '@nimbus-sh/platform/wave-writer.js';
 /** What the holder reads of the process's resident store (its own decisions aside). */
 export interface HolderStore {
     readonly device: number;
@@ -65,8 +66,10 @@ export interface HolderOptions {
     readonly isHomeRoot?: (key: string) => boolean;
     /** Told when what the holder decided changed the namespace the store shows (the barrier is owed after a send). */
     readonly sent?: () => void;
-    /** The clock files are stamped with. */
+    /** The clock files are stamped with, and its client runs on. */
     readonly now?: () => number;
+    /** The timers its client lingers and retries on (ProcessFsClientOptions.timers). */
+    readonly timers?: WaveTimers;
     /** Mutations in a subtree before it is taken (the client's GRANT_AFTER). */
     readonly grantAfter?: number;
     /** Inode numbers a first grant reserves (the client's GRANT_INOS). */
@@ -79,7 +82,11 @@ export interface HolderOptions {
      * and a change is counted toward taking a subtree only once one makes it.
      */
     readonly cannotWait?: () => boolean;
-    /** The process's live umask, for what it makes provisionally (a held subtree's grant carries the session's). */
+    /**
+     * The process's live umask: for what it makes provisionally (a held
+     * subtree's grant carries the session's), and stamped by its client on
+     * each call logged that makes a name and does not name one.
+     */
     readonly umask?: () => number;
 }
 /** The decisions the process made in a held subtree, not yet sent. */

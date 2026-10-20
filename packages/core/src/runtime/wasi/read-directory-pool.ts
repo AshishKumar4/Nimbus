@@ -3,12 +3,12 @@ import { DIRECTORY_BATCH_LIMIT, DIRECTORY_END_WAIT_MS, DIRECTORY_PREFETCH_LIMIT 
 import type { ProcessFsClient } from '../../_shared/process-fs-client.js';
 import type { RuntimeFileHandle, RuntimeFsPath, VfsAcquireResult } from '../os-contracts.js';
 import type { ReadDirectoryBatchRequest, ReadDirectoryBatchResult, ReadDirectoryDescription } from '../read-directory-batch.js';
-import type { ResidentEntry } from './resident-filesystem.js';
+import type { ResidentBarrier, ResidentBarrierOptions, ResidentEntry } from './resident-filesystem.js';
 
 export interface DirectoryPoolStore {
   ready(): boolean;
   cursor(): { epoch: string; rev: number } | null;
-  admit(answer: VfsAcquireResult): Promise<boolean>;
+  barrier(options?: ResidentBarrierOptions): Promise<ResidentBarrier>;
   entry(key: string): ResidentEntry | null | undefined;
 }
 interface Options {
@@ -152,7 +152,7 @@ export function readDirectoryPool({ call, store, client, before, endWaitMs = DIR
       ? current.rev <= result.acquire.rev
       : current.epoch === cursor.epoch && generation === stamp);
     let admitted: boolean;
-    try { admitted = applies && await store.admit(result.acquire); }
+    try { admitted = applies && (await store.barrier({ answer: result.acquire })).applied === true; }
     catch (error) { invalidate(); throw error; }
     trustedAtIo = false;
     if (lease && ask && admitted && !result.acquire.poison && generation === stamp && cancelled === cancelAt) {
