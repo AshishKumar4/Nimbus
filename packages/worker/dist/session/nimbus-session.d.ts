@@ -743,8 +743,11 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
     _rpcRouteCapabilityPort(port: number, capability: string, request: Request, innerPath: string): Promise<Response>;
     /** What restoring the dev servers reads of this session, one view per instance (its restore is the view's). */
     private devServerHost;
+    private get devServers();
     /** The dev servers a previous incarnation ran, started again once (dev-servers.ts): what every route to one waits on. */
     restoreDevServers(): Promise<readonly DevServerRestoreFailure[]>;
+    /** Their processes spawned again (dev-servers.ts): what a listing of what runs waits on. */
+    devServersRespawned(): Promise<void>;
     /** The port route's in-DO HMR accept, delegated — same reason. */
     acceptCirrusHmrWs(request: Request): Response;
     /**

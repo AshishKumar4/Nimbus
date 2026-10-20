@@ -108,9 +108,17 @@ export interface DevServerRestoreHost extends DevServerHost {
 }
 /**
  * Run again, once, each dev server a previous incarnation of the session
- * recorded, one at a time; every caller waits on that one run. A server whose
- * command fails is not tried again: the failure is answered, and its
- * process's log says why.
+ * recorded; every caller waits on that one run. First each server's process
+ * is spawned again, as the recorded one was (`respawned`), then each command
+ * runs, one at a time, under its process. A server whose command fails is
+ * not tried again: the failure is answered, and its process's log says why.
  */
 export declare function restoreDevServers(host: DevServerRestoreHost): Promise<readonly DevServerRestoreFailure[]>;
+/**
+ * Once each dev server this incarnation restores has its process in the
+ * table, before any of its commands runs: what a listing of what runs waits
+ * for, so "not listed" means "not coming". A command the restore runs may
+ * list too, and finds the wait over.
+ */
+export declare function devServersRespawned(host: DevServerRestoreHost): Promise<void>;
 //# sourceMappingURL=dev-servers.d.ts.map

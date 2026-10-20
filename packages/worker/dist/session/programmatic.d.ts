@@ -28,7 +28,6 @@ import { type NimbusWorkspace } from '@nimbus-sh/core/workspace';
 import { type NamedTerminals } from './named-terminals.js';
 import { type ExecOutput, type ExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 import type { RuntimeManager } from '@nimbus-sh/core/runtime/runtime-manager.js';
-import type { DevServerRestoreFailure } from './helpers.js';
 export interface ProgrammaticShell {
     getEnv(): Record<string, string>;
 }
@@ -49,8 +48,8 @@ interface ProgrammaticViteServer {
 export interface ProgrammaticHost extends TimerHost {
     readonly runtimeManager: RuntimeManager;
     ensureRuntimeReady(): Promise<void>;
-    /** This incarnation's one restore of the dev servers its previous one ran (session/dev-servers.ts). */
-    restoreDevServers(): Promise<readonly DevServerRestoreFailure[]>;
+    /** This incarnation's restore of the dev servers its previous one ran, their processes spawned again (session/dev-servers.ts). */
+    devServersRespawned(): Promise<void>;
     /** The destroy running (rpcDestroy), until it is answered. */
     destroying?: Promise<SessionDestroyResult> | null;
     _w1SessionDestroyed: boolean;

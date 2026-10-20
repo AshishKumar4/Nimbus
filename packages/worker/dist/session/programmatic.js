@@ -470,14 +470,14 @@ export async function rpcListRuntimes(self) {
     };
 }
 /**
- * Ready, and what runs listed in full: the dev servers this incarnation's
- * restore runs again are in the table, as port routing waits for them. A
+ * Ready, and what runs listed in full: the dev servers this incarnation
+ * restores have their processes in the table, their commands not yet run. A
  * host's recovery asks once, and must not read "not yet" as "none coming"
  * (Kinu ask 65).
  */
 async function ensureRunningListed(self) {
     await ensureProgrammaticReady(self);
-    await self.restoreDevServers();
+    await self.devServersRespawned();
 }
 export async function rpcListProcesses(self) {
     await ensureRunningListed(self);
