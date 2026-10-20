@@ -19,6 +19,7 @@ import { DurableObject as CloudflareDurableObject } from 'cloudflare:workers';
 import { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { CommandRegistry } from '@nimbus-sh/core/substrate/lifo/commands/registry.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
+import { NamedTerminals } from './named-terminals.js';
 import type { FacetManager } from '../facets/manager.js';
 import { type ComposedFacetManager } from '../facets/compose.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
@@ -54,6 +55,7 @@ import type { HostedHttpRequest, PeerHost } from '@nimbus-sh/fabric/peer-host.js
 import type { FanoutShardOptions } from '@nimbus-sh/fabric/fanout.js';
 import type { D1QueryResponse, D1QuerySql, KvCall, R2Call } from '@nimbus-sh/fabric/inner-storage-env.js';
 import { WebSocketRelay } from './ws-relay.js';
+import { type ProcessEnvHooks } from './process-env.js';
 import type { DevServerRestoreFailure } from './helpers.js';
 import * as _portCapability from './port-capability.js';
 import { ServedReads } from '../facets/read-profile.js';
@@ -81,6 +83,8 @@ export declare function renderWelcomeMarkdown(version: string): string;
 type SessionEnv = runtimeServices.HostedRuntimeEnv & SessionAiHost['env'];
 export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> implements SessionRouterRpc {
     #private;
+    /** The session keeps each relaunchable launch's environment itself, outside its filesystem (session/process-env.ts). */
+    readonly processEnv: ProcessEnvHooks;
     get childProcessHost(): import("@nimbus-sh/core/runtime/child-process-manager.js").ChildProcessHost;
     runtimeWorkspace: NimbusWorkspace | null;
     get runtimeManager(): RuntimeManager;
@@ -95,6 +99,8 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
     shell: Shell | null;
     shellProcessPid: number | null;
     terminal: WebSocketTerminal | null;
+    /** The session's named terminals (`/ws?terminal=`): each a shell of its own over this workspace. */
+    readonly terminals: NamedTerminals;
     /** The composed manager is the one field; `.manager` is derived. */
     facetManagerComposed: ComposedFacetManager | null;
     get facetManager(): FacetManager | null;
@@ -597,6 +603,16 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
         ok: boolean;
         pid: number;
     }>;
+    _rpcListTerminals(): Promise<{
+        name: string | null;
+        live: boolean;
+        attached: boolean;
+        running: string | null;
+        cwd: string;
+    }[]>;
+    _rpcCloseTerminal(name: string): Promise<{
+        closed: boolean;
+    }>;
     _rpcWriteProcessInput(pid: number, data: string): Promise<{
         ok: boolean;
         pid: number;
@@ -830,8 +846,8 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
     seedFilesystem(): void;
     private terminalInputDispatcher;
     private terminalInputPending;
-    dispatchTerminalInput(frame: string): void;
-    _rpcTerminalInput(frame: string, terminalId: string): Promise<void>;
+    dispatchTerminalInput(frame: string, named?: string): void;
+    _rpcTerminalInput(frame: string, terminalId: string, terminal?: string): Promise<void>;
     webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void>;
     webSocketClose(ws: WebSocket, code?: number, reason?: string, wasClean?: boolean): Promise<void>;
     webSocketError(ws: WebSocket, error?: any): Promise<void>;

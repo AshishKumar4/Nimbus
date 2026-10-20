@@ -21,8 +21,10 @@ import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import {
   FACET_IMAGE_DIR,
+  PROCESS_IMAGE_DIR,
   facetImageDigest,
   facetImagePath,
+  processImagePath,
   encodeCodePack,
   decodeCodePackBytes,
   residentLoaderConfig,
@@ -59,7 +61,7 @@ manager.setVfs(sessionVfs, processFiles(sessionVfs));
 const fs = sessionVfs.as(CRED_KERNEL);
 
 const storedImages = () => {
-  try { return fs.readdir(FACET_IMAGE_DIR).map((e) => e.name).sort(); }
+  try { return fs.readdir(PROCESS_IMAGE_DIR).map((e) => e.name).sort(); }
   catch { return []; }
 };
 const spawn = (code, name) => manager.spawnNode(code, {
@@ -75,7 +77,7 @@ const name = (path) => path.split('/').pop();
 const a1 = await spawn('const a = 1;', 'a.js');
 const imageA = await bootedImage();
 const packA = await bootedPack();
-assert.match(imageA, /^\/\.nimbus\/facet-images\/[0-9a-f]{64}\.js$/,
+assert.match(imageA, /^\/\.nimbus\/process-images\/[0-9a-f]{64}\.js$/,
   'the image is named by the digest of its own bytes');
 assert.deepEqual(storedImages(), [name(imageA), name(packA)].sort(),
   'the spawn materialized exactly its main module and its code pack in the store');
@@ -84,7 +86,7 @@ assert.ok(Object.values(configs().at(-1).modules).some((m) => m?.cjs?.includes('
 
 // The bytes the loader saw are the bytes on disk, not a copy carried alongside.
 const storedSource = fs.readFileString(imageA.replace(/^\/+/, ''));
-assert.equal(imageA, facetImagePath(await facetImageDigest(storedSource)), 'the recipe is named by its own bytes');
+assert.equal(imageA, processImagePath(await facetImageDigest(storedSource)), 'the recipe is named by its own bytes');
 assert.deepEqual(await storedBootModules(world, fs), processImageModules(configs().at(-1)),
   'the facet booted from the stored recipe and shared assets, read when it loaded');
 const cells = decodeCodePackBytes(fs.readFileUncached(packA));
@@ -121,6 +123,14 @@ await spawn('const shared = 1;', 'shared.js');
 assert.equal(storedImages().includes(imageA.split('/').pop()), true,
   'an image is kept while ANY process that boots from it is still running');
 
+// An embedder keeps content-addressed images of its own beside the store's
+// (facetImagePath: a durable worker's runner, its text modules), and removes
+// them itself: the sweep is over what the store wrote.
+const embedderImage = 'export class NimbusProcess {}\n';
+const embedderPath = facetImagePath(await facetImageDigest(embedderImage)).slice(1);
+fs.mkdir(FACET_IMAGE_DIR, { recursive: true, mode: 0o755 });
+fs.writeFile(embedderPath, embedderImage, { mode: 0o644 });
+
 manager.finishProcess(a2.pid, 0);
 await spawn('const c = 3;', 'c.js');
 const imageC = await bootedImage();
@@ -130,6 +140,7 @@ assert.equal(live.includes(imageA.split('/').pop()), false,
 assert.equal(live.includes(imageB.split('/').pop()), true, 'a running process keeps its image');
 assert.equal(live.includes(imageC.split('/').pop()), true);
 assert.equal(processes.get(b.pid)?.state, 'running');
+assert.equal(fs.exists(embedderPath), true, 'an embedder\'s image beside the store survives its sweep');
 
 // ── reader: verify-on-read ─────────────────────────────────────────────────
 // The name is a promise about the bytes; the loader must check it before the

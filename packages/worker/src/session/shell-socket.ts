@@ -57,11 +57,14 @@ export interface AutoResponseHost {
 interface ShellAttachment {
   kind: typeof SHELL_KIND;
   seenAt?: number;
+  /** A named terminal's socket (`/ws?terminal=`); absent for the session's own. */
+  terminal?: string;
 }
 
 /** What a shell socket carries. `seenAt` is null when it carries none. */
 interface ShellStamp {
   seenAt: number | null;
+  terminal: string | undefined;
 }
 
 function readAttachment(ws: WebSocket): unknown {
@@ -93,13 +96,14 @@ function writeAttachment(ws: WebSocket, attachment: ShellAttachment): void {
 function readShellStamp(ws: WebSocket, now: number): ShellStamp | null {
   const attachment = readAttachment(ws);
   if (typeof attachment !== 'object' || attachment === null) return null;
-  const record = attachment as { kind?: unknown; seenAt?: unknown };
+  const record = attachment as { kind?: unknown; seenAt?: unknown; terminal?: unknown };
   if (record.kind !== SHELL_KIND) return null;
+  const terminal = typeof record.terminal === 'string' ? record.terminal : undefined;
   const seenAt = record.seenAt;
   if (typeof seenAt !== 'number' || !Number.isFinite(seenAt) || seenAt > now + CLOCK_SKEW_MS) {
-    return { seenAt: null };
+    return { seenAt: null, terminal };
   }
-  return { seenAt };
+  return { seenAt, terminal };
 }
 
 /** When the runtime last answered a ping on this socket, if it ever did. */
@@ -127,22 +131,33 @@ function ownsTerminal(
 }
 
 /** The open shell sockets, each with the stamp it carries. */
+/** The open shell sockets of one terminal: the session's own (`terminal` undefined) or a named one. */
 function openShellSockets(
   sockets: readonly WebSocket[],
   now: number,
+  terminal: string | undefined,
 ): { ws: WebSocket; stamp: ShellStamp }[] {
   const found: { ws: WebSocket; stamp: ShellStamp }[] = [];
   for (const ws of sockets) {
     if (ws.readyState !== WebSocket.OPEN) continue;
     const stamp = readShellStamp(ws, now);
-    if (stamp) found.push({ ws, stamp });
+    if (stamp && stamp.terminal === terminal) found.push({ ws, stamp });
   }
   return found;
 }
 
-/** Tag a freshly accepted terminal socket as this session's shell owner. */
-export function tagShellSocket(ws: WebSocket, now: number = Date.now()): void {
-  writeAttachment(ws, { kind: SHELL_KIND, seenAt: now });
+function shellAttachment(seenAt: number | undefined, terminal: string | undefined): ShellAttachment {
+  return { kind: SHELL_KIND, ...(seenAt === undefined ? {} : { seenAt }), ...(terminal === undefined ? {} : { terminal }) };
+}
+
+/** The named terminal a shell socket is (`/ws?terminal=`): undefined for the session's own, or another socket. */
+export function shellSocketTerminal(ws: WebSocket): string | undefined {
+  return readShellStamp(ws, Date.now())?.terminal;
+}
+
+/** Tag a freshly accepted terminal socket as its terminal's owner: the session's own, or the named `terminal`. */
+export function tagShellSocket(ws: WebSocket, now: number = Date.now(), terminal?: string): void {
+  writeAttachment(ws, shellAttachment(now, terminal));
 }
 
 /**
@@ -155,8 +170,9 @@ export function tagShellSocket(ws: WebSocket, now: number = Date.now()): void {
  * A peer that turns out to be alive re-stamps on its next frame.
  */
 export function clearShellSocketStamp(ws: WebSocket): void {
-  if (readShellStamp(ws, Date.now()) === null) return;
-  writeAttachment(ws, { kind: SHELL_KIND });
+  const stamp = readShellStamp(ws, Date.now());
+  if (stamp === null) return;
+  writeAttachment(ws, shellAttachment(undefined, stamp.terminal));
 }
 
 /**
@@ -170,7 +186,7 @@ export function noteShellSocketActivity(ws: WebSocket, now: number = Date.now())
   const stamp = readShellStamp(ws, now);
   if (!stamp) return;
   if (stamp.seenAt !== null && now - stamp.seenAt < STAMP_INTERVAL_MS) return;
-  writeAttachment(ws, { kind: SHELL_KIND, seenAt: now });
+  writeAttachment(ws, shellAttachment(now, stamp.terminal));
 }
 
 /** True when another browser terminal currently holds this session. */
@@ -178,8 +194,9 @@ export function hasLiveShellOwner(
   ctx: AutoResponseHost | undefined,
   sockets: readonly WebSocket[],
   now: number = Date.now(),
+  terminal?: string,
 ): boolean {
-  return openShellSockets(sockets, now).some(({ ws, stamp }) => ownsTerminal(ctx, ws, stamp, now));
+  return openShellSockets(sockets, now, terminal).some(({ ws, stamp }) => ownsTerminal(ctx, ws, stamp, now));
 }
 
 /**
@@ -193,8 +210,9 @@ export function closeStaleShellSockets(
   ctx: AutoResponseHost | undefined,
   sockets: readonly WebSocket[],
   now: number = Date.now(),
+  terminal?: string,
 ): void {
-  for (const { ws, stamp } of openShellSockets(sockets, now)) {
+  for (const { ws, stamp } of openShellSockets(sockets, now, terminal)) {
     if (ownsTerminal(ctx, ws, stamp, now)) continue;
     try { ws.close(1001, 'terminal taken over'); } catch { /* already closing */ }
   }

@@ -196,6 +196,7 @@ declare const FsAcquireArgsSchema: z.ZodObject<{
     epoch: z.ZodNullable<z.ZodString>;
     cursor: z.ZodNumber;
     begin: z.ZodOptional<z.ZodNumber>;
+    own: z.ZodOptional<z.ZodNumber>;
     options: z.ZodOptional<z.ZodObject<{
         namespace: z.ZodOptional<z.ZodBoolean>;
         lease: z.ZodOptional<z.ZodBoolean>;

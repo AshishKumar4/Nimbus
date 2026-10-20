@@ -25,6 +25,7 @@ import { moduleImporterUrl } from '@nimbus-sh/core/_shared/module-importer.js';
 import { isTypescriptDeclarationFile } from '@nimbus-sh/core/_shared/typescript-specifiers.js';
 import { ReadAheadBudget, STDIN_SYNC_READ_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { execIdField, parseExecId } from '@nimbus-sh/core/runtime/process-table.js';
+import { InterpreterEnvFactsSchema, interpreterProcessEnv } from '@nimbus-sh/core/runtime/interpreter-env.js';
 import { exitCodeForSignal } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { ensureKernelStoreRoot, KERNEL_STORE_ROOT } from './kernel-store-root.js';
 import { parseProcessSignalName } from '@nimbus-sh/core/runtime/process-io-protocol.js';
@@ -44,7 +45,7 @@ import { relayRpcBody, responseScope } from '@nimbus-sh/core/runtime/port-regist
 import { clearPortCapability, listPortReservations, readPortReservation, readPortReservationByOwner, releasePortReservation, restoreReservedPortCapability, } from '../session/port-capability.js';
 import { deriveResidentOwner, launchArgv } from './resident-identity.js';
 import { z } from 'zod/v4';
-import { RESIDENT_OWNER_KEY_PREFIX, DURABLE_IMAGES_KEY_PREFIX } from '../session/keys.js';
+import { RESIDENT_OWNER_KEY_PREFIX, DURABLE_IMAGES_KEY_PREFIX, DEV_SERVER_KEY_PREFIX, PROCESS_ENV_DROPPED_KEY } from '../session/keys.js';
 import { PORT_CAPABILITY_KEY_PREFIX } from '../session/keys.js';
 import { sessionIdentity, unbindPublicPortCapability } from '../router/public-directory.js';
 import { prefetchForRequire, requireFsOverBridge, resolveDeferredImport, ClosureBoundExceededError, } from '@nimbus-sh/core/runtime/require-resolver.js';
@@ -93,7 +94,9 @@ import { drainProcessFsJournal, UNSETTLED_END_NOTE } from '@nimbus-sh/core/_shar
 import { journalDrainSession } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import { ProcessJournals } from '../session/process-journals.js';
 import { acquireDurableFacetSlot, freeDurableFacetSlot, } from './durable-slots.js';
-import { persistDurableWorkerImage, purgeDurableWorkerImages, } from './durable-images.js';
+import { persistDurableWorkerImage, readStoredImages, purgeDurableWorkerImages, rewriteWithoutEnvironment, unlinkDurableImages, } from './durable-images.js';
+import { legacyGeneratedImages } from './legacy-images.js';
+import { deleteRecord, putRecord, relaunchEnv } from './process-env.js';
 import { SQLITE_WASM_MODULE_NAME, } from '../runtime/opencode-facet-runner.js';
 import { parsePortFromArgv, resolveLongRunningPort } from '@nimbus-sh/core/runtime/long-running-handle.js';
 import { hostActivity, hostAdapterBytes } from '@nimbus-sh/fabric/host-activity.js';
@@ -1406,10 +1409,12 @@ export function facetWasmImportsSource(wasmImports) {
 export async function generateLongRunningNodeCode(userCode, vfsState, opts, usesSqlite, sources, pacer) {
     const bundleSource = await facetVfsBundleSourceFor(vfsState, pacer);
     const entry = entryModule(userCode, opts.filename, opts.cwd || DEFAULT_HOME, opts.esModule, bundleSource, opts.preamble, opts.node?.check === true);
+    // No env: a process's environment is its own (ask 62), and this source is
+    // content-addressed into an image every process can read. It travels in
+    // the start payload (startArgs.env), in memory.
     const args = {
         argv: opts.argv || [],
         nodeCommandLine: opts.node ?? null,
-        env: opts.env || {},
         cwd: opts.cwd || '/home/user',
         filename: opts.filename || '<script>',
         dirname: opts.dirname || opts.cwd || '/home/user',
@@ -1504,7 +1509,9 @@ async function __nimbusEnsureStarted(workerEnv, workerCtx, __startArgs) {
   if (__nimbusStarting) return __nimbusStarting;
   __nimbusStarting = (async () => {
     const args = __NIMBUS_ARGS;
-    const { argv, nodeCommandLine, env, cwd: _cwd, filename, dirname, stdin, captureOutput, attachedTty, cred } = args;
+    const { argv, nodeCommandLine, cwd: _cwd, filename, dirname, stdin, captureOutput, attachedTty, cred } = args;
+    // The process's environment, handed over in memory (never in this module's text).
+    const env = (__startArgs && __startArgs.env) || {};
     const __nimbusProcessId = Number(__startArgs?.pid || env?.NIMBUS_CP_CHILD_PID || 1);
     // Every resident process has a live input channel on its pid.
     const __nimbusLiveInputPid = Number(__startArgs?.pid || env?.NIMBUS_CP_CHILD_PID || 0);
@@ -4410,6 +4417,10 @@ export const DEFAULT_WORKER_MAIN_MODULE = 'worker.js';
 const ROUTEABLE_PORT_ATTACH_TIMEOUT_MS = 1_000;
 /** A port request may wait this long for a durable app's re-drive to boot. */
 const DURABLE_ENSURE_BOOT_BUDGET_MS = 12_000;
+/** What relaunching `pid` from `record` under `identity` asks its host (facets/process-env.ts). */
+function relaunchRequest(record, pid, identity) {
+    return { pid, cred: identity.cred, record, ...execIdField(identity) };
+}
 /** The env var a launch reads its restart policy from — set by startProcess({ restart }) and `nimbus start --restart`. */
 export const RESTART_POLICY_ENV = 'NIMBUS_RESTART';
 /** A process whose host the platform reset ends as a killed one does (SIGKILL's 137). */
@@ -4418,6 +4429,36 @@ const HOST_LOST_EXIT_CODE = 137;
 const RESTART_BACKOFF_BASE_MS = 1_000;
 function residentRestartPolicy(env) {
     return env?.[RESTART_POLICY_ENV] === 'on-failure' ? 'on-failure' : 'never';
+}
+/** A record an earlier release wrote with the environment its process ran with in it. */
+const RecordHoldingEnvSchema = z.looseObject({ env: z.record(z.string(), z.string()) });
+/** An interpreter resident's start payload, as its environment members parse; a launch given none has none. */
+const InterpreterStartArgsSchema = z.looseObject({
+    userEnv: z.record(z.string(), z.string()).optional(),
+    envFacts: InterpreterEnvFactsSchema.optional(),
+}).default({});
+function interpreterStartArgs(startArgs) {
+    const parsed = InterpreterStartArgsSchema.safeParse(startArgs);
+    if (!parsed.success)
+        throw new Error(`Nimbus: an interpreter resident's start payload is malformed: ${parsed.error.message}`);
+    return parsed.data;
+}
+/** An interpreter resident's start payload as its image keeps it: what its environment is built from, never the environment. */
+function storedStartArgs(startArgs, interpreterEnv) {
+    const { userEnv: _built, envFacts: _facts, ...rest } = interpreterStartArgs(startArgs);
+    return interpreterEnv?.facts ? { ...rest, envFacts: interpreterEnv.facts } : rest;
+}
+/** What an interpreter resident is relaunched with: its image's payload, its environment built again on the host's answer. */
+function relaunchInterpreter(stored, base) {
+    const { envFacts, ...rest } = interpreterStartArgs(stored);
+    return {
+        startArgs: { ...rest, userEnv: envFacts === undefined ? base : interpreterProcessEnv(base, envFacts) },
+        interpreterEnv: { base, facts: envFacts ?? null },
+    };
+}
+/** A relaunch's environment carrying its record's restart policy: Nimbus's own setting, which the host's answer need not. */
+function withRestartPolicy(env, restart) {
+    return restart === 'on-failure' ? { ...env, [RESTART_POLICY_ENV]: 'on-failure' } : env;
 }
 /** What an app reports of its live process: its exec id and the process it restarts, each when it has one. */
 function processReportFields(entry) {
@@ -4715,7 +4756,16 @@ export class FacetManager {
         this.readProfile = profiles && typeof profiles === 'object'
             ? new ReadProfile(profiles, Date.now, () => { this.readProfileConflicts++; })
             : null;
-        this.launchJournal = new FencedWork(ctx.storage, {
+        // A row's delete takes the environment kept beside it in the same
+        // storage operation: every way a row goes (release, purge, abandonment,
+        // supersession) is a delete through here.
+        const journalStorage = {
+            put: (key, value) => ctx.storage.put(key, value),
+            delete: (key) => ctx.storage.transaction((txn) => deleteRecord(txn, this.hooks.keepProcessEnv, key)),
+            list: (options) => ctx.storage.list(options),
+            sync: () => ctx.storage.sync(),
+        };
+        this.launchJournal = new FencedWork(journalStorage, {
             generationBase: () => this.processes.pidBase,
             waitUntil: (promise) => this.ctx.waitUntil(promise),
             redrive: (record, attempt, cause) => this._redrive(record, attempt, cause),
@@ -4745,6 +4795,9 @@ export class FacetManager {
         // logs a previous incarnation's residents left undrained (their names
         // reserved from minting until then). One that cannot be read is said in
         // the worker's log and on the terminal, and kept.
+        // First: what an earlier release kept of its processes' environments goes,
+        // before any of it is re-driven or read (ask 62).
+        onColdStart(ctx, () => this._dropEnvironmentsAtRest());
         onColdStart(ctx, () => this.processJournals.drainPending({
             reserved: reservedFacetNames(this.ctx),
             generation: generation(this.ctx),
@@ -4776,6 +4829,85 @@ export class FacetManager {
             this.ctx.waitUntil(this.trackLaunchTask(this._onResidentTerminal(pid)));
         });
         this.processes.setDefaultSignalAction((pid, code, signal) => this._endBySignal(pid, code, signal));
+    }
+    /**
+     * What releases before ask 62 kept of their processes' environments, once
+     * per session, before anything of it is re-driven or read. Each record
+     * moves its environment to where this host keeps environments
+     * (keepProcessEnv) in the same storage write that strips it:
+     * - a Node resident's journal row, and a dev server's record, held it;
+     * - every application blob that held an interpreter's environment, or a
+     *   binding env, where every process could read it (named by an index, a
+     *   row, or nothing): written again without it, its rows and owner
+     *   indexes naming the new blob, the old one unlinked. An application
+     *   whose binding env nothing can give back (no embedder
+     *   resolveWorkerLaunch) is not restarted, and the session is told. A
+     *   blob a reset cut short, which no reader can use, is unlinked too;
+     * - a Node resident's generated entry an earlier release left in an image
+     *   directory: not removed, as the directory is the embedder's; the
+     *   session is told how many look generated (legacy-images.ts).
+     * A filesystem snapshot or export taken before keeps what it held.
+     */
+    async _dropEnvironmentsAtRest() {
+        if (await this.ctx.storage.get(PROCESS_ENV_DROPPED_KEY) === true)
+            return;
+        const keeping = this.hooks.keepProcessEnv;
+        const rows = await this.ctx.storage.list({ prefix: FENCED_WORK_KEY_PREFIX });
+        for (const [key, row] of rows) {
+            if (row.recipe.kind !== 'node' || row.recipe.opts.env === undefined)
+                continue;
+            const { env, ...opts } = row.recipe.opts;
+            const rewritten = { ...row, recipe: { ...row.recipe, opts } };
+            rows.set(key, rewritten);
+            await this.ctx.storage.transaction((txn) => putRecord(txn, keeping, key, rewritten, env));
+        }
+        for (const [key, row] of await this.ctx.storage.list({ prefix: DEV_SERVER_KEY_PREFIX })) {
+            const held = RecordHoldingEnvSchema.safeParse(row);
+            if (!held.success)
+                continue;
+            const { env, ...record } = held.data;
+            await this.ctx.storage.transaction((txn) => putRecord(txn, keeping, key, record, env));
+        }
+        const vfs = this.vfs;
+        if (vfs !== null) {
+            const { holdingEnv, corrupt } = await readStoredImages(vfs);
+            const rewritten = new Map();
+            for (const held of holdingEnv) {
+                const naming = [...rows].flatMap(([key, row]) => (row.recipe.kind === 'worker' && row.recipe.image.application === held.digest ? [{ key, row, recipe: row.recipe }] : []));
+                const application = await rewriteWithoutEnvironment(vfs, held.digest);
+                rewritten.set(held.digest, application);
+                for (const { key, row, recipe } of naming) {
+                    // What nothing can give back: a binding env with no embedder
+                    // resolveWorkerLaunch; an interpreter's whole environment with no
+                    // keeping here, where an embedder's resolveProcessEnv answers the
+                    // base its runtime built on, which this image never recorded.
+                    const unrecoverable = recipe.resident === undefined
+                        ? held.bindingEnv && this.hooks.resolveWorkerLaunch === undefined
+                        : held.processEnv !== null && keeping === undefined;
+                    if (unrecoverable) {
+                        await this.ctx.storage.transaction((txn) => deleteRecord(txn, keeping, key));
+                        rows.delete(key);
+                        this.hooks.notify?.(`\x1b[33m[nimbus: "${row.command}" is not restarted: its image held its environment, which Nimbus no longer keeps; start it again]\x1b[0m\r\n`);
+                        continue;
+                    }
+                    const moved = { ...row, recipe: { ...recipe, image: { runner: recipe.image.runner, application } } };
+                    rows.set(key, moved);
+                    await this.ctx.storage.transaction((txn) => putRecord(txn, keeping, key, moved, recipe.resident === undefined ? undefined : held.processEnv ?? undefined));
+                }
+            }
+            for (const [ownerKey, images] of await this.ctx.storage.list({ prefix: DURABLE_IMAGES_KEY_PREFIX })) {
+                if (!images.some((image) => rewritten.has(image.application)))
+                    continue;
+                await this.ctx.storage.put(ownerKey, images.map((image) => ({ runner: image.runner, application: rewritten.get(image.application) ?? image.application })));
+            }
+            unlinkDurableImages(vfs, [...rewritten.keys(), ...corrupt]);
+            const left = legacyGeneratedImages(vfs).length;
+            if (left > 0) {
+                this.hooks.notify?.(`\x1b[33m[nimbus: earlier releases left ${left} generated program image(s) with their environment in them in /.nimbus/facet-images or /var/lib/nimbus/facet-images; GET /api/_diag/session lists them (legacyGeneratedImages)]\x1b[0m\r\n`);
+            }
+        }
+        await this.ctx.storage.put(PROCESS_ENV_DROPPED_KEY, true);
+        await this.ctx.storage.sync();
     }
     /**
      * A signal's default action: the process ends with 128+signo whether its
@@ -4923,8 +5055,13 @@ export class FacetManager {
             ? { kind: 'exited', code: entry.exitCode ?? 1 }
             : { kind: 'host-reset' });
     }
-    /** Claim identity AND write its recovery row in one serializable storage transaction. */
-    async _claimResident(record) {
+    /**
+     * Claim identity AND write its recovery row in one serializable storage
+     * transaction, with the environment its relaunch asks for (`env`, when it
+     * asks) kept beside the row where this host keeps environments. A claim
+     * again of a row already written leaves what is kept beside it.
+     */
+    async _claimResident(record, env) {
         const owner = residentOwner(record);
         if (owner === undefined)
             throw new Error('resident launch has no owner');
@@ -4935,7 +5072,7 @@ export class FacetManager {
                 && this.processes.get(held)?.state === 'running')
                 return held;
             await txn.put(key, record.pid);
-            await txn.put(`${FENCED_WORK_KEY_PREFIX}${record.pid}`, record);
+            await putRecord(txn, this.hooks.keepProcessEnv, `${FENCED_WORK_KEY_PREFIX}${record.pid}`, record, env);
             return null;
         });
         if (duplicate === null) {
@@ -7366,7 +7503,7 @@ export class FacetManager {
                 pid: staged.pid,
                 writerId,
                 code: async () => ({ stage: staged.stageSpec }),
-                request: new Request('http://nimbus-runtime.local/run', { method: 'POST' }),
+                request: new Request('http://nimbus-runtime.local/run', { method: 'POST', body: JSON.stringify({ env: staged.env }) }),
                 onWriterActivated: (id) => {
                     this._activateProcessVfsWriter(staged.pid, id);
                     writerActivated = true;
@@ -7406,7 +7543,7 @@ export class FacetManager {
         // A preparation that fails ends the process it spawned: no caller holds
         // its pid yet to end it, and it never started.
         try {
-            return { pid: entry.pid, stageSpec: await this._stageOpencodeSpec(entry, opts, mode) };
+            return { pid: entry.pid, ...await this._stageOpencodeSpec(entry, opts, mode) };
         }
         catch (error) {
             this._end(entry.pid, { code: 1, cause: `staging \`${command}\` failed: ${errorMessage(error)}` });
@@ -7425,19 +7562,20 @@ export class FacetManager {
             this.processes.openInput(pid);
         }
         // attached: opencode's shim TTY (node-shims.ts) keys raw-mode stdin and
-        // columns/rows off these env vars, exactly like the long-running node path.
-        const runnerEnv = attached
+        // columns/rows off these vars as its module evaluates, exactly like the
+        // long-running node path. They describe the terminal, so they ride in the
+        // stage; the rest of the env goes with the start or the run (ask 62).
+        const terminal = attached
             ? {
-                ...opts.env,
                 NIMBUS_ATTACHED_TTY: '1',
                 NIMBUS_CP_CHILD_PID: String(pid),
                 TERM: opts.env.TERM || 'xterm-256color',
                 COLORTERM: opts.env.COLORTERM || 'truecolor',
                 COLUMNS: opts.env.COLUMNS || '80',
                 LINES: opts.env.LINES || '24',
-                FORCE_COLOR: opts.env.FORCE_COLOR || '1',
             }
-            : opts.env;
+            : {};
+        const env = attached ? { ...opts.env, ...terminal, FORCE_COLOR: opts.env.FORCE_COLOR || '1' } : opts.env;
         // Snapshot the working tree so opencode's sync fs reads resolve, and a
         // directory manifest so readdir/stat are coherent: the files as they are,
         // since opencode runs its own code and only reads them (dataOnly).
@@ -7458,14 +7596,17 @@ export class FacetManager {
             return { vfsState: gathered, vfsBundle: serialized };
         }, () => this._launchEnds(entry.pid), undefined, this._allocationOwner(entry.pid));
         return {
-            mode,
-            argv: opts.argv,
-            env: runnerEnv,
-            cred: { ...entry.cred, groups: [...entry.cred.groups] },
-            cwd: opts.cwd,
-            stdin: opts.stdin ?? '',
-            vfsBundle,
-            vfsCursor: serializeFacetVfsCursor(vfsState.cursor),
+            env,
+            stageSpec: {
+                mode,
+                argv: opts.argv,
+                terminal,
+                cred: { ...entry.cred, groups: [...entry.cred.groups] },
+                cwd: opts.cwd,
+                stdin: opts.stdin ?? '',
+                vfsBundle,
+                vfsCursor: serializeFacetVfsCursor(vfsState.cursor),
+            },
         };
     }
     /**
@@ -7559,7 +7700,7 @@ export class FacetManager {
      * artifact sources exist only while this facet is loading.
      */
     async _startStagedResident(staged, port) {
-        const { pid, stageSpec } = staged;
+        const { pid, stageSpec, env } = staged;
         const what = port === undefined ? 'opencode TUI' : 'opencode serve';
         let handle;
         let resourcesTracked = false;
@@ -7570,6 +7711,7 @@ export class FacetManager {
                 pid,
                 workerKey: `nimbus-process:${this.ctx.id.toString()}:${pid}`,
                 boot: { kind: 'staged', stage: stageSpec },
+                startArgs: { env },
                 onWriterActivated: (writerId) => {
                     this._activateProcessVfsWriter(pid, writerId);
                 },
@@ -7936,9 +8078,9 @@ export class FacetManager {
     /**
      * Re-drive a journalled launch after an instance reset. What the journal
      * row carries is the recipe, and who the launch ran as (its credential and
-     * exec id); env and secrets are never written to storage, so a worker
-     * launch's are re-resolved by the embedder through
-     * `hooks.resolveWorkerLaunch`.
+     * exec id); never its environment, which the host gives again
+     * (`hooks.resolveProcessEnv`), and a worker launch's bindings are
+     * re-resolved by the embedder through `hooks.resolveWorkerLaunch`.
      */
     async _redrive(record, attempt, cause) {
         const { recipe } = record;
@@ -7956,8 +8098,12 @@ export class FacetManager {
                 doing: residentLaunchDoing(record),
             },
         };
+        const key = `${FENCED_WORK_KEY_PREFIX}${record.pid}`;
         switch (recipe.kind) {
-            case 'node': return this._spawnResident(recipe.code, recipe.opts, attempt, identity);
+            case 'node': {
+                const env = await relaunchEnv(this.hooks.resolveProcessEnv, relaunchRequest(key, record.pid, identity));
+                return this._spawnResident(recipe.code, { ...recipe.opts, env: withRestartPolicy(env, record.restart) }, attempt, identity);
+            }
             case 'worker': {
                 // Which resolver a worker recipe re-drives through is decided by
                 // `recipe.resident`, and it is not a flag: it is the interpreter
@@ -7980,15 +8126,24 @@ export class FacetManager {
                 const { [mainModule]: workerCode, ...modules } = resolved.modules;
                 if (typeof workerCode !== 'string')
                     throw new Error(`resolved worker launch carries no ${mainModule} main module source`);
+                // An interpreter resident's environment is built again on the host's
+                // answer, as its first launch built it (no `image`: the spawn
+                // persists one).
+                let startArgs = resolved.startArgs ?? recipe.startArgs;
+                let interpreterEnv;
+                if (recipe.resident) {
+                    ({ startArgs, interpreterEnv } = relaunchInterpreter(startArgs, await relaunchEnv(this.hooks.resolveProcessEnv, relaunchRequest(key, record.pid, identity))));
+                }
                 return this._spawnWorker(workerCode, record.command, recipe.cwd, {
                     port: recipe.resident ? record.port : recipe.port > 0 ? recipe.port : undefined, modules, compatibilityDate: recipe.compatibilityDate,
-                    compatibilityFlags: recipe.compatibilityFlags, startArgs: resolved.startArgs ?? recipe.startArgs,
+                    compatibilityFlags: recipe.compatibilityFlags, startArgs,
+                    ...(interpreterEnv !== undefined ? { interpreterEnv } : {}),
                     resident: recipe.resident, restart: record.restart,
                     env: resolved.env ?? undefined, globalOutbound: resolved.globalOutbound,
                     vfsWasmModules: resolved.vfsWasmModules,
                     vfsTextModules: resolved.vfsTextModules,
                     mainModule,
-                    durable: { owner: residentOwner(record) ?? recipe.owner, image: recipe.image },
+                    durable: { owner: residentOwner(record) ?? recipe.owner, ...(recipe.resident ? {} : { image: recipe.image }) },
                 }, attempt, identity);
             }
         }
@@ -8171,7 +8326,8 @@ export class FacetManager {
         }
         // The recipe is the launch's inputs; the invoker is a pid of this
         // instance, which a re-drive outlives, so the row carries who it ran as.
-        const { invokerPid: _invokerPid, ...inputs } = opts;
+        // Not its env: a relaunch asks the host for it (resolveProcessEnv).
+        const { invokerPid: _invokerPid, env: _env, ...inputs } = opts;
         const recipe = { kind: 'node', code, opts: { ...inputs, skipSpawn: undefined, callerPid: undefined } };
         const ranAs = { cred: entry.cred, ...(entry.execId === undefined ? {} : { execId: entry.execId }) };
         const initial = {
@@ -8185,7 +8341,7 @@ export class FacetManager {
         let durableFacetName;
         let launchEnv;
         try {
-            duplicateOf = await this._claimResident(initial);
+            duplicateOf = await this._claimResident(initial, opts.env ?? {});
             this._assertLaunchStillOwned(entry.pid);
             // The reservation the identity holds, if any: its port is what `$PORT`
             // is set to and what the facet's durable slot is bound for, so the
@@ -8295,10 +8451,9 @@ export class FacetManager {
         // stdin reads that channel once the program consumes stdin. A
         // backgrounded server started from the terminal sees its stdin stay open,
         // as a job's terminal stdin does, instead of an immediate EOF; only an
-        // attached one is a TTY. The pid travels in the start payload (startArgs),
-        // not the env: the env is part of the generated worker, which is
-        // content-addressed into the image store, so a pid there gave every
-        // restart of the same server a new image.
+        // attached one is a TTY. The env, like the pid, travels in the start
+        // payload (startArgs), in memory: the generated worker is
+        // content-addressed into an image every process can read.
         const processEnv = opts.attachedTty
             ? {
                 ...(spawnEnv || {}),
@@ -8330,7 +8485,7 @@ export class FacetManager {
             // rest of the map, the trampoline a 2 KB asset, each binding a path.
             staged = await this._residentStagedBindingMembers(vfsState.stagedBindings ?? [], entry.pid, pacer);
             try {
-                generatedWorker = await this._generateUnderCeiling(entry.pid, vfsState, this._residentMemberBytes(entry.pid, sqlite, staged, images), (state) => generateLongRunningNodeCode(userCode, state, { ...opts, env: processEnv, cred: entry.cred, wasmImports: images }, usesSqlite, sources, pacer));
+                generatedWorker = await this._generateUnderCeiling(entry.pid, vfsState, this._residentMemberBytes(entry.pid, sqlite, staged, images), (state) => generateLongRunningNodeCode(userCode, state, { ...opts, cred: entry.cred, wasmImports: images }, usesSqlite, sources, pacer));
                 break;
             }
             catch (error) {
@@ -8449,6 +8604,7 @@ export class FacetManager {
                             } : {}),
                             startArgs: {
                                 pid: entry.pid, vfsCursor, dataPlan,
+                                env: processEnv ?? {},
                                 ...(Object.keys(lazyReads).length > 0 ? { lazyReads } : {}),
                                 ...(sourceRoots.length > 0 ? { sourceRoots } : {}),
                                 ...(profileOffer !== undefined && profileOffer.staged.length > 0 ? { profileStaged: profileOffer.staged.map((e) => e.path) } : {}),
@@ -8713,19 +8869,27 @@ export class FacetManager {
                     throw new Error('Nimbus: a durable spawn carrying a live globalOutbound binding '
                         + 'cannot be journalled without an embedder resolveWorkerLaunch hook');
                 }
+                // Nor an env, `{}` included (it is the isolate's whole binding map):
+                // what the image store holds every process can read, so it holds no
+                // environment, and only the embedder can give one back.
+                if (opts.env !== undefined && this.hooks.resolveWorkerLaunch === undefined) {
+                    throw new Error('Nimbus: a durable spawn carrying an env cannot be journalled without an embedder resolveWorkerLaunch hook: '
+                        + 'its image is readable by every process, so it never holds an environment');
+                }
                 // Self-owned applications persist their launch inputs as image blobs —
                 // a runner blob for worker.js, an application blob for modules + env —
                 // under .nimbus/images/<sha256>, and the journal row names the digests
                 // of what was written, never placeholder strings. An embedder-owned
                 // spawn is given digests by its own bookkeeping instead.
+                // No environment: neither a binding env (refused above) nor the
+                // process's own (storedStartArgs), as every process can read it.
                 const image = opts.durable.image
                     ?? await persistDurableWorkerImage(this._imageBlobs(entry.pid), workerCode, {
                         modules: opts.modules ?? {},
-                        ...(opts.env !== undefined ? { env: opts.env } : {}),
                         vfsWasmModules: opts.vfsWasmModules,
                         vfsTextModules: opts.vfsTextModules,
                         ...(opts.mainModule !== undefined ? { mainModule: opts.mainModule } : {}),
-                        startArgs: opts.startArgs,
+                        startArgs: opts.resident === undefined ? opts.startArgs : storedStartArgs(opts.startArgs, opts.interpreterEnv),
                     });
                 await this.ctx.storage.transaction(async (txn) => {
                     const key = `${DURABLE_IMAGES_KEY_PREFIX}${opts.durable.owner}`;
@@ -8766,7 +8930,8 @@ export class FacetManager {
                 // re-drive after a reset, an eviction's re-attach and a relaunch all
                 // land on the same `app-slot-<n>`, which is the only thing that keeps
                 // the retained SQLite bound to this application.
-                const duplicate = await this._claimResident(record);
+                // An interpreter resident's relaunch asks for its environment, an empty one included.
+                const duplicate = await this._claimResident(record, opts.resident === undefined ? undefined : opts.interpreterEnv?.base ?? {});
                 if (duplicate !== null) {
                     this.ephemeralPids.set(entry.pid, opts.durable.owner);
                     this.hooks.notify?.(`\x1b[2m[nimbus: second instance of "${command}" is not the durable one — pid ${duplicate} keeps the identity]\x1b[0m\r\n`);

@@ -13,6 +13,17 @@ export const SessionProcessSchema = z.object({
     attachedTty: z.boolean().optional().default(false),
     execId: z.string().optional(),
 });
+/** A session's terminal as a list shows it: its own is `name: null`; a named one's is `/ws?terminal=<name>`. */
+export const SessionTerminalSchema = z.object({
+    name: z.string().nullable(),
+    /** Its shell runs in this incarnation of the session. */
+    live: z.boolean(),
+    /** A socket has it now. */
+    attached: z.boolean(),
+    /** The line its shell is running, if it is running one. */
+    running: z.string().nullable(),
+    cwd: z.string(),
+});
 export const SessionPortSchema = z.object({
     port: z.number(),
     pid: z.number(),
@@ -158,6 +169,8 @@ const SessionResultSchemas = {
     listRuntimes: z.object({ installed: z.array(SessionRuntimeSummarySchema), available: z.array(SessionAvailableRuntimeSchema) }),
     listProcesses: z.array(SessionProcessSchema),
     killProcess: ProcessControlResultSchema,
+    listTerminals: z.array(SessionTerminalSchema),
+    closeTerminal: z.object({ closed: z.boolean() }),
     writeProcessInput: ProcessControlResultSchema,
     endProcessInput: ProcessControlResultSchema,
     resizeProcess: ProcessControlResultSchema,

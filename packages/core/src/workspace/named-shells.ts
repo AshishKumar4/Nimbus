@@ -61,6 +61,10 @@ export interface NamedShellOptions {
 
 /** A shell's name, the rule an `execId` follows. */
 const ShellIdSchema = z.string().min(1).max(160).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/);
+/** A terminal's name (`/ws?terminal=`): 1 to 64 of `A-Z a-z 0-9 . _ -`. */
+export const TerminalNameSchema = z.string().regex(/^[A-Za-z0-9._-]{1,64}$/);
+/** A named terminal's shell, by a row id no shell name can spell (a shell's has no `/`): an exec never queues behind it. */
+const TERMINAL_PREFIX = 'terminal/';
 /** A plain object whose every value `entry` accepts, its own names kept (`__proto__` too), on a null prototype. */
 function nameRecord<T>(entry: (value: unknown) => value is T): z.ZodType<Record<string, T>> {
   return z.custom<Record<string, T>>((value) => {
@@ -138,6 +142,33 @@ export class NamedShells {
     return this.run(id);
   }
 
+  /**
+   * Where the named terminal `name`'s shell last was, or null. A terminal's
+   * shell lives as long as the terminal, not as a call: it is read when the
+   * terminal starts and saved as its shell changes, with no queue.
+   */
+  terminalState(name: string): ShellState | null {
+    return this.load(TERMINAL_PREFIX + TerminalNameSchema.parse(name));
+  }
+
+  saveTerminalState(name: string, state: ShellState): void {
+    this.ensureTable();
+    this.save(TERMINAL_PREFIX + TerminalNameSchema.parse(name), state);
+  }
+
+  /** The terminal `name`'s saved state forgotten (its close). */
+  forgetTerminal(name: string): void {
+    this.ensureTable();
+    this.sql.exec(`DELETE FROM ${SHELLS_TABLE} WHERE id = ?`, TERMINAL_PREFIX + TerminalNameSchema.parse(name));
+  }
+
+  /** The named terminals with saved state, by name. */
+  terminalNames(): string[] {
+    this.ensureTable();
+    return [...this.sql.exec(`SELECT id FROM ${SHELLS_TABLE} WHERE id >= ? AND id < ? ORDER BY id`, TERMINAL_PREFIX, 'terminal0')]
+      .map((row) => String(row.id).slice(TERMINAL_PREFIX.length));
+  }
+
   private run(id: string): Promise<ShellState | null>;
   private run<T>(id: string, options: NamedShellOptions, body: (shell: NamedShell) => Promise<T>): Promise<T>;
   private async run<T>(id: string, options?: NamedShellOptions, body?: (shell: NamedShell) => Promise<T>): Promise<T | ShellState | null> {
@@ -158,16 +189,7 @@ export class NamedShells {
     };
     const detach = () => { detached = true; leave(); };
     try {
-      // Every call, so a workspace whose tables were dropped makes it again.
-      this.sql.exec(`CREATE TABLE IF NOT EXISTS ${SHELLS_TABLE} (id TEXT PRIMARY KEY, cwd TEXT NOT NULL, env TEXT NOT NULL, vars TEXT)`);
-      this.addVarsColumn();
-      const [row] = this.sql.exec(`SELECT cwd, env, vars FROM ${SHELLS_TABLE} WHERE id = ?`, name);
-      const saved = row === undefined ? null : parseShellState({
-        cwd: row.cwd,
-        env: JSON.parse(String(row.env)),
-        // A row from before `vars`, or one whose attributes were the default, has none.
-        ...(row.vars === null || row.vars === undefined ? {} : { vars: JSON.parse(String(row.vars)) }),
-      });
+      const saved = this.load(name);
       if (options === undefined || body === undefined) return saved;
       const state = saved ?? { cwd: options.start?.cwd ?? this.home, env: options.start?.env ?? {} };
       // The next owner may start before this body settles. It sees the last
@@ -188,6 +210,24 @@ export class NamedShells {
       options?.detach?.removeEventListener('abort', detach);
       leave();
     }
+  }
+
+  /** Every call, so a workspace whose tables were dropped makes it again. */
+  private ensureTable(): void {
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS ${SHELLS_TABLE} (id TEXT PRIMARY KEY, cwd TEXT NOT NULL, env TEXT NOT NULL, vars TEXT)`);
+    this.addVarsColumn();
+  }
+
+  /** Row `id`'s state, or null when it has none. */
+  private load(id: string): ShellState | null {
+    this.ensureTable();
+    const [row] = this.sql.exec(`SELECT cwd, env, vars FROM ${SHELLS_TABLE} WHERE id = ?`, id);
+    return row === undefined ? null : parseShellState({
+      cwd: row.cwd,
+      env: JSON.parse(String(row.env)),
+      // A row from before `vars`, or one whose attributes were the default, has none.
+      ...(row.vars === null || row.vars === undefined ? {} : { vars: JSON.parse(String(row.vars)) }),
+    });
   }
 
   private save(name: string, state: ShellState): void {

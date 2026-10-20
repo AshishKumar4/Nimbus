@@ -12,7 +12,7 @@
 
 import assert from 'node:assert/strict';
 import { ImageStore, FACET_IMAGE_WRITE_SLICE_BYTES } from '../../packages/fabric/src/image-store.ts';
-import { decodeCodePackBytes, encodeCodePack, facetImageDigest, facetImagePath } from '../../packages/fabric/src/process-fabric.ts';
+import { decodeCodePackBytes, encodeCodePack, facetImageDigest, processImagePath } from '../../packages/fabric/src/process-fabric.ts';
 
 // The disk: each file its written pieces, kept as the store hands them over
 // (copied with the native constructor, so the disk's own copies are not
@@ -81,7 +81,7 @@ const watch = async (run) => {
 const pack = encodeCodePack(modules);
 const paths = await watch(() => store.materialize(3, [['code pack', pack]], pacer));
 const path = paths['code pack'];
-assert.equal(path, facetImagePath(await facetImageDigest(expected)), 'the pack is named by the digest of its bytes');
+assert.equal(path, processImagePath(await facetImageDigest(expected)), 'the pack is named by the digest of its bytes');
 const stored = contents(path.replace(/^\/+/, ''));
 assert.ok(sameBytes(stored, expected), 'and holds exactly them');
 assert.deepEqual(Object.keys(decodeCodePackBytes(stored)), Object.keys(modules), 'which decode to every module');
@@ -119,7 +119,7 @@ console.log('  a pack already stored is recognized without a whole copy and not 
   writes.length = 0;
   const straddled = await store.materialize(6, [['code pack', pack]], pacer);
   const at = straddled['code pack'].replace(/^\/+/, '');
-  assert.equal(straddled['code pack'], facetImagePath(await facetImageDigest(whole)), 'its digest is the whole pack\'s');
+  assert.equal(straddled['code pack'], processImagePath(await facetImageDigest(whole)), 'its digest is the whole pack\'s');
   assert.ok(sameBytes(contents(at), whole), 'and its bytes are');
   assert.equal(writes[0], SLICE, 'the first slice is whole, holding the first two bytes of the four');
   console.log('  a character straddling a slice is split across two');

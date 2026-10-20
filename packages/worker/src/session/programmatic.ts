@@ -27,7 +27,7 @@ import {
   SessionProcessLogsOptionsSchema,
   type SessionReadyOptions, type SessionExecOptions, type SessionRunCodeOptions,
   type SessionDestroyOptions, type SessionDestroyResult, type SessionStartResult,
-  type SessionProcess, type SessionPort, type SessionExposedApp, type SessionApp, type SessionAppTarget,
+  type SessionProcess, type SessionTerminal, type SessionPort, type SessionExposedApp, type SessionApp, type SessionAppTarget,
   type SessionExposeOptions, type SessionDurableAppOptions, type SessionTerminalSize,
   type SessionRuntimeInstallOptions, type SessionResult,
 } from '@nimbus-sh/core/runtime/session-protocol.js';
@@ -39,7 +39,8 @@ import type { LongRunningWorkerSpawnOptions, ResidentAppSummary, ResidentIdentit
 import { RESTART_POLICY_ENV } from '../facets/manager.js';
 import { adoptGeneration, generation, raiseGeneration, releaseGeneration, type GenerationContext } from '@nimbus-sh/fabric/generation.js';
 import { timers, type TimerHost } from '@nimbus-sh/fabric/timers.js';
-import { parseShellState, type NamedShell, type NimbusWorkspace } from '@nimbus-sh/core/workspace';
+import { parseShellState, TerminalNameSchema, type NamedShell, type NimbusWorkspace } from '@nimbus-sh/core/workspace';
+import { socketOpen, type NamedTerminals } from './named-terminals.js';
 import { enc } from '@nimbus-sh/core/_shared/bytes.js';
 import { singleQuote } from '@nimbus-sh/core/_shared/shell-quote.js';
 import { collectExecStream, createExecStream, type ExecExit, type ExecOutput, type ExecStream, type ExecStreamName, type ExecStreamWriter } from '@nimbus-sh/core/runtime/exec-stream.js';
@@ -110,6 +111,8 @@ export interface ProgrammaticHost extends TimerHost {
   _viteShimPort: number | null;
   _cirrusHmrWsClients?: { clear(): void } | null;
   terminal?: (TerminalLike & { write(text: string): void; close(): void }) | null;
+  /** The session's named terminals (named-terminals.ts); a host with no terminals has none. */
+  readonly terminals?: NamedTerminals;
   kernel?: unknown;
   childProcessManager?: ChildProcessManager | null;
   esbuildService?: unknown;
@@ -657,6 +660,32 @@ export async function rpcListRuntimes(self: ProgrammaticHost): Promise<SessionRe
 export async function rpcListProcesses(self: ProgrammaticHost): Promise<SessionProcess[]> {
   await ensureProgrammaticReady(self);
   return self.processes.publishedAll().map((p: ProcessEntry) => serializeProcess(p)!);
+}
+
+/** What listing and closing a session's terminals asks of it. */
+export interface TerminalsHost {
+  ensureRuntimeReady(): Promise<void>;
+  readonly shell: { getCwd(): string; readonly foreground: string | null } | null;
+  readonly terminal?: { readonly ws: WebSocket | null } | null;
+  readonly terminals: NamedTerminals;
+}
+
+/** The session's terminals: its own first (`name: null`), then the named ones by name. */
+export async function rpcListTerminals(self: TerminalsHost): Promise<SessionTerminal[]> {
+  await self.ensureRuntimeReady();
+  const shell = self.shell;
+  const own: SessionTerminal[] = shell === null
+    ? []
+    : [{ name: null, live: true, attached: socketOpen(self.terminal?.ws), running: shell.foreground, cwd: shell.getCwd() }];
+  return [...own, ...self.terminals.list()];
+}
+
+/** Close the named terminal `name` (NamedTerminals.close): whether there was one. The session's own is not closed. */
+export async function rpcCloseTerminal(self: TerminalsHost, name: string): Promise<{ closed: boolean }> {
+  const parsed = TerminalNameSchema.safeParse(name);
+  if (!parsed.success) throw new TypeError(`closeTerminal: a terminal name is 1 to 64 of A-Z a-z 0-9 . _ -, got ${JSON.stringify(name)}`);
+  await self.ensureRuntimeReady();
+  return { closed: await self.terminals.close(parsed.data) };
 }
 
 export async function rpcKillProcess(self: ProgrammaticHost, pid: number) {
@@ -1350,6 +1379,8 @@ async function quiesceInMemorySessionState(self: ProgrammaticHost): Promise<void
     try { clearTimeout(self._w9FlushTimer); } catch {}
     self._w9FlushTimer = null;
   }
+  // The named terminals go with the session's own: none outlives its workspace.
+  self.terminals?.dispose();
   try { self.terminal?.close?.(); } catch {}
   self.terminal = null;
   await closeAcceptedWebSockets(self);
@@ -1425,6 +1456,8 @@ async function closeAcceptedWebSockets(self: ProgrammaticHost): Promise<void> {
 
 async function resetInMemorySessionState(self: ProgrammaticHost): Promise<void> {
   try { self._cirrusHmrWsClients?.clear?.(); } catch {}
+  // The named terminals go with the session's own: none outlives its workspace.
+  self.terminals?.dispose();
   try { self.terminal?.close?.(); } catch {}
 
   const filesystem = self.filesystem;

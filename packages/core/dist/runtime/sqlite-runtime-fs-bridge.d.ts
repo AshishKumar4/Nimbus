@@ -45,10 +45,8 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     /**
      * The path resolved in one walk on SQLite (SqliteVFS.resolveName), or null
      * for the walk component by component (resolveDataPath): for a walk
-     * beneath a root, for a spelling with `..` (that walk takes `..`
-     * physically, after the link before it, where the engine's names take it
-     * lexically), and where the namespace lays a mount or a directory above
-     * one.
+     * beneath a root, for a spelling with `..`, and where the namespace lays a
+     * mount or a directory above one. Plain SQLite names keep their one walk.
      */
     private walkOnSqlite;
     /** SQLite stores no row for the namespace root; it is the one directory that always exists. */
@@ -178,16 +176,10 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     private pathArgument;
     /** The walk component by component: the name reached and its spelling for the namespace (walkBeneath's BeneathReached). */
     private resolveDataPath;
-    /**
-     * A mounted (or composed) entry's link target, or null when it is not a
-     * link or not there, or when the namespace has no name for where it leads
-     * (linkLeadsTo): then the walk keeps the link's own name, and the
-     * namespace hands it to the backend that follows it.
-     */
-    private mountedLink;
     /** Where the link at `path`, reading `link`, leads: the namespace's link-root rule (CompositeVFS.linkLeadsTo); SQLite alone, its text. */
     linkLeadsTo(path: string, link: string): string | null;
     /** `call`: the syscall a refusal names, or the whole call when it names two paths. */
+    /** `absentDirectory`: an absent entry named with a trailing slash may be made here (a directory renamed to it); otherwise it is ENOENT, only mkdir makes one. */
     private locateMutation;
     /** The name a mutation by `owner` reaches, checked against the leases on a mount as on SQLite. */
     private reached;

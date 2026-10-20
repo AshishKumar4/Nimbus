@@ -1,4 +1,4 @@
-import { resolve } from '../../utils/path.js';
+import { operandPath } from '../../utils/path.js';
 import { encode } from '../../utils/encoding.js';
 import { SinkWriter } from '../../../../_shared/byte-stream.js';
 import { isVfsError } from '../../../../vfs/vfs-error.js';
@@ -43,7 +43,7 @@ const command = async (ctx) => {
 };
 /** The input, opened once, as dd's if= is: its blocks are the file the open found. */
 async function openInput(ctx, options, input, open) {
-    const file = await labelled(input, () => open(resolve(ctx.cwd, input), { read: true }));
+    const file = await labelled(input, () => open(operandPath(ctx.cwd, input), { read: true }));
     if (options.count === undefined && isCharacterDevice(file.stat.mode)) {
         throw new Error(`${input}: character device has no end — pass count= to bound the copy`);
     }
@@ -111,7 +111,7 @@ async function openOutput(ctx, options, open) {
         return streamSink(ctx.stdout);
     if (target === '/dev/stderr')
         return streamSink(ctx.stderr);
-    const path = resolve(ctx.cwd, target);
+    const path = operandPath(ctx.cwd, target);
     const start = options.seek * options.outputBlockSize;
     // The output is opened once, as dd's of= is, and written at its own offset.
     // dd truncates it unless conv=notrunc; seeking still keeps whatever

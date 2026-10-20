@@ -19,7 +19,8 @@
  *      empty, read-only nodejs_compat filesystem (EPERM on mkdir).
  *   2. Installs the Bun-global polyfill (Bun.stdin.text, Bun.stringWidth,
  *      Bun.file, Bun.write, Bun.hash) — opencode references `Bun.*` even on node target.
- *   3. Seeds process.argv / env / cwd from the per-invocation constants.
+ *   3. Seeds process.argv / cwd from the per-invocation constants, and
+ *      process.env from the env its start or its run hands over.
  *   4. Captures stdout/stderr and process.exit.
  *   5. Imports the opencode bundle and invokes its exported nimbusMain()
  *      INSIDE the fetch handler. The bundle is built so its CLI is a deferred
@@ -263,7 +264,13 @@ if (typeof globalThis.Bun === "undefined") {
 
 export interface OpencodeRunnerOptions {
   argv: string[];
-  env: Record<string, string>;
+  /**
+   * The terminal an attached TUI draws on (its TTY flags, geometry and TERM),
+   * which the shims and the OpenTUI backend read as the module evaluates.
+   * Never the launch's env: that is handed over with the start or the run,
+   * in memory (ask 62).
+   */
+  terminal: Record<string, string>;
   cred: { uid: number; gid: number; groups: readonly number[]; umask: number };
   cwd: string;
   stdin: string;
@@ -285,9 +292,9 @@ export interface OpencodeRunnerOptions {
    *                stream LIVE to the SUPERVISOR (→ xterm), the live stdin pump
    *                (SUPERVISOR.cpReadStdin → process.stdin, with setRawMode/
    *                resize/signal) feeds keystrokes, and the facet stays alive on
-   *                workerCtx.waitUntil until opencode exits. The env must carry
-   *                NIMBUS_ATTACHED_TTY=1 + NIMBUS_CP_CHILD_PID so the shim TTY
-   *                activates its raw-mode stdin and columns/rows.
+   *                workerCtx.waitUntil until opencode exits. The terminal must
+   *                carry NIMBUS_ATTACHED_TTY=1 + NIMBUS_CP_CHILD_PID so the shim
+   *                TTY activates its raw-mode stdin and columns/rows.
    *   - 'server'   run a headless `opencode serve` HTTP server: no renderer, no
    *                stdin pump, logs stream live, the facet stays resident, and
    *                routed HTTP (the in-session loopback + external /port/<n>)
@@ -637,7 +644,7 @@ export function generateOpencodeRunnerCode(opts: OpencodeRunnerOptions): { code:
   }
   const safe = {
     argv: JSON.stringify(opts.argv),
-    env: JSON.stringify(opts.env),
+    terminal: JSON.stringify(opts.terminal),
     cred: JSON.stringify(opts.cred),
     cwd: JSON.stringify(opts.cwd),
     stdin: JSON.stringify(opts.stdin),
@@ -704,7 +711,8 @@ ${yogaImportSrc()}` : ''}
 // __supervisor is assigned in fetch() from the request env; the shim reads it
 // lazily, so late assignment is correct.
 const argv = ["node", "/opencode", ...${safe.argv}];
-const env = ${safe.env};
+// The terminal only, until __ocTakeEnv merges in the launch's env.
+const env = ${safe.terminal};
 const cred = ${safe.cred};
 let cwd = ${safe.cwd};
 const filename = "/opencode";
@@ -856,10 +864,19 @@ const __ocAppendDiagnostic = (text) => {
   stderr = __ocTail(stderr, String(text));
 };
 
-// process state seeding (argv/env/cwd) + stdout/stderr/exit capture.
+// process state seeding (argv/terminal/cwd) + stdout/stderr/exit capture.
 try { process.argv = argv; } catch {}
 try { Object.assign(process.env, env); } catch {}
 try { process.chdir(cwd); } catch {}
+
+// The launch's env, handed over with its start or its run and never written
+// into this module's text (ask 62); taken before any opencode code runs.
+function __ocTakeEnv(given) {
+  Object.assign(env, given);
+  try { Object.assign(process.env, given); } catch {}
+  __nimbusTakeLaunchEnv();
+  if (env.NIMBUS_DIAG_EXEC === "1") __ocDiagOn();
+}
 
 // One-shot: capture process.exit as a throw the fetch handler unwinds. Resident
 // modes keep the shim's native exit event + __ProcessExit contract, but the
@@ -985,8 +1002,9 @@ async function __ocReportFinalExit() {
 //     ≥500ms apart, which keeps reporting even if the paced loop is starved
 //     by a busy event loop (Date.now only advances across real I/O).
 // Off by default: __ocDiag.on false keeps the resident path silent.
-const __ocDiag = { on: !!(env && env.NIMBUS_DIAG_EXEC === "1"), stop: false, t0: Date.now(), busy: false, lastFlow: 0 };
-if (__ocDiag.on) {
+const __ocDiag = { on: false, stop: false, t0: Date.now(), busy: false, lastFlow: 0 };
+function __ocDiagOn() {
+  __ocDiag.on = true;
   // Microtask-churn probes: count nextTick/queueMicrotask enqueues so a
   // CPU-bound microtask spin (which starves timers AND the paced diag loop)
   // is visible in the counters of whichever sample does get out.
@@ -1235,7 +1253,8 @@ export class NimbusProcess extends __NimbusDurableObject {
     globalThis.__nimbusFsJournalSql = ctx.storage.sql;
   }
 
-  async startProcess() {
+  async startProcess(args) {
+    __ocTakeEnv(args.env);
     __supervisor = this.env && this.env.SUPERVISOR ? globalThis.__nimbusAnsweringSupervisor(this.env.SUPERVISOR) : null;
     const __bootFailure = await __ocBootStore();
     if (__bootFailure) throw new Error(__bootFailure);
@@ -1318,6 +1337,7 @@ async function __ocRunServe() {
 }
 
 async function __ocOneShotFetch(request, workerEnv) {
+    __ocTakeEnv((await request.json()).env);
     __supervisor = workerEnv && workerEnv.SUPERVISOR ? globalThis.__nimbusAnsweringSupervisor(workerEnv.SUPERVISOR) : null;
     const __bootFailure = await __ocBootStore();
     if (__bootFailure) {

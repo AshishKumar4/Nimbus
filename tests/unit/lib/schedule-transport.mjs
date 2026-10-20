@@ -65,7 +65,9 @@ export function scheduleTransport({ park = () => false, note = () => {}, poisone
       poisoned();
     }
     const settled = await Promise.resolve(call(asked)).then((value) => ({ value }), (error) => ({ error }));
-    const shown = `${name}(${JSON.stringify(asked).slice(1, -1).slice(0, 120)}) → ${'error' in settled ? `error ${settled.error?.code ?? settled.error?.message}` : JSON.stringify(settled.value)?.slice(0, 160)}`;
+    const refused = 'error' in settled ? null : settled.value?.error;
+    const shown = `${name}(${JSON.stringify(asked).slice(1, -1).slice(0, 120)}) → ${'error' in settled ? `error ${settled.error?.code ?? settled.error?.message}` : JSON.stringify(settled.value)?.slice(0, 160)}`
+      + (refused ? ` refused: ${JSON.stringify(refused).slice(0, 400)}` : '');
     if (waits(kind, name)) {
       const { promise, resolve } = Promise.withResolvers();
       const id = ++ids;

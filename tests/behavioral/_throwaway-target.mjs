@@ -123,12 +123,8 @@ const DEFAULT_TTL_MS = 3 * 60 * 60 * 1000;
  */
 const PREVIEW_PARENT = 'nimbus-probe-previews';
 
-/**
- * How long the workers.dev edge may keep serving a deleted Preview.
- * Declared here rather than beside its use: the commands run at module
- * top level, before a `const` further down has initialised.
- */
-const HOSTNAME_SETTLE_MS = 60_000;
+/** An API read of a Preview that failed: not an answer that it has no deployment. */
+class PreviewReadError extends Error {}
 
 // ── CLI ──────────────────────────────────────────────────────────────
 
@@ -194,17 +190,23 @@ async function up() {
   // Also before the build: a Preview already standing that this checkout
   // holds no secret for belongs to somebody else's run, and taking it
   // over is the one thing `up` must not do by accident.
+  // Whether it stands is the API's answer, and only a confirmed one: an
+  // error read as absence would mint a secret over a Preview that has one.
   const token = await apiToken({ cwd: PROBE_APP, account });
-  const before = await latestDeployment({ account, token, preview });
+  // The parent first: under a parent that does not exist the API answers
+  // a Preview's read with the Worker's absence (10007), not the Preview's.
+  await ensurePreviewParent({ account, token });
+  const presence = await previewPresence({ preview, account, token });
+  if (presence.kind === 'unknown') throw new Error(`cannot tell whether Preview ${preview} stands: ${presence.reason}`);
+  const created = presence.kind === 'not-found';
+  const before = created ? null : await latestDeployment({ account, token, preview });
   assertCredentialHeld({
     name,
     statePath: statePath(name),
     hasSecret: reuseSecret,
-    provisioned: before !== null,
+    provisioned: !created,
     rotate: Boolean(flags['rotate-secrets']),
   });
-
-  await ensurePreviewParent({ account, token });
 
   // Recorded before the deploy, not after: `wrangler preview` can create
   // the Preview and still fail before its deployment lands, and a name
@@ -216,7 +218,21 @@ async function up() {
 
   log(`deploying apps/probe as Preview ${preview} of ${PREVIEW_PARENT}`);
   for (let i = 0; i < varOverrides.length; i += 2) log(`var override: ${varOverrides[i + 1]}`);
-  const { base, deploymentId, startupMs } = await deployPreview({ account, token, preview, secret, before, config: bundle });
+  let deployed = await deployPreview({ account, token, preview, secret, before, config: bundle });
+  if (!deployed.landed) {
+    // A Preview this run created holds nothing but its uploads, each with
+    // this secret: one wrangler reported a deployment for carried it, however
+    // late it lands, so a retry, here or by a later `up`, keeps the secret
+    // instead of refusing a name it cannot vouch for. An upload with no id
+    // may have failed before its deployment, and proves nothing.
+    if (created && deployed.reported) writeState(statePath(name), { name, preview, parent: PREVIEW_PARENT, base: null, secret, secretPushed: true, createdAt });
+    log(`WARNING: Preview ${preview} of ${PREVIEW_PARENT} did not land: ${deployed.detail}; wrangler exited ${deployed.status}. Uploading it once more.`);
+    // Against the latest before either upload: a first one that lands late has an id of its own, not the second's.
+    deployed = await deployPreview({ account, token, preview, secret, before, config: bundle });
+    if (!deployed.landed && created && deployed.reported) writeState(statePath(name), { name, preview, parent: PREVIEW_PARENT, base: null, secret, secretPushed: true, createdAt });
+    if (!deployed.landed) throw new Error(`Preview ${preview} of ${PREVIEW_PARENT} did not land, twice: ${deployed.detail}; wrangler exited ${deployed.status}`);
+  }
+  const { base, deploymentId, startupMs } = deployed;
   writeState(statePath(name), { name, preview, parent: PREVIEW_PARENT, base, secret, secretPushed: true, createdAt, versionId: deploymentId });
   // The platform's own measure of the script's startup, limit 1 s
   // (https://developers.cloudflare.com/workers/platform/limits/#worker-startup-time).
@@ -280,7 +296,7 @@ async function down() {
       });
     }
     const gone = existing.kind === 'unknown' ? { ok: false, reason: existing.reason }
-      : await confirmDeleted({ name, preview, account, token });
+      : await confirmDeleted({ preview, account, token });
     if (!gone.ok) {
       console.error(`FAILED to confirm ${name} is gone: ${gone.reason}; receipt kept at ${statePath(name)}`);
       process.exitCode = 1;
@@ -352,9 +368,16 @@ function previewName(name) {
 }
 
 /** The latest deployment of `preview`, or null when there is no such Preview. */
+/**
+ * The Preview's latest deployment, or null when it has none (404). Any other
+ * failure throws PreviewReadError: read as "none", it would pass a Preview
+ * that stands for one this run may create.
+ */
 async function latestDeployment({ account, token, preview, signal = undefined }) {
   const got = await cfApi(`/workers/workers/${PREVIEW_PARENT}/previews/${encodeURIComponent(preview)}/deployments/latest`, { account, token, signal });
-  return got.ok ? got.result : null;
+  if (got.ok) return got.result;
+  if (got.status === 404) return null;
+  throw new PreviewReadError(`the latest deployment of Preview ${preview} answered HTTP ${got.status}: ${JSON.stringify(got.errors)}`);
 }
 
 /**
@@ -384,11 +407,13 @@ async function ensurePreviewParent({ account, token }) {
  * `wrangler preview`, then prove it. The same three facts as a Worker
  * deploy (_deploy-target.mjs deployAndVerify): the command reported a
  * deployment id, the API serves that id as the Preview's latest, and it
- * differs from the latest before.
+ * differs from the latest before. Answers `{ landed: false, detail, status }`
+ * when they do not hold, for `up` to upload once more.
  */
 async function deployPreview({ account, token, preview, secret, before, config }) {
   // The secret travels with the deployment: each Preview deployment
   // carries its own env, so every deploy uploads it again.
+  const uploadStarted = Date.now();
   const result = withSecretsFile({ JWT_SECRET: secret }, (secretsFile) => wrangle(WRANGLER, [
     'preview', '--name', preview, '--worker-name', PREVIEW_PARENT,
     '--ignore-base-config', '--json', '--secrets-file', secretsFile, ...varOverrides, '--config', config,
@@ -399,17 +424,25 @@ async function deployPreview({ account, token, preview, secret, before, config }
     printed = JSON.parse(stdout.slice(stdout.indexOf('{')));
   } catch { /* reported below */ }
   const deploymentId = printed?.deployment?.id ?? null;
-  // Read until the API serves the upload or 30 s have passed. A read the
-  // deadline cuts off is no answer: the wait ends with what was last read.
-  const settleBy = Date.now() + 30_000;
+  // Read until the API serves the upload, for as long as the upload took.
+  // Measured 2026-10-20: 20 uploads to two Previews, new and redeployed,
+  // landed 273–1488 ms after wrangler exited (median 330 ms), each on the
+  // first read; the misses seen before (no deployment, or the one before,
+  // 30 s on) never landed later. So past the upload's own time, uploading
+  // again is what lands sooner. A read the deadline cuts off is no answer:
+  // the wait ends with what was last read.
+  const landingMs = Date.now() - uploadStarted;
+  const settleBy = Date.now() + landingMs;
+  const waited = `${(landingMs / 1000).toFixed(1)} s, as long as the upload took`;
   const signal = AbortSignal.timeout(Math.max(1, settleBy - Date.now()));
   let latest;
   for (;;) {
     try {
       latest = await latestDeployment({ account, token, preview, signal });
     } catch (error) {
-      if (!signal.aborted) throw error;
-      break;
+      if (signal.aborted) break;
+      // One read the API failed is no answer: the next may give one, before the deadline.
+      if (!(error instanceof PreviewReadError)) throw error;
     }
     if (!deploymentId || latest?.id === deploymentId || Date.now() >= settleBy) break;
     await delay(Math.min(500, Math.max(1, settleBy - Date.now())));
@@ -420,15 +453,15 @@ async function deployPreview({ account, token, preview, secret, before, config }
     const detail = !deploymentId
       ? '`wrangler preview` reported no deployment id'
       : latest === undefined
-        ? 'the API answered no read of its latest deployment within 30 s of the upload'
+        ? `the API answered no read of its latest deployment within ${waited}`
         : after !== deploymentId
-          ? `30 s after the upload, the API serves ${after ?? 'no deployment'} as the latest, not ${deploymentId}`
+          ? `${waited} after it, the API serves ${after ?? 'no deployment'} as the latest, not ${deploymentId}`
           : `the latest deployment is still ${after} — nothing was deployed`;
-    throw new Error(`Preview ${preview} of ${PREVIEW_PARENT} did not land: ${detail}; wrangler exited ${result.status}`);
+    return { landed: false, reported: Boolean(deploymentId), detail, status: result.status };
   }
   const base = workersDevUrlOf(printed.preview?.urls);
   if (!base) throw new Error(`Preview ${preview} has no workers.dev URL (urls: ${JSON.stringify(printed.preview?.urls)})`);
-  return { base, deploymentId, startupMs: latest.startup_time_ms };
+  return { landed: true, base, deploymentId, startupMs: latest.startup_time_ms };
 }
 
 /** The workers.dev URL among a Preview's URLs, without a trailing slash. */
@@ -460,41 +493,17 @@ async function previewPresence({ preview, account, token }) {
  * .../previews/<name> stops answering it. A 404 on its hostname is not the
  * same claim, which is why it cannot stand in for this check.
  *
- * The hostname is polled afterwards for the operator's benefit, not as
- * evidence. It lags: measured 2026-08-05, a deleted Worker kept answering
- * 200 for ~30s after the API had stopped listing it.
+ * The hostname lags: measured 2026-08-05, a deleted Worker kept answering
+ * 200 for ~30s after the API had stopped listing it. `down` records the
+ * Preview (recordDeleted), and `list` says whether its hostname still
+ * answers.
  */
-async function confirmDeleted({ name, preview, account, token }) {
+async function confirmDeleted({ preview, account, token }) {
   const presence = await previewPresence({ preview, account, token });
   if (presence.kind === 'exists') return { ok: false, reason: `the API still answers Preview ${preview} (HTTP ${presence.status})` };
   if (presence.kind === 'unknown') return { ok: false, reason: presence.reason };
 
-  const base = readState(statePath(name))?.base;
-  const absent = `Preview ${preview} is not found (HTTP 404, code 10025)`;
-  if (!base) return { ok: true, reason: absent };
-
-  const status = await waitForHostnameGone(base);
-  return {
-    ok: true,
-    reason: status === null
-      ? `${absent} and the hostname no longer serves it`
-      : `${absent}; ${base} still answers ${status} after `
-        + `${HOSTNAME_SETTLE_MS}ms of edge propagation`,
-  };
-}
-
-/**
- * Poll until the hostname stops serving the Preview. Returns null once it
- * 404s or stops answering at all, otherwise the last status seen.
- */
-async function waitForHostnameGone(base) {
-  const deadline = Date.now() + HOSTNAME_SETTLE_MS;
-  for (;;) {
-    const status = await fetch(base, { redirect: 'manual' }).then((r) => r.status, () => 404);
-    if (status === 404) return null;
-    if (Date.now() >= deadline) return status;
-    await new Promise((r) => setTimeout(r, 3000));
-  }
+  return { ok: true, reason: `Preview ${preview} is not found (HTTP 404, code 10025)` };
 }
 
 // ── State ────────────────────────────────────────────────────────────

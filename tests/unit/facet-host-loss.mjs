@@ -10,6 +10,7 @@
 
 import assert from 'node:assert/strict';
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
+import { sessionProcessEnv } from '../../packages/worker/src/session/process-env.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
@@ -47,6 +48,7 @@ function setup() {
   const notices = [];
   const exits = [];
   const fm = new FacetManager(ctx, env, processes, portRegistry, processHostFor, {
+    ...sessionProcessEnv(ctx.storage),
     notify: (line) => notices.push(line),
     onExternalExit: (pid, code, reason) => exits.push({ pid, code, reason }),
   });

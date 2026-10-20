@@ -98,7 +98,16 @@ export class WebSocketTerminal {
     }
     get cols() { return this._cols; }
     get rows() { return this._rows; }
+    /** ITerminal.writes. */
+    written = 0;
+    lineEnded = true;
+    get writes() { return this.written; }
+    get endsLine() { return this.lineEnded; }
     write(data) {
+        if (data.length === 0)
+            return;
+        this.written++;
+        this.lineEnded = data.endsWith('\n');
         this.buffer.push(data);
         if (!this.flushScheduled) {
             this.flushScheduled = true;

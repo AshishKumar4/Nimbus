@@ -9,6 +9,7 @@
  */
 import type { Admission } from './admission.js';
 import type { Coherence } from './coherence.js';
+import type { Namespace } from './namespace.js';
 import type { ResidentSupervisor } from './supervisor.js';
 export interface Pages {
     /**
@@ -16,7 +17,8 @@ export interface Pages {
      * bytes): those held, and the rest read in batches pinned to that revision
      * and held for the next reader; with how many were read. Null when the
      * session's file is no longer at `rev`, or a read fails: the caller reads
-     * through its descriptor.
+     * through its descriptor. A read is a learning (namespace.learning): pages
+     * asked before the store started again are not held.
      */
     read(supervisor: ResidentSupervisor, k: string, rev: number, size: number, first: number, last: number): Promise<{
         pages: Uint8Array[];
@@ -25,5 +27,5 @@ export interface Pages {
     /** Forget what the counters knew: the tables were cleared or rebound. */
     reset(): void;
 }
-export declare function createPages(coherence: Coherence, admission: Admission): Pages;
+export declare function createPages(coherence: Coherence, admission: Admission, namespace: Namespace): Pages;
 //# sourceMappingURL=pages.d.ts.map

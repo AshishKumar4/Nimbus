@@ -1,5 +1,5 @@
 import type { ProcessView } from '../../../runtime/process-files.js';
-import { resolve } from './path.js';
+import { operandPath } from './path.js';
 import { exists } from '../../../vfs/vfs.js';
 import { decodeLossless, encodeLossless, firstLosslessByte } from './lossless-text.js';
 
@@ -198,7 +198,7 @@ export async function expandGlob(pattern: string, text: string, cwd: string, vfs
   }
 
   // The working directory's name matches only itself: escaped, as the pattern's quoted characters are.
-  const absPattern = pattern.startsWith('/') ? pattern : resolve(escapeGlob(cwd), pattern);
+  const absPattern = pattern.startsWith('/') ? pattern : operandPath(escapeGlob(cwd), pattern);
   const parts = absPattern.split('/').filter(Boolean);
   const isAbsolute = pattern.startsWith('/');
 

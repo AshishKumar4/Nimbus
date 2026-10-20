@@ -9,6 +9,10 @@ export interface ITerminal {
   shellIntegration?(event: ShellIntegrationEvent): void;
   readonly cols: number;
   readonly rows: number;
+  /** How many writes it has taken: a shell compares it to tell whether anything was written after its own. */
+  readonly writes?: number;
+  /** Whether the last write ended a line (or nothing was written). */
+  readonly endsLine?: boolean;
   focus(): void;
   clear(): void;
 }

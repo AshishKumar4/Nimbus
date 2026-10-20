@@ -57,6 +57,11 @@ export interface Admitted {
   stale?: boolean;
 }
 
+/** One fill's token (cells.beginFill): its own, compared by identity. */
+export interface ResidentFill {
+  readonly fill: number;
+}
+
 export interface Cells {
   /**
    * The resident set, as the shims have always seen it: `k in b`, `b[k]`,
@@ -77,8 +82,24 @@ export interface Cells {
   get(path: string): ResidentCell | undefined;
   /** Write one cell as `rev`, or as an own write when `rev` is not a number (see put below). */
   put(t: ResidentTables, path: string, cell: ResidentCell | ArrayBuffer, rev?: number, ckey?: unknown): boolean;
-  putChunk(t: ResidentTables, path: string, part: number, bytes: Uint8Array): boolean;
-  putHead(t: ResidentTables, path: string, kind: number, size: number, chunks: number, rev: number | undefined, ckey: unknown): void;
+  /**
+   * A fill about to ask for `paths`: each one's chunk rows are its own, over
+   * the head as it stands, until another fill begins for it or anything
+   * changes its rows (rowsChanged).
+   */
+  beginFill(paths: ArrayLike<string>): ResidentFill;
+  /** One chunk of `fill`: written only while the path's chunk rows are its own (false otherwise). */
+  putChunk(t: ResidentTables, path: string, part: number, bytes: Uint8Array, fill: ResidentFill): boolean;
+  /** The fill's file, once all its chunks are in: held as `rev`, if its chunk rows are still its (false otherwise). */
+  publishFill(t: ResidentTables, path: string, kind: number, size: number, chunks: number, rev: number, ckey: unknown, fill: ResidentFill): boolean;
+  /** A fill that did not finish `path`: the chunk rows it wrote, and the head they were written over, go, if they are still its. */
+  abandonFill(t: ResidentTables, path: string, fill: ResidentFill): void;
+  /**
+   * The rows of `path` (every path: undefined) are about to change (tables.ts,
+   * whoever changes them): the fill writing there is disowned, and what it
+   * wrote with no head over it goes with it, bytes and accounting.
+   */
+  rowsChanged(path?: string): void;
   copyByKey(t: ResidentTables, path: string, ckey: unknown, rev: number): boolean;
   delete(t: ResidentTables, path: string): boolean;
   provenance(path: string): number | undefined;
@@ -231,7 +252,7 @@ export function createCells(
    * for. There is no third case: the column refuses one.
    */
   const put = (t: ResidentTables, path: string, cell: ResidentCell | ArrayBuffer, rev?: number, ckey?: unknown): boolean => {
-    // Whatever this puts supersedes a held cell, held or not.
+    // Whatever this puts supersedes a held cell, held or not, and (its head write) a fill's chunk rows.
     forgetHeld(path);
     // The room reserved for its fill is what it spends.
     admission.release(path);
@@ -272,7 +293,19 @@ export function createCells(
   };
 
   /** One chunk row, written as it arrives. The streaming filler's primitive. */
-  const putChunk = (t: ResidentTables, path: string, part: number, bytes: Uint8Array): boolean => {
+  /**
+   * Whose chunk rows each path's are while a fill writes them: the fill that
+   * began last, while nothing changed the head it writes over since it was
+   * asked (tables.ts tells rowsChanged of every head write and chunk removal,
+   * single or bulk). Disowning a fill removes the rows it wrote with no head
+   * over them, and removing them disowns it: one operation, so no rows are
+   * left unowned and no fill writes on after its rows went.
+   */
+  const filling = new SafeMap<string, ResidentFill>();
+  let fills = 0;
+
+  const putChunk = (t: ResidentTables, path: string, part: number, bytes: Uint8Array, fill: ResidentFill): boolean => {
+    if (filling.get(path) !== fill) return false;
     if (part === 0) admission.release(path);
     if (!admission.fits(mathCeil(typedArrayByteLength(bytes) * 1.01) + RESIDENT_ROW_BYTES + 4096)) return false;
     t.chunkSetBin(path, part, bytes);
@@ -339,7 +372,10 @@ export function createCells(
         const path = entry.path;
         if (namespaced && namespace.ready()) {
           const again = namespace.applyEntry(t, entry);
-          if (again !== null) relist[relist.length] = again;
+          if (again !== null) {
+            relist[relist.length] = again;
+            namespace.fence(again);
+          }
         }
         // A row at or above the reported revision already holds that mutation —
         // this facet's own write coming back, or bytes fetched after it; anything
@@ -371,7 +407,10 @@ export function createCells(
           });
           // Names under it may have become hidden or visible without being
           // named: an enumerated namespace relists that subtree.
-          if (namespaced && !namespace.lazy && subtree && stat && stat.type === 'directory') relist[relist.length] = path;
+          if (namespaced && !namespace.lazy && subtree && stat && stat.type === 'directory') {
+            relist[relist.length] = path;
+            namespace.fence(path);
+          }
         }
         let isHeld = false, stamped = 0, heldKey: string | null = null;
         const row = t.fileRevKey(path);
@@ -575,6 +614,33 @@ export function createCells(
     get,
     put,
     putChunk,
+    publishFill(t, path, kind, size, chunks, rev, ckey, fill) {
+      if (filling.get(path) !== fill) return false;
+      // Its rows are a file now: no longer a fill's to drop.
+      filling.delete(path);
+      t.filePut(path, kind, size, chunks, rev, ckey != null ? stringOf(ckey) : null);
+      return true;
+    },
+    abandonFill(t, path, fill) {
+      if (filling.get(path) !== fill) return;
+      t.chunkDelete(path);
+      t.fileDelete(path);
+    },
+    beginFill(paths) {
+      const fill: ResidentFill = { fill: ++fills };
+      for (let i = 0; i < paths.length; i++) filling.set(paths[i]!, fill);
+      return fill;
+    },
+    rowsChanged(path) {
+      if (filling.size === 0) return;
+      // Maintenance, not a read: it runs while a kept store is sealed for its reconcile too.
+      const t = coherence.tables('rowsChanged');
+      const disown = (at: string): void => { if (filling.delete(at) && t.fileHead(at) === undefined) t.chunkDelete(at); };
+      if (path !== undefined) { disown(path); return; }
+      const owned = new SafeList<string>();
+      filling.forEach((_fill, at) => { owned[owned.length] = at; });
+      for (let i = 0; i < owned.length; i++) disown(owned[i]!);
+    },
     /**
      * The head row, written LAST by the streaming filler.
      *
@@ -584,12 +650,6 @@ export function createCells(
      * file leaves chunks nothing can read, never a short file something can.
      * Writing the head first would invert that into a truncated read.
      */
-    putHead(t, path, kind, size, chunks, rev, ckey) {
-      t.filePut(
-        path, kind, size, chunks, typeof rev === 'number' ? rev : RK_OWN_WRITE,
-        typeof rev === 'number' && ckey != null ? stringOf(ckey) : null,
-      );
-    },
     /**
      * Hold `path` with the bytes of a dated row whose content identity is
      * `ckey`, by copying rows inside this store: equal keys are equal bytes, so

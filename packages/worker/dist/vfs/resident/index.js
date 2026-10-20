@@ -147,7 +147,7 @@
 import { createAdmission } from './admission.js';
 import { createCells } from './cells.js';
 import { createCoherence } from './coherence.js';
-import { createLazy } from './lazy.js';
+import { createView } from './view.js';
 import { createPages } from './pages.js';
 import { createNamespace } from './namespace.js';
 import { createSync } from './sync.js';
@@ -165,8 +165,8 @@ export function createResidentStore(options = {}) {
     const cells = createCells(coherence, admission, namespace, observeRead);
     const transport = createTransport(coherence, admission, namespace, cells);
     const sync = createSync(coherence, admission, namespace, cells, transport);
-    const pages = createPages(coherence, admission);
-    const lazy = createLazy(coherence, admission, namespace, cells, transport, sync, pages);
+    const pages = createPages(coherence, admission, namespace);
+    const view = createView(coherence, admission, namespace, cells, transport, sync, pages);
     const bindTables = (t, heap) => {
         // A store can outlive its process. Own rows left by an earlier one are
         // writes that never reached the authority or cells whose acknowledgement it
@@ -184,10 +184,10 @@ export function createResidentStore(options = {}) {
                 throw new Error('Nimbus: this facet has no synchronous SQLite (ctx.storage.sql); '
                     + 'the resident set cannot be served and every sync read would raise EAGAIN');
             }
-            bindTables(sqlTables(sql), null);
+            bindTables(sqlTables(sql, cells.rowsChanged), null);
         },
         bindInMemory(budget) {
-            const t = heapTables();
+            const t = heapTables(cells.rowsChanged);
             bindTables(t, t);
             admission.bindHeap(budget);
         },
@@ -199,22 +199,6 @@ export function createResidentStore(options = {}) {
         transport,
         sync,
         pages,
-        lazy,
-        measure() {
-            if (!coherence.bound())
-                return { bound: false };
-            const stats = cells.stats();
-            return {
-                backing: admission.inHeap ? 'heap' : 'sql',
-                cap: admission.cap,
-                bytesNow: admission.dbBytes(),
-                ...admission.measured,
-                ...cells.measured,
-                files: stats.files,
-                fileBytes: stats.bytes,
-                names: stats.names,
-                databaseSize: stats.databaseSize,
-            };
-        },
+        view,
     };
 }

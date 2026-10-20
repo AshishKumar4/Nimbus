@@ -192,6 +192,8 @@ export class NimbusSandbox {
             _rpcListRuntimes: () => this.remoteRpc('listRuntimes', []),
             _rpcListProcesses: () => this.remoteRpc('listProcesses', []),
             _rpcKillProcess: (pid) => this.remoteRpc('killProcess', [pid]),
+            _rpcListTerminals: () => this.remoteRpc('listTerminals', []),
+            _rpcCloseTerminal: (name) => this.remoteRpc('closeTerminal', [name]),
             _rpcWriteProcessInput: (pid, data) => this.remoteRpc('writeProcessInput', [pid, data]),
             _rpcEndProcessInput: (pid) => this.remoteRpc('endProcessInput', [pid]),
             _rpcResizeProcess: (pid, size) => this.remoteRpc('resizeProcess', [pid, size]),
@@ -416,6 +418,21 @@ export class NimbusSandbox {
                 this.assertRuntimeAllowed(spec, 'onDemand');
             await this.ready();
             return this.rpc(this.stub()._rpcEnsureRuntimes(list, options));
+        },
+    };
+    /**
+     * The session's terminals: its own (`name: null`) and the named ones a
+     * browser opens at `/ws?terminal=<name>`. Closing one hangs up what it
+     * runs and forgets its screen, cwd, variables and history.
+     */
+    terminals = {
+        list: async () => {
+            await this.ready();
+            return this.rpc(this.stub()._rpcListTerminals());
+        },
+        close: async (name) => {
+            await this.ready();
+            return this.rpc(this.stub()._rpcCloseTerminal(name));
         },
     };
     processes = {

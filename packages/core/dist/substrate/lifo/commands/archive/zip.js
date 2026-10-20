@@ -1,4 +1,4 @@
-import { resolve } from '../../utils/path.js';
+import { operandPath } from '../../utils/path.js';
 import { createZip, collectFiles } from '../../utils/archive.js';
 import { parseArgs } from '../../utils/args.js';
 import { isVfsError } from '../../../../vfs/vfs-error.js';
@@ -30,7 +30,7 @@ const command = async (ctx) => {
         await ctx.stderr.write('zip: no files to archive\n');
         return 1;
     }
-    const archivePath = resolve(ctx.cwd, archiveFile);
+    const archivePath = operandPath(ctx.cwd, archiveFile);
     try {
         const tarEntries = (await collectFiles(ctx.vfs, ctx.cwd, files));
         const zipEntries = tarEntries.map((e) => ({

@@ -1,5 +1,6 @@
 import type { WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { composeFacetManager, type ComposedFacetManager, type FacetManagerHostHooks } from "../facets/compose.js";
+import type { ProcessEnvHooks } from '../session/process-env.js';
 import { normalizeChildCommand, shellChildRunner, textBytes, type ChildProcessHost } from "@nimbus-sh/core/runtime/child-process-manager.js";
 import { runChildCommand, runChildShell } from '@nimbus-sh/core/workspace/child-process-runner.js';
 import {
@@ -56,6 +57,8 @@ export interface RuntimeServiceContext {
   notify(line: string): void;
   requestLaunchTurn(notBefore?: number): Promise<void>;
   resolveWorkerLaunch?: FacetManagerHostHooks['resolveWorkerLaunch'];
+  /** Who gives a relaunched process its environment back, and where this host keeps it if it does (session/process-env.ts). */
+  readonly processEnv: ProcessEnvHooks;
   /**
    * Hold the host actor in memory while a resident process runs:
    * `armResidentKeepalive` (session/hibernation.ts) bound to the host's own
@@ -107,6 +110,7 @@ export function ensureFacetManager(self: RuntimeServiceHost, runtimeContext: Run
 
           requestLaunchTurn: (notBefore) => runtimeContext.requestLaunchTurn(notBefore),
           resolveWorkerLaunch: runtimeContext.resolveWorkerLaunch,
+          ...runtimeContext.processEnv,
           notify: (line) => runtimeContext.notify(line),
           onSpawn: (pid, command, longRunning) => {
             const attachedTty = self.processes.get(pid)?.attachedTty === true;

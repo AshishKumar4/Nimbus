@@ -46,7 +46,7 @@ import type { StorageLedger } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 import { PeerHost, type HostedHttpRequest, type HostedHttpResponse, type HostedReply } from '@nimbus-sh/fabric/peer-host.js';
-import { OpencodeStageSpecSchema } from '../facets/opencode-staging.js';
+import { OpencodeStageSpecSchema } from '../facets/opencode-stage-spec.js';
 import {
   recordFailure, getLastRpcFrame, getLastFacetId,
 } from '@nimbus-sh/platform/oom-discriminator.js';
@@ -520,6 +520,8 @@ const FsAcquireArgsSchema = z.object({
   cursor: z.number().int().min(0),
   /** The asking process's own count of when it built these (node-shims _acquireArgs): echoed with the answer, never read here. */
   begin: z.number().int().min(0).optional(),
+  /** Its own changes' debt then (ResidentFilesystem.acquireArgs): echoed with the answer, never read here. */
+  own: z.number().int().min(0).optional(),
   options: z.object({
     namespace: z.boolean().optional(),
     lease: z.boolean().optional(),

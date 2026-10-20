@@ -8,7 +8,7 @@
 import type { ProcessView } from '../../../runtime/process-files.js';
 import { resolveContext, type CommandRegistry } from '../commands/registry.js';
 import type { CommandInputStream, CommandOutputStream } from '../commands/types.js';
-import { resolve } from '../utils/path.js';
+import { operandPath, resolve } from '../utils/path.js';
 import { echoOutput } from '../utils/backslash-escapes.js';
 import { writeLossless } from '../utils/bytes-io.js';
 import { encodeLossless } from '../utils/lossless-text.js';
@@ -103,12 +103,25 @@ async function builtinCd({ args, stderr, state, host }: BuiltinCall): Promise<nu
     newPath = state.env['OLDPWD'] ?? state.getCwd();
   } else if (target === '~' || target.startsWith('~/')) {
     const home = state.env['HOME'] ?? DEFAULT_HOME;
-    newPath = target === '~' ? home : resolve(home, target.slice(2));
+    newPath = target === '~' ? home : operandPath(home, target.slice(2));
   } else {
-    newPath = resolve(state.getCwd(), target);
+    newPath = operandPath(state.getCwd(), target);
   }
 
   try {
+    // Logical cd checks a directory before cancelling its name with `..`.
+    const components = newPath.split('/');
+    for (let at = 0; at < components.length; at++) {
+      if (components[at] !== '..') continue;
+      const before = resolve('/', ...components.slice(0, at));
+      // That it is a directory, as bash's canonicalizer asks: not that it may be searched.
+      const stat = await statOrThrow(host.vfs(), before);
+      if (stat.type !== 'directory') {
+        await stderr.write(`cd: ${target}: Not a directory\n`);
+        return 1;
+      }
+    }
+    newPath = resolve('/', newPath);
     const stat = (await statOrThrow(host.vfs(), newPath));
     if (stat.type !== 'directory') {
       (await stderr.write(`cd: ${target}: Not a directory\n`));
@@ -834,7 +847,7 @@ async function builtinSource({ args, stderr, state, host, context }: BuiltinCall
     (await stderr.write('source: missing filename\n'));
     return 1;
   }
-  const path = resolve(state.getCwd(), args[0]);
+  const path = operandPath(state.getCwd(), args[0]);
   let content: string;
   try {
     content = (await host.vfs().readFileString(path));

@@ -13,6 +13,7 @@ import { RESIDENT_PAGE_BYTES, RESIDENT_PAGE_CACHE_BYTES, RESIDENT_PAGE_CACHE_FRE
 import type { Admission } from './admission.js';
 import { RESIDENT_ROW_BYTES, residentBytes } from './cell-cost.js';
 import type { Coherence } from './coherence.js';
+import type { Learning, Namespace } from './namespace.js';
 import type { ResidentSupervisor } from './supervisor.js';
 
 export interface Pages {
@@ -21,14 +22,15 @@ export interface Pages {
    * bytes): those held, and the rest read in batches pinned to that revision
    * and held for the next reader; with how many were read. Null when the
    * session's file is no longer at `rev`, or a read fails: the caller reads
-   * through its descriptor.
+   * through its descriptor. A read is a learning (namespace.learning): pages
+   * asked before the store started again are not held.
    */
   read(supervisor: ResidentSupervisor, k: string, rev: number, size: number, first: number, last: number): Promise<{ pages: Uint8Array[]; fetched: number } | null>;
   /** Forget what the counters knew: the tables were cleared or rebound. */
   reset(): void;
 }
 
-export function createPages(coherence: Coherence, admission: Admission): Pages {
+export function createPages(coherence: Coherence, admission: Admission, namespace: Namespace): Pages {
   let clock: number | null = null;
   let total: number | null = null;
 
@@ -77,40 +79,56 @@ export function createPages(coherence: Coherence, admission: Admission): Pages {
     return true;
   };
 
+  const readWith = async (
+    learning: Learning, supervisor: ResidentSupervisor, k: string, rev: number, size: number, first: number, last: number,
+  ): Promise<{ pages: Uint8Array[]; fetched: number } | null> => {
+    const cursor = coherence.cursor();
+    if (cursor === null || typeof supervisor.fsReadBatch !== 'function') return null;
+    // A page is its epoch's. One database's revisions never go back, so no
+    // epoch the platform produces names a revision of another's with other
+    // bytes; a store that outlived its database would meet one, and keying by
+    // epoch costs nothing.
+    const keyed = cursor.epoch + '\u0000' + k;
+    const out: Uint8Array[] = new Array(last - first + 1);
+    const missing: number[] = [];
+    for (let part = first; part <= last; part++) {
+      const page = get(keyed, rev, part);
+      if (page !== undefined) out[part - first] = page;
+      else missing.push(part);
+    }
+    const perBatch = Math.max(1, Math.min(FS_READ_BATCH_PATH_LIMIT, Math.floor(FS_READ_BATCH_REQUEST_BYTES / RESIDENT_PAGE_BYTES)));
+    for (let at = 0; at < missing.length; at += perBatch) {
+      const batch = missing.slice(at, at + perBatch);
+      const ranges = batch.map((part) => {
+        const offset = part * RESIDENT_PAGE_BYTES;
+        return { path: '/' + k, offset, length: Math.min(RESIDENT_PAGE_BYTES, Math.max(0, size - offset)), expectedEpoch: cursor.epoch, expectedRevision: rev };
+      });
+      // N18: room asked for first; a page the ledger will not admit is still read, only not held.
+      await admission.ensureRoom(ranges.reduce((n, r) => n + r.length + RESIDENT_ROW_BYTES, 0));
+      let results;
+      try { results = await supervisor.fsReadBatch(ranges); }
+      catch { return null; }
+      if (!Array.isArray(results) || results.length !== ranges.length) return null;
+      for (let i = 0; i < batch.length; i++) {
+        const entry = results[i];
+        if (!entry || entry.error || entry.bytes == null) return null;
+        const bytes = residentBytes(entry.bytes);
+        if (bytes.byteLength !== ranges[i]!.length) return null;
+        out[batch[i]! - first] = bytes;
+        if (learning.installs(k)) put(keyed, rev, batch[i]!, bytes);
+      }
+    }
+    return { pages: out, fetched: missing.length };
+  };
+
   return {
     async read(supervisor, k, rev, size, first, last) {
-      const cursor = coherence.cursor();
-      if (cursor === null || typeof supervisor.fsReadBatch !== 'function') return null;
-      const out: Uint8Array[] = new Array(last - first + 1);
-      const missing: number[] = [];
-      for (let part = first; part <= last; part++) {
-        const page = get(k, rev, part);
-        if (page !== undefined) out[part - first] = page;
-        else missing.push(part);
+      const learning = namespace.learning();
+      try {
+        return await readWith(learning, supervisor, k, rev, size, first, last);
+      } finally {
+        learning.end();
       }
-      const perBatch = Math.max(1, Math.min(FS_READ_BATCH_PATH_LIMIT, Math.floor(FS_READ_BATCH_REQUEST_BYTES / RESIDENT_PAGE_BYTES)));
-      for (let at = 0; at < missing.length; at += perBatch) {
-        const batch = missing.slice(at, at + perBatch);
-        const ranges = batch.map((part) => {
-          const offset = part * RESIDENT_PAGE_BYTES;
-          return { path: '/' + k, offset, length: Math.min(RESIDENT_PAGE_BYTES, Math.max(0, size - offset)), expectedEpoch: cursor.epoch, expectedRevision: rev };
-        });
-        // N18: room asked for first; a page the ledger will not admit is still read, only not held.
-        await admission.ensureRoom(ranges.reduce((n, r) => n + r.length + RESIDENT_ROW_BYTES, 0));
-        let results;
-        try { results = await supervisor.fsReadBatch(ranges); }
-        catch { return null; }
-        if (!Array.isArray(results) || results.length !== ranges.length) return null;
-        for (let i = 0; i < batch.length; i++) {
-          const entry = results[i];
-          if (!entry || entry.error || entry.bytes == null) return null;
-          const bytes = residentBytes(entry.bytes);
-          if (bytes.byteLength !== ranges[i]!.length) return null;
-          out[batch[i]! - first] = bytes;
-          put(k, rev, batch[i]!, bytes);
-        }
-      }
-      return { pages: out, fetched: missing.length };
     },
     reset() {
       clock = null;

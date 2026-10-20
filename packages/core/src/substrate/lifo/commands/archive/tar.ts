@@ -1,5 +1,5 @@
 import type { Command, CommandContext } from '../types.js';
-import { resolve, dirname } from '../../utils/path.js';
+import { operandPath, dirname } from '../../utils/path.js';
 import { createTar, parseTar, compressGzip, decompressGzip, collectFiles } from '../../utils/archive.js';
 import { isVfsError } from '../../../../vfs/vfs-error.js';
 
@@ -77,8 +77,8 @@ const command: Command = async (ctx) => {
     return 1;
   }
 
-  const archivePath = resolve(ctx.cwd, archiveFile);
-  const targetDir = changeDir ? resolve(ctx.cwd, changeDir) : ctx.cwd;
+  const archivePath = operandPath(ctx.cwd, archiveFile);
+  const targetDir = changeDir ? operandPath(ctx.cwd, changeDir) : ctx.cwd;
 
   try {
     if (create) {
@@ -116,13 +116,13 @@ const command: Command = async (ctx) => {
       }
 
       for (const entry of entries) {
-        const entryPath = resolve(targetDir, entry.path);
+        const entryPath = operandPath(targetDir, entry.path);
 
         if (entry.type === 'directory') {
           try { (await ctx.vfs.mkdir(entryPath, { recursive: true })); } catch { /* exists */ }
         } else {
           // Ensure parent dir exists
-          const parent = dirname(entryPath);
+          const parent = operandPath(targetDir, dirname(entry.path));
           try { (await ctx.vfs.mkdir(parent, { recursive: true })); } catch { /* exists */ }
           (await ctx.vfs.writeFile(entryPath, entry.data));
         }

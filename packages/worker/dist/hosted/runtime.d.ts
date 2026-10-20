@@ -29,6 +29,13 @@ export interface HostedRuntimeOptions {
     ports: PortRegistry;
     lifecycle: HostedRuntimeLifecycle;
     resolveWorkerLaunch?: FacetManagerHostHooks['resolveWorkerLaunch'];
+    /**
+     * The environment a process was launched with, asked for when it is
+     * relaunched (a reset's re-drive, a restart, a durable app's relaunch, a
+     * dev server's restore). Nimbus keeps no process's environment: without
+     * this, or when it answers `null`, the relaunch fails, saying why.
+     */
+    resolveProcessEnv?: FacetManagerHostHooks['resolveProcessEnv'];
     basePath?: string;
     origin?: string;
 }
@@ -36,6 +43,10 @@ export interface HostedRuntimeOptions {
 export type RuntimeFiles = ProcessView & {
     as(cred: VfsCred): RuntimeFiles;
 };
+/** Which terminal an embedder's call is about: a name, or none for the session's own. */
+export interface TerminalSelection {
+    readonly terminal?: string;
+}
 export declare function composeHostedRuntime(options: HostedRuntimeOptions): Promise<{
     supervisorOp: (envelope: SupervisorOpEnvelope) => Promise<unknown>;
     /** Private native-fetch legs for an embedder's service-binding fetch entrypoint. */
@@ -43,7 +54,7 @@ export declare function composeHostedRuntime(options: HostedRuntimeOptions): Pro
     /** The SDK's session surface for `Nimbus.fromSession`, optionally bound to one shell and identity. */
     session: (scope?: HostedSessionScope) => HostedSession;
     onScheduled: (task: HostedRuntimeTask) => Promise<void>;
-    terminalClose: (ws: WebSocket) => void;
+    terminalClose: (ws: WebSocket, selection?: TerminalSelection) => void;
     close: () => Promise<void>;
     facets: () => ComposedFacetManager;
     ready: (options?: import("@nimbus-sh/core/runtime/session-protocol.js").SessionReadyOptions | undefined) => Promise<{
@@ -242,8 +253,18 @@ export declare function composeHostedRuntime(options: HostedRuntimeOptions): Pro
     }>;
     spawnWorker: (workerCode: string, command: string, cwd: string, opts?: import("../workspace-host.js").LongRunningWorkerSpawnOptions | undefined) => Promise<import("../facets/manager.js").SpawnedWorker>;
     routeCapabilityPort: (port: number, capability: string, request: Request<unknown, CfProperties<unknown>>, innerPath: string) => Promise<Response>;
-    attachTerminal: (ws: WebSocket) => Promise<void>;
-    terminalFrame: (ws: WebSocket, message: string | ArrayBuffer) => Promise<void>;
+    attachTerminal: (ws: WebSocket, selection?: TerminalSelection) => Promise<void>;
+    terminalFrame: (ws: WebSocket, message: string | ArrayBuffer, selection?: TerminalSelection) => Promise<void>;
+    listTerminals: () => Promise<{
+        name: string | null;
+        live: boolean;
+        attached: boolean;
+        running: string | null;
+        cwd: string;
+    }[]>;
+    closeTerminal: (name: string) => Promise<{
+        closed: boolean;
+    }>;
     workspace: NimbusWorkspace;
     terminal: WebSocketTerminal;
     files: RuntimeFiles;

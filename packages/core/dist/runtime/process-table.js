@@ -81,8 +81,9 @@ export class ProcessTable {
         const inheritedCred = options.parentPid === undefined
             ? CRED_SESSION_USER
             : this.credOf(options.parentPid);
-        const execId = options.execId
-            ?? (options.parentPid === undefined ? undefined : this.processes.get(options.parentPid)?.execId);
+        const parent = options.parentPid === undefined ? undefined : this.processes.get(options.parentPid);
+        const execId = options.execId ?? parent?.execId;
+        const terminal = options.terminal ?? parent?.terminal;
         const pid = this.nextPid++;
         if (pid % PID_GEN_STRIDE === 0)
             this.onStride?.(pid / PID_GEN_STRIDE);
@@ -101,6 +102,8 @@ export class ProcessTable {
         };
         if (execId !== undefined)
             entry.execId = execId;
+        if (terminal !== undefined)
+            entry.terminal = terminal;
         if (options.restartedFrom !== undefined)
             entry.restartedFrom = { ...options.restartedFrom };
         this.processes.set(pid, entry);
@@ -211,6 +214,19 @@ export class ProcessTable {
             }
         }
         return found;
+    }
+    /** `pid`, a shell made before its terminal (the workspace's own), takes `terminal` as its controlling terminal: once. */
+    setTerminal(pid, terminal) {
+        const entry = this.processes.get(pid);
+        if (!entry)
+            throw noSuchProcess(pid);
+        if (entry.terminal !== undefined && entry.terminal !== terminal)
+            throw new Error(`process ${pid} already has terminal ${JSON.stringify(entry.terminal)}`);
+        entry.terminal = terminal;
+    }
+    /** The running processes whose controlling terminal is `terminal`, oldest first. */
+    onTerminal(terminal) {
+        return [...this.processes.values()].filter((entry) => entry.state === 'running' && entry.terminal === terminal);
     }
     /** Remove `pid`'s entry, now: its owner has seen it end. */
     forget(pid) {

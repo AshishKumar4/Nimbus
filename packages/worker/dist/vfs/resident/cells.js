@@ -164,7 +164,7 @@ export function createCells(coherence, admission, namespace, observeRead) {
      * for. There is no third case: the column refuses one.
      */
     const put = (t, path, cell, rev, ckey) => {
-        // Whatever this puts supersedes a held cell, held or not.
+        // Whatever this puts supersedes a held cell, held or not, and (its head write) a fill's chunk rows.
         forgetHeld(path);
         // The room reserved for its fill is what it spends.
         admission.release(path);
@@ -206,7 +206,19 @@ export function createCells(coherence, admission, namespace, observeRead) {
         return true;
     };
     /** One chunk row, written as it arrives. The streaming filler's primitive. */
-    const putChunk = (t, path, part, bytes) => {
+    /**
+     * Whose chunk rows each path's are while a fill writes them: the fill that
+     * began last, while nothing changed the head it writes over since it was
+     * asked (tables.ts tells rowsChanged of every head write and chunk removal,
+     * single or bulk). Disowning a fill removes the rows it wrote with no head
+     * over them, and removing them disowns it: one operation, so no rows are
+     * left unowned and no fill writes on after its rows went.
+     */
+    const filling = new SafeMap();
+    let fills = 0;
+    const putChunk = (t, path, part, bytes, fill) => {
+        if (filling.get(path) !== fill)
+            return false;
         if (part === 0)
             admission.release(path);
         if (!admission.fits(mathCeil(typedArrayByteLength(bytes) * 1.01) + RESIDENT_ROW_BYTES + 4096))
@@ -277,8 +289,10 @@ export function createCells(coherence, admission, namespace, observeRead) {
                 const path = entry.path;
                 if (namespaced && namespace.ready()) {
                     const again = namespace.applyEntry(t, entry);
-                    if (again !== null)
+                    if (again !== null) {
                         relist[relist.length] = again;
+                        namespace.fence(again);
+                    }
                 }
                 // A row at or above the reported revision already holds that mutation —
                 // this facet's own write coming back, or bytes fetched after it; anything
@@ -312,8 +326,10 @@ export function createCells(coherence, admission, namespace, observeRead) {
                     });
                     // Names under it may have become hidden or visible without being
                     // named: an enumerated namespace relists that subtree.
-                    if (namespaced && !namespace.lazy && subtree && stat && stat.type === 'directory')
+                    if (namespaced && !namespace.lazy && subtree && stat && stat.type === 'directory') {
                         relist[relist.length] = path;
+                        namespace.fence(path);
+                    }
                 }
                 let isHeld = false, stamped = 0, heldKey = null;
                 const row = t.fileRevKey(path);
@@ -542,6 +558,42 @@ export function createCells(coherence, admission, namespace, observeRead) {
         get,
         put,
         putChunk,
+        publishFill(t, path, kind, size, chunks, rev, ckey, fill) {
+            if (filling.get(path) !== fill)
+                return false;
+            // Its rows are a file now: no longer a fill's to drop.
+            filling.delete(path);
+            t.filePut(path, kind, size, chunks, rev, ckey != null ? stringOf(ckey) : null);
+            return true;
+        },
+        abandonFill(t, path, fill) {
+            if (filling.get(path) !== fill)
+                return;
+            t.chunkDelete(path);
+            t.fileDelete(path);
+        },
+        beginFill(paths) {
+            const fill = { fill: ++fills };
+            for (let i = 0; i < paths.length; i++)
+                filling.set(paths[i], fill);
+            return fill;
+        },
+        rowsChanged(path) {
+            if (filling.size === 0)
+                return;
+            // Maintenance, not a read: it runs while a kept store is sealed for its reconcile too.
+            const t = coherence.tables('rowsChanged');
+            const disown = (at) => { if (filling.delete(at) && t.fileHead(at) === undefined)
+                t.chunkDelete(at); };
+            if (path !== undefined) {
+                disown(path);
+                return;
+            }
+            const owned = new SafeList();
+            filling.forEach((_fill, at) => { owned[owned.length] = at; });
+            for (let i = 0; i < owned.length; i++)
+                disown(owned[i]);
+        },
         /**
          * The head row, written LAST by the streaming filler.
          *
@@ -551,9 +603,6 @@ export function createCells(coherence, admission, namespace, observeRead) {
          * file leaves chunks nothing can read, never a short file something can.
          * Writing the head first would invert that into a truncated read.
          */
-        putHead(t, path, kind, size, chunks, rev, ckey) {
-            t.filePut(path, kind, size, chunks, typeof rev === 'number' ? rev : RK_OWN_WRITE, typeof rev === 'number' && ckey != null ? stringOf(ckey) : null);
-        },
         /**
          * Hold `path` with the bytes of a dated row whose content identity is
          * `ckey`, by copying rows inside this store: equal keys are equal bytes, so

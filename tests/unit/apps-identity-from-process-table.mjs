@@ -28,6 +28,7 @@
 import assert from 'node:assert/strict';
 
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
+import { sessionProcessEnv } from '../../packages/worker/src/session/process-env.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
@@ -110,7 +111,8 @@ function setup({ storage = new Map(), world, directory = fakeDirectory(), notice
   };
   const processes = new SessionProcessSupervisor();
   const portRegistry = new PortRegistry();
-  const fm = new FacetManager(ctx, env, processes, portRegistry, processHostFor, { notify: (line) => notices.push(line) });
+  const processEnv = sessionProcessEnv(ctx.storage);
+  const fm = new FacetManager(ctx, env, processes, portRegistry, processHostFor, { ...processEnv, notify: (line) => notices.push(line) });
   const vfsHarness = sessionFs ? null : createSqliteVfsTestHarness();
   const vfs = sessionFs ?? new SqliteVFS(vfsHarness.sql, vfsHarness.ctx);
   // A database's namespace; a stand-in filesystem tells no changes.
@@ -123,6 +125,7 @@ function setup({ storage = new Map(), world, directory = fakeDirectory(), notice
     env,
     ctx,
     portRegistry,
+    processEnv,
     facetManagerComposed: null,
     facetManager: fm,
     processes,

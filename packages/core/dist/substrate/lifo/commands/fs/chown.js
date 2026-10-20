@@ -1,6 +1,6 @@
 import { parseChownOwnership } from '../../../../shell/unix-accounts.js';
 import { parseArgs } from '../../utils/args.js';
-import { resolve } from '../../utils/path.js';
+import { operandPath } from '../../utils/path.js';
 import { statOrThrow } from '../../../../vfs/vfs.js';
 import { strerror } from '../../../../vfs/vfs-error.js';
 const spec = {
@@ -24,7 +24,7 @@ const command = async (ctx) => {
     const apply = async (path, type) => {
         if (flags.recursive && type === 'directory') {
             for (const child of (await vfs.readdir(path))) {
-                const childPath = resolve(path, child.name);
+                const childPath = operandPath(path, child.name);
                 (await apply(childPath, (await statOrThrow(vfs, childPath)).type));
             }
         }
@@ -36,7 +36,7 @@ const command = async (ctx) => {
         // up (missing, or behind a directory it cannot search) "cannot be
         // accessed", and only a change the filesystem refuses is a change of
         // ownership that failed.
-        const path = resolve(ctx.cwd, file);
+        const path = operandPath(ctx.cwd, file);
         let type;
         try {
             type = (await statOrThrow(vfs, path)).type;

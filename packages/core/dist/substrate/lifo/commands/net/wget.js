@@ -1,4 +1,4 @@
-import { resolve } from '../../utils/path.js';
+import { operandPath } from '../../utils/path.js';
 import { hopInit, sendHop, walkRedirects } from './kernel-fetch.js';
 function parseWgetArgs(args) {
     const options = { quiet: false };
@@ -78,7 +78,7 @@ function createWgetImpl(kernel) {
                 await ctx.stderr.write(`connected.\n`);
                 await ctx.stderr.write(`HTTP request sent, awaiting response... ${response.status} ${response.statusText}\n`);
             }
-            const path = resolve(ctx.cwd, outputFile);
+            const path = operandPath(ctx.cwd, outputFile);
             (await ctx.vfs.writeFile(path, response.body));
             if (!options.quiet) {
                 await ctx.stderr.write(`Saving to: '${outputFile}'\n`);

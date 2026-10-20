@@ -50,8 +50,7 @@ import type { WsRelayHeaders, WsRelayOpened } from './ws-relay.js';
 import type { DoCallRetryPolicy } from '@nimbus-sh/fabric/do-calls.js';
 import type { SupervisorOpEnvelope, SupervisorOpName, WriteFileStatAnswer } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import { type SupervisorDeliveredOpName, type SupervisorJoinedReadOpName } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
-import type { PackumentReadOptions, PackumentReadThrough } from '../npm/r2-cache.js';
-import { R2CacheClient } from '../npm/r2-cache.js';
+import type { PackumentReadOptions, PackumentReadThrough, R2CacheClient } from '../npm/r2-cache.js';
 import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsListTree, VfsMutationReceipt, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle, RecallKind } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { ReadDirectoryBatchRequest, ReadDirectoryBatchResult } from '@nimbus-sh/core/runtime/read-directory-batch.js';
 import { type SupervisorAnswer, type SupervisorAnsweredMethod } from '@nimbus-sh/core/runtime/vfs-supervisor.js';
@@ -59,6 +58,13 @@ import type { WriteBatchStreamResult } from '@nimbus-sh/core/runtime/wave-contra
 import { type FsAcquireArgs, type FsAcquiredAnswer, type FsReadBatchEntry, type FsReadBatchRequest, type VfsDeliveredAcquire } from './rpc.js';
 import type { WaveFence } from '@nimbus-sh/platform/wave-writer.js';
 import type { CacheStatEvent } from '@nimbus-sh/core/_shared/cache-stats.js';
+/**
+ * The npm cache client, loaded at its first use: it links the npm engine,
+ * which no other call needs, and a host Worker's isolates all evaluate what
+ * its re-exported SupervisorRPC links statically, at startup (ask 56).
+ */
+declare const npmCache: () => Promise<typeof import("../npm/r2-cache.js")>;
+type NpmCache = Awaited<ReturnType<typeof npmCache>>;
 /**
  * How a supervisor reaches its host: what it was minted with, and how any
  * envelope gets there. Behind a symbol, so it is off the RPC surface: every
@@ -567,7 +573,7 @@ export declare function supervisorCalls<Base extends Class>(base: Base): (abstra
     [CACHE_READ]<T>(plan: {
         ticket?: string;
         readOnly: boolean;
-    }, produce: (client: R2CacheClient) => Promise<T>): Promise<T>;
+    }, produce: (client: R2CacheClient, cache: NpmCache) => Promise<T>): Promise<T>;
     [INFRASTRUCTURE_CACHE](op: SupervisorOpName, args: readonly unknown[]): boolean;
     /**
      * The network this binding's process reaches out through: its workspace's
