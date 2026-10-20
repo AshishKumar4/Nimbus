@@ -17,7 +17,7 @@
 
 import { createHash } from 'node:crypto';
 
-import { strerror } from '@nimbus-sh/core/vfs/vfs-error.js';
+import { isVfsError, strerror } from '@nimbus-sh/core/vfs/vfs-error.js';
 
 import { objectIdPrefix, oidToHex } from '../pack/format.js';
 import { EMPTY_BLOB, S_IFGITLINK, S_IFLNK, S_IFMT, S_IFREG, decodePath, objectId, type DirCache, type EntryStat } from './dircache.js';
@@ -63,8 +63,23 @@ export function newCounters(): WalkCounters {
 }
 
 /** One worktree in its repository's terms. */
+/** An entry of the worktree's ordered scan: its repo-relative path, its lstat, and whether what is below it must be asked by name. */
+export interface ScannedWorktreeEntry {
+  path: string;
+  stat: WorktreeStat;
+  /** A directory the scan does not list (an unlisted mount, one the caller may not read and search). */
+  byName: boolean;
+}
+
 export interface Worktree {
   fs: WorktreeFs;
+  /**
+   * The worktree in one scan, every entry in byte order of its path (the
+   * index's order), a directory before what it holds. Absent: the walk asks
+   * by name. A scan that fails throws from the iterator; EAGAIN when the
+   * tree changed under it.
+   */
+  scan?: () => AsyncIterable<ScannedWorktreeEntry>;
   /** core.filemode: the owner's exec bit is a change. */
   filemode: boolean;
   /** core.autocrlf=true: a valid UTF-8 file is hashed with CRLF as LF, as cf-git adds it. */
@@ -292,13 +307,53 @@ const TRACKED_FILE = 1;
 const TRACKED_DIR = 2;
 const TRACKED_GITLINK = 4;
 
+/** How many times a worktree's scan is tried when the tree changes under it, before the walk by name. */
+const SCAN_ATTEMPTS = 3;
+
+/** A failure of the worktree's scan itself (not of a comparison): the walk falls back to asking by name. */
+class ScanFailure extends Error {
+  constructor(readonly failure: unknown) {
+    super('worktree scan failed');
+  }
+}
+
 /**
  * diff-files and read_directory over the whole worktree (or `specs`):
  * every tracked entry that differs, and what is untracked. Unmerged entries
  * (stage > 0) are left to the caller; skip-worktree and assume-unchanged
  * entries are never looked at, as git never looks at them.
+ *
+ * A worktree with a `scan` is read in that one ordered pass, merged with
+ * the index as it goes; it is asked by name where the scan cannot answer (a
+ * top it does not list as a readdir of the top does, a tree that changed
+ * under it SCAN_ATTEMPTS times, a scan that failed).
  */
 export async function scanWorktree(tree: Worktree, dc: DirCache, options: ScanOptions): Promise<ScanResult> {
+  const scan = tree.scan;
+  if (scan !== undefined) {
+    for (let attempt = 0; attempt < SCAN_ATTEMPTS; attempt++) {
+      try {
+        const merged = await compare(tree, dc, options, scan);
+        if (merged !== null) return merged;
+        break;
+      } catch (error) {
+        if (!(error instanceof ScanFailure)) throw error;
+        if (!isVfsError(error.failure, 'EAGAIN')) break;
+      }
+    }
+  }
+  const byName = await compare(tree, dc, options, null);
+  if (byName === null) throw new Error('the walk by name always answers');
+  return byName;
+}
+
+/** The comparison over the scan merged with the index, or (`scan` null) by name; null when the scan's top is not the top's listing. */
+async function compare(
+  tree: Worktree,
+  dc: DirCache,
+  options: ScanOptions,
+  scan: (() => AsyncIterable<ScannedWorktreeEntry>) | null,
+): Promise<ScanResult | null> {
   const specs = (options.specs ?? []).includes('') ? [] : options.specs ?? [];
   const inScope = (path: string) => specs.length === 0 || specs.some((spec) => path === spec || path.startsWith(`${spec}/`));
   const onTheWay = (dir: string) => specs.some((spec) => spec.startsWith(`${dir}/`));
@@ -349,28 +404,28 @@ export async function scanWorktree(tree: Worktree, dc: DirCache, options: ScanOp
    * index holds a file at its name (`shadowed`): git drops such a name from
    * what it lists (index_name_is_other), though not the files below it.
    */
-  const untracked = async (path: string, type: WorktreeType, shadowed = false): Promise<void> => {
+  const untracked = async (path: string, type: WorktreeType, shadowed = false, out = result.untracked): Promise<void> => {
     if (type === 'other') return;
     const ignored = await excluded(path, type === 'directory');
     if (ignored && !options.ignoredToo) return;
     if (type !== 'directory') {
-      if (inScope(path)) result.untracked.push(path);
+      if (inScope(path)) out.push(path);
       return;
     }
     // A nested repository is listed as its directory, never entered.
     const entries = await listOrWarn(path) ?? [];
     if (entries.some((entry) => entry.name === '.git')) {
-      if (inScope(path) && !shadowed) result.untracked.push(`${path}/`);
+      if (inScope(path) && !shadowed) out.push(`${path}/`);
       return;
     }
     if (options.untracked === 'normal' && inScope(path) && !ignored) {
-      if (!shadowed && await holdsUntracked(path)) result.untracked.push(`${path}/`);
+      if (!shadowed && await holdsUntracked(path)) out.push(`${path}/`);
       return;
     }
     for (const entry of entries) {
       if (entry.name === '.git') continue;
       const child = join(path, entry.name);
-      if (inScope(child) || (entry.type === 'directory' && onTheWay(child))) await untracked(child, entry.type);
+      if (inScope(child) || (entry.type === 'directory' && onTheWay(child))) await untracked(child, entry.type, false, out);
     }
   };
 
@@ -463,6 +518,308 @@ export async function scanWorktree(tree: Worktree, dc: DirCache, options: ScanOp
     }
   };
 
-  await walk('', 0, dc.count);
-  return result;
+  if (scan === null) {
+    await walk('', 0, dc.count);
+    return result;
+  }
+  return await merge(scan) ? result : null;
+
+  /**
+   * The walk over the ordered scan: one cursor, advanced in step with the
+   * index, which is in the same byte order. A directory's own entry comes
+   * first, then (perhaps after siblings whose names sort before its `/`) the
+   * run of what it holds; each run is one contiguous range, so the walk
+   * holds only the directories it is in and the entry under the cursor. A
+   * tracked entry is compared from the stat the scan gave; what the index
+   * does not hold is judged untracked as the cursor passes it.
+   */
+  async function merge(source: () => AsyncIterable<ScannedWorktreeEntry>): Promise<boolean> {
+    let top: Array<{ name: string }>;
+    try {
+      top = await tree.fs.list('');
+    } catch {
+      return false;
+    }
+    const cursor = new ScanCursor(source());
+    const topNames: string[] = [];
+    await trackedDir('', new Uint8Array(0), 0, dc.count, topNames);
+    const names = (listing: ReadonlyArray<string>) => [...listing].sort().join('/');
+    return names(topNames) === names(top.map(({ name }) => name));
+
+    /** The scan's run under `prefix`, passed over. */
+    async function skipUnder(prefix: Uint8Array): Promise<void> {
+      for (let entry = await cursor.peek(); entry !== null && under(entry.bytes, prefix); entry = await cursor.peek()) cursor.take();
+    }
+
+    /**
+     * The run under `prefix` (the directory `dir`), child by child in the
+     * scan's order: `onEntry` at each child's own entry (`before` first takes
+     * what of the index sorts before it), then `onDir` once a child
+     * directory's own run begins (or, empty, once it is passed), which must
+     * consume that run. `onEntry`'s answer for a directory is handed to its
+     * `onDir`.
+     */
+    async function children<T>(
+      prefix: Uint8Array,
+      dir: string,
+      before: (key: Uint8Array) => Promise<void>,
+      onEntry: (name: string, path: string, entry: ScannedEntry, key: Uint8Array) => Promise<T>,
+      onDir: (name: string, path: string, entry: ScannedEntry | null, under: Uint8Array, key: Uint8Array, seen: T | undefined) => Promise<void>,
+    ): Promise<void> {
+      const skip = prefix.length;
+      const pending: Array<{ name: string; path: string; key: Uint8Array; entry: ScannedEntry; seen: T }> = [];
+      const open = async (name: string, path: string, entry: ScannedEntry | null, key: Uint8Array, seen: T | undefined) => {
+        await before(key);
+        await onDir(name, path, entry, concatBytes(prefix, key), key, seen);
+      };
+      // The directories whose runs sort before `limit` (all, when null) are empty: each is opened as such.
+      const flush = async (limit: Uint8Array | null) => {
+        while (pending.length > 0 && (limit === null || compareBytes(pending[0].key, limit) < 0)) {
+          const next = pending[0];
+          pending.shift();
+          await open(next.name, next.path, next.entry, next.key, next.seen);
+        }
+      };
+      for (let entry = await cursor.peek(); entry !== null && under(entry.bytes, prefix); entry = await cursor.peek()) {
+        const rest = entry.bytes.subarray(skip);
+        const slash = rest.indexOf(0x2f);
+        if (slash < 0) {
+          await flush(rest);
+          await before(rest);
+          cursor.take();
+          const name = entry.path.slice(dir ? dir.length + 1 : 0);
+          const path = join(dir, name);
+          const seen = await onEntry(name, path, entry, rest);
+          if (entry.stat.type === 'directory') {
+            const key = concatBytes(rest, SLASH);
+            let at = pending.length;
+            while (at > 0 && compareBytes(pending[at - 1].key, key) > 0) at--;
+            pending.splice(at, 0, { name, path, key, entry, seen });
+          }
+          continue;
+        }
+        const key = rest.subarray(0, slash + 1);
+        await flush(key);
+        const at = pending.findIndex((p) => compareBytes(p.key, key) === 0);
+        if (at >= 0) {
+          const [opened] = pending.splice(at, 1);
+          await open(opened.name, opened.path, opened.entry, opened.key, opened.seen);
+        } else {
+          // A run whose directory's own entry the scan did not give: the directory, as it holds what it holds.
+          const name = decodePath(rest.subarray(0, slash));
+          await open(name, join(dir, name), null, key.slice(), undefined);
+        }
+      }
+      await flush(null);
+    }
+
+    /** A tracked directory: its index entries [lo, hi) merged with its run under `prefix`. */
+    async function trackedDir(dir: string, prefix: Uint8Array, lo: number, hi: number, topNames?: string[]): Promise<void> {
+      const skip = prefix.length;
+      let ix = lo;
+      /** The index entry at `i` as one name of this directory sorts: a file's name, a directory's `name/`. */
+      const itemKey = (i: number) => {
+        const rest = dc.pathBytes(i).subarray(skip);
+        const slash = rest.indexOf(0x2f);
+        return slash >= 0 ? rest.subarray(0, slash + 1) : rest;
+      };
+      /** Index entries the worktree has nothing for, up to `key` (all, when null): as the walk by name finds them absent. */
+      const absentBefore = async (key: Uint8Array | null) => {
+        while (ix < hi && (key === null || compareBytes(itemKey(ix), key) < 0)) {
+          const rest = dc.pathBytes(ix).subarray(skip);
+          const slash = rest.indexOf(0x2f);
+          if (slash >= 0) {
+            const path = join(dir, decodePath(rest.subarray(0, slash)));
+            const [, end] = dc.rangeUnder(path, ix, hi);
+            if (inScope(path) || onTheWay(path)) deleted(ix, end);
+            ix = end;
+            continue;
+          }
+          const path = dc.path(ix);
+          let next = ix + 1;
+          while (next < hi && dc.stage(next) !== 0 && dc.path(next) === path) next++;
+          if (dc.stage(ix) !== 0) {
+            if (options.unmerged && inScope(path)) result.unmerged.push({ path, lo: ix, hi: next, stat: null });
+          } else if (!dc.skipWorktree(ix) && !dc.assumeValid(ix) && inScope(path)) {
+            result.dirty.set(ix, { change: 'D' });
+          }
+          ix = next;
+        }
+      };
+      await children<number>(prefix, dir, absentBefore, async (name, path, entry, key) => {
+        topNames?.push(name);
+        if (name === '.git') return 0;
+        let kinds = 0;
+        if (ix < hi && compareBytes(itemKey(ix), key) === 0) {
+          // A tracked file (or gitlink) at this name: compared from the scan's stat.
+          const gitlink = (dc.mode(ix) & S_IFMT) === S_IFGITLINK;
+          let next = ix + 1;
+          while (next < hi && dc.stage(next) !== 0 && dc.path(next) === dc.path(ix)) next++;
+          if (dc.stage(ix) !== 0) {
+            if (options.unmerged && inScope(path)) result.unmerged.push({ path, lo: ix, hi: next, stat: entry.stat });
+          } else if (!dc.skipWorktree(ix) && !dc.assumeValid(ix) && inScope(path)) {
+            const dirty = entry.stat.type === 'directory' && !gitlink ? { change: 'D' as const, directory: true }
+              : await compareEntry(tree, dc, ix, path, entry.stat, options.uncleanIsDirty);
+            if (dirty) result.dirty.set(ix, dirty);
+          }
+          kinds = gitlink ? TRACKED_GITLINK : TRACKED_FILE;
+          ix = next;
+        }
+        if (entry.stat.type === 'directory' || kinds !== 0) return kinds;
+        // A gitlink owns whatever is at its path, a file entry a non-directory: anything else here is untracked.
+        if (options.untracked !== 'no' && inScope(path)) await untracked(path, entry.stat.type);
+        return kinds;
+      }, async (name, path, entry, below, key, seen) => {
+        const kinds = seen ?? 0;
+        let runLo = ix;
+        let runHi = ix;
+        if (ix < hi && compareBytes(itemKey(ix), key) === 0) {
+          [runLo, runHi] = dc.rangeUnder(path, ix, hi);
+          ix = runHi;
+        }
+        if (name === '.git' || (kinds & TRACKED_GITLINK) !== 0) return await skipUnder(below);
+        const reached = inScope(path) || onTheWay(path);
+        if (entry?.byName) {
+          // What the scan cannot list is asked by name, as the walk by name asks it.
+          await skipUnder(below);
+          if (runHi > runLo) {
+            if (reached) await walk(path, runLo, runHi);
+          } else if (options.untracked !== 'no' && reached) {
+            await untracked(path, 'directory', (kinds & TRACKED_FILE) !== 0);
+          }
+          return;
+        }
+        if (runHi > runLo) return reached ? await trackedDir(path, below, runLo, runHi) : await skipUnder(below);
+        if (options.untracked === 'no' || !reached) return await skipUnder(below);
+        await untrackedDir(path, below, (kinds & TRACKED_FILE) !== 0, result.untracked);
+      });
+      await absentBefore(null);
+    }
+
+    /**
+     * An untracked directory, from its run under `prefix`, as {@link untracked}
+     * judges it: an ignored one passed over; a nested repository (a `.git`
+     * in it) listed as itself; under -unormal listed as itself if anything
+     * below it is untracked and not ignored; else what it holds. What it
+     * holds is kept until its run ends, which says whether a `.git` was in it.
+     */
+    async function untrackedDir(path: string, prefix: Uint8Array, shadowed: boolean, out: string[]): Promise<void> {
+      const ignored = await excluded(path, true);
+      if (ignored && !options.ignoredToo) return await skipUnder(prefix);
+      const normal = options.untracked === 'normal' && inScope(path) && !ignored;
+      const below: string[] = [];
+      let repository = false;
+      let holds = false;
+      await children<void>(prefix, path, async () => {}, async (name, child, entry) => {
+        if (name === '.git') {
+          repository = true;
+          return;
+        }
+        if (entry.stat.type === 'directory') return;
+        if (normal) {
+          if (!shadowed && !holds && entry.stat.type !== 'other' && !await excluded(child, false)) holds = true;
+          return;
+        }
+        if (inScope(child)) await untracked(child, entry.stat.type, false, below);
+      }, async (name, child, entry, under) => {
+        if (name === '.git' || repository) return await skipUnder(under);
+        if (normal) {
+          if (shadowed || holds || await excluded(child, true)) return await skipUnder(under);
+          if (await probe(child, under, entry)) holds = true;
+          return;
+        }
+        if (!(inScope(child) || onTheWay(child))) return await skipUnder(under);
+        if (entry?.byName) {
+          await skipUnder(under);
+          return await untracked(child, 'directory', false, below);
+        }
+        await untrackedDir(child, under, false, below);
+      });
+      if (repository) {
+        if (inScope(path) && !shadowed) out.push(`${path}/`);
+        return;
+      }
+      if (normal) {
+        if (!shadowed && holds) out.push(`${path}/`);
+        return;
+      }
+      for (const found of below) out.push(found);
+    }
+
+    /** -unormal's probe of a directory below an untracked one, from its run: a `.git` in it, or {@link holdsUntracked} of it. */
+    async function probe(path: string, prefix: Uint8Array, entry: ScannedEntry | null): Promise<boolean> {
+      if (entry?.byName) {
+        await skipUnder(prefix);
+        return (await listOrWarn(path) ?? []).some((child) => child.name === '.git') || await holdsUntracked(path);
+      }
+      let holds = false;
+      await children<void>(prefix, path, async () => {}, async (name, child, found) => {
+        if (holds || found.stat.type === 'directory') return;
+        if (name === '.git' || (found.stat.type !== 'other' && !await excluded(child, false))) holds = true;
+      }, async (name, child, found, under) => {
+        if (holds || name === '.git') {
+          holds = true;
+          return await skipUnder(under);
+        }
+        if (await excluded(child, true)) return await skipUnder(under);
+        if (await probe(child, under, found)) holds = true;
+      });
+      return holds;
+    }
+  }
+}
+
+/** The byte `/`. */
+const SLASH = new Uint8Array([0x2f]);
+
+/** An entry of the scan with its path's bytes, the order it comes in. */
+interface ScannedEntry extends ScannedWorktreeEntry {
+  bytes: Uint8Array;
+}
+
+/** The scan, one entry looked at before it is taken; a failure of the scan's own is a ScanFailure. */
+class ScanCursor {
+  private readonly entries: AsyncIterator<ScannedWorktreeEntry>;
+  private head: ScannedEntry | null | undefined;
+
+  constructor(source: AsyncIterable<ScannedWorktreeEntry>) {
+    this.entries = source[Symbol.asyncIterator]();
+  }
+
+  async peek(): Promise<ScannedEntry | null> {
+    if (this.head === undefined) {
+      let next: IteratorResult<ScannedWorktreeEntry>;
+      try {
+        next = await this.entries.next();
+      } catch (error) {
+        throw new ScanFailure(error);
+      }
+      this.head = next.done ? null : { ...next.value, bytes: encoder.encode(next.value.path) };
+    }
+    return this.head;
+  }
+
+  take(): void {
+    this.head = undefined;
+  }
+}
+
+/** Whether `bytes` is strictly below `prefix` (`dir/`; empty: the top). */
+function under(bytes: Uint8Array, prefix: Uint8Array): boolean {
+  if (bytes.length <= prefix.length) return prefix.length === 0 && bytes.length > 0;
+  for (let i = 0; i < prefix.length; i++) if (bytes[i] !== prefix[i]) return false;
+  return true;
+}
+
+function compareBytes(a: Uint8Array, b: Uint8Array): number {
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i++) if (a[i] !== b[i]) return a[i] - b[i];
+  return a.length - b.length;
+}
+
+function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
+  const out = new Uint8Array(a.length + b.length);
+  out.set(a);
+  out.set(b, a.length);
+  return out;
 }

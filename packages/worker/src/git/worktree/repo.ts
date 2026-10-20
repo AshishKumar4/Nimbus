@@ -83,28 +83,6 @@ interface ObjectSink {
   flush(): Promise<void>;
 }
 
-/** Scans of a worktree status makes before it walks by name: each one the tree changed under is made again. */
-const SCAN_ATTEMPTS = 3;
-
-/** A worktree scan's tables: each directory's listing, each entry's lstat, and the directories asked by name. */
-interface ScannedTree {
-  listings: Map<string, Array<{ name: string; type: WorktreeType }>>;
-  stats: Map<string, WorktreeStat>;
-  byName: Set<string>;
-}
-
-/** Whether `path` is under one of the `byName` directories. */
-function askedUnder(byName: ReadonlySet<string>, path: string): boolean {
-  if (byName.size === 0) return false;
-  for (let cut = path.lastIndexOf('/'); cut > 0; cut = path.lastIndexOf('/', cut - 1)) if (byName.has(path.slice(0, cut))) return true;
-  return false;
-}
-
-/** Whether `path` is inside a `.git` directory (the worktree's or a nested repository's): its entry is kept, what it holds is not. */
-function insideGitDir(path: string): boolean {
-  return path.startsWith('.git/') || path.includes('/.git/');
-}
-
 /** A worktree entry's stat as the comparisons take it: a type the walk knows, else `other`. */
 function worktreeStatOf(st: VfsStat): WorktreeStat {
   const type = st.type === 'file' || st.type === 'directory' || st.type === 'symlink' ? st.type : 'other';
@@ -348,69 +326,27 @@ export class WorktreeRepo {
   }
 
   /**
-   * The worktree as one ordered scan of its tree reads it (ProjectFs.scan):
-   * its listings and lstats answered from the scan, what the scan marks
-   * `byName` (a directory on an unlisted mount, or one the caller may not
-   * read) asked by name, its contents read as {@link worktree} reads them.
-   * Measured on next.js's 34,302 files (throwaway Previews, the spans'
-   * session CPU): status took 3.8–4.2 s of the session's CPU walking by
-   * name and 1.0–1.6 s from the scan. The walk by name stands where the
-   * scan cannot: a top it does not list as a readdir of the top does (a
-   * top on a mount it does not name, one the caller may not read), a tree
-   * that changed under it SCAN_ATTEMPTS times, or a scan that failed,
-   * whose errors the walk reports entry by entry. The scan is held whole (not `.git`'s
-   * contents, which no walk reads), so a command that walks a tree too
-   * large to hold (add -A, under its memory bound) keeps {@link worktree}.
+   * The worktree as one ordered scan of its tree reads it (ProjectFs.scan),
+   * merged with the index as it goes (scanWorktree): no table of it is held,
+   * only the scan's page and the directories the walk is in. Measured on
+   * next.js's 34,302 files (throwaway Previews, the spans' session CPU):
+   * status took 3.8–4.2 s of the session's CPU walking by name and 1.0–1.6 s
+   * from the scan. Where the scan cannot answer, the walk asks by name.
    */
   async scannedWorktree(): Promise<Worktree> {
-    const byNameWalk = await this.worktree();
-    let top: Array<{ name: string; type: WorktreeType }>;
-    try {
-      top = await this.fs.list('');
-    } catch {
-      return byNameWalk;
-    }
-    for (let attempt = 0; attempt < SCAN_ATTEMPTS; attempt++) {
-      let scanned: ScannedTree;
-      try {
-        scanned = await this.scanTree();
-      } catch (error) {
-        if (isVfsError(error, 'EAGAIN')) continue;
-        return byNameWalk;
-      }
-      const names = (listing: ReadonlyArray<{ name: string }>) => listing.map(({ name }) => name).sort().join('/');
-      if (names(scanned.listings.get('') ?? []) !== names(top)) return byNameWalk;
-      const { listings, stats, byName } = scanned;
-      const askedByName = (path: string) => askedUnder(byName, path);
-      return {
-        ...byNameWalk,
-        fs: {
-          ...this.fs,
-          // Nothing there, or not a directory, is no listing (WorktreeFs.list).
-          list: async (dir) => byName.has(dir) || askedByName(dir) ? await this.fs.list(dir) : listings.get(dir) ?? [],
-          lstat: async (path) => askedByName(path) ? await this.fs.lstat(path) : stats.get(path) ?? null,
-        },
-      };
-    }
-    return byNameWalk;
-  }
-
-  /** One scan of the worktree into the tables scannedWorktree answers from. */
-  private async scanTree(): Promise<ScannedTree> {
-    const tree: ScannedTree = { listings: new Map([['', []]]), stats: new Map(), byName: new Set() };
-    this.counters.scans++;
-    for await (const entry of this.vfs.scan(this.root)) {
-      this.counters.scanned++;
-      if (askedUnder(tree.byName, entry.path) || insideGitDir(entry.path)) continue;
-      const st = worktreeStatOf(entry.stat);
-      const cut = entry.path.lastIndexOf('/');
-      tree.listings.get(cut < 0 ? '' : entry.path.slice(0, cut))?.push({ name: entry.path.slice(cut + 1), type: st.type });
-      tree.stats.set(entry.path, st);
-      if (st.type !== 'directory') continue;
-      if (entry.byName) tree.byName.add(entry.path);
-      else tree.listings.set(entry.path, []);
-    }
-    return tree;
+    const counters = this.counters;
+    const vfs = this.vfs;
+    const root = this.root;
+    return {
+      ...await this.worktree(),
+      scan: async function* () {
+        counters.scans++;
+        for await (const entry of vfs.scan(root)) {
+          counters.scanned++;
+          yield { path: entry.path, stat: worktreeStatOf(entry.stat), byName: entry.byName };
+        }
+      },
+    };
   }
 
   /** The worktree with the settings its comparisons take. */
