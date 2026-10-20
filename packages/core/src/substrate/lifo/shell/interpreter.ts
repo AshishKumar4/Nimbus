@@ -43,7 +43,7 @@ import {
 import { evaluateDoubleBracketWords } from './test-builtin.js';
 import { isPipeEnd, PipeChannel } from './pipe.js';
 import {
-  arrayFor, arrayIndex, assignArray, assignVariable, lastIndex, restoreVariable, saveVariable, type ArrayLiteral, type SavedVariable,
+  arrayFor, arrayIndex, assignArray, assignVariable, exportedEnvironment, lastIndex, restoreVariable, saveVariable, type ArrayLiteral, type SavedVariable,
 } from './variables.js';
 import { forkShellState, type ShellState } from './state.js';
 import { exitCodeForAbortSignal, KILLED_BY_SIGPIPE } from './signals.js';
@@ -339,6 +339,8 @@ export interface ProgramSpec {
 interface CommandSpec extends ProgramSpec {
   readonly vfs: ProcessView;
   readonly shellBuiltin: boolean;
+  /** CommandContext.searchPath. */
+  readonly searchPath?: string;
   /** The command says its program takes the shell's signals (CommandContext.takesSignals). */
   readonly takesSignals?: () => void;
 }
@@ -1345,7 +1347,8 @@ export class Interpreter {
                     commandContext: io.commandContext,
                     identity,
                     cwd: this.config.getCwd(),
-                    env: { ...this.config.env },
+                    env: exportedEnvironment(this.config),
+                    searchPath: this.config.env.PATH,
                     vfs: io.vfs ?? this.config.vfs,
                     stdout,
                     stderr,
@@ -1444,6 +1447,7 @@ export class Interpreter {
       cred: identity.cred,
       args,
       env: spec.env,
+      ...(spec.searchPath === undefined ? {} : { searchPath: spec.searchPath }),
       cwd: spec.cwd,
       vfs: spec.vfs,
       vfsUntilExit: () => bindProcessView(this.config.filesystem, { pid: identity.pid, cred: identity.cred }),

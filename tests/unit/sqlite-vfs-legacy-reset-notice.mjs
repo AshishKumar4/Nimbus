@@ -52,7 +52,7 @@ const ctxFor = (harness) => ({ storage: { sql: harness.sql, transactionSync: har
   const harness = v1Database();
   const ctx = ctxFor(harness);
   ensureSessionStateSchema(ctx);
-  persistShellState(ctx, { cwd: '/home/user/project', env: { HOME: '/home/user' } });
+  persistShellState(ctx, { cwd: '/home/user/project', env: { HOME: '/home/user' }, vars: null });
   assert.equal(loadShellState(ctx).hasPersistedState, true);
   const vfs = new SqliteVFS(harness.sql, harness.ctx);
   const notice = takeLegacyResetNotice(vfs, ctx);
@@ -68,7 +68,7 @@ const ctxFor = (harness) => ({ storage: { sql: harness.sql, transactionSync: har
   const harness = createSqliteVfsTestHarness();
   const ctx = ctxFor(harness);
   ensureSessionStateSchema(ctx);
-  persistShellState(ctx, { cwd: '/tmp', env: null });
+  persistShellState(ctx, { cwd: '/tmp', env: null, vars: null });
   assert.equal(takeLegacyResetNotice(new SqliteVFS(harness.sql, harness.ctx), ctx), null);
   assert.equal(loadShellState(ctx).cwd, '/tmp', 'a v2 session keeps its state');
 }

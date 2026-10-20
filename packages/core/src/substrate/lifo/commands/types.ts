@@ -97,6 +97,12 @@ export interface CommandContext {
    * is then the program's, not the signal's.
    */
   takesSignals?: () => void;
+  /**
+   * The PATH the shell searches with, its variable's value exported or not:
+   * a shell builtin's lookups (type, command -v) use it, where a program's
+   * environment holds PATH only if it is exported. Absent, `env`'s.
+   */
+  searchPath?: string;
   /** Whether the shell running this command runs `name` itself, as a builtin (type and command -v ask). */
   isShellBuiltin?: (name: string) => boolean;
   setUmask(mask: number): void;

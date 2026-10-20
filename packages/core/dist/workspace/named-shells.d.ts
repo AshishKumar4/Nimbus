@@ -55,6 +55,8 @@ export interface NamedShellOptions {
     /** Release this call's ownership, without stopping it or saving its later state. */
     readonly detach?: AbortSignal;
 }
+/** Saved variable attributes (a hosted terminal's JSON), or an error naming what is wrong with them. */
+export declare function parseVariableAttributes(json: string): VariableAttributes;
 /** A saved shell state, or an error naming what is wrong with it. */
 export declare function parseShellState(value: unknown): ShellState;
 /** Where named shells are saved, one row each; made by the first call that names one. */

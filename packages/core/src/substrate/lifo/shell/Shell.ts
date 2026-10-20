@@ -10,8 +10,10 @@ import { BOLD, GREEN, BLUE, RESET } from '../utils/colors.js';
 import { textCapture } from '../utils/bytes-io.js';
 
 import { Interpreter, type BuiltinFn, type ProgramSpec, type TerminalFdState } from './interpreter.js';
-import { createShellState, restoreShellState, snapshotShellState, type ShellOptions, type ShellState } from './state.js';
-import { attributesOf, restoreAttributes, restoreVariable, saveVariable, type SavedVariable, type VariableAttributes } from './variables.js';
+import { createShellState, restoreShellState, snapshotShellState, startupVariableAttributes, type ShellOptions, type ShellState } from './state.js';
+import {
+  attributesOf, exportedEnvironment, isShellParameter, restoreAttributes, restoreVariable, saveVariable, type SavedVariable, type VariableAttributes,
+} from './variables.js';
 import { shellBuiltins } from './builtins.js';
 import { continuationState } from './lexer.js';
 import { HistoryManager } from './history.js';
@@ -263,14 +265,24 @@ export class Shell {
     return this.state.env;
   }
 
+  /** What a command or a process it starts gets as its environment: the exported variables (exportedEnvironment). */
+  getExportedEnv(): Record<string, string> {
+    return exportedEnvironment(this.state);
+  }
+
   /** Its variables' attributes and arrays, beyond {@link getEnv}'s scalars (a named shell's saved state). */
   getVariableAttributes(): VariableAttributes {
     return attributesOf(this.state);
   }
 
-  /** Put `attributes` back, saved with the scalars named in `saved` (restoreAttributes). */
-  restoreVariableAttributes(attributes: VariableAttributes, saved: Iterable<string>): void {
-    restoreAttributes(this.state, attributes, saved);
+  /**
+   * Put `attributes` back, saved with the scalars named in `saved`
+   * (restoreAttributes); absent (a state saved before them), the marks a
+   * shell starts with over those scalars.
+   */
+  restoreVariableAttributes(attributes: VariableAttributes | undefined, saved: Iterable<string>): void {
+    const names = [...saved];
+    restoreAttributes(this.state, attributes ?? startupVariableAttributes(names), names);
   }
 
   getVfs(): ProcessView {
@@ -406,7 +418,8 @@ export class Shell {
     const savedShellState = options?.isolateShellState
       ? { state: snapshotShellState(this.state), functions: this.interpreter.saveFunctions() }
       : null;
-    // A call's env binds each name for the call alone: its whole binding (scalar or array) saved, and given back after.
+    // A call's env binds each name for the call alone, exported as an environment's is: its whole
+    // binding (scalar or array, its marks) saved, and given back after.
     const envOverrideSnapshot = !savedShellState && options?.env
       ? new Map<string, SavedVariable>(Object.keys(options.env).map((name) => [name, saveVariable(this.state, name)]))
       : null;
@@ -431,6 +444,7 @@ export class Shell {
       for (const [name, value] of Object.entries(options.env)) {
         this.state.arrays.delete(name);
         this.state.env[name] = value;
+        if (!isShellParameter(name)) this.state.exportedNames.add(name);
       }
     }
     if (options?.shellOptions) {
@@ -485,7 +499,7 @@ export class Shell {
         restoreShellState(this.state, savedShellState.state);
         this.interpreter.restoreFunctions(savedShellState.functions);
       } else {
-        if (envOverrideSnapshot) for (const [name, saved] of envOverrideSnapshot) restoreVariable(this.state, name, saved, false);
+        if (envOverrideSnapshot) for (const [name, saved] of envOverrideSnapshot) restoreVariable(this.state, name, saved);
         if (optionSnapshot) Object.assign(this.state.options, optionSnapshot);
       }
       if (prevCwd !== undefined) {

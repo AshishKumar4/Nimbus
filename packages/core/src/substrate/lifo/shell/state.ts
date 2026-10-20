@@ -6,7 +6,7 @@
  * of the shell that runs it (BuiltinExecutionContext.shell).
  */
 import type { JobTable } from './jobs.js';
-import { assignVariable, cloneArrays, cloneEnv } from './variables.js';
+import { assignVariable, cloneArrays, cloneEnv, isShellParameter, type VariableAttributes } from './variables.js';
 
 export interface ShellOptions {
   errexit: boolean;
@@ -45,18 +45,40 @@ export interface ShellState {
   readonly jobTable: JobTable;
 }
 
+/**
+ * The marks a shell starts with over variables named `names` (its
+ * environment's), as bash's: each exported (a shell parameter kept among
+ * them, `#` or `1`, is none), and PWD and OLDPWD exported too, OLDPWD
+ * declared where it has no value.
+ */
+export function startupAttributes(names: Iterable<string>): { readonly exported: ReadonlySet<string>; readonly declared: ReadonlySet<string> } {
+  const exported = new Set([...names].filter((name) => !isShellParameter(name)));
+  const declared = new Set<string>();
+  if (!exported.has('OLDPWD')) declared.add('OLDPWD');
+  exported.add('PWD');
+  exported.add('OLDPWD');
+  return { exported, declared };
+}
+
+/** startupAttributes as VariableAttributes: what a saved state without its attributes restores to. */
+export function startupVariableAttributes(names: Iterable<string>): VariableAttributes {
+  const { exported, declared } = startupAttributes(names);
+  return { exported: [...exported].sort(), readonly: [], declared: [...declared].sort(), arrays: {} };
+}
+
 /** A shell's state at `cwd`, its variables `env` (PWD set), nothing else defined. */
 export function createShellState(env: Record<string, string>, cwd: string, jobTable: JobTable): ShellState {
   const shellEnv = cloneEnv(env);
   shellEnv.PWD = cwd;
+  const startup = startupAttributes(Object.keys(env));
   return withCwd({
     env: shellEnv,
     arrays: new Map(),
     options: { errexit: false, nounset: false, pipefail: false, posix: false },
     traps: new Map(),
     readonlyNames: new Set(),
-    exportedNames: new Set(Object.keys(env)),
-    declaredNames: new Set(),
+    exportedNames: new Set(startup.exported),
+    declaredNames: new Set(startup.declared),
     aliases: new Map(),
     jobTable,
   }, cwd);
