@@ -27,7 +27,10 @@ published independently in the `@nimbus-sh` npm scope.
   runtime owns its sessions' `/.nimbus/facet-images` whole, so it removes
   them there. Copies already taken in a snapshot, an export or a clone are
   not removed either. Remove `/var/lib/nimbus` with `sudo rm -r` once no
-  durable worker boots from there. A
+  durable worker boots from there. The directory a resident process's
+  generated program image lives in (`/.nimbus/process-images`) is now
+  closed to every account but the kernel's: an image holds the files its
+  process read, `~/.bash_history` with an inline `VAR=secret` among them. A
   Python or Ruby server whose image an earlier release wrote, under an
   embedder that composes `resolveProcessEnv`, is not restarted, and the
   session says so: start it again. `/api/_diag/session` lists the shell's

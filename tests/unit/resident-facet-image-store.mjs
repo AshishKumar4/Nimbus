@@ -95,12 +95,14 @@ for (const [module, member] of Object.entries(world.bootSpecs.at(-1).code.assetM
   assert.equal(storedImages().includes(member.source.sha256 + '.js'), false, 'a library is not written as a process image');
 }
 
-// The image is kernel-owned and world-readable: every process reads it through
-// a supervisor binding that enforces its own credential, so readability has to
-// hold by construction rather than by a carve-out in the permission layer.
+// The image is the kernel's alone: its boot reads it as the kernel, and it
+// holds what its process could read (a 0600 file of its user's among them),
+// which no other account may.
 const meta = fs.lstat(imageA.replace(/^\/+/, ''));
 assert.equal(meta.uid, CRED_KERNEL.uid, 'the image belongs to the kernel, not to the program it encodes');
-assert.equal(meta.mode & 0o777, 0o644, 'and is readable by any process without a privilege exception');
+assert.equal(fs.lstat(PROCESS_IMAGE_DIR).mode & 0o077, 0, 'and its directory admits no other account');
+assert.throws(() => sessionVfs.as({ uid: 1001, gid: 1001, groups: [1001], umask: 0o022 }).readFile(imageA.replace(/^\/+/, '')), /EACCES/,
+  'so another account cannot read it');
 
 // ── identical program, identical image ─────────────────────────────────────
 const afterA = storedImages();
