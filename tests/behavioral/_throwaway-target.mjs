@@ -141,6 +141,9 @@ const HOSTNAME_SETTLE_MS = 60_000;
  */
 const LANDING_MS = 30_000;
 
+/** An API read of a Preview that failed: not an answer that it has no deployment. */
+class PreviewReadError extends Error {}
+
 // ── CLI ──────────────────────────────────────────────────────────────
 
 const [command, ...rest] = process.argv.slice(2);
@@ -382,9 +385,6 @@ function previewName(name) {
 }
 
 /** The latest deployment of `preview`, or null when there is no such Preview. */
-/** An API read of a Preview that failed: not an answer that it has no deployment. */
-class PreviewReadError extends Error {}
-
 /**
  * The Preview's latest deployment, or null when it has none (404). Any other
  * failure throws PreviewReadError: read as "none", it would pass a Preview
