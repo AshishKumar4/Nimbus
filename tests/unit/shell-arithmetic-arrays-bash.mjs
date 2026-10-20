@@ -65,6 +65,8 @@ const LINES = [
   'echo $((1 +\n2 \n)) $(( 3\t*\t2 ))',
   // A value's subscript expands its names as text (2*$i with i=1+1 is 2*1+1); a quote in a substitution is the substitution's.
   "a=(0 10 20 30 40); i=1+1; e='a[2*$i]'; echo $((e)); echo $(( \"$(echo \"2\")\" * 3 )); i=1; let 'a[$i] = 7'; echo ${a[1]}; x=4; echo $(( \"${x}\" + 1 ))",
+  // A quote a name's value brings is data, not quoting; a subscript that names itself ends at the recursion bound.
+  { line: "a=(10 20); i='\"1\"'; e='a[$i]'; echo $((e))\necho next\na=(0); i='a[$i]'; e='a[$i]'; echo $((e))\necho end", script: 'bash' },
   // A $ in a value, outside a subscript, is no operand.
   { line: "e='2*$i'; i=3; echo $((e))\necho next", script: 'bash' },
 ];

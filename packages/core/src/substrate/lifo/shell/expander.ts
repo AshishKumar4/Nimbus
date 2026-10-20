@@ -1340,12 +1340,18 @@ class ArithParser {
     const trimmed = text.trim();
     if (text === '' || trimmed === '@' || trimmed === '*') return null;
     if (this.noeval > 0 || trimmed === '') return 0;
-    // Its names expanded as text, then its quotes removed, as arithmetic's are (expandArithmetic).
-    // Any other expansion left in it (a value's subscript) is an operand error, not a guess.
-    const named = text.includes('$') ? text.replace(SUBSCRIPT_NAME, (_, braced: string | undefined, bare: string | undefined) => this.parameterText(braced ?? bare ?? '')) : text;
-    const expression = /["\\]/.test(named) ? parameterWordParts(named, 'double').map((part) => part.text).join('') : named;
+    // Its original quotes removed as arithmetic's are (expandArithmetic), and its names expanded as
+    // text, a value's characters its data; a backslash-quoted `$` is no name. Any other expansion
+    // left in it (a value's subscript) is an operand error, not a guess.
+    const expression = /["\\$]/.test(text)
+      ? parameterWordParts(text, 'double').map((part) => (part.quoted === 'single' ? part.text : this.expandNames(part.text))).join('')
+      : text;
     try {
-      return evaluateArithmetic(expression, this.scope, this.depth);
+      // Its own evaluation is a level deeper, as a value's is: a subscript naming itself ends.
+      if (this.depth >= MAX_ARITHMETIC_DEPTH) {
+        throw new ArithmeticError(`${text}: expression recursion level exceeded (error token is "${text}")`);
+      }
+      return evaluateArithmetic(expression, this.scope, this.depth + 1);
     } catch (error) {
       if (!(error instanceof ArithmeticError) || error instanceof SubscriptArithmeticError) throw error;
       throw new SubscriptArithmeticError(error.message);
@@ -1822,9 +1828,9 @@ class ArithParser {
     return evaluateArithmetic(val, this.scope, this.depth + 1);
   }
 
-  /** A name's value as text, as a subscript's `$name` expands it: unset is empty. */
-  private parameterText(name: string): string {
-    return this.getParameter(name) ?? '';
+  /** `text` with its `$name`, `${name}` and `$1` replaced by their values (unset, empty), as a subscript expands them. */
+  private expandNames(text: string): string {
+    return text.replace(SUBSCRIPT_NAME, (_, braced: string | undefined, bare: string | undefined) => this.getParameter(braced ?? bare ?? '') ?? '');
   }
 
   /** A name's value: a positional parameter's, a scalar's, or an array's first element. */
