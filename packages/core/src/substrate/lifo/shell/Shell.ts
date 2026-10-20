@@ -136,6 +136,8 @@ export class Shell {
 
   // Running command
   running: boolean = false;
+  /** The line it is running, while it runs one: a terminal list's foreground. */
+  foreground: string | null = null;
   private abortController: AbortController | null = null;
   private terminalStdin: TerminalStdin | null = null;
   private stdinLineBuffer: string = '';
@@ -202,7 +204,8 @@ export class Shell {
     shellEnv['$'] = String(this.commandIdentity.pid);
 
     // Initialize history manager
-    this.historyManager = new HistoryManager(() => this.vfs, () => this.state.env.HOME ?? DEFAULT_HOME);
+    // bash's HISTFILE, else its default.
+    this.historyManager = new HistoryManager(() => this.vfs, () => this.state.env.HISTFILE || `${this.state.env.HOME ?? DEFAULT_HOME}/.bash_history`);
 
     this.builtins = shellBuiltins({
       vfs: () => this.vfs,
@@ -1222,6 +1225,7 @@ export class Shell {
     // History expansion
     const expanded = this.historyManager.expand(line);
     const actualLine = expanded ?? line;
+    this.foreground = actualLine;
 
     if (expanded !== null) {
       // Show the expanded command
@@ -1264,6 +1268,7 @@ export class Shell {
       this.stdinLineBuffer = '';
       this.stdinCursorPos = 0;
       this.running = false;
+      this.foreground = null;
       this.abortController = null;
       this.terminal.write(commandEnd(status));
       execution?.finish(status);

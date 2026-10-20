@@ -39,6 +39,7 @@ import { recordFailure, getLastRpcFrame, getLastFacetId, recordRecoveryEvent } f
 import { flushOnClose as _w9DoFlushOnClose } from './hibernation.js';
 import { generation } from '@nimbus-sh/fabric/generation.js';
 import { appendScrollback, persistShellState } from './state-store.js';
+import type { NamedTerminals } from './named-terminals.js';
 import {
   handleFsWatchSubscribe,
   handleFsWatchUnsubscribe,
@@ -53,7 +54,7 @@ import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import type { CirrusReal } from '../facets/cirrus-real.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
-import { clearShellSocketStamp, noteShellSocketActivity } from './shell-socket.js';
+import { clearShellSocketStamp, noteShellSocketActivity, shellSocketTerminal } from './shell-socket.js';
 import type { InitSessionOptions } from './init.js';
 import type { Kernel, Shell } from '@nimbus-sh/core/substrate/lifo/index.js';
 import { PRIOR_GENERATION_EXIT_REASON } from './rpc.js';
@@ -63,7 +64,9 @@ import { PRIOR_GENERATION_EXIT_REASON } from './rpc.js';
  * drop `private` on the class. `ctx` NOT on the interface (D1).
  */
 export interface WsHost {
-  dispatchTerminalInput(frame: string): void;
+  dispatchTerminalInput(frame: string, terminal?: string): void;
+  readonly terminals: NamedTerminals;
+  ensureRuntimeReady(): Promise<void>;
   sqliteFs: SqliteVFS | null;
   /** The session's namespace and process bindings (fs-watch watches the namespace). */
   getFilesystemAuthority(): ProcessFiles;
@@ -298,7 +301,7 @@ const FsWatchClientFrameSchema = z.discriminatedUnion('type', [
 /** `WebSocket.readyState` for an open socket; the constant name differs between workerd and Node. */
 const WS_READY_STATE_OPEN = 1;
 
-const TerminalMessageSchema = z.object({
+export const TerminalMessageSchema = z.object({
   type: z.string(),
   data: z.string().optional(),
   submissionId: z.string().min(1).max(160).optional(),
@@ -344,6 +347,11 @@ export async function wsMessage(self: WsHost, ws: WebSocket, message: string | A
     // Rate-limited inside; see src/session/shell-socket.ts.
     if (attach?.kind === 'shell') {
       noteShellSocketActivity(ws);
+      const named = shellSocketTerminal(ws);
+      if (named !== undefined) {
+        await namedTerminalMessage(self, ws, named, message);
+        return;
+      }
       // Before the frame is parsed: a woken instance has no session to
       // hand ANY shell-socket frame to, the liveness probe included.
       if (!(await bindShellSocket(self, ws))) return;
@@ -402,6 +410,27 @@ export async function wsMessage(self: WsHost, ws: WebSocket, message: string | A
     // Never let a message parsing error crash the DO
     console.error('[nimbus] webSocketMessage error:', e?.message);
   }
+}
+
+/**
+ * A frame on a named terminal's socket: the session built (a woken instance
+ * builds it), the socket given its terminal as a wake gives it (no replay),
+ * and the frame handed to it as the session's own terminal's are, outside
+ * this handler.
+ */
+async function namedTerminalMessage(self: WsHost, ws: WebSocket, name: string, message: string | ArrayBuffer): Promise<void> {
+  if (ws.readyState !== WS_READY_STATE_OPEN) return;
+  try {
+    await self.ensureRuntimeReady();
+    await self.terminals.attach(name, ws, 'wake');
+  } catch (error) {
+    const reason = `terminal ${name} unavailable: ${errorText(error)}`;
+    console.error('[nimbus]', reason);
+    try { ws.close(1011, reason.slice(0, 123)); } catch { /* closing */ }
+    return;
+  }
+  const frame = TerminalMessageSchema.safeParse(JSON.parse(typeof message === 'string' ? message : dec.decode(message)));
+  if (frame.success) self.dispatchTerminalInput(JSON.stringify(frame.data), name);
 }
 
 export async function terminalInput(self: Pick<WsHost, 'terminal' | 'shell'>, frame: string, terminalId: string): Promise<void> {
@@ -536,6 +565,14 @@ function endSocket(self: WsHost, ws: WebSocket, trigger: 'ws-close' | 'ws-error'
   // their end does not imply session lifecycle. Don't touch
   // shell/terminal, and don't flush.
   if (att.kind === 'process-logs' || att.kind === 'fs-watch') return false;
+  // A named terminal's socket lets its terminal go; the session's own state is not its.
+  const named = shellSocketTerminal(ws);
+  if (named !== undefined) {
+    clearShellSocketStamp(ws);
+    self.terminals.detach(named, ws);
+    self._w9FlushOnClose();
+    return false;
+  }
   if (att.kind === 'cirrus-hmr') {
     // HMR socket ended. Detach from the bridge + drop from the map.
     // Do NOT touch shell/terminal/kernel — the user's terminal tab
