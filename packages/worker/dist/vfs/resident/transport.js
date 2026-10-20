@@ -31,6 +31,8 @@ const BATCH_BYTES = FS_READ_BATCH_REQUEST_BYTES;
  * rather than a workload.
  */
 const MAX_LIST_PAGES = 4096;
+/** Relists of one directory a barrier tries, each overtaken by a later one's delta, before the namespace stops answering. */
+const RELIST_ATTEMPTS = 3;
 /** A record's own data field, retaining the type its contract gives it. */
 function ownValue(record, key) {
     return objectHasOwn(record, key) ? record[key] : undefined;
@@ -47,7 +49,10 @@ export const messageOf = (e) => {
 export function createTransport(coherence, admission, namespace, cells) {
     /**
      * Re-read the names beneath `dir` from the authority: a directory that just
-     * became searchable, whose descendants no delta will ever name.
+     * became searchable, whose descendants no delta will ever name. A relist is
+     * a learning: one a later barrier's delta overtook (a report at, above or
+     * beneath `dir`) installs nothing and lists again, so often before the
+     * namespace stops answering.
      */
     const relist = async (supervisor, dir) => {
         const t = coherence.tables('relist');
@@ -56,6 +61,20 @@ export function createTransport(coherence, admission, namespace, cells) {
             namespace.markReady(t, false, 'the session cannot list its filesystem');
             return;
         }
+        for (let attempt = 0; attempt < RELIST_ATTEMPTS; attempt++) {
+            const learning = namespace.learning();
+            try {
+                const listed = await relistWith(learning, t, supervisor, fsList, dir);
+                if (listed !== 'overtaken')
+                    return;
+            }
+            finally {
+                learning.end();
+            }
+        }
+        namespace.markReady(t, false, 'a listing of /' + dir + ' was overtaken by every barrier since');
+    };
+    const relistWith = async (learning, t, supervisor, fsList, dir) => {
         const prefix = dir + '/';
         const seen = new SafeList();
         let replaceBytes = 0;
@@ -122,6 +141,8 @@ export function createTransport(coherence, admission, namespace, cells) {
                 return;
             }
         }
+        if (!learning.lists(dir))
+            return 'overtaken';
         // Exactly what the listing has under the directory: a name it no longer
         // shows (hidden now, or gone) leaves, one it shows is written.
         namespace.deleteTree(t, dir, false);
@@ -129,7 +150,7 @@ export function createTransport(coherence, admission, namespace, cells) {
             const entry = seen[i];
             namespace.put(t, nsKey(entry.path), entry.stat, entry.rev, ownValue(entry, 'linkTarget'), ownValue(entry, 'unlisted') ?? null);
         }
-        namespace.unfence(dir);
+        namespace.relisted(dir);
     };
     /**
      * Fetch these files from the authority and install them, each dated at the
@@ -235,6 +256,8 @@ export function createTransport(coherence, admission, namespace, cells) {
         const landed = new SafeMap();
         let filled = 0, failed = 0, fetchedBytes = 0;
         const failedPaths = new SafeSet();
+        /** Paths a later delta or a store started again took from this read: what is held there is not its to judge. */
+        const overtaken = new SafeSet();
         /** The revision each path is read at. */
         const revOf = new SafeMap();
         for (let i = 0; i < ranges.length; i++) {
@@ -310,6 +333,8 @@ export function createTransport(coherence, admission, namespace, cells) {
                 }
                 // Not a byte of it beneath a newer revision of the file (another fill's head and chunks).
                 if (outdated(t, learning, range.path, range.rev)) {
+                    if (!learning.installs(range.path))
+                        overtaken.add(range.path);
                     failedPaths.add(range.path);
                     continue;
                 }
@@ -336,7 +361,7 @@ export function createTransport(coherence, admission, namespace, cells) {
             // wrote, and goes with them.
             const held = t.fileRev(path);
             const rev = revOf.get(path);
-            if (held !== undefined && (held === RK_OWN_WRITE || (rev !== undefined && held >= rev)))
+            if (held !== undefined && (held === RK_OWN_WRITE || overtaken.has(path) || (rev !== undefined && held >= rev)))
                 return;
             t.chunkDelete(path);
             t.fileDelete(path);

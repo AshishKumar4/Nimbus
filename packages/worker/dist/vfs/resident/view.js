@@ -17,7 +17,7 @@
  * One barrier for both: it asks (or takes the answer a delivery carried),
  * applies, and differs only in how it repairs what it could not apply.
  */
-import { nsRowAt } from './namespace.js';
+import { nsKey, nsRowAt } from './namespace.js';
 import { NS_DIR, NS_LINK, RK_OWN_WRITE } from './tables.js';
 /** The most a lookup reads of the file it ends at, so the open that follows a stat costs no trip of its own. */
 const LOOKUP_CONTENT_BYTES = 256 * 1024;
@@ -204,6 +204,8 @@ export function createView(coherence, admission, namespace, cells, transport, sy
              * listing, which keeps every row it proves current (sync.synchronize).
              */
             const runRepair = async (answer) => {
+                // What was asked before is answered against what the repair replaces: none of it is installed.
+                namespace.spoilLearnings();
                 if (await repairFromFloor(answer))
                     return;
                 let repaired = null;
@@ -317,8 +319,12 @@ export function createView(coherence, admission, namespace, cells, transport, sy
                 const applied = await sync.applyAcquire(supervisor, answer);
                 if (!namespace.ready())
                     return { landed: false };
-                // What it held and the delta dropped, fetched again at its new revision, and every refetch it found in flight.
-                await Promise.all([...refetch(applied.dropped), ...joined]);
+                // What it held and the delta dropped, fetched again at its new
+                // revision; a refetch in flight that its delta overtook (a file
+                // rewritten again), once more; and every refetch it found in flight.
+                const named = answer.paths.map((entry) => nsKey(entry.path));
+                const overtaken = [...refetching.keys()].filter((k) => !applied.dropped.includes(k) && named.some((at) => at === k || at === '' || k.startsWith(at + '/')));
+                await Promise.all([...refetch([...applied.dropped, ...overtaken]), ...joined]);
                 return answer.readLease ? { landed: true, applied: !repaired, readLease: answer.readLease } : { landed: true, applied: !repaired };
             };
             /** The barrier on a namespace listed on demand: one it cannot apply starts it again from nothing. */

@@ -125,12 +125,19 @@ export interface Namespace {
     learn(t: ResidentTables, k: string, stat: NsStat, rev: unknown, target?: string | null): boolean;
     /**
      * A delta made `dir`'s listing stale and its relist is on its way: until
-     * it lands (`unfence`), nothing at or under it is answered, cached rows and
-     * nested directories' absences included (`fenced`).
+     * that relist lands (`relisted`), nothing at or under it is answered,
+     * cached rows and nested directories' absences included (`fenced`).
      */
     fence(dir: string): void;
-    unfence(dir: string): void;
+    /**
+     * A relist of `dir` landed: its fence goes (another still on its way keeps
+     * its own), and a directory a learning marked is whole, every name beneath
+     * it now a row. One a mount left unlisted stays so.
+     */
+    relisted(dir: string): void;
     fenced(k: string): boolean;
+    /** Every learning in flight installs nothing: what it was asked against is being replaced (a repair begun). */
+    spoilLearnings(): void;
     /**
      * A lookup or listing about to be asked of the session: a delta admitted
      * before its answer lands is newer than the answer at every path it names,

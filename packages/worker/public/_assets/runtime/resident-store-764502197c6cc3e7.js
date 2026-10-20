@@ -1262,11 +1262,11 @@ var __nimbusResidentModule = (() => {
     let generation = 0;
     const learnings = new SafeSet();
     const ready = () => ok && coherence.serving();
-    let relisting = new SafeSet();
+    let relisting = new SafeMap();
     const fenced = (k) => {
       if (relisting.size === 0) return false;
       let hit = false;
-      relisting.forEach((dir) => {
+      relisting.forEach((_count, dir) => {
         if (!hit && (dir === "" || k === dir || stringStartsWith(k, dir + "/"))) hit = true;
       });
       return hit;
@@ -1277,6 +1277,18 @@ var __nimbusResidentModule = (() => {
       if (dir === "") return true;
       const row = nsRowAt(coherence.require(), dir);
       return row !== void 0 && row.kind === NS_DIR;
+    };
+    const markListed = (dir) => {
+      if (lazy) {
+        listed.add(dir);
+        return;
+      }
+      if (dir === "" || unlisted.get(dir) === void 0) return;
+      const t = coherence.require();
+      const row = nsRowAt(t, dir);
+      if (row === void 0 || row.kind !== NS_DIR) return;
+      t.nsPut(nsParent(dir), nsName(dir), row.kind, row.size, row.mode, row.uid, row.gid, row.atime, row.mtime, row.ctime, row.ino, row.rev, null, row.dev, row.nlink);
+      unlisted.delete(dir);
     };
     const learnedMark = (k) => {
       for (let at = nsParent(k); ; at = nsParent(at)) {
@@ -1527,7 +1539,7 @@ var __nimbusResidentModule = (() => {
        */
       replace(t, entries) {
         generation++;
-        relisting = new SafeSet();
+        relisting = new SafeMap();
         const names = new SafeSet();
         for (let i = 0; i < entries.length; i++) names.add(nsKey(entries[i].path));
         const rows = t.nsKeys();
@@ -1632,7 +1644,7 @@ var __nimbusResidentModule = (() => {
       },
       clear() {
         generation++;
-        relisting = new SafeSet();
+        relisting = new SafeMap();
         links = new SafeSet();
         unlisted = new SafeMap();
         ok = false;
@@ -1642,7 +1654,7 @@ var __nimbusResidentModule = (() => {
       },
       beginLazy() {
         generation++;
-        relisting = new SafeSet();
+        relisting = new SafeMap();
         lazy = true;
         listed.clear();
         links = new SafeSet();
@@ -1652,29 +1664,24 @@ var __nimbusResidentModule = (() => {
         return isListed(nsParent(k));
       },
       isListed,
-      markListed(dir) {
-        if (lazy) {
-          listed.add(dir);
-          return;
-        }
-        if (dir === "" || unlisted.get(dir) === void 0) return;
-        const t = coherence.require();
-        const row = nsRowAt(t, dir);
-        if (row === void 0 || row.kind !== NS_DIR) return;
-        t.nsPut(nsParent(dir), nsName(dir), row.kind, row.size, row.mode, row.uid, row.gid, row.atime, row.mtime, row.ctime, row.ino, row.rev, null, row.dev, row.nlink);
-        unlisted.delete(dir);
-      },
+      markListed,
       learn(t, k, stat, rev, target) {
         if (lazy || stat.type !== "directory" || nsRowAt(t, k) !== void 0) return tryPut(t, k, stat, rev, target);
         return tryPut(t, k, stat, rev, target, learnedMark(k));
       },
       fence(dir) {
-        relisting.add(dir);
+        relisting.set(dir, (relisting.get(dir) ?? 0) + 1);
       },
-      unfence(dir) {
-        relisting.delete(dir);
+      relisted(dir) {
+        const count = relisting.get(dir) ?? 0;
+        if (count <= 1) relisting.delete(dir);
+        else relisting.set(dir, count - 1);
+        if (!lazy && unlisted.get(dir) === dir) markListed(dir);
       },
       fenced,
+      spoilLearnings() {
+        generation++;
+      },
       onPut(listener) {
         putListener = listener;
       },
@@ -2427,6 +2434,7 @@ var __nimbusResidentModule = (() => {
           return true;
         };
         const runRepair = async (answer) => {
+          namespace.spoilLearnings();
           if (await repairFromFloor(answer)) return;
           let repaired = null;
           try {
@@ -2496,7 +2504,9 @@ var __nimbusResidentModule = (() => {
           }
           const applied = await sync.applyAcquire(supervisor, answer);
           if (!namespace.ready()) return { landed: false };
-          await Promise.all([...refetch(applied.dropped), ...joined]);
+          const named = answer.paths.map((entry) => nsKey(entry.path));
+          const overtaken = [...refetching.keys()].filter((k) => !applied.dropped.includes(k) && named.some((at) => at === k || at === "" || k.startsWith(at + "/")));
+          await Promise.all([...refetch([...applied.dropped, ...overtaken]), ...joined]);
           return answer.readLease ? { landed: true, applied: !repaired, readLease: answer.readLease } : { landed: true, applied: !repaired };
         };
         const lazily = async (answer) => {
@@ -2677,6 +2687,7 @@ var __nimbusResidentModule = (() => {
   var BATCH_PATHS = FS_READ_BATCH_PATH_LIMIT;
   var BATCH_BYTES = FS_READ_BATCH_REQUEST_BYTES;
   var MAX_LIST_PAGES = 4096;
+  var RELIST_ATTEMPTS = 3;
   function ownValue3(record, key) {
     return objectHasOwn(record, key) ? record[key] : void 0;
   }
@@ -2695,6 +2706,18 @@ var __nimbusResidentModule = (() => {
         namespace.markReady(t, false, "the session cannot list its filesystem");
         return;
       }
+      for (let attempt = 0; attempt < RELIST_ATTEMPTS; attempt++) {
+        const learning = namespace.learning();
+        try {
+          const listed = await relistWith(learning, t, supervisor, fsList, dir);
+          if (listed !== "overtaken") return;
+        } finally {
+          learning.end();
+        }
+      }
+      namespace.markReady(t, false, "a listing of /" + dir + " was overtaken by every barrier since");
+    };
+    const relistWith = async (learning, t, supervisor, fsList, dir) => {
       const prefix = dir + "/";
       const seen = new SafeList();
       let replaceBytes = 0;
@@ -2757,12 +2780,13 @@ var __nimbusResidentModule = (() => {
           return;
         }
       }
+      if (!learning.lists(dir)) return "overtaken";
       namespace.deleteTree(t, dir, false);
       for (let i = 0; i < seen.length; i++) {
         const entry = seen[i];
         namespace.put(t, nsKey(entry.path), entry.stat, entry.rev, ownValue3(entry, "linkTarget"), ownValue3(entry, "unlisted") ?? null);
       }
-      namespace.unfence(dir);
+      namespace.relisted(dir);
     };
     const outdated = (t, learning, path, rev) => {
       if (!learning.installs(path)) return true;
@@ -2825,6 +2849,7 @@ var __nimbusResidentModule = (() => {
       const landed = new SafeMap();
       let filled = 0, failed = 0, fetchedBytes = 0;
       const failedPaths = new SafeSet();
+      const overtaken = new SafeSet();
       const revOf = new SafeMap();
       for (let i = 0; i < ranges.length; i++) {
         const range = ranges[i];
@@ -2881,6 +2906,7 @@ var __nimbusResidentModule = (() => {
             continue;
           }
           if (outdated(t, learning, range.path, range.rev)) {
+            if (!learning.installs(range.path)) overtaken.add(range.path);
             failedPaths.add(range.path);
             continue;
           }
@@ -2901,7 +2927,7 @@ var __nimbusResidentModule = (() => {
         failed++;
         const held = t.fileRev(path);
         const rev = revOf.get(path);
-        if (held !== void 0 && (held === RK_OWN_WRITE || rev !== void 0 && held >= rev)) return;
+        if (held !== void 0 && (held === RK_OWN_WRITE || overtaken.has(path) || rev !== void 0 && held >= rev)) return;
         t.chunkDelete(path);
         t.fileDelete(path);
       });
