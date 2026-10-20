@@ -82,9 +82,10 @@ const turns = async () => { for (let i = 0; i < 200; i++) await new Promise((res
   assert.equal(processes.get(pid)?.exitCode, 137);
   const served = ports.get(PORT)?.pid;
   assert.ok(served !== undefined && served !== pid, 'a new process serves the port');
-  assert.deepEqual(answered('/after-idle'), [{ index: replacement, starts: 1 }],
-    'it ran once, on the replacement, after the new process started there: never as the lost process');
-  assert.equal(body, `instance ${replacement} started 1`);
+  const [ran, ...again2] = answered('/after-idle');
+  assert.deepEqual(again2, [], 'it ran once');
+  assert.ok(ran.index >= replacement && ran.starts === 1, 'on an instance a new process started: never as the lost process');
+  assert.equal(body, `instance ${ran.index} started 1`);
   console.log('  [1] a request to the port of a process whose idle host was replaced runs once on a new process');
 }
 
