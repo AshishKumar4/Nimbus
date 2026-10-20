@@ -143,6 +143,8 @@ export interface BuiltinExecutionContext {
   interactive?: boolean;
   /** A declaration builtin's arguments written as array assignments, `name=(…)`, by index: their arrays (Interpreter.arrayLiteral). */
   arrayElements?: ReadonlyMap<number, ArrayLiteral>;
+  /** bash's report_error, after a builtin reports an error the shell's own: under `set -e` the shell ends there. */
+  reportedError?(): void;
   vfs: ProcessView;
   /** The working directory a builtin resolves its relative path operands against. */
   cwd: string;
@@ -1169,7 +1171,6 @@ export class Interpreter {
               // A builtin is work of the shell's own (a `sleep`, a `read`, a
               // `wait`), never an await of a child; its thread lends it its unit.
               const endWork = io.workThread ? io.workThread.beginWork() : io.commandIdentity?.beginWork?.();
-              const declared = arrayElements === undefined || name !== commandWordText(cmd) ? undefined : arrayElements;
               try {
                 exitCode = await builtin(args, stdout, stderr, stdin, {
                   vfs: builtinIo.vfs ?? this.config.vfs,
@@ -1184,7 +1185,8 @@ export class Interpreter {
                     stderr: fds.terminalOutputFds.has(2),
                   },
                   scriptMode: io.scriptMode,
-                  ...(declared === undefined ? {} : { arrayElements: declared }),
+                  ...(arrayElements === undefined || name !== commandWordText(cmd) ? {} : { arrayElements }),
+                  reportedError: () => this.exitOnReportedError(),
                   isFdTerminal: (fd) => this.isFdTerminal(fds, fd),
                   getPositionals: () => this.readPositionals(builtinIo),
                   setPositionals: (nextArgs) => this.writePositionals(builtinIo, nextArgs),
@@ -1218,8 +1220,6 @@ export class Interpreter {
                 return io.commandIdentity;
               },
                 });
-                // An element it refused and reported, the rest of its array assigned: under `set -e` the shell ends.
-                if (declared !== undefined) for (const literal of declared.values()) if (literal.refused.length > 0) this.exitOnReportedError();
               } catch (error) {
                 // A write the store or a device refused fails the builtin, as it
                 // fails a registered command (runCommand): its message on its
