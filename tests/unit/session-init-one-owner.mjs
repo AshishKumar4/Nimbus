@@ -119,10 +119,11 @@ const socket = () => ({ readyState: 1, send() {}, close() {} });
   const build = gate();
   const sent = [];
   const ws = { readyState: 1, send: (frame) => sent.push(JSON.parse(frame).type), close() {} };
+  let resumed = 0;
   const host = {
     building: build.promise,
     shellStarted: Promise.resolve(),
-    shell: { announcePrompt() {} },
+    shell: { resumePrompt() { resumed++; } },
     terminal: { ws: null, attach(socket) { this.ws = socket; }, replay() {} },
     ctx: {},
     _b4Phase: null,
@@ -133,6 +134,7 @@ const socket = () => ({ readyState: 1, send() {}, close() {} });
   build.release();
   await joined;
   assert.deepEqual(sent, ['ready'], 'a joined socket is told ready exactly once');
+  assert.equal(resumed, 1, 'and its shell paints a prompt only as its screen needs one');
 }
 
 console.log('session-init-one-owner: ok');

@@ -66,14 +66,23 @@ const socket = () => ({ readyState: 1, frames: [], send(frame) { this.frames.pus
 const shown = (ws) => ws.frames.filter((f) => f.type === 'output').map((f) => f.data).join('');
 const stored = () => [...harness.sql.exec('SELECT data FROM nimbus_terminal_scrollback ORDER BY seq ASC')].map((row) => String(row.data)).join('');
 const settle = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+/** The stored screen once it holds `done`, waiting at most 10 s: what a frame's line has written by then. */
+const until = async (done, label) => {
+  for (const deadline = Date.now() + 10_000; Date.now() < deadline; await settle(10)) {
+    runtime.terminal.flushNow();
+    if (done(stored())) return stored();
+  }
+  throw new Error(`timed out waiting for ${label}: ${JSON.stringify(stored().slice(-400))}`);
+};
 // A fresh prompt is marked (OSC 133;A); a redraw of the line being edited is not. PROMPT is its visible end.
 const FRESH = '\x1b]133;A\x07';
 const PROMPT = '\x1b[0m$ ';
 const prompts = (text) => text.split(FRESH).length - 1;
-const type = async (ws, data) => {
+/** A frame typed, and its echo (or a line's prompt after it) on the stored screen. */
+const type = async (ws, data, done) => {
+  const before = stored().length;
   await runtime.terminalFrame(ws, JSON.stringify({ type: 'input', data }));
-  await settle(50);
-  runtime.terminal.flushNow();
+  await until((text) => text.length > before && (done === undefined || done(text.slice(before))), JSON.stringify(data));
 };
 const reattach = async () => {
   const ws = socket();
@@ -101,7 +110,7 @@ assert.equal(stored(), typing, 'a reattach adds no prompt after the line being t
 for (let k = 0; k < 3; k++) await type(ws, '\x7f');
 
 const before = stored();
-await type(ws, 'echo hi\r');
+await type(ws, 'echo hi\r', (added) => added.includes(FRESH));
 const added = stored().slice(before.length);
 assert.equal(added.split('hi\r\n').length - 1, 1, `echo hi prints its line once: ${JSON.stringify(added)}`);
 assert.equal(prompts(added), 1, `and one prompt: ${JSON.stringify(added)}`);
@@ -109,11 +118,10 @@ ws = await reattach();
 assert.equal(stored(), before + added, 'a reattach after it adds nothing');
 
 // The line being typed when the job writes: the job's output lands after it.
-await type(ws, '{ sleep 0.3; echo late-output; } &\r');
-await type(ws, 'ec');
-await settle(600);
-runtime.terminal.flushNow();
-const late = stored();
+await type(ws, '{ while [ ! -e /tmp/go ]; do sleep 0.05; done; echo late-output; } &\r', (added) => added.includes(FRESH));
+await type(ws, 'ec', (added) => added.includes('ec'));
+await workspace.fs.writeFile('/tmp/go', '');
+const late = await until((text) => text.includes('late-output'), 'the job\'s output');
 assert.ok(late.lastIndexOf('late-output') > late.lastIndexOf(PROMPT), `the job wrote after the prompt: ${JSON.stringify(late.slice(before.length + added.length))}`);
 ws = await reattach();
 const repainted = stored().slice(late.length);

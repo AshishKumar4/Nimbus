@@ -12,6 +12,8 @@ interface ShellLike {
   queuePasteInput(data: string, submission?: ShellInputSubmission): void;
   rejectQueuedInput(): void;
   redrawLine(): void;
+  /** Its line editor has just painted itself (Shell.markEditor). */
+  markEditor(): void;
   running: boolean;
   readonly history: readonly string[];
   lineBuffer: string;
@@ -823,6 +825,8 @@ export class LineEditorExtender {
     } else {
       this.terminal.write(`(failed reverse-i-search)\`${this.rsearchQuery}': `);
     }
+    // The search is the editor's line now: a screen attached again shows it as it is.
+    this.shell.markEditor();
   }
 
   /**

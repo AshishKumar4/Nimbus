@@ -624,8 +624,16 @@ export class Shell {
     return this.terminal.writes !== undefined && this.terminal.writes === this.editorMark;
   }
 
-  private markEditor(): void {
+  /** The line editor has just painted itself (a prompt, the line being edited, a search): the last thing on the screen. */
+  markEditor(): void {
     this.editorMark = this.terminal.writes ?? -1;
+  }
+
+  /** A write of the editor's that paints nothing new (a cursor move, a bell): the editor stays last if it was. */
+  private editorWrite(text: string): void {
+    const last = this.atPrompt;
+    this.terminal.write(text);
+    if (last) this.markEditor();
   }
 
   /**
@@ -667,13 +675,6 @@ export class Shell {
   }
 
   async handleInput(data: string, submission?: ShellInputSubmission): Promise<void> {
-    // An edit of a line the editor painted last leaves it the last thing on the screen.
-    const atPrompt = !this.running && this.atPrompt;
-    await this.editInput(data, submission);
-    if (atPrompt && !this.running && this.promptMode === 'primary') this.markEditor();
-  }
-
-  private async editInput(data: string, submission?: ShellInputSubmission): Promise<void> {
     // Raw mode: bypass all shell line editing, deliver keypresses directly
     if (this.running && this.terminalStdin?.rawMode) {
       this.terminalStdin.feed(data);
@@ -870,7 +871,7 @@ export class Shell {
 
     if (result.completions.length === 0) {
       // No completions -- bell
-      this.terminal.write('\x07');
+      this.editorWrite('\x07');
       return;
     }
 
@@ -897,11 +898,11 @@ export class Shell {
       this.terminal.write('\r\n');
       this.writeToTerminal(result.completions.join('  ') + '\n');
       this.printPrompt();
-      this.terminal.write(this.lineBuffer);
+      this.editorWrite(this.lineBuffer);
       // Move cursor to correct position
       const diff = this.lineBuffer.length - this.cursorPos;
       if (diff > 0) {
-        this.terminal.write(`\x1b[${diff}D`);
+        this.editorWrite(`\x1b[${diff}D`);
       }
       this.tabCount = 0;
     }
@@ -1020,7 +1021,8 @@ export class Shell {
    */
   writeNotice(text: string): void {
     if (this.running) {
-      this.terminal.write(text);
+      // A line of its own, after whatever the command left unfinished.
+      this.terminal.write(this.terminal.endsLine === false ? `\r\n${text}` : text);
       return;
     }
     if (this.screenCursorRow > 0) this.terminal.write(`\x1b[${this.screenCursorRow}A`);
@@ -1118,20 +1120,20 @@ export class Shell {
   private moveCursorLeft(): void {
     if (this.cursorPos > 0) {
       this.cursorPos--;
-      this.terminal.write('\x1b[D');
+      this.editorWrite('\x1b[D');
     }
   }
 
   private moveCursorRight(): void {
     if (this.cursorPos < this.lineBuffer.length) {
       this.cursorPos++;
-      this.terminal.write('\x1b[C');
+      this.editorWrite('\x1b[C');
     }
   }
 
   private moveCursorHome(): void {
     if (this.cursorPos > 0) {
-      this.terminal.write(`\x1b[${this.cursorPos}D`);
+      this.editorWrite(`\x1b[${this.cursorPos}D`);
       this.cursorPos = 0;
     }
   }
@@ -1139,7 +1141,7 @@ export class Shell {
   private moveCursorEnd(): void {
     const diff = this.lineBuffer.length - this.cursorPos;
     if (diff > 0) {
-      this.terminal.write(`\x1b[${diff}C`);
+      this.editorWrite(`\x1b[${diff}C`);
       this.cursorPos = this.lineBuffer.length;
     }
   }
