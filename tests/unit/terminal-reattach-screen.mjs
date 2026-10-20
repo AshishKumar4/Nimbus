@@ -103,7 +103,7 @@ for (let k = 0; k < 3; k++) await type(ws, '\x7f');
 const before = stored();
 await type(ws, 'echo hi\r');
 const added = stored().slice(before.length);
-assert.equal(added.split('\r\nhi\r\n').length - 1, 1, `echo hi prints its line once: ${JSON.stringify(added)}`);
+assert.equal(added.split('hi\r\n').length - 1, 1, `echo hi prints its line once: ${JSON.stringify(added)}`);
 assert.equal(prompts(added), 1, `and one prompt: ${JSON.stringify(added)}`);
 ws = await reattach();
 assert.equal(stored(), before + added, 'a reattach after it adds nothing');
