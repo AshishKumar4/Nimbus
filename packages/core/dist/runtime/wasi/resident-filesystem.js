@@ -1399,10 +1399,12 @@ export function residentFilesystem(session, resident, delegation) {
     const pathOf = (path) => (typeof path === 'string' ? path : path.path);
     // Changes by name a held subtree holds are decided here; any other is the session's, through the client.
     // A whole file written by name: made or emptied, written and closed here
-    // where the holder decides that open, as the three calls are.
+    // where the holder decides that open, as the three calls are. One that
+    // makes its parents is decided here too where its directory is (making
+    // none); where a directory on the way is missing, the session makes them.
     const bySessionWriteFile = fs.writeFile;
     fs.writeFile = (path, bytes, options) => {
-        if (holder === null || options?.createParents === true || options?.expectedRevision !== undefined)
+        if (holder === null || options?.expectedRevision !== undefined)
             return bySessionWriteFile(path, bytes, options);
         const data = typeof bytes === 'string' ? new TextEncoder().encode(bytes) : bytes;
         const flags = { write: true, create: true, truncate: true, mode: 0o666, ...(options?.umask === undefined ? {} : { umask: options.umask }) };
@@ -1412,7 +1414,7 @@ export function residentFilesystem(session, resident, delegation) {
             return holder.writeFile(walk.key, pathOf(path), data, flags) ?? DELEGATE;
         }));
         return after(local, (done) => (done !== DELEGATE ? done
-            : now ? provisionally(path, true, (key, row) => holder.provisional.writeFile(key, pathOf(path), data, row, options?.umask) && (holder.entry(key)?.revision ?? 0))
+            : now && options?.createParents !== true ? provisionally(path, true, (key, row) => holder.provisional.writeFile(key, pathOf(path), data, row, options?.umask) && (holder.entry(key)?.revision ?? 0))
                 : bySessionWriteFile(path, bytes, options)));
     };
     const bySessionMkdir = fs.mkdir;
