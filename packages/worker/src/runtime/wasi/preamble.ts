@@ -241,9 +241,21 @@ let __wasiKept: { who: string; store: ResidentStore; device: number; walked: rea
  */
 let __wasiAbandoned = 0;
 
-/** Whether another process may run in this facet after this one (FacetSpec.warm): no syscall here was abandoned. */
+/**
+ * Whether a process here reached the network: a connection, a listener or
+ * an accepted connection asked for. What that leaves is the isolate's, not
+ * the process's (a bound listener in the socket kernel, a connection still
+ * open, the last socket error), so another process must not find it.
+ */
+let __wasiReachedSockets = false;
+
+/**
+ * Whether another process may run in this facet after this one
+ * (FacetSpec.warm): no syscall here was abandoned, and no process here
+ * reached the network.
+ */
 export function __wasiReusable(): boolean {
-  return __wasiAbandoned === 0;
+  return __wasiAbandoned === 0 && !__wasiReachedSockets;
 }
 
 /** Who a store's names were walked as. */
@@ -557,6 +569,7 @@ function __wasiConnectRemote(host: string, port: number): { errno: Errno; socket
 // fd_write, sock_*, poll_oneoff, fd_close) is identical for either peer.
 // Returns a WASI errno and writes the new fd to fdOutPtr.
 function __wasiOpenTcpSocket(pathArg: string, fdflags: number, fdOutPtr: number, writeU32LE: WriteU32LE): Errno {
+  __wasiReachedSockets = true;
   // pathArg shape: "/dev/tcp/<host>/<port>".
   const tail = pathArg.substring(WASI_TCP_PATH_PREFIX.length);
   const slashIdx = tail.lastIndexOf('/');
@@ -584,6 +597,7 @@ function __wasiKernelOrNull(what: string): VirtualSocketKernel | null {
 // Open a listening socket as a descriptor. The port must already be bound; the
 // descriptor is the accept queue, not the bind.
 function __wasiOpenListener(pathArg: string, fdflags: number, fdOutPtr: number, writeU32LE: WriteU32LE): Errno {
+  __wasiReachedSockets = true;
   const port = parseInt(pathArg.substring(WASI_LISTEN_PATH_PREFIX.length), 10);
   if (!Number.isInteger(port) || port <= 0 || port >= 65536) return __WASI_EINVAL;
   const kernel = __wasiKernelOrNull('ports cannot be listened on');
@@ -657,6 +671,7 @@ async function __wasiAcceptRead(entry: ListenerFdEntry, iovsPtr: number, iovsLen
 // Bind an already-accepted kernel connection to a file descriptor, so a
 // server's accepted socket is the same kind of fd as a client's dialed one.
 function __wasiOpenAcceptedSocket(pathArg: string, fdflags: number, fdOutPtr: number, writeU32LE: WriteU32LE): Errno {
+  __wasiReachedSockets = true;
   const id = parseInt(pathArg.substring(WASI_ACCEPTED_PATH_PREFIX.length), 10);
   if (!Number.isInteger(id) || id <= 0) return __WASI_EINVAL;
   const kernel = globalThis.__nimbusVirtualSockets;

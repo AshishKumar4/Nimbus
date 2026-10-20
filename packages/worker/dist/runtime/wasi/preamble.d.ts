@@ -1,6 +1,10 @@
 import type { FdEntry, WasiInitOptions, WasiInstanceBundle, WasiMakeImportsOptions, WasiRunResult, WasiStartInstance, WasiSupervisorStub } from '@nimbus-sh/core/runtime/wasi/types.js';
 import { type ResidentFilesystemStats } from '@nimbus-sh/core/runtime/wasi/resident-filesystem.js';
-/** Whether another process may run in this facet after this one (FacetSpec.warm): no syscall here was abandoned. */
+/**
+ * Whether another process may run in this facet after this one
+ * (FacetSpec.warm): no syscall here was abandoned, and no process here
+ * reached the network.
+ */
 export declare function __wasiReusable(): boolean;
 export declare function __wasiPrepareFilesystem(roots: readonly string[]): Promise<void>;
 /** This process's filesystem calls so far and who answered them (ResidentFilesystemStats), or null when the session answered them all. */

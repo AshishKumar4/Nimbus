@@ -169,9 +169,20 @@ let __wasiKept = null;
  * not kept, and __wasiReusable says so to whoever leases the facet.
  */
 let __wasiAbandoned = 0;
-/** Whether another process may run in this facet after this one (FacetSpec.warm): no syscall here was abandoned. */
+/**
+ * Whether a process here reached the network: a connection, a listener or
+ * an accepted connection asked for. What that leaves is the isolate's, not
+ * the process's (a bound listener in the socket kernel, a connection still
+ * open, the last socket error), so another process must not find it.
+ */
+let __wasiReachedSockets = false;
+/**
+ * Whether another process may run in this facet after this one
+ * (FacetSpec.warm): no syscall here was abandoned, and no process here
+ * reached the network.
+ */
 export function __wasiReusable() {
-    return __wasiAbandoned === 0;
+    return __wasiAbandoned === 0 && !__wasiReachedSockets;
 }
 /** Who a store's names were walked as. */
 function __wasiWho(cred) {
@@ -481,6 +492,7 @@ function __wasiConnectRemote(host, port) {
 // fd_write, sock_*, poll_oneoff, fd_close) is identical for either peer.
 // Returns a WASI errno and writes the new fd to fdOutPtr.
 function __wasiOpenTcpSocket(pathArg, fdflags, fdOutPtr, writeU32LE) {
+    __wasiReachedSockets = true;
     // pathArg shape: "/dev/tcp/<host>/<port>".
     const tail = pathArg.substring(WASI_TCP_PATH_PREFIX.length);
     const slashIdx = tail.lastIndexOf('/');
@@ -510,6 +522,7 @@ function __wasiKernelOrNull(what) {
 // Open a listening socket as a descriptor. The port must already be bound; the
 // descriptor is the accept queue, not the bind.
 function __wasiOpenListener(pathArg, fdflags, fdOutPtr, writeU32LE) {
+    __wasiReachedSockets = true;
     const port = parseInt(pathArg.substring(WASI_LISTEN_PATH_PREFIX.length), 10);
     if (!Number.isInteger(port) || port <= 0 || port >= 65536)
         return __WASI_EINVAL;
@@ -593,6 +606,7 @@ async function __wasiAcceptRead(entry, iovsPtr, iovsLen, nreadPtr, writeU32LE, v
 // Bind an already-accepted kernel connection to a file descriptor, so a
 // server's accepted socket is the same kind of fd as a client's dialed one.
 function __wasiOpenAcceptedSocket(pathArg, fdflags, fdOutPtr, writeU32LE) {
+    __wasiReachedSockets = true;
     const id = parseInt(pathArg.substring(WASI_ACCEPTED_PATH_PREFIX.length), 10);
     if (!Number.isInteger(id) || id <= 0)
         return __WASI_EINVAL;

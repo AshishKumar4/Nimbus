@@ -10,9 +10,12 @@ import { encode, decode } from '../utils/encoding.js';
 import { errnoCodeOf, fsError, isVfsError, type FsError } from '../../../vfs/vfs-error.js';
 import { DIRENT_TYPES, direntTypeOfStat } from '../../../vfs/dirent-type.js';
 import { S_IFMT } from '../../../vfs/vfs.js';
-import { invalidArgType, nodeError, nodeSystemError } from '../../../_shared/node-error.js';
+import { nameDec } from '../../../_shared/bytes.js';
+import { invalidArgType, invalidArgValue, nodeError, nodeSystemError } from '../../../_shared/node-error.js';
+import { fileURLToPath } from 'node:url';
 import {
   O_ACCMODE, O_APPEND, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_RDONLY, O_RDWR, O_SYNC, O_TRUNC, O_WRONLY, nodeOwnerId, parseFileMode, stringToFlags,
+  validateInt32,
 } from '../../../_shared/node-arguments.js';
 
 export interface FSWatcher extends EventEmitter {
@@ -134,9 +137,28 @@ interface StreamOptions {
   flush?: boolean;
 }
 
-function resolvePath(cwd: string, p: string | URL): string {
-  const str = typeof p === 'string' ? p : p.pathname;
-  return resolve(cwd, str);
+/** A path argument as Node takes one: a string, a Buffer's text, or a file: URL's path (decoded; another scheme is ERR_INVALID_URL_SCHEME). */
+function pathText(p: string | URL | Uint8Array): string {
+  if (typeof p === 'string') return p;
+  // By shape, not by class: a program's URL or Buffer may be another realm's.
+  if (ArrayBuffer.isView(p)) return nameDec.decode(p);
+  if (p.protocol !== 'file:') throw nodeError(TypeError, 'ERR_INVALID_URL_SCHEME', 'The URL must be of scheme file');
+  return fileURLToPath(p.href);
+}
+
+function resolvePath(cwd: string, p: string | URL | Uint8Array): string {
+  return resolve(cwd, pathText(p));
+}
+
+/** A truncate length as Node takes one (validateInteger, a safe integer), a negative one 0; none is 0. */
+function lengthOf(len: number | null | undefined): number {
+  return len === undefined ? 0 : Math.max(0, validateInt32(len, 'len', Number.MIN_SAFE_INTEGER, Number.MAX_SAFE_INTEGER));
+}
+
+/** Node's callback check (makeCallback): a callback that is not a function is ERR_INVALID_ARG_TYPE, thrown before any work. */
+function callbackOf<T>(cb: Callback<T> | string | URL | Uint8Array | { encoding?: string | null } | number | null | undefined): Callback<T> {
+  if (typeof cb !== 'function') throw invalidArgType('cb', 'function', cb);
+  return cb;
 }
 
 // ─── Open flags ───
@@ -383,12 +405,23 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array, reachS
     },
   );
 
-  function truncateSync(path: string | URL, len?: number): void {
-    const abs = resolvePath(cwd, path);
-    const data = vfs.readFile(abs);
-    const newLen = len ?? 0;
-    if (newLen >= data.length) return;
-    vfs.writeFile(abs, data.slice(0, newLen));
+  /**
+   * truncate(2) as Node makes it: the file opened for writing (its errors
+   * name open), cut or zero-extended to `len` (a negative one is 0), closed.
+   * The length is checked once the file is open, as Node's ftruncate checks it.
+   * A descriptor in place of the path is ftruncate's (Node's DEP0081).
+   */
+  function truncateSync(path: string | URL | Uint8Array | number, len?: number | null): void {
+    if (typeof path === 'number') {
+      ftruncateSync(path, len);
+      return;
+    }
+    const fd = vfs.open(resolvePath(cwd, path), openFlagsOf('r+', undefined));
+    try {
+      vfs.ftruncate(fd, lengthOf(len));
+    } finally {
+      vfs.close(fd);
+    }
   }
 
   // ─── File descriptor sync API ───
@@ -430,9 +463,11 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array, reachS
     return toNodeStat(onDescriptor(fd, 'fstat', (id) => vfs.fstat(id)));
   }
 
-  function ftruncateSync(fd: number, len?: number): void {
-    // A negative length is 0, as Node clamps it.
-    onDescriptor(fd, 'ftruncate', (id) => vfs.ftruncate(id, Math.max(0, len ?? 0)));
+  /** Its length is checked before its descriptor (an int32 from 0), as Node's are. */
+  function ftruncateSync(fd: number, len?: number | null): void {
+    const length = lengthOf(len);
+    validateInt32(fd, 'fd', 0);
+    onDescriptor(fd, 'ftruncate', (id) => vfs.ftruncate(id, length));
   }
 
   function fchownSync(fd: number, uid: number, gid: number): void {
@@ -449,19 +484,29 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array, reachS
     onDescriptor(fd, 'fdatasync', (id) => vfs.fsync(id));
   }
 
-  // ─── Symlink stubs ───
+  // ─── Links ───
 
-  function symlinkSync(_target: string, _path: string, _type?: string): void {
-    // No-op - VFS has no symlink support yet
+  /** symlink(2): the link at `path` holds `target` as given (a relative target stays relative, read from the link's directory). */
+  function symlinkSync(target: string | URL | Uint8Array, path: string | URL | Uint8Array, _type?: string | null): void {
+    vfs.symlink(pathText(target), resolvePath(cwd, path));
   }
 
-  function linkSync(_existingPath: string, _newPath: string): void {
-    // No-op
+  /**
+   * link(2), refused (ENOSYS) as the hosted node refuses it: the filesystem
+   * has no hard links, and a copy would claim an inode the names do not share.
+   */
+  function linkSync(existingPath: string | URL | Uint8Array, newPath: string | URL | Uint8Array): void {
+    throw fsError('ENOSYS', 'link', pathText(existingPath), pathText(newPath));
   }
 
-  function readlinkSync(path: string | URL): string {
-    // Return the path itself since we have no symlinks
-    return resolvePath(cwd, path);
+  /** readlink(2): the link's text in `encoding` (UTF-8 by default), or its bytes with `encoding: 'buffer'`. */
+  function readlinkSync(path: string | URL | Uint8Array, options?: string | { encoding?: string | null } | null): string | Buffer {
+    // No encoding, or an empty one, is UTF-8, as Node takes it.
+    const encoding = (typeof options === 'string' ? options : options?.encoding) || 'utf8';
+    if (encoding !== 'buffer' && !Buffer.isEncoding(encoding)) throw invalidArgValue('encoding', encoding, 'is invalid encoding');
+    const text = vfs.readlink(resolvePath(cwd, path));
+    if (encoding === 'buffer') return Buffer.from(text);
+    return encoding === 'utf8' ? text : Buffer.from(text).toString(encoding);
   }
 
   // ─── Callback API ───
@@ -550,6 +595,44 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array, reachS
     const callback = typeof modeOrCb === 'function' ? modeOrCb : cb!;
     const mode = typeof modeOrCb === 'function' ? undefined : modeOrCb;
     wrapCallback(() => accessSync(path, mode), callback);
+  }
+
+  /** Its callback is its last argument, as Node's symlink takes it. */
+  function symlink(target: string | URL | Uint8Array, path: string | URL | Uint8Array, ...rest: Array<string | null | undefined | Callback<void>>): void {
+    const callback = callbackOf<void>(rest.length === 0 ? path : rest[rest.length - 1]);
+    wrapCallback(() => symlinkSync(target, path), callback);
+  }
+
+  function readlink(path: string | URL | Uint8Array, optionsOrCb: string | { encoding?: string | null } | null | undefined | Callback<string | Buffer>, cb?: Callback<string | Buffer>): void {
+    const callback = callbackOf<string | Buffer>(typeof optionsOrCb === 'function' ? optionsOrCb : cb);
+    const options = typeof optionsOrCb === 'function' ? undefined : optionsOrCb;
+    wrapCallback(() => readlinkSync(path, options), callback);
+  }
+
+  function link(existingPath: string | URL | Uint8Array, newPath: string | URL | Uint8Array, cb?: Callback<void>): void {
+    const callback = callbackOf<void>(cb);
+    const from = pathText(existingPath);
+    const to = pathText(newPath);
+    wrapCallback(() => linkSync(from, to), callback);
+  }
+
+  /** Its length and callback are checked before anything is done, as Node's are. */
+  function truncate(path: string | URL | Uint8Array | number, lenOrCb?: number | null | Callback<void>, cb?: Callback<void>): void {
+    if (typeof path === 'number') {
+      ftruncate(path, lenOrCb, cb);
+      return;
+    }
+    const length = lengthOf(typeof lenOrCb === 'function' ? undefined : lenOrCb);
+    const callback = callbackOf<void>(typeof lenOrCb === 'function' ? lenOrCb : cb);
+    wrapCallback(() => truncateSync(path, length), callback);
+  }
+
+  /** Its length, callback and descriptor are checked before anything is done, in that order, as Node's are. */
+  function ftruncate(fd: number, lenOrCb?: number | null | Callback<void>, cb?: Callback<void>): void {
+    const length = lengthOf(typeof lenOrCb === 'function' ? undefined : lenOrCb);
+    const callback = callbackOf<void>(typeof lenOrCb === 'function' ? lenOrCb : cb);
+    validateInt32(fd, 'fd', 0);
+    wrapCallback(() => ftruncateSync(fd, length), callback);
   }
 
   function exists(path: string | URL, cb: (exists: boolean) => void): void {
@@ -668,7 +751,7 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array, reachS
     if (options.encoding && options.encoding !== 'buffer' && !Buffer.isEncoding(options.encoding)) {
       throw nodeError(TypeError, 'ERR_INVALID_ARG_VALUE', `The argument 'encoding' is invalid encoding. Received '${options.encoding}'`);
     }
-    const given = typeof filename === 'string' ? filename : filename.pathname;
+    const given = pathText(filename);
     let abs: string;
     try {
       if (given === '') throw fsError('ENOENT', 'watch', given);
@@ -742,25 +825,52 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array, reachS
     copyFile: async (src: string | URL, dest: string | URL) => copyFileSync(src, dest),
     access: async (path: string | URL, mode?: number) => accessSync(path, mode),
     realpath: async (path: string | URL) => realpathSync(path),
-    truncate: async (path: string | URL, len?: number) => truncateSync(path, len),
+    // A path only: a descriptor is its FileHandle's truncate.
+    truncate: async (path: string | URL | Uint8Array, len?: number | null) => {
+      if (typeof path === 'number') throw invalidArgType('path', ['string', 'Buffer', 'URL'], path);
+      truncateSync(path, len);
+    },
+    symlink: async (target: string | URL | Uint8Array, path: string | URL | Uint8Array, type?: string | null) => symlinkSync(target, path, type),
+    link: async (existingPath: string | URL | Uint8Array, newPath: string | URL | Uint8Array) => linkSync(existingPath, newPath),
+    readlink: async (path: string | URL | Uint8Array, options?: string | { encoding?: string | null } | null) => readlinkSync(path, options),
     chmod: async (path: string | URL, mode: number | string) => chmodSync(path, mode),
     chown: async (path: string | URL, uid: number, gid: number) => chownSync(path, uid, gid),
     lchown: async (path: string | URL, uid: number, gid: number) => lchownSync(path, uid, gid),
     open: async (path: string | URL, flags?: string | number, mode?: number) => {
       const fd = openSync(path, flags, mode);
+      let closed = false;
+      // A closed handle refuses each call before its arguments, as Node's FileHandle does
+      // (its descriptor number may be another file's by then); closing it again is nothing.
+      const open = (syscall: string): void => {
+        if (closed) throw Object.assign(new Error('file closed'), { code: 'EBADF', syscall });
+      };
       return {
         fd,
-        close: async () => closeSync(fd),
-        read: async (buffer: Uint8Array, offset: number, length: number, position: number | null) => ({
-          bytesRead: readSync(fd, buffer, offset, length, position),
-          buffer,
-        }),
-        write: async (data: Uint8Array | string) => ({
-          bytesWritten: writeSync(fd, data),
-        }),
-        stat: async () => fstatSync(fd),
-        chown: async (uid: number, gid: number) => fchownSync(fd, uid, gid),
-        truncate: async (len?: number) => ftruncateSync(fd, len),
+        close: async () => {
+          if (closed) return;
+          closed = true;
+          closeSync(fd);
+        },
+        read: async (buffer: Uint8Array, offset: number, length: number, position: number | null) => {
+          open('read');
+          return { bytesRead: readSync(fd, buffer, offset, length, position), buffer };
+        },
+        write: async (data: Uint8Array | string) => {
+          open('write');
+          return { bytesWritten: writeSync(fd, data) };
+        },
+        stat: async () => {
+          open('fstat');
+          return fstatSync(fd);
+        },
+        chown: async (uid: number, gid: number) => {
+          open('fchown');
+          fchownSync(fd, uid, gid);
+        },
+        truncate: async (len?: number | null) => {
+          open('ftruncate');
+          ftruncateSync(fd, len);
+        },
       };
     },
     rm: async (path: string | URL, options?: { recursive?: boolean; force?: boolean }) => rmSync(path, options),
@@ -833,6 +943,11 @@ export function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array, reachS
     rename,
     access,
     exists,
+    symlink,
+    link,
+    readlink,
+    truncate,
+    ftruncate,
     open,
     close,
     read,
