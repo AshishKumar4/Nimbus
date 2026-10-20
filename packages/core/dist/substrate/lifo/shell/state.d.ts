@@ -28,8 +28,8 @@ export interface ShellState {
      */
     readonly arrays: Map<string, (string | undefined)[]>;
     getCwd(): string;
-    /** Move the shell, and PWD with it. */
-    setCwd(cwd: string): void;
+    /** Move the shell, and PWD with it as an assignment would; false where PWD is readonly and kept its value. */
+    setCwd(cwd: string): boolean;
     readonly options: ShellOptions;
     readonly traps: TrapTable;
     readonly readonlyNames: Set<string>;

@@ -23,6 +23,7 @@
 import { createKillCommand, type HostProcessSignals } from '../substrate/lifo/commands/system/kill.js';
 import { Kernel } from '../substrate/lifo/kernel/index.js';
 import { Shell } from '../substrate/lifo/shell/Shell.js';
+import type { VariableAttributes } from '../substrate/lifo/shell/variables.js';
 import type { ShellCommandIdentity } from '../substrate/lifo/shell/Shell.js';
 import { createDefaultRegistry } from '../substrate/lifo/commands/registry.js';
 import type { CommandRegistry } from '../substrate/lifo/commands/registry.js';
@@ -682,7 +683,12 @@ export class NimbusWorkspace {
    * process ends, {@link Shell.closeDescriptors} closes what an `exec` in it
    * left open.
    */
-  shellFor(pid: number, state: { readonly cwd: string; readonly env?: Readonly<Record<string, string>>; readonly inheritEnv?: boolean }): Shell {
+  shellFor(pid: number, state: {
+    readonly cwd: string;
+    readonly env?: Readonly<Record<string, string>>;
+    readonly vars?: VariableAttributes;
+    readonly inheritEnv?: boolean;
+  }): Shell {
     const processes = this.processes;
     const shell = new Shell(
       new HeadlessTerminal(),
@@ -700,6 +706,9 @@ export class NimbusWorkspace {
     const hostSignals = this.shell.getHostProcessSignals();
     if (hostSignals) shell.setHostProcessSignals(hostSignals);
     shell.setCwd(state.cwd);
+    // A saved shell's bindings, over the variables it was saved with (named-shells.ts), after
+    // setCwd's PWD: an array named PWD is the saved state's.
+    if (state.vars !== undefined) shell.restoreVariableAttributes(state.vars, Object.keys(state.env ?? {}));
     return shell;
   }
 

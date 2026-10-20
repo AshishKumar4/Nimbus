@@ -4683,9 +4683,11 @@ const __fsMod = (() => {
    * them is no grant. The check a read open(2) makes, as _ensureWritable is
    * a write's.
    */
+  /** What the namespace says of \`absPath\` (_statLadder), refused EACCES where this process may not read it. */
   function _ensureReadable(absPath, syscall, p) {
     const stat = _statLadder(absPath);
     if (stat !== undefined && !_modeAllows(stat, 4)) throw _fsErr("EACCES", syscall, p);
+    return stat;
   }
 
   /**
@@ -4789,7 +4791,9 @@ const __fsMod = (() => {
     }
     const denial = _denialCode(content);
     if (denial) throw _fsErr(denial, "open", p);
-    _ensureReadable(absPath, "open", p);
+    // Bytes held under a name the namespace does not show are no file there:
+    // what statSync says of the name, readFileSync says too.
+    if (_ensureReadable(absPath, "open", p) === undefined && _nsActive()) throw _absentErr(absPath, "open", p, "fs.promises.readFile", true);
     const encoding = typeof opts === "string" ? opts : opts?.encoding;
     if (encoding) {
       // An encoding requested: a string, whatever the cell's shape.

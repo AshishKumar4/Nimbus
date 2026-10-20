@@ -6,7 +6,7 @@
  * of the shell that runs it (BuiltinExecutionContext.shell).
  */
 import type { JobTable } from './jobs.js';
-import { cloneArrays, cloneEnv } from './variables.js';
+import { assignVariable, cloneArrays, cloneEnv } from './variables.js';
 
 export interface ShellOptions {
   errexit: boolean;
@@ -32,8 +32,8 @@ export interface ShellState {
    */
   readonly arrays: Map<string, (string | undefined)[]>;
   getCwd(): string;
-  /** Move the shell, and PWD with it. */
-  setCwd(cwd: string): void;
+  /** Move the shell, and PWD with it as an assignment would; false where PWD is readonly and kept its value. */
+  setCwd(cwd: string): boolean;
   readonly options: ShellOptions;
   readonly traps: TrapTable;
   readonly readonlyNames: Set<string>;
@@ -88,7 +88,7 @@ function withCwd(state: Omit<ShellState, 'getCwd' | 'setCwd'>, cwd: string): She
     getCwd: () => current,
     setCwd: (next) => {
       current = next;
-      state.env.PWD = next;
+      return assignVariable(state, 'PWD', next);
     },
   };
 }

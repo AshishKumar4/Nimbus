@@ -21,6 +21,7 @@
  */
 import { Kernel } from '../substrate/lifo/kernel/index.js';
 import { Shell } from '../substrate/lifo/shell/Shell.js';
+import type { VariableAttributes } from '../substrate/lifo/shell/variables.js';
 import type { ShellCommandIdentity } from '../substrate/lifo/shell/Shell.js';
 import type { CommandRegistry } from '../substrate/lifo/commands/registry.js';
 import { type EgressFor, type WorkspaceEgress, type WorkspaceNetwork } from '../_shared/workspace-network.js';
@@ -316,6 +317,7 @@ export declare class NimbusWorkspace {
     shellFor(pid: number, state: {
         readonly cwd: string;
         readonly env?: Readonly<Record<string, string>>;
+        readonly vars?: VariableAttributes;
         readonly inheritEnv?: boolean;
     }): Shell;
     /**
