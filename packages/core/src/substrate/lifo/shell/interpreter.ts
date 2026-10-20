@@ -37,7 +37,7 @@ import { execRefusal } from '../../../shell/exec-dispatch.js';
 import { withRecall } from '../../../vfs/recall.js';
 import { parseAssignment, ParseError, ScriptLines } from './parser.js';
 import {
-  expandBraceWord, expandFields, expandWords, expandWord, expandPatternWord, expandSubscript, arithmeticOf, arithmeticValue, ArithmeticError, ExpansionError, reportWarnings,
+  expandBraceWord, expandFields, expandWords, expandWord, expandPatternWord, expandSubscript, arithmeticOf, arithmeticValue, ArithmeticError, ExpansionError, reportWarnings, SubscriptArithmeticError,
   type ExpandContext, type CapturedCommand,
 } from './expander.js';
 import { evaluateDoubleBracketWords } from './test-builtin.js';
@@ -923,6 +923,8 @@ export class Interpreter {
     }
     await reportWarnings(ctx, ctx.report);
     if (failure !== null) await ctx.report(failure.reportedBy('(('));
+    // A subscript's error is an expansion's: the line's.
+    if (failure instanceof SubscriptArithmeticError) throw new DiscardSignal();
     return value;
   }
 

@@ -3,7 +3,7 @@ import type { ProcessStat } from '../../../runtime/process-files.js';
 import type { CommandOutputStream } from '../commands/types.js';
 import type { WordPart } from './types.js';
 import {
-  ArithmeticError, arithmeticOf, expandPatternWord, expandRegexWord, reportWarnings, type ArithmeticScope, type ExpandContext,
+  ArithmeticError, arithmeticOf, expandPatternWord, expandRegexWord, reportWarnings, SubscriptArithmeticError, type ArithmeticScope, type ExpandContext,
 } from './expander.js';
 import { DiscardSignal } from './discard.js';
 import { compileRegcomp, execLongest, PosixRegexSyntax, type CompiledRegex } from '../utils/posix-regex.js';
@@ -338,6 +338,8 @@ async function reported(stderr: CommandOutputStream, scope: ArithmeticScope, val
   };
   await reportWarnings(scope, report);
   if (failure !== null) await report(failure.reportedBy('[['));
+  // A subscript's error is an expansion's: the line's.
+  if (failure instanceof SubscriptArithmeticError) throw new DiscardSignal();
   return failure === null ? value : null;
 }
 

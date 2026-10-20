@@ -19,7 +19,8 @@ import { DEFAULT_HOME } from '../../../constants.js';
 import { ExitSignal, TextSyntaxError, type BuiltinExecutionContext, type BuiltinFn } from './interpreter.js';
 import { resolveJobSpec } from './jobs.js';
 import { evaluateTest } from './test-builtin.js';
-import { ArithmeticError, arithmeticOf, reportWarnings, type ArithmeticScope } from './expander.js';
+import { ArithmeticError, arithmeticOf, reportWarnings, SubscriptArithmeticError, type ArithmeticScope } from './expander.js';
+import { DiscardSignal } from './discard.js';
 import { isVfsError, strerror } from '../../../vfs/vfs-error.js';
 import { statOrThrow } from '../../../vfs/vfs.js';
 import { runKill, type HostProcessSignals } from '../commands/system/kill.js';
@@ -877,6 +878,8 @@ async function builtinLet({ args, stderr, state, context }: BuiltinCall): Promis
       if (!(error instanceof ArithmeticError)) throw error;
       await reportWarnings(scope, report);
       await report(error.reportedBy('let'));
+      // A subscript's error is an expansion's: the line's.
+      if (error instanceof SubscriptArithmeticError) throw new DiscardSignal();
       return 1;
     }
     await reportWarnings(scope, report);
