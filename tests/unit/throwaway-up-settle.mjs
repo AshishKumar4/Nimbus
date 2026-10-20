@@ -165,6 +165,22 @@ await import('./tests/behavioral/_throwaway-target.mjs');
     env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: ACCOUNT, CLOUDFLARE_API_TOKEN: TOKEN, XDG_STATE_HOME: join(checkout, 'state'), TMPDIR: join(checkout, 'tmp'), WRANGLER_SEND_METRICS: 'false' },
   });
 
+  // No parent Worker at all: up makes it before it asks whether the Preview stands.
+  {
+    mode = 'no-parent';
+    rmSync(recordPath, { force: true });
+    rmSync(join(checkout, 'uploads'), { force: true });
+    const { code, stdout, stderr } = await up();
+    const output = `${stdout}${stderr}`;
+    assert.equal(code, 3, `up reaches readiness\n${output}`);
+    assert.match(output, /creating the Preview parent Worker nimbus-probe-previews/, `it makes the parent\n${output}`);
+    assert.match(output, /deployment deployment-uploaded-1 is live/, `and deploys the Preview, new\n${output}`);
+    console.log('  ok  no parent Worker: up makes it, then deploys the Preview');
+    // The cases below redeploy a Preview this checkout holds the secret of.
+    holdSecret();
+    rmSync(join(checkout, 'uploads'), { force: true });
+  }
+
   for (const [name, settled, expected] of [
     ['the API keeps serving the deployment before', 'stale', /did not land, twice: [\d.]+ s, as long as the upload took after it, the API serves deployment-before as the latest, not deployment-uploaded-\d/],
     ['the API answers no read in time', 'silent', /did not land, twice: the API answered no read of its latest deployment within [\d.]+ s, as long as the upload took/],
@@ -246,18 +262,6 @@ await import('./tests/behavioral/_throwaway-target.mjs');
     assert.match(output, /deployment deployment-uploaded-3 is live/, `it redeploys it\n${output}`);
     assert.equal(record().secret, kept.secret, 'with the secret its uploads carried');
     console.log('  ok  a new Preview that lands late: the next up redeploys it with its secret');
-  }
-  // No parent Worker at all: up makes it before it asks whether the Preview stands.
-  {
-    mode = 'no-parent';
-    rmSync(recordPath, { force: true });
-    rmSync(join(checkout, 'uploads'), { force: true });
-    const { code, stdout, stderr } = await up();
-    const output = `${stdout}${stderr}`;
-    assert.equal(code, 3, `up reaches readiness\n${output}`);
-    assert.match(output, /creating the Preview parent Worker nimbus-probe-previews/, `it makes the parent\n${output}`);
-    assert.match(output, /deployment deployment-uploaded-1 is live/, `and deploys the Preview, new\n${output}`);
-    console.log('  ok  no parent Worker: up makes it, then deploys the Preview');
   }
   assert.deepEqual(unexpected, [], 'up asked the API nothing else');
 } finally {
