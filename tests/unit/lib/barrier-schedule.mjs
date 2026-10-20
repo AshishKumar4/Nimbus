@@ -697,10 +697,10 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
     const published = track(engine.publish());
     for (let i = 0; i < 1_000 && (model.moving() || inflight.has(published) || descriptors.size > 0); i++) {
       while (transport.release('wave'));
-      if (descriptors.size > 0) while (transport.release('lookup') || transport.release('listing'));
+      if (descriptors.size > 0) while (transport.release());
       await sleep(5);
     }
-    if (model.moving() || inflight.has(published)) { note(`  (step ${at} skipped: a change of the process's is still in flight)`); return; }
+    if (model.moving() || inflight.has(published) || descriptors.size > 0) { note(`  (step ${at} skipped: a change or a descriptor read of the process's is still in flight)`); return; }
     unpublished = [];
     const next = new Map();
     // In the order they took their revisions, a directory before what it holds.

@@ -149,6 +149,13 @@ const FOUND = {
     schedule: [['own', 'readFile', 'top'], ['own', 'readFile', 'd/f'], ['settle'], ['restart'], ['input'], ['settle'],
       ['sync', 'readFile', 'top'], ['sync', 'stat', 'd/f'], ['own', 'readFile', 'd/f']],
   },
+  // The sweep of seeds 2000-2319 (with restarts), shrunk.
+  'an awaited read of a file a relist is on its way to is answered, not refused': {
+    engines: ['node'], park: 2209,
+    schedule: [['release'], ['root', 'chmod', 'd', 493], ['own', 'readFile', 'mid'], ['sync', 'stat', 'd'], ['input'], ['input'], ['root', 'chmod', 'd/e', 448],
+      ['hold', 'listing'], ['root', 'chmod', 'd', 488], ['own', 'pread', 'mid', 0], ['settle'], ['peer', 'rename', 'd/e', 'x/e'], ['sync', 'write', 'x/e/g', 'c2209.1'],
+      ['root', 'chmod', 'x/e', 457], ['sync', 'chmod', 'x/h', 420], ['sync', 'stat', 'z/k'], ['own', 'readFile', 'd/e/g'], ['settle']],
+  },
   'a file a call that cannot wait missed stays a miss until an awaited read answers it': {
     engines: ['node'],
     schedule: [['peer', 'write', 'new', 'not resident'], ['settle'], ['input'], ['settle'], ['sync', 'readFile', 'new'], ['own', 'stat', 'new'], ['settle']],
@@ -176,6 +183,11 @@ const GAPS = {
   'a name the process renamed into place stays once the session acknowledges it after a barrier reported it [eager]': {
     lacks: 'O9: an awaited rename outside a grant is decided by the provisional decisions (the cutover)',
     shows: 'sync stat d/f answered file 644 size 2',
+  },
+  'an awaited read of a file a relist is on its way to is answered, not refused [node]': {
+    lacks: 'B2: node-shims refuses an awaited read under a directory its relist is on its way to (EAGAIN), where it should wait (the cutover\'s relist fence); '
+      + 'meanwhile fs.promises.readFile of such a file can reject EAGAIN',
+    shows: 'own readFile d/e/g answered EAGAIN',
   },
   'a directory the process may search again shows nothing stale while it is relisted [node]': {
     lacks: 'B2: a relist answers what is under its directory as unknown until it lands (the cutover\'s relist fence); '
@@ -312,6 +324,7 @@ async function run(kind, schedule, park) {
 
 /** What the process renamed itself: Node's own renames, run apart so each file stays in the fast tier. */
 const OWN_RENAMES = new Set([
+  'an awaited read of a file a relist is on its way to is answered, not refused',
   'a name the process renamed into place can be renamed again at once',
   'a name the process renamed stays while a later rename of its waits on the session',
   'a name the process renamed into place stays once the session acknowledges it after a barrier reported it',
