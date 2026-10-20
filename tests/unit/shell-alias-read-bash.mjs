@@ -52,6 +52,8 @@ const CASES = [
   { line: "alias r='[[ x =~ '\nalias y=z\nr y|x ]]; echo $?\nalias b='[[ x '\nalias ']]'=ignored\nb ]]; echo $?", compare: "all" },
   // Past an empty alias the next word is not checked; past a blank one it is; an alias's own first word is.
   { line: "alias r='[[ x =~ '\nalias e=''\nalias y=x\nr e y ]]; echo $?\nalias q='[[ x == '\nq e y ]]; echo $?\nalias f=' '\nq f y ]]; echo $?\nr f y ]]; echo $?\nalias w='y '\nq w ]]; echo $?", compare: "all" },
+  // An enclosing blank-ending alias ended past an empty one makes the next word eligible; a blank one ended is expandable again.
+  { line: "alias r='[[ x =~ '\nalias a='e '\nalias e=''\nalias y=x\nr a y ]]; echo $?\nalias f=' '\nr f f y ]]; echo $?\nalias q='[[ x == '\nq a y ]]; echo $?\nq f f y ]]; echo $?", compare: "all" },
   { line: "[[ -n ]]; echo $?", compare: "out" },
   { line: "[[ x == ]]; echo $?", compare: "out" },
 ];

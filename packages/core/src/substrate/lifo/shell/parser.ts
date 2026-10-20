@@ -455,21 +455,21 @@ class Parser {
    * expression's groups (`inGroup`); outside a group it is a syntax error.
    */
   private parseRegexWord(inGroup: boolean): WordPart[] {
-    const first = this.peek();
     this.rereadFromHere();
     let regex = this.reader.readRegexWord();
-    // After an alias whose text ended in a blank, the whole regex word (not `]]`) may name one, not in use:
-    // its text is read as the regex, as bash reads the word, then looks it up.
-    const inUse = new Set(first.aliases ?? []);
-    while (first.aliasCheck === true && regex !== null && unquotedLiteral(regex.token) !== ']]') {
-      const name = aliasName(regex.token);
-      const value = name === null || inUse.has(name) ? undefined : this.aliases?.(name);
+    // The whole regex word (not `]]`) is looked up as bash looks up a word, after it is read: where it
+    // follows an alias whose text ended in a blank, or is the first word of an alias's text just read;
+    // never an alias being read (the reader says which, as it began).
+    let expanded: string | null = null;
+    while (regex !== null && unquotedLiteral(regex.token) !== ']]') {
+      const { token } = regex;
+      if (token.aliasCheck !== true && (expanded === null || token.aliases?.has(expanded) !== true)) break;
+      const name = aliasName(token);
+      const value = name === null || token.aliases?.has(name) === true ? undefined : this.aliases?.(name);
       if (name === null || value === undefined) break;
-      inUse.add(name);
       this.reader.pushAlias(name, value);
+      expanded = name;
       regex = this.reader.readRegexWord();
-      // Read from its text, or past a blank one, the regex is checked again; past an empty one, not.
-      if (value === '') break;
     }
     // Nothing there, or the conditional's own `]]`: no operand.
     if (regex === null || unquotedLiteral(regex.token) === ']]') throw new ParseError('unexpected argument to conditional binary operator', this.peek().pos);
