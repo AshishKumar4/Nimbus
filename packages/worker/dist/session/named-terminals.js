@@ -9,25 +9,27 @@
  * session's restarts; its screen is stored as the session's own terminal's
  * is, capped on its own. A socket closing detaches it: what it runs runs on.
  * A close hangs everything on it up and forgets it.
+ *
+ * There is no count of them. Measured on armada (hosted runtime, Bun's heap
+ * after a full collection, 3 runs of 10 terminals): a live idle terminal
+ * holds 0.10 to 0.30 MiB (median 0.15; the session's first holds 0.85 more,
+ * once, for code first loaded then), and a busy one (a foreground command, a
+ * job, a screenful written) 0.10 to 0.20 MiB more. A saved one holds no heap:
+ * its screen is at most SCROLLBACK_MAX_BYTES of rows, its shell row 0.8 KiB,
+ * its history at most 1,000 lines. So a terminal is cheaper than anything
+ * its shell runs, which the session's memory bounds as it bounds any of its
+ * work, and only the session's owner opens one.
  */
 import { HeredocHandler, LineEditorExtender } from '@nimbus-sh/core/shell/features.js';
 import { TerminalNameSchema } from '@nimbus-sh/core/workspace';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { appendScrollback, forgetScrollback, loadScrollback, writeShellSnapshot } from './state-store.js';
-/** How many named terminals a session keeps, live or saved: what bounds their stored screens. */
-export const NAMED_TERMINAL_LIMIT = 16;
 const RESUMED_NOTICE = '[Runtime resumed; files and shell settings restored. Previous interpreter state was not retained.]\r\n';
 /** A terminal's line editing: here-documents, then readline's keys over them. The session's own terminal's too. */
 export function makeInteractive(shell, terminal) {
     HeredocHandler.install(shell, terminal);
     LineEditorExtender.install(shell, terminal);
-}
-/** A refusal of a new name past NAMED_TERMINAL_LIMIT. */
-export class TerminalLimitError extends Error {
-    constructor() {
-        super(`a session keeps at most ${NAMED_TERMINAL_LIMIT} named terminals; close one first`);
-    }
 }
 export class NamedTerminals {
     host;
@@ -195,13 +197,6 @@ export class NamedTerminals {
         }
         this.live.clear();
     }
-    /** Whether the terminal `name` may be opened: it is live or saved, or the session holds fewer than the limit. */
-    admits(name) {
-        if (this.live.has(name) || this.opening.has(name))
-            return true;
-        const saved = this.host.workspace().terminalNames();
-        return saved.includes(name) || new Set([...saved, ...this.live.keys(), ...this.opening.keys()]).size < NAMED_TERMINAL_LIMIT;
-    }
     /** `epoch`: the one the request began in; a dispose since refuses it, however long it waited. */
     open(name, epoch = this.epoch) {
         const valid = TerminalNameSchema.parse(name);
@@ -215,9 +210,6 @@ export class NamedTerminals {
             return closing.then(() => this.open(valid, epoch));
         let opening = this.opening.get(valid);
         if (opening === undefined) {
-            // Counted against the limit from now (admits), not once its shell is built.
-            if (!this.admits(valid))
-                return Promise.reject(new TerminalLimitError());
             // One promise for every waiter: they resume in the order they asked.
             const started = this.start(valid, epoch).finally(() => {
                 if (this.opening.get(valid) === started)

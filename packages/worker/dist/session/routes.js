@@ -41,7 +41,6 @@ import { loadShellState, getScrollbackStats, clearSessionState, loadScrollback }
 import { classifyWsUpgrade, joinExistingSession } from './init-phases.js';
 import { shellTerminalTee } from './ws.js';
 import { closeStaleShellSockets, hasLiveShellOwner, tagShellSocket } from './shell-socket.js';
-import { NAMED_TERMINAL_LIMIT } from './named-terminals.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
@@ -1657,7 +1656,7 @@ async function handleFanoutTestEndpoint(self, url, request) {
 }
 /**
  * The `/ws?terminal=<name>` upgrade: refused (409) while another live socket
- * holds that name, or when a new name would pass the session's limit; else
+ * holds that name; else
  * the session built, the socket accepted as the name's, and given its
  * terminal (started if it is not live), its stored screen replayed.
  */
@@ -1670,9 +1669,6 @@ async function namedTerminalUpgrade(self, name) {
     const priorSockets = self.ctx.getWebSockets();
     if (hasLiveShellOwner(self.ctx, priorSockets, Date.now(), name)) {
         return Response.json({ error: `terminal ${name} already has an active socket` }, { status: 409 });
-    }
-    if (!self.terminals.admits(name)) {
-        return Response.json({ error: 'too many terminals', hint: `a session keeps at most ${NAMED_TERMINAL_LIMIT}; close one first` }, { status: 409 });
     }
     closeStaleShellSockets(self.ctx, priorSockets, Date.now(), name);
     const pair = new WebSocketPair();

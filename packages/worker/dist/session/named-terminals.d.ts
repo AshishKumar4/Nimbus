@@ -9,21 +9,25 @@
  * session's restarts; its screen is stored as the session's own terminal's
  * is, capped on its own. A socket closing detaches it: what it runs runs on.
  * A close hangs everything on it up and forgets it.
+ *
+ * There is no count of them. Measured on armada (hosted runtime, Bun's heap
+ * after a full collection, 3 runs of 10 terminals): a live idle terminal
+ * holds 0.10 to 0.30 MiB (median 0.15; the session's first holds 0.85 more,
+ * once, for code first loaded then), and a busy one (a foreground command, a
+ * job, a screenful written) 0.10 to 0.20 MiB more. A saved one holds no heap:
+ * its screen is at most SCROLLBACK_MAX_BYTES of rows, its shell row 0.8 KiB,
+ * its history at most 1,000 lines. So a terminal is cheaper than anything
+ * its shell runs, which the session's memory bounds as it bounds any of its
+ * work, and only the session's owner opens one.
  */
 import type { Shell } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
 import { type NimbusWorkspace } from '@nimbus-sh/core/workspace';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import type { SessionTerminal } from '@nimbus-sh/core/runtime/session-protocol.js';
-/** How many named terminals a session keeps, live or saved: what bounds their stored screens. */
-export declare const NAMED_TERMINAL_LIMIT = 16;
 /** A terminal's line editing: here-documents, then readline's keys over them. The session's own terminal's too. */
 export declare function makeInteractive(shell: Shell, terminal: WebSocketTerminal): void;
 /** What a terminal's socket sends it (WebSocketTerminal.handleMessage): typing, its size. */
 export type TerminalMessage = Parameters<WebSocketTerminal['handleMessage']>[0];
-/** A refusal of a new name past NAMED_TERMINAL_LIMIT. */
-export declare class TerminalLimitError extends Error {
-    constructor();
-}
 export interface NamedTerminalsHost {
     /** Where the screens are stored (`ctx.storage.sql`). */
     readonly ctx: DurableObjectState;
@@ -87,8 +91,6 @@ export declare class NamedTerminals {
      * abandoned.
      */
     dispose(): void;
-    /** Whether the terminal `name` may be opened: it is live or saved, or the session holds fewer than the limit. */
-    admits(name: string): boolean;
     /** `epoch`: the one the request began in; a dispose since refuses it, however long it waited. */
     private open;
     private start;
