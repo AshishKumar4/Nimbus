@@ -1091,6 +1091,7 @@ export async function registerHostedCommands(self, workspace) {
         })().catch((error) => { tsrsCommand = null; throw error; });
         return await (await tsrsCommand)(binName)(ctx);
     };
+    const ownPrograms = tsrsPrograms(tsrs);
     installNpmBinFallbackResolver(registry, {
         filesystem: workspace.filesystem,
         getCwd: () => shell?.getCwd() || '/home/user',
@@ -1111,7 +1112,7 @@ export async function registerHostedCommands(self, workspace) {
             }
             catch { }
         },
-        ownPrograms: tsrsPrograms(tsrs),
+        ownPrograms,
     });
     // Register core npm — the install work itself goes through the port,
     // which owns the NpmInstaller, prefix dirs and bin materialisation.
@@ -1203,8 +1204,11 @@ export async function registerHostedCommands(self, workspace) {
             return 0;
         }
         const cmd = invocation.command;
-        // Check if it's a built-in command (vite, esbuild, etc.)
-        const resolved = cmd ? await registry.resolve(cmd, resolveContext(ctx.cwd, ctx.env, ctx.vfs)) : null;
+        // Check if it's a built-in command (vite, esbuild, etc.). A package npx is
+        // asked for by name is installed, never stood in for by Nimbus's own
+        // program for a name it lacks (tsc).
+        const asked = invocation.packageOverride !== null && cmd !== null && ownPrograms.names.has(cmd);
+        const resolved = cmd && !asked ? await registry.resolve(cmd, resolveContext(ctx.cwd, ctx.env, ctx.vfs)) : null;
         if (resolved) {
             return await resolved({ ...ctx, args: invocation.args });
         }

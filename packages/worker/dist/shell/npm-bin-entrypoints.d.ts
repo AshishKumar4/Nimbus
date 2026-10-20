@@ -30,14 +30,16 @@ declare const NpmBinPackageMetadataSchema: z.ZodObject<{
 }, z.core.$loose>;
 export type NpmBinPackageMetadata = z.infer<typeof NpmBinPackageMetadataSchema>;
 /**
- * Programs Nimbus has for names a project may also install (`tsc`). Asked
- * only for `names`: `resolve` answers a name no node_modules/.bin from the
- * cwd up has (`installed` null), or one whose installed package cannot run
- * here (`installed` its package.json), or leaves it to the project.
+ * Programs Nimbus has for names a project may also install (`tsc`), asked
+ * only for `names`: `absent` answers a name no node_modules/.bin from the
+ * cwd up has; `inPlaceOf` answers an installed bin whose package (its
+ * package.json) cannot run here, however the bin was reached, or leaves it
+ * to the project (undefined).
  */
 export interface OwnPrograms {
     readonly names: ReadonlySet<string>;
-    resolve(name: string, installed: NpmBinPackageMetadata | null): Command | undefined;
+    absent(name: string): Command;
+    inPlaceOf(name: string, installed: NpmBinPackageMetadata): Command | undefined;
 }
 export declare function installNpmBinFallbackResolver(registry: RegistryLike, deps: {
     /** The session's namespace: bins are found in it, as the running command when one runs. */

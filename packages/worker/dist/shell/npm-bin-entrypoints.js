@@ -60,12 +60,8 @@ export function installNpmBinFallbackResolver(registry, deps) {
         if (upstream)
             return upstream;
         const bin = context.search ? await probe(() => resolveNpmBin(inspector, cwd, name)) : null;
-        if (context.search && deps.ownPrograms?.names.has(name)) {
-            const installed = bin === null ? null : await readNpmBinPackageMetadata(inspector, bin.packagePath);
-            const own = deps.ownPrograms.resolve(name, installed);
-            if (own)
-                return own;
-        }
+        if (bin === null && context.search && deps.ownPrograms?.names.has(name))
+            return deps.ownPrograms.absent(name);
         if (bin === null) {
             let hint = null;
             try {
@@ -121,6 +117,14 @@ export function installNpmBinFallbackResolver(registry, deps) {
                     ctx.stderr.write(`/${bin.shimPath}: Permission denied\n`);
                     return 126;
                 }
+            }
+            // An installed program that cannot run here, by name or by path (an
+            // npm script's PATH), is Nimbus's own where it has one.
+            if (deps.ownPrograms?.names.has(name)) {
+                const installed = await readNpmBinPackageMetadata(vfs, bin.packagePath);
+                const own = installed === null ? undefined : deps.ownPrograms.inPlaceOf(name, installed);
+                if (own)
+                    return await own(ctx);
             }
             const argv = Array.isArray(ctx.args) ? ctx.args.map(String) : [];
             // Staged-artifact sentinel (e.g. opencode): the runnable bundle lives in

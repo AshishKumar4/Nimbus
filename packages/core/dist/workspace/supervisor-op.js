@@ -221,10 +221,10 @@ export const SUPERVISOR_OP_ROUTES = {
 const fsFor = (e, tools) => tools.bridge(e.pid, e.cred);
 /** The exclusive mutation lease the envelope's binding presents, if it holds one (SupervisorRPC props). */
 const leaseOf = (e) => e.mutationOwner === undefined ? undefined : { mutationOwner: e.mutationOwner };
-/** A whole-file read, leased for what the file holds. */
+/** A whole-file read, leased for what the file it reads holds: the file a link leads to, whatever the read's options. */
 async function readWholeFile(e, t, path, options) {
     const fs = fsFor(e, t);
-    const stat = await fs.stat(path, { followSymlinks: options?.followSymlinks });
+    const stat = await fs.stat(path);
     if (!stat)
         return null;
     return readHydrating(t.hydrated, () => t.readLease(stat.size, () => Promise.resolve(fs.readFile(path, options)), e.pid));
@@ -234,7 +234,7 @@ async function readRange(e, t, op) {
     const fs = fsFor(e, t);
     const path = stringArg(e, 0), offset = numberArg(e, 1), length = numberArg(e, 2);
     const options = { ...ReadOptions.parse(e.args?.[3]), ...op };
-    const stat = await fs.stat(path, { followSymlinks: options.followSymlinks });
+    const stat = await fs.stat(path);
     const available = stat ? Math.max(0, Math.min(length, stat.size - offset)) : 0;
     return readHydrating(t.hydrated, () => t.readLease(available, () => Promise.resolve(fs.readRange(path, offset, length, options)), e.pid));
 }

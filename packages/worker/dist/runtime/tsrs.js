@@ -20,9 +20,8 @@ import { fetchStagedBytes, stagedAsset } from './staged-source.js';
 export function tsrsPrograms(tsrs) {
     return {
         names: new Set(['tsc', 'tsrs']),
-        resolve(name, installed) {
-            if (installed === null)
-                return tsrs(name);
+        absent: tsrs,
+        inPlaceOf(name, installed) {
             const notice = nativeCompilerNotice(name, installed);
             if (notice === null)
                 return undefined;
@@ -69,8 +68,8 @@ const NATIVE_COMPILER_SHARDS = { typescript: '@typescript/typescript-', tsrs: '@
  * when the installed one is not.
  */
 function nativeCompilerNotice(bin, installed) {
-    const shard = installed?.name === undefined ? undefined : NATIVE_COMPILER_SHARDS[installed.name];
-    if (shard === undefined || !Object.keys(installed?.optionalDependencies ?? {}).some((name) => name.startsWith(shard)))
+    const shard = installed.name === undefined ? undefined : NATIVE_COMPILER_SHARDS[installed.name];
+    if (shard === undefined || !Object.keys(installed.optionalDependencies ?? {}).some((name) => name.startsWith(shard)))
         return null;
     const named = installed.version === undefined ? installed.name : `${installed.name} ${installed.version}`;
     return `${bin}: ${named} here is a native compiler, which cannot run in Nimbus; `
