@@ -8,7 +8,7 @@ import { parseAssignment, ParseError, ScriptLines } from './parser.js';
 import { expandWords, expandWord, expandPatternWord, expandSubscript, subscriptArithmetic, ExpansionError, } from './expander.js';
 import { evaluateDoubleBracketWords } from './test-builtin.js';
 import { isPipeEnd, PipeChannel } from './pipe.js';
-import { arrayFor, assignArray, assignVariable, lastIndex, restoreVariable, saveVariable, } from './variables.js';
+import { arrayFor, arrayIndex, assignArray, assignVariable, lastIndex, restoreVariable, saveVariable, } from './variables.js';
 import { forkShellState } from './state.js';
 import { exitCodeForAbortSignal, KILLED_BY_SIGPIPE } from './signals.js';
 import { isBrokenPipe, isRefusedWrite, textCapture } from '../utils/bytes-io.js';
@@ -56,14 +56,23 @@ export class ExitSignal {
 export class TextSyntaxError extends Error {
 }
 /**
- * A function call past the nesting bound (functionNestingLimit): the rest of
- * the line it is in is discarded (bash's jump_to_top_level(DISCARD)): a
- * shell goes on with the next line it reads, its own or a `source`d file's
- * or a trap's, with $? 1; a child shell (subshell, substitution, pipeline
- * element, job) ends with 1. Neither `||`, `if` nor a loop goes on.
+ * The rest of the line it is in is discarded (bash's
+ * jump_to_top_level(DISCARD)): a shell goes on with the next line it reads,
+ * its own or a `source`d file's or a trap's, with $? 1; a child shell
+ * (subshell, substitution, pipeline element, job) ends with 1. Neither `||`,
+ * `if` nor a loop goes on.
  */
-export class FunctionNestingSignal {
+export class DiscardSignal {
     exitCode = 1;
+}
+/** A function call past the nesting bound (functionNestingLimit). */
+export class FunctionNestingSignal extends DiscardSignal {
+}
+/**
+ * A command of assignments alone that could not assign (a readonly name, a
+ * bad array subscript), as bash's expand_word_list_internal discards it.
+ */
+export class AssignmentErrorSignal extends DiscardSignal {
 }
 /**
  * The deepest shell functions nest where FUNCNEST does not lower it. Bash
@@ -110,7 +119,8 @@ function commandWordText(cmd) {
     const [word] = cmd.words;
     return word === undefined ? null : literalWordText(word);
 }
-/** A declaration builtin's name, written unquoted: its compound array assignments are arrays. */
+/** An assignment that did what it was asked, with nothing to report. */
+const ASSIGNED = { diagnostics: [], failed: false };
 function isDeclarationWord(word) {
     const text = literalWordText(word);
     return text === 'declare' || text === 'typeset' || text === 'local';
@@ -218,7 +228,7 @@ export class Interpreter {
                         exitCode = await this.executeList(list, io);
                     }
                     catch (error) {
-                        if (!(error instanceof FunctionNestingSignal) || !readsLines || this.child)
+                        if (!(error instanceof DiscardSignal) || !readsLines || this.child)
                             throw error;
                         exitCode = error.exitCode;
                         this.lastExitCode = exitCode;
@@ -734,11 +744,8 @@ export class Interpreter {
                 const { diagnostics, failed } = await this.applyAssignment(assign, expandCtx);
                 for (const diagnostic of diagnostics)
                     this.writeTerminal(io, `${diagnostic}\n`);
-                if (failed) {
-                    if (io.scriptMode === true)
-                        throw new ErrexitSignal(1);
-                    return 1;
-                }
+                if (failed)
+                    throw new AssignmentErrorSignal();
             }
             // A command that is only assignments exits with the status of the last
             // command substitution it ran, so `out="$(cmd)" || die` sees cmd fail.
@@ -1117,16 +1124,15 @@ export class Interpreter {
         if (assign.subscript !== undefined) {
             const subscript = await expandSubscript(assign.subscript, ctx);
             const array = arrayFor(this.config, name);
-            const raw = subscript === '' ? -1 : subscriptArithmetic(subscript, ctx);
-            const index = raw < 0 && subscript !== '' ? lastIndex(array) + 1 + raw : raw;
+            const index = subscript === '' ? -1 : arrayIndex(array, subscriptArithmetic(subscript, ctx));
             if (index < 0)
                 return { diagnostics: [`${name}[${assign.subscript}]: bad array subscript`], failed: true };
             array[index] = assign.append ? (array[index] ?? '') + value : value;
-            return { diagnostics: [], failed: false };
+            return ASSIGNED;
         }
         // On an array name, `arr=x` and `arr+=x` land on its first element.
         assignVariable(this.config, name, value, assign.append);
-        return { diagnostics: [], failed: false };
+        return ASSIGNED;
     }
     /**
      * `name=(…)`'s array, as bash's assign_compound_array_list builds it, or
@@ -1160,8 +1166,7 @@ export class Interpreter {
                 refused.push(`${written}: cannot assign to non-numeric index`);
                 continue;
             }
-            const raw = subscript === '' ? -1 : subscriptArithmetic(subscript, ctx);
-            const index = raw < 0 && subscript !== '' ? lastIndex(array) + 1 + raw : raw;
+            const index = subscript === '' ? -1 : arrayIndex(array, subscriptArithmetic(subscript, ctx));
             if (index < 0) {
                 refused.push(`${written}: bad array subscript`);
                 continue;
@@ -1283,8 +1288,8 @@ export class Interpreter {
                 exitCode = await run();
             }
             catch (e) {
-                // An `exit` inside it ends only it; so do `set -e` and a fatal error, and a call past the nesting bound.
-                if (!(e instanceof ExitSignal) && !(e instanceof ErrexitSignal) && !(e instanceof FunctionNestingSignal))
+                // An `exit` inside it ends only it; so do `set -e`, a fatal error and a discard.
+                if (!(e instanceof ExitSignal) && !(e instanceof ErrexitSignal) && !(e instanceof DiscardSignal))
                     throw e;
                 exitCode = e.exitCode;
             }
@@ -1312,8 +1317,8 @@ export class Interpreter {
         catch (e) {
             if (e instanceof ExitSignal || e instanceof ErrexitSignal)
                 return e.exitCode;
-            // A call past the nesting bound ends the action, a child shell's too; the status stays (bash 5.2).
-            if (!(e instanceof FunctionNestingSignal))
+            // A discard ends the action, a child shell's too; the status stays (bash 5.2).
+            if (!(e instanceof DiscardSignal))
                 throw e;
         }
         finally {

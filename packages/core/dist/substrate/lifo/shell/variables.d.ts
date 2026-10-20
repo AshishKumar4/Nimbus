@@ -36,7 +36,7 @@ export declare function assignArray(store: VariableStore, name: string, array: (
 export declare function lastIndex(array: readonly (string | undefined)[]): number;
 /** The array behind a subscripted assignment, promoting a scalar to its element 0 if needed. */
 export declare function arrayFor(store: VariableStore, name: string): (string | undefined)[];
-/** One variable's whole binding, so a scope can put it back exactly. */
+/** One variable's whole binding, so a scope can put it back exactly: its array a copy, as what the scope does to it in place is not kept. */
 export declare function saveVariable(store: VariableStore, name: string): SavedVariable;
 /**
  * `name` bound again as `saved` holds it. `attributes`: its export mark and
@@ -46,4 +46,8 @@ export declare function saveVariable(store: VariableStore, name: string): SavedV
 export declare function restoreVariable(store: VariableStore, name: string, saved: SavedVariable, attributes?: boolean): void;
 /** A copy of `arrays` whose arrays are copies too: what a subshell or a saved shell state holds. */
 export declare function cloneArrays(arrays: ReadonlyMap<string, (string | undefined)[]>): Map<string, (string | undefined)[]>;
+/** A copy of `array`, its holes kept, however high its last index. */
+export declare function copyArray(array: readonly (string | undefined)[]): (string | undefined)[];
+/** A subscript's arithmetic as an index of `array`: a negative one counts back from past its last value (still negative where that is before the first). */
+export declare function arrayIndex(array: readonly (string | undefined)[], value: number): number;
 //# sourceMappingURL=variables.d.ts.map

@@ -32,14 +32,23 @@ export declare class ExitSignal {
 export declare class TextSyntaxError extends Error {
 }
 /**
- * A function call past the nesting bound (functionNestingLimit): the rest of
- * the line it is in is discarded (bash's jump_to_top_level(DISCARD)): a
- * shell goes on with the next line it reads, its own or a `source`d file's
- * or a trap's, with $? 1; a child shell (subshell, substitution, pipeline
- * element, job) ends with 1. Neither `||`, `if` nor a loop goes on.
+ * The rest of the line it is in is discarded (bash's
+ * jump_to_top_level(DISCARD)): a shell goes on with the next line it reads,
+ * its own or a `source`d file's or a trap's, with $? 1; a child shell
+ * (subshell, substitution, pipeline element, job) ends with 1. Neither `||`,
+ * `if` nor a loop goes on.
  */
-export declare class FunctionNestingSignal {
+export declare class DiscardSignal {
     readonly exitCode = 1;
+}
+/** A function call past the nesting bound (functionNestingLimit). */
+export declare class FunctionNestingSignal extends DiscardSignal {
+}
+/**
+ * A command of assignments alone that could not assign (a readonly name, a
+ * bad array subscript), as bash's expand_word_list_internal discards it.
+ */
+export declare class AssignmentErrorSignal extends DiscardSignal {
 }
 export interface BuiltinExecutionContext {
     interactive?: boolean;

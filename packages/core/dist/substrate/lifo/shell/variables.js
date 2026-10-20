@@ -34,8 +34,11 @@ export function assignArray(store, name, array) {
 }
 /** The highest index that holds a value, or -1: bash's array_max_index, past which `a+=(…)` goes on. */
 export function lastIndex(array) {
+    const end = array.length - 1;
+    if (end < 0 || array[end] !== undefined)
+        return end;
+    // Past a removed last element: an array's own keys are its indices in order, the holes skipped, however high.
     let last = -1;
-    // An array's own keys are its indices in order, the holes skipped, however high the last.
     for (const key of Object.keys(array))
         if (array[Number(key)] !== undefined)
             last = Number(key);
@@ -52,9 +55,10 @@ export function arrayFor(store, name) {
     store.arrays.set(name, array);
     return array;
 }
-/** One variable's whole binding, so a scope can put it back exactly. */
+/** One variable's whole binding, so a scope can put it back exactly: its array a copy, as what the scope does to it in place is not kept. */
 export function saveVariable(store, name) {
-    return { scalar: store.env[name], array: store.arrays.get(name), exported: store.exportedNames.has(name), declared: store.declaredNames.has(name) };
+    const array = store.arrays.get(name);
+    return { scalar: store.env[name], array: array === undefined ? undefined : copyArray(array), exported: store.exportedNames.has(name), declared: store.declaredNames.has(name) };
 }
 /**
  * `name` bound again as `saved` holds it. `attributes`: its export mark and
@@ -83,5 +87,16 @@ export function restoreVariable(store, name, saved, attributes = true) {
 }
 /** A copy of `arrays` whose arrays are copies too: what a subshell or a saved shell state holds. */
 export function cloneArrays(arrays) {
-    return new Map(Array.from(arrays, ([name, elements]) => [name, [...elements]]));
+    return new Map(Array.from(arrays, ([name, elements]) => [name, copyArray(elements)]));
+}
+/** A copy of `array`, its holes kept, however high its last index. */
+export function copyArray(array) {
+    const copy = [];
+    for (const key of Object.keys(array))
+        copy[Number(key)] = array[Number(key)];
+    return copy;
+}
+/** A subscript's arithmetic as an index of `array`: a negative one counts back from past its last value (still negative where that is before the first). */
+export function arrayIndex(array, value) {
+    return value < 0 ? lastIndex(array) + 1 + value : value;
 }

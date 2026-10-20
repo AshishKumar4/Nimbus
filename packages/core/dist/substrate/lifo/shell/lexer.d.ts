@@ -1,6 +1,13 @@
 import { TokenKind, type Token } from './types.js';
 /** Every token of `input`, read at once. */
 export declare function lex(input: string): Token[];
+/**
+ * An array literal's words (the text between its parentheses), as bash's
+ * reader reads a compound assignment: as anywhere, except that a word
+ * beginning `[subscript]=` or `[subscript]+=` reads its subscript whole
+ * (TokenReader.readSubscriptedWord).
+ */
+export declare function lexArrayElements(input: string): Token[];
 /** Text a reader reads: the input, or an alias's text read in place of its name (`alias`; `blank`: it ends in a blank). */
 interface Frame {
     readonly input: string;
@@ -45,6 +52,14 @@ export declare class TokenReader {
     /** The next batch: a token, or a newline and the here-document bodies it opens; at the input's end, EOF. */
     next(): Token[];
     private read;
+    /**
+     * An array literal's `[subscript]=value` (or `+=`) word, read here when one
+     * begins at the next word: its subscript to the matching `]`, whose blanks,
+     * parentheses and operators are its own and whose quotes are kept as a
+     * word's (`[i + 1]`, `[(1+2)]`, `["a]b"]`), then the value as a word. Null,
+     * with nothing read but blanks, where the next word is not one.
+     */
+    readSubscriptedWord(): Token | null;
     /**
      * The word after `=~`, as bash's reader reads a regular expression: up to a
      * blank or an operator, except that its parentheses nest and, inside them,
