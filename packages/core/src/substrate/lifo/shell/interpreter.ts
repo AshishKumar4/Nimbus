@@ -1996,9 +1996,9 @@ export class Interpreter {
     }));
     // The files behind what is installed: the shadowed ones too (`2>&2` names fd 2's own file).
     const shadowed = [...outputs, ...inputs].flatMap(({ handle }) => (handle === undefined ? [] : [handle]));
-    const fileOf = (stream: CommandInputStream | CommandOutputStream | undefined): OpenFile | undefined => (stream === undefined
-      ? undefined
-      : [...this.persistentHandles(), ...shadowed].find((open) => open.stream === stream) ?? fds.opened.get(stream) ?? fds.enclosing.get(stream));
+    const fileOf = (stream: CommandInputStream | CommandOutputStream | undefined): OpenFile | undefined => (
+      stream === undefined ? undefined : this.fileBehind(stream, fds, shadowed)
+    );
     for (const { fd } of outputs) {
       const stream = fds.outputFds.get(fd);
       this.installOutputFd(fd, stream, fds.terminalOutputFds.has(fd));
@@ -2132,6 +2132,17 @@ export class Interpreter {
    * redirection holds (`{ exec 3>&1; } >f`), or one another descriptor names
    * (`exec 4>&3`). The file it named before goes to `released`.
    */
+  /**
+   * The open file behind `stream`: one a descriptor of the table holds, or
+   * one in `held` (references just taken out of it), or one the command's
+   * redirections opened, or one an enclosing redirection holds.
+   */
+  private fileBehind(stream: CommandInputStream | CommandOutputStream, fds: FdState, held: readonly OpenFile[]): OpenFile | undefined {
+    return [...this.persistentHandles(), ...held].find((open) => open.stream === stream)
+      ?? fds.opened.get(stream)
+      ?? fds.enclosing.get(stream);
+  }
+
   private repointPersistentHandle(
     handles: Map<number, OpenFile>,
     fd: number,
@@ -2146,9 +2157,7 @@ export class Interpreter {
       released.push(held);
     }
     if (stream === undefined) return;
-    const file = [...this.persistentHandles(), ...released].find((open) => open.stream === stream)
-      ?? fds.opened.get(stream)
-      ?? fds.enclosing.get(stream);
+    const file = this.fileBehind(stream, fds, released);
     if (!file) return;
     file.refs++;
     handles.set(fd, file);
