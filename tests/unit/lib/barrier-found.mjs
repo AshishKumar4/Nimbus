@@ -127,6 +127,12 @@ const FOUND = {
     engines: ['node'], park: 1294,
     schedule: [['own', 'rename', 'd/e', 'x/e'], ['own', 'unlink', 'd/f'], ['poison'], ['own', 'opendir', 'new']],
   },
+  // The client sends one wave at a time: a refused one goes again, first, before what was written after it.
+  'two writes of one file, the first refused while a peer recalls the read lease, land in order': {
+    engines: ['holder'], park: 1298,
+    schedule: [['own', 'stat', 'x/h'], ['own', 'readFile', 'top'], ['own', 'opendir', 'd'], ['root', 'chown', 'x', 1000],
+      ['sync', 'write', 'd/n', 'first'], ['sync', 'write', 'd/n', 'second!']],
+  },
   'a file a call that cannot wait missed stays a miss until an awaited read answers it': {
     engines: ['node'],
     schedule: [['peer', 'write', 'new', 'not resident'], ['settle'], ['input'], ['settle'], ['sync', 'readFile', 'new'], ['own', 'stat', 'new'], ['settle']],

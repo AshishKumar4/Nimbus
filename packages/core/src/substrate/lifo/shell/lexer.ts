@@ -13,6 +13,28 @@ export function lex(input: string): Token[] {
   }
 }
 
+/**
+ * An array literal's words (the text between its parentheses), as bash's
+ * reader reads a compound assignment: as anywhere, except that a word
+ * beginning `[subscript]=` or `[subscript]+=` reads its subscript whole
+ * (TokenReader.readSubscriptedWord).
+ */
+export function lexArrayElements(input: string): Token[] {
+  const reader = new TokenReader(input);
+  const tokens: Token[] = [];
+  for (;;) {
+    const subscripted = reader.readSubscriptedWord();
+    if (subscripted !== null) {
+      tokens.push(subscripted);
+      continue;
+    }
+    for (const token of reader.next()) {
+      if (token.kind === TokenKind.EOF) return tokens;
+      tokens.push(token);
+    }
+  }
+}
+
 /** Text a reader reads: the input, or an alias's text read in place of its name (`alias`; `blank`: it ends in a blank). */
 interface Frame {
   readonly input: string;
@@ -168,6 +190,49 @@ export class TokenReader {
       frame.at++;
     }
     return [{ kind: TokenKind.EOF, value: '', pos: this.frame.at }];
+  }
+
+  /**
+   * An array literal's `[subscript]=value` (or `+=`) word, read here when one
+   * begins at the next word: its subscript to the matching `]`, whose blanks,
+   * parentheses and operators are its own and whose quotes are kept as a
+   * word's (`[i + 1]`, `[(1+2)]`, `["a]b"]`), then the value as a word. Null,
+   * with nothing read but blanks, where the next word is not one.
+   */
+  readSubscriptedWord(): Token | null {
+    const frame = this.frame;
+    const input = frame.input;
+    while (input[frame.at] === ' ' || input[frame.at] === '\t' || (input[frame.at] === '\\' && input[frame.at + 1] === '\n')) {
+      frame.at += input[frame.at] === '\\' ? 2 : 1;
+    }
+    const pos = frame.at;
+    if (input[pos] !== '[') return null;
+    const close = subscriptEnd(input, pos);
+    if (close === -1) return null;
+    const operator = input.startsWith('+=', close + 1) ? '+=' : input[close + 1] === '=' ? '=' : null;
+    if (operator === null) return null;
+    const parts: WordPart[] = [{ text: '[', quoted: 'none' }];
+    // The subscript's words, as far as the `]`; a character no word begins with is its own.
+    const subscript = input.slice(0, close);
+    for (let i = pos + 1; i < close;) {
+      const word = isWordBreak(subscript[i]) ? null : readWord(subscript, i);
+      if (word === null) {
+        parts.push({ text: subscript[i], quoted: 'none' });
+        i++;
+        continue;
+      }
+      parts.push(...(word.token.parts ?? [{ text: word.token.value, quoted: 'none' }]));
+      i = word.end;
+    }
+    parts.push({ text: `]${operator}`, quoted: 'none' });
+    let end = close + 1 + operator.length;
+    const value = isWordBreak(input[end] ?? ' ') ? null : readWord(input, end);
+    if (value !== null) {
+      parts.push(...(value.token.parts ?? [{ text: value.token.value, quoted: 'none' }]));
+      end = value.end;
+    }
+    frame.at = end;
+    return { kind: TokenKind.Word, value: parts.map((part) => part.text).join(''), pos, parts, source: input.slice(pos, end) };
   }
 
   /**
@@ -542,6 +607,16 @@ function isOperatorBreak(ch: string): boolean {
     || ch === '>' || ch === '<' || ch === '\n' || ch === '(' || ch === ')';
 }
 
+/**
+ * The index of the `]` that closes the `[` at `open`, as bash's skipsubscript
+ * finds it: brackets nest, and one quoted, backslashed or in a substitution
+ * is not counted (readBalancedCommand). -1 where it is not closed.
+ */
+function subscriptEnd(input: string, open: number): number {
+  const span = readBalancedCommand(input, open + 1, '[', ']');
+  return span.closed ? span.end - 1 : -1;
+}
+
 function isWordBreak(ch: string): boolean {
   return ch === ' ' || ch === '\t' || ch === '|' || ch === '&' || ch === ';'
     || ch === '>' || ch === '<' || ch === '#' || ch === '\n' || ch === '(' || ch === ')';
@@ -902,9 +977,10 @@ function stopTable(chars: string): Uint8Array {
 }
 
 /** Where a balanced span's scan must look, by its brackets: every other character is body as it stands. */
-const SPAN_STOPS: Readonly<Record<'(' | '{', Uint8Array>> = {
+const SPAN_STOPS: Readonly<Record<'(' | '{' | '[', Uint8Array>> = {
   '(': stopTable('\\\'"$`#()<\n'),
   '{': stopTable('\\\'"$`#{}'),
+  '[': stopTable('\\\'"$`[]'),
 };
 /** Where a double-quoted span's scan must look. */
 const DOUBLE_QUOTED_STOPS = stopTable('"\\$`');
@@ -920,8 +996,9 @@ function nextStop(input: string, i: number, stops: Uint8Array): number {
 
 /**
  * The body of a balanced `open`...`close` span whose body starts at `pos`
- * (just past `open`), and where it ends (just past `close`, or the input's
- * end when it never closes). Quotes and nested `$(...)` inside it are
+ * (just past `open`): a command's, a parameter expansion's or a subscript's;
+ * and where it ends (just past `close`, or the input's end when it never
+ * closes). Quotes and nested `$(...)` inside it are
  * skipped whole, so a `close` inside them does not end it. In a command's
  * span, a here-document's body is too: read at the newline after its `<<`,
  * as the shell's reader reads it, so its `'` or `)` is text. An arithmetic
@@ -930,8 +1007,8 @@ function nextStop(input: string, i: number, stops: Uint8Array): number {
 export function readBalancedCommand(
   input: string,
   pos: number,
-  open: '(' | '{',
-  close: ')' | '}',
+  open: '(' | '{' | '[',
+  close: ')' | '}' | ']',
 ): { body: string; end: number; closed: boolean } {
   const arithmetic = open === '(' && input[pos] === '(' && input[pos - 1] === '(' && input[pos - 2] === '$';
   const stops = SPAN_STOPS[open];

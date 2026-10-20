@@ -661,7 +661,7 @@ async function builtinDeclare(verb, { args, stdout, stderr, state, context }) {
             (await stderr.write(`${verb}: can only be used in a function\n`));
             return 1;
         }
-        if (eq !== -1 && !(await assignDeclared(state, name, context.arrayElements?.get(index) ?? arg.slice(eq + 1), stderr)))
+        if (eq !== -1 && !(await assignDeclared(state, name, context.arrayElements?.get(index) ?? arg.slice(eq + 1), stderr, context)))
             exitCode = 1;
         // Declared with no value (a local too, which a callee sees): it exists, unset.
         if (eq === -1 && !Object.hasOwn(state.env, name) && !state.arrays.has(name))
@@ -674,13 +674,21 @@ async function builtinDeclare(verb, { args, stdout, stderr, state, context }) {
     }
     return exitCode;
 }
-/** The right-hand side of a declaration: a string, or an array assignment's elements (BuiltinExecutionContext.arrayElements). */
-async function assignDeclared(state, name, value, stderr) {
+/** The right-hand side of a declaration: a string, or an array assignment's array (BuiltinExecutionContext.arrayElements). */
+async function assignDeclared(state, name, value, stderr, context) {
     if (state.readonlyNames.has(name)) {
         (await stderr.write(`${name}: readonly variable\n`));
         return false;
     }
-    return typeof value === 'string' ? assignVariable(state, name, value) : assignArray(state, name, value);
+    if (typeof value === 'string')
+        return assignVariable(state, name, value);
+    for (const refused of value.refused)
+        (await stderr.write(`${refused}\n`));
+    const assigned = assignArray(state, name, value.array);
+    // What it assigned before a refusal is its value when `set -e` ends the shell at it.
+    if (value.refused.length > 0)
+        context.reportedError?.();
+    return assigned;
 }
 async function assignEnv(state, name, value, stderr) {
     if (assignVariable(state, name, value))
