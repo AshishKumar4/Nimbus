@@ -121,7 +121,7 @@ assert.equal(stored(), before + added, 'a reattach after it adds nothing');
 await type(ws, '{ while [ ! -e /tmp/go ]; do sleep 0.05; done; echo late-output; } &\r', (added) => added.includes(FRESH));
 await type(ws, 'ec', (added) => added.includes('ec'));
 await workspace.fs.writeFile('/tmp/go', '');
-const late = await until((text) => text.includes('late-output'), 'the job\'s output');
+const late = await until((text) => text.includes('late-output\r\n'), 'the job\'s output');
 assert.ok(late.lastIndexOf('late-output') > late.lastIndexOf(PROMPT), `the job wrote after the prompt: ${JSON.stringify(late.slice(before.length + added.length))}`);
 ws = await reattach();
 const repainted = stored().slice(late.length);

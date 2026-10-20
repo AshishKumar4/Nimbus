@@ -608,6 +608,8 @@ export class Shell {
 
     this.terminal.write(PROMPT_START + formatShellPrompt(this.state.env, this.state.getCwd()) + PROMPT_END);
     this.promptMode = 'primary';
+    // A fresh prompt is the editor's first row, whatever row a pasted line wrapped to.
+    this.screenCursorRow = 0;
     this.markEditor();
     this.announcePrompt();
     const submission = this.lineSubmission;
