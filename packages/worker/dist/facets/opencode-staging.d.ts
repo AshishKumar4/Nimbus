@@ -23,38 +23,12 @@
  * assembly runs under the isolate's whole transient budget, so two never
  * overlap (assembleOpencodeFacetConfig).
  */
-import { z } from 'zod/v4';
 import type { WorkerCode } from '@nimbus-sh/fabric/vendor/types.js';
 export interface OpencodeAssetsEnv {
     ASSETS: {
         fetch(req: Request): Promise<Response>;
     };
 }
-/**
- * Everything a facet spawn needs beyond the artifact sources themselves.
- * Small enough to ride in NimbusLoadedEntrypoint props (the VFS snapshot is
- * the only variable-size member; it is bounded by the prefetch-bundle caps).
- */
-export declare const OpencodeStageSpecSchema: z.ZodObject<{
-    mode: z.ZodEnum<{
-        oneshot: "oneshot";
-        attached: "attached";
-        server: "server";
-    }>;
-    argv: z.ZodArray<z.ZodString>;
-    terminal: z.ZodRecord<z.ZodString, z.ZodString>;
-    cred: z.ZodObject<{
-        uid: z.ZodNumber;
-        gid: z.ZodNumber;
-        groups: z.ZodArray<z.ZodNumber>;
-        umask: z.ZodNumber;
-    }, z.core.$strip>;
-    cwd: z.ZodString;
-    stdin: z.ZodString;
-    vfsBundle: z.ZodString;
-    vfsCursor: z.ZodString;
-}, z.core.$strip>;
-export type OpencodeStageSpec = z.infer<typeof OpencodeStageSpecSchema>;
 /** sql.js wasm `{ wasm }` module entry (shared with the generic facet paths). */
 export declare function sqliteWasmModuleEntry(env: Partial<OpencodeAssetsEnv>, usesSqlite: boolean): Promise<Record<string, {
     wasm: ArrayBuffer;

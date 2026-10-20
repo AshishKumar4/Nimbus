@@ -53,12 +53,17 @@ import { setLastRpcFrame } from '@nimbus-sh/platform/oom-discriminator.js';
 import { recordFailure } from '../runtime/stop-replay-body.js';
 // Phase 2 A'.2 — supervisor in-flight RPC payload byte tracking.
 import { rpcPayloadStart, rpcPayloadEnd } from '@nimbus-sh/platform/diag-counters.js';
-import { R2CacheClient, MAX_R2_TARBALL_BYTES } from '../npm/r2-cache.js';
 import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { isSupervisorAnsweredMethod, supervisorAnswer, } from '@nimbus-sh/core/runtime/vfs-supervisor.js';
 import { fsReadBatchRequestBytes } from './rpc.js';
 import { W7_MAX_RECORD_BYTES } from '@nimbus-sh/platform/w7-frame.js';
 import { LOST_CALL_HEDGE_AFTER_MS, WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
+/**
+ * The npm cache client, loaded at its first use: it links the npm engine,
+ * which no other call needs, and a host Worker's isolates all evaluate what
+ * its re-exported SupervisorRPC links statically, at startup (ask 56).
+ */
+const npmCache = () => import('../npm/r2-cache.js');
 /**
  * W5 Lever 5: estimate the byte-cost of a writeBatch payload so the
  * /api/_diag/memory.rpc.lastFrame.payloadBytes field is meaningful.
@@ -219,6 +224,7 @@ export function supervisorCalls(base) {
             return value;
         }
         async [CACHE_READ](plan, produce) {
+            const { R2CacheClient } = await npmCache();
             const client = new R2CacheClient(this[TRANSPORT]().env?.NPM_TARBALL_CACHE ?? null, this[TRANSPORT]().env?.NPM_PACKUMENT_CACHE ?? null, plan.readOnly);
             let value;
             try {
@@ -692,6 +698,7 @@ export function supervisorCalls(base) {
         async getCachedTarball(integrity) {
             const plan = this[INFRASTRUCTURE_CACHE]('getCachedTarball', [integrity]) ? { readOnly: false }
                 : await this[CALL](this[OP]('getCachedTarball', [integrity]));
+            const { MAX_R2_TARBALL_BYTES } = await npmCache();
             return this[CACHE_READ](plan, async (client) => {
                 const bytes = await client.getTarball(integrity);
                 return { bytes: bytes?.length && bytes.length <= MAX_R2_TARBALL_BYTES ? bytes : null, events: client._cacheEvents };
@@ -711,6 +718,7 @@ export function supervisorCalls(base) {
             // does NOT flow through this return path.
             if (!this[INFRASTRUCTURE_CACHE]('putCachedTarball', [integrity, bytes]))
                 await this[CALL](this[OP]('putCachedTarball', [integrity, bytes]));
+            const { R2CacheClient } = await npmCache();
             return new R2CacheClient(this[TRANSPORT]().env?.NPM_TARBALL_CACHE ?? null, null).putTarball(integrity, bytes);
         }
         /**
