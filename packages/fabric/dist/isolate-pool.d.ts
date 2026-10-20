@@ -371,6 +371,8 @@ export declare class IsolatePool {
     private readonly network;
     /** The process the pool's facets write as, when they are bound to one (supervisorPid). */
     private readonly writerPid;
+    /** What a stall names a call of this pool by (thread-stalls.ts): its tag, and its process. */
+    private readonly watchName;
     constructor(env: unknown, ctx: DurableObjectState, opts: IsolatePoolOptions);
     /** Effective concurrency used when no per-call override is supplied. */
     get defaultConcurrency(): number;

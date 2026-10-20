@@ -27,6 +27,7 @@ import { PROCESS_FS_JOURNAL_READER_SOURCE } from '@nimbus-sh/core/_shared/proces
 import { applyFacetLimits, facetLimits, facetLoaderKey } from './facet-limits.js';
 import { withResolvers } from './turn-budget.js';
 import { enteredByRun, RUN_ENTERED } from './one-shot-entry.js';
+import { holdThreadWatch } from './thread-stalls.js';
 /**
  * A staged one-shot's entrypoint (OneShotCode `stage`): a NimbusLoadedEntrypoint
  * that assembles the program on its loader's miss, in that stateless isolate,
@@ -509,9 +510,12 @@ function spawnResident(ctx, env, disk, supervisor, params) {
         // peer's own for the request it relays.
         handleHttpRequest: async (request, scope, relayed) => {
             const lease = observation.acquire();
+            // Watched while it is answered, not for the resident's life: an idle one keeps no tick running.
+            const watched = holdThreadWatch(ctx, `request pid ${params.pid}`);
             const cancel = relayed === undefined ? new AbortController() : null;
             scope.settled((delivered) => {
                 lease.release();
+                watched();
                 if (!delivered)
                     cancel?.abort(new DOMException('The caller left the request', 'AbortError'));
             });
@@ -526,17 +530,20 @@ function spawnResident(ctx, env, disk, supervisor, params) {
             }
             catch (error) {
                 lease.release();
+                watched();
                 throw error;
             }
         },
         // An upgrade hands its socket to the caller at the handshake.
         handleWebSocketRequest: async (request) => {
             const lease = observation.acquire();
+            const watched = holdThreadWatch(ctx, `upgrade pid ${params.pid}`);
             try {
                 return await checked(await facet.fetch(await admitted(request)));
             }
             finally {
                 lease.release();
+                watched();
             }
         },
         release,
@@ -636,6 +643,7 @@ async function runOneShot(ctx, env, supervisor, supervise, params, consume) {
     let supervisorBinding;
     let worker;
     let entrypoint;
+    const watched = holdThreadWatch(ctx, `run pid ${params.pid}`);
     try {
         // Built before the capability is minted: nothing can write as this writer
         // until there is a program to do the writing, and a map that fails to
@@ -738,6 +746,7 @@ async function runOneShot(ctx, env, supervisor, supervise, params, consume) {
         disposeRpcResource(worker);
         disposeRpcResource(capability);
         disposeRpcResource(supervisorBinding);
+        watched();
         endFetch();
     }
 }

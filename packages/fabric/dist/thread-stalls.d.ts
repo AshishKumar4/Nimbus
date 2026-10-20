@@ -21,8 +21,9 @@ export interface ThreadStall {
 export declare const STALL_RECORDED_MS = 250;
 /**
  * `name` in flight on `ctx`'s thread until the returned release is called:
- * while anything is, `ctx` watches its thread for stalls. Released twice is
- * released once.
+ * while anything is, `ctx` watches its thread for stalls. The tick due when
+ * the last work ends still runs, once, so a stall that work caused is
+ * recorded though it ended first. Released twice is released once.
  */
 export declare function holdThreadWatch(ctx: object, name: string): () => void;
 /** `ctx`'s last STALLS_KEPT stalls, oldest first. */

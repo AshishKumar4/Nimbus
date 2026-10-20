@@ -41,6 +41,7 @@ import { COMMITS_PER_CHUNK, treeSlices } from './pack/history.js';
 import { RETRY_ATTEMPTS, isLostTransport, retryDelay } from './pack/transport.js';
 import { CHECKOUT_FAILED } from './pack/mount-writer.js';
 import { framedGitBody, GIT_FRAMED_HEADER } from './pack/remote-body.js';
+import { holdThreadWatch } from '@nimbus-sh/fabric/thread-stalls.js';
 const WAVE_DIAGNOSTIC_FIELDS = [
     'waves', 'files', 'bytes', 'rpcWallMs', 'maxRpcWallMs', 'producerWaitMs',
     'ownershipVisits', 'maxWavePaths', 'maxWaveBytes', 'retries', 'wholeWaves',
@@ -730,6 +731,7 @@ export async function execGitNetwork(ctx, env, opts, /**
         // session's ledger from load to teardown — bracketed, never wrapped (see
         // beginLoaderFetch).
         const endFetch = beginLoaderFetch(ctx, `git-network:${crypto.randomUUID()}`);
+        const watched = holdThreadWatch(ctx, `git ${opts.op} pid ${opts.pid}`);
         try {
             const gitBundleSource = await unlessCancelled(fetchGitBundleSource(env), signal);
             const facetCode = (binding) => ({
@@ -1094,6 +1096,7 @@ export async function execGitNetwork(ctx, env, opts, /**
                 disposeRpcResource(load.binding);
                 load.endFetch();
             }
+            watched();
             endFetch();
         }
     }

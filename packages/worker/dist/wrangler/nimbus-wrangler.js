@@ -23,6 +23,7 @@ import { innerWorkerModules } from '@nimbus-sh/fabric/inner-env.js';
 import { applyD1Migrations, d1Database } from '../bindings/d1.js';
 import { hostRoute } from '@nimbus-sh/fabric/composition.js';
 import { parseWranglerJsonc } from './wrangler-config.js';
+import { holdThreadWatch } from '@nimbus-sh/fabric/thread-stalls.js';
 // ── Proxy helpers ──────────────────────────────────────────────────────
 /**
  * Rewrite a Location header emitted by the inner Worker so that, when
@@ -501,7 +502,15 @@ export class NimbusWrangler {
      * False when one is missing: logged, unless the build was superseded.
      */
     async exportsDoClasses(worker, classesEntrypoint, bindings, superseded) {
-        const missing = new Set(await worker.getEntrypoint(classesEntrypoint, { limits: facetLimits('worker') }).missing(bindings.map((b) => b.class_name)));
+        const watched = holdThreadWatch(this.supervisorCtx, 'wrangler dev classes');
+        let named;
+        try {
+            named = await worker.getEntrypoint(classesEntrypoint, { limits: facetLimits('worker') }).missing(bindings.map((b) => b.class_name));
+        }
+        finally {
+            watched();
+        }
+        const missing = new Set(named);
         if (superseded())
             return false;
         for (const b of bindings) {
@@ -834,7 +843,15 @@ export class NimbusWrangler {
                 // correctly-prefixed outer URL.
                 redirect: 'manual',
             });
-            const response = await this.workerStub.fetch(workerReq);
+            const watched = holdThreadWatch(this.supervisorCtx, 'wrangler dev request');
+            let response;
+            // Awaited by this frame, as an RPC stub call must be (beginLoaderFetch); the watch only brackets it.
+            try {
+                response = await this.workerStub.fetch(workerReq);
+            }
+            finally {
+                watched();
+            }
             // ── Response post-processing ─────────────────────────────────
             const newHeaders = new Headers(response.headers);
             newHeaders.set('Access-Control-Allow-Origin', '*');
