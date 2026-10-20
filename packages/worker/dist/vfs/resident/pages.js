@@ -63,7 +63,10 @@ export function createPages(coherence, admission, namespace) {
         const cursor = coherence.cursor();
         if (cursor === null || typeof supervisor.fsReadBatch !== 'function')
             return null;
-        // A page is its epoch's: another incarnation of the session holds other bytes at the same revision.
+        // A page is its epoch's. One database's revisions never go back, so no
+        // epoch the platform produces names a revision of another's with other
+        // bytes; a store that outlived its database would meet one, and keying by
+        // epoch costs nothing.
         const keyed = cursor.epoch + '\u0000' + k;
         const out = new Array(last - first + 1);
         const missing = [];
