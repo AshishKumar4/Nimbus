@@ -68,7 +68,7 @@ const wasm = new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0]);
   assert.deepEqual(victim(), ['keep'], 'the kernel wrote nothing through the link, and removed nothing there');
 
   const image = world.bootSpecs.at(-1).code.vfsComposedModules['worker.js'];
-  assert.match(image, /^\/\.nimbus\/facet-images\/[0-9a-f]{64}\.js$/, 'the images are below /.nimbus');
+  assert.match(image, /^\/\.nimbus\/process-images\/[0-9a-f]{64}\.js$/, 'the images are below /.nimbus');
   const root = kernel.lstat('.nimbus');
   assert.equal(root.type, 'directory');
   assert.equal(root.uid, 0, '/.nimbus is the kernel’s');

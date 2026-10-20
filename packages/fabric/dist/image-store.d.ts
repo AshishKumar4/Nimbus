@@ -115,7 +115,9 @@ export declare class ImageStore {
      */
     materialize(pid: number, images: AsyncIterable<readonly [string, string | string[]]> | Iterable<readonly [string, string | string[]]>, pacer: TurnBudget): Promise<Record<string, string>>;
     /**
-     * Drop every image no running process boots from.
+     * Drop every image of the store's (PROCESS_IMAGE_DIR) no running process
+     * boots from. Only the store's: an embedder's images in FACET_IMAGE_DIR are
+     * its own to remove, and a durable worker's re-drive reads them.
      *
      * Content addressing means a changed program writes a NEW image rather than
      * replacing one, so a watch loop — or simply a session that runs a few
