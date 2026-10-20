@@ -667,6 +667,8 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
    */
   /** Each name's revision before the last restart. */
   const revsBefore = new Map();
+  /** The revision the session holds `rel` at. */
+  const revisionOf = (rel) => Number(engine.authority.rawVfs.revision(key(rel), CRED_KERNEL));
   const restart = async (at) => {
     if (kind === 'node') { note(`  (step ${at}: a restart is the resident filesystem's to meet)`); return; }
     stalled = false;
@@ -678,10 +680,9 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
     }
     if (model.moving() || inflight.has(published)) { note(`  (step ${at} skipped: a change of the process's is still in flight)`); return; }
     unpublished = [];
-    const root = engine.authority.rawVfs.as(CRED_KERNEL);
     const next = new Map();
     // In the order they took their revisions, a directory before what it holds.
-    const byRev = [...model.world].map(([rel, state]) => ({ rel, state, rev: Number(root.lstat(key(rel)).revision) })).sort((a, b) => a.rev - b.rev);
+    const byRev = [...model.world].map(([rel, state]) => ({ rel, state, rev: revisionOf(rel) })).sort((a, b) => a.rev - b.rev);
     const entries = [];
     const made = new Set();
     const make = (item) => {
@@ -713,7 +714,7 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
     if (what === 'unstall') { stalled = false; return engine.release(); }
     if (what === 'restart') return restart(at);
     if (what === 'aligned') {
-      const now = Number(engine.authority.rawVfs.as(CRED_KERNEL).lstat(key(s[1])).revision);
+      const now = revisionOf(s[1]);
       if (kind !== 'node' && now !== revsBefore.get(s[1])) throw new Finding(`the restart did not keep ${s[1]} at its revision (${revsBefore.get(s[1])}, now ${now}): the schedule does not test what it says`, at);
       return undefined;
     }
