@@ -8,7 +8,8 @@
 // comment in it takes the rest of the line, and a regular expression read
 // on past its end has bash's blank there; a command after a prefix's
 // assignments is no compound command (`x=1 (echo)` is a syntax error); a
-// function keeps the aliases it was read with. Before, the whole text was parsed first and an alias was
+// function keeps the aliases it was read with; a `[[ ]]` operand (a regex too)
+// after an alias whose text ends in a blank is alias-checked. Before, the whole text was parsed first and an alias was
 // expanded when its command ran. Each line runs as a session's line and as
 // host bash's `bash -O expand_aliases -c`. Host bash is the oracle (stdout,
 // status, and stderr without bash's line prefix; a syntax error's stdout
@@ -43,6 +44,10 @@ const CASES = [
   { line: "echo a\n(echo b) (echo c)\necho never", compare: "out" },
   { line: "alias r='[[ x =~ '\nr x ]]; echo $?", compare: "all" },
   { line: "alias r='[[ \"x \" =~ (x'\nr) ]]; echo \"$? <${BASH_REMATCH[0]}>\"\nr ) ]]; echo \"$? <${BASH_REMATCH[0]}>\"\nalias r='[[ \" x\" =~ (a|'\nr x) ]]; echo \"$? <${BASH_REMATCH[0]}>\"", compare: "all" },
+  // A [[ ]] operand after an alias whose text ended in a blank is alias-checked, a regex's too (ticket lifo-alias-conditional-operands).
+  { line: "alias r='[[ x =~ '\nalias y=x\nr y ]]; echo $?\nalias q='[[ x == '\nq y ]]; echo $?\nalias b='[[ '\nb y == x ]]; echo $?", compare: "all" },
+  { line: "alias y=x\n[[ y == x ]]; echo $?\nalias r='[[ x =~ '\nalias z='x|z'\nr z ]]; echo $?", compare: "all" },
+  { line: "alias u='[[ -n '\nalias e=''\nu e ]]; echo $?", compare: "out" },
 ];
 
 /** bash's diagnostic prefix: `bash: line 1: `, `bash: -c: line 1: `. */

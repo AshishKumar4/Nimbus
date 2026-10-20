@@ -125,7 +125,7 @@ class Parser {
 
   /**
    * The word at a command's start (or one after an alias whose text ended in
-   * a blank): while it names an alias whose text is not being read, read
+   * a blank, a `[[ ]]` operand's too): while it names an alias whose text is not being read, read
    * that text in its place, as bash's reader does, before any reserved word
    * is recognized. Whether it did.
    */
@@ -401,6 +401,8 @@ class Parser {
     let groups = 0;
 
     while (!this.isAtEnd()) {
+      // A word after an alias whose text ended in a blank is checked for an alias too, an operand's as any (bash 5.2).
+      if (this.peek().aliasCheck === true) this.expandAliases();
       const token = this.advance();
       if (isUnquotedLiteralWord(token, ']]')) {
         return {
@@ -436,6 +438,8 @@ class Parser {
    * expression's groups (`inGroup`); outside a group it is a syntax error.
    */
   private parseRegexWord(inGroup: boolean): WordPart[] {
+    // After an alias whose text ended in a blank, the regex's first word may name one: its text is read as the regex.
+    if (this.peek().aliasCheck === true) this.expandAliases();
     this.rereadFromHere();
     const regex = this.reader.readRegexWord();
     // Nothing there, or the conditional's own `]]`: no operand.
