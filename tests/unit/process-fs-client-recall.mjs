@@ -12,7 +12,10 @@
  *   once, all land;
  * - a close that consumed its description and then met a recall (its
  *   backend's flush) took effect: the session does not mark it to go again,
- *   and the client answers it as failed, fenced or not, never as done.
+ *   and the client answers it as failed, fenced or not, never as done;
+ * - a rename placed after the wave's earlier write committed, meeting
+ *   another process's delegation through a linked parent, goes again once
+ *   that process gave its subtree back: both land.
  */
 
 import assert from 'node:assert/strict';
@@ -158,6 +161,58 @@ const writeFile = (path, text) => ({ type: 'call', call: { call: 'writeFile', pa
   await c.flush();
   for (const [i, answer] of answers.entries()) assert.equal((await answer)?.failed, undefined, `write ${i} was not failed`);
   for (let i = 0; i < 12; i++) assert.equal(s.text(`home/user/n${i}.txt`), `n${i}`);
+  await c.settle();
+}
+
+// ── A write, then a rename through a linked parent into another process's delegated subtree, in one wave ──
+{
+  const harness = createSqliteVfsTestHarness();
+  const engine = new SqliteVFS(harness.sql, harness.ctx);
+  const kernel = engine.as(CRED_KERNEL);
+  kernel.mkdir('home/user/real', { recursive: true, mode: 0o755 });
+  kernel.chown('home/user', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+  kernel.chown('home/user/real', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+  const files = new ProcessFiles(engine);
+  files.bind({ pid: PID, cred: CRED_SESSION_USER });
+  const other = files.bind({ pid: PID + 1, cred: CRED_SESSION_USER });
+  other.symlink('real', '/home/user/link');
+  // The other process holds `real`, and gives it back a while after it is asked to.
+  const grant = other.acquireExclusiveMutation('/home/user/real', { delegate: { reads: false } });
+  let recalls = 0;
+  (async () => {
+    for (;;) {
+      const kind = await other.awaitRecall(grant.owner, 5_000);
+      if (kind === null) continue;
+      recalls++;
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      other.recalled(grant.owner, kind);
+      return;
+    }
+  })();
+  const deliveries = new SupervisorDeliveries();
+  const op = createSupervisorOpHandler({ vfs: engine, filesystem: files, deliveries });
+  let waves = 0;
+  const c = processFsClient({
+    session: {
+      openWriter: async () => deliveries.openWaveWriter(PID, 60_000),
+      retireWriter: async (writer) => { await op({ op: 'retireWaveWriter', args: [writer], pid: PID }); },
+      writeBatchStream: async (stream, fence) => {
+        waves++;
+        return op({ op: 'writeBatchStream', args: [], pid: PID, stream, waveFence: { ...fence, hostIncarnation: deliveries.incarnation } });
+      },
+    },
+    retry: RETRY,
+    grantAfter: Number.MAX_SAFE_INTEGER,
+  });
+  const wrote = c.submit(writeFile('home/user/a.txt', 'moved'));
+  const renamed = c.submit({ type: 'rename', from: 'home/user/a.txt', to: 'home/user/link/a.txt' }).then((value) => ({ value }), (error) => ({ error }));
+  await c.flush();
+  assert.equal((await wrote)?.failed, undefined, 'the write was not failed');
+  const moved = await renamed;
+  assert.equal(moved.error, undefined, `the rename was not lost: ${moved.error?.message}`);
+  assert.equal(recalls, 1, 'the other process was asked for its subtree');
+  assert.equal(dec.decode(kernel.readFile('home/user/real/a.txt')), 'moved');
+  assert.ok(waves >= 2, 'its wave went again');
   await c.settle();
 }
 
