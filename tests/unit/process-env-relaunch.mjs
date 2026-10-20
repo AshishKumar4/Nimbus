@@ -16,20 +16,24 @@
 //      none;
 //   5. a session an earlier release left: the env its journal row held, a
 //      dev server's record held, an application blob held (named by nothing,
-//      too), and the generated source holding it, are gone before anything
-//      is re-driven, and the relaunch gets the env back from the session's
-//      keeping. A file that only looks generated stays: one an application
-//      names, or one the kernel does not own;
+//      too, or cut short by a reset), and the generated entries holding it
+//      (a composed recipe, as the store wrote it, and plain text below
+//      /var/lib/nimbus), are gone before anything is re-driven, and the
+//      relaunch gets the env back from the session's keeping. A file that
+//      only mentions the declaration stays, and so does one the kernel does
+//      not own;
 //   6. a python resident's environment is built again on the host's answer
 //      as its first launch built it (an empty PYTHONUNBUFFERED is '1'
-//      again), and its image keeps no env: one an earlier release wrote
-//      whole keeps the facts it was built from.
+//      again), and its image keeps no env. One an earlier release wrote
+//      whole keeps no facts to build from: its relaunch runs with the
+//      host's answer as it is, which the session keeps whole.
 
 import assert from 'node:assert/strict';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { facetImageDigest, facetImagePath } from '../../packages/fabric/src/process-fabric.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { interpreterProcessEnv } from '../../packages/core/src/runtime/interpreter-env.ts';
+import { ImmutableModuleSource, moduleSource } from '../../packages/platform/src/module-source.ts';
 import { PROCESS_ENV_DROPPED_KEY } from '../../packages/worker/src/session/keys.ts';
 import { resolveDurableWorkerImage } from '../../packages/worker/src/facets/durable-images.ts';
 import { launchManager, launchSession } from './lib/facet-launch-harness.mjs';
@@ -155,37 +159,41 @@ console.log('  [3] a host that answers null, throws or composes no resolver fail
   session.storage.set(key, { ...row, recipe: { ...row.recipe, opts: { ...row.recipe.opts, env: { SECRET: FIRST } } } });
   session.storage.delete(`process-env:${key}`);
   session.storage.delete(PROCESS_ENV_DROPPED_KEY);
-  // Its generated source, the env in its arguments: in the image store, and
-  // below /var/lib/nimbus, where releases through 0.19 wrote it and no
-  // sweep of the store looks.
+  // Its generated entry, the env in its arguments: composed as the store
+  // wrote it (a ModuleSourceRecipe's JSON, a library by reference), and as
+  // the plain text releases through 0.19 wrote below /var/lib/nimbus.
   const kernel = session.vfs.as(CRED_KERNEL);
-  const generated = `const __NIMBUS_ARGS = ${JSON.stringify({ argv: [], env: { SECRET: FIRST } })};\n`;
-  const imagePath = facetImagePath(await facetImageDigest(generated)).slice(1);
-  for (const dir of ['.nimbus/facet-images', 'var/lib/nimbus/facet-images']) {
+  const args = { argv: [], env: { SECRET: FIRST }, cwd: '/home/user/app' };
+  const library = new ImmutableModuleSource(new TextEncoder().encode('export const shims = 1;\n'), { path: '/node-shims/shims.js', sha256: '0'.repeat(64) });
+  const composed = JSON.stringify(moduleSource`import { DurableObject } from "cloudflare:workers";\n${library}\nconst __NIMBUS_ARGS = ${JSON.stringify(args)};\nexport class NimbusProcess extends DurableObject {}\n`.recipe());
+  const plain = `import { DurableObject } from "cloudflare:workers";\nconst __NIMBUS_ARGS = JSON.parse(${JSON.stringify(JSON.stringify(args))});\n`;
+  for (const [dir, image] of [['.nimbus/facet-images', composed], ['var/lib/nimbus/facet-images', plain]]) {
     kernel.mkdir(dir, { recursive: true, mode: 0o755 });
-    kernel.writeFile(`${dir}/${imagePath.split('/').at(-1)}`, generated, { mode: 0o644 });
+    kernel.writeFile(facetImagePath(await facetImageDigest(image)).slice(1).replace('.nimbus/facet-images', dir), image, { mode: 0o644 });
   }
-  // A dev server's record, and an application blob no index or row names, each with the env in it.
+  // A dev server's record, an application blob no index or row names, and
+  // one a reset cut short (its bytes not yet what its name says), each with
+  // the env in it.
   session.storage.set('dev-server:7', { command: 'vite', env: { SECRET: FIRST } });
   const orphan = JSON.stringify({ modules: {}, env: { SECRET: FIRST }, vfsWasmModules: null });
   kernel.mkdir('.nimbus/images', { recursive: true, mode: 0o755 });
   kernel.writeFile(`.nimbus/images/${await facetImageDigest(orphan)}`, orphan, { mode: 0o644 });
-  // Files that only look generated: a text module an application names, and one the kernel does not own.
-  const lookalike = `// const __NIMBUS_ARGS = {"argv":[]}\nexport const answer = 42;\n`;
-  const named = facetImagePath(await facetImageDigest(lookalike));
-  kernel.writeFile(named.slice(1), lookalike, { mode: 0o644 });
-  const naming = JSON.stringify({ modules: {}, env: null, vfsWasmModules: null, vfsTextModules: { 'lib.js': named } });
-  kernel.writeFile(`.nimbus/images/${await facetImageDigest(naming)}`, naming, { mode: 0o644 });
-  const usersOwn = `var/lib/nimbus/facet-images/${await facetImageDigest(generated + ' ')}.js`;
-  kernel.writeFile(usersOwn, generated, { mode: 0o644 });
+  const whole = JSON.stringify({ modules: { 'a.js': 'x'.repeat(64) }, env: { SECRET: FIRST }, vfsWasmModules: null });
+  kernel.writeFile(`.nimbus/images/${await facetImageDigest(whole)}`, whole.slice(0, whole.length / 2), { mode: 0o644 });
+  // Files that only look generated: one that mentions the declaration, and one the kernel does not own.
+  const mentions = `// const __NIMBUS_ARGS = ${JSON.stringify(args)};\nexport const answer = 42;\n`;
+  const mentioning = facetImagePath(await facetImageDigest(mentions)).slice(1);
+  kernel.writeFile(mentioning, mentions, { mode: 0o644 });
+  const usersOwn = `var/lib/nimbus/facet-images/${await facetImageDigest(plain + ' ')}.js`;
+  kernel.writeFile(usersOwn, plain, { mode: 0o644 });
   kernel.chown(usersOwn, 1000, 1000);
 
   const gen2 = instance(session, 2);
   await gen2.manager.pumpResidentLaunches();
   await until(() => gen2.starts.length === 1, 'the re-drive to start');
   assert.equal(gen2.starts[0].env.SECRET, FIRST, 'the relaunch gets the env the row held, from the session\'s keeping');
-  assert.deepEqual(filesHolding(session.vfs, FIRST), [usersOwn], 'the generated sources and the blob that held it are gone, and only a file the kernel does not own is left');
-  assert.equal(kernel.exists(named.slice(1)), true, 'a text module an application names stays');
+  assert.deepEqual(filesHolding(session.vfs, FIRST).sort(), [mentioning, usersOwn].sort(),
+    'the generated entries and the blobs that held it are gone; a file that only mentions the declaration, and one the kernel does not own, stay');
   assert.deepEqual(session.storage.get('dev-server:7'), { command: 'vite' }, 'the dev server\'s record holds no env');
   assert.deepEqual(session.storage.get('process-env:dev-server:7'), { env: { SECRET: FIRST } }, 'which the session keeps beside it');
   assert.equal([...session.storage.entries()].some(([name, value]) => !name.startsWith('process-env:') && JSON.stringify(value).includes(FIRST)), false,
@@ -228,11 +236,11 @@ console.log('  [3] a host that answers null, throws or composes no resolver fail
   session.storage.set(key, { ...row, attempt: 0, recipe: { ...row.recipe, image: { ...row.recipe.image, application: legacyDigest } } });
   session.storage.delete(`process-env:${key}`);
   session.storage.delete(PROCESS_ENV_DROPPED_KEY);
-  const gen3 = instance(session, 3, { resolveProcessEnv: async () => answer });
+  const gen3 = instance(session, 3);
   await gen3.manager.pumpResidentLaunches();
   await until(() => gen3.starts.length === 1, 'the re-drive of the migrated image to start');
-  assert.deepEqual(gen3.starts[0].userEnv, interpreterProcessEnv(answer, facts), 'the migrated image keeps the facts its environment was built from');
-  assert.deepEqual(filesHolding(session.vfs, FIRST), [], 'and no file holds the env');
+  assert.deepEqual(gen3.starts[0].userEnv, interpreterProcessEnv(base, facts), 'the migrated image runs with the environment the session keeps whole');
+  assert.deepEqual(filesHolding(session.vfs, FIRST), [], 'and no file holds it');
   console.log(`  [6] an interpreter's environment is built again on the host's answer (pid ${pid}), from a migrated image too`);
 }
 

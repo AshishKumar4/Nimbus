@@ -29,12 +29,11 @@
 
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { base64, base64Decode } from '@nimbus-sh/core/_shared/crypto.js';
+import { base64, base64Decode, sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
 import { storeContentBlob, type ImageBlobStore } from '@nimbus-sh/fabric/image-store.js';
 import { readContentBlob, ResidentCodeSpecSchema } from '@nimbus-sh/fabric/process-fabric.js';
 import { z } from 'zod/v4';
 import type { ResolvedWorkerLaunch, WorkerRecipe } from './manager.js';
-import { interpreterEnvFactsOf, type InterpreterEnvFacts } from '@nimbus-sh/core/runtime/interpreter-env.js';
 
 /** The directory every durable application's image blobs live under. */
 export const DURABLE_IMAGE_DIR = '.nimbus/images';
@@ -72,7 +71,7 @@ function kernelImageBlobs(vfs: SqliteVFS): ImageBlobStore {
 /** An application blob an earlier release wrote with an environment in it. */
 export interface ApplicationHoldingEnv {
   digest: string;
-  /** What its launch's process ran with, the runtime's additions in it (`startArgs.userEnv`). */
+  /** What its launch's process ran with, its runtime's additions in it (`startArgs.userEnv`). */
   processEnv: Record<string, string> | null;
   /** Whether it held a binding env, which nothing in the session can give back. */
   bindingEnv: boolean;
@@ -81,50 +80,51 @@ export interface ApplicationHoldingEnv {
 const HeldUserEnvSchema = z.looseObject({ userEnv: z.record(z.string(), z.string()) });
 
 /**
- * Every application blob in the store (an earlier release's included, an
- * index or row naming it or not), read: the ones that hold an environment,
- * and every path any of them names (`vfsTextModules`, `vfsWasmModules`),
- * which their launches read. Runner blobs are code, not application JSON,
- * and are not read.
+ * Every blob in the store, an earlier release's included, an index or row
+ * naming it or not, read: the application blobs that hold an environment,
+ * and the blobs whose bytes are not what their name says (a write a reset
+ * cut short), which no reader can use, since every one verifies the digest.
+ * A runner blob is code, not application JSON, and holds no environment.
  */
-export async function readApplicationImages(vfs: SqliteVFS): Promise<{ holdingEnv: ApplicationHoldingEnv[]; namedPaths: Set<string> }> {
+export async function readStoredImages(vfs: SqliteVFS): Promise<{ holdingEnv: ApplicationHoldingEnv[]; corrupt: string[] }> {
   const kernel = vfs.as(CRED_KERNEL);
   const holdingEnv: ApplicationHoldingEnv[] = [];
-  const namedPaths = new Set<string>();
-  if (!kernel.exists(DURABLE_IMAGE_DIR)) return { holdingEnv, namedPaths };
+  const corrupt: string[] = [];
+  if (!kernel.exists(DURABLE_IMAGE_DIR)) return { holdingEnv, corrupt };
   for (const { name } of kernel.readdir(DURABLE_IMAGE_DIR)) {
     if (!/^[a-f0-9]{64}$/.test(name)) continue;
-    let json: unknown;
-    try {
-      json = JSON.parse(new TextDecoder().decode(await readContentBlob({ readFile: (path: string) => kernel.readFile(path) }, imagePath(name), name)));
-    } catch {
-      continue;
-    }
-    const parsed = ApplicationImageSchema.safeParse(json);
+    const bytes = kernel.readFile(imagePath(name));
+    if (await sha256Hex(bytes) !== name) { corrupt.push(name); continue; }
+    const parsed = ApplicationImageSchema.safeParse(jsonOrNull(new TextDecoder().decode(bytes)));
     if (!parsed.success) continue;
-    for (const path of [...Object.values(parsed.data.vfsTextModules ?? {}), ...Object.values(parsed.data.vfsWasmModules ?? {})]) namedPaths.add(path);
     const held = HeldUserEnvSchema.safeParse(parsed.data.startArgs);
     if (parsed.data.env !== null || held.success) holdingEnv.push({ digest: name, processEnv: held.success ? held.data.userEnv : null, bindingEnv: parsed.data.env !== null });
   }
-  return { holdingEnv, namedPaths };
+  return { holdingEnv, corrupt };
+}
+
+/** `text` parsed as JSON, or null when it is not JSON (a runner blob is code). */
+function jsonOrNull(text: string): unknown {
+  try { return JSON.parse(text); }
+  catch { return null; }
 }
 
 /**
  * `application`, written again without an environment: what every process
- * can read holds none (ask 62). An interpreter's environment is kept as the
- * facts it was built from (`envFacts`, read back from it for `runtime`), as
- * a launch writes it today. Answers the new application digest.
+ * can read holds none (ask 62). It keeps no facts to build an interpreter's
+ * environment from: an earlier release kept the environment whole, so its
+ * relaunch runs with the host's answer as it is (the session's keeping holds
+ * that whole environment). Answers the new application digest.
  */
-export async function rewriteWithoutEnvironment(vfs: SqliteVFS, application: string, runtime: InterpreterEnvFacts['runtime'] | null): Promise<string> {
+export async function rewriteWithoutEnvironment(vfs: SqliteVFS, application: string): Promise<string> {
   const kernel = vfs.as(CRED_KERNEL);
   const bytes = await readContentBlob({ readFile: (path: string) => kernel.readFile(path) }, imagePath(application), application);
   const { env: _env, startArgs, ...rest } = ApplicationImageSchema.parse(JSON.parse(new TextDecoder().decode(bytes)));
-  let kept: unknown = startArgs;
   const held = HeldUserEnvSchema.safeParse(startArgs);
+  let kept: unknown = startArgs;
   if (held.success) {
-    const { userEnv, ...others } = held.data;
-    const facts = runtime === null ? null : interpreterEnvFactsOf(runtime, userEnv);
-    kept = facts === null ? others : { ...others, envFacts: facts };
+    const { userEnv: _userEnv, ...others } = held.data;
+    kept = others;
   }
   // The members written as persistDurableWorkerImage writes them, so the
   // digest is what a launch with these inputs writes today.

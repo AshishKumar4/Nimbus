@@ -45,22 +45,3 @@ export function interpreterProcessEnv(base: Readonly<Record<string, string>>, fa
       return env;
   }
 }
-
-const BuiltPythonEnv = z.looseObject({ HOME: z.string(), SSL_CERT_FILE: z.string().optional() });
-const BuiltRubyEnv = z.looseObject({ HOME: z.string(), GEM_HOME: z.string(), NIMBUS_GEM_LIBS: z.string(), NIMBUS_GEM_ACTIVATE: z.string().optional() });
-
-/**
- * The facts an environment an earlier release stored whole (the base with
- * its runtime's additions in it) was built from, read back from it: null
- * when it does not hold them.
- */
-export function interpreterEnvFactsOf(runtime: InterpreterEnvFacts['runtime'], built: Readonly<Record<string, string>>): InterpreterEnvFacts | null {
-  if (runtime === 'python') {
-    const held = BuiltPythonEnv.safeParse(built);
-    return held.success ? { runtime, home: held.data.HOME, cacert: held.data.SSL_CERT_FILE ?? null } : null;
-  }
-  const held = BuiltRubyEnv.safeParse(built);
-  return held.success
-    ? { runtime, home: held.data.HOME, gemHome: held.data.GEM_HOME, gemLibs: held.data.NIMBUS_GEM_LIBS === '' ? [] : held.data.NIMBUS_GEM_LIBS.split(':'), gemActivates: held.data.NIMBUS_GEM_ACTIVATE === '1' }
-    : null;
-}
