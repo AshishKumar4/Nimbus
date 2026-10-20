@@ -2,18 +2,23 @@
 // durable/process-env-private — a process's launch environment is its own.
 //
 // WHAT IT PROVES
-//   A resident Node server and a Python socket server are launched by the
-//   session user with a secret in their environment. Another account on the
-//   box then searches everything the box keeps under /.nimbus and /var (the
-//   image stores, which every process can read) and finds no trace of either
-//   secret, as on Linux a process's environ is its owner's alone. The
+//   A resident Node server and a Python socket server are started with a
+//   secret in their launch environment (startProcess's `env`), and only
+//   there: no file of the session holds it. Another account on the box then
+//   searches everything the box keeps under /.nimbus and /var (the image
+//   stores, the generated sources, the durable images) and finds no trace of
+//   either secret, as on Linux a process's environ is its owner's alone. The
 //   session's diagnostics name the shell's environment, never its values.
 //   Each process still sees its own environment, and after a real reset of
 //   the session (`_diag/abort`) the Node server is relaunched on its port
 //   with the same environment: the session keeps it in a row of its own
 //   object, outside the filesystem, and gives it back.
+//
+//   A secret in a file a process reads (an inline `VAR=secret` in
+//   ~/.bash_history) is another question, the image store's privacy: its own
+//   probe asks it.
 
-import { BASE, makeAsserter, mintSession, deleteSession, Terminal, heredocCommand, fetchPort, sleep, stripAnsi, requestHeaders } from '../_driver.mjs';
+import { BASE, AUTH_TOKEN, makeAsserter, mintSession, deleteSession, Terminal, heredocCommand, fetchPort, sleep, stripAnsi, requestHeaders } from '../_driver.mjs';
 import { afterReset, resetInstance } from './_reset-window.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -27,9 +32,11 @@ const SHELL_SECRET = `shell-${crypto.randomUUID()}`;
 const NODE_PORT = 3000;
 const PYTHON_PORT = 8000;
 
+const { Nimbus } = await import('../../../packages/sdk/src/index.ts');
 const sid = await mintSession();
 console.log(`SID: ${sid}`);
 const t = new Terminal(sid);
+const box = Nimbus.connect({ endpoint: BASE, ...(AUTH_TOKEN ? { token: AUTH_TOKEN } : {}) }).sandbox(sid);
 
 /** `command`'s output, ANSI stripped, and its exit. */
 const run = async (command, ms = 120_000) => {
@@ -55,7 +62,8 @@ try {
 
   // ── Two processes, each with a secret in its environment ──────────────
   await run(heredocCommand('/home/user/env-server.js', `require('http').createServer((q, s) => s.end('env:' + (process.env.SECRET_TOKEN || 'none'))).listen(${NODE_PORT});\n`), 10_000);
-  t.cmd(`cd /home/user && SECRET_TOKEN=${NODE_SECRET} node env-server.js &`);
+  const nodeStarted = await box.startProcess('node env-server.js', { cwd: '/home/user', env: { SECRET_TOKEN: NODE_SECRET } });
+  a.check('the Node server starts', nodeStarted.pid > 0, JSON.stringify(nodeStarted).slice(0, 300));
   const node = await pollPort(NODE_PORT, `env:${NODE_SECRET}`, 90_000);
   a.check('the Node server sees its own environment', node.ok, JSON.stringify(node.last).slice(0, 300));
 
@@ -70,7 +78,8 @@ try {
     `http.server.HTTPServer(("0.0.0.0", ${PYTHON_PORT}), H).serve_forever()`,
     '',
   ].join('\n')), 10_000);
-  t.cmd(`cd /home/user && SECRET_TOKEN=${PYTHON_SECRET} python3 env-server.py &`);
+  const pyStarted = await box.startProcess('python3 env-server.py', { cwd: '/home/user', env: { SECRET_TOKEN: PYTHON_SECRET } });
+  a.check('the Python server starts', pyStarted.pid > 0, JSON.stringify(pyStarted).slice(0, 300));
   const py = await pollPort(PYTHON_PORT, `env:${PYTHON_SECRET}`, 120_000);
   a.check('the Python server sees its own environment', py.ok, JSON.stringify(py.last).slice(0, 300));
 
