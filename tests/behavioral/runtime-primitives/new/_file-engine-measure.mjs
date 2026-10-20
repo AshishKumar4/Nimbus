@@ -48,9 +48,10 @@ const setup = (t, line, timeoutMs = 600_000) => t.run(line, timeoutMs);
 // A tree a program reads: 20 directories of 50 files of 1 KiB, and 20 of 64 KiB.
 const TREE = "mkdir -p tree/big && for d in $(seq 1 20); do mkdir -p tree/d$d; for f in $(seq 1 50); do head -c 1024 /dev/urandom | base64 > tree/d$d/f$f; done; done && for f in $(seq 1 20); do head -c 65536 /dev/urandom | base64 > tree/big/b$f; done";
 
+// Its first argument limits it to that many directories: a one-shot stages at most READ_PROFILE_MAX_ENTRIES (1,024) learned reads.
 const NODE_WORK = `const fs = require('fs');
 let bytes = 0, stats = 0;
-const dirs = fs.readdirSync('tree');
+const dirs = fs.readdirSync('tree').filter((d) => d.startsWith('d')).sort().slice(0, Number(process.argv[2] || 1e9));
 for (let pass = 0; pass < 3; pass++) for (const d of dirs) for (const f of fs.readdirSync('tree/' + d)) { bytes += fs.readFileSync('tree/' + d + '/' + f).length; stats += fs.statSync('tree/' + d + '/' + f).size > 0; }
 fs.mkdirSync('out', { recursive: true });
 for (let i = 0; i < 100; i++) fs.writeFileSync('out/w' + i, 'x'.repeat(1024) + i);
@@ -76,9 +77,12 @@ print('work', total)
 // Allocates 1 MiB at a time, yielding each time so what it said reaches the
 // session, until the isolate dies; the last count is its headroom.
 const NODE_MEM = `const fs = require('fs');
-const max = Number(process.env.MAX || 2048);
+const max = fs.existsSync('max') ? 1 : 2048;
 let held = 0;
-if (process.env.FILL) for (const d of fs.readdirSync('tree')) for (const f of fs.readdirSync('tree/' + d)) held += fs.readFileSync('tree/' + d + '/' + f).length;
+const fill = process.env.FILL;
+const filled = !fill ? [] : fill === 'huge' ? ['huge'] : fs.readdirSync('tree').filter((x) => x.startsWith('d')).sort().slice(0, 8);
+for (const d of filled) for (const f of fs.readdirSync('tree/' + d)) held += fs.readFileSync('tree/' + d + '/' + f).length;
+globalThis.__nimbusHostConsole?.log('[mem-probe] held ' + held);
 const blocks = [];
 (async () => {
   for (let i = 1; i <= max; i++) {
@@ -116,8 +120,8 @@ async function host() {
   const arms = [
     { runtime: 'node', label: 'trivial', arm: 'loader', line: "node -e 'console.log(1)'" },
     { runtime: 'node', label: 'trivial', arm: 'facet', line: "NIMBUS_MEASURE_HOST=facet node -e 'console.log(1)'" },
-    { runtime: 'node', label: 'work', arm: 'loader', line: 'node work.js', files: true },
-    { runtime: 'node', label: 'work', arm: 'facet', line: 'NIMBUS_MEASURE_HOST=facet node work.js', files: true },
+    { runtime: 'node', label: 'work', arm: 'loader', line: 'node work.js 8', files: true },
+    { runtime: 'node', label: 'work', arm: 'facet', line: 'NIMBUS_MEASURE_HOST=facet node work.js 8', files: true },
     { runtime: 'python', label: 'imports', arm: 'loader', line: `python3 -c "${PY_IMPORTS}"` },
     { runtime: 'python', label: 'imports', arm: 'facet', line: 'python3 imports.py' },
     { runtime: 'ruby', label: 'requires', arm: 'loader', line: `ruby -e "${RB_REQUIRES}"` },
@@ -140,7 +144,7 @@ async function host() {
 /** One resident program's store on its facet's SQLite and on its heap, alternating in one session. */
 async function backing() {
   const cases = [
-    { runtime: 'node', setupLines: [TREE, heredoc('work.js', NODE_WORK)], arms: { sql: 'NIMBUS_MEASURE_HOST=facet node work.js', heap: 'NIMBUS_MEASURE_HOST=facet NIMBUS_MEASURE_STORE=heap node work.js', loader: 'node work.js' } },
+    { runtime: 'node', setupLines: [TREE, heredoc('work.js', NODE_WORK)], arms: { sql: 'NIMBUS_MEASURE_HOST=facet node work.js 8', heap: 'NIMBUS_MEASURE_HOST=facet NIMBUS_MEASURE_STORE=heap node work.js 8', loader: 'node work.js 8', 'sql-all': 'NIMBUS_MEASURE_HOST=facet node work.js', 'loader-all': 'node work.js' } },
     { runtime: 'python', setupLines: ['nimbus install python', TREE, heredoc('work.py', PY_WORK)], arms: { heap: 'python3 work.py', sql: 'NIMBUS_MEASURE_STORE=sql python3 work.py', loader: `python3 -c "exec(open('work.py').read())"` } },
   ];
   for (const c of cases) {
@@ -162,15 +166,20 @@ async function mem() {
     'facet-sql': 'NIMBUS_MEASURE_HOST=facet node mem.js',
     'facet-sql-fill': 'NIMBUS_MEASURE_HOST=facet FILL=1 node mem.js',
     'facet-heap-fill': 'NIMBUS_MEASURE_HOST=facet NIMBUS_MEASURE_STORE=heap FILL=1 node mem.js',
+    'loader-huge': 'FILL=huge node mem.js',
+    'facet-sql-huge': 'NIMBUS_MEASURE_HOST=facet FILL=huge node mem.js',
+    'facet-heap-huge': 'NIMBUS_MEASURE_HOST=facet NIMBUS_MEASURE_STORE=heap FILL=huge node mem.js',
   };
   for (const [arm, line] of Object.entries(arms)) {
     if (only && !only.has(arm)) continue;
     for (let rep = 0; rep < Math.min(REPS, 2); rep++) {
       await inSession(async (t, sid) => {
         await setup(t, TREE);
+        // 16 MiB of random bytes, 21.6 MiB as base64: a store's worth to hold.
+        if (arm.endsWith('huge')) await setup(t, 'mkdir -p tree/huge && for f in $(seq 1 16); do head -c 1048576 /dev/urandom | base64 > tree/huge/h$f; done');
         await setup(t, heredoc('mem.js', NODE_MEM));
         // What a one-shot reads synchronously is staged by its next run (the residency ledger): learned first.
-        await setup(t, `MAX=1 ${line}`, 300_000);
+        await setup(t, `echo > max; ${line}; rm -f max`, 300_000);
         const r = await step(t, sid, { group: 'mem', arm, rep }, line, 300_000);
         const counts = [...r.output.matchAll(/^M (\d+)/gm)].map((m) => Number(m[1]));
         out({ group: 'mem', arm, rep, sid, headroomMiB: counts.length ? Math.max(...counts) : null });
@@ -223,6 +232,7 @@ async function recall() {
     const start = new Date().toISOString();
     await t.run('npm run dev > dev.log 2>&1 &', 60_000);
     const firstPaint = await previewServed(sid);
+    await fetch(`${BASE}/s/${sid}/preview/?__nimbus_measure=1`, { redirect: 'manual', headers: requestHeaders({}, sid) }).then((r) => r.text()).catch(() => {});
     out({ group: 'recall', scenario: 'dev-server-start', sid, start, end: new Date().toISOString(), firstPaintMs: firstPaint, delegations: { before, after: await delegations(sid) } });
     const files = (await t.run('ls src', 30_000)).output;
     const source = /\b(main\.[jt]sx?|App\.[jt]sx?|index\.[jt]sx?)\b/.exec(files)?.[1] ?? 'main.js';
@@ -233,10 +243,12 @@ async function recall() {
       await previewServed(sid, 30_000);
       await sleep(500);
     }
+    await fetch(`${BASE}/s/${sid}/preview/?__nimbus_measure=1`, { redirect: 'manual', headers: requestHeaders({}, sid) }).then((r) => r.text()).catch(() => {});
     out({ group: 'recall', scenario: 'edits-under-dev-server', sid, start: editStart, end: new Date().toISOString(), source, delegations: { before: edits, after: await delegations(sid) } });
     const statusBefore = await delegations(sid);
     const statusStart = new Date().toISOString();
     for (let i = 0; i < 3; i++) await t.run('ls -la src | head -3; cat package.json | head -3', 120_000);
+    await fetch(`${BASE}/s/${sid}/preview/?__nimbus_measure=1`, { redirect: 'manual', headers: requestHeaders({}, sid) }).then((r) => r.text()).catch(() => {});
     out({ group: 'recall', scenario: 'reads-under-dev-server', sid, start: statusStart, end: new Date().toISOString(), delegations: { before: statusBefore, after: await delegations(sid) } });
     const stopStart = new Date().toISOString();
     await t.run('kill %1; sleep 3', 60_000);
@@ -244,12 +256,12 @@ async function recall() {
   });
   await inSession(async (t, sid) => {
     await setup(t, 'nimbus install python');
-    await setup(t, heredoc('writer.py', "import time\nfor i in range(40):\n    with open('shared.txt', 'w') as h: h.write('v%d\\n' % i)\n    time.sleep(0.25)\nprint('done')\n"));
+    await setup(t, heredoc('writer.py', "import time\nfor i in range(40):\n    with open('work/shared.txt', 'w') as h: h.write('v%d\\n' % i)\n    time.sleep(0.25)\nprint('done')\n"));
     const before = await delegations(sid);
     const start = new Date().toISOString();
-    await t.run('python3 writer.py > writer.log 2>&1 &', 60_000);
+    await t.run('mkdir -p work; python3 writer.py > writer.log 2>&1 &', 60_000);
     await sleep(1000);
-    for (let i = 0; i < 16; i++) { await t.run('cat shared.txt', 30_000); await sleep(400); }
+    for (let i = 0; i < 16; i++) { await t.run('cat work/shared.txt', 30_000); await sleep(400); }
     await t.run('wait; cat writer.log', 120_000);
     out({ group: 'recall', scenario: 'reader-under-python-writer', sid, start, end: new Date().toISOString(), delegations: { before, after: await delegations(sid) } });
   });

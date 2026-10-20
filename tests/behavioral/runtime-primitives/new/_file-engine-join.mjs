@@ -59,7 +59,9 @@ for (const r of records) {
     g.outcomes[x.outcome] = (g.outcomes[x.outcome] ?? 0) + 1;
   }
   const measures = mine.flatMap((x) => x.logs ?? []).filter((l) => l.startsWith('[fs-measure] {')).map((l) => JSON.parse(l.slice('[fs-measure] '.length)));
-  const memProbe = mine.flatMap((x) => x.logs ?? []).filter((l) => l.startsWith('[mem-probe]')).map((l) => Number(l.split(' ')[1]));
+  const memLines = mine.flatMap((x) => x.logs ?? []).filter((l) => l.startsWith('[mem-probe]'));
+  const memProbe = memLines.filter((l) => !l.includes('held')).map((l) => Number(l.split(' ')[1]));
+  const memHeld = memLines.filter((l) => l.includes('held')).map((l) => Number(l.split(' ')[2]));
   const sess = session.filter((x) => x.at >= a && x.at <= b);
   console.log(JSON.stringify({
     ...r,
@@ -73,5 +75,6 @@ for (const r of records) {
     supervisorRpcCpuMs: Math.round(supervisorRpc.filter((x) => x.at >= a && x.at <= b).reduce((s, x) => s + x.cpuMs, 0)),
     measures,
     memProbeMax: memProbe.length ? Math.max(...memProbe) : null,
+    memHeld: memHeld.length ? memHeld[0] : null,
   }));
 }

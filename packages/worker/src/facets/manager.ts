@@ -2164,6 +2164,8 @@ ${nodeProgramRuntime(sources, entry.esModule)}
 
 async function __nimbusDispatchHttp(req, workerEnv, workerCtx) {
   await __nimbusEnsureStarted(workerEnv, workerCtx, __nimbusStartArgs);
+  // Measurement: a request that asks for it logs what this resident's store holds now.
+  if (String(req.url).includes("__nimbus_measure")) globalThis.__nimbusMeasureLog?.("node-resident-http");
   // Streaming dispatch lives in the node-shims http shim (globalThis.__nimbusServeHttp):
   // it returns the in-facet server's response as a streaming host Response the
   // moment headers are known, so SSE / chunked bodies flow live over the RPC
