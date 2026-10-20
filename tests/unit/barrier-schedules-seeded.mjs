@@ -10,7 +10,7 @@
  */
 
 import { runScenarios } from './lib/resident-body.mjs';
-import { ENGINES } from './lib/guest-engines.mjs';
+import { SCHEDULE_ENGINES as ENGINES } from './lib/guest-engines.mjs';
 import { generate, KNOWN_GAPS, runSchedule } from './lib/barrier-schedule.mjs';
 
 const realProcess = globalThis.process;

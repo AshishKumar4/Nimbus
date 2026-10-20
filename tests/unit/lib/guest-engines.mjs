@@ -5,7 +5,11 @@
  *     process a resident facet runs, driven through its own `fs`;
  *   - `holder`: the WASI body's (core runtime/wasi/resident-filesystem.ts and
  *     delegation-holder.ts), the filesystem __wasiFilesystem gives a guest
- *     that can park, called as its codec calls it.
+ *     that can park, called as its codec calls it;
+ *   - `eager` (the schedules' only, SCHEDULE_ENGINES): the same filesystem
+ *     over a store enumerated at boot, as Node's runs on it (vfs/resident
+ *     view.ts), asking a read lease with each barrier, its input arriving
+ *     with the session's answer for it (a delivery).
  * Both speak to the same session (createAuthority) through the same facet
  * supervisor (facetSupervisor), whose waves can be stalled and counted and
  * whose grants are watched, and log into the same kind of facet store.
@@ -28,9 +32,15 @@ import { PortRegistry } from '../../../packages/core/src/runtime/port-registry.t
 import { assumeGeneration } from '../../../packages/fabric/src/generation.ts';
 import { FacetManager } from '../../../packages/worker/src/facets/manager.ts';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
+import { residentFilesystem } from '../../../packages/core/src/runtime/wasi/resident-filesystem.ts';
+import { answeringSupervisor, supervisorFilesystem } from '../../../packages/core/src/runtime/vfs-supervisor.ts';
+import { createResidentStore } from '../../../packages/worker/src/vfs/resident/index.ts';
+import { _acquireOnDelivery } from '../../../packages/worker/src/session/rpc.ts';
 import { CRED, createAuthority, facetSql, facetSupervisor, launchResident, sleep, until } from './resident-body.mjs';
 
 export const ENGINES = ['node', 'holder'];
+/** The engines barrier schedules run on: the two a process runs, and the resident filesystem over an enumerated store. */
+export const SCHEDULE_ENGINES = ['node', 'holder', 'eager'];
 
 /** The process's project directory: the session user's own, where it writes. */
 export const APP = '/home/user/app';
@@ -186,6 +196,47 @@ async function holderBridge(supervisor) {
   });
 }
 
+/**
+ * The resident filesystem over a store enumerated at boot (as Node's runs
+ * on it), over `stub`: its waves and grants through the stub, its log in
+ * `sql`, a read lease asked with each barrier.
+ */
+async function eagerBridge(stub, sql) {
+  const supervisor = answeringSupervisor(stub);
+  const bridge = supervisorFilesystem(stub);
+  const store = createResidentStore();
+  store.bindInMemory(64 * 1024 * 1024);
+  store.admission.setStorage(undefined, supervisor);
+  const cursor = await supervisor.fsAcquire(null, 0, { namespace: true });
+  const boot = await store.sync.boot(() => ({}), { epoch: cursor.epoch, rev: cursor.rev }, supervisor, 0);
+  if (boot.failure) throw new Error(`the store did not enumerate: ${boot.failure}`);
+  const view = store.view.namespaceView(supervisor, (await bridge.stat('/')).dev, CRED);
+  const fs = residentFilesystem(bridge, view, {
+    session: {
+      openWriter: (first) => stub.openWaveWriter(first),
+      writeBatchStream: (stream, fence, owner) => (owner === undefined ? stub.writeBatchStream(stream, fence) : stub.writeBatchStream(stream, fence, owner)),
+      retireWriter: async (writer) => { await stub.retireWaveWriter(writer); },
+      grants: {
+        acquire: async (path, delegate) => await bridge.acquireExclusiveMutation(path, { delegate }),
+        release: async (owner) => { await bridge.releaseExclusiveMutation(owner); },
+        awaitRecall: async (owner, waitMs) => await bridge.awaitRecall(owner, waitMs),
+        recalled: async (owner, kind) => { await bridge.recalled(owner, kind); },
+      },
+    },
+    ...(typeof stub.fsReadDirectories === 'function' ? { readDirectories: (request) => supervisor.fsReadDirectories(request) } : {}),
+    isHomeRoot: (key) => key.startsWith('home/') && !key.slice('home/'.length).includes('/'),
+    journal: sqlJournal(sql),
+    readLeases: () => true,
+  });
+  // Its own calls answer as they are; the contract's are awaited, as a codec awaits them.
+  const direct = new Set(['acquireArgs', 'catchUp', 'inbound', 'stats']);
+  return new Proxy(fs, {
+    get: (target, name) => (name === 'copyFile' ? async (from, to) => target.copyFile(from, to, { keepMode: true })
+      : direct.has(name) ? target[name].bind(target)
+        : typeof target[name] === 'function' ? async (...args) => target[name](...args) : target[name]),
+  });
+}
+
 /** Whether `work` settles while the session answers no wave (a timer of the host's, which no barrier holds). */
 export const answeredAtOnce = (work) => Promise.race([Promise.resolve(work).then(() => 'answered'), sleep(50).then(() => 'waiting')]);
 
@@ -201,7 +252,7 @@ export const answeredAtOnce = (work) => Promise.race([Promise.resolve(work).then
  * @param {{ seed?: (authority: any) => void, supervise?: Record<string, (call: (args: any[]) => Promise<any>, args: any[]) => Promise<any>>, stdin?: boolean }} [options]
  */
 export async function bootEngine(kind, { seed, supervise = {}, stdin = false } = {}) {
-  if (!ENGINES.includes(kind)) throw new Error(`no engine ${kind}`);
+  if (!SCHEDULE_ENGINES.includes(kind)) throw new Error(`no engine ${kind}`);
   const authority = createAuthority(undefined, { sequenced: true });
   authority.kfs.mkdir('home/user/app', { recursive: true, mode: 0o755 });
   seed?.(authority);
@@ -238,6 +289,8 @@ export async function bootEngine(kind, { seed, supervise = {}, stdin = false } =
       if (listingFails) throw new Error('Network connection lost.');
       return forward('fsList', args);
     },
+    // An input the eager engine's process reads, delivered with the session's ACQUIRE for it (rpc.ts _acquireOnDelivery).
+    ...(kind === 'eager' ? { cpReadStdin: (args) => _acquireOnDelivery(authority.host, args) } : {}),
   };
   for (const [name, wrap] of Object.entries(supervise)) {
     const base = own[name] ?? ((...args) => forward(name, args));
@@ -258,6 +311,9 @@ export async function bootEngine(kind, { seed, supervise = {}, stdin = false } =
     await until(() => globalThis.__engineFs !== undefined, 'the process lends its fs');
     fs = nodeBridge(globalThis.__engineFs);
     sync = nodeSyncBridge(globalThis.__engineFs);
+  } else if (kind === 'eager') {
+    fs = await eagerBridge(handle.supervisor, sql);
+    sync = new Proxy(fs.synchronous, { get: (target, name) => (name === 'copyFile' ? (from, to) => target.copyFile(from, to, { keepMode: true }) : target[name]) });
   } else {
     globalThis.__nimbusFsJournalSql = sql;
     fs = await holderBridge(handle.supervisor);
@@ -298,6 +354,11 @@ export async function bootEngine(kind, { seed, supervise = {}, stdin = false } =
         return undefined;
       }
       if (kind === 'node') return globalThis.__nimbusVfsAcquireBarrier();
+      if (kind === 'eager') {
+        const args = fs.acquireArgs();
+        const delivered = args === null ? null : await own.cpReadStdin(args);
+        return fs.catchUp({ viaIo: true, ...(delivered ? { delivered } : {}) });
+      }
       fs.inbound();
       await fs.stat(APP);
     },

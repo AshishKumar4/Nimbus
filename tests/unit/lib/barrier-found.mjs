@@ -11,7 +11,7 @@
 
 import assert from 'node:assert/strict';
 import { createAuthority, facetSupervisor, launchResident, sleep, until } from './resident-body.mjs';
-import { APP, ENGINES, bootEngine } from './guest-engines.mjs';
+import { APP, SCHEDULE_ENGINES as ENGINES, bootEngine } from './guest-engines.mjs';
 import { runSchedule } from './barrier-schedule.mjs';
 import { scheduleTransport, supervisedFacet } from './schedule-transport.mjs';
 
@@ -85,6 +85,16 @@ const FOUND = {
     schedule: [['own', 'stat', 'd/f'], ['settle'], ['hold', 'wave'], ['own', 'rename', 'd/f', 'd/n'], ['settle'], ['stall'], ['own', 'rename', 'd', 'z'],
       ['input'], ['settle'], ['sync', 'stat', 'z/n'], ['sync', 'stat', 'd/n'], ['unstall'], ['release', 'wave'], ['settle'], ['sync', 'stat', 'z/n']],
   },
+  'a relist overtaken by a later barrier restores nothing it saw': {
+    schedule: [['own', 'stat', 'd/e/g'], ['settle'], ['root', 'chown', 'd', 0], ['root', 'chmod', 'd', 0o700], ['settle'], ['input'], ['settle'],
+      ['root', 'chmod', 'd', 0o755], ['settle'], ['hold', 'listing'], ['input'], ['settle'],
+      ['peer', 'unlink', 'd/e/g'], ['peer', 'write', 'd/f', 'f rewritten'], ['settle'], ['input'], ['settle'], ['release', 'listing'], ['settle'],
+      ['sync', 'stat', 'd/e/g'], ['sync', 'stat', 'd/f'], ['sync', 'readdir', 'd/e'], ['own', 'stat', 'd/e/g']],
+  },
+  'a refetch a later rewrite overtook is replaced before the barriers land': {
+    schedule: [['own', 'readFile', 'top'], ['settle'], ['peer', 'write', 'top', 'second!'], ['settle'], ['hold', 'lookup'], ['input'], ['settle'],
+      ['peer', 'write', 'top', 'third!!!'], ['settle'], ['input'], ['settle'], ['release', 'lookup'], ['settle'], ['sync', 'readFile', 'top']],
+  },
   'a file a call that cannot wait missed stays a miss until an awaited read answers it': {
     engines: ['node'],
     schedule: [['peer', 'write', 'new', 'not resident'], ['settle'], ['input'], ['settle'], ['sync', 'readFile', 'new'], ['own', 'stat', 'new'], ['settle']],
@@ -98,6 +108,14 @@ const GAPS = {
     shows: 'sync stat top answered file 644',
   },
   'a directory a call that cannot wait has not listed is not refused as a directory [holder]': {
+    lacks: 'its synchronous refusal names the call: a directory is EISDIR only to a call for bytes (notResident, the cutover)',
+    shows: 'answered EISDIR',
+  },
+  'an awaited chmod outside a grant is what the next call that cannot wait reads [eager]': {
+    lacks: 'O9: an awaited mutation outside a grant is decided by the provisional decisions (the cutover)',
+    shows: 'sync stat top answered file 644',
+  },
+  'a directory a call that cannot wait has not listed is not refused as a directory [eager]': {
     lacks: 'its synchronous refusal names the call: a directory is EISDIR only to a call for bytes (notResident, the cutover)',
     shows: 'answered EISDIR',
   },

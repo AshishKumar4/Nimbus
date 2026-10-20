@@ -270,6 +270,7 @@ export function generate(seed, steps = 40) {
 export const KNOWN_GAPS = Object.freeze({
   node: Object.freeze({ absentWhileRelisted: true }),
   holder: Object.freeze({ unshownAwaitedChange: true, refusedAsDirectory: true }),
+  eager: Object.freeze({ unshownAwaitedChange: true, refusedAsDirectory: true }),
 });
 
 /** A finding: the schedule, the step, and what was wrong there. */
@@ -394,6 +395,8 @@ export function createModel() {
     drop(record) { changes.splice(changes.indexOf(record), 1); },
     /** Whether `answer` (of read `op` of `rel`) is one the session's files gave between states `from` and `to` (`decided`: with every structural change of the process's own in flight shown). */
     admits: (op, rel, answer, from, to, decided = false) => worldsSeen(rel, from, to, decided).some((w) => answers(op, rel, answer, w)),
+    /** The state the latest change of `rel` (or above it) landed at; Infinity while one is in flight. */
+    touched: (rel) => Math.max(0, ...changes.filter((c) => c.domain.some((root) => under(rel, root))).map((c) => (c.done === null ? Infinity : c.done))),
     /** The state the latest structural change of the process's own in flight at or about `rel` began at, or 0. */
     decidedSince: (rel) => Math.max(0, ...changes.filter((c) => c.done === null && c.decides && c.domain.some((root) => under(rel, root) || under(root, rel))).map((c) => c.begun)),
     /** Whether a world between `from` and `to` holds, at `rel`, a file the process may read: what a refusal of its bytes (EAGAIN) can be about. */
@@ -414,7 +417,16 @@ export function createModel() {
 export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = {}, deadlineMs = 40_000 } = {}) {
   const note = (line) => { writeSync(2, `  | ${line}\n`); };
   note(`boot ${kind}`);
-  const lazy = kind === 'holder';
+  // A store listed on demand refuses a name it does not know; the resident
+  // filesystem over an enumerated one is let refuse it too (its completeness
+  // is the view's own tests', resident-view-eager).
+  const lazy = kind !== 'node';
+  /** Whether a barrier refetches the files it drops that the process held (B5): the resident filesystem's over an enumerated store. */
+  const refetches = kind === 'eager';
+  /** Inputs whose barrier has not landed. */
+  let inputsInFlight = 0;
+  /** Files whose bytes an awaited read of the process's answered, and no change of its own touched since. */
+  const resident = new Set();
   /** A poison the session answered, and no input landed since: a namespace that is not answering may refuse. */
   let poisoned = false;
   // Replies park at random once the process is up: its boot waits on replies no step releases.
@@ -460,7 +472,15 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
   const peerAt = [];
 
   /** Whether a call that cannot wait may be refused (EAGAIN): a view listed on demand, a namespace a poison stopped or a listing is moving, or bytes it does not hold of a file it may read. */
-  const refusable = (op, rel, from, to) => lazy || poisoned || transport.inFlight('listing') > 0 || (op === 'readFile' && model.readable(rel, from, to));
+  /**
+   * Whether a refusal of `rel`'s bytes is a miss the store owes: a file the
+   * process held, still there, every barrier since its last change landed
+   * (each refetches what it drops) and none in flight.
+   */
+  const owedBytes = (rel) => refetches && resident.has(rel) && inputsInFlight === 0 && !poisoned && transport.inFlight('listing') === 0
+    && model.world.get(rel)?.type === 'file' && model.touched(rel) <= landed;
+  const refusable = (op, rel, from, to) => (op === 'readFile' && owedBytes(rel) ? false
+    : lazy || poisoned || transport.inFlight('listing') > 0 || (op === 'readFile' && model.readable(rel, from, to)));
   const judge = (at, way, op, rel, answer, from, to) => {
     if (answer?.code === 'EAGAIN' && way === 'sync' && refusable(op, rel, from, to)) return;
     if (gaps.refusedAsDirectory && way === 'sync' && answer?.code === 'EISDIR' && model.worldsSeen(rel, from, to).some((world) => world.get(rel)?.type === 'dir')) return;
@@ -521,6 +541,7 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
     const finish = () => model.finish(record, () => {
       if (outside(way)) peerAt.push({ done: seq(), domain });
       else {
+        for (const rel of [...resident]) if (domain.some((root) => under(rel, root) || under(root, rel))) resident.delete(rel);
         if (way === 'sync' || !gaps.unshownAwaitedChange) for (const root of domain) ownAt.set(root, seq());
         unpublished = [...unpublished, ...domain];
       }
@@ -580,7 +601,8 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
     if (what === 'unstall') { stalled = false; return engine.release(); }
     if (what === 'input') {
       const arrived = seq();
-      return void track(engine.input().then(() => { landed = Math.max(landed, arrived); poisoned = false; }));
+      inputsInFlight++;
+      return void track(engine.input().then(() => { landed = Math.max(landed, arrived); poisoned = false; }).finally(() => { inputsInFlight--; }));
     }
     const [way, op, rel] = s;
     if (op === 'stat' || op === 'readFile' || op === 'readdir') {
@@ -594,7 +616,10 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
       const from = kind === 'node' ? seq() : bound;
       return void track(read(way, op, rel).then((answer) => {
         judge(at, way, op, rel, answer, from, seq());
-        if (op === 'readFile' && typeof answer === 'string') missed.delete(rel);
+        if (op === 'readFile' && typeof answer === 'string') {
+          missed.delete(rel);
+          if (model.touched(rel) !== Infinity) resident.add(rel);
+        }
       }).catch((error) => { failures.push(error); }));
     }
     if (begin(at, way, s) === 'wait') deferred.push([at, s]);
@@ -643,7 +668,7 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
       for (const way of ['own', 'sync']) {
         for (const op of ['stat', state?.type === 'dir' ? 'readdir' : 'readFile']) {
           const answer = await read(way, op, rel);
-          if (answer?.code === 'EAGAIN' && way === 'sync' && (lazy || (op === 'readFile' && model.readable(rel, seq(), seq())))) continue;
+          if (answer?.code === 'EAGAIN' && way === 'sync' && (op === 'readFile' ? !owedBytes(rel) && model.readable(rel, seq(), seq()) : lazy)) continue;
           if (answer?.code === 'EISDIR' && way === 'sync' && gaps.refusedAsDirectory && state?.type === 'dir') continue;
           if (!answers(op, rel, answer, world)) {
             throw new Finding(`at rest, ${way} ${op} ${rel || '.'} answered ${JSON.stringify(answer)}; the model holds ${describe(state)}`, end);
