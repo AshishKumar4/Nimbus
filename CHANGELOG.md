@@ -26,6 +26,7 @@ published independently in the `@nimbus-sh` npm scope.
   2000 were all it read, and a reset logged past them read as "no reset or
   overload error logged". A record still reads as incomplete when one
   millisecond alone fills a query, or after 64 queries.
+- Fixed: the shell's `node` refuses a hard link (`fs.link`, `fs.linkSync`, `fs.promises.link`) with `ENOSYS`, as the hosted `node` does: the filesystem has no hard links. Before, `linkSync` did nothing and returned, so the new name was never there. `truncate` and `ftruncate` (now also in callback form) check the length as Node does: a length that is not a number is `ERR_INVALID_ARG_TYPE`, and one that is not a safe integer is `ERR_OUT_OF_RANGE`.
 - Fixed: a Node program could be told a file, directory or link it had
   just renamed was not there (`fs.statSync` ENOENT, and renaming it again
   refused) when input arrived while the rename was still on its way to the
