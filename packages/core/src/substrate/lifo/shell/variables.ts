@@ -56,8 +56,10 @@ export function assignArray(store: VariableStore, name: string, array: (string |
 
 /** The highest index that holds a value, or -1: bash's array_max_index, past which `a+=(…)` goes on. */
 export function lastIndex(array: readonly (string | undefined)[]): number {
+  const end = array.length - 1;
+  if (end < 0 || array[end] !== undefined) return end;
+  // Past a removed last element: an array's own keys are its indices in order, the holes skipped, however high.
   let last = -1;
-  // An array's own keys are its indices in order, the holes skipped, however high the last.
   for (const key of Object.keys(array)) if (array[Number(key)] !== undefined) last = Number(key);
   return last;
 }
