@@ -608,10 +608,13 @@ export class PortRegistry {
       // part of the published @cloudflare/workers-types RequestInit,
       // so extend the type locally rather than casting the whole
       // init — that keeps typos in other fields caught by the compiler.
+      // The caller's signal goes with it: a re-run of a refused request
+      // (ProcessNotAdmitted.request) still ends when its caller leaves.
       const init: RequestInit & { duplex?: 'half' } = {
         method: request.method,
         headers,
         body: hasBody ? request.body : undefined,
+        signal: request.signal,
       };
       if (hasBody) init.duplex = 'half';
       forwarded = new Request(innerUrl, init);

@@ -31,11 +31,13 @@ adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
 const PORT = 20961;
 /** Each instance of a guest: how often a process started on it, and the requests it answered, each with that count. */
 const instances = [];
+/** While set, a process's start waits on it: a replacement still starting. */
+let startsHeld = null;
 const evaluate = () => {
   const instance = { starts: 0, answered: [] };
   instances.push(instance);
   return {
-    async startProcess() { instance.starts++; return { ok: true }; },
+    async startProcess() { instance.starts++; await startsHeld?.promise; return { ok: true }; },
     async handleHttpRequest(request) {
       const body = request.body === null ? '' : await request.text();
       instance.answered.push({ path: new URL(request.url).pathname, starts: instance.starts, body });
@@ -99,7 +101,21 @@ const turns = async () => { for (let i = 0; i < 200; i++) await new Promise((res
   const third = await viaPort('/after-idle-again');
   assert.equal(third.status, 200, `the next request is answered too: ${await third.text()}`);
   assert.notEqual(ports.get(PORT)?.pid, served, 'by another new process');
-  console.log('  [1] a request to the port of a process whose idle host was replaced runs once on a new process, body and all, and again after the next');
+  // A caller that leaves while the replacement starts: its re-run ends with it, and runs nowhere.
+  await turns();
+  world.replace(world.liveFacets()[0]);
+  startsHeld = Promise.withResolvers();
+  const caller = new AbortController();
+  const startsBefore = instances.reduce((n, instance) => n + instance.starts, 0);
+  const abandoned = viaPort('/abandoned', { method: 'POST', body: 'left', signal: caller.signal }).then((r) => r.status, (error) => error.name);
+  for (let i = 0; i < 400 && instances.reduce((n, instance) => n + instance.starts, 0) === startsBefore; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+  caller.abort();
+  startsHeld.resolve();
+  startsHeld = null;
+  assert.notEqual(await abandoned, 200, 'the abandoned request is not answered');
+  await turns();
+  assert.deepEqual(answered('/abandoned'), [], 'and its re-run ran nowhere');
+  console.log('  [1] a request to the port of a process whose idle host was replaced runs once on a new process, body and all, again after the next, and not when its caller left');
 }
 
 // ── 2. through the process's own facet ──────────────────────────────────────
