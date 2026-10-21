@@ -14,6 +14,12 @@ published independently in the `@nimbus-sh` npm scope.
   - Its env defaults to the session shell's exported environment.
   - `signalProcess`, `writeProcessInput` and `endProcessInput` reach a started program as the child broker's. Every other process keeps its own routes.
   - A scoped session (one named shell or identity) refuses it with EPERM: a start names neither.
+- Added: a session's files answer as Node's `fs` needs them, over Workers RPC and the remote API alike.
+  - `files.stat` and `files.lstat` carry all of stat(2): `dev`, `ino`, `nlink`, `uid`, `gid`, `mode`, `size`, `atime`, `mtime` and `ctime`.
+  - `files.mkdir(path, { recursive, mode })` is mkdir(2). With no options it stays `mkdir -p`.
+  - `files.unlink` and `files.rmdir` are their own calls, so unlinking a directory is EISDIR and removing a file with rmdir is ENOTDIR (`files.delete` is unchanged).
+  - New calls: `appendFile`, `symlink`, `realpath`, `truncate`, `utimes` (milliseconds; `followSymlinks: false` for a link's own times) and `chown` (a null side keeps the file's).
+- Changed: over the remote API, a call that fails with an errno keeps Node's fields. The response carries `code`, `errno`, `syscall` and `path` (and `dest`), with status 404 for ENOENT, 403 for EACCES/EPERM/EROFS, 409 for EEXIST/ENOTEMPTY/EBUSY, 500 for EIO, 503 for EHOSTDOWN, and 400 for any other errno. `NimbusRemoteError` exposes them. Before, every such failure was `E_NIMBUS_REMOTE_RPC` with status 500 and a message only.
 
 ## 2026-10-21: platform 0.15.0, core 0.26.0, fabric 0.21.0, worker 0.24.0, sdk 0.20.0, react 0.4.2, cli 0.2.11, loom 0.3.4, create-nimbus-app 0.2.7 (config 0.3.2 and the runtimes unchanged)
 

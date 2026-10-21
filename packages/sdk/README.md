@@ -252,6 +252,16 @@ await box.files.rename('/home/user/example-app/a.txt', '/home/user/example-app/b
 await box.files.chmod('/home/user/example-app/b.txt', 0o755);
 await box.files.readRange('/home/user/example-app/b.txt', 0, 64);
 await box.files.delete('/home/user/example-app/b.txt');
+// Node's fs calls, one for one; a failure carries Node's code, errno, syscall and path, over HTTP too
+await box.files.mkdir('/home/user/example-app/cache', { mode: 0o700 }); // mkdir(2); with no options, mkdir -p
+await box.files.appendFile('/home/user/example-app/log.txt', 'line\n');
+await box.files.symlink('log.txt', '/home/user/example-app/latest');
+await box.files.realpath('/home/user/example-app/latest');
+await box.files.truncate('/home/user/example-app/log.txt', 0);
+await box.files.utimes('/home/user/example-app/log.txt', Date.now(), Date.now()); // milliseconds
+await box.files.chown('/home/user/example-app/log.txt', null, 1000);
+await box.files.unlink('/home/user/example-app/latest');   // EISDIR for a directory
+await box.files.rmdir('/home/user/example-app/cache');     // ENOTDIR, ENOTEMPTY as rmdir(2)
 
 await box.runtimes.available();
 await box.runtimes.installed();
