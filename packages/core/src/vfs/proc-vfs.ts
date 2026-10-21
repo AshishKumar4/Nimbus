@@ -15,16 +15,11 @@
  */
 import { CA_CERTIFICATES_PEM } from './ca-certificates.generated.js';
 import { immutableChanges } from './immutable-changes.js';
+import { PROC_FILES, type ProcGenerator } from './proc-files.js';
 import type { SyncVFS, VFS, VfsChanges, VfsCred, VfsDirent, VfsStat } from './vfs.js';
 import { syscallError } from './vfs-error.js';
 import { posixAccess } from './posix-access.js';
 
-/**
- * A /proc file's content, for the credential of the process reading it (null:
- * the embedder's view): text made when read, or bytes made once and shared,
- * which a whole-file read copies and a stat or ranged read does not.
- */
-export type ProcGenerator = (cred: VfsCred | null) => string | Uint8Array;
 
 const enc = new TextEncoder();
 /** A directory's and a file's mode and owner: what their stats say and their access asks. */
@@ -159,47 +154,7 @@ const CA_CERTIFICATES = enc.encode(CA_CERTIFICATES_PEM);
  */
 export function standardProc(): ProcVFS {
   const proc = new ProcVFS();
-  proc.register('cpuinfo', () => {
-    const cores = typeof navigator !== 'undefined' ? navigator.hardwareConcurrency ?? 1 : 1;
-    const lines: string[] = [];
-    for (let i = 0; i < cores; i++) {
-      lines.push(`processor\t: ${i}`, 'model name\t: Browser Virtual CPU', `cpu cores\t: ${cores}`, '');
-    }
-    return lines.join('\n');
-  });
-  proc.register('meminfo', () => {
-    const memory = ((globalThis as { performance?: unknown }).performance as {
-      memory?: { jsHeapSizeLimit: number; usedJSHeapSize: number; totalJSHeapSize: number };
-    } | undefined)?.memory;
-    if (!memory) return ['MemTotal:       2097152 kB', 'MemFree:        1048576 kB', 'MemUsed:        1048576 kB', ''].join('\n');
-    const totalKB = Math.floor(memory.jsHeapSizeLimit / 1024);
-    const usedKB = Math.floor(memory.usedJSHeapSize / 1024);
-    return [
-      `MemTotal:       ${totalKB} kB`,
-      `MemFree:        ${totalKB - usedKB} kB`,
-      `MemUsed:        ${usedKB} kB`,
-      `HeapTotal:      ${Math.floor(memory.totalJSHeapSize / 1024)} kB`,
-      '',
-    ].join('\n');
-  }, true);
-  proc.register('uptime', () => {
-    const seconds = typeof performance !== 'undefined' ? (performance.now() / 1000).toFixed(2) : '0.00';
-    return `${seconds} ${seconds}\n`;
-  }, true);
-  proc.register('version', () => `Lifo 1.0.0 (${typeof navigator !== 'undefined' ? navigator.userAgent : 'Node.js'})\n`);
+  for (const [name, { generate, volatile }] of Object.entries(PROC_FILES)) proc.register(name, generate, volatile);
   proc.register(CA_CERTIFICATES_FILE.slice('/proc/'.length), () => CA_CERTIFICATES);
-  proc.register('net/info', () => {
-    const conn = typeof navigator !== 'undefined'
-      ? (navigator as unknown as { connection?: { effectiveType?: string; downlink?: number; rtt?: number; type?: string } }).connection
-      : undefined;
-    if (!conn) return 'Network information not available\n';
-    return [
-      `type:          ${conn.type ?? 'unknown'}`,
-      `effectiveType: ${conn.effectiveType ?? 'unknown'}`,
-      `downlink:      ${conn.downlink ?? 0} Mbps`,
-      `rtt:           ${conn.rtt ?? 0} ms`,
-      '',
-    ].join('\n');
-  }, true);
   return proc;
 }

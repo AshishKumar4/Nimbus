@@ -33,6 +33,7 @@ import { runtimeStatOf } from '../vfs/runtime-stat.js';
 import { FS_LIST_PAGE_LIMIT, MOUNT_LIST_NAME_LIMIT } from '../constants.js';
 import { DevVFS } from '../vfs/dev-vfs.js';
 import { ProcVFS, standardProc } from '../vfs/proc-vfs.js';
+import { PROC_MOUNT_POINT } from '../vfs/proc-files.js';
 import { sqliteFiles } from '../vfs/sqlite-files.js';
 import { isVfsError, syscallError, toVfsError, VfsError } from '../vfs/vfs-error.js';
 import { beforeSubtree, normalizeVfsPath } from '../vfs/path.js';
@@ -357,7 +358,7 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     this.vfs.guardMutations((cred, path, owner) => engine.mutationRefusal(path, cred, owner));
     this.proc = standardProc();
     this.proc.register('mounts', (cred) => formatProcMounts(this.mounts(cred ?? CRED_KERNEL)));
-    this.vfs.mount('/proc', this.proc);
+    this.vfs.mount(PROC_MOUNT_POINT, this.proc);
     this.vfs.mount('/dev', new DevVFS());
     // A read lease vouches for what is the engine's, which a mount or an unmount moves.
     this.vfs.watchMounts(() => engine.breakReadLeases());
@@ -768,7 +769,7 @@ interface MountListing {
 }
 
 /** The kernel's own filesystems: fed (their trees fixed: immutable-changes.ts), so never walked. */
-const KERNEL_MOUNT_POINTS: Record<string, true> = { '/proc': true, '/dev': true };
+const KERNEL_MOUNT_POINTS: Record<string, true> = { [PROC_MOUNT_POINT]: true, '/dev': true };
 
 /**
  * Entries one page of ProcessView.scan reads in one slice of the thread.

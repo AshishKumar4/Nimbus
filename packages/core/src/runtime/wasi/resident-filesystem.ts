@@ -51,7 +51,9 @@ import type { ReadDirectorySupervisor } from '../read-directory-batch.js';
 import type { VfsAcquireResult } from '../os-contracts.js';
 import type { ProcessFsClient, ProcessFsJournal, ProcessFsOp, ProcessFsSession, ProcessFsStats } from '../../_shared/process-fs-client.js';
 import type { WaveTimers } from '@nimbus-sh/platform/wave-writer.js';
-import { rootOf, type FeedPosition } from '../feed-position.js';
+import { feedPointOf, rootOf, type FeedPosition } from '../feed-position.js';
+import { PROC_MOUNT_POINT, volatileProcFile } from '../../vfs/proc-files.js';
+import { isCharacterDevice } from '../../vfs/vfs.js';
 
 /** A name as the store holds it: its lstat, and a symlink's text. */
 export interface ResidentEntry {
@@ -652,7 +654,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       if (key === '') { step = walk.next(ROOT_FOR_WALK); continue; }
       const entry = store.entry(key);
       if (entry === undefined) return { missing: key };
-      if (entry !== null && entry.dev !== store.device) return DELEGATE;
+      if (entry !== null && !answerable(key, entry)) return DELEGATE;
       step = walk.next(entry === null ? null : { type: entry.type, mode: entry.mode, uid: entry.uid, gid: entry.gid });
     }
   };
@@ -848,9 +850,46 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   const entryAt = (key: string): ResidentEntry | null | undefined => {
     const entry = store.entry(key);
     if (entry === undefined) return undefined;
-    if (entry !== null && entry.dev !== store.device) return undefined;
+    if (entry !== null && !answerable(key, entry)) return undefined;
     return entry;
   };
+
+  /**
+   * Whether the view answers for `entry` at `key`: a row of a fed mount
+   * (the session's own filesystem, or a mount whose backend states its
+   * change model: VFS.changes, /dev and /proc among them), never one of a
+   * mount without a feed (a snapshot its listing walked), which is the
+   * session's to answer. A row is its fed mount's where its device is that
+   * mount's root's (the deepest fed mount point at or above it): a mount
+   * without a feed beneath it has a device of its own.
+   */
+  const answerable = (key: string, entry: ResidentEntry): boolean => {
+    if (entry.dev === store.device) return true;
+    const cursor = store.cursor();
+    if (cursor === null) return false;
+    const point = feedPointOf(cursor, key).slice(1);
+    if (point === '') return false;
+    const root = point === key ? entry : store.entry(point);
+    return root !== undefined && root !== null && root.dev === entry.dev;
+  };
+
+  /**
+   * The bytes of a volatile /proc file (proc-files.ts), made here at each
+   * read by the session's own generator: what its row (size 0, as procfs
+   * says) cannot hold, and no fetch could keep current. Undefined for any
+   * other file.
+   */
+  const generated = (key: string, entry: ResidentEntry): Uint8Array | undefined => {
+    const cursor = store.cursor();
+    if (entry.size !== 0 || cursor === null || feedPointOf(cursor, key) !== PROC_MOUNT_POINT) return undefined;
+    const generate = volatileProcFile(key.slice(PROC_MOUNT_POINT.length));
+    if (generate === undefined) return undefined;
+    const content = generate({ ...store.cred, umask: 0 });
+    return typeof content === 'string' ? new TextEncoder().encode(content) : content.slice();
+  };
+
+  /** A file whose bytes the view never holds: a device's (read by a descriptor of the session's), or one made at each read (generated). */
+  const unheld = (key: string, entry: ResidentEntry): boolean => isCharacterDevice(entry.mode) || generated(key, entry) !== undefined;
 
   /**
    * A file's bytes: what this process decided for it, else the store's,
@@ -1112,7 +1151,9 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     // As the authority checks: permission before what kind of name it is.
     if (!modeAllows(entry, 4, store.cred)) throw fsError('EACCES', 'open', path);
     if (entry.type === 'directory') throw fsError('EISDIR', 'open', path);
-    if (entry.type !== 'file' || entry.size > WASI_RESIDENT_FILE_CAP_BYTES) return DELEGATE;
+    if (entry.type !== 'file' || entry.size > WASI_RESIDENT_FILE_CAP_BYTES || isCharacterDevice(entry.mode)) return DELEGATE;
+    const made = generated(key, entry);
+    if (made !== undefined) return made;
     return after(contentOf(key, entry), (bytes) => (bytes === undefined ? DELEGATE : bytes));
   }), () => authority.readFile(path, options));
 
@@ -1285,7 +1326,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
    */
   const openByNumber = (path: RuntimeFsPath, flags: RuntimeOpenFlags): RuntimeOpenedFile => {
     if (flags.directory) throw NOT_NOW;
-    return heldOpen(provisionally(path, flags.followSymlinks !== false, (key, row) => holder!.provisional.open(key, pathOf(path), flags, row)));
+    return heldOpen(provisionally(path, flags.followSymlinks !== false, (key, row) => (row !== null && unheld(key, row) ? undefined
+      : holder!.provisional.open(key, pathOf(path), flags, row))));
   };
 
   /**

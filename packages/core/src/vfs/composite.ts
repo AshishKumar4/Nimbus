@@ -867,7 +867,8 @@ export class CompositeVFS implements VFS {
       for (const entry of delta.paths) {
         const at = CompositeVFS.reroot(mount.point, entry.path);
         if (this.feedShows(at, mount)) {
-          paths.push(at === entry.path ? entry : { ...entry, path: at });
+          paths.push(at === entry.path && mount.dev === null ? entry
+            : { ...entry, path: at, ...(entry.stat ? { stat: this.identifyListed(mount, at, entry.stat) } : {}) });
           continue;
         }
         // A covered row changing is nothing to the reader, except at a
@@ -921,7 +922,7 @@ export class CompositeVFS implements VFS {
         for (const entry of page.entries) {
           const at = CompositeVFS.reroot(point, entry.path);
           if (past(at) && this.feedShows(at, mount) && at !== point) {
-            entries.push(at === entry.path ? entry : { ...entry, path: at });
+            entries.push(at === entry.path && mount.dev === null ? entry : { ...entry, path: at, stat: this.identifyListed(mount, at, entry.stat) });
           }
         }
         more = page.next !== null;
@@ -2939,6 +2940,17 @@ export class CompositeVFS implements VFS {
   private identityOf(r: Resolution): string {
     const operand = r.operand;
     return operand !== undefined && r.spelling !== r.path ? `${operand.point}\0${operand.rel}` : r.path;
+  }
+
+  /** A fed mount's listed or reported stat at `at`, identified as `stat` there says it (identifyOn): its mount's device, its inode numbered where it has none. */
+  private identifyListed(mount: Mount, at: string, stat: RuntimeVfsStat): RuntimeVfsStat {
+    if (mount.dev === null) return stat;
+    let ino = stat.ino;
+    if (ino === 0) {
+      ino = mount.inos.get(at);
+      if (ino === undefined) mount.inos.set(at, ino = mount.inos.size + 1);
+    }
+    return { ...stat, dev: mount.dev, ino };
   }
 
   /** `identify`, on the mount `identity` was found on (a pin's, which may since have left its point). */
