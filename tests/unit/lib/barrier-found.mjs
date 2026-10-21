@@ -250,6 +250,10 @@ const FOUND = {
       ['sync', 'write', 'top', 'c5891.5'], ['own', 'unlink', 'd/f'], ['own', 'rmdir', 'x'], ['own', 'mkdir', 'd/e'], ['own', 'write', 'd/e/g', 'c5891.7'], ['release', 'delivery'],
       ['hold', 'listing'], ['own', 'readdir', 'x/h'], ['release', 'delivery'], ['sync', 'readdir', 'd/e'], ['sync', 'write', 'top', 'c5891.8'], ['release', 'listing']],
   },
+  'a file the process renamed away keeps its size while a new file is written at its old name (6113)': {
+    park: 6113,
+    schedule: [['sync', 'rename', 'x/h', 'd/n'], ['own', 'write', 'x/h', 'c6113.1'], ['sync', 'stat', 'd/n']],
+  },
   'a file fetched in batches that the process read stays resident past a repair (4033)': {
     park: 4033,
     schedule: [['poison'], ['own', 'stat', 'x'], ['sync', 'readdir', 'd/e'], ['own', 'readFile', 'mid'], ['sync', 'readFile', 'x/e/g'], ['release', 'listing'],
@@ -300,6 +304,11 @@ const GAPS = {
   'an awaited read of a file the session holds is answered, not refused (5425) [node]': {
     lacks: 'S refuses an awaited read EAGAIN where the session holds the file (closed by the cutover: RF waits for its fill); meanwhile fs.promises.readFile can reject EAGAIN',
     shows: 'own readFile x/e/g answered EAGAIN',
+  },
+  'a file the process renamed away keeps its size while a new file is written at its old name (6113) [node]': {
+    lacks: 'S gives a write in flight at a name the size of the file it renamed away from that name (closed by the cutover: RF keeps own state by identity); '
+      + 'meanwhile statSync of the renamed file can report the size of the file being written at its old name',
+    shows: 'sync stat d/n answered file 644 size 7',
   },
   'an awaited read of a directory a peer moved is answered, not refused (5786) [node]': {
     lacks: 'S refuses an awaited read EAGAIN where the session answers it (closed by the cutover: RF waits for the session); meanwhile fs.promises.readFile can reject EAGAIN',
