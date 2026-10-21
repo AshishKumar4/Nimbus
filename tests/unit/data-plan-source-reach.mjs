@@ -11,11 +11,19 @@
 //     superset for braces in the directory part;
 //   - a `..` its alternatives could spell climbs a directory, so the reach
 //     still covers `{../a,../b}/x`; a range spells no dot;
-//   - Kinu's two paths each answer in bounded time, and the sheet's other
-//     sources are still held.
+//   - leading braces that may spell a `/` reach from `/`; escapes in the
+//     static part are decoded, as an expansion decodes them;
+//   - a directory the walk's rules leave out (node_modules) that a source
+//     names is walked, below an outside reach or inside the project, its
+//     links out followed;
+//   - Kinu's two paths each answer in bounded time (in a child, so a return
+//     to expansion fails as a timeout, not a hung test), and the sheet's
+//     other sources are still held.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import * as dataPlan from '../../packages/worker/src/facets/data-plan.ts';
+import { runBoundedProcess } from '../../scripts/lib/bounded-process.mjs';
 
 const { planStylesheetSources } = dataPlan;
 const sourceReach = (path) => {
@@ -51,17 +59,19 @@ check('a `..` an alternative could spell', () => {
   assert.equal(sourceReach('lib/{1..9}/{2..4}/x'), 'lib', 'a range spells no dot');
 });
 
-check("Kinu's paths, in bounded time", () => {
-  const nested = '{'.repeat(4999) + '}'.repeat(4999);
-  const commas = '{a,'.repeat(1999) + '}'.repeat(1999);
-  const range = 'src/{1..100000000}/x.html';
-  const started = performance.now();
-  assert.equal(sourceReach(nested), '.');
-  assert.equal(sourceReach(commas), '.');
-  assert.equal(sourceReach(range), 'src');
-  assert.equal(sourceReach('{'.repeat(200_000) + '.'.repeat(4)), './../..', 'any depth, without recursion');
-  const ms = performance.now() - started;
-  assert.ok(ms < 1000, `${ms.toFixed(0)} ms`);
+check('leading braces that may spell a `/`', () => {
+  assert.equal(sourceReach('{/srv/ui,/opt/ui}/**/*.tsx'), '/');
+  assert.equal(sourceReach('{,relative}/srv/ui/**'), '/', 'an empty alternative before a `/`');
+  assert.equal(sourceReach('{{,x}/srv,y}/z'), '/', 'nested');
+  assert.equal(sourceReach('{a,b}/x'), '.');
+  assert.equal(sourceReach('{1..9}/x'), '.', 'a range spells a character');
+});
+
+check('escapes in the static part', () => {
+  assert.equal(sourceReach('../back\\\\slash/{a,b}/x.html'), '../back\\slash', 'an escaped backslash is one');
+  assert.equal(sourceReach('../back\\\\slash'), '../back\\slash', 'with no glob character too');
+  assert.equal(sourceReach('lit\\{x\\}/y'), 'lit{x}/y', 'an escaped brace is no glob character');
+  assert.equal(sourceReach('a\\*b/c*'), 'a*b');
 });
 
 check('the worker depends on no braces', () => {
@@ -70,49 +80,93 @@ check('the worker depends on no braces', () => {
   assert.deepEqual(named.filter((name) => /braces/.test(name)), []);
 });
 
-// The plan over a sheet holding both of Kinu's paths and a source of its own.
-{
-  const files = {
-    'home/user/app/src/index.css': [
-      '@import "tailwindcss";',
-      `@source "${'{'.repeat(4999) + '}'.repeat(4999)}";`,
-      '@source "../../huge/{1..100000000}/x.html";',
-      '@source "../../kit/**/*.{ts,tsx}";',
-    ].join('\n'),
-    'home/user/kit/Button.tsx': 'b',
-    'home/user/huge/1/x.html': 'h',
+/** A stand-in for the namespace a plan reads: `files` by path, `links` from path to target. */
+function namespace(files, links = {}) {
+  const real = (path) => {
+    for (const [from, to] of Object.entries(links)) if (path === from || path.startsWith(`${from}/`)) return to + path.slice(from.length);
+    return path;
   };
-  const source = {
-    readText: async (path) => files[path] ?? null,
+  const kindOf = (path) => {
+    if (Object.hasOwn(files, path)) return 'file';
+    return Object.keys(files).some((name) => name.startsWith(`${path}/`)) ? 'directory' : null;
+  };
+  return {
+    readText: async (path) => files[real(path)] ?? null,
     stat: async (path) => {
-      if (Object.hasOwn(files, path)) return { kind: 'file', size: files[path].length };
-      return Object.keys(files).some((name) => name.startsWith(`${path}/`)) ? { kind: 'directory', size: 0 } : null;
+      const kind = kindOf(real(path));
+      return kind === null ? null : { kind, size: kind === 'file' ? files[real(path)].length : 0 };
     },
-    linkTarget: async () => null,
+    linkTarget: async (path) => {
+      const target = links[path.replace(/^\//, '')];
+      return target === undefined ? null : `/${target}`;
+    },
     readdir: async (dir) => {
+      const at = real(dir);
       const below = new Map();
-      for (const name of Object.keys(files)) {
-        if (!name.startsWith(`${dir}/`)) continue;
-        const rest = name.slice(dir.length + 1);
+      for (const name of [...Object.keys(files), ...Object.keys(links)]) {
+        if (!name.startsWith(`${at}/`)) continue;
+        const rest = name.slice(at.length + 1);
         const slash = rest.indexOf('/');
-        below.set(rest.slice(0, slash < 0 ? undefined : slash), slash < 0 ? 'file' : 'directory');
+        const child = rest.slice(0, slash < 0 ? undefined : slash);
+        below.set(child, Object.hasOwn(links, `${at}/${child}`) ? 'symlink' : slash < 0 ? 'file' : 'directory');
       }
-      return [...below].map(([name, kind]) => ({ path: `${dir}/${name}`, kind, size: kind === 'file' ? files[`${dir}/${name}`].length : 0 }));
+      return [...below].map(([name, kind]) => ({ path: `${dir}/${name}`, kind, size: kind === 'file' ? files[`${at}/${name}`].length : 0 }));
     },
   };
-  const started = performance.now();
-  let planned = null;
-  try {
-    planned = await planStylesheetSources(source, { cwd: '/home/user/app', home: '/home/user', sheets: ['home/user/app/src/index.css'] });
-  } catch (error) {
-    failures.push(`the plan over Kinu's sheet threw: ${error.message}`);
+}
+const held = async (files, sheet, cwd, links) => {
+  const planned = await planStylesheetSources(namespace(files, links), { cwd, home: '/home/user', sheets: [sheet] });
+  return { held: planned.files.map((file) => file.path).sort(), roots: planned.roots };
+};
+
+try {
+  const { held: absolute } = await held({
+    'home/user/app/src/index.css': '@import "tailwindcss";\n@source "{/srv/ui,/opt/ui}/**/*.tsx";\n',
+    'srv/ui/A.tsx': 'a', 'opt/ui/B.tsx': 'b',
+  }, 'home/user/app/src/index.css', '/home/user/app');
+  if (!absolute.includes('srv/ui/A.tsx') || !absolute.includes('opt/ui/B.tsx')) failures.push(`absolute alternatives are held: ${JSON.stringify(absolute)}`);
+
+  const { held: escaped } = await held({
+    'home/user/app/src/index.css': '@import "tailwindcss";\n@source "../../back\\\\\\\\slash/{a,b}/x.html";\n',
+    'home/user/back\\slash/a/x.html': 'x',
+  }, 'home/user/app/src/index.css', '/home/user/app');
+  if (!escaped.includes('home/user/back\\slash/a/x.html')) failures.push(`an escaped backslash names its directory: ${JSON.stringify(escaped)}`);
+
+  const { held: selected, roots: selectedRoots } = await held({
+    'home/user/theme/theme.css': '@import "tailwindcss";\n@source "../{shared/node_modules/ui,kit}/**/*.tsx";\n',
+    'home/user/shared/node_modules/ui/Card.tsx': 'c',
+    'home/user/kit/Button.tsx': 'b',
+  }, 'home/user/theme/theme.css', '/home/user/app');
+  if (!selected.includes('home/user/shared/node_modules/ui/Card.tsx') || !selected.includes('home/user/kit/Button.tsx')) {
+    failures.push(`a node_modules a source names is walked: ${JSON.stringify(selected)}`);
   }
-  const ms = performance.now() - started;
-  if (planned !== null) {
-    const held = planned.files.map((file) => file.path).sort();
-    if (!held.includes('home/user/kit/Button.tsx')) failures.push(`the sheet's other source is held: ${JSON.stringify(held)}`);
-    if (!held.includes('home/user/huge/1/x.html')) failures.push(`the range's directory is held: ${JSON.stringify(held)}`);
-    if (ms > 2000) failures.push(`the plan took ${ms.toFixed(0)} ms`);
+  if (!selectedRoots.includes('/home/user/shared/node_modules/ui')) failures.push(`and pushed as its own root, below which push excludes it not: ${JSON.stringify(selectedRoots)}`);
+
+  const { held: linked } = await held({
+    'home/user/app/theme.css': '@import "tailwindcss";\n@source "./{node_modules/ui,other}/**/*.tsx";\n',
+    'home/user/app/other/Plain.tsx': 'p',
+    'srv/ui/Linked.tsx': 'l',
+  }, 'home/user/app/theme.css', '/home/user/app', { 'home/user/app/node_modules/ui': 'srv/ui' });
+  if (!linked.includes('srv/ui/Linked.tsx')) failures.push(`a link out of a named node_modules in the project is followed: ${JSON.stringify(linked)}`);
+  if (linked.includes('home/user/app/other/Plain.tsx')) failures.push(`the project's own files are the project rule's: ${JSON.stringify(linked)}`);
+} catch (error) {
+  failures.push(`a plan threw: ${error.stack}`);
+}
+
+// Kinu's paths, through sourceReach and a plan, in a child bounded in time.
+{
+  const child = await runBoundedProcess(process.execPath, [fileURLToPath(new URL('./lib/source-reach-hazards.mjs', import.meta.url))], { timeoutMs: 30_000, name: 'source-reach-hazards' });
+  if (!child.ok) {
+    failures.push(`Kinu's paths: ${child.reason || `exit ${child.code}`}: ${String(child.stderr).slice(-600)}`);
+  } else {
+    const found = JSON.parse(String(child.stdout).trim().split('\n').pop());
+    try {
+      assert.deepEqual(found.reach, { nested: '.', commas: '.', range: 'src', deep: './../..' });
+      assert.ok(found.held.includes('home/user/kit/Button.tsx'), `the sheet's other source is held: ${JSON.stringify(found.held)}`);
+      assert.ok(found.held.includes('home/user/huge/1/x.html'), `the range's directory is held: ${JSON.stringify(found.held)}`);
+    } catch (error) {
+      failures.push(`Kinu's paths: ${error.message}`);
+    }
   }
 }
 
