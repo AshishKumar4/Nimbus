@@ -18,7 +18,7 @@ import type { ResidentSupervisor } from './supervisor.js';
 import { arrayIsArray, arrayPush, arrayShift, mathMax, NumberOf, SafeList, SafeMap } from '@nimbus-sh/core/_shared/primordials.js';
 
 export interface Admission {
-  /** Whether the store is a one-shot's heap rather than a facet's SQLite. */
+  /** Whether the store is a one-shot's heap rather than a facet's storage. */
   readonly inHeap: boolean;
   readonly cap: number | null;
   /** Everything the cap counts. */
@@ -41,7 +41,7 @@ export interface Admission {
   /**
    * Why a one-shot's namespace may not grow by `bytes`, or null: the cap is
    * one budget, and a namespace that does not fit cannot be described. Only a
-   * one-shot's heap is judged here; a facet's SQLite is admitted as it grows.
+   * one-shot's heap is judged here; a facet's storage is admitted as it grows.
    */
   namespaceRefusal(bytes: number): string | null;
   /** namespaceRefusal of a row put into the heap tables, growing them by `growth` (the overlay and reserve beside them, not pins). */

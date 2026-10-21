@@ -2,32 +2,22 @@
 // One evaluation of the staged library, two differently backed processes.
 // No module reload or fresh realm can accidentally provide their isolation.
 import assert from 'node:assert/strict';
-import { Database } from 'bun:sqlite';
 import './lib/launch-captures.mjs';
 import { nodeFacetSources } from './lib/node-facet-sources.mjs';
+import { facetStorage } from './lib/fake-do-kv.mjs';
+import { facetSql } from './lib/resident-body.mjs';
 
 const text = nodeFacetSources('').residentStore;
 const library = /** @type {typeof import('../../packages/worker/src/vfs/resident/index.ts')} */ (
   new Function(text + '\nreturn __nimbusResidentModule;')()
 );
-const db = new Database(':memory:');
-const sql = {
-  exec(query, ...params) {
-    if (/^\s*(CREATE|INSERT|UPDATE|DELETE|REPLACE)/i.test(query)) {
-      db.query(query).run(...params);
-      return [];
-    }
-    return db.query(query).all(...params);
-  },
-  get databaseSize() { return 0; },
-};
 const sqlReads = new Set();
 const heapReads = new Set();
 const sqlite = library.createResidentStore({ observeRead: (path) => sqlReads.add(path) });
 const heap = library.createResidentStore({ observeRead: (path) => heapReads.add(path) });
 
 try {
-  sqlite.bind({ storage: { sql } });
+  sqlite.bind({ storage: facetStorage(facetSql()) });
   heap.bindInMemory(1024 * 1024);
   sqlite.namespace.setCred({ uid: 1000, gid: 1000, groups: [1000] });
   heap.namespace.setCred({ uid: 2000, gid: 2000, groups: [2000] });

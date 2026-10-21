@@ -11,8 +11,9 @@
  *
  * `bytes` is what the rows take (each key's UTF-8 and its value serialized),
  * the share of the database's size they are on the platform. `meter`, when
- * given, counts each read call and the file content (a string or bytes value)
- * the reads hand back.
+ * given, counts each read call (`reads`) and the bytes of file content the
+ * reads hand back (`contentBytes`: the store's chunk and page rows, tags C
+ * and P in kv-tables.ts).
  */
 import { serialize } from 'bun:jsc';
 
@@ -31,8 +32,10 @@ export function fakeDoKv({ meter } = {}) {
   const sizes = new Map();
   let sorted = null;
   const keys = () => (sorted ??= [...rows.keys()].sort(utf8Order));
-  const read = (value) => {
-    if (meter && (typeof value === 'string' || value instanceof Uint8Array)) meter.contentBytes += typeof value === 'string' ? value.length : value.byteLength;
+  const read = (key, value) => {
+    if (meter && (key[0] === 'C' || key[0] === 'P') && (typeof value === 'string' || value instanceof Uint8Array)) {
+      meter.contentBytes += typeof value === 'string' ? value.length : value.byteLength;
+    }
     return structuredClone(value);
   };
   const storage = {
@@ -63,7 +66,7 @@ export function fakeDoKv({ meter } = {}) {
     kv: {
       get(key) {
         if (meter) meter.reads++;
-        return rows.has(key) ? read(rows.get(key)) : undefined;
+        return rows.has(key) ? read(key, rows.get(key)) : undefined;
       },
       /** @param {{ start?: string, end?: string, prefix?: string, reverse?: boolean, limit?: number }} [options] */
       *list(options = {}) {
@@ -76,7 +79,7 @@ export function fakeDoKv({ meter } = {}) {
         let n = 0;
         for (const key of all) {
           if (n++ >= limit) return;
-          if (rows.has(key)) yield [key, read(rows.get(key))];
+          if (rows.has(key)) yield [key, read(key, rows.get(key))];
         }
       },
     },
@@ -85,14 +88,19 @@ export function fakeDoKv({ meter } = {}) {
   return storage;
 }
 
+const storages = new WeakMap();
+
 /**
  * A process facet's `ctx.storage`: its key-value storage (fakeDoKv) and its
  * SQL (`sql`, a facetSql-shaped shim: the write journal's) over one database,
- * as on the platform, whose `databaseSize` is what both hold.
+ * as on the platform, whose `databaseSize` is what both hold. One a SQL: a
+ * store bound again over the same facet (a restart) finds the rows it left.
  * @param {any} sql
  * @param {{ meter?: { reads: number, contentBytes: number } }} [options]
  */
 export function facetStorage(sql, options = {}) {
+  const kept = storages.get(sql);
+  if (kept) return kept;
   const storage = fakeDoKv(options);
   const pages = () => {
     for (const row of sql.exec('SELECT page_count * page_size AS n FROM pragma_page_count(), pragma_page_size()')) return Number(row.n);
@@ -101,5 +109,6 @@ export function facetStorage(sql, options = {}) {
   const shared = new Proxy(sql, {
     get: (target, name) => (name === 'databaseSize' ? pages() + storage.bytes : Reflect.get(target, name)),
   });
-  return Object.assign(storage, { sql: shared });
+  storages.set(sql, Object.assign(storage, { sql: shared }));
+  return storage;
 }

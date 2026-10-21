@@ -11,11 +11,12 @@
  * it died in. So the rows are SQLite's (the same database, its __cf_kv
  * table), written without the gate, and read synchronously.
  *
- * The answers are the SQL backing's (tables.ts sqlTables), row for row and in
- * its order: keys are the rows' primary keys under one tag each, compared as
- * SQLite compares TEXT (by UTF-8 bytes), with numbers zero-padded so their
- * order is numeric. A value that is listed in a scan (a chunk's, a page's)
- * has a key-only index beside it, so a scan never reads the bytes.
+ * Its answers are the tables' (tables.ts ResidentTables), in their key order:
+ * keys are the rows' primary keys under one tag each, compared by UTF-8
+ * bytes, with numbers zero-padded so their order is numeric; the one-shot's
+ * heap answers alike (resident-store-backings). A value that is listed in a
+ * scan (a chunk's, a page's) has a key-only index beside it, so a scan never
+ * reads the bytes.
  */
 
 import { RK_OWN_WRITE, NS_DIR, RESIDENT_SCHEMA, type ChunkRow, type FileByKey, type FileHead, type FileRow, type NsChild, type NsKey, type NsRow, type PageRow, type ResidentTables, type RowsChanged } from './tables.js';
@@ -30,13 +31,14 @@ export interface ResidentKv {
   };
   put(key: string, value: unknown, options: { allowUnconfirmed: boolean }): unknown;
   delete(keys: string | string[], options: { allowUnconfirmed: boolean }): unknown;
-  readonly sql?: { readonly databaseSize?: number };
+  /** The facet's SQL, the same database: its size is the store's (bytes()); an earlier Nimbus's store tables are dropped from it (store.bind). */
+  readonly sql?: { readonly databaseSize?: number; exec?(query: string, ...bindings: unknown[]): Iterable<Record<string, unknown>> };
 }
 
 const UNCONFIRMED = { allowUnconfirmed: true };
 /** The most keys one delete takes (the storage API's bound). */
 const DELETE_BATCH = 128;
-/** Between a key's parts: below every character a path or name holds, so a composite key sorts as its parts do (SQL's (parent, name)). */
+/** Between a key's parts: below every character a path or name holds, so a composite key sorts as its parts do ((parent, name)). */
 const SEP = '\u0001';
 /** Decimal, padded past Number.MAX_SAFE_INTEGER's 16 digits: key order is numeric order. */
 const pad = (n: number): string => stringOf(NumberOf(n)).padStart(17, '0');
@@ -56,8 +58,9 @@ const END = { [FILE]: StringFromCharCode(0x47), [NS]: StringFromCharCode(0x4f) }
 
 /**
  * A file's head row: [kind, size, chunks, rev, ckey, seq]. `seq` orders the
- * rows of one content key as SQLite's rowids do (each INSERT OR REPLACE is a
- * new, highest rowid; an UPDATE keeps it), so fileByKey picks the same file.
+ * rows of one content key by when their head was made (a new head is the
+ * latest; a revision change keeps its place), as the heap's set does, so
+ * fileByKey picks the same file in both.
  */
 type FileValue = [number, number, number, number, string | null, number];
 /** A page's row, kept apart from its bytes: [used, size]. */
@@ -201,7 +204,7 @@ export function kvTables(storage: ResidentKv, rowsChanged: RowsChanged = () => {
     },
     fileDelete(path) { writeRows(path, () => { deleteFile(path); }); },
     fileByKey(ckey, notPath) {
-      // The first that can be copied, in the ckey index's order (rowid), as SQL's LIMIT 1 takes it.
+      // The first that can be copied, in the ckey index's order (seq).
       for (const [key] of kv.list({ prefix: BY_CKEY + stringOf(ckey) + SEP })) {
         const path = key.slice(key.indexOf(SEP) + 1 + 17 + 1);
         if (path === notPath) continue;
@@ -252,7 +255,7 @@ export function kvTables(storage: ResidentKv, rowsChanged: RowsChanged = () => {
     chunkCopy(to, from) {
       const parts = new SafeList<[string, unknown]>();
       for (const [key, value] of kv.list({ prefix: CHUNK + from + SEP })) parts[parts.length] = [key.slice(key.lastIndexOf(SEP) + 1), value];
-      // One statement in SQLite: a conflicting part fails the whole copy, and nothing lands.
+      // One step: a conflicting part fails the whole copy, and nothing lands.
       for (let i = 0; i < parts.length; i++) {
         if (kv.get(CHUNK_KEYS + to + SEP + parts[i][0]) !== undefined) throw new Error('UNIQUE constraint failed: chunk.path, chunk.part');
       }
@@ -307,7 +310,7 @@ export function kvTables(storage: ResidentKv, rowsChanged: RowsChanged = () => {
       drop(keys);
     },
     pageOldest(limit) {
-      // SQL's ORDER BY used, path, rev, part: the index's key order.
+      // Least recently used first; ties by path, rev, part: the index's key order.
       const out = new SafeList<PageRow>();
       for (const [key, value] of kv.list({ prefix: PAGE_USED, limit })) {
         const { path, rev, part } = unpage(key.slice(1 + 17 + 1));

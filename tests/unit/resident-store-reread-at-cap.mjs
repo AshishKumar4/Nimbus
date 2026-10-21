@@ -15,6 +15,7 @@ import assert from 'node:assert/strict';
 import { createResidentStore } from '../../packages/worker/src/vfs/resident/index.ts';
 import { RESIDENT_CHUNK_BYTES } from '../../packages/worker/src/vfs/facet-resident-limits.ts';
 import { facetSql } from './lib/resident-body.mjs';
+import { facetStorage } from './lib/fake-do-kv.mjs';
 
 const enc = new TextEncoder();
 const CURSOR = { poison: false, paths: [], epoch: 'e1', rev: 7 };
@@ -33,7 +34,7 @@ const FILES = {
 // leave them (text as text); then its allowance is exactly what it holds,
 // and the session's ledger has no more.
 const store = createResidentStore();
-store.bind({ storage: { sql: facetSql() } });
+store.bind({ storage: facetStorage(facetSql()) });
 store.cells.admit(CURSOR);
 const ledger = { fsStorageGrant: async () => ({ granted: 0 }) };
 store.admission.setStorage({ facet: 'proc-slot-0', grant: 64 * 1024 * 1024 }, ledger);

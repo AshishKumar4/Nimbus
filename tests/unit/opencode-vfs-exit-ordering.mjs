@@ -12,6 +12,7 @@
 // Each disposition runs in a child process of its own (importOpencodeRunner).
 
 import assert from 'node:assert/strict';
+import { facetStorage } from './lib/fake-do-kv.mjs';
 
 const realProcess = globalThis.process;
 const realExit = realProcess.exit.bind(realProcess);
@@ -73,7 +74,7 @@ if (mode) {
     let answered = false;
     const run = mode === 'oneshot'
       ? runner.default.fetch(new Request('http://facet/run', { method: 'POST', body: JSON.stringify({ env: terminal }) }), { SUPERVISOR: supervisor })
-      : new runner.NimbusProcess({ storage: { sql: facetSql() }, waitUntil() {}, id: { toString: () => 'exit-ordering' } }, { SUPERVISOR: supervisor }).startProcess({ env: terminal });
+      : new runner.NimbusProcess({ storage: facetStorage(facetSql()), waitUntil() {}, id: { toString: () => 'exit-ordering' } }, { SUPERVISOR: supervisor }).startProcess({ env: terminal });
     void run.then(() => { answered = true; }, () => { answered = true; });
 
     await until(() => events.includes('write'), 'the program\'s write to reach the session', 10_000);

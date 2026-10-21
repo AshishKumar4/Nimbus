@@ -27,6 +27,7 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
 import { createResidentStore } from '../../packages/worker/src/vfs/resident/index.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { attachSupervisorOps } from './lib/session-supervisor-ops.mjs';
+import { facetStorage } from './lib/fake-do-kv.mjs';
 
 const ROOT = resolve(import.meta.dirname, '../..');
 const dec = new TextDecoder();
@@ -34,7 +35,7 @@ const dec = new TextDecoder();
 /** A fresh typed store over its own SQLite. */
 function loadStore() {
   const store = createResidentStore();
-  store.bind({ storage: { sql: createSqliteVfsTestHarness().sql } });
+  store.bind({ storage: facetStorage(createSqliteVfsTestHarness().sql) });
   // The launch's data plan names every file here: this test is about how the
   // store keeps what it holds, not about what it is asked to hold.
   store.sync.setPlan(Array.from({ length: FILES }, (_, i) => `app/d${Math.floor(i / 100)}/f${i}.dat`));
@@ -342,7 +343,7 @@ if (fixturePath) {
       fsStorageGrant: async () => ({ granted: 0 }),
     };
     const store = createResidentStore();
-    store.bind({ storage: { sql: createSqliteVfsTestHarness().sql } });
+    store.bind({ storage: facetStorage(createSqliteVfsTestHarness().sql) });
     // No plan and no push roots: a repair refetches only what it dropped.
     store.sync.setPlan([]);
     store.sync.adoptModuleBundle({}, { epoch: vfs.epoch, rev: vfs.revision() });
