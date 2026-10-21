@@ -20,9 +20,9 @@ export const VFS_WRITE_LEDGER_BUILD_ID: string = "f7b8d03b5040098e";
 export const VFS_WRITE_LEDGER_SHA256: string = "f7b8d03b5040098ed8a8344ed1b9a1f9b40db082b923d0d33bdb29563d4cf722";
 
 /** src/vfs/resident/index.ts, bundled by scripts/resident-store-bundle.mjs */
-export const RESIDENT_STORE_ENTRY: string = "/_assets/runtime/resident-store-b04ad4934ada5fc9.js";
-export const RESIDENT_STORE_BUILD_ID: string = "b04ad4934ada5fc9";
-export const RESIDENT_STORE_SHA256: string = "b04ad4934ada5fc9c5c317d5a445482e839943f7a2c50feb42931e0f47c1b1f7";
+export const RESIDENT_STORE_ENTRY: string = "/_assets/runtime/resident-store-be8fce82f7f592aa.js";
+export const RESIDENT_STORE_BUILD_ID: string = "be8fce82f7f592aa";
+export const RESIDENT_STORE_SHA256: string = "be8fce82f7f592aae09577003276129d4cc39a91aedae59d289e896a248c6c24";
 
 /** @nimbus-sh/core src/interpreter/primordials.ts, bundled by scripts/interpreter-bundle.mjs */
 export const JS_INTERPRETER_PRIMORDIALS_ENTRY: string = "/_assets/runtime/js-interpreter-primordials-eb58a6d5234006d4.js";

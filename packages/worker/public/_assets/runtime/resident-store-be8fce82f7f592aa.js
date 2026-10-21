@@ -3323,7 +3323,10 @@ var __nimbusResidentModule = (() => {
   // src/vfs/resident/kv-tables.ts
   var UNCONFIRMED = { allowUnconfirmed: true };
   var DELETE_BATCH = 128;
-  var SEP = "";
+  var SEP = "";
+  var RESERVED = /[\u0000\u0001]/;
+  var encodePart = (text) => RESERVED.test(text) ? text.replace(/[\u0000\u0001]/g, (c) => c === "\0" ? "" : "") : text;
+  var decodePart = (text) => text.indexOf("") < 0 ? text : text.replace(/\u0001[\u0002\u0003]/g, (c) => c === "" ? "\0" : "");
   var pad = (n) => stringOf(NumberOf(n)).padStart(17, "0");
   var FILE = "F";
   var CHUNK = "C";
@@ -3366,19 +3369,22 @@ var __nimbusResidentModule = (() => {
       return out;
     };
     const rangeOf = (tag, from, to) => ({
-      start: tag + from,
-      end: to === null ? END[tag] : tag + to
+      start: tag + encodePart(from),
+      end: to === null ? END[tag] : tag + encodePart(to)
     });
-    const fileKey = (path) => FILE + path;
+    const fileKey = (path) => FILE + encodePart(path);
     const fileOf = (path) => kv.get(fileKey(path));
-    const chunkKey = (path, part) => CHUNK + path + SEP + pad(part);
-    const chunkIndex = (path, part) => CHUNK_KEYS + path + SEP + pad(part);
-    const byKey = (row, path) => BY_CKEY + row[4] + SEP + pad(row[5]) + SEP + path;
-    const nsKey2 = (parent, name) => NS + parent + SEP + name;
-    const pageTail = (path, rev, part) => path + SEP + pad(rev) + SEP + pad(part);
+    const chunkKey = (path, n) => CHUNK + encodePart(path) + SEP + pad(n);
+    const chunkIndex = (path, n) => CHUNK_KEYS + encodePart(path) + SEP + pad(n);
+    const byKeyPrefix = (ckey) => BY_CKEY + encodePart(ckey) + SEP;
+    const byKey = (row, path) => byKeyPrefix(row[4]) + pad(row[5]) + SEP + encodePart(path);
+    const nsKey2 = (parent, name) => NS + encodePart(parent) + SEP + encodePart(name);
+    const nsChildren = (parent) => NS + encodePart(parent) + SEP;
+    const pageTail = (path, rev, n) => encodePart(path) + SEP + pad(rev) + SEP + pad(n);
+    const NUMBER = SEP.length + 17;
     const unpage = (tail) => {
-      const at = tail.length - 2 * 18;
-      return { path: tail.slice(0, at), rev: NumberOf(tail.slice(at + 1, at + 18)), part: NumberOf(tail.slice(at + 19)) };
+      const at = tail.length - 2 * NUMBER;
+      return { path: decodePart(tail.slice(0, at)), rev: NumberOf(tail.slice(at + SEP.length, at + NUMBER)), part: NumberOf(tail.slice(at + NUMBER + SEP.length)) };
     };
     const chunkRow = (value) => typeof value === "string" ? { txt: value, bin: null } : { txt: null, bin: value };
     const setFile = (path, kind, size, chunks, rev, ckey) => {
@@ -3400,7 +3406,7 @@ var __nimbusResidentModule = (() => {
       dropOne(fileKey(path));
     };
     const deleteChunks = (path) => {
-      const parts = keysOf({ prefix: CHUNK_KEYS + path + SEP });
+      const parts = keysOf({ prefix: CHUNK_KEYS + encodePart(path) + SEP });
       const keys = new SafeList();
       for (let i = 0; i < parts.length; i++) {
         keys[keys.length] = parts[i];
@@ -3416,14 +3422,14 @@ var __nimbusResidentModule = (() => {
     };
     const files = () => {
       const out = new SafeList();
-      for (const [key, value] of kv.list({ prefix: FILE })) out[out.length] = [key.slice(1), value];
+      for (const [key, value] of kv.list({ prefix: FILE })) out[out.length] = [decodePart(key.slice(1)), value];
       return out;
     };
     const chunkPaths = () => {
       const out = new SafeList();
       let last = null;
       for (const [key] of kv.list({ prefix: CHUNK_KEYS })) {
-        const path = key.slice(1, key.lastIndexOf(SEP));
+        const path = decodePart(key.slice(1, key.lastIndexOf(SEP)));
         if (path !== last) {
           out[out.length] = path;
           last = path;
@@ -3447,7 +3453,7 @@ var __nimbusResidentModule = (() => {
       const out = new SafeList();
       for (const [key, value] of kv.list(options)) {
         const at = key.indexOf(SEP);
-        out[out.length] = [{ parent: key.slice(1, at), name: key.slice(at + 1) }, value];
+        out[out.length] = [{ parent: decodePart(key.slice(1, at)), name: decodePart(key.slice(at + SEP.length)) }, value];
       }
       return out;
     };
@@ -3509,8 +3515,9 @@ var __nimbusResidentModule = (() => {
         });
       },
       fileByKey(ckey, notPath) {
-        for (const [key] of kv.list({ prefix: BY_CKEY + stringOf(ckey) + SEP })) {
-          const path = key.slice(key.indexOf(SEP) + 1 + 17 + 1);
+        const prefix = byKeyPrefix(stringOf(ckey));
+        for (const [key] of kv.list({ prefix })) {
+          const path = decodePart(key.slice(prefix.length + NUMBER));
           if (path === notPath) continue;
           const row = fileOf(path);
           if (row !== void 0 && row[3] >= 0) return { path, kind: row[0], size: row[1], chunks: row[2] };
@@ -3519,7 +3526,7 @@ var __nimbusResidentModule = (() => {
       },
       filePaths(from, to) {
         const out = new SafeList();
-        for (const [key] of kv.list(rangeOf(FILE, from, to))) out[out.length] = key.slice(1);
+        for (const [key] of kv.list(rangeOf(FILE, from, to))) out[out.length] = decodePart(key.slice(1));
         return arrayCopy(out);
       },
       fileAny(from, to) {
@@ -3528,7 +3535,7 @@ var __nimbusResidentModule = (() => {
       },
       fileRevsIn(from, to) {
         const out = new SafeList();
-        for (const [key, value] of kv.list(rangeOf(FILE, from, to))) out[out.length] = { path: key.slice(1), rev: value[3] };
+        for (const [key, value] of kv.list(rangeOf(FILE, from, to))) out[out.length] = { path: decodePart(key.slice(1)), rev: value[3] };
         return arrayCopy(out);
       },
       fileAllPaths() {
@@ -3561,7 +3568,7 @@ var __nimbusResidentModule = (() => {
       },
       chunkParts(path) {
         const out = new SafeList();
-        for (const [, value] of kv.list({ prefix: CHUNK + path + SEP })) out[out.length] = chunkRow(value);
+        for (const [, value] of kv.list({ prefix: CHUNK + encodePart(path) + SEP })) out[out.length] = chunkRow(value);
         return arrayCopy(out);
       },
       chunkAddText(path, part, txt) {
@@ -3575,13 +3582,13 @@ var __nimbusResidentModule = (() => {
       },
       chunkCopy(to, from) {
         const parts = new SafeList();
-        for (const [key, value] of kv.list({ prefix: CHUNK + from + SEP })) parts[parts.length] = [key.slice(key.lastIndexOf(SEP) + 1), value];
+        for (const [key, value] of kv.list({ prefix: CHUNK + encodePart(from) + SEP })) parts[parts.length] = [key.slice(key.lastIndexOf(SEP) + SEP.length), value];
         for (let i = 0; i < parts.length; i++) {
-          if (kv.get(CHUNK_KEYS + to + SEP + parts[i][0]) !== void 0) throw new Error2("UNIQUE constraint failed: chunk.path, chunk.part");
+          if (kv.get(CHUNK_KEYS + encodePart(to) + SEP + parts[i][0]) !== void 0) throw new Error2("UNIQUE constraint failed: chunk.path, chunk.part");
         }
         for (let i = 0; i < parts.length; i++) {
-          put(CHUNK + to + SEP + parts[i][0], parts[i][1]);
-          put(CHUNK_KEYS + to + SEP + parts[i][0], 1);
+          put(CHUNK + encodePart(to) + SEP + parts[i][0], parts[i][1]);
+          put(CHUNK_KEYS + encodePart(to) + SEP + parts[i][0], 1);
         }
       },
       chunkDelete(path) {
@@ -3648,8 +3655,8 @@ var __nimbusResidentModule = (() => {
       pageOldest(limit) {
         const out = new SafeList();
         for (const [key, value] of kv.list({ prefix: PAGE_USED, limit })) {
-          const { path, rev, part } = unpage(key.slice(1 + 17 + 1));
-          out[out.length] = { path, rev, part, size: value };
+          const { path, rev, part: n } = unpage(key.slice(1 + NUMBER));
+          out[out.length] = { path, rev, part: n, size: value };
         }
         return arrayCopy(out);
       },
@@ -3686,7 +3693,7 @@ var __nimbusResidentModule = (() => {
         dropOne(nsKey2(parent, name));
       },
       nsDeleteChildren(parent) {
-        deleteKeys({ prefix: NS + parent + SEP });
+        deleteKeys({ prefix: nsChildren(parent) });
       },
       nsDeleteParents(from, to) {
         deleteKeys(rangeOf(NS, from, to));
@@ -3717,9 +3724,10 @@ var __nimbusResidentModule = (() => {
       },
       nsChildren(parent) {
         const out = new SafeList();
-        for (const [key, value] of kv.list({ prefix: NS + parent + SEP })) {
+        const prefix = nsChildren(parent);
+        for (const [key, value] of kv.list({ prefix })) {
           const row = value;
-          out[out.length] = { name: key.slice(key.indexOf(SEP) + 1), kind: row.kind, mode: row.mode };
+          out[out.length] = { name: decodePart(key.slice(prefix.length)), kind: row.kind, mode: row.mode };
         }
         return arrayCopy(out);
       },
