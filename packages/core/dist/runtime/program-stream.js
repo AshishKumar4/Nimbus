@@ -6,12 +6,13 @@
  * with Node's spawn error); then its output, as its reader takes it; then
  * its exit, waitpid's. Cancelling the stream before the start cancels the
  * start; after it, the program is sent SIGKILL. Decoded, its output is read
- * ahead a pipe's worth, so a program whose output fits is seen to exit with
- * that output unread.
+ * ahead a pipe's worth, and its exit is also waited for apart from the
+ * stream (ProgramControl.wait), so it is seen with any output unread.
  */
 import { z } from 'zod/v4';
 import { enc } from '../_shared/bytes.js';
 import { createFrameReader, frame } from './exec-stream.js';
+import { ExitStatusSchema } from './session-protocol.js';
 /** Content type of an HTTP body carrying an encoded program stream. */
 export const PROGRAM_STREAM_CONTENT_TYPE = 'application/vnd.nimbus.program-stream';
 const FRAME_STARTED = 1;
@@ -27,10 +28,6 @@ const StartedFrameSchema = z.object({ pid: z.number().int() });
 const RefusedFrameSchema = z.object({
     message: z.string(), code: z.string(), errno: z.number(), syscall: z.string(), path: z.string(), spawnargs: z.array(z.string()),
 });
-const ExitFrameSchema = z.union([
-    z.object({ code: z.number(), signal: z.null() }),
-    z.object({ code: z.null(), signal: z.string() }),
-]);
 const FailedFrameSchema = z.object({ message: z.string() });
 const json = (kind, value) => frame(kind, enc.encode(JSON.stringify(value)));
 /** Node's spawn error as the frame carries it: what a refused start rejects with. */
@@ -114,10 +111,10 @@ export function encodeProgramStream(start) {
 const parse = (schema, payload) => schema.parse(JSON.parse(new TextDecoder().decode(payload)));
 /**
  * The inverse of encodeProgramStream: resolved with the started program
- * (its kill sent through `signal`), or rejected with the start's error, Node's
- * spawn error with its own properties.
+ * (its kill and its exit through `control`), or rejected with the start's
+ * error, Node's spawn error with its own properties.
  */
-export async function decodeProgramStream(wire, signal, cancel) {
+export async function decodeProgramStream(wire, control, cancel) {
     const reading = createFrameReader(wire);
     // A caller that gives up before the start's answer cancels the stream: the start, or what it ran.
     const giveUp = () => { void reading.cancel(cancel?.reason); };
@@ -149,11 +146,32 @@ export async function decodeProgramStream(wire, signal, cancel) {
     if (first.kind !== FRAME_STARTED)
         throw new Error(first.kind === FRAME_FAILED ? parse(FailedFrameSchema, first.payload).message : `program stream: frame ${first.kind} before the start's answer`);
     const { pid } = parse(StartedFrameSchema, first.payload);
-    let settle = { resolve: () => { }, reject: () => { } };
-    const exit = new Promise((resolve, reject) => { settle = { resolve, reject }; });
+    let settled = false;
+    let resolveExit = () => { };
+    let rejectExit = () => { };
+    const exit = new Promise((resolve, reject) => { resolveExit = resolve; rejectExit = reject; });
     exit.catch(() => { });
-    // Read ahead of its reader up to a pipe's worth, as a pipe holds what a program wrote: a program whose
-    // output fits is seen to exit whether or not that output is read; one that writes more waits for its reader.
+    const settle = {
+        resolve(status) { if (!settled) {
+            settled = true;
+            resolveExit(status);
+        } },
+        reject(reason) { if (!settled) {
+            settled = true;
+            rejectExit(reason);
+        } },
+    };
+    // Its exit comes on a path of its own, so it is seen whatever of its output lies unread, as waitpid sees it
+    // whatever its pipe holds; the exit frame, after that output, says the same. Whichever comes first settles it.
+    const waiting = async () => {
+        while (!settled) {
+            const status = await control.wait(pid);
+            if (status !== null)
+                settle.resolve(status);
+        }
+    };
+    waiting().catch((error) => settle.reject(error));
+    // Read ahead of its reader up to a pipe's worth, as a pipe holds what a program wrote.
     const output = new ReadableStream({
         async pull(controller) {
             try {
@@ -165,7 +183,7 @@ export async function decodeProgramStream(wire, signal, cancel) {
                     return;
                 }
                 if (next.kind === FRAME_EXIT) {
-                    settle.resolve(parse(ExitFrameSchema, next.payload));
+                    settle.resolve(parse(ExitStatusSchema, next.payload));
                     controller.close();
                     return;
                 }
@@ -176,10 +194,10 @@ export async function decodeProgramStream(wire, signal, cancel) {
                 controller.error(error);
             }
         },
+        // Its program is killed (encodeProgramStream): the wait says how it ended.
         async cancel(reason) {
-            settle.reject(reason ?? new Error('program output cancelled'));
             await reading.cancel(reason);
         },
     }, { highWaterMark: PIPE_BYTES, size: (chunk) => chunk.data.byteLength });
-    return { pid, output, exit, kill: (sent) => signal(pid, sent) };
+    return { pid, output, exit, kill: (sent) => control.signal(pid, sent) };
 }

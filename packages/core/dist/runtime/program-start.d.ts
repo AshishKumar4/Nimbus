@@ -76,8 +76,9 @@ export interface ProgramInputSink {
  * `stdin`'s bytes into `sink`, in order, then its end, as a pipe's writer
  * gives them; a source that fails ends it there, as a writer that dies
  * closes its pipe. Once the program has ended (`ended`) or takes no more,
- * the source is let go: a read still waiting is cancelled. A sink that
- * fails lets the source go and is the caller's to hear.
+ * the source is let go: a read still waiting is cancelled. A sink that fails
+ * lets the source go with its error and ends the input; when that fails too
+ * it rejects, and the caller is left a program it can only kill.
  */
 export declare function feedProgramInput(stdin: ReadableStream<Uint8Array>, sink: ProgramInputSink, ended: Promise<unknown>): Promise<void>;
 //# sourceMappingURL=program-start.d.ts.map

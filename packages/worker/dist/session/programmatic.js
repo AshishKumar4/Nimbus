@@ -533,6 +533,19 @@ export async function rpcStartProgram(self, argv, options = {}) {
     };
     return encodeProgramStream((cancel) => workspace.startProgram(program, cancel));
 }
+/**
+ * Started program `pid`'s exit once it comes, or null after `waitMs` (at
+ * most a minute): its end, which its stream says only after the output it
+ * holds is read.
+ */
+export async function rpcWaitProgram(self, pid, waitMs = 25_000) {
+    await self.ensureRuntimeReady();
+    const workspace = self.runtimeWorkspace;
+    if (!workspace)
+        throw new Error('waitProgram: the session has no workspace');
+    const bound = Math.min(Math.max(0, Number(waitMs) || 0), 60_000);
+    return { exit: await workspace.waitProgram(Number(pid), bound) };
+}
 /** Whether `pid` is a program started by its argv: its input and signals are the broker's. */
 function startedProgram(self, pid) {
     return self.runtimeWorkspace?.isStartedProgram(pid) === true;
@@ -558,7 +571,7 @@ async function writeProcessBytes(self, pid, data, gone) {
  * while the write waits for room (its body cancelled) withdraws it.
  */
 export async function rpcWriteProcessInputStream(self, pid, data) {
-    await ensureProgrammaticReady(self);
+    await self.ensureRuntimeReady();
     const gone = new AbortController();
     const writing = writeProcessBytes(self, Number(pid), data, gone.signal);
     return new ReadableStream({

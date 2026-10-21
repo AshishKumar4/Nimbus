@@ -7,15 +7,28 @@
  * on, its output read as its reader takes it, its signals the broker's.
  */
 import type { ChildProcessManager } from '../runtime/child-process-manager.js';
-import { type Program, type StartedSessionProgram } from '../runtime/program-start.js';
+import { type ExitStatus, type Program, type StartedSessionProgram } from '../runtime/program-start.js';
 import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import type { VfsCred } from '../runtime/os-contracts.js';
 export interface ProgramHost {
     readonly children: ChildProcessManager;
     readonly processes: SessionProcessSupervisor;
     readonly cred: Readonly<VfsCred>;
-    /** The programs it started that have not ended. */
-    readonly started: Set<number>;
+    readonly started: StartedPrograms;
+}
+/**
+ * The programs startProgram started: each one's exit, waited for apart from
+ * its output (waitProgram), kept a minute past its end.
+ */
+export declare class StartedPrograms {
+    private readonly programs;
+    add(pid: number, exit: Promise<ExitStatus>): void;
+    /** Whether `pid` is one of them that has not ended. */
+    running(pid: number): boolean;
+    /** `pid`'s exit once it comes, or null once `waitMs` pass first; ESRCH for none of them. */
+    wait(pid: number, waitMs: number): Promise<ExitStatus | null>;
+    /** Forget those that ended more than EXIT_KEPT_MS ago. */
+    prune(): void;
 }
 /**
  * A program's input: the contract's (a stream to its end, or none: ended at

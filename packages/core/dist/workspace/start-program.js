@@ -3,6 +3,47 @@ import { exitCodeForSignal } from '../substrate/lifo/shell/signals.js';
 import { errnoOf } from '../vfs/vfs-error.js';
 /** How long one wait on the broker lasts before it is made again. */
 const WAIT_MS = 5000;
+/** How long an ended program's exit is kept for a wait that comes late. */
+const EXIT_KEPT_MS = 60_000;
+/**
+ * The programs startProgram started: each one's exit, waited for apart from
+ * its output (waitProgram), kept a minute past its end.
+ */
+export class StartedPrograms {
+    programs = new Map();
+    add(pid, exit) {
+        const record = { exit, endedAt: null };
+        this.programs.set(pid, record);
+        const ended = () => { record.endedAt = Date.now(); };
+        exit.then(ended, ended);
+    }
+    /** Whether `pid` is one of them that has not ended. */
+    running(pid) {
+        return this.programs.get(pid)?.endedAt === null;
+    }
+    /** `pid`'s exit once it comes, or null once `waitMs` pass first; ESRCH for none of them. */
+    async wait(pid, waitMs) {
+        const record = this.programs.get(pid);
+        if (record === undefined)
+            throw Object.assign(new Error(`waitProgram: no started program ${pid}`), { code: 'ESRCH', errno: -3 });
+        let timer = null;
+        const late = new Promise((resolve) => { timer = setTimeout(() => resolve(null), waitMs); });
+        try {
+            return await Promise.race([record.exit, late]);
+        }
+        finally {
+            clearTimeout(timer);
+        }
+    }
+    /** Forget those that ended more than EXIT_KEPT_MS ago. */
+    prune() {
+        const now = Date.now();
+        for (const [pid, record] of this.programs) {
+            if (record.endedAt !== null && now - record.endedAt > EXIT_KEPT_MS)
+                this.programs.delete(pid);
+        }
+    }
+}
 /**
  * `program` started (ExecDelegate.start's contract): resolved once it runs,
  * rejected with Node's spawn error (`code`, `errno`, `syscall: 'spawn
@@ -18,6 +59,7 @@ export async function startProgram(host, program, cancel) {
     const { children, processes } = host;
     // What ended a minute ago goes as a launch begins (NimbusWorkspace.runProcess's rule).
     await processes.reap();
+    host.started.prune();
     // Its parent: a process of its own, as an exec's, which ends with it.
     const parent = processes.spawn(program.argv.join(' '), [...program.argv], program.cwd, { cred: host.cred });
     let childPid = null;
@@ -62,9 +104,7 @@ export async function startProgram(host, program, cancel) {
         await release();
         throw spawnError(program.argv, { code: cancel.aborted ? 'ECANCELED' : heard.spawnError });
     }
-    host.started.add(pid);
-    const unlist = () => { host.started.delete(pid); };
-    ended.then(unlist, unlist);
+    host.started.add(pid, ended);
     if (program.stdin !== 'written')
         void pumpInput(children, pid, program.stdin, ended);
     const output = outputOf(children, pid, release, () => { ended.then(forget, forget); });
@@ -81,12 +121,12 @@ async function settleExit(children, processes, parentPid, childPid, heard) {
     processes.exit(parentPid, exit.signal === null ? exit.code : exitCodeForSignal(exit.signal.replace(/^SIG/, '')));
     return exit;
 }
-/** `stdin` into the child's input (feedProgramInput); none: ended at once. A write that fails ends it there. */
+/** `stdin` into the child's input (feedProgramInput); none: ended at once. One whose input cannot be ended is killed. */
 function pumpInput(children, childPid, stdin, ended) {
     if (stdin === null)
         return children.stdinEnd(childPid);
     const sink = { write: async (bytes) => (await children.stdinWrite(childPid, bytes)).ok, end: () => children.stdinEnd(childPid) };
-    return feedProgramInput(stdin, sink, ended).catch(() => children.stdinEnd(childPid));
+    return feedProgramInput(stdin, sink, ended).catch(() => { children.kill(childPid, 'SIGKILL'); });
 }
 /**
  * The child's stdout and stderr as one stream of chunks, in the order the

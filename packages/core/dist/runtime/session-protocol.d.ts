@@ -254,6 +254,14 @@ export declare const SessionDestroyResultSchema: z.ZodObject<{
     reason: z.ZodNullable<z.ZodString>;
 }, z.core.$strip>;
 export type SessionDestroyResult = z.infer<typeof SessionDestroyResultSchema>;
+/** waitpid(2)'s answer: an exit code, or the signal that ended it. */
+export declare const ExitStatusSchema: z.ZodUnion<readonly [z.ZodObject<{
+    code: z.ZodNumber;
+    signal: z.ZodNull;
+}, z.core.$strip>, z.ZodObject<{
+    code: z.ZodNull;
+    signal: z.ZodString;
+}, z.core.$strip>]>;
 /** JSON answers after the common wire codec; execStream travels as a byte stream. */
 declare const SessionResultSchemas: {
     ready: z.ZodObject<{
@@ -438,6 +446,15 @@ declare const SessionResultSchemas: {
     signalProcess: z.ZodObject<{
         ok: z.ZodBoolean;
         pid: z.ZodNumber;
+    }, z.core.$strip>;
+    waitProgram: z.ZodObject<{
+        exit: z.ZodNullable<z.ZodUnion<readonly [z.ZodObject<{
+            code: z.ZodNumber;
+            signal: z.ZodNull;
+        }, z.core.$strip>, z.ZodObject<{
+            code: z.ZodNull;
+            signal: z.ZodString;
+        }, z.core.$strip>]>>;
     }, z.core.$strip>;
     processLogs: z.ZodObject<{
         pid: z.ZodNumber;
@@ -685,6 +702,8 @@ export interface SessionRpc {
     _rpcEndProcessInput(pid: number): Promise<SessionResult<'endProcessInput'>>;
     _rpcResizeProcess(pid: number, size: SessionTerminalSize): Promise<SessionResult<'resizeProcess'>>;
     _rpcSignalProcess(pid: number, signal: string): Promise<SessionResult<'signalProcess'>>;
+    /** A started program's exit once it comes, or null once `waitMs` pass: its end apart from its output. */
+    _rpcWaitProgram(pid: number, waitMs?: number): Promise<SessionResult<'waitProgram'>>;
     _rpcProcessLogs(pid: number, options?: SessionProcessLogsOptions): Promise<SessionProcessLogs>;
     _rpcListPorts(): Promise<SessionPort[]>;
     _rpcExposePort(port: number, options?: SessionExposeOptions): Promise<SessionResult<'exposePort'>>;

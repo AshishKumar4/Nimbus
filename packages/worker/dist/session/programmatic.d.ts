@@ -180,16 +180,26 @@ export declare function rpcKillProcess(self: ProgrammaticHost, pid: number): Pro
  * parent's.
  */
 export declare function rpcStartProgram(self: Pick<ProgrammaticHost, 'ensureRuntimeReady' | 'runtimeWorkspace'>, argv: string[], options?: SessionStartProgramOptions): Promise<ReadableStream<Uint8Array>>;
+/**
+ * Started program `pid`'s exit once it comes, or null after `waitMs` (at
+ * most a minute): its end, which its stream says only after the output it
+ * holds is read.
+ */
+export declare function rpcWaitProgram(self: Pick<ProgrammaticHost, 'ensureRuntimeReady' | 'runtimeWorkspace'>, pid: number, waitMs?: number): Promise<{
+    exit: import("@nimbus-sh/core/runtime/program-start.js").ExitStatus | null;
+}>;
 export declare function rpcWriteProcessInput(self: ProgrammaticHost, pid: number, data: string | Uint8Array): Promise<{
     ok: boolean;
     pid: number;
 }>;
+/** What a byte write reaches: the session's process table, and its workspace's started programs. */
+type ProcessBytesHost = Pick<ProgrammaticHost, 'ensureRuntimeReady' | 'runtimeWorkspace' | 'processes'>;
 /**
  * A byte write as the remote API makes it: its answer, the JSON envelope a
  * remote call answers with, is the body of a stream, so a client that leaves
  * while the write waits for room (its body cancelled) withdraws it.
  */
-export declare function rpcWriteProcessInputStream(self: ProgrammaticHost, pid: number, data: Uint8Array): Promise<ReadableStream<Uint8Array>>;
+export declare function rpcWriteProcessInputStream(self: ProcessBytesHost, pid: number, data: Uint8Array): Promise<ReadableStream<Uint8Array>>;
 export declare function rpcEndProcessInput(self: ProgrammaticHost, pid: number): Promise<{
     ok: boolean;
     pid: number;

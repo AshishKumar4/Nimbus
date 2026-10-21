@@ -640,6 +640,9 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
         pid: number;
     }>;
     _rpcWriteProcessInputStream(pid: number, data: Uint8Array): Promise<ReadableStream<Uint8Array<ArrayBufferLike>>>;
+    _rpcWaitProgram(pid: number, waitMs?: number): Promise<{
+        exit: import("@nimbus-sh/core/runtime/program-start.js").ExitStatus | null;
+    }>;
     _rpcStartProgram(argv: string[], options?: SessionStartProgramOptions): Promise<ReadableStream<Uint8Array<ArrayBufferLike>>>;
     _rpcEndProcessInput(pid: number): Promise<{
         ok: boolean;

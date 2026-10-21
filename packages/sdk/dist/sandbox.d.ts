@@ -175,7 +175,11 @@ export declare class NimbusSandbox {
         stdin?: ReadableStream<Uint8Array>;
         signal?: AbortSignal;
     }): Promise<StartedSessionProgram>;
-    /** `stdin` into `program`'s input with the program's input calls (feedProgramInput). */
+    /**
+     * `stdin` into `program`'s input with the program's input calls
+     * (feedProgramInput). A write that fails cancels `stdin` with its error and
+     * ends the input; a program whose input cannot be ended either is killed.
+     */
     private feed;
     /** Run a command to completion and return its output as strings. Built on {@link execStream}. */
     exec(command: string, options?: NimbusExecOptions): Promise<NimbusExecResult>;

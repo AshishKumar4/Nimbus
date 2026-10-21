@@ -202,6 +202,9 @@ export declare class HostedSession extends RpcTarget implements SessionRpc {
         ok: boolean;
         pid: number;
     }>;
+    _rpcWaitProgram(pid: number, waitMs?: number): Promise<{
+        exit: import("@nimbus-sh/core/runtime/program-start.js").ExitStatus | null;
+    }>;
     _rpcResizeProcess(pid: number, size: SessionTerminalSize): Promise<{
         ok: boolean;
         pid: number;
