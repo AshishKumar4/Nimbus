@@ -14,6 +14,7 @@
 //   and reads it again.
 
 import { BASE, makeAsserter, mintSession, deleteSession, Terminal, heredocCommand, fetchPort, sleep, stripAnsi } from '../_driver.mjs';
+import { addAlice, aliceSearch } from './_another-account.mjs';
 import { afterReset, resetInstance } from './_reset-window.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -82,16 +83,13 @@ try {
   a.check('the Python server reads its user\'s file', py.ok, JSON.stringify(py.last).slice(0, 300));
 
   // ── Another account searches everything under /.nimbus ────────────────
-  await run(`sudo sh -c 'echo "alice:x:1001:1001:alice:/home/alice:/bin/sh" >> /etc/passwd && echo "alice:x:1001:" >> /etc/group'`, 10_000);
-  const who = await run('sudo -u alice id -u', 10_000);
-  a.check('the second account exists', who.text.includes('1001'), who.text.slice(-200));
+  const alice = await addAlice(run);
+  a.check('the second account exists', alice.exists, alice.text.slice(-200));
   const direct = await run('sudo -u alice cat /home/user/.token; echo "READ $?"', 10_000);
   a.check('the second account cannot read the file itself', /READ 1/.test(direct.text) && !direct.text.includes(FILE_SECRET), direct.text.slice(-200));
-  // A directory alice may not read is no place she finds them: grep says so (status 2) and prints no path.
-  const search = await run(`sudo -u alice grep -rl -e ${FILE_SECRET} -e ${INLINE_SECRET} /.nimbus; echo "SEARCHED $?"`, 120_000);
-  const found = search.text.split('\n').filter((line) => line.startsWith('/.nimbus'));
-  a.check('another account finds neither secret anywhere under /.nimbus', /SEARCHED [12]/.test(search.text) && found.length === 0,
-    `found in: ${found.join(', ') || '(none)'}; ${search.text.slice(-300)}`);
+  const search = await aliceSearch(run, [FILE_SECRET, INLINE_SECRET], ['/.nimbus']);
+  a.check('another account finds neither secret anywhere under /.nimbus', search.answered && search.found.length === 0,
+    `found in: ${search.found.join(', ') || '(none)'}; ${search.text.slice(-300)}`);
 
   // ── A real reset: the Node server is relaunched and reads it again ────
   const reset = await resetInstance(sid);
