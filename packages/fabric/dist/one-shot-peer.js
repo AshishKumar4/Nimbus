@@ -131,6 +131,8 @@ export class OneShotPlacement {
     /** Each worker's warmth key, and when the peer last answered a call of it. */
     #answered = new Map();
     #warming = new Set();
+    /** Advanced when the peer is forgotten: what answers a call made before is not news of the peer chosen after. */
+    #generation = 0;
     #calls = [];
     constructor(ctx, env) {
         this.#ctx = ctx;
@@ -193,6 +195,7 @@ export class OneShotPlacement {
         // No signal crosses: a kill reaches the peer's call as its own.
         const cancel = () => this.#ctx.waitUntil(this.#call(peer, 'oneShotCancel', [callId]).catch(() => { }));
         options?.signal?.addEventListener('abort', cancel, { once: true });
+        const generation = this.#generation;
         let raw;
         try {
             raw = await this.#call(peer, 'oneShotSubmit', [wire, callId, fn, args, { timeoutMs: options?.timeoutMs }, this.#images(wire, images)]);
@@ -210,7 +213,7 @@ export class OneShotPlacement {
         try {
             if (!isAnswer(raw))
                 throw new BindingError(`one-shot peer '${peer}' answered no result`);
-            this.#answered.set(warmth, Date.now()).set(ANY_WORKER, Date.now());
+            this.#heard(generation, warmth);
             return raw;
         }
         finally {
@@ -226,19 +229,21 @@ export class OneShotPlacement {
      * The peer warmed for `warmth`'s worker, beside the call that found it
      * cold: its object started, and a warm facet's worker loaded and its
      * images compiled (IsolatePool.warm), so the next call of it finds it
-     * warm. One at a time per worker.
+     * warm. One at a time per worker and peer.
      */
     #warm(wire, images, fn, warmth) {
-        if (this.#warming.has(warmth))
+        const generation = this.#generation;
+        const warming = `${generation}\n${warmth}`;
+        if (this.#warming.has(warming))
             return;
-        this.#warming.add(warmth);
+        this.#warming.add(warming);
         this.#ctx.waitUntil((async () => {
             const peer = await this.#choose();
             if (peer === null || wire.scope === undefined)
                 return;
             await this.#call(peer, 'oneShotWarm', [{ ...wire, key: crypto.randomUUID() }, fn, this.#images(wire, images)]);
-            this.#answered.set(warmth, Date.now()).set(ANY_WORKER, Date.now());
-        })().catch(() => { }).finally(() => { this.#warming.delete(warmth); }));
+            this.#heard(generation, warmth);
+        })().catch(() => { }).finally(() => { this.#warming.delete(warming); }));
     }
     /**
      * The peer: the first of its candidate names whose object runs outside
@@ -248,6 +253,7 @@ export class OneShotPlacement {
     #choose() {
         if (this.#peer !== null)
             return Promise.resolve(this.#peer);
+        const generation = this.#generation;
         this.#choosing ??= (async () => {
             for (let attempt = 0; attempt < PEER_PLACEMENT_MAX_ATTEMPTS; attempt++) {
                 const name = `${this.#ctx.id.toString()}:one-shot:${attempt}`;
@@ -259,8 +265,10 @@ export class OneShotPlacement {
                 finally {
                     disposeRpcResource(raw);
                 }
+                if (generation !== this.#generation)
+                    return null;
                 this.#peer = name;
-                this.#answered.set(ANY_WORKER, Date.now());
+                this.#heard(generation, ANY_WORKER);
                 return name;
             }
             return null;
@@ -273,9 +281,17 @@ export class OneShotPlacement {
     }
     /** The peer is cold for every worker, and found again by the next warming: a call to it failed. */
     forgetPeer() {
+        this.#generation++;
         this.#answered.clear();
         this.#peer = null;
         this.#choosing = null;
+    }
+    /** The peer answered a call of `warmth`'s worker, made in `generation`: warm for it, unless forgotten since. */
+    #heard(generation, warmth) {
+        if (generation !== this.#generation)
+            return;
+        const now = Date.now();
+        this.#answered.set(warmth, now).set(ANY_WORKER, now);
     }
     /** `images` as they cross: each read in this session, under its load admission, when the peer's load opens it. */
     #images(wire, images) {
