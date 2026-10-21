@@ -257,11 +257,16 @@ function burnInline(n: number): number {
   for (let i = 0; i < n; i++) h = Math.imul(h ^ i, 16777619);
   return h >>> 0;
 }
-type BurnLoader = { get(name: string, code: () => Promise<{ compatibilityDate: string; mainModule: string; modules: Record<string, string> }>): {
+type BurnLoader = { get(name: string, code: () => Promise<{ compatibilityDate: string; mainModule: string; modules: Record<string, string | { cjs: string }> }>): {
   getEntrypoint(): { fetch(url: string): Promise<Response> };
   getDurableObjectClass(name: string): unknown;
 } };
 const burnCode = async () => ({ compatibilityDate: '2026-09-26', mainModule: 'burn.js', modules: { 'burn.js': BURN_SOURCE } });
+// The same burn in a CommonJS module of the worker's map, as a node one-shot's code is (`{ cjs }`).
+const burnCjsCode = async () => ({ compatibilityDate: '2026-09-26', mainModule: 'main.js', modules: {
+  'main.js': "import burner from './burn.cjs';\nexport default { fetch(request) { return new Response(String(burner.burn(Number(new URL(request.url).searchParams.get('n'))))); } };\n",
+  'burn.cjs': { cjs: 'module.exports = { burn(n) { let h = 0x811c9dc5; for (let i = 0; i < n; i++) h = Math.imul(h ^ i, 16777619); return h >>> 0; } };\n' },
+} });
 // The same burn after its module replaced Math.random, as stop-replay's tape does in a node one-shot.
 const burnAfterRandomCode = async () => ({ compatibilityDate: '2026-09-26', mainModule: 'burn.js', modules: { 'burn.js': 'Math.random = function random() { return 0.5; };\n' + BURN_SOURCE } });
 async function burnInLoader(loader: BurnLoader, n: number): Promise<number> {
@@ -347,6 +352,7 @@ export class NimbusSession extends SdkNimbusSession {
     const loader = (this.env as unknown as { LOADER: BurnLoader }).LOADER;
     let result: number;
     if (via === 'inline') result = burnInline(n);
+    else if (via === 'do-cjs') result = Number(await (await loader.get('d1-burn-cjs', burnCjsCode).getEntrypoint().fetch(`https://burn.local/?n=${n}`)).text());
     else if (via === 'do-random') result = Number(await (await loader.get('d1-burn-random', burnAfterRandomCode).getEntrypoint().fetch(`https://burn.local/?n=${n}`)).text());
     else if (via === 'do') result = await burnInLoader(loader, n);
     else if (via === 'stateless') result = await (this.ctx as unknown as { exports: { D1Burn: { burn(n: number): Promise<number> } } }).exports.D1Burn.burn(n);
