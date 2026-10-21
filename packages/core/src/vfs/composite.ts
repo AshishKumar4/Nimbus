@@ -1106,19 +1106,22 @@ export class CompositeVFS implements VFS {
    * Where a program started with its cwd at `cwd` runs (MountOptions.exec),
    * for this view's principal: by the mount the cwd is on, links into it
    * followed, as every lookup finds it (route). A cwd the namespace cannot
-   * look up runs where its name says (its longest mount point): under a
-   * delegating mount it is refused with the lookup's failure, never run
-   * here in its place; elsewhere it runs here, to fail as it would.
+   * look up is placed by where the lookup had reached, links followed:
+   * under a delegating mount it is refused with the lookup's failure, never
+   * run here in its place; elsewhere it runs here, to fail as it would.
    */
   async placeProgram(cwd: string): Promise<ProgramPlacement> {
     if (this.table.delegates === 0) return LOCAL_PLACEMENT;
+    const trace: LookupTrace = { links: [], at: normalizePath(cwd) };
     let route: VfsRoute;
     try {
-      route = await this.route(cwd, { follow: true });
+      route = await this.routeWith(cwd, { follow: true }, trace);
     } catch (error) {
-      if (!isVfsError(error)) throw error;
-      const named = this.table.mounts.get(this.mountOf(cwd));
-      return named?.options.exec === undefined ? LOCAL_PLACEMENT : { kind: 'absent', reason: error.message };
+      if (this.table.mounts.get(this.mountOf(trace.at))?.options.exec === undefined) {
+        if (isVfsError(error)) return LOCAL_PLACEMENT;
+        throw error;
+      }
+      return { kind: 'absent', reason: error instanceof Error ? error.message : String(error) };
     }
     const exec = this.table.mounts.get(route.point)?.options.exec;
     if (exec === undefined) return LOCAL_PLACEMENT;
@@ -1892,7 +1895,13 @@ export class CompositeVFS implements VFS {
   route(path: string, options?: VfsRouteOptions): Promise<VfsRoute | VfsRouteReport>;
   async route(path: string, options?: VfsRouteOptions): Promise<VfsRoute | VfsRouteReport> {
     const trace: LookupTrace | undefined = options?.report === true ? { links: [], at: normalizePath(path) } : undefined;
-    const run = (): Awaitable<VfsRoute> => awaited({ syscall: 'route', path }, () => {
+    const run = (): Awaitable<VfsRoute> => this.routeWith(path, options, trace);
+    return trace === undefined ? run() : lookupReport(trace, run);
+  }
+
+  /** route's lookup, recording in `trace` (when given) where it has reached, links followed. */
+  private routeWith(path: string, options: VfsRouteOptions | undefined, trace: LookupTrace | undefined): Awaitable<VfsRoute> {
+    return awaited({ syscall: 'route', path }, () => {
       // A recalled lookup starts over: keep only the traversal that answers.
       if (trace !== undefined) { trace.links.length = 0; trace.at = normalizePath(path); }
       return andThen(this.resolve(path, options?.follow === true, false, options?.creating === true, trace), (resolved): Awaitable<VfsRoute> => {
@@ -1916,7 +1925,6 @@ export class CompositeVFS implements VFS {
         });
       });
     });
-    return trace === undefined ? run() : lookupReport(trace, run);
   }
 
   /**

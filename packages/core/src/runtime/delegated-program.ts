@@ -75,20 +75,20 @@ export async function runDelegatedProgram(
   cancel.addEventListener('abort', send, { once: true });
   const output = started.output.getReader();
   try {
-    for (;;) {
-      const next = await output.read();
-      if (next.done) break;
-      try {
+    try {
+      for (;;) {
+        const next = await output.read();
+        if (next.done) break;
         await (next.value.stream === 'stderr' ? streams.stderr : streams.stdout)(next.value.data);
-      } catch (error) {
-        const pipe = isBrokenPipe(error);
-        started.kill(pipe ? 'SIGPIPE' : 'SIGKILL');
-        await output.cancel();
-        if (!pipe) {
-          await started.exit;
-          throw error;
-        }
-        break;
+      }
+    } catch (error) {
+      // A closed pipe is the program's SIGPIPE; any other failure, of its output or where it goes, ends it.
+      const pipe = isBrokenPipe(error);
+      started.kill(pipe ? 'SIGPIPE' : 'SIGKILL');
+      await output.cancel().catch(() => undefined);
+      if (!pipe) {
+        await started.exit;
+        throw error;
       }
     }
     return await started.exit;

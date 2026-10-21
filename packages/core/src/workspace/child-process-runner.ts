@@ -9,7 +9,7 @@ import { isBrokenPipe } from '../substrate/lifo/utils/bytes-io.js';
 import type { NimbusWorkspace } from './nimbus-workspace.js';
 import { ProgramRefusal, runDelegatedProgram } from '../runtime/delegated-program.js';
 import type { ExitStatus, ProgramPlacement, StartedProgram } from '../runtime/program-start.js';
-import { DELIVERED_SIGNALS } from '../runtime/runtime-stdio.js';
+import { ProcessSignalNameSchema } from '../runtime/process-io-protocol.js';
 import { errnoOf } from '../vfs/vfs-error.js';
 
 /** Resolve with the child's authority, then run on its descriptors and process identity. */
@@ -61,9 +61,10 @@ function delegatedRunner(workspace: NimbusWorkspace, request: SpawnReq, placemen
     async run(child): Promise<number | SpawnRefusal | ExitStatus> {
       const processes = workspace.processes;
       const stop = new AbortController();
-      const stopped = processes.holdWork(child.pid, (reason) => stop.abort(reason));
-      const signals = processes.takeSignals(child.pid, DELIVERED_SIGNALS);
       const relay = new AbortController();
+      // Before its start a signal stops it (the delegate's cancel); once started, the program takes it.
+      const stopped = processes.holdWork(child.pid, (reason) => { relay.abort(); stop.abort(reason); });
+      let signals = (): void => {};
       try {
         return await runDelegatedProgram(
           placement.delegate,
@@ -71,6 +72,7 @@ function delegatedRunner(workspace: NimbusWorkspace, request: SpawnReq, placemen
           { stdin: child.stdin, stdout: async (bytes) => child.output.onStdout(bytes), stderr: async (bytes) => child.output.onStderr(bytes) },
           stop.signal,
           (started) => {
+            signals = processes.takeSignals(child.pid, PROGRAM_SIGNALS);
             child.onStarted();
             void relaySignals(processes, child.pid, started, relay.signal);
           },
@@ -87,11 +89,20 @@ function delegatedRunner(workspace: NimbusWorkspace, request: SpawnReq, placemen
   };
 }
 
-/** The child's signals, as the broker delivers them (ChildProcessManager.kill), sent to the started program until `until`. */
+/** Every signal a program on another machine may take and decide on (SIGKILL is never taken: it ends it). */
+const PROGRAM_SIGNALS = ProcessSignalNameSchema.options;
+
+/**
+ * The child's signals, as the broker delivers them (ChildProcessManager.kill),
+ * sent to the started program until `until`, or until the child has ended
+ * (no signal is taken for it any more).
+ */
 async function relaySignals(processes: NimbusWorkspace['processes'], pid: number, started: StartedProgram, until: AbortSignal): Promise<void> {
   while (!until.aborted) {
     const signal = await processes.nextSignal(pid, 5000);
-    if (signal !== null && !until.aborted) started.kill(signal);
+    if (until.aborted) return;
+    if (signal !== null) started.kill(signal);
+    else if (processes.get(pid)?.state !== 'running') return;
   }
 }
 

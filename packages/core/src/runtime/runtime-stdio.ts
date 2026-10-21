@@ -8,7 +8,7 @@ import { NIMBUS_SIGNAL_ERRNOS } from './wasi/types.js';
 import { parseProcessSignalName, type ProcessSignalName } from './process-io-protocol.js';
 
 /** The signals a WASI image that takes its own is sent (NIMBUS_SIGNAL_ERRNOS). */
-export const DELIVERED_SIGNALS: readonly ProcessSignalName[] = Object.keys(NIMBUS_SIGNAL_ERRNOS)
+const DELIVERED_SIGNALS: readonly ProcessSignalName[] = Object.keys(NIMBUS_SIGNAL_ERRNOS)
   .map(parseProcessSignalName)
   .filter((signal): signal is ProcessSignalName => signal !== null);
 

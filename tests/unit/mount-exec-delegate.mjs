@@ -41,6 +41,7 @@ function program(run) {
   Promise.resolve().then(async () => {
     const status = await run({
       out: (text) => { if (open) write.enqueue({ stream: 'stdout', data: typeof text === 'string' ? encoder.encode(text) : text }); },
+      lose: () => { if (open) { open = false; write.error(new Error('the computer\'s output stream was lost')); } },
       untilKilled: () => new Promise((resolve) => { if (sent !== null) resolve(sent); else killed = resolve; }),
     });
     if (open) write.close();
@@ -57,6 +58,9 @@ const delegate = {
       // Stopped while pending, it starts anyway: the contract's other settlement, killed at once.
       await new Promise((resolve) => cancel.addEventListener('abort', resolve, { once: true }));
       return program(async ({ untilKilled }) => ({ code: null, signal: await untilKilled() }));
+    }
+    if (name === 'lossy') {
+      return program(async ({ out, lose, untilKilled }) => { out('first\n'); lose(); return { code: null, signal: await untilKilled() }; });
     }
     if (name === 'yes') {
       return program(async ({ out, untilKilled }) => {
@@ -174,6 +178,8 @@ try {
   assert.deepEqual(r.starts, []);
 
   // hash finds the machine's program and remembers nothing of it.
+  r = await run('cd /m && hash echo printf; echo "builtins=$?"');
+  assert.deepEqual([r.out, r.starts], ['builtins=0\n', []], 'hash passes over the shell\'s own names, as bash\'s does');
   r = await run('cd /m && hash tool; hash missing; echo "s=$?"; hash -l');
   assert.equal(r.out.split('\n')[0], 's=1');
   assert.ok(!r.out.includes('tool'), r.out);
@@ -184,6 +190,11 @@ try {
   r = await run('cd /m && yes > /dev/full; echo "s=$?"');
   assert.deepEqual(r.kills, ['SIGKILL']);
   assert.equal(r.out, 's=1\n');
+
+  // Its output lost: the program is ended before the shell goes on.
+  r = await run('cd /m && lossy; echo "s=$?"');
+  assert.deepEqual(r.kills, ['SIGKILL']);
+  assert.match(r.out, /s=1\n$/);
 
   // Ctrl-C reaches a running program as SIGINT; its status is 130.
   const stop = new AbortController();
@@ -263,10 +274,31 @@ try {
     ws.processes.exit(parent.pid, 0);
   }
 
-  // A cwd under a delegating mount whose lookup fails: refused, the delegate not asked, nothing run here.
+  // A cwd under a delegating mount whose lookup fails: refused, the delegate not asked, nothing run here,
+  // reached by its name or through a link.
   c = await child({ command: 'tool', cwd: '/sick/x' });
   assert.equal(c.exit.spawnError, 'EHOSTDOWN');
   assert.deepEqual(c.starts, []);
+  await ws.exec('ln -s /sick/x /home/user/work');
+  c = await child({ command: 'tool', cwd: '/home/user/work' });
+  assert.equal(c.exit.spawnError, 'EHOSTDOWN', 'a link into a failing delegating mount');
+  assert.deepEqual(c.starts, []);
+
+  // A signal a remote program may take (SIGABRT) is its own; a signal while the start is pending stops the start.
+  for (const [command, signal, sent] of [['sleep', 'SIGABRT', ['SIGABRT']], ['hold', 'SIGTERM', []]]) {
+    starts.length = 0;
+    kills.length = 0;
+    const parent = ws.processes.spawn('node', ['node'], '/home/user', { parentPid: ws.shellProcessPid });
+    const { childPid } = await ws.children.spawn({ command, args: [], env: {}, cwd: '/m', stdio: ['pipe', 'pipe', 'pipe'], parentPid: parent.pid });
+    for (let i = 0; i < 100 && starts.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(ws.children.kill(childPid, signal), true);
+    let exit = await ws.children.wait(childPid);
+    while (!exit.done) exit = await ws.children.wait(childPid);
+    assert.deepEqual(kills, sent, `${command}: ${signal}`);
+    assert.equal(exit.signal, signal);
+    ws.processes.exit(parent.pid, 0);
+  }
 
   // A local cwd: found here, where there is no tool, and the delegate not asked.
   starts.length = 0;

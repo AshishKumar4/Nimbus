@@ -5,6 +5,7 @@
  * interactive shell has (its terminal, history, processes and commands)
  * through its BuiltinHost.
  */
+import { BASH_BUILTINS } from './bash-builtins.js';
 import type { ProcessView } from '../../../runtime/process-files.js';
 import { resolveContext, type CommandRegistry } from '../commands/registry.js';
 import type { CommandInputStream, CommandOutputStream } from '../commands/types.js';
@@ -402,7 +403,7 @@ async function builtinTrap({ args, stdout, stderr, state }: BuiltinCall): Promis
   return 0;
 }
 
-async function builtinHash({ args, stdout, stderr, state, host }: BuiltinCall): Promise<number> {
+async function builtinHash({ args, stdout, stderr, state, host, context }: BuiltinCall): Promise<number> {
   if (args.length === 0 || (args.length === 1 && args[0] === '-r')) return 0;
   let exitCode = 0;
   for (const arg of args) {
@@ -412,6 +413,8 @@ async function builtinHash({ args, stdout, stderr, state, host }: BuiltinCall): 
       continue;
     }
     // A start from a cwd whose mount runs programs on its machine is found there, and nothing is remembered of it.
+    // The shell's own names are not programs: bash's hash passes over them.
+    if (BASH_BUILTINS.has(arg) || context.isFunction(arg)) continue;
     const located = await host.locateProgram(arg, state.getCwd(), state.env);
     if (located !== undefined) {
       if (located === null) {
