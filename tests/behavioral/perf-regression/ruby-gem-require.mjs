@@ -5,14 +5,17 @@
 // installer writes them, and `top`, which requires five of them; nothing in
 // it is left to RubyGems' activation, so the load path answers every require.
 //
-// What is graded is the session's own time for the Ruby call, the least of
-// REPEATS calls a round. Measured in an A/A of one commit (2026-10-20, 20
-// rounds, 5 calls each; /mnt/local/nimbus/verify/paired-grader): the time a
-// client sees carries its Preview's placement (about +200 ms on some
-// Previews, none of it the session's), and a call took over 1.5 times its
-// round's least in a share p = 0.55-0.62 of calls. Spikes only add time, so
-// a round grades the least of its calls; how many is a model's choice, not a
-// measured bound (REPEATS).
+// What is graded is what the user waits for: each command's wall at the
+// client, net of its terminal's own round trip in the same round (the least
+// of REPEATS runs of the shell builtin `true`), the least of REPEATS commands
+// a round. The round trip carries the Preview's placement: in an A/A of one
+// commit (2026-10-20, 20 rounds, 5 calls each; /mnt/local/nimbus/verify/
+// paired-grader/k-wall.py) one Preview's walls were +57% over its set's
+// others, and graded on the wall alone that A/A was red at every k. The
+// session's own record of a call is no stand-in: a Durable Object's clock does
+// not move while its thread computes, so a call run on its thread reads short
+// and one run elsewhere does not (2026-10-21, ruby one-shots on a session's
+// peer). Spikes only add time, so a round grades the least of its calls.
 
 import { mintSession, Terminal, makeAsserter, deleteSession, heredocCommand, hasOutputLine } from '../_driver.mjs';
 import { assertCandidateRounds, assertPaired, measurePaired, requirePairedTargets } from '../_paired.mjs';
@@ -93,37 +96,28 @@ async function ready(target, arm) {
 const LAUNCH = 'ruby -e \'puts "LAUN" + "CHED"\'';
 const REQUIRE = `ruby -e 'require "top"; puts "TOP=#{defined?(Top)}"'`;
 
-/** `command`'s wall time, once it exits 0 having printed `line` as a line of its own. */
+/** `command`'s wall time, once it exits 0 having printed `line` as a line of its own (when it names one). */
 async function timed(t, command, line) {
   const t0 = performance.now();
   const { output, exitCode } = await t.run(command, 60_000);
   const ms = performance.now() - t0;
-  if (exitCode !== 0 || !hasOutputLine(output, line)) throw new Error(`${command}: exit ${exitCode}: ${output.slice(-300)}`);
+  if (exitCode !== 0 || (line !== null && !hasOutputLine(output, line))) throw new Error(`${command}: exit ${exitCode}: ${output.slice(-300)}`);
   return ms;
 }
 
 /**
- * What the Ruby facet's last call cost, as the session recorded it: a cold
- * worker's code read and its call (ruby+stdlib.wasm compiled, the VM booted
- * and the program run), or a warm one's call (the program alone).
+ * `command`, REPEATS times, each after its terminal's round trip (`true`):
+ * the least of its walls net of the least round trip, and every wall, as
+ * said.
  */
-async function rubyCall(t) {
-  const calls = await t.facetCalls();
-  if (typeof calls === 'string') throw new Error(calls);
-  const call = calls.findLast((c) => c.tag === 'ruby-runner');
-  if (!call) throw new Error('no ruby call recorded');
-  return call;
-}
-
-/** `command`, REPEATS times: the session's least time for its Ruby call, and every call's, as said. */
-async function leastCall(t, command, line) {
-  const calls = [];
+async function leastNet(t, command, line) {
+  const walls = [];
+  const trips = [];
   for (let i = 0; i < REPEATS; i++) {
-    const wall = await timed(t, command, line);
-    const call = await rubyCall(t);
-    calls.push({ wall: Math.round(wall), callMs: call.callMs, cold: call.cold });
+    trips.push(Math.round(await timed(t, 'true', null)));
+    walls.push(Math.round(await timed(t, command, line)));
   }
-  return { least: Math.min(...calls.map((call) => call.callMs)), calls };
+  return { least: Math.max(1, Math.min(...walls) - Math.min(...trips)), walls, trips };
 }
 
 let round = 0;
@@ -131,9 +125,9 @@ const result = await measurePaired(arms, ROUNDS, async (target, arm) => {
   // The arms of a round start together, a1 first: its round is theirs.
   const at = arm === 'a1' ? ++round : round;
   const { t } = await ready(target, arm);
-  const launch = await leastCall(t, LAUNCH, 'LAUNCHED');
-  const require = await leastCall(t, REQUIRE, 'TOP=constant');
-  console.log(`  round ${at} ${arm}: ruby launch ${JSON.stringify(launch.calls)}; gem require ${JSON.stringify(require.calls)}`);
+  const launch = await leastNet(t, LAUNCH, 'LAUNCHED');
+  const require = await leastNet(t, REQUIRE, 'TOP=constant');
+  console.log(`  round ${at} ${arm}: samples ${JSON.stringify({ launch: launch.walls, launchTrip: launch.trips, require: require.walls, requireTrip: require.trips })}`);
   return { 'ruby launch': launch.least, 'single-version gem require': require.least };
 });
 
