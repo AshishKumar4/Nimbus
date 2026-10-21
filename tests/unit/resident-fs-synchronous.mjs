@@ -93,6 +93,18 @@ await runScenarios(import.meta.path, {
     // A directory is the name's own state where the view knows it.
     assert.equal((await e.fs.stat(`${APP}/dir`)).type, 'directory');
     await answersNow(e, 'readFile of a directory', () => sync.readFile(`${APP}/dir`), 'EISDIR');
+    // An open of a directory is refused as the session's open refuses it: one that would make or change its
+    // content (O_CREAT, O_TRUNC, O_APPEND), O_DIRECTORY or not; any other is the session's to answer.
+    const dir = `${APP}/dir`;
+    for (const [label, flags, code] of [
+      ['O_TRUNC', { read: true, truncate: true }, 'EISDIR'],
+      ['O_DIRECTORY|O_TRUNC', { read: true, directory: true, truncate: true }, 'EISDIR'],
+      ['O_APPEND', { write: true, append: true }, 'EISDIR'],
+      ['O_DIRECTORY|O_APPEND', { write: true, directory: true, append: true }, 'EISDIR'],
+      ['O_CREAT', { write: true, create: true, mode: 0o644 }, 'EISDIR'],
+      ['O_WRONLY', { write: true }, 'EAGAIN'],
+      ['O_DIRECTORY|O_WRONLY', { write: true, directory: true }, 'EAGAIN'],
+    ]) await answersNow(e, `an open of a directory, ${label}`, () => sync.open(dir, flags), code);
   },
 
   async 'mkdir -p is planned whole: one that reaches a name the view cannot place makes nothing'(e = undefined) {
