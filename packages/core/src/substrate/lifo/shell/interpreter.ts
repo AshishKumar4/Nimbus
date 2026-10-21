@@ -20,6 +20,9 @@ import type {
 } from './types.js';
 import { TokenKind } from './types.js';
 import { ProcessView, bindProcessView } from '../../../runtime/process-files.js';
+import { LOCAL_PLACEMENT, type ProgramPlacement } from '../../../runtime/program-start.js';
+import { ProgramRefusal, runDelegatedProgram, shellStatusOf } from '../../../runtime/delegated-program.js';
+import { outputHooks } from '../../../_shared/byte-stream.js';
 import type { NimbusFilesystemAuthority } from '../../../runtime/os-contracts.js';
 import { resolveContext, type CommandRegistry } from '../commands/registry.js';
 import type {
@@ -1231,23 +1234,29 @@ export class Interpreter {
       }
 
 
+      // A program start is placed by its cwd before anything here (Kinu ask 66).
+      const placing = this.placeCommand(name, replacesShell, viaCommand, io);
+      const placement = placing instanceof Promise ? await placing : placing;
+
       try {
         // Check for break/continue/return builtins
-        if (name === 'break') {
+        if (name === 'break' && placement.kind === 'local') {
           const levels = args[0] ? parseInt(args[0], 10) : 1;
           throw new BreakSignal(levels);
         }
-        if (name === 'continue') {
+        if (name === 'continue' && placement.kind === 'local') {
           const levels = args[0] ? parseInt(args[0], 10) : 1;
           throw new ContinueSignal(levels);
         }
-        if (name === 'return') {
+        if (name === 'return' && placement.kind === 'local') {
           const code = args[0] ? parseInt(args[0], 10) : this.lastExitCode;
           throw new ReturnSignal(code);
         }
         if (name === 'exec' && args.length === 0) {
           await this.persistFdState(fds);
           exitCode = 0;
+        } else if (placement.kind !== 'local') {
+          exitCode = await this.runPlacedProgram(placement, name, args, { stdin, stdout, stderr }, io);
         } else {
           // Check functions
           const funcBody = replacesShell || viaCommand ? undefined : this.functions.get(name);
@@ -1404,6 +1413,66 @@ export class Interpreter {
   }
 
   /**
+   * Where the simple command `name` starts a program (Kinu ask 66): nowhere
+   * for what bash runs without execve (a function, a builtin, `command` of
+   * a builtin), so here; otherwise by its cwd's mount (placeProgram). `exec
+   * name` always starts one, as bash's does.
+   */
+  private placeCommand(name: string, replacesShell: boolean, viaCommand: boolean, io: ExecutionIo): ProgramPlacement | Promise<ProgramPlacement> {
+    const identity = io.commandIdentity;
+    if (identity === undefined) return LOCAL_PLACEMENT;
+    if (!replacesShell && ((!viaCommand && this.functions.has(name)) || this.config.builtins.has(name) || BASH_BUILTINS.has(name))) return LOCAL_PLACEMENT;
+    return this.config.filesystem.placeProgram(identity.cred, this.config.getCwd());
+  }
+
+  /**
+   * A program placed on its mount's machine (placeCommand), run with the
+   * command's streams and its exported environment. Its status is bash's:
+   * the program's exit code, 128+n for the signal that ended it, 127 for a
+   * program its machine cannot find, 126 for any other refusal or an absent
+   * mount, 1 for a stream that failed once it ran.
+   */
+  private async runPlacedProgram(
+    placement: Exclude<ProgramPlacement, { kind: 'local' }>,
+    name: string,
+    args: string[],
+    streams: { stdin: CommandInputStream | undefined; stdout: CommandOutputStream; stderr: CommandOutputStream },
+    io: ExecutionIo,
+  ): Promise<number> {
+    if (placement.kind === 'absent') {
+      await streams.stderr.write(`${name}: ${placement.reason}\n`);
+      return 126;
+    }
+    const output = outputHooks({ stdout: streams.stdout, stderr: streams.stderr });
+    const endWork = io.workThread ? io.workThread.beginWork() : io.commandIdentity?.beginWork?.();
+    try {
+      const exit = await runDelegatedProgram(
+        placement.delegate,
+        { argv: [name, ...args], env: exportedEnvironment(this.config), cwd: placement.cwd },
+        { stdin: streams.stdin ?? null, stdout: output.onStdout, stderr: output.onStderr },
+        io.signal ?? this.config.getAbortSignal?.() ?? new AbortController().signal,
+      );
+      return shellStatusOf(exit);
+    } catch (error) {
+      // A start the caller stopped (Ctrl-C while it was pending) ends as the stop says.
+      const stopped = this.abortExitCode(io);
+      if (stopped !== null) return stopped;
+      if (error instanceof ProgramRefusal) {
+        await streams.stderr.write(error.code === 'ENOENT' ? `${name}: command not found\n` : `${name}: ${error.message}\n`);
+        return error.code === 'ENOENT' ? 127 : 126;
+      }
+      await streams.stderr.write(`${name}: ${error instanceof Error ? error.message : String(error)}\n`);
+      return 1;
+    } finally {
+      try {
+        await output.end();
+      } finally {
+        endWork?.();
+      }
+    }
+  }
+
+  /**
    * execvp(3) of `argv`: argv[0] is found as a program is found (the
    * registry, then a path from `spec.cwd`), never as a function, an alias or
    * a builtin, and runs as a process on the streams it is handed. A program
@@ -1414,6 +1483,11 @@ export class Interpreter {
   async runProgram(argv: readonly string[], spec: ProgramSpec): Promise<ChildExit> {
     const [name, ...args] = argv;
     if (name === undefined) return exited(0);
+    // Placed by its cwd before anything here (Kinu ask 66): one on its mount's machine fails there as execvp would.
+    const placing = this.config.filesystem.placeProgram(spec.identity.cred, spec.cwd);
+    const placement = placing instanceof Promise ? await placing : placing;
+    if (placement.kind === 'absent') throw syscallError('EIO', 'execvp', name, { detail: placement.reason });
+    if (placement.kind === 'delegated') return await this.runDelegatedChild(placement, name, args, spec);
     // The program is found, as it runs, under the child's credential.
     const vfs = bindProcessView(this.config.filesystem, { pid: spec.identity.pid, cred: spec.identity.cred, signal: spec.signal });
     const command = await this.config.registry.resolve(name, resolveContext(spec.cwd, spec.env, vfs));
@@ -1426,6 +1500,35 @@ export class Interpreter {
       vfs,
       shellBuiltin: false,
     });
+  }
+
+  /**
+   * execvp of a program placed on its mount's machine (runProgram): run with
+   * the child's streams, environment and stop; a start its machine refuses
+   * is execvp failing, ENOENT for a program it cannot find, EIO with its
+   * words otherwise.
+   */
+  private async runDelegatedChild(
+    placement: Extract<ProgramPlacement, { kind: 'delegated' }>,
+    name: string,
+    args: string[],
+    spec: ProgramSpec,
+  ): Promise<ChildExit> {
+    const output = outputHooks({ stdout: spec.stdout, stderr: spec.stderr });
+    try {
+      const exit = await runDelegatedProgram(
+        placement.delegate,
+        { argv: [name, ...args], env: spec.env, cwd: placement.cwd },
+        { stdin: spec.stdin ?? null, stdout: output.onStdout, stderr: output.onStderr },
+        spec.signal,
+      );
+      return { status: shellStatusOf(exit), signal: exit.signal === null ? null : exit.signal.replace(/^SIG/, '') };
+    } catch (error) {
+      if (!(error instanceof ProgramRefusal)) throw error;
+      throw error.code === 'ENOENT' ? syscallError('ENOENT', 'execvp', name) : syscallError('EIO', 'execvp', name, { detail: error.message });
+    } finally {
+      await output.end();
+    }
   }
 
   /**

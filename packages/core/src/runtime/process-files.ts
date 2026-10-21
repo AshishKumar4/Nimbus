@@ -15,6 +15,7 @@
  * which every consumer (supervisor RPC, facets, runners) already speaks.
  */
 
+import { LOCAL_PLACEMENT, type ProgramPlacement } from './program-start.js';
 import { isPendingChunkError, listPageBudget } from '../vfs/sqlite-vfs.js';
 import type { SqliteVFS, VfsExportChunk, VfsExportPage } from '../vfs/sqlite-vfs.js';
 import { linkedSignal, type WriteBatchStreamResult, type WriteStreamOptions } from './wave-contracts.js';
@@ -657,6 +658,10 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
   }
 
   /** The mounts `cred` sees, root first: what df, mount and `/proc/mounts` list. */
+  placeProgram(cred: Readonly<VfsCred>, cwd: string): ProgramPlacement | Promise<ProgramPlacement> {
+    return this.vfs.placesPrograms() ? this.vfs.as(immutableCredential(cred)).placeProgram(cwd) : LOCAL_PLACEMENT;
+  }
+
   mounts(cred: Readonly<VfsCred>): readonly NimbusMountEntry[] {
     const engine = this.engine;
     return this.vfs.as(immutableCredential(cred)).mounts().map((mount) => {

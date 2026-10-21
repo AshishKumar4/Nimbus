@@ -1620,8 +1620,8 @@ function mkXargs(): Command {
         ended = await ctx.runAs(ctx.cred, [cmdName, ...batch], { parent });
       } catch (error) {
         if (!isVfsError(error) || error.syscall !== 'execvp') throw error;
-        (await ctx.stderr.write(`xargs: ${cmdName}: ${VFS_STRERROR[error.code]}\n`));
-        return error.code === 'EACCES' ? 126 : 127;
+        (await ctx.stderr.write(`xargs: ${cmdName}: ${error.detail ?? VFS_STRERROR[error.code]}\n`));
+        return error.code === 'ENOENT' ? 127 : 126;
       }
       if (ended.signal !== null) {
         (await ctx.stderr.write(`xargs: ${cmdName}: terminated by signal ${ended.status - 128}\n`));
