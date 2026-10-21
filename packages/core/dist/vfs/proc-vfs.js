@@ -42,12 +42,13 @@ export class ProcVFS {
                 return true;
         return false;
     }
+    /** The file's content: text made for this read, or bytes shared with every read, which are not the caller's to change. */
     generate(path) {
         const k = key(path);
         const generator = this.files.get(k);
         if (generator === undefined)
             throw syscallError(this.isDir(k) ? 'EISDIR' : 'ENOENT', 'open', path);
-        return enc.encode(generator(this.cred));
+        return generator(this.cred);
     }
     stat(path) {
         const k = key(path);
@@ -55,10 +56,13 @@ export class ProcVFS {
             return DIR;
         if (!this.files.has(k))
             return null;
-        return { size: this.generate(path).length, mtimeMs: Date.now(), ...FILE };
+        const content = this.generate(path);
+        return { size: typeof content === 'string' ? enc.encode(content).length : content.length, mtimeMs: Date.now(), ...FILE };
     }
     readFile(path) {
-        return this.generate(path);
+        const content = this.generate(path);
+        // Shared bytes are copied, so no reader changes them for the next.
+        return typeof content === 'string' ? enc.encode(content) : content.slice();
     }
     /** Its files are root's, 0444, its directories 0555: a credential asks them by their mode (the embedder's view is not judged). */
     access(path, mode) {
@@ -70,7 +74,8 @@ export class ProcVFS {
             throw syscallError('EACCES', 'open', path);
     }
     readRange(path, offset, length) {
-        return this.generate(path).slice(offset, offset + length);
+        const content = this.generate(path);
+        return (typeof content === 'string' ? enc.encode(content) : content).slice(offset, offset + length);
     }
     readdir(path) {
         const k = key(path);
@@ -110,6 +115,8 @@ export class ProcVFS {
  * build machine's.
  */
 export const CA_CERTIFICATES_FILE = '/proc/nimbus/ca-certificates.crt';
+/** Its bytes, encoded once per isolate: CPython reads the file for every TLS connection it makes. */
+const CA_CERTIFICATES = enc.encode(CA_CERTIFICATES_PEM);
 /**
  * The /proc every workspace has: cpuinfo, meminfo, uptime, version,
  * net/info and the trust store. ProcessFiles adds `mounts`, and a host adds
@@ -144,7 +151,7 @@ export function standardProc() {
         return `${seconds} ${seconds}\n`;
     });
     proc.register('version', () => `Lifo 1.0.0 (${typeof navigator !== 'undefined' ? navigator.userAgent : 'Node.js'})\n`);
-    proc.register(CA_CERTIFICATES_FILE.slice('/proc/'.length), () => CA_CERTIFICATES_PEM);
+    proc.register(CA_CERTIFICATES_FILE.slice('/proc/'.length), () => CA_CERTIFICATES);
     proc.register('net/info', () => {
         const conn = typeof navigator !== 'undefined'
             ? navigator.connection

@@ -1,6 +1,10 @@
 import type { SyncVFS, VFS, VfsCred, VfsDirent, VfsStat } from './vfs.js';
-/** A /proc file's content, for the credential of the process reading it (null: the embedder's view). */
-export type ProcGenerator = (cred: VfsCred | null) => string;
+/**
+ * A /proc file's content, for the credential of the process reading it (null:
+ * the embedder's view): text made when read, or bytes made once and shared,
+ * which a whole-file read copies and a stat or ranged read does not.
+ */
+export type ProcGenerator = (cred: VfsCred | null) => string | Uint8Array;
 export declare class ProcVFS implements VFS {
     private readonly cred;
     private readonly files;
@@ -11,6 +15,7 @@ export declare class ProcVFS implements VFS {
     /** The same files, generated for `cred`. */
     as(cred: VfsCred): ProcVFS;
     private isDir;
+    /** The file's content: text made for this read, or bytes shared with every read, which are not the caller's to change. */
     private generate;
     stat(path: string): VfsStat | null;
     readFile(path: string): Uint8Array;
