@@ -1101,11 +1101,14 @@ export function provisional(host: ProvisionalHost): Provisional {
   const bytesOf = (inode: Inode, syscall: string, path: string): { bytes: Uint8Array; size: number } | undefined => {
     if (inode.state !== null) {
       if (inode.state.bytes === null) {
-        // Its baseline's bytes not held when it took its first record: held now at that revision, the records fold over them.
+        // Its baseline's bytes not held when it took its first record: held now at that revision (the view's, else what its
+        // descriptors read of it there, theirs once no name leads to it), the records fold over them.
         // One a grant gave back (heldAt) has its cell's bytes for baseline, newer than any the view has until it retires.
-        const seen = inode.heldAt === undefined ? viewed(inode) : undefined;
-        if (seen?.bytes === undefined || seen.row.revision !== inode.row.revision) return undefined;
-        inode.base = { ...inode.base!, bytes: owned(seen.bytes) };
+        if (inode.heldAt !== undefined) return undefined;
+        const seen = viewed(inode);
+        const held = seen?.bytes !== undefined && seen.row.revision === inode.row.revision ? seen.bytes : pinned(inode, seen, inode.row.revision);
+        if (held === undefined) return undefined;
+        inode.base = { ...inode.base!, bytes: owned(held) };
         refold(inode);
         // Kept only where the budget has room (fit): else unknown again, and the read waits for the session.
         fit(inode);

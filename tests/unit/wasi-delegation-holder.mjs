@@ -197,6 +197,8 @@ async function until(ready, what) {
     await until(() => s.filesystem.delegations.size === 1, 'the grant');
     await new Promise((resolve) => setTimeout(resolve, 10));
   };
+  // Input arrives: the next copy's walk takes the barrier it owes.
+  s.fs.inbound();
   await s.fs.copyFile('/home/user/proj/d3/src.txt', '/home/user/proj/d3/second.txt');
   await s.fs.settle();
   assert.equal(dec.decode(s.kernel.readFile('home/user/proj/d3/first.txt')), 'OLD');
