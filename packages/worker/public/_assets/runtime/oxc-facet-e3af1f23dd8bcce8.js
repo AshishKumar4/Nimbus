@@ -10007,7 +10007,7 @@ error: the Oxc transform crashed (${reason})`);
     };
   }
 
-  var NODE_RELEASE = "22.22.3";
+  var NODE_RELEASE = "22.23.4";
   var NODE_VERSION = `v${NODE_RELEASE}`;
   var FS_READ_BATCH_REQUEST_BYTES = 4 * 1024 * 1024;
   var FS_LIST_PAGE_LIMIT = 8192;

@@ -560,6 +560,13 @@ ${suffix}`;
   ERR_OPERATION_FAILED: { message: "Operation failed: %s", bases: [Error, TypeError] },
   ERR_OUT_OF_RANGE: { message: outOfRangeMessage, bases: [RangeError] },
   ERR_SOCKET_BAD_PORT: { message: (name, port, allowZero = true) => `${name} should be ${allowZero ? ">=" : ">"} 0 and < 65536. Received ${determineSpecificType(port)}.`, bases: [RangeError] },
+  ERR_TLS_CERT_ALTNAME_FORMAT: { message: "Invalid subject alternative name string", bases: [SyntaxError] },
+  ERR_TLS_CERT_ALTNAME_INVALID: { message: function(reason, host, cert) {
+    this.reason = reason;
+    this.host = host;
+    this.cert = cert;
+    return `Hostname/IP does not match certificate's altnames: ${reason}`;
+  }, bases: [Error] },
   ERR_UNAVAILABLE_DURING_EXIT: { message: "Cannot call function in process exit handler", bases: [Error] },
   ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET: { message: "`process.setupUncaughtExceptionCapture()` was called while a capture callback was already active", bases: [Error] },
   ERR_UNKNOWN_SIGNAL: { message: "Unknown signal: %s", bases: [TypeError] },
@@ -9428,7 +9435,7 @@ const __fsMod = (() => {
   realpath.native = realpath;
 
   // ── fs.glob ── Node 22's fs.glob, fs.globSync and fs.promises.glob: its
-  // Glob, ported from lib/internal/fs/glob.js (v22.22.3; the Linux paths),
+  // Glob, ported from lib/internal/fs/glob.js (v22.23.4; the Linux paths),
   // matching with the minimatch Node vendors (node-minimatch-source.ts),
   // which is evaluated the first time a program globs.
   const _Glob = (() => {
@@ -11773,7 +11780,7 @@ return {"applyRedirectPolicy":c,"isRedirectStatus":i};})();
 // ═══════════════════════════════════════════════════════════════════════
 // ──  util module ────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
-// util.inspect, format and formatWithOptions are Node v22.22.3's own
+// util.inspect, format and formatWithOptions are Node v22.23.4's own
 // lib/internal/util/inspect.js (node-lib-source.ts), evaluated the first
 // time a program formats a value, over what node-lib-host.ts gives it in
 // place of Node's internals: what a program prints of a value, through util
@@ -12031,7 +12038,7 @@ Object.defineProperties(__nimbusInspect, {
         throw Object.assign(new TypeError("Invalid URL"), { code: "ERR_INVALID_URL", input: inputText, ...(baseText !== undefined ? { base: baseText } : {}) });
       }
     }
-    // Node's (lib/internal/url.js, v22.22.3), but for showHidden's internal
+    // Node's (lib/internal/url.js, v22.23.4), but for showHidden's internal
     // context, which workerd's URL has none of.
     [inspectCustom](depth, opts) {
       if (typeof depth === "number" && depth < 0) return this;
@@ -12069,7 +12076,7 @@ Object.defineProperties(__nimbusInspect, {
   // URL instances are instanceof _Orig, and URL.prototype's __proto__ is
   // _Orig.prototype (so all native URL methods are reachable via the chain).
   globalThis.URL = __nimbusFronted(URL, _Orig);
-  // URLSearchParams prints as Node's does (lib/internal/url.js, v22.22.3).
+  // URLSearchParams prints as Node's does (lib/internal/url.js, v22.23.4).
   Object.defineProperty(globalThis.URLSearchParams.prototype, inspectCustom, {
     value: function (recurseTimes, ctx) {
       if (typeof recurseTimes === "number" && recurseTimes < 0) return ctx.stylize("[Object]", "special");
@@ -13243,16 +13250,250 @@ const __tlsMod = (() => {
     };
     return socket;
   };
+  // tls.checkServerIdentity is Node's (lib/tls.js and its helpers, and
+  // src/cares_wrap.cc CanonicalizeIP over libuv's inet_pton and inet_ntop,
+  // deps/uv/src/inet.c). workerd's is an older Node's: it matched a host that
+  // is an IP address only once IDNA maps it ('127.1', '0x7f.0.0.1') against
+  // the certificate's DNS names, and a DNS name as written rather than in its
+  // ASCII form ('foo\u3002bar.example.com' against '*.example.com').
+  const unfqdn = (host) => host.replace(/[.]$/, "");
+  // String#toLowerCase is locale-sensitive: only A-Z are lowered.
+  const splitHost = (host) => unfqdn(host).replace(/[A-Z]/g, (c) => String.fromCharCode(32 + c.charCodeAt(0))).split(".");
+  function check(hostParts, pattern, wildcards) {
+    if (!pattern) return false;
+    const patternParts = splitHost(pattern);
+    if (hostParts.length !== patternParts.length) return false;
+    // A pattern with an empty label, or with a U-label, control or blank, never matches.
+    if (patternParts.includes("")) return false;
+    if (patternParts.some((s) => /[^\u0021-\u007F]/u.test(s))) return false;
+    for (let i = hostParts.length - 1; i > 0; i -= 1) {
+      if (hostParts[i] !== patternParts[i]) return false;
+    }
+    const hostSubdomain = hostParts[0];
+    const patternSubdomain = patternParts[0];
+    const patternSubdomainParts = patternSubdomain.split("*", 3);
+    // No wildcard, or an A-label, which RFC 6125 matches verbatim.
+    if (patternSubdomainParts.length === 1 || patternSubdomain.includes("xn--")) return hostSubdomain === patternSubdomain;
+    // One wildcard, and never in a *.tld.
+    if (!wildcards || patternSubdomainParts.length > 2 || patternParts.length <= 2) return false;
+    const { 0: prefix, 1: suffix } = patternSubdomainParts;
+    return prefix.length + suffix.length <= hostSubdomain.length && hostSubdomain.startsWith(prefix) && hostSubdomain.endsWith(suffix);
+  }
+  // A JSON string literal, exactly (ECMA-404): how far a quoted name runs.
+  const jsonStringPattern = /^"(?:[^"\\\u0000-\u001f]|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))*"/;
+  function splitEscapedAltNames(altNames) {
+    const result = [];
+    let currentToken = "";
+    let offset = 0;
+    while (offset !== altNames.length) {
+      const nextSep = altNames.indexOf(",", offset);
+      const nextQuote = altNames.indexOf('"', offset);
+      if (nextQuote !== -1 && (nextSep === -1 || nextQuote < nextSep)) {
+        currentToken += altNames.substring(offset, nextQuote);
+        const match = jsonStringPattern.exec(altNames.substring(nextQuote));
+        if (!match) throw new nodeErrorCodes.ERR_TLS_CERT_ALTNAME_FORMAT();
+        currentToken += JSON.parse(match[0]);
+        offset = nextQuote + match[0].length;
+      } else if (nextSep !== -1) {
+        currentToken += altNames.substring(offset, nextSep);
+        result.push(currentToken);
+        currentToken = "";
+        offset = nextSep + 2;
+      } else {
+        currentToken += altNames.substring(offset);
+        offset = altNames.length;
+      }
+    }
+    result.push(currentToken);
+    return result;
+  }
+  // inet_pton4: four decimal octets, none above 255 or with a leading zero.
+  function inetPton4(text) {
+    const bytes = [0];
+    let sawDigit = false;
+    let octets = 0;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (ch >= "0" && ch <= "9") {
+        const last = bytes[bytes.length - 1];
+        if (sawDigit && last === 0) return null;
+        const next = last * 10 + (ch.charCodeAt(0) - 48);
+        if (next > 255) return null;
+        bytes[bytes.length - 1] = next;
+        if (!sawDigit) {
+          if (++octets > 4) return null;
+          sawDigit = true;
+        }
+      } else if (ch === "." && sawDigit) {
+        if (octets === 4) return null;
+        bytes.push(0);
+        sawDigit = false;
+      } else return null;
+    }
+    return octets < 4 ? null : bytes;
+  }
+  // inet_pton6: groups of one to four hex digits, one "::" for a run of
+  // zeros, and an IPv4 address as the last 32 bits.
+  function inetPton6(text) {
+    const bytes = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    let tp = 0;
+    let colon = -1;
+    let i = 0;
+    if (text[0] === ":" && text[++i] !== ":") return null;
+    let token = i;
+    let digits = 0;
+    let value = 0;
+    while (i < text.length) {
+      const ch = text[i++];
+      let hex = "0123456789abcdef".indexOf(ch);
+      if (hex === -1) hex = "0123456789ABCDEF".indexOf(ch);
+      if (hex !== -1) {
+        value = (value << 4) | hex;
+        if (++digits > 4) return null;
+        continue;
+      }
+      if (ch === ":") {
+        token = i;
+        if (digits === 0) {
+          if (colon !== -1) return null;
+          colon = tp;
+          continue;
+        }
+        if (i === text.length || tp + 2 > 16) return null;
+        bytes[tp++] = (value >> 8) & 0xff;
+        bytes[tp++] = value & 0xff;
+        digits = 0;
+        value = 0;
+        continue;
+      }
+      const ipv4 = ch === "." && tp + 4 <= 16 ? inetPton4(text.slice(token)) : null;
+      if (ipv4 === null) return null;
+      for (const byte of ipv4) bytes[tp++] = byte;
+      digits = 0;
+      break;
+    }
+    if (digits !== 0) {
+      if (tp + 2 > 16) return null;
+      bytes[tp++] = (value >> 8) & 0xff;
+      bytes[tp++] = value & 0xff;
+    }
+    if (colon !== -1) {
+      if (tp === 16) return null;
+      const n = tp - colon;
+      for (let k = 1; k <= n; k++) {
+        bytes[16 - k] = bytes[colon + n - k];
+        bytes[colon + n - k] = 0;
+      }
+      tp = 16;
+    }
+    return tp === 16 ? bytes : null;
+  }
+  // inet_ntop6: lowercase hex, the first longest run of two or more zero
+  // groups as "::", and a mapped or compatible IPv4 address dotted.
+  function inetNtop6(bytes) {
+    const words = [];
+    for (let k = 0; k < 8; k++) words.push((bytes[2 * k] << 8) | bytes[2 * k + 1]);
+    let best = { base: -1, len: 0 };
+    let cur = { base: -1, len: 0 };
+    for (let k = 0; k < 8; k++) {
+      if (words[k] === 0) {
+        if (cur.base === -1) cur = { base: k, len: 1 };
+        else cur.len++;
+      } else if (cur.base !== -1) {
+        if (best.base === -1 || cur.len > best.len) best = cur;
+        cur = { base: -1, len: 0 };
+      }
+    }
+    if (cur.base !== -1 && (best.base === -1 || cur.len > best.len)) best = cur;
+    if (best.base !== -1 && best.len < 2) best = { base: -1, len: 0 };
+    let out = "";
+    for (let k = 0; k < 8; k++) {
+      if (best.base !== -1 && k >= best.base && k < best.base + best.len) {
+        if (k === best.base) out += ":";
+        continue;
+      }
+      if (k !== 0) out += ":";
+      if (k === 6 && best.base === 0 && (best.len === 6 || (best.len === 7 && words[7] !== 1) || (best.len === 5 && words[5] === 0xffff))) {
+        out += bytes.slice(12).join(".");
+        break;
+      }
+      out += words[k].toString(16);
+    }
+    if (best.base !== -1 && best.base + best.len === 8) out += ":";
+    return out;
+  }
+  // CanonicalizeIP: the address as libuv prints it, or undefined. The
+  // binding reads a C string, so a NUL ends it; uv_inet_pton drops an
+  // IPv6 zone ("%eth0") first.
+  function canonicalizeIP(ip) {
+    let text = String(ip);
+    const nul = text.indexOf("\u0000");
+    if (nul !== -1) text = text.slice(0, nul);
+    const ipv4 = inetPton4(text);
+    if (ipv4 !== null) return ipv4.join(".");
+    const zone = text.indexOf("%");
+    if (zone > 45) return undefined;
+    const ipv6 = inetPton6(zone === -1 ? text : text.slice(0, zone));
+    return ipv6 === null ? undefined : inetNtop6(ipv6);
+  }
+  function checkServerIdentity(hostname, cert) {
+    const subject = cert.subject;
+    const altNames = cert.subjectaltname;
+    const dnsNames = [];
+    const ips = [];
+    const { isIP } = __nimbusNodeLib().require("internal/net");
+    hostname = "" + hostname;
+    const hostnameASCII = __urlMod.domainToASCII(hostname);
+    hostname = unfqdn(hostname);
+    const hostnameASCIIWithoutFQDN = unfqdn(hostnameASCII);
+    const hostnameIsIP = isIP(hostname);
+    const hostnameASCIIIsIP = isIP(hostnameASCIIWithoutFQDN);
+    if (altNames) {
+      const splitAltNames = altNames.includes('"') ? splitEscapedAltNames(altNames) : altNames.split(", ");
+      splitAltNames.forEach((name) => {
+        if (name.startsWith("DNS:")) dnsNames.push(name.slice(4));
+        else if (name.startsWith("IP Address:")) ips.push(canonicalizeIP(name.slice(11)));
+      });
+    }
+    // A spelling that the resolver may read as another address is refused.
+    if (!hostnameIsIP && hostnameASCIIIsIP) {
+      return new nodeErrorCodes.ERR_TLS_CERT_ALTNAME_INVALID("Host is a non-canonical IP address", hostname, cert);
+    }
+    let valid = false;
+    let reason = "Unknown reason";
+    if (hostnameIsIP) {
+      // An IP host is matched as written: domainToASCII answers '' for IPv6.
+      valid = ips.includes(canonicalizeIP(hostname));
+      if (!valid) reason = "IP: " + hostname + " is not in the cert's list: " + ips.join(", ");
+    } else if (dnsNames.length > 0 || subject?.CN) {
+      const hostParts = splitHost(hostnameASCIIWithoutFQDN);
+      const wildcard = (pattern) => check(hostParts, pattern, true);
+      if (dnsNames.length > 0) {
+        valid = dnsNames.some(wildcard);
+        if (!valid) reason = "Host: " + hostname + ". is not in the cert's altnames: " + String(altNames);
+      } else {
+        // The Common Name only when the certificate names no DNS name.
+        const cn = subject.CN;
+        if (Array.isArray(cn)) valid = cn.some(wildcard);
+        else if (cn) valid = wildcard(cn);
+        if (!valid) reason = "Host: " + hostname + ". is not cert's CN: " + String(cn);
+      }
+    } else {
+      reason = "Cert does not contain a DNS name";
+    }
+    if (!valid) return new nodeErrorCodes.ERR_TLS_CERT_ALTNAME_INVALID(reason, hostname, cert);
+  }
   // Anything else node:tls exports that is called or constructed (a
   // TLSSocket, a server) may open a connection: counted too, all but the
   // helpers that only compute.
-  const pure = { createSecureContext: true, getCiphers: true, checkServerIdentity: true, convertALPNProtocols: true };
+  const pure = { createSecureContext: true, getCiphers: true, convertALPNProtocols: true };
   const counted = new Map();
   // tls.createServer in workerd would bind a real port; in a facet we want
   // routing through __portRegistry, so override that one method.
   return new Proxy(real, {
     get(t, p) {
       if (p === 'connect') return connect;
+      if (p === 'checkServerIdentity') return checkServerIdentity;
       if (p === 'createServer') {
         return () => {
           throw nodeError(Error, 'ERR_NET_SERVER_NOT_AVAILABLE', 'tls.createServer: not supported in Nimbus facet. Use http.createServer for routing.');
@@ -14334,7 +14575,7 @@ const __childProcessMod = (() => {
 // constructor ("The Console method is not implemented"), which OpenTUI's
 // console capture calls over streams of its own.
 // Node's colour policy (lib/internal/tty.js getColorDepth and hasColors,
-// lib/internal/util/colors.js shouldColorize, v22.22.3), for its platform
+// lib/internal/util/colors.js shouldColorize, v22.23.4), for its platform
 // (Nimbus is linux): FORCE_COLOR first, then NODE_DISABLE_COLORS, NO_COLOR and
 // TERM=dumb, then the CI and terminal variables. Each stream decides for
 // itself: a terminal's getColorDepth reads the env it is given.
@@ -15436,8 +15677,8 @@ const __processMod = Object.setPrototypeOf({
   release: {
     name: "node",
     lts: "Jod",
-    sourceUrl: "https://nodejs.org/download/release/" + "v22.22.3" + "/node-" + "v22.22.3" + ".tar.gz",
-    headersUrl: "https://nodejs.org/download/release/" + "v22.22.3" + "/node-" + "v22.22.3" + "-headers.tar.gz",
+    sourceUrl: "https://nodejs.org/download/release/" + "v22.23.4" + "/node-" + "v22.23.4" + ".tar.gz",
+    headersUrl: "https://nodejs.org/download/release/" + "v22.23.4" + "/node-" + "v22.23.4" + "-headers.tar.gz",
   },
   debugPort: 9229,
   domain: null,
@@ -15461,7 +15702,7 @@ const __processMod = Object.setPrototypeOf({
   },
   _exiting: false,
   platform: "linux", arch: "x64",
-  version: "v22.22.3", versions: {"node":"22.22.3","v8":"12.4.254.21-node.56","modules":"127"},
+  version: "v22.23.4", versions: {"node":"22.23.4","v8":"12.4.254.21-node.57","modules":"127"},
   features: Object.freeze({
     inspector: false,
     debug: false,
@@ -15654,7 +15895,7 @@ function __nimbusExitAtEnd() {
 }
 
 // ── What nothing caught ──
-// Node 22.22.3's fatal exception (lib/internal/process/execution.js
+// Node 22.23.4's fatal exception (lib/internal/process/execution.js
 // createOnGlobalUncaughtException; lib/internal/process/promises.js
 // throwUnhandledRejectionsMode; src/node_errors.cc TriggerUncaughtException,
 // ReportFatalException, GetErrorSource): 'uncaughtExceptionMonitor' sees it,
@@ -17942,7 +18183,10 @@ builtins.zlib = (() => {
   // `default`. workerd exports every constant by name, enumerable, and two
   // zstd modes of its own (ZSTD_ENCODE, ZSTD_DECODE) beside Node's
   // ZSTD_COMPRESS and ZSTD_DECOMPRESS. Named limit: ZLIB_VERNUM and
-  // Z_MAX_CHUNK are the engine's values, not Node's.
+  // Z_MAX_CHUNK are the engine's values, not Node's, and the Brotli decoder
+  // is the engine's: Node 22.23.4's has a fix (CVE-2026-111497) and its error
+  // code, BROTLI_DECODER_ERROR_FORMAT_BLOCK_SWITCH, which workerd's
+  // constants lack.
   const workerdOnly = { ZSTD_ENCODE: true, ZSTD_DECODE: true };
   const constants = Object.create(null);
   for (const [name, value] of Object.entries(__real.constants)) {
@@ -19044,7 +19288,7 @@ function __nimbusIsCommonJSGlobalLikeError(e) {
 }
 
 // Node's explainCommonJSGlobalLikeNotDefinedError (lib/internal/modules/esm/
-// module_job.js, v22.22.3): what a ReferenceError for a CommonJS name says
+// module_job.js, v22.23.4): what a ReferenceError for a CommonJS name says
 // once it escapes the evaluation of an ES module job the loader ran: a
 // program's ES entry, an import(), a require() of an ES module. `url` and
 // `hasTopLevelAwait` are the job's module's. Thrown anywhere else (in a

@@ -1,6 +1,6 @@
 /**
  * cjs-module-lexer's JavaScript build (lexer.js of the version
- * packages/core/package.json pins, Node 22.22.3's), wrapped in a factory:
+ * packages/core/package.json pins, Node 22.23.4's), wrapped in a factory:
  * the lexer Node's ESM loader runs on a CommonJS module to name its exports
  * before it runs (lib/internal/modules/esm/translators.js
  * cjsPreparseModuleExports). The package's own ESM build is its wasm one,

@@ -1,5 +1,5 @@
 /**
- * node-error.ts — Node's internal errors, as lib/internal/errors.js (v22.22.3)
+ * node-error.ts — Node's internal errors, as lib/internal/errors.js (v22.23.4)
  * makes them, for every error the runtime gives a code: the guest's shims and
  * module resolver, the shell's own Node compatibility, and the host code that
  * shares them. A NodeError reads `Name [CODE]: message` in its stack and its
@@ -321,6 +321,13 @@ const nodeErrorMessages = {
     ERR_OPERATION_FAILED: { message: 'Operation failed: %s', bases: [Error, TypeError] },
     ERR_OUT_OF_RANGE: { message: outOfRangeMessage, bases: [RangeError] },
     ERR_SOCKET_BAD_PORT: { message: (name, port, allowZero = true) => `${name} should be ${allowZero ? '>=' : '>'} 0 and < 65536. Received ${determineSpecificType(port)}.`, bases: [RangeError] },
+    ERR_TLS_CERT_ALTNAME_FORMAT: { message: 'Invalid subject alternative name string', bases: [SyntaxError] },
+    ERR_TLS_CERT_ALTNAME_INVALID: { message: function (reason, host, cert) {
+            this.reason = reason;
+            this.host = host;
+            this.cert = cert;
+            return `Hostname/IP does not match certificate's altnames: ${reason}`;
+        }, bases: [Error] },
     ERR_UNAVAILABLE_DURING_EXIT: { message: 'Cannot call function in process exit handler', bases: [Error] },
     ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET: { message: '`process.setupUncaughtExceptionCapture()` was called while a capture callback was already active', bases: [Error] },
     ERR_UNKNOWN_SIGNAL: { message: 'Unknown signal: %s', bases: [TypeError] },
