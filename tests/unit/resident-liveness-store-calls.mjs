@@ -46,10 +46,12 @@ await launchResident({
   authority, sql: facetSql(), program: PROGRAM, env: { SUPERVISOR: handle.supervisor }, cursor: authority.cursor(),
 });
 slow = true;
+const bootCalls = { ...handle.log.calls };
 await authority.peer.chmod('home/user/app/locked', 0o755);
 
 await until(() => handle.log.exit !== null, 'the process ends', 10_000);
-assert.ok(lists > 0, 'the store listed the directory again after the process started: the case this pins');
+const after = Object.fromEntries(Object.entries(handle.log.calls).map(([name, n]) => [name, n - (bootCalls[name] ?? 0)]).filter(([, n]) => n > 0));
+assert.ok(lists > 0, `the store listed the directory again after the process started: the case this pins; calls after boot ${JSON.stringify(after)}, stdout ${JSON.stringify(handle.log.stdout)}, exit ${JSON.stringify(handle.log.exit)}`);
 assert.match(handle.log.stdout, /^READ 20000$/m, `the read is answered before the process ends: stdout ${JSON.stringify(handle.log.stdout)}, exit ${JSON.stringify(handle.log.exit)}`);
 assert.equal(handle.log.exit.code, 0);
 console.log('resident-liveness-store-calls: ok');
