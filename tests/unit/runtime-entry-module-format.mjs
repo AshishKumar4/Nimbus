@@ -181,7 +181,7 @@ const CJS_PKG = JSON.stringify({ name: 'typescript', bin: { tsc: './bin/tsc' } }
 // the target package). A file under node_modules with no package.json of
 // its own belongs to no package: Node's scope walk stops at node_modules,
 // so the `type: module` project above it does not reach it, and it runs as
-// the CommonJS it is (real node 22.22.3: `typeof require` is 'function').
+// the CommonJS it is (real node 22.23.4: `typeof require` is 'function').
 {
   const shim = 'require("/home/user/node_modules/genpkg/bin/genpkg");\n';
   const r = await runScript({

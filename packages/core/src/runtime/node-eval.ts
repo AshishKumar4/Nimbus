@@ -1,6 +1,6 @@
 /**
  * The code `node -e` and `node -p` run, as Node prepares it
- * (lib/internal/main/eval_string.js and eval_stdin.js, v22.22.3), for a
+ * (lib/internal/main/eval_string.js and eval_stdin.js, v22.23.4), for a
  * process that runs it as its entry module's body.
  *
  * `-p` prints the code's completion value: the value a script evaluates to,

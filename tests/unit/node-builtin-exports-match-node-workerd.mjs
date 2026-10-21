@@ -1,7 +1,7 @@
 // @serial
 // @tier slow — drives a local workerd
 // The builtin modules a session's `node` program can require, against host
-// Node 22.22.3's: module.builtinModules itself, and for every module Node
+// Node 22.23.4's: module.builtinModules itself, and for every module Node
 // lists, whether it loads and the names it exports (Object.keys) with each
 // one's typeof. The differences today are recorded in
 // tests/fixtures/node-builtin-exports-gaps.json, for the builtin-parity work

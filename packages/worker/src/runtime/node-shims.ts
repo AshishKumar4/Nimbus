@@ -6444,7 +6444,7 @@ const __fsMod = (() => {
   realpath.native = realpath;
 
   // ── fs.glob ── Node 22's fs.glob, fs.globSync and fs.promises.glob: its
-  // Glob, ported from lib/internal/fs/glob.js (v22.22.3; the Linux paths),
+  // Glob, ported from lib/internal/fs/glob.js (v22.23.4; the Linux paths),
   // matching with the minimatch Node vendors (node-minimatch-source.ts),
   // which is evaluated the first time a program globs.
   const _Glob = (() => {
@@ -7877,7 +7877,7 @@ ${UNDICI_SHIM_CODE}
 // ═══════════════════════════════════════════════════════════════════════
 // ──  util module ────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
-// util.inspect, format and formatWithOptions are Node v22.22.3's own
+// util.inspect, format and formatWithOptions are Node v22.23.4's own
 // lib/internal/util/inspect.js (node-lib-source.ts), evaluated the first
 // time a program formats a value, over what node-lib-host.ts gives it in
 // place of Node's internals: what a program prints of a value, through util
@@ -8135,7 +8135,7 @@ Object.defineProperties(__nimbusInspect, {
         throw Object.assign(new TypeError("Invalid URL"), { code: "ERR_INVALID_URL", input: inputText, ...(baseText !== undefined ? { base: baseText } : {}) });
       }
     }
-    // Node's (lib/internal/url.js, v22.22.3), but for showHidden's internal
+    // Node's (lib/internal/url.js, v22.23.4), but for showHidden's internal
     // context, which workerd's URL has none of.
     [inspectCustom](depth, opts) {
       if (typeof depth === "number" && depth < 0) return this;
@@ -8173,7 +8173,7 @@ Object.defineProperties(__nimbusInspect, {
   // URL instances are instanceof _Orig, and URL.prototype's __proto__ is
   // _Orig.prototype (so all native URL methods are reachable via the chain).
   globalThis.URL = __nimbusFronted(URL, _Orig);
-  // URLSearchParams prints as Node's does (lib/internal/url.js, v22.22.3).
+  // URLSearchParams prints as Node's does (lib/internal/url.js, v22.23.4).
   Object.defineProperty(globalThis.URLSearchParams.prototype, inspectCustom, {
     value: function (recurseTimes, ctx) {
       if (typeof recurseTimes === "number" && recurseTimes < 0) return ctx.stylize("[Object]", "special");
@@ -10045,7 +10045,7 @@ const __childProcessMod = (() => {
 // constructor ("The Console method is not implemented"), which OpenTUI's
 // console capture calls over streams of its own.
 // Node's colour policy (lib/internal/tty.js getColorDepth and hasColors,
-// lib/internal/util/colors.js shouldColorize, v22.22.3), for its platform
+// lib/internal/util/colors.js shouldColorize, v22.23.4), for its platform
 // (Nimbus is linux): FORCE_COLOR first, then NODE_DISABLE_COLORS, NO_COLOR and
 // TERM=dumb, then the CI and terminal variables. Each stream decides for
 // itself: a terminal's getColorDepth reads the env it is given.
@@ -11365,7 +11365,7 @@ function __nimbusExitAtEnd() {
 }
 
 // ── What nothing caught ──
-// Node 22.22.3's fatal exception (lib/internal/process/execution.js
+// Node 22.23.4's fatal exception (lib/internal/process/execution.js
 // createOnGlobalUncaughtException; lib/internal/process/promises.js
 // throwUnhandledRejectionsMode; src/node_errors.cc TriggerUncaughtException,
 // ReportFatalException, GetErrorSource): 'uncaughtExceptionMonitor' sees it,
@@ -12815,7 +12815,7 @@ function __nimbusIsCommonJSGlobalLikeError(e) {
 }
 
 // Node's explainCommonJSGlobalLikeNotDefinedError (lib/internal/modules/esm/
-// module_job.js, v22.22.3): what a ReferenceError for a CommonJS name says
+// module_job.js, v22.23.4): what a ReferenceError for a CommonJS name says
 // once it escapes the evaluation of an ES module job the loader ran: a
 // program's ES entry, an import(), a require() of an ES module. \`url\` and
 // \`hasTopLevelAwait\` are the job's module's. Thrown anywhere else (in a

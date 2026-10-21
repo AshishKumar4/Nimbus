@@ -1,4 +1,4 @@
-// The names Node 22.22.3 gives each builtin's ES namespace beside `default`
+// The names Node 22.23.4 gives each builtin's ES namespace beside `default`
 // (core runtime/node-builtin-exports.ts, which an ES module's import of a
 // builtin is staged with): host Node the oracle. On a difference this prints
 // the table as Node gives it.

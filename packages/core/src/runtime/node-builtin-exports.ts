@@ -1,5 +1,5 @@
 /**
- * node-builtin-exports.ts — the names Node 22.22.3 gives each builtin's ES
+ * node-builtin-exports.ts — the names Node 22.23.4 gives each builtin's ES
  * module namespace beside `default`: Object.keys of its CommonJS exports, as
  * BuiltinModule.getESMFacade takes them when the builtin first loads. An ES
  * module's import of a builtin links to a facade with these names

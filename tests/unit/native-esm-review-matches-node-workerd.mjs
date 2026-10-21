@@ -1,6 +1,6 @@
 // @serial
 // @tier slow — drives a local workerd session through every scenario.
-// Native ES module review regressions, against host Node 22.22.3: failed
+// Native ES module review regressions, against host Node 22.23.4: failed
 // require(esm), JSON's shared CommonJS cache, a late graph's failed
 // evaluation, require/import namespace identity, transitive top-level
 // await, Function's import origin, query identity, CommonJS/ESM cycles,

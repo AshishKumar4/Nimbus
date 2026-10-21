@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // node:path's posix half (core _shared/posix-path.ts, the guest's node:path)
-// answers as Node v22.22.3's does: host Node's path.posix the oracle, over a
+// answers as Node v22.23.4's does: host Node's path.posix the oracle, over a
 // generated corpus. Every string of '/', '.', 'a' and 'é' up to six long, for
 // each function of one path (dirname, basename, extname, normalize,
 // isAbsolute, parse, toNamespacedPath); every pair of them up to three long

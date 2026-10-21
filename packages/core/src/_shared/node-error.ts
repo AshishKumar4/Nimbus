@@ -1,5 +1,5 @@
 /**
- * node-error.ts — Node's internal errors, as lib/internal/errors.js (v22.22.3)
+ * node-error.ts — Node's internal errors, as lib/internal/errors.js (v22.23.4)
  * makes them, for every error the runtime gives a code: the guest's shims and
  * module resolver, the shell's own Node compatibility, and the host code that
  * shares them. A NodeError reads `Name [CODE]: message` in its stack and its
