@@ -27,6 +27,7 @@
  */
 import { fsError } from '../beneath-walk.js';
 import { chmodRefusal, chownRefusal, explicitTimes, modeAllows, utimesRefusal } from '../../vfs/posix-access.js';
+import { refusesDirectory } from '../../vfs/open-rules.js';
 import { copiedPermissions, copyfileMode } from '../../vfs/vfs.js';
 import { applyOp, copyState, foldOps, owned } from './inode-fold.js';
 /** Where a provisional file's own numbers start: past any the session gives. */
@@ -976,7 +977,8 @@ export function provisional(host) {
                 return undefined;
         }
         else {
-            if (row.type === 'directory')
+            // A directory as the session's open judges one: refused, or a descriptor of the session's.
+            if (row.type === 'directory' && refusesDirectory(flags))
                 throw fsError('EISDIR', 'open', path);
             if (row.type !== 'file')
                 return undefined;

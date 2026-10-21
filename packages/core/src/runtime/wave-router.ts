@@ -34,7 +34,8 @@ import type { CompositeVFS, VfsMutationRoute } from '../vfs/composite.js';
 import type { RoutedStat, RoutedWaveRecord, WaveRouter } from './wave-contracts.js';
 import type { VfsCred, VfsRemoval, VfsStat } from '../vfs/vfs.js';
 import { VFS_DESCRIPTION, VfsError, type VfsErrorCode } from '../vfs/vfs-error.js';
-import { openFollows, openOnMount } from '../vfs/mounted-description.js';
+import { openOnMount } from '../vfs/mounted-description.js';
+import { openFollows } from '../vfs/open-rules.js';
 import { openFlags } from './descriptors.js';
 import { openAccessRights } from '@nimbus-sh/platform/w7-frame.js';
 
