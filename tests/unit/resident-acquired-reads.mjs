@@ -10,6 +10,7 @@
 // value, and before it throws when the read was refused.
 
 import assert from 'node:assert/strict';
+import { rootOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import {
   createAuthority,
@@ -45,10 +46,10 @@ async function boot(overrides = {}, seed = () => {}) {
   // Every call here is the session's: it grants no read lease (whose async
   // stats are the process's own view; node-read-lease).
   const asked = Object.hasOwn(given, 'fsAcquire') ? {} : {
-    fsAcquire: (epoch, cursor, options) => {
-      if (options?.lease !== true) return forward('fsAcquire', options === undefined ? [epoch, cursor] : [epoch, cursor, options]);
+    fsAcquire: (position, options) => {
+      if (options?.lease !== true) return forward('fsAcquire', options === undefined ? [position] : [position, options]);
       const { lease: _lease, ...rest } = options;
-      return forward('fsAcquire', [epoch, cursor, rest]);
+      return forward('fsAcquire', [position, rest]);
     },
   };
   const handle = facetSupervisor(authority, { ...asked, ...given });
@@ -159,7 +160,7 @@ await runScenarios(import.meta.path, {
     await authority.peer.unlink('home/user/app/g.txt');
     const deleted = authority.rawVfs.revision();
     const resumed = probe.resume();
-    await until(() => globalThis.__nimbusVfsCursor.rev >= deleted, 'the barrier applied the deletion');
+    await until(() => rootOf(globalThis.__nimbusVfsCursor.position).cursor >= deleted, 'the barrier applied the deletion');
     release.resolve();
     assert.equal(await reading, 'g1', 'the read is what was there when it was served');
     await resumed;
@@ -192,7 +193,7 @@ await runScenarios(import.meta.path, {
     await authority.peer.writeFile('home/user/app/g.txt', 'g2');
     const unrelated = authority.rawVfs.revision();
     const resumed = probe.resume();
-    await until(() => globalThis.__nimbusVfsCursor.rev >= unrelated, 'the barrier applied the unrelated write');
+    await until(() => rootOf(globalThis.__nimbusVfsCursor.position).cursor >= unrelated, 'the barrier applied the unrelated write');
     await authority.peer.writeFile('home/user/app/late.txt', 'late');
     release.resolve();
     assert.equal(await reading, 'late');

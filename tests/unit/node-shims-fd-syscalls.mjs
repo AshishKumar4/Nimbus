@@ -9,6 +9,7 @@
 // SQLite must fail EAGAIN — loudly — instead of returning wrong bytes.
 
 import assert from 'node:assert/strict';
+import { positionOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { spawnSync } from 'node:child_process';
 import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
@@ -52,7 +53,7 @@ const supervisor = {
   chown: (p, u, g, o) => bridge.chown(p, u, g, o),
   fsRemove: (p, o) => bridge.remove(p, o),
   // The barrier's delta, as every session serves it.
-  fsAcquire: (epoch, cursor, options) => bridge.acquire(epoch, cursor, options),
+  fsAcquire: (position, options) => bridge.acquire(position, options),
 };
 // Its process's waves reach these calls (lib/wave-supervisor.mjs).
 waveSupervisor(supervisor);
@@ -70,14 +71,14 @@ const dirs = {};
 
 const code = SHIMS_STORE_PRELUDE + generateShimsCode();
 // The process starts at the authority's cursor, as a launch does.
-globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
+globalThis.__nimbusVfsCursor = { position: positionOf('', { '/': { epoch: rawVfs.epoch, cursor: rawVfs.revision() } }) };
 const factory = new Function(
   '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
   '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + code +
     '\n;return { fs: __fsMod, process: __processMod, writes: __vfsWrites, builtins, drain: __nimbusDrainVfsMutations };'
 );
 listAuthority(rawVfs);
-globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
+globalThis.__nimbusVfsCursor = { position: positionOf('', { '/': { epoch: rawVfs.epoch, cursor: rawVfs.revision() } }) };
 const sandbox = (declareNamespace({ metadata: metadata, manifest: null }), factory(
   bundle,
   dirs,

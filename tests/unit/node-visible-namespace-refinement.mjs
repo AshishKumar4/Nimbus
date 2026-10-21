@@ -73,7 +73,7 @@ for (const [index, testCase] of fixture.cases.entries()) {
   const supervisor = {
     fsList: (after, limit) => _rpcFsList(host, after ?? null, limit ?? null, undefined, pid),
     fsReadBatch: (requests) => _rpcFsReadBatch(host, requests, pid),
-    fsAcquire: (epoch, cursor, options) => _rpcFsAcquire(host, epoch, cursor, options, pid),
+    fsAcquire: (position, options) => _rpcFsAcquire(host, position, options, pid),
   };
   const { store, namespace } = residentStore();
   store.namespace.setCred(reader);

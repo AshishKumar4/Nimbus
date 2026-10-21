@@ -18,6 +18,7 @@
 // latency, because the gap only opens while a round trip is outstanding.
 
 import assert from 'node:assert/strict';
+import { positionOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { ENTRYPOINT_EVENT_LOOP } from '../../packages/worker/src/facets/manager.ts';
@@ -68,13 +69,13 @@ const supervisor = {
   mkdir: slow((p) => bridge.mkdir(p, { recursive: true })),
   chmod: slow((p, mode) => bridge.chmod(p, mode)),
   fsReadRange: slow((p, o, l) => bridge.readRange(p, o, l)),
-  fsAcquire: slow((epoch, cursor, options) => bridge.acquire(epoch, cursor, options)),
+  fsAcquire: slow((position, options) => bridge.acquire(position, options)),
 };
 // Its process's waves reach these calls (lib/wave-supervisor.mjs).
 waveSupervisor(supervisor);
 
 listAuthority(rawVfs);
-globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
+globalThis.__nimbusVfsCursor = { position: positionOf('', { '/': { epoch: rawVfs.epoch, cursor: rawVfs.revision() } }) };
 globalThis.__nimbusRawSetTimeout = rawSetTimeout;
 globalThis.__nimbusRawClearTimeout = globalThis.clearTimeout;
 globalThis.__nimbusProcessExitPromise = new Promise(() => {});

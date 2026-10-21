@@ -7,6 +7,7 @@
 // and every file still lands.
 
 import assert from 'node:assert/strict';
+import { positionOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { ENTRYPOINT_EVENT_LOOP } from '../../packages/worker/src/facets/manager.ts';
@@ -46,12 +47,12 @@ const supervisor = {
   exists: slow(async (p) => (await bridge.stat(p)) !== null),
   mkdir: slow((p, o) => bridge.mkdir(p, o ?? { recursive: true })),
   fsReadRange: slow((p, o, l) => bridge.readRange(p, o, l)),
-  fsAcquire: slow((epoch, cursor) => bridge.acquire(epoch, cursor)),
+  fsAcquire: slow((position) => bridge.acquire(position)),
 };
 // Its process's waves reach these calls (lib/wave-supervisor.mjs).
 waveSupervisor(supervisor);
 
-globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
+globalThis.__nimbusVfsCursor = { position: positionOf('', { '/': { epoch: rawVfs.epoch, cursor: rawVfs.revision() } }) };
 globalThis.__nimbusRawSetTimeout = rawSetTimeout;
 globalThis.__nimbusRawClearTimeout = globalThis.clearTimeout;
 globalThis.__nimbusProcessExitPromise = new Promise(() => {});

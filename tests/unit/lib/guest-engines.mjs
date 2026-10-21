@@ -207,8 +207,8 @@ async function eagerBridge(stub, sql) {
   const store = createResidentStore();
   store.bindInMemory(64 * 1024 * 1024);
   store.admission.setStorage(undefined, supervisor);
-  const cursor = await supervisor.fsAcquire(null, 0, { namespace: true });
-  const boot = await store.sync.boot(() => ({}), { epoch: cursor.epoch, rev: cursor.rev }, supervisor, 0);
+  const cursor = await supervisor.fsAcquire(null, { namespace: true });
+  const boot = await store.sync.boot(() => ({}), cursor.position, supervisor, 0);
   if (boot.failure) throw new Error(`the store did not enumerate: ${boot.failure}`);
   const view = store.view.namespaceView(supervisor, await bridge.stat('/'), CRED);
   const fs = residentFilesystem(bridge, view, {

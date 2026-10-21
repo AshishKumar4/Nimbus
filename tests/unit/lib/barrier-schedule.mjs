@@ -716,7 +716,7 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
     if (kind === 'node') { note(`  (step ${at}: a restart is the resident filesystem's to meet)`); return; }
     engine.authority.rawVfs.rotateIncarnation();
     restarts.push(seq());
-    note(`  (step ${at}: the session's database started a new incarnation, epoch ${engine.authority.cursor().epoch})`);
+    note(`  (step ${at}: the session's database started a new incarnation, epoch ${engine.authority.rawVfs.epoch})`);
   };
 
   const step = async (at, s) => {

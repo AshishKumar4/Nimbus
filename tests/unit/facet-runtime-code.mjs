@@ -55,7 +55,7 @@ function makeSupervisor() {
     async fsReadRange(path, offset, length) { return bridge.readRange(path, offset, length); },
     fsList: (after, limit) => _rpcFsList(sessionHost, after ?? null, limit ?? null),
     fsReadBatch: (requests) => _rpcFsReadBatch(sessionHost, requests),
-    fsAcquire: (epoch, cursor, options) => _rpcFsAcquire(sessionHost, epoch, cursor, options),
+    fsAcquire: (position, options) => _rpcFsAcquire(sessionHost, position, options),
     async stdout() {}, async stderr() {}, async reportExit() {},
     [Symbol.dispose]() {},
   };

@@ -74,8 +74,8 @@ function meteredSupervisor() {
       for (const r of requests) cost.readBytes += r.length;
       return _rpcFsReadBatch(host, requests);
     },
-    async fsAcquire(epoch, cursor) {
-      return _rpcFsAcquire(host, epoch, cursor);
+    async fsAcquire(position) {
+      return _rpcFsAcquire(host, position);
     },
   };
 }
@@ -339,7 +339,7 @@ if (fixturePath) {
     const supervisor = {
       fsList: (after, limit) => _rpcFsList(caseHost, after ?? null, limit ?? null),
       fsReadBatch: (requests) => _rpcFsReadBatch(caseHost, requests),
-      fsAcquire: (epoch, cursor) => _rpcFsAcquire(caseHost, epoch, cursor),
+      fsAcquire: (position) => _rpcFsAcquire(caseHost, position),
       fsStorageGrant: async () => ({ granted: 0 }),
     };
     const store = createResidentStore();

@@ -10,6 +10,7 @@
 // let a barrier that came while the rename was still on its way retire the
 // new names, and neither name was there.
 import assert from 'node:assert/strict';
+import { rootOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createAuthority, facetSupervisor, launchResident, runScenarios, residentDataPlan, until } from './lib/resident-body.mjs';
 
@@ -100,7 +101,7 @@ await runScenarios(import.meta.path, {
     await authority.peer.writeFile('home/user/app/other', 'o');
     const reported = authority.rawVfs.revision();
     const resumed = probe.resume();
-    await until(() => globalThis.__nimbusVfsCursor.rev >= reported, 'the barrier applied the peer\'s change');
+    await until(() => rootOf(globalThis.__nimbusVfsCursor.position).cursor >= reported, 'the barrier applied the peer\'s change');
     const during = [fs.existsSync('/home/user/app/moved/f'), fs.existsSync('/home/user/app/tree'), fs.readdirSync('/home/user/app').sort()];
     assert.deepEqual(during, [true, false, ['moved', 'other']], 'while the rename is out: the new names, not the old');
     release.resolve();

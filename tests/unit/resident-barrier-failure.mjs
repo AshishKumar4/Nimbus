@@ -323,7 +323,7 @@ await runScenarios(import.meta.path, {
       readdir: (p) => bridge.readdir(p),
       exists: async (p) => (await bridge.stat(p)) !== null,
       fsReadRange: (p, o, l) => bridge.readRange(p, o, l),
-      fsAcquire: (epoch, cursor, options) => (dropped ? DROPPED() : bridge.acquire(epoch, cursor, options)),
+      fsAcquire: (position, options) => (dropped ? DROPPED() : bridge.acquire(position, options)),
       // What a failed barrier's repair refetches with, as the session serves it.
       fsList: (after, limit) => authority.host.supervisorOp({ op: 'fsList', args: [after, limit] }),
       fsReadBatch: (requests) => authority.host.supervisorOp({ op: 'fsReadBatch', args: [requests] }),

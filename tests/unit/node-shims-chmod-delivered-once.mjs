@@ -7,6 +7,7 @@
 // those evictions and failed EAGAIN.
 
 import assert from 'node:assert/strict';
+import { positionOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
@@ -47,11 +48,11 @@ const supervisor = {
   access: (p, m) => bridge.access(p, m), mkdir: (p, o) => bridge.mkdir(p, o ?? { recursive: true }),
   chmod: (p, m) => { chmods++; return bridge.chmod(p, m); },
   fsReadRange: (p, o, l) => bridge.readRange(p, o, l),
-  fsAcquire: (epoch, cursor, options) => bridge.acquire(epoch, cursor, options),
+  fsAcquire: (position, options) => bridge.acquire(position, options),
 };
 // Its process's waves reach these calls (lib/wave-supervisor.mjs).
 waveSupervisor(supervisor);
-globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
+globalThis.__nimbusVfsCursor = { position: positionOf('', { '/': { epoch: rawVfs.epoch, cursor: rawVfs.revision() } }) };
 
 const factory = new Function(
   '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',

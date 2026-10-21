@@ -10,6 +10,7 @@
 // the callback sees the peer's bytes — the case that was stale before.
 
 import assert from 'node:assert/strict';
+import { positionOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
@@ -35,14 +36,14 @@ const supervisor = {
   readdir: (p) => bridge.readdir(p), exists: async (p) => (await bridge.stat(p)) !== null,
   access: (p, m) => bridge.access(p, m), mkdir: (p) => bridge.mkdir(p, { recursive: true }),
   fsReadRange: (p, o, l) => bridge.readRange(p, o, l),
-  fsAcquire: (epoch, cursor, options) => { acquireCalls++; return bridge.acquire(epoch, cursor, options); },
+  fsAcquire: (position, options) => { acquireCalls++; return bridge.acquire(position, options); },
 };
 const factory = new Function(
   '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
   '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode() + '\n;return { fs: __fsMod, setTimeout: globalThis.setTimeout };'
 );
 listAuthority(rawVfs);
-globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
+globalThis.__nimbusVfsCursor = { position: positionOf('', { '/': { epoch: rawVfs.epoch, cursor: rawVfs.revision() } }) };
 const out = (declareNamespace({ metadata: { 'home/user/t': { type:'directory', size:0, mode:0o755, uid:1000, gid:1000 },
     'home/user/t/r.txt': { type:'file', size:2, mode:0o644, uid:1000, gid:1000 } }, manifest: { 'home/user': ['t'], 'home/user/t': ['r.txt'] } }), factory(
   { 'home/user/t/r.txt': 'V1' },

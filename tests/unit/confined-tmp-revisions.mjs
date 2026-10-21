@@ -128,7 +128,7 @@ store.bind({ storage: facetStorage(facetSql()) });
 const supervisor = {
   fsList: (after, limit) => _rpcFsList(host, after ?? null, limit ?? null, undefined, pid),
   fsReadBatch: (requests) => _rpcFsReadBatch(host, requests, pid),
-  fsAcquire: (epoch, cursor) => _rpcFsAcquire(host, epoch, cursor, undefined, pid),
+  fsAcquire: (position) => _rpcFsAcquire(host, position, undefined, pid),
 };
 const asText = (cell) => (typeof cell === 'string' ? cell : dec.decode(cell));
 
