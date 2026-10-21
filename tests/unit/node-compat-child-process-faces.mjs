@@ -38,10 +38,14 @@ function runningFace({ refuse, output } = {}) {
 
 const failures = [];
 const check = async (name, body) => {
+  let timer;
+  const late = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('not done within 10 s')), 10_000); });
   try {
-    await body();
+    await Promise.race([body(), late]);
   } catch (error) {
     failures.push(`${name}: ${error.message}`);
+  } finally {
+    clearTimeout(timer);
   }
 };
 

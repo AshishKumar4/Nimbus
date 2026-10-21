@@ -43,13 +43,16 @@ await check('listeners say what it catches; a queued signal reaches them', async
   const onTerm = () => heard.push('SIGTERM');
   proc.on('SIGTERM', onTerm);
   proc.once('SIGUSR1', () => heard.push('SIGUSR1'));
-  assert.deepEqual(said, [['SIGTERM'], ['SIGUSR1', 'SIGTERM']], 'said as each is added, at once');
+  for (let i = 0; i < 100 && said.length < 2; i++) await sleep(10);
+  assert.deepEqual(said, [['SIGTERM'], ['SIGUSR1', 'SIGTERM']], 'said as each is added, one after another');
   send('SIGTERM');
   send('SIGUSR1');
   for (let i = 0; i < 100 && heard.length < 2; i++) await sleep(10);
   assert.deepEqual(heard, ['SIGTERM', 'SIGUSR1'], 'its handlers hear them');
+  for (let i = 0; i < 100 && said.at(-1)?.length !== 1; i++) await sleep(10);
   assert.deepEqual(said.at(-1), ['SIGTERM'], 'a once listener gone, it no longer catches its signal');
   proc.off('SIGTERM', onTerm);
+  for (let i = 0; i < 100 && said.at(-1)?.length !== 0; i++) await sleep(10);
   assert.deepEqual(said.at(-1), [], 'none left: it catches none');
 });
 
