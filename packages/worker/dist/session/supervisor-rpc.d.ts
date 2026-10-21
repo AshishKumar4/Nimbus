@@ -174,6 +174,7 @@ declare const SupervisorRPC_base: (abstract new (...args: any[]) => {
         acquired?: import("./rpc.js").VfsDeliveredAcquire;
     }>;
     cpNextSignal(waitMs: number): Promise<string | null>;
+    cpCatchSignals(catches: readonly string[]): Promise<void>;
     cpBlocked(report: {
         blocked: boolean;
         frontier: number;

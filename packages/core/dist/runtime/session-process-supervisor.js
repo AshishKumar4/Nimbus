@@ -848,6 +848,21 @@ export class SessionProcessSupervisor {
         };
     }
     /**
+     * `pid`'s program says which signals it catches now, as a Node process's
+     * listeners come and go: the offer takeSignals makes, made, or its
+     * catches changed (none: each signal takes its default action again).
+     * Until it ends, each it catches is queued for it (nextSignal).
+     */
+    catchSignals(pid, catches) {
+        const box = this.signalBoxes.get(pid);
+        if (box === undefined) {
+            if (catches.length > 0)
+                this.takeSignals(pid, catches);
+            return;
+        }
+        box.catches = new Set(catches.filter((signal) => signal !== 'SIGKILL'));
+    }
+    /**
      * The next signal sent to `pid`'s program (takeSignals), waiting up to
      * `waitMs` for one: null if none came, the process ended, or a later wait
      * took its place (one waits at a time).

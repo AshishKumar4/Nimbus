@@ -15067,6 +15067,16 @@ function __makeStdinSource() {
   function end() { ended = true; deliver(); }
   function fail(error) { failure = error; deliver(); }
   async function pumpLiveStdin() {
+    __nimbusStdinPumping = true;
+    try {
+      await pumpLiveStdinPackets();
+    } finally {
+      __nimbusStdinPumping = false;
+      // Its signals are the signal taker's again once its input has ended.
+      if (!__nimbusProgramStopped) __nimbusTakeSignals();
+    }
+  }
+  async function pumpLiveStdinPackets() {
     let readFailures = 0;
     // What fd 0's follower took after process.stdin took the channel over
     // comes first (__nimbusFollowStdin).
@@ -15613,6 +15623,56 @@ Object.defineProperty(__processMod, "allowedNodeEnvironmentFlags", {
 });
 // The 'warning' listener Node installs (setupWarningHandler), unless warnings are off.
 if (__nimbusWarnings.installs) __processMod.on("warning", __nimbusWarnings.onWarning);
+// The signals this process catches, as its listeners come and go: the
+// session queues each one sent to it (a parent's kill, the shell's, a
+// client's) for it to take, where it would otherwise take the signal's
+// default action (cpCatchSignals), and this process takes them
+// (cpNextSignal), its handlers deciding what it does, as Node's do. While its
+// stdin pump runs, the pump takes them with its input (one waits at a time).
+const __nimbusCatchable = ["SIGHUP", "SIGINT", "SIGQUIT", "SIGUSR1", "SIGUSR2", "SIGPIPE", "SIGALRM", "SIGTERM"];
+let __nimbusCaught = "";
+let __nimbusSignalTaker = null;
+let __nimbusStdinPumping = false;
+function __nimbusCatchSignals(adding) {
+  if (!__supervisor || typeof __supervisor.cpCatchSignals !== "function") return;
+  const caught = __nimbusCatchable.filter((sig) => sig === adding || __processMod.listenerCount(sig) > 0);
+  const key = caught.join(",");
+  if (key === __nimbusCaught) return;
+  __nimbusCaught = key;
+  // Sent at once, before what the program does next (a "ready" it prints): a signal sent after that finds it caught.
+  __nimbusUseRpcResultUnref(__supervisor.cpCatchSignals(caught), () => undefined).catch(() => {});
+  __nimbusTakeSignals();
+}
+function __nimbusTakeSignals() {
+  if (__nimbusSignalTaker !== null || __nimbusCaught === "" || __nimbusStdinPumping || typeof __supervisor.cpNextSignal !== "function") return;
+  __nimbusSignalTaker = (async () => {
+    let failures = 0;
+    while (__nimbusCaught !== "" && !__nimbusStdinPumping && !__nimbusProgramStopped) {
+      let sig = null;
+      try {
+        // Unref'd, as the stdin pump's poll: waiting for a signal is no reason to keep the program alive.
+        sig = await __nimbusUseRpcResultUnref(__supervisor.cpNextSignal(5000), (result) => result);
+        failures = 0;
+      } catch {
+        if (++failures > 10) return;
+        continue;
+      }
+      if (sig === null || __nimbusProgramStopped) continue;
+      // Whatever sent it may have written files first, as for a signal the stdin pump delivers.
+      await __nimbusInboundBarrier(undefined, true);
+      __nimbusSignalSelf(String(sig));
+    }
+  })().catch((e) => {
+    if (e instanceof __ProcessExit) return;
+    try { queueMicrotask(() => { throw e; }); } catch {}
+  }).finally(() => {
+    __nimbusSignalTaker = null;
+    // Listeners added while it ended are taken by the next.
+    if (!__nimbusProgramStopped) __nimbusTakeSignals();
+  });
+}
+__processMod.on("newListener", (event) => { if (__nimbusCatchable.includes(event)) __nimbusCatchSignals(event); });
+__processMod.on("removeListener", (event) => { if (__nimbusCatchable.includes(event)) __nimbusCatchSignals(null); });
 // Node's process reads as one: Object.prototype.toString gives "[object
 // process]", which axios (utils.kindOf) and others test to pick their Node
 // paths (axios: its http adapter rather than its fetch one). As Node defines

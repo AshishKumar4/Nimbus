@@ -357,6 +357,16 @@ export class ChildProcessManager {
         const packet = await this.deps.processes.readInput(childPid, waitMs, maxBytes);
         return { ...packet, data: typeof packet.data === 'string' ? textBytes(packet.data) : packet.data };
     }
+    /** The signals `pid`'s program catches now (SessionProcessSupervisor.catchSignals). */
+    catchSignals(pid, catches) {
+        const names = [];
+        for (const catching of catches) {
+            const name = parseProcessSignalName(catching);
+            if (name !== null)
+                names.push(name);
+        }
+        this.deps.processes.catchSignals(pid, names);
+    }
     /** The next signal sent to `pid`, whose program takes its own (SessionProcessSupervisor.nextSignal). */
     nextSignal(pid, waitMs) {
         return this.deps.processes.nextSignal(pid, waitMs);
@@ -749,5 +759,6 @@ export function createChildProcessSupervisor(manager, pid) {
         cpCloseOutput: (child, fd) => manager.closeOutput(child, fd),
         cpDrainOutput: (child) => manager.drainOutput(child),
         cpNextSignal: (waitMs) => manager.nextSignal(pid, waitMs),
+        cpCatchSignals: (catches) => manager.catchSignals(pid, catches),
     };
 }

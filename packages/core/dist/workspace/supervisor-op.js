@@ -195,6 +195,7 @@ export const SUPERVISOR_OP_ROUTES = {
     cpKill: { method: '_rpcCpKill', args: [0, 1, 'pid'] },
     cpWait: { method: '_rpcCpWait', args: [0, 1, 2, 'pid', 3] },
     cpNextSignal: { method: '_rpcCpNextSignal', args: ['pid', 0] },
+    cpCatchSignals: { method: '_rpcCpCatchSignals', args: ['pid', 0] },
     cpBlocked: { method: '_rpcCpBlocked', args: ['pid', 0] },
     innerDoCall: { method: '_rpcInnerDoCall', args: [0] },
     // A wrangler-dev Worker's storage bindings: each names its own store, and a

@@ -1,10 +1,16 @@
 import type { SessionDirectoryEntry, SessionFileStat, SessionFollowOptions, SessionMkdirOptions } from '../runtime/session-protocol.js';
-import type { NodeFiles } from './faces.js';
-export type { FilesFace, NodeFaces, NodeFiles, NodeFilesystem, NodeWatch } from './faces.js';
+import type { StartedSessionProgram } from '../runtime/program-start.js';
+import type { NodeFiles, NodeStart } from './faces.js';
+export type { FilesFace, NodeFaces, NodeFiles, NodeFilesystem, NodeProgram, NodeStart, NodeWatch } from './faces.js';
 export { createNodeFs } from './fs.js';
-/** `fs` and `fs/promises` over `files`, relative paths taken from `cwd`. */
-export declare function createNodeCompat({ files }: {
+export { ChildProcess, createNodeChildProcess } from './child_process.js';
+/**
+ * `fs` and `fs/promises` over `files`, and `child_process` over `start`
+ * (none: every start refused ENOSYS), relative paths taken from `cwd`.
+ */
+export declare function createNodeCompat({ files, start }: {
     files: NodeFiles;
+    start?: NodeStart;
 }, { cwd }: {
     cwd: string;
 }): {
@@ -329,6 +335,16 @@ export declare function createNodeCompat({ files }: {
             force?: boolean;
         }) => Promise<void>;
     };
+    childProcess: {
+        ChildProcess: typeof import("./child_process.js").ChildProcess;
+        spawn: (file: string, args?: readonly string[] | import("./child_process.js").SpawnOptions, options?: import("./child_process.js").SpawnOptions) => import("./child_process.js").ChildProcess;
+        exec: (command: string, options?: import("./child_process.js").ExecOptions | ((error: Error | null, stdout: string | import("node:buffer").Buffer, stderr: string | import("node:buffer").Buffer) => void) | null | undefined, callback?: ((error: Error | null, stdout: string | import("node:buffer").Buffer, stderr: string | import("node:buffer").Buffer) => void) | undefined) => import("./child_process.js").ChildProcess;
+        execFile: (file: string, args?: readonly string[] | import("./child_process.js").ExecOptions | ((error: Error | null, stdout: string | import("node:buffer").Buffer, stderr: string | import("node:buffer").Buffer) => void) | null, options?: import("./child_process.js").ExecOptions | ((error: Error | null, stdout: string | import("node:buffer").Buffer, stderr: string | import("node:buffer").Buffer) => void) | null, callback?: (error: Error | null, stdout: string | import("node:buffer").Buffer, stderr: string | import("node:buffer").Buffer) => void) => import("./child_process.js").ChildProcess;
+        fork: (modulePath: string) => never;
+        execSync: (command: string) => never;
+        execFileSync: (file: string, args?: readonly string[]) => never;
+        spawnSync: (file: string, args?: readonly string[]) => never;
+    };
 };
 /** A Nimbus session's file calls, as its client (the SDK's `sandbox.files`) makes them. */
 export interface SessionFilesClient {
@@ -354,10 +370,24 @@ export interface SessionFilesClient {
     truncate(path: string, size: number): Promise<void>;
     chown(path: string, uid: number | null, gid: number | null, options?: SessionFollowOptions): Promise<void>;
 }
-/** Node's `fs` calls over a Nimbus session's (`sandbox.files`); its absences are Node's ENOENT. */
+/** A Nimbus session's argv start, as its client (the SDK's `sandbox.startProgram`) makes it. */
+export type SessionStartClient = (argv: string[], options: {
+    cwd?: string;
+    env?: Record<string, string>;
+    stdin?: ReadableStream<Uint8Array>;
+    signal?: AbortSignal;
+}) => Promise<StartedSessionProgram>;
+/**
+ * Node's `fs` calls over a Nimbus session's (`sandbox.files`), its absences
+ * Node's ENOENT; and its starts over the session's (`sandbox.startProgram`),
+ * placed by their cwd as every start is, a child given no environment the
+ * session's own.
+ */
 export declare function nodeFacesOf(session: {
     files: SessionFilesClient;
+    startProgram?: SessionStartClient;
 }): {
     files: NodeFiles;
+    start?: NodeStart;
 };
 //# sourceMappingURL=index.d.ts.map

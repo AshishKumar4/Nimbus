@@ -1,18 +1,24 @@
 /**
  * Node's modules over a session client (Kinu ask 67): `createNodeCompat`
  * gives `fs` and `fs/promises`, written once (node-compat/fs.ts), over the
- * file calls a client provides; `nodeFacesOf` makes those calls over a
- * Nimbus session. There is no synchronous face: a client's isolate cannot
- * wait, so every `*Sync` call that reaches the session throws EAGAIN, and
- * every asynchronous form works.
+ * file calls a client provides, and `child_process` (node-compat/
+ * child_process.ts) over its start; `nodeFacesOf` makes those over a Nimbus
+ * session. There is no synchronous face: a client's isolate cannot wait, so
+ * every `*Sync` call that reaches the session throws EAGAIN (a child's,
+ * ERR_NIMBUS_SYNC_CHILD_PROCESS), and every asynchronous form works.
  */
 import { errnoCodeOf, fsError } from '../vfs/vfs-error.js';
 import { createNodeFs } from './fs.js';
+import { createNodeChildProcess } from './child_process.js';
 export { createNodeFs } from './fs.js';
-/** `fs` and `fs/promises` over `files`, relative paths taken from `cwd`. */
-export function createNodeCompat({ files }, { cwd }) {
+export { ChildProcess, createNodeChildProcess } from './child_process.js';
+/**
+ * `fs` and `fs/promises` over `files`, and `child_process` over `start`
+ * (none: every start refused ENOSYS), relative paths taken from `cwd`.
+ */
+export function createNodeCompat({ files, start }, { cwd }) {
     const fs = createNodeFs({ async: completeFiles(files) }, { cwd });
-    return { fs, fsPromises: fs.promises };
+    return { fs, fsPromises: fs.promises, childProcess: createNodeChildProcess(start, { cwd }) };
 }
 /** `path`'s stat, or null where nothing is there. */
 async function statIfPresent(files, path) {
@@ -87,8 +93,20 @@ function runtimeStatOf(stat, syscall, path) {
         mode: stat.mode, uid: stat.uid ?? 0, gid: stat.gid ?? 0, revision: stat.revision ?? 0,
     };
 }
-/** Node's `fs` calls over a Nimbus session's (`sandbox.files`); its absences are Node's ENOENT. */
+/**
+ * Node's `fs` calls over a Nimbus session's (`sandbox.files`), its absences
+ * Node's ENOENT; and its starts over the session's (`sandbox.startProgram`),
+ * placed by their cwd as every start is, a child given no environment the
+ * session's own.
+ */
 export function nodeFacesOf(session) {
+    const { startProgram } = session;
+    const start = startProgram === undefined ? undefined : (program, cancel) => startProgram.call(session, [...program.argv], {
+        cwd: program.cwd,
+        ...(program.env === undefined ? {} : { env: { ...program.env } }),
+        ...(program.stdin === null ? {} : { stdin: program.stdin }),
+        signal: cancel,
+    });
     const client = session.files;
     const statOf = async (path, follow) => {
         const syscall = follow ? 'stat' : 'lstat';
@@ -136,5 +154,5 @@ export function nodeFacesOf(session) {
         chown: (path, uid, gid, follow) => client.chown(path, uid, gid, { followSymlinks: follow }),
         truncate: (path, size) => client.truncate(path, size),
     };
-    return { files };
+    return start === undefined ? { files } : { files, start };
 }

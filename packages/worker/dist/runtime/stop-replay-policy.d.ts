@@ -252,6 +252,9 @@ export declare const REPLAY_OPERATION_POLICY: {
     cpNextSignal: {
         readonly kind: "observation";
     };
+    cpCatchSignals: {
+        readonly kind: "control";
+    };
     cpWait: {
         kind: "observation";
         answer: (value: unknown) => unknown;

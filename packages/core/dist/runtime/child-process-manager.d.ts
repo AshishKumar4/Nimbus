@@ -237,6 +237,8 @@ export declare class ChildProcessManager {
         data: Uint8Array;
         ended: boolean;
     }>;
+    /** The signals `pid`'s program catches now (SessionProcessSupervisor.catchSignals). */
+    catchSignals(pid: number, catches: readonly string[]): void;
     /** The next signal sent to `pid`, whose program takes its own (SessionProcessSupervisor.nextSignal). */
     nextSignal(pid: number, waitMs: number): Promise<string | null>;
     /** A broker-side text message onto the child's byte ring. */
@@ -345,6 +347,7 @@ export declare function createChildProcessSupervisor(manager: ChildProcessManage
     cpCloseOutput: (child: number, fd: 1 | 2) => void;
     cpDrainOutput: (child: number) => Promise<DrainResult>;
     cpNextSignal: (waitMs: number) => Promise<string | null>;
+    cpCatchSignals: (catches: readonly string[]) => void;
 };
 export {};
 //# sourceMappingURL=child-process-manager.d.ts.map
