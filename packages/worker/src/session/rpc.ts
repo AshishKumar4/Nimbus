@@ -47,6 +47,7 @@ import type { StorageLedger } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 import { PeerHost, type HostedHttpRequest, type HostedHttpResponse, type HostedReply } from '@nimbus-sh/fabric/peer-host.js';
+import { oneShotHost } from '@nimbus-sh/fabric/one-shot-peer.js';
 import { OpencodeStageSpecSchema } from '../facets/opencode-stage-spec.js';
 import {
   recordFailure, getLastRpcFrame, getLastFacetId,
@@ -1762,4 +1763,24 @@ export function _rpcAbandonHostedHttp(self: PeerHostRpcHost, workerKey: string, 
 }
 export function _rpcCancelHostProcess(self: PeerHostRpcHost, workerKey: string): Promise<{ cancelled: boolean }> {
   return self.peerHost.cancel(workerKey);
+}
+
+// ── One-shots: the peer leg ─────────────────────────────────────────────────
+//
+// What a session asks of THIS object when it runs a one-shot on it, as its
+// peer (fabric one-shot-peer.ts), served by the object's one OneShotHost.
+
+interface OneShotRpcHost {
+  readonly ctx: DurableObjectState;
+  readonly env: object;
+}
+
+export function _rpcOneShotSubmit(self: OneShotRpcHost, spec: unknown, callId: unknown, fn: unknown, args: unknown, options: unknown, images: unknown) {
+  return oneShotHost(self.ctx, self.env).submit(spec, callId, fn, args, options, images);
+}
+export function _rpcOneShotWarm(self: OneShotRpcHost, spec: unknown, fn: unknown, images: unknown): Promise<{ warmed: true }> {
+  return oneShotHost(self.ctx, self.env).warm(spec, fn, images);
+}
+export function _rpcOneShotCancel(self: OneShotRpcHost, callId: unknown): { cancelled: boolean } {
+  return oneShotHost(self.ctx, self.env).cancel(callId);
 }

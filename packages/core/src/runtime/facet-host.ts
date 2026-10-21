@@ -105,6 +105,15 @@ export interface FacetSpec {
    * handed to each call. A host may still start each facet afresh.
    */
   warm?: import('./warm-facets.js').WarmFacetKey;
+  /**
+   * Whether a call needs what this facet's earlier calls left in its scope:
+   * bash's shell, booted by the first call and fed by each one after. Such a
+   * facet stays on the host it was opened on for its whole life. Any other
+   * facet's call may run wherever its host places it (a Worker Loader host:
+   * on the session's warm peer, fabric one-shot-peer.ts), since a warm scope
+   * it finds is only a cache.
+   */
+  stateful?: boolean;
 }
 
 /** The session a facet's syscalls reach, and who they reach it as. */

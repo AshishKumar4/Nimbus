@@ -5,6 +5,14 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Changed: while something else wants a session, a one-shot (python, ruby, clang, tsc, git.wasm, a WASI program) runs on the session's peer, another Durable Object, so the session keeps answering. A one-shot's worker used to run on the session's own thread, so while it computed the session answered nothing. Measured during a python run importing ten stdlib modules, session against peer: a second terminal's `echo` waited 3.4-4.5 s against 0.07-0.15 s, a request to a running server 3.2-5.2 s against 0.08-0.14 s, and a file save 3.2-4.1 s against 0.22-0.30 s.
+  - Something else wants the session while another terminal is attached, or another process is running: a server, another one-shot, a resident starting. Otherwise the run stays in the session: there, idle, it is no faster on the peer (python 4253 ms in the session against 4197 on the peer, ruby 455 against 453, clang 619 against 680). A file save that comes during such a run still waits for it.
+  - The run goes to the peer only when the peer answered a call of the same worker within 135 s, the longest idle gap after which every measured peer was still warm. A run that finds it cold stays in the session, and the peer is warmed beside it for the next one.
+  - The run is the session's process wherever it runs: the same pid, credential, filesystem rules, environment and output. The peer keeps nothing of a call once it ends.
+  - A peer lost after it took a call ends the run with `the session's one-shot host was lost while it ran: <cause>`, and the run is not repeated, since it may have done things. A call the peer refused before taking it runs in the session.
+  - `/api/_diag/session` lists, under `launch.oneShots`, the session's peer, the workers it is warm for, where each of the last 16 one-shots ran and what wanted the session then, and the last warming that failed. Its `facetCalls` hold a peer's calls too, as the peer timed them.
+  - These stay in the session: bash's facet, which keeps the shell's state between calls; a one-shot whose network goes out through the workspace's egress; and node one-shots.
+- Fixed: a python, ruby or clang one-shot's image is read at each load through a view of its own, not the run's. A warm worker loaded after a short run ended used to fail with `EBADF: filesystem scope closed`.
 - Fixed: `astro dev` runs with Astro 7.4.2. Astro 7.4.2 requires Node
   22.23.4 or later, and its CLI stopped before its dev server loaded,
   because a process reported Node v22.22.3. A process now reports
@@ -12,7 +20,6 @@ published independently in the `@nimbus-sh` npm scope.
   the REPL banner and npm's engine check. The unit tests compare Nimbus's
   node with node 22.23.4, and the shims run that release's own library
   modules.
-
 - Fixed (security): a process does what Node 22.23.4, the October 2026
   security release, does in the checks that Nimbus makes itself:
   - `tls.checkServerIdentity` refuses a host that is an IP address only
@@ -34,14 +41,12 @@ published independently in the `@nimbus-sh` npm scope.
   - TLS connections and their certificate checks, node:crypto's X.509
     parsing and the HTTP client's transport are workerd's and Cloudflare's
     code. The release's fixes to those parts of Node are theirs to make.
-
 - Fixed: a WASI program's filesystem answers as the session holds it where it did not:
   - a file read through a descriptor after the program rewrote it and removed its name read the bytes from before the rewrite;
   - a directory made where the program had just moved another away listed the moved one's names;
   - a call that cannot wait, on a directory its process had not listed yet, was refused `EISDIR` where it is `EAGAIN` as any such call;
   - a file the program had read, beneath a directory whose own attributes another process changed, was fetched again and refused to a call that cannot wait.
   - `stat`, `realpath` and `access` of `/` answer from the process's own view, with no round trip.
-
 - Changed: a long-running node process (a dev server, an agent's turn) keeps the files it has read in its facet's key-value storage instead of its SQL tables. Its writes there no longer hold the process's next message to the session until they are confirmed, a wait measured at 23–36 ms on every turn that read new files. A store kept from an earlier version is dropped when the process starts, and refilled as it reads.
 - Added: a mount can run programs on the machine its files live on. `filesystem.vfs.mount(point, source, { exec })` takes an `ExecDelegate` (`start(program, cancel)`, `locate(name, cwd, env)`). Every program started with its cwd under that mount is placed there: the shell's, an execvp from find, xargs, env or sudo, and a node child's. Each start is one call, `{ argv, env, cwd, stdin }`, made as execvp makes it, never as shell text; its exit is waitpid's code or signal.
   - What the shell does itself stays in the session: builtins, functions, pipes and expansions. So `cd /computer/app && npm test | tail -5` starts two programs on the computer, joined by the session's pipe.
@@ -49,7 +54,6 @@ published independently in the `@nimbus-sh` npm scope.
   - `type` and `command -v` report the machine's program.
   - Node's `spawn`/`execFile` with such a cwd start Node's own argv there (`/bin/sh -c line` for `shell`), and a refused start is the `error` event with the machine's code.
   - A namespace with no delegating mount places nothing and runs as before.
-
 - Fixed: a request to a resident process whose idle host the platform
   replaced is no longer failed with "its host was reset by the platform".
   Such a request now waits for its host's watch to confirm the process's
@@ -66,7 +70,6 @@ published independently in the `@nimbus-sh` npm scope.
   unsent, and so does one whose body went to the peer before it was refused.
   The first request after a process sits idle pays one round trip to its
   host before it is sent.
-
 - Fixed (security): another account can no longer read a file of yours
   through a process's image. A resident process's generated program image
   holds its program and the files it read at start, a 0600 one among them
@@ -84,7 +87,6 @@ published independently in the `@nimbus-sh` npm scope.
   nothing boots from goes. Two accounts that run the same program now keep
   a copy each. Copies already taken in a snapshot, an export or a clone are
   not changed.
-
 - Fixed (CI): a probe task armada starts again after losing its container
   is graded. Its token, minted when the job was submitted, could expire
   before the second attempt's limit, so that attempt refused to run and the
@@ -99,9 +101,7 @@ published independently in the `@nimbus-sh` npm scope.
   Each task's verdict now says when it started, and each run says how long
   its tasks waited, which measures the part not yet measured: many vessels
   waiting at once for fleet capacity.
-
 - Fixed: a long-running node process (a server, an agent's turn) could end mid-read with exit 0 and its read never answered. This happened when its filesystem had to ask the session for something on the program's behalf: more storage room for a file another process had just written, a listing, or a fill. That work was not counted as something the program was waiting on, so the process looked idle and ended. Every filesystem call a node process makes on the session now counts as live work until it is answered, whichever part of the process made it.
-
 - Added: a session starts a program by its argv. In the SDK it is `sandbox.startProgram(argv, { cwd, env, stdin, signal })`; in a workspace it is `workspace.startProgram(program, cancel)`. This is the start contract a mount's exec delegate meets, now met by a session.
   - It resolves once the program runs. If the program cannot start, it rejects with Node's spawn error (`code`, `errno`, `syscall: 'spawn <file>'`, `path`). `signal` aborted while it is pending rejects `ECANCELED`, and kills anything that had started.
   - Its output streams as you read it. Its exit is waitpid's code or signal, seen whether or not you read the output, and `kill(signal)` sends that signal to the program.
@@ -110,7 +110,6 @@ published independently in the `@nimbus-sh` npm scope.
   - Its env defaults to the session shell's exported environment.
   - `signalProcess`, `writeProcessInput` and `endProcessInput` reach a started program as the child broker's. Every other process keeps its own routes.
   - A scoped session (one named shell or identity) refuses it with EPERM: a start names neither.
-
 - Added: a session's files answer as Node's `fs` needs them, over Workers RPC and the remote API alike.
   - `files.stat` and `files.lstat` carry all of stat(2): `dev`, `ino`, `nlink`, `uid`, `gid`, `mode`, `size`, `atime`, `mtime` and `ctime`.
   - `files.mkdir(path, { recursive, mode })` is mkdir(2). With no options it stays `mkdir -p`.
@@ -138,7 +137,6 @@ published independently in the `@nimbus-sh` npm scope.
   - Expanding there was a hazard. An agent writes those stylesheets: `@source "src/{1..100000000}/x.html"` ran the isolate out of memory, and `{` nested 4,999 deep overflowed its stack.
   - Now no path is expanded. A path's reach is the part before its first glob character (`{ * ? [`), up to its last `/`, and one directory higher for each `..` its brace alternatives could spell. It is computed in one pass over the path, whatever it nests or ranges over.
   - It is exact for braces in the file part (`../ui/**/*.{ts,tsx}` holds `../ui`). Braces in the directory part (`../{a,b}/src`) hold their common parent: more files, never fewer. A range's directory is held whole, not the files it names. What the plan does not hold, Tailwind's scanner still reads, as before.
-
 - Added: `createNodeCompat({ files, start })` also gives Node's `child_process` (`childProcess`), and `nodeFacesOf(sandbox)` gives it the session's argv start (`sandbox.startProgram`). Each child is placed by its cwd, as every start is.
   - `exec` starts `/bin/sh -c` its line, as Node's does; `execFile` and `spawn` start their argv.
   - A child's stdin is bytes with backpressure, to their end; its output is read as you read it; its exit is waitpid's.

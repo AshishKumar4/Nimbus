@@ -33,6 +33,15 @@ export function isolateToken() {
         _isolateToken = crypto.randomUUID();
     return _isolateToken;
 }
+/** A coordinator's route (HostRoute), as a sibling receives it. */
+export const HostRouteSchema = z.object({
+    supervisorEntrypoint: z.string().min(1),
+    hostNamespace: z.string().min(1),
+    hostDispatchMethod: z.string().min(1),
+});
+/** A workspace's egress (a stub, crossed by RPC), as a sibling receives it. */
+export const WorkspaceEgressSchema = z.custom((value) => value !== null && (typeof value === 'object' || typeof value === 'function')
+    && 'fetch' in value && typeof value.fetch === 'function' && 'connect' in value && typeof value.connect === 'function');
 /**
  * Options the coordinator hands a hosting peer. Parsed on the peer, because a
  * sibling accepts them from whoever calls it.
@@ -41,11 +50,7 @@ const HostProcessOptsSchema = z.object({
     /** Full doId of the coordinator session (SUPERVISOR routing target). */
     coordinatorDoId: z.string().min(1),
     /** The coordinator's route, minted into the process's SUPERVISOR binding. */
-    route: z.object({
-        supervisorEntrypoint: z.string().min(1),
-        hostNamespace: z.string().min(1),
-        hostDispatchMethod: z.string().min(1),
-    }).optional(),
+    route: HostRouteSchema.optional(),
     /** Supervisor-assigned pid of the process entry on the coordinator. */
     pid: z.number().int().positive(),
     /** Trusted identity of this concrete resident-host incarnation. */
@@ -54,8 +59,7 @@ const HostProcessOptsSchema = z.object({
     hostIncarnation: z.string().uuid().optional(),
     /** The coordinator workspace's egress (a stub, crossed by RPC) and its id: the process's network. */
     network: z.object({
-        egress: z.custom((value) => value !== null && (typeof value === 'object' || typeof value === 'function')
-            && 'fetch' in value && typeof value.fetch === 'function' && 'connect' in value && typeof value.connect === 'function'),
+        egress: WorkspaceEgressSchema,
         id: z.string().min(1),
     }).optional(),
     /** Keyed dynamic-worker identity on the peer's loader. */
@@ -128,7 +132,7 @@ const CANCELLED_HOSTING_KEY_PREFIX = 'hosting-cancelled:';
  * acts through: a run whose boot is stopped and replayed (stop/replay) is
  * judged by what it received itself, and it received none of these.
  */
-const RESIDENT_READ_RANGE_BYTES = 4 * 1024 * 1024;
+export const RESIDENT_READ_RANGE_BYTES = 4 * 1024 * 1024;
 function peerDiskReader(reads) {
     const fs = infrastructureSupervisor(reads);
     return { readFile: (path) => readSupervisorFile(fs, path) };

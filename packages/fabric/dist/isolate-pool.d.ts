@@ -98,6 +98,12 @@ export interface IsolatePoolOptions {
      */
     network: WorkspaceNetwork;
     /**
+     * Whose record of facet calls (recentFacetCalls) this pool's calls are
+     * noted in: its Durable Object's by default. A session's peer notes a call
+     * it runs for the session apart, and the session notes it in its own.
+     */
+    callsOf?: object;
+    /**
      * Baked into the loader id. Two pools sharing tag, preamble, wasm and
      * supervisor but differing in `scope` never reuse each other's warm
      * workers: an interpreter scope that ENDS (REPL close, Ctrl-C reset)
@@ -287,6 +293,8 @@ export interface FacetCallTime {
 }
 /** The last facet calls `ctx`'s pools made, oldest first: what a launch's phases cost (`/api/_diag/session`). */
 export declare function recentFacetCalls(ctx: object): FacetCallTime[];
+/** `call` in `ctx`'s record of facet calls: one a pool of its made, or one its session's peer ran for it, as the peer timed it. */
+export declare function recordFacetCall(ctx: object, call: FacetCallTime): void;
 /**
  * Nimbus-scoped parallel dispatch over `env.LOADER`. Tasks are pure
  * functions whose last argument is an `env` object containing the
@@ -316,6 +324,7 @@ export declare class IsolatePool {
     private readonly facetKind;
     private readonly defaultRetries;
     private readonly tag;
+    private readonly callsOf;
     private readonly slotGenerations;
     /**
      * Per-slot execution ownership: the tail of each slot's in-flight
@@ -381,6 +390,12 @@ export declare class IsolatePool {
      * throws TimeoutError / RetryExhaustedError / ExecutionError.
      */
     submit<T, R>(fn: FacetTaskSource<T, R>, arg: T, opts?: IsolateCallOptions): Promise<Awaited<R>>;
+    /**
+     * The worker `fn` is submitted to, loaded and left warm without running
+     * `fn`: its images read and compiled and its preamble evaluated, as the
+     * first submit of `fn` would, so that submit finds it warm.
+     */
+    warm<A, R>(fn: FacetTaskSource<A, R>, opts?: IsolateCallOptions): Promise<void>;
     /**
      * Dispatch `fn` through the fetch transport — the pool's only
      * cancellable path: aborting `request.signal` cancels the inner

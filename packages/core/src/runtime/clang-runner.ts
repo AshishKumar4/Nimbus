@@ -29,7 +29,7 @@
 
 import { installedPath, type RuntimeManifest } from './runtime-manifest.js';
 import { CLANG_CALL_TASK } from './compiled-bodies.generated.js';
-import { type ProcessView, withHostView } from './process-files.js';
+import { hostImage, type ProcessView, withHostView } from './process-files.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 import type { Facet, FacetImage, FacetSpec, FacetSubmitOptions } from './facet-host.js';
 import type { ClangFacetResult, clangFacetCall } from './facet-tasks.js';
@@ -187,7 +187,9 @@ export function makeClangRunnerFactory(deps: {
       const openTarget = async (primaryName: 'clang' | 'wasm-ld'): Promise<ClangFacetTarget | null> => {
         let image: FacetImage;
         try {
-          image = await runtimeVfs.image(primaryName === 'clang' ? clangVfsPath : lldVfsPath);
+          // Through a lease of its own at each load, not this invocation's: a warm facet's load may come after it
+          // (its warming on the session's peer).
+          image = await hostImage(deps.filesystem, CRED_KERNEL, primaryName === 'clang' ? clangVfsPath : lldVfsPath);
         } catch (e: unknown) {
           ctx.stderr.write(`${binName}: ${primaryName} runtime warm-up failed: ${errorText(e)}\n`);
           return null;

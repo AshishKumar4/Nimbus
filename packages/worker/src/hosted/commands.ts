@@ -44,6 +44,8 @@ import type { SessionInternal } from '../session/internal.js';
 import { HeadlessTerminal } from '@nimbus-sh/core/substrate/lifo/index.js';
 import type { RuntimeCatalogEnv } from '../runtime/runtime-catalog.js';
 import { makeNimbusVerbHandler } from '@nimbus-sh/core/runtime/nimbus-command.js';
+import { oneShotPlacement } from '@nimbus-sh/fabric/one-shot-peer.js';
+import { threadDemand } from '../session/thread-demand.js';
 
 /** Internal runtime services; callers use composeHostedRuntime, not this recipe. */
 export type RuntimeCommandHost = Pick<SessionInternal,
@@ -59,6 +61,13 @@ export type RuntimeCommandHost = Pick<SessionInternal,
 };
 
 export async function registerHostedCommands(self: RuntimeCommandHost, workspace: NimbusWorkspace): Promise<void> {
+  // What may want this session's thread besides a one-shot (session/thread-demand.ts).
+  oneShotPlacement(self.ctx, self.env).wantedBy(threadDemand({
+    ctx: self.ctx,
+    processes: self.processes,
+    listens: (pid) => self.portRegistry.getAll().some((entry) => entry.pid === pid),
+    isShell: (pid) => pid === workspace.shellProcessPid || self.terminals.isShell(pid),
+  }));
   const sqliteFs = workspace.vfs;
   // The nimbus verb's runtime installs are Nimbus's own system state.
   const kernelFs = sqliteFs.as(CRED_KERNEL);

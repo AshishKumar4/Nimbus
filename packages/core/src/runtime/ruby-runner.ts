@@ -47,7 +47,7 @@
 import type { WorkspaceNetwork } from '../_shared/workspace-network.js';
 import { RUBY_CALL_TASK } from './compiled-bodies.generated.js';
 import { installedPath, type RuntimeManifest } from './runtime-manifest.js';
-import { withHostView, type ProcessView as CredentialedVfs } from './process-files.js';
+import { hostImage, withHostView, type ProcessView as CredentialedVfs } from './process-files.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 import { z } from 'zod';
 import { hasLeadingCliFlag } from './cli-flags.js';
@@ -266,7 +266,8 @@ export function makeRubyRunnerFactory(deps: {
         const stdio = openRuntimeStdio(deps, ctx, formatRubyCommand(binName, argv));
         try {
           result = await dispatchRubyFacet(
-            deps.facets, warmKeys, stdio.syscalls, facetArgs, await vfs.image(wasmVfs), stdio.pid, stdio.signal);
+            // As the caller, through a view of its own: a warm facet's load may come after this run (its warming on the session's peer).
+            deps.facets, warmKeys, stdio.syscalls, facetArgs, await hostImage(deps.filesystem, cred, wasmVfs), stdio.pid, stdio.signal);
         } finally { await stdio.finish(result?.exitCode ?? 1); }
       }
 

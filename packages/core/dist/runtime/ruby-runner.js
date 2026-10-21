@@ -45,7 +45,7 @@
  */
 import { RUBY_CALL_TASK } from './compiled-bodies.generated.js';
 import { installedPath } from './runtime-manifest.js';
-import { withHostView } from './process-files.js';
+import { hostImage, withHostView } from './process-files.js';
 import { z } from 'zod';
 import { hasLeadingCliFlag } from './cli-flags.js';
 import { CRED_SESSION_USER, gateSyncLaunch, requireVfsCred } from './os-contracts.js';
@@ -221,7 +221,9 @@ export function makeRubyRunnerFactory(deps) {
             else {
                 const stdio = openRuntimeStdio(deps, ctx, formatRubyCommand(binName, argv));
                 try {
-                    result = await dispatchRubyFacet(deps.facets, warmKeys, stdio.syscalls, facetArgs, await vfs.image(wasmVfs), stdio.pid, stdio.signal);
+                    result = await dispatchRubyFacet(
+                    // As the caller, through a view of its own: a warm facet's load may come after this run (its warming on the session's peer).
+                    deps.facets, warmKeys, stdio.syscalls, facetArgs, await hostImage(deps.filesystem, cred, wasmVfs), stdio.pid, stdio.signal);
                 }
                 finally {
                     await stdio.finish(result?.exitCode ?? 1);

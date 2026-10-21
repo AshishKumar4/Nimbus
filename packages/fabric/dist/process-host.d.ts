@@ -80,6 +80,11 @@ export type ProcessHostMode = 'facet' | 'peer';
 export declare function createProcessHost(mode: ProcessHostMode, ctx: DurableObjectState, env: unknown, disk: (pid: number) => ResidentDiskReader, 
 /** The workspace's network: every process's binding carries it, and with it its egress. */
 network: () => WorkspaceNetwork, supervise?: Supervise): ProcessHost;
+/**
+ * How many sibling names to try before accepting one that co-located with a
+ * process already running. Measured: 1 shared pair in 24 fresh peers.
+ */
+export declare const PEER_PLACEMENT_MAX_ATTEMPTS = 4;
 export interface PeerOwner {
     pid: number;
     workerKey: string;

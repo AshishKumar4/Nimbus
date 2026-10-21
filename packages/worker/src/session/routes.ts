@@ -34,6 +34,7 @@ import {
 import { readDiagCounters } from '@nimbus-sh/platform/diag-counters.js';
 import { readSupervisorAllocationBudget } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { recentFacetCalls } from '@nimbus-sh/fabric/isolate-pool.js';
+import { oneShotPlacementDiagnostics } from '@nimbus-sh/fabric/one-shot-peer.js';
 import { recentThreadStalls } from '@nimbus-sh/fabric/thread-stalls.js';
 import { readIsolateId } from './diag.js';
 import {
@@ -263,6 +264,8 @@ async function launchDiagnosis(self: RoutesHost): Promise<Record<string, unknown
     facetCalls: recentFacetCalls(self.ctx),
     // When its thread was held while work was in flight, and that work (thread-stalls.ts).
     stalls: recentThreadStalls(self.ctx),
+    // Where its last one-shots ran, and its peer (one-shot-peer.ts).
+    oneShots: oneShotPlacementDiagnostics(self.ctx),
   };
 }
 
