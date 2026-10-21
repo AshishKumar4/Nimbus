@@ -35,13 +35,16 @@ export const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
  * and each throwaway alike, as `--var KEY:VALUE` arguments: the suite is
  * written against this configuration, so a target without it fails probes
  * for its configuration, not for the change. apps/probe's own config leaves
- * them out, so nimbus-probe keeps its production gating.
+ * them out, so nimbus-probe keeps its production gating. They are data in
+ * apps/probe (probe-target-vars.json), so a release's deployed digest
+ * (scripts/ci/lib/release.mjs deployedDigest) covers them with the config.
  *
  * NIMBUS_DEBUG=1 opens the _diag and _test surfaces (cache reset, the
  * abort that durable probes reset with) and the terminal's exit trailers
  * (`[shell exited: pid=… code=0 …]`) that probes read.
  */
-export const PROBE_TARGET_VARS = ['--var', 'NIMBUS_DEBUG:1'];
+export const PROBE_TARGET_VARS = Object.entries(JSON.parse(readFileSync(join(ROOT, 'apps', 'probe', 'probe-target-vars.json'), 'utf8')))
+  .flatMap(([key, value]) => ['--var', `${key}:${value}`]);
 export const WRANGLER = join(ROOT, 'node_modules', '.bin', 'wrangler');
 
 const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/;

@@ -6,8 +6,9 @@
 //     any module, docs or asset digest in it.
 //   - deployedDigest (the same file): remote-probes skips the paired perf
 //     probes when the baseline's deployment and the candidate's have one
-//     digest, so it must change with the module, the app's config or the
-//     worker's public assets, and with nothing else in the tree.
+//     digest, so it must change with the module, the app's config, the
+//     probe target vars or the worker's public assets, and with nothing
+//     else in the tree.
 //   - holdLease (scripts/ci/lib/lease.mjs): one lane at a time per
 //     environment. A second holder waits, and gives up naming the first;
 //     the lease is free the moment its holder's process ends, killed or not.
@@ -116,6 +117,7 @@ try {
     const testsOnly = commit({ 'tests/unit/a.mjs': '2\n', 'scripts/ci/remote-probes.mjs': '3\n' });
     const asset = commit({ 'packages/worker/public/index.html': '<p>shell 2</p>\n' });
     const config = commit({ 'apps/probe/wrangler.jsonc': '{ "name": "probe", "vars": { "A": "1" } }\n' });
+    const targetVars = commit({ 'apps/probe/probe-target-vars.json': '{ "NIMBUS_DEBUG": "1" }\n' });
     /** The digest of a release of `sha` whose apps/probe module is `module`. */
     const digest = (sha, module, target = 'apps/probe') => {
       const dir = join(root, `release-${sha.slice(0, 12)}-${module}`);
@@ -128,6 +130,7 @@ try {
     assert.notEqual(digest(testsOnly, 'ab'), digest(base, 'aa'), 'a module');
     assert.notEqual(digest(asset, 'aa'), digest(testsOnly, 'aa'), "the worker's public assets");
     assert.notEqual(digest(config, 'aa'), digest(asset, 'aa'), "the app's wrangler config");
+    assert.notEqual(digest(targetVars, 'aa'), digest(config, 'aa'), 'the vars every probe target is deployed with');
     assert.throws(() => digest(base, 'aa', 'apps/hosted-demo:staging'), /has no apps\/hosted-demo:staging/, 'a target the release does not hold');
     console.log('  ok  deployedDigest: the same module, config and public assets are one deployment; a change to any is another, and a test or script change is none');
   }

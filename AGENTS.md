@@ -145,7 +145,8 @@ unrecognised value is refused rather than defaulted. Flip it on a target with
 `bun tests/behavioral/_throwaway-target.mjs up --bundle <release dir> --var NIMBUS_PROCESS_HOST:peer`,
 and read back where a process actually landed in the process log: every
 probe target, each throwaway included, is deployed with `NIMBUS_DEBUG=1`
-(`PROBE_TARGET_VARS` in `tests/behavioral/_deploy-target.mjs`).
+(`apps/probe/probe-target-vars.json`, read as `PROBE_TARGET_VARS` in
+`tests/behavioral/_deploy-target.mjs`).
 
 Lock order: supervisor credit, then a Dynamic Worker. Nothing waits for
 credit (SupervisorAllocationBudget acquire or acquireLoad, or growing a
@@ -462,7 +463,8 @@ again.
   set is red too. Run by hand without them, a paired probe exits 2.
   When the baseline's release and the candidate's deploy the same bytes
   (`deployedDigest` in `scripts/ci/lib/release.mjs`: the module, the app's
-  config and `packages/worker/public`), the timing measures nothing. The
+  config, its probe target vars and `packages/worker/public`), the timing
+  measures nothing. The
   suite then skips these probes and stands up no throwaways. It prints
   `paired perf: skipped, deployed bytes equal to <baseline> (digest …)`, and
   the verdict records it as `pairedSkipped`. A run that names a paired probe

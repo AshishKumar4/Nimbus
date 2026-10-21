@@ -141,8 +141,10 @@ export function releaseDigest(release) {
 
 /**
  * What an upload of `target` reads from its checkout, beside the release:
- * the app (its wrangler config) and the worker's public assets. uploadConfig
- * refuses a checkout where either differs from the release's commit.
+ * the app (its wrangler config, and apps/probe's probe-target-vars.json,
+ * which every probe target is deployed with) and the worker's public
+ * assets. uploadConfig refuses a checkout where either differs from the
+ * release's commit.
  */
 const checkoutInputs = (target) => [target.split(':')[0], 'packages/worker/public'];
 
