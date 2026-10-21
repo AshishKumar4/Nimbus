@@ -31,9 +31,9 @@ try {
 
   const emptyHeap = heap.cells.stats();
   assert.equal(facet.cells.fill('facet-only.txt', 'FACET', facetCursor.rev), true);
-  assert.deepEqual(heap.cells.stats(), emptyHeap, 'a SQLite fill cannot charge the heap process');
-  assert.equal('sql-only.txt' in heap.bundle, false);
-  assert.equal(heap.bundle['sql-only.txt'], undefined, 'the other process cannot read the fill');
+  assert.deepEqual(heap.cells.stats(), emptyHeap, 'a facet-backed fill cannot charge the heap process');
+  assert.equal('facet-only.txt' in heap.bundle, false);
+  assert.equal(heap.bundle['facet-only.txt'], undefined, 'the other process cannot read the fill');
   const filledFacet = facet.cells.stats();
   assert.equal(heap.cells.fill('heap-only.txt', 'HEAP!', heapCursor.rev), true);
   assert.deepEqual(facet.cells.stats(), filledFacet, 'a heap fill cannot charge the facet-backed process');
@@ -50,13 +50,13 @@ try {
   facetReads.clear();
   heapReads.clear();
   assert.equal(facet.bundle['facet-only.txt'], 'FACET');
-  assert.deepEqual([...facetReads], ['sql-only.txt']);
-  assert.deepEqual([...heapReads], [], 'SQLite reads do not strike the heap read profile');
+  assert.deepEqual([...facetReads], ['facet-only.txt']);
+  assert.deepEqual([...heapReads], [], 'the facet-backed process\'s reads do not strike the heap read profile');
   assert.equal(heap.bundle['heap-only.txt'], 'HEAP!');
-  assert.deepEqual([...facetReads], ['sql-only.txt']);
+  assert.deepEqual([...facetReads], ['facet-only.txt']);
   assert.deepEqual([...heapReads], ['heap-only.txt']);
   assert.equal(facet.cells.stats().files, 1);
-  assert.equal(facet.cells.stats().bytes, 3);
+  assert.equal(facet.cells.stats().bytes, 5);
   assert.equal(heap.cells.stats().files, 1);
   assert.equal(heap.cells.stats().bytes, 5);
 
