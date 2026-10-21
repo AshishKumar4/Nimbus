@@ -81,10 +81,11 @@ function createInstance(generation) {
   return { manager, processes, spawns };
 }
 
-const settle = async (predicate, tries = 400) => {
+const settle = async (predicate, what, tries = 400) => {
   for (let i = 0; i < tries && !predicate(); i++) {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
+  assert.ok(predicate(), `timed out waiting for ${what}`);
 };
 const row = (pid) => storage.get(`resident-launch:${pid}`);
 
@@ -103,7 +104,7 @@ const plain = await gen1.manager.spawnNode("require('http').createServer(() => {
 const python = await gen1.manager.spawnWorker('export default {}', 'python -m http.server 8000', '/home/user/app', {
   resident: { runtime: 'python', argv: ['python', '-m', 'http.server', '8000'] }, invokerPid: tagged.pid,
 });
-await settle(() => [node.pid, plain.pid, python.pid].every((pid) => row(pid)?.phase === 'running'));
+await settle(() => [node.pid, plain.pid, python.pid].every((pid) => row(pid)?.phase === 'running'), 'the three residents to run');
 
 assert.equal(gen1.processes.get(node.pid).execId, 'j1', 'the node server carries the execId of the command that started it');
 assert.equal(gen1.processes.get(python.pid).execId, 'j1', 'so does the python server');
@@ -117,7 +118,7 @@ console.log('  [1] a resident started under an exec carries its execId, and its 
 // ── generation 2: the reset; the re-drive restores it ───────────────────
 const gen2 = createInstance(2);
 await gen2.manager.pumpResidentLaunches();
-await settle(() => gen2.spawns.length === 3);
+await settle(() => gen2.spawns.length === 3, 'the three re-drives');
 const back = (command) => {
   const found = gen2.spawns.filter((spawn) => spawn.command === command);
   assert.equal(found.length, 1, `${command} was re-driven once: ${JSON.stringify(gen2.spawns)}`);
@@ -131,7 +132,7 @@ assert.equal(node2.execId, 'j1', 'the re-driven node server keeps j1');
 assert.equal(python2.execId, 'j1', 'so does the re-driven python server');
 assert.equal(plain2.execId, undefined, 'and the untagged one is still untagged');
 // Each is running, with its uptime proof captured, before the proofs are run.
-await settle(() => [node2, python2, plain2].every((entry) => row(entry.pid)?.phase === 'running'));
+await settle(() => [node2, python2, plain2].every((entry) => row(entry.pid)?.phase === 'running'), 'the three re-driven residents to run');
 assert.equal(row(node2.pid)?.execId, 'j1', 'the re-drive journals it again, for the next reset');
 
 // ── generation 3: and the next one ──────────────────────────────────────
@@ -141,7 +142,7 @@ assert.equal(row(node2.pid)?.execId, 'j1', 'the re-drive journals it again, for 
 await Promise.all(proofs.splice(0).map((prove) => prove()));
 const gen3 = createInstance(3);
 await gen3.manager.pumpResidentLaunches();
-await settle(() => gen3.spawns.length === 3);
+await settle(() => gen3.spawns.length === 3, 'the three second re-drives');
 const node3 = gen3.processes.get(gen3.spawns.find((spawn) => spawn.command === 'node server.js').pid);
 assert.equal(node3.execId, 'j1', 'a second reset keeps it');
 console.log('  [2] a reset re-drives node and python residents with their execId, and the next reset too');
