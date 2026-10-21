@@ -64,6 +64,9 @@ export async function supervisorAnswer(call) {
         return { refusal };
     }
 }
+async function answerOf(stub, name, args) {
+    return await stub.answer(name, args);
+}
 /** Only an RPC stub has `answer` (it has every name); a same-isolate supervisor (vfsSupervisor) has none of it. */
 function isAnsweringStub(supervisor) {
     return typeof Reflect.get(supervisor, 'answer') === 'function';
@@ -91,7 +94,8 @@ export function answeringSupervisor(supervisor, live) {
             if (!isSupervisorAnsweredMethod(name))
                 return Reflect.get(target, name);
             return async (...args) => {
-                const asked = stub.answer(name, args);
+                // A promise of this realm's own: an RPC stub's answer is a thenable of its own class.
+                const asked = answerOf(stub, name, args);
                 if (live !== undefined && WAITS[name] !== true)
                     live(asked);
                 const answer = await asked;

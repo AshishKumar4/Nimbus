@@ -808,6 +808,9 @@ return globalThis.Go;
   function isSupervisorAnsweredMethod(name) {
     return typeof name === "string" && ANSWERED[name] === true;
   }
+  async function answerOf(stub, name, args) {
+    return await stub.answer(name, args);
+  }
   function isAnsweringStub(supervisor) {
     return typeof Reflect.get(supervisor, "answer") === "function";
   }
@@ -818,7 +821,7 @@ return globalThis.Go;
       get(target, name) {
         if (!isSupervisorAnsweredMethod(name)) return Reflect.get(target, name);
         return async (...args) => {
-          const asked = stub.answer(name, args);
+          const asked = answerOf(stub, name, args);
           if (live !== void 0 && WAITS[name] !== true) live(asked);
           const answer = await asked;
           try {
