@@ -140,6 +140,28 @@ export function releaseDigest(release) {
 }
 
 /**
+ * What an upload of `target` reads from its checkout, beside the release:
+ * the app (its wrangler config) and the worker's public assets. uploadConfig
+ * refuses a checkout where either differs from the release's commit.
+ */
+const checkoutInputs = (target) => [target.split(':')[0], 'packages/worker/public'];
+
+/**
+ * The digest of the Worker an upload of `target` from the release in `dir`
+ * deploys: the module and the app's assets as CI built them, and what the
+ * upload reads from a checkout at the release's commit (checkoutInputs), by
+ * git object id. Two releases with one digest deploy the same bytes.
+ * `repo` holds the release's commit.
+ */
+export function deployedDigest(repo, dir, target) {
+  const release = readRelease(dir);
+  const bundle = release.bundles[target];
+  if (!bundle) throw new Error(`the release in ${dir} has no ${target}`);
+  const checkout = Object.fromEntries(checkoutInputs(target).map((path) => [path, git(repo, ['rev-parse', `${release.commit}:${path}`])]));
+  return sha256(canonical({ module: bundle.sha256, assets: release.assets[target.split(':')[0]] ?? null, checkout }));
+}
+
+/**
  * A wrangler config that uploads `target`'s module from the release in
  * `dir` as built, with the app's own settings (its env blocks included)
  * otherwise; returns its path. Refused unless the release is of `root`'s
@@ -160,7 +182,7 @@ export function uploadConfig(dir, target, { root, preview = false, log = (line) 
   if (release.commit !== head) throw new Error(`the release in ${dir} is of ${release.commit}, and this checkout is at ${head}`);
   const bundle = release.bundles[target];
   if (!bundle) throw new Error(`the release in ${dir} has no ${target}`);
-  const local = git(root, ['status', '--porcelain', '--untracked-files=all', '--', app, 'packages/worker/public']);
+  const local = git(root, ['status', '--porcelain', '--untracked-files=all', '--', ...checkoutInputs(target)]);
   if (local) throw new Error(`the upload reads these from the checkout, and they differ from ${head}:\n${local}`);
   const main = join(dir, bundle.file);
   const actual = sha256(readFileSync(main));
