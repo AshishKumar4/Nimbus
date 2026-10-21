@@ -54,8 +54,16 @@ function createInstance(session, generation, label, { embedderModules }) {
   return { ctx, world, processes, manager, asked };
 }
 
-const settle = async (predicate, tries = 400) => {
+const settle = async (predicate, what, tries = 400) => {
   for (let i = 0; i < tries && !predicate(); i++) await new Promise((r) => setTimeout(r, 5));
+  assert.ok(predicate(), `timed out waiting for ${what}`);
+};
+
+/** The replacement's pid once the journal handed the launch off to it (after its boot), else 0. */
+const handedOff = (session, gen2) => {
+  const rows = [...session.storage.keys()].filter((k) => k.startsWith('resident-launch:'));
+  const pid = rows.length === 1 ? Number(rows[0].slice('resident-launch:'.length)) : 0;
+  return pid > 2 * PID_GEN_STRIDE && gen2.processes.get(pid)?.state === 'running' ? pid : 0;
 };
 
 const RUNNER_V1 = 'export default { fetch: () => new Response("v1") };';
@@ -81,7 +89,7 @@ const RUNNER_V2 = 'export default { fetch: () => new Response("v2") };';
   // which is exactly the point of asking it: the embedder's store decides.
   const gen2 = createInstance(session, 2, 'embedder', { embedderModules: { 'runner.js': RUNNER_V2 } });
   await gen2.manager.pumpResidentLaunches();
-  await settle(() => gen2.world.configs.size > 0);
+  await settle(() => handedOff(session, gen2) !== 0, 'the journal to hand the launch off');
 
   assert.equal(gen2.asked.fallback.length, 0, 'the image-store fallback was NOT consulted');
   assert.equal(gen2.asked.embedder.length, 1, 'the embedder resolver was, once');
@@ -120,7 +128,7 @@ const RUNNER_V2 = 'export default { fetch: () => new Response("v2") };';
 
   const gen2 = createInstance(session, 2, 'interpreter', { embedderModules: { 'runner.js': RUNNER_V2 } });
   await gen2.manager.pumpResidentLaunches();
-  await settle(() => gen2.world.configs.size > 0);
+  await settle(() => handedOff(session, gen2) !== 0, 'the journal to hand the launch off');
 
   assert.equal(gen2.asked.embedder.length, 0, "the embedder's resolver is not asked about the session's own interpreter");
   assert.equal(gen2.asked.fallback.length, 1, 'the image-store fallback is');
@@ -129,8 +137,7 @@ const RUNNER_V2 = 'export default { fetch: () => new Response("v2") };';
   assert.match(config.modules[config.mainModule], /from "\.\/worker\.js"/, 'the host adapter imports the default interpreter main');
   assert.match(config.modules['worker.js'], /fallback/);
 
-  const rows = [...session.storage.keys()].filter((k) => k.startsWith('resident-launch:'));
-  gen2.manager.kill(Number(rows[0].slice('resident-launch:'.length)));
+  gen2.manager.kill(handedOff(session, gen2));
 }
 
 console.log('PASS resident-worker-redrive-resolver');

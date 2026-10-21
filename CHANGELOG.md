@@ -86,6 +86,23 @@ published independently in the `@nimbus-sh` npm scope.
   - `files.unlink` and `files.rmdir` are their own calls, so unlinking a directory is EISDIR and removing a file with rmdir is ENOTDIR (`files.delete` is unchanged).
   - New calls: `appendFile`, `symlink`, `realpath`, `truncate`, `utimes` (milliseconds; `followSymlinks: false` for a link's own times) and `chown` (a null side keeps the file's).
 - Changed: over the remote API, a call that fails with an errno keeps Node's fields. The response carries `code`, `errno`, `syscall` and `path` (and `dest`), with status 404 for ENOENT, 403 for EACCES/EPERM/EROFS, 409 for EEXIST/ENOTEMPTY/EBUSY, 500 for EIO, 503 for EHOSTDOWN, and 400 for any other errno. `NimbusRemoteError` exposes them. Before, every such failure was `E_NIMBUS_REMOTE_RPC` with status 500 and a message only.
+- Added: `@nimbus-sh/core/node-compat`, Node's `fs` and `fs/promises` over a session client. `createNodeCompat({ files }, { cwd })` gives them over the file calls a client provides, and `nodeFacesOf(sandbox)` makes those calls over a Nimbus session (`sandbox.files`).
+  - Every asynchronous form works: callbacks, never in their caller's turn, and `fs.promises`.
+  - The client's isolate cannot wait, so a `*Sync` call that reaches the session throws EAGAIN before anything is asked, naming its syscall, its path and the form that can wait. `existsSync` throws too: `false` would say a file is absent when nothing was asked.
+  - Without the session's descriptors, `fs.open`, `FileHandle`, streams and `fs.watch` are ENOSYS.
+  - The module reaches nothing of the kernel, SQLite, the shell or a wasm loader.
+- Changed: lifo's node runs the same `fs`: one source, each operation a generator run by a synchronous or an asynchronous driver. Its answers are as before, except where they now match Node's and the hosted node's (a three-way differential checks this):
+  - an error names a path as its caller gave it (`'missing.txt'`, no longer the absolute path);
+  - Stats' `blocks` count 512-byte blocks allocated 4096 bytes at a time;
+  - a callback form called without a callback throws ERR_INVALID_ARG_TYPE at once;
+  - `fs.exists` of a path it cannot take answers `false`;
+  - a symlink's failure names the target, then the link, as given (`path` and `dest`);
+  - a path argument that is no path (`{}`, `null`) is ERR_INVALID_ARG_TYPE.
+  - Its cost under V8, measured against main's over an in-memory filesystem, per 800 rounds of a require-heavy probe:
+    - absolute paths: 10.47 → 11.62 ms, about 0.3 µs per fs call (an operation generator and its steps);
+    - relative paths: 11.25 → 13.60 ms. A failure there is caught and its error named as given, which costs another throw, about 1 µs per failing call;
+    - `fs.promises`: 1.75 → 2.10 ms.
+  - End to end, a core-only workspace running a program that loads ajv's and semver's trees and makes about 440 fs calls takes about 690 ms. The difference was within the A/A spread in every confirmation run: [-1.4, 20.8], [-7.7, 17.7] ms.
 
 ## 2026-10-21 (patch): worker 0.24.1 (every other package unchanged from the 2026-10-21 release)
 

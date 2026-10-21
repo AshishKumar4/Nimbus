@@ -34,10 +34,11 @@ adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
 /**
  * Stands in for the program the facet runs. Each module evaluation is one BOOT
  * with a fresh module scope, which is what a real second isolate would give the
- * user.
+ * user. It takes a moment, as a program's top level does on the real loader.
  */
-const program = () => {
+const program = async () => {
   const boot = { id: `boot-${world.boots.length + 1}`, served: 0 };
+  await new Promise((resolve) => setTimeout(resolve, 50));
   return {
     boot,
     async startProcess() { return { ok: true }; },
@@ -88,13 +89,14 @@ assert.match(afterLoss.message, /no longer loaded/, 'the error names the real ca
 assert.equal(processes.get(spawned.pid)?.state, 'exited', 'the process whose facet was lost is listed as ended, before its caller hears');
 assert.equal(processes.get(spawned.pid)?.exitCode, 137);
 const lostCommand = processes.get(spawned.pid).command;
-let successor;
-for (let i = 0; i < 300 && !successor; i++) {
-  successor = processes.getRunning().find((p) => p.command === lostCommand && p.pid !== spawned.pid);
-  if (!successor) await new Promise((r) => setTimeout(r, 20));
-}
-assert.ok(successor, 'the caller is owed a run: a new process takes the lost one\'s place');
+// The new process is listed as it starts and holds the port once booted: wait for the port.
+for (let i = 0; i < 300 && (portRegistry.get(3000)?.pid ?? spawned.pid) === spawned.pid; i++) await new Promise((r) => setTimeout(r, 20));
+const successor = processes.get(portRegistry.get(3000)?.pid);
+assert.ok(successor?.state === 'running' && successor.command === lostCommand && successor.pid !== spawned.pid,
+  'the caller is owed a run: a new process takes the lost one\'s place');
 assert.equal(world.boots.length, 2, 'booted once, as the new process: no ghost of the lost one');
+const owed = await portRegistry.routeRequest(3000, new Request('http://s/port/3000/ping'), '/ping');
+assert.equal((await owed.json()).boot, world.boots[1].instance.boot.id, 'the port is answered by the new process');
 
 // ── 3b. under restart on-failure, a lost facet's process is restarted ──────
 {

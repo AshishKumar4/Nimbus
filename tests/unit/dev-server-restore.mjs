@@ -141,7 +141,8 @@ try {
   const app = (await next.runtime.listApps()).find((listed) => listed.name === 'web');
   assert.deepEqual({ status: app?.status, pid: app?.pid, owner: app?.owner, execId: app?.execId },
     { status: 'running', pid: again.pid, owner: exposed.owner, execId: 'exec-dev-1' }, 'it is the same application');
-  assert.equal(next.ports.hasCapability(5173, exposed.capability), true, 'on the link that was handed out');
+  // The restore releases the old record before it takes the link back.
+  await settle(() => next.ports.hasCapability(5173, exposed.capability), 'the link that was handed out');
   const rotated = await next.runtime.rotateLink('web');
   assert.deepEqual({ owner: rotated.owner, pid: rotated.pid }, { owner: exposed.owner, pid: again.pid }, 'and rotates as it');
   const log = (await next.runtime.processLogs(again.pid)).text;
