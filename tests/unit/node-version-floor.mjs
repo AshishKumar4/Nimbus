@@ -7,7 +7,11 @@
 // command checks it first: on v22.19.0 `react-router dev` printed "Oops, Node
 // v22.19.0 detected. react-router requires a Node version greater than
 // 22.22.0." and exited 1 (remix-real on a throwaway, sid dry-birch-1520),
-// before vite was ever loaded. create-astro refuses any major below 22.
+// before vite was ever loaded. create-astro refuses any major below 22, and
+// astro 7.4.2 (engines.node ">=22.23.4", the October 2026 security release)
+// exits 1 before it loads its dev server: on v22.22.3 `astro dev` printed
+// "Node.js v22.22.3 is not supported by Astro!" (astro-real on production,
+// sid azure-boulder-5997).
 //
 // It is also the release the tests compare Nimbus's node against: `node` on
 // the CI image (pinned), whose behaviour the differential tests take as
@@ -28,6 +32,8 @@ const atLeast = (version, floor) => {
 assert.equal(NODE_VERSION, `v${NODE_VERSIONS.node}`, 'process.version and process.versions.node agree');
 assert.ok(atLeast(NODE_VERSIONS.node, '22.22.0'),
   `react-router 8.4 requires node >=22.22.0; the shim reports ${NODE_VERSION}`);
+assert.ok(atLeast(NODE_VERSIONS.node, '22.23.4'),
+  `astro 7.4.2 requires node >=22.23.4; the shim reports ${NODE_VERSION}`);
 
 // The oracle: the node on PATH, as the differential tests run it.
 const oracle = spawnSync('node', ['-p', 'JSON.stringify(process.versions)'], { encoding: 'utf8' });
