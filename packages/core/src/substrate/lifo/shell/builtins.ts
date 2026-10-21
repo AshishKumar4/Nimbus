@@ -5,7 +5,6 @@
  * interactive shell has (its terminal, history, processes and commands)
  * through its BuiltinHost.
  */
-import { BASH_BUILTINS } from './bash-builtins.js';
 import type { ProcessView } from '../../../runtime/process-files.js';
 import { resolveContext, type CommandRegistry } from '../commands/registry.js';
 import type { CommandInputStream, CommandOutputStream } from '../commands/types.js';
@@ -34,6 +33,8 @@ export interface BuiltinHost {
   readonly registry: CommandRegistry;
   /** Where a program a start from `cwd` would run is found on its mount's machine (locatePlacedProgram). */
   locateProgram(name: string, cwd: string, env: Readonly<Record<string, string>>): Promise<string | null | undefined>;
+  /** Whether `name` is the shell's own builtin, which no start places (Interpreter.placeCommand). */
+  isShellBuiltin(name: string): boolean;
   /** The host's processes, which `kill` reaches by pid (Shell.setHostProcessSignals). */
   hostProcessSignals(): HostProcessSignals | undefined;
   clearTerminal(): void;
@@ -414,8 +415,7 @@ async function builtinHash({ args, stdout, stderr, state, host, context }: Built
     }
     // A start from a cwd whose mount runs programs on its machine is found there, and nothing is remembered of it.
     // The shell's own names are not programs: bash's hash passes over them.
-    if (BASH_BUILTINS.has(arg) || context.isFunction(arg)) continue;
-    const located = await host.locateProgram(arg, state.getCwd(), state.env);
+    const located = host.isShellBuiltin(arg) || context.isFunction(arg) ? undefined : await host.locateProgram(arg, state.getCwd(), state.env);
     if (located !== undefined) {
       if (located === null) {
         (await stderr.write(`hash: ${arg}: not found\n`));

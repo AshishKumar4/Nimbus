@@ -1106,9 +1106,10 @@ export class CompositeVFS implements VFS {
    * Where a program started with its cwd at `cwd` runs (MountOptions.exec),
    * for this view's principal: by the mount the cwd is on, links into it
    * followed, as every lookup finds it (route). A cwd the namespace cannot
-   * look up is placed by where the lookup had reached, links followed:
-   * under a delegating mount it is refused with the lookup's failure, never
-   * run here in its place; elsewhere it runs here, to fail as it would.
+   * look up, in a namespace where a mount delegates, is refused with the
+   * lookup's failure (an absent mount's in its own words): where the walk
+   * stopped says nothing of where the cwd is, and a program is never run
+   * here in a machine's place.
    */
   async placeProgram(cwd: string): Promise<ProgramPlacement> {
     if (this.table.delegates === 0) return LOCAL_PLACEMENT;
@@ -1118,12 +1119,7 @@ export class CompositeVFS implements VFS {
       route = await this.routeWith(cwd, { follow: true }, trace);
     } catch (error) {
       const reached = this.table.mounts.get(this.mountOf(trace.at));
-      if (reached?.options.exec === undefined) {
-        if (isVfsError(error)) return LOCAL_PLACEMENT;
-        throw error;
-      }
-      // An absent mount in its own words; any other failure in the lookup's.
-      const absent = this.backend(reached) === null ? this.absentReason(reached) : undefined;
+      const absent = reached !== undefined && this.backend(reached) === null ? this.absentReason(reached) : undefined;
       return { kind: 'absent', reason: absent ?? (error instanceof Error ? error.message : String(error)) };
     }
     const exec = this.table.mounts.get(route.point)?.options.exec;

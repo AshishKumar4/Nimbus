@@ -178,7 +178,7 @@ try {
   assert.deepEqual(r.starts, []);
 
   // hash finds the machine's program and remembers nothing of it.
-  r = await run('cd /m && hash echo printf; echo "builtins=$?"');
+  r = await run('cd /m && hash echo printf clear; echo "builtins=$?"');
   assert.deepEqual([r.out, r.starts], ['builtins=0\n', []], 'hash passes over the shell\'s own names, as bash\'s does');
   r = await run('cd /m && hash tool; hash missing; echo "s=$?"; hash -l');
   assert.equal(r.out.split('\n')[0], 's=1');
@@ -283,6 +283,33 @@ try {
   c = await child({ command: 'tool', cwd: '/home/user/work' });
   assert.equal(c.exit.spawnError, 'EHOSTDOWN', 'a link into a failing delegating mount');
   assert.deepEqual(c.starts, []);
+
+  // A cwd whose lookup fails before it reaches a delegating mount: refused all the same.
+  await ws.exec('mkdir -p /home/user/locked/m');
+  const inner = new MemoryVFS({ uid: 1000, gid: 1000 });
+  inner.mkdir('/x', { recursive: true });
+  ws.filesystem.vfs.mount('/home/user/locked/m', inner, { exec: delegate });
+  await ws.exec('chmod 000 /home/user/locked');
+  c = await child({ command: 'tool', cwd: '/home/user/locked/m/x' });
+  await ws.exec('chmod 755 /home/user/locked');
+  assert.equal(c.exit.spawnError, 'EHOSTDOWN', 'an unresolved cwd is never run here');
+  assert.deepEqual(c.starts, []);
+
+  // Any signal is offered to the program first: one whose default action ends nothing (SIGWINCH) too.
+  {
+    starts.length = 0;
+    kills.length = 0;
+    const parent = ws.processes.spawn('node', ['node'], '/home/user', { parentPid: ws.shellProcessPid });
+    const { childPid } = await ws.children.spawn({ command: 'sleep', args: [], env: {}, cwd: '/m', stdio: ['pipe', 'pipe', 'pipe'], parentPid: parent.pid });
+    for (let i = 0; i < 100 && starts.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(ws.children.kill(childPid, 'SIGWINCH'), true);
+    let exit = await ws.children.wait(childPid);
+    while (!exit.done) exit = await ws.children.wait(childPid);
+    assert.deepEqual(kills, ['SIGWINCH']);
+    assert.equal(exit.signal, 'SIGWINCH', 'the fake ends on any signal it is sent');
+    ws.processes.exit(parent.pid, 0);
+  }
 
   // A signal a remote program may take (SIGABRT) is its own; a signal while the start is pending stops the start.
   for (const [command, signal, sent] of [['sleep', 'SIGABRT', ['SIGABRT']], ['hold', 'SIGTERM', []]]) {
