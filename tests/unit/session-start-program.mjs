@@ -1,0 +1,105 @@
+#!/usr/bin/env bun
+// A session starts a program by its argv (Kinu ask 67, the facade's exec):
+// workspace.startProgram(program, cancel) is the start contract a mount's
+// exec delegate meets (ask 66), so a session is one too. It resolves once
+// the program runs, and only then; a start that cannot run rejects with
+// the errno Node's spawn gives (`code`, `syscall: 'spawn <file>'`, `path`);
+// its exit is waitpid's code or signal; kill(signal) is the program's
+// signal; its stdin is bytes, to their end, with backpressure. Programs are
+// placed by their cwd as every start is: under a delegating mount it is the
+// mount's machine that starts them. Before, a session ran only command
+// lines (exec), whose answer is a shell's status.
+import assert from 'node:assert/strict';
+import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
+import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
+import { hostSqlite } from './lib/host-sqlite.mjs';
+
+const { sql, transactions } = await hostSqlite();
+const ws = await NimbusWorkspace.create({ sql, transactions });
+
+/** A started program's output, read to its end, and its exit. */
+async function finish(started) {
+  const out = [];
+  const err = [];
+  for await (const chunk of started.output) (chunk.stream === 'stdout' ? out : err).push(...chunk.data);
+  return { stdout: new Uint8Array(out), stderr: new TextDecoder().decode(new Uint8Array(err)), exit: await started.exit };
+}
+const text = (bytes) => new TextDecoder().decode(bytes);
+const never = new AbortController().signal;
+const program = (argv, extra = {}) => ({ argv, env: { PATH: '/usr/bin:/bin', HOME: '/home/user' }, cwd: '/home/user', stdin: null, ...extra });
+
+try {
+  let started = await ws.startProgram(program(['echo', 'hi']), never);
+  assert.equal(typeof started.pid, 'number', 'started: its pid');
+  let ran = await finish(started);
+  assert.deepEqual([text(ran.stdout), ran.exit], ['hi\n', { code: 0, signal: null }]);
+
+  ran = await finish(await ws.startProgram(program(['sh', '-c', 'echo err >&2; exit 3']), never));
+  assert.deepEqual([ran.stderr, ran.exit], ['err\n', { code: 3, signal: null }]);
+
+  await assert.rejects(ws.startProgram(program(['no-such-program']), never), (error) => {
+    assert.deepEqual([error.code, error.errno, error.syscall, error.path], ['ENOENT', -2, 'spawn no-such-program', 'no-such-program']);
+    return true;
+  }, 'a start that cannot run: Node\'s spawn error');
+
+  // Bytes in, to their end, every value, and more than a pipe holds, to a reader slower than the writer.
+  const bytes = new Uint8Array(1024 * 1024 + 256);
+  for (let i = 0; i < bytes.length; i++) bytes[i] = i & 0xff;
+  const stdin = new ReadableStream({
+    start(controller) {
+      for (let at = 0; at < bytes.length; at += 64 * 1024) controller.enqueue(bytes.subarray(at, at + 64 * 1024));
+      controller.close();
+    },
+  });
+  started = await ws.startProgram(program(['cat'], { stdin }), never);
+  const echoed = [];
+  for await (const chunk of started.output) {
+    echoed.push(chunk.data);
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  const joined = new Uint8Array(echoed.reduce((n, c) => n + c.length, 0));
+  let at = 0;
+  for (const c of echoed) { joined.set(c, at); at += c.length; }
+  assert.equal(joined.length, bytes.length, 'every byte back');
+  assert.ok(joined.every((b, i) => b === bytes[i]), 'in order, byte for byte');
+  assert.deepEqual(await started.exit, { code: 0, signal: null });
+
+  // kill(signal) is the program's: ended by it, waitpid says which.
+  started = await ws.startProgram(program(['sleep', '600']), never);
+  started.kill('SIGTERM');
+  ran = await finish(started);
+  assert.deepEqual(ran.exit, { code: null, signal: 'SIGTERM' });
+
+  // Placed by its cwd, as every start is: under a delegating mount, the mount's machine starts it.
+  const starts = [];
+  const delegate = {
+    async start(spec, cancel) {
+      starts.push([...spec.argv]);
+      if (spec.argv[0] === 'hold') {
+        await new Promise((resolve) => cancel.addEventListener('abort', resolve, { once: true }));
+        throw Object.assign(new Error('operation canceled'), { code: 'ECANCELED' });
+      }
+      return {
+        output: new ReadableStream({ start(c) { c.enqueue({ stream: 'stdout', data: new TextEncoder().encode('remote\n') }); c.close(); } }),
+        exit: Promise.resolve({ code: 0, signal: null }),
+        kill() {},
+      };
+    },
+    async locate() { return null; },
+  };
+  const files = new MemoryVFS({ uid: 1000, gid: 1000 });
+  files.mkdir('/x', { recursive: true });
+  ws.filesystem.vfs.mount('/m', files, { exec: delegate });
+  ran = await finish(await ws.startProgram(program(['uname', '-a'], { cwd: '/m/x' }), never));
+  assert.deepEqual([starts, text(ran.stdout), ran.exit], [[['uname', '-a']], 'remote\n', { code: 0, signal: null }]);
+
+  // Cancelled while its start is pending: ECANCELED, nothing run.
+  const cancel = new AbortController();
+  const pending = ws.startProgram(program(['hold'], { cwd: '/m' }), cancel.signal);
+  for (let i = 0; i < 100 && starts.length < 2; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+  cancel.abort();
+  await assert.rejects(pending, { code: 'ECANCELED' });
+} finally {
+  await ws.close();
+}
+console.log('session-start-program: a session starts a program by its argv, as a mount\'s delegate does');
