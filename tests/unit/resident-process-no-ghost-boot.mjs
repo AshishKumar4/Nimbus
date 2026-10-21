@@ -34,10 +34,11 @@ adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
 /**
  * Stands in for the program the facet runs. Each module evaluation is one BOOT
  * with a fresh module scope, which is what a real second isolate would give the
- * user.
+ * user. It takes a moment, as a program's top level does on the real loader.
  */
-const program = () => {
+const program = async () => {
   const boot = { id: `boot-${world.boots.length + 1}`, served: 0 };
+  await new Promise((resolve) => setTimeout(resolve, 50));
   return {
     boot,
     async startProcess() { return { ok: true }; },
