@@ -3,7 +3,7 @@
 // process's listeners say so to the session (cpCatchSignals) as they come
 // and go, and it takes each signal the session queues for it (cpNextSignal),
 // its handlers deciding what it does; a SIGTERM it has stopped listening for
-// takes the default action. A session that holds no catches for it, answering
+// takes the default action; with none left it stops asking, and holds nothing open. A session that holds no catches for it, answering
 // none at once, is asked again a second later, not in a tight loop. What it
 // catches is said again until the session takes it, and its output waits for
 // that, so a "ready" it prints is seen only once it is caught. The generated
@@ -63,8 +63,10 @@ await check('none answered at once is not asked again at once', async () => {
     cpNextSignal: async () => { asked++; return null; },
   };
   const { proc } = make(supervisor);
-  proc.on('SIGINT', () => {});
+  const handler = () => {};
+  proc.on('SIGINT', handler);
   await sleep(300);
+  proc.off('SIGINT', handler);
   assert.ok(asked <= 2, `asked ${asked} times in 300 ms`);
 });
 
@@ -81,8 +83,10 @@ await check('said again until taken; output waits for it', async () => {
     cpNextSignal: (waitMs) => new Promise((resolve) => setTimeout(() => resolve(null), Math.min(waitMs, 50))),
   };
   const { proc, writeLive } = make(supervisor);
-  proc.on('SIGTERM', () => {});
+  const handler = () => {};
+  proc.on('SIGTERM', handler);
   await new Promise((resolve) => writeLive('stdout', 'ready\n', undefined, resolve, async () => { events.push('ready out'); }));
+  proc.off('SIGTERM', handler);
   assert.deepEqual([tries, events], [3, ['caught SIGTERM', 'ready out']]);
 });
 

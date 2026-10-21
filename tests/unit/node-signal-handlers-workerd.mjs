@@ -90,9 +90,11 @@ try {
     await new Promise((r) => setTimeout(r, 1000));
     t.send('\x03');
     await t.waitForPrompt(30_000);
+    // What the line showed, before the next one clears the view.
+    const shown = t.buf;
     const parked = (await terminal.run('echo "S=$?"')).stdout;
     const status = Number(/S=(\d+)/.exec(parked)?.[1]);
-    const order = (t.buf.match(/read \[\]|heard SIGINT/g) ?? []).join(' then ');
+    const order = (shown.match(/read \[\]|heard SIGINT/g) ?? []).join(' then ');
     console.log(`  parked: status ${status}, ${order}`);
     assert.deepEqual([status, order], [0, 'read [] then heard SIGINT'], 'a caught Ctrl-C waits for the read to return, then its handler runs');
   } finally {
