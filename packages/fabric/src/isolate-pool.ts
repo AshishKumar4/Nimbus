@@ -135,6 +135,12 @@ export interface IsolatePoolOptions {
    */
   network: WorkspaceNetwork;
   /**
+   * Whose record of facet calls (recentFacetCalls) this pool's calls are
+   * noted in: its Durable Object's by default. A session's peer notes a call
+   * it runs for the session apart, and the session notes it in its own.
+   */
+  callsOf?: object;
+  /**
    * Baked into the loader id. Two pools sharing tag, preamble, wasm and
    * supervisor but differing in `scope` never reuse each other's warm
    * workers: an interpreter scope that ENDS (REPL close, Ctrl-C reset)
@@ -487,7 +493,8 @@ export function recentFacetCalls(ctx: object): FacetCallTime[] {
   return calls;
 }
 
-function noteFacetCall(ctx: object, tag: string, loadMs: number | null, began: number): void {
+/** A facet call `ctx` made, which `began` then, cold when its worker's code took `loadMs` to read. */
+export function noteFacetCall(ctx: object, tag: string, loadMs: number | null, began: number): void {
   let ring = callsByCtx.get(ctx);
   if (ring === undefined) {
     ring = { slots: Array.from({ length: FACET_CALLS_KEPT }, () => ({ tag: '', cold: false, loadMs: 0, callMs: 0, at: 0 })), next: 0, count: 0 };
@@ -594,6 +601,7 @@ export class IsolatePool {
   private readonly facetKind: FacetKind;
   private readonly defaultRetries: number;
   private readonly tag: string;
+  private readonly callsOf: object;
   private readonly slotGenerations = new Map<number, number>();
   /**
    * Per-slot execution ownership: the tail of each slot's in-flight
@@ -677,6 +685,7 @@ export class IsolatePool {
     this.defaultTimeoutMs = opts.timeoutMs ?? facetCallDeadlineMs(this.facetKind) ?? 0;
     this.defaultRetries = Math.max(0, opts.retries ?? 0);
     this.tag = opts.tag ?? 'facet';
+    this.callsOf = opts.callsOf ?? ctx;
     this.writerPid = opts.omitSupervisor || opts.supervisorPid === undefined ? undefined : opts.supervisorPid;
     this.watchName = `facet ${this.tag}${this.writerPid === undefined ? '' : ` pid ${this.writerPid}`}`;
     this.preamble = opts.preamble;
@@ -1010,7 +1019,7 @@ export class IsolatePool {
         // Direct property call, awaited by this frame — bracketed, never
         // wrapped. See beginLoaderFetch for the measured DO-poisoning hazard.
         const answer = await invoke(entrypoint, attempt);
-        noteFacetCall(this.ctx, this.tag, loadMs, began);
+        noteFacetCall(this.callsOf, this.tag, loadMs, began);
         return answer;
       } catch (err) {
         // The ledger learns a limit refusal from the hold it ends.

@@ -30,6 +30,7 @@ import assert from 'node:assert/strict';
 import { adoptCtxExports, composeFabric } from '../../packages/fabric/src/composition.ts';
 import { ONE_SHOT_WARM_MS, oneShotPlacement, oneShotPlacementDiagnostics } from '../../packages/fabric/src/one-shot-peer.ts';
 import { isolateToken } from '../../packages/fabric/src/peer-host.ts';
+import { recentFacetCalls } from '../../packages/fabric/src/isolate-pool.ts';
 import { loaderFacetHost } from '../../packages/worker/src/runtime/facet-loader-host.ts';
 import * as rpc from '../../packages/worker/src/session/rpc.ts';
 import { SUPERVISOR_OP_ROUTES } from '../../packages/core/src/workspace/supervisor-op.ts';
@@ -143,6 +144,9 @@ function world({ colocated = false } = {}) {
   assert.deepEqual(new Uint8Array(peer.ran[0].modules['probe.wasm'].wasm), IMAGE_BYTES, 'with the image the session read');
   const calls = oneShotPlacementDiagnostics(w.session.ctx).calls.map((c) => c.host);
   assert.deepEqual(calls, ['session', 'peer']);
+  assert.deepEqual(recentFacetCalls(w.session.ctx).map((c) => [c.tag, c.cold]), [['probe-runner', true], ['probe-runner', false]],
+    'the session\'s record of its facet calls holds both: cold in the session, then warm on the peer');
+  assert.deepEqual(recentFacetCalls(peer.ctx), [], 'the peer keeps none of it');
   console.log('  ok  cold: in the session, the peer warmed beside it; warm: on the peer, as the session\'s process');
 }
 
