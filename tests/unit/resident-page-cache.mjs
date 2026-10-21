@@ -20,6 +20,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { positionOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { createResidentStore } from '../../packages/worker/src/vfs/resident/index.ts';
 import { RESIDENT_PAGE_BYTES, RESIDENT_PAGE_CACHE_BYTES, RESIDENT_PAGE_CACHE_FREE_SHARE } from '../../packages/platform/src/limits.ts';
 import { facetStorage } from './lib/fake-do-kv.mjs';
@@ -39,7 +40,7 @@ function session(size) {
     rev: 5,
     epoch: 'e1',
     batches: [],
-    async fsAcquire() { return { epoch: s.epoch, rev: 100 }; },
+    async fsAcquire() { return { position: positionOf('', { '/': { epoch: s.epoch, cursor: 100 } }) }; },
     async fsReadBatch(requests) {
       s.batches.push(requests.length);
       return requests.map((r) => {

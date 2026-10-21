@@ -19,6 +19,7 @@
 // REAL resident body on it (tests/unit/lib/resident-body.mjs).
 
 import assert from 'node:assert/strict';
+import { positionOf, rootOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { createResidentStore } from '../../packages/worker/src/vfs/resident/index.ts';
 import { _rpcFsList } from '../../packages/worker/src/session/rpc.ts';
 import {
@@ -112,7 +113,7 @@ await runScenarios(import.meta.path, {
       // The supervisor is replaced between two pages, so the walk stops short.
       async fsList(after, limit) {
         const listed = await _rpcFsList(authority.host, after ?? null, 1);
-        return page++ === 0 ? { ...listed, next: listed.entries.at(-1).path } : { ...listed, epoch: 'a-new-incarnation' };
+        return page++ === 0 ? { ...listed, next: listed.entries.at(-1).path } : { ...listed, position: positionOf(listed.position.table, { ...listed.position.feeds, '/': { epoch: 'a-new-incarnation', cursor: rootOf(listed.position).cursor } }) };
       },
     });
     // The walk that stopped short is taken again before any user code (the

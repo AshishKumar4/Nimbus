@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 // Git fsmonitor v2 over the existing credential-bound VFS revision feed.
 import assert from 'node:assert/strict';
+import { positionOf, rootOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
@@ -93,8 +94,8 @@ try {
   const bounded = makeGitFsmonitor();
   let revision = 1;
   const many = {
-    acquire: async (epoch) => ({
-      epoch: 'bounded', rev: revision, poison: epoch !== 'bounded',
+    acquire: async (position) => ({
+      position: positionOf('', { '/': { epoch: 'bounded', cursor: revision } }), poison: position === null || rootOf(position).epoch !== 'bounded',
       paths: revision === 1 ? [] : Array.from({ length: 5000 }, (_, i) => ({ path: `home/user/repo/file-${i}-${'x'.repeat(30)}`, rev: revision, stat: { type: 'file' } })),
     }),
     revision: async () => revision,
@@ -103,7 +104,7 @@ try {
   revision = 2;
   const capped = await query(before.token, { monitor: bounded, fs: many });
   assert.deepEqual(capped.paths, ['/'], 'a large change set is a bounded full invalidation');
-  const gap = { ...many, acquire: async () => ({ epoch: 'bounded', rev: 3, paths: [], poison: true }) };
+  const gap = { ...many, acquire: async () => ({ position: positionOf('', { '/': { epoch: 'bounded', cursor: 3 } }), paths: [], poison: true }) };
   assert.deepEqual((await query(capped.token, { monitor: bounded, fs: gap })).paths, ['/'], 'a journal gap never answers clean');
   const wakeVfs = new SqliteVFS(harness.sql, harness.ctx);
   const wakeAuthority = new ProcessFiles(wakeVfs);

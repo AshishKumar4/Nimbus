@@ -17,6 +17,7 @@
 // would let the reconcile pass with the revision comparison deleted.
 
 import assert from 'node:assert/strict';
+import { positionOf, rootOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
@@ -84,7 +85,7 @@ function meteredSupervisor() {
 async function bootedStore() {
   const store = loadStore();
   const supervisor = meteredSupervisor();
-  store.sync.adoptModuleBundle({}, { epoch: rawVfs.epoch, rev: rawVfs.revision() });
+  store.sync.adoptModuleBundle({}, (await supervisor.fsAcquire(null)).position);
   const result = await store.sync.synchronize(supervisor);
   return { store, supervisor, result };
 }
@@ -148,7 +149,7 @@ kfs.writeFile('app/scratch', 'x');
 kfs.unlink('app/scratch');
 
 const heldCursor = cold.store.coherence.cursor();
-const poisoned = await _rpcFsAcquire(host, heldCursor.epoch, heldCursor.rev);
+const poisoned = await _rpcFsAcquire(host, heldCursor);
 assert.equal(
   poisoned.poison,
   true,
@@ -161,8 +162,8 @@ const warm = { store: cold.store, supervisor: meteredSupervisor() };
 const reconciled = await warm.store.sync.synchronize(warm.supervisor);
 
 assert.equal(reconciled.reconciled, true, 'a same-epoch poison is repaired by revision');
-assert.equal(reconciled.cursor.epoch, rawVfs.epoch);
-assert.ok(reconciled.cursor.rev > 0, 'the cursor advanced past the poison');
+assert.equal(rootOf(reconciled.cursor).epoch, rawVfs.epoch);
+assert.ok(rootOf(reconciled.cursor).cursor > 0, 'the cursor advanced past the poison');
 
 // Correctness first. This is the assertion the cost is only allowed to buy
 // against: the peer's write must be visible, and nothing else may have drifted.
@@ -240,7 +241,7 @@ assert.ok(
   assert.equal(result.rekeyed, FILES, 'a row whose content key is listed again is kept');
   assert.equal(result.dropped, 0, 'so nothing is rebuilt');
   assert.equal(result.filled, 0, 'and nothing is fetched');
-  assert.equal(result.cursor.epoch, restarted.epoch, 'and the store re-dates to the new epoch');
+  assert.equal(rootOf(result.cursor).epoch, restarted.epoch, 'and the store re-dates to the new epoch');
   assert.equal(
     asText(store.cells.get('app/d0/unflushed.txt')),
     'MY-OWN-UNFLUSHED-BYTES',
@@ -293,10 +294,10 @@ for (const comparable of [true, false]) {
   // adopted at another epoch's cursor, so none of its revisions can be
   // compared with the listing's.
   if (comparable) {
-    store.sync.adoptModuleBundle({}, { epoch: rawVfs.epoch, rev: rawVfs.revision() });
+    store.sync.adoptModuleBundle({}, (await supervisor.fsAcquire(null)).position);
     await store.sync.synchronize(full);
   } else {
-    store.sync.adoptModuleBundle({}, { epoch: 'another-epoch', rev: 0 });
+    store.sync.adoptModuleBundle({}, positionOf('', { '/': { epoch: 'another-epoch', cursor: 0 } }));
   }
   // No room at all: every own write is held in the heap.
   store.admission.setStorage({ facet: 'held-facet', grant: 0 }, full);
@@ -346,7 +347,7 @@ if (fixturePath) {
     store.bind({ storage: facetStorage(createSqliteVfsTestHarness().sql) });
     // No plan and no push roots: a repair refetches only what it dropped.
     store.sync.setPlan([]);
-    store.sync.adoptModuleBundle({}, { epoch: vfs.epoch, rev: vfs.revision() });
+    store.sync.adoptModuleBundle({}, (await supervisor.fsAcquire(null)).position);
     await store.sync.synchronize(supervisor);
     store.admission.setStorage({ facet: 'bridge', grant: c.full ? 0 : 64 * 1024 * 1024 }, supervisor);
     for (const [i, e] of c.events.entries()) {
@@ -356,7 +357,7 @@ if (fixturePath) {
       else if (e.event === 'flush') { k.writeFile(e.path, e.bytes); store.cells.stamp(e.path, vfs.revision()); }
       else if (e.event === 'barrier') {
         const at = store.coherence.cursor();
-        store.cells.admit(await supervisor.fsAcquire(at.epoch, at.rev));
+        store.cells.admit(await supervisor.fsAcquire(at));
       } else if (e.event === 'repair') {
         k.writeFile(c.churn, e.bytes);
         await store.sync.synchronize(supervisor);

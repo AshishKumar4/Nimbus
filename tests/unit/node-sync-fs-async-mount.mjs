@@ -268,8 +268,8 @@ console.log(JSON.stringify({
   const store = createResidentStore();
   store.bind({ storage: facetStorage(facetSql()) });
   store.sync.setPlan(['m/kept/data.txt']);
-  store.sync.adoptModuleBundle({}, { epoch: ws.vfs.epoch, rev: ws.vfs.revision() });
   const supervisor = supervisorFor(pid);
+  store.sync.adoptModuleBundle({}, (await supervisor.fsAcquire(null)).position);
   await store.sync.synchronize(supervisor);
   assert.equal(dec.decode(/** @type {Uint8Array} */ (store.cells.get('m/kept/data.txt'))), 'old\n', 'the launch held the mounted file');
   await backing.writeFile('/kept/data.txt', enc.encode('new\n'));
@@ -285,7 +285,7 @@ async function listAll(fs, limit) {
   for (let after = null; ;) {
     const page = await fs.list(after, limit);
     for (const entry of page.entries) entries.set(entry.path, entry);
-    if (page.next === null) return { entries, cursor: { epoch: page.epoch, rev: page.rev } };
+    if (page.next === null) return { entries, cursor: page.position };
     after = page.next;
   }
 }
@@ -338,13 +338,13 @@ function launched(named = []) {
   root.writeFile('s/app/phantom.txt', 'p');
   root.unlink('s/app/data.txt');
   root.writeFile('home/user/news.txt', 'n');
-  const answer = await fs.acquire(cursor.epoch, cursor.rev, { namespace: true });
+  const answer = await fs.acquire(cursor, { namespace: true });
   assert.equal(answer.poison, false);
   assert.deepEqual(answer.paths.map((entry) => entry.path).filter((path) => path.startsWith('s')), [], 'writes SQLite takes under /s are not reported');
   assert.ok(answer.paths.some((entry) => entry.path === 'home/user/news.txt'), 'a write SQLite shows is');
   // A mount appearing is in no backend's feed: the next barrier relists.
   ws.filesystem.vfs.mount('/late', remote(new MemoryVFS()));
-  assert.equal((await fs.acquire(answer.epoch, answer.rev, { namespace: true })).poison, true, 'a changed mount table is a poison');
+  assert.equal((await fs.acquire(answer.position, { namespace: true })).poison, true, 'a changed mount table is a poison');
   ws.filesystem.vfs.unmount('/late');
   await ws.filesystem.releaseProcess(pid);
   ws.filesystem.vfs.unmount('/s');

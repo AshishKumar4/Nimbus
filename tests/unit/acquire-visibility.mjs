@@ -92,7 +92,7 @@ const supervisor = {
 };
 async function barrier() {
   const held = store.coherence.cursor();
-  return store.cells.admit(await supervisor.fsAcquire(held.epoch, held.rev));
+  return store.cells.admit(await supervisor.fsAcquire(held));
 }
 
 plain.mkdir('/home/user/d');
@@ -103,7 +103,7 @@ plain.mkdir('/home/user/work/lib', { recursive: true });
 plain.writeFile('/home/user/work/lib/index.js', 'export default 1;');
 plain.mkdir('/home/user/shelf');
 plain.writeFile('/home/user/shelf/book.txt', 'book');
-store.sync.adoptModuleBundle({}, { epoch: raw.epoch, rev: raw.revision() });
+store.sync.adoptModuleBundle({}, (await supervisor.fsAcquire(null)).position);
 // The launch's data plan holds every file here: this test is about what the
 // barrier evicts, not about what the store is asked to hold.
 store.sync.setPlan([

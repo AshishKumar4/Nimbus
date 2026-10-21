@@ -3,6 +3,7 @@
 // Preparing the resident filesystem must really boot it, not fall back to
 // the authority-only path on a runtime without JSPI.
 import assert from 'node:assert/strict';
+import { rootOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -47,8 +48,8 @@ try {
   const second = await startResidentWasi(P, secondProcess.supervisor, secondCred);
   assert.equal(second.namespace.ready(), true);
   assert.equal(P.__wasiFsStats().local, 0, 'a new WASI process starts a fresh read profiler');
-  assert.deepEqual(secondProcess.acquireRequests[0], { epoch: null, rev: 0 }, 'the new process did not offer the previous cursor');
-  assert.notEqual(firstSession.cursor().epoch, secondSession.cursor().epoch);
+  assert.deepEqual(secondProcess.acquireRequests[0], null, 'the new process did not offer the previous cursor');
+  assert.notEqual(rootOf(firstSession.cursor()).epoch, rootOf(secondSession.cursor()).epoch);
   assert.equal((await second.namespace.barrier()).landed, true);
   assert.deepEqual(secondProcess.acquireRequests.at(-1), secondSession.cursor(), 'the next barrier uses only the second session\'s cursor');
   assert.equal(second.namespace.entry('home/user/first-only.txt'), null, 'names from the previous process are absent');

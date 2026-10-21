@@ -77,14 +77,14 @@ for (const [index, testCase] of fixture.cases.entries()) {
   };
   const { store, namespace } = residentStore();
   store.namespace.setCred(reader);
-  store.sync.adoptModuleBundle({}, { epoch: raw.epoch, rev: raw.revision() });
+  store.sync.adoptModuleBundle({}, (await supervisor.fsAcquire(null)).position);
   await store.sync.synchronize(supervisor);
   assert.ok(store.namespace.ready(), `${where}: the namespace was not built`);
   assert.deepEqual(sorted(namespace()), sorted(testCase.atCursor), `${where}: namespace at the cursor`);
 
   for (const step of testCase.window) apply(kernel, step, where);
   const held = store.coherence.cursor();
-  const applied = store.cells.admit(await supervisor.fsAcquire(held.epoch, held.rev, store.sync.acquireOptions()));
+  const applied = store.cells.admit(await supervisor.fsAcquire(held, store.sync.acquireOptions()));
   for (const dir of applied.relist) {
     relists++;
     await store.transport.relist(supervisor, dir);

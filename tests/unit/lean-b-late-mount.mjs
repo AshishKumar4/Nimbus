@@ -28,7 +28,7 @@ async function check(kind) {
       if (kind === 'aba') authority.files.vfs.unmount('/m');
     }
     const cursor = store.coherence.cursor();
-    const answer = await supervisor.fsAcquire(cursor.epoch, cursor.rev, { namespace: true });
+    const answer = await supervisor.fsAcquire(cursor, { namespace: true });
     if (answer.poison) await store.sync.synchronize(supervisor);
     else await store.sync.applyAcquire(supervisor, answer);
     const live = await bridge.stat('/m');
@@ -38,7 +38,7 @@ async function check(kind) {
     assert.equal(answer.poison, true, 'the new live mount must poison the SQLite-only listing');
     assert.equal(staged?.kind, kind === 'aba' ? undefined : NS_DIR, 'the repaired namespace matches the final table');
     const repaired = store.coherence.cursor();
-    const next = await supervisor.fsAcquire(repaired.epoch, repaired.rev, { namespace: true });
+    const next = await supervisor.fsAcquire(repaired, { namespace: true });
     assert.equal(next.poison, false, 'the relist acknowledges the new table, including an ABA');
   } finally {
     await authority.files.releaseProcess(binding.pid);

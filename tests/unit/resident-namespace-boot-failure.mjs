@@ -2,6 +2,7 @@
 // A module snapshot has a data cursor, not a listed namespace. If listing
 // fails afterwards, its real failure must survive boot and reach the caller.
 import assert from 'node:assert/strict';
+import { positionOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { createResidentStore } from '../../packages/worker/src/vfs/resident/index.ts';
 
 const store = createResidentStore();
@@ -12,7 +13,7 @@ const supervisor = {
   fsList: async () => { listings++; throw new Error(reason); },
   fsReadBatch: async () => [],
 };
-const boot = await store.sync.boot(() => ({}), { epoch: 'snapshot', rev: 7 }, supervisor, 0);
+const boot = await store.sync.boot(() => ({}), positionOf('', { '/': { epoch: 'snapshot', cursor: 7 } }), supervisor, 0);
 assert.equal(store.namespace.ready(), false, 'the module cursor never substitutes for a namespace');
 assert.match(boot.failure ?? '', /Subrequest depth limit exceeded/, 'boot preserves a failed listing instead of a synthetic admission cause');
 const failed = await store.sync.requireNamespace(supervisor, boot.failure);

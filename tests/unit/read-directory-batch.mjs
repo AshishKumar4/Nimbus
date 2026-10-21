@@ -17,7 +17,7 @@ const count = DIRECTORY_PREFETCH_LIMIT + 30;
 for (let i = 0; i < count; i++) await fs.mkdir(`${root}/d${i}`);
 const channel = crypto.randomUUID();
 let sequence = 0;
-const request = (open = [], options = {}) => ({ channel, sequence: ++sequence, epoch: engine.epoch, cursor: engine.revision(), open, retire: [], claim: [], lease: false, ...options });
+const request = (open = [], options = {}) => ({ channel, sequence: ++sequence, position: fs.acquire(null).position, open, retire: [], claim: [], lease: false, ...options });
 try {
   const first = await readDirectoryBatch(fs, request([`${root}/d0`, `${root}/d1`]));
   assert.equal(first.opened.length, 2);

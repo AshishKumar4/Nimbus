@@ -157,7 +157,7 @@ const mkdir = (path) => ({ type: 'call', call: { call: 'mkdir', path, mode: 0o75
   s.files.continueAtCommit(PID);
   const lease = (pid) => {
     const view = s.files.bind({ pid, cred: CRED_SESSION_USER });
-    const { readLease } = view.acquire(s.engine.epoch, s.engine.revision(), { lease: true });
+    const { readLease } = view.acquire(view.acquire(null).position, { lease: true });
     return () => view.recalled(readLease.owner, 'revoke');
   };
   const c = client(s);
@@ -226,7 +226,7 @@ const mkdir = (path) => ({ type: 'call', call: { call: 'mkdir', path, mode: 0o75
   s.files.holdOutput(new SessionProcessSupervisor());
   s.files.continueAtCommit(PID);
   const reader = s.files.bind({ pid: 7, cred: CRED_SESSION_USER });
-  const { readLease } = reader.acquire(s.engine.epoch, s.engine.revision(), { lease: true });
+  const { readLease } = reader.acquire(reader.acquire(null).position, { lease: true });
   // As a launch writes the process's boot image: the kernel, through its binding, held for the reader's recall.
   const launching = s.files.bind({ pid: PID, cred: CRED_KERNEL }).synchronous;
   launching.mkdir('/.nimbus/facet-images', { recursive: true, mode: 0o755 });
@@ -605,7 +605,7 @@ for (const lose of [0, 1]) {
   const c = client(s, { grantAfter: 1, grantIdleMs: 60_000, recallPollMs: 100 });
   c.holder('home/user/v/x');
   const grant = await until(() => c.holder('home/user/v/x'), 'the grant');
-  const view = { epoch: grant.certificate.epoch, rev: s.engine.revision() };
+  const view = { epoch: grant.certificate.epoch, cursor: s.engine.revision() };
   assert.equal(c.vouch('home/user/v', view), 'held', 'a view at the session\'s revision was not vouched for');
   let lost = lose;
   s.fault = async (deliver) => {
@@ -616,7 +616,7 @@ for (const lose of [0, 1]) {
   await c.submit(writeFile('home/user/v/made', 'm'));
   assert.equal(c.stats().resends, lose);
   assert.equal(c.vouch('home/user/v', view), undefined, 'a view from before the change was vouched for');
-  assert.equal(c.vouch('home/user/v', { ...view, rev: s.engine.revision() }), 'held');
+  assert.equal(c.vouch('home/user/v', { ...view, cursor: s.engine.revision() }), 'held');
   await c.settle();
 }
 
@@ -638,9 +638,9 @@ for (const continues of [true, false]) {
   c.holder('home/user/v/x');
   const grant = await until(() => c.holder('home/user/v/x'), 'the grant');
   const reader = s.files.bind({ pid: 7, cred: CRED_SESSION_USER });
-  const { readLease } = reader.acquire(s.engine.epoch, s.engine.revision(), { lease: true });
+  const { readLease } = reader.acquire(reader.acquire(null).position, { lease: true });
   assert.ok(readLease, 'the reader holds no read lease');
-  const view = { epoch: grant.certificate.epoch, rev: s.engine.revision() };
+  const view = { epoch: grant.certificate.epoch, cursor: s.engine.revision() };
   assert.equal(c.vouch('home/user/v', view), 'held', 'a view at the session\'s revision was not vouched for');
   const written = c.submit(writeFile('home/user/v/made', 'm'));
   assert.equal(await reader.awaitRecall(readLease.owner, 1000), 'revoke');
@@ -649,12 +649,12 @@ for (const continues of [true, false]) {
   assert.equal(c.vouch('home/user/v', view), undefined, 'a view from before the change was vouched for');
   if (continues) {
     assert.notEqual(s.engine.publishedFor(), null, 'the change was published before its answer');
-    assert.equal(c.vouch('home/user/v', { ...view, rev: s.engine.revision() }), undefined, 'a change not yet published was vouched for');
+    assert.equal(c.vouch('home/user/v', { ...view, cursor: s.engine.revision() }), undefined, 'a change not yet published was vouched for');
     reader.recalled(readLease.owner, 'revoke');
     await s.engine.publishedFor();
     await c.submit(writeFile('home/user/v/after', 'a'));
   }
-  assert.equal(c.vouch('home/user/v', { ...view, rev: s.engine.revision() }), 'held');
+  assert.equal(c.vouch('home/user/v', { ...view, cursor: s.engine.revision() }), 'held');
   await c.settle();
 }
 

@@ -101,9 +101,10 @@ assert.deepEqual(receipt, { before: beforeRange, after: raw.revision() }, 'the r
 // no name for, is not reported to it at all.
 {
   const cursor = raw.revision();
+  const at = fs.acquire(null).position;
   kernel.writeFile('tmp/x', 'shared, rewritten');
   const own = fs.writeFile('/tmp/x', 'private v4');
-  const delta = fs.acquire(raw.epoch, cursor);
+  const delta = fs.acquire(at);
   assert.equal(delta.poison, false);
   assert.deepEqual(
     delta.paths.filter((entry) => entry.path.startsWith('tmp')).sort((l, r) => (l.path < r.path ? -1 : 1)),
@@ -114,7 +115,7 @@ assert.deepEqual(receipt, { before: beforeRange, after: raw.revision() }, 'the r
   // An unconfined caller names storage as it is, but only what it could
   // list: the shared tmp/x, and not A's private file, whose root it cannot
   // traverse. The kernel can, and is told of both.
-  const session = host.supervisorBridge().acquire(raw.epoch, cursor);
+  const session = host.supervisorBridge().acquire(at);
   const names = new Set(session.paths.map((entry) => entry.path));
   assert.ok(names.has('tmp/x'));
   assert.ok(!names.has(`${PRIVATE_ROOT}/x`), 'the session user was told a name in A\'s private root');
@@ -132,7 +133,7 @@ const supervisor = {
 };
 const asText = (cell) => (typeof cell === 'string' ? cell : dec.decode(cell));
 
-store.sync.adoptModuleBundle({}, { epoch: raw.epoch, rev: raw.revision() });
+store.sync.adoptModuleBundle({}, fs.acquire(null).position);
 // The launch's data plan holds A's /tmp/x.
 store.sync.setPlan(['tmp/x']);
 const filled = await store.sync.synchronize(supervisor);
@@ -143,7 +144,7 @@ assert.equal(asText(store.cells.get('tmp/x')), 'private v4');
 // name the delta has to evict.
 kernel.writeFile(`${PRIVATE_ROOT}/x`, 'a peer wrote this');
 const held = store.coherence.cursor();
-const applied = store.cells.admit(await supervisor.fsAcquire(held.epoch, held.rev));
+const applied = store.cells.admit(await supervisor.fsAcquire(held));
 assert.deepEqual(applied.dropped, ['tmp/x'], "a peer's write left A holding the replaced bytes");
 assert.equal(store.cells.get('tmp/x'), undefined);
 const refilled = await store.sync.synchronize(supervisor);

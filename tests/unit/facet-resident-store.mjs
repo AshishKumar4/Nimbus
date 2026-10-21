@@ -14,6 +14,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { positionOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { createResidentStore } from '../../packages/worker/src/vfs/resident/index.ts';
 import { kvTables } from '../../packages/worker/src/vfs/resident/kv-tables.ts';
 import { facetSql } from './lib/resident-body.mjs';
@@ -27,7 +28,7 @@ function loadStore(meter = undefined) {
   return store;
 }
 
-const CURSOR = { poison: false, paths: [], epoch: 'e1', rev: 7 };
+const CURSOR = { poison: false, paths: [], position: positionOf('', { '/': { epoch: 'e1', cursor: 7 } }) };
 
 // ── the seal ────────────────────────────────────────────────────────────────
 
@@ -123,8 +124,7 @@ const CURSOR = { poison: false, paths: [], epoch: 'e1', rev: 7 };
 
   const applied = s.cells.admit({
     poison: false,
-    epoch: 'e1',
-    rev: 10,
+    position: positionOf('', { '/': { epoch: 'e1', cursor: 10 } }),
     paths: [
       { path: 'a.txt', rev: 8 },
       { path: 'b.txt', rev: 10 },
@@ -138,15 +138,15 @@ const CURSOR = { poison: false, paths: [], epoch: 'e1', rev: 7 };
   assert.equal(s.bundle['e.txt'], 'E@7', 'an unnamed path is untouched');
   assert.equal(s.bundle['c.txt'], 'C-mine', "the facet's own write survives its own report");
   assert.equal(s.bundle['d.txt'], 'D-unflushed', 'unacknowledged own bytes survive any report');
-  assert.deepEqual(applied.cursor, { epoch: 'e1', rev: 10 });
+  assert.deepEqual(applied.cursor, positionOf('', { '/': { epoch: 'e1', cursor: 10 } }));
 
-  s.cells.admit({ poison: true, epoch: 'e2', rev: 0 });
+  s.cells.admit({ poison: true, position: positionOf('', { '/': { epoch: 'e2', cursor: 0 } }) });
   assert.deepEqual(
     Object.keys(s.bundle),
     ['d.txt'],
     'a poison drops every row the authority dated, and none of the own bytes it never saw',
   );
-  assert.deepEqual(s.coherence.cursor(), { epoch: 'e2', rev: 0 });
+  assert.deepEqual(s.coherence.cursor(), positionOf('', { '/': { epoch: 'e2', cursor: 0 } }));
 }
 
 // ── slot handover ───────────────────────────────────────────────────────────
@@ -271,17 +271,17 @@ const CURSOR = { poison: false, paths: [], epoch: 'e1', rev: 7 };
 // ── a subtree-scoped or structural report covers everything under it ───────
 {
   const s = loadStore();
-  s.cells.admit({ poison: false, paths: [], epoch: 'e1', rev: 5 });
+  s.cells.admit({ poison: false, paths: [], position: positionOf('', { '/': { epoch: 'e1', cursor: 5 } }) });
   s.cells.fill('d/a.txt', 'A', 4);
   s.cells.fill('d/sub/b.txt', 'B', 6);
   s.cells.fill('dx.txt', 'X', 4);
   s.bundle['d/own.txt'] = 'mine';
-  const applied = s.cells.admit({ poison: false, paths: [{ path: 'd', rev: 6, subtree: true }], epoch: 'e1', rev: 6 });
+  const applied = s.cells.admit({ poison: false, paths: [{ path: 'd', rev: 6, subtree: true }], position: positionOf('', { '/': { epoch: 'e1', cursor: 6 } }) });
   assert.deepEqual(applied.dropped.sort(), ['d/a.txt'], 'a row under it stamped below the report goes');
   assert.equal(s.bundle['d/sub/b.txt'], 'B', 'a row stamped at the report stays');
   assert.equal(s.bundle['d/own.txt'], 'mine', "the facet's own bytes stay");
   assert.equal(s.bundle['dx.txt'], 'X', 'a sibling that only shares the prefix is not covered');
-  s.cells.admit({ poison: false, paths: [{ path: 'd', rev: 7, structural: true }], epoch: 'e1', rev: 7 });
+  s.cells.admit({ poison: false, paths: [{ path: 'd', rev: 7, structural: true }], position: positionOf('', { '/': { epoch: 'e1', cursor: 7 } }) });
   assert.equal(s.bundle['d/sub/b.txt'], undefined, 'a structural report covers the subtree too');
 }
 

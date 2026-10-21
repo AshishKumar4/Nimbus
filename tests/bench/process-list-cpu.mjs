@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 // Independent module copies and databases for main, main's null arm, and head.
 import assert from 'node:assert/strict';
+import { rootOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { hostSqlite } from '../unit/lib/host-sqlite.mjs';
 import { cpuMs } from './lib/paired-cpu.mjs';
 import { CORE_CPU_SOURCES } from './lib/cpu-sources.mjs';
@@ -29,7 +30,7 @@ async function make({ 'vfs/sqlite-vfs.ts': { SqliteVFS }, 'runtime/process-files
 }
 
 async function cpu(arm, kind, iterations) {
-  const cursor = { epoch: arm.engine.epoch, rev: arm.engine.revision() };
+  const cursor = arm.bridge.acquire(null).position;
   if (kind === 'acquire-one') arm.root.writeFile('tree/mutated', `write-${++arm.writes}`);
   return cpuMs(async () => {
     for (let i = 0; i < iterations; i++) {
@@ -45,10 +46,10 @@ async function cpu(arm, kind, iterations) {
         assert.equal(page instanceof Promise, false);
         checksum += page.entries.length;
       } else {
-        const answer = arm.bridge.acquire(cursor.epoch, cursor.rev, { namespace: true });
+        const answer = arm.bridge.acquire(cursor, { namespace: true });
         assert.equal(answer.poison, false);
         assert.equal(answer.paths.length > 0, kind === 'acquire-one');
-        checksum += answer.rev + answer.paths.length;
+        checksum += rootOf(answer.position).cursor + answer.paths.length;
       }
     }
   });

@@ -16,6 +16,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { rootOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { mock } from 'bun:test';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { MAX_TX_SQL_EXECS } from '../../packages/platform/src/limits.ts';
@@ -52,7 +53,7 @@ function session(options) {
 
 /** A barrier of `bridge`'s that asks for the lease, from `from` (an answer it applied) or from now. */
 function barrier(s, bridge, from) {
-  return bridge.acquire(s.engine.epoch, from?.rev ?? s.engine.revision(), { lease: true });
+  return bridge.acquire(from?.position ?? bridge.acquire(null).position, { lease: true });
 }
 
 /** `text` to `path` in a wave of `bridge`'s, as a process's writes travel: answered at its commit when its process continues. */
@@ -111,7 +112,7 @@ function sequenced(bridge, pid, key, first) {
   assert.equal(again.readLease?.owner, first.readLease.owner, 'the next barrier took another lease rather than confirm its own');
   assert.equal(s.files.delegations.stats().reads.granted, 1);
   // Not asked for: none taken, none confirmed.
-  assert.equal(reader.acquire(s.engine.epoch, s.engine.revision()).readLease, undefined);
+  assert.equal(reader.acquire(reader.acquire(null).position).readLease, undefined);
   // The engine refuses a lease at a revision behind its own.
   assert.throws(() => s.engine.acquireReadLease({ reads: false, recall: async () => {} }, { epoch: s.engine.epoch, cursor: s.engine.revision() - 1 }), (error) => error.code === 'ESTALE');
 }
@@ -153,7 +154,7 @@ function sequenced(bridge, pid, key, first) {
   const other = s.files.bind({ pid: 9, cred: USER });
   const taken = barrier(s, reader);
   const before = s.engine.revision();
-  const seen = other.acquire(s.engine.epoch, s.engine.revision());
+  const seen = other.acquire(other.acquire(null).position);
   let published = false;
   const writing = withRecall(() => writer.writeFile('/home/user/d/a.txt', 'piped')).then(() => { published = true; });
   assert.equal(await reader.awaitRecall(taken.readLease.owner, 1000), 'revoke');
@@ -161,7 +162,7 @@ function sequenced(bridge, pid, key, first) {
   // Committed, and held: no revision, no barrier reports it, no lease is granted, and another's access waits.
   assert.equal(published, false);
   assert.equal(s.engine.revision(), before, 'the write was published before the reader answered');
-  const meanwhile = other.acquire(s.engine.epoch, seen.rev, { lease: true });
+  const meanwhile = other.acquire(seen.position, { lease: true });
   assert.ok(!meanwhile.paths.some((entry) => entry.path === 'home/user/d/a.txt'), 'a barrier reported a held write');
   assert.equal(meanwhile.readLease, undefined, 'a lease was granted over a held write');
   let read = null;
@@ -174,7 +175,7 @@ function sequenced(bridge, pid, key, first) {
   await reading;
   assert.equal(new TextDecoder().decode(read), 'piped');
   assert.ok(s.engine.revision() > before);
-  assert.ok(other.acquire(s.engine.epoch, seen.rev).paths.some((entry) => entry.path === 'home/user/d/a.txt'), 'published, a barrier reports it');
+  assert.ok(other.acquire(seen.position).paths.some((entry) => entry.path === 'home/user/d/a.txt'), 'published, a barrier reports it');
 }
 
 // ── A descriptor's writes that met a reader's recall land, and are published once it answers ──
@@ -227,7 +228,7 @@ function sequenced(bridge, pid, key, first) {
   const writer = s.files.bind({ pid: 8, cred: USER });
   const other = s.files.bind({ pid: 9, cred: USER });
   const { readLease } = barrier(s, reader);
-  const from = other.acquire(s.engine.epoch, s.engine.revision());
+  const from = other.acquire(other.acquire(null).position);
   const held = new Set();
   await withRecall(() => writer.writeFile('/home/user/d/a.txt', 'one'), undefined, held);
   await withRecall(() => writer.writeFile('/home/user/d/b.txt', 'two'), undefined, held);
@@ -237,9 +238,9 @@ function sequenced(bridge, pid, key, first) {
   await Promise.all(held);
   const written = s.harness.statements.slice(before).filter((statement) => /^\s*(INSERT|UPDATE|DELETE|REPLACE)/i.test(statement.sql));
   assert.deepEqual(written.map((statement) => statement.sql), [], 'publishing what was held wrote to storage');
-  const after = other.acquire(s.engine.epoch, from.rev);
+  const after = other.acquire(from.position);
   assert.deepEqual(after.paths.map((entry) => entry.path).filter((path) => path.startsWith('home/user/d/')).sort(), ['home/user/d/a.txt', 'home/user/d/b.txt']);
-  assert.equal(after.rev, s.engine.revision());
+  assert.equal(rootOf(after.position).cursor, s.engine.revision());
 }
 
 // ── A held write is published after a later one elsewhere, at a revision of its own, kept whatever revisions are dropped ──
@@ -249,20 +250,20 @@ for (const pathRevisionBytes of [undefined, 0]) {
   const writer = s.files.bind({ pid: 8, cred: USER });
   const other = s.files.bind({ pid: 9, cred: USER });
   const { readLease } = barrier(s, reader);
-  const from = other.acquire(s.engine.epoch, s.engine.revision());
+  const from = other.acquire(other.acquire(null).position);
   const writing = withRecall(() => writer.writeFile('/home/user/d/a.txt', 'held'));
   await sleep(10);
   // The reader's own write recalls nothing: it is published at once, ahead of the held one.
   reader.writeFile('/home/user/elsewhere', 'x');
-  const later = other.acquire(s.engine.epoch, from.rev);
+  const later = other.acquire(from.position);
   assert.ok(later.paths.some((entry) => entry.path === 'home/user/elsewhere'));
   assert.ok(!later.paths.some((entry) => entry.path === 'home/user/d/a.txt'), 'the held write was reported with the later one');
   reader.recalled(readLease.owner, 'revoke');
   await writing;
-  const last = other.acquire(s.engine.epoch, later.rev);
+  const last = other.acquire(later.position);
   const reported = last.paths.find((entry) => entry.path === 'home/user/d/a.txt');
   assert.ok(reported !== undefined, 'a barrier at the later write\'s revision never hears of the held one');
-  assert.ok(last.rev > later.rev);
+  assert.ok(rootOf(last.position).cursor > rootOf(later.position).cursor);
   // What the barrier reports is the revision the file has, after others' changes too, and on the next open: a read expecting it is answered.
   for (let i = 0; i < 64; i++) reader.writeFile(`/home/user/churn-${i}`, 'x');
   const fetched = other.readRange('/home/user/d/a.txt', 0, 64, { expectedEpoch: s.engine.epoch, expectedRevision: reported.rev });
@@ -283,7 +284,7 @@ for (const pathRevisionBytes of [undefined, 0]) {
   const removing = withRecall(() => writer.remove('/home/user/d/many', { recursive: true }));
   await sleep(10);
   reader.writeFile('/home/user/elsewhere', 'x');
-  const later = other.acquire(s.engine.epoch, s.engine.revision());
+  const later = other.acquire(other.acquire(null).position);
   const from = s.harness.statements.length;
   reader.recalled(readLease.owner, 'revoke');
   await removing;
@@ -294,8 +295,8 @@ for (const pathRevisionBytes of [undefined, 0]) {
   const largest = Math.max(...perTransaction.values());
   assert.ok(largest <= MAX_TX_SQL_EXECS, `a publication's transaction ran ${largest} statements`);
   // Reported where the removed names were, the directory they were in.
-  const reported = other.acquire(s.engine.epoch, later.rev).paths.find((entry) => entry.path === 'home/user/d/many');
-  assert.ok(reported !== undefined && reported.rev > later.rev, 'a removal passed by a later publication was reported below it');
+  const reported = other.acquire(later.position).paths.find((entry) => entry.path === 'home/user/d/many');
+  assert.ok(reported !== undefined && reported.rev > rootOf(later.position).cursor, 'a removal passed by a later publication was reported below it');
   assert.equal(other.revision('/home/user/d/many'), reported.rev);
 }
 
@@ -309,14 +310,14 @@ for (const pathRevisionBytes of [undefined, 0]) {
   const writing = withRecall(() => writer.writeFile('/home/user/d/a.txt', 'held'));
   await sleep(10);
   reader.writeFile('/home/user/elsewhere', 'x');
-  const later = other.acquire(s.engine.epoch, s.engine.revision());
+  const later = other.acquire(other.acquire(null).position);
   // The store is full: nothing that grows it is admitted now, the kernel's included.
   s.engine.ledger.report('proc-full', 64_000_000);
   assert.throws(() => s.engine.ledger.admit(1, true), (error) => error.code === 'ENOSPC');
   reader.recalled(readLease.owner, 'revoke');
   await writing;
-  const reported = other.acquire(s.engine.epoch, later.rev).paths.find((entry) => entry.path === 'home/user/d/a.txt');
-  assert.ok(reported !== undefined && reported.rev > later.rev, 'a held commit was never published');
+  const reported = other.acquire(later.position).paths.find((entry) => entry.path === 'home/user/d/a.txt');
+  assert.ok(reported !== undefined && reported.rev > rootOf(later.position).cursor, 'a held commit was never published');
 }
 
 // ── A held wave whose promotion fails after its first group is not published: its writer is failed, and every reader starts again from what the store holds ──
@@ -344,7 +345,7 @@ for (const pathRevisionBytes of [undefined, 0]) {
   const committed = () => Number(s.harness.db.query("SELECT COUNT(*) AS n FROM vfs_inodes WHERE path LIKE 'home/user/d/w%'").get().n);
   while (committed() < names.length) await sleep(5);
   reader.writeFile('/home/user/elsewhere', 'x');
-  const later = other.acquire(s.engine.epoch, s.engine.revision());
+  const later = other.acquire(other.acquire(null).position);
   // The promotion's second transaction fails: its first group is committed, the rest is not.
   let groups = 0;
   s.harness.setFaultInjector((statement) => {
@@ -357,7 +358,7 @@ for (const pathRevisionBytes of [undefined, 0]) {
   // What it committed stands, its holds let go; no cursor handed out before hears a delta that omits it.
   const decode = (bytes) => new TextDecoder().decode(bytes);
   assert.equal(decode(other.readFile('/home/user/d/w0')), 'waved');
-  assert.equal(other.acquire(later.epoch, later.rev).poison, true, 'a reader was left on a view the commit changed');
+  assert.equal(other.acquire(later.position).poison, true, 'a reader was left on a view the commit changed');
   // Repaired from a listing; an unrelated write later, what it listed is still what each file is.
   const listed = new Map();
   for (let after = null; ;) {
@@ -379,12 +380,12 @@ for (const pathRevisionBytes of [undefined, 0]) {
   const reader = s.files.bind({ pid: 7, cred: USER });
   const writer = s.files.bind({ pid: 8, cred: USER });
   const other = s.files.bind({ pid: 9, cred: USER });
-  const from = other.acquire(s.engine.epoch, s.engine.revision());
+  const from = other.acquire(other.acquire(null).position);
   writer.writeFile('/home/user/d/a.txt', 'published');
   const { readLease } = barrier(s, reader);
   const writing = withRecall(() => writer.writeFile('/home/user/d/a.txt', 'held'));
   await sleep(10);
-  const ask = (view) => view.acquire(s.engine.epoch, from.rev, { namespace: true, push: { roots: ['/home/user'] } });
+  const ask = (view) => view.acquire(from.position, { namespace: true, push: { roots: ['/home/user'] } });
   const decode = (bytes) => new TextDecoder().decode(bytes);
   const pushed = (answer) => answer.paths.find((entry) => entry.path === 'home/user/d/a.txt');
   assert.throws(() => ask(other), (error) => error.code === 'EAGAIN', 'a barrier reported what is held for publication');
@@ -967,7 +968,7 @@ for (const end of ['exit', 'kill']) {
   const reader = s.files.bind({ pid: 7, cred: USER });
   const other = s.files.bind({ pid: 9, cred: USER });
   const { readLease } = barrier(s, reader);
-  const from = other.acquire(s.engine.epoch, s.engine.revision());
+  const from = other.acquire(other.acquire(null).position);
   // As a launch writes process 8's boot image: the kernel, through 8's binding.
   const launching = s.files.bind({ pid: 8, cred: CRED_KERNEL }).synchronous;
   launching.mkdir('/.nimbus/facet-images', { recursive: true, mode: 0o755 });
@@ -979,7 +980,7 @@ for (const end of ['exit', 'kill']) {
   assert.throws(() => other.readFile(image), (error) => error.code === 'EAGAIN', 'another read what is held for publication');
   const root = s.files.bind({ pid: 10, cred: CRED_KERNEL });
   assert.throws(() => root.readFile(image), (error) => error.code === 'EAGAIN', 'another process, as root, read what is held for process 8');
-  assert.ok(!other.acquire(s.engine.epoch, from.rev).paths.some((entry) => entry.path.startsWith('.nimbus')), 'a barrier reported it before the recall');
+  assert.ok(!other.acquire(from.position).paths.some((entry) => entry.path.startsWith('.nimbus')), 'a barrier reported it before the recall');
   assert.equal(await reader.awaitRecall(readLease.owner, 1000), 'revoke');
   reader.recalled(readLease.owner, 'revoke');
   assert.equal(decode(await withRecall(() => other.readFile(image))), 'image');
@@ -1035,7 +1036,7 @@ for (const end of ['exit', 'kill']) {
   assert.equal(result.ok, true, JSON.stringify(result.error));
   const { reads } = s.files.delegations.stats();
   assert.deepEqual([reads.answered, reads.expired], [0, 0], 'the wave recalled its own process\'s lease');
-  assert.equal(barrier(s, reader, { rev: s.engine.revision() }).readLease?.owner, readLease.owner, 'its lease did not survive its own wave');
+  assert.equal(barrier(s, reader).readLease?.owner, readLease.owner, 'its lease did not survive its own wave');
 }
 
 // ── A sequenced wave writes nothing before the recall it meets is sent, and its publication keeps its writer's own lease ──
@@ -1063,7 +1064,7 @@ for (const end of ['exit', 'kill']) {
   const secondWave = await second;
   assert.equal(secondWave.ok, true, JSON.stringify(secondWave.error));
   assert.equal(s.engine.readLeaseStats().broken, 0, 'its publication broke its writer\'s own lease');
-  assert.equal(barrier(s, writer, { rev: s.engine.revision() }).readLease?.owner, own.readLease.owner, 'the writer\'s own lease did not survive its wave');
+  assert.equal(barrier(s, writer).readLease?.owner, own.readLease.owner, 'the writer\'s own lease did not survive its wave');
 }
 
 // ── A lease the engine ends without waiting (a new incarnation) is recalled: its holder is told ──
@@ -1071,12 +1072,12 @@ for (const end of ['exit', 'kill']) {
   const s = session();
   const reader = s.files.bind({ pid: 7, cred: USER });
   const { readLease } = barrier(s, reader);
-  const before = s.engine.epoch;
+  const before = reader.acquire(null).position;
   s.engine.rotateIncarnation();
   assert.equal(await reader.awaitRecall(readLease.owner, 200), 'revoke', 'the holder of a lease the new clock ended was not told');
   assert.equal(s.engine.readLeaseStats().broken, 1);
   reader.recalled(readLease.owner, 'revoke');
-  assert.equal(reader.acquire(before, s.engine.revision(), { lease: true }).poison, true);
+  assert.equal(reader.acquire(before, { lease: true }).poison, true);
   assert.notEqual(barrier(s, reader).readLease?.owner, readLease.owner, 'the ended lease was confirmed again');
 }
 

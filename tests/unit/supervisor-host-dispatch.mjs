@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import assert from 'node:assert/strict';
+import { positionOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { buildSessionSupervisorOps } from '../../packages/worker/src/session/supervisor-op.ts';
 import { SUPERVISOR_OPS, SUPERVISOR_OP_ROUTES, SUPERVISOR_NATIVE_OPS } from '../../packages/core/src/workspace/supervisor-op.ts';
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
@@ -78,7 +79,7 @@ const bytes = new Uint8Array([1, 2, 3]), content = 'written';
 const atimeMs = 100, mtimeMs = 200, mode = 0o640, size = 3;
 const uid = CRED_SESSION_USER.uid, gid = CRED_SESSION_USER.gid;
 const mask = 0o077, rOk = 0o4, xOk = 0o1, seekTo = 2;
-const options = { followSymlinks: false }, epoch = 'epoch', cursor = 9, after = 'after', limit = 32;
+const options = { followSymlinks: false }, position = positionOf('', { '/': { epoch: 'epoch', cursor: 9 } }), after = 'after', limit = 32;
 const url = 'https://remote.test/', protocols = ['protocol'], id = 7, waitMs = 25, text = 'text';
 const wsHeaders = [['Authorization', 'Bearer t']];
 const code = 0, reason = 'closed', offset = 0, length = 3;
@@ -114,7 +115,7 @@ const INPUTS = {
   readlink: [linkPath],
   symlink: [target, symlinkPath],
   fsAcquire: [position, { namespace: true }],
-  fsAcquired: [{ epoch, cursor }, 'stat', ['/home/user']],
+  fsAcquired: [{ position }, 'stat', ['/home/user']],
   fsRevision: [path],
   fsList: [after, limit],
   fsListTree: ['/home/user/proj', 64],
@@ -130,7 +131,7 @@ const INPUTS = {
   fsSeek: () => [fileHandle.id, seekTo, 'set'],
   fsSetStatus: () => [fileHandle.id, { append: true }],
   fsReaddirHandle: async () => [(await openHandle(handleDir, { read: true, directory: true })).id],
-  fsReadDirectories: [{ channel: crypto.randomUUID(), sequence: 1, epoch: null, cursor: 0, open: [handleDir], retire: [], claim: [], lease: false }],
+  fsReadDirectories: [{ channel: crypto.randomUUID(), sequence: 1, position: null, open: [handleDir], retire: [], claim: [], lease: false }],
   fsFtruncate: () => [fileHandle.id, size],
   fsFchmod: () => [fileHandle.id, mode],
   fsFchown: () => [fileHandle.id, uid, gid],
@@ -175,18 +176,18 @@ const INPUTS = {
   cpSpawn: [req],
   cpStdinWrite: [childPid, data],
   cpStdinEnd: [childPid],
-  cpReadStdin: [childPid, waitMs, { epoch, cursor }, 65536],
+  cpReadStdin: [childPid, waitMs, { position }, 65536],
   stdinFileRead: [path, offset, length],
   stdinPrepared: [],
   getCachedTarball: ['sha256-AAAA'],
   putCachedTarball: ['sha256-AAAA', data],
   getPackument: ['pkg', { retries: 0 }],
   cacheResult: ['ticket', { value: null }],
-  cpReadOutput: [childPid, fd, sinceSeq, waitMs, { epoch, cursor }],
+  cpReadOutput: [childPid, fd, sinceSeq, waitMs, { position }],
   cpDrainOutput: [childPid],
   cpCloseOutput: [childPid, fd],
   cpKill: [childPid, signal],
-  cpWait: [childPid, waitMs, { epoch, cursor }, false],
+  cpWait: [childPid, waitMs, { position }, false],
   cpBlocked: [{ blocked: true, frontier: 3, seq: 4 }],
   cpNextSignal: [waitMs],
   innerDoCall: [{ bindingName: 'NimbusDO', id: 'inner-id', path: ['hello'], args: [1, 'two'] }],
@@ -412,7 +413,7 @@ const nativeAssert = {
     assert.equal(r.opened[0].key, 'home/user/hdir', 'at its canonical placement');
     const listed = await ops.dispatch({ op: 'fsReaddirHandle', args: [r.opened[0].handle.id], pid });
     assert.deepEqual(listed.map((e) => e.name), ['child'], 'through a real descriptor of the process');
-    assert.equal(typeof r.acquire.epoch, 'string', 'with the namespace answer it was asked at');
+    assert.equal(typeof r.acquire.position.table, 'string', 'with the namespace answer it was asked at');
   },
   fsFtruncate: () => assert.equal(kernelVfs.stat('home/user/owned/handle').size, size, 'fsFtruncate sized the open file'),
   fsFchmod: () => assert.equal(kernelVfs.stat('home/user/owned/handle').mode & 0o777, mode, 'fsFchmod applied'),
