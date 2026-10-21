@@ -89,7 +89,11 @@ published independently in the `@nimbus-sh` npm scope.
   - Stats' `blocks` count 512-byte blocks allocated 4096 bytes at a time;
   - a callback form called without a callback throws ERR_INVALID_ARG_TYPE at once;
   - `fs.exists` of a path it cannot take answers `false`.
-  - Its cost under V8, measured against the previous release's: about 0.1 µs per fs call (sync 12.29 → 13.03 ms and promises 2.00 → 2.28 ms per 800 rounds over an in-memory filesystem). End to end, a core-only workspace running a program that loads ajv's and semver's trees and makes about 440 fs calls takes about 690 ms; in three runs the difference's interval was [-1.3, 14.5], [-4.2, 14.0] and [-9.6, 14.6] ms, within the A/A spread.
+  - Its cost under V8, measured against main's over an in-memory filesystem, per 800 rounds of a require-heavy probe:
+    - absolute paths: 10.47 → 11.62 ms, about 0.3 µs per fs call (an operation generator and its steps);
+    - relative paths: 11.25 → 13.60 ms. A failure there is caught and its error named as given, which costs another throw, about 1 µs per failing call;
+    - `fs.promises`: 1.75 → 2.10 ms.
+  - End to end, a core-only workspace running a program that loads ajv's and semver's trees and makes about 440 fs calls takes about 690 ms. The difference was within the A/A spread in every confirmation run: [-1.4, 20.8], [-7.7, 17.7] ms.
 
 ## 2026-10-21 (patch): worker 0.24.1 (every other package unchanged from the 2026-10-21 release)
 
