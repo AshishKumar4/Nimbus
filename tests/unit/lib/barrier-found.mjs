@@ -332,6 +332,11 @@ const GAPS = {
       + 'meanwhile readdirSync can list a file before its write is made',
     shows: 'sync readdir d/e answered ["g"]',
   },
+  'a fed mount beneath one with no feed answers as the session holds it [node]': {
+    lacks: 'S lists a mount with no change feed only where its launch named it, and refuses the rest (closed by the cutover: such a mount is the session\'s to answer, awaited); '
+      + 'meanwhile readdirSync of a directory on such a mount can be refused EAGAIN',
+    shows: 'sync readdir . answered EAGAIN',
+  },
   'a name on a mount with no feed answers as the session holds it now [node]': {
     lacks: 'S answers a name on a mount with no change feed as its launch\'s listing walked it (closed by the cutover: such a mount is the session\'s to answer); '
       + 'meanwhile readFileSync of a file on such a mount can serve bytes another process has since replaced',

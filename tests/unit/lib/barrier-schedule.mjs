@@ -662,11 +662,13 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
   /** Whether a call that cannot wait may be refused (EAGAIN): a view listed on demand, a namespace a poison stopped or a listing is moving, or bytes it does not hold of a file it may read. */
   /**
    * Whether a refusal of `rel`'s bytes is a miss the store owes: a file the
-   * process held, still there, every barrier since its last change landed
-   * (each refetches what it drops) and none in flight.
+   * process held, still there, the session's own (not a mount's), every
+   * barrier since its last change landed (each refetches what it drops) and
+   * none in flight.
    */
   const owedBytes = (rel) => refetches && resident.has(rel) && inputsInFlight === 0 && !poisoned && transport.inFlight('listing') === 0
-    && !underUnfed(model.world, rel)
+    // A mount's bytes are no store's debt: one with no feed is the session's, and a fed one's are while a read lease is trusted.
+    && mountOf(model.world, rel) === null
     && model.world.get(rel)?.type === 'file' && model.touched(rel) <= landed;
   const refusable = (op, rel, from, to) => (op === 'readFile' && owedBytes(rel) ? false
     : lazy || poisoned || transport.inFlight('listing') > 0 || (op === 'readFile' && model.readable(rel, from, to)));
