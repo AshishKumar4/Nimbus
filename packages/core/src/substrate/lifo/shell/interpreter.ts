@@ -1422,7 +1422,7 @@ export class Interpreter {
     const identity = io.commandIdentity;
     if (identity === undefined) return LOCAL_PLACEMENT;
     if (!replacesShell && ((!viaCommand && this.functions.has(name)) || this.config.builtins.has(name) || BASH_BUILTINS.has(name))) return LOCAL_PLACEMENT;
-    return this.config.filesystem.placeProgram(identity.cred, this.config.getCwd());
+    return this.config.filesystem.placeProgram?.(identity.cred, this.config.getCwd()) ?? LOCAL_PLACEMENT;
   }
 
   /**
@@ -1484,7 +1484,7 @@ export class Interpreter {
     const [name, ...args] = argv;
     if (name === undefined) return exited(0);
     // Placed by its cwd before anything here (Kinu ask 66): one on its mount's machine fails there as execvp would.
-    const placing = this.config.filesystem.placeProgram(spec.identity.cred, spec.cwd);
+    const placing = this.config.filesystem.placeProgram?.(spec.identity.cred, spec.cwd) ?? LOCAL_PLACEMENT;
     const placement = placing instanceof Promise ? await placing : placing;
     if (placement.kind === 'absent') throw syscallError('EIO', 'execvp', name, { detail: placement.reason });
     if (placement.kind === 'delegated') return await this.runDelegatedChild(placement, name, args, spec);
@@ -1504,7 +1504,7 @@ export class Interpreter {
 
   /** CommandContext.locateProgram: the delegate's answer for a cwd its mount places, undefined for one placed here. */
   private async locateProgram(name: string, cwd: string, env: Record<string, string>, cred: VfsCred): Promise<string | null | undefined> {
-    const placement = await this.config.filesystem.placeProgram(cred, cwd);
+    const placement = await (this.config.filesystem.placeProgram?.(cred, cwd) ?? LOCAL_PLACEMENT);
     if (placement.kind === 'local') return undefined;
     if (placement.kind === 'absent') return null;
     return await placement.delegate.locate(name, placement.cwd, env);

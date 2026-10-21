@@ -302,9 +302,10 @@ export interface NimbusFilesystemAuthority {
   /**
    * Where a program a process of `cred` starts with its cwd at `cwd` runs
    * (Kinu ask 66, CompositeVFS.placeProgram): answered at once, here, in a
-   * namespace no mount delegates, so a start there waits on nothing.
+   * namespace no mount delegates, so a start there waits on nothing. An
+   * authority without it places every program here.
    */
-  placeProgram(cred: Readonly<VfsCred>, cwd: string): ProgramPlacement | Promise<ProgramPlacement>;
+  placeProgram?(cred: Readonly<VfsCred>, cwd: string): ProgramPlacement | Promise<ProgramPlacement>;
   /**
    * The mounts `cred` sees, in mount order. Synchronous so `/proc/mounts`
    * can read it; only usage is async. A wrapper exposing its own mounts
