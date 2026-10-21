@@ -293,11 +293,11 @@ export class NimbusSession extends SdkNimbusSession {
   async _rpcD1Host(peer: string | null, stats: boolean): Promise<{ peer: string | null; peerSubmits: Record<string, number> | null }> {
     this.requireProbeDiagnostics();
     if (peer === null) {
-      d1OneShotPeer.delete(this.ctx.id.toString());
+      d1OneShotPeer().delete(this.ctx.id.toString());
       return { peer, peerSubmits: null };
     }
     const name = `d1-oneshot-peer:${this.ctx.id.toString()}:${peer}`;
-    d1OneShotPeer.set(this.ctx.id.toString(), name);
+    d1OneShotPeer().set(this.ctx.id.toString(), name);
     if (!stats) return { peer, peerSubmits: null };
     const sessions = (this.env as unknown as { NIMBUS_SESSION: DurableObjectNamespace<NimbusSession> }).NIMBUS_SESSION;
     const stub = sessions.get(sessions.idFromName(name));

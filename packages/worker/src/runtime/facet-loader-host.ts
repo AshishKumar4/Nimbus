@@ -35,7 +35,12 @@ export { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 // Experiment (D1, not for landing): a session's one-shots of these runtimes run
 // on another session Durable Object (by name, set per session from the probe
 // app), its own IsolatePool over the same spec, its syscalls routed back here.
-export const d1OneShotPeer = new Map<string, string>();
+// On globalThis: the probe app's copy of this module is not the SDK's.
+export function d1OneShotPeer(): Map<string, string> {
+  const shared = globalThis as unknown as { [D1_PEERS]?: Map<string, string> };
+  return shared[D1_PEERS] ??= new Map();
+}
+const D1_PEERS = Symbol.for('nimbus.d1.oneShotPeer');
 const D1_MOVED = /^(tsrs|clang-runner|cpython-runner|ruby-runner|git-runner)/;
 export interface D1PeerImage { path: string; identity: string; size: number; peak: number; stream(): Promise<ReadableStream<Uint8Array>> }
 export interface D1PeerShape {
@@ -97,7 +102,7 @@ export function loaderFacetHost(env: unknown, ctx: DurableObjectState, network: 
       return {
         submit<A, R>(fn: FacetTaskSource<A, R>, args: A, options?: FacetSubmitOptions): Promise<Awaited<R>> {
           const watched = holdThreadWatch(ctx, `one-shot ${spec.tag}`);
-          const peerName = D1_MOVED.test(spec.tag) ? d1OneShotPeer.get(ctx.id.toString()) : undefined;
+          const peerName = D1_MOVED.test(spec.tag) ? d1OneShotPeer().get(ctx.id.toString()) : undefined;
           if (peerName === undefined) return pool.submit(fn, args, options).finally(watched);
           peerUsed = peerName;
           return (d1Peer(env, peerName)._rpcD1PeerSubmit(shape, fn as FacetTaskSource<unknown, unknown>, args,

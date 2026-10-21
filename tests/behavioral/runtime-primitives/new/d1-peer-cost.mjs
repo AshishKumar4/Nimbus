@@ -19,8 +19,14 @@ const SERVER = `require('http').createServer((req, res) => res.end('ok ' + req.u
 const sid = await mintSession();
 const t = new Terminal(sid);
 const t2 = new Terminal(sid);
+// A fresh throwaway refused the first terminal once (verdict 20261021T102902-2d0334103516).
+async function connect(terminal) {
+  for (let attempt = 1; ; attempt++) {
+    try { return await terminal.connect(); } catch (error) { if (attempt === 3) throw error; await sleep(2000); }
+  }
+}
 try {
-  await t.connect();
+  await connect(t);
   await t.waitForPrompt(60_000);
   for (const line of ['nimbus install python', heredoc('srv.js', SERVER), 'node --watch srv.js']) {
     const r = await t.run(line, 600_000);
@@ -31,7 +37,7 @@ try {
     ready = await fetchPort(sid, PORT, 'ready').catch(() => null);
     if (ready?.status !== 200) await sleep(200);
   }
-  await t2.connect();
+  await connect(t2);
   await t2.waitForPrompt(60_000);
   const run = async (line) => {
     const w = await watched(sid, () => t.run(line, 600_000));
