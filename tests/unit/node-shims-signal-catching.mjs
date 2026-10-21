@@ -13,7 +13,7 @@ import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.
 import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
 
 const make = (supervisor) => new Function('__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname', '__nimbusProcessId',
-  'const __pendingIO = [];' + SHIMS_STORE_PRELUDE + generateShimsCode() + '\nreturn { proc: __processMod, writeLive: __nimbusWriteLiveOutput };')({}, {}, {}, supervisor, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, '/home/user', [], {}, '/home/user/main.js', '/home/user', 4321);
+  'const __pendingIO = [];' + SHIMS_STORE_PRELUDE + generateShimsCode() + '\nreturn { proc: __processMod, outputGate: __nimbusOutputGate };')({}, {}, {}, supervisor, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, '/home/user', [], {}, '/home/user/main.js', '/home/user', 4321);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const failures = [];
@@ -82,10 +82,12 @@ await check('said again until taken; output waits for it', async () => {
     },
     cpNextSignal: (waitMs) => new Promise((resolve) => setTimeout(() => resolve(null), Math.min(waitMs, 50))),
   };
-  const { proc, writeLive } = make(supervisor);
+  const { proc, outputGate } = make(supervisor);
   const handler = () => {};
   proc.on('SIGTERM', handler);
-  await new Promise((resolve) => writeLive('stdout', 'ready\n', undefined, resolve, async () => { events.push('ready out'); }));
+  // An output's gate, taken as it is written (the facet's output queue waits for it before it sends).
+  await outputGate();
+  events.push('ready out');
   const triedBeforeReady = tries;
   proc.off('SIGTERM', handler);
   assert.deepEqual([triedBeforeReady, events], [3, ['caught SIGTERM', 'ready out']]);
