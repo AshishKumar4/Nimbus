@@ -111,8 +111,40 @@ try {
     assert.equal(await box.files.exists(`${cwd}/w.txt`), false, 'a refused writeFileSync wrote nothing');
     assert.equal((await failure(async () => fs.existsSync('a.txt'))).code, 'EAGAIN', 'existsSync throws: false would say absent, unasked');
     assert.equal((await failure(async () => fs.statSync('a.txt'))).syscall, 'stat');
-    const options = await failure(async () => fs.readFileSync({}));
-    assert.notEqual(options.code, 'EAGAIN', 'its arguments are checked first, as Node checks them');
+    for (const path of [{}, null]) {
+      assert.equal((await failure(async () => fs.readFileSync(path))).code, 'ERR_INVALID_ARG_TYPE', 'its arguments are checked first, as Node checks them');
+    }
+    assert.equal((await failure(() => fsPromises.readFile({}))).code, 'ERR_INVALID_ARG_TYPE');
+  });
+
+  await check('Node\'s answers for what the session names otherwise', async () => {
+    await fsPromises.rm('nothing-here', { force: true });
+    const truncated = await failure(() => fsPromises.truncate('nothing-here', 0));
+    assert.deepEqual([truncated.code, truncated.syscall, truncated.path], ['ENOENT', 'open', 'nothing-here'], 'a path\'s truncate fails as its opening would');
+    assert.equal((await failure(() => fsPromises.truncate('nothing-here', 1.5))).code, 'ENOENT', 'opened before its length is checked');
+    assert.deepEqual(await (async () => { const e = await failure(() => fsPromises.truncate('d', 0)); return [e.code, e.syscall]; })(), ['EISDIR', 'open']);
+    const linked = await failure(() => fsPromises.symlink('target', 'a.txt'));
+    assert.deepEqual([linked.code, linked.path, linked.dest], ['EEXIST', 'target', 'a.txt'], 'the target, then the link, as given');
+  });
+
+  await check('a face\'s errors are its own', async () => {
+    const stat = { dev: 1, ino: 2, nlink: 1, type: 'file', size: 1, ctime: 1, atime: 1, mtime: 1, mode: 0o644, uid: 0, gid: 0, revision: 1 };
+    const shared = Object.freeze(Object.assign(new Error("ENOENT: no such file or directory, stat '/c/x'"), { code: 'ENOENT', errno: -2, syscall: 'stat', path: '/c/x' }));
+    const vanished = () => Object.assign(new Error('gone'), { code: 'ENOENT' });
+    const files = {
+      stat: async () => { throw shared; },
+      lstat: async () => stat,
+      readFile: async () => new Uint8Array(0),
+      writeFile: async () => {},
+      readdir: async () => [],
+      unlink: async () => { throw vanished(); },
+    };
+    const own = bundle.createNodeCompat({ files }, { cwd: '/c' }).fsPromises;
+    const relative = await failure(() => own.stat('x'));
+    assert.deepEqual([relative.code, relative.errno, relative.path], ['ENOENT', -2, 'x'], 'named as given, though the face\'s error is frozen');
+    assert.equal((await failure(() => own.stat('/c/x'))).path, '/c/x', 'and the face\'s error is left as it was for the next call');
+    assert.equal(shared.path, '/c/x');
+    await own.rm('x', { force: true });
   });
 
   await check('no descriptors, no streams', async () => {

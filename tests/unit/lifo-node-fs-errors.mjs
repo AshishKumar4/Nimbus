@@ -56,6 +56,9 @@ const SYNC = {
   'unlinkSync of a missing file, named relatively': 'fs.unlinkSync(rel("missing"))',
   'renameSync of a missing file, named relatively': 'fs.renameSync(rel("missing"), rel("other"))',
   'mkdirSync of an existing directory, named relatively': 'fs.mkdirSync(rel("dir"))',
+  'symlinkSync onto an existing file, named relatively': 'fs.symlinkSync("target", rel("file"))',
+  'truncateSync of a missing file with a bad length, named relatively': 'fs.truncateSync(rel("missing"), 1.5)',
+  'readFileSync of an object': 'fs.readFileSync({})',
 };
 const CALLBACK = {
   'readFile of a missing file': 'fs.readFile(at("missing"), cb)',
