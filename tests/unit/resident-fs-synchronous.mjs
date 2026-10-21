@@ -167,13 +167,13 @@ await runScenarios(import.meta.path, {
     e = await boot();
     // What the session's own filesystem says of / (its SQLite root's stat).
     const facts = (raw) => { const { type, mode, uid, gid, ino } = engineStat(raw); return { type, mode, uid, gid, ino, dev: Number(raw.dev) }; };
-    const sessionRoot = () => facts(e.authority.files.vfs.stat('/'));
-    assert.deepEqual(facts(await answersNow(e, 'stat of /', () => e.sync.stat('/'))), sessionRoot());
+    const sessionRoot = async () => facts(await e.authority.files.vfs.stat('/'));
+    assert.deepEqual(facts(await answersNow(e, 'stat of /', () => e.sync.stat('/'))), await sessionRoot());
     assert.equal(await answersNow(e, 'realpath of /', () => e.sync.realpath('/')), '/');
     // A name made at the top: the root's own row moves with it, once the input's barrier lands.
     await e.authority.peerAs(CRED_KERNEL).mkdir('newtop', { mode: 0o755 });
     await e.input();
-    assert.deepEqual(facts(e.sync.stat('/')), sessionRoot());
+    assert.deepEqual(facts(e.sync.stat('/')), await sessionRoot());
   },
 
   async 'an awaited change only the session decides is shown once it returns'(e = undefined) {
