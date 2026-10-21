@@ -887,7 +887,11 @@ export class SessionProcessSupervisor implements ProcessOutput {
       // A signal that came with it is the next wait's.
       wait.cancel();
       const late = await wait.signal;
-      if (late !== null) box.queued.unshift(late);
+      if (late !== null) {
+        // Back to the queue, the queue's alone: not also the one it was given.
+        if (box.handed === late) box.handed = null;
+        box.queued.unshift(late);
+      }
       return first.packet;
     }
     withdraw.abort();
@@ -936,9 +940,18 @@ export class SessionProcessSupervisor implements ProcessOutput {
       if (catches.length > 0) this.takeSignals(pid, catches);
       return;
     }
+    // A parked box stays parked: a run says what it catches as it starts, before a replay's boundary.
     box.catches = new Set(catches.filter((signal) => signal !== 'SIGKILL'));
-    // Said by a run past its entry: a parked box is its own again.
-    box.parked = false;
+  }
+
+  /**
+   * `pid`'s program's run, past a replay's boundary, takes back its parked
+   * box (parkSignals): what waits there is its to take, by its waits or with
+   * its input.
+   */
+  takeSignalsBack(pid: number): void {
+    const box = this.signalBoxes.get(pid);
+    if (box !== undefined) box.parked = false;
   }
 
   /**
@@ -980,7 +993,6 @@ export class SessionProcessSupervisor implements ProcessOutput {
     if (box === undefined) return Promise.resolve(null);
     // It asks again: what it was given it has.
     box.handed = null;
-    box.parked = false;
     return this.waitSignal(box, waitMs).signal;
   }
 

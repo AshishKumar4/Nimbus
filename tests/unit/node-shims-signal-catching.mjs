@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // A Node process catches the signals it listens for (Kinu ask 67.4): its
 // process's listeners say so to the session (cpCatchSignals) as they come
-// and go, and it takes each signal the session queues for it (cpNextSignal),
+// and go, and it takes each signal the session queues for it (cpTakeSignal),
 // its handlers deciding what it does; a SIGTERM it has stopped listening for
 // takes the default action; with none left it stops asking, and holds nothing open. A session that holds no catches for it, answering
 // none at once, is asked again a second later, not in a tight loop. What it
@@ -31,7 +31,7 @@ await check('listeners say what it catches; a queued signal reaches them', async
   let waiting = null;
   const supervisor = {
     cpCatchSignals: async (catches) => { said.push([...catches]); },
-    cpNextSignal: (waitMs) => new Promise((resolve) => {
+    cpTakeSignal: (waitMs) => new Promise((resolve) => {
       if (queued.length > 0) { resolve(queued.shift()); return; }
       waiting = resolve;
       setTimeout(() => { if (waiting === resolve) { waiting = null; resolve(null); } }, Math.min(waitMs, 50));
@@ -60,7 +60,7 @@ await check('none answered at once is not asked again at once', async () => {
   let asked = 0;
   const supervisor = {
     cpCatchSignals: async () => {},
-    cpNextSignal: async () => { asked++; return null; },
+    cpTakeSignal: async () => { asked++; return null; },
   };
   const { proc } = make(supervisor);
   const handler = () => {};
@@ -80,7 +80,7 @@ await check('said again until taken; output waits for it', async () => {
       if (tries < 3) throw new Error('the session was busy');
       events.push(`caught ${catches.join(',')}`);
     },
-    cpNextSignal: (waitMs) => new Promise((resolve) => setTimeout(() => resolve(null), Math.min(waitMs, 50))),
+    cpTakeSignal: (waitMs) => new Promise((resolve) => setTimeout(() => resolve(null), Math.min(waitMs, 50))),
   };
   const { proc, outputGate } = make(supervisor);
   const handler = () => {};

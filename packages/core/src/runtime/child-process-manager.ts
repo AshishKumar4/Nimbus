@@ -554,6 +554,12 @@ export class ChildProcessManager {
     return { ...packet, data: typeof packet.data === 'string' ? textBytes(packet.data) : packet.data };
   }
 
+  /** The next signal sent to `pid`'s Node program, its box taken back from a stop (SessionProcessSupervisor.takeSignalsBack). */
+  takeSignal(pid: number, waitMs: number): Promise<string | null> {
+    this.deps.processes.takeSignalsBack(pid);
+    return this.deps.processes.nextSignal(pid, waitMs);
+  }
+
   /** The signals `pid`'s program catches now (SessionProcessSupervisor.catchSignals). */
   catchSignals(pid: number, catches: readonly string[]): void {
     const names: ProcessSignalName[] = [];
@@ -945,5 +951,6 @@ export function createChildProcessSupervisor(manager: ChildProcessManager, pid: 
     cpDrainOutput: (child: number) => manager.drainOutput(child),
     cpNextSignal: (waitMs: number) => manager.nextSignal(pid, waitMs),
     cpCatchSignals: (catches: readonly string[]) => manager.catchSignals(pid, catches),
+    cpTakeSignal: (waitMs: number) => manager.takeSignal(pid, waitMs),
   };
 }

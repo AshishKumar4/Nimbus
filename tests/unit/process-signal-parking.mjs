@@ -7,8 +7,11 @@
 //   - a signal sent while it is parked is queued, not given to a wait nor to
 //     its input (the next run's preparation reads input before its handlers
 //     are there);
-//   - the next run's word of what it catches, or its first wait, takes the box
-//     back, and the signal is its.
+//   - the next run's word of what it catches does not take the box back (it
+//     says so as it starts, before a replay's boundary); its first take past
+//     the boundary does, and the signal is its;
+//   - a signal its input wait gave back when data won is the queue's alone: a
+//     park does not queue it twice.
 import assert from 'node:assert/strict';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 
@@ -25,6 +28,7 @@ const check = async (name, body) => {
 function running() {
   const processes = new SessionProcessSupervisor();
   const { pid } = processes.spawn('node', ['node', 'main.js'], '/home/user', {});
+  processes.openInput(pid);
   processes.catchSignals(pid, ['SIGTERM', 'SIGINT']);
   return { processes, pid };
 }
@@ -42,6 +46,7 @@ await check('a signal the stopped run was given goes back', async () => {
   processes.signal(pid, 'SIGTERM');
   assert.equal(await waiting, 'SIGTERM', 'given to the run that then stopped');
   processes.parkSignals(pid);
+  processes.takeSignalsBack(pid);
   assert.equal(await within(1000, processes.nextSignal(pid, 5000)), 'SIGTERM', 'the next run takes it');
 });
 
@@ -62,19 +67,39 @@ await check('parked, a signal waits in the box: not in the input', async () => {
   assert.deepEqual(processes.signal(pid, 'SIGINT'), { ok: true });
   processes.writeInput(pid, 'x');
   const packet = await processes.readInput(pid, 100);
-  assert.equal(packet.signal, undefined, `the next run's preparation reads no signal: ${JSON.stringify(packet)}`);
+  assert.deepEqual([packet.signal, new TextDecoder().decode(typeof packet.data === 'string' ? new TextEncoder().encode(packet.data) : packet.data)], [undefined, 'x'],
+    `the next run's preparation reads its input, no signal: ${JSON.stringify(packet)}`);
   processes.catchSignals(pid, ['SIGTERM', 'SIGINT']);
-  assert.equal(await within(1000, processes.nextSignal(pid, 50)), 'SIGINT', 'the next run, once it says what it catches, takes it');
+  processes.writeInput(pid, 'y');
+  const again = await within(1000, processes.readInput(pid, 100));
+  assert.equal(again.signal, undefined, `its word of what it catches leaves it parked: ${JSON.stringify(again)}`);
+  processes.takeSignalsBack(pid);
+  assert.equal(await within(1000, processes.nextSignal(pid, 50)), 'SIGINT', 'taken back past its boundary, it is the run\'s');
+});
+
+await check('a signal given back when data won is queued once', async () => {
+  const { processes, pid } = running();
+  const reading = processes.readInput(pid, 1000);
+  processes.writeInput(pid, 'data');
+  processes.signal(pid, 'SIGTERM');
+  const packet = await within(1000, reading);
+  assert.equal(packet.signal, undefined, `data won: ${JSON.stringify(packet)}`);
+  processes.parkSignals(pid);
+  processes.takeSignalsBack(pid);
+  assert.equal(await within(1000, processes.nextSignal(pid, 50)), 'SIGTERM');
+  assert.equal(await within(1000, processes.nextSignal(pid, 50)), null, 'once');
 });
 
 await check('parked with its stopped run\'s word of what it catches, it stays parked', async () => {
   const processes = new SessionProcessSupervisor();
   const { pid } = processes.spawn('node', ['node', 'main.js'], '/home/user', {});
+  processes.openInput(pid);
   processes.parkSignals(pid, ['SIGTERM']);
   assert.deepEqual(processes.signal(pid, 'SIGTERM'), { ok: true }, 'caught: queued, not its end');
   processes.writeInput(pid, 'x');
   const packet = await within(1000, processes.readInput(pid, 100));
   assert.equal(packet.signal, undefined, `still parked: ${JSON.stringify(packet)}`);
+  processes.takeSignalsBack(pid);
   assert.equal(await within(1000, processes.nextSignal(pid, 50)), 'SIGTERM');
 });
 

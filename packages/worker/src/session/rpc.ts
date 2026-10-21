@@ -1636,6 +1636,18 @@ export async function _rpcCpNextSignal(self: RpcHost, pid: number | undefined, w
     return self.processes.nextSignal(pid, Number(waitMs) || 0);
 }
 
+/**
+ * The next signal sent to `pid`'s Node program, which takes its own: its
+ * box taken back from a stop (SessionProcessSupervisor.takeSignalsBack), then
+ * cpNextSignal's wait. Its own op: a Node run asks only past a replay's
+ * boundary, so none of its waits is a replayed observation.
+ */
+export async function _rpcCpTakeSignal(self: ProcessRpcHost, pid: number | undefined, waitMs: unknown): Promise<string | null> {
+    if (pid === undefined || isPriorGenerationPid(self, pid)) return null;
+    self.processes.takeSignalsBack(pid);
+    return self.processes.nextSignal(pid, Number(waitMs) || 0);
+}
+
 /** The signals process `pid`'s program catches now (SessionProcessSupervisor.catchSignals); names not a signal's are not. */
 export async function _rpcCpCatchSignals(self: ProcessRpcHost, pid: number | undefined, catches: unknown): Promise<void> {
     if (pid === undefined || isPriorGenerationPid(self, pid) || !Array.isArray(catches)) return;
