@@ -3,8 +3,12 @@
  * uses it (kv-tables.ts ResidentKv): `put` and `delete` (unconfirmed, applied
  * at once, as a turn's own reads see them), the synchronous `kv.get` and
  * `kv.list`. Values cross as the platform's do, by structured clone; keys are
- * ordered by their UTF-8 bytes. Measured on the platform: an unconfirmed put
- * is read back by kv.get in its own turn (file-engine-d4-measurements.md).
+ * ordered by their UTF-8 bytes. What it models was measured on the platform
+ * (file-engine-d4-measurements.md, "what sync reads see"): kv.get and
+ * kv.list (prefix, start/end, reverse with limit) see unconfirmed puts,
+ * overwrites and deletes made earlier in the same turn and after a yield, and
+ * a key deleted and put again in one turn reads and lists as the last put.
+ * A key holding NUL is refused: the platform does not keep one intact.
  */
 const utf8Order = (a, b) => {
   const x = new TextEncoder().encode(a), y = new TextEncoder().encode(b);
@@ -21,6 +25,7 @@ export function fakeDoKv() {
     writes: 0,
     put(key, value, options) {
       if (options?.allowUnconfirmed !== true) throw new Error('fake: the store writes unconfirmed');
+      if (key.includes('\u0000')) throw new Error('fake: a key holding NUL is not kept intact by the platform');
       if (!rows.has(key)) sorted = null;
       rows.set(key, structuredClone(value));
       storage.writes++;

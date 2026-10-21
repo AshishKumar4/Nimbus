@@ -36,7 +36,13 @@ export interface ResidentKv {
 const UNCONFIRMED = { allowUnconfirmed: true };
 /** The most keys one delete takes (the storage API's bound). */
 const DELETE_BATCH = 128;
-const SEP = '\u0000';
+/**
+ * Between a key's parts: below every character a path or name holds, so a
+ * composite key sorts as its parts do (SQL's (parent, name)), and never NUL,
+ * which the platform's keys do not carry intact (a NUL-separated namespace
+ * collapsed a directory's names into one key; pi-official-installer).
+ */
+const SEP = '\u0001';
 /** Decimal, padded past Number.MAX_SAFE_INTEGER's 16 digits: key order is numeric order. */
 const pad = (n: number): string => stringOf(NumberOf(n)).padStart(17, '0');
 
