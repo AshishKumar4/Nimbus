@@ -131,14 +131,17 @@ try {
         const r = await runOn(host, heavy.kind, heavy.line, heavy.tags, observe);
         out({ observer, round: i, host, ms: r.ms, worst: r.worst, ranOn: r.ranOn });
         a.check(`${observer} round ${i}: ran where placed (${host})`, r.ranOn.length > 0 && r.ranOn.every((h) => h === host), JSON.stringify(r.ranOn));
+        if (observer === 'save') {
+          // What this round's saves wrote, read back outside its timing: the last of them.
+          const saved = printed((await t.run('cat /home/user/saved.txt', 30_000)).output);
+          a.check(`save round ${i} (${host}): the file holds its last save`, lastSaved !== null && saved.includes(lastSaved), JSON.stringify({ lastSaved, saved }));
+        }
         waits[host].push(r.worst);
       }
     }
     a.check(`${observer}: waits less while the run is on the peer (median of worst waits ${median(waits.peer)} ms, against ${median(waits.session)} ms in the session)`,
       median(waits.peer) < median(waits.session), JSON.stringify(waits));
   }
-  const saved = printed((await t.run('cat /home/user/saved.txt', 30_000)).output);
-  a.check('the saves landed: the file holds the last one', lastSaved !== null && saved.includes(lastSaved), JSON.stringify({ lastSaved, saved }));
 
   // Three at once.
   const three = `${heavy.line} & ${heavy.line} & ${heavy.line} & wait`;

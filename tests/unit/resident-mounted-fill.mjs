@@ -22,6 +22,7 @@ import assert from 'node:assert/strict';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { createResidentStore } from '../../packages/worker/src/vfs/resident/index.ts';
 import { createAuthority, facetSql, facetSupervisor } from './lib/resident-body.mjs';
+import { facetStorage } from './lib/fake-do-kv.mjs';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -60,7 +61,7 @@ function launched({ async = false, beforeRead } = {}) {
   const binding = { pid: handle.log.pid, cred: authority.host.processes.cred(handle.log.pid) };
   authority.files.nameLaunch(binding, () => ['/m/kept', '/home/user']);
   const store = createResidentStore();
-  store.bind({ storage: { sql: facetSql() } });
+  store.bind({ storage: facetStorage(facetSql()) });
   store.sync.setPlan(['m/kept/data.txt', 'home/user/own.txt']);
   store.sync.adoptModuleBundle({}, authority.cursor());
   return { authority, backing, handle, binding, store, reads };

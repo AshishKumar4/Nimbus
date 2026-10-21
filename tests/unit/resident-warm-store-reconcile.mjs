@@ -29,6 +29,7 @@ import {
   runScenarios,
   residentDataPlan,
 } from './lib/resident-body.mjs';
+import { facetStorage } from './lib/fake-do-kv.mjs';
 
 const PROGRAM = `
 const fs = require("fs");
@@ -59,7 +60,7 @@ async function keptStore() {
   // What a previous launch leaves: the cold adopt, then the boot fill.
   const sql = facetSql();
   const previous = createResidentStore();
-  previous.bind({ storage: { sql } });
+  previous.bind({ storage: facetStorage(sql) });
   previous.sync.setPlan(await residentDataPlan(authority, '/home/user/app'));
   previous.sync.adoptModuleBundle({}, authority.cursor());
   const filled = await previous.sync.synchronize(facetSupervisor(authority).supervisor);

@@ -17,6 +17,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createResidentStore } from '../../packages/worker/src/vfs/resident/index.ts';
 import { createAuthority, facetSql, facetSupervisor } from './lib/resident-body.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+import { facetStorage } from './lib/fake-do-kv.mjs';
 
 const fixture = JSON.parse(readFileSync(new URL('../../lean/fixtures/composite-feed.json', import.meta.url), 'utf8'));
 const enc = new TextEncoder();
@@ -131,7 +132,7 @@ async function cacheTrace(testCase) {
     backends.set(mount.point, mounted);
   }
   const store = createResidentStore();
-  store.bind({ storage: { sql: facetSql() } });
+  store.bind({ storage: facetStorage(facetSql()) });
   const path = testCase.cache.path.slice(1);
   const held = () => {
     const bytes = store.cells.get(path);

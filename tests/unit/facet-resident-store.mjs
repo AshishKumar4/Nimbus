@@ -14,43 +14,16 @@
  */
 
 import assert from 'node:assert/strict';
-import { Database } from 'bun:sqlite';
 import { createResidentStore } from '../../packages/worker/src/vfs/resident/index.ts';
+import { kvTables } from '../../packages/worker/src/vfs/resident/kv-tables.ts';
+import { facetSql } from './lib/resident-body.mjs';
+import { facetStorage } from './lib/fake-do-kv.mjs';
 import { RESIDENT_CHUNK_BYTES } from '../../packages/worker/src/vfs/facet-resident-limits.ts';
 
-/** workerd's `ctx.storage.sql`: exec(query, ...params) → synchronous cursor. */
-function sqlShim(meter = undefined) {
-  const db = new Database(':memory:');
-  return {
-    exec(query, ...params) {
-      const normalized = params.map((p) => (p instanceof Uint8Array ? p : p));
-      if (/^\s*(CREATE|INSERT|UPDATE|DELETE|REPLACE)/i.test(query)) {
-        db.query(query).run(...normalized);
-        return [];
-      }
-      const rows = db.query(query).all(...normalized);
-      if (meter) {
-        meter.selects++;
-        // A query against `chunk` is a CONTENT read. Counting them is the whole
-        // point: a question about NAMES that touches this table is reading the
-        // filesystem to answer something the index already knows.
-        if (/FROM chunk/i.test(query)) {
-          meter.contentReads++;
-          for (const row of rows) {
-            meter.contentBytes += (row.txt ? row.txt.length : 0) + (row.bin ? row.bin.byteLength : 0);
-          }
-        }
-      }
-      return rows;
-    },
-    get databaseSize() { return 0; },
-  };
-}
-
-/** A fresh typed store over its own SQLite. */
+/** A fresh typed store over its own facet storage; `meter` counts its reads and the file content they hand back. */
 function loadStore(meter = undefined) {
   const store = createResidentStore();
-  store.bind({ storage: { sql: sqlShim(meter) } });
+  store.bind({ storage: facetStorage(facetSql(), { meter }) });
   return store;
 }
 
@@ -235,23 +208,23 @@ const CURSOR = { poison: false, paths: [], epoch: 'e1', rev: 7 };
 // question without touching content at all.
 
 {
-  const meter = { selects: 0, contentReads: 0, contentBytes: 0 };
+  const meter = { reads: 0, contentBytes: 0 };
   const s = loadStore(meter);
   s.cells.admit(CURSOR);
   const body = 'x'.repeat(4096);
   for (let i = 0; i < 400; i++) s.cells.fill(`usr/lib/node_modules/p${i % 20}/f${i}.js`, body, 7);
   for (let i = 0; i < 400; i++) s.cells.fill(`var/other/f${i}.js`, body, 7);
 
-  meter.contentReads = 0; meter.contentBytes = 0; meter.selects = 0;
+  meter.contentBytes = 0; meter.reads = 0;
   assert.equal(s.cells.hasUnder('usr/lib/node_modules/p3/'), true);
   assert.equal(meter.contentBytes, 0, 'a directory-existence question must read no file content');
-  assert.equal(meter.selects, 1, 'and must be one query, not one per candidate path');
+  assert.equal(meter.reads, 1, 'and must be one read, not one per candidate path');
 
-  meter.contentReads = 0; meter.contentBytes = 0;
+  meter.contentBytes = 0;
   assert.equal(s.cells.hasUnder('usr/lib/node_modules/nope/'), false);
   assert.equal(meter.contentBytes, 0, 'a negative answer must read no file content either');
 
-  meter.contentReads = 0; meter.contentBytes = 0;
+  meter.contentBytes = 0;
   const under = s.cells.keysUnder('usr/lib/node_modules/p3/');
   assert.equal(meter.contentBytes, 0, 'listing a subtree must read no file content');
   assert.ok(under.length > 0 && under.every((k) => k.startsWith('usr/lib/node_modules/p3/')),
@@ -260,7 +233,7 @@ const CURSOR = { poison: false, paths: [], epoch: 'e1', rev: 7 };
   // The descriptor trap is what turned key enumeration into a full read. Even
   // the whole-set walk — still used for watch globbing outside a cwd — must
   // cost names only.
-  meter.contentReads = 0; meter.contentBytes = 0;
+  meter.contentBytes = 0;
   let walked = 0;
   for (const k of Object.keys(s.bundle)) { if (k.length) walked++; }
   assert.equal(walked, 800, 'the walk really did visit every key');
@@ -278,20 +251,21 @@ const CURSOR = { poison: false, paths: [], epoch: 'e1', rev: 7 };
 // authority rows are still dated and reconcile as usual, but the previous
 // process's unflushed writes never reached the authority: they are not files.
 {
-  const sql = sqlShim();
+  const storage = facetStorage(facetSql());
   const make = createResidentStore;
   const first = make();
-  first.bind({ storage: { sql } });
+  first.bind({ storage });
   first.cells.admit(CURSOR);
   first.cells.fill('lib/x.js', 'X', 5);
   first.bundle['tmp/unflushed.txt'] = 'never written back';
-  const paths = () => sql.exec('SELECT path FROM file ORDER BY path').map((r) => r.path);
-  assert.deepEqual(paths(), ['lib/x.js', 'tmp/unflushed.txt']);
+  // The rows the store left, read by a second binding over the same storage.
+  const rows = kvTables(storage);
+  assert.deepEqual(rows.fileAllPaths().sort(), ['lib/x.js', 'tmp/unflushed.txt']);
 
   const next = make();
-  next.bind({ storage: { sql } });
-  assert.deepEqual(paths(), ['lib/x.js'], 'the dead process\'s unflushed write is dropped; dated rows stay');
-  assert.deepEqual(sql.exec("SELECT path FROM chunk WHERE path = 'tmp/unflushed.txt'"), [], 'with its bytes');
+  next.bind({ storage });
+  assert.deepEqual(rows.fileAllPaths().sort(), ['lib/x.js'], 'the dead process\'s unflushed write is dropped; dated rows stay');
+  assert.deepEqual(rows.chunkParts('tmp/unflushed.txt'), [], 'with its bytes');
 }
 
 // ── a subtree-scoped or structural report covers everything under it ───────

@@ -545,6 +545,7 @@ export declare function _rpcOneShotSubmit(self: OneShotRpcHost, spec: unknown, c
 } | {
     ok: true;
     value: unknown;
+    loadMs: number | null;
 }>;
 export declare function _rpcOneShotWarm(self: OneShotRpcHost, spec: unknown, fn: unknown, images: unknown): Promise<{
     warmed: true;

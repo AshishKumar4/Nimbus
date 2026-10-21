@@ -19,6 +19,7 @@ import assert from 'node:assert/strict';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { runScenarios } from './lib/resident-body.mjs';
+import { facetStorage } from './lib/fake-do-kv.mjs';
 
 const SECRET = 'ask62-sentinel-5e1d';
 const ENV = { SECRET, NODE_DEBUG: 'ask62' };
@@ -97,7 +98,7 @@ await runScenarios(import.meta.path, {
   async 'opencode serve: the env comes with its start'() {
     const { facetSql } = await import('./lib/resident-body.mjs');
     const { authority, supervisor, runner, dir, exited } = await opencodeRunner('server', servesEnv);
-    const serve = new runner.NimbusProcess({ storage: { sql: facetSql() }, waitUntil() {}, id: { toString: () => 'process-env' } }, { SUPERVISOR: supervisor });
+    const serve = new runner.NimbusProcess({ storage: facetStorage(facetSql()), waitUntil() {}, id: { toString: () => 'process-env' } }, { SUPERVISOR: supervisor });
     await serve.startProcess({ env: ENV });
     assert.equal(await exited, 0);
     assert.equal(authority.read('home/user/env.txt'), EXPECTED, 'the program read the env its start handed over');

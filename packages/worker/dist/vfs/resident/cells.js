@@ -10,8 +10,8 @@
  * short row and never pages a megabyte of blob in to answer "is it there".
  * 'rev' is never undated, and that IS the coherence guarantee rather than a
  * note about it. An undated row can never be invalidated, so it would be
- * served stale forever. The SQLite backing makes the column NOT NULL, so such
- * a row cannot be written; this is the r2-cache posture (an unverifiable key
+ * served stale forever. Both backings take a revision with every head row
+ * (filePut), so such a row cannot be written; this is the r2-cache posture (an unverifiable key
  * cannot be constructed) moved to the only storage layer this store has.
  *
  * RK_OWN_WRITE is the one negative value: this facet's own bytes that the
@@ -493,7 +493,7 @@ export function createCells(coherence, admission, namespace, observeRead) {
             // An ACCESSOR, not a data descriptor, and that is the whole point: a
             // for-in or Object.keys over a Proxy asks this trap about every key, so a
             // data descriptor had to produce `value` — reading every file's bytes out
-            // of SQLite to answer a question about NAMES. Measured at pi scale, one
+            // of storage to answer a question about NAMES. Measured at pi scale, one
             // such scan read 87 MiB and threw all of it away. A getter answers the
             // name question for free and still returns the bytes to anything that
             // genuinely reads the property.

@@ -36,7 +36,7 @@ import { acquireSupervisorLoad } from '@nimbus-sh/platform/heavy-alloc-coord.js'
 import { classifyDoCall } from '@nimbus-sh/platform/oom-classify.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { hostNamespaceBinding, hostOpDispatch } from './host-dispatch.js';
-import { IsolatePool } from './isolate-pool.js';
+import { IsolatePool, noteFacetCall, recentFacetCalls } from './isolate-pool.js';
 import { HostRouteSchema, isolateToken, RESIDENT_READ_RANGE_BYTES, WorkspaceEgressSchema } from './peer-host.js';
 import { hashSource } from './vendor/serialize.js';
 import { PEER_PLACEMENT_MAX_ATTEMPTS } from './process-host.js';
@@ -78,7 +78,7 @@ const PreambleMissingSchema = z.object({ ok: z.literal('preamble missing') });
  * cannot.
  */
 function answerSchema() {
-    return z.discriminatedUnion('ok', [z.object({ ok: z.literal(true), value: z.custom(() => true) }), OneShotFailureSchema, PreambleMissingSchema]);
+    return z.discriminatedUnion('ok', [z.object({ ok: z.literal(true), value: z.custom(() => true), loadMs: z.number().nonnegative().nullable() }), OneShotFailureSchema, PreambleMissingSchema]);
 }
 const SupervisorBindingPropsSchema = z.object({
     doId: z.string().min(1),
@@ -176,7 +176,7 @@ export class OneShotPlacement {
                 const peer = this.#warmFor(worker);
                 if (peer === null || options?.signal?.aborted === true) {
                     if (peer === null)
-                        this.#warm(spec, images, fn, worker);
+                        this.#warm(spec, callImages, fn, worker);
                     try {
                         return await local.submit(fn, args, options);
                     }
@@ -202,9 +202,11 @@ export class OneShotPlacement {
                     }
                 }
                 this.#note(spec.tag, worker, 'peer', began);
-                if (answer.ok === true)
-                    return answer.value;
-                throw failedAs(answer);
+                if (answer.ok !== true)
+                    throw failedAs(answer);
+                // The session's own record of its facet calls holds this one too: cold as it was on the peer, its time the session's.
+                noteFacetCall(this.#ctx, spec.tag, answer.loadMs, began);
+                return answer.value;
             },
             dispose: () => local.dispose(),
         };
@@ -231,14 +233,7 @@ export class OneShotPlacement {
                 const carries = !this.#carried.has(hash);
                 let raw;
                 try {
-                    await new Promise((resolve) => setTimeout(resolve, 0));
-                    // Experiment: the session's pending writes made durable first, so the output gate holds nothing back.
-                    const synced = Date.now();
-                    await this.#ctx.storage.sync();
-                    const sent = Date.now();
-                    globalThis.__d1Sync = [...(globalThis.__d1Sync ?? []).slice(-31), sent - synced];
                     raw = await dispatch({ op: 'oneShotSubmit', args: [this.#wire(spec, carries), callId, fn, args, { timeoutMs: options?.timeoutMs }, this.#images(spec, images, options?.signal)] });
-                    globalThis.__d1Sent = [...(globalThis.__d1Sent ?? []).slice(-31), { sent, answered: Date.now() }];
                 }
                 catch (error) {
                     this.forgetPeer();
@@ -253,6 +248,8 @@ export class OneShotPlacement {
                         if (carries)
                             throw new BindingError(`one-shot peer '${peer}' did not hold the preamble the call carried`);
                         this.#carried.delete(hash);
+                        // Killed before the peer took it: it never started, and is not sent again.
+                        options?.signal?.throwIfAborted();
                         continue;
                     }
                     if (generation === this.#generation)
@@ -395,7 +392,7 @@ export class OneShotPlacement {
         }
     }
     #note(tag, worker, host, began) {
-        this.#calls.push({ tag, worker, host, ms: Date.now() - began, at: began });
+        this.#calls.push({ tag, worker, host, at: began });
         if (this.#calls.length > PLACEMENT_CALLS_KEPT)
             this.#calls.shift();
     }
@@ -422,12 +419,13 @@ function workerOf(spec, images, fn) {
     if (spec.scope === undefined)
         return ANY_WORKER;
     const identities = Object.entries(images).map(([name, image]) => `${name}=${image.identity}`).sort().join(',');
-    return [spec.tag, spec.reuse ?? 'session', spec.scope, preambleHash(spec.preamble), hashSource(requireFacetTaskSource(fn)), identities].join('\n');
+    const supervisor = spec.supervisor === undefined ? 's-none' : 's-call';
+    return [spec.tag, spec.reuse ?? 'session', spec.scope, supervisor, preambleHash(spec.preamble), hashSource(requireFacetTaskSource(fn)), identities].join('\n');
 }
-/** A preamble's hash, once per preamble: a runtime's is a constant of the deploy, some hundreds of KB. */
+/** A preamble's hash, once per preamble: a runtime's is a constant of the deploy, some hundreds of KB. None, or an empty one, is '0', as the pool has it. */
 const preambleHashes = new Map();
 function preambleHash(preamble) {
-    if (preamble === undefined)
+    if (!preamble)
         return '0';
     let hash = preambleHashes.get(preamble);
     if (hash === undefined)
@@ -494,26 +492,20 @@ export class OneShotHost {
     }
     /** One call of a session's facet: its answer, whatever the task did. */
     async submit(spec, callId, fn, args, options, images) {
-        await new Promise((resolve) => setTimeout(resolve, 0));
-        const t0 = Date.now();
         const id = z.string().uuid().parse(callId);
-        const pool = this.#pool(spec);
+        // The call's own record of its facet call: whether its worker was cold, for the session's record.
+        const calls = {};
+        const pool = this.#pool(spec, calls);
         if (pool === null)
             return { ok: 'preamble missing' };
-        const t1 = Date.now();
         const controller = new AbortController();
         this.#calls.set(id, controller);
         try {
-            const task = facetTaskSource(FacetTaskSchema.parse(fn).source);
-            const parsed = { ...CallOptionsSchema.parse(options), wasmModules: facetImages(images), signal: controller.signal };
-            const t2 = Date.now();
-            const value = await pool.submit(task, args, parsed);
-            const t3 = Date.now();
-            pool.dispose();
-            await new Promise((resolve) => setTimeout(resolve, 0));
-            const t4 = Date.now();
-            globalThis.__d1Spans = [...(globalThis.__d1Spans ?? []).slice(-31), { entry: t0, pool: t1 - t0, parse: t2 - t1, submit: t3 - t2, after: t4 - t3 }];
-            return { ok: true, value };
+            const value = await pool.submit(facetTaskSource(FacetTaskSchema.parse(fn).source), args, {
+                ...CallOptionsSchema.parse(options), wasmModules: facetImages(images), signal: controller.signal,
+            });
+            const [call] = recentFacetCalls(calls);
+            return { ok: true, value, loadMs: call?.cold === true ? call.loadMs : null };
         }
         catch (error) {
             const code = typeof error === 'object' && error !== null ? Reflect.get(error, 'code') : undefined;
@@ -531,7 +523,7 @@ export class OneShotHost {
     }
     /** A facet's worker loaded here and left warm (IsolatePool.warm), running nothing. */
     async warm(spec, fn, images) {
-        const pool = this.#pool(spec);
+        const pool = this.#pool(spec, {});
         if (pool === null)
             throw new BindingError('a warming carries its preamble');
         try {
@@ -542,8 +534,8 @@ export class OneShotHost {
             pool.dispose();
         }
     }
-    /** A call's pool, its preamble the one it carried or one held by its hash; null when it is neither. */
-    #pool(spec) {
+    /** A call's pool, its preamble the one it carried or one held by its hash, its calls noted in `callsOf`; null when it is neither. */
+    #pool(spec, callsOf) {
         const wire = OneShotSpecSchema.parse(spec);
         let preamble = wire.preamble;
         if (preamble !== undefined) {
@@ -556,7 +548,7 @@ export class OneShotHost {
             if (preamble === undefined)
                 return null;
         }
-        return new IsolatePool(this.env, this.ctx, oneShotPoolOptions({ ...wire, preamble }, ISOLATE_NETWORK));
+        return new IsolatePool(this.env, this.ctx, { ...oneShotPoolOptions({ ...wire, preamble }, ISOLATE_NETWORK), callsOf });
     }
     /** A call's kill: its wait for admission ends, as a session's own call's does. */
     cancel(callId) {
