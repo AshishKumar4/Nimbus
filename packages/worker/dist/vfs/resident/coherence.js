@@ -6,13 +6,13 @@
  * check because a check gets forgotten.
  *
  * The hazard is specific to putting the resident set in storage, and it is
- * created by the property that makes the design affordable: a facet's SQLite
+ * created by the property that makes the design affordable: a facet's storage
  * survives a fresh module scope (measured — same facet name, new loader key,
  * new module token, 7,141 rows and 45.7 MB intact). So a new incarnation opens
  * onto rows written by a PREVIOUS one, while every in-heap stamp and cursor
  * that described them is gone. Heap-side provenance cannot survive the thing it
  * is meant to describe, so provenance lives in the rows: 'file.rev' per path,
- * '(epoch, rev)' for the store, both in this SQLite.
+ * '(epoch, rev)' for the store, both in this storage.
  *
  * Sealed is the initial state and an admitted delta (cells.admit) is what
  * clears it, so a row cannot be served by an incarnation that has not applied
@@ -43,7 +43,7 @@ export function createCoherence() {
         get heap() { return heap; },
         require() {
             if (t === null) {
-                throw new Error('Nimbus: the resident store was read before its facet bound its SQLite. '
+                throw new Error('Nimbus: the resident store was read before its facet bound its storage. '
                     + 'store.bind(ctx) must run in the process DO constructor, ahead of the program.');
             }
             if (isSealed) {

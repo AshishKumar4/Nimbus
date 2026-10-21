@@ -10,15 +10,21 @@
 import { VFS_BUNDLE_MAX_BYTES } from '@nimbus-sh/core/constants.js';
 
 /**
- * Bytes of file content in one row.
+ * Bytes of file content in one row: one value of the store's key-value
+ * storage (kv-tables.ts), so the size that costs least per byte to read.
  *
- * The measured ceiling is 2,199,981 bytes in a single value (bisected, with a
- * 12-char key; the limit is on the row, so a longer path buys less). 1 MiB
- * leaves better than 2x of headroom against a limit whose exact form is not
- * contractual, and keeps the per-read allocation of a large file bounded.
- * Files at or under it — effectively all of them — are one row and one query.
+ * Measured on a deployed Durable Object (2026-10-20, file-engine-d4-
+ * measurements.md, per-op CPU): a synchronous kv.get of a 64 KiB value costs
+ * 173 µs and of a 1 MiB value 9.5 ms. A value is structured-cloned, which
+ * grows faster than its size, so a 1 MiB file read whole costs less as 16
+ * values of 64 KiB (2.8 ms) than as one (9.5 ms). For a 40 MiB launch: 640
+ * reads, 111 ms, at 64 KiB; 40 reads, 380 ms, at 1 MiB. Fewer, larger values
+ * cost more; smaller ones add a key and a call each for no saving. A launch's
+ * 640 puts in one turn are inside what was measured: 2,000 unconfirmed puts
+ * in one turn, ten runs, none refused. The row ceiling (8 MiB, SQLITE_TOOBIG,
+ * the same in production and local workerd, 2026-10-21) is far above it.
  */
-export const RESIDENT_CHUNK_BYTES = 1_048_576;
+export const RESIDENT_CHUNK_BYTES = 65_536;
 
 /**
  * What a one-shot's store may hold in its heap: the closure bound a one-shot

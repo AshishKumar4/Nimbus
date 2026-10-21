@@ -695,6 +695,8 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
   const restartLine = processes.allLogs(redriven.pid).map((chunk) => chunk.data).join('').split('\n')[0];
   assert.match(restartLine, new RegExp(`"node crashy\\.js" exited with code 1, so it was restarted \\(restart on-failure\\); it was pid ${a.pid}`));
   assert.doesNotMatch(restartLine, /session restarted/);
+  // The restart holds its port once booted; the crashed row is superseded after the re-drive returns.
+  await waitFor(async () => (await rowFor(ctx, a.pid)) === undefined && !fm.launchJournal.has(a.pid), 5_000);
   assert.equal(await rowFor(ctx, a.pid), undefined, 'the crashed row is superseded');
   assert.equal(fm.launchJournal.has(a.pid), false, 'a same-instance restart releases journal lifetime bookkeeping');
   assert.ok(notices.some((line) => /exited with code 1 — restarting in 1s \(FencedWork attempt 1/.test(line)), JSON.stringify(notices));

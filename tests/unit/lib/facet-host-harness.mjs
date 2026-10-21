@@ -506,8 +506,9 @@ if (!globalThis.IdentityTransformStream) globalThis.IdentityTransformStream = Tr
 // ── Process-facet storage ───────────────────────────────────────────────────
 
 import { Database } from 'bun:sqlite';
+import { facetStorage } from './fake-do-kv.mjs';
 
-/** facetName → its SQLite. Storage is keyed by NAME, which is the real rule. */
+/** facetName → its storage (its SQL and key-value storage, one database). Storage is keyed by NAME, which is the real rule. */
 const facetDatabases = new Map();
 
 /**
@@ -528,26 +529,22 @@ const facetDatabases = new Map();
  * in workerd.
  */
 export function createProcessFacetCtx(facetName) {
-  let db = facetDatabases.get(facetName);
-  if (!db) {
-    db = new Database(':memory:');
-    facetDatabases.set(facetName, db);
-  }
-  return {
-    waitUntil() {},
-    storage: {
-      sql: {
-        exec(query, ...params) {
-          if (/^\s*(CREATE|INSERT|UPDATE|DELETE|REPLACE|DROP)/i.test(query)) {
-            db.query(query).run(...params);
-            return [];
-          }
-          return db.query(query).all(...params);
-        },
-        get databaseSize() { return 0; },
+  let storage = facetDatabases.get(facetName);
+  if (!storage) {
+    const db = new Database(':memory:');
+    storage = facetStorage({
+      exec(query, ...params) {
+        if (/^\s*(CREATE|INSERT|UPDATE|DELETE|REPLACE|DROP)/i.test(query)) {
+          db.query(query).run(...params);
+          return [];
+        }
+        return db.query(query).all(...params);
       },
-    },
-  };
+      get databaseSize() { return 0; },
+    });
+    facetDatabases.set(facetName, storage);
+  }
+  return { waitUntil() {}, storage };
 }
 
 /** Drop a facet's storage — slot handover, or test isolation. */

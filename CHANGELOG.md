@@ -5,6 +5,7 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Changed: a long-running node process (a dev server, an agent's turn) keeps the files it has read in its facet's key-value storage instead of its SQL tables. Its writes there no longer hold the process's next message to the session until they are confirmed, a wait measured at 23–36 ms on every turn that read new files. A store kept from an earlier version is dropped when the process starts, and refilled as it reads.
 - Added: a mount can run programs on the machine its files live on. `filesystem.vfs.mount(point, source, { exec })` takes an `ExecDelegate` (`start(program, cancel)`, `locate(name, cwd, env)`). Every program started with its cwd under that mount is placed there: the shell's, an execvp from find, xargs, env or sudo, and a node child's. Each start is one call, `{ argv, env, cwd, stdin }`, made as execvp makes it, never as shell text; its exit is waitpid's code or signal.
   - What the shell does itself stays in the session: builtins, functions, pipes and expansions. So `cd /computer/app && npm test | tail -5` starts two programs on the computer, joined by the session's pipe.
   - Refusals follow bash: a start the machine refuses `ENOENT` is `name: command not found` (127); any other refusal, or an absent mount, is `name: <reason>` (126); Ctrl-C reaches the program as SIGINT (130).
