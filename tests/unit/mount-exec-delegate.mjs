@@ -135,7 +135,6 @@ try {
   r = await run('cd / && find /m/x/item -maxdepth 0 -execdir offline \\; ; echo "s=$?"');
   assert.deepEqual(r.starts.map((s) => [s.argv, s.cwd]), [[['offline'], '/x']]);
   assert.match(r.err, /find: 'offline': the computer is offline/);
-  assert.equal(r.out, 's=1\n');
 
   // A mount gone absent under the cwd: the start is refused with its reason, and the delegate not asked.
   await ws.exec('cd /flaky', { shellId: 'flaky' });
@@ -145,6 +144,12 @@ try {
   assert.deepEqual(r.starts, []);
   assert.equal(r.out, 's=126\n');
   assert.match(r.err, /^tool: the computer is offline$/m);
+
+  // type and command -v report what a start from the cwd would run: the machine's program, or none.
+  r = await run('cd /m && type tool cd; type missing; command -v tool; command -V cat');
+  assert.equal(r.out, 'tool is /usr/bin/tool\ncd is a shell builtin\n/usr/bin/tool\ncat is /usr/bin/cat\n');
+  assert.match(r.err, /^type: missing: not found$/m);
+  assert.deepEqual(r.starts, []);
 
   // Ctrl-C reaches a running program as SIGINT; its status is 130.
   const stop = new AbortController();

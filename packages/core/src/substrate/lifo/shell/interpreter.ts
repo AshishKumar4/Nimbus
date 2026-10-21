@@ -1502,6 +1502,14 @@ export class Interpreter {
     });
   }
 
+  /** CommandContext.locateProgram: the delegate's answer for a cwd its mount places, undefined for one placed here. */
+  private async locateProgram(name: string, cwd: string, env: Record<string, string>, cred: VfsCred): Promise<string | null | undefined> {
+    const placement = await this.config.filesystem.placeProgram(cred, cwd);
+    if (placement.kind === 'local') return undefined;
+    if (placement.kind === 'absent') return null;
+    return await placement.delegate.locate(name, placement.cwd, env);
+  }
+
   /**
    * execvp of a program placed on its mount's machine (runProgram): run with
    * the child's streams, environment and stop; a start its machine refuses
@@ -1559,6 +1567,7 @@ export class Interpreter {
       cwd: spec.cwd,
       vfs: spec.vfs,
       vfsUntilExit: () => bindProcessView(this.config.filesystem, { pid: identity.pid, cred: identity.cred }),
+      locateProgram: (program) => this.locateProgram(program, spec.cwd, spec.env, identity.cred),
       stdout: spec.stdout,
       stderr,
       get signal() { return signalOf(); },
