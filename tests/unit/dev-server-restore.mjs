@@ -221,7 +221,6 @@ try {
     const listed = (await next.runtime.listProcesses()).find((process) => process.execId === 'job-1' && process.state === 'running');
     assert.ok(listed, `${what}: listed at once, under the exec id it had`);
     assert.equal(listed.restartedFrom?.cause, 'session-restart', `${what}: as the restart of the one before`);
-    assert.ok(Array.isArray(await next.runtime.listApps()), `${what}: the apps are listed too`);
     await settle(() => next.ports.has(5173), `${what}: its port again`);
     await next.runtime.killProcess(listed.pid);
     await settle(() => recordKeys().length === 0 && !next.ports.has(5173), `${what}: its record to be released`);

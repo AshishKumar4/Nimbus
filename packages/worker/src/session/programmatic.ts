@@ -659,19 +659,13 @@ export async function rpcListRuntimes(self: ProgrammaticHost): Promise<SessionRe
   };
 }
 
-/**
- * Ready, and what runs listed in full: the dev servers this incarnation
- * restores have their processes in the table, their commands not yet run. A
- * host's recovery asks once, and must not read "not yet" as "none coming"
- * (Kinu ask 65).
- */
-async function ensureRunningListed(self: ProgrammaticHost): Promise<void> {
-  await ensureProgrammaticReady(self);
-  await self.devServersRespawned();
-}
-
 export async function rpcListProcesses(self: ProgrammaticHost): Promise<SessionProcess[]> {
-  await ensureRunningListed(self);
+  await ensureProgrammaticReady(self);
+  // Every process this incarnation's restore runs again is in the table: a
+  // host's recovery asks once, and must not read "not yet" as "none coming"
+  // (Kinu ask 65). Its ports and apps come as each server starts, as a
+  // server's do at any start.
+  await self.devServersRespawned();
   return self.processes.publishedAll().map((p: ProcessEntry) => serializeProcess(p)!);
 }
 
@@ -766,7 +760,7 @@ export async function rpcProcessLogs(
 }
 
 export async function rpcListPorts(self: ProgrammaticHost): Promise<SessionPort[]> {
-  await ensureRunningListed(self);
+  await ensureProgrammaticReady(self);
   // The composed manager's copy is the one implementation — persistence
   // at tell-time included.
   return self.ensureFacetManager().apps.listPorts();
@@ -1020,7 +1014,7 @@ async function assertServingOwner(self: ProgrammaticHost, port: number, owner: s
 
 /** Every stamped identity, with the URL each is reachable at. */
 export async function rpcListApps(self: ProgrammaticHost): Promise<SessionApp[]> {
-  await ensureRunningListed(self);
+  await ensureProgrammaticReady(self);
   const apps = await self.facetManager!.listResidentApps();
   return apps.map((app) => ({
     ...app,

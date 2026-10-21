@@ -451,7 +451,7 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
       });
     }
     if (url.pathname === '/api/processes') {
-      // What runs, the restored dev servers among it (programmatic.ts ensureRunningListed).
+      // What runs, the restored dev servers' processes among it (programmatic.ts rpcListProcesses).
       await self.devServersRespawned();
       return handleProcessesListRequest(self.processes);
     }

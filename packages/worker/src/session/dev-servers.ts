@@ -300,6 +300,11 @@ async function respawnOne(
       longRunning: true, cred: record.cred, ...execIdField(record), restartedFrom: { pid: from, cause: 'session-restart' },
     });
     host.processes.appendOutput(entry.pid, 'stderr', `[nimbus] the session restarted: running \`${record.command}\` again in ${record.cwd}\n`);
+    // Its end, however it comes (a stop while its command waits its turn
+    // among them), releases the record, so no later incarnation restores it.
+    host.processes.whenEnded(entry.pid)
+      .then(() => release(host, key))
+      .catch((error: unknown) => console.warn(`[dev-servers] releasing ${key} failed: ${errorText(error)}`));
     return { key, record, entry, env };
   } catch (error) {
     await release(host, key);
@@ -307,13 +312,10 @@ async function respawnOne(
   }
 }
 
-/** `one`'s recorded command, run under its respawned process; nothing when the process ended first (it was stopped). */
+/** `one`'s recorded command, run under its respawned process; nothing when the process ended first (it was stopped, and its end released the record). */
 async function rerunOne(host: DevServerRestoreHost, ours: () => boolean, { key, record, entry, env }: Respawned): Promise<DevServerRestoreFailure | null> {
-  if (!ours()) return null;
-  if (host.processes.get(entry.pid)?.state !== 'running') {
-    await release(host, key);
-    return null;
-  }
+  const stopped = (): boolean => host.processes.get(entry.pid)?.state !== 'running';
+  if (!ours() || stopped()) return null;
   await host.ctx.storage.put(key, { ...record, restoring: true });
   await host.ctx.storage.sync();
   // The links handed out for its ports: a registration that is not a restore retires them.
@@ -324,7 +326,8 @@ async function rerunOne(host: DevServerRestoreHost, ours: () => boolean, { key, 
   }
   let failure: DevServerRestoreFailure | null = null;
   try {
-    failure = await runAgain(host, record, entry, env);
+    // A stop that came while the record was marked: nothing runs under an ended process.
+    if (!stopped()) failure = await runAgain(host, record, entry, env);
   } catch (error) {
     // The process this restore spawned ends with its run.
     if (host.processes.get(entry.pid)?.state === 'running') host.processes.exit(entry.pid, 1);
