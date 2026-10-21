@@ -16,8 +16,7 @@
  *                          none ('unfed', root's: a directory root changes
  *                          the mode of may shut the process out of a fed
  *                          one beneath): it covers what the session held
- *                          beneath, the point itself staying the directory
- *                          it was. Drawn over
+ *                          there, its root the point's directory. Drawn over
  *                          names the process may hold, and a fed mount
  *                          beneath one with none. A mount point is not
  *                          removed, moved or chowned; a rename never crosses
@@ -231,8 +230,8 @@ function applied(world, change) {
       const owner = b === 'fed' ? USER : 0;
       const owned = (state) => ({ ...state, uid: owner, gid: owner });
       for (const rel of world.keys()) if (rel !== a && under(rel, a)) next.delete(rel);
-      // The point is the directory it covers (its mode governs lookup through it, CompositeVFS), now a mount's.
-      next.set(a, { ...at, mount: b });
+      // The point is the mount's root, as a stat of it answers (CompositeVFS mountPointStat).
+      next.set(a, { ...owned(dirState()), mount: b });
       for (const [rel, content] of Object.entries(tree)) next.set(a === '' ? rel : `${a}/${rel}`, owned(content === null ? dirState() : fileState(content)));
       return next;
     }
@@ -900,7 +899,8 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
         }
       }
       // What the session holds is what the model says, as root sees it: nothing the process wrote was lost.
-      const held = normalized(await engine.authority.peerAs(CRED_KERNEL).lstat(key(rel)).catch(() => null));
+      // (A stat: no name here is a link, and an lstat of a mount point answers the directory it covers.)
+      const held = normalized(await engine.authority.peerAs(CRED_KERNEL).stat(key(rel)).catch(() => null));
       if (!statIs(held, state)) throw new Finding(`at rest, the session holds ${JSON.stringify(held)} at ${rel || '.'}; the model says ${describe(state)}`, end);
     }
   } finally {

@@ -331,6 +331,11 @@ const GAPS = {
       + 'meanwhile readdirSync can list a file before its write is made',
     shows: 'sync readdir d/e answered ["g"]',
   },
+  'a fed mount beneath one with no feed is reached as that one lets the process reach it [node]': {
+    lacks: 'S walks to a fed mount through the directories of a mount with no feed above it as its launch saw them (closed by the cutover: such a mount is the session\'s to answer); '
+      + 'meanwhile fs.readFile can answer a file beneath a directory the process may no longer search',
+    shows: 'own readFile d/e/g answered "g1111"',
+  },
   'a name on a mount with no feed answers as the session holds it now [node]': {
     lacks: 'S answers a name on a mount with no change feed as its launch\'s listing walked it (closed by the cutover: such a mount is the session\'s to answer); '
       + 'meanwhile readFileSync of a file on such a mount can serve bytes another process has since replaced',

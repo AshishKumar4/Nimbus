@@ -225,9 +225,11 @@ await runScenarios(import.meta.path, {
   },
 
   async 'a fed mount made over a file the process held shows the mount\'s bytes'(e = undefined) {
-    e = await bootEngine('eager', {});
+    // No read lease: while one is trusted, a moving mount's rows are the session's (below).
+    e = await bootEngine('eager', { leases: false });
     await e.authority.peer.mkdir('home/user/app/cov', { mode: 0o755 });
     await e.authority.peer.writeFile('home/user/app/cov/f', 'ROOT1');
+    await e.input();
     assert.equal(new TextDecoder().decode(await e.fs.readFile(`${APP}/cov/f`)), 'ROOT1');
     // The same name, of the same size, at a revision far below the root's on its own feed.
     const mem = new MemoryVFS({ uid: 1000, gid: 1000 });
@@ -281,6 +283,7 @@ await runScenarios(import.meta.path, {
     const mem = new MemoryVFS({ uid: 1000, gid: 1000 });
     mem.writeFile('/f', new TextEncoder().encode('KEPT'));
     e = await bootEngine('eager', {
+      leases: false,
       seed(authority) {
         authority.kfs.writeFile('home/user/app/seed.txt', 'SEED');
         authority.files.vfs.mount('/mnt/mem', mem);
