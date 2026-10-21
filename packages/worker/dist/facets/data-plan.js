@@ -49,7 +49,6 @@ import { packageJsonText, parseResolvablePackageJson, resolvePackageEntry } from
 import { resolveFile } from '@nimbus-sh/core/runtime/require-resolution.js';
 import { resolveDeferredImport } from '@nimbus-sh/core/runtime/require-resolver.js';
 import { parseSheet, sheetSources, sheetStringImports } from '@nimbus-sh/core/runtime/css-syntax.js';
-import braces from 'braces';
 import { rootClampedSegments } from '@nimbus-sh/platform/lexical-path.js';
 /** The package whose scanner reads a stylesheet's sources synchronously (Tailwind v4). */
 const OXIDE_PACKAGE = 'node_modules/@tailwindcss/oxide';
@@ -105,16 +104,43 @@ export function packageRootOf(k) {
  * directory below `dir` or inside one, or a cache of the home directory it is
  * in ($HOME, or /home/<user>).
  */
-function excludedDir(home, dir, d) {
-    if (d !== dir && d.slice(dir === '' ? 0 : dir.length + 1).split('/').some((seg) => PROJECT_EXCLUDED.has(seg)))
-        return true;
+function excludedDir(home, dir, d, named = NONE_NAMED) {
+    // A source that names such a directory selects it, as many deep as it names it: `node_modules` named once
+    // lifts one, and the dependencies below that one stay out.
+    if (d !== dir) {
+        const segs = d.slice(dir === '' ? 0 : dir.length + 1).split('/');
+        if (named.size === 0) {
+            if (segs.some((seg) => PROJECT_EXCLUDED.has(seg)))
+                return true;
+        }
+        else {
+            let seen = null;
+            for (const seg of segs) {
+                if (!PROJECT_EXCLUDED.has(seg))
+                    continue;
+                seen ??= new Map();
+                const count = (seen.get(seg) ?? 0) + 1;
+                seen.set(seg, count);
+                if (count > (named.get(seg) ?? 0))
+                    return true;
+            }
+        }
+    }
     const segs = d.split('/');
     const userHome = home !== '' && (d === home || d.startsWith(home + '/')) ? home
         : segs[0] === 'home' && segs.length > 1 ? 'home/' + segs[1] : null;
     if (userHome === null)
         return false;
     const inHome = d.slice(userHome.length + 1) + '/';
-    return HOME_EXCLUDED.some((prefix) => inHome.startsWith(prefix));
+    return HOME_EXCLUDED.some((prefix) => inHome.startsWith(prefix) && !named.has(prefix.slice(0, prefix.indexOf('/'))));
+}
+const NONE_NAMED = new Map();
+/** Whether `names` holds a directory excludedDir leaves out of a walk. */
+function namesExcluded(names) {
+    for (const name of names.keys())
+        if (PROJECT_EXCLUDED.has(name) || HOME_EXCLUDED.some((prefix) => prefix.startsWith(name + '/')))
+            return true;
+    return false;
 }
 /** Whether file `k`, below `dir`, lies in a directory excludedDir leaves out. */
 function excludedBelow(home, dir, k) {
@@ -720,6 +746,198 @@ export function carriesOxide(closure) {
  * misses, as any file a launch did not plan.
  */
 export const STYLESHEET_SOURCE_MAX_FILES = 5_000;
+/** A range in a brace group (`{1..9}`, `{a..z}`, with a step): it spells digits, signs or letters, never a dot. */
+const BRACE_RANGE = /\{(?:[+-]?\d+\.\.[+-]?\d+|[A-Za-z]\.\.[A-Za-z])(?:\.\.[+-]?\d+)?\}/y;
+/**
+ * Where an `@source` path can reach, without expanding it: the part before
+ * its first glob character, up to its last `/` (the path itself when it has
+ * none), then a directory up for each `..` its brace alternatives could
+ * spell. Linear in the path, however it nests or whatever range it names: an
+ * agent writes the stylesheets, and a line of CSS must not cost an isolate.
+ * A superset of every path it matches: what it misses Tailwind's scanner
+ * learns by its misses.
+ */
+export function sourceReach(path) {
+    // Its escapes were decoded with its CSS string (sheetSources), once, as Tailwind's expansion decodes them: a
+    // backslash left is a name's. A glob character after one may be literal; taken as a glob, the reach is wider.
+    const first = path.search(GLOB_SPECIAL);
+    if (first < 0)
+        return path;
+    // Its leading braces may spell a `/` first (`{/srv/ui,/opt/ui}`, `{,x}/srv`): then it may be anywhere.
+    if (first === 0 && path[0] === '{' && mayLeadWithSlash(path))
+        return '/';
+    const slash = path.lastIndexOf('/', first);
+    const prefix = slash < 0 ? '.' : slash === 0 ? '/' : path.slice(0, slash);
+    const climbs = dotDotBound(path, slash + 1);
+    return climbs === 0 ? prefix : `${prefix}${'/..'.repeat(climbs)}`;
+}
+/** A range of single characters (`{!..~}`), which spells each between its ends. */
+const CHAR_RANGE = /\{([^{},\\])\.\.([^{},\\])(?:\.\.[+-]?\d+)?\}/y;
+/** Whether the range at `at` in `path` may spell `/`: null where none is there. */
+function rangeSpellsSlash(path, at) {
+    BRACE_RANGE.lastIndex = at;
+    if (BRACE_RANGE.test(path))
+        return { spells: false, end: BRACE_RANGE.lastIndex };
+    CHAR_RANGE.lastIndex = at;
+    const range = CHAR_RANGE.exec(path);
+    if (range === null)
+        return null;
+    const [low, high] = [range[1].charCodeAt(0), range[2].charCodeAt(0)].sort((a, b) => a - b);
+    return { spells: low <= 0x2f && 0x2f <= high, end: CHAR_RANGE.lastIndex };
+}
+/**
+ * Whether an expansion of `path`, which starts with a brace group, could
+ * start with `/`: a `/` (or a range that may spell one) where nothing need
+ * come before it, at the start of an alternative of a leading group, or after
+ * leading groups that may all be empty. One pass, its groups on a stack.
+ */
+function mayLeadWithSlash(path) {
+    // Per open group: whether nothing need come before it, whether one of its alternatives may be empty, and
+    // whether the alternative it is in so far may be.
+    const groups = [];
+    // Whether nothing need come before here: at depth 0, the groups so far may all be empty.
+    let first = true;
+    for (let i = 0; i < path.length; i++) {
+        const c = path[i];
+        const top = groups.length > 0 ? groups[groups.length - 1] : null;
+        const atStart = top === null ? first : top.first && top.alternative;
+        if (c === '{') {
+            const range = rangeSpellsSlash(path, i);
+            if (range !== null) {
+                if (atStart && range.spells)
+                    return true;
+                if (top === null)
+                    return false;
+                top.alternative = false;
+                i = range.end - 1;
+                continue;
+            }
+            groups.push({ first: atStart, empty: false, alternative: true });
+            continue;
+        }
+        if (top !== null && (c === ',' || c === '}')) {
+            if (top.alternative)
+                top.empty = true;
+            top.alternative = true;
+            if (c === '}') {
+                groups.pop();
+                const parent = groups.length > 0 ? groups[groups.length - 1] : null;
+                if (parent === null)
+                    first = first && top.empty;
+                else
+                    parent.alternative = parent.alternative && top.empty;
+            }
+            continue;
+        }
+        const literal = c === '\\' && i + 1 < path.length ? path[++i] : c;
+        if (atStart && literal === '/')
+            return true;
+        if (top === null)
+            return false;
+        top.alternative = false;
+    }
+    return false;
+}
+/**
+ * The directory names a source spells below its reach, each with how many
+ * times it does: a directory its pattern names is one it selects, though a
+ * walk leaves such names out (`../{shared/node_modules/ui,kit}`). Only what
+ * a `/` follows is a directory's: `*.{node_modules,tsx}` names files. Linear
+ * in the path.
+ */
+export function sourceNames(path) {
+    const names = new Map();
+    const first = path.search(GLOB_SPECIAL);
+    if (first < 0)
+        return names;
+    const parts = path.slice(path.lastIndexOf('/', first) + 1).split('/');
+    const last = parts.length - 1;
+    for (let i = 0; i <= last; i++) {
+        const part = parts[i];
+        // The last part may be a directory's (`../{node_modules,kit}`) where it is only its alternatives: a name
+        // with anything outside its groups (`*.{node_modules,tsx}`) is a file's.
+        if (i === last && !wholeAlternatives(part))
+            continue;
+        const counted = new Map();
+        for (const name of part.split(/[{},*?[\]\\]/))
+            if (name !== '')
+                counted.set(name, (counted.get(name) ?? 0) + 1);
+        // Groups side by side may join into a name (`{node_,}{modules,x}`): what their text holds, joined, counts.
+        if (i < last) {
+            const joined = part.replace(/[{},]/g, '');
+            for (const excluded of PROJECT_EXCLUDED) {
+                let found = 0;
+                for (let at = joined.indexOf(excluded); at >= 0; at = joined.indexOf(excluded, at + excluded.length))
+                    found++;
+                if (found > (counted.get(excluded) ?? 0))
+                    counted.set(excluded, found);
+            }
+        }
+        for (const [name, count] of counted)
+            names.set(name, (names.get(name) ?? 0) + count);
+    }
+    return names;
+}
+/** Whether `part` is nothing but brace groups and the names between their commas: no text outside its groups. */
+function wholeAlternatives(part) {
+    let depth = 0;
+    for (const c of part) {
+        if (c === '{')
+            depth++;
+        else if (c === '}')
+            depth = Math.max(0, depth - 1);
+        else if (depth === 0)
+            return false;
+    }
+    return part.startsWith('{');
+}
+/**
+ * How many `..` segments any expansion of `path` from `from` on could spell:
+ * each needs two dots, and a character outside every brace group is in every
+ * expansion, so it parts the dots before it from those after. Dots inside a
+ * group may meet whatever its alternatives drop; a range spells none.
+ */
+function dotDotBound(path, from) {
+    let depth = 0;
+    let dots = 0;
+    let climbs = 0;
+    const part = () => {
+        climbs += dots >> 1;
+        dots = 0;
+    };
+    for (let i = from; i < path.length; i++) {
+        const c = path[i];
+        if (c === '\\') {
+            i++;
+            if (path[i] === '.')
+                dots++;
+            else if (depth === 0)
+                part();
+            continue;
+        }
+        if (c === '{') {
+            BRACE_RANGE.lastIndex = i;
+            if (BRACE_RANGE.test(path)) {
+                i = BRACE_RANGE.lastIndex - 1;
+                if (depth === 0)
+                    part();
+                continue;
+            }
+            depth++;
+            continue;
+        }
+        if (c === '}' && depth > 0) {
+            depth--;
+            continue;
+        }
+        if (c === '.')
+            dots++;
+        else if (depth === 0)
+            part();
+    }
+    part();
+    return climbs;
+}
 /** Whether `at` is where `dir` or a directory it is below is. */
 function below(dir, at) {
     for (let d = dir; d !== null; d = d.up)
@@ -731,8 +949,8 @@ function below(dir, at) {
  * The stylesheet-source rule, for a resident's plan and a one-shot's alike:
  * from `sheets`, through the `@import`s Tailwind inlines (a path's, not a
  * package's), each sheet where its links lead and read once, every `@source`
- * outside the working tree `cwd`, each brace alternative's directory prefix
- * taken whole, through its links; and the files under those roots, walked a
+ * outside the working tree `cwd`, where it can reach (sourceReach, its
+ * braces never expanded), through its links; and the files under those roots, walked a
  * directory at a time with the project rule's exclusions, which are of a path
  * as it is named below its root, whatever a link makes of it. The roots it
  * returns are what the facet's barriers push: those, and wherever a link
@@ -748,6 +966,8 @@ export async function planStylesheetSources(source, input) {
     const cwd = key(input.cwd);
     const home = key(input.home);
     const roots = [];
+    // The names each root's sources spell below it (sourceNames).
+    const rootNames = new Map();
     // A sheet is where its links lead, as Tailwind resolves it: what it names is relative to that, and it is read once.
     const located = async (k) => (await throughLinks(source, k)) ?? k;
     const sheets = new Set();
@@ -769,16 +989,20 @@ export async function planStylesheetSources(source, input) {
         for (const { path, negated } of sheetSources(parsed)) {
             if (negated)
                 continue;
-            // Quotes are filename characters to oxide, and a range of any length is a set of paths.
-            for (const alternative of braces(path, { expand: true, keepQuotes: true, rangeLimit: Infinity })) {
-                const names = alternative.split('/');
-                const glob = names.findIndex((name) => GLOB_SPECIAL.test(name));
-                const named = resolve(glob < 0 ? alternative : names.slice(0, glob).join('/') || (alternative.startsWith('/') ? '/' : '.'));
-                const root = (await throughLinks(source, named)) ?? named;
-                if (cwd === '' || root === cwd || root.startsWith(cwd + '/') || roots.includes(root))
-                    continue;
+            const named = resolve(sourceReach(path));
+            const root = (await throughLinks(source, named)) ?? named;
+            const spelled = sourceNames(path);
+            // A reach in the project is the project rule's, but where it names a directory that rule leaves out
+            // (`./{node_modules/ui,lib}`): what the source selects there, links out of it included, is this walk's.
+            if (cwd === '' || ((root === cwd || root.startsWith(cwd + '/')) && !namesExcluded(spelled)))
+                continue;
+            // Two sources on one root select what either does: the most each names a directory.
+            const names = rootNames.get(root) ?? new Map();
+            for (const [name, count] of spelled)
+                names.set(name, Math.max(names.get(name) ?? 0, count));
+            rootNames.set(root, names);
+            if (!roots.includes(root))
                 roots.push(root);
-            }
         }
     }
     const files = new Map();
@@ -786,8 +1010,13 @@ export async function planStylesheetSources(source, input) {
     const read = new Set();
     // What a barrier pushes: the roots, and wherever a link below one leads out of them.
     const pushed = [...roots];
-    const pushFrom = (k) => { if (!pushed.some((dir) => under(dir, k)))
-        pushed.push(k); };
+    const pushedSet = new Set(pushed);
+    const pushFrom = (k) => {
+        if (pushed.some((dir) => under(dir, k)))
+            return;
+        pushed.push(k);
+        pushedSet.add(k);
+    };
     let stopped = null;
     /** Holds `path` within the bounds: false once the walk is at its bound. */
     const hold = (root, path, size) => {
@@ -810,6 +1039,8 @@ export async function planStylesheetSources(source, input) {
         }
         if (at?.kind !== 'directory')
             continue;
+        // A root in the project is walked for what its sources name that the project rule leaves out: the rest is that rule's.
+        const projectRoot = root === cwd || root.startsWith(cwd + '/');
         // Each directory as it is named below the root, which its exclusions are
         // of, where it is, which is what is read, and what it is below: a name is
         // walked once each, unless a link loops it back to where it is below.
@@ -835,12 +1066,31 @@ export async function planStylesheetSources(source, input) {
                     [path, kind, size] = [target, found.kind, found.size];
                 }
                 if (kind === 'directory') {
-                    if (excludedDir(home, root, named) || below(dir, path))
+                    if (below(dir, path))
                         continue;
+                    if (excludedDir(home, root, named)) {
+                        // A directory a walk leaves out, but the source names. Where it crosses into one (its own name is
+                        // left out, or its parent is not), it is its own push root, which push exclusions are below; what
+                        // is below that, the root covers.
+                        if (!excludedDir(home, root, named, rootNames.get(root))) {
+                            if ((PROJECT_EXCLUDED.has(baseOf(named)) || !excludedDir(home, root, parentOf(named))) && !pushedSet.has(path)) {
+                                pushedSet.add(path);
+                                pushed.push(path);
+                            }
+                            else {
+                                // Below one: where a link leads out of every root, its own.
+                                pushFrom(path);
+                            }
+                            queue.push({ named, at: path, up: dir });
+                        }
+                        continue;
+                    }
                     pushFrom(path);
                     queue.push({ named, at: path, up: dir });
                 }
-                else if (kind === 'file' && !excludedBelow(home, root, named)) {
+                else if (kind === 'file' && !excludedDir(home, root, parentOf(named), rootNames.get(root))) {
+                    if (projectRoot && (path === cwd || path.startsWith(cwd + '/')) && !excludedDir(home, root, parentOf(named)))
+                        continue;
                     pushFrom(path);
                     if (!hold(root, path, size))
                         break walk;
