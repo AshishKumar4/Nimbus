@@ -26,19 +26,24 @@ function program(run) {
   let write;
   let finish;
   const exit = new Promise((resolve) => { finish = resolve; });
-  const output = new ReadableStream({ start(controller) { write = controller; } });
+  // A signal sent before the program waits for one is kept for it.
   let killed = null;
+  let sent = null;
   const started = {
-    output,
+    output: null,
     exit,
-    kill(signal) { kills.push(signal); killed?.(signal); },
+    kill(signal) { kills.push(signal); if (killed) killed(signal); else sent = signal; },
   };
+  // A reader that has cancelled its output takes no more of it, as a machine's stream would drop it.
+  let open = true;
+  const output = new ReadableStream({ start(controller) { write = controller; }, cancel() { open = false; } });
+  started.output = output;
   Promise.resolve().then(async () => {
     const status = await run({
-      out: (text) => write.enqueue({ stream: 'stdout', data: typeof text === 'string' ? encoder.encode(text) : text }),
-      untilKilled: () => new Promise((resolve) => { killed = resolve; }),
+      out: (text) => { if (open) write.enqueue({ stream: 'stdout', data: typeof text === 'string' ? encoder.encode(text) : text }); },
+      untilKilled: () => new Promise((resolve) => { if (sent !== null) resolve(sent); else killed = resolve; }),
     });
-    write.close();
+    if (open) write.close();
     finish(status);
   });
   return started;
