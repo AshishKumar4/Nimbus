@@ -1,8 +1,13 @@
 import type { FilesFace, NodeFaces } from './faces.js';
+/** A path a call names: as the face takes it (absolute), and as its caller gave it, which its errors name, as Node's do. */
+export interface Named {
+    readonly abs: string;
+    readonly given: string;
+}
 /** One file call an operation waits for; its syscall and path name it in an EAGAIN. */
 export interface Step {
     readonly syscall: string;
-    readonly path: string | undefined;
+    readonly path: Named | undefined;
     later(files: FilesFace<'async'>): Promise<void>;
 }
 /** An operation: the steps it makes, and what it answers. */
@@ -15,7 +20,7 @@ export type Stepping<T> = Iterable<Step, T, void>;
  * Answered now, it is called where it stands; answered later, its answer is
  * kept here and read back after the step.
  */
-export declare function step<T>(syscall: string, path: string | undefined, call: (files: FilesFace<'sync'> | FilesFace<'async'>) => T | Promise<T>): Stepping<T>;
+export declare function step<T>(syscall: string, path: Named | undefined, call: (files: FilesFace<'sync'> | FilesFace<'async'>) => T | Promise<T>, dest?: Named): Stepping<T>;
 /** ENOSYS: the filesystem has no `syscall`. */
 export declare function lacks(syscall: string, path?: string): Error;
 /**

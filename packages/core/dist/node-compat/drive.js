@@ -9,6 +9,18 @@
  */
 import { fsError } from '../vfs/vfs-error.js';
 import { syncValue } from '../vfs/vfs.js';
+/** `error`, a failure of a call on `path` (and `dest`), naming them as its caller gave them. */
+function asGiven(error, path, dest) {
+    if (!(error instanceof Error))
+        return error;
+    for (const [field, named] of [['path', path], ['dest', dest]]) {
+        if (named === undefined || named.given === named.abs || Reflect.get(error, field) !== named.abs)
+            continue;
+        Reflect.set(error, field, named.given);
+        error.message = error.message.split(`'${named.abs}'`).join(`'${named.given}'`);
+    }
+    return error;
+}
 /**
  * The synchronous face while an operation is answered now: its steps call
  * it where they stand, so a failure is thrown once, where the body can
@@ -34,15 +46,29 @@ class Answered {
  * Answered now, it is called where it stands; answered later, its answer is
  * kept here and read back after the step.
  */
-export function step(syscall, path, call) {
-    return answering !== null ? new Answered(syncValue(call(answering))) : waitFor(syscall, path, call);
+export function step(syscall, path, call, dest) {
+    if (answering === null)
+        return waitFor(syscall, path, call, dest);
+    try {
+        return new Answered(syncValue(call(answering)));
+    }
+    catch (error) {
+        throw asGiven(error, path, dest);
+    }
 }
-function* waitFor(syscall, path, call) {
+function* waitFor(syscall, path, call, dest) {
     const slot = { answer: null };
     yield {
         syscall,
         path,
-        async later(files) { slot.answer = { value: await call(files) }; },
+        async later(files) {
+            try {
+                slot.answer = { value: await call(files) };
+            }
+            catch (error) {
+                throw asGiven(error, path, dest);
+            }
+        },
     };
     if (slot.answer === null)
         throw new Error(`node-compat: ${syscall} resumed unanswered`);
@@ -78,7 +104,7 @@ export function runSync(faces, name, op) {
     if (next.done)
         return next.value;
     const base = name.replace(/Sync$/, '');
-    throw fsError('EAGAIN', next.value.syscall, next.value.path, undefined, {
+    throw fsError('EAGAIN', next.value.syscall, next.value.path?.given, undefined, {
         detail: `resource temporarily unavailable (${name} cannot wait for these files; fs.${base} and fs.promises can)`,
     });
 }
