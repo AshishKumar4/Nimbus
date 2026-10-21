@@ -4,7 +4,8 @@ import {Terminal,mintSession,stripAnsi,makeAsserter,deleteSession,heredocCommand
 import {launchFrameworkDev,frameworkProxyHost} from '../_framework-dev.mjs';
 if(!process.env.BASE){console.error('FATAL: BASE env required');process.exit(2);}
 const a=makeAsserter('astro-versions-diag');
-for(const [version,newerFingerprint] of [['7.4.2',false],['7.4.1',false],['7.4.2',true]]){
+const cases=process.env.NIMBUS_ASTRO_DIAG_LATEST_ONLY==='1'?[['7.4.2',false]]:[['7.4.2',false],['7.4.1',false],['7.4.2',true]];
+for(const [version,newerFingerprint] of cases){
   const ROOT='/home/user/astro-probe',APP=ROOT+'/mvp',PORT=4321;
   const MARKER='astro-diag-'+version+'-'+Date.now();
   const sid=await mintSession();console.log(`[astro-diag] version=${version} newerFingerprint=${newerFingerprint} sid=${sid} BASE=${BASE}`);
@@ -19,12 +20,12 @@ for(const [version,newerFingerprint] of [['7.4.2',false],['7.4.1',false],['7.4.2
       console.log(`[astro-diag] runtime audit exit=${audit.exitCode}\n${stripAnsi(audit.output)}`);
     }
     const create=await t.run('npm create astro@latest mvp -- --template minimal --no-install --no-git --skip-houston --yes 2>&1',240000);
-    console.log(`[astro-diag] scaffold version=${version} exit=${create.exitCode}\n${stripAnsi(create.output)}`);
+    console.log(`[astro-diag] scaffold version=${version} exit=${create.exitCode}`);
     if(create.exitCode!==0)throw new Error('scaffold failed');
     const installed=await t.run(`cd ${APP} && npm install astro@${version} --save-exact 2>&1`,400000);
-    console.log(`[astro-diag] install version=${version} exit=${installed.exitCode}\n${stripAnsi(installed.output)}`);
+    console.log(`[astro-diag] install version=${version} exit=${installed.exitCode}\n${stripAnsi(installed.output).split('\n').filter(line=>line.includes('npm warn')||line.includes('[npm] Done!')||line.startsWith('added ')).join('\n')}`);
     if(installed.exitCode!==0)throw new Error('install failed');
-    const versions=await t.run(`cat ${APP}/node_modules/astro/package.json && cat ${APP}/node_modules/@astrojs/markdown-satteri/package.json && cat ${APP}/node_modules/satteri/package.json`,15000);
+    const versions=await t.run(`grep '"version"' ${APP}/node_modules/astro/package.json ${APP}/node_modules/@astrojs/markdown-satteri/package.json ${APP}/node_modules/satteri/package.json`,15000);
     console.log(`[astro-diag] installed manifests version=${version}\n${stripAnsi(versions.output)}`);
     await t.run(heredocCommand(APP+'/src/pages/proof.md','# Markdown proof\n\n**'+MARKER+'**\n'),10000);
     await t.run(heredocCommand(APP+'/src/pages/index.astro',`---\nimport { Content } from './proof.md';\n---\n<html lang="en"><head><title>Astro proof</title></head><body><Content /></body></html>\n`),10000);
