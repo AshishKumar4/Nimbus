@@ -164,6 +164,8 @@ function userSession() {
   }
   assert.deepEqual([kernel.exists(booted), kernel.exists(orphan), kernel.exists(earlierImage)], [false, false, false],
     'the shared wasm image, one nothing boots from, and the earlier process image are gone');
+  const reading = blobs().filter((path) => kernel.readFileString(path).includes(booted));
+  assert.deepEqual(reading, [], 'and no blob still reads the shared image');
   console.log('  [2] an earlier release\'s open images are closed once, a shared one copied per uid, and the durable apps relaunch');
 }
 

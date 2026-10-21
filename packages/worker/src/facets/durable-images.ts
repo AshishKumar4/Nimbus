@@ -169,6 +169,19 @@ export function rewriteWithoutEnvironment(vfs: SqliteVFS, application: string): 
   });
 }
 
+/** Every application blob in the store whose wasm modules read a path `reads` holds. */
+export async function applicationsNaming(vfs: SqliteVFS, reads: (path: string) => boolean): Promise<string[]> {
+  const kernel = vfs.as(CRED_KERNEL);
+  if (!kernel.exists(DURABLE_IMAGE_DIR)) return [];
+  const naming: string[] = [];
+  for (const { name } of kernel.readdir(DURABLE_IMAGE_DIR)) {
+    if (!/^[a-f0-9]{64}$/.test(name)) continue;
+    const parsed = ApplicationImageSchema.safeParse(jsonOrNull(new TextDecoder().decode(kernel.readFile(imagePath(name)))));
+    if (parsed.success && Object.values(parsed.data.vfsWasmModules ?? {}).some(reads)) naming.push(name);
+  }
+  return naming;
+}
+
 /** `application`, written again with each wasm module path in `moved` read from where it moved. */
 export function rewriteWasmPaths(vfs: SqliteVFS, application: string, moved: ReadonlyMap<string, string>): Promise<string> {
   return rewriteApplication(vfs, application, (image) => ({
