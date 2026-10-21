@@ -1,3 +1,4 @@
+import type { ExitStatus } from './program-start.js';
 import { singleQuote } from '../_shared/shell-quote.js';
 import { errorText } from '../_shared/error-text.js';
 import { resolveVfsPath } from '../vfs/path.js';
@@ -181,8 +182,9 @@ export interface SpawnRefusal {
   readonly errno: number;
 }
 
+/** A run's end: an exit status, a start refused, or (a program another machine ran) waitpid's answer. */
 export interface ChildRunner {
-  run(context: ChildRunnerContext): Promise<number | SpawnRefusal>;
+  run(context: ChildRunnerContext): Promise<number | SpawnRefusal | ExitStatus>;
 }
 
 export interface ChildProcessHost {
@@ -470,6 +472,9 @@ export class ChildProcessManager {
       if (this._stampKilled(child)) return;
       if (typeof result === 'number') {
         this._stampExit(child, result, null);
+      } else if ('signal' in result) {
+        if (result.signal === null) this._stampExit(child, result.code, null);
+        else this._stampExit(child, exitCodeForSignal(result.signal.replace(/^SIG/, '')), result.signal);
       } else if (!child.started) {
         child.spawnError = result.code;
         this._stampExit(child, result.errno, null);

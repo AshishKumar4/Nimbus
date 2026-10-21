@@ -7,6 +7,9 @@ import type { Command, CommandContext } from '../substrate/lifo/commands/types.j
 import { KILLED_BY_SIGPIPE } from '../substrate/lifo/shell/signals.js';
 import { isBrokenPipe } from '../substrate/lifo/utils/bytes-io.js';
 import type { NimbusWorkspace } from './nimbus-workspace.js';
+import { ProgramRefusal, runDelegatedProgram } from '../runtime/delegated-program.js';
+import type { ExitStatus } from '../runtime/program-start.js';
+import { errnoOf } from '../vfs/vfs-error.js';
 
 /** Resolve with the child's authority, then run on its descriptors and process identity. */
 export async function resolveWorkspaceChild(
@@ -15,6 +18,8 @@ export async function resolveWorkspaceChild(
   origin: ChildOrigin,
 ): Promise<ChildRunner | null> {
   const processes = workspace.processes;
+  const delegated = await delegatedChildRunner(workspace, request, origin);
+  if (delegated) return delegated;
   const view = new ProcessView(workspace.filesystem.bind({ pid: origin.pid, cred: processes.cred(origin.pid) }));
   const shellRunner = shellChildRunner(request, view, (context, line) => runChildShell(workspace, context, line));
   if (shellRunner) return shellRunner;
@@ -25,6 +30,48 @@ export async function resolveWorkspaceChild(
   const command = await resolveChildCommand(workspace.registry, request.command, resolveContext(origin.cwd, origin.env, view), view);
   if (!command) return null;
   return { run: context => runChildCommand(workspace, context, command) };
+}
+
+/**
+ * A node child whose cwd is under a delegating mount (Kinu ask 66), started
+ * on the mount's machine as Node starts it: its file and args, or, with
+ * `shell`, `/bin/sh -c` its line (Node's own argv). Null: it runs here.
+ * A start the machine refuses is the child's `error` event with the
+ * machine's code; an absent mount, EHOSTDOWN with nothing asked.
+ */
+export async function delegatedChildRunner(workspace: NimbusWorkspace, request: SpawnReq, origin: ChildOrigin): Promise<ChildRunner | null> {
+  const placing = workspace.filesystem.placeProgram(workspace.processes.cred(origin.pid), origin.cwd);
+  const placement = placing instanceof Promise ? await placing : placing;
+  if (placement.kind === 'local') return null;
+  if (placement.kind === 'absent') return { run: async () => spawnRefusal('EHOSTDOWN') };
+  const args = Array.isArray(request.args) ? request.args.map(String) : [];
+  const argv = request.shell
+    ? [typeof request.shell === 'string' ? request.shell : '/bin/sh', '-c', [request.command, ...args].join(' ')]
+    : [request.command, ...args];
+  return {
+    async run(child): Promise<number | SpawnRefusal | ExitStatus> {
+      const stop = new AbortController();
+      const stopped = workspace.processes.holdWork(child.pid, (reason) => stop.abort(reason));
+      try {
+        return await runDelegatedProgram(
+          placement.delegate,
+          { argv, env: child.env, cwd: placement.cwd },
+          { stdin: child.stdin, stdout: async (bytes) => child.output.onStdout(bytes), stderr: async (bytes) => child.output.onStderr(bytes) },
+          stop.signal,
+          () => child.onStarted(),
+        );
+      } catch (error) {
+        if (error instanceof ProgramRefusal) return spawnRefusal(error.code);
+        throw error;
+      } finally {
+        stopped();
+      }
+    },
+  };
+}
+
+function spawnRefusal(code: string): SpawnRefusal {
+  return { code, errno: errnoOf(code) ?? -5 };
 }
 
 /** A child's isolated shell owns its work until all of its descriptors close. */

@@ -90,7 +90,7 @@ try {
   assert.deepEqual(r.starts.map((s) => [s.argv, s.cwd]), [[['tool', '--flag'], '/']], 'one start, its argv, the mount\'s cwd');
 
   r = await run('cd /m && echo hi && printf x && command printf y && type -t cd >/dev/null');
-  assert.equal(r.out, 'hixy');
+  assert.equal(r.out, 'hi\nxy');
   assert.deepEqual(r.starts, [], 'the shell\'s own commands start nothing');
 
   r = await run('cd /m && f() { echo fn; }; f');
