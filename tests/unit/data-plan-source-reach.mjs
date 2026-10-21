@@ -85,6 +85,8 @@ check('the directories a source names', () => {
   assert.deepEqual([...sourceNamesOf('../{shared/node_modules/ui,kit}/**/*.tsx')], [['shared', 1], ['node_modules', 1], ['ui', 1], ['kit', 1]]);
   assert.deepEqual([...sourceNamesOf('./**/*.{node_modules,tsx}')], [], 'a file\'s name is no directory\'s');
   assert.deepEqual([...sourceNamesOf('{a/node_modules/b/node_modules,c}/x')], [['a', 1], ['node_modules', 2], ['b', 1], ['c', 1]]);
+  assert.deepEqual([...sourceNamesOf('../{node_modules,kit}')], [['node_modules', 1], ['kit', 1]], 'a last part of only alternatives names directories');
+  assert.equal(sourceNamesOf('../{node_,}{modules,x}/node_modules/ui/**').get('node_modules'), 2, 'groups side by side join into a name');
 });
 
 check('the worker depends on no braces', () => {
@@ -159,6 +161,26 @@ try {
   if (!selectedRoots.includes('/home/user/shared/node_modules') || selectedRoots.includes('/home/user/shared/node_modules/ui')) {
     failures.push(`pushed where the walk crosses into it, and no deeper: ${JSON.stringify(selectedRoots)}`);
   }
+
+  const { held: direct } = await held({
+    'home/user/theme/theme.css': '@import "tailwindcss";\n@source "../{node_modules,kit}";\n',
+    'home/user/node_modules/pkg/A.tsx': 'a',
+    'home/user/kit/B.tsx': 'b',
+  }, 'home/user/theme/theme.css', '/home/user/app');
+  if (!direct.includes('home/user/node_modules/pkg/A.tsx') || !direct.includes('home/user/kit/B.tsx')) failures.push(`directories a last part names are walked: ${JSON.stringify(direct)}`);
+
+  const { held: joined } = await held({
+    'home/user/theme/theme.css': '@import "tailwindcss";\n@source "../{node_,}{modules,x}/node_modules/ui/**";\n',
+    'home/user/node_modules/node_modules/ui/C.tsx': 'c',
+  }, 'home/user/theme/theme.css', '/home/user/app');
+  if (!joined.includes('home/user/node_modules/node_modules/ui/C.tsx')) failures.push(`a name groups join into lifts its exclusion: ${JSON.stringify(joined)}`);
+
+  const { roots: linkedOut } = await held({
+    'home/user/theme/theme.css': '@import "tailwindcss";\n@source "../{shared/node_modules/ui,kit}/**/*.tsx";\n',
+    'home/user/shared/node_modules/ui/Card.tsx': 'c',
+    'srv/widgets/W.tsx': 'w',
+  }, 'home/user/theme/theme.css', '/home/user/app', { 'home/user/shared/node_modules/ui/widgets': 'srv/widgets' });
+  if (!linkedOut.includes('/srv/widgets')) failures.push(`a link below a lifted directory pushes where it leads: ${JSON.stringify(linkedOut)}`);
 
   const { held: extension } = await held({
     'home/user/app/theme.css': '@import "tailwindcss";\n@source "./**/*.{node_modules,tsx}";\n',

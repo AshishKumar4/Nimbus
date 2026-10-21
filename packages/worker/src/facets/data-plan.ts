@@ -182,12 +182,18 @@ function excludedDir(home: string, dir: string, d: string, named: ReadonlyMap<st
   // A source that names such a directory selects it, as many deep as it names it: `node_modules` named once
   // lifts one, and the dependencies below that one stay out.
   if (d !== dir) {
-    const seen = new Map<string, number>();
-    for (const seg of d.slice(dir === '' ? 0 : dir.length + 1).split('/')) {
-      if (!PROJECT_EXCLUDED.has(seg)) continue;
-      const count = (seen.get(seg) ?? 0) + 1;
-      seen.set(seg, count);
-      if (count > (named.get(seg) ?? 0)) return true;
+    const segs = d.slice(dir === '' ? 0 : dir.length + 1).split('/');
+    if (named.size === 0) {
+      if (segs.some((seg) => PROJECT_EXCLUDED.has(seg))) return true;
+    } else {
+      let seen: Map<string, number> | null = null;
+      for (const seg of segs) {
+        if (!PROJECT_EXCLUDED.has(seg)) continue;
+        seen ??= new Map();
+        const count = (seen.get(seg) ?? 0) + 1;
+        seen.set(seg, count);
+        if (count > (named.get(seg) ?? 0)) return true;
+      }
     }
   }
   const segs = d.split('/');
@@ -832,11 +838,37 @@ export function sourceNames(path: string): ReadonlyMap<string, number> {
   const first = path.search(GLOB_SPECIAL);
   if (first < 0) return names;
   const parts = path.slice(path.lastIndexOf('/', first) + 1).split('/');
-  // The last part is the file's.
-  for (let i = 0; i < parts.length - 1; i++) {
-    for (const name of parts[i].split(/[{},*?[\]\\]/)) if (name !== '') names.set(name, (names.get(name) ?? 0) + 1);
+  const last = parts.length - 1;
+  for (let i = 0; i <= last; i++) {
+    const part = parts[i];
+    // The last part may be a directory's (`../{node_modules,kit}`) where it is only its alternatives: a name
+    // with anything outside its groups (`*.{node_modules,tsx}`) is a file's.
+    if (i === last && !wholeAlternatives(part)) continue;
+    const counted = new Map<string, number>();
+    for (const name of part.split(/[{},*?[\]\\]/)) if (name !== '') counted.set(name, (counted.get(name) ?? 0) + 1);
+    // Groups side by side may join into a name (`{node_,}{modules,x}`): what their text holds, joined, counts.
+    if (i < last) {
+      const joined = part.replace(/[{},]/g, '');
+      for (const excluded of PROJECT_EXCLUDED) {
+        let found = 0;
+        for (let at = joined.indexOf(excluded); at >= 0; at = joined.indexOf(excluded, at + excluded.length)) found++;
+        if (found > (counted.get(excluded) ?? 0)) counted.set(excluded, found);
+      }
+    }
+    for (const [name, count] of counted) names.set(name, (names.get(name) ?? 0) + count);
   }
   return names;
+}
+
+/** Whether `part` is nothing but brace groups and the names between their commas: no text outside its groups. */
+function wholeAlternatives(part: string): boolean {
+  let depth = 0;
+  for (const c of part) {
+    if (c === '{') depth++;
+    else if (c === '}') depth = Math.max(0, depth - 1);
+    else if (depth === 0) return false;
+  }
+  return part.startsWith('{');
 }
 
 /**
@@ -1009,6 +1041,9 @@ export async function planStylesheetSources(
               if ((PROJECT_EXCLUDED.has(baseOf(named)) || !excludedDir(home, root, parentOf(named))) && !pushedSet.has(path)) {
                 pushedSet.add(path);
                 pushed.push(path);
+              } else {
+                // Below one: where a link leads out of every root, its own.
+                pushFrom(path);
               }
               queue.push({ named, at: path, up: dir });
             }
