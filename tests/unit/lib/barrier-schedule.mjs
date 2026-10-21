@@ -98,6 +98,7 @@
 
 import { APP, bootEngine, stat as normalized } from './guest-engines.mjs';
 import { MemoryVFS } from '../../../packages/core/src/vfs/memory.ts';
+import { withRecall } from '../../../packages/core/src/vfs/recall.ts';
 import { scheduleTransport, KINDS } from './schedule-transport.mjs';
 import { sleep } from './resident-body.mjs';
 import { writeSync } from 'node:fs';
@@ -137,6 +138,8 @@ const DIR_MODE = 0o755;
 const DECIDED = Object.freeze(['rename', 'unlink', 'mkdir', 'rmdir', 'chmod']);
 /** The process's user and group, and the session user's: what owns everything not root's. */
 const USER = 1000;
+/** A peer's credential: the session user's. */
+const PEER_CRED = Object.freeze({ uid: USER, gid: USER, groups: [USER], umask: 0o022 });
 
 const parentOf = (rel) => (rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')) : '');
 const under = (rel, root) => rel === root || root === '' || rel.startsWith(`${root}/`);
@@ -701,6 +704,12 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
     }
   };
 
+  /** A peer through the session's namespace (a mount's names are on it, not on its database), as `cred`; calls a held grant recalls first. */
+  const namespacePeer = (cred) => {
+    const bridge = engine.authority.files.bind({ pid: cred === CRED_KERNEL ? 90_000 : 90_001, cred });
+    return new Proxy(bridge, { get: (target, name) => (typeof target[name] === 'function' ? (...args) => withRecall(() => target[name](...args)) : target[name]) });
+  };
+
   /** The change as `way` makes it: a promise, but for a call that cannot wait, which answers or throws now. */
   const change = (way, [, op, a, b, tree]) => {
     const fs = way === 'sync' ? engine.sync : engine.fs;
@@ -713,6 +722,15 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
       }
       engine.authority.files.vfs.mount(abs(a), b === 'fed' ? backend : new Proxy(backend, { get: (target, name) => (name === 'changes' ? undefined : Reflect.get(target, name, target)) }));
       return Promise.resolve();
+    }
+    if (outside(way) && [a, b].some((rel) => typeof rel === 'string' && mountOf(model.world, rel) !== null)) {
+      // A mounted name is the namespace's: the change goes through it, to the mount.
+      const peer = namespacePeer(way === 'root' ? CRED_KERNEL : PEER_CRED);
+      if (op === 'write') return peer.writeFile(abs(a), enc.encode(b));
+      if (op === 'mkdir') return peer.mkdir(abs(a), { mode: DIR_MODE });
+      if (op === 'rename') return peer.rename(abs(a), abs(b));
+      if (op === 'chmod') return peer.chmod(abs(a), b);
+      return peer[op](abs(a));
     }
     if (outside(way)) {
       const peer = way === 'root' ? engine.authority.peerAs(CRED_KERNEL) : engine.authority.peer;
@@ -898,9 +916,8 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
           }
         }
       }
-      // What the session holds is what the model says, as root sees it: nothing the process wrote was lost.
-      // (A stat: no name here is a link, and an lstat of a mount point answers the directory it covers.)
-      const held = normalized(await engine.authority.peerAs(CRED_KERNEL).stat(key(rel)).catch(() => null));
+      // What the session holds is what the model says, as root sees it through the namespace: nothing the process wrote was lost.
+      const held = normalized(await namespacePeer(CRED_KERNEL).stat(abs(rel), { followSymlinks: false }).catch(() => null));
       if (!statIs(held, state)) throw new Finding(`at rest, the session holds ${JSON.stringify(held)} at ${rel || '.'}; the model says ${describe(state)}`, end);
     }
   } finally {
