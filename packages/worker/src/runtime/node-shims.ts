@@ -10544,6 +10544,16 @@ function __makeStdinSource() {
   function end() { ended = true; deliver(); }
   function fail(error) { failure = error; deliver(); }
   async function pumpLiveStdin() {
+    __nimbusStdinPumping = true;
+    try {
+      await pumpLiveStdinPackets();
+    } finally {
+      __nimbusStdinPumping = false;
+      // Its signals are the signal taker's again once its input has ended.
+      if (!__nimbusProgramStopped) __nimbusTakeSignals();
+    }
+  }
+  async function pumpLiveStdinPackets() {
     let readFailures = 0;
     // What fd 0's follower took after process.stdin took the channel over
     // comes first (__nimbusFollowStdin).
@@ -10820,11 +10830,27 @@ function __nimbusWriteLiveOutput(streamName, data, encoding, callback, send) {
   return ready;
 }
 
+// What output must wait for besides the filesystem's gate: what this process
+// says it catches (__nimbusSayCaught), so a "ready" it prints after
+// process.on() leaves only once a signal sent then finds it caught. Null when
+// nothing is held.
+let __nimbusOutputHold = null;
+function __nimbusHoldOutput(promise) {
+  const held = Promise.all([__nimbusOutputHold, promise]).then(() => {}, () => {});
+  __nimbusOutputHold = held;
+  held.then(() => { if (__nimbusOutputHold === held) __nimbusOutputHold = null; });
+}
+
 // The gate an output or exit leaving the process is released at, taken when
 // it is made (ProcessFsClient.effect): null when nothing it logged waits.
+// What is held (__nimbusOutputHold) is waited for too; the output is written
+// meanwhile, so a run that stops carries it (runtime/stop-replay.ts).
 function __nimbusOutputGate() {
   const client = globalThis.__nimbusProcessFs;
-  return client ? client.effect() : null;
+  const gate = client ? client.effect() : null;
+  const hold = __nimbusOutputHold;
+  if (hold === null) return gate;
+  return gate === null ? hold : Promise.all([gate, hold]);
 }
 
 // Send a line to the session's stderr for this process, at its gate: every
@@ -11090,6 +11116,109 @@ Object.defineProperty(__processMod, "allowedNodeEnvironmentFlags", {
 });
 // The 'warning' listener Node installs (setupWarningHandler), unless warnings are off.
 if (__nimbusWarnings.installs) __processMod.on("warning", __nimbusWarnings.onWarning);
+// The signals this process catches, as its listeners come and go: the
+// session queues each one sent to it (a parent's kill, the shell's, a
+// client's) for it to take, where it would otherwise take the signal's
+// default action (cpCatchSignals), and this process takes them
+// (cpTakeSignal), its handlers deciding what it does, as Node's do. While its
+// stdin pump runs, the pump takes them with its input (one waits at a time).
+// What it catches is said again until the session has it, and its output
+// waits for that: a "ready" it prints after process.on() is seen only once a
+// signal sent then finds it caught.
+const __nimbusCatchable = ["SIGHUP", "SIGINT", "SIGQUIT", "SIGUSR1", "SIGUSR2", "SIGPIPE", "SIGALRM", "SIGTERM"];
+let __nimbusCaughtWanted = "";
+let __nimbusCaughtSaid = "";
+let __nimbusCaughtSaying = null;
+let __nimbusSignalTaker = null;
+let __nimbusStdinPumping = false;
+// A pause no program waits on: the facet's own timer, not the program's.
+function __nimbusPause(ms) {
+  const schedule = globalThis.__nimbusRawSetTimeout || setTimeout;
+  return new Promise((resolve) => { schedule(resolve, ms); });
+}
+function __nimbusCatchSignals(adding) {
+  if (!__supervisor || typeof __supervisor.cpCatchSignals !== "function") return;
+  __nimbusCaughtWanted = __nimbusCatchable.filter((sig) => sig === adding || __processMod.listenerCount(sig) > 0).join(",");
+  // A run that stops carries them, as its word may not have reached the session.
+  if (__nimbusReplay && typeof __nimbusReplay.catches === "function") __nimbusReplay.catches(__nimbusCaughtWanted);
+  __nimbusSayCaught();
+  __nimbusTakeSignals();
+}
+function __nimbusSayCaught() {
+  if (__nimbusCaughtSaying !== null || __nimbusCaughtWanted === __nimbusCaughtSaid) return;
+  const saying = (async () => {
+    let failures = 0;
+    try {
+      while (__nimbusCaughtWanted !== __nimbusCaughtSaid && !__nimbusProgramStopped) {
+        const wanted = __nimbusCaughtWanted;
+        try {
+          await __nimbusUseRpcResultUnref(__supervisor.cpCatchSignals(wanted === "" ? [] : wanted.split(",")), () => undefined);
+          __nimbusCaughtSaid = wanted;
+          failures = 0;
+        } catch (error) {
+          if (++failures >= 5) {
+            __nimbusReleaseStderr("[nimbus] the session did not take this process's signal handlers (" + ((error && error.message) || String(error))
+              + "): a signal sent to it takes its default action\\n");
+            return;
+          }
+          await __nimbusPause(200 * failures);
+        }
+      }
+    } finally {
+      // Let go in the same turn as the last look at what is wanted: a listener added after says it afresh.
+      __nimbusCaughtSaying = null;
+    }
+  })();
+  __nimbusCaughtSaying = saying;
+  __nimbusHoldOutput(saying);
+}
+// Whether this run has taken back what a stop parked (cpTakeSignal): once, past a replay's boundary, whether its
+// signals then come by its own waits or with its stdin.
+let __nimbusSignalsTakenBack = false;
+function __nimbusTakeSignals() {
+  if (__nimbusSignalTaker !== null || __nimbusCaughtWanted === "" || typeof __supervisor.cpTakeSignal !== "function") return;
+  if (__nimbusStdinPumping && __nimbusSignalsTakenBack) return;
+  __nimbusSignalTaker = (async () => {
+    let failures = 0;
+    while (__nimbusCaughtWanted !== "" && !__nimbusProgramStopped && !(__nimbusStdinPumping && __nimbusSignalsTakenBack)) {
+      // A run after a stop takes no signal before the read the run before it stopped at: that run had none there.
+      const crossing = __nimbusReplay && typeof __nimbusReplay.untilBoundary === "function" ? __nimbusReplay.untilBoundary() : null;
+      if (crossing) await crossing;
+      let sig = null;
+      const asked = Date.now();
+      try {
+        // Unref'd, as the stdin pump's poll: waiting for a signal is no reason to keep the program alive. While the
+        // pump reads, it takes them with its input: this asks once, to take back what a stop parked, and is done.
+        sig = await __nimbusUseRpcResultUnref(__supervisor.cpTakeSignal(__nimbusStdinPumping ? 0 : 5000), (result) => result);
+        __nimbusSignalsTakenBack = true;
+        failures = 0;
+      } catch {
+        if (++failures > 10) return;
+        sig = null;
+      }
+      if (__nimbusProgramStopped) return;
+      if (sig === null) {
+        if (__nimbusStdinPumping) continue;
+        // An answer of none that came at once (the session holds no catches for it, or failed) is asked again a second later, not at once.
+        if (Date.now() - asked < 1000) await __nimbusPause(1000);
+        continue;
+      }
+      // Whatever sent it may have written files first, as for a signal the stdin pump delivers.
+      await __nimbusInboundBarrier(undefined, true);
+      if (__nimbusReplay) __nimbusReplay.unreplayable("took " + sig + ", sent from outside it, which a second run would not be sent again");
+      __nimbusSignalSelf(String(sig));
+    }
+  })().catch((e) => {
+    if (e instanceof __ProcessExit) return;
+    try { queueMicrotask(() => { throw e; }); } catch {}
+  }).finally(() => {
+    __nimbusSignalTaker = null;
+    // Listeners added while it ended are taken by the next.
+    if (!__nimbusProgramStopped) __nimbusTakeSignals();
+  });
+}
+__processMod.on("newListener", (event) => { if (__nimbusCatchable.includes(event)) __nimbusCatchSignals(event); });
+__processMod.on("removeListener", (event) => { if (__nimbusCatchable.includes(event)) __nimbusCatchSignals(null); });
 // Node's process reads as one: Object.prototype.toString gives "[object
 // process]", which axios (utils.kindOf) and others test to pick their Node
 // paths (axios: its http adapter rather than its fetch one). As Node defines

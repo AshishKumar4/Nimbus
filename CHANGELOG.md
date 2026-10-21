@@ -109,6 +109,20 @@ published independently in the `@nimbus-sh` npm scope.
   - Now no path is expanded. A path's reach is the part before its first glob character (`{ * ? [`), up to its last `/`, and one directory higher for each `..` its brace alternatives could spell. It is computed in one pass over the path, whatever it nests or ranges over.
   - It is exact for braces in the file part (`../ui/**/*.{ts,tsx}` holds `../ui`). Braces in the directory part (`../{a,b}/src`) hold their common parent: more files, never fewer. A range's directory is held whole, not the files it names. What the plan does not hold, Tailwind's scanner still reads, as before.
 
+- Added: `createNodeCompat({ files, start })` also gives Node's `child_process` (`childProcess`), and `nodeFacesOf(sandbox)` gives it the session's argv start (`sandbox.startProgram`). Each child is placed by its cwd, as every start is.
+  - `exec` starts `/bin/sh -c` its line, as Node's does; `execFile` and `spawn` start their argv.
+  - A child's stdin is bytes with backpressure, to their end; its output is read as you read it; its exit is waitpid's.
+  - A child given no `env` gets the session's environment.
+  - Shapes are Node's:
+    - a failed exit is an error with `code` or `signal`, plus `killed`, `cmd`, `stdout` and `stderr`;
+    - a refused start is the `error` event (`ENOENT`, `syscall: 'spawn <file>'`), then `close` with the negative errno;
+    - `maxBuffer`, `encoding: 'buffer'`, `timeout`/`killSignal`, `signal` and `util.promisify` behave as Node's.
+  - `execSync`, `execFileSync` and `spawnSync` throw `ERR_NIMBUS_SYNC_CHILD_PROCESS`, as the hosted node's do.
+  - `stdio: 'inherit'` output goes nowhere: this process shares no descriptors with its child.
+  - `fork` is unavailable: there is no IPC channel.
+- Changed: lifo's node runs the same `child_process` with no start face until its realm can wait for one. `exec` and `spawn` refuse every child ENOSYS, as Node reports a spawn it cannot make. Before, its stub said "requires shell interpreter", and `spawn` threw.
+- Fixed: a Node program's signal handlers hear the signals sent to it, as on Linux. A `process.on('SIGTERM')` handler runs when the program is killed: by its Node parent (`child.kill()`), by the shell's `kill`, by the session's `signalProcess`, or by a started program's `kill`. The program then does what its handler says. A signal it has no handler for still takes its default action. A signal it catches while it waits in `fs.readFileSync(0)` reaches it once the read returns, as in Node. A program that has taken a signal cannot afterwards wait at a synchronous read of stdin that has no input yet: Nimbus cannot run it again past a signal. It fails that read with `ERR_NIMBUS_SYNC_STDIN`, naming the signal. Before, every such kill ended the program at once.
+
 ## 2026-10-21 (patch): worker 0.24.1 (every other package unchanged from the 2026-10-21 release)
 
 - Fixed: a new Vite project installs again. Vite 8.3.5, published

@@ -25,6 +25,7 @@ import { enc, dec, StreamTextDecoders } from '@nimbus-sh/core/_shared/bytes.js';
 import { RuntimeStatSchema, sessionFileStatOf, type SessionFileStat, type SessionFollowOptions, type SessionMkdirOptions } from '@nimbus-sh/core/runtime/session-protocol.js';
 import { isBrokenPipe } from '@nimbus-sh/core/substrate/lifo/utils/bytes-io.js';
 import { STDIN_FILE_READ_PIECE_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
+import { parseProcessSignalName, type ProcessSignalName } from '@nimbus-sh/core/runtime/process-io-protocol.js';
 import { normalizeTerminalNewlines } from '@nimbus-sh/core/_shared/terminal.js';
 import type { ProcessExitNotice, ProcessExitNoticeSource } from '@nimbus-sh/core/runtime/process-exit-notices.js';
 import { getInnerDoClass, innerDoFacetName, noteInnerDoFacetOpened } from '@nimbus-sh/fabric/inner-do-registry.js';
@@ -1633,6 +1634,29 @@ export async function _rpcLoaderCodeStore(self: RpcHost, request: LoaderStoreReq
 export async function _rpcCpNextSignal(self: RpcHost, pid: number | undefined, waitMs: number): Promise<string | null> {
     if (pid === undefined || isPriorGenerationPid(self, pid)) return null;
     return self.processes.nextSignal(pid, Number(waitMs) || 0);
+}
+
+/**
+ * The next signal sent to `pid`'s Node program, which takes its own: its
+ * box taken back from a stop (SessionProcessSupervisor.takeSignalsBack), then
+ * cpNextSignal's wait. Its own op: a Node run asks only past a replay's
+ * boundary, so none of its waits is a replayed observation.
+ */
+export async function _rpcCpTakeSignal(self: ProcessRpcHost, pid: number | undefined, waitMs: unknown): Promise<string | null> {
+    if (pid === undefined || isPriorGenerationPid(self, pid)) return null;
+    self.processes.takeSignalsBack(pid);
+    return self.processes.nextSignal(pid, Number(waitMs) || 0);
+}
+
+/** The signals process `pid`'s program catches now (SessionProcessSupervisor.catchSignals); names not a signal's are not. */
+export async function _rpcCpCatchSignals(self: ProcessRpcHost, pid: number | undefined, catches: unknown): Promise<void> {
+    if (pid === undefined || isPriorGenerationPid(self, pid) || !Array.isArray(catches)) return;
+    const names: ProcessSignalName[] = [];
+    for (const catching of catches) {
+      const name = typeof catching === 'string' ? parseProcessSignalName(catching) : null;
+      if (name !== null) names.push(name);
+    }
+    self.processes.catchSignals(pid, names);
 }
 
 export async function _rpcCpReadOutput(

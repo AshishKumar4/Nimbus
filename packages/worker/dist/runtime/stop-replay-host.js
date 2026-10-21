@@ -79,6 +79,8 @@ function parseStopRecord(error, nonce, run) {
             || captured.stdout.length + captured.stderr.length > REPLAY_PREFIX_MAX_BYTES)
             return null;
     }
+    if (r.catches !== undefined && (typeof r.catches !== 'string' || !/^(SIG[A-Z0-9]+(,SIG[A-Z0-9]+)*)?$/.test(r.catches) || r.catches.length > 400))
+        return null;
     if (r.kind === 'stdin') {
         if ((r.until !== 'end' && r.until !== 'data') || !isCount(r.stopAt, REPLAY_TAPE_MAX_READINGS) || !isTape(r.tape))
             return null;

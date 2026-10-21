@@ -201,7 +201,7 @@ try {
   });
 
   await check('the SDK across the remote API', async () => {
-    const host = { async ensureRuntimeReady() {}, runtimeWorkspace: ws, processes: ws.processes };
+    const host = { async ensureRuntimeReady() {}, runtimeWorkspace: ws, processes: ws.processes, _ensureChildProcessManager: () => ws.children };
     const waits = [];
     const session = {
       _rpcReady: async () => ({ ok: true, preinstalled: [] }),
