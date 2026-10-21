@@ -3223,6 +3223,7 @@ var __nimbusResidentModule = (() => {
       const dropped = [];
       const own = [];
       let rekeyed = 0;
+      let vouched = 0;
       for (const row of rows) {
         const entry = listed.get(row.path);
         if (row.rev === RK_OWN_WRITE) {
@@ -3233,8 +3234,12 @@ var __nimbusResidentModule = (() => {
           });
           continue;
         }
-        const keep = vouches(entry, row.rev) || !judgeable;
-        if (keep) {
+        if (vouches(entry, row.rev)) {
+          vouched++;
+          current.add(row.path);
+          continue;
+        }
+        if (!judgeable) {
           current.add(row.path);
           continue;
         }
@@ -3246,7 +3251,6 @@ var __nimbusResidentModule = (() => {
         }
         dropped.push(row.path);
       }
-      let vouched = 0;
       for (const [path, rev] of cells.heldRevisions()) {
         if (current.has(path)) continue;
         const entry = listed.get(path);
