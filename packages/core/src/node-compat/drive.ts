@@ -67,7 +67,11 @@ export function withFields(error: Error, change: (fields: Record<string, unknown
   } finally {
     Reflect.set(Error, 'stackTraceLimit', limit);
   }
-  if (typeof error.stack === 'string') copy.stack = error.stack.replace(error.message, message);
+  // Read only when asked: an error's stack is formatted the first time it is read, at a cost a probe should not pay.
+  Object.defineProperty(copy, 'stack', {
+    configurable: true,
+    get: () => (typeof error.stack === 'string' ? error.stack.replace(error.message, message) : undefined),
+  });
   return Object.assign(copy, fields);
 }
 
