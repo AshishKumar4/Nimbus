@@ -349,15 +349,26 @@ const BURN_VARIANTS: Record<string, Record<string, string | { cjs: string } | { 
   // The same, in a CommonJS module's own sloppy-mode wrapper but through a with-free indirect eval.
   eval: { 'main.js': BURN_MAIN('burn.burn(n)'), 'burn.js': `const module = { exports: {} };\n(0, eval)(${JSON.stringify(`(function (exports, require, module, __filename, __dirname) { module.exports = { burn(n) { ${BURN_BODY} } }; })`)}).call(module.exports, module.exports, () => null, module, '/burn.js', '/');\nexport default module.exports;\n` },
 };
-const BurnRequest = z.object({ variant: z.enum(['esm', 'cjs', 'fn', 'eval']), n: z.number().int().positive() });
+// Each again with the guests' registry (new_module_registry, GUEST_COMPAT_FLAGS), and the new Function wrapper
+// evaluated at request time: its module imported by the request, not the load.
+BURN_VARIANTS['fn-request'] = {
+  'main.js': `export default { async fetch(request) { const n = Number(new URL(request.url).searchParams.get('n')); try { const burn = (await import('./burn.js')).default; return new Response(JSON.stringify(burn.burn(n))); } catch (e) { return new Response(String(e && e.stack || e), { status: 500 }); } } };\n`,
+  'burn.js': BURN_VARIANTS.fn['burn.js'],
+};
+BURN_VARIANTS['strict-esm'] = {
+  'main.js': BURN_MAIN('burn.burn(n)'),
+  // A strict cell in an ES module, wrapped as the cjs cell is (THE WRAPPER), its five names passed in.
+  'burn.js': `const module = { exports: {} };\n(function (exports, require, module, __filename, __dirname) { 'use strict'; module.exports = { burn(n) { ${BURN_BODY} } }; }).call(module.exports, module.exports, () => null, module, '/burn.js', '/');\nexport default module.exports;\n`,
+};
+const BurnRequest = z.object({ variant: z.enum(['esm', 'cjs', 'fn', 'eval', 'fn-request', 'strict-esm']), n: z.number().int().positive(), registry: z.enum(['old', 'new']).default('old') });
 
 /** POST /api/embedder/<any>/cjs-burn {variant, n} — experiment: the burn, `variant`'s way, in a Loader worker this request calls. */
 async function cjsBurn(request: Request, env: ProbeEnv): Promise<Response> {
   if (!nimbusDebugEnabled(env)) return new Response('Not found', { status: 404 });
   if (!await verifyRequestToken(request, env)) return authRequiredResponse();
-  const { variant, n } = BurnRequest.parse(await request.json());
-  const loader = (env as unknown as { LOADER: { get(id: string, code: () => Promise<{ compatibilityDate: string; mainModule: string; modules: Record<string, string | { cjs: string } | { js: string }> }>): { getEntrypoint(): { fetch(url: string): Promise<Response> } } } }).LOADER;
-  const worker = loader.get(`cjs-burn-${variant}`, async () => ({ compatibilityDate: '2026-09-26', mainModule: 'main.js', modules: BURN_VARIANTS[variant] }));
+  const { variant, n, registry } = BurnRequest.parse(await request.json());
+  const loader = (env as unknown as { LOADER: { get(id: string, code: () => Promise<{ compatibilityDate: string; compatibilityFlags: string[]; mainModule: string; modules: Record<string, string | { cjs: string } | { js: string }> }>): { getEntrypoint(): { fetch(url: string): Promise<Response> } } } }).LOADER;
+  const worker = loader.get(`cjs-burn-${variant}-${registry}`, async () => ({ compatibilityDate: '2026-09-26', compatibilityFlags: registry === 'new' ? ['nodejs_compat', 'new_module_registry'] : [], mainModule: 'main.js', modules: BURN_VARIANTS[variant] }));
   const started = Date.now();
   const answer = await worker.getEntrypoint().fetch(`https://burn.local/?n=${n}`);
   const text = await answer.text();
