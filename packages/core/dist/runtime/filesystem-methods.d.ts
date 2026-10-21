@@ -204,6 +204,7 @@ export declare const FILESYSTEM_METHODS: {
     readonly awaitRecall: {
         readonly rpc: "fsAwaitRecall";
         readonly answer: "value";
+        readonly waits: true;
     };
     readonly recalled: {
         readonly rpc: "fsRecalled";

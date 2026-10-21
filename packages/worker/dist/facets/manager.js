@@ -1135,7 +1135,7 @@ ${VFS_CURSOR_SEED_SOURCE}
     // Every call that changes something outside the process is counted: a
     // run that made one cannot stop to be run again.
     const __supervisor = workerEnv?.SUPERVISOR
-      ? __nimbusStopReplay.ledger(globalThis.__nimbusAnsweringSupervisor(workerEnv.SUPERVISOR)) : null;
+      ? __nimbusStopReplay.ledger(globalThis.__nimbusAnsweringSupervisor(workerEnv.SUPERVISOR, __nimbusTrackOp)) : null;
     // What the run misses, and the code it produces, reach the session as they
     // happen, as a resident's do: a run the platform kills (its memory limit)
     // sends no exit envelope, and its next launch must still stage what it
@@ -1530,7 +1530,7 @@ ${VFS_CURSOR_SEED_SOURCE}
       run: __startArgs && __startArgs.run,
     });
     const __supervisor = workerEnv?.SUPERVISOR
-      ? __nimbusStopReplay.ledger(globalThis.__nimbusAnsweringSupervisor(workerEnv.SUPERVISOR)) : null;
+      ? __nimbusStopReplay.ledger(globalThis.__nimbusAnsweringSupervisor(workerEnv.SUPERVISOR, __nimbusTrackOp)) : null;
     // Its network goes through its workspace's egress: node:tls refuses a TLS socket by name.
     globalThis.__nimbusEgress = workerEnv?.NIMBUS_EGRESS === true;
     __nimbusRuntimeCodeReporter = () => {
