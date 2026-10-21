@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "1e877ceb5a621b8fd045f36d08b39dba709eab59518f40243aa9da2be61c2d7f",
+  "fingerprint": "7732bf6399e00f0b31067c3f6d9c8c4cc4867a348d94b60512590413d4303afa",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2368,7 +2368,7 @@
     "packages/worker/dist/facets/dev-stylesheet.d.ts.map": "0dc6c12eb776ab136c9ea5e3fb8e5dae9137836c48011eabb9b862195868dadf",
     "packages/worker/dist/facets/dev-stylesheet.js": "3a793ebbf38d24ce9e2e164381a09d0e07db72ce5a7799f7da0f01acd6b3945b",
     "packages/worker/dist/facets/durable-images.d.ts": "61173f1c9004977900c2db8195a934ddb8dea352d9aa242b3252e63a42884284",
-    "packages/worker/dist/facets/durable-images.d.ts.map": "616f19a465f104d4b24d3f2af35591760a1e9c2e717cd777a42ce205cebab952",
+    "packages/worker/dist/facets/durable-images.d.ts.map": "09a39d6ac62935f7d506cc2f3b5d2f3aced7bc1fb0e713f4484be5c772a6018d",
     "packages/worker/dist/facets/durable-images.js": "eddf75c8f3934849c1bcc2a6974bb058bec7d0dc58b79434545f8aed214a3a99",
     "packages/worker/dist/facets/durable-slots.d.ts": "03213b7f22af5b325c3aa75f16a66998480c405e74350a17270f5a90f77a70eb",
     "packages/worker/dist/facets/durable-slots.d.ts.map": "f2e0bfe6b5b4023f4062d0e75a8b9e4334ebb814867d900a9dfda248c358e92f",
@@ -3289,7 +3289,7 @@
     "packages/worker/src/facets/compose.ts": "04f8491e454352984c854958b62a29f09b8d5fa8857c760453f328f8e401f6e3",
     "packages/worker/src/facets/data-plan.ts": "400da39987b567eb57e562403258b122d91455683690723127e9113df3eaf339",
     "packages/worker/src/facets/dev-stylesheet.ts": "f3d0d28ee725eec8e6f4928d12e126973898582cb84eab0e22b0886bcaf240a4",
-    "packages/worker/src/facets/durable-images.ts": "c51b8f983c1bbf9a03402d3f12c0c646e2cc20270aed86a2b780a385f223c81e",
+    "packages/worker/src/facets/durable-images.ts": "a3dc03879ec3454f0e603ba699810096e2961c0b0e18463b6d669134a276022c",
     "packages/worker/src/facets/durable-slots.ts": "bdbe2a56483a438c3b9ad5394f8c2719ab3b9f254c16452ab520a6cf1ce7839d",
     "packages/worker/src/facets/esbuild-transform.ts": "7151a8b161f987460c1057d25ac58188cc14d7ec1614d2ef127db9f6d485df35",
     "packages/worker/src/facets/esm-stage.ts": "d59c39fd9e412dd2f3dffe1d08739350684d49bee84797f4f625f03897aa5929",
