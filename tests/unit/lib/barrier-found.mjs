@@ -213,10 +213,6 @@ const GAPS = {
     lacks: 'O9: an awaited mutation outside a grant is decided by the provisional decisions (the cutover)',
     shows: 'sync stat top answered file 644',
   },
-  'a directory a call that cannot wait has not listed is not refused as a directory [holder]': {
-    lacks: 'its synchronous refusal names the call: a directory is EISDIR only to a call for bytes (notResident, the cutover)',
-    shows: 'answered EISDIR',
-  },
   'an awaited chmod outside a grant is what the next call that cannot wait reads [eager]': {
     lacks: 'O9: an awaited mutation outside a grant is decided by the provisional decisions (the cutover)',
     shows: 'sync stat top answered file 644',

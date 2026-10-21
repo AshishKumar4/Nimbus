@@ -296,8 +296,6 @@ export function generate(seed, steps = 40) {
  * drawn schedule finds something new. A gap closed is removed from both.
  *   - unshownAwaitedChange: an awaited change outside a grant is not shown
  *     to a call that cannot wait until a barrier lands (O9);
- *   - refusedAsDirectory: a call that cannot wait, on a directory the view
- *     cannot answer it for, is refused EISDIR, whatever it asked;
  *   - absentWhileRelisted: a directory being relisted answers a name under
  *     it as absent (B2);
  *   - refusedWhileRelisted: an awaited read under a directory being relisted
@@ -305,8 +303,8 @@ export function generate(seed, steps = 40) {
  */
 export const KNOWN_GAPS = Object.freeze({
   node: Object.freeze({ absentWhileRelisted: true, refusedWhileRelisted: true }),
-  holder: Object.freeze({ unshownAwaitedChange: true, refusedAsDirectory: true }),
-  eager: Object.freeze({ unshownAwaitedChange: true, refusedAsDirectory: true }),
+  holder: Object.freeze({ unshownAwaitedChange: true }),
+  eager: Object.freeze({ unshownAwaitedChange: true }),
 });
 
 /** A finding: the schedule, the step, and what was wrong there. */
@@ -589,7 +587,6 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
     : lazy || poisoned || transport.inFlight('listing') > 0 || (op === 'readFile' && model.readable(rel, from, to)));
   const judge = (at, way, op, rel, answer, from, to, offset = 0) => {
     if (answer?.code === 'EAGAIN' && way === 'sync' && refusable(op, rel, from, to)) return;
-    if (gaps.refusedAsDirectory && way === 'sync' && answer?.code === 'EISDIR' && model.worldsSeen(rel, from, to).some((world) => world.get(rel)?.type === 'dir')) return;
     if (gaps.absentWhileRelisted && way === 'sync' && answer === null && transport.inFlight('listing') > 0) return;
     if (gaps.refusedWhileRelisted && way === 'own' && answer?.code === 'EAGAIN' && transport.inFlight('listing') > 0) return;
     const decided = kind === 'node' && way === 'sync';
@@ -672,7 +669,6 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
       } catch (error) {
         model.drop(record);
         if (error?.code === 'EAGAIN' && (lazy || poisoned)) return null;
-        if (error?.code === 'EISDIR' && gaps.refusedAsDirectory && domain.some((rel) => model.world.get(rel)?.type === 'dir')) return null;
         throw new Finding(`sync ${step[1]} ${step.slice(2).join(' ')} failed: ${error?.code ?? error?.message ?? error}`, at);
       }
       finish();
@@ -807,7 +803,6 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
         for (const op of ['stat', state?.type === 'dir' ? 'readdir' : 'readFile']) {
           const answer = await read(way, op, rel);
           if (answer?.code === 'EAGAIN' && way === 'sync' && (op === 'readFile' ? !owedBytes(rel) && (lazy || model.readable(rel, seq(), seq())) : lazy)) continue;
-          if (answer?.code === 'EISDIR' && way === 'sync' && gaps.refusedAsDirectory && state?.type === 'dir') continue;
           if (!answers(op, rel, answer, world)) {
             throw new Finding(`at rest, ${way} ${op} ${rel || '.'} answered ${JSON.stringify(answer)}; the model holds ${op === 'readdir' && state?.type === 'dir' ? `[${childrenOf(world, rel)}]` : describe(state)}`, end);
           }
