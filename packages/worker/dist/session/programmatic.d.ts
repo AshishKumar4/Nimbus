@@ -184,6 +184,12 @@ export declare function rpcWriteProcessInput(self: ProgrammaticHost, pid: number
     ok: boolean;
     pid: number;
 }>;
+/**
+ * A byte write as the remote API makes it: its answer, the JSON envelope a
+ * remote call answers with, is the body of a stream, so a client that leaves
+ * while the write waits for room (its body cancelled) withdraws it.
+ */
+export declare function rpcWriteProcessInputStream(self: ProgrammaticHost, pid: number, data: Uint8Array): Promise<ReadableStream<Uint8Array>>;
 export declare function rpcEndProcessInput(self: ProgrammaticHost, pid: number): Promise<{
     ok: boolean;
     pid: number;

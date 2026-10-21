@@ -736,14 +736,18 @@ export class SessionProcessSupervisor {
      * A pipe write to `pid`'s input, waiting for room. When `writer`, the
      * process writing, takes its own signals (takeSignals), a signal sent to
      * it while it waits answers instead, as a write is interrupted, and the
-     * write is withdrawn, taking nothing.
+     * write is withdrawn, taking nothing. `gone` (its caller has left) ends a
+     * wait the same way, with what it has not written unwritten.
      */
-    async writeInputBytesWait(pid, data, writer) {
+    async writeInputBytesWait(pid, data, writer, gone) {
         const box = writer === undefined ? undefined : this.signalBoxes.get(writer);
         // One there is room for does not wait, and nothing interrupts it.
         if (writer === undefined || box === undefined || this.input.hasRoom(pid, data.byteLength))
-            return this.input.writeBytesWait(pid, data);
+            return this.input.writeBytesWait(pid, data, gone);
         const withdraw = new AbortController();
+        gone?.addEventListener('abort', () => withdraw.abort(), { once: true });
+        if (gone?.aborted)
+            withdraw.abort();
         const writing = this.input.writeBytesWait(pid, data, withdraw.signal);
         // Its waits for a signal end at their bound, or when its program lets go of its signals: the write is then waited for alone.
         while (this.signalBoxes.get(writer) === box) {

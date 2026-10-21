@@ -109,6 +109,15 @@ export async function handleNimbusRemoteApi(request, env, sdk, outbox) {
             const wire = await ctx.stub._rpcStartProgram(argvArg(args[0]), startProgramOptions(args[1]));
             return corsResponse(wire, 200, { 'Content-Type': PROGRAM_STREAM_CONTENT_TYPE });
         }
+        // A byte write waits for room: its answer is a stream's body, so a client that leaves withdraws it.
+        if (body.op === 'writeProcessInput') {
+            const args = body.args ?? [];
+            const data = fileContentArg(args[1]);
+            if (data instanceof Uint8Array) {
+                const answer = await ctx.stub._rpcWriteProcessInputStream(numberArg(args[0], 'pid'), data);
+                return corsResponse(answer, 200, { 'Content-Type': 'application/json' });
+            }
+        }
         const t0 = Date.now();
         return await useRpcResource(dispatchRemoteRpc(ctx), (result) => remoteJson(wantDiag ? { ok: true, result, rpcMs: Date.now() - t0 } : { ok: true, result }));
     }

@@ -12,6 +12,7 @@ export { CRED_KERNEL, CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contr
 import { EXEC_STREAM_CONTENT_TYPE, collectExecStream, decodeExecStream, } from '@nimbus-sh/core/runtime/exec-stream.js';
 import { SessionResults, SessionSuccessSchema, SessionFailureSchema, } from '@nimbus-sh/core/runtime/session-protocol.js';
 import { decodeProgramStream, PROGRAM_STREAM_CONTENT_TYPE } from '@nimbus-sh/core/runtime/program-stream.js';
+import { feedProgramInput } from '@nimbus-sh/core/runtime/program-start.js';
 import { z } from 'zod/v4';
 import { WireEncoder, WireDecoder } from '@nimbus-sh/core/_shared/wire-codec.js';
 import { DEFAULT_HOME } from '@nimbus-sh/core/constants.js';
@@ -295,32 +296,18 @@ export class NimbusSandbox {
             void this.feed(started, start.stdin);
         return started;
     }
-    /** `stdin`'s bytes into `program`'s input, each write waiting for room, then its end; let go once it has ended. */
+    /** `stdin` into `program`'s input with the program's input calls (feedProgramInput). */
     async feed(program, stdin) {
         const stub = this.stub();
-        const reader = stdin.getReader();
-        const gone = program.exit.then(() => null, () => null);
+        const sink = {
+            write: async (bytes) => (await this.rpc(stub._rpcWriteProcessInput(program.pid, bytes))).ok,
+            end: async () => { await this.rpc(stub._rpcEndProcessInput(program.pid)); },
+        };
         try {
-            for (;;) {
-                const next = await Promise.race([reader.read(), gone]);
-                if (next === null) {
-                    await reader.cancel();
-                    return;
-                }
-                if (next.done)
-                    break;
-                if (!(await this.rpc(stub._rpcWriteProcessInput(program.pid, next.value))).ok) {
-                    await reader.cancel();
-                    return;
-                }
-            }
-            await this.rpc(stub._rpcEndProcessInput(program.pid));
+            await feedProgramInput(stdin, sink, program.exit);
         }
         catch (error) {
             console.error(`Nimbus: the input of program ${program.pid} could not be written`, error);
-        }
-        finally {
-            reader.releaseLock();
         }
     }
     /** Run a command to completion and return its output as strings. Built on {@link execStream}. */

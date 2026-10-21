@@ -7,7 +7,7 @@
  * on, its output read as its reader takes it, its signals the broker's.
  */
 import type { ChildProcessManager } from '../runtime/child-process-manager.js';
-import type { Program, StartedSessionProgram } from '../runtime/program-start.js';
+import { type Program, type StartedSessionProgram } from '../runtime/program-start.js';
 import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import type { VfsCred } from '../runtime/os-contracts.js';
 export interface ProgramHost {
