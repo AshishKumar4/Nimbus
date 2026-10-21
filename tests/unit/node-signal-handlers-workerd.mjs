@@ -96,7 +96,7 @@ try {
     const status = Number(/S=(\d+)/.exec(parked)?.[1]);
     const order = (shown.match(/read \[\]|heard SIGINT/g) ?? []).join(' then ');
     console.log(`  parked: status ${status}, ${order}`);
-    assert.deepEqual([status, order], [0, 'read [] then heard SIGINT'], 'a caught Ctrl-C waits for the read to return, then its handler runs');
+    assert.deepEqual([status, order], [0, 'read [] then heard SIGINT'], `a caught Ctrl-C waits for the read to return, then its handler runs; the line showed ${JSON.stringify(shown.slice(-600))}`);
   } finally {
     await terminal.close();
   }

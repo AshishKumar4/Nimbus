@@ -86,8 +86,9 @@ await check('said again until taken; output waits for it', async () => {
   const handler = () => {};
   proc.on('SIGTERM', handler);
   await new Promise((resolve) => writeLive('stdout', 'ready\n', undefined, resolve, async () => { events.push('ready out'); }));
+  const triedBeforeReady = tries;
   proc.off('SIGTERM', handler);
-  assert.deepEqual([tries, events], [3, ['caught SIGTERM', 'ready out']]);
+  assert.deepEqual([triedBeforeReady, events], [3, ['caught SIGTERM', 'ready out']]);
 });
 
 assert.deepEqual(failures, []);
