@@ -139,7 +139,7 @@ function sqlShim() {
 const store = createResidentStore();
 store.bind({ storage: { sql: sqlShim() } });
 const supervisor = {
-  fsList: (after, limit) => _rpcFsList(host, after ?? null, limit ?? null, pid),
+  fsList: (after, limit) => _rpcFsList(host, after ?? null, limit ?? null, undefined, pid),
   fsReadBatch: (requests) => _rpcFsReadBatch(host, requests, pid),
   fsAcquire: (epoch, cursor) => _rpcFsAcquire(host, epoch, cursor, undefined, pid),
 };

@@ -78,7 +78,7 @@ for (const [index, testCase] of fixture.cases.entries()) {
   const host = attachSupervisorOps({ sqliteFs: raw, processes, ensureSqliteFs() {} });
   const { pid } = processes.spawn('node', ['node'], '/', { cred: reader });
   const supervisor = {
-    fsList: (after, limit) => _rpcFsList(host, after ?? null, limit ?? null, pid),
+    fsList: (after, limit) => _rpcFsList(host, after ?? null, limit ?? null, undefined, pid),
     fsReadBatch: (requests) => _rpcFsReadBatch(host, requests, pid),
     fsAcquire: (epoch, cursor, options) => _rpcFsAcquire(host, epoch, cursor, options, pid),
   };

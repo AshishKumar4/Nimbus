@@ -17,6 +17,15 @@ published independently in the `@nimbus-sh` npm scope.
   restored process before its command has run ends the restore of it for
   good. A listed process now also says which process it restarts
   (`restartedFrom`), as `/api/processes` did.
+- Fixed: a WebAssembly program's or a worker's filesystem calls that cross to the session keep their options. Before, the hop dropped them, so:
+  - a write that makes its parent directories failed with ENOENT in a new directory;
+  - a write ignored the program's own umask;
+  - a write or read stating the revision it is of could overwrite or return a newer file instead of failing ESTALE;
+  - a read bounded to so many bytes read the whole file;
+  - a listing returned what it was asked to leave out.
+- Added: `tsc` works in a session with nothing installed. When no `node_modules/.bin` from the working directory up has a `tsc`, `tsc` and `tsrs` run tsrs, the Rust port of the TypeScript compiler built to WebAssembly: `@tsrs/wasm` 0.18.0-ts7.1.0-dev.20260929, which ports TypeScript 7.1.0-dev.20260929. It is experimental upstream (its diagnostics can come in a different order from tsc's). Nimbus serves it from its own assets, pinned by version and sha256, so the first `tsc` installs nothing. It type-checks and emits as tsc does, `--build` and incremental `.tsbuildinfo` included, with tsc's exit statuses (2 for type errors; 5 for a run that crashed, as on a stack overflow). It reads the project through the process's own copy of the filesystem, as every WASI program does, and runs on the session's warm workers. A project's own `typescript` still runs as installed. A `typescript` 7 project, whose compiler is a native binary that cannot run here, runs tsrs in its place, and a line says which compiler ran. `npx tsc` runs tsrs too; before, it installed npm's deprecated `tsc` package. `tsc --watch` exits 1: the wasm build has no watch mode, so install `typescript` in the project for it.
+- Changed: a session keeps as many idle warm workers per interpreter or tool (`python3`, `ruby`, `clang`, `wasm-ld`, `git`) as its runs of that tool had in flight at once, up to the platform's ten Dynamic Workers in flight per Durable Object. Before, it kept at most two, so a third concurrent `clang` or `python3` run loaded its image again every time.
+- Fixed: `git status` holds what its comparisons need of the worktree, not the worktree. Its one ordered scan of the tree is merged with the index as it goes, in the order both share, so only the directories it is in are held; its memory grows with the index alone. Before, status kept the whole scan (every entry's path, stat and listing row): about 0.6 KiB a file, 23 MiB more from 2,000 to 40,000 files, about 30 MiB on next.js's 34,000. Status also takes about a tenth less CPU on next.js's shape.
 - Changed: `SupervisorRPC` no longer links the npm engine. Every isolate
   of a Worker evaluates, as it starts, every module its exported classes
   link. `SupervisorRPC` linked the npm cache client, and through it core's

@@ -244,6 +244,7 @@
         "@babel/types": "7.29.8",
         "@cloudflare/workers-types": "^5.20260928.1",
         "@rollup/wasm-node": "4.60.4",
+        "@tsrs/wasm": "0.18.0-ts7.1.0-dev.20260929",
         "@types/braces": "^3.0.5",
         "@types/yargs-parser": "21.0.3",
         "@vitejs/plugin-react": "4.3.4",
@@ -783,6 +784,8 @@
     "@standard-schema/spec": ["@standard-schema/spec@1.1.0", "", {}, "sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w=="],
 
     "@tootallnate/quickjs-emscripten": ["@tootallnate/quickjs-emscripten@0.23.0", "", {}, "sha512-C5Mc6rdnsaJDjO3UpGW/CQTHtCKaYlScZTly4JIu97Jxo/odCiH0ITnDXSJPTOrEKk/ycSZ0AOgTmkDtkOsvIA=="],
+
+    "@tsrs/wasm": ["@tsrs/wasm@0.18.0-ts7.1.0-dev.20260929", "", { "bin": { "tsrs-wasm": "bin/tsrs-wasm.js" } }, "sha512-1Wv0GU3OIsY1x37cUykxrDLTeCWb81lWS/BCuw2ZfYcB6E7cno3mgfZvOA/3uV1hKs6fBN94LEntmMjULNaRTw=="],
 
     "@tybys/wasm-util": ["@tybys/wasm-util@0.10.3", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-F3fo1MYrRJYL3zER0OUOmkutjr1Vp23m7OsSgp7nq4SP6OqX6C/56XFIPAl5bt3zaBRjmW7SGz3u/6LwFpYcOg=="],
 

@@ -40,13 +40,11 @@ import { openRuntimeStdio } from './runtime-stdio.js';
 import { errorText } from '../_shared/error-text.js';
 import { warmFacetKeys } from './warm-facets.js';
 const CLANG_VERSION_FLAGS = new Set(['--version', '-v']);
-/** Idle warm workers a session keeps per tool: each holds its compiled image (clang 31 MiB, wasm-ld 18.5 MiB). */
-const WARM_CLANG_FACETS = 2;
 /** Build the runner factory. Closes over the facet host and the filesystem authority. */
 export function makeClangRunnerFactory(deps) {
     const warmKeys = {
-        clang: warmFacetKeys(deps.session, 'clang', WARM_CLANG_FACETS),
-        'wasm-ld': warmFacetKeys(deps.session, 'wasm-ld', WARM_CLANG_FACETS),
+        clang: warmFacetKeys(deps.session, 'clang'),
+        'wasm-ld': warmFacetKeys(deps.session, 'wasm-ld'),
     };
     return function clangRunnerFactory(manifest, installRoot, binName, binKind) {
         const clangVfsPath = installedPath(manifest, installRoot, 'bin/clang');

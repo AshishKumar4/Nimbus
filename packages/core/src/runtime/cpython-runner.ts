@@ -227,8 +227,6 @@ export interface CPythonFacetResult {
   reusable?: boolean;
 }
 
-/** Idle warm CPython workers a session keeps, per interpreter: each holds its compiled python.wasm. */
-const WARM_CPYTHON_FACETS = 2;
 
 export type CPythonRunnerFactory = (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => Command;
 
@@ -271,8 +269,8 @@ export function makeCPythonRunnerFactory(deps: {
 }): CPythonRunnerFactory {
   // One set per interpreter: a warm worker holds the one python.wasm it compiled.
   const warmKeys = {
-    plain: warmFacetKeys(deps.session, CPYTHON_RUNNER, WARM_CPYTHON_FACETS),
-    sci: warmFacetKeys(deps.session, `${CPYTHON_RUNNER}:sci`, WARM_CPYTHON_FACETS),
+    plain: warmFacetKeys(deps.session, CPYTHON_RUNNER),
+    sci: warmFacetKeys(deps.session, `${CPYTHON_RUNNER}:sci`),
   };
 
   return function cpythonRunnerFactory(manifest, installRoot, binName, _binKind) {
