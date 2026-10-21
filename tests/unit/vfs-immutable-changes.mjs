@@ -65,6 +65,11 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   assert.notEqual(proc.changes.epoch, epoch);
   assert.equal(view.changes.since(epoch, 0).poison, true, 'a view kept the tree from before the registration');
   assert.ok(view.changes.list(null, 100).entries.some((entry) => entry.path === '/nimbus/extra'));
+
+  // A file registered again with other content of the same size is another tree too.
+  const before = proc.changes.epoch;
+  proc.register('nimbus/extra', () => 'y\n');
+  assert.notEqual(proc.changes.epoch, before, 'a replacement of the same size kept the epoch');
 }
 
 console.log('vfs-immutable-changes: ok');

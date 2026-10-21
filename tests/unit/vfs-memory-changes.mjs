@@ -46,11 +46,28 @@ const paths = (delta) => delta.paths.map((entry) => `${entry.path}${entry.struct
   mem.mkdir('/e');
   const r0 = feed.revision();
   mem.rename('/e', '/f');
-  assert.deepEqual(paths(feed.since(feed.epoch, r0)), ['/', '/e!', '/f']);
+  // The directory moved: what was under it is under its new name, which a reader lists again.
+  assert.deepEqual(paths(feed.since(feed.epoch, r0)), ['/', '/e!', '/f!']);
 
   assert.equal(feed.since('another', 0).poison, true, 'a cursor of another epoch');
   assert.equal(feed.since(feed.epoch, feed.revision() + 1).poison, true, 'a cursor from its future');
   assert.notEqual(new MemoryVFS().changes.epoch, feed.epoch, 'two trees, two epochs');
+}
+
+// A change through a link is reported at the name it changed, the link's target, not the link.
+{
+  const mem = new MemoryVFS();
+  const feed = mem.changes;
+  mem.mkdir('/d');
+  mem.writeFile('/t', new TextEncoder().encode('T'));
+  mem.symlink('/t', '/alias');
+  mem.symlink('/d', '/ld');
+  const r0 = feed.revision();
+  mem.writeFile('/alias', new TextEncoder().encode('NEW'));
+  mem.writeFile('/ld/n', new TextEncoder().encode('N'));
+  mem.chmod('/alias', 0o600);
+  assert.deepEqual(paths(feed.since(feed.epoch, r0)), ['/d', '/d/n', '/t']);
+  assert.equal(feed.since(feed.epoch, r0, { namespace: true }).paths.find((entry) => entry.path === '/t').stat.size, 3);
 }
 
 // Removals kept no more than the tree has entries: past that, the oldest go and a cursor below them is a poison.

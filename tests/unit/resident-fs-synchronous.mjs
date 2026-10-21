@@ -224,6 +224,77 @@ await runScenarios(import.meta.path, {
     assert.equal(engineStat(await e.fs.stat('/mnt/plain/a'))?.size, 5);
   },
 
+  async 'a fed mount made over a file the process held shows the mount\'s bytes'(e = undefined) {
+    e = await bootEngine('eager', {});
+    await e.authority.peer.mkdir('home/user/app/cov', { mode: 0o755 });
+    await e.authority.peer.writeFile('home/user/app/cov/f', 'ROOT1');
+    assert.equal(new TextDecoder().decode(await e.fs.readFile(`${APP}/cov/f`)), 'ROOT1');
+    // The same name, of the same size, at a revision far below the root's on its own feed.
+    const mem = new MemoryVFS({ uid: 1000, gid: 1000 });
+    mem.writeFile('/f', new TextEncoder().encode('MOUNT'));
+    e.authority.files.vfs.mount(`${APP}/cov`, mem);
+    await e.input();
+    await e.fs.stat(APP);
+    const shown = (() => { try { return new TextDecoder().decode(e.sync.readFile(`${APP}/cov/f`)); } catch (error) { return error.code; } })();
+    assert.ok(shown === 'MOUNT' || shown === 'EAGAIN', `readFileSync of a file a mount now covers: ${shown}`);
+    assert.equal(new TextDecoder().decode(await e.fs.readFile(`${APP}/cov/f`)), 'MOUNT');
+  },
+
+  async 'a fed mount beneath one with no feed is reached as that one lets the process reach it'(e = undefined) {
+    // The parent states no change model: its access changes unreported.
+    const parent = new MemoryVFS({ uid: 0, gid: 0 });
+    parent.mkdir('/b', { mode: 0o755 });
+    const unfedParent = new Proxy(parent, { get: (target, key) => (key === 'changes' ? undefined : Reflect.get(target, key, target)) });
+    const child = new MemoryVFS({ uid: 1000, gid: 1000 });
+    child.writeFile('/f', new TextEncoder().encode('CHILD'));
+    e = await bootEngine('holder', {
+      seed(authority) {
+        authority.files.vfs.mount('/mnt/u', unfedParent);
+        authority.files.vfs.mount('/mnt/u/b', child);
+      },
+    });
+    await e.fs.readdir('/mnt/u/b');
+    assert.equal(new TextDecoder().decode(await e.fs.readFile('/mnt/u/b/f')), 'CHILD');
+    // Out of band, as such a backend changes: the process may no longer search it.
+    parent.chmod('/', 0o700);
+    await assert.rejects(Promise.resolve().then(() => e.fs.readFile('/mnt/u/b/f')), (error) => error?.code === 'EACCES');
+    await answersNow(e, 'readFile beneath a parent the process may not search', () => e.sync.readFile('/mnt/u/b/f'), 'EAGAIN');
+  },
+
+  async 'a Node program\'s read through a link to a fed mount follows the mount\'s changes'(e = undefined) {
+    const mem = new MemoryVFS({ uid: 1000, gid: 1000 });
+    mem.writeFile('/f', new TextEncoder().encode('OLD'));
+    e = await bootEngine('node', {
+      seed(authority) {
+        authority.files.vfs.mount('/mnt/mem', mem);
+        authority.kfs.symlink('/mnt/mem/f', 'home/user/app/ln');
+      },
+    });
+    assert.equal(new TextDecoder().decode(await e.fs.readFile(`${APP}/ln`)), 'OLD');
+    mem.writeFile('/f', new TextEncoder().encode('NEW'));
+    await e.input();
+    const shown = (() => { try { return new TextDecoder().decode(e.sync.readFile(`${APP}/ln`)); } catch (error) { return error.code; } })();
+    assert.ok(shown === 'NEW' || shown === 'EAGAIN', `readFileSync through the link after the mount changed: ${shown}`);
+  },
+
+  async 'a fed mount\'s held file survives a restart of the session\'s database'(e = undefined) {
+    const mem = new MemoryVFS({ uid: 1000, gid: 1000 });
+    mem.writeFile('/f', new TextEncoder().encode('KEPT'));
+    e = await bootEngine('eager', {
+      seed(authority) {
+        authority.kfs.writeFile('home/user/app/seed.txt', 'SEED');
+        authority.files.vfs.mount('/mnt/mem', mem);
+      },
+    });
+    await e.fs.readdir('/mnt/mem');
+    assert.equal(new TextDecoder().decode(await e.fs.readFile('/mnt/mem/f')), 'KEPT');
+    assert.equal(new TextDecoder().decode(await e.fs.readFile(`${APP}/seed.txt`)), 'SEED');
+    e.authority.rawVfs.rotateIncarnation();
+    await e.input();
+    await e.fs.stat(APP);
+    assert.equal(new TextDecoder().decode(await answersNow(e, 'readFile of a mount\'s held file after a restart', () => e.sync.readFile('/mnt/mem/f'))), 'KEPT');
+  },
+
   async 'under a trusted read lease a moving mount\'s rows are the session\'s, a fixed one\'s the view\'s'(e = undefined) {
     const mem = new MemoryVFS();
     mem.writeFile('/a', new TextEncoder().encode('MEM'));
