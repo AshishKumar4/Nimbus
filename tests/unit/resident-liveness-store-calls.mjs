@@ -48,9 +48,9 @@ await launchResident({
   startArgs: { storage: { facet: FACET, grant: 0 } },
 });
 slow = true;
-authority.kfs.writeFile('home/user/app/late.txt', 'x'.repeat(20_000));
+await authority.peer.writeFile('home/user/app/late.txt', 'x'.repeat(20_000));
 
-await until(() => handle.log.exit !== null, 10_000, 'the process ends');
+await until(() => handle.log.exit !== null, 'the process ends', 10_000);
 assert.ok(grants > 0, 'the barrier\'s bytes needed a grant: the case this pins');
 assert.match(handle.log.stdout, /^READ 20000$/m, `the read is answered before the process ends: stdout ${JSON.stringify(handle.log.stdout)}, exit ${JSON.stringify(handle.log.exit)}`);
 assert.equal(handle.log.exit.code, 0);
