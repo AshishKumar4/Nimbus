@@ -126,7 +126,9 @@ export const rubyFacetCall = async function rubyFacetCall(inArgs: RubyFacetCallA
         Reflect.set(globalThis, '__nimbusRubySupervisor', supervisor);
     adopt?.(supervisor);
     // The invocation as the runner made it: a field it adds reaches the VM.
-    return fn(inArgs);
+    const answer = await fn(inArgs);
+    // Experiment (not for landing): the run's filesystem statistics.
+    return typeof answer === 'object' && answer !== null ? { ...answer, fsStats: typeof __wasiFsStats === 'function' ? __wasiFsStats() : null } : answer;
 };
 // ── facet-side globals injected by the WASI preamble ─────────────────
 // The preamble (WASI_INSTANCE_PREAMBLE_SRC) runs at facet module-init

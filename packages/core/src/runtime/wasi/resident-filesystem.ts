@@ -817,6 +817,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
         return store.lookup(keys, content && keys[keys.length - 1] === target)
           .then((known) => {
             if (known) foundIn.set(parent, Boolean(store.entry(walked.missing)));
+            // Experiment (not for landing): lookups whose name is absent.
+            if (known && store.entry(walked.missing) === null) (counts as unknown as { absentLookups: number }).absentLookups = ((counts as unknown as { absentLookups?: number }).absentLookups ?? 0) + 1;
             return known ? attempt(asked + 1) : DELEGATE;
           });
       }
