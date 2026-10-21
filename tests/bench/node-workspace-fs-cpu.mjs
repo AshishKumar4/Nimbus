@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 // lifo's node end to end, CPU per arm under V8 as workerd runs it: a
 // core-only workspace (NimbusWorkspace over SQLite, the built package as an
-// embedder loads it) runs a program that requires express's whole package
-// tree, then makes some hundreds of fs calls, sync and promised, over it.
+// embedder loads it) runs a program that requires ajv's and semver's package
+// trees (some hundred modules), then makes some hundreds of fs calls, sync
+// and promised, over them. (lifo's CommonJS loader refuses express, the same
+// on both sides: its wrapper's Buffer clashes with a module's own.)
 // Each arm is its side's built core (packages/core/dist, its realm included),
 // on a workspace of its own holding the same tree; the program's process CPU
 // is what is measured, its realm's thread included. remote-node-workspace-fs-cpu
@@ -27,7 +29,7 @@ const PAIRS = short ? 3 : 30;
 const disposals = [];
 const results = [];
 
-// express and everything it requires, from the install's package store: each
+// The packages and everything they require, from the install's package store: each
 // package under the app's node_modules by name, a second version of a name
 // under the node_modules of the package that requires it.
 const STORE = join(repository, 'node_modules/.bun');
@@ -55,13 +57,14 @@ function collect(dir, into) {
   for (const dependency of Object.keys(dependencies)) collect(join(siblings, dependency), '/home/user/app/node_modules');
 }
 const files = new Map();
-collect(join(STORE, 'express@5.2.1/node_modules/express'), '/home/user/app/node_modules');
+collect(join(STORE, 'ajv@8.20.0/node_modules/ajv'), '/home/user/app/node_modules');
+collect(join(STORE, 'semver@7.8.5/node_modules/semver'), '/home/user/app/node_modules');
 const PROGRAM = `
 const fs = require('fs');
-const express = require('express');
-const app = express();
-app.get('/', (req, res) => res.send('ok'));
-let n = typeof app === 'function' ? 1 : 0;
+const Ajv = require('ajv');
+const semver = require('semver');
+const validate = new Ajv().compile({ type: 'object', properties: { version: { type: 'string' } }, required: ['version'] });
+let n = validate({ version: '1.2.3' }) && semver.satisfies('1.2.3', '^1.0.0') ? 1 : 0;
 const names = fs.readdirSync('node_modules');
 for (let round = 0; round < 3; round++) {
   for (const name of names) {
@@ -73,7 +76,7 @@ for (let round = 0; round < 3; round++) {
 }
 (async () => {
   for (const name of names) n += (await fs.promises.stat('node_modules/' + name + '/package.json')).size;
-  n += (await fs.promises.readdir('node_modules/express/lib')).length;
+  n += (await fs.promises.readdir('node_modules/ajv/dist')).length;
   console.log(n);
 })();
 `;
@@ -105,7 +108,7 @@ try {
   // Each arm answers as the others do: the comparison is of the same work.
   assert.equal(await run(arms.real), await run(arms.A), 'the head\'s node answers as the baseline\'s');
   const cpu = (ws) => cpuMs(() => run(ws));
-  const result = await pairedKind('express', arms, cpu, { pairs: PAIRS, warm: 2, iterations: 1 });
+  const result = await pairedKind('require-heavy', arms, cpu, { pairs: PAIRS, warm: 2, iterations: 1 });
   results.push(result);
   writeFileSync(output, `${JSON.stringify(results, null, 2)}\n`);
   const { samples, ...summary } = result;
