@@ -104,6 +104,24 @@ published independently in the `@nimbus-sh` npm scope.
     - relative paths: 11.25 → 13.60 ms. A failure there is caught and its error named as given, which costs another throw, about 1 µs per failing call;
     - `fs.promises`: 1.75 → 2.10 ms.
   - End to end, a core-only workspace running a program that loads ajv's and semver's trees and makes about 440 fs calls takes about 690 ms. The difference was within the A/A spread in every confirmation run: [-1.4, 20.8], [-7.7, 17.7] ms.
+- Fixed: `@nimbus-sh/worker` no longer depends on `braces`, which is under advisory GHSA-vfj7-8cjw-p6xm with no fixed version. It served one purpose: expanding a stylesheet's `@source` paths when a process carrying Tailwind's scanner plans which files to hold.
+  - Expanding there was a hazard. An agent writes those stylesheets: `@source "src/{1..100000000}/x.html"` ran the isolate out of memory, and `{` nested 4,999 deep overflowed its stack.
+  - Now no path is expanded. A path's reach is the part before its first glob character (`{ * ? [`), up to its last `/`, and one directory higher for each `..` its brace alternatives could spell. It is computed in one pass over the path, whatever it nests or ranges over.
+  - It is exact for braces in the file part (`../ui/**/*.{ts,tsx}` holds `../ui`). Braces in the directory part (`../{a,b}/src`) hold their common parent: more files, never fewer. A range's directory is held whole, not the files it names. What the plan does not hold, Tailwind's scanner still reads, as before.
+
+- Added: `createNodeCompat({ files, start })` also gives Node's `child_process` (`childProcess`), and `nodeFacesOf(sandbox)` gives it the session's argv start (`sandbox.startProgram`). Each child is placed by its cwd, as every start is.
+  - `exec` starts `/bin/sh -c` its line, as Node's does; `execFile` and `spawn` start their argv.
+  - A child's stdin is bytes with backpressure, to their end; its output is read as you read it; its exit is waitpid's.
+  - A child given no `env` gets the session's environment.
+  - Shapes are Node's:
+    - a failed exit is an error with `code` or `signal`, plus `killed`, `cmd`, `stdout` and `stderr`;
+    - a refused start is the `error` event (`ENOENT`, `syscall: 'spawn <file>'`), then `close` with the negative errno;
+    - `maxBuffer`, `encoding: 'buffer'`, `timeout`/`killSignal`, `signal` and `util.promisify` behave as Node's.
+  - `execSync`, `execFileSync` and `spawnSync` throw `ERR_NIMBUS_SYNC_CHILD_PROCESS`, as the hosted node's do.
+  - `stdio: 'inherit'` output goes nowhere: this process shares no descriptors with its child.
+  - `fork` is unavailable: there is no IPC channel.
+- Changed: lifo's node runs the same `child_process` with no start face until its realm can wait for one. `exec` and `spawn` refuse every child ENOSYS, as Node reports a spawn it cannot make. Before, its stub said "requires shell interpreter", and `spawn` threw.
+- Fixed: a Node program's signal handlers hear the signals sent to it, as on Linux. A `process.on('SIGTERM')` handler runs when the program is killed: by its Node parent (`child.kill()`), by the shell's `kill`, by the session's `signalProcess`, or by a started program's `kill`. The program then does what its handler says. A signal it has no handler for still takes its default action. A signal it catches while it waits in `fs.readFileSync(0)` reaches it once the read returns, as in Node. A program that has taken a signal cannot afterwards wait at a synchronous read of stdin that has no input yet: Nimbus cannot run it again past a signal. It fails that read with `ERR_NIMBUS_SYNC_STDIN`, naming the signal. Before, every such kill ended the program at once.
 
 ## 2026-10-21 (patch): worker 0.24.1 (every other package unchanged from the 2026-10-21 release)
 

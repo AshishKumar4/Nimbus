@@ -491,6 +491,15 @@ export declare function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs:
  */
 export declare function _rpcLoaderCodeStore(self: RpcHost, request: LoaderStoreRequest, stream: ReadableStream<Uint8Array> | undefined, pid?: number): Promise<unknown>;
 export declare function _rpcCpNextSignal(self: RpcHost, pid: number | undefined, waitMs: number): Promise<string | null>;
+/**
+ * The next signal sent to `pid`'s Node program, which takes its own: its
+ * box taken back from a stop (SessionProcessSupervisor.takeSignalsBack), then
+ * cpNextSignal's wait. Its own op: a Node run asks only past a replay's
+ * boundary, so none of its waits is a replayed observation.
+ */
+export declare function _rpcCpTakeSignal(self: ProcessRpcHost, pid: number | undefined, waitMs: unknown): Promise<string | null>;
+/** The signals process `pid`'s program catches now (SessionProcessSupervisor.catchSignals); names not a signal's are not. */
+export declare function _rpcCpCatchSignals(self: ProcessRpcHost, pid: number | undefined, catches: unknown): Promise<void>;
 export declare function _rpcCpReadOutput(self: RpcHost, childPid: number, fd: 1 | 2, sinceSeq: number, waitMs: number, acquire?: unknown, pid?: number): Promise<any>;
 export declare function _rpcCpDrainOutput(self: RpcHost, childPid: number, pid?: number): Promise<any>;
 export declare function _rpcCpCloseOutput(self: RpcHost, childPid: number, fd: 1 | 2, pid?: number): Promise<void>;

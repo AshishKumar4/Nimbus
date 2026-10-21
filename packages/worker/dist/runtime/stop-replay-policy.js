@@ -83,7 +83,14 @@ export const REPLAY_OPERATION_POLICY = {
     cpReadOutput: { kind: 'observation', answer: withAcquire, args: (a) => [...a.slice(0, 4), acquireArgs(a[4])] },
     cpDrainOutput: read, cpCloseOutput: effect, cpKill: effect,
     cpBlocked: { kind: 'control' },
+    // A wasm guest polls while it waits, many times a wait where it catches nothing: answered from the record, a
+    // replay does not wait on each again.
     cpNextSignal: read,
+    // A Node run's: asked only past a replay's boundary (untilBoundary), and a run that took one is not run again
+    // (the shims say so); none is the record's.
+    cpTakeSignal: control,
+    // A statement of what the program catches, made again by a run after a stop: its answer is nothing.
+    cpCatchSignals: control,
     cpWait: { kind: 'observation', answer: withAcquire, args: (a) => [...a.slice(0, 2), acquireArgs(a[2])] },
     fsFstat: read, fsDup: read, fsSeek: read,
     fsSetStatus: effect, fsReaddirHandle: read, fsFtruncate: effect,

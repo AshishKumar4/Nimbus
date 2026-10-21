@@ -11,7 +11,7 @@ import { EventEmitter } from 'node:events';
 import { createHttp } from './http.js';
 import type { LoopbackRouter, VirtualRequestHandler } from '../kernel/index.js';
 import type { DNSResolver } from '../kernel/dns-resolver.js';
-import { createChildProcess } from './child_process.js';
+import { createNodeChildProcess } from '../../../node-compat/child_process.js';
 import * as zlibModule from './zlib.js';
 import { ttyOf, type ProgramStdio } from './tty-streams.js';
 import { createDns } from './dns.js';
@@ -34,7 +34,6 @@ export interface NodeContext {
   filename: string;
   dirname: string;
   signal: AbortSignal;
-  executeCapture?: (input: string) => Promise<string>;
   /** fd 0 to its end, blocking until stdin ends (readFileSync(0)); absent, fd 0 reads as empty. */
   stdin?: () => Uint8Array;
   /** Its standard descriptors, as its process and its tty module see them (one object per program). */
@@ -113,7 +112,8 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
     util: () => realm.getBuiltinModule('node:util'),
     http: () => createHttp(ctx.portRegistry, 'http:', ctx.routeLoopback),
     https: () => createHttp(ctx.portRegistry, 'https:', ctx.routeLoopback),
-    child_process: () => createChildProcess(ctx.executeCapture),
+    // No start face until the realm can wait for one (Phase B): every start is refused ENOSYS.
+    child_process: () => createNodeChildProcess(undefined, { cwd: ctx.cwd }),
     stream: () => (ctx.reachStreams?.(), realm.getBuiltinModule('node:stream')),
     'stream/promises': () => (ctx.reachStreams?.(), realm.getBuiltinModule('node:stream/promises')),
     'stream/consumers': () => (ctx.reachStreams?.(), realm.getBuiltinModule('node:stream/consumers')),

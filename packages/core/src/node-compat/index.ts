@@ -1,24 +1,31 @@
 /**
  * Node's modules over a session client (Kinu ask 67): `createNodeCompat`
  * gives `fs` and `fs/promises`, written once (node-compat/fs.ts), over the
- * file calls a client provides; `nodeFacesOf` makes those calls over a
- * Nimbus session. There is no synchronous face: a client's isolate cannot
- * wait, so every `*Sync` call that reaches the session throws EAGAIN, and
- * every asynchronous form works.
+ * file calls a client provides, and `child_process` (node-compat/
+ * child_process.ts) over its start; `nodeFacesOf` makes those over a Nimbus
+ * session. There is no synchronous face: a client's isolate cannot wait, so
+ * every `*Sync` call that reaches the session throws EAGAIN (a child's,
+ * ERR_NIMBUS_SYNC_CHILD_PROCESS), and every asynchronous form works.
  */
 import { errnoCodeOf, fsError } from '../vfs/vfs-error.js';
 import type { RuntimeDirentType, RuntimeVfsDirEntry, RuntimeVfsStat } from '../runtime/os-contracts.js';
 import type { SessionDirectoryEntry, SessionFileStat, SessionFollowOptions, SessionMkdirOptions } from '../runtime/session-protocol.js';
-import type { FilesFace, NodeFiles } from './faces.js';
+import type { StartedSessionProgram } from '../runtime/program-start.js';
+import type { FilesFace, NodeFiles, NodeStart } from './faces.js';
 import { createNodeFs } from './fs.js';
+import { createNodeChildProcess } from './child_process.js';
 
-export type { FilesFace, NodeFaces, NodeFiles, NodeFilesystem, NodeWatch } from './faces.js';
+export type { FilesFace, NodeFaces, NodeFiles, NodeFilesystem, NodeProgram, NodeStart, NodeWatch } from './faces.js';
 export { createNodeFs } from './fs.js';
+export { ChildProcess, createNodeChildProcess } from './child_process.js';
 
-/** `fs` and `fs/promises` over `files`, relative paths taken from `cwd`. */
-export function createNodeCompat({ files }: { files: NodeFiles }, { cwd }: { cwd: string }) {
+/**
+ * `fs` and `fs/promises` over `files`, and `child_process` over `start`
+ * (none: every start refused ENOSYS), relative paths taken from `cwd`.
+ */
+export function createNodeCompat({ files, start }: { files: NodeFiles; start?: NodeStart }, { cwd }: { cwd: string }) {
   const fs = createNodeFs({ async: completeFiles(files) }, { cwd });
-  return { fs, fsPromises: fs.promises };
+  return { fs, fsPromises: fs.promises, childProcess: createNodeChildProcess(start, { cwd }) };
 }
 
 /** `path`'s stat, or null where nothing is there. */
@@ -116,8 +123,26 @@ function runtimeStatOf(stat: SessionFileStat, syscall: string, path: string): Ru
   };
 }
 
-/** Node's `fs` calls over a Nimbus session's (`sandbox.files`); its absences are Node's ENOENT. */
-export function nodeFacesOf(session: { files: SessionFilesClient }): { files: NodeFiles } {
+/** A Nimbus session's argv start, as its client (the SDK's `sandbox.startProgram`) makes it. */
+export type SessionStartClient = (
+  argv: string[],
+  options: { cwd?: string; env?: Record<string, string>; stdin?: ReadableStream<Uint8Array>; signal?: AbortSignal },
+) => Promise<StartedSessionProgram>;
+
+/**
+ * Node's `fs` calls over a Nimbus session's (`sandbox.files`), its absences
+ * Node's ENOENT; and its starts over the session's (`sandbox.startProgram`),
+ * placed by their cwd as every start is, a child given no environment the
+ * session's own.
+ */
+export function nodeFacesOf(session: { files: SessionFilesClient; startProgram?: SessionStartClient }): { files: NodeFiles; start?: NodeStart } {
+  const { startProgram } = session;
+  const start: NodeStart | undefined = startProgram === undefined ? undefined : (program, cancel) => startProgram.call(session, [...program.argv], {
+    cwd: program.cwd,
+    ...(program.env === undefined ? {} : { env: { ...program.env } }),
+    ...(program.stdin === null ? {} : { stdin: program.stdin }),
+    signal: cancel,
+  });
   const client = session.files;
   const statOf = async (path: string, follow: boolean): Promise<RuntimeVfsStat> => {
     const syscall = follow ? 'stat' : 'lstat';
@@ -161,5 +186,5 @@ export function nodeFacesOf(session: { files: SessionFilesClient }): { files: No
     chown: (path, uid, gid, follow) => client.chown(path, uid, gid, { followSymlinks: follow }),
     truncate: (path, size) => client.truncate(path, size),
   };
-  return { files };
+  return start === undefined ? { files } : { files, start };
 }

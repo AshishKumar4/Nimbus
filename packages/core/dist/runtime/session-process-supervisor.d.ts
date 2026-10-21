@@ -413,6 +413,29 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
      */
     takeSignals(pid: number, catches: readonly ProcessSignalName[]): () => void;
     /**
+     * `pid`'s program says which signals it catches now, as a Node process's
+     * listeners come and go: the offer takeSignals makes, made, or its
+     * catches changed (none: each signal takes its default action again).
+     * Until it ends, each it catches is queued for it (nextSignal).
+     */
+    catchSignals(pid: number, catches: readonly ProcessSignalName[]): void;
+    /**
+     * `pid`'s program's run, past a replay's boundary, takes back its parked
+     * box (parkSignals): what waits there is its to take, by its waits or with
+     * its input.
+     */
+    takeSignalsBack(pid: number): void;
+    /**
+     * `pid`'s program's run has stopped (a read it waits for, a listen), and
+     * the next will take over: until then what it catches waits in its box,
+     * not given to the stopped run's wait (answered none) nor to the next
+     * run's preparation, and a signal the stopped run was given but did not
+     * ask past goes back to the front.
+     */
+    parkSignals(pid: number, catches?: readonly ProcessSignalName[]): void;
+    /** Whether `pid`'s program catches `signal` (takeSignals, catchSignals): one sent to it is its own to take. */
+    catchesSignal(pid: number, signal: ProcessSignalName): boolean;
+    /**
      * The next signal sent to `pid`'s program (takeSignals), waiting up to
      * `waitMs` for one: null if none came, the process ended, or a later wait
      * took its place (one waits at a time).

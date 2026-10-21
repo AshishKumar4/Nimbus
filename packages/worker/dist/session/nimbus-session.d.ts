@@ -510,6 +510,8 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
     _rpcCpBlocked(pid: number, report: unknown): Promise<void>;
     _rpcLoaderCodeStore(request: LoaderStoreRequest, stream: ReadableStream<Uint8Array> | undefined, pid?: number): Promise<unknown>;
     _rpcCpNextSignal(pid: number, waitMs: number): Promise<string | null>;
+    _rpcCpCatchSignals(pid: number, catches: unknown): Promise<void>;
+    _rpcCpTakeSignal(pid: number, waitMs: unknown): Promise<string | null>;
     _rpcReady(options?: SessionReadyOptions): Promise<{
         ok: true;
         preinstalled: string[];

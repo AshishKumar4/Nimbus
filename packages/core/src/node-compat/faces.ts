@@ -6,6 +6,7 @@
  */
 import type { RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat } from '../runtime/os-contracts.js';
 import type { VfsEvent } from '../vfs/events.js';
+import type { StartedProgram } from '../runtime/program-start.js';
 
 export interface NodeWatch {
   close(): void;
@@ -83,6 +84,22 @@ export type NodeFilesystem = Required<Omit<FilesFace<'sync'>, 'truncate'>>;
  * caller gave it (one frozen is copied instead).
  */
 export type NodeFiles = Pick<FilesFace<'async'>, 'stat' | 'lstat' | 'readFile' | 'writeFile' | 'readdir'> & Partial<FilesFace<'async'>>;
+
+/** A program Node's child_process starts: its argv, its cwd, its environment (none: its parent's, the session's own), its input (none: ended at once). */
+export interface NodeProgram {
+  readonly argv: readonly string[];
+  readonly cwd: string;
+  readonly env?: Readonly<Record<string, string>>;
+  readonly stdin: ReadableStream<Uint8Array> | null;
+}
+
+/**
+ * Starts `program` (ExecDelegate.start's contract): resolved once it runs,
+ * with its pid where its host numbers it; refused with Node's spawn error
+ * (`code`, `errno`, `syscall: 'spawn <file>'`, `path`). `cancel` before then
+ * cancels the start.
+ */
+export type NodeStart = (program: NodeProgram, cancel: AbortSignal) => Promise<StartedProgram & { readonly pid?: number }>;
 
 /** The faces one `fs` runs over: a synchronous one, an asynchronous one, or both. */
 export type NodeFaces =
