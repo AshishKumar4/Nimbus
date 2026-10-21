@@ -20,9 +20,10 @@
  */
 
 import assert from 'node:assert/strict';
-import { Database } from 'bun:sqlite';
 import { createResidentStore } from '../../packages/worker/src/vfs/resident/index.ts';
 import { RESIDENT_PAGE_BYTES, RESIDENT_PAGE_CACHE_BYTES, RESIDENT_PAGE_CACHE_FREE_SHARE } from '../../packages/platform/src/limits.ts';
+import { facetStorage } from './lib/fake-do-kv.mjs';
+import { facetSql } from './lib/resident-body.mjs';
 
 const P = RESIDENT_PAGE_BYTES;
 /** The store, and the bytes of the pages it holds. */
@@ -30,18 +31,6 @@ const freshStore = () => {
   const store = createResidentStore();
   return Object.assign(store, { pageHeld: () => store.coherence.tables('pageHeld').pageBytes() });
 };
-
-/** workerd's ctx.storage.sql over a real SQLite. */
-function sqlShim() {
-  const db = new Database(':memory:');
-  return {
-    exec(query, ...params) {
-      if (/^\s*(CREATE|INSERT|UPDATE|DELETE|REPLACE|DROP)/i.test(query)) { db.query(query).run(...params); return []; }
-      return db.query(query).all(...params);
-    },
-    get databaseSize() { return 0; },
-  };
-}
 
 /** A session holding one file, `big`, at revision `rev`: ranges of it, pinned to a revision. */
 function session(size) {
@@ -76,7 +65,7 @@ const joined = (pages) => {
 for (const backing of ['heap', 'sqlite']) {
   const store = freshStore();
   if (backing === 'heap') store.bindInMemory(64 * P);
-  else store.bind({ storage: { sql: sqlShim() } });
+  else store.bind({ storage: facetStorage(facetSql()) });
   const size = 20 * P + 123;
   const { s, bytes } = session(size);
   store.admission.setStorage(undefined, s);
@@ -131,7 +120,7 @@ for (const backing of ['heap', 'sqlite']) {
 // free, and the pages keep to their share of it.
 {
   const store = freshStore();
-  store.bind({ storage: { sql: sqlShim() } });
+  store.bind({ storage: facetStorage(facetSql()) });
   const size = 40 * P;
   const { s } = session(size);
   const free = 8 * P;

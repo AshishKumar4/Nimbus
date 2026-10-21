@@ -13,10 +13,9 @@
 //
 // Nothing is mocked below the RPC surface: a real SqliteVFS, a process spawned
 // with the confined credential, the real fsList / fsReadBatch / fsAcquire
-// handlers, and the resident store's shipped source over a real SQLite.
+// handlers, and the resident store's shipped source over a facet's storage.
 
 import assert from 'node:assert/strict';
-import { Database } from 'bun:sqlite';
 
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
@@ -25,6 +24,8 @@ import { _rpcFsAcquire, _rpcFsList, _rpcFsReadBatch } from '../../packages/worke
 import { createResidentStore } from '../../packages/worker/src/vfs/resident/index.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { attachSupervisorOps } from './lib/session-supervisor-ops.mjs';
+import { facetStorage } from './lib/fake-do-kv.mjs';
+import { facetSql } from './lib/resident-body.mjs';
 
 const A = Object.freeze({ uid: 5001, gid: 5001, groups: Object.freeze([5001]), umask: 0o022 });
 const PRIVATE_ROOT = 'var/agents/a/tmp';
@@ -122,22 +123,8 @@ assert.deepEqual(receipt, { before: beforeRange, after: raw.revision() }, 'the r
 }
 
 // ── The resident store keeps A's /tmp coherent ─────────────────────────────
-function sqlShim() {
-  const db = new Database(':memory:');
-  return {
-    exec(query, ...params) {
-      if (/^\s*(CREATE|INSERT|UPDATE|DELETE|REPLACE)/i.test(query)) {
-        db.query(query).run(...params);
-        return [];
-      }
-      return db.query(query).all(...params);
-    },
-    get databaseSize() { return 0; },
-  };
-}
-
 const store = createResidentStore();
-store.bind({ storage: { sql: sqlShim() } });
+store.bind({ storage: facetStorage(facetSql()) });
 const supervisor = {
   fsList: (after, limit) => _rpcFsList(host, after ?? null, limit ?? null, undefined, pid),
   fsReadBatch: (requests) => _rpcFsReadBatch(host, requests, pid),

@@ -15,6 +15,7 @@ import { residentFilesystem } from '../../../packages/core/src/runtime/wasi/resi
 import { subtreeListing } from '../../../packages/core/src/runtime/fs-list-tree.ts';
 import { createResidentStore } from '../../../packages/worker/src/vfs/resident/index.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { facetStorage } from './fake-do-kv.mjs';
 
 const enc = new TextEncoder();
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -70,9 +71,9 @@ async function incarnation(tree) {
  * revisions never go back), kept to hold the store's invariants for it;
  * `kernel` and `authority` are always the session's current ones.
  * @param {Record<string, string | null>} tree
- * `backing`: the store's tables in the heap (bindInMemory) or in a SQLite
- * database of their own (bind, as a facet's are).
- * @param {{ eager?: boolean, unlisted?: string[], delegated?: boolean, backing?: 'heap' | 'sql' }} [options]
+ * `backing`: the store's tables in the heap (bindInMemory) or in a facet's
+ * key-value storage of their own (bind, as a facet's are).
+ * @param {{ eager?: boolean, unlisted?: string[], delegated?: boolean, backing?: 'heap' | 'kv' }} [options]
  */
 export async function storeSession(tree, { eager = false, unlisted = [], delegated = false, backing = 'heap' } = {}) {
   let current = await incarnation(tree);
@@ -141,7 +142,7 @@ export async function storeSession(tree, { eager = false, unlisted = [], delegat
     }),
   };
   const store = createResidentStore();
-  if (backing === 'sql') store.bind({ storage: { sql: residentSql() } });
+  if (backing === 'kv') store.bind({ storage: facetStorage(residentSql()) });
   else store.bindInMemory(64 * 1024 * 1024);
   store.admission.setStorage(undefined, supervisor);
   if (eager) {

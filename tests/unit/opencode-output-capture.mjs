@@ -20,6 +20,7 @@
 
 import assert from 'node:assert/strict';
 import { runScenarios } from './lib/resident-body.mjs';
+import { facetStorage } from './lib/fake-do-kv.mjs';
 
 const CAP = 1024 * 1024;
 const TAIL = 64 * 1024;
@@ -175,7 +176,7 @@ await runScenarios(import.meta.path, {
       terminal: { NIMBUS_ATTACHED_TTY: '1', NIMBUS_CP_CHILD_PID: String(pid) },
       vfsCursor: JSON.stringify(authority.cursor()),
     });
-    await new runner.NimbusProcess({ storage: { sql: facetSql() }, waitUntil() {}, id: { toString: () => 'output-capture' } }, { SUPERVISOR: supervisor }).startProcess({ env: {} });
+    await new runner.NimbusProcess({ storage: facetStorage(facetSql()), waitUntil() {}, id: { toString: () => 'output-capture' } }, { SUPERVISOR: supervisor }).startProcess({ env: {} });
     assert.equal(await exited.promise, 0);
     // The TUI draws on the terminal too: what the program printed is what lies between its own marks.
     assert.deepEqual(framed(sent.stdout, '<OUT>', '</OUT>'), [0xc3, 0xa9]);

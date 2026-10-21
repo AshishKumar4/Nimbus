@@ -247,6 +247,7 @@ console.log('  [3] a host that answers null, throws or composes no resolver fail
   await gen2.manager.pumpResidentLaunches();
   await until(() => gen2.starts.length === 1, 'the re-drive to start');
   assert.deepEqual(gen2.starts[0].userEnv, interpreterProcessEnv(answer, facts), 'the relaunch builds it on the host\'s answer as the first launch built it');
+  await until(() => journalKeys(session).length === 1 && journalKeys(session)[0] !== `resident-launch:${pid}`, 'the old record to be superseded');
 
   // Its image as an earlier release wrote it: the environment whole, no facts.
   const key = journalKeys(session)[0];
@@ -266,6 +267,7 @@ console.log('  [3] a host that answers null, throws or composes no resolver fail
   await until(() => gen3.starts.length === 1, 'the re-drive of the migrated image to start');
   assert.deepEqual(gen3.starts[0].userEnv, interpreterProcessEnv(base, facts), 'the migrated image runs with the environment the session keeps whole');
   assert.deepEqual(filesHolding(session.vfs, FIRST), [], 'and no file holds it');
+  await until(() => journalKeys(session).length === 1 && journalKeys(session)[0] !== key, 'the migrated record to be superseded');
 
   // The same session under an embedder that keeps nothing here, and answers a base.
   session.storage.clear();

@@ -21,12 +21,13 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
 import { createResidentStore } from '../../packages/worker/src/vfs/resident/index.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { attachSupervisorOps } from './lib/session-supervisor-ops.mjs';
+import { facetStorage } from './lib/fake-do-kv.mjs';
 
 const dec = new TextDecoder();
 
 function loadStore() {
   const store = createResidentStore();
-  store.bind({ storage: { sql: createSqliteVfsTestHarness().sql } });
+  store.bind({ storage: facetStorage(createSqliteVfsTestHarness().sql) });
   store.sync.setPlan(Array.from({ length: 8 }, (_, i) => `app/f${i}.txt`));
   return store;
 }
