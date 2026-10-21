@@ -284,14 +284,9 @@ try {
   assert.equal(c.exit.spawnError, 'EHOSTDOWN', 'a link into a failing delegating mount');
   assert.deepEqual(c.starts, []);
 
-  // A cwd whose lookup fails before it reaches a delegating mount: refused all the same.
-  await ws.exec('mkdir -p /home/user/locked/m');
-  const inner = new MemoryVFS({ uid: 1000, gid: 1000 });
-  inner.mkdir('/x', { recursive: true });
-  ws.filesystem.vfs.mount('/home/user/locked/m', inner, { exec: delegate });
-  await ws.exec('chmod 000 /home/user/locked');
-  c = await child({ command: 'tool', cwd: '/home/user/locked/m/x' });
-  await ws.exec('chmod 755 /home/user/locked');
+  // A cwd the namespace cannot look up at all, where a mount delegates: where the walk stopped says nothing of
+  // where the cwd is, so it is refused, never run here in a machine's place.
+  c = await child({ command: 'tool', cwd: '/home/user/no-such-dir/m/x' });
   assert.equal(c.exit.spawnError, 'EHOSTDOWN', 'an unresolved cwd is never run here');
   assert.deepEqual(c.starts, []);
 
