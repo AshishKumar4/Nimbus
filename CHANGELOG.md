@@ -45,6 +45,20 @@ published independently in the `@nimbus-sh` npm scope.
   nothing boots from goes. Two accounts that run the same program now keep
   a copy each. Copies already taken in a snapshot, an export or a clone are
   not changed.
+- Fixed (CI): a probe task armada starts again after losing its container
+  is graded. Its token, minted when the job was submitted, could expire
+  before the second attempt's limit, so that attempt refused to run and the
+  task went ungraded (train 1021a's paired perf, twice: the first attempt's
+  container was lost after 17 minutes). `remote-probes` now runs such a
+  task once more, in a job of its own with fresh credentials, for the
+  suite, a regrade and a paired confirmation alike, so no token lives past
+  one task's limit. The wait a task may take before its first attempt is
+  the sum of its measured parts (35 s to create the job, up to 331 s to
+  prepare an environment, up to 61 s for a vessel), 428 s rather than a
+  fixed 15 minutes, so each token lives about 37 minutes instead of 45.
+  Each task's verdict now says when it started, and each run says how long
+  its tasks waited, which measures the part not yet measured: many vessels
+  waiting at once for fleet capacity.
 - Fixed: a long-running node process (a server, an agent's turn) could end mid-read with exit 0 and its read never answered. This happened when its filesystem had to ask the session for something on the program's behalf: more storage room for a file another process had just written, a listing, or a fill. That work was not counted as something the program was waiting on, so the process looked idle and ended. Every filesystem call a node process makes on the session now counts as live work until it is answered, whichever part of the process made it.
 
 ## 2026-10-21 (patch): worker 0.24.1 (every other package unchanged from the 2026-10-21 release)
