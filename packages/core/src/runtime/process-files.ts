@@ -205,7 +205,8 @@ class GuardedProcessBridge implements RuntimeFsBridge {
    * reports (Delegations.readLease).
    */
   withReadLease(answer: VfsAcquireResult, options?: VfsAcquireOptions): VfsAcquireResult {
-    if (options?.lease !== true || this.pid === undefined || answer.poison) return answer;
+    // The engine's writes recall a lease; a change on another feed that moves would not.
+    if (options?.lease !== true || this.pid === undefined || answer.poison || !this.target.leasable()) return answer;
     let lease: { owner: string; trustMs: number } | null;
     try {
       lease = this.delegations.readLease(this.pid, (terms) => this.target.acquireReadLease(terms, rootOf(answer.position)), this.scope);
@@ -357,7 +358,8 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     // resolved, right before the backend is called.
     this.vfs.guardMutations((cred, path, owner) => engine.mutationRefusal(path, cred, owner));
     this.proc = standardProc();
-    this.proc.register('mounts', (cred) => formatProcMounts(this.mounts(cred ?? CRED_KERNEL)));
+    // Made at each read from the table as it stands: volatile, its row size 0, as the session's alone to make.
+    this.proc.register('mounts', (cred) => formatProcMounts(this.mounts(cred ?? CRED_KERNEL)), true);
     this.vfs.mount(PROC_MOUNT_POINT, this.proc);
     this.vfs.mount('/dev', new DevVFS());
     // A read lease vouches for what is the engine's, which a mount or an unmount moves.

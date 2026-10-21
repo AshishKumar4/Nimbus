@@ -4,7 +4,7 @@
 import { LruMap } from '../_shared/lru-map.js';
 import { normalizeVfsPath } from '../vfs/path.js';
 import type { Awaitable, RuntimeFsBridge, SqlDatabase, VfsCred } from './os-contracts.js';
-import { isFeedPosition, rootOf, type FeedPosition } from './feed-position.js';
+import { feedsOf, isFeedPosition, positionOf, rootOf, type FeedPosition } from './feed-position.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 
 const REPOSITORIES = 128;
@@ -103,7 +103,13 @@ export function makeGitFsmonitor(state?: GitFsmonitorState): {
       if (history) trusted.set(key, history);
       const before = history ? serialize(history) : null;
       const issued = cursor >= 0 ? history?.tokens.get(cursor) : undefined;
-      const from = issued?.position ?? null;
+      // From the token's place on each feed it holds, in the table as it stands: a mount that came or went is the
+      // mount footprint's to report (mergeMounts), so it is no poison here; a feed it never held starts now.
+      let from: FeedPosition | null = null;
+      if (issued?.position) {
+        const now = (await fs.acquire(null)).position;
+        from = positionOf(now.table, { ...feedsOf(now), ...feedsOf(issued.position) });
+      }
       const delta = await fs.acquire(from, { namespace: true });
       // The token is the root's revision; the position it was issued at is what the next query asks from.
       const at = rootOf(delta.position);

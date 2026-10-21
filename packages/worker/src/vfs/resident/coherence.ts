@@ -55,8 +55,8 @@ export interface Coherence {
 
 export function createCoherence(): Coherence {
   let t: ResidentTables | null = null;
-  /** The cursor as last read or written, for the tables it is of: parsed once, not at every read. */
-  let read: { tables: ResidentTables; cursor: Cursor | null } | null = null;
+  /** The cursor as last parsed, by the text it was parsed from: parsed again only when the text is another. */
+  let read: { text: string; cursor: Cursor | null } | null = null;
   let heap: HeapTables | null = null;
   let isSealed = true;
   /**
@@ -106,23 +106,21 @@ export function createCoherence(): Coherence {
     setUndated(value) { undated = value; },
     cursor() {
       if (t === null) return null;
-      if (read !== null && read.tables === t) return read.cursor;
       const text = t.metaGet('position');
+      if (text === undefined) return null;
+      if (read !== null && read.text === text) return read.cursor;
       let cursor: Cursor | null = null;
-      if (text !== undefined) {
-        try {
-          const parsed: unknown = JSONParse(text);
-          cursor = isFeedPosition(parsed) ? parsed : null;
-        } catch {
-          cursor = null;
-        }
+      try {
+        const parsed: unknown = JSONParse(text);
+        cursor = isFeedPosition(parsed) ? parsed : null;
+      } catch {
+        cursor = null;
       }
-      read = { tables: t, cursor };
+      read = { text, cursor };
       return cursor;
     },
     writeCursor(tables, cursor) {
       tables.metaSet('position', JSONStringify(cursor));
-      read = { tables, cursor };
     },
   };
 }

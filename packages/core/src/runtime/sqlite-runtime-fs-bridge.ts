@@ -637,6 +637,11 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     };
   }
 
+  /** Whether a read lease may be granted over this caller's namespace: no feed but the engine's moves (CompositeVFS.movesWithTheRootAlone). */
+  leasable(): boolean {
+    return this.namespace === undefined || this.namespace.movesWithTheRootAlone();
+  }
+
   /** One page of every name this caller's namespace shows (namespacePage), or SQLite's where it has none. */
   list(after?: string | null, limit?: number, options?: VfsListOptions): VfsListPage {
     if (this.namespace === undefined) {

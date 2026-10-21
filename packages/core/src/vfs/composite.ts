@@ -1827,6 +1827,18 @@ export class CompositeVFS implements VFS {
 
   /** Whether the table declares an accepted mount point, even if its source is absent. */
   /**
+   * Whether every live mount's feed but the root's is fixed (VfsChanges.fixed):
+   * a read lease, which the engine's writes recall, follows no other feed
+   * that moves.
+   */
+  movesWithTheRootAlone(): boolean {
+    for (const { mount, changes } of this.feedSources()) {
+      if (mount.point !== ROOT_POINT && changes !== undefined && changes.fixed !== true) return false;
+    }
+    return true;
+  }
+
+  /**
    * Whether the mount at `point` states its change model (a feed:
    * VFS.changes), as the root's SQLite does: false for one with none, or
    * whose source is absent, which only a walk can list (CompositeFeed.walk).

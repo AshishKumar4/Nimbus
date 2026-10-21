@@ -35,7 +35,8 @@ async function check(kind) {
     const staged = store.namespace.rowAt('m');
     console.log(JSON.stringify({ kind, poison: answer.poison, paths: answer.paths, liveDirectory: live?.type, stagedDirectory: staged ?? null }));
     assert.equal(live?.type, kind === 'aba' ? undefined : 'directory');
-    assert.equal(answer.poison, true, 'the new live mount must poison the SQLite-only listing');
+    // An ABA leaves the table as the listing saw it: nothing to relist (CompositeFeed.an_aba_window_needs_no_poison).
+    assert.equal(answer.poison, kind !== 'aba', kind === 'aba' ? 'an ABA window needs no poison' : 'the new live mount must poison the listing');
     assert.equal(staged?.kind, kind === 'aba' ? undefined : NS_DIR, 'the repaired namespace matches the final table');
     const repaired = store.coherence.cursor();
     const next = await supervisor.fsAcquire(repaired, { namespace: true });

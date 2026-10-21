@@ -873,23 +873,27 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     return root !== undefined && root !== null && root.dev === entry.dev;
   };
 
-  /**
-   * The bytes of a volatile /proc file (proc-files.ts), made here at each
-   * read by the session's own generator: what its row (size 0, as procfs
-   * says) cannot hold, and no fetch could keep current. Undefined for any
-   * other file.
-   */
-  const generated = (key: string, entry: ResidentEntry): Uint8Array | undefined => {
+  /** Whether `entry` at `key` is a volatile /proc file: made at each read, its row size 0 (as procfs says), no bytes to hold. */
+  const volatileProc = (key: string, entry: ResidentEntry): boolean => {
+    if (entry.type !== 'file' || entry.size !== 0) return false;
     const cursor = store.cursor();
-    if (entry.size !== 0 || cursor === null || feedPointOf(cursor, key) !== PROC_MOUNT_POINT) return undefined;
-    const generate = volatileProcFile(key.slice(PROC_MOUNT_POINT.length));
+    return cursor !== null && feedPointOf(cursor, key) === PROC_MOUNT_POINT;
+  };
+
+  /**
+   * A volatile /proc file's bytes, made here by the session's own generator
+   * (proc-files.ts) where this process has it; undefined where only the
+   * session makes it (/proc/mounts).
+   */
+  const generated = (key: string): Uint8Array | undefined => {
+    const generate = volatileProcFile(('/' + key).slice(PROC_MOUNT_POINT.length + 1));
     if (generate === undefined) return undefined;
     const content = generate({ ...store.cred, umask: 0 });
     return typeof content === 'string' ? new TextEncoder().encode(content) : content.slice();
   };
 
-  /** A file whose bytes the view never holds: a device's (read by a descriptor of the session's), or one made at each read (generated). */
-  const unheld = (key: string, entry: ResidentEntry): boolean => isCharacterDevice(entry.mode) || generated(key, entry) !== undefined;
+  /** A file whose bytes the view never holds: a device's (read by a descriptor of the session's), or a volatile /proc file's. */
+  const unheld = (key: string, entry: ResidentEntry): boolean => isCharacterDevice(entry.mode) || volatileProc(key, entry);
 
   /**
    * A file's bytes: what this process decided for it, else the store's,
@@ -1152,8 +1156,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     if (!modeAllows(entry, 4, store.cred)) throw fsError('EACCES', 'open', path);
     if (entry.type === 'directory') throw fsError('EISDIR', 'open', path);
     if (entry.type !== 'file' || entry.size > WASI_RESIDENT_FILE_CAP_BYTES || isCharacterDevice(entry.mode)) return DELEGATE;
-    const made = generated(key, entry);
-    if (made !== undefined) return made;
+    if (volatileProc(key, entry)) return generated(key) ?? DELEGATE;
     return after(contentOf(key, entry), (bytes) => (bytes === undefined ? DELEGATE : bytes));
   }), () => authority.readFile(path, options));
 

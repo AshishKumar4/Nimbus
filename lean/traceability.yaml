@@ -856,7 +856,7 @@ requirements:
       - packages/core/src/vfs/composite.ts#CompositeVFS.walkUnfed
       - packages/core/src/runtime/process-files.ts#ProcessFiles.nameLaunch
       - packages/core/src/runtime/process-files.ts#AwaitingProcessBridge.list
-      - packages/core/src/runtime/process-files.ts#AwaitingProcessBridge.listMounted
+      - packages/core/src/runtime/sqlite-runtime-fs-bridge.ts#namespacePage
       - packages/core/src/runtime/process-files.ts#AwaitingProcessBridge.acquire
     refinement:
       - lean/fixtures/composite-feed.json :: tests/unit/composite-feed-refinement.mjs
@@ -865,8 +865,8 @@ requirements:
       - An own mutation's delta is assumed to name every staged path it changed (FsStep.own); the lane's own-write overlay is not modeled here
       - One principal's table; per-principal source switches are table changes for that principal
       - The walk model abstracts traversal order to bounded parent-closed observations and whole-directory completion certificates, not a promise to discover every name; concurrent backend mutation during the walk is not modeled; the fixture exercises the implemented 8192-name bound, unlisted directories and retention across listing pages
-      - Bound ProcessFiles listing is used for every fixture; root/unfed-only cases also use its acquire, while independent fed backends retain CompositeFeed's multi-feed cursor, which the SQLite-only process cursor does not encode
-      - The generation-only route requires zero declared non-kernel mount points; a declared but absent source stays on the signature route, so null-to-live changes are detected without a mount operation
+      - Bound ProcessFiles listing and acquire are used for every fixture: a process's cursor is CompositeFeed's position (runtime/feed-position.ts), every fed backend's feed in it
+      - A declared but absent source is on the signature (its live flag), so null-to-live changes are detected without a mount operation
       - Resident mounted-byte refinement covers async-only unfed mounts; a synchronous unfed mount currently refuses the resident fill with ESTALE when fsReadBatch carries the SQLite expectedEpoch, so that runtime path is not claimed here
       - Unfed own-write overlays are not modeled by FsStep.own, which preserves the held walk; the cache model treats own bytes as separate reconciliation evidence
       - The CAS model identifies writes by (epoch, gen); the epoch is assumed fresh per incarnation

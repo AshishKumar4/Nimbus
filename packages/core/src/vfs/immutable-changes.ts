@@ -68,6 +68,7 @@ export function immutableChanges(vfs: Pick<SyncVFS, 'stat' | 'readdir'>, version
   };
   return {
     get epoch() { return current().epoch; },
+    fixed: true,
     revision: () => 0,
     since: (epoch) => {
       const now = current().epoch;
