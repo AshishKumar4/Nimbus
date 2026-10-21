@@ -159,11 +159,13 @@ try {
     });
   }
 
-  await (async () => {
-    // Across HTTP an errno is the call's answer, not the server failing.
-    const error = await failure(overHttp.files.unlink('/tmp/none-at-all'));
+  // Across HTTP an errno is the call's answer, not the server failing.
+  try {
+    const error = await failure(overHttp.files.stat('/tmp/none-at-all/x').then(() => overHttp.files.rmdir('/tmp/none-at-all')));
     if (error.status !== 404) failures.push(`http: ENOENT is 404, not ${error.status}`);
-  })();
+  } catch (error) {
+    failures.push(`http: ENOENT's status: ${error.message}`);
+  }
 } finally {
   await runtime.close();
 }

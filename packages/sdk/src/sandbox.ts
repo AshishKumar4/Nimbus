@@ -666,7 +666,8 @@ export class NimbusSandbox {
       },
       mkdir: async (path: string, options?: NimbusMkdirOptions): Promise<void> => {
         await this.ready();
-        return this.rpc(this.stub()._rpcMkdir(path, undefined, cred, options));
+        const stub = this.stub();
+        return this.rpc(options === undefined ? stub._rpcMkdir(path, undefined, cred) : stub._rpcMkdir(path, undefined, cred, options));
       },
       exists: async (path: string): Promise<boolean> => {
         await this.ready();

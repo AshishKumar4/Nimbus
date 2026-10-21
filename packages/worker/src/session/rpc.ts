@@ -418,7 +418,8 @@ export interface FilesHost {
 }
 
 const NullableStat = RuntimeStatSchema.nullable();
-const Descriptor = z.number().int().nonnegative();
+/** An open file's answer (RuntimeOpenedFile): its descriptor is its id. */
+const Opened = z.object({ id: z.number().int().nonnegative() });
 const Written = z.number().int().nonnegative();
 
 export async function _rpcStat(self: FilesHost, path: string, pid?: number, cred?: VfsCred): Promise<SessionFileStat | null> {
@@ -440,7 +441,7 @@ export async function _rpcRmdir(self: FilesHost, path: string, pid?: number, cre
 /** Opened O_APPEND (made when absent), written to its end, closed: every byte at the file's end however it grows meanwhile. */
 export async function _rpcAppendFile(self: FilesHost, path: string, content: string | Uint8Array, pid?: number, cred?: VfsCred): Promise<void> {
   const bytes = typeof content === 'string' ? new TextEncoder().encode(content) : content;
-  const fd = Descriptor.parse(await self.supervisorOp({ op: 'fsOpen', args: [path, { write: true, append: true, create: true }], pid, cred }));
+  const fd = Opened.parse(await self.supervisorOp({ op: 'fsOpen', args: [path, { write: true, append: true, create: true }], pid, cred })).id;
   try {
     for (let at = 0; at < bytes.byteLength;) {
       at += Written.parse(await self.supervisorOp({ op: 'fsWrite', args: [fd, null, bytes.subarray(at)], pid, cred }));
