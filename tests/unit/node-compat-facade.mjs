@@ -159,6 +159,20 @@ try {
     const quiet = bundle.createNodeCompat({ files: { ...files, stat: async () => { throw hidden; } } }, { cwd: '/c' }).fsPromises;
     const unseen = await failure(() => quiet.stat('y'));
     assert.deepEqual([unseen.code, unseen.errno, unseen.syscall, unseen.path], ['ENOENT', -2, 'stat', 'y']);
+    // A path its class reads, with no setter: the error cannot be renamed where it stands.
+    class Gotten extends Error {
+      get path() { return '/c/z'; }
+    }
+    const gotten = bundle.createNodeCompat({ files: { ...files, stat: async () => { throw Object.assign(new Gotten("ENOENT: no such file or directory, stat '/c/z'"), { code: 'ENOENT', errno: -2, syscall: 'stat' }); } } }, { cwd: '/c' }).fsPromises;
+    const read = await failure(() => gotten.stat('z'));
+    assert.deepEqual([read.code, read.path, read.message], ['ENOENT', 'z', "ENOENT: no such file or directory, stat 'z'"]);
+    // A frozen error whose stack is its own, enumerable: copied, its stack kept.
+    const stacked = new Error("ENOENT: no such file or directory, stat '/c/w'");
+    Object.defineProperty(stacked, 'stack', { value: 'Error: a stack of its own', enumerable: true });
+    Object.freeze(Object.assign(stacked, { code: 'ENOENT', errno: -2, syscall: 'stat', path: '/c/w' }));
+    const kept = bundle.createNodeCompat({ files: { ...files, stat: async () => { throw stacked; } } }, { cwd: '/c' }).fsPromises;
+    const copied = await failure(() => kept.stat('w'));
+    assert.deepEqual([copied.code, copied.path, copied.stack, copied.cause === stacked], ['ENOENT', 'w', 'Error: a stack of its own', true]);
   });
 
   await check('a synchronous face\'s path truncate', async () => {
