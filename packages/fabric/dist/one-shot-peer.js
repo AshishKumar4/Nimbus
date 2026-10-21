@@ -487,16 +487,21 @@ export class OneShotHost {
     }
     /** One call of a session's facet: its answer, whatever the task did. */
     async submit(spec, callId, fn, args, options, images) {
+        const t0 = performance.now();
         const id = z.string().uuid().parse(callId);
         const pool = this.#pool(spec);
         if (pool === null)
             return { ok: 'preamble missing' };
+        const t1 = performance.now();
         const controller = new AbortController();
         this.#calls.set(id, controller);
         try {
-            const value = await pool.submit(facetTaskSource(FacetTaskSchema.parse(fn).source), args, {
-                ...CallOptionsSchema.parse(options), wasmModules: facetImages(images), signal: controller.signal,
-            });
+            const task = facetTaskSource(FacetTaskSchema.parse(fn).source);
+            const parsed = { ...CallOptionsSchema.parse(options), wasmModules: facetImages(images), signal: controller.signal };
+            const t2 = performance.now();
+            const value = await pool.submit(task, args, parsed);
+            const t3 = performance.now();
+            globalThis.__d1Spans = [...(globalThis.__d1Spans ?? []).slice(-31), { pool: t1 - t0, parse: t2 - t1, submit: t3 - t2, at: Date.now() }];
             return { ok: true, value };
         }
         catch (error) {
