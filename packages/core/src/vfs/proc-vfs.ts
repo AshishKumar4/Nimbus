@@ -6,6 +6,7 @@
  * `name` may be nested (`net/info`), which makes its directories. Nothing
  * here is stored, so nothing here has a revision: a cache never holds it.
  */
+import { CA_CERTIFICATES_PEM } from './ca-certificates.generated.js';
 import type { SyncVFS, VFS, VfsCred, VfsDirent, VfsStat } from './vfs.js';
 import { syscallError } from './vfs-error.js';
 import { posixAccess } from './posix-access.js';
@@ -107,9 +108,20 @@ export class ProcVFS implements VFS {
 }
 
 /**
- * The /proc every workspace has: cpuinfo, meminfo, uptime, version and
- * net/info. ProcessFiles adds `mounts`, and a host adds its own with
- * `register`.
+ * The trust store: the TLS roots this build serves (Mozilla's, pinned by
+ * scripts/update-ca-certificates.mjs). Generated here rather than kept in a
+ * session, so every session trusts what the deployed Nimbus trusts, and a
+ * root Mozilla distrusts leaves every session with the next deploy (a copy
+ * staged in a session would keep it). CPython's and Ruby's OpenSSL read it
+ * through SSL_CERT_FILE (interpreter-env.ts): their default paths are their
+ * build machine's.
+ */
+export const CA_CERTIFICATES_FILE = '/proc/nimbus/ca-certificates.crt';
+
+/**
+ * The /proc every workspace has: cpuinfo, meminfo, uptime, version,
+ * net/info and the trust store. ProcessFiles adds `mounts`, and a host adds
+ * its own with `register`.
  */
 export function standardProc(): ProcVFS {
   const proc = new ProcVFS();
@@ -141,6 +153,7 @@ export function standardProc(): ProcVFS {
     return `${seconds} ${seconds}\n`;
   });
   proc.register('version', () => `Lifo 1.0.0 (${typeof navigator !== 'undefined' ? navigator.userAgent : 'Node.js'})\n`);
+  proc.register(CA_CERTIFICATES_FILE.slice('/proc/'.length), () => CA_CERTIFICATES_PEM);
   proc.register('net/info', () => {
     const conn = typeof navigator !== 'undefined'
       ? (navigator as unknown as { connection?: { effectiveType?: string; downlink?: number; rtt?: number; type?: string } }).connection

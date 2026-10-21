@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// The trust store every session reads, /etc/ssl/certs/ca-certificates.crt,
+// The trust store every session reads, /proc/nimbus/ca-certificates.crt,
 // is the pinned bundle this build serves, and trusts nothing on a path to
 // the eMudhra intermediates whose keys were found compromised on 2026-10-20
 // (https://emudhra.we-have-a-problem.com/). Before, a session's CPython
@@ -16,7 +16,7 @@ import { interpreterProcessEnv } from '../../packages/core/src/runtime/interpret
 import { hostSqlite } from './lib/host-sqlite.mjs';
 
 const PINNED_SHA256 = '796f1389bfea13c0ed78f663b765baaff54a508e5483786bd6ece73c5e3e3cbe'; // curl.se cacert-2026-10-20.pem
-const FILE = '/etc/ssl/certs/ca-certificates.crt';
+const FILE = '/proc/nimbus/ca-certificates.crt';
 
 const pemBlocks = (text) => text.match(/-----BEGIN CERTIFICATE-----[^-]+-----END CERTIFICATE-----/g) ?? [];
 const fingerprint = (cert) => cert.fingerprint256.replaceAll(':', '');
@@ -43,12 +43,14 @@ try {
   }
 
   // Where a session finds it, and that it is the deployment's, not the session's to change.
-  const listed = await ws.exec(`ls -l ${FILE}; ls /etc/ssl/certs; grep ' /etc/ssl/certs ' /proc/mounts`);
-  assert.match(listed.stdout, /^-rw-r--r-- +1 root root 200116 .* \/etc\/ssl\/certs\/ca-certificates\.crt$/m, listed.stdout);
+  const listed = await ws.exec(`ls -l ${FILE}; ls /proc/nimbus`);
+  assert.match(listed.stdout, /^-r--r--r-- +1 root root 200116 .* \/proc\/nimbus\/ca-certificates\.crt$/m, listed.stdout);
   assert.match(listed.stdout, /^ca-certificates\.crt$/m);
-  assert.match(listed.stdout, /^ca-certificates \/etc\/ssl\/certs ca-certificates ro/m, listed.stdout);
-  const write = await ws.exec(`echo forged >> ${FILE}; rm -f ${FILE}; touch /etc/ssl/certs/extra.pem`);
-  assert.equal(write.stderr.match(/Read-only file system/g)?.length, 3, write.stderr);
+  for (const line of [`echo forged >> ${FILE}`, `rm -f ${FILE}`, 'touch /proc/nimbus/extra.pem']) {
+    const refused = await ws.exec(line);
+    assert.notEqual(refused.exitCode, 0, `${line}: refused`);
+    assert.match(refused.stderr, /EROFS|[Rr]ead-only file system/, `${line}: ${refused.stderr}`);
+  }
   assert.equal(createHash('sha256').update(await ws.fs.readFile(FILE)).digest('hex'), PINNED_SHA256, 'unchanged by them');
 } finally {
   await ws.close();

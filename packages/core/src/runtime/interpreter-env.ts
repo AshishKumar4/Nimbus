@@ -6,7 +6,7 @@
 // paths, and the gems found installed when it launched.
 
 import { z } from 'zod/v4';
-import { CA_CERTIFICATES_FILE } from '../vfs/ca-certificates-vfs.js';
+import { CA_CERTIFICATES_FILE } from '../vfs/proc-vfs.js';
 
 export const InterpreterEnvFactsSchema = z.discriminatedUnion('runtime', [
   z.object({ runtime: z.literal('python'), home: z.string() }),
