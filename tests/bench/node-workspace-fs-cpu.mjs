@@ -66,7 +66,7 @@ const semver = require('semver');
 const validate = new Ajv().compile({ type: 'object', properties: { version: { type: 'string' } }, required: ['version'] });
 let n = validate({ version: '1.2.3' }) && semver.satisfies('1.2.3', '^1.0.0') ? 1 : 0;
 const names = fs.readdirSync('node_modules');
-for (let round = 0; round < 3; round++) {
+for (let round = 0; round < 16; round++) {
   for (const name of names) {
     const manifest = 'node_modules/' + name + '/package.json';
     if (fs.existsSync(manifest)) n += JSON.parse(fs.readFileSync(manifest, 'utf8')).name.length;
@@ -75,7 +75,9 @@ for (let round = 0; round < 3; round++) {
   }
 }
 (async () => {
-  for (const name of names) n += (await fs.promises.stat('node_modules/' + name + '/package.json')).size;
+  for (let round = 0; round < 8; round++) {
+    for (const name of names) n += (await fs.promises.stat('node_modules/' + name + '/package.json')).size;
+  }
   n += (await fs.promises.readdir('node_modules/ajv/dist')).length;
   console.log(n);
 })();
@@ -112,7 +114,7 @@ try {
   results.push(result);
   writeFileSync(output, `${JSON.stringify(results, null, 2)}\n`);
   const { samples, ...summary } = result;
-  console.log(JSON.stringify({ ...summary, files: files.size, packages: tree.size }));
+  console.log(JSON.stringify({ ...summary, files: files.size, packages: tree.size, fsCalls: tree.size * (16 * 4 + 8) + 2 }));
   assertArmsInside();
 } finally {
   for (const dispose of disposals) dispose();
