@@ -49,7 +49,7 @@ export type Resolved = { path: string; row: NsRow } | 'ELOOP';
 
 /** A lookup or listing asked of the session, until its answer is installed or dropped (Namespace.learning). */
 export interface Learning {
-  /** Whether what the answer says of `k` may be installed: nothing admitted since it was asked is at or above `k`, and the table was not replaced. */
+  /** Whether what the answer says of `k` may be installed: nothing admitted since it was asked is at `k`, or above it with what is beneath it moved, and the table was not replaced. */
   installs(k: string): boolean;
   /** Whether the answer's listing of `dir` may be installed: as `installs`, and nothing admitted beneath it either. */
   lists(dir: string): boolean;
@@ -221,8 +221,13 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
   const listed = new SafeSet<string>();
   /** Moved whenever the table is replaced or stops answering: a learning asked before installs nothing. */
   let generation = 0;
-  /** Each learning in flight, with every path an admitted delta named since it was asked. */
-  const learnings = new SafeSet<{ generation: number; reported: SafeList<string> }>();
+  /**
+   * Each learning in flight, with every path an admitted delta named since it
+   * was asked, and whether what is beneath it moved too (`beneath`): not when
+   * the entry left the name the same directory, as traversable, with only its
+   * own attributes changed (a name added or removed in it, its times).
+   */
+  const learnings = new SafeSet<{ generation: number; reported: SafeList<{ at: string; beneath: boolean }> }>();
 
   const ready = (): boolean => ok && coherence.serving();
 
@@ -492,16 +497,18 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
      */
     applyEntry(t, entry) {
       const k = nsKey(entry.path);
-      learnings.forEach((asked) => { asked.reported[asked.reported.length] = k; });
-      if (k === '') return null;
+      const moved = (beneath: boolean): void => { learnings.forEach((asked) => { asked.reported[asked.reported.length] = { at: k, beneath }; }); };
+      if (k === '') { moved(true); return null; }
       const stat = ownValue(entry, 'stat');
-      if (stat === null) { deleteTree(t, k, true); return null; }
+      if (stat === null) { moved(true); deleteTree(t, k, true); return null; }
       const before = nsRowAt(t, k);
-      if (stat === undefined || !tryPut(t, k, stat, entry.rev, ownValue(entry, 'linkTarget'))) return null;
+      if (stat === undefined || !tryPut(t, k, stat, entry.rev, ownValue(entry, 'linkTarget'))) { moved(true); return null; }
       const after = nsRowAt(t, k);
-      if (after === undefined || after.kind !== NS_DIR) { deleteTree(t, k, false); return null; }
+      if (after === undefined || after.kind !== NS_DIR) { moved(true); deleteTree(t, k, false); return null; }
       const was = before !== undefined && traversable(before);
       const now = traversable(after);
+      moved(!(before !== undefined && before.kind === NS_DIR && before.ino === after.ino && before.dev === after.dev && was === now
+        && !ownValue(entry, 'structural') && !ownValue(entry, 'subtree')));
       // Listed on demand, a directory whose names moved without being named
       // (replaced, renamed, its mode or owner changed) is unknown beneath:
       // its names are looked up again.
@@ -664,12 +671,12 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
       putListener = listener;
     },
     learning() {
-      const asked = { generation, reported: new SafeList<string>() };
+      const asked = { generation, reported: new SafeList<{ at: string; beneath: boolean }>() };
       learnings.add(asked);
       const named = (k: string, beneath: boolean): boolean => {
         for (let i = 0; i < asked.reported.length; i++) {
-          const at = asked.reported[i];
-          if (at === '' || at === k || stringStartsWith(k, at + '/') || (beneath && (k === '' || stringStartsWith(at, k + '/')))) return true;
+          const { at, beneath: under } = asked.reported[i];
+          if (at === k || (under && (at === '' || stringStartsWith(k, at + '/'))) || (beneath && (k === '' || stringStartsWith(at, k + '/')))) return true;
         }
         return false;
       };
