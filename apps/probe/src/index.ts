@@ -32,6 +32,7 @@ import { disposeRpcResource } from '../../../packages/platform/src/rpc-dispose.j
 import { peerPlacement } from '@nimbus-sh/fabric/process-host.js';
 import { abortFacet, heldFacetName } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { oneShotPlacement, oneShotPlacementDiagnostics } from '@nimbus-sh/fabric/one-shot-peer.js';
+import { recentFacetCalls } from '@nimbus-sh/fabric/isolate-pool.js';
 import { WASI_INSTANCE_PREAMBLE_SRC } from '@nimbus-sh/core/runtime/wasi-instance.js';
 import { warmFacetScope } from '@nimbus-sh/core/runtime/warm-facets.js';
 import { facetTaskSource } from '@nimbus-sh/core/runtime/facet-task.js';
@@ -288,6 +289,11 @@ export class NimbusSession extends SdkNimbusSession {
     }
   }
   /** Whether this object stores `needle` anywhere: in its key-value storage or a row of its SQLite. */
+  /** Experiment: this object's last facet calls (fabric isolate-pool recentFacetCalls): a peer's own times for the calls it ran. */
+  _rpcProbeFacetCalls() {
+    this.requireProbeDiagnostics();
+    return recentFacetCalls(this.ctx);
+  }
   async _rpcProbeStores(needle: string): Promise<boolean> {
     this.requireProbeDiagnostics();
     if (JSON.stringify([...await this.ctx.storage.list()]).includes(needle)) return true;
@@ -490,7 +496,7 @@ export class NimbusProcess extends DurableObject {
   } finally { disposeRpcResource(stub); }
 }
 
-const OneShotPeerProbe = z.object({ action: z.enum(['forget', 'reset', 'stored', 'burn']), needle: z.string().default(''), forget: z.boolean().default(false), preamble: z.enum(['none', 'wasi']).default('none'), n: z.number().int().positive().default(1) });
+const OneShotPeerProbe = z.object({ action: z.enum(['forget', 'reset', 'stored', 'burn', 'facet-calls']), needle: z.string().default(''), forget: z.boolean().default(false), preamble: z.enum(['none', 'wasi']).default('none'), n: z.number().int().positive().default(1) });
 
 /**
  * POST /api/embedder/<id>/one-shot-peer {action, needle?}: the session's
@@ -516,6 +522,7 @@ async function probeOneShotPeer(request: Request, env: ProbeEnv, sessionId: stri
     if (name === null) return Response.json({ error: 'the session has no one-shot peer' }, { status: 404 });
     peer = env.NIMBUS_SESSION.get(env.NIMBUS_SESSION.idFromName(name));
     if (action === 'stored') return Response.json({ peer: name, stored: await peer._rpcProbeStores(needle) });
+    if (action === 'facet-calls') return Response.json({ peer: name, calls: await peer._rpcProbeFacetCalls() });
     await peer._rpcProbeCoordinatorReset().catch(() => {});
     return Response.json({ reset: name });
   } catch (error) {
