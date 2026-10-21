@@ -150,3 +150,14 @@ export function sameClock(a: FeedPosition, b: FeedPosition, key: string): boolea
   const y = feedOf(b, point);
   return x !== undefined && y !== undefined && x.epoch === y.epoch;
 }
+
+/** Whether a fed mount's point lies strictly beneath `key` (a path, with or without its leading slash) in `position`: a directory the namespace makes above it. */
+export function abovePoint(position: FeedPosition, key: string): boolean {
+  const path = key.length > 0 && key.charCodeAt(0) === 0x2f ? key : '/' + key;
+  const under = path === '/' ? '/' : path + '/';
+  const points = objectKeys(feedsOf(position));
+  for (let i = 0; i < points.length; i++) {
+    if (points[i] !== ROOT_FEED && points[i].length > under.length && stringStartsWith(points[i], under)) return true;
+  }
+  return false;
+}

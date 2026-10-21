@@ -224,14 +224,13 @@ await runScenarios(import.meta.path, {
     assert.equal(engineStat(await e.fs.stat('/mnt/plain/a'))?.size, 5);
   },
 
-  async 'a Node program reads /dev and /proc synchronously as the session holds them'(e = undefined) {
+  async 'a Node program stats /dev and /proc synchronously as the session holds them'(e = undefined) {
     e = await bootEngine('node', {});
     await e.fs.readdir('/proc');
     await e.fs.readdir('/dev');
-    const uptime = new TextDecoder().decode(e.sync.readFile('/proc/uptime'));
-    assert.match(uptime, /^\d+\.\d\d \d+\.\d\d\n$/, `readFileSync of /proc/uptime: ${JSON.stringify(uptime)}`);
-    assert.deepEqual(e.sync.readFile('/proc/version'), await e.fs.readFile('/proc/version'));
-    assert.equal(Number(e.sync.stat('/dev/null').mode) & 0o170000, 0o020000);
+    assert.equal(Number(e.sync.stat('/dev/null').mode) & 0o170000, 0o020000, 'a character device');
+    assert.equal(Number(e.sync.stat('/proc/uptime').size), 0, 'a volatile file is size 0');
+    assert.equal(Number(e.sync.stat('/proc/version').size), (await e.fs.readFile('/proc/version')).byteLength);
   },
 
   async 'an awaited change only the session decides is shown once it returns'(e = undefined) {

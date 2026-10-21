@@ -51,7 +51,7 @@ import type { ReadDirectorySupervisor } from '../read-directory-batch.js';
 import type { VfsAcquireResult } from '../os-contracts.js';
 import type { ProcessFsClient, ProcessFsJournal, ProcessFsOp, ProcessFsSession, ProcessFsStats } from '../../_shared/process-fs-client.js';
 import type { WaveTimers } from '@nimbus-sh/platform/wave-writer.js';
-import { feedPointOf, ROOT_FEED, rootOf, type FeedPosition } from '../feed-position.js';
+import { abovePoint, feedPointOf, ROOT_FEED, rootOf, type FeedPosition } from '../feed-position.js';
 import { PROC_MOUNT_POINT, volatileProcFile } from '../../vfs/proc-files.js';
 import { isCharacterDevice } from '../../vfs/vfs.js';
 
@@ -861,12 +861,15 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
    * mount without a feed (a snapshot its listing walked), which is the
    * session's to answer. A row is its fed mount's where its device is that
    * mount's root's (the deepest fed mount point at or above it): a mount
-   * without a feed beneath it has a device of its own.
+   * without a feed beneath it has a device of its own. A directory the
+   * namespace makes above a fed mount point is answered too.
    */
   const answerable = (key: string, entry: ResidentEntry): boolean => {
     if (entry.dev === store.device) return true;
     const cursor = store.cursor();
     if (cursor === null) return false;
+    // A directory the namespace makes above a fed mount (no backend holds it): the table's, which a poison moves.
+    if (entry.type === 'directory' && abovePoint(cursor, key)) return true;
     const point = feedPointOf(cursor, key).slice(1);
     if (point === '') return false;
     const root = point === key ? entry : store.entry(point);
