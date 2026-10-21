@@ -30,9 +30,12 @@ let answering: FilesFace<'sync'> | null = null;
 
 /** A step's answer already in hand: `yield*` of it is its value, with nothing yielded. */
 class Answered<T> implements Iterator<Step, T, void> {
-  constructor(private readonly value: T) {}
+  private readonly result: IteratorReturnResult<T>;
+  constructor(value: T) {
+    this.result = { done: true, value };
+  }
   next(): IteratorResult<Step, T> {
-    return { done: true, value: this.value };
+    return this.result;
   }
   [Symbol.iterator](): Iterator<Step, T, void> {
     return this;

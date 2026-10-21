@@ -259,7 +259,7 @@ export function createNodeFs(faces: NodeFaces, { cwd, stdin, reachStreams }: Nod
   }
 
   /** `op` for `fs.promises`. */
-  const promised = <T>(op: () => Op<T>): Promise<T> => runAsync(faces, op());
+  const promised = <T>(op: Op<T>): Promise<T> => runAsync(faces, op);
 
   // ─── File descriptors ───
   // A descriptor is the process's own (NodeFilesystem.open): its file,
@@ -973,31 +973,31 @@ export function createNodeFs(faces: NodeFaces, { cwd, stdin, reachStreams }: Nod
   // ─── Promises API ───
 
   const promises = {
-    readFile: (path: string | URL, options?: string | { encoding?: string }) => promised(() => readFileOp(path, options)),
-    writeFile: (path: string | URL, data: string | Uint8Array) => promised(() => writeFileOp(path, data)),
-    appendFile: (path: string | URL, data: string | Uint8Array) => promised(() => appendFileOp(path, data)),
-    stat: (path: string | URL) => promised(() => statOp(path)),
-    lstat: (path: string | URL) => promised(() => lstatOp(path)),
-    mkdir: (path: string | URL, options?: { recursive?: boolean }) => promised(() => mkdirOp(path, options)),
-    readdir: (path: string | URL, options?: { encoding?: string; withFileTypes?: boolean }) => promised(() => readdirOp(path, options)),
-    unlink: (path: string | URL) => promised(() => unlinkOp(path)),
-    rmdir: (path: string | URL, options?: { recursive?: boolean }) => promised(() => rmdirOp(path, options)),
-    rename: (oldPath: string | URL, newPath: string | URL) => promised(() => renameOp(oldPath, newPath)),
-    copyFile: (src: string | URL, dest: string | URL) => promised(() => copyFileOp(src, dest)),
-    access: (path: string | URL, _mode?: number) => promised(() => accessOp(path)),
-    realpath: (path: string | URL) => promised(() => realpathOp(path, 'lstat')),
+    readFile: (path: string | URL, options?: string | { encoding?: string }) => promised(readFileOp(path, options)),
+    writeFile: (path: string | URL, data: string | Uint8Array) => promised(writeFileOp(path, data)),
+    appendFile: (path: string | URL, data: string | Uint8Array) => promised(appendFileOp(path, data)),
+    stat: (path: string | URL) => promised(statOp(path)),
+    lstat: (path: string | URL) => promised(lstatOp(path)),
+    mkdir: (path: string | URL, options?: { recursive?: boolean }) => promised(mkdirOp(path, options)),
+    readdir: (path: string | URL, options?: { encoding?: string; withFileTypes?: boolean }) => promised(readdirOp(path, options)),
+    unlink: (path: string | URL) => promised(unlinkOp(path)),
+    rmdir: (path: string | URL, options?: { recursive?: boolean }) => promised(rmdirOp(path, options)),
+    rename: (oldPath: string | URL, newPath: string | URL) => promised(renameOp(oldPath, newPath)),
+    copyFile: (src: string | URL, dest: string | URL) => promised(copyFileOp(src, dest)),
+    access: (path: string | URL, _mode?: number) => promised(accessOp(path)),
+    realpath: (path: string | URL) => promised(realpathOp(path, 'lstat')),
     // A path only: a descriptor is its FileHandle's truncate.
-    truncate: (path: string | URL | Uint8Array, len?: number | null) => promised(function* () {
+    truncate: (path: string | URL | Uint8Array, len?: number | null) => promised((function* () {
       if (typeof path === 'number') throw invalidArgType('path', ['string', 'Buffer', 'URL'], path);
       yield* truncateOp(path, len);
-    }),
-    symlink: (target: string | URL | Uint8Array, path: string | URL | Uint8Array, _type?: string | null) => promised(() => symlinkOp(target, path)),
-    link: (existingPath: string | URL | Uint8Array, newPath: string | URL | Uint8Array) => promised(function* () { linkSync(existingPath, newPath); }),
-    readlink: (path: string | URL | Uint8Array, options?: string | { encoding?: string | null } | null) => promised(() => readlinkOp(path, options)),
-    chmod: (path: string | URL, mode: number | string) => promised(() => chmodOp(path, mode)),
-    chown: (path: string | URL, uid: number, gid: number) => promised(() => chownOp(path, uid, gid, true)),
-    lchown: (path: string | URL, uid: number, gid: number) => promised(() => chownOp(path, uid, gid, false)),
-    open: (path: string | URL, flags?: string | number, mode?: number) => promised(function* () {
+    })()),
+    symlink: (target: string | URL | Uint8Array, path: string | URL | Uint8Array, _type?: string | null) => promised(symlinkOp(target, path)),
+    link: (existingPath: string | URL | Uint8Array, newPath: string | URL | Uint8Array) => promised((function* () { linkSync(existingPath, newPath); })()),
+    readlink: (path: string | URL | Uint8Array, options?: string | { encoding?: string | null } | null) => promised(readlinkOp(path, options)),
+    chmod: (path: string | URL, mode: number | string) => promised(chmodOp(path, mode)),
+    chown: (path: string | URL, uid: number, gid: number) => promised(chownOp(path, uid, gid, true)),
+    lchown: (path: string | URL, uid: number, gid: number) => promised(chownOp(path, uid, gid, false)),
+    open: (path: string | URL, flags?: string | number, mode?: number) => promised((function* () {
       const fd = yield* openOp(path, flags, mode);
       let closed = false;
       // A closed handle refuses each call before its arguments, as Node's FileHandle does
@@ -1007,34 +1007,34 @@ export function createNodeFs(faces: NodeFaces, { cwd, stdin, reachStreams }: Nod
       };
       return {
         fd,
-        close: () => promised(function* () {
+        close: () => promised((function* () {
           if (closed) return;
           closed = true;
           yield* closeOp(fd);
-        }),
-        read: (buffer: Uint8Array, offset: number, length: number, position: number | null) => promised(function* () {
+        })()),
+        read: (buffer: Uint8Array, offset: number, length: number, position: number | null) => promised((function* () {
           isOpen('read');
           return { bytesRead: yield* readOp(fd, buffer, offset, length, position), buffer };
-        }),
-        write: (data: Uint8Array | string) => promised(function* () {
+        })()),
+        write: (data: Uint8Array | string) => promised((function* () {
           isOpen('write');
           return { bytesWritten: yield* writeOp(fd, data) };
-        }),
-        stat: () => promised(function* () {
+        })()),
+        stat: () => promised((function* () {
           isOpen('fstat');
           return yield* fstatOp(fd);
-        }),
-        chown: (uid: number, gid: number) => promised(function* () {
+        })()),
+        chown: (uid: number, gid: number) => promised((function* () {
           isOpen('fchown');
           yield* fchownOp(fd, uid, gid);
-        }),
-        truncate: (len?: number | null) => promised(function* () {
+        })()),
+        truncate: (len?: number | null) => promised((function* () {
           isOpen('ftruncate');
           yield* ftruncateOp(fd, len);
-        }),
+        })()),
       };
-    }),
-    rm: (path: string | URL, options?: { recursive?: boolean; force?: boolean }) => promised(() => rmOp(path, options)),
+    })()),
+    rm: (path: string | URL, options?: { recursive?: boolean; force?: boolean }) => promised(rmOp(path, options)),
   };
 
   // ─── Constants ───
