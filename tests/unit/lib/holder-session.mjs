@@ -53,7 +53,7 @@ export function session({ grantInos, journal, gate, refuse, view, acquired, gran
     } catch { return null; }
   };
   const contentNow = (key) => { try { return bridge.readFile('/' + key) ?? undefined; } catch { return undefined; } };
-  const cursorNow = () => ({ epoch: engine.epoch, rev: engine.revision() });
+  const cursorNow = () => bridge.acquire(null).position;
   const seen = new Map();
   let cursor = cursorNow();
   /** The process's admission listener (ResidentNamespace.onAdmitted): told of each row the view takes in, as it does. */
@@ -110,7 +110,7 @@ export function session({ grantInos, journal, gate, refuse, view, acquired, gran
     },
     acquireArgs: () => {
       const at = view ? cursor : cursorNow();
-      return at === null ? null : { epoch: at.epoch, cursor: at.rev };
+      return at === null ? null : { position: at };
     },
     // `budget`: the bytes the process may hold outside the store, counted as they are taken and given back.
     reserve: (bytes) => {

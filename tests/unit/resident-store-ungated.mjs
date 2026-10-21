@@ -9,6 +9,7 @@
 // store binds, so its bytes are not counted against the process's room.
 
 import assert from 'node:assert/strict';
+import { positionOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { createResidentStore } from '../../packages/worker/src/vfs/resident/index.ts';
 import { facetSql } from './lib/resident-body.mjs';
 import { facetStorage } from './lib/fake-do-kv.mjs';
@@ -34,7 +35,7 @@ const storage = facetStorage(recorded);
 const store = createResidentStore();
 store.bind({ storage });
 bound = true;
-store.cells.admit({ poison: false, paths: [], epoch: 'e1', rev: 7 });
+store.cells.admit({ poison: false, paths: [], position: positionOf('', { '/': { epoch: 'e1', cursor: 7 } }) });
 store.cells.fill('home/user/app/a.js', 'module.exports = 1;\n', 7);
 store.cells.fill('home/user/app/b.bin', new Uint8Array(300_000).fill(9), 7);
 store.bundle['home/user/app/own.txt'] = 'mine';

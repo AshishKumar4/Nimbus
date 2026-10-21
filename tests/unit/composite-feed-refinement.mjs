@@ -73,6 +73,8 @@ async function listAll(bridge, vfs, betweenPages) {
     const page = await bridge.list(after, 3);
     pages++;
     for (const entry of page.entries) {
+      // The kernel's mounts are every process's now; the model stages only the mounts it names.
+      if (entry.path === 'dev' || entry.path.startsWith('dev/') || entry.path === 'proc' || entry.path.startsWith('proc/')) continue;
       const path = `/${entry.path}`;
       out[path] = await valueOf(vfs, { ...entry, path });
       if (entry.rev === 0) undated.push(path);
@@ -161,7 +163,7 @@ async function cacheTrace(testCase) {
     assert.deepEqual(held(), testCase.cache.before, 'the resident holds the walked, undated bytes');
     for (const op of testCase.window) write(backends.get(op.backend), op.path, op.bytes);
     const cursor = store.coherence.cursor();
-    const answer = await handle.supervisor.fsAcquire(cursor.epoch, cursor.rev, { namespace: true });
+    const answer = await handle.supervisor.fsAcquire(cursor, { namespace: true });
     assert.equal(answer.poison, false);
     assert.deepEqual(answer.paths, [], 'unfed external writes have no incremental record');
     await store.sync.applyAcquire(handle.supervisor, answer);
@@ -222,7 +224,7 @@ for (const [index, testCase] of fixture.cases.entries()) {
       (testCase.mounts.some((mount) => mount.changes) || testCase.window.some((op) => op.op === 'mount' && op.changes)));
     const answer = independentFeeds
       ? vfs.feed.since(position, { namespace: true })
-      : bridge.acquire(listed.cursor.epoch, listed.cursor.rev, { namespace: true });
+      : bridge.acquire(listed.cursor.position, { namespace: true });
     assert.equal(answer.poison, testCase.poison, 'poison exactly when the model says');
     if (answer.poison) {
       poisons++;

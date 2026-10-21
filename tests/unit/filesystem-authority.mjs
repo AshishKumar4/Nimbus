@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import assert from 'node:assert/strict';
+import { rootOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
@@ -62,15 +63,15 @@ assert.throws(() => lease1.fs.read(one.id, 0, 1), { code: 'EBADF' });
 assert.throws(() => lease1.fs.linkLeadsTo('/moved', '/elsewhere'), { code: 'EBADF' });
 assert.equal(text(lease2.fs.read(two.id, 0, 11)), 'replacement');
 await lease2.dispose();
-const listing = fs.list();
+const listing = await fs.list();
 const entry = listing.entries.find(entry => entry.path === 'moved');
-assert.equal(text(fs.readRange('/moved', 0, 4, { expectedEpoch: listing.epoch, expectedRevision: entry.rev })), 'repl');
+assert.equal(text(fs.readRange('/moved', 0, 4, { expectedEpoch: rootOf(listing.position).epoch, expectedRevision: entry.rev })), 'repl');
 fs.writeFile('/moved', 'same-length');
-assert.throws(() => fs.readRange('/moved', 4, 4, { expectedEpoch: listing.epoch, expectedRevision: entry.rev }), { code: 'ESTALE' });
+assert.throws(() => fs.readRange('/moved', 4, 4, { expectedEpoch: rootOf(listing.position).epoch, expectedRevision: entry.rev }), { code: 'ESTALE' });
 const reopened = new SqliteVFS(h.sql, h.ctx);
 assert.equal(reopened.namespace, raw.namespace);
 const afterRestart = new ProcessFiles(reopened).bind({ pid: 3, cred: CRED_KERNEL });
-assert.throws(() => afterRestart.readRange('/moved', 0, 1, { expectedEpoch: listing.epoch, expectedRevision: entry.rev }), { code: 'ESTALE' });
+assert.throws(() => afterRestart.readRange('/moved', 0, 1, { expectedEpoch: rootOf(listing.position).epoch, expectedRevision: entry.rev }), { code: 'ESTALE' });
 await authority.releaseProcess(1);
 assert.throws(() => fs.readFile('/moved'), { code: 'EBADF' });
 assert.throws(() => authority.bind({ pid: 1, cred: CRED_KERNEL }), { code: 'ESTALE' });

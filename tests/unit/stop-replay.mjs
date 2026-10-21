@@ -8,6 +8,7 @@
 // sync-stdin-replay-workerd.mjs runs them together.
 
 import assert from 'node:assert/strict';
+import { positionOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { spawnSync } from 'node:child_process';
 
 import {
@@ -265,7 +266,7 @@ const TAPE = { seed: [1, 2, 3, 4], now: [], perf: [], random: '', reads: [], wri
   assert.match(g.unreplayable, /fsOpen \/w for writing/);
   // Operation-local coherence tokens do not count; timestamps do.
   const project = operationPolicy('fsAcquire').answer;
-  assert.equal(answerDigest(project({ rev: 1, epoch: 'a', paths: [] })), answerDigest(project({ rev: 9, epoch: 'b', paths: [] })));
+  assert.equal(answerDigest(project({ position: positionOf('', { '/': { epoch: 'a', cursor: 1 } }), paths: [] })), answerDigest(project({ position: positionOf('', { '/': { epoch: 'b', cursor: 9 } }), paths: [] })));
   assert.notEqual(answerDigest({ atime: 1 }), answerDigest({ atime: 9 }));
   assert.notEqual(answerDigest(new Uint8Array([65, 66, 67, 68])), answerDigest(new Uint8Array([87, 88, 89, 90])));
   assert.notEqual(callKey('fsRead', [3, 0, 4]), callKey('fsRead', [3, 4, 4]), 'a read at another offset is another call');
@@ -447,7 +448,7 @@ const postBoundary = guest(`
   sr.begin({ replay: { run: 2, tape: ${JSON.stringify(TAPE)}, stopAt: 0, prefix: null }, abort, nonce: NONCE, boundary: () => supervisor.replayBoundary() });
   sr.arm(false);
   sr.readAll(1);
-  const read = supervisor.fsAcquire('epoch', 0);
+  const read = supervisor.fsAcquire({ table: '', feeds: { '/': { epoch: 'epoch', cursor: 0 } } });
   const write = supervisor.writeFile('/after-read', 'x');
   await Promise.resolve(); await Promise.resolve();
   const during = events.slice();
@@ -467,12 +468,12 @@ const refusedBoundary = guest(`
   sr.begin({ replay: { run: 2, tape: ${JSON.stringify(TAPE)}, stopAt: 0, prefix: null }, abort, nonce: NONCE, boundary: () => supervisor.replayBoundary() });
   sr.arm(false);
   sr.readAll(1);
-  const read = supervisor.fsAcquire('epoch', 0);
+  const read = supervisor.fsAcquire({ table: '', feeds: { '/': { epoch: 'epoch', cursor: 0 } } });
   const outbound = sr.afterBoundary();
   refused(new Error('boundary refused'));
   let error, later;
   try { await read; } catch (e) { error = e.message; }
-  try { await supervisor.fsAcquire('epoch', 1); } catch (e) { later = e.message; }
+  try { await supervisor.fsAcquire({ table: '', feeds: { '/': { epoch: 'epoch', cursor: 1 } } }); } catch (e) { later = e.message; }
   console.log(JSON.stringify({ calls, error, later, sameGate: outbound === notice }));
 `);
 assert.deepEqual(refusedBoundary, { calls: 0, error: 'boundary refused', later: 'boundary refused', sameGate: true }, 'a refused boundary never dispatches a post-read call; outbound joins the same gate');

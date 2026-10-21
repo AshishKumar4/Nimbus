@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
+import { positionOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { processFsClient } from '../../packages/core/src/_shared/process-fs-client.ts';
 import { readDirectoryPool } from '../../packages/core/src/runtime/wasi/read-directory-pool.ts';
 import { DIRECTORY_PREFETCH_LIMIT } from '../../packages/core/src/constants.ts';
 
 const deferred = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
 function fixture(options = {}) {
-  let clock = 1000, next = 0, cursor = { epoch: 'E', rev: 1 };
+  let clock = 1000, next = 0, cursor = positionOf('', { '/': { epoch: 'E', cursor: 1 } });
   const calls = [], held = new Map(), recalls = new Map(), nodes = new Map();
   const s = { calls, held, nodes, hook: null, admission: null, clock: (value) => { clock = value; } };
   for (let i = 0; i < 100; i++) nodes.set(`d${i}`, { type: 'directory', dev: 1, ino: i + 1, revision: 1, mode: 0o755, uid: 0, gid: 0, nlink: 1, size: 0, atime: 1, mtime: 1, ctime: 1, target: null });
@@ -30,7 +31,7 @@ function fixture(options = {}) {
       // The answer a batch carried, applied as the barrier applies one (ResidentNamespace.barrier({ answer })).
       async barrier({ answer }) {
         if (s.admission) await s.admission(answer);
-        cursor = { epoch: answer.epoch, rev: answer.rev };
+        cursor = answer.position;
         for (const change of answer.paths) if (change.stat) nodes.set(change.path, { ...change.stat, target: null });
         return { landed: true, applied: !answer.poison };
       },
@@ -49,7 +50,7 @@ function fixture(options = {}) {
         return { key, handle, dev: entry.dev, ino: entry.ino, opened: { mode: entry.mode, uid: entry.uid, gid: entry.gid, ctime: entry.ctime } };
       });
       const answer = { channel: request.channel, sequence: request.sequence, opened, retired: request.retire, claimed: request.claim,
-        outstanding: held.size, acquire: { epoch: 'E', rev: cursor.rev, paths: [], poison: false, namespace: true,
+        outstanding: held.size, acquire: { position: cursor, paths: [], poison: false, namespace: true,
           ...(request.lease ? { readLease: { owner: 'L' + request.sequence, trustMs: 500 } } : {}) } };
       return s.hook ? s.hook(request, answer) : answer;
     },
@@ -200,7 +201,7 @@ function fixture(options = {}) {
 // The descriptor's stat is the final admitted namespace, never the early open stat.
 {
   const s = fixture();
-  s.hook = async (_request, answer) => ({ ...answer, acquire: { ...answer.acquire, rev: 2,
+  s.hook = async (_request, answer) => ({ ...answer, acquire: { ...answer.acquire, position: positionOf('', { '/': { epoch: 'E', cursor: 2 } }),
     paths: [{ path: 'd0', stat: { ...s.nodes.get('d0'), revision: 2, mtime: 55 } },
       { path: 'd1', stat: { ...s.nodes.get('d1'), revision: 2, mode: 0 } }] } });
   const handle = await s.pool.open('/d0', 'd0', async () => ['/d1']);

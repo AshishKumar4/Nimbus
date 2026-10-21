@@ -16,8 +16,10 @@ await fs.mkdir(root, { recursive: true });
 const count = DIRECTORY_PREFETCH_LIMIT + 30;
 for (let i = 0; i < count; i++) await fs.mkdir(`${root}/d${i}`);
 const channel = crypto.randomUUID();
+// Where a request's position is taken from: a binding no rewind or release ends.
+const positions = files.bind({ pid: 2, cred: CRED_KERNEL });
 let sequence = 0;
-const request = (open = [], options = {}) => ({ channel, sequence: ++sequence, epoch: engine.epoch, cursor: engine.revision(), open, retire: [], claim: [], lease: false, ...options });
+const request = (open = [], options = {}) => ({ channel, sequence: ++sequence, position: positions.acquire(null).position, open, retire: [], claim: [], lease: false, ...options });
 try {
   const first = await readDirectoryBatch(fs, request([`${root}/d0`, `${root}/d1`]));
   assert.equal(first.opened.length, 2);

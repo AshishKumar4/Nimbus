@@ -18,6 +18,7 @@
 // or at least must not see as the old bytes.
 
 import assert from 'node:assert/strict';
+import { positionOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
@@ -323,12 +324,12 @@ await runScenarios(import.meta.path, {
       readdir: (p) => bridge.readdir(p),
       exists: async (p) => (await bridge.stat(p)) !== null,
       fsReadRange: (p, o, l) => bridge.readRange(p, o, l),
-      fsAcquire: (epoch, cursor, options) => (dropped ? DROPPED() : bridge.acquire(epoch, cursor, options)),
+      fsAcquire: (position, options) => (dropped ? DROPPED() : bridge.acquire(position, options)),
       // What a failed barrier's repair refetches with, as the session serves it.
       fsList: (after, limit) => authority.host.supervisorOp({ op: 'fsList', args: [after, limit] }),
       fsReadBatch: (requests) => authority.host.supervisorOp({ op: 'fsReadBatch', args: [requests] }),
     };
-    globalThis.__nimbusVfsCursor = authority.cursor();
+    globalThis.__nimbusVfsCursor = { position: positionOf('', { '/': { epoch: rawVfs.epoch, cursor: rawVfs.revision() } }) };
     declareNamespace({
       metadata: { 'home/user/app/f.txt': { type: 'file', size: 2, mode: 0o644, uid: 1000, gid: 1000 } },
       manifest: { 'home/user': ['app'], 'home/user/app': ['f.txt'] },

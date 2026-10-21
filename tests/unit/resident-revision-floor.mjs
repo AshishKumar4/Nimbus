@@ -69,7 +69,7 @@ const TARGET = 'app/f3.txt';
 
 // ── Boot: the store holds every file, dated at its listed revision ────────
 const store = loadStore();
-store.sync.adoptModuleBundle({}, { epoch: rawVfs.epoch, rev: rawVfs.revision() });
+store.sync.adoptModuleBundle({}, (await supervisor.fsList(null, 1)).position);
 const booted = await store.sync.synchronize(supervisor);
 assert.equal(booted.filled, 8);
 const heldAt = store.cells.provenance(TARGET);

@@ -23,32 +23,29 @@ async function make({ 'vfs/sqlite-vfs.ts': { SqliteVFS }, 'runtime/process-files
   root.writeFile('tree/mutated', 'initial');
   const files = new ProcessFiles(engine);
   const bridge = files.bind({ pid: 71, cred: CRED_KERNEL });
-  const page = bridge.list(null, 256);
-  assert.equal(page instanceof Promise, false);
+  const page = await bridge.list(null, 256);
   return { engine, root, files, bridge, kernel: CRED_KERNEL, writes: 0, nextPid: 72 };
 }
 
 async function cpu(arm, kind, iterations) {
-  const cursor = { epoch: arm.engine.epoch, rev: arm.engine.revision() };
+  const cursor = arm.bridge.acquire(null).position;
   if (kind === 'acquire-one') arm.root.writeFile('tree/mutated', `write-${++arm.writes}`);
   return cpuMs(async () => {
     for (let i = 0; i < iterations; i++) {
       if (kind === 'cold-first-list') {
         const pid = arm.nextPid++;
         const bridge = arm.files.bind({ pid, cred: arm.kernel });
-        const page = bridge.list(null, 256);
-        assert.equal(page instanceof Promise, false);
+        const page = await bridge.list(null, 256);
         checksum += page.entries.length;
         await arm.files.releaseProcess(pid);
       } else if (kind === 'first-list') {
-        const page = arm.bridge.list(null, 256);
-        assert.equal(page instanceof Promise, false);
+        const page = await arm.bridge.list(null, 256);
         checksum += page.entries.length;
       } else {
-        const answer = arm.bridge.acquire(cursor.epoch, cursor.rev, { namespace: true });
+        const answer = arm.bridge.acquire(cursor, { namespace: true });
         assert.equal(answer.poison, false);
         assert.equal(answer.paths.length > 0, kind === 'acquire-one');
-        checksum += answer.rev + answer.paths.length;
+        checksum += answer.position.feeds['/'].cursor + answer.paths.length;
       }
     }
   });

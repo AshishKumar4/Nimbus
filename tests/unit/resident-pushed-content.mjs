@@ -82,7 +82,7 @@ await runScenarios(import.meta.path, {
     const gate = { armed: false, held: null, release: Promise.withResolvers(), served: Promise.withResolvers() };
     const { authority, probe } = await boot((auth) => ({
       async fsAcquire(...args) {
-        const answer = await _rpcFsAcquire(auth.host, args[0], args[1], args[2]);
+        const answer = await _rpcFsAcquire(auth.host, args[0], args[1]);
         if (gate.armed && !gate.held) {
           gate.held = true;
           gate.served.resolve();

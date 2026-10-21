@@ -13,6 +13,7 @@
 // copy's name stayed absent to sync reads until a barrier, in a directory the
 // program made just now too.
 import assert from 'node:assert/strict';
+import { rootOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { createAuthority, facetSupervisor, launchResident, runScenarios, residentDataPlan, until } from './lib/resident-body.mjs';
 
 const PROGRAM = `
@@ -69,7 +70,7 @@ await runScenarios(import.meta.path, {
     await answered.promise;
     const reported = box.authority.rawVfs.revision();
     const resumed = box.probe.resume();
-    await until(() => globalThis.__nimbusVfsCursor.rev >= reported, 'the barrier applied the peer\'s change');
+    await until(() => rootOf(globalThis.__nimbusVfsCursor.position).cursor >= reported, 'the barrier applied the peer\'s change');
     assert.equal(await fs.promises.readFile(`${A}/src`, 'utf8'), 'B', 'the source refilled');
     release.resolve();
     await resumed;

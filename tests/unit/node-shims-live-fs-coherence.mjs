@@ -3,6 +3,7 @@
 // never as authority for async I/O after another process mutates SQLite VFS.
 
 import assert from 'node:assert/strict';
+import { positionOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
@@ -53,20 +54,20 @@ const supervisor = {
   fsTruncate: (path, size) => bridge.truncate(path, size),
   // The barrier's delta, as every session serves it: how a peer's new name
   // reaches the process's namespace.
-  fsAcquire: (epoch, cursor, options) => bridge.acquire(epoch, cursor, options),
+  fsAcquire: (position, options) => bridge.acquire(position, options),
 };
 // Its process's waves reach these calls (lib/wave-supervisor.mjs).
 waveSupervisor(supervisor);
 
 // The process starts at the authority's cursor, as a launch does.
-globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
+globalThis.__nimbusVfsCursor = { position: positionOf('', { '/': { epoch: rawVfs.epoch, cursor: rawVfs.revision() } }) };
 const factory = new Function(
   '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
   '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode() +
     '\n;return { fs: __fsMod };',
 );
 listAuthority(rawVfs);
-globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
+globalThis.__nimbusVfsCursor = { position: positionOf('', { '/': { epoch: rawVfs.epoch, cursor: rawVfs.revision() } }) };
 const { fs } = (declareNamespace({ metadata: {
     'home/user/coherence': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 },
     'home/user/coherence/resident.txt': { type: 'file', size: 2, mode: 0o644, uid: 1000, gid: 1000 },
@@ -262,7 +263,7 @@ assert.throws(() => fs.readFileSync(dir, 'utf8'), (error) => {
   let release;
   const gate = new Promise((resolve) => { release = resolve; });
   const realAcquire = supervisor.fsAcquire;
-  supervisor.fsAcquire = async (epoch, cursor) => { await gate; return realAcquire(epoch, cursor); };
+  supervisor.fsAcquire = async (position) => { await gate; return realAcquire(position); };
 
   const read = fs.promises.readFile(`${dir}/held.txt`, 'utf8');
   // Let the read reach its barrier and park there. Microtask yields, not

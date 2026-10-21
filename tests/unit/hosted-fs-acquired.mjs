@@ -64,7 +64,7 @@ const runtime = await bundle.composeHostedRuntime({
 const SIZE = 100_000;
 await runtime.files.as(bundle.CRED_KERNEL).writeFile('/home/user/data.bin', new Uint8Array(SIZE).fill(7), { mode: 0o644 });
 const { pid } = processes.spawn('node', ['main.js'], '/home/user', { cred: bundle.CRED_SESSION_USER });
-const acquire = () => ({ epoch: vfs.epoch, cursor: vfs.revision() });
+const acquire = () => ({ position: workspace.filesystem.bind({ pid, cred: bundle.CRED_SESSION_USER }).acquire(null).position });
 const batch = [[{ path: '/home/user/data.bin', offset: 0, length: SIZE }]];
 
 try {

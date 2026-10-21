@@ -50,7 +50,7 @@ const supervisor = {
   access: slow((p, m) => bridge.access(p, m)),
   mkdir: slow((p) => bridge.mkdir(p, { recursive: true })),
   fsReadRange: slow((p, o, l) => bridge.readRange(p, o, l)),
-  fsAcquire: slow((epoch, cursor) => bridge.acquire(epoch, cursor)),
+  fsAcquire: slow((position) => bridge.acquire(position)),
 };
 // Its process's waves reach these calls (lib/wave-supervisor.mjs).
 waveSupervisor(supervisor);

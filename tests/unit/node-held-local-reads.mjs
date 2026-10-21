@@ -14,6 +14,7 @@
 // local answer must never get wrong (held-local-reads-design.md T1–T16).
 
 import assert from 'node:assert/strict';
+import { positionOf, rootOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { createAuthority, facetSupervisor, launchResident, residentDataPlan, runScenarios, sleep, until } from './lib/resident-body.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { withRecall } from '../../packages/core/src/vfs/recall.ts';
@@ -266,10 +267,10 @@ await runScenarios(import.meta.path, {
     const { fs, asked } = await boot();
     await fs.promises.stat(`${OUT}/seeded.txt`);
     const cursor = globalThis.__nimbusVfsCursor;
-    const epoch = cursor.epoch;
-    cursor.epoch = 'another';
+    const position = cursor.position;
+    cursor.position = positionOf(position.table, { ...position.feeds, '/': { epoch: 'another', cursor: rootOf(position).cursor } });
     before = asked();
-    await fs.promises.stat(`${OUT}/seeded.txt`).finally(() => { if (cursor.epoch === 'another') cursor.epoch = epoch; });
+    await fs.promises.stat(`${OUT}/seeded.txt`).finally(() => { if (rootOf(cursor.position).epoch === 'another') cursor.position = position; });
     assert.equal(asked() - before, 1, 'a cursor in another epoch answered');
   },
 

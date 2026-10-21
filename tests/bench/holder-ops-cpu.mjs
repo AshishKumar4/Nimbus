@@ -59,7 +59,7 @@ function session({
     list: async () => true, lookup: async () => true, listTree: async () => false,
     content: (key) => viewed(key).content,
     fill: async (key) => bridge.readFile('/' + key),
-    cursor: () => ({ epoch: engine.epoch, rev: engine.revision() }),
+    cursor: () => bridge.acquire(null).position,
     // Whether the barrier landed: an object, read as true by a side whose store answered a boolean.
     barrier: async () => { seen.clear(); return { landed: true }; },
     reserve: () => true, release: () => {},

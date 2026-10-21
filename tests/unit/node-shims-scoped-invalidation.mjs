@@ -10,6 +10,7 @@
 // a synchronous read there no longer returns the old bytes.
 
 import assert from 'node:assert/strict';
+import { positionOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
@@ -40,7 +41,7 @@ const supervisor = {
   readdir: (p) => bridge.readdir(p), exists: async (p) => (await bridge.stat(p)) !== null,
   access: (p, m) => bridge.access(p, m), mkdir: (p) => bridge.mkdir(p, { recursive: true }),
   fsReadRange: (p, o, l) => bridge.readRange(p, o, l),
-  fsAcquire: (epoch, cursor, options) => bridge.acquire(epoch, cursor, options),
+  fsAcquire: (position, options) => bridge.acquire(position, options),
 };
 const bundle = {};
 const metadata = { 'home/user': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 } };
@@ -52,13 +53,13 @@ for (const dir of ['d', 'g', 'k']) {
   manifest[`home/user/${dir}`] = ['f.txt'];
 }
 // The process starts at the authority's cursor, as a launch does.
-globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
+globalThis.__nimbusVfsCursor = { position: positionOf('', { '/': { epoch: rawVfs.epoch, cursor: rawVfs.revision() } }) };
 const factory = new Function(
   '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
   '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode() + '\n;return { fs: __fsMod, setTimeout: globalThis.setTimeout };'
 );
 listAuthority(rawVfs);
-globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
+globalThis.__nimbusVfsCursor = { position: positionOf('', { '/': { epoch: rawVfs.epoch, cursor: rawVfs.revision() } }) };
 const out = (declareNamespace({ metadata: metadata, manifest: manifest }), factory(bundle, {}, supervisor, READER, '/home/user', [], {}, '/home/user/s.mjs', '/home/user'));
 const { fs } = out;
 

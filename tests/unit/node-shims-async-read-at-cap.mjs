@@ -59,7 +59,7 @@ const factory = new Function(
     + '\n;__resident.admission.setStorage({ facet: "proc-slot-0", grant: 0 }, __supervisor);'
     + '\n;const allow = (grant) => __resident.admission.setStorage({ facet: "proc-slot-0", grant }, __supervisor);'
     + '\n;return { fs: __fsMod, held: (path) => __resident.cells.has(path), room: () => allow(1 << 20), full: () => allow(0),'
-    + ' synced: (path, text) => __resident.cells.fill(path, text, __resident.coherence.cursor().rev) };',
+    + ' synced: (path, text) => __resident.cells.fill(path, text, __nimbusResidentModule.rootOf(__resident.coherence.cursor()).cursor) };',
 );
 const statOf = (size) => ({ type: 'file', size, mode: 0o644, uid: 1000, gid: 1000 });
 const metadata = { 'home/user/reread': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 } };

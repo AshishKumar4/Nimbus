@@ -6,12 +6,13 @@
 // and the supervisor computes none for them.
 
 import assert from 'node:assert/strict';
+import { positionOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { DELIVERED_ACQUIRE_HEADER, PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 
 const asked = [];
 const registry = new PortRegistry(async (pid) => {
   asked.push(pid);
-  return { args: { epoch: 'e', cursor: 7 }, answer: { kind: 'current' } };
+  return { args: { position: positionOf('',{'/':{epoch:'e',cursor:7}}) }, answer: { kind: 'current' } };
 });
 const echo = { async handleHttpRequest(request) { return Response.json(Object.fromEntries(request.headers)); } };
 registry.bindFacetStub(41, echo, { deliversAcquire: true });
@@ -24,7 +25,7 @@ const route = async (port) => (await registry.routeRequest(port, new Request(`ht
 }), '/')).json();
 
 const node = await route(3000);
-assert.deepEqual(JSON.parse(node['x-nimbus-vfs-acquired']), { args: { epoch: 'e', cursor: 7 }, answer: { kind: 'current' } },
+assert.deepEqual(JSON.parse(node['x-nimbus-vfs-acquired']), { args: { position: positionOf('',{'/':{epoch:'e',cursor:7}}) }, answer: { kind: 'current' } },
   'a node-shims resident gets the supervisor\'s answer, not the client\'s');
 const other = await route(3001);
 assert.equal(other['x-nimbus-vfs-acquired'], undefined, 'a process that does not strip it must not receive it');
