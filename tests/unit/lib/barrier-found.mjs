@@ -243,7 +243,7 @@ const FOUND = {
       ['own', 'stat', 'd/n'], ['hold', 'delivery'], ['own', 'readFile', 'x/h'], ['sync', 'readFile', 'mid'], ['peer', 'rename', 'd', 'z'], ['sync', 'readdir', 'd/f'], ['release'],
       ['own', 'readFile', 'd/e'], ['own', 'readFile', 'x']],
   },
-  'a directory the process removed and made again lists only what it made there since (5891)': {
+  'a directory the process removed and made again lists no name before its write is made (5891)': {
     park: 5891,
     schedule: [['sync', 'readdir', 'x/e'], ['own', 'pread', 'mid', 8400000], ['sync', 'chmod', 'd/f', 0o600], ['own', 'unlink', 'top'], ['input'], ['input'], ['own', 'rename', 'x/h', 'd/e/g'],
       ['sync', 'write', 'd/e/g', 'c5891.3'], ['own', 'opendir', 'top'], ['own', 'pread', 'big', 8400000], ['own', 'readFile', 'mid'], ['sync', 'readFile', 'x/h'], ['sync', 'rename', 'd/e', 'z'],
@@ -305,9 +305,9 @@ const GAPS = {
     lacks: 'S refuses an awaited read EAGAIN where the session answers it (closed by the cutover: RF waits for the session); meanwhile fs.promises.readFile can reject EAGAIN',
     shows: 'own readFile d/e answered EAGAIN',
   },
-  'a directory the process removed and made again lists only what it made there since (5891) [node]': {
-    lacks: 'S lists, in a directory the process made, a name its own earlier write left under the directory that was there before (closed by the cutover: one own state, RF\'s); '
-      + 'meanwhile readdirSync can list a file that is not there',
+  'a directory the process removed and made again lists no name before its write is made (5891) [node]': {
+    lacks: 'S lists, in a directory the process removed and made again, a name the session does not hold there while the process\'s own write of it is in flight (closed by the cutover: one own state, RF\'s); '
+      + 'meanwhile readdirSync can list a file before its write is made',
     shows: 'sync readdir d/e answered ["g"]',
   },
   'a file a peer made and the process then wrote is listed while its directory is relisted (4751) [node]': {
