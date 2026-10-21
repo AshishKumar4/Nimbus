@@ -47,7 +47,11 @@ function asGiven(error: unknown, path: Named | undefined, dest: Named | undefine
 /** The fields Node's system errors carry, however a face defines them (enumerable or not, own or a getter's). */
 const ERRNO_FIELDS = ['code', 'errno', 'syscall', 'path', 'dest'] as const;
 
-/** A new error with `error`'s own fields and message as `change` makes them; `error` is its cause. */
+/**
+ * A new error with `error`'s own fields and message as `change` makes them;
+ * `error` is its cause, and its stack is `error`'s. No stack is captured
+ * for it: a program probing paths (statSync in a try) meets one per probe.
+ */
 export function withFields(error: Error, change: (fields: Record<string, unknown>, message: string) => string): Error {
   const fields: Record<string, unknown> = { ...error };
   for (const field of ERRNO_FIELDS) {
@@ -55,7 +59,16 @@ export function withFields(error: Error, change: (fields: Record<string, unknown
     if (value !== undefined) fields[field] = value;
   }
   const message = change(fields, error.message);
-  return Object.assign(new Error(message, { cause: error }), fields);
+  const limit: unknown = Reflect.get(Error, 'stackTraceLimit');
+  Reflect.set(Error, 'stackTraceLimit', 0);
+  let copy: Error;
+  try {
+    copy = new Error(message, { cause: error });
+  } finally {
+    Reflect.set(Error, 'stackTraceLimit', limit);
+  }
+  if (typeof error.stack === 'string') copy.stack = error.stack.replace(error.message, message);
+  return Object.assign(copy, fields);
 }
 
 /** An operation: the steps it makes, and what it answers. */
