@@ -254,6 +254,10 @@ const FOUND = {
     park: 6113,
     schedule: [['sync', 'rename', 'x/h', 'd/n'], ['own', 'write', 'x/h', 'c6113.1'], ['sync', 'stat', 'd/n']],
   },
+  'a file the process makes on a mount is made less its umask (6614)': {
+    park: 6614,
+    schedule: [['peer', 'mount', 'd', 'fed', { f: 'm6614.1' }], ['input'], ['own', 'write', 'd/n', 'c6614.5']],
+  },
   'a fed mount made over a file the process held shows the mount\'s bytes': {
     schedule: [['own', 'readFile', 'x/h'], ['settle'], ['peer', 'mount', 'x', 'fed', { h: 'm00' }], ['input'], ['settle'], ['sync', 'readFile', 'x/h'],
       ['own', 'readFile', 'x/h'], ['settle']],
