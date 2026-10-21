@@ -214,14 +214,16 @@ try {
   const toBuild = commits.filter((commit) => !(recorded && commit === baseline));
   const built = await Promise.allSettled(toBuild.map((commit) => fetchRelease({ repo, sha: commit, targets: ['apps/probe'], into: join(runDir.dir, 'releases') })));
   const releases = {};
+  const jobs = {};
   for (const [i, outcome] of built.entries()) {
     if (outcome.status === 'rejected') throw outcome.reason;
     releases[toBuild[i]] = outcome.value.dir;
+    jobs[toBuild[i]] = outcome.value.release.job;
   }
   if (recorded) releases[baseline] = recorded.dir;
   // What the a-arms run, kept in the verdict: the sealed release (its directory and digest), or the job that built it now.
   baselineSource = !baseline ? null : recorded ? { commit: baseline, release: recorded.sealed, digest: recorded.digest }
-    : { commit: baseline, built: built[toBuild.indexOf(baseline)].value.release.job };
+    : { commit: baseline, built: jobs[baseline] };
   signals(true);
   if (flags.deploy) {
     // Its exports (a token among them) are not wanted: probes get their own, below.
