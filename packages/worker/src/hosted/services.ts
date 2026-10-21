@@ -1,8 +1,9 @@
+import { signalAbortReason } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import type { WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { composeFacetManager, type ComposedFacetManager, type FacetManagerHostHooks } from "../facets/compose.js";
 import type { ProcessEnvHooks } from '../session/process-env.js';
 import { normalizeChildCommand, shellChildRunner, textBytes, type ChildProcessHost } from "@nimbus-sh/core/runtime/child-process-manager.js";
-import { runChildCommand, runChildShell } from '@nimbus-sh/core/workspace/child-process-runner.js';
+import { delegatedChildRunner, runChildCommand, runChildShell } from '@nimbus-sh/core/workspace/child-process-runner.js';
 import {
   bindProcessTable,
   isDynamicWorkerDeadlock,
@@ -157,6 +158,9 @@ export function createChildProcessHost(self: RuntimeServiceHost, runtimeContext:
       const workspace = self.runtimeWorkspace;
       if (!workspace) return null;
       bindProcessTable(runtimeContext.ctx, self.processes);
+      const delegating = delegatedChildRunner(workspace, request, origin);
+      const delegated = delegating instanceof Promise ? await delegating : delegating;
+      if (delegated) return delegated;
       const view = new ProcessView(workspace.filesystem.bind({ pid: origin.pid, cred: self.processes.cred(origin.pid) }));
       const shell = shellChildRunner(request, view, (child, line) => runChildShell(workspace, child, line));
       if (shell) return shell;
@@ -202,7 +206,7 @@ export function createChildProcessHost(self: RuntimeServiceHost, runtimeContext:
         },
       };
     },
-    terminate: (pid, signal) => self.ensureFacetManager().manager.kill(pid, signal),
+    terminate: (pid, signal) => self.ensureFacetManager().manager.kill(pid, signal, signalAbortReason(signal.replace(/^SIG/, ''))),
     issueNews: parent => issueProcessNews(runtimeContext.ctx, parent),
   };
 }

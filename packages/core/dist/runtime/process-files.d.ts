@@ -14,6 +14,7 @@
  * It implements the process-binding contract (NimbusFilesystemAuthority),
  * which every consumer (supervisor RPC, facets, runners) already speaks.
  */
+import { type ProgramPlacement } from './program-start.js';
 import type { SqliteVFS, VfsExportChunk, VfsExportPage } from '../vfs/sqlite-vfs.js';
 import { WaveIngest } from './wave-ingest.js';
 import { Hydrator, type HydratorOptions } from './hydration.js';
@@ -182,6 +183,7 @@ export declare class ProcessFiles implements NimbusFilesystemAuthority {
         lost: number[];
     };
     /** The mounts `cred` sees, root first: what df, mount and `/proc/mounts` list. */
+    placeProgram(cred: Readonly<VfsCred>, cwd: string): ProgramPlacement | Promise<ProgramPlacement>;
     mounts(cred: Readonly<VfsCred>): readonly NimbusMountEntry[];
     /**
      * Closes `scope` for good: every descriptor (each last close flushing),

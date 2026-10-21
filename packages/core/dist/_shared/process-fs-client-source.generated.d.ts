@@ -7,7 +7,7 @@
  * A process's filesystem client as an IIFE binding __nimbusProcessFsModule,
  * which the write ledger (vfs-write-ledger.ts) carries ahead of its text.
  *
- * Size: 94.21 KiB
+ * Size: 94.25 KiB
  */
 export declare const PROCESS_FS_CLIENT_SOURCE: string;
 //# sourceMappingURL=process-fs-client-source.generated.d.ts.map

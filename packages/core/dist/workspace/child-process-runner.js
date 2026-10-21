@@ -1,24 +1,104 @@
 import { errorText } from '../_shared/error-text.js';
 import { ProcessView, X_OK } from '../runtime/process-files.js';
-import { shellChildRunner, textBytes } from '../runtime/child-process-manager.js';
+import { normalizeChildCommand, shellChildRunner, textBytes } from '../runtime/child-process-manager.js';
 import { resolveChildCommand } from '../shell/exec-dispatch.js';
 import { resolveContext } from '../substrate/lifo/commands/registry.js';
 import { KILLED_BY_SIGPIPE } from '../substrate/lifo/shell/signals.js';
 import { isBrokenPipe } from '../substrate/lifo/utils/bytes-io.js';
+import { ProgramRefusal, runDelegatedProgram } from '../runtime/delegated-program.js';
+import { ProcessSignalNameSchema } from '../runtime/process-io-protocol.js';
+import { errnoOf } from '../vfs/vfs-error.js';
 /** Resolve with the child's authority, then run on its descriptors and process identity. */
 export async function resolveWorkspaceChild(workspace, request, origin) {
     const processes = workspace.processes;
+    const delegating = delegatedChildRunner(workspace, request, origin);
+    const delegated = delegating instanceof Promise ? await delegating : delegating;
+    if (delegated)
+        return delegated;
     const view = new ProcessView(workspace.filesystem.bind({ pid: origin.pid, cred: processes.cred(origin.pid) }));
     const shellRunner = shellChildRunner(request, view, (context, line) => runChildShell(workspace, context, line));
     if (shellRunner)
         return shellRunner;
-    if (request.command.includes('/')) {
-        await view.access(request.command.startsWith('/') ? request.command : `${origin.cwd}/${request.command}`, X_OK);
+    const name = normalizeChildCommand(request.command);
+    if (name.includes('/')) {
+        await view.access(name.startsWith('/') ? name : `${origin.cwd}/${name}`, X_OK);
     }
-    const command = await resolveChildCommand(workspace.registry, request.command, resolveContext(origin.cwd, origin.env, view), view);
+    const command = await resolveChildCommand(workspace.registry, name, resolveContext(origin.cwd, origin.env, view), view);
     if (!command)
         return null;
     return { run: context => runChildCommand(workspace, context, command) };
+}
+/**
+ * A node child whose cwd is under a delegating mount (Kinu ask 66), started
+ * on the mount's machine as Node starts it: its file (as the program named
+ * it) and args, or, with `shell`, `/bin/sh -c` its line (Node's own argv).
+ * Null: it runs here; answered at once where no mount delegates. A start
+ * the machine refuses is the child's `error` event with the machine's
+ * code; an absent mount, EHOSTDOWN with nothing asked. The child takes its
+ * catchable signals, each sent to the program, which ends as it decides;
+ * SIGKILL ends it.
+ */
+export function delegatedChildRunner(workspace, request, origin) {
+    const placing = workspace.filesystem.placeProgram(workspace.processes.cred(origin.pid), origin.cwd);
+    return placing instanceof Promise ? placing.then((placement) => delegatedRunner(workspace, request, placement)) : delegatedRunner(workspace, request, placing);
+}
+function delegatedRunner(workspace, request, placement) {
+    if (placement.kind === 'local')
+        return null;
+    if (placement.kind === 'absent')
+        return { run: async () => spawnRefusal('EHOSTDOWN') };
+    const args = Array.isArray(request.args) ? request.args.map(String) : [];
+    const argv = request.shell
+        ? [typeof request.shell === 'string' ? request.shell : '/bin/sh', '-c', [request.command, ...args].join(' ')]
+        : [request.command, ...args];
+    return {
+        async run(child) {
+            const processes = workspace.processes;
+            const stop = new AbortController();
+            const relay = new AbortController();
+            // Before its start a signal stops it (the delegate's cancel); once started, the program takes it.
+            const stopped = processes.holdWork(child.pid, (reason) => { relay.abort(); stop.abort(reason); });
+            let signals = () => { };
+            try {
+                return await runDelegatedProgram(placement.delegate, { argv, env: child.env, cwd: placement.cwd }, { stdin: child.stdin, stdout: async (bytes) => child.output.onStdout(bytes), stderr: async (bytes) => child.output.onStderr(bytes) }, stop.signal, (started) => {
+                    signals = processes.takeSignals(child.pid, PROGRAM_SIGNALS);
+                    child.onStarted();
+                    void relaySignals(processes, child.pid, started, relay.signal);
+                });
+            }
+            catch (error) {
+                if (error instanceof ProgramRefusal)
+                    return spawnRefusal(error.code);
+                throw error;
+            }
+            finally {
+                relay.abort();
+                signals();
+                stopped();
+            }
+        },
+    };
+}
+/** Every signal a program on another machine may take and decide on (SIGKILL is never taken: it ends it). */
+const PROGRAM_SIGNALS = ProcessSignalNameSchema.options;
+/**
+ * The child's signals, as the broker delivers them (ChildProcessManager.kill),
+ * sent to the started program until `until`, or until the child has ended
+ * (no signal is taken for it any more).
+ */
+async function relaySignals(processes, pid, started, until) {
+    while (!until.aborted) {
+        const signal = await processes.nextSignal(pid, 5000);
+        if (until.aborted)
+            return;
+        if (signal !== null)
+            started.kill(signal);
+        else if (processes.get(pid)?.state !== 'running')
+            return;
+    }
+}
+function spawnRefusal(code) {
+    return { code, errno: errnoOf(code) ?? -5 };
 }
 /** A child's isolated shell owns its work until all of its descriptors close. */
 export async function runChildShell(workspace, child, line) {

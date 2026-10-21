@@ -103,6 +103,13 @@ export interface CommandContext {
     searchPath?: string;
     /** Whether the shell running this command runs `name` itself, as a builtin (type and command -v ask). */
     isShellBuiltin?: (name: string) => boolean;
+    /**
+     * Where a program `name` started from this command's cwd would be found
+     * when the cwd's mount runs programs on its own machine (Kinu ask 66):
+     * its path there, or null when the machine has none. Undefined: a start
+     * from here runs here, and is found here.
+     */
+    locateProgram?: (name: string) => Promise<string | null | undefined>;
     setUmask(mask: number): void;
     /** Run `argv` as a child process under `cred`, with this command's stdio and environment, and wait for it. */
     runAs(cred: VfsCred, argv: string[], options?: RunAsOptions): Promise<ChildExit>;
