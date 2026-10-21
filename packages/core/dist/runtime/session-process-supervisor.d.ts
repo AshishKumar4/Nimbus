@@ -426,7 +426,7 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
      * run's preparation, and a signal the stopped run was given but did not
      * ask past goes back to the front.
      */
-    parkSignals(pid: number): void;
+    parkSignals(pid: number, catches?: readonly ProcessSignalName[]): void;
     /** Whether `pid`'s program catches `signal` (takeSignals, catchSignals): one sent to it is its own to take. */
     catchesSignal(pid: number, signal: ProcessSignalName): boolean;
     /**

@@ -7068,9 +7068,9 @@ export class FacetManager {
         // run is dropped, the resident's are delivered (exec's finally ends it).
         const gate = this.outputGates.get(pid);
         const stopped = gate?.stopped(stop) ?? { fresh: [], prefix: null };
-        // What it catches waits for the run that comes next; what the stopped run was given and did not act on, too.
-        this.processes.parkSignals(pid);
-        this._takeStopCatches(pid, stop);
+        // What it catches (its record's word, which may not have reached the session) waits for the run that comes
+        // next; what the stopped run was given and did not act on, too.
+        this.processes.parkSignals(pid, this._stopCatches(stop));
         for (const { stream, bytes } of stopped.fresh)
             await this._deliverOutput(pid, stream, bytes);
         if (stopped.prefix === null) {
@@ -7185,9 +7185,9 @@ export class FacetManager {
         taken?.retire();
         const gate = this.outputGates.get(pid);
         const stopped = gate?.stopped(stop) ?? { fresh: [], prefix: null };
-        // What it catches waits for the run that comes next; what the stopped run was given and did not act on, too.
-        this.processes.parkSignals(pid);
-        this._takeStopCatches(pid, stop);
+        // What it catches (its record's word, which may not have reached the session) waits for the run that comes
+        // next; what the stopped run was given and did not act on, too.
+        this.processes.parkSignals(pid, this._stopCatches(stop));
         for (const { stream, bytes } of stopped.fresh)
             await this._deliverOutput(pid, stream, bytes);
         // Output a captured run printed before it stopped: the result of an exit
@@ -7271,7 +7271,11 @@ export class FacetManager {
         let resize;
         let ended = false;
         // A signal its program catches waits in its parked box (parkSignals) for the run that comes next, as Node
-        // runs a handler once the synchronous read returns; one that reaches the input anyway goes back there.
+        // runs a handler once the synchronous read returns; one that reaches the input anyway goes back there once
+        // the wait is over.
+        const caught = [];
+        const giveBack = () => { for (const sent of caught.splice(0))
+            this.processes.deliverSignal(pid, sent); };
         const aborted = new Promise((resolve) => {
             if (signal.aborted)
                 resolve('aborted');
@@ -7283,13 +7287,17 @@ export class FacetManager {
             const packet = await Promise.race([channel.read(1000), aborted]);
             if (packet === 'aborted') {
                 held.give(pieces.bytes);
+                giveBack();
                 return { aborted: true };
             }
             const sent = packet.signal === undefined ? null : parseProcessSignalName(packet.signal);
-            if (sent !== null && sent !== 'SIGKILL' && pid > 0 && this.processes.deliverSignal(pid, sent))
+            if (sent !== null && sent !== 'SIGKILL' && pid > 0 && this.processes.catchesSignal(pid, sent)) {
+                caught.push(sent);
                 continue;
+            }
             if (packet.signal === 'SIGINT' || packet.signal === 'SIGTERM' || packet.signal === 'SIGKILL') {
                 held.give(pieces.bytes);
+                giveBack();
                 return { signal: packet.signal };
             }
             if (packet.resize)
@@ -7299,6 +7307,7 @@ export class FacetManager {
                 const granted = already + pieces.bytes + data.byteLength > STDIN_SYNC_READ_BYTES ? 0 : held.take(data.byteLength);
                 if (granted < data.byteLength) {
                     held.give(granted + pieces.bytes);
+                    giveBack();
                     return { full: true };
                 }
                 pieces.add(data);
@@ -7313,6 +7322,7 @@ export class FacetManager {
         const packets = pieces.finish().map((data) => ({ data, ended: false }));
         if (resize)
             packets.push({ data: new Uint8Array(0), ended: false, resize });
+        giveBack();
         return { packets, bytes: pieces.bytes, ended };
     }
     /**
@@ -7321,16 +7331,16 @@ export class FacetManager {
      * after process.on() is seen only once a signal sent then finds it caught,
      * and its word of them may not have reached the session before the stop.
      */
-    _takeStopCatches(pid, stop) {
+    _stopCatches(stop) {
         if (stop.catches === undefined)
-            return;
+            return undefined;
         const names = [];
         for (const name of stop.catches === '' ? [] : stop.catches.split(',')) {
             const parsed = parseProcessSignalName(name);
             if (parsed !== null)
                 names.push(parsed);
         }
-        this.processes.catchSignals(pid, names);
+        return names;
     }
     /** `pid`'s stdin channel: the host's, else the session's input store when the pid has one. */
     _stdinChannel(pid) {

@@ -875,7 +875,15 @@ export class SessionProcessSupervisor {
      * run's preparation, and a signal the stopped run was given but did not
      * ask past goes back to the front.
      */
-    parkSignals(pid) {
+    parkSignals(pid, catches) {
+        // What it catches by its stopped run's own word (its stop record's), which may not have reached here.
+        if (catches !== undefined) {
+            if (!this.signalBoxes.has(pid) && catches.length > 0)
+                this.takeSignals(pid, catches);
+            const made = this.signalBoxes.get(pid);
+            if (made !== undefined)
+                made.catches = new Set(catches.filter((signal) => signal !== 'SIGKILL'));
+        }
         const box = this.signalBoxes.get(pid);
         if (box === undefined)
             return;
