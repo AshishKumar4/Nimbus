@@ -55,8 +55,12 @@ export interface Coherence {
 
 export function createCoherence(): Coherence {
   let t: ResidentTables | null = null;
-  /** The cursor as last parsed, by the text it was parsed from: parsed again only when the text is another. */
-  let read: { text: string; cursor: Cursor | null } | null = null;
+  /**
+   * The cursor as last read or written, for the tables it is of: read again
+   * once they are another (bind), or were cleared (a clear seals them, or
+   * writes a cursor at once: beginLazy).
+   */
+  let read: { tables: ResidentTables; cursor: Cursor | null } | null = null;
   let heap: HeapTables | null = null;
   let isSealed = true;
   /**
@@ -69,7 +73,7 @@ export function createCoherence(): Coherence {
   let sealReason = 'the store has not reconciled with the authority in this incarnation';
 
   return {
-    bind(tables, heapTables) { t = tables; heap = heapTables; },
+    bind(tables, heapTables) { t = tables; heap = heapTables; read = null; },
     bound: () => t !== null,
     serving: () => t !== null && !isSealed,
     tables(doing) {
@@ -97,6 +101,7 @@ export function createCoherence(): Coherence {
     seal(reason) {
       isSealed = true;
       sealReason = String(reason || 'resealed');
+      read = null;
     },
     unseal() {
       isSealed = false;
@@ -106,21 +111,23 @@ export function createCoherence(): Coherence {
     setUndated(value) { undated = value; },
     cursor() {
       if (t === null) return null;
+      if (read !== null && read.tables === t) return read.cursor;
       const text = t.metaGet('position');
-      if (text === undefined) return null;
-      if (read !== null && read.text === text) return read.cursor;
       let cursor: Cursor | null = null;
-      try {
-        const parsed: unknown = JSONParse(text);
-        cursor = isFeedPosition(parsed) ? parsed : null;
-      } catch {
-        cursor = null;
+      if (text !== undefined) {
+        try {
+          const parsed: unknown = JSONParse(text);
+          cursor = isFeedPosition(parsed) ? parsed : null;
+        } catch {
+          cursor = null;
+        }
       }
-      read = { text, cursor };
+      read = { tables: t, cursor };
       return cursor;
     },
     writeCursor(tables, cursor) {
       tables.metaSet('position', JSONStringify(cursor));
+      read = { tables, cursor };
     },
   };
 }
