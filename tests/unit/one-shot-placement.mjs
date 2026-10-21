@@ -99,9 +99,9 @@ function world({ colocated = false } = {}) {
     path: '/usr/lib/probe.wasm', identity: 'content:probe:4', size: 4, peak: 4,
     read: async () => { session.imageReads = (session.imageReads ?? 0) + 1; return IMAGE_BYTES; },
   });
-  /** One one-shot, as cpython opens one: a warm key, the process's syscalls, an image. */
+  /** One one-shot, as cpython opens one: a warm key (none for null), the process's syscalls, an image. */
   const oneShot = async (arg, { warm = { session: 'session-0123456789', name: 'probe-1' }, stateful, signal } = {}) => {
-    const facet = host.open({ tag: 'probe-runner', concurrency: 1, syscalls: { vfs: {}, pid: 4242 }, preamble: 'const p = 1;', wasmModules: { 'probe.wasm': image() }, warm, stateful });
+    const facet = host.open({ tag: 'probe-runner', concurrency: 1, syscalls: { vfs: {}, pid: 4242 }, preamble: 'const p = 1;', wasmModules: { 'probe.wasm': image() }, warm: warm ?? undefined, stateful });
     try { return await facet.submit(TASK, arg, { signal }); } finally { facet.dispose(); }
   };
   const peerOf = () => objects.byName.get(oneShotPlacementDiagnostics(session.ctx)?.peer ?? '');
@@ -254,11 +254,11 @@ function world({ colocated = false } = {}) {
 // ── 10: a facet with no warm worker ─────────────────────────────────────────
 {
   const w = world();
-  assert.equal((await w.oneShot('first', { warm: undefined })).ranOn, 'session-0123456789');
+  assert.equal((await w.oneShot('first', { warm: null })).ranOn, 'session-0123456789');
   await w.settled();
   const peer = w.peerOf();
   assert.equal(peer.warmed, 0, 'its worker is its own, cold on either host: nothing is warmed');
-  assert.equal((await w.oneShot('second', { warm: undefined })).ranOn, peer.name, 'it runs on the peer once the peer\'s object is up');
+  assert.equal((await w.oneShot('second', { warm: null })).ranOn, peer.name, 'it runs on the peer once the peer\'s object is up');
   console.log('  ok  a facet with no warm worker runs on the peer once its object answered');
 }
 
