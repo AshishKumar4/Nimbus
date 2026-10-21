@@ -249,8 +249,9 @@ export const answeredAtOnce = (work) => Promise.race([Promise.resolve(work).then
  * and answers in its place (schedule-transport.mjs). `stdin`: Node's
  * process is attached to the session's input store, and its input (`input`)
  * is a keystroke, delivered with the ACQUIRE the session computes for it.
+ * `leases`: the holder's process asks read leases (as a WASI run does).
  * @param {string} kind
- * @param {{ seed?: (authority: any) => void, supervise?: Record<string, (call: (args: any[]) => Promise<any>, args: any[]) => Promise<any>>, stdin?: boolean }} [options]
+ * @param {{ seed?: (authority: any) => void, supervise?: Record<string, (call: (args: any[]) => Promise<any>, args: any[]) => Promise<any>>, stdin?: boolean, leases?: boolean }} [options]
  */
 export async function bootEngine(kind, { seed, supervise = {}, stdin = false, leases = true } = {}) {
   if (!SCHEDULE_ENGINES.includes(kind)) throw new Error(`no engine ${kind}`);
