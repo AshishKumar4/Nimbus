@@ -68,6 +68,8 @@ const HostProcessOptsSchema = z.object({
 export const HOSTED_WATCH_HEADER = 'x-nimbus-hosted-watch';
 export const HOSTED_RESIDENCY_HEADER = 'x-nimbus-hosted-residency';
 export const HOSTED_FAILURE_HEADER = 'x-nimbus-hosted-failure';
+/** On a peer's failure response: the pid whose request its leaf refused unsent (ProcessNotAdmitted). */
+export const HOSTED_NOT_ADMITTED_HEADER = 'x-nimbus-hosted-not-admitted';
 class LostHostedProcess extends Error {
 }
 /**
@@ -408,7 +410,7 @@ export class PeerHost {
             const facet = await record.facet;
             return facet.handleWebSocketRequest(new Request(request.url, { method: request.method, headers }));
         });
-        return result instanceof Response ? result : this.gone(capability, result.hostLost);
+        return result instanceof Response ? result : this.gone(capability, result.hostLost, result.notAdmitted);
     }
     /**
      * Deterministic kill of a hosted process — the same teardown a coordinator
@@ -462,7 +464,7 @@ export class PeerHost {
                 throw error;
             }
         });
-        return result instanceof Response ? result : this.gone(capability, result.hostLost);
+        return result instanceof Response ? result : this.gone(capability, result.hostLost, result.notAdmitted);
     }
     /** The coordinator retains its endpoint unaccepted; only the peer receives events. */
     async reside(request) {
@@ -480,7 +482,7 @@ export class PeerHost {
                 this.ctx.waitUntil(this.cancel(key).catch((error) => console.error('Nimbus: coordinator residency teardown failed', error)));
             });
         });
-        return result instanceof Response ? result : this.gone(capability, result.hostLost);
+        return result instanceof Response ? result : this.gone(capability, result.hostLost, result.notAdmitted);
     }
     socket(request, sockets, releaseOwner, afterEnd) {
         const [client, server] = Object.values(new WebSocketPair());
@@ -508,8 +510,12 @@ export class PeerHost {
             return record.webSocketCapability === capability;
         return (await this.ctx.storage.get(`${HOSTING_KEY_PREFIX}${key}`))?.capability === capability;
     }
-    gone(capability, reason) {
-        return new Response(reason, { status: 410, headers: { [HOSTED_FAILURE_HEADER]: capability, [HOST_INCARNATION_HEADER]: this.incarnation } });
+    gone(capability, reason, notAdmitted) {
+        return new Response(reason, { status: 410, headers: {
+                [HOSTED_FAILURE_HEADER]: capability,
+                [HOST_INCARNATION_HEADER]: this.incarnation,
+                ...(notAdmitted === undefined ? {} : { [HOSTED_NOT_ADMITTED_HEADER]: String(notAdmitted) }),
+            } });
     }
     async answer(key, work) {
         try {

@@ -75,7 +75,7 @@ import { hostNamespaceBinding, hostOpDispatch } from './host-dispatch.js';
 import { z } from 'zod/v4';
 import { isHostReset } from '@nimbus-sh/platform/oom-classify.js';
 import { ProcessHostLost, } from './process-fabric.js';
-import { HOSTED_WEBSOCKET_CAPABILITY_HEADER, HOSTED_WEBSOCKET_KEY_HEADER, HOSTED_WATCH_HEADER, HOSTED_RESIDENCY_HEADER, HOSTED_FAILURE_HEADER, headerPairs, isolateToken, } from './peer-host.js';
+import { HOSTED_WEBSOCKET_CAPABILITY_HEADER, HOSTED_WEBSOCKET_KEY_HEADER, HOSTED_WATCH_HEADER, HOSTED_RESIDENCY_HEADER, HOSTED_FAILURE_HEADER, HOSTED_NOT_ADMITTED_HEADER, headerPairs, isolateToken, } from './peer-host.js';
 import { DYNAMIC_WORKER_CODE_LIMIT_BYTES } from './budgets.js';
 import { BindingError } from './vendor/errors.js';
 import { processes, } from './workerd-facet-host.js';
@@ -382,7 +382,9 @@ class PeerProcessHost {
                 // Sent to the peer at once: a loss its coordinator sees first fails the
                 // request by the loss's name, though the peer may have refused it
                 // unsent. Only the peer's own answer says that (ProcessNotAdmitted,
-                // typed across its reply), when it comes first.
+                // typed across its reply), when it comes first, and only for a request
+                // whose body did not go to the peer with it: one that did cannot be
+                // sent again, so its refusal is the loss.
                 handleHttpRequest: (request, scope) => loss.request(async (sendingToPeer) => {
                     const lease = observation.acquire();
                     sendingToPeer();
@@ -403,7 +405,7 @@ class PeerProcessHost {
                         else if (sending.abandoned)
                             sent.received(sending);
                         lease.release();
-                        throw error;
+                        throw error instanceof ProcessNotAdmitted && request.body !== null ? new ProcessHostLost(error.cause) : error;
                     }
                 }),
                 // An upgrade hands its socket to the caller at the handshake.
@@ -705,7 +707,8 @@ async function routeWebSocketThroughPeer(stub, workerKey, capability, request) {
     return peerFetchAnswer(await stub.fetch(new Request(request.url, { method: request.method, headers })), capability);
 }
 async function peerFetchAnswer(response, capability) {
-    if (response.headers.get(HOSTED_FAILURE_HEADER) === capability)
-        throw new ProcessHostLost(await response.text());
-    return response;
+    if (response.headers.get(HOSTED_FAILURE_HEADER) !== capability)
+        return response;
+    const notAdmitted = response.headers.get(HOSTED_NOT_ADMITTED_HEADER);
+    throw notAdmitted === null ? new ProcessHostLost(await response.text()) : new ProcessNotAdmitted(Number(notAdmitted), await response.text());
 }

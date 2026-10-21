@@ -70,6 +70,8 @@ export type HostedReply<T> = T | {
 export declare const HOSTED_WATCH_HEADER = "x-nimbus-hosted-watch";
 export declare const HOSTED_RESIDENCY_HEADER = "x-nimbus-hosted-residency";
 export declare const HOSTED_FAILURE_HEADER = "x-nimbus-hosted-failure";
+/** On a peer's failure response: the pid whose request its leaf refused unsent (ProcessNotAdmitted). */
+export declare const HOSTED_NOT_ADMITTED_HEADER = "x-nimbus-hosted-not-admitted";
 /**
  * Which hosted process a fetched upgrade is for. An upgrade cannot travel as
  * RPC arguments, so the two values `_rpcRouteHostedHttp` would have taken ride

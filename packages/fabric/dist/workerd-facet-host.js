@@ -531,23 +531,18 @@ function spawnResident(ctx, env, disk, supervisor, params) {
         // before the request is sent, so the request ran nowhere and is whole,
         // body and all, for its caller to run again (HostLoss.request).
         handleHttpRequest: async (request, scope, leg = {}) => {
-            const lease = observation.acquire();
-            try {
-                if (!observation.validated())
-                    await unsentUntilValidated(lease);
-            }
-            catch (error) {
-                lease.release();
-                throw error;
-            }
             const cancel = leg.relayed === undefined ? new AbortController() : null;
+            const signal = leg.relayed ?? cancel.signal;
+            // A caller that leaves while the request waits for validation releases it.
+            const lease = observation.acquire(signal);
             scope.settled((delivered) => {
                 lease.release();
                 if (!delivered)
                     cancel?.abort(new DOMException('The caller left the request', 'AbortError'));
             });
-            const signal = leg.relayed ?? cancel.signal;
             try {
+                if (!observation.validated())
+                    await unsentUntilValidated(lease);
                 leg.sending?.();
                 // Unencoded: the registry decodes a coding once, as it did the bytes an RPC hop carried.
                 const response = await facet.fetch(request, { signal, encodeResponseBody: 'manual' });
@@ -563,7 +558,7 @@ function spawnResident(ctx, env, disk, supervisor, params) {
         // An upgrade hands its socket to the caller at the handshake. It carries
         // its admission, which an instance other than the pinned one refuses.
         handleWebSocketRequest: async (request, sending) => {
-            const lease = observation.acquire();
+            const lease = observation.acquire(request.signal);
             try {
                 if (!observation.validated())
                     await unsentUntilValidated(lease);
