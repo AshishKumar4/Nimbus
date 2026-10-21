@@ -420,7 +420,7 @@ assert.equal(noTs.rules.typescript.files, 0);
   const tree = {
     'home/user/app/package.json': '{"name":"app"}',
     'home/user/app/src/index.css': '@import "tailwindcss";\n@source "./local";\n@source inline("underline");\n@import "../../theme/theme.css";\n@import url("../../unused/unused.css");',
-    'home/user/theme/theme.css': '@source "../shared";\n@source "../{kit,app}/**/*.tsx";\n@source not "../ignored";\n@source "/home/user/app/../linked/**";\n@source "../shared/.next/templates";\n@source "../quoted\'s";\n@source "../range/{1..1001}.tsx";\n@media screen { @import "./deeper.css"; }',
+    'home/user/theme/theme.css': '@source "../shared";\n@source "../kit/**/*.{ts,tsx}";\n@source not "../ignored";\n@source "/home/user/app/../linked/**";\n@source "../shared/.next/templates";\n@source "../quoted\'s";\n@source "../range/{1..1001}.tsx";\n@media screen { @import "./deeper.css"; }',
     'home/user/theme/deeper.css': '@source "../deep/*.tsx";',
     'home/user/unused/unused.css': '@source "../never";',
     'home/user/deep/Deep.tsx': 'd',
@@ -454,7 +454,7 @@ assert.equal(noTs.rules.typescript.files, 0);
   const withOxide = await planFacetData(ns, { cwd: '/home/user/app', home: '/home/user', closure: oxide, refs: [] });
   const held = new Set(withOxide.paths);
   assert.ok(held.has('home/user/shared/Card.tsx'), 'a source outside the working tree is held, from a sheet outside it that an import after an @source names');
-  assert.ok(held.has('home/user/kit/ui/Button.tsx'), 'each brace alternative holds its directory prefix');
+  assert.ok(held.has('home/user/kit/ui/Button.tsx'), 'a glob holds its directory prefix, braces in its file part');
   assert.ok(held.has('home/user/deep/Deep.tsx'), 'an import nested in a rule is followed, as Tailwind inlines it');
   assert.ok(held.has('home/user/real-linked/L.tsx'), 'an absolute source with dot segments, through a link, holds its target');
   assert.ok(!held.has('home/user/never/Never.tsx'), 'an @import url() is not followed');
@@ -465,10 +465,10 @@ assert.equal(noTs.rules.typescript.files, 0);
   assert.ok(!held.has('home/user/srv-cache/c.js'), 'an excluded name is excluded through a link, by its name below the root');
   assert.ok(held.has('home/user/srv-widgets/Old.tsx') && withOxide.sourceRoots.includes('/home/user/srv-widgets'), 'a directory a link leads to out of the roots is held, and pushed');
   assert.ok(held.has("home/user/quoted's/Q.tsx"), 'a quote is a filename character');
-  assert.ok(held.has('home/user/range/1001.tsx') && !held.has('home/user/range/1002.tsx'), 'a range of any length expands, to the files it names');
+  assert.ok(held.has('home/user/range/1001.tsx') && held.has('home/user/range/1002.tsx'), 'a range is never expanded: its directory is held');
   assert.deepEqual(withOxide.sourceRoots.slice(0, 4), ['/home/user/shared', '/home/user/kit', '/home/user/real-linked', '/home/user/shared/.next/templates'], 'the plan names the roots outside the tree, for the barriers to push');
-  assert.ok(withOxide.sourceRoots.includes("/home/user/quoted's") && withOxide.sourceRoots.includes('/home/user/range/1001.tsx') && withOxide.sourceRoots.includes('/home/user/deep'));
-  assert.equal(withOxide.rules['stylesheet-source'].files, 8);
+  assert.ok(withOxide.sourceRoots.includes("/home/user/quoted's") && withOxide.sourceRoots.includes('/home/user/range') && withOxide.sourceRoots.includes('/home/user/deep'));
+  assert.equal(withOxide.rules['stylesheet-source'].files, 9);
   assert.equal(withOxide.names, listed, 'the namespace is counted once, however many walks');
   const without = await planFacetData(ns, { cwd: '/home/user/app', home: '/home/user', closure: [], refs: [] });
   assert.ok(!new Set(without.paths).has('home/user/shared/Card.tsx'), 'without oxide, the source is not held');
