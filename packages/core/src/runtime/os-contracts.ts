@@ -1,3 +1,4 @@
+import type { ProgramPlacement } from './program-start.js';
 import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 import type { VfsEvent } from '../vfs/events.js';
 import { rootClampedSegments } from '@nimbus-sh/platform/lexical-path.js';
@@ -298,6 +299,13 @@ export interface NimbusFilesystemAuthority {
    * from the first as the run before's were. The pid stays live.
    */
   rewindProcess?(pid: number): Promise<void>;
+  /**
+   * Where a program a process of `cred` starts with its cwd at `cwd` runs
+   * (Kinu ask 66, CompositeVFS.placeProgram): answered at once, here, in a
+   * namespace no mount delegates, so a start there waits on nothing. An
+   * authority without it places every program here.
+   */
+  placeProgram?(cred: Readonly<VfsCred>, cwd: string): ProgramPlacement | Promise<ProgramPlacement>;
   /**
    * The mounts `cred` sees, in mount order. Synchronous so `/proc/mounts`
    * can read it; only usage is async. A wrapper exposing its own mounts

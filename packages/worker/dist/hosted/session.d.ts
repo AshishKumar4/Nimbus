@@ -55,6 +55,17 @@ export declare class HostedSession extends RpcTarget implements SessionRpc {
             longRunning: boolean;
             attachedTty: boolean;
             execId?: string | undefined;
+            restartedFrom?: {
+                pid: number;
+                cause: "session-restart";
+            } | {
+                pid: number;
+                cause: "exited";
+                exitCode: number;
+            } | {
+                pid: number;
+                cause: "host-reset";
+            } | undefined;
         };
         ports: {
             port: number;
@@ -156,6 +167,17 @@ export declare class HostedSession extends RpcTarget implements SessionRpc {
         longRunning: boolean;
         attachedTty: boolean;
         execId?: string | undefined;
+        restartedFrom?: {
+            pid: number;
+            cause: "session-restart";
+        } | {
+            pid: number;
+            cause: "exited";
+            exitCode: number;
+        } | {
+            pid: number;
+            cause: "host-reset";
+        } | undefined;
     }[]>;
     _rpcKillProcess(pid: number): Promise<{
         ok: boolean;

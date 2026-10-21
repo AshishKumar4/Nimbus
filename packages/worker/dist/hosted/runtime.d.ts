@@ -95,6 +95,17 @@ export declare function composeHostedRuntime(options: HostedRuntimeOptions): Pro
             longRunning: boolean;
             attachedTty: boolean;
             execId?: string | undefined;
+            restartedFrom?: {
+                pid: number;
+                cause: "session-restart";
+            } | {
+                pid: number;
+                cause: "exited";
+                exitCode: number;
+            } | {
+                pid: number;
+                cause: "host-reset";
+            } | undefined;
         };
         ports: {
             port: number;
@@ -117,6 +128,17 @@ export declare function composeHostedRuntime(options: HostedRuntimeOptions): Pro
         longRunning: boolean;
         attachedTty: boolean;
         execId?: string | undefined;
+        restartedFrom?: {
+            pid: number;
+            cause: "session-restart";
+        } | {
+            pid: number;
+            cause: "exited";
+            exitCode: number;
+        } | {
+            pid: number;
+            cause: "host-reset";
+        } | undefined;
     }[]>;
     killProcess: (pid: number) => Promise<{
         ok: boolean;

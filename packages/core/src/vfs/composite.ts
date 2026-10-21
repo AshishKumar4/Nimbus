@@ -25,6 +25,7 @@ import type {
   VfsRevision, VfsStat, VfsUsage, VfsViewOptions, VfsWriteEvent, VfsWriteObserver, VfsWriteWants,
 } from './vfs.js';
 import type { RuntimeVfsStat, VfsAcquireOptions, VfsInvalidatedPath, VfsListEntry } from '../runtime/os-contracts.js';
+import { LOCAL_PLACEMENT, type ExecDelegate, type ProgramPlacement } from '../runtime/program-start.js';
 import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 import { inWatchedTree, projectChange, type VfsEvent, type VfsEventType } from './events.js';
 import { VfsError, VFS_DESCRIPTION, isVfsError, syscallError, type VfsErrorCode } from './vfs-error.js';
@@ -202,6 +203,13 @@ export interface MountOptions {
    * storage that is not the session's (another machine, a user's files).
    */
   removalCrosses?: boolean;
+  /**
+   * Programs started with their cwd under the mount run on the machine its
+   * files live on (Kinu ask 66): every program start (the shell's, execvp's,
+   * a node child's) is placed first (placeProgram), and one placed here is
+   * the delegate's to start, nothing of it run in the session.
+   */
+  exec?: ExecDelegate;
 }
 
 /** Options shared by `route` and `mutationRoute`. */
@@ -574,6 +582,8 @@ interface Table {
   guard?: MutationGuard;
   /** Told of every mount and unmount (watchMounts). */
   moved?: () => void;
+  /** How many mounts carry an exec delegate: none, and no program start is placed (placesPrograms). */
+  delegates: number;
   /** Asked before a mount or unmount changes what a path routes to (guardRouting). */
   routing?: (point: string) => void;
 }
@@ -794,7 +804,7 @@ export class CompositeVFS implements VFS {
       this.viewer = shared.principal;
       this.views = shared.views;
     } else {
-      this.table = { mounts: new Map([[ROOT_POINT, { point: ROOT_POINT, under: ROOT_POINT, source: root, options, dev: null, inos: new Map() }]]), generation: 0, lastDev: 0, synthesized: new Map(), behind: new WeakMap() };
+      this.table = { mounts: new Map([[ROOT_POINT, { point: ROOT_POINT, under: ROOT_POINT, source: root, options, dev: null, inos: new Map() }]]), generation: 0, lastDev: 0, synthesized: new Map(), behind: new WeakMap(), delegates: options.exec === undefined ? 0 : 1 };
       this.viewer = { cred: null };
       const refs = new Map<string, WeakRef<CompositeVFS>>();
       this.views = { refs, gone: new FinalizationRegistry((key: string) => {
@@ -1068,6 +1078,7 @@ export class CompositeVFS implements VFS {
     const mount: Mount = { point: at, under: `${at}/`, source, options, dev: ANONYMOUS_DEV + ++this.table.lastDev, inos: new Map() };
     this.table.mounts.set(at, mount);
     this.table.generation++;
+    if (options.exec !== undefined) this.table.delegates++;
     this.resynthesize();
     if (this.table.writes !== undefined) this.subscribeWrites(mount);
     for (const watch of this.table.changes?.watches ?? []) {
@@ -1086,6 +1097,37 @@ export class CompositeVFS implements VFS {
     return this.table.generation;
   }
 
+  /** Whether a mount carries an exec delegate: in a namespace with none, every program runs here, nothing asked. */
+  placesPrograms(): boolean {
+    return this.table.delegates > 0;
+  }
+
+  /**
+   * Where a program started with its cwd at `cwd` runs (MountOptions.exec),
+   * for this view's principal: by the mount the cwd is on, links into it
+   * followed, as every lookup finds it (route). A cwd the namespace cannot
+   * look up, in a namespace where a mount delegates, is refused with the
+   * lookup's failure (an absent mount's in its own words): where the walk
+   * stopped says nothing of where the cwd is, and a program is never run
+   * here in a machine's place.
+   */
+  async placeProgram(cwd: string): Promise<ProgramPlacement> {
+    if (this.table.delegates === 0) return LOCAL_PLACEMENT;
+    const trace: LookupTrace = { links: [], at: normalizePath(cwd) };
+    let route: VfsRoute;
+    try {
+      route = await this.routeWith(cwd, { follow: true }, trace);
+    } catch (error) {
+      const reached = this.table.mounts.get(this.mountOf(trace.at));
+      const absent = reached !== undefined && this.backend(reached) === null ? this.absentReason(reached) : undefined;
+      return { kind: 'absent', reason: absent ?? (error instanceof Error ? error.message : String(error)) };
+    }
+    const exec = this.table.mounts.get(route.point)?.options.exec;
+    if (exec === undefined) return LOCAL_PLACEMENT;
+    if (route.source === null) return { kind: 'absent', reason: route.absentReason ?? 'its mount is absent' };
+    return { kind: 'delegated', delegate: exec, cwd: route.path };
+  }
+
   unmount(point: string): void {
     const at = normalizePath(point);
     const mount = this.table.mounts.get(at);
@@ -1093,6 +1135,7 @@ export class CompositeVFS implements VFS {
     this.table.routing?.(at);
     this.table.mounts.delete(at);
     this.table.generation++;
+    if (mount.options.exec !== undefined) this.table.delegates--;
     this.table.writes?.subscribed.get(mount)?.();
     this.table.writes?.subscribed.delete(mount);
     for (const watch of this.table.changes?.watches ?? []) {
@@ -1851,7 +1894,13 @@ export class CompositeVFS implements VFS {
   route(path: string, options?: VfsRouteOptions): Promise<VfsRoute | VfsRouteReport>;
   async route(path: string, options?: VfsRouteOptions): Promise<VfsRoute | VfsRouteReport> {
     const trace: LookupTrace | undefined = options?.report === true ? { links: [], at: normalizePath(path) } : undefined;
-    const run = (): Awaitable<VfsRoute> => awaited({ syscall: 'route', path }, () => {
+    const run = (): Awaitable<VfsRoute> => this.routeWith(path, options, trace);
+    return trace === undefined ? run() : lookupReport(trace, run);
+  }
+
+  /** route's lookup, recording in `trace` (when given) where it has reached, links followed. */
+  private routeWith(path: string, options: VfsRouteOptions | undefined, trace: LookupTrace | undefined): Awaitable<VfsRoute> {
+    return awaited({ syscall: 'route', path }, () => {
       // A recalled lookup starts over: keep only the traversal that answers.
       if (trace !== undefined) { trace.links.length = 0; trace.at = normalizePath(path); }
       return andThen(this.resolve(path, options?.follow === true, false, options?.creating === true, trace), (resolved): Awaitable<VfsRoute> => {
@@ -1875,7 +1924,6 @@ export class CompositeVFS implements VFS {
         });
       });
     });
-    return trace === undefined ? run() : lookupReport(trace, run);
   }
 
   /**

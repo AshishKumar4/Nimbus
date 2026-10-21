@@ -292,6 +292,18 @@ async function _whichLookup(
  * `_knownCommandPath` puts it, or else a shell builtin (a runtime's install
  * hint with no bin is not found). A resolution that failed is not found.
  */
+/**
+ * What `name` names for type and command -v/-V from `ctx`: the shell's own
+ * builtin, or the program a start would run, found on the cwd's mount's
+ * machine when it runs programs there (CommandContext.locateProgram).
+ */
+async function describeFor(registry: CommandRegistry, name: string, ctx: CommandContext): ReturnType<typeof _describeCommand> {
+  const builtin = (candidate: string) => ctx.isShellBuiltin?.(candidate) ?? false;
+  const located = BASH_BUILTINS.has(name) || builtin(name) ? undefined : await ctx.locateProgram?.(name);
+  if (located === undefined) return await _describeCommand(registry, name, lookupContext(ctx, ctx.vfs), builtin);
+  return located === null ? null : { kind: 'file', path: located };
+}
+
 async function _describeCommand(
   registry: CommandRegistry,
   name: string,
@@ -423,7 +435,7 @@ function mkCommand(registry: CommandRegistry): Command {
     const from = lookupContext(ctx, vfs);
     if (mode === '-v' || mode === '-V') {
       const name = args[0];
-      const described = await _describeCommand(registry, name, from, (builtin) => ctx.isShellBuiltin?.(builtin) ?? false);
+      const described = await describeFor(registry, name, ctx);
       if (mode === '-v') {
         if (described === null) return 1;
         (await ctx.stdout.write(`${described.kind === 'file' ? described.path : name}\n`));
@@ -482,9 +494,8 @@ function mkType(registry: CommandRegistry): Command {
     const vfs = ctx.vfs;
     if (ctx.args.length === 0) return 0;
     let exit = 0;
-    const from = lookupContext(ctx, vfs);
     for (const name of ctx.args) {
-      const described = await _describeCommand(registry, name, from, (builtin) => ctx.isShellBuiltin?.(builtin) ?? false);
+      const described = await describeFor(registry, name, ctx);
       if (described === null) {
         (await ctx.stderr.write(`type: ${name}: not found\n`));
         exit = 1;
@@ -1620,8 +1631,8 @@ function mkXargs(): Command {
         ended = await ctx.runAs(ctx.cred, [cmdName, ...batch], { parent });
       } catch (error) {
         if (!isVfsError(error) || error.syscall !== 'execvp') throw error;
-        (await ctx.stderr.write(`xargs: ${cmdName}: ${VFS_STRERROR[error.code]}\n`));
-        return error.code === 'EACCES' ? 126 : 127;
+        (await ctx.stderr.write(`xargs: ${cmdName}: ${error.detail ?? VFS_STRERROR[error.code]}\n`));
+        return error.code === 'ENOENT' ? 127 : 126;
       }
       if (ended.signal !== null) {
         (await ctx.stderr.write(`xargs: ${cmdName}: terminated by signal ${ended.status - 128}\n`));

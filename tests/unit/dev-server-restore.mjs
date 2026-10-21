@@ -204,6 +204,28 @@ try {
   assert.equal(next.ports.get(5174), undefined, 'the server stopped with its process: its port is free');
   await settle(() => recordKeys().length === 0, 'the record to be released');
 
+  // ── what runs is listed with what the restore runs again (Kinu ask 65) ──
+  // Asked at once, as an embedder's recovery asks: "not listed" must mean
+  // "not coming". The listing waits for the restore's processes, never for
+  // its commands: one that lists what runs itself, and one that never ends
+  // (a dev server, then a loop, as a job may run), each answers.
+  for (const [what, line] of [
+    ['a dev server', 'vite --port 5173 --no-install-check'],
+    ['one whose line then lists the apps', 'vite --port 5173 --no-install-check; nimbus app list'],
+    ['one whose line never ends', 'vite --port 5173 --no-install-check; while true; do sleep 1; done'],
+  ]) {
+    await next.runtime.startProcess(line, { cwd: '/home/user/app', execId: 'job-1' });
+    await settle(() => next.ports.has(5173), `${what}: its port`);
+    await next.ctx.storage.sync();
+    next = await incarnation({ restored: false });
+    const listed = (await next.runtime.listProcesses()).find((process) => process.execId === 'job-1' && process.state === 'running');
+    assert.ok(listed, `${what}: listed at once, under the exec id it had`);
+    assert.equal(listed.restartedFrom?.cause, 'session-restart', `${what}: as the restart of the one before`);
+    await settle(() => next.ports.has(5173), `${what}: its port again`);
+    await next.runtime.killProcess(listed.pid);
+    await settle(() => recordKeys().length === 0 && !next.ports.has(5173), `${what}: its record to be released`);
+  }
+
   // ── a login file that starts one, with one to restore ───────────────────
   const recorded = await next.runtime.exec('vite --port 5173 --no-install-check', { cwd: '/home/user/app' });
   assert.equal(recorded.exitCode, 0, recorded.stderr);

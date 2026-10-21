@@ -1,3 +1,5 @@
+import { BASH_BUILTINS } from './bash-builtins.js';
+import { locatePlacedProgram } from '../../../runtime/delegated-program.js';
 import type { ITerminal } from '../terminal/ITerminal.js';
 import { ProcessView, bindProcessView } from '../../../runtime/process-files.js';
 import type { CommandRegistry } from '../commands/registry.js';
@@ -210,6 +212,8 @@ export class Shell {
     this.builtins = shellBuiltins({
       vfs: () => this.vfs,
       registry,
+      locateProgram: (name, cwd, env) => locatePlacedProgram(filesystem, this.commandIdentity.cred, name, cwd, env),
+      isShellBuiltin: (name) => this.builtins.has(name) || BASH_BUILTINS.has(name),
       hostProcessSignals: () => this.hostProcessSignals,
       clearTerminal: () => this.terminal.clear(),
       history: () => this.historyManager.getAll(),

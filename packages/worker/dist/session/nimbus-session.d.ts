@@ -27,7 +27,7 @@ import type { ChildProcessManager } from '@nimbus-sh/core/runtime/child-process-
 import type { SessionRouterRpc, SessionReadyOptions, SessionExecOptions, SessionRunCodeOptions, SessionDestroyOptions, SessionDestroyResult, SessionFileStat, SessionDirectoryEntry, SessionRuntimeInstallOptions, SessionTerminalSize, SessionProcessLogsOptions, SessionExposeOptions, SessionDurableAppOptions, SessionAppTarget } from '@nimbus-sh/core/runtime/session-protocol.js';
 import type { RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
-import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListPage, type VfsMutationReceipt, type VfsListTree } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListOptions, type VfsListPage, type VfsMutationReceipt, type VfsListTree } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { WsHibernationConfigResult } from './hibernation.js';
 import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
@@ -408,7 +408,7 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
     _rpcFsStorageGrant(facet: string, bytes: number, databaseSize: number, pid?: number): Promise<{
         granted: number;
     }>;
-    _rpcFsList(after: string | null, limit: number | null, pid?: number): Promise<VfsListPage>;
+    _rpcFsList(after: string | null, limit: number | null, options?: VfsListOptions, pid?: number): Promise<VfsListPage>;
     _rpcFsListTree(root: string, maxEntries: number, pid?: number): Promise<VfsListTree>;
     _rpcWsOpen(url: string, protocols: string[], headers?: [string, string][] | null, refusalBody?: boolean | null, pid?: number): Promise<any>;
     _rpcWsPoll(id: number, waitMs: number, pid?: number): Promise<any>;
@@ -531,6 +531,17 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
             longRunning: boolean;
             attachedTty: boolean;
             execId?: string | undefined;
+            restartedFrom?: {
+                pid: number;
+                cause: "session-restart";
+            } | {
+                pid: number;
+                cause: "exited";
+                exitCode: number;
+            } | {
+                pid: number;
+                cause: "host-reset";
+            } | undefined;
         };
         ports: {
             port: number;
@@ -598,6 +609,17 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
         longRunning: boolean;
         attachedTty: boolean;
         execId?: string | undefined;
+        restartedFrom?: {
+            pid: number;
+            cause: "session-restart";
+        } | {
+            pid: number;
+            cause: "exited";
+            exitCode: number;
+        } | {
+            pid: number;
+            cause: "host-reset";
+        } | undefined;
     }[]>;
     _rpcKillProcess(pid: number): Promise<{
         ok: boolean;
@@ -721,8 +743,11 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
     _rpcRouteCapabilityPort(port: number, capability: string, request: Request, innerPath: string): Promise<Response>;
     /** What restoring the dev servers reads of this session, one view per instance (its restore is the view's). */
     private devServerHost;
+    private get devServers();
     /** The dev servers a previous incarnation ran, started again once (dev-servers.ts): what every route to one waits on. */
     restoreDevServers(): Promise<readonly DevServerRestoreFailure[]>;
+    /** Their processes spawned again (dev-servers.ts): what a listing of what runs waits on. */
+    devServersRespawned(): Promise<void>;
     /** The port route's in-DO HMR accept, delegated — same reason. */
     acceptCirrusHmrWs(request: Request): Response;
     /**

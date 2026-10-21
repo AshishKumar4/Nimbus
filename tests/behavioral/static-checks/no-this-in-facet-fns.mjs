@@ -35,7 +35,7 @@ try {
     for (const [name, task] of Object.entries(exports)) {
       if (task?.kind !== 'nimbus-facet-task') continue;
       assert.notEqual(typeof task, 'function', `${pkg}/${name}: no live callback`);
-      const preamble = name === 'WASM_CALL_TASK' ? WASI_INSTANCE_PREAMBLE_SRC
+      const preamble = name === 'WASM_CALL_TASK' || name === 'TSRS_CALL_TASK' ? WASI_INSTANCE_PREAMBLE_SRC
         : name === 'NPM_RESOLVE_ONE_TASK' ? NPM_RESOLVE_PREAMBLE
         : name === 'NPM_INSTALL_BATCH_TASK' ? [TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE, WAVE_WRITER_PREAMBLE, NPM_INSTALL_PREAMBLE].join('\n') : '';
       const source = assembleLoaderWorkerModuleSource({ fnSource: task.source, preamble, hasBindings: true });

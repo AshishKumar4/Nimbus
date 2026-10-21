@@ -1,5 +1,11 @@
 import { z } from 'zod/v4';
 import { ExecOutputSchema } from './exec-stream.js';
+/** The process a process starts again, and why (ProcessEntry.restartedFrom). */
+export const ProcessRestartSchema = z.discriminatedUnion('cause', [
+    z.object({ pid: z.number(), cause: z.literal('session-restart') }),
+    z.object({ pid: z.number(), cause: z.literal('exited'), exitCode: z.number() }),
+    z.object({ pid: z.number(), cause: z.literal('host-reset') }),
+]);
 export const SessionProcessSchema = z.object({
     pid: z.number(),
     command: z.string(),
@@ -12,6 +18,8 @@ export const SessionProcessSchema = z.object({
     longRunning: z.boolean(),
     attachedTty: z.boolean().optional().default(false),
     execId: z.string().optional(),
+    /** The process it starts again, when it is a restart. */
+    restartedFrom: ProcessRestartSchema.optional(),
 });
 /** A session's terminal as a list shows it: its own is `name: null`; a named one's is `/ws?terminal=<name>`. */
 export const SessionTerminalSchema = z.object({

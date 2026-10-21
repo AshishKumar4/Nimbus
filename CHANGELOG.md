@@ -5,6 +5,38 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a long-running node process (a server, an agent's turn) could end mid-read with exit 0 and its read never answered. This happened when its filesystem had to ask the session for something on the program's behalf: more storage room for a file another process had just written, a listing, or a fill. That work was not counted as something the program was waiting on, so the process looked idle and ended. Every filesystem call a node process makes on the session now counts as live work until it is answered, whichever part of the process made it.
+
+## 2026-10-21: platform 0.15.0, core 0.26.0, fabric 0.21.0, worker 0.24.0, sdk 0.20.0, react 0.4.2, cli 0.2.11, loom 0.3.4, create-nimbus-app 0.2.7 (config 0.3.2 and the runtimes unchanged)
+
+- Added: a mount can run programs on the machine its files live on. `filesystem.vfs.mount(point, source, { exec })` takes an `ExecDelegate` (`start(program, cancel)`, `locate(name, cwd, env)`). Every program started with its cwd under that mount is placed there: the shell's, an execvp from find, xargs, env or sudo, and a node child's. Each start is one call, `{ argv, env, cwd, stdin }`, made as execvp makes it, never as shell text; its exit is waitpid's code or signal.
+  - What the shell does itself stays in the session: builtins, functions, pipes and expansions. So `cd /computer/app && npm test | tail -5` starts two programs on the computer, joined by the session's pipe.
+  - Refusals follow bash: a start the machine refuses `ENOENT` is `name: command not found` (127); any other refusal, or an absent mount, is `name: <reason>` (126); Ctrl-C reaches the program as SIGINT (130).
+  - `type` and `command -v` report the machine's program.
+  - Node's `spawn`/`execFile` with such a cwd start Node's own argv there (`/bin/sh -c line` for `shell`), and a refused start is the `error` event with the machine's code.
+  - A namespace with no delegating mount places nothing and runs as before.
+- Security: every session trusts the TLS roots this deployment serves, at `/proc/nimbus/ca-certificates.crt` (read-only, generated from the build as the rest of /proc is), and CPython's and Ruby's OpenSSL read them through `SSL_CERT_FILE` unless a program names its own. The bundle is Mozilla's roots as of 2026-10-20 (curl.se's extract, pinned by sha256), which no longer trusts emSign ECC Root CA - G3 and so nothing on a path to the eMudhra intermediates whose keys were found compromised that day. Before, CPython verified against a copy staged with its runtime (Mozilla's roots of 2026-07-16), which accepted certificates those intermediates issued for any name, and a session kept its copy until it reinstalled the runtime. Updating the roots is now `bun scripts/update-ca-certificates.mjs <date> <sha256>` and a deploy.
+- Fixed: listing a session's processes (`listProcesses`,
+  `GET /api/processes`) waits until each dev server its previous
+  incarnation ran has its process again. Before, a listing right after a
+  restart could come before the restore, so a host could not tell "none
+  coming" from "not yet": Kinu failed a job whose server Nimbus then started
+  again, and the job's second start found its port taken. The listing waits
+  for the processes, not for their commands, so a command that never ends,
+  or one that lists what runs itself, does not hold it. A restored server's
+  ports and apps are listed as it starts, as at any start. Stopping a
+  restored process before its command has run ends the restore of it for
+  good. A listed process now also says which process it restarts
+  (`restartedFrom`), as `/api/processes` did.
+- Fixed: a WebAssembly program's or a worker's filesystem calls that cross to the session keep their options. Before, the hop dropped them, so:
+  - a write that makes its parent directories failed with ENOENT in a new directory;
+  - a write ignored the program's own umask;
+  - a write or read stating the revision it is of could overwrite or return a newer file instead of failing ESTALE;
+  - a read bounded to so many bytes read the whole file;
+  - a listing returned what it was asked to leave out.
+- Added: `tsc` works in a session with nothing installed. When no `node_modules/.bin` from the working directory up has a `tsc`, `tsc` and `tsrs` run tsrs, the Rust port of the TypeScript compiler built to WebAssembly: `@tsrs/wasm` 0.18.0-ts7.1.0-dev.20260929, which ports TypeScript 7.1.0-dev.20260929. It is experimental upstream (its diagnostics can come in a different order from tsc's). Nimbus serves it from its own assets, pinned by version and sha256, so the first `tsc` installs nothing. It type-checks and emits as tsc does, `--build` and incremental `.tsbuildinfo` included, with tsc's exit statuses (2 for type errors; 5 for a run that crashed, as on a stack overflow). It reads the project through the process's own copy of the filesystem, as every WASI program does, and runs on the session's warm workers. A project's own `typescript` still runs as installed. A `typescript` 7 project, whose compiler is a native binary that cannot run here, runs tsrs in its place, and a line says which compiler ran. `npx tsc` runs tsrs too; before, it installed npm's deprecated `tsc` package. `tsc --watch` exits 1: the wasm build has no watch mode, so install `typescript` in the project for it.
+- Changed: a session keeps as many idle warm workers per interpreter or tool (`python3`, `ruby`, `clang`, `wasm-ld`, `git`) as its runs of that tool had in flight at once, up to the platform's ten Dynamic Workers in flight per Durable Object. Before, it kept at most two, so a third concurrent `clang` or `python3` run loaded its image again every time.
+- Fixed: `git status` holds what its comparisons need of the worktree, not the worktree. Its one ordered scan of the tree is merged with the index as it goes, in the order both share, so only the directories it is in are held; its memory grows with the index alone. Before, status kept the whole scan (every entry's path, stat and listing row): about 0.6 KiB a file, 23 MiB more from 2,000 to 40,000 files, about 30 MiB on next.js's 34,000. Status also takes about a tenth less CPU on next.js's shape.
 - Changed: `SupervisorRPC` no longer links the npm engine. Every isolate
   of a Worker evaluates, as it starts, every module its exported classes
   link. `SupervisorRPC` linked the npm cache client, and through it core's

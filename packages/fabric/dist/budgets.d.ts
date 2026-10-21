@@ -27,13 +27,8 @@
  * loaded them, so a ledger that goes away with its host describes nothing
  * that still exists.
  */
-/**
- * Distinct Dynamic Workers one Durable Object may have with in-flight
- * requests at once, shared across all concurrent requests to that object;
- * multiple in-flight requests to one Dynamic Worker count once.
- * https://developers.cloudflare.com/changelog/post/2026-08-28-durable-objects-dynamic-workers-limit/
- */
-export declare const DO_DYNAMIC_WORKER_LIMIT = 10;
+import { DO_DYNAMIC_WORKER_LIMIT } from '@nimbus-sh/platform/limits.js';
+export { DO_DYNAMIC_WORKER_LIMIT };
 /**
  * Ends one hold, idempotently. Pass the error the call failed with, if it
  * did: a "Dynamic worker concurrency limit exceeded" refusal pauses the

@@ -229,7 +229,8 @@ export class ChildProcessManager {
         const dispatchReq = shellPlanFor(req) ? req : { ...req, command: normalizeChildCommand(req.command) };
         let runner;
         try {
-            runner = await this.deps.resolve(dispatchReq, { pid, cwd: req.cwd, env: childEnv });
+            // As the program named it: a host normalizes for its own lookup, a delegate's machine is handed the file.
+            runner = await this.deps.resolve(req, { pid, cwd: req.cwd, env: childEnv });
             if (!runner)
                 throw Object.assign(new Error(`spawn ${req.command} ENOENT`), { code: 'ENOENT', errno: -2, path: req.command });
         }
@@ -269,6 +270,12 @@ export class ChildProcessManager {
                 return;
             if (typeof result === 'number') {
                 this._stampExit(child, result, null);
+            }
+            else if ('signal' in result) {
+                if (result.signal === null)
+                    this._stampExit(child, result.code, null);
+                else
+                    this._stampExit(child, exitCodeForSignal(result.signal.replace(/^SIG/, '')), result.signal);
             }
             else if (!child.started) {
                 child.spawnError = result.code;
@@ -551,12 +558,14 @@ export class ChildProcessManager {
         // does not end a process (SIGCHLD, SIGSTOP), the probe 0, or a name no
         // signal has ends nothing here.
         const name = parseSignalName(String(signal));
-        if (name === null || name === '0' || signalDisposition(name) !== 'terminate')
+        if (name === null || name === '0')
             return false;
-        // One its program takes is its program's: the child runs on.
+        // One its program takes is its program's, whatever its default action: the child runs on.
         const sent = parseProcessSignalName(`SIG${name}`);
         if (sent !== null && this.deps.processes.deliverSignal(child.pid, sent))
             return true;
+        if (signalDisposition(name) !== 'terminate')
+            return false;
         child.killed = true;
         this.deps.terminate(child.pid, name);
         this._stampExit(child, exitCodeForSignal(name), `SIG${name}`); // 128+signo, as the shell reports it

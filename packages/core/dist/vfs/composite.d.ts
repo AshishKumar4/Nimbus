@@ -22,6 +22,7 @@
  */
 import type { Awaitable, Principal, SyncVFS, VFS, VfsCasResult, VfsCopyOptions, VfsCred, VfsDirent, VfsMountDescription, VfsRemoval, VfsRevision, VfsStat, VfsUsage, VfsViewOptions, VfsWriteObserver, VfsWriteWants } from './vfs.js';
 import type { RuntimeVfsStat, VfsAcquireOptions, VfsInvalidatedPath, VfsListEntry } from '../runtime/os-contracts.js';
+import { type ExecDelegate, type ProgramPlacement } from '../runtime/program-start.js';
 import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 import { type VfsEvent } from './events.js';
 import { type VfsErrorCode } from './vfs-error.js';
@@ -142,6 +143,13 @@ export interface MountOptions {
      * storage that is not the session's (another machine, a user's files).
      */
     removalCrosses?: boolean;
+    /**
+     * Programs started with their cwd under the mount run on the machine its
+     * files live on (Kinu ask 66): every program start (the shell's, execvp's,
+     * a node child's) is placed first (placeProgram), and one placed here is
+     * the delegate's to start, nothing of it run in the session.
+     */
+    exec?: ExecDelegate;
 }
 /** Options shared by `route` and `mutationRoute`. */
 export interface VfsRouteOptions {
@@ -343,6 +351,8 @@ interface Table {
     guard?: MutationGuard;
     /** Told of every mount and unmount (watchMounts). */
     moved?: () => void;
+    /** How many mounts carry an exec delegate: none, and no program start is placed (placesPrograms). */
+    delegates: number;
     /** Asked before a mount or unmount changes what a path routes to (guardRouting). */
     routing?: (point: string) => void;
 }
@@ -439,6 +449,18 @@ export declare class CompositeVFS implements VFS {
     mount(point: string, source: VfsSource, options?: MountOptions): void;
     /** The mount table's generation: it moves with every mount and unmount, in every view of this namespace. */
     mountGeneration(): number;
+    /** Whether a mount carries an exec delegate: in a namespace with none, every program runs here, nothing asked. */
+    placesPrograms(): boolean;
+    /**
+     * Where a program started with its cwd at `cwd` runs (MountOptions.exec),
+     * for this view's principal: by the mount the cwd is on, links into it
+     * followed, as every lookup finds it (route). A cwd the namespace cannot
+     * look up, in a namespace where a mount delegates, is refused with the
+     * lookup's failure (an absent mount's in its own words): where the walk
+     * stopped says nothing of where the cwd is, and a program is never run
+     * here in a machine's place.
+     */
+    placeProgram(cwd: string): Promise<ProgramPlacement>;
     unmount(point: string): void;
     /**
      * Every mutation that lands in this namespace, on any mount, reported
@@ -644,6 +666,8 @@ export declare class CompositeVFS implements VFS {
         report?: false;
     }): Promise<VfsRoute>;
     route(path: string, options?: VfsRouteOptions): Promise<VfsRoute | VfsRouteReport>;
+    /** route's lookup, recording in `trace` (when given) where it has reached, links followed. */
+    private routeWith;
     /**
      * The name `path` leads to now, for an open (PinnedName): links on the
      * way followed, the last only with `follow`. The open's decisions, and the

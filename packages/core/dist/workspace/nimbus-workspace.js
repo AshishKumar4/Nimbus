@@ -204,7 +204,7 @@ export class NimbusWorkspace {
                     throw new Error('Nimbus: workspace is not initialized');
                 return resolveWorkspaceChild(workspace, request, origin);
             },
-            terminate: (pid, signal) => processes.kill(pid, exitCodeForSignal(signal)),
+            terminate: (pid, signal) => processes.kill(pid, exitCodeForSignal(signal), signalAbortReason(signal)),
         });
         if (options.childProcesses)
             children.bindHost(options.childProcesses);

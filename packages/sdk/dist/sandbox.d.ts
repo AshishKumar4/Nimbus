@@ -416,6 +416,17 @@ export declare class NimbusSandbox {
                         longRunning: boolean;
                         attachedTty: boolean;
                         execId?: string | undefined;
+                        restartedFrom?: {
+                            pid: number;
+                            cause: "session-restart";
+                        } | {
+                            pid: number;
+                            cause: "exited";
+                            exitCode: number;
+                        } | {
+                            pid: number;
+                            cause: "host-reset";
+                        } | undefined;
                     };
                     ports: {
                         port: number;

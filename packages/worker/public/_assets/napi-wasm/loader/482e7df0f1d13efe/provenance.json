@@ -4,7 +4,7 @@
     "inputs": {
       "packages/core/src/runtime/wasi/filesystem.ts": "c943a545e7d39575af0a827fcfc2c9fb48089a6545351f60738ba0712847c663",
       "packages/core/src/vfs/dirent-type.ts": "f22395b71aab1211b5f55eded1f996c0719d05c1b838025fc3651ba61e253185",
-      "packages/core/src/vfs/vfs-error.ts": "0470e3d0a43c1b5c6f8b5daebeea895f6858307203a72f984fde4d6e01041008",
+      "packages/core/src/vfs/vfs-error.ts": "d2cd968ce3080d3792d028cf17ac000c1f48ca36be34454ac2111857a49983a6",
       "packages/core/src/vfs/vfs.ts": "a005a63f4ca0f75ec935f650dab084b34545af8e594cb65d7506b7edf0f29430",
       "packages/core/tsconfig.json": "6dc680d90729597ee71dcaf78368fceb9f44638d4e301811dd4cff58bdb9b62f",
       "packages/platform/src/lexical-path.ts": "cf6c5834a0e850007f9289347c79c67a2902bc7daad5711337f1565da3000b2e",
@@ -47,9 +47,9 @@
       "bun.lock#@esbuild/win32-x64": "fab96a9b3da5d6d290e01b96354bf5059b42ce1faade63672fed0084ec14c231",
       "bun.lock#esbuild": "add5ecc823d2dd6f81362b09025f25d76ab708b382ff33103bd0314cb655dee7",
       "package.json": "a0d482519e26833358f20cc67a3d24067c15c173e0c0c753423d415a62aa483a",
-      "packages/core/package.json": "bb11fb4f145206a54c6a419f043c0b570c1ed64352c0e09a6e314e956cd3504c",
+      "packages/core/package.json": "1a93dd713a39bd5a5b541e54431c577e73a84872179a7900a1591cf7333934f7",
       "packages/platform/package.json": "a747888a19282e5bcd5b014c8bbcba11b6ccf1570f52d4a80e6cd2b2d964f38f",
-      "packages/worker/package.json": "780394e6b45c2aae8d45e03c3bbda1aff8bc81546280fc19f7fc5ee3f6a039b0"
+      "packages/worker/package.json": "bcce229022c2002129f83c567dfb39de0ba46990cf877e39efd6eec554d6fedf"
     },
     "graph": [
       "packages/core/src/runtime/wasi/filesystem.ts",

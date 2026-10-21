@@ -39,7 +39,7 @@ import { onColdStart } from '@nimbus-sh/fabric/generation.js';
 import { removeLegacyGeneratedImages } from '../facets/legacy-images.js';
 import { hostNamespaceBinding } from '@nimbus-sh/fabric/host-dispatch.js';
 import type { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
-import { restoreDevServers, type DevServerRestoreHost } from '../session/dev-servers.js';
+import { devServersRespawned, restoreDevServers, type DevServerRestoreHost } from '../session/dev-servers.js';
 import type { ProcessEnvHooks } from '../session/process-env.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 
@@ -229,8 +229,7 @@ class RuntimeOwner {
   ensureSqliteFs() { return this.sqliteFs; }
   /** What restoring the dev servers reads of this runtime: its readiness short of the login files, which may wait on the restore. */
   private devServerHost: DevServerRestoreHost | null = null;
-  /** The dev servers the previous incarnation ran, started again once (dev-servers.ts). */
-  restoreDevServers() {
+  private get devServers(): DevServerRestoreHost {
     const owner = this;
     this.devServerHost ??= {
       ctx: this.ctx,
@@ -240,7 +239,15 @@ class RuntimeOwner {
       processEnv: this.processEnv,
       ensureRuntimeReady: () => this.ensureUsable(),
     };
-    return restoreDevServers(this.devServerHost);
+    return this.devServerHost;
+  }
+  /** The dev servers the previous incarnation ran, started again once (dev-servers.ts). */
+  restoreDevServers() {
+    return restoreDevServers(this.devServers);
+  }
+  /** Their processes spawned again (dev-servers.ts): what a listing of what runs waits on. */
+  devServersRespawned() {
+    return devServersRespawned(this.devServers);
   }
   routeLoopback(port: number, request: Request) {
     return routeRuntimeLoopback(this.portRegistry, port, request, (dark) => this.ensureFacetManager().manager.ensureDurableAppOnPort(dark));

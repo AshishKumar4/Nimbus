@@ -1,3 +1,12 @@
+/**
+ * /proc: files generated when read, for the principal reading them.
+ *
+ * Synchronous and read-only. A file is a generator from the reading
+ * principal's credential to text; `register` adds or replaces one, and
+ * `name` may be nested (`net/info`), which makes its directories. Nothing
+ * here is stored, so nothing here has a revision: a cache never holds it.
+ */
+import { CA_CERTIFICATES_PEM } from './ca-certificates.generated.js';
 import { syscallError } from './vfs-error.js';
 import { posixAccess } from './posix-access.js';
 const enc = new TextEncoder();
@@ -33,12 +42,13 @@ export class ProcVFS {
                 return true;
         return false;
     }
+    /** The file's content: text made for this read, or bytes shared with every read, which are not the caller's to change. */
     generate(path) {
         const k = key(path);
         const generator = this.files.get(k);
         if (generator === undefined)
             throw syscallError(this.isDir(k) ? 'EISDIR' : 'ENOENT', 'open', path);
-        return enc.encode(generator(this.cred));
+        return generator(this.cred);
     }
     stat(path) {
         const k = key(path);
@@ -46,10 +56,13 @@ export class ProcVFS {
             return DIR;
         if (!this.files.has(k))
             return null;
-        return { size: this.generate(path).length, mtimeMs: Date.now(), ...FILE };
+        const content = this.generate(path);
+        return { size: typeof content === 'string' ? enc.encode(content).length : content.length, mtimeMs: Date.now(), ...FILE };
     }
     readFile(path) {
-        return this.generate(path);
+        const content = this.generate(path);
+        // Shared bytes are copied, so no reader changes them for the next.
+        return typeof content === 'string' ? enc.encode(content) : content.slice();
     }
     /** Its files are root's, 0444, its directories 0555: a credential asks them by their mode (the embedder's view is not judged). */
     access(path, mode) {
@@ -61,7 +74,8 @@ export class ProcVFS {
             throw syscallError('EACCES', 'open', path);
     }
     readRange(path, offset, length) {
-        return this.generate(path).slice(offset, offset + length);
+        const content = this.generate(path);
+        return (typeof content === 'string' ? enc.encode(content) : content).slice(offset, offset + length);
     }
     readdir(path) {
         const k = key(path);
@@ -92,9 +106,21 @@ export class ProcVFS {
     }
 }
 /**
- * The /proc every workspace has: cpuinfo, meminfo, uptime, version and
- * net/info. ProcessFiles adds `mounts`, and a host adds its own with
- * `register`.
+ * The trust store: the TLS roots this build serves (Mozilla's, pinned by
+ * scripts/update-ca-certificates.mjs). Generated here rather than kept in a
+ * session, so every session trusts what the deployed Nimbus trusts, and a
+ * root Mozilla distrusts leaves every session with the next deploy (a copy
+ * staged in a session would keep it). CPython's and Ruby's OpenSSL read it
+ * through SSL_CERT_FILE (interpreter-env.ts): their default paths are their
+ * build machine's.
+ */
+export const CA_CERTIFICATES_FILE = '/proc/nimbus/ca-certificates.crt';
+/** Its bytes, encoded once per isolate: CPython reads the file for every TLS connection it makes. */
+const CA_CERTIFICATES = enc.encode(CA_CERTIFICATES_PEM);
+/**
+ * The /proc every workspace has: cpuinfo, meminfo, uptime, version,
+ * net/info and the trust store. ProcessFiles adds `mounts`, and a host adds
+ * its own with `register`.
  */
 export function standardProc() {
     const proc = new ProcVFS();
@@ -125,6 +151,7 @@ export function standardProc() {
         return `${seconds} ${seconds}\n`;
     });
     proc.register('version', () => `Lifo 1.0.0 (${typeof navigator !== 'undefined' ? navigator.userAgent : 'Node.js'})\n`);
+    proc.register(CA_CERTIFICATES_FILE.slice('/proc/'.length), () => CA_CERTIFICATES);
     proc.register('net/info', () => {
         const conn = typeof navigator !== 'undefined'
             ? navigator.connection

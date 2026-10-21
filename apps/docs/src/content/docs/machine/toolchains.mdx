@@ -5,8 +5,8 @@ description: The exact runtime and package support for Node, Bun, Python, Ruby, 
 
 import NimbusSandbox from '../../../components/NimbusSandbox.astro';
 
-A session ships five toolchains: `node`, `bun`, `python`, `ruby`, and
-`clang`. Compile and run C without leaving the shell.
+A session ships six toolchains: `node`, `bun`, `python`, `ruby`, `clang`,
+and `tsc`. Compile and run C without leaving the shell.
 
 ```bash
 $ cat > hello.c <<'EOF'
@@ -28,6 +28,19 @@ against. Nimbus runs pthread programs correctly. To run one, build it
 with a full wasi-sdk and the futex shim from
 [the design note](https://github.com/AshishKumar4/Nimbus/blob/main/docs/wasi-threads.md),
 then run the `.wasm` in a session.
+
+`tsc` type-checks and compiles TypeScript with nothing installed. When no
+`node_modules/.bin` from the working directory up has a `tsc`, `tsc` (and
+`tsrs`) run tsrs 0.18.0, the experimental Rust port of TypeScript 7.1
+(7.1.0-dev.20260929) built to WebAssembly. It checks and emits as `tsc` does,
+including `--build` and incremental `.tsbuildinfo`, but has no `--watch`. A
+project that installs `typescript` runs its own; a `typescript` 7 runs
+tsrs instead, because its compiler is a native binary.
+
+```bash
+$ tsc --noEmit
+src/bad.ts(1,14): error TS2322: Type 'string' is not assignable to type 'number'.
+```
 
 Package installers check the ABI:
 

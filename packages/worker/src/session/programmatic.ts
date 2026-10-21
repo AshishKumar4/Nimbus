@@ -77,6 +77,8 @@ interface ProgrammaticViteServer {
 export interface ProgrammaticHost extends TimerHost {
   readonly runtimeManager: RuntimeManager;
   ensureRuntimeReady(): Promise<void>;
+  /** This incarnation's restore of the dev servers its previous one ran, their processes spawned again (session/dev-servers.ts). */
+  devServersRespawned(): Promise<void>;
   /** The destroy running (rpcDestroy), until it is answered. */
   destroying?: Promise<SessionDestroyResult> | null;
   _w1SessionDestroyed: boolean;
@@ -659,6 +661,11 @@ export async function rpcListRuntimes(self: ProgrammaticHost): Promise<SessionRe
 
 export async function rpcListProcesses(self: ProgrammaticHost): Promise<SessionProcess[]> {
   await ensureProgrammaticReady(self);
+  // Every process this incarnation's restore runs again is in the table: a
+  // host's recovery asks once, and must not read "not yet" as "none coming"
+  // (Kinu ask 65). Its ports and apps come as each server starts, as a
+  // server's do at any start.
+  await self.devServersRespawned();
   return self.processes.publishedAll().map((p: ProcessEntry) => serializeProcess(p)!);
 }
 
@@ -1510,6 +1517,7 @@ function serializeProcess(p: ProcessEntry | undefined): SessionProcess | null {
     longRunning: p.longRunning === true,
     attachedTty: p.attachedTty === true,
     ...execIdField(p),
+    ...(p.restartedFrom === undefined ? {} : { restartedFrom: p.restartedFrom }),
   };
 }
 

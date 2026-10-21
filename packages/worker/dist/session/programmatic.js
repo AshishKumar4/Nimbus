@@ -471,6 +471,11 @@ export async function rpcListRuntimes(self) {
 }
 export async function rpcListProcesses(self) {
     await ensureProgrammaticReady(self);
+    // Every process this incarnation's restore runs again is in the table: a
+    // host's recovery asks once, and must not read "not yet" as "none coming"
+    // (Kinu ask 65). Its ports and apps come as each server starts, as a
+    // server's do at any start.
+    await self.devServersRespawned();
     return self.processes.publishedAll().map((p) => serializeProcess(p));
 }
 /** The session's terminals: its own first (`name: null`), then the named ones by name. */
@@ -1321,6 +1326,7 @@ function serializeProcess(p) {
         longRunning: p.longRunning === true,
         attachedTty: p.attachedTty === true,
         ...execIdField(p),
+        ...(p.restartedFrom === undefined ? {} : { restartedFrom: p.restartedFrom }),
     };
 }
 function serializePort(self, p) {

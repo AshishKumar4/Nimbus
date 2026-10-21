@@ -35,6 +35,20 @@ const OpenOptions = z.object({
 const ReopenTarget = z.object({ handle: z.number().int() });
 /** A byte offset into a file: what a ranged write may start at. */
 const RangeOffset = z.number().int().nonnegative();
+/** A call's own options, as each bridge method declares them; what the binding carries (a mutation lease) is never a process's to name. */
+const FollowOptions = z.object({ followSymlinks: z.boolean().optional() }).optional();
+const Revision = z.number().int().nonnegative();
+const WriteFileOptions = z.object({ createParents: z.boolean().optional(), expectedRevision: Revision.optional(), umask: z.number().int().nonnegative().max(0o777).optional() }).optional();
+const WriteRangeOptions = z.object({ createParents: z.boolean().optional(), expectedRevision: Revision.optional() }).optional();
+const ReadFileOptions = z.object({
+  followSymlinks: z.boolean().optional(), cached: z.boolean().optional(),
+  maxBytes: z.number().int().nonnegative().optional(), contentKey: z.string().optional(),
+}).optional();
+const ReadOptions = z.object({
+  followSymlinks: z.boolean().optional(), cached: z.boolean().optional(),
+  expectedEpoch: z.string().optional(), expectedRevision: Revision.optional(),
+  expectedFile: z.object({ dev: z.number(), ino: z.number(), size: z.number(), mtime: z.number(), ctime: z.number(), revision: z.number() }).optional(),
+}).optional();
 /** What `deliverOnce` carries besides the mutation's args; its op is checked against the delivered set. */
 const Delivery = z.object({ op: z.string(), id: z.string().uuid(), hostIncarnation: z.string().uuid() });
 /** A read id, minted like a delivery id (SupervisorRPC `_fsRead`). */
@@ -311,7 +325,7 @@ export const SUPERVISOR_OP_ROUTES: Readonly<Record<Exclude<SupervisorOpName, Nat
   setUmask: { method: '_rpcSetUmask', args: [0,'pid'] },
   fsAcquire: { method: '_rpcFsAcquire', args: [0,1,2,'pid'] },
   fsAcquired: { method: '_rpcFsAcquired', args: [0,1,2,'pid'] },
-  fsList: { method: '_rpcFsList', args: [0,1,'pid'] },
+  fsList: { method: '_rpcFsList', args: [0,1,2,'pid'] },
   fsListTree: { method: '_rpcFsListTree', args: [0,1,'pid'] },
   fsStorageGrant: { method: '_rpcFsStorageGrant', args: [0,1,2,'pid'] },
   wsOpen: { method: '_rpcWsOpen', args: [0,1,2,3,'pid'] },
@@ -377,18 +391,19 @@ const fsFor = (e: SupervisorOpEnvelope, tools: SupervisorOpTools): RuntimeFsBrid
 const leaseOf = (e: SupervisorOpEnvelope): RuntimeMutationOwner | undefined =>
   e.mutationOwner === undefined ? undefined : { mutationOwner: e.mutationOwner };
 
-/** A whole-file read, leased for what the file holds. */
-async function readWholeFile(e: SupervisorOpEnvelope, t: SupervisorOpTools, path: RuntimeFsPath): Promise<Uint8Array | null> {
+/** A whole-file read, leased for what the file it reads holds: the file a link leads to, whatever the read's options. */
+async function readWholeFile(e: SupervisorOpEnvelope, t: SupervisorOpTools, path: RuntimeFsPath, options?: z.infer<typeof ReadFileOptions>): Promise<Uint8Array | null> {
   const fs = fsFor(e, t);
   const stat = await fs.stat(path);
   if (!stat) return null;
-  return readHydrating(t.hydrated, () => t.readLease(stat.size, () => Promise.resolve(fs.readFile(path)), e.pid));
+  return readHydrating(t.hydrated, () => t.readLease(stat.size, () => Promise.resolve(fs.readFile(path, options)), e.pid));
 }
 
-/** A range read, leased for what the range can return rather than what it asks. */
-async function readRange(e: SupervisorOpEnvelope, t: SupervisorOpTools, options: { cached?: boolean }): Promise<Uint8Array | null> {
+/** A range read (its options the call's, `cached` the op's where it names one), leased for what the range can return rather than what it asks. */
+async function readRange(e: SupervisorOpEnvelope, t: SupervisorOpTools, op: { cached?: boolean }): Promise<Uint8Array | null> {
   const fs = fsFor(e, t);
   const path = stringArg(e, 0), offset = numberArg(e, 1), length = numberArg(e, 2);
+  const options = { ...ReadOptions.parse(e.args?.[3]), ...op };
   const stat = await fs.stat(path);
   const available = stat ? Math.max(0, Math.min(length, stat.size - offset)) : 0;
   return readHydrating(t.hydrated, () => t.readLease(available, () => Promise.resolve(fs.readRange(path, offset, length, options)), e.pid));
@@ -452,18 +467,18 @@ const NATIVE_OPS = {
   fsRecalled: (e, t) => fsFor(e, t).recalled(stringArg(e, 0), z.enum(['share', 'revoke']).parse(e.args?.[1])),
   // Its held writes published, before an effect of its goes out past the session's gate.
   fsPublished: (e, t) => fsFor(e, t).published(z.object({ escape: z.boolean().optional() }).optional().parse(e.args?.[0])),
-  readFileBytes: (e, t) => readWholeFile(e, t, FsPath.parse(e.args?.[0])),
-  stat: (e, t) => fsFor(e, t).stat(FsPath.parse(e.args?.[0]), z.object({ followSymlinks: z.boolean().optional() }).optional().parse(e.args?.[1])),
+  readFileBytes: (e, t) => readWholeFile(e, t, FsPath.parse(e.args?.[0]), ReadFileOptions.parse(e.args?.[1])),
+  stat: (e, t) => fsFor(e, t).stat(FsPath.parse(e.args?.[0]), FollowOptions.parse(e.args?.[1])),
   lstat: (e, t) => fsFor(e, t).stat(stringArg(e, 0), { followSymlinks: false }),
   exists: async (e, t) => (await fsFor(e, t).stat(stringArg(e, 0))) !== null,
-  readdir: (e, t) => fsFor(e, t).readdir(FsPath.parse(e.args?.[0])),
+  readdir: (e, t) => fsFor(e, t).readdir(FsPath.parse(e.args?.[0]), FollowOptions.parse(e.args?.[1])),
   readlink: (e, t) => fsFor(e, t).readlink(FsPath.parse(e.args?.[0])),
   fsLinkLeadsTo: (e, t) => fsFor(e, t).linkLeadsTo(stringArg(e, 0), stringArg(e, 1)),
   fsReadRange: (e, t) => readRange(e, t, {}),
   // Boot-spec members only: a 34 MiB image read through the LRU would evict the session's hot set.
   fsReadRangeUncached: (e, t) => readRange(e, t, { cached: false }),
   fsRevision: (e, t) => fsFor(e, t).revision(e.args?.[0] === undefined ? undefined : stringArg(e, 0)),
-  writeFile: (e, t) => fsFor(e, t).writeFile(FsPath.parse(e.args?.[0]), contentArg(e, 1)),
+  writeFile: (e, t) => fsFor(e, t).writeFile(FsPath.parse(e.args?.[0]), contentArg(e, 1), WriteFileOptions.parse(e.args?.[2])),
   // writeFile, answering with the path's own stat as the write left it: a
   // process keeps that stat for its sync view, and asked for it in a second
   // call before (node-shims _writeFileAsync). The write is committed before
@@ -488,11 +503,11 @@ const NATIVE_OPS = {
   rename: (e, t) => fsFor(e, t).rename(FsPath.parse(e.args?.[0]), FsPath.parse(e.args?.[1]), leaseOf(e)),
   symlink: (e, t) => fsFor(e, t).symlink(stringArg(e, 0), FsPath.parse(e.args?.[1])),
   access: (e, t) => fsFor(e, t).access(FsPath.parse(e.args?.[0]), numberArg(e, 1)),
-  chown: (e, t) => fsFor(e, t).chown(FsPath.parse(e.args?.[0]), nullableNumberArg(e, 1), nullableNumberArg(e, 2), z.object({ followSymlinks: z.boolean().optional() }).optional().parse(e.args?.[3])),
+  chown: (e, t) => fsFor(e, t).chown(FsPath.parse(e.args?.[0]), nullableNumberArg(e, 1), nullableNumberArg(e, 2), FollowOptions.parse(e.args?.[3])),
   chmod: (e, t) => fsFor(e, t).chmod(FsPath.parse(e.args?.[0]), numberArg(e, 1)),
-  utimes: (e, t) => fsFor(e, t).utimes(FsPath.parse(e.args?.[0]), timeArg(e, 1), timeArg(e, 2), z.object({ followSymlinks: z.boolean().optional() }).optional().parse(e.args?.[3])),
-  fsTruncate: (e, t) => fsFor(e, t).truncate(FsPath.parse(e.args?.[0]), numberArg(e, 1), leaseOf(e)),
-  fsWriteRange: (e, t) => fsFor(e, t).writeRange(FsPath.parse(e.args?.[0]), RangeOffset.parse(e.args?.[1]), writeRangeBytesArg(e, 2), leaseOf(e)),
+  utimes: (e, t) => fsFor(e, t).utimes(FsPath.parse(e.args?.[0]), timeArg(e, 1), timeArg(e, 2), FollowOptions.parse(e.args?.[3])),
+  fsTruncate: (e, t) => fsFor(e, t).truncate(FsPath.parse(e.args?.[0]), numberArg(e, 1), { ...FollowOptions.parse(e.args?.[2]), ...leaseOf(e) }),
+  fsWriteRange: (e, t) => fsFor(e, t).writeRange(FsPath.parse(e.args?.[0]), RangeOffset.parse(e.args?.[1]), writeRangeBytesArg(e, 2), { ...WriteRangeOptions.parse(e.args?.[3]), ...leaseOf(e) }),
   // The decode-drain clock starts when the envelope arrives, not when the
   // store first reads it. A fenced wave commits only while its writer's
   // epoch is open on this instance and no newer attempt of it was admitted

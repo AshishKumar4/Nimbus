@@ -422,7 +422,7 @@ class FindRun {
       ended = await this.ctx.runAs(this.ctx.cred, argv, { parent: { ...this.ctx, cwd: directory } });
     } catch (error) {
       if (!isVfsError(error) || error.syscall !== 'execvp') throw error;
-      await this.diagnose(`${quote(argv[0] ?? '')}: ${VFS_STRERROR[error.code]}`);
+      await this.diagnose(`${quote(argv[0] ?? '')}: ${error.detail ?? VFS_STRERROR[error.code]}`);
       return { status: 1, signal: null };
     }
     if (ended.signal !== null) await this.diagnose(`${quote(argv[0] ?? '')} terminated by signal ${ended.status - 128}`);

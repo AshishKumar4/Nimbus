@@ -35,8 +35,15 @@ export declare function supervisorAnswer(call: () => unknown): Promise<Superviso
  * A same-isolate supervisor is handed back as is: its refusals are thrown in
  * this isolate and cross nothing. The call's value is handed on and its
  * envelope released.
+ *
+ * `live` is told of each filesystem call as it is made, with the call in
+ * flight: a program's liveness counts it as work it waits on, whoever made
+ * it, its own fs or the filesystem that answers for it (a store's fills,
+ * listings and grants), until the session answers. A call that waits on the
+ * session for as long as it likes is not told: a grant's recall poll (the
+ * table's `waits`); stdin and a socket's poll are not filesystem calls.
  */
-export declare function answeringSupervisor<T extends object>(supervisor: T): T;
+export declare function answeringSupervisor<T extends object>(supervisor: T, live?: (call: Promise<unknown>) => unknown): T;
 /**
  * Installs {@link answeringSupervisor} as `globalThis.__nimbusAnsweringSupervisor`,
  * for the facet bodies that are generated text and take it spliced in

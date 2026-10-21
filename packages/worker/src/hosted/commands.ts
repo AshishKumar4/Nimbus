@@ -27,6 +27,7 @@ import { makeInteractive, type NamedTerminals } from '../session/named-terminals
 import { registerShellEntrypointCommands, type ShellEntrypointExecutor } from '@nimbus-sh/core/shell/shell-entrypoints.js';
 import { makeChshCommand } from '@nimbus-sh/core/substrate/lifo/shell/default-shell.js';
 import { installNpmBinFallbackResolver } from '../shell/npm-bin-entrypoints.js';
+import { tsrsImage, tsrsPrograms } from '../runtime/tsrs.js';
 import { createNpmInstallPort } from '../session/npm-install-port.js';
 import { createRuntimeCommandHintResolver } from '../runtime/package-manager.js';
 import { rpcExposeApp, rpcListApps, rpcRemoveApp, rpcRotateLink } from '../session/programmatic.js';
@@ -1151,6 +1152,21 @@ const shellExecuteTracked = async (
   return handedOffToLongRunningFacet ? 'resident' : exitCode;
 };
 const runtimeCommandHint = createRuntimeCommandHintResolver(self.env as any);
+// tsc and tsrs, when the project has no TypeScript of its own (runtime/tsrs.ts):
+// one command per session, which holds the session's warm tsrs workers.
+let tsrsCommand: Promise<(binName: string) => Command> | null = null;
+const tsrs = (binName: string): Command => async (ctx) => {
+  tsrsCommand ??= (async () => {
+    const { makeTsrsCommand } = await import('@nimbus-sh/core/runtime/tsrs-runner.js');
+    const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
+    return makeTsrsCommand({
+      facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem, processes: self.processes,
+      session: self.ctx.id.toString(), image: () => tsrsImage(self.env),
+    });
+  })().catch((error) => { tsrsCommand = null; throw error; });
+  return await (await tsrsCommand)(binName)(ctx);
+};
+const ownPrograms = tsrsPrograms(tsrs);
 installNpmBinFallbackResolver(registry, {
   filesystem: workspace.filesystem,
   getCwd: () => shell?.getCwd() || '/home/user',
@@ -1168,6 +1184,7 @@ installNpmBinFallbackResolver(registry, {
   emitShellExecDone: (pid, command, exitCode, durationMs) => {
     try { self._emitShellExecDone(pid, command, exitCode, durationMs); } catch {}
   },
+  ownPrograms,
 });
 
 // Register core npm — the install work itself goes through the port,
@@ -1269,8 +1286,11 @@ registry.register('npx', async (ctx: any) => {
   }
   const cmd = invocation.command;
 
-  // Check if it's a built-in command (vite, esbuild, etc.)
-  const resolved = cmd ? await registry.resolve(cmd, resolveContext(ctx.cwd, ctx.env, ctx.vfs)) : null;
+  // Check if it's a built-in command (vite, esbuild, etc.). A package npx is
+  // asked for by name is installed, never stood in for by Nimbus's own
+  // program for a name it lacks (tsc).
+  const asked = invocation.packageOverride !== null && cmd !== null && ownPrograms.names.has(cmd);
+  const resolved = cmd && !asked ? await registry.resolve(cmd, resolveContext(ctx.cwd, ctx.env, ctx.vfs)) : null;
   if (resolved) {
     return await resolved({ ...ctx, args: invocation.args });
   }

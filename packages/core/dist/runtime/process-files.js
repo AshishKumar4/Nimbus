@@ -14,6 +14,7 @@
  * It implements the process-binding contract (NimbusFilesystemAuthority),
  * which every consumer (supervisor RPC, facets, runners) already speaks.
  */
+import { LOCAL_PLACEMENT } from './program-start.js';
 import { isPendingChunkError, listPageBudget } from '../vfs/sqlite-vfs.js';
 import { linkedSignal } from './wave-contracts.js';
 import { namespaceWaveRouter } from './wave-router.js';
@@ -635,6 +636,9 @@ export class ProcessFiles {
         return { lost };
     }
     /** The mounts `cred` sees, root first: what df, mount and `/proc/mounts` list. */
+    placeProgram(cred, cwd) {
+        return this.vfs.placesPrograms() ? this.vfs.as(immutableCredential(cred)).placeProgram(cwd) : LOCAL_PLACEMENT;
+    }
     mounts(cred) {
         const engine = this.engine;
         return this.vfs.as(immutableCredential(cred)).mounts().map((mount) => {

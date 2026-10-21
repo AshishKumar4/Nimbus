@@ -98,6 +98,7 @@ export declare const RESIDENT_KEEPALIVE_DETACHED_MS = 60000;
  */
 export declare const WS_ATTACHMENT_LIMIT_BYTES = 16384;
 export declare const MAX_RPC_SAFE_PAYLOAD_BYTES: number;
+export declare const DO_DYNAMIC_WORKER_LIMIT = 10;
 export declare const ONE_SHOT_MODULE_MAP_MAX_BYTES: number;
 export declare const SUPERVISOR_HEAP_CEILING_BYTES: number;
 export declare const FACET_OWN_WRITE_MEMORY_BYTES: number;
