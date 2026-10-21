@@ -95,7 +95,7 @@ try {
     assert.equal(called, false, 'never in its caller\'s turn');
     assert.equal(await read, 'hello');
     const missing = await failure(() => fsPromises.readFile('nope.txt'));
-    assert.deepEqual([missing.code, missing.syscall, missing.path], ['ENOENT', 'open', `${cwd}/nope.txt`]);
+    assert.deepEqual([missing.code, missing.syscall, missing.path], ['ENOENT', 'open', 'nope.txt'], 'named as given, as Node names it');
     await fsPromises.mkdir('d/e', { recursive: true });
     assert.deepEqual(await fsPromises.readdir('d'), ['e']);
     assert.equal((await failure(() => fsPromises.unlink('d'))).code, 'EISDIR');
@@ -105,7 +105,7 @@ try {
 
   await check('a *Sync call cannot wait', async () => {
     const read = await failure(async () => fs.readFileSync('a.txt'));
-    assert.deepEqual([read.code, read.syscall, read.path], ['EAGAIN', 'open', `${cwd}/a.txt`]);
+    assert.deepEqual([read.code, read.syscall, read.path], ['EAGAIN', 'open', 'a.txt']);
     assert.match(read.message, /readFileSync cannot wait.*fs\.readFile/, read.message);
     assert.equal((await failure(async () => fs.writeFileSync('w.txt', 'x'))).code, 'EAGAIN');
     assert.equal(await box.files.exists(`${cwd}/w.txt`), false, 'a refused writeFileSync wrote nothing');

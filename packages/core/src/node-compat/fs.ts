@@ -26,7 +26,7 @@ import {
   validateInt32,
 } from '../_shared/node-arguments.js';
 import type { NodeFaces, NodeWatch } from './faces.js';
-import { lacks, runAsync, runSync, step, type Op, type Stepping } from './drive.js';
+import { lacks, runAsync, runSync, step, type Named, type Op, type Stepping } from './drive.js';
 
 export interface FSWatcher extends EventEmitter {
   close(): void;
@@ -104,7 +104,8 @@ function toNodeStat(stat: VfsStat): NodeStat {
     rdev: 0,
     size: stat.size,
     blksize: 4096,
-    blocks: Math.ceil(stat.size / 512),
+    // 512-byte blocks, allocated 4096 at a time, as a Linux filesystem reports them.
+    blocks: Math.ceil(stat.size / 4096) * 8,
     atimeMs: stat.atime,
     mtimeMs: stat.mtime,
     ctimeMs: stat.ctime,
@@ -161,6 +162,12 @@ function pathText(p: string | URL | Uint8Array): string {
 
 function resolvePath(cwd: string, p: string | URL | Uint8Array): string {
   return operandPath(cwd, pathText(p));
+}
+
+/** `p` as the face takes it, and as it was given: a failure names it as given, as Node's does. */
+function namedPath(cwd: string, p: string | URL | Uint8Array): Named {
+  const given = pathText(p);
+  return { abs: operandPath(cwd, given), given };
 }
 
 /** A truncate length as Node takes one (validateInteger, a safe integer), a negative one 0; none is 0. */
@@ -247,7 +254,7 @@ export function createNodeFs(faces: NodeFaces, { cwd, stdin, reachStreams }: Nod
         }
         return;
       }
-      runAsync(faces, op()).then((result) => ({ result }), (error: unknown) => ({ error })).then((outcome) => {
+      new Promise<T>((resolve) => { resolve(runAsync(faces, op())); }).then((result) => ({ result }), (error: unknown) => ({ error })).then((outcome) => {
         if (!('error' in outcome)) {
           cb(null, outcome.result);
           return;
@@ -302,15 +309,16 @@ export function createNodeFs(faces: NodeFaces, { cwd, stdin, reachStreams }: Nod
       const bytes = Buffer.concat(parts);
       return encoding ? new TextDecoder().decode(bytes) : bytes;
     }
-    const abs = resolvePath(cwd, path);
+    const at = namedPath(cwd, path);
+    const abs = at.abs;
     try {
       if (encoding) {
-        return yield* step('open', abs, (f) => f.readFileString(abs));
+        return yield* step('open', at, (f) => f.readFileString(abs));
       }
       // Return Buffer (not raw Uint8Array) so .toString() yields UTF-8 text.
       // Many packages do JSON.parse(fs.readFileSync('package.json')) without
       // encoding, expecting Buffer.toString() to return the file contents.
-      const raw = yield* step('open', abs, (f) => f.readFile(abs));
+      const raw = yield* step('open', at, (f) => f.readFile(abs));
       return Buffer.from(raw);
     } catch (e) {
       // Node opens a directory, then fails to read it: the error is read's,
@@ -321,53 +329,54 @@ export function createNodeFs(faces: NodeFaces, { cwd, stdin, reachStreams }: Nod
   }
 
   function* writeFileOp(path: string | URL, data: string | Uint8Array): Op<void> {
-    const abs = resolvePath(cwd, path);
-    yield* step('open', abs, (f) => f.writeFile(abs, data));
+    const at = namedPath(cwd, path);
+    yield* step('open', at, (f) => f.writeFile(at.abs, data));
   }
 
   function* appendFileOp(path: string | URL, data: string | Uint8Array): Op<void> {
-    const abs = resolvePath(cwd, path);
-    yield* step('open', abs, (f) => {
-      if (f.appendFile === undefined) throw lacks('open', abs);
-      return f.appendFile(abs, data);
+    const at = namedPath(cwd, path);
+    yield* step('open', at, (f) => {
+      if (f.appendFile === undefined) throw lacks('open', at.given);
+      return f.appendFile(at.abs, data);
     });
   }
 
   function* existsOp(path: string | URL): Op<boolean> {
-    const abs = resolvePath(cwd, path);
-    return yield* step('access', abs, (f) => f.exists(abs));
+    const at = namedPath(cwd, path);
+    return yield* step('access', at, (f) => f.exists(at.abs));
   }
 
   function* statOp(path: string | URL): Op<NodeStat> {
-    const abs = resolvePath(cwd, path);
-    return toNodeStat(yield* step('stat', abs, (f) => f.stat(abs)));
+    const at = namedPath(cwd, path);
+    return toNodeStat(yield* step('stat', at, (f) => f.stat(at.abs)));
   }
 
   function* lstatOp(path: string | URL): Op<NodeStat> {
-    const abs = resolvePath(cwd, path);
-    return toNodeStat(yield* step('lstat', abs, (f) => f.lstat(abs)));
+    const at = namedPath(cwd, path);
+    return toNodeStat(yield* step('lstat', at, (f) => f.lstat(at.abs)));
   }
 
   function* mkdirOp(path: string | URL, options?: { recursive?: boolean; mode?: number | string | null } | number | string | null): Op<void> {
-    const abs = resolvePath(cwd, path);
+    const at = namedPath(cwd, path);
     // Node's: a mode in options is checked as given (null is refused), none is 0o777.
     const opts = typeof options === 'object' && options !== null ? options : null;
     const mode = opts === null ? parseFileMode(options, 'mode', 0o777) : opts.mode === undefined ? 0o777 : parseFileMode(opts.mode, 'options.mode');
-    yield* step('mkdir', abs, (f) => {
-      if (f.mkdir === undefined) throw lacks('mkdir', abs);
-      return f.mkdir(abs, { recursive: opts?.recursive, mode });
+    yield* step('mkdir', at, (f) => {
+      if (f.mkdir === undefined) throw lacks('mkdir', at.given);
+      return f.mkdir(at.abs, { recursive: opts?.recursive, mode });
     });
   }
 
   function* readdirOp(path: string | URL, options?: { encoding?: string; withFileTypes?: boolean }): Op<string[] | Dirent[]> {
-    const abs = resolvePath(cwd, path);
-    const entries = yield* step('scandir', abs, (f) => f.readdir(abs));
+    const at = namedPath(cwd, path);
+    const abs = at.abs;
+    const entries = yield* step('scandir', at, (f) => f.readdir(abs));
     if (!options?.withFileTypes) return entries.map((e) => e.name);
     // d_type, or where the backend cannot say, lstat's.
     const dirents: Dirent[] = [];
     for (const e of entries) {
       const entry = resolvePath(abs, e.name);
-      const holds = DIRENT_TYPES[e.type === 'unknown' ? direntTypeOfStat(yield* step('lstat', entry, (f) => f.lstat(entry))) : e.type].node;
+      const holds = DIRENT_TYPES[e.type === 'unknown' ? direntTypeOfStat(yield* step('lstat', { abs: entry, given: entry }, (f) => f.lstat(entry))) : e.type].node;
       dirents.push({
         name: e.name,
         path: abs,
@@ -384,17 +393,18 @@ export function createNodeFs(faces: NodeFaces, { cwd, stdin, reachStreams }: Nod
   }
 
   function* unlinkOp(path: string | URL): Op<void> {
-    const abs = resolvePath(cwd, path);
-    yield* step('unlink', abs, (f) => {
-      if (f.unlink === undefined) throw lacks('unlink', abs);
-      return f.unlink(abs);
+    const at = namedPath(cwd, path);
+    yield* step('unlink', at, (f) => {
+      if (f.unlink === undefined) throw lacks('unlink', at.given);
+      return f.unlink(at.abs);
     });
   }
 
-  function* rmdirRecursiveStep(abs: string): Op<void> {
-    yield* step('rmdir', abs, (f) => {
-      if (f.rmdirRecursive === undefined) throw lacks('rmdir', abs);
-      return f.rmdirRecursive(abs);
+  function* rmdirRecursiveStep(path: string | URL): Op<void> {
+    const at = namedPath(cwd, path);
+    yield* step('rmdir', at, (f) => {
+      if (f.rmdirRecursive === undefined) throw lacks('rmdir', at.given);
+      return f.rmdirRecursive(at.abs);
     });
   }
 
@@ -404,12 +414,11 @@ export function createNodeFs(faces: NodeFaces, { cwd, stdin, reachStreams }: Nod
    * that is not there is no error.
    */
   function* rmOp(path: string | URL, options?: { recursive?: boolean; force?: boolean }): Op<void> {
-    const abs = resolvePath(cwd, path);
     // With force, a name gone by the look or by the removal is no error, as in Node's rimraf.
     const gone = (e: unknown) => options?.force === true && isVfsError(e) && e.code === 'ENOENT';
     let stat: NodeStat;
     try {
-      stat = yield* lstatOp(abs);
+      stat = yield* lstatOp(path);
     } catch (e) {
       if (gone(e)) return;
       throw e;
@@ -418,93 +427,92 @@ export function createNodeFs(faces: NodeFaces, { cwd, stdin, reachStreams }: Nod
       throw nodeSystemError('ERR_FS_EISDIR', 'Path is a directory', { code: 'EISDIR', message: 'is a directory', path: String(path), syscall: 'rm', errno: 21 });
     }
     try {
-      if (stat.isDirectory()) yield* rmdirRecursiveStep(abs);
-      else yield* unlinkOp(abs);
+      if (stat.isDirectory()) yield* rmdirRecursiveStep(path);
+      else yield* unlinkOp(path);
     } catch (e) {
       if (!gone(e)) throw e;
     }
   }
 
   function* rmdirOp(path: string | URL, options?: { recursive?: boolean }): Op<void> {
-    const abs = resolvePath(cwd, path);
     if (options?.recursive) {
-      yield* rmdirRecursiveStep(abs);
-    } else {
-      yield* step('rmdir', abs, (f) => {
-        if (f.rmdir === undefined) throw lacks('rmdir', abs);
-        return f.rmdir(abs);
-      });
+      yield* rmdirRecursiveStep(path);
+      return;
     }
+    const at = namedPath(cwd, path);
+    yield* step('rmdir', at, (f) => {
+      if (f.rmdir === undefined) throw lacks('rmdir', at.given);
+      return f.rmdir(at.abs);
+    });
   }
 
   function* renameOp(oldPath: string | URL, newPath: string | URL): Op<void> {
-    const abs1 = resolvePath(cwd, oldPath);
-    const abs2 = resolvePath(cwd, newPath);
-    yield* step('rename', abs1, (f) => {
-      if (f.rename === undefined) throw lacks('rename', abs1);
-      return f.rename(abs1, abs2);
-    });
+    const from = namedPath(cwd, oldPath);
+    const to = namedPath(cwd, newPath);
+    yield* step('rename', from, (f) => {
+      if (f.rename === undefined) throw lacks('rename', from.given);
+      return f.rename(from.abs, to.abs);
+    }, to);
   }
 
   function* copyFileOp(src: string | URL, dest: string | URL): Op<void> {
-    const abs1 = resolvePath(cwd, src);
-    const abs2 = resolvePath(cwd, dest);
-    yield* step('copyfile', abs1, (f) => {
-      if (f.copyFile === undefined) throw lacks('copyfile', abs1);
-      return f.copyFile(abs1, abs2);
-    });
+    const from = namedPath(cwd, src);
+    const to = namedPath(cwd, dest);
+    yield* step('copyfile', from, (f) => {
+      if (f.copyFile === undefined) throw lacks('copyfile', from.given);
+      return f.copyFile(from.abs, to.abs);
+    }, to);
   }
 
   function* chmodOp(path: string | URL, mode: number | string): Op<void> {
-    const abs = resolvePath(cwd, path);
+    const at = namedPath(cwd, path);
     const bits = parseFileMode(mode, 'mode');
-    yield* step('chmod', abs, (f) => {
-      if (f.chmod === undefined) throw lacks('chmod', abs);
-      return f.chmod(abs, bits);
+    yield* step('chmod', at, (f) => {
+      if (f.chmod === undefined) throw lacks('chmod', at.given);
+      return f.chmod(at.abs, bits);
     });
   }
 
   // chown(2) and lchown(2): a side Node's -1 names keeps the file's, in the same change.
-  function* chownAt(path: string | URL, owner: number | null, group: number | null, follow: boolean): Op<void> {
-    const abs = resolvePath(cwd, path);
+  function* chownAt(at: Named, owner: number | null, group: number | null, follow: boolean): Op<void> {
     const syscall = follow ? 'chown' : 'lchown';
-    yield* step(syscall, abs, (f) => {
-      if (f.chown === undefined) throw lacks(syscall, abs);
-      return f.chown(abs, owner, group, follow);
+    yield* step(syscall, at, (f) => {
+      if (f.chown === undefined) throw lacks(syscall, at.given);
+      return f.chown(at.abs, owner, group, follow);
     });
   }
 
   /** chown as its `*Sync` form and its promise take it: the path, then the ids, checked as they are used. */
   function* chownOp(path: string | URL, uid: number, gid: number, follow: boolean): Op<void> {
-    const abs = resolvePath(cwd, path);
-    yield* chownAt(abs, nodeOwnerId(uid, 'uid'), nodeOwnerId(gid, 'gid'), follow);
+    const at = namedPath(cwd, path);
+    yield* chownAt(at, nodeOwnerId(uid, 'uid'), nodeOwnerId(gid, 'gid'), follow);
   }
 
   function* accessOp(path: string | URL): Op<void> {
-    const abs = resolvePath(cwd, path);
-    if (!(yield* step('access', abs, (f) => f.exists(abs)))) {
-      throw fsError('ENOENT', 'access', abs);
+    const at = namedPath(cwd, path);
+    if (!(yield* step('access', at, (f) => f.exists(at.abs)))) {
+      throw fsError('ENOENT', 'access', at.given);
     }
   }
 
   /** realpath(3); a missing path is `missing`'s ENOENT (Node's realpathSync lstats the path's components: a missing one is lstat's). */
   function* realpathOp(path: string | URL, missing: string): Op<string> {
-    const abs = resolvePath(cwd, path);
-    if (!(yield* step(missing, abs, (f) => f.exists(abs)))) {
-      throw fsError('ENOENT', missing, abs);
+    const at = namedPath(cwd, path);
+    if (!(yield* step(missing, at, (f) => f.exists(at.abs)))) {
+      throw fsError('ENOENT', missing, at.given);
     }
-    return yield* step('realpath', abs, (f) => {
-      if (f.realpath === undefined) throw lacks('realpath', abs);
-      return f.realpath(abs);
+    return yield* step('realpath', at, (f) => {
+      if (f.realpath === undefined) throw lacks('realpath', at.given);
+      return f.realpath(at.abs);
     });
   }
 
   function* openOp(path: string | URL, flags?: string | number | null, mode?: number): Op<number> {
-    const abs = resolvePath(cwd, path);
+    const at = namedPath(cwd, path);
     const how = openFlagsOf(flags, mode);
-    return (yield* step('open', abs, (f) => {
-      if (f.open === undefined) throw lacks('open', abs);
-      return f.open(abs, how);
+    return (yield* step('open', at, (f) => {
+      if (f.open === undefined) throw lacks('open', at.given);
+      return f.open(at.abs, how);
     })) - 1 + STDIO;
   }
 
@@ -584,18 +592,19 @@ export function createNodeFs(faces: NodeFaces, { cwd, stdin, reachStreams }: Nod
       yield* ftruncateOp(path, len);
       return;
     }
-    const abs = resolvePath(cwd, path);
-    const pathTruncates = yield* step('open', abs, (f) => f.truncate !== undefined);
+    const at = namedPath(cwd, path);
+    const abs = at.abs;
+    const pathTruncates = yield* step('open', at, (f) => f.truncate !== undefined);
     if (pathTruncates) {
       const length = lengthOf(len);
-      yield* step('open', abs, (f) => {
-        if (f.truncate === undefined) throw lacks('open', abs);
+      yield* step('open', at, (f) => {
+        if (f.truncate === undefined) throw lacks('open', at.given);
         return f.truncate(abs, length);
       });
       return;
     }
-    const fd = yield* step('open', abs, (f) => {
-      if (f.open === undefined) throw lacks('open', abs);
+    const fd = yield* step('open', at, (f) => {
+      if (f.open === undefined) throw lacks('open', at.given);
       return f.open(abs, openFlagsOf('r+', undefined));
     });
     try {
@@ -615,10 +624,10 @@ export function createNodeFs(faces: NodeFaces, { cwd, stdin, reachStreams }: Nod
   /** symlink(2): the link at `path` holds `target` as given (a relative target stays relative, read from the link's directory). */
   function* symlinkOp(target: string | URL | Uint8Array, path: string | URL | Uint8Array): Op<void> {
     const text = pathText(target);
-    const abs = resolvePath(cwd, path);
-    yield* step('symlink', abs, (f) => {
-      if (f.symlink === undefined) throw lacks('symlink', abs);
-      return f.symlink(text, abs);
+    const at = namedPath(cwd, path);
+    yield* step('symlink', at, (f) => {
+      if (f.symlink === undefined) throw lacks('symlink', at.given);
+      return f.symlink(text, at.abs);
     });
   }
 
@@ -627,10 +636,10 @@ export function createNodeFs(faces: NodeFaces, { cwd, stdin, reachStreams }: Nod
     // No encoding, or an empty one, is UTF-8, as Node takes it.
     const encoding = (typeof options === 'string' ? options : options?.encoding) || 'utf8';
     if (encoding !== 'buffer' && !Buffer.isEncoding(encoding)) throw invalidArgValue('encoding', encoding, 'is invalid encoding');
-    const abs = resolvePath(cwd, path);
-    const text = yield* step('readlink', abs, (f) => {
-      if (f.readlink === undefined) throw lacks('readlink', abs);
-      return f.readlink(abs);
+    const at = namedPath(cwd, path);
+    const text = yield* step('readlink', at, (f) => {
+      if (f.readlink === undefined) throw lacks('readlink', at.given);
+      return f.readlink(at.abs);
     });
     if (encoding === 'buffer') return Buffer.from(text);
     return encoding === 'utf8' ? text : Buffer.from(text).toString(encoding);
@@ -687,13 +696,13 @@ export function createNodeFs(faces: NodeFaces, { cwd, stdin, reachStreams }: Nod
   function chown(path: string | URL, uid: number, gid: number, cb: Callback<void>): void {
     const owner = nodeOwnerId(uid, 'uid');
     const group = nodeOwnerId(gid, 'gid');
-    callback(() => chownAt(path, owner, group, true), cb);
+    callback(() => chownAt(namedPath(cwd, path), owner, group, true), cb);
   }
 
   function lchown(path: string | URL, uid: number, gid: number, cb: Callback<void>): void {
     const owner = nodeOwnerId(uid, 'uid');
     const group = nodeOwnerId(gid, 'gid');
-    callback(() => chownAt(path, owner, group, false), cb);
+    callback(() => chownAt(namedPath(cwd, path), owner, group, false), cb);
   }
 
   function fchown(fd: number, uid: number, gid: number, cb: Callback<void>): void {

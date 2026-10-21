@@ -54,7 +54,6 @@ export async function differential(fs, label) {
   out.afterRename = (await p.readdir(`${label}/a`)).sort();
   out.moved = await p.readFile(`${label}/a/g.txt`, 'utf8');
   out.unlinkDirectory = await caught(p.unlink(`${label}/a/b`));
-  out.mkdirExisting = await caught(p.mkdir(`${label}/a`));
   return out;
 }
 

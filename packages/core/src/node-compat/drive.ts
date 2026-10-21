@@ -11,11 +11,28 @@ import { fsError } from '../vfs/vfs-error.js';
 import { syncValue } from '../vfs/vfs.js';
 import type { FilesFace, NodeFaces } from './faces.js';
 
+/** A path a call names: as the face takes it (absolute), and as its caller gave it, which its errors name, as Node's do. */
+export interface Named {
+  readonly abs: string;
+  readonly given: string;
+}
+
 /** One file call an operation waits for; its syscall and path name it in an EAGAIN. */
 export interface Step {
   readonly syscall: string;
-  readonly path: string | undefined;
+  readonly path: Named | undefined;
   later(files: FilesFace<'async'>): Promise<void>;
+}
+
+/** `error`, a failure of a call on `path` (and `dest`), naming them as its caller gave them. */
+function asGiven(error: unknown, path: Named | undefined, dest: Named | undefined): unknown {
+  if (!(error instanceof Error)) return error;
+  for (const [field, named] of [['path', path], ['dest', dest]] as const) {
+    if (named === undefined || named.given === named.abs || Reflect.get(error, field) !== named.abs) continue;
+    Reflect.set(error, field, named.given);
+    error.message = error.message.split(`'${named.abs}'`).join(`'${named.given}'`);
+  }
+  return error;
 }
 
 /** An operation: the steps it makes, and what it answers. */
@@ -51,16 +68,37 @@ export type Stepping<T> = Iterable<Step, T, void>;
  * Answered now, it is called where it stands; answered later, its answer is
  * kept here and read back after the step.
  */
-export function step<T>(syscall: string, path: string | undefined, call: (files: FilesFace<'sync'> | FilesFace<'async'>) => T | Promise<T>): Stepping<T> {
-  return answering !== null ? new Answered(syncValue(call(answering))) : waitFor(syscall, path, call);
+export function step<T>(
+  syscall: string,
+  path: Named | undefined,
+  call: (files: FilesFace<'sync'> | FilesFace<'async'>) => T | Promise<T>,
+  dest?: Named,
+): Stepping<T> {
+  if (answering === null) return waitFor(syscall, path, call, dest);
+  try {
+    return new Answered(syncValue(call(answering)));
+  } catch (error) {
+    throw asGiven(error, path, dest);
+  }
 }
 
-function* waitFor<T>(syscall: string, path: string | undefined, call: (files: FilesFace<'sync'> | FilesFace<'async'>) => T | Promise<T>): Op<T> {
+function* waitFor<T>(
+  syscall: string,
+  path: Named | undefined,
+  call: (files: FilesFace<'sync'> | FilesFace<'async'>) => T | Promise<T>,
+  dest: Named | undefined,
+): Op<T> {
   const slot: { answer: { value: T } | null } = { answer: null };
   yield {
     syscall,
     path,
-    async later(files) { slot.answer = { value: await call(files) }; },
+    async later(files) {
+      try {
+        slot.answer = { value: await call(files) };
+      } catch (error) {
+        throw asGiven(error, path, dest);
+      }
+    },
   };
   if (slot.answer === null) throw new Error(`node-compat: ${syscall} resumed unanswered`);
   return slot.answer.value;
@@ -94,7 +132,7 @@ export function runSync<T>(faces: NodeFaces, name: string, op: Op<T>): T {
   const next = resumed(() => op.next());
   if (next.done) return next.value;
   const base = name.replace(/Sync$/, '');
-  throw fsError('EAGAIN', next.value.syscall, next.value.path, undefined, {
+  throw fsError('EAGAIN', next.value.syscall, next.value.path?.given, undefined, {
     detail: `resource temporarily unavailable (${name} cannot wait for these files; fs.${base} and fs.promises can)`,
   });
 }
