@@ -25,8 +25,13 @@ const arms = requirePairedTargets('perf-regression/ruby-gem-require');
 console.log(`perf-regression/ruby-gem-require — baseline ${arms.a1.base}, ${arms.a2.base}; candidate ${arms.b1.base}, ${arms.b2.base}`);
 
 const ROUNDS = 20;
-/** The share of calls over 1.5 times their five-call round's least, the most measured. */
-const SPIKE_SHARE = 0.62;
+/**
+ * The share of net walls over 1.5 times their round's least, the most
+ * measured: 0.152-0.221 over two A/As of one commit on fresh Preview sets,
+ * 20 rounds of 7 each (2026-10-21, verdicts 20261021T184843-188b2be4dde5 and
+ * 20261021T195005-188b2be4dde5; /mnt/local/nimbus/verify/paired-grader/k-net.py).
+ */
+const SPIKE_SHARE = 0.221;
 /**
  * Calls a round: were calls spikes independently with chance SPIKE_SHARE,
  * the least of this many would be one under 5% of the time. A model, not a
@@ -35,13 +40,12 @@ const SPIKE_SHARE = 0.62;
  */
 const REPEATS = Math.ceil(Math.log(0.05) / Math.log(SPIKE_SHARE));
 /**
- * What the grading was shown to find. Replaying the A/A (the least of 5
- * calls) with each candidate arm slowed found +60% in 8 of 8 cases (2 Preview
- * sets, 2 commands, either side as the candidate), +50% in 6, +30% in 3. Live,
- * at 7 calls (work/psm-v3, 2026-10-20), +60% was red on 3 of 4 metric-sets:
- * launch passed on one set, its weaker candidate 0.934-1.299.
+ * What the grading was shown to find, and not to find. Both A/As passed at
+ * every k from 1 to 7 (0.97-1.08). Replaying them at REPEATS calls with each
+ * candidate arm slowed (2 Preview sets, 2 commands, either side as the
+ * candidate) found +50% and +60% in 8 of 8, and +30% in 6 of 8.
  */
-const FOUND = '+60% in 8 of 8 replays at 5 calls a round and 3 of 4 live checks at 7';
+const FOUND = '+50% in 8 of 8 replays of two A/As at 2 calls a round, +30% in 6 of 8';
 const GEMS = 30;
 const HEADER = '# Gem::Specification written by Nimbus RubyGems, its runtime dependencies recorded.';
 const spec = (name, deps) => [
