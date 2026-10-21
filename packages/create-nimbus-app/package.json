@@ -28,7 +28,7 @@
     "NOTICE.md"
   ],
   "dependencies": {
-    "@nimbus-sh/cli": "^0.2.11"
+    "@nimbus-sh/cli": "^0.2.12"
   },
   "engines": {
     "node": ">=20.10.0"
