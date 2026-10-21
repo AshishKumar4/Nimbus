@@ -95,7 +95,6 @@ await runScenarios(import.meta.path, {
     await answersNow(e, 'readFile of a directory', () => sync.readFile(`${APP}/dir`), 'EISDIR');
     // An open of a directory is refused as the session's open refuses it: one that would make or change its
     // content (O_CREAT, O_TRUNC, O_APPEND), O_DIRECTORY or not; any other is the session's to answer.
-    const dir = `${APP}/dir`;
     for (const [label, flags, code] of [
       ['O_TRUNC', { read: true, truncate: true }, 'EISDIR'],
       ['O_DIRECTORY|O_TRUNC', { read: true, directory: true, truncate: true }, 'EISDIR'],
