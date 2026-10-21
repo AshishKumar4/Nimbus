@@ -41,7 +41,7 @@ function run(cwd, command, args, stdio) {
     child.stderr.setEncoding('utf8').on('data', (text) => { stderr += text; });
     child.on('error', reject);
     child.on('close', (code) => (code === 0 ? resolve(stdout)
-      : reject(new Error(`${command} ${args.slice(0, 3).join(' ')} exited ${code} in ${cwd}: ${causeOf(stderr)}\n${stderr.trimEnd().split('\n').slice(-15).join('\n')}`))));
+      : reject(new Error(`${command} ${args.slice(0, 3).join(' ')} exited ${code} in ${cwd}: ${causeOf({ stderr })}\n${stderr.trimEnd().split('\n').slice(-15).join('\n')}`))));
   });
 }
 

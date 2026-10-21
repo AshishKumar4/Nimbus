@@ -244,7 +244,7 @@ async function deployments() {
   const ids = {};
   if (throwaway !== undefined) {
     const read = spawnSync('bun', ['tests/behavioral/_throwaway-target.mjs', 'version', '--name', throwaway], { cwd: repo, encoding: 'utf8' });
-    if (read.status !== 0) throw new Error(`could not read ${throwaway}'s live deployment: ${causeOf(read.stderr)}\n${read.stderr}`);
+    if (read.status !== 0) throw new Error(`could not read ${throwaway}'s live deployment: ${causeOf(read)}\n${read.stderr ?? ''}`);
     ids[`target ${throwaway}`] = read.stdout.trim();
   }
   if (arms) for (const [arm, id] of Object.entries(await arms.versions())) ids[`arm ${arm}`] = id;
@@ -263,7 +263,7 @@ async function credentials() {
     ? ['tests/behavioral/_staging-target.mjs', 'token']
     : ['tests/behavioral/_throwaway-target.mjs', 'token', '--name', throwaway];
   const minted = spawnSync('bun', [...minter, '--json', '--ttl-ms', String(TOKEN_TTL_MS)], { cwd: repo, encoding: 'utf8' });
-  if (minted.status !== 0) throw new Error(`could not mint a token for ${throwaway ?? 'staging'}: ${causeOf(minted.stderr)}\n${minted.stderr}`);
+  if (minted.status !== 0) throw new Error(`could not mint a token for ${throwaway ?? 'staging'}: ${causeOf(minted)}\n${minted.stderr ?? ''}`);
   const { base, token } = JSON.parse(minted.stdout);
   return { base, token, arms: arms ? await arms.credentials(TOKEN_TTL_MS) : null, startBy };
 }
