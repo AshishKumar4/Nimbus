@@ -9,20 +9,23 @@
 //     0x00-0xff, and 1 MiB to a slow reader, in order.
 
 /** The program: `cp` is Node's module. */
-export async function childDifferential(cp) {
+export async function childDifferential(cp, note = () => {}) {
   const out = {};
   out.exit3 = await new Promise((resolve) => cp.exec('echo out; echo err >&2; exit 3', (error, stdout, stderr) => resolve({
     code: error?.code, killed: error?.killed, signal: error?.signal, cmd: error?.cmd, message: error?.message, stdout, stderr,
   })));
+  note('exit3');
   out.sigterm = await new Promise((resolve) => {
     const child = cp.spawn('sleep', ['600']);
     child.on('spawn', () => child.kill('SIGTERM'));
     child.on('exit', (code, signal) => resolve({ code, signal, killed: child.killed }));
   });
+  note('sigterm');
   out.missing = await new Promise((resolve) => {
     const child = cp.execFile('no-such-program-67', ['a']);
     child.on('error', (error) => resolve({ code: error.code, errno: error.errno, syscall: error.syscall, path: error.path, spawnargs: error.spawnargs }));
   });
+  note('missing');
   const echo = (bytes, slow) => new Promise((resolve, reject) => {
     const child = cp.spawn('cat');
     const parts = [];
@@ -48,6 +51,7 @@ export async function childDifferential(cp) {
     });
   });
   out.bytes = await echo(Buffer.from(Array.from({ length: 256 }, (_, i) => i)), false);
+  note('bytes');
   out.mebibyte = await echo(Buffer.from(Array.from({ length: 1024 * 1024 }, (_, i) => (i * 7 + (i >> 8)) & 0xff)), true);
   return out;
 }

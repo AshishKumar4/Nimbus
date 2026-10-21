@@ -75,10 +75,16 @@ const failures = [];
 try {
   for (const [via, box] of [['rpc', overRpc], ['http', overHttp]]) {
     const check = async (name, body) => {
+      let timer;
+      const late = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('not done within 60 s')), 60_000); });
+      const began = Date.now();
       try {
-        await body();
+        await Promise.race([body(), late]);
       } catch (error) {
         failures.push(`${via}: ${name}: ${error.message}`);
+      } finally {
+        clearTimeout(timer);
+        console.log(`  ${via}: ${name}: ${Date.now() - began} ms`);
       }
     };
     const cwd = `/tmp/children-${via}`;
@@ -86,7 +92,7 @@ try {
     const cp = bundle.createNodeCompat(bundle.nodeFacesOf(box), { cwd }).childProcess;
 
     await check('the differential\'s program', async () => {
-      const out = await childDifferential(cp);
+      const out = await childDifferential(cp, (step) => console.log(`    ${via}: ${step} done`));
       assert.deepEqual(out.exit3, {
         code: 3, killed: false, signal: null, cmd: 'echo out; echo err >&2; exit 3',
         message: 'Command failed: echo out; echo err >&2; exit 3\nerr\n', stdout: 'out\n', stderr: 'err\n',
