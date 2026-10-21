@@ -116,9 +116,7 @@ export function answeringSupervisor<T extends object>(supervisor: T, live?: (cal
     get(target, name) {
       if (!isSupervisorAnsweredMethod(name)) return Reflect.get(target, name);
       return async (...args: unknown[]) => {
-        const asked = stub.answer(name, args);
-        // A promise of this realm's own: an RPC stub's answer is a thenable of its own class.
-        if (live !== undefined && WAITS[name] !== true) live(Promise.resolve(asked));
+        const asked = WAITS[name] === true ? stub.answer(name, args) : toldLive(stub.answer(name, args), live);
         const answer = await asked;
         try {
           if ('refusal' in answer) throw supervisorRefusalError(answer.refusal);
@@ -160,6 +158,17 @@ export function supervisorFilesystem(remote: WasiSupervisorStub, local?: Runtime
   });
 }
 
+/**
+ * `call`, told to `live` as work in flight, as a promise of this realm: an
+ * RPC stub's answer is a thenable of its own class, which a tracker that
+ * follows promises (node's __nimbusTrackOp) cannot follow.
+ */
+function toldLive<T>(call: PromiseLike<T>, live: ((call: Promise<unknown>) => unknown) | undefined): Promise<T> {
+  const native = Promise.resolve(call);
+  live?.(native);
+  return native;
+}
+
 /** The stub's wave calls (SupervisorRPC.openWaveWriter, writeBatchStream, retireWaveWriter). */
 interface WaveSender {
   openWaveWriter(first: boolean): Promise<string | null>;
@@ -175,15 +184,11 @@ interface WaveSender {
  */
 export function supervisorSession(stub: WasiSupervisorStub, authority: RuntimeFsBridge, live?: (call: Promise<unknown>) => unknown): ProcessFsSession {
   const waves = stub as unknown as WaveSender;
-  const told = <T>(call: Promise<T>): Promise<T> => {
-    live?.(call);
-    return call;
-  };
   return {
     // Called as methods of the stub, never through .call/.apply: on an RPC stub those are remote method names too.
-    openWriter: (first) => told(waves.openWaveWriter(first)),
-    writeBatchStream: (stream, fence, owner) => told(owner === undefined ? waves.writeBatchStream(stream, fence) : waves.writeBatchStream(stream, fence, owner)),
-    retireWriter: async (writer) => { await told(waves.retireWaveWriter(writer)); },
+    openWriter: (first) => toldLive(waves.openWaveWriter(first), live),
+    writeBatchStream: (stream, fence, owner) => toldLive(owner === undefined ? waves.writeBatchStream(stream, fence) : waves.writeBatchStream(stream, fence, owner), live),
+    retireWriter: async (writer) => { await toldLive(waves.retireWaveWriter(writer), live); },
     grants: {
       acquire: async (path, delegate) => await authority.acquireExclusiveMutation(path, { delegate }),
       release: async (owner) => { await authority.releaseExclusiveMutation(owner); },
