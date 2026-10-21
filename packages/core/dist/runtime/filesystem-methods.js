@@ -58,7 +58,8 @@ export const FILESYSTEM_METHODS = {
     writeStream: { rpc: 'writeBatchStream', answer: 'stream' },
     acquireExclusiveMutation: { rpc: 'fsAcquireExclusiveMutation', answer: 'value' },
     releaseExclusiveMutation: { rpc: 'fsReleaseExclusiveMutation', answer: 'value' },
-    awaitRecall: { rpc: 'fsAwaitRecall', answer: 'value' },
+    // Waits for a recall for as long as the session has none to send: never work a program waits on.
+    awaitRecall: { rpc: 'fsAwaitRecall', answer: 'value', waits: true },
     recalled: { rpc: 'fsRecalled', answer: 'value' },
     published: { rpc: 'fsPublished', answer: 'value' },
 };

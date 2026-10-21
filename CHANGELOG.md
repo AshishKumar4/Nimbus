@@ -5,15 +5,18 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
-## 2026-10-21: platform 0.15.0, core 0.26.0, fabric 0.21.0, worker 0.24.0, sdk 0.20.0, react 0.4.2, cli 0.2.11, loom 0.3.4, create-nimbus-app 0.2.7 (config 0.3.2 and the runtimes unchanged)
-
-- Added: a session starts a program by its argv. In the SDK it is `sandbox.startProgram(argv, { cwd, env, stdin })`; in a workspace it is `workspace.startProgram(program, cancel)`. This is the start contract a mount's exec delegate meets, now met by a session.
-  - It resolves once the program runs. If the program cannot start, it rejects with Node's spawn error (`code`, `errno`, `syscall: 'spawn <file>'`, `path`).
-  - Its output streams as you read it. Its exit is waitpid's code or signal, and `kill(signal)` sends that signal to the program.
-  - Its stdin is bytes, every value, in order, to their end, with each write waiting for room. Over Workers RPC it is a stream; over the remote API the SDK writes it with `writeProcessInput`, which now takes bytes and waits.
+- Fixed: a long-running node process (a server, an agent's turn) could end mid-read with exit 0 and its read never answered. This happened when its filesystem had to ask the session for something on the program's behalf: more storage room for a file another process had just written, a listing, or a fill. That work was not counted as something the program was waiting on, so the process looked idle and ended. Every filesystem call a node process makes on the session now counts as live work until it is answered, whichever part of the process made it.
+- Added: a session starts a program by its argv. In the SDK it is `sandbox.startProgram(argv, { cwd, env, stdin, signal })`; in a workspace it is `workspace.startProgram(program, cancel)`. This is the start contract a mount's exec delegate meets, now met by a session.
+  - It resolves once the program runs. If the program cannot start, it rejects with Node's spawn error (`code`, `errno`, `syscall: 'spawn <file>'`, `path`). `signal` aborted while it is pending rejects `ECANCELED`, and kills anything that had started.
+  - Its output streams as you read it. Up to 64 KiB of it waits unread, as a pipe holds it, so a program that writes no more than that is seen to exit whether or not you read its output. Its exit is waitpid's code or signal, and `kill(signal)` sends that signal to the program.
+  - Its stdin is bytes, every value, in order, to their end, with each write waiting for room. A source that fails ends the program's input there. Over Workers RPC it is a stream. Over the remote API the SDK writes it with `writeProcessInput`, which now takes bytes and waits; a byte write whose client leaves is withdrawn.
   - It is placed by its cwd, as every start is: under a delegating mount, the mount's machine starts it.
   - Its env defaults to the session shell's exported environment.
-  - `signalProcess` and `endProcessInput` reach a started program as the child broker's.
+  - `signalProcess`, `writeProcessInput` and `endProcessInput` reach a started program as the child broker's. Every other process keeps its own routes.
+  - A scoped session (one named shell or identity) refuses it with EPERM: a start names neither.
+
+## 2026-10-21: platform 0.15.0, core 0.26.0, fabric 0.21.0, worker 0.24.0, sdk 0.20.0, react 0.4.2, cli 0.2.11, loom 0.3.4, create-nimbus-app 0.2.7 (config 0.3.2 and the runtimes unchanged)
+
 - Added: a mount can run programs on the machine its files live on. `filesystem.vfs.mount(point, source, { exec })` takes an `ExecDelegate` (`start(program, cancel)`, `locate(name, cwd, env)`). Every program started with its cwd under that mount is placed there: the shell's, an execvp from find, xargs, env or sudo, and a node child's. Each start is one call, `{ argv, env, cwd, stdin }`, made as execvp makes it, never as shell text; its exit is waitpid's code or signal.
   - What the shell does itself stays in the session: builtins, functions, pipes and expansions. So `cd /computer/app && npm test | tail -5` starts two programs on the computer, joined by the session's pipe.
   - Refusals follow bash: a start the machine refuses `ENOENT` is `name: command not found` (127); any other refusal, or an absent mount, is `name: <reason>` (126); Ctrl-C reaches the program as SIGINT (130).
