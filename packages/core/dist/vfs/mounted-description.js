@@ -18,35 +18,9 @@ import { processView, settleHeld } from '../runtime/descriptors.js';
 import { runtimeStatOf } from './composite.js';
 import { andThen, isPromise } from './vfs.js';
 import { isVfsError } from './vfs-error.js';
+import { flagsRefusal, openAccess, openFollows, refusesDirectory } from './open-rules.js';
 /** What one description holds unwritten before EFBIG: a whole-file rewrite at flush, kept off the heap's edge. */
 export const BUFFERED_WRITE_BYTES = 8 * 1024 * 1024;
-/**
- * Where an open looks its name up (CompositeVFS.pin): through a link at it,
- * unless it declines to (O_NOFOLLOW) or answers for the name itself
- * (O_CREAT|O_EXCL).
- */
-export function openFollows(flags) {
-    return flags.followSymlinks && !(flags.create && flags.exclusive);
-}
-/**
- * The refusals open(2) makes of its flags alone, before any name is looked
- * up: O_CREAT|O_DIRECTORY is EINVAL (Linux's build_open_flags). Null when
- * there is none. Every open asks it first, on SQLite as on a mount.
- */
-export function flagsRefusal(flags) {
-    return flags.create && flags.directory ? 'EINVAL' : null;
-}
-/**
- * The access an open asks of a file that is there (VFS.access's mode), as
- * Linux's open asks it: read for reading, write for writing or O_TRUNC
- * (whatever rights the descriptor itself has). A description's write rights
- * on a directory are a capability, not an access (a WASI guest asks a
- * capability set); a wave's open is to write.
- */
-export function openAccess(flags, directory, describes = true) {
-    const writes = (flags.write && !(describes && directory)) || flags.truncate;
-    return (flags.read ? 4 : 0) | (writes ? 2 : 0);
-}
 /**
  * open(2) of the name `file` found (pinned where the lookup landed,
  * openFollows), one rule for every caller, Linux's (do_open) where Linux and
@@ -54,9 +28,10 @@ export function openAccess(flags, directory, describes = true) {
  * - O_CREAT|O_EXCL of a name that is there, a link included: EEXIST;
  * - O_DIRECTORY of a link not followed: ENOTDIR; O_NOFOLLOW of a link: ELOOP;
  * - an absent name without O_CREAT: ENOENT;
- * - O_CREAT of a directory: EISDIR; O_DIRECTORY of anything else: ENOTDIR;
- * - a directory refuses O_TRUNC and O_APPEND (EISDIR), and an open that
- *   keeps no description (`describes` false, a wave's open to write) any write;
+ * - O_DIRECTORY of anything but a directory: ENOTDIR;
+ * - a directory refuses O_CREAT, O_TRUNC and O_APPEND (EISDIR), and an open
+ *   that keeps no description (`describes` false, a wave's open to write)
+ *   any write (refusesDirectory);
  * - the access asked (openAccess), by the backend's own policy (VFS.access):
  *   a backend that takes a caller's credential enforces modes, one of one
  *   identity has none;
@@ -87,11 +62,9 @@ export function openOnMount(file, open, describes, admit) {
             }
             else {
                 const directory = there.type === 'directory';
-                if (directory && flags.create)
-                    throw refuse('EISDIR', 'open');
                 if (flags.directory && !directory)
                     throw refuse('ENOTDIR', 'open');
-                if (directory && (flags.truncate || flags.append || (flags.write && !describes)))
+                if (directory && refusesDirectory(flags, describes))
                     throw refuse('EISDIR', 'open');
             }
             const access = there === null ? undefined : file.access(openAccess(flags, there.type === 'directory', describes));

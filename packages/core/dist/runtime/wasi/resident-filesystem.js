@@ -36,6 +36,7 @@
  */
 import { fsError, walkBeneath } from '../beneath-walk.js';
 import { modeAllows } from '../../vfs/posix-access.js';
+import { refusesDirectory } from '../../vfs/open-rules.js';
 import { errnoCodeOf } from '../../vfs/vfs-error.js';
 import { openIdentified } from './filesystem.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES, DIRECTORY_BATCH_LIMIT, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES } from '../../constants.js';
@@ -95,12 +96,12 @@ const DESCRIPTOR_CALLS = new Set(['read', 'write', 'close', 'fstat', 'dup', 'see
 const NOT_NOW = Symbol('not now');
 /** The calls the session refuses on a directory (EISDIR): those for a file's bytes, that write one, or remove one as a file. */
 const REFUSED_ON_A_DIRECTORY = new Set(['readFile', 'readRange', 'writeFile', 'writeRange', 'truncate', 'unlink', 'copyFile', 'contentKey']);
-/** Whether the session refuses `syscall` with `args` on a directory: an open is refused only where it makes, writes or empties the file. */
+/** Whether the session refuses `syscall` with `args` on a directory: an open as the session's open judges one (refusesDirectory). */
 function refusesADirectory(syscall, args) {
     if (syscall !== 'open')
         return REFUSED_ON_A_DIRECTORY.has(syscall);
     const flags = args[1];
-    return flags !== undefined && flags.directory !== true && (flags.write === true || flags.create === true || flags.truncate === true || flags.append === true);
+    return flags !== undefined && refusesDirectory(flags);
 }
 const notNow = () => { throw NOT_NOW; };
 /** A bridge's calls with no synchronous form (RuntimeSynchronousFs). */

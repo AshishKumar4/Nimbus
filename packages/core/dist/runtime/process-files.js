@@ -35,7 +35,8 @@ import { sameFileVersion, CRED_KERNEL, isVfsCred, requireVfsCred, } from './os-c
 import { fsError, SqliteRuntimeFsBridge, walkBeneath } from './sqlite-runtime-fs-bridge.js';
 import { modeAllows } from '../vfs/posix-access.js';
 import { closeDescriptions, closeScopeSignal, createDescriptorScope, Descriptors, openFlags, processView, reportLost, scopeSignal, settleHeldAt } from './descriptors.js';
-import { BUFFERED_WRITE_BYTES, flagsRefusal, openFollows, openMounted, reopenMounted } from '../vfs/mounted-description.js';
+import { BUFFERED_WRITE_BYTES, openMounted, reopenMounted } from '../vfs/mounted-description.js';
+import { flagsRefusal, openFollows } from '../vfs/open-rules.js';
 import { registerDirectoryReadBridge, directoryReadHandleClosed } from './read-directory-batch.js';
 import { readLeaseCovers, SESSION_KERNEL_ROOTS } from '../_shared/read-lease-cover.js';
 function immutableCredential(cred) {
