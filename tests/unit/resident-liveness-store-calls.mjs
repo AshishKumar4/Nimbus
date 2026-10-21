@@ -64,9 +64,9 @@ await launchResident({
   startArgs: { storage: { facet: FACET, grant: 0 } },
 });
 
-await until(() => handle.log.exit !== null, 'the process ends', 10_000);
-const seen = `calls ${JSON.stringify(handle.log.calls)}, stdout ${JSON.stringify(handle.log.stdout)}, exit ${JSON.stringify(handle.log.exit)}`;
-assert.ok(wrote && grants > 0, `the pushed bytes needed a grant after the read's session call, the case this pins: ${seen}`);
-assert.match(handle.log.stdout, new RegExp(`^READ ${SIZE}$`, 'm'), `the read is answered before the process ends: ${seen}`);
+const seen = () => `calls ${JSON.stringify(handle.log.calls)}, grants ${grants}, stdout ${JSON.stringify(handle.log.stdout)}, exit ${JSON.stringify(handle.log.exit)}`;
+await until(() => handle.log.exit !== null, 'the process ends', 10_000).catch((error) => { throw new Error(`${error.message}: ${seen()}`); });
+assert.ok(wrote && grants > 0, `the pushed bytes needed a grant after the read's session call, the case this pins: ${seen()}`);
+assert.match(handle.log.stdout, new RegExp(`^READ ${SIZE}$`, 'm'), `the read is answered before the process ends: ${seen()}`);
 assert.equal(handle.log.exit.code, 0);
 console.log('resident-liveness-store-calls: ok');
