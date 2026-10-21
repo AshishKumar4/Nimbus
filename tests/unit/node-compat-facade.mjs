@@ -166,7 +166,12 @@ try {
     const gotten = bundle.createNodeCompat({ files: { ...files, stat: async () => { throw Object.assign(new Gotten("ENOENT: no such file or directory, stat '/c/z'"), { code: 'ENOENT', errno: -2, syscall: 'stat' }); } } }, { cwd: '/c' }).fsPromises;
     const read = await failure(() => gotten.stat('z'));
     assert.deepEqual([read.code, read.path, read.message], ['ENOENT', 'z', "ENOENT: no such file or directory, stat 'z'"]);
-    // A frozen error whose stack is its own, enumerable: copied, its stack kept.
+  });
+
+  await check('a frozen error with a stack of its own', async () => {
+    const stat = { dev: 1, ino: 2, nlink: 1, type: 'file', size: 1, ctime: 1, atime: 1, mtime: 1, mode: 0o644, uid: 0, gid: 0, revision: 1 };
+    const files = { lstat: async () => stat, readFile: async () => new Uint8Array(0), writeFile: async () => {}, readdir: async () => [] };
+    // Its stack enumerable: copied, its stack kept.
     const stacked = new Error("ENOENT: no such file or directory, stat '/c/w'");
     Object.defineProperty(stacked, 'stack', { value: 'Error: a stack of its own', enumerable: true });
     Object.freeze(Object.assign(stacked, { code: 'ENOENT', errno: -2, syscall: 'stat', path: '/c/w' }));
