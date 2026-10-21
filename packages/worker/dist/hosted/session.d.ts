@@ -19,7 +19,7 @@
  */
 import { RpcTarget } from 'cloudflare:workers';
 import { type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
-import type { SessionRpc, SessionReadyOptions, SessionExecOptions, SessionRunCodeOptions, SessionExposeOptions, SessionDurableAppOptions, SessionRuntimeInstallOptions, SessionTerminalSize, SessionProcessLogsOptions, SessionAppTarget, SessionStartProgramOptions, SessionFollowOptions, SessionMkdirOptions } from '@nimbus-sh/core/runtime/session-protocol.js';
+import type { SessionRpc, SessionRouterRpc, SessionReadyOptions, SessionExecOptions, SessionRunCodeOptions, SessionExposeOptions, SessionDurableAppOptions, SessionRuntimeInstallOptions, SessionTerminalSize, SessionProcessLogsOptions, SessionAppTarget, SessionStartProgramOptions, SessionFollowOptions, SessionMkdirOptions } from '@nimbus-sh/core/runtime/session-protocol.js';
 import * as rpc from '../session/rpc.js';
 import * as operations from '../session/programmatic.js';
 export interface HostedSessionScope {
@@ -31,7 +31,7 @@ export interface HostedSessionScope {
 export type HostedSessionOwner = operations.ProgrammaticHost & operations.TerminalsHost & rpc.FilesHost & {
     noteClientActivity(): void;
 };
-export declare class HostedSession extends RpcTarget implements SessionRpc {
+export declare class HostedSession extends RpcTarget implements SessionRpc, Pick<SessionRouterRpc, '_rpcWriteProcessInputStream'> {
     #private;
     private readonly owner;
     private readonly scope;
@@ -216,6 +216,7 @@ export declare class HostedSession extends RpcTarget implements SessionRpc {
         ok: boolean;
         pid: number;
     }>;
+    _rpcWriteProcessInputStream(pid: number, data: Uint8Array): Promise<ReadableStream<Uint8Array<ArrayBufferLike>>>;
     _rpcStartProgram(argv: string[], options?: SessionStartProgramOptions): Promise<ReadableStream<Uint8Array<ArrayBufferLike>>>;
     _rpcEndProcessInput(pid: number): Promise<{
         ok: boolean;

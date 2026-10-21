@@ -182,8 +182,13 @@ export class ChildProcess extends EventEmitter {
                 const { data } = next.value;
                 if (sink !== null && !sink.destroyed && !sink.write(Buffer.from(data.buffer, data.byteOffset, data.byteLength))) {
                     await new Promise((resolve) => {
-                        sink.once('drain', () => resolve());
-                        sink.once('close', () => resolve());
+                        const done = () => {
+                            sink.off('drain', done);
+                            sink.off('close', done);
+                            resolve();
+                        };
+                        sink.once('drain', done);
+                        sink.once('close', done);
                     });
                 }
             }
@@ -274,11 +279,12 @@ export function createNodeChildProcess(start, { cwd }) {
         child.stderr = stdio[2] === 'pipe' ? new PassThrough() : null;
         child.stdio = [child.stdin, child.stdout, child.stderr];
         let open = 0;
+        // Each counts as closed when its stream closes: at its end, or destroyed (an exec past its maxBuffer), as Node counts its pipes.
         for (const stream of [child.stdout, child.stderr]) {
             if (stream === null)
                 continue;
             open++;
-            stream.once('end', () => child.outputEnded());
+            stream.once('close', () => child.outputEnded());
         }
         child.openOutputs(open);
         const cancel = new AbortController();

@@ -15649,15 +15649,21 @@ function __nimbusTakeSignals() {
     let failures = 0;
     while (__nimbusCaught !== "" && !__nimbusStdinPumping && !__nimbusProgramStopped) {
       let sig = null;
+      const asked = Date.now();
       try {
         // Unref'd, as the stdin pump's poll: waiting for a signal is no reason to keep the program alive.
         sig = await __nimbusUseRpcResultUnref(__supervisor.cpNextSignal(5000), (result) => result);
         failures = 0;
       } catch {
         if (++failures > 10) return;
+        sig = null;
+      }
+      if (__nimbusProgramStopped) return;
+      if (sig === null) {
+        // An answer of none that came at once (the session holds no catches for it, or failed) is asked again a second later, not at once.
+        if (Date.now() - asked < 1000) await new Promise((resolve) => { const timer = setTimeout(resolve, 1000); timer?.unref?.(); });
         continue;
       }
-      if (sig === null || __nimbusProgramStopped) continue;
       // Whatever sent it may have written files first, as for a signal the stdin pump delivers.
       await __nimbusInboundBarrier(undefined, true);
       __nimbusSignalSelf(String(sig));
