@@ -12,10 +12,9 @@
  *   ['peer', 'mount', rel, kind, tree]
  *                          the session mounts at `rel` a MemoryVFS holding
  *                          `tree` (names relative to it, as SEED_TREE's),
- *                          with a change feed ('fed', the process's own) or
- *                          none ('unfed', root's: a directory root changes
- *                          the mode of may shut the process out of a fed
- *                          one beneath): it covers what the session held
+ *                          with a change feed ('fed') or none ('unfed'),
+ *                          the process's own (a MemoryVFS has one owner and
+ *                          no access policy): it covers what the session held
  *                          there, its root the point's directory. Drawn over
  *                          names the process may hold, and a fed mount
  *                          beneath one with none. A mount point is not
@@ -224,7 +223,8 @@ function applied(world, change) {
     // A mount point, and a directory above one, stays as it is (EBUSY); a rename never crosses a mount; a MemoryVFS has one owner.
     if (at?.mount !== undefined) return null;
     if ((op === 'chmod' || op === 'chown') && [...world].some(([rel, state]) => state.mount !== undefined && rel !== a && under(rel, a))) return null;
-    if (op === 'chown' && mountOf(world, a) !== null) return null;
+    // A MemoryVFS has one owner and no access policy of its own (VFS.access): a mounted name's mode or owner is not drawn.
+    if ((op === 'chown' || op === 'chmod') && mountOf(world, a) !== null) return null;
     if (op === 'rename' && (world.get(b)?.mount !== undefined || mountOf(world, a)?.point !== mountOf(world, b)?.point
       || [...world].some(([rel, state]) => state.mount !== undefined && rel !== a && under(rel, a)))) return null;
   }
@@ -233,9 +233,8 @@ function applied(world, change) {
       const enclosing = mountOf(world, a);
       if (at?.type !== 'dir' || (a === '' && b !== 'unfed') || [...world].some(([rel, state]) => state.mount !== undefined && under(rel, a))) return null;
       if (enclosing !== null && !(b === 'fed' && enclosing.kind === 'unfed')) return null;
-      // A MemoryVFS has one owner: the process's for a fed one, root's for one with none.
-      const owner = b === 'fed' ? USER : 0;
-      const owned = (state) => ({ ...state, uid: owner, gid: owner });
+      // A MemoryVFS has one owner, the process's: it enforces no modes, which the model's then agree with.
+      const owned = (state) => ({ ...state, uid: USER, gid: USER });
       for (const rel of world.keys()) if (rel !== a && under(rel, a)) next.delete(rel);
       // The point is the mount's root, as a stat of it answers (CompositeVFS mountPointStat).
       next.set(a, { ...owned(dirState()), mount: b });
@@ -720,14 +719,14 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
   const change = (way, [, op, a, b, tree]) => {
     const fs = way === 'sync' ? engine.sync : engine.fs;
     if (op === 'mount') {
-      const owner = b === 'fed' ? USER : 0;
-      const backend = new MemoryVFS({ uid: owner, gid: owner });
+      const backend = new MemoryVFS({ uid: USER, gid: USER });
       for (const [rel, made] of Object.entries(tree).sort(([x], [y]) => x.length - y.length)) {
         if (made === null) backend.mkdir(`/${rel}`, { mode: DIR_MODE });
         else backend.writeFile(`/${rel}`, enc.encode(made));
       }
-      engine.authority.files.vfs.mount(abs(a), b === 'fed' ? backend : new Proxy(backend, { get: (target, name) => (name === 'changes' ? undefined : Reflect.get(target, name, target)) }));
-      return Promise.resolve();
+      // A held grant beneath the point is recalled first, as any session change over it (EAGAIN until it is).
+      return withRecall(() => engine.authority.files.vfs.mount(abs(a), b === 'fed' ? backend
+        : new Proxy(backend, { get: (target, name) => (name === 'changes' ? undefined : Reflect.get(target, name, target)) })));
     }
     if (outside(way) && [a, b].some((rel) => typeof rel === 'string' && mountOf(model.world, rel) !== null)) {
       // A mounted name is the namespace's: the change goes through it, to the mount.

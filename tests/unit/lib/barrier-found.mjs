@@ -265,6 +265,19 @@ const FOUND = {
     park: 6614,
     schedule: [['peer', 'mount', 'd', 'fed', { f: 'm6614.1' }], ['input'], ['own', 'write', 'd/n', 'c6614.5']],
   },
+  'a directory the process made beside a mount with no feed is listed at rest (7078)': {
+    park: 7078,
+    schedule: [['own', 'readFile', 'd'], ['own', 'unlink', 'd/f'], ['release', 'delivery'], ['input'], ['peer', 'rename', 'x', 'z'], ['hold', 'acquire'], ['sync', 'stat', 'x/e/g'],
+      ['own', 'pread', 'mid', 0], ['own', 'readFile', 'x/e'], ['own', 'readdir', 'z'], ['release'], ['own', 'stat', 'x/f'], ['own', 'readdir', 'x/f'], ['own', 'readdir', 'z/g'],
+      ['own', 'opendir', 'd/n'], ['restart'], ['sync', 'readdir', 'x/f'], ['peer', 'mount', 'z', 'unfed', { k: 'm7078.1' }], ['input'], ['own', 'chmod', 'd/e/g', 0o600],
+      ['sync', 'stat', 'd/e'], ['release'], ['sync', 'stat', 'z/g'], ['input'], ['sync', 'readFile', 'd/e'], ['own', 'mkdir', 'x'], ['hold', 'acquire'], ['own', 'stat', 'new'],
+      ['own', 'stat', 'new'], ['settle'], ['sync', 'readdir', 'x'], ['root', 'chown', 'd/e', 0], ['own', 'write', 'new', 'c7078.2'], ['own', 'opendir', 'x/h'], ['own', 'stat', 'z/g']],
+  },
+  'a mount over a name the process holds a grant beneath waits for its recall (7269)': {
+    park: 7269,
+    schedule: [['input'], ['input'], ['input'], ['own', 'stat', 'x/f'], ['input'], ['own', 'rename', 'd', 'z'], ['own', 'mkdir', 'x/e'], ['sync', 'write', 'new', 'c7269.2'],
+      ['peer', 'mount', 'x', 'fed', { e: null, h: 'm7269.3', 'e/g': 'm7269.4' }], ['sync', 'write', 'x/f', 'c7269.5'], ['sync', 'unlink', 'x/f']],
+  },
   'a fed mount made over a file the process held shows the mount\'s bytes': {
     schedule: [['own', 'readFile', 'x/h'], ['settle'], ['peer', 'mount', 'x', 'fed', { h: 'm00' }], ['input'], ['settle'], ['sync', 'readFile', 'x/h'],
       ['own', 'readFile', 'x/h'], ['settle']],
@@ -352,6 +365,11 @@ const GAPS = {
     lacks: 'S lists a mount with no change feed only where its launch named it, and refuses the rest (closed by the cutover: such a mount is the session\'s to answer, awaited); '
       + 'meanwhile readdirSync of a directory on such a mount can be refused EAGAIN',
     shows: 'sync readdir . answered EAGAIN',
+  },
+  'a directory the process made beside a mount with no feed is listed at rest (7078) [node]': {
+    lacks: 'S lists the directory the process made as its relist after the mount table changed saw it, without the name (closed by the cutover: one own state, RF\'s); '
+      + 'meanwhile readdirSync can leave out a directory the program made after a mount appeared',
+    shows: 'sync readdir . answered ["d","mid","top","z"]',
   },
   'a name on a mount with no feed answers as the session holds it now [node]': {
     lacks: 'S answers a name on a mount with no change feed as its launch\'s listing walked it (closed by the cutover: such a mount is the session\'s to answer); '
