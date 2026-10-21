@@ -35,6 +35,8 @@ export const DEV_SERVER_KEY_PREFIX = 'dev-server:';
 export const PROCESS_ENV_KEY_PREFIX = 'process-env:';
 /** Set once a session's records and images an earlier release wrote hold no process environment (FacetManager._dropEnvironmentsAtRest). */
 export const PROCESS_ENV_DROPPED_KEY = 'process-env-dropped';
+/** Set once the images earlier releases left readable by every account are each one principal's (FacetManager._closeEarlierImages). */
+export const EARLIER_IMAGES_CLOSED_KEY = 'earlier-images-closed';
 /**
  * Destroyed-session tombstone. Written AFTER `storage.deleteAll()` in the
  * destroy flow so a straggler facet RPC that wakes the dead DO cannot re-arm

@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 
 import { buildFacetVfsBundleSource, generateLongRunningNodeCode, releaseGeneratedSources, releaseSerializedSources } from '../../packages/worker/src/facets/manager.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { PROCESS_IMAGE_DIR } from '../../packages/fabric/src/process-fabric.ts';
+import { processImageDir } from '../../packages/fabric/src/process-fabric.ts';
 import { nodeFacetSources } from './lib/node-facet-sources.mjs';
 import { importModuleSet, storedBootModules, processImageModules } from './lib/module-map-bundle.mjs';
 import { launchManager } from './lib/facet-launch-harness.mjs';
@@ -89,7 +89,7 @@ async function launch(cacheRetained) {
     assert.deepEqual(await storedBootModules(world, fs), processImageModules(config),
       'the complete map is reconstructed from stored images and shared assets');
     if (!cacheRetained) assert.equal(refused, 1, 'the admission policy really refused this build');
-    assert.ok(fs.readdir(PROCESS_IMAGE_DIR).length > 0);
+    assert.ok(fs.readdir(processImageDir(1000)).length > 0);
 
     // Run the stored map, not a separately generated copy of its program.
     const mod = await importModuleSet(config.modules, 'worker.js');

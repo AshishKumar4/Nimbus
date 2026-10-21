@@ -19,6 +19,7 @@
 //   probe asks it.
 
 import { BASE, AUTH_TOKEN, makeAsserter, mintSession, deleteSession, Terminal, heredocCommand, fetchPort, sleep, stripAnsi, requestHeaders } from '../_driver.mjs';
+import { addAlice, aliceSearch } from './_another-account.mjs';
 import { afterReset, resetInstance } from './_reset-window.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -84,13 +85,11 @@ try {
   a.check('the Python server sees its own environment', py.ok, JSON.stringify(py.last).slice(0, 300));
 
   // ── Another account searches what every process can read ──────────────
-  await run(`sudo sh -c 'echo "alice:x:1001:1001:alice:/home/alice:/bin/sh" >> /etc/passwd && echo "alice:x:1001:" >> /etc/group'`, 10_000);
-  const who = await run('sudo -u alice id -u', 10_000);
-  a.check('the second account exists', who.text.includes('1001'), who.text.slice(-200));
-  const search = await run(`sudo -u alice grep -rl -e ${NODE_SECRET} -e ${PYTHON_SECRET} /.nimbus /var; echo "SEARCHED $?"`, 120_000);
-  const found = search.text.split('\n').filter((line) => line.startsWith('/.nimbus') || line.startsWith('/var'));
-  a.check('another account finds neither secret anywhere under /.nimbus or /var', /SEARCHED 1/.test(search.text) && found.length === 0,
-    `found in: ${found.join(', ') || '(none)'}; ${search.text.slice(-300)}`);
+  const alice = await addAlice(run);
+  a.check('the second account exists', alice.exists, alice.text.slice(-200));
+  const search = await aliceSearch(run, [NODE_SECRET, PYTHON_SECRET], ['/.nimbus', '/var']);
+  a.check('another account finds neither secret anywhere under /.nimbus or /var', search.answered && search.found.length === 0,
+    `found in: ${search.found.join(', ') || '(none)'}; ${search.text.slice(-300)}`);
 
   // ── The session's diagnostics name the shell's environment only ───────
   await run(`export SHELL_TOKEN=${SHELL_SECRET}`, 10_000);

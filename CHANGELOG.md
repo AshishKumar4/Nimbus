@@ -28,6 +28,23 @@ published independently in the `@nimbus-sh` npm scope.
   unsent, and so does one whose body went to the peer before it was refused.
   The first request after a process sits idle pays one round trip to its
   host before it is sent.
+- Fixed (security): another account can no longer read a file of yours
+  through a process's image. A resident process's generated program image
+  holds its program and the files it read at start, a 0600 one among them
+  (such as `~/.bash_history` with an inline `VAR=secret`). The image was
+  the kernel's, mode 0644, so every account on the box could read it. Now
+  each image belongs to the uid its process runs as, mode 0400, in a
+  directory per uid (`/.nimbus/process-images/<uid>`), as are the wasm
+  images Nimbus stages from a program's code (`/.nimbus/inline-wasm/<uid>`).
+  A durable application's blobs (`/.nimbus/images`), which applications of
+  any uid share by content and only the kernel reads, are the kernel's
+  alone. The first start after the upgrade closes what earlier releases
+  left open: their process images go, durable blobs become the kernel's, and
+  a staged wasm image is copied for each uid whose durable application
+  boots from it (the application is written again to read its copy); one
+  nothing boots from goes. Two accounts that run the same program now keep
+  a copy each. Copies already taken in a snapshot, an export or a clone are
+  not changed.
 - Fixed: a long-running node process (a server, an agent's turn) could end mid-read with exit 0 and its read never answered. This happened when its filesystem had to ask the session for something on the program's behalf: more storage room for a file another process had just written, a listing, or a fill. That work was not counted as something the program was waiting on, so the process looked idle and ended. Every filesystem call a node process makes on the session now counts as live work until it is answered, whichever part of the process made it.
 
 ## 2026-10-21 (patch): worker 0.24.1 (every other package unchanged from the 2026-10-21 release)
@@ -124,12 +141,7 @@ published independently in the `@nimbus-sh` npm scope.
   earlier release wrote, under an embedder that composes
   `resolveProcessEnv`, is not restarted, and the session says so: start it
   again. `/api/_diag/session` lists the shell's variable names, not their
-  values. Not fixed yet: a resident process's generated program image still
-  holds the files its process read at start, and every account can read the
-  image. A secret in such a file, such as an inline `VAR=secret` saved in
-  `~/.bash_history`, stays readable by other accounts until the image
-  store's privacy fix ships. Pass secrets through the launch environment
-  instead.
+  values.
 - Fixed: the shell's commands walk their file operands as POSIX does. A `..` applies after the name before it is looked up, through a symbolic link to where it points, and a missing or non-directory name before it is ENOENT or ENOTDIR; a trailing slash asks for a directory (`cat f/` is "Not a directory"), and on a name being removed or renamed it names the entry itself, never a link's target (`rm -r link/` empties the target and refuses the link, `rmdir link/` says the link was not followed, as GNU's do). Before, `cat missing/../f` and `cat f/` read `f`, and `cat link/../x` read the `x` beside the link. Messages still name the operand as typed; `cp`'s into-itself check compares where the names lead; `mktemp` prints the name it made; logical `cd` refuses `missing/..` and keeps `PWD` logical; `mkdir -p` makes the names a following `..` leaves; `rm -r` refuses another name for `/`.
 
 ## 2026-10-20 (patch): worker 0.23.1 (every other package unchanged from the 2026-10-20 release)
