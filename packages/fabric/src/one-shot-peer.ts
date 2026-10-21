@@ -240,7 +240,7 @@ export class OneShotPlacement {
         const worker = workerOf(spec, callImages, fn);
         const peer = this.#warmFor(worker);
         if (peer === null || options?.signal?.aborted === true) {
-          if (peer === null) this.#warm(spec, images, fn, worker);
+          if (peer === null) this.#warm(spec, callImages, fn, worker);
           try { return await local.submit(fn, args, options); } finally { this.#note(spec.tag, worker, 'session', began); }
         }
         let answer: { ok: true; value: Awaited<R> } | OneShotFailure | null;
@@ -296,6 +296,8 @@ export class OneShotPlacement {
           if (answer.ok === 'preamble missing') {
             if (carries) throw new BindingError(`one-shot peer '${peer}' did not hold the preamble the call carried`);
             this.#carried.delete(hash);
+            // Killed before the peer took it: it never started, and is not sent again.
+            options?.signal?.throwIfAborted();
             continue;
           }
           if (generation === this.#generation) this.#carried.add(hash);
@@ -459,13 +461,14 @@ export class OneShotPlacement {
 function workerOf<A, R>(spec: OneShotPoolSpec, images: Record<string, FacetImage>, fn: FacetTaskSource<A, R>): string {
   if (spec.scope === undefined) return ANY_WORKER;
   const identities = Object.entries(images).map(([name, image]) => `${name}=${image.identity}`).sort().join(',');
-  return [spec.tag, spec.reuse ?? 'session', spec.scope, preambleHash(spec.preamble), hashSource(requireFacetTaskSource(fn)), identities].join('\n');
+  const supervisor = spec.supervisor === undefined ? 's-none' : 's-call';
+  return [spec.tag, spec.reuse ?? 'session', spec.scope, supervisor, preambleHash(spec.preamble), hashSource(requireFacetTaskSource(fn)), identities].join('\n');
 }
 
-/** A preamble's hash, once per preamble: a runtime's is a constant of the deploy, some hundreds of KB. */
+/** A preamble's hash, once per preamble: a runtime's is a constant of the deploy, some hundreds of KB. None, or an empty one, is '0', as the pool has it. */
 const preambleHashes = new Map<string, string>();
 function preambleHash(preamble: string | undefined): string {
-  if (preamble === undefined) return '0';
+  if (!preamble) return '0';
   let hash = preambleHashes.get(preamble);
   if (hash === undefined) preambleHashes.set(preamble, hash = hashSource(preamble));
   return hash;

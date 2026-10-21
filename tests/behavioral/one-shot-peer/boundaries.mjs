@@ -11,7 +11,8 @@
 //      ticket-python-kill-latency.md.)
 //   3. Its host lost: a peer reset mid-run ends the run at once (not when the
 //      run would have ended), with an error naming the cause; the run is not
-//      run again, and the next one-shot runs.
+//      run again (what it does on starting, an append, happened once), and the
+//      next one-shot runs.
 import { makeAsserter, mintSession, deleteSession, Terminal, sleep } from '../_driver.mjs';
 import { addAlice } from '../durable/_another-account.mjs';
 import { peer, warmFor, warmForWorker, lastWorker, mark, hostsSince, median } from './_peer.mjs';
@@ -39,7 +40,7 @@ async function on(host, line) {
 }
 const ran = (r, host) => r.ranOn.length > 0 && r.ranOn.every((h) => h === host);
 /** What a run printed, a line each, without the command's own echo. */
-const lines = (r) => r.text.split('\n').slice(1).map((line) => line.trim());
+const lines = (r) => (r.text ?? r.output).split('\n').slice(1).map((line) => line.trim());
 
 try {
   await t.connect();
@@ -111,10 +112,20 @@ try {
   // ── 3. Its host lost ──────────────────────────────────────────────────────
   await placeNext('peer');
   const marked = await mark(sid);
+  await run('rm -f /home/user/started.log');
   t.reset();
-  t.cmd('python3 -c "import time; time.sleep(30); print(\'SLEPT-\' + \'THROUGH\')"');
+  t.cmd('python3 -c "open(\'/home/user/started.log\', \'a\').write(\'started\\n\'); import time; time.sleep(30); print(\'SLEPT-\' + \'THROUGH\')"');
   const submission = t.submission;
-  await sleep(3000);
+  // The reset waits for the run to have started: its append is in the session, read from a second terminal.
+  const t2 = new Terminal(sid, { terminal: 'observer' });
+  await t2.connect();
+  await t2.waitForPrompt(60_000);
+  for (const until = Date.now() + 30_000; ;) {
+    if (lines(await t2.run('cat /home/user/started.log 2>/dev/null', 30_000)).includes('started')) break;
+    if (Date.now() > until) throw new Error('the run never started');
+    await sleep(200);
+  }
+  await t2.close();
   const at = Date.now();
   const reset = await peer(sid, 'reset');
   await t.waitFor(() => submission.end !== null, 60_000, 'the run\'s end after its host was lost');
@@ -127,8 +138,10 @@ try {
   a.check('it ran on the peer', lostOn.length > 0 && lostOn.every((h) => h === 'peer'), JSON.stringify(lostOn));
   await sleep(Math.max(0, 30_000 - (Date.now() - at)));
   const next = await run('python3 -c "print(2)"');
-  a.check('it is not run again, and the next one-shot runs', next.exitCode === 0 && /\n2/.test(next.text) && !t.stream.slice(submission.start).includes('SLEPT-THROUGH'),
-    JSON.stringify({ exit: next.exitCode, text: next.text.slice(-200) }));
+  const started = lines(await run('cat /home/user/started.log'));
+  a.check('it is not run again (it started once), and the next one-shot runs',
+    next.exitCode === 0 && lines(next).includes('2') && started.filter((line) => line === 'started').length === 1 && !t.stream.slice(submission.start).includes('SLEPT-THROUGH'),
+    JSON.stringify({ exit: next.exitCode, text: next.text.slice(-200), started }));
 } catch (error) {
   a.check('the probe ran to its end', false, String(error?.stack ?? error).slice(0, 2000));
 } finally {

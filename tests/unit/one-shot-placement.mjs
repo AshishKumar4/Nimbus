@@ -23,7 +23,8 @@
 //      the next cold call warms the peer again;
 //  12. a facet whose network goes out through an egress stays in the session;
 //  13. a call carries its preamble only until the peer holds it, and again
-//      when the peer no longer does.
+//      when the peer no longer does; a kill between the two ends the call;
+//  14. a call with images of its own warms, then runs on, the worker with them.
 
 import assert from 'node:assert/strict';
 import { adoptCtxExports, composeFabric } from '../../packages/fabric/src/composition.ts';
@@ -90,6 +91,7 @@ function world({ colocated = false } = {}) {
         [Symbol.dispose]() {},
         async supervisorOp({ op, args }) {
           objects.sent.push({ to: name, op, args });
+          objects.onSent?.({ to: name, op, args });
           if (peer.fail?.(op)) throw peer.fail(op);
           if (op === 'processHostProbe') return { isolateToken: peer.token };
           const route = SUPERVISOR_OP_ROUTES[op];
@@ -323,7 +325,34 @@ function world({ colocated = false } = {}) {
   assert.deepEqual(carried(), [false, false, false, true], 'sent again, carrying it');
   await w.oneShot('then');
   assert.deepEqual(carried().at(-1), false, 'and not after');
-  console.log('  ok  a preamble crosses once per peer, and again when the peer lost it');
+
+  // Killed while the peer answers that it lost the preamble: not sent again.
+  peer.ctx = { ...peer.ctx };
+  const kill = new AbortController();
+  w.objects.onSent = (sent) => { if (sent.op === 'oneShotSubmit' && sent.args[3] === 'killed') kill.abort(new Error('SIGINT')); };
+  const killed = await w.oneShot('killed', { signal: kill.signal }).catch((error) => error);
+  w.objects.onSent = undefined;
+  assert.equal(killed.message, 'SIGINT', 'the call ends as killed');
+  assert.equal(w.objects.sent.filter((s) => s.op === 'oneShotSubmit' && s.args[3] === 'killed').length, 1, 'and is not sent again');
+  console.log('  ok  a preamble crosses once per peer, and again when the peer lost it, unless the call was killed meanwhile');
+}
+
+// ── 14: a call's own images ─────────────────────────────────────────────────
+{
+  const w = world();
+  const extra = { path: '/usr/lib/extra.wasm', identity: 'content:extra:4', size: 4, peak: 4, read: async () => IMAGE_BYTES };
+  const host = loaderFacetHost(w.session.env, w.session.ctx, ISOLATE_NETWORK);
+  const call = async (arg) => {
+    const facet = host.open({ tag: 'probe-runner', concurrency: 1, syscalls: { vfs: {}, pid: 4242 }, preamble: 'const p = 1;', warm: { session: 'session-0123456789', name: 'probe-1' } });
+    try { return await facet.submit(TASK, arg, { wasmModules: { 'extra.wasm': extra } }); } finally { facet.dispose(); }
+  };
+  assert.equal((await call('cold')).ranOn, 'session-0123456789');
+  await w.settled();
+  const peer = w.peerOf();
+  assert.equal(peer.warmed, 1, 'the warming loaded the worker with the call\'s own image');
+  assert.equal((await call('warm')).ranOn, peer.name, 'the next such call runs on the peer');
+  assert.equal(peer.loads, 1, 'on that worker, warm');
+  console.log('  ok  a call with images of its own warms and runs on the worker with them');
 }
 
 console.log('one-shot-placement: ok');
