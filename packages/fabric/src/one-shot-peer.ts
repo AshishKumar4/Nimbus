@@ -10,12 +10,15 @@
  * 0.04-0.12 s with the same run on another Durable Object, whose worker runs
  * on that object's thread (verdict 20261021T111038-40692a3b802a).
  *
- * So a session keeps one sibling, its peer, and runs a one-shot there when
- * the peer is warm for it: when the peer answered a call of the same worker
- * within ONE_SHOT_WARM_MS. When it is not, the call runs in the session as
- * before, and the peer is warmed for the next one beside it. A cold peer's
- * first call cost 2.4-3.1 s against 0.5-0.7 s warm, more than most runs
- * hold the session, so it is never paid on a call.
+ * So a session keeps one sibling, its peer, and runs a one-shot there while
+ * something besides the run wants the session's thread (#threadWanted) and
+ * the peer is warm for it: when the
+ * peer answered a call of the same worker within ONE_SHOT_WARM_MS. A wanted
+ * thread and a cold peer run the call in the session as before, and warm the
+ * peer for the next one beside it: a cold peer's first call cost 2.4-3.1 s
+ * against 0.5-0.7 s warm, more than most runs hold the session, so it is
+ * never paid on a call. An unwanted thread runs the call in the session and
+ * warms nothing: there, a run is no faster on the peer (design-d1-placement-b.md).
  *
  * The run is the session's wherever it runs. Its SUPERVISOR binding is the
  * one the session minted for it (its pid, and so its credential; its
@@ -160,14 +163,27 @@ const ProbeAnswerSchema = z.object({ isolateToken: z.string().min(1) });
 /** Warmth a peer has for any call: it answered one (its object is up). */
 const ANY_WORKER = '';
 
+/** What may want a session's thread besides a run, as the session reads it (OneShotPlacement.wantedBy). */
+export interface SessionDemand {
+  /** Terminals with an open socket: the session's own and each named one. */
+  terminals(): number;
+  /** Ports a process of the session listens on. */
+  ports(): number;
+}
+
 /** What /api/_diag/session shows of a session's one-shots: where each of the last ran, and its peer. */
 export interface OneShotPlacementCall {
   tag: string;
   /** Its worker, as warmth knows it (workerOf): '' for one only the peer object's warmth decides. */
   worker: string;
   host: 'session' | 'peer';
+  /** What wanted the session's thread as it started (#threadWanted): none, and it ran in the session. */
+  wants: ThreadWant[];
   at: number;
 }
+
+/** What may want a session's thread while a one-shot computes there (OneShotPlacement #threadWanted). */
+export type ThreadWant = 'terminal' | 'port' | 'run';
 const PLACEMENT_CALLS_KEPT = 16;
 
 const placements = new WeakMap<object, OneShotPlacement>();
@@ -212,6 +228,10 @@ export class OneShotPlacement {
   /** Advanced when the peer is forgotten: what answers a call made before is not news of the peer chosen after. */
   #generation = 0;
   readonly #calls: OneShotPlacementCall[] = [];
+  /** What its session says may want its thread (wantedBy); none until it does. */
+  #demand: SessionDemand | null = null;
+  /** One-shot calls in flight, on either host. */
+  #inFlight = 0;
   #warmFailure: { worker: string; message: string; at: number } | null = null;
   /**
    * The preambles the peer holds, by hash. A runtime's preamble is some
@@ -224,6 +244,38 @@ export class OneShotPlacement {
   constructor(ctx: DurableObjectState, env: object) {
     this.#ctx = ctx;
     this.#env = env;
+  }
+
+  /** What may want the session's thread besides a run, as its session reads it. */
+  wantedBy(demand: SessionDemand): void {
+    this.#demand = demand;
+  }
+
+  /**
+   * Whether anything besides a run starting now may ask the session's thread
+   * for work while the run computes there. Each source was measured waiting
+   * during a python run in the session against on the peer (2026-10-21,
+   * verdict 20261021T153907-db2aae8dc079):
+   * 1. another terminal attached, even idle: a keystroke may come (a second
+   *    terminal's echo waited 4.5 s against 0.15 s);
+   * 2. a process listening on a port: a request may come (5.2 s against
+   *    0.08 s);
+   * 3. another one-shot in flight: runs in the session take its thread in
+   *    turn (three at once held it 6.7-10.6 s against 0.06-0.12 s).
+   * Not one: the run's own terminal, whose user waits for the run on either
+   * host; and an HTTP request in flight, since a run the API started is in
+   * its own. When nothing wants the thread, a run is no faster on the peer:
+   * idle, python with ten imports took 4253 ms in the session and 4197 on the
+   * peer, ruby 455 and 453, clang 619 and 680 (design-d1-placement-b.md).
+   */
+  #threadWanted(): ThreadWant[] {
+    const demand = this.#demand;
+    if (demand === null) return [];
+    const wants: ThreadWant[] = [];
+    if (demand.terminals() > 1) wants.push('terminal');
+    if (demand.ports() > 0) wants.push('port');
+    if (this.#inFlight > 0) wants.push('run');
+    return wants;
   }
 
   /**
@@ -240,31 +292,43 @@ export class OneShotPlacement {
         const began = Date.now();
         const callImages = imagesOfCall(images, options?.wasmModules);
         const worker = workerOf(spec, callImages, fn);
-        const peer = this.#warmFor(worker);
-        if (peer === null || options?.signal?.aborted === true) {
-          if (peer === null) this.#warm(spec, callImages, fn, worker);
-          try { return await local.submit(fn, args, options); } finally { this.#note(spec.tag, worker, 'session', began); }
-        }
-        let answer: { ok: true; value: Awaited<R>; call: z.infer<typeof FacetCallSchema> | null } | OneShotFailure | null;
+        const wants = this.#threadWanted();
+        this.#inFlight++;
         try {
-          answer = await this.#submit<A, R>(peer, spec, callImages, worker, fn, args, options);
-        } catch (error) {
-          // Lost on the peer: it ran there.
-          this.#note(spec.tag, worker, 'peer', began);
-          throw error;
+          return await this.#place(wants, spec, callImages, worker, fn, args, options, local, began);
+        } finally {
+          this.#inFlight--;
         }
-        if (answer === null) {
-          try { return await local.submit(fn, args, options); } finally { this.#note(spec.tag, worker, 'session', began); }
-        }
-        this.#note(spec.tag, worker, 'peer', began);
-        if (answer.ok !== true) throw failedAs(answer);
-        // The session's own record of its facet calls holds this one too, as the peer timed it: from its worker's
-        // hold to its answer, on the clock of the object whose thread ran it, as the session times its own.
-        if (answer.call !== null) recordFacetCall(this.#ctx, { tag: spec.tag, ...answer.call, at: began });
-        return answer.value;
       },
       dispose: () => local.dispose(),
     };
+  }
+
+  /** One call, in the session or on the peer as what `wants` the thread and the peer's warmth say. */
+  async #place<A, R>(wants: ThreadWant[], spec: OneShotPoolSpec, images: Record<string, FacetImage>, worker: string,
+    fn: FacetTaskSource<A, R>, args: A, options: FacetSubmitOptions | undefined, local: Facet, began: number): Promise<Awaited<R>> {
+    const peer = wants.length > 0 ? this.#warmFor(worker) : null;
+    if (peer === null || options?.signal?.aborted === true) {
+      if (wants.length > 0 && peer === null) this.#warm(spec, images, fn, worker);
+      try { return await local.submit(fn, args, options); } finally { this.#note(spec.tag, worker, 'session', began, wants); }
+    }
+    let answer: { ok: true; value: Awaited<R>; call: z.infer<typeof FacetCallSchema> | null } | OneShotFailure | null;
+    try {
+      answer = await this.#submit<A, R>(peer, spec, images, worker, fn, args, options);
+    } catch (error) {
+      // Lost on the peer: it ran there.
+      this.#note(spec.tag, worker, 'peer', began, wants);
+      throw error;
+    }
+    if (answer === null) {
+      try { return await local.submit(fn, args, options); } finally { this.#note(spec.tag, worker, 'session', began, wants); }
+    }
+    this.#note(spec.tag, worker, 'peer', began, wants);
+    if (answer.ok !== true) throw failedAs(answer);
+    // The session's own record of its facet calls holds this one too, as the peer timed it: from its worker's
+    // hold to its answer, on the clock of the object whose thread ran it, as the session times its own.
+    if (answer.call !== null) recordFacetCall(this.#ctx, { tag: spec.tag, ...answer.call, at: began });
+    return answer.value;
   }
 
   /**
@@ -438,8 +502,8 @@ export class OneShotPlacement {
     }
   }
 
-  #note(tag: string, worker: string, host: 'session' | 'peer', began: number): void {
-    this.#calls.push({ tag, worker, host, at: began });
+  #note(tag: string, worker: string, host: 'session' | 'peer', began: number, wants: ThreadWant[]): void {
+    this.#calls.push({ tag, worker, host, wants, at: began });
     if (this.#calls.length > PLACEMENT_CALLS_KEPT) this.#calls.shift();
   }
 

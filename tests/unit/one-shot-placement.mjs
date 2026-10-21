@@ -1,9 +1,11 @@
 #!/usr/bin/env bun
 // one-shot-placement — where a session's one-shot runs (fabric one-shot-peer.ts).
 //
-// A call runs on the session's peer when the peer answered a call of the same
-// worker within ONE_SHOT_WARM_MS; otherwise it runs in the session and the
-// peer is warmed beside it. Asserted through the real loader host, the real
+// A call runs on the session's peer when something besides it wants the
+// session's thread (another terminal, a listening port, another one-shot in
+// flight) and the peer answered a call of the same worker within
+// ONE_SHOT_WARM_MS. Wanted and cold, it runs in the session and the peer is
+// warmed beside it; not wanted, it runs in the session and nothing is warmed. Asserted through the real loader host, the real
 // placement and the real peer leg (the session's op routes and rpc.ts), with
 // each Durable Object's Worker Loader a fake that records what it loaded and
 // what ran on it:
@@ -24,7 +26,9 @@
 //  12. a facet whose network goes out through an egress stays in the session;
 //  13. a call carries its preamble only until the peer holds it, and again
 //      when the peer no longer does; a kill between the two ends the call;
-//  14. a call with images of its own warms, then runs on, the worker with them.
+//  14. a call with images of its own warms, then runs on, the worker with them;
+//  15. nothing wanting the thread: the call runs in the session, nothing warmed,
+//      even with the peer warm; a listening port, or a one-shot in flight, wants it.
 
 import assert from 'node:assert/strict';
 import { adoptCtxExports, composeFabric } from '../../packages/fabric/src/composition.ts';
@@ -102,6 +106,9 @@ function world({ colocated = false } = {}) {
     },
   };
   const session = object('session-0123456789', objects);
+  // A second terminal attached: the session's thread is wanted (case 15 varies it).
+  const demand = { terminals: 2, ports: 0 };
+  oneShotPlacement(session.ctx, session.env).wantedBy({ terminals: () => demand.terminals, ports: () => demand.ports });
   const host = loaderFacetHost(session.env, session.ctx, ISOLATE_NETWORK);
   const image = () => ({
     path: '/usr/lib/probe.wasm', identity: 'content:probe:4', size: 4, peak: 4,
@@ -117,7 +124,7 @@ function world({ colocated = false } = {}) {
     await session.settled();
     for (const peer of objects.byName.values()) await peer.settled();
   };
-  return { objects, session, oneShot, peerOf, settled };
+  return { objects, session, oneShot, peerOf, settled, demand };
 }
 
 // ── 1 + 2: cold, then warm ──────────────────────────────────────────────────
@@ -357,6 +364,34 @@ function world({ colocated = false } = {}) {
   assert.equal((await call('warm')).ranOn, peer.name, 'the next such call runs on the peer');
   assert.equal(peer.loads, 1, 'on that worker, warm');
   console.log('  ok  a call with images of its own warms and runs on the worker with them');
+}
+
+// ── 15: what wants the thread ───────────────────────────────────────────────
+{
+  const w = world();
+  w.demand.terminals = 1;
+  assert.equal((await w.oneShot('idle')).ranOn, 'session-0123456789', 'only its own terminal: the call runs in the session');
+  await w.settled();
+  assert.equal(oneShotPlacementDiagnostics(w.session.ctx).peer, null, 'and nothing is warmed');
+  assert.deepEqual(oneShotPlacementDiagnostics(w.session.ctx).calls.at(-1).wants, []);
+  w.demand.terminals = 2;
+  await w.oneShot('warm it');
+  await w.settled();
+  const peer = w.peerOf();
+  w.demand.terminals = 1;
+  assert.equal((await w.oneShot('idle, peer warm')).ranOn, 'session-0123456789', 'idle, even with the peer warm, the call runs in the session');
+  w.demand.ports = 1;
+  assert.equal((await w.oneShot('a port')).ranOn, peer.name, 'a listening port wants the thread: the call runs on the peer');
+  assert.deepEqual(oneShotPlacementDiagnostics(w.session.ctx).calls.at(-1).wants, ['port'], 'and says why');
+  w.demand.ports = 0;
+  let release;
+  w.session.run = (arg) => (arg === 'first' ? new Promise((resolve) => { release = () => resolve({ ranOn: 'session-0123456789', arg }); }) : Promise.resolve({ ranOn: 'session-0123456789', arg }));
+  const first = w.oneShot('first');
+  while (release === undefined) await new Promise((r) => setTimeout(r, 1));
+  assert.equal((await w.oneShot('second')).ranOn, peer.name, 'a one-shot in flight wants the thread: the next runs on the peer');
+  release();
+  assert.equal((await first).ranOn, 'session-0123456789', 'the first, started idle, stays in the session');
+  console.log('  ok  only what wants the session\'s thread sends a call to the peer');
 }
 
 console.log('one-shot-placement: ok');
