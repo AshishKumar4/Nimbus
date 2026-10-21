@@ -19,7 +19,8 @@
  */
 import { RpcTarget } from 'cloudflare:workers';
 import { type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
-import type { SessionRpc, SessionReadyOptions, SessionExecOptions, SessionRunCodeOptions, SessionExposeOptions, SessionDurableAppOptions, SessionRuntimeInstallOptions, SessionTerminalSize, SessionProcessLogsOptions, SessionAppTarget, SessionStartProgramOptions } from '@nimbus-sh/core/runtime/session-protocol.js';
+import type { SessionRpc, SessionReadyOptions, SessionExecOptions, SessionRunCodeOptions, SessionExposeOptions, SessionDurableAppOptions, SessionRuntimeInstallOptions, SessionTerminalSize, SessionProcessLogsOptions, SessionAppTarget, SessionStartProgramOptions, SessionFollowOptions, SessionMkdirOptions } from '@nimbus-sh/core/runtime/session-protocol.js';
+import * as rpc from '../session/rpc.js';
 import * as operations from '../session/programmatic.js';
 export interface HostedSessionScope {
     /** The only named shell a command may run in; every command must name it (`sandbox(id, { shellId })`). */
@@ -27,7 +28,7 @@ export interface HostedSessionScope {
     /** The identity every command and file operation runs as. */
     readonly cred?: VfsCred;
 }
-export type HostedSessionOwner = operations.ProgrammaticHost & operations.TerminalsHost & {
+export type HostedSessionOwner = operations.ProgrammaticHost & operations.TerminalsHost & rpc.FilesHost & {
     noteClientActivity(): void;
 };
 export declare class HostedSession extends RpcTarget implements SessionRpc {
@@ -99,6 +100,11 @@ export declare class HostedSession extends RpcTarget implements SessionRpc {
         ctime?: number | undefined;
         ino?: number | undefined;
         revision?: number | undefined;
+        dev?: number | undefined;
+        nlink?: number | undefined;
+        uid?: number | undefined;
+        gid?: number | undefined;
+        atime?: number | undefined;
     } | null>;
     _rpcLstat(path: string, _pid?: undefined, cred?: VfsCred): Promise<{
         type: string;
@@ -108,6 +114,11 @@ export declare class HostedSession extends RpcTarget implements SessionRpc {
         ctime?: number | undefined;
         ino?: number | undefined;
         revision?: number | undefined;
+        dev?: number | undefined;
+        nlink?: number | undefined;
+        uid?: number | undefined;
+        gid?: number | undefined;
+        atime?: number | undefined;
     } | null>;
     _rpcReadlink(path: string, _pid?: undefined, cred?: VfsCred): Promise<string | null>;
     _rpcReaddir(path: string, _pid?: undefined, cred?: VfsCred): Promise<{
@@ -118,7 +129,15 @@ export declare class HostedSession extends RpcTarget implements SessionRpc {
     _rpcChmod(path: string, mode: number, _pid?: undefined, cred?: VfsCred): Promise<void>;
     _rpcFsReadRange(path: string, offset: number, length: number, _pid?: undefined, cred?: VfsCred): Promise<Uint8Array<ArrayBufferLike> | null>;
     _rpcExists(path: string, _pid?: undefined, cred?: VfsCred): Promise<boolean>;
-    _rpcMkdir(path: string, _pid?: undefined, cred?: VfsCred): Promise<void>;
+    _rpcMkdir(path: string, _pid?: undefined, cred?: VfsCred, options?: SessionMkdirOptions): Promise<void>;
+    _rpcUnlink(path: string, _pid?: undefined, cred?: VfsCred): Promise<void>;
+    _rpcRmdir(path: string, _pid?: undefined, cred?: VfsCred): Promise<void>;
+    _rpcAppendFile(path: string, content: string | Uint8Array, _pid?: undefined, cred?: VfsCred): Promise<void>;
+    _rpcSymlink(target: string, path: string, _pid?: undefined, cred?: VfsCred): Promise<void>;
+    _rpcRealpath(path: string, _pid?: undefined, cred?: VfsCred): Promise<string>;
+    _rpcTruncate(path: string, size: number, _pid?: undefined, cred?: VfsCred): Promise<void>;
+    _rpcUtimes(path: string, atime: number, mtime: number, _pid?: undefined, cred?: VfsCred, options?: SessionFollowOptions): Promise<void>;
+    _rpcChown(path: string, uid: number | null, gid: number | null, _pid?: undefined, cred?: VfsCred, options?: SessionFollowOptions): Promise<void>;
     _rpcDeleteFile(path: string, options?: {
         recursive?: boolean;
     }, cred?: VfsCred): Promise<void>;

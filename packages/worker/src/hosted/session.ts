@@ -21,7 +21,7 @@
 import { RpcTarget } from 'cloudflare:workers';
 import { CRED_SESSION_USER, sameCred, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { encodeExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
-import type { SessionRpc, SessionReadyOptions, SessionExecOptions, SessionRunCodeOptions, SessionExposeOptions, SessionDurableAppOptions, SessionRuntimeInstallOptions, SessionTerminalSize, SessionProcessLogsOptions, SessionAppTarget, SessionStartProgramOptions } from '@nimbus-sh/core/runtime/session-protocol.js';
+import type { SessionRpc, SessionReadyOptions, SessionExecOptions, SessionRunCodeOptions, SessionExposeOptions, SessionDurableAppOptions, SessionRuntimeInstallOptions, SessionTerminalSize, SessionProcessLogsOptions, SessionAppTarget, SessionStartProgramOptions, SessionFollowOptions, SessionMkdirOptions } from '@nimbus-sh/core/runtime/session-protocol.js';
 import * as rpc from '../session/rpc.js';
 import * as operations from '../session/programmatic.js';
 
@@ -32,7 +32,7 @@ export interface HostedSessionScope {
   readonly cred?: VfsCred;
 }
 
-export type HostedSessionOwner = operations.ProgrammaticHost & operations.TerminalsHost & {
+export type HostedSessionOwner = operations.ProgrammaticHost & operations.TerminalsHost & rpc.FilesHost & {
   noteClientActivity(): void;
 };
 
@@ -119,7 +119,21 @@ export class HostedSession extends RpcTarget implements SessionRpc {
     return rpc._rpcFsReadRange(this.#client(), path, offset, length, undefined, this.#cred(cred));
   }
   async _rpcExists(path: string, _pid?: undefined, cred?: VfsCred) { return rpc._rpcExists(this.#client(), path, undefined, this.#cred(cred)); }
-  async _rpcMkdir(path: string, _pid?: undefined, cred?: VfsCred) { return rpc._rpcMkdir(this.#client(), path, undefined, this.#cred(cred)); }
+  async _rpcMkdir(path: string, _pid?: undefined, cred?: VfsCred, options?: SessionMkdirOptions) { return rpc._rpcMkdir(this.#client(), path, undefined, this.#cred(cred), options); }
+  async _rpcUnlink(path: string, _pid?: undefined, cred?: VfsCred) { return rpc._rpcUnlink(this.#client(), path, undefined, this.#cred(cred)); }
+  async _rpcRmdir(path: string, _pid?: undefined, cred?: VfsCred) { return rpc._rpcRmdir(this.#client(), path, undefined, this.#cred(cred)); }
+  async _rpcAppendFile(path: string, content: string | Uint8Array, _pid?: undefined, cred?: VfsCred) {
+    return rpc._rpcAppendFile(this.#client(), path, content, undefined, this.#cred(cred));
+  }
+  async _rpcSymlink(target: string, path: string, _pid?: undefined, cred?: VfsCred) { return rpc._rpcSymlink(this.#client(), target, path, undefined, this.#cred(cred)); }
+  async _rpcRealpath(path: string, _pid?: undefined, cred?: VfsCred) { return rpc._rpcRealpath(this.#client(), path, undefined, this.#cred(cred)); }
+  async _rpcTruncate(path: string, size: number, _pid?: undefined, cred?: VfsCred) { return rpc._rpcTruncate(this.#client(), path, size, undefined, this.#cred(cred)); }
+  async _rpcUtimes(path: string, atime: number, mtime: number, _pid?: undefined, cred?: VfsCred, options?: SessionFollowOptions) {
+    return rpc._rpcUtimes(this.#client(), path, atime, mtime, undefined, this.#cred(cred), options);
+  }
+  async _rpcChown(path: string, uid: number | null, gid: number | null, _pid?: undefined, cred?: VfsCred, options?: SessionFollowOptions) {
+    return rpc._rpcChown(this.#client(), path, uid, gid, undefined, this.#cred(cred), options);
+  }
   async _rpcDeleteFile(path: string, options?: { recursive?: boolean }, cred?: VfsCred) {
     return operations.rpcDeleteFile(this.#client(), path, options, this.#cred(cred));
   }

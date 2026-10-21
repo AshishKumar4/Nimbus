@@ -791,6 +791,18 @@ export class NimbusSession extends CloudflareDurableObject {
     }
     async _rpcStat(path, pid, cred) { return _rpc._rpcStat(this, path, pid, cred); }
     async _rpcLstat(path, pid, cred) { return _rpc._rpcLstat(this, path, pid, cred); }
+    async _rpcUnlink(path, pid, cred) { return _rpc._rpcUnlink(this, path, pid, cred); }
+    async _rpcRmdir(path, pid, cred) { return _rpc._rpcRmdir(this, path, pid, cred); }
+    async _rpcAppendFile(path, content, pid, cred) { return _rpc._rpcAppendFile(this, path, content, pid, cred); }
+    async _rpcSymlink(target, path, pid, cred) { return _rpc._rpcSymlink(this, target, path, pid, cred); }
+    async _rpcRealpath(path, pid, cred) { return _rpc._rpcRealpath(this, path, pid, cred); }
+    async _rpcTruncate(path, size, pid, cred) { return _rpc._rpcTruncate(this, path, size, pid, cred); }
+    async _rpcUtimes(path, atime, mtime, pid, cred, options) {
+        return _rpc._rpcUtimes(this, path, atime, mtime, pid, cred, options);
+    }
+    async _rpcChown(path, uid, gid, pid, cred, options) {
+        return _rpc._rpcChown(this, path, uid, gid, pid, cred, options);
+    }
     async _rpcReadlink(path, pid, cred) { return _rpc._rpcReadlink(this, path, pid, cred); }
     async _rpcChmod(path, mode, pid, cred) {
         return _rpc._rpcChmod(this, path, mode, pid, cred);
@@ -800,7 +812,7 @@ export class NimbusSession extends CloudflareDurableObject {
     }
     async _rpcReaddir(path, pid, cred) { return _rpc._rpcReaddir(this, path, pid, cred); }
     async _rpcExists(path, pid, cred) { return _rpc._rpcExists(this, path, pid, cred); }
-    async _rpcMkdir(path, pid, cred) { return _rpc._rpcMkdir(this, path, pid, cred); }
+    async _rpcMkdir(path, pid, cred, options) { return _rpc._rpcMkdir(this, path, pid, cred, options); }
     async _rpcRename(from, to, pid, cred) { return _rpc._rpcRename(this, from, to, pid, cred); }
     async _rpcFsAcquire(epoch, cursor, options, pid) {
         return _rpc._rpcFsAcquire(this, epoch, cursor, options, pid);

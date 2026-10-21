@@ -48,6 +48,7 @@ import {
   type SessionProcessLogs as NimbusProcessLogsResult,
   type SessionPort as NimbusPort,
   type SessionFileStat as NimbusFileStat, type SessionDirectoryEntry,
+  type SessionMkdirOptions as NimbusMkdirOptions, type SessionFollowOptions as NimbusFollowOptions,
   type SessionRuntimeSummary as NimbusRuntimeSummary,
   type SessionAvailableRuntime as NimbusAvailableRuntime,
 } from '@nimbus-sh/core/runtime/session-protocol.js';
@@ -57,7 +58,7 @@ export type {
   NimbusSessionSurface, NimbusRestartPolicy, NimbusAppVisibility, NimbusAppTarget, NimbusDurableAppOptions,
   NimbusTerminalSize, NimbusDestroyOptions, NimbusDestroyResult, NimbusStartResult,
   NimbusProcess, NimbusProcessLogChunk, NimbusProcessExitInfo, NimbusProcessLogsOptions,
-  NimbusProcessLogsResult, NimbusPort, NimbusFileStat, NimbusRuntimeSummary, NimbusAvailableRuntime,
+  NimbusProcessLogsResult, NimbusPort, NimbusFileStat, NimbusMkdirOptions, NimbusFollowOptions, NimbusRuntimeSummary, NimbusAvailableRuntime,
 };
 import { z } from 'zod/v4';
 import { WireEncoder, WireDecoder } from '@nimbus-sh/core/_shared/wire-codec.js';
@@ -128,9 +129,26 @@ export interface NimbusSandboxFiles {
   /** Read `length` bytes at `offset` without materializing the whole file. */
   readRange(path: string, offset: number, length: number): Promise<Uint8Array | null>;
   list(path?: string): Promise<SessionDirectoryEntry[]>;
-  mkdir(path: string): Promise<void>;
+  /** Without options, `mkdir -p`; with them, mkdir(2)'s: `recursive` only when asked, `mode` before the umask. */
+  mkdir(path: string, options?: NimbusMkdirOptions): Promise<void>;
   exists(path: string): Promise<boolean>;
   delete(path: string, options?: { recursive?: boolean }): Promise<void>;
+  /** unlink(2): EISDIR for a directory. */
+  unlink(path: string): Promise<void>;
+  /** rmdir(2): ENOTDIR for a non-directory, ENOTEMPTY for one with entries. */
+  rmdir(path: string): Promise<void>;
+  /** Written at the file's end, as O_APPEND writes; the file is made when absent. */
+  appendFile(path: string, content: string | Uint8Array): Promise<void>;
+  /** symlink(2): a link at `path` whose text is `target`, as given. */
+  symlink(target: string, path: string): Promise<void>;
+  /** realpath(3): the path with every link followed. */
+  realpath(path: string): Promise<string>;
+  /** truncate(2): cut to `size`, or extended with zeros. */
+  truncate(path: string, size: number): Promise<void>;
+  /** utimensat(2), times in milliseconds; `followSymlinks: false` sets a link's own. */
+  utimes(path: string, atime: number, mtime: number, options?: NimbusFollowOptions): Promise<void>;
+  /** chown(2): a null side keeps the file's; `followSymlinks: false` changes a link's own. */
+  chown(path: string, uid: number | null, gid: number | null, options?: NimbusFollowOptions): Promise<void>;
 }
 
 /** The trailing wire argument a credentialed file op carries, or nothing. */
@@ -186,13 +204,22 @@ export class NimbusRemoteError extends Error {
   readonly status: number;
   readonly code: string | undefined;
   readonly body: unknown;
+  /** A failed system call's, as Node's error carries them (ENOENT's -2, `syscall: 'unlink'`, the path). */
+  readonly errno: number | undefined;
+  readonly syscall: string | undefined;
+  readonly path: string | undefined;
+  readonly dest: string | undefined;
 
-  constructor(message: string, options: { status: number; code?: string; body?: unknown }) {
+  constructor(message: string, options: { status: number; code?: string; body?: unknown; errno?: number; syscall?: string; path?: string; dest?: string }) {
     super(message);
     this.name = 'NimbusRemoteError';
     this.status = options.status;
     this.code = options.code;
     this.body = options.body;
+    this.errno = options.errno;
+    this.syscall = options.syscall;
+    this.path = options.path;
+    this.dest = options.dest;
   }
 }
 
@@ -212,11 +239,9 @@ async function remotePayload(response: Response): Promise<unknown> {
 function remoteFailure(response: Response, payload: unknown): NimbusRemoteError {
   const failure = SessionFailureSchema.safeParse(payload);
   const fallback = `Nimbus remote API request failed (${response.status})`;
-  return new NimbusRemoteError(failure.success ? failure.data.error ?? failure.data.message ?? fallback : fallback, {
-    status: response.status,
-    code: failure.success ? failure.data.code : undefined,
-    body: payload,
-  });
+  if (!failure.success) return new NimbusRemoteError(fallback, { status: response.status, body: payload });
+  const { error, message, code, errno, syscall, path, dest } = failure.data;
+  return new NimbusRemoteError(error ?? message ?? fallback, { status: response.status, code, body: payload, errno, syscall, path, dest });
 }
 
 const ToolPathInputSchema = z.object({
@@ -368,7 +393,19 @@ export class NimbusSandbox {
         this.remoteRpc('readRange', [path, offset, length, ...fileWireOptions(cred)]),
       _rpcReaddir: (path, _pid, cred) => this.remoteRpc('readdir', [path, ...fileWireOptions(cred)]),
       _rpcExists: (path, _pid, cred) => this.remoteRpc('exists', [path, ...fileWireOptions(cred)]),
-      _rpcMkdir: (path, _pid, cred) => this.remoteRpc('mkdir', [path, ...fileWireOptions(cred)]),
+      _rpcMkdir: (path, _pid, cred, options) => this.remoteRpc('mkdir', options === undefined && cred === undefined
+        ? [path]
+        : [path, { ...(options ?? {}), ...(cred !== undefined ? { cred } : {}) }]),
+      _rpcUnlink: (path, _pid, cred) => this.remoteRpc('unlink', [path, ...fileWireOptions(cred)]),
+      _rpcRmdir: (path, _pid, cred) => this.remoteRpc('rmdir', [path, ...fileWireOptions(cred)]),
+      _rpcAppendFile: (path, content, _pid, cred) => this.remoteRpc('appendFile', [path, content, ...fileWireOptions(cred)]),
+      _rpcSymlink: (target, path, _pid, cred) => this.remoteRpc('symlink', [target, path, ...fileWireOptions(cred)]),
+      _rpcRealpath: (path, _pid, cred) => this.remoteRpc('realpath', [path, ...fileWireOptions(cred)]),
+      _rpcTruncate: (path, size, _pid, cred) => this.remoteRpc('truncate', [path, size, ...fileWireOptions(cred)]),
+      _rpcUtimes: (path, atime, mtime, _pid, cred, options) =>
+        this.remoteRpc('utimes', [path, atime, mtime, { ...(options ?? {}), ...(cred !== undefined ? { cred } : {}) }]),
+      _rpcChown: (path, uid, gid, _pid, cred, options) =>
+        this.remoteRpc('chown', [path, uid, gid, { ...(options ?? {}), ...(cred !== undefined ? { cred } : {}) }]),
       _rpcDeleteFile: (path, options, cred) =>
         this.remoteRpc('deleteFile', [path, { ...(options ?? {}), ...(cred !== undefined ? { cred } : {}) }]),
       _rpcInstallRuntime: (spec, options) => this.remoteRpc('installRuntime', [spec, options]),
@@ -627,9 +664,10 @@ export class NimbusSandbox {
         await this.ready();
         return this.rpc(this.stub()._rpcReaddir(path, undefined, cred));
       },
-      mkdir: async (path: string): Promise<void> => {
+      mkdir: async (path: string, options?: NimbusMkdirOptions): Promise<void> => {
         await this.ready();
-        return this.rpc(this.stub()._rpcMkdir(path, undefined, cred));
+        const stub = this.stub();
+        return this.rpc(options === undefined ? stub._rpcMkdir(path, undefined, cred) : stub._rpcMkdir(path, undefined, cred, options));
       },
       exists: async (path: string): Promise<boolean> => {
         await this.ready();
@@ -638,6 +676,38 @@ export class NimbusSandbox {
       delete: async (path: string, options: { recursive?: boolean } = {}): Promise<void> => {
         await this.ready();
         return this.rpc(this.stub()._rpcDeleteFile(path, options, cred));
+      },
+      unlink: async (path: string): Promise<void> => {
+        await this.ready();
+        return this.rpc(this.stub()._rpcUnlink(path, undefined, cred));
+      },
+      rmdir: async (path: string): Promise<void> => {
+        await this.ready();
+        return this.rpc(this.stub()._rpcRmdir(path, undefined, cred));
+      },
+      appendFile: async (path: string, content: string | Uint8Array): Promise<void> => {
+        await this.ready();
+        return this.rpc(this.stub()._rpcAppendFile(path, content, undefined, cred));
+      },
+      symlink: async (target: string, path: string): Promise<void> => {
+        await this.ready();
+        return this.rpc(this.stub()._rpcSymlink(target, path, undefined, cred));
+      },
+      realpath: async (path: string): Promise<string> => {
+        await this.ready();
+        return this.rpc(this.stub()._rpcRealpath(path, undefined, cred));
+      },
+      truncate: async (path: string, size: number): Promise<void> => {
+        await this.ready();
+        return this.rpc(this.stub()._rpcTruncate(path, size, undefined, cred));
+      },
+      utimes: async (path: string, atime: number, mtime: number, options?: NimbusFollowOptions): Promise<void> => {
+        await this.ready();
+        return this.rpc(this.stub()._rpcUtimes(path, atime, mtime, undefined, cred, options));
+      },
+      chown: async (path: string, uid: number | null, gid: number | null, options?: NimbusFollowOptions): Promise<void> => {
+        await this.ready();
+        return this.rpc(this.stub()._rpcChown(path, uid, gid, undefined, cred, options));
       },
     };
   }

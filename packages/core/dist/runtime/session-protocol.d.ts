@@ -102,10 +102,43 @@ export declare const SessionFileStatSchema: z.ZodObject<{
     mode: z.ZodNumber;
     ino: z.ZodOptional<z.ZodNumber>;
     revision: z.ZodOptional<z.ZodNumber>;
+    dev: z.ZodOptional<z.ZodNumber>;
+    nlink: z.ZodOptional<z.ZodNumber>;
+    uid: z.ZodOptional<z.ZodNumber>;
+    gid: z.ZodOptional<z.ZodNumber>;
+    atime: z.ZodOptional<z.ZodNumber>;
 }, z.core.$strip>;
 export type SessionFileStat = z.infer<typeof SessionFileStatSchema>;
-/** Runtime stat uses zero for unknown metadata; the session wire exposes that as absent. */
-export declare function sessionFileStatOf(stat: SessionFileStat | null): SessionFileStat | null;
+/** A filesystem's stat (RuntimeVfsStat), as a session's file calls answer with it. */
+export declare const RuntimeStatSchema: z.ZodObject<{
+    dev: z.ZodNumber;
+    ino: z.ZodNumber;
+    nlink: z.ZodNumber;
+    type: z.ZodEnum<{
+        file: "file";
+        directory: "directory";
+        symlink: "symlink";
+    }>;
+    size: z.ZodNumber;
+    ctime: z.ZodNumber;
+    atime: z.ZodNumber;
+    mtime: z.ZodNumber;
+    mode: z.ZodNumber;
+    uid: z.ZodNumber;
+    gid: z.ZodNumber;
+    revision: z.ZodNumber;
+}, z.core.$strip>;
+/** Runtime stat uses zero for an unknown inode or revision; the session wire exposes that as absent. */
+export declare function sessionFileStatOf(stat: z.infer<typeof RuntimeStatSchema> | null): SessionFileStat | null;
+/** mkdir(2)'s options as a session takes them: none is `mkdir -p`, as files.mkdir has always been. */
+export interface SessionMkdirOptions {
+    recursive?: boolean;
+    mode?: number;
+}
+/** Whether a link's own times or owner change (lutimes, lchown), not its target's. */
+export interface SessionFollowOptions {
+    followSymlinks?: boolean;
+}
 export declare const SessionDirectoryEntrySchema: z.ZodObject<{
     name: z.ZodString;
     type: z.ZodString;
@@ -339,6 +372,11 @@ declare const SessionResultSchemas: {
         mode: z.ZodNumber;
         ino: z.ZodOptional<z.ZodNumber>;
         revision: z.ZodOptional<z.ZodNumber>;
+        dev: z.ZodOptional<z.ZodNumber>;
+        nlink: z.ZodOptional<z.ZodNumber>;
+        uid: z.ZodOptional<z.ZodNumber>;
+        gid: z.ZodOptional<z.ZodNumber>;
+        atime: z.ZodOptional<z.ZodNumber>;
     }, z.core.$strip>>;
     lstat: z.ZodNullable<z.ZodObject<{
         type: z.ZodString;
@@ -348,6 +386,11 @@ declare const SessionResultSchemas: {
         mode: z.ZodNumber;
         ino: z.ZodOptional<z.ZodNumber>;
         revision: z.ZodOptional<z.ZodNumber>;
+        dev: z.ZodOptional<z.ZodNumber>;
+        nlink: z.ZodOptional<z.ZodNumber>;
+        uid: z.ZodOptional<z.ZodNumber>;
+        gid: z.ZodOptional<z.ZodNumber>;
+        atime: z.ZodOptional<z.ZodNumber>;
     }, z.core.$strip>>;
     readlink: z.ZodNullable<z.ZodString>;
     readdir: z.ZodArray<z.ZodObject<{
@@ -356,6 +399,14 @@ declare const SessionResultSchemas: {
     }, z.core.$strip>>;
     rename: z.ZodUndefined;
     chmod: z.ZodUndefined;
+    unlink: z.ZodUndefined;
+    rmdir: z.ZodUndefined;
+    appendFile: z.ZodUndefined;
+    symlink: z.ZodUndefined;
+    realpath: z.ZodString;
+    truncate: z.ZodUndefined;
+    utimes: z.ZodUndefined;
+    chown: z.ZodUndefined;
     readRange: z.ZodNullable<z.ZodType<Uint8Array<ArrayBufferLike>, unknown, z.core.$ZodTypeInternals<Uint8Array<ArrayBufferLike>, unknown>>>;
     exists: z.ZodBoolean;
     mkdir: z.ZodUndefined;
@@ -601,6 +652,10 @@ export declare const SessionFailureSchema: z.ZodObject<{
     error: z.ZodOptional<z.ZodString>;
     message: z.ZodOptional<z.ZodString>;
     code: z.ZodOptional<z.ZodString>;
+    errno: z.ZodOptional<z.ZodNumber>;
+    syscall: z.ZodOptional<z.ZodString>;
+    path: z.ZodOptional<z.ZodString>;
+    dest: z.ZodOptional<z.ZodString>;
 }, z.core.$loose>;
 export interface SessionReadyOptions {
     preinstall?: string[];
@@ -686,10 +741,26 @@ export interface SessionRpc {
     _rpcChmod(path: string, mode: number, pid?: undefined, cred?: VfsCred): Promise<void>;
     _rpcFsReadRange(path: string, offset: number, length: number, pid?: undefined, cred?: VfsCred): Promise<SessionResult<'readRange'>>;
     _rpcExists(path: string, pid?: undefined, cred?: VfsCred): Promise<boolean>;
-    _rpcMkdir(path: string, pid?: undefined, cred?: VfsCred): Promise<void>;
+    _rpcMkdir(path: string, pid?: undefined, cred?: VfsCred, options?: SessionMkdirOptions): Promise<void>;
     _rpcDeleteFile(path: string, options?: {
         recursive?: boolean;
     }, cred?: VfsCred): Promise<void>;
+    /** unlink(2): EISDIR for a directory. */
+    _rpcUnlink(path: string, pid?: undefined, cred?: VfsCred): Promise<void>;
+    /** rmdir(2): ENOTDIR for a non-directory, ENOTEMPTY for one with entries. */
+    _rpcRmdir(path: string, pid?: undefined, cred?: VfsCred): Promise<void>;
+    /** Written at the file's end, as O_APPEND writes; the file is made when absent. */
+    _rpcAppendFile(path: string, content: string | Uint8Array, pid?: undefined, cred?: VfsCred): Promise<void>;
+    /** symlink(2): a link at `path` whose text is `target`, as given. */
+    _rpcSymlink(target: string, path: string, pid?: undefined, cred?: VfsCred): Promise<void>;
+    /** realpath(3): the path with every link followed. */
+    _rpcRealpath(path: string, pid?: undefined, cred?: VfsCred): Promise<string>;
+    /** truncate(2): cut to `size`, or extended with zeros. */
+    _rpcTruncate(path: string, size: number, pid?: undefined, cred?: VfsCred): Promise<void>;
+    /** utimensat(2), times in milliseconds. */
+    _rpcUtimes(path: string, atime: number, mtime: number, pid?: undefined, cred?: VfsCred, options?: SessionFollowOptions): Promise<void>;
+    /** chown(2): a null side keeps the file's. */
+    _rpcChown(path: string, uid: number | null, gid: number | null, pid?: undefined, cred?: VfsCred, options?: SessionFollowOptions): Promise<void>;
     _rpcInstallRuntime(spec: string, options?: SessionRuntimeInstallOptions): Promise<SessionResult<'installRuntime'>>;
     _rpcEnsureRuntimes(specs: string[], options?: SessionRuntimeInstallOptions): Promise<SessionResult<'ensureRuntimes'>>;
     _rpcListRuntimes(): Promise<SessionResult<'listRuntimes'>>;

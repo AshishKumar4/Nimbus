@@ -20,10 +20,11 @@
  * these ~3 sites would each need ctx threaded through; cast at boundary
  * is acceptable per plan §IX recommendation 1.
  */
-import { type SessionFileStat } from '@nimbus-sh/core/runtime/session-protocol.js';
+import { type SessionFileStat, type SessionFollowOptions, type SessionMkdirOptions } from '@nimbus-sh/core/runtime/session-protocol.js';
 import type { D1QueryResponse, D1QuerySql, KvCall, R2Call } from '@nimbus-sh/fabric/inner-storage-env.js';
 import type { RuntimeVfsStat } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type FanoutShardOptions } from '@nimbus-sh/fabric/fanout.js';
+import { type SupervisorOpEnvelope } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import { PeerHost, type HostedHttpRequest, type HostedHttpResponse, type HostedReply } from '@nimbus-sh/fabric/peer-host.js';
 import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListOptions, type VfsListPage, type VfsMutationReceipt, type VfsListTree } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type LoaderStoreRequest } from '../wrangler/loader-code-store.js';
@@ -131,8 +132,21 @@ export declare function _rpcWriteFile(self: RpcHost, path: string, content: stri
  * running in the session (docs/sandbox-sdk.md, "Users and Permissions").
  */
 export declare function _rpcWriteProtectedRootFile(self: RpcHost, rootPath: string, path: string, content: string | Uint8Array): Promise<void>;
-export declare function _rpcStat(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<SessionFileStat | null>;
-export declare function _rpcLstat(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<SessionFileStat | null>;
+/** What a session's file calls reach: its supervisor's file ops, as the caller (a pid, or a credential). */
+export interface FilesHost {
+    supervisorOp(envelope: SupervisorOpEnvelope): Promise<unknown>;
+}
+export declare function _rpcStat(self: FilesHost, path: string, pid?: number, cred?: VfsCred): Promise<SessionFileStat | null>;
+export declare function _rpcLstat(self: FilesHost, path: string, pid?: number, cred?: VfsCred): Promise<SessionFileStat | null>;
+export declare function _rpcUnlink(self: FilesHost, path: string, pid?: number, cred?: VfsCred): Promise<void>;
+export declare function _rpcRmdir(self: FilesHost, path: string, pid?: number, cred?: VfsCred): Promise<void>;
+/** Opened O_APPEND (made when absent), written to its end, closed: every byte at the file's end however it grows meanwhile. */
+export declare function _rpcAppendFile(self: FilesHost, path: string, content: string | Uint8Array, pid?: number, cred?: VfsCred): Promise<void>;
+export declare function _rpcSymlink(self: FilesHost, target: string, path: string, pid?: number, cred?: VfsCred): Promise<void>;
+export declare function _rpcRealpath(self: FilesHost, path: string, pid?: number, cred?: VfsCred): Promise<string>;
+export declare function _rpcTruncate(self: FilesHost, path: string, size: number, pid?: number, cred?: VfsCred): Promise<void>;
+export declare function _rpcUtimes(self: FilesHost, path: string, atime: number, mtime: number, pid?: number, cred?: VfsCred, options?: SessionFollowOptions): Promise<void>;
+export declare function _rpcChown(self: FilesHost, path: string, uid: number | null, gid: number | null, pid?: number, cred?: VfsCred, options?: SessionFollowOptions): Promise<void>;
 export declare function _rpcReadlink(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<string | null>;
 export declare function _rpcChmod(self: RpcHost, path: string, mode: number, pid?: number, cred?: VfsCred): Promise<void>;
 export declare function _rpcSetUmask(self: RpcHost, mask: number, pid?: number): Promise<number>;
@@ -141,7 +155,7 @@ export declare function _rpcReaddir(self: RpcHost, path: string, pid?: number, c
     type: string;
 }[]>;
 export declare function _rpcExists(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<boolean>;
-export declare function _rpcMkdir(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<void>;
+export declare function _rpcMkdir(self: FilesHost, path: string, pid?: number, cred?: VfsCred, options?: SessionMkdirOptions): Promise<void>;
 export declare function _rpcRename(self: RpcHost, from: string, to: string, pid?: number, cred?: VfsCred): Promise<void>;
 declare const FsReadBatchArgsSchema: z.ZodArray<z.ZodUnion<readonly [z.ZodObject<{
     path: z.ZodString;

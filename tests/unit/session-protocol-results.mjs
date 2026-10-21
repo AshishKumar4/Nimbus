@@ -39,7 +39,9 @@ replies.stat = { type: 'file', size: 3, mtime: 1, mode: 0o644 };
 assert.deepEqual(await client.files.stat('/mounted/file'), replies.stat, 'a backend without revision or inode reports neither');
 replies.readlink = null;
 assert.equal(await client.files.readlink('/missing'), null);
-assert.deepEqual(sessionFileStatOf({ ...replies.stat, ino: 0, revision: 0 }), replies.stat, 'runtime unknown sentinels are absent on the session wire');
+const runtimeStat = { dev: 1, nlink: 1, uid: 1000, gid: 1000, ctime: 1, atime: 1, ...replies.stat };
+assert.deepEqual(sessionFileStatOf({ ...runtimeStat, ino: 0, revision: 0 }), runtimeStat, 'runtime unknown sentinels are absent on the session wire');
+assert.deepEqual(sessionFileStatOf({ ...runtimeStat, ino: 41, revision: 7, extra: 'kept out' }), { ...runtimeStat, ino: 41, revision: 7 }, 'and only stat(2)\'s fields cross it');
 assert.equal(sessionFileStatOf(null), null);
 
 replies.installRuntime = { ...install, exitCode: '0' };

@@ -10,9 +10,9 @@ import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 export { CRED_KERNEL, CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
 export type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type ExecChunk, type ExecExit, type ExecStream, type ExecOutput } from '@nimbus-sh/core/runtime/exec-stream.js';
-import { type SessionRpc as NimbusSessionSurface, type SessionExecOptions, type SessionRunCodeOptions, type SessionRestartPolicy as NimbusRestartPolicy, type SessionAppVisibility as NimbusAppVisibility, type SessionAppTarget as NimbusAppTarget, type SessionDurableAppOptions as NimbusDurableAppOptions, type SessionApp, type SessionExposedApp, type SessionTerminalSize as NimbusTerminalSize, type SessionDestroyOptions as NimbusDestroyOptions, type SessionDestroyResult as NimbusDestroyResult, type SessionStartResult as NimbusStartResult, type SessionProcess as NimbusProcess, type SessionTerminal, type SessionProcessLogChunk as NimbusProcessLogChunk, type SessionProcessExit as NimbusProcessExitInfo, type SessionProcessLogsOptions as NimbusProcessLogsOptions, type SessionProcessLogs as NimbusProcessLogsResult, type SessionPort as NimbusPort, type SessionFileStat as NimbusFileStat, type SessionDirectoryEntry, type SessionRuntimeSummary as NimbusRuntimeSummary, type SessionAvailableRuntime as NimbusAvailableRuntime } from '@nimbus-sh/core/runtime/session-protocol.js';
+import { type SessionRpc as NimbusSessionSurface, type SessionExecOptions, type SessionRunCodeOptions, type SessionRestartPolicy as NimbusRestartPolicy, type SessionAppVisibility as NimbusAppVisibility, type SessionAppTarget as NimbusAppTarget, type SessionDurableAppOptions as NimbusDurableAppOptions, type SessionApp, type SessionExposedApp, type SessionTerminalSize as NimbusTerminalSize, type SessionDestroyOptions as NimbusDestroyOptions, type SessionDestroyResult as NimbusDestroyResult, type SessionStartResult as NimbusStartResult, type SessionProcess as NimbusProcess, type SessionTerminal, type SessionProcessLogChunk as NimbusProcessLogChunk, type SessionProcessExit as NimbusProcessExitInfo, type SessionProcessLogsOptions as NimbusProcessLogsOptions, type SessionProcessLogs as NimbusProcessLogsResult, type SessionPort as NimbusPort, type SessionFileStat as NimbusFileStat, type SessionDirectoryEntry, type SessionMkdirOptions as NimbusMkdirOptions, type SessionFollowOptions as NimbusFollowOptions, type SessionRuntimeSummary as NimbusRuntimeSummary, type SessionAvailableRuntime as NimbusAvailableRuntime } from '@nimbus-sh/core/runtime/session-protocol.js';
 import { type StartedSessionProgram } from '@nimbus-sh/core/runtime/program-start.js';
-export type { NimbusSessionSurface, NimbusRestartPolicy, NimbusAppVisibility, NimbusAppTarget, NimbusDurableAppOptions, NimbusTerminalSize, NimbusDestroyOptions, NimbusDestroyResult, NimbusStartResult, NimbusProcess, NimbusProcessLogChunk, NimbusProcessExitInfo, NimbusProcessLogsOptions, NimbusProcessLogsResult, NimbusPort, NimbusFileStat, NimbusRuntimeSummary, NimbusAvailableRuntime, };
+export type { NimbusSessionSurface, NimbusRestartPolicy, NimbusAppVisibility, NimbusAppTarget, NimbusDurableAppOptions, NimbusTerminalSize, NimbusDestroyOptions, NimbusDestroyResult, NimbusStartResult, NimbusProcess, NimbusProcessLogChunk, NimbusProcessExitInfo, NimbusProcessLogsOptions, NimbusProcessLogsResult, NimbusPort, NimbusFileStat, NimbusMkdirOptions, NimbusFollowOptions, NimbusRuntimeSummary, NimbusAvailableRuntime, };
 import { type NimbusConfig, type NimbusCodeLanguage, type RuntimeSpec } from '@nimbus-sh/config/sandbox';
 export type { NimbusConfig, NimbusSandboxProfile, NimbusRuntimePolicy, RuntimeSpec, NimbusRuntimeName as RuntimeName } from '@nimbus-sh/config/sandbox';
 export interface NimbusFromEnvOptions {
@@ -60,11 +60,28 @@ export interface NimbusSandboxFiles {
     /** Read `length` bytes at `offset` without materializing the whole file. */
     readRange(path: string, offset: number, length: number): Promise<Uint8Array | null>;
     list(path?: string): Promise<SessionDirectoryEntry[]>;
-    mkdir(path: string): Promise<void>;
+    /** Without options, `mkdir -p`; with them, mkdir(2)'s: `recursive` only when asked, `mode` before the umask. */
+    mkdir(path: string, options?: NimbusMkdirOptions): Promise<void>;
     exists(path: string): Promise<boolean>;
     delete(path: string, options?: {
         recursive?: boolean;
     }): Promise<void>;
+    /** unlink(2): EISDIR for a directory. */
+    unlink(path: string): Promise<void>;
+    /** rmdir(2): ENOTDIR for a non-directory, ENOTEMPTY for one with entries. */
+    rmdir(path: string): Promise<void>;
+    /** Written at the file's end, as O_APPEND writes; the file is made when absent. */
+    appendFile(path: string, content: string | Uint8Array): Promise<void>;
+    /** symlink(2): a link at `path` whose text is `target`, as given. */
+    symlink(target: string, path: string): Promise<void>;
+    /** realpath(3): the path with every link followed. */
+    realpath(path: string): Promise<string>;
+    /** truncate(2): cut to `size`, or extended with zeros. */
+    truncate(path: string, size: number): Promise<void>;
+    /** utimensat(2), times in milliseconds; `followSymlinks: false` sets a link's own. */
+    utimes(path: string, atime: number, mtime: number, options?: NimbusFollowOptions): Promise<void>;
+    /** chown(2): a null side keeps the file's; `followSymlinks: false` changes a link's own. */
+    chown(path: string, uid: number | null, gid: number | null, options?: NimbusFollowOptions): Promise<void>;
 }
 /** The SDK builds a browser URL, or leaves it undefined when the deployment is not addressable. */
 export type NimbusExposedApp = Omit<SessionExposedApp, 'url'> & {
@@ -114,10 +131,19 @@ export declare class NimbusRemoteError extends Error {
     readonly status: number;
     readonly code: string | undefined;
     readonly body: unknown;
+    /** A failed system call's, as Node's error carries them (ENOENT's -2, `syscall: 'unlink'`, the path). */
+    readonly errno: number | undefined;
+    readonly syscall: string | undefined;
+    readonly path: string | undefined;
+    readonly dest: string | undefined;
     constructor(message: string, options: {
         status: number;
         code?: string;
         body?: unknown;
+        errno?: number;
+        syscall?: string;
+        path?: string;
+        dest?: string;
     });
 }
 export declare class Nimbus {
