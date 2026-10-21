@@ -13,10 +13,10 @@
 //
 // And a signal it catches while it waits in a synchronous read of stdin (a
 // run Nimbus stops and runs again once the input is there) waits for it, as
-// Node runs a handler once the read returns: Ctrl-C at
-// `(sleep 20; echo x) | node -e '<SIGINT handler>; readFileSync(0)'` ends
-// the writer, the read returns empty, and then the handler runs; the
-// program exits 0. Before, the wait took Ctrl-C as the end (130).
+// Node runs a handler once the read returns (libuv restarts the read): its
+// parent's kill('SIGTERM') while it waits, then its input, prints the read
+// and then the handler's line, and it exits 0. Before, the wait took SIGTERM
+// as the end (143).
 //
 // Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
 // generated artifacts before testing a runner change.
@@ -30,6 +30,7 @@ const HEARS = "process.on('SIGTERM', () => { console.log('heard SIGTERM'); proce
 const STUBBORN = "process.on('SIGTERM', () => { console.log('ignored SIGTERM'); }); console.log('ready'); setInterval(() => {}, 1000)";
 const ONCE = "process.once('SIGTERM', () => { console.log('once'); }); console.log('ready'); setInterval(() => {}, 1000)";
 const PLAIN = "console.log('ready'); setInterval(() => {}, 1000)";
+const PARKED = "process.on('SIGTERM', () => console.log('heard SIGTERM')); console.log('waiting'); console.log('read [' + require('fs').readFileSync(0, 'utf8').trim() + ']'); setTimeout(() => {}, 500)";
 const PROGRAM = `
 const { spawn } = require('child_process');
 const run = (label, code, signals) => new Promise((resolve) => {
@@ -54,11 +55,31 @@ const run = (label, code, signals) => new Promise((resolve) => {
     resolve();
   });
 });
+const parked = () => new Promise((resolve) => {
+  console.log('begin parked');
+  const child = spawn('node', ['-e', ${JSON.stringify(PARKED)}]);
+  let out = '';
+  let sent = false;
+  child.stdout.on('data', (data) => {
+    out += data;
+    if (sent || !out.includes('waiting')) return;
+    sent = true;
+    setTimeout(() => {
+      child.kill('SIGTERM');
+      setTimeout(() => child.stdin.end('x'), 1000);
+    }, 1000);
+  });
+  child.on('close', (code, signal) => {
+    console.log('parked: code=' + code + ' signal=' + signal + ' out=' + JSON.stringify(out.split('\n').filter(Boolean)));
+    resolve();
+  });
+});
 (async () => {
   await run('a handler that exits', ${JSON.stringify(HEARS)}, ['SIGTERM']);
   await run('a handler that does not', ${JSON.stringify(STUBBORN)}, ['SIGTERM', 'SIGKILL']);
   await run('a handler once, then the default', ${JSON.stringify(ONCE)}, ['SIGTERM', 'SIGTERM']);
   await run('no handler', ${JSON.stringify(PLAIN)}, ['SIGTERM']);
+  await parked();
 })();
 `;
 
@@ -67,7 +88,7 @@ const lines = (text) => text.split('\n').map((l) => l.trimEnd()).filter((l) => l
 const host = spawnSync('node', ['-e', PROGRAM], { encoding: 'utf8', timeout: 60_000 });
 assert.equal(host.status, 0, host.stderr);
 const expected = lines(host.stdout);
-assert.equal(expected.length, 8, host.stdout);
+assert.equal(expected.length, 10, host.stdout);
 
 console.log('node-signal-handlers-workerd: starting local workerd');
 const probe = await startLocalProbe({ runtimes: [] });
@@ -83,20 +104,6 @@ try {
     for (const line of got) console.log('  ' + line);
     assert.deepEqual(got, expected, 'what a child\'s signal handlers do, as under host node');
 
-    const t = terminal.terminal;
-    t.reset();
-    t.cmd(`(sleep 20; echo x) | node -e "process.on('SIGINT', () => console.log('heard' + ' SIGINT')); console.log('wait' + 'ing'); console.log('read [' + require('fs').readFileSync(0, 'utf8').trim() + ']')"`);
-    await t.waitFor((b) => /\nwaiting/.test(b), 60_000, 'waiting');
-    await new Promise((r) => setTimeout(r, 1000));
-    t.send('\x03');
-    await t.waitForPrompt(30_000);
-    // What the line showed, before the next one clears the view.
-    const shown = t.buf;
-    const parked = (await terminal.run('echo "S=$?"')).stdout;
-    const status = Number(/S=(\d+)/.exec(parked)?.[1]);
-    const order = (shown.match(/read \[\]|heard SIGINT/g) ?? []).join(' then ');
-    console.log(`  parked: status ${status}, ${order}`);
-    assert.deepEqual([status, order], [0, 'read [] then heard SIGINT'], `a caught Ctrl-C waits for the read to return, then its handler runs; the line showed ${JSON.stringify(shown.slice(-600))}`);
   } finally {
     await terminal.close();
   }
