@@ -47,7 +47,7 @@ import { unsettledNoteOf } from '../_shared/process-fs-client.js';
 import type { WorkspaceNetwork } from '../_shared/workspace-network.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 import { resolveVfsPath } from '../vfs/path.js';
-import type { ProcessView as CredentialedVfs } from './process-files.js';
+import { hostImage, type ProcessView as CredentialedVfs } from './process-files.js';
 import { hasLeadingCliFlag } from './cli-flags.js';
 import { CPYTHON_PREAMBLE_TAIL } from './cpython-preamble.js';
 import { PYTHON_SERVER_ADAPTER } from './python-server-adapter.js';
@@ -467,8 +467,9 @@ export function makeCPythonRunnerFactory(deps: {
         // never reaches the session.
         syscalls: stdio.syscalls,
         preamble: buildCPythonPreamble(),
-        // Opened, not read: the host reads it for the facet's load alone (FacetImage).
-        wasmModules: { 'python.wasm': await vfs.image(wasmVfs) },
+        // Opened, not read: the host reads it for the facet's load alone (FacetImage), as the caller, through a
+        // view of its own: a warm facet's load may come after this run (its warming on the session's peer).
+        wasmModules: { 'python.wasm': await hostImage(deps.filesystem, cred, wasmVfs) },
         warm,
       });
 
