@@ -1,16 +1,19 @@
 #!/usr/bin/env bun
 // The daily upstream canary names what changed upstream since its last green
 // run (scripts/ci/lib/upstream.mjs):
-//   - resolveInstalls: what a fresh install of each probe's roots takes, by
-//     the rules Nimbus's npm installs by. Each root at its latest release; each
-//     dependency, required peer and optional dependency at the newest version
-//     its range admits; a staged binding's owner at the newest staged version
-//     its range admits; an npm: alias as the package it names. A required
-//     peer is installed and an optional one is not; a git dependency comes
-//     from no registry. The package ABI policy shapes the tree as the
-//     installer does: lightningcss installs as lightningcss-wasm, an optional
-//     native shard is left out, and a staged binding's owner installs
-//     without its optional dependencies.
+//   - resolveInstalls: what a fresh install of each probe's recorded
+//     package.json takes, by the rules Nimbus's npm installs by. Each
+//     dependency and dev dependency at the version its range admits, and
+//     below them each dependency, required peer and optional dependency;
+//     a staged binding's owner at the newest staged version its range
+//     admits; an npm: alias as the package it names. An optional peer is
+//     not installed; a git dependency comes from no registry. The package
+//     ABI policy shapes the tree as the installer does: lightningcss
+//     installs as lightningcss-wasm; rollup 4 as @rollup/wasm-node only at
+//     the version rollup's own range picks, where wasm-node publishes it;
+//     a staged binding's owner installs without its optional dependencies;
+//     an optional native shard is left out, unless it is a staged binding,
+//     whose rewrite clears its platform fields first.
 //   - upstreamChanges: per install, each package whose versions differ from
 //     the last green run's, and nothing else; an install with no record
 //     there is null, not a list of every package it takes.
@@ -32,7 +35,6 @@ const registry = (packages) => {
 };
 const SPECS = { 'rolldown@1.2.13': { name: 'rolldown', version: '1.2.13', npm: { owner: 'rolldown' } } };
 const packages = {
-  'create-vite': pkg('9.0.0', { '9.0.0': {} }),
   vite: pkg('8.3.5', {
     '8.3.4': { dependencies: { rolldown: '~1.2.12', picomatch: '^4.0.0' } },
     '8.3.5': { dependencies: { rolldown: '~1.2.12', picomatch: '^4.0.0', fork: 'npm:@scope/fork@^2.0.0', lightningcss: '^1.30.0' }, peerDependencies: { less: '*', yaml: '^2.0.0' }, peerDependenciesMeta: { less: { optional: true } } },
@@ -42,17 +44,25 @@ const packages = {
   fsevents: pkg('2.3.3', { '2.3.3': { os: ['darwin'] } }),
   'tiny-opt': pkg('1.0.0', { '1.0.0': {} }),
   'lightningcss-wasm': pkg('1.30.2', { '1.30.2': {} }),
-  '@scope/fork': pkg('2.1.0', { '2.1.0': { dependencies: { vite: '^8.0.0' } } }),
+  '@scope/fork': pkg('2.1.0', { '2.1.0': { dependencies: { vite: '^8.0.0' }, optionalDependencies: { '@rolldown/binding-wasm32-wasi': '1.2.13' } } }),
+  '@rolldown/binding-wasm32-wasi': pkg('1.2.13', { '1.2.13': { cpu: ['wasm32'] } }),
   yaml: pkg('2.8.0', { '2.8.0': {} }),
   less: pkg('4.4.0', { '4.4.0': {} }),
   astro: pkg('7.4.2', { '7.4.1': {}, '7.4.2': { dependencies: { vite: '^8.3.0', 'git-dep': 'github:someone/git-dep' } } }),
+  rollup: pkg('4.63.5', { '3.29.5': {}, '4.63.4': {}, '4.63.5': {} }),
+  '@rollup/wasm-node': pkg('4.63.4', { '4.63.4': {} }),
 };
 
 // ── each probe's install, by the rules Nimbus's npm installs by ──
 {
   const { reads, packument } = registry(packages);
-  const installs = await resolveInstalls({ 'frameworks/vite8-real': ['create-vite', 'vite'], 'frameworks/astro-real': ['astro'] }, { specs: SPECS, packument });
+  const installs = await resolveInstalls({
+    'frameworks/vite8-real': { devDependencies: { vite: '^8.3.0' } },
+    'frameworks/astro-real': { dependencies: { astro: '^7.4.0' } },
+    rollups: { dependencies: { rollup: '^4.0.0', old: 'npm:rollup@^3.0.0', pinned: 'npm:rollup@4.63.4' } },
+  }, { specs: SPECS, packument });
   const vite = {
+    '@rolldown/binding-wasm32-wasi': ['1.2.13'],
     '@scope/fork': ['2.1.0'],
     'lightningcss-wasm': ['1.30.2'],
     picomatch: ['4.0.3'],
@@ -62,8 +72,9 @@ const packages = {
     yaml: ['2.8.0'],
   };
   assert.deepEqual(installs, {
-    'frameworks/vite8-real': { ...vite, 'create-vite': ['9.0.0'] },
+    'frameworks/vite8-real': vite,
     'frameworks/astro-real': { ...vite, astro: ['7.4.2'] },
+    rollups: { '@rollup/wasm-node': ['4.63.4'], rollup: ['3.29.5', '4.63.5'] },
   });
   assert.deepEqual(Object.keys(installs['frameworks/vite8-real']), Object.keys(installs['frameworks/vite8-real']).sort(), 'packages in name order: one record, one text');
   assert.ok([...reads.values()].every((count) => count === 1), `each packument is read once for every install: ${JSON.stringify([...reads])}`);
@@ -76,7 +87,7 @@ const packages = {
 {
   const two = structuredClone(packages);
   two.astro.versions['7.4.2'].dependencies.rolldown = '1.2.12';
-  const installs = await resolveInstalls({ 'frameworks/astro-real': ['astro'] }, { specs: SPECS, packument: registry(two).packument });
+  const installs = await resolveInstalls({ 'frameworks/astro-real': { dependencies: { astro: '^7.4.0' } } }, { specs: SPECS, packument: registry(two).packument });
   assert.deepEqual(installs['frameworks/astro-real'].rolldown, ['1.2.12', '1.2.13']);
 }
 
