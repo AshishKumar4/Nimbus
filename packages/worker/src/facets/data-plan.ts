@@ -178,9 +178,18 @@ export function packageRootOf(k: string): string | null {
  * directory below `dir` or inside one, or a cache of the home directory it is
  * in ($HOME, or /home/<user>).
  */
-function excludedDir(home: string, dir: string, d: string, named: ReadonlySet<string> = NONE_NAMED): boolean {
-  // A name `named` holds is one a source selected, which it does not leave out.
-  if (d !== dir && d.slice(dir === '' ? 0 : dir.length + 1).split('/').some((seg) => PROJECT_EXCLUDED.has(seg) && !named.has(seg))) return true;
+function excludedDir(home: string, dir: string, d: string, named: ReadonlyMap<string, number> = NONE_NAMED): boolean {
+  // A source that names such a directory selects it, as many deep as it names it: `node_modules` named once
+  // lifts one, and the dependencies below that one stay out.
+  if (d !== dir) {
+    const seen = new Map<string, number>();
+    for (const seg of d.slice(dir === '' ? 0 : dir.length + 1).split('/')) {
+      if (!PROJECT_EXCLUDED.has(seg)) continue;
+      const count = (seen.get(seg) ?? 0) + 1;
+      seen.set(seg, count);
+      if (count > (named.get(seg) ?? 0)) return true;
+    }
+  }
   const segs = d.split('/');
   const userHome = home !== '' && (d === home || d.startsWith(home + '/')) ? home
     : segs[0] === 'home' && segs.length > 1 ? 'home/' + segs[1] : null;
@@ -189,11 +198,11 @@ function excludedDir(home: string, dir: string, d: string, named: ReadonlySet<st
   return HOME_EXCLUDED.some((prefix) => inHome.startsWith(prefix) && !named.has(prefix.slice(0, prefix.indexOf('/'))));
 }
 
-const NONE_NAMED: ReadonlySet<string> = new Set();
+const NONE_NAMED: ReadonlyMap<string, number> = new Map();
 
 /** Whether `names` holds a directory excludedDir leaves out of a walk. */
-function namesExcluded(names: ReadonlySet<string>): boolean {
-  for (const name of names) if (PROJECT_EXCLUDED.has(name) || HOME_EXCLUDED.some((prefix) => prefix.startsWith(name + '/'))) return true;
+function namesExcluded(names: ReadonlyMap<string, number>): boolean {
+  for (const name of names.keys()) if (PROJECT_EXCLUDED.has(name) || HOME_EXCLUDED.some((prefix) => prefix.startsWith(name + '/'))) return true;
   return false;
 }
 
@@ -738,29 +747,15 @@ const BRACE_RANGE = /\{(?:[+-]?\d+\.\.[+-]?\d+|[A-Za-z]\.\.[A-Za-z])(?:\.\.[+-]?
  * learns by its misses.
  */
 export function sourceReach(path: string): string {
-  // Its static part, up to its first glob character not escaped, its escapes decoded as an expansion decodes them.
-  let decoded = '';
-  let slashAt = -1;
-  let slashDecoded = -1;
-  let first = -1;
-  for (let i = 0; i < path.length; i++) {
-    let c = path[i];
-    if (c === '\\' && i + 1 < path.length) c = path[++i];
-    else if (GLOB_SPECIAL.test(c)) {
-      first = i;
-      break;
-    }
-    if (c === '/') {
-      slashAt = i;
-      slashDecoded = decoded.length;
-    }
-    decoded += c;
-  }
-  if (first < 0) return decoded;
+  // Its escapes were decoded with its CSS string (sheetSources), once, as Tailwind's expansion decodes them: a
+  // backslash left is a name's. A glob character after one may be literal; taken as a glob, the reach is wider.
+  const first = path.search(GLOB_SPECIAL);
+  if (first < 0) return path;
   // Its leading braces may spell a `/` first (`{/srv/ui,/opt/ui}`, `{,x}/srv`): then it may be anywhere.
   if (first === 0 && path[0] === '{' && mayLeadWithSlash(path)) return '/';
-  const prefix = slashDecoded < 0 ? '.' : slashDecoded === 0 ? '/' : decoded.slice(0, slashDecoded);
-  const climbs = dotDotBound(path, slashAt + 1);
+  const slash = path.lastIndexOf('/', first);
+  const prefix = slash < 0 ? '.' : slash === 0 ? '/' : path.slice(0, slash);
+  const climbs = dotDotBound(path, slash + 1);
   return climbs === 0 ? prefix : `${prefix}${'/..'.repeat(climbs)}`;
 }
 
@@ -826,15 +821,21 @@ function mayLeadWithSlash(path: string): boolean {
 }
 
 /**
- * The names a source spells below its reach: a directory its pattern names
- * is one it selects, though the project rule leaves such names out of a
- * walk (`../{shared/node_modules/ui,kit}`). Linear in the path.
+ * The directory names a source spells below its reach, each with how many
+ * times it does: a directory its pattern names is one it selects, though a
+ * walk leaves such names out (`../{shared/node_modules/ui,kit}`). Only what
+ * a `/` follows is a directory's: `*.{node_modules,tsx}` names files. Linear
+ * in the path.
  */
-export function sourceNames(path: string): ReadonlySet<string> {
+export function sourceNames(path: string): ReadonlyMap<string, number> {
+  const names = new Map<string, number>();
   const first = path.search(GLOB_SPECIAL);
-  if (first < 0) return new Set();
-  const names = new Set<string>();
-  for (const name of path.slice(path.lastIndexOf('/', first) + 1).split(/[/{},*?[\]\\]/)) if (name !== '') names.add(name);
+  if (first < 0) return names;
+  const parts = path.slice(path.lastIndexOf('/', first) + 1).split('/');
+  // The last part is the file's.
+  for (let i = 0; i < parts.length - 1; i++) {
+    for (const name of parts[i].split(/[{},*?[\]\\]/)) if (name !== '') names.set(name, (names.get(name) ?? 0) + 1);
+  }
   return names;
 }
 
@@ -919,7 +920,7 @@ export async function planStylesheetSources(
   const home = key(input.home);
   const roots: string[] = [];
   // The names each root's sources spell below it (sourceNames).
-  const rootNames = new Map<string, Set<string>>();
+  const rootNames = new Map<string, Map<string, number>>();
   // A sheet is where its links lead, as Tailwind resolves it: what it names is relative to that, and it is read once.
   const located = async (k: string) => (await throughLinks(source, k)) ?? k;
   const sheets = new Set<string>();
@@ -942,8 +943,9 @@ export async function planStylesheetSources(
       // A reach in the project is the project rule's, but where it names a directory that rule leaves out
       // (`./{node_modules/ui,lib}`): what the source selects there, links out of it included, is this walk's.
       if (cwd === '' || ((root === cwd || root.startsWith(cwd + '/')) && !namesExcluded(spelled))) continue;
-      const names = rootNames.get(root) ?? new Set<string>();
-      for (const name of spelled) names.add(name);
+      // Two sources on one root select what either does: the most each names a directory.
+      const names = rootNames.get(root) ?? new Map<string, number>();
+      for (const [name, count] of spelled) names.set(name, Math.max(names.get(name) ?? 0, count));
       rootNames.set(root, names);
       if (!roots.includes(root)) roots.push(root);
     }
@@ -953,7 +955,12 @@ export async function planStylesheetSources(
   const read = new Set<string>();
   // What a barrier pushes: the roots, and wherever a link below one leads out of them.
   const pushed = [...roots];
-  const pushFrom = (k: string) => { if (!pushed.some((dir) => under(dir, k))) pushed.push(k); };
+  const pushedSet = new Set(pushed);
+  const pushFrom = (k: string) => {
+    if (pushed.some((dir) => under(dir, k))) return;
+    pushed.push(k);
+    pushedSet.add(k);
+  };
   let stopped: string | null = null;
   /** Holds `path` within the bounds: false once the walk is at its bound. */
   const hold = (root: string, path: string, size: number): boolean => {
@@ -995,9 +1002,14 @@ export async function planStylesheetSources(
         if (kind === 'directory') {
           if (below(dir, path)) continue;
           if (excludedDir(home, root, named)) {
-            // A directory the project rule leaves out, but the source names: its own push root, which push exclusions are below.
+            // A directory a walk leaves out, but the source names. Where it crosses into one (its own name is
+            // left out, or its parent is not), it is its own push root, which push exclusions are below; what
+            // is below that, the root covers.
             if (!excludedDir(home, root, named, rootNames.get(root))) {
-              if (!pushed.includes(path)) pushed.push(path);
+              if ((PROJECT_EXCLUDED.has(baseOf(named)) || !excludedDir(home, root, parentOf(named))) && !pushedSet.has(path)) {
+                pushedSet.add(path);
+                pushed.push(path);
+              }
               queue.push({ named, at: path, up: dir });
             }
             continue;

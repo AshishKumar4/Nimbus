@@ -30,6 +30,10 @@ const sourceReach = (path) => {
   if (typeof dataPlan.sourceReach !== 'function') throw new Error('no sourceReach');
   return dataPlan.sourceReach(path);
 };
+const sourceNamesOf = (path) => {
+  if (typeof dataPlan.sourceNames !== 'function') throw new Error('no sourceNames');
+  return dataPlan.sourceNames(path);
+};
 
 const failures = [];
 const check = (name, body) => {
@@ -71,11 +75,16 @@ check('leading braces that may spell a `/`', () => {
   assert.equal(sourceReach('{x,{,/q}}/a'), '/', 'one that leads a nested alternative does');
 });
 
-check('escapes in the static part', () => {
-  assert.equal(sourceReach('../back\\\\slash/{a,b}/x.html'), '../back\\slash', 'an escaped backslash is one');
-  assert.equal(sourceReach('../back\\\\slash'), '../back\\slash', 'with no glob character too');
-  assert.equal(sourceReach('lit\\{x\\}/y'), 'lit{x}/y', 'an escaped brace is no glob character');
-  assert.equal(sourceReach('a\\*b/c*'), 'a*b');
+check('a backslash, decoded once with its CSS string, is a name\'s', () => {
+  assert.equal(sourceReach('../back\\slash/{a,b}/x.html'), '../back\\slash');
+  assert.equal(sourceReach('../back\\slash'), '../back\\slash', 'with no glob character too');
+  assert.equal(sourceReach('lit\\{x\\}/y'), '.', 'a glob character after one is taken as a glob: wider');
+});
+
+check('the directories a source names', () => {
+  assert.deepEqual([...sourceNamesOf('../{shared/node_modules/ui,kit}/**/*.tsx')], [['shared', 1], ['node_modules', 1], ['ui', 1], ['kit', 1]]);
+  assert.deepEqual([...sourceNamesOf('./**/*.{node_modules,tsx}')], [], 'a file\'s name is no directory\'s');
+  assert.deepEqual([...sourceNamesOf('{a/node_modules/b/node_modules,c}/x')], [['a', 1], ['node_modules', 2], ['b', 1], ['c', 1]]);
 });
 
 check('the worker depends on no braces', () => {
@@ -132,7 +141,7 @@ try {
   if (!absolute.includes('srv/ui/A.tsx') || !absolute.includes('opt/ui/B.tsx')) failures.push(`absolute alternatives are held: ${JSON.stringify(absolute)}`);
 
   const { held: escaped } = await held({
-    'home/user/app/src/index.css': '@import "tailwindcss";\n@source "../../back\\\\\\\\slash/{a,b}/x.html";\n',
+    'home/user/app/src/index.css': '@import "tailwindcss";\n@source "../../back\\\\slash/{a,b}/x.html";\n',
     'home/user/back\\slash/a/x.html': 'x',
   }, 'home/user/app/src/index.css', '/home/user/app');
   if (!escaped.includes('home/user/back\\slash/a/x.html')) failures.push(`an escaped backslash names its directory: ${JSON.stringify(escaped)}`);
@@ -140,12 +149,22 @@ try {
   const { held: selected, roots: selectedRoots } = await held({
     'home/user/theme/theme.css': '@import "tailwindcss";\n@source "../{shared/node_modules/ui,kit}/**/*.tsx";\n',
     'home/user/shared/node_modules/ui/Card.tsx': 'c',
+    'home/user/shared/node_modules/ui/node_modules/dep/Dep.tsx': 'd',
     'home/user/kit/Button.tsx': 'b',
   }, 'home/user/theme/theme.css', '/home/user/app');
+  if (selected.includes('home/user/shared/node_modules/ui/node_modules/dep/Dep.tsx')) failures.push(`the dependencies below what it names stay out: ${JSON.stringify(selected)}`);
   if (!selected.includes('home/user/shared/node_modules/ui/Card.tsx') || !selected.includes('home/user/kit/Button.tsx')) {
     failures.push(`a node_modules a source names is walked: ${JSON.stringify(selected)}`);
   }
-  if (!selectedRoots.includes('/home/user/shared/node_modules/ui')) failures.push(`and pushed as its own root, below which push excludes it not: ${JSON.stringify(selectedRoots)}`);
+  if (!selectedRoots.includes('/home/user/shared/node_modules') || selectedRoots.includes('/home/user/shared/node_modules/ui')) {
+    failures.push(`pushed where the walk crosses into it, and no deeper: ${JSON.stringify(selectedRoots)}`);
+  }
+
+  const { held: extension } = await held({
+    'home/user/app/theme.css': '@import "tailwindcss";\n@source "./**/*.{node_modules,tsx}";\n',
+    'home/user/app/node_modules/dep/Dep.tsx': 'd',
+  }, 'home/user/app/theme.css', '/home/user/app');
+  if (extension.includes('home/user/app/node_modules/dep/Dep.tsx')) failures.push(`a file extension lifts no exclusion: ${JSON.stringify(extension)}`);
 
   const { held: linked } = await held({
     'home/user/app/theme.css': '@import "tailwindcss";\n@source "./{node_modules/ui,other}/**/*.tsx";\n',
