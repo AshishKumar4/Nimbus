@@ -18,7 +18,7 @@
 // no port listening, the session idle: a one-shot runs in the session, and a
 // terminal that attaches during it waits for it (what (b) accepts, recorded).
 import { BASE, makeAsserter, mintSession, deleteSession, Terminal, heredocCommand, fetchPort, requestHeaders, sleep } from '../_driver.mjs';
-import { peer, placement, warmFor, mark, hostsSince, diagLatency, watched, median } from './_peer.mjs';
+import { peer, placement, warmFor, mark, hostsSince, diagLatency, watched, median, holdLive } from './_peer.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('one-shot-peer/placement');
@@ -71,6 +71,7 @@ try {
   await t.waitForPrompt(60_000);
   await t2.connect();
   await t2.waitForPrompt(60_000);
+  const releaseT2 = holdLive(t2);
   for (const line of ['nimbus install python', 'nimbus install ruby', 'nimbus install clang', heredocCommand('x.c', CSRC), 'mkdir -p ~/tsp/src',
     heredocCommand('tsp/tsconfig.json', JSON.stringify({ compilerOptions: { strict: true, target: 'ES2022', noEmit: true }, include: ['src'] })),
     ...TS_FILES.map(([path, body]) => heredocCommand(`tsp/${path}`, body)), heredocCommand('srv.js', SERVER)]) {
@@ -174,6 +175,7 @@ try {
 
   // Idle: the second terminal closed, the server stopped.
   await fetchPort(sid, PORT, 'exit').catch(() => null);
+  releaseT2();
   await t2.close();
   for (let until = Date.now() + 30_000; ;) {
     const status = await fetchPort(sid, PORT, 'gone').then((r) => r.status).catch(() => 0);
@@ -194,7 +196,15 @@ try {
     idle.r.exitCode === 0 && printed(idle.r.output).includes('1') && idle.calls.length > 0 && idle.calls.every((call) => call.host === 'session' && call.wants.length === 0),
     JSON.stringify(idle.calls));
   const SOURCES = {
-    terminal: { start: async () => { const other = new Terminal(sid, { terminal: 'source' }); await other.connect(); await other.waitForPrompt(60_000); return () => other.close(); } },
+    terminal: {
+      start: async () => {
+        const other = new Terminal(sid, { terminal: 'source' });
+        await other.connect();
+        await other.waitForPrompt(60_000);
+        const release = holdLive(other);
+        return () => { release(); return other.close(); };
+      },
+    },
     process: { start: async () => { await t.run('sleep 600 & echo $! > sleeper.pid', 60_000); return () => t.run('kill "$(cat sleeper.pid)"; true', 60_000); } },
   };
   // A save that comes during an idle session's run waits for it: the cost this placement accepts, recorded.

@@ -15,7 +15,7 @@
 //      next one-shot runs.
 import { makeAsserter, mintSession, deleteSession, Terminal, sleep } from '../_driver.mjs';
 import { addAlice } from '../durable/_another-account.mjs';
-import { peer, warmFor, warmForWorker, lastWorker, mark, hostsSince, median } from './_peer.mjs';
+import { peer, warmFor, warmForWorker, lastWorker, mark, hostsSince, median, holdLive } from './_peer.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('one-shot-peer/boundaries');
@@ -49,6 +49,7 @@ try {
   // A second terminal attached: the session's thread is wanted, so a one-shot may go to the peer.
   await other.connect();
   await other.waitForPrompt(60_000);
+  holdLive(other);
   for (const line of ['nimbus install python', 'echo private > /home/user/private.txt && chmod 600 /home/user/private.txt',
     'sudo mkdir -p /srv/shared && sudo chmod 1777 /srv/shared']) {
     const r = await run(line, 600_000);

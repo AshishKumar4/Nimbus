@@ -4,6 +4,20 @@
 // the session's thread.
 import { BASE, requestHeaders, sleep } from '../_driver.mjs';
 
+/**
+ * `terminal` held as a browser tab holds one: a frame every 5 s while quiet
+ * (public/s/index.html's liveness probe, PROBE_AFTER_MS and TICK_MS), which
+ * keeps its socket's owner live (shell-socket.ts). A protocol ping, all the
+ * driver sends, leaves no trace there. Returns what stops it.
+ */
+export function holdLive(terminal) {
+  const timer = setInterval(() => {
+    try { terminal.ws?.send(JSON.stringify({ type: 'resize', cols: 120, rows: 40 })); } catch { /* closing */ }
+  }, 5_000);
+  timer.unref?.();
+  return () => clearInterval(timer);
+}
+
 /** The session's placement record: its peer, each worker it is warm for, and where its last one-shots ran. */
 export async function placement(sid) {
   const r = await fetch(`${BASE}/s/${sid}/api/_diag/session`, { headers: requestHeaders({}, sid), signal: AbortSignal.timeout(60_000) });
