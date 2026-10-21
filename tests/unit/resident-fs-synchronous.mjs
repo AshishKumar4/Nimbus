@@ -195,7 +195,9 @@ await runScenarios(import.meta.path, {
     plain.writeFile('/a', new TextEncoder().encode('PLAIN'));
     // The same tree, stating no change model: a snapshot its listing could only walk.
     const unfed = new Proxy(plain, { get: (target, key) => (key === 'changes' ? undefined : Reflect.get(target, key, target)) });
+    // No read lease: one vouches for the engine alone, and while it is trusted a moving mount's rows are the session's (below).
     e = await bootEngine('holder', {
+      leases: false,
       seed(authority) {
         authority.files.vfs.mount('/mnt/mem', mem);
         authority.files.vfs.mount('/mnt/plain', unfed);
@@ -222,6 +224,20 @@ await runScenarios(import.meta.path, {
     // A mount with no feed: the session's to answer, never the view's.
     await answersNow(e, 'stat of /mnt/plain/a', () => e.sync.stat('/mnt/plain/a'), 'EAGAIN');
     assert.equal(engineStat(await e.fs.stat('/mnt/plain/a'))?.size, 5);
+  },
+
+  async 'under a trusted read lease a moving mount\'s rows are the session\'s, a fixed one\'s the view\'s'(e = undefined) {
+    const mem = new MemoryVFS();
+    mem.writeFile('/a', new TextEncoder().encode('MEM'));
+    e = await bootEngine('holder', { seed(authority) { authority.files.vfs.mount('/mnt/mem', mem); } });
+    for (const dir of ['/dev', '/mnt/mem']) await e.fs.readdir(dir);
+    // Input arrives: the next call's barrier asks a lease, and is granted one.
+    e.fs.inbound();
+    await e.fs.stat(APP);
+    assert.equal(e.fs.client.readTrusted(), true, 'the barrier took no lease');
+    await answersNow(e, 'stat of /mnt/mem/a under a trusted lease', () => e.sync.stat('/mnt/mem/a'), 'EAGAIN');
+    assert.equal(Number((await e.fs.stat('/mnt/mem/a')).size), 3);
+    assert.equal(Number((await answersNow(e, 'stat of /dev/null under a trusted lease', () => e.sync.stat('/dev/null'))).mode) & 0o170000, 0o020000);
   },
 
   async 'a Node program stats /dev and /proc synchronously as the session holds them'(e = undefined) {

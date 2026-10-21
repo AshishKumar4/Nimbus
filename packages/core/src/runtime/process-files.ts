@@ -205,8 +205,7 @@ class GuardedProcessBridge implements RuntimeFsBridge {
    * reports (Delegations.readLease).
    */
   withReadLease(answer: VfsAcquireResult, options?: VfsAcquireOptions): VfsAcquireResult {
-    // The engine's writes recall a lease; a change on another feed that moves would not.
-    if (options?.lease !== true || this.pid === undefined || answer.poison || !this.target.leasable()) return answer;
+    if (options?.lease !== true || this.pid === undefined || answer.poison) return answer;
     let lease: { owner: string; trustMs: number } | null;
     try {
       lease = this.delegations.readLease(this.pid, (terms) => this.target.acquireReadLease(terms, rootOf(answer.position)), this.scope);
