@@ -15,7 +15,9 @@
  *                          with a change feed ('fed', the process's own) or
  *                          none ('unfed', root's: a directory root changes
  *                          the mode of may shut the process out of a fed
- *                          one beneath): it covers what the session held there. Drawn over
+ *                          one beneath): it covers what the session held
+ *                          beneath, the point itself staying the directory
+ *                          it was. Drawn over
  *                          names the process may hold, and a fed mount
  *                          beneath one with none. A mount point is not
  *                          removed, moved or chowned; a rename never crosses
@@ -214,8 +216,8 @@ function applied(world, change) {
   const next = new Map(world);
   if (!root && unreachable(world, a) !== null) return null;
   if (op !== 'mount') {
-    // A mount point stays where it is; a rename never crosses a mount; a MemoryVFS has one owner.
-    if (at?.mount !== undefined && op !== 'write' && op !== 'chmod') return null;
+    // A mount point stays as it is; a rename never crosses a mount; a MemoryVFS has one owner.
+    if (at?.mount !== undefined) return null;
     if (op === 'chown' && mountOf(world, a) !== null) return null;
     if (op === 'rename' && (world.get(b)?.mount !== undefined || mountOf(world, a)?.point !== mountOf(world, b)?.point
       || [...world].some(([rel, state]) => state.mount !== undefined && rel !== a && under(rel, a)))) return null;
@@ -229,7 +231,8 @@ function applied(world, change) {
       const owner = b === 'fed' ? USER : 0;
       const owned = (state) => ({ ...state, uid: owner, gid: owner });
       for (const rel of world.keys()) if (rel !== a && under(rel, a)) next.delete(rel);
-      next.set(a, { ...owned(dirState()), mount: b });
+      // The point is the directory it covers (its mode governs lookup through it, CompositeVFS), now a mount's.
+      next.set(a, { ...at, mount: b });
       for (const [rel, content] of Object.entries(tree)) next.set(a === '' ? rel : `${a}/${rel}`, owned(content === null ? dirState() : fileState(content)));
       return next;
     }
@@ -657,6 +660,7 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
    * (each refetches what it drops) and none in flight.
    */
   const owedBytes = (rel) => refetches && resident.has(rel) && inputsInFlight === 0 && !poisoned && transport.inFlight('listing') === 0
+    && !underUnfed(model.world, rel)
     && model.world.get(rel)?.type === 'file' && model.touched(rel) <= landed;
   const refusable = (op, rel, from, to) => (op === 'readFile' && owedBytes(rel) ? false
     : lazy || poisoned || transport.inFlight('listing') > 0 || (op === 'readFile' && model.readable(rel, from, to)));

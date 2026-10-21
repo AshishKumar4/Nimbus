@@ -331,6 +331,11 @@ const GAPS = {
       + 'meanwhile readdirSync can list a file before its write is made',
     shows: 'sync readdir d/e answered ["g"]',
   },
+  'a name on a mount with no feed answers as the session holds it now [node]': {
+    lacks: 'S answers a name on a mount with no change feed as its launch\'s listing walked it (closed by the cutover: such a mount is the session\'s to answer); '
+      + 'meanwhile readFileSync of a file on such a mount can serve bytes another process has since replaced',
+    shows: 'sync readFile x/h answered "u00"',
+  },
   'a file a peer made and the process then wrote is listed while its directory is relisted (4751) [node]': {
     lacks: 'B2: a directory whose relist is on its way answers its listing without the names the process wrote there since (the cutover\'s relist fence); '
       + 'meanwhile a Node program\'s readdirSync can miss a file it has just written, while the directory is relisted',
