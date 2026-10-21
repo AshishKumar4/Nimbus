@@ -202,6 +202,7 @@ function keepSocketAlive(ws, everyMs = SOCKET_KEEPALIVE_MS) {
 const LEDGER = process.env.NIMBUS_PROBE_LEDGER || '';
 const PROBE = relative(dirname(fileURLToPath(import.meta.url)), process.argv[1] || '');
 const undeleted = new Map(); // sid → its target-scoped session record
+const leftToTtl = new Set(); // anonymous demo sessions deleteSession released to the demo's TTL
 const minted = []; // { sid, at }: every session this probe minted, in order
 let exitHookArmed = false;
 
@@ -254,7 +255,7 @@ function nameMintedOnFailure(code) {
   console.error(`sessions this probe minted on ${BASE} (exit ${code}):`);
   for (const { sid, at } of minted) {
     const { base } = targetOf(sid);
-    console.error(`  ${sid}  minted ${at}${base === BASE ? '' : `  on ${base}`}${undeleted.has(sid) ? '' : '  (deleted by the probe)'}`);
+    console.error(`  ${sid}  minted ${at}${base === BASE ? '' : `  on ${base}`}${undeleted.has(sid) ? '' : leftToTtl.has(sid) ? "  (left to the demo's TTL)" : '  (deleted by the probe)'}`);
   }
 }
 
@@ -319,6 +320,7 @@ export async function deleteSession(sid, reason = 'behavioral-probe-cleanup') {
   ledger('delete', sid, result.status, { confirmed: result.ok });
   const released = result.ok || (target.session(sid).reap === 'ttl' && result.status === 401);
   if (released) undeleted.delete(sid);
+  if (released && !result.ok) leftToTtl.add(sid);
   return { ...result, ok: released };
 }
 
