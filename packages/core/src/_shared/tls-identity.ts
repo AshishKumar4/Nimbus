@@ -24,7 +24,7 @@ import {
 
 /** What checkServerIdentity reads of a peer certificate. */
 export interface CertificateNames {
-  readonly subject?: { readonly CN?: string | readonly string[] };
+  readonly subject?: { readonly CN?: string | string[] };
   readonly subjectaltname?: string;
 }
 
