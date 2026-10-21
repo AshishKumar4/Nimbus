@@ -74,10 +74,11 @@ function sequenced(bridge, pid, key, first) {
   }), { sequence: { writer: `${pid}:w`, first, ack: first - 1, pid } });
 }
 
-// ── A mount or an unmount ends a read lease; a feed the engine's cursor does not follow grants none; the session's stores ──
+// ── A mount or an unmount ends a read lease; a feed that moves besides the engine's grants none; the session's stores ──
 {
   const s = session();
-  s.files.vfs.mount('/mnt/drive', new MemoryVFS());
+  // A drive stating no change model (VFS.changes): the view never answers for it, so the lease need not follow it.
+  s.files.vfs.mount('/mnt/drive', new Proxy(new MemoryVFS(), { get: (target, key) => (key === 'changes' ? undefined : Reflect.get(target, key, target)) }));
   const reader = s.files.bind({ pid: 7, cred: USER });
   const { readLease } = barrier(s, reader);
   assert.ok(readLease, 'no lease granted');
@@ -85,15 +86,14 @@ function sequenced(bridge, pid, key, first) {
   s.files.vfs.mount('/mnt/other', new MemoryVFS());
   assert.equal(await reader.awaitRecall(readLease.owner, 1000), 'revoke');
   assert.equal(s.engine.readLeaseStats().held, 0);
-  // A backend with a change feed of its own (another database): its changes
-  // recall no lease, so none is granted. A process's cursor follows the
-  // engine's feed alone, so every barrier over another is a poison, which
-  // grants none (CompositeFeed.since).
+  // A backend with a change feed of its own that moves (another database, a
+  // MemoryVFS): the view answers for it, but its changes recall no lease, so
+  // a barrier over it is answered and grants none (movesWithTheRootAlone).
   const other = createSqliteVfsTestHarness();
   s.files.vfs.mount('/mnt/db', sqliteFiles(new SqliteVFS(other.sql, other.ctx), CRED_KERNEL));
   const fed = barrier(s, s.files.bind({ pid: 11, cred: USER }));
   assert.equal(fed.readLease, undefined, 'a lease was granted over a feed it does not follow');
-  assert.equal(fed.poison, true);
+  assert.equal(fed.poison, false);
   // Where a synchronous write is held rather than refused (SqliteVFS.readRecallAt): the stores, and the directories they are made in.
   const store = (key) => !readLeaseCovers(key, true, SESSION_KERNEL_ROOTS);
   assert.deepEqual(['', '.nimbus', '.nimbus/images/x', '.nimbus/facet-images/x', '.nimbus/staged/x'].filter((key) => !store(key)), []);

@@ -27,10 +27,13 @@ import { facetStorage } from './lib/fake-do-kv.mjs';
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
-/** A synchronous MemoryVFS behind an awaited face only, as a remote backend is. */
+/** A MemoryVFS stating no change model (VFS.changes): a mount its listing walks, where its launch named it. */
+const unfed = (vfs) => new Proxy(vfs, { get: (target, key) => (key === 'changes' ? undefined : Reflect.get(target, key, target)) });
+
+/** A synchronous MemoryVFS behind an awaited face only, as a remote backend is, with no feed (a synchronous face). */
 const remote = (vfs) => new Proxy(vfs, {
   get(target, key) {
-    if (key === 'sync') return undefined;
+    if (key === 'sync' || key === 'changes') return undefined;
     const value = target[key];
     if (typeof value !== 'function') return value;
     return async (...args) => {
@@ -48,7 +51,7 @@ function launched({ async = false, beforeRead } = {}) {
   backing.mkdir('/kept');
   backing.writeFile('/kept/data.txt', enc.encode('old'));
   authority.kfs.writeFile('home/user/own.txt', enc.encode('own'));
-  authority.files.vfs.mount('/m', async ? remote(backing) : backing);
+  authority.files.vfs.mount('/m', async ? remote(backing) : unfed(backing));
   const reads = [];
   const handle = facetSupervisor(authority, {
     async fsReadBatch(requests) {
@@ -130,7 +133,7 @@ await check('a refill from the namespace after the backend is mounted again', as
     await store.sync.synchronize(handle.supervisor);
     // The same backend unmounted and mounted again at its point: a new device, its files as they were.
     authority.files.vfs.unmount('/m');
-    authority.files.vfs.mount('/m', backing);
+    authority.files.vfs.mount('/m', unfed(backing));
     await store.sync.synchronize(handle.supervisor);
     store.cells.delete(store.coherence.tables('test'), 'm/kept/data.txt');
     reads.length = 0;
