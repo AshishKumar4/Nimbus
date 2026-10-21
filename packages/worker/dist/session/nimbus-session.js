@@ -761,7 +761,15 @@ export class NimbusSession extends CloudflareDurableObject {
     // leaves the session here and is counted (answerSupervisorOp).
     supervisorOp(envelope) {
         const watched = holdThreadWatch(this.ctx, `${envelope.op} pid ${envelope.pid ?? '-'}`);
-        return answerSupervisorOp((served) => this.serveSupervisorOp(served), envelope).finally(watched);
+        // Experiment: when a one-shot call entered this object and when its answer left it.
+        const entered = Date.now();
+        return answerSupervisorOp((served) => this.serveSupervisorOp(served), envelope).finally(() => {
+            if (envelope.op === 'oneShotSubmit') {
+                const shared = globalThis;
+                shared.__d1Edges = [...(shared.__d1Edges ?? []).slice(-31), { entered, left: Date.now() }];
+            }
+            watched();
+        });
     }
     /** `envelope` answered, for the session itself: a call inside another answer (session/rpc.ts _rpcFsAcquired). */
     serveSupervisorOp(envelope) {
