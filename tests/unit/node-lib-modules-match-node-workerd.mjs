@@ -1041,10 +1041,14 @@ attempt('deprecate code', () => util.deprecate(() => {}, 'm', 5));
   // Before, workerd's 172 constants were each an enumerable, writable export,
   // with `default` and two zstd names of workerd's own (ZSTD_ENCODE,
   // ZSTD_DECODE). Two values are the engine's own: the zlib it builds and its
-  // chunk ceiling.
+  // chunk ceiling. One name is the engine's too: Brotli's decoder defines
+  // BROTLI_DECODER_ERROR_FORMAT_BLOCK_SWITCH only with the fix Node 22.23.4
+  // cherry-picks (google/brotli 0ed4268a, CVE-2026-111497), and the decoder
+  // is workerd's native code, which Nimbus does not replace.
   'zlib.cjs': String.raw`
 const zlib = require('zlib');
 const ENGINE = new Set(['ZLIB_VERNUM', 'Z_MAX_CHUNK']);
+const DECODER = new Set(['BROTLI_DECODER_ERROR_FORMAT_BLOCK_SWITCH']);
 const flags = (o, k) => { const d = Object.getOwnPropertyDescriptor(o, k); return 'value' in d ? [d.enumerable, d.writable, d.configurable].map(Number).join('') : 'accessor'; };
 const value = (v, k) => (ENGINE.has(k) ? 'engine' : typeof v === 'number' ? v : typeof v);
 const strictly = (f) => { try { f(); return 'no error'; } catch (e) { return e.name + ': ' + e.message; } };
@@ -1052,7 +1056,7 @@ const names = Object.getOwnPropertyNames(zlib).sort();
 console.log('enumerable: ' + JSON.stringify(Object.keys(zlib).sort()));
 console.log('own names: ' + names.length + ' ' + JSON.stringify(names));
 console.log('flags: ' + JSON.stringify(names.map((k) => k + ' ' + flags(zlib, k) + ' ' + value(zlib[k], k))));
-const constants = Object.keys(zlib.constants).sort();
+const constants = Object.keys(zlib.constants).filter((k) => !DECODER.has(k)).sort();
 console.log('constants: ' + constants.length + ' ' + JSON.stringify(constants.map((k) => k + ' ' + flags(zlib.constants, k) + ' ' + value(zlib.constants[k], k))));
 console.log('constants object: ' + [Object.getPrototypeOf(zlib.constants), Object.isExtensible(zlib.constants), flags(zlib, 'constants'), flags(zlib, 'codes'), Object.isFrozen(zlib.codes)].join(' '));
 console.log('codes: ' + JSON.stringify(zlib.codes));

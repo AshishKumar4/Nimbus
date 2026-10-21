@@ -12235,7 +12235,10 @@ builtins.zlib = (() => {
   // \`default\`. workerd exports every constant by name, enumerable, and two
   // zstd modes of its own (ZSTD_ENCODE, ZSTD_DECODE) beside Node's
   // ZSTD_COMPRESS and ZSTD_DECOMPRESS. Named limit: ZLIB_VERNUM and
-  // Z_MAX_CHUNK are the engine's values, not Node's.
+  // Z_MAX_CHUNK are the engine's values, not Node's, and the Brotli decoder
+  // is the engine's: Node 22.23.4's has a fix (CVE-2026-111497) and its error
+  // code, BROTLI_DECODER_ERROR_FORMAT_BLOCK_SWITCH, which workerd's
+  // constants lack.
   const workerdOnly = { ZSTD_ENCODE: true, ZSTD_DECODE: true };
   const constants = Object.create(null);
   for (const [name, value] of Object.entries(__real.constants)) {

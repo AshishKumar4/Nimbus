@@ -62,7 +62,9 @@ const npmEnv = {
   npm_config_update_notifier: 'false', npm_config_cache: join(D, 'cache'), npm_config_prefix: D + PREFIX,
 };
 const npmVersion = spawnSync('npm', ['--version'], { encoding: 'utf8', env: npmEnv }).stdout.trim();
-assert.equal(npmVersion, '10.9.8', 'premise: npm is 10.9.8');
+// The oracle is node 22.23.4's npm, 10.9.9, which differs from 10.9.8 only in
+// its tar (7.5.22, github.com/npm/cli/releases/tag/v10.9.9).
+assert.equal(npmVersion, '10.9.9', 'premise: npm is 10.9.9');
 
 const world = createFacetWorld(() => ({
   async startProcess() { return { ok: true }; },
