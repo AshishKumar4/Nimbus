@@ -71,7 +71,6 @@ const CPYTHON_WASM_REL = 'share/cpython/python.wasm';
 const CPYTHON_SCI_WASM_REL = 'share/cpython/python-sci.wasm';
 const CPYTHON_SCI_PACKAGES_REL = 'lib/sci-packages.zip';
 const CPYTHON_STDLIB_REL = 'lib/python313.zip';
-const CPYTHON_CACERT_REL = 'etc/ssl/cert.pem';
 /**
  * The environment markers of the CPython build `manifest` installs, as the
  * interpreter answers them (cpython-wasi-reactor.mjs runs it to check): its
@@ -310,10 +309,9 @@ export function makeCPythonRunnerFactory(deps) {
                 `sys.path.insert(0, ${JSON.stringify(cwd)})`,
                 enterWorkingDirectory(binName, cwd),
             ].join('\n');
-            const cacertVfs = findFile(CPYTHON_CACERT_REL);
             const interpreterEnv = {
                 base: { ...(ctx.env || {}) },
-                facts: { runtime: 'python', home, cacert: cacertVfs ? `/${cacertVfs.replace(/^\/+/, '')}` : null },
+                facts: { runtime: 'python', home },
             };
             const userEnv = interpreterProcessEnv(interpreterEnv.base, interpreterEnv.facts);
             const facetArgs = {
