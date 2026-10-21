@@ -73,6 +73,8 @@ async function listAll(bridge, vfs, betweenPages) {
     const page = await bridge.list(after, 3);
     pages++;
     for (const entry of page.entries) {
+      // The kernel's mounts are every process's now; the model stages only the mounts it names.
+      if (entry.path === 'dev' || entry.path.startsWith('dev/') || entry.path === 'proc' || entry.path.startsWith('proc/')) continue;
       const path = `/${entry.path}`;
       out[path] = await valueOf(vfs, { ...entry, path });
       if (entry.rev === 0) undated.push(path);

@@ -49,6 +49,8 @@ function residentStore() {
   const namespace = () => {
     const out = {};
     for (const key of rows.nsKeys()) {
+      // The kernel's mounts are every reader's now; the fixture states the reader's own names.
+      if (key.name === 'dev' || key.name === 'proc' || key.parent === 'dev' || key.parent.startsWith('dev/') || key.parent === 'proc' || key.parent.startsWith('proc/')) continue;
       const row = rows.nsGet(key.parent, key.name);
       out[key.parent ? `${key.parent}/${key.name}` : key.name] = row.kind === NS_DIR ? 'dir' : 'file';
     }
