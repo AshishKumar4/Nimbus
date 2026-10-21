@@ -178,7 +178,7 @@ function nodeSyncBridge(fs) {
 }
 
 /** The WASI body's own filesystem for a guest that parks, over `supervisor`, as a facet's body builds it. */
-async function holderBridge(supervisor, leases = true) {
+async function holderBridge(supervisor) {
   const modulePath = join(tmpdir(), `guest-engine-holder-${process.pid}-${Math.random().toString(16).slice(2)}.mjs`);
   writeFileSync(modulePath, `${WASI_INSTANCE_PREAMBLE_SRC}\nexport { __wasiInitFS, __wasiAdoptSupervisor, __wasiFilesystem, __wasiPrepareFilesystem };`);
   let P;
@@ -201,7 +201,7 @@ async function holderBridge(supervisor, leases = true) {
  * on it), over `stub`: its waves and grants through the stub, its log in
  * `sql`, a read lease asked with each barrier.
  */
-async function eagerBridge(stub, sql) {
+async function eagerBridge(stub, sql, leases = true) {
   const supervisor = answeringSupervisor(stub);
   const bridge = supervisorFilesystem(stub);
   const store = createResidentStore();
@@ -249,7 +249,7 @@ export const answeredAtOnce = (work) => Promise.race([Promise.resolve(work).then
  * and answers in its place (schedule-transport.mjs). `stdin`: Node's
  * process is attached to the session's input store, and its input (`input`)
  * is a keystroke, delivered with the ACQUIRE the session computes for it.
- * `leases`: the holder's process asks read leases (as a WASI run does).
+ * `leases`: the eager engine's process asks a read lease with each barrier.
  * @param {string} kind
  * @param {{ seed?: (authority: any) => void, supervise?: Record<string, (call: (args: any[]) => Promise<any>, args: any[]) => Promise<any>>, stdin?: boolean, leases?: boolean }} [options]
  */
@@ -314,11 +314,11 @@ export async function bootEngine(kind, { seed, supervise = {}, stdin = false, le
     fs = nodeBridge(globalThis.__engineFs);
     sync = nodeSyncBridge(globalThis.__engineFs);
   } else if (kind === 'eager') {
-    fs = await eagerBridge(handle.supervisor, sql);
+    fs = await eagerBridge(handle.supervisor, sql, leases);
     sync = new Proxy(fs.synchronous, { get: (target, name) => (name === 'copyFile' ? (from, to) => target.copyFile(from, to, { keepMode: true }) : target[name]) });
   } else {
     globalThis.__nimbusFsJournalSql = sql;
-    fs = await holderBridge(handle.supervisor, leases);
+    fs = await holderBridge(handle.supervisor);
     // As the codec calls the synchronous view: its own copies keep their mode.
     sync = new Proxy(fs.synchronous, { get: (target, name) => (name === 'copyFile' ? (from, to) => target.copyFile(from, to, { keepMode: true }) : target[name]) });
   }

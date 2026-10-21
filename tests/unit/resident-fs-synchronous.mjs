@@ -195,9 +195,7 @@ await runScenarios(import.meta.path, {
     plain.writeFile('/a', new TextEncoder().encode('PLAIN'));
     // The same tree, stating no change model: a snapshot its listing could only walk.
     const unfed = new Proxy(plain, { get: (target, key) => (key === 'changes' ? undefined : Reflect.get(target, key, target)) });
-    // No read lease: one vouches for the engine alone, and while it is trusted a moving mount's rows are the session's (below).
     e = await bootEngine('holder', {
-      leases: false,
       seed(authority) {
         authority.files.vfs.mount('/mnt/mem', mem);
         authority.files.vfs.mount('/mnt/plain', unfed);
@@ -229,7 +227,7 @@ await runScenarios(import.meta.path, {
   async 'under a trusted read lease a moving mount\'s rows are the session\'s, a fixed one\'s the view\'s'(e = undefined) {
     const mem = new MemoryVFS();
     mem.writeFile('/a', new TextEncoder().encode('MEM'));
-    e = await bootEngine('holder', { seed(authority) { authority.files.vfs.mount('/mnt/mem', mem); } });
+    e = await bootEngine('eager', { seed(authority) { authority.files.vfs.mount('/mnt/mem', mem); } });
     for (const dir of ['/dev', '/mnt/mem']) await e.fs.readdir(dir);
     // Input arrives: the next call's barrier asks a lease, and is granted one.
     e.fs.inbound();
