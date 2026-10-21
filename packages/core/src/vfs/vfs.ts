@@ -14,7 +14,7 @@
  * that (ENOTSUP) and decides.
  */
 
-import type { RuntimeDirentType, VfsAcquireOptions, VfsAcquireResult, VfsListPage } from '../runtime/os-contracts.js';
+import type { RuntimeDirentType, VfsAcquireOptions, VfsDelta, VfsBackendPage, VfsListOptions } from '../runtime/os-contracts.js';
 import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 import type { VfsEvent } from './events.js';
 
@@ -291,9 +291,9 @@ export interface VfsChanges {
   readonly epoch: string;
   revision(): number;
   /** Every path changed in (cursor, now], with its stat when asked; a poison when that cannot be answered. */
-  since(epoch: string | null, cursor: number, options?: VfsAcquireOptions): VfsAcquireResult;
-  /** One page of every name, in path order. */
-  list(after: string | null, limit: number): VfsListPage;
+  since(epoch: string | null, cursor: number, options?: VfsAcquireOptions): VfsDelta;
+  /** One page of every name, in path order; `options` what each entry carries beyond its name and stat. */
+  list(after: string | null, limit: number, options?: VfsListOptions): VfsBackendPage;
 }
 
 export type VfsCasResult = { ok: true; revision: VfsRevision } | { ok: false; revision: VfsRevision };

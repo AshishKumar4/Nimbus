@@ -11,7 +11,7 @@
  * registered, another deploy's devices) is another epoch, so a reader
  * holding the last one lists again.
  */
-import type { VfsAcquireResult, VfsListEntry, VfsListPage } from '../runtime/os-contracts.js';
+import type { VfsDelta, VfsListEntry, VfsBackendPage } from '../runtime/os-contracts.js';
 import { compareUtf8 as comparePaths } from '@nimbus-sh/platform/utf8.js';
 import { runtimeStatOf } from './runtime-stat.js';
 import type { SyncVFS, VfsChanges } from './vfs.js';
@@ -44,11 +44,11 @@ export function immutableChanges(vfs: Pick<SyncVFS, 'stat' | 'readdir'>, version
   return {
     get epoch() { return current().epoch; },
     revision: () => 0,
-    since: (epoch): VfsAcquireResult => {
+    since: (epoch): VfsDelta => {
       const now = current().epoch;
       return { epoch: now, rev: 0, paths: [], poison: epoch !== now };
     },
-    list: (after, limit): VfsListPage => {
+    list: (after, limit): VfsBackendPage => {
       const { entries, epoch } = current();
       const from = after === null ? 0 : entries.findIndex((entry) => comparePaths(entry.path, after) > 0);
       const start = from < 0 ? entries.length : from;

@@ -51,6 +51,7 @@ import type { ReadDirectorySupervisor } from '../read-directory-batch.js';
 import type { VfsAcquireResult } from '../os-contracts.js';
 import type { ProcessFsClient, ProcessFsJournal, ProcessFsOp, ProcessFsSession, ProcessFsStats } from '../../_shared/process-fs-client.js';
 import type { WaveTimers } from '@nimbus-sh/platform/wave-writer.js';
+import { rootOf, type FeedPosition } from '../feed-position.js';
 
 /** A name as the store holds it: its lstat, and a symlink's text. */
 export interface ResidentEntry {
@@ -114,8 +115,8 @@ export interface ResidentNamespace {
   acquireArgs(): ResidentAcquireArgs | null;
   /** Whether the store holds rows a repair could not vouch for: every barrier repairs until one does. */
   repairOwed?(): boolean;
-  /** The store's provenance cursor. */
-  cursor(): { epoch: string; rev: number } | null;
+  /** The store's provenance cursor: the namespace's position its rows are known-good at. */
+  cursor(): FeedPosition | null;
   /** Charge `bytes` of heap held outside the store to its budget: false when they do not fit. */
   reserve(bytes: number): boolean;
   /** Return what `reserve` charged. */
@@ -138,8 +139,7 @@ export interface ResidentNamespace {
  * changes when they were built, and `own`, its own debt then (acquireArgs).
  */
 export interface ResidentAcquireArgs {
-  readonly epoch: string;
-  readonly cursor: number;
+  readonly position: FeedPosition;
   readonly options?: object;
   readonly begin?: number;
   readonly own?: number;
@@ -153,8 +153,8 @@ export interface ResidentBarrierOptions {
   readonly answer?: VfsAcquireResult;
   /**
    * An answer a delivery carried, with the arguments it was asked with: it
-   * stands in for asking when it answers from a cursor the store has reached,
-   * in its epoch.
+   * stands in for asking when it answers from a position the store has
+   * reached.
    */
   readonly delivered?: { readonly args: ResidentAcquireArgs; readonly answer: VfsAcquireResult } | null;
   /** A read lease asked with the barrier: `answered` once the session grants it, whatever the barrier does next. */
@@ -952,7 +952,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     if (holder!.client.held(key) === undefined) return true;
     const cursor = store.cursor();
     return walks.every((walk) => walk.crossed.every((name) => holder!.entry(name) !== undefined
-      || (cursor !== null && holder!.client.certifies(name, cursor) !== undefined)));
+      || (cursor !== null && holder!.client.certifies(name, rootOf(cursor)) !== undefined)));
   };
 
   /** The authority, for a call that may change what the store holds: the barrier is owed once it returns. */
@@ -1745,7 +1745,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
    */
   const vouchedContent = ({ key }: Walk): Uint8Array | undefined => {
     const cursor = store.cursor();
-    if (cursor === null || holder!.client.vouch(key, cursor) !== 'held') return undefined;
+    if (cursor === null || holder!.client.vouch(key, rootOf(cursor)) !== 'held') return undefined;
     const entry = entryAt(key);
     return entry ? store.content(key, entry.revision) : undefined;
   };

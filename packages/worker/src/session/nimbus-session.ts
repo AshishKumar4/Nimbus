@@ -939,8 +939,8 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
   async _rpcExists(path: string, pid?: number, cred?: VfsCred): Promise<boolean> { return _rpc._rpcExists(this as any, path, pid, cred); }
   async _rpcMkdir(path: string, pid?: number, cred?: VfsCred, options?: SessionMkdirOptions): Promise<void> { return _rpc._rpcMkdir(this, path, pid, cred, options); }
   async _rpcRename(from: string, to: string, pid?: number, cred?: VfsCred): Promise<void> { return _rpc._rpcRename(this as any, from, to, pid, cred); }
-  async _rpcFsAcquire(epoch: string | null, cursor: number, options?: VfsAcquireOptions | null, pid?: number): Promise<VfsAcquireResult> {
-    return _rpc._rpcFsAcquire(this as any, epoch, cursor, options, pid);
+  async _rpcFsAcquire(position: unknown, options?: VfsAcquireOptions | null, pid?: number): Promise<VfsAcquireResult> {
+    return _rpc._rpcFsAcquire(this as any, position, options, pid);
   }
   async _rpcFsAcquired(acquire: unknown, op: unknown, args: unknown, pid?: number) {
     return _rpc._rpcFsAcquired(this as any, acquire, op, args, pid);

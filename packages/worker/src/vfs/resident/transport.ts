@@ -26,6 +26,7 @@ import { nsName, nsParent } from './namespace-lookup.js';
 import { RESIDENT_CHUNK_BYTES } from '../facet-resident-limits.js';
 import type { ResidentSupervisor } from './supervisor.js';
 import { RK_BINARY, type ResidentTables } from './tables.js';
+import { isFeedPosition, rootOf, sameEpochs } from '@nimbus-sh/core/runtime/feed-position.js';
 
 /**
  * The `fsReadBatch` bounds, as the filler must respect them.
@@ -400,9 +401,10 @@ export function createTransport(coherence: Coherence, admission: Admission, name
       if (!listed || !arrayIsArray(listed.entries)) {
         throw new Error('Nimbus: fsList returned no page');
       }
+      if (!isFeedPosition(listed.position)) throw new Error('Nimbus: fsList returned no position');
       if (cursor === null) {
-        cursor = { epoch: stringOf(listed.epoch), rev: NumberOf(listed.rev) };
-      } else if (stringOf(listed.epoch) !== cursor.epoch) {
+        cursor = listed.position;
+      } else if (!sameEpochs(listed.position, cursor)) {
         return { entries: arrayCopy(entries), names: arrayCopy(names), cursor, complete: false, reason: 'the supervisor changed incarnation mid-enumeration' };
       }
       for (let i = 0; i < listed.entries.length; i++) {
@@ -434,7 +436,7 @@ export function createTransport(coherence: Coherence, admission: Admission, name
         }
         // Its stat, for the bytes the store already has: who may read them (namespace.readable).
         const contentKey = ownValue(entry, 'contentKey');
-        entries[entries.length] = { path, size, rev, epoch: cursor.epoch, ckey: contentKey == null ? null : stringOf(contentKey), stat: entry.stat ?? null };
+        entries[entries.length] = { path, size, rev, epoch: rootOf(cursor).epoch, ckey: contentKey == null ? null : stringOf(contentKey), stat: entry.stat ?? null };
       }
       if (listed.next === null || listed.next === undefined) {
         return { entries: arrayCopy(entries), names: arrayCopy(names), namespaceBytes, cursor, complete: true, reason: null };

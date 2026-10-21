@@ -24,7 +24,8 @@ import type {
   Awaitable, Principal, SyncVFS, VFS, VfsCasResult, VfsChanges, VfsContentRef, VfsCopyOptions, VfsCred, VfsDirent, VfsMountDescription, VfsOpenFile, VfsRemoval,
   VfsRevision, VfsStat, VfsUsage, VfsViewOptions, VfsWriteEvent, VfsWriteObserver, VfsWriteWants,
 } from './vfs.js';
-import type { RuntimeVfsStat, VfsAcquireOptions, VfsInvalidatedPath, VfsListEntry } from '../runtime/os-contracts.js';
+import type { RuntimeVfsStat, VfsAcquireOptions, VfsInvalidatedPath, VfsListEntry, VfsListOptions } from '../runtime/os-contracts.js';
+import { feedOf, positionOf, type FeedCursor, type FeedPosition } from '../runtime/feed-position.js';
 import { LOCAL_PLACEMENT, type ExecDelegate, type ProgramPlacement } from '../runtime/program-start.js';
 import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 import { inWatchedTree, projectChange, type VfsEvent, type VfsEventType } from './events.js';
@@ -37,15 +38,6 @@ import { runtimeStatOf } from './runtime-stat.js';
 import { walkRemoval, type RemovalSteps } from './removal-walk.js';
 import { abandon, andThen, copiedPermissions, copySetsMode, isCharacterDevice, isPromise, readRangeOrWhole, syncValue } from './vfs.js';
 import { compareUtf8 as comparePaths } from '@nimbus-sh/platform/utf8.js';
-
-/**
- * Where a reader of a namespace's feed stands: the mount table as its
- * principal saw it, and each change feed's epoch and cursor.
- */
-export interface FeedPosition<Epoch extends string | null = string> {
-  readonly table: string;
-  readonly feeds: Readonly<Record<string, { readonly epoch: Epoch; readonly cursor: number }>>;
-}
 
 /** One answer of the feed: every path changed since the position, or a poison (relist). */
 export interface FeedAnswer {
@@ -74,8 +66,9 @@ export type MountWalk = readonly VfsListEntry[];
  */
 export interface CompositeFeed {
   position(): FeedPosition;
-  since(position: FeedPosition<string | null>, options?: VfsAcquireOptions): FeedAnswer;
-  list(after: string | null, limit: number, walked?: MountWalk): { entries: VfsListEntry[]; next: string | null };
+  /** What changed since `position`; null (a reader with none) is a poison. */
+  since(position: FeedPosition | null, options?: VfsAcquireOptions): FeedAnswer;
+  list(after: string | null, limit: number, walked?: MountWalk, options?: VfsListOptions): { entries: VfsListEntry[]; next: string | null };
   /**
    * What the mounts without a feed hold where `named` points into them, as
    * this principal: each such mount point that it can reach, and, on it, the
@@ -806,7 +799,7 @@ export class CompositeVFS implements VFS {
     return {
       position: () => this.feedPosition(this.feedSignature(), this.feedSources()),
       since: (position, options) => this.feedSince(position, options),
-      list: (after, limit, walked) => this.feedList(after, limit, walked),
+      list: (after, limit, walked, options) => this.feedList(after, limit, walked, options),
       walk: (named, limit) => this.walkUnfed(named, limit),
     };
   }
@@ -839,11 +832,11 @@ export class CompositeVFS implements VFS {
   }
 
   private feedPosition(table: string, sources: Array<{ mount: Mount; changes: VfsChanges | undefined }>): FeedPosition {
-    const feeds: Record<string, { epoch: string; cursor: number }> = {};
+    const feeds: Record<string, FeedCursor> = {};
     for (const { mount, changes } of sources) {
       if (changes) feeds[mount.point] = { epoch: changes.epoch, cursor: changes.revision() };
     }
-    return { table, feeds };
+    return positionOf(table, feeds);
   }
 
   private static reroot(point: string, path: string): string {
@@ -857,16 +850,16 @@ export class CompositeVFS implements VFS {
     return !this.isStructural(path) || this.table.mounts.get(path) === mount;
   }
 
-  private feedSince(position: FeedPosition<string | null>, options?: VfsAcquireOptions): FeedAnswer {
+  private feedSince(position: FeedPosition | null, options?: VfsAcquireOptions): FeedAnswer {
     const table = this.feedSignature();
     const sources = this.feedSources();
     const poison = (): FeedAnswer => ({ position: this.feedPosition(table, sources), poison: true, paths: [] });
-    if (position.table !== table) return poison();
-    const feeds: Record<string, { epoch: string; cursor: number }> = {};
+    if (position === null || position.table !== table) return poison();
+    const feeds: Record<string, FeedCursor> = {};
     const paths: VfsInvalidatedPath[] = [];
     for (const { mount, changes } of sources) {
       if (!changes) continue;
-      const held = position.feeds[mount.point];
+      const held = feedOf(position, mount.point);
       if (held === undefined) return poison();
       const delta = changes.since(held.epoch, held.cursor, options);
       if (delta.poison) return poison();
@@ -886,7 +879,7 @@ export class CompositeVFS implements VFS {
         }
       }
     }
-    return { position: { table, feeds }, poison: false, paths };
+    return { position: positionOf(table, feeds), poison: false, paths };
   }
 
   /**
@@ -897,7 +890,7 @@ export class CompositeVFS implements VFS {
    * those mounts). A mount without a feed shows only its point otherwise.
    * Take `position()` before the first page.
    */
-  private feedList(after: string | null, limit: number, walked: MountWalk = []): { entries: VfsListEntry[]; next: string | null } {
+  private feedList(after: string | null, limit: number, walked: MountWalk = [], options?: VfsListOptions): { entries: VfsListEntry[]; next: string | null } {
     const want = Math.max(1, limit);
     const past = (path: string): boolean => after === null || comparePaths(path, after) > 0;
     const streams: Array<{ entries: readonly VfsListEntry[]; more: boolean }> = [];
@@ -924,7 +917,7 @@ export class CompositeVFS implements VFS {
       const entries: VfsListEntry[] = [];
       let more = true;
       while (entries.length < want && more) {
-        const page = changes.list(from, want);
+        const page = changes.list(from, want, options);
         for (const entry of page.entries) {
           const at = CompositeVFS.reroot(point, entry.path);
           if (past(at) && this.feedShows(at, mount) && at !== point) {

@@ -71,7 +71,9 @@ import {
   type VfsMutationReceipt,
   type VfsListTree,
 } from '@nimbus-sh/core/runtime/os-contracts.js';
-import type { CredentialedVfs, SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { FeedPosition } from '@nimbus-sh/core/runtime/feed-position.js';
+import { FeedPositionSchema } from '@nimbus-sh/core/runtime/feed-position-schema.js';
 import { loaderCodeRegistry, type LoaderStoreRequest } from '../wrangler/loader-code-store.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/runtime/wave-contracts.js';
 import type { BatchInodeEntry } from '@nimbus-sh/platform/w7-frame.js';
@@ -565,11 +567,11 @@ const FsTruncateArgsSchema = z.object({
   size: FsRangeOffsetSchema,
 });
 
-// A facet supplies its own cursor, so it is untrusted input. A null epoch is
+
+// A facet supplies its own position, so it is untrusted input. A null one is
 // the legitimate first call from a facet that has never acquired.
 const FsAcquireArgsSchema = z.object({
-  epoch: z.string().max(64).nullable(),
-  cursor: z.number().int().min(0),
+  position: FeedPositionSchema.nullable(),
   /** The asking process's own count of when it built these (node-shims _acquireArgs): echoed with the answer, never read here. */
   begin: z.number().int().min(0).optional(),
   /** Its own changes' debt then (ResidentFilesystem.acquireArgs): echoed with the answer, never read here. */
@@ -677,14 +679,13 @@ export async function _rpcWsClose(
  */
 export async function _rpcFsAcquire(
   self: RpcHost,
-  epoch: string | null,
-  cursor: number,
+  position: unknown,
   options?: VfsAcquireOptions | null,
   pid?: number,
 ): Promise<VfsAcquireResult> {
-  const args = FsAcquireArgsSchema.parse({ epoch, cursor, options: options ?? undefined });
+  const args = FsAcquireArgsSchema.parse({ position, options: options ?? undefined });
   // What it reports another's held commit made waits for its publication, as a list does.
-  return withRecall(() => self.supervisorBridge(pid).acquire(args.epoch, args.cursor, args.options));
+  return withRecall(() => self.supervisorBridge(pid).acquire(args.position, args.options));
 }
 
 /** The reads a process may ask together with its ACQUIRE (_rpcFsAcquired). */
@@ -815,8 +816,7 @@ export async function _acquireOnDelivery(
   // Computed now, or not carried: one that would wait for another's held
   // commit to publish holds no delivery back (the process asks, and waits).
   try {
-    const { epoch, cursor } = parsed.data;
-    return { args: parsed.data, answer: await self.supervisorBridge(caller).acquire(epoch, cursor, parsed.data.options === undefined ? undefined : options) };
+    return { args: parsed.data, answer: await self.supervisorBridge(caller).acquire(parsed.data.position, parsed.data.options === undefined ? undefined : options) };
   } catch {
     return undefined;
   }
@@ -830,11 +830,17 @@ export async function _acquireOnDelivery(
  * one-integer piggyback — true for any request no write preceded since the
  * process last caught up — and otherwise asks.
  */
-export function _acquireForRoutedRequest(self: RpcHost, pid: number): Promise<VfsDeliveredAcquire | undefined> {
+export async function _acquireForRoutedRequest(self: RpcHost, pid: number): Promise<VfsDeliveredAcquire | undefined> {
   self.ensureSqliteFs();
-  const vfs: SqliteVFS | null = self.sqliteFs;
-  if (!vfs) return Promise.resolve(undefined);
-  return _acquireOnDelivery(self, { epoch: vfs.epoch, cursor: vfs.revision() }, pid);
+  if (!self.sqliteFs) return undefined;
+  // Where the namespace stands now: an acquire from no position is a poison that says so.
+  let now: FeedPosition;
+  try {
+    ({ position: now } = await self.supervisorBridge(pid).acquire(null));
+  } catch {
+    return undefined;
+  }
+  return _acquireOnDelivery(self, { position: now }, pid);
 }
 
 /**

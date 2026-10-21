@@ -15,6 +15,7 @@ import { RESIDENT_ROW_BYTES, residentBytes } from './cell-cost.js';
 import type { Coherence } from './coherence.js';
 import type { Learning, Namespace } from './namespace.js';
 import type { ResidentSupervisor } from './supervisor.js';
+import { rootOf } from '@nimbus-sh/core/runtime/feed-position.js';
 
 export interface Pages {
   /**
@@ -88,7 +89,8 @@ export function createPages(coherence: Coherence, admission: Admission, namespac
     // epoch the platform produces names a revision of another's with other
     // bytes; a store that outlived its database would meet one, and keying by
     // epoch costs nothing.
-    const keyed = cursor.epoch + '\u0000' + k;
+    const epoch = rootOf(cursor).epoch;
+    const keyed = epoch + '\u0000' + k;
     const out: Uint8Array[] = new Array(last - first + 1);
     const missing: number[] = [];
     for (let part = first; part <= last; part++) {
@@ -101,7 +103,7 @@ export function createPages(coherence: Coherence, admission: Admission, namespac
       const batch = missing.slice(at, at + perBatch);
       const ranges = batch.map((part) => {
         const offset = part * RESIDENT_PAGE_BYTES;
-        return { path: '/' + k, offset, length: Math.min(RESIDENT_PAGE_BYTES, Math.max(0, size - offset)), expectedEpoch: cursor.epoch, expectedRevision: rev };
+        return { path: '/' + k, offset, length: Math.min(RESIDENT_PAGE_BYTES, Math.max(0, size - offset)), expectedEpoch: epoch, expectedRevision: rev };
       });
       // N18: room asked for first; a page the ledger will not admit is still read, only not held.
       await admission.ensureRoom(ranges.reduce((n, r) => n + r.length + RESIDENT_ROW_BYTES, 0));

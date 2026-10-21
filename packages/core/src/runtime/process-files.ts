@@ -73,7 +73,8 @@ import {
   type RuntimeMutationOwner,
 } from './os-contracts.js';
 import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
-import { fsError, SqliteRuntimeFsBridge, walkBeneath } from './sqlite-runtime-fs-bridge.js';
+import { rootOf, samePosition, type FeedPosition } from './feed-position.js';
+import { fsError, namespacePage, SqliteRuntimeFsBridge, walkBeneath } from './sqlite-runtime-fs-bridge.js';
 import { modeAllows } from '../vfs/posix-access.js';
 import { closeDescriptions, closeScopeSignal, createDescriptorScope, Descriptors, openFlags, processView, reportLost, scopeSignal, settleHeldAt, type Authority, type DescriptorScope } from './descriptors.js';
 import { BUFFERED_WRITE_BYTES, openMounted, reopenMounted } from '../vfs/mounted-description.js';
@@ -193,9 +194,9 @@ class GuardedProcessBridge implements RuntimeFsBridge {
   fsync(handleId?: number): void { this.guard(); return this.target.fsync(handleId); }
   revision(path?: RuntimeFsPath): number { this.guard(); return this.target.revision(path); }
   contentKey(path: RuntimeFsPath): string { this.guard(); return this.reading(() => this.target.contentKey(path)); }
-  acquire(epoch: string | null, cursor: number, options?: VfsAcquireOptions): VfsAcquireResult {
+  acquire(position: FeedPosition | null, options?: VfsAcquireOptions): VfsAcquireResult {
     this.guard();
-    return this.withReadLease(this.target.acquire(epoch, cursor, options), options);
+    return this.withReadLease(this.target.acquire(position, options), options);
   }
   /**
    * `answer`, with the process's read lease when it asked for one: in the
@@ -206,7 +207,7 @@ class GuardedProcessBridge implements RuntimeFsBridge {
     if (options?.lease !== true || this.pid === undefined || answer.poison) return answer;
     let lease: { owner: string; trustMs: number } | null;
     try {
-      lease = this.delegations.readLease(this.pid, (terms) => this.target.acquireReadLease(terms, { epoch: answer.epoch, cursor: answer.rev }), this.scope);
+      lease = this.delegations.readLease(this.pid, (terms) => this.target.acquireReadLease(terms, rootOf(answer.position)), this.scope);
     } catch (error) {
       // A change being published (EAGAIN): this barrier is answered without one.
       if ((error as { code?: unknown } | null)?.code !== 'EAGAIN') throw error;
@@ -427,7 +428,7 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
   private createListing(pid: number): MountListing {
     let listing = this.listings.get(pid);
     if (listing === undefined) {
-      listing = { named: new Set<string>(), table: null, sqliteGeneration: null, held: null };
+      listing = { named: new Set<string>(), held: null };
       this.listings.set(pid, listing);
     }
     return listing;
@@ -757,25 +758,16 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
 
 /**
  * Where a process's listings of the mounts beyond SQLite stand: what they
- * walk, what mount table they began at, and the walk a listing in progress
- * took.
+ * walk, and the walk a listing in progress took.
  */
 interface MountListing {
   /** What its launch names (ProcessFiles.nameLaunch): where its listing walks. */
   readonly named: Set<string>;
-  /**
-   * The mount table its last listing from the start began at (FeedPosition's
-   * `table`): an acquire across a change of it is a poison, since a mount
-   * appearing or going is in no backend's feed.
-   */
-  table: string | null;
-  /** The table generation when no embedder mount was declared; null for a composite listing. */
-  sqliteGeneration: number | null;
   /** The walk its listing in progress took, which only the page continuing it (`next`) reuses. */
   held: { walk: MountWalk; next: string } | null;
 }
 
-/** The kernel's own filesystems: never walked, and never in a process's listing, which is SQLite's and its embedder's. */
+/** The kernel's own filesystems: fed (their trees fixed: immutable-changes.ts), so never walked. */
 const KERNEL_MOUNT_POINTS: Record<string, true> = { '/proc': true, '/dev': true };
 
 /**
@@ -795,12 +787,6 @@ const engineSetTimeout = globalThis.setTimeout;
 /** A mount an embedder made (a Drive, a container, a device). */
 function isEmbedderMount(point: string): boolean {
   return point !== '/' && KERNEL_MOUNT_POINTS[point] !== true;
-}
-
-/** Whether `path` (absolute) is at or under /proc or /dev. */
-function underKernelMount(path: string): boolean {
-  const end = path.indexOf('/', 1);
-  return KERNEL_MOUNT_POINTS[end === -1 ? path : path.slice(0, end)] === true;
 }
 
 /** Whether the table declares an embedder mount, including one whose source is absent. */
@@ -888,93 +874,32 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
 
 
   /**
-   * One page of every name the process's view shows, in path order. SQLite
-   * alone (no mount an embedder made): SQLite's own page, answered at once.
-   * Otherwise the namespace's feed (CompositeFeed.list): SQLite's names less
-   * what a mount covers, the directories the namespace makes, and each
-   * mount's names where the process's launch named them (CompositeFeed.walk),
-   * cut to a page by SQLite's own bound (listPageBudget). The kernel's /proc
-   * and /dev are left out, as SQLite's page leaves them out. A mounted entry
-   * carries revision 0: a mount never moves the SQLite clock.
+   * One page of every name the process's view shows (namespacePage), the
+   * mounts without a feed walked where the process's launch named them
+   * (CompositeFeed.walk). A mounted entry carries its own feed's revision,
+   * 0 for one that never moves.
    */
-  list(after?: string | null, limit?: number, options?: VfsListOptions): VfsListPage | Promise<VfsListPage> {
-    if (!mountsBeyondSqlite(this.namespace)) {
-      // A later mount must invalidate this SQLite-only listing too.
-      const listing = after === null || after === undefined ? this.listing(true) : undefined;
-      if (listing) {
-        listing.table = null;
-        listing.sqliteGeneration = this.namespace.mountGeneration();
-      }
-      return this.bridge.list(after, limit, options);
-    }
+  async list(after?: string | null, limit?: number, options?: VfsListOptions): Promise<VfsListPage> {
     this.authority();
-    return this.listMounted(after ?? null, Math.min(Math.max(1, Math.trunc(limit ?? FS_LIST_PAGE_LIMIT)), FS_LIST_PAGE_LIMIT));
-  }
-
-  private async listMounted(after: string | null, want: number): Promise<VfsListPage> {
     const listing = this.listing(true);
-    const feed = this.namespace.feed;
     // A page continuing a listing reuses the walk its earlier pages took; any other walks afresh.
     const held = listing?.held;
-    const walk = after !== null && held && held.next === after
+    const walk = after != null && held && held.next === after
       ? held.walk
-      : await feed.walk(listing?.named ?? [], MOUNT_LIST_NAME_LIMIT);
+      : await this.namespace.feed.walk(listing?.named ?? [], MOUNT_LIST_NAME_LIMIT);
     this.authority();
-    // Read before the page, as SqliteVFS.list reads its cursor (VfsListPage).
-    const position = feed.position();
-    const root = position.feeds['/'];
-    if (after === null && listing) {
-      listing.table = position.table;
-      listing.sqliteGeneration = null;
-    }
-    const page = feed.list(after === null ? null : `/${after}`, want, walk);
-    // SQLite measured its own entries when it listed them; each is measured
-    // here under the path the process sees, which only re-encodes that path.
-    const fits = listPageBudget(root.epoch, root.cursor);
-    const entries: VfsListEntry[] = [];
-    let next = page.next === null ? null : page.next.slice(1);
-    for (const entry of page.entries) {
-      if (underKernelMount(entry.path)) continue;
-      const path = entry.path.slice(1);
-      // A mounted directory judged as this bridge judges a mount's (access): SQLite marked its own.
-      const unreadable = entry.kind === 'directory' && entry.unreadable === undefined && !modeAllows(entry.stat, 0o5, this.cred);
-      const listed: VfsListEntry = unreadable ? { ...entry, path, unreadable: true } : { ...entry, path };
-      if (!fits(listed, path)) { next = entries[entries.length - 1].path; break; }
-      entries.push(listed);
-    }
-    if (listing) listing.held = next === null ? null : { walk, next };
-    return { epoch: root.epoch, rev: root.cursor, entries, next };
+    const page = namespacePage(this.namespace, this.cred, after ?? null, limit, walk, options);
+    if (listing) listing.held = page.next === null ? null : { walk, next: page.next };
+    return page;
   }
 
   /**
-   * What changed since the process's cursor. SQLite alone: SQLite's own
-   * answer. Otherwise the namespace's feed (CompositeFeed.since), which
-   * reports only what the namespace routes to SQLite (a write SQLite takes
-   * under a mount point is none of the process's), and is a poison when the
-   * mount table is not the one the process's last listing began at.
+   * What changed since the process's position (SqliteRuntimeFsBridge.acquire),
+   * with its read lease where it asked one.
    */
-  acquire(epoch: string | null, cursor: number, options?: VfsAcquireOptions): VfsAcquireResult {
-    const listing = this.listing(false);
-    if (listing && listing.sqliteGeneration !== null) {
-      // Even a mount/unmount ABA relists once: a generation change is conservative.
-      return this.bridge.acquire(listing.sqliteGeneration === this.namespace.mountGeneration() ? epoch : null, cursor, options);
-    }
-    if (!mountsBeyondSqlite(this.namespace) && (listing?.table ?? null) === null) return this.bridge.acquire(epoch, cursor, options);
+  acquire(position: FeedPosition | null, options?: VfsAcquireOptions): VfsAcquireResult {
     this.authority();
-    const feed = this.namespace.feed;
-    const table = listing?.table ?? feed.position().table;
-    // A null epoch (a caller with no cursor) is SQLite's poison, as ever.
-    const answer = feed.since({ table, feeds: { '/': { epoch, cursor } } }, options);
-    const root = answer.position.feeds['/'];
-    const paths: VfsInvalidatedPath[] = [];
-    for (const entry of answer.paths) {
-      if (underKernelMount(entry.path)) continue;
-      paths.push({ ...entry, path: entry.path.slice(1) });
-    }
-    return this.bridge.withReadLease({
-      epoch: root.epoch, rev: root.cursor, paths, poison: answer.poison,
-      ...(options?.namespace === true && !answer.poison ? { namespace: true } : {}),
-    }, options);
+    return this.bridge.acquire(position, options);
   }
 
   /**
@@ -1618,12 +1543,12 @@ export class ProcessView implements VFS {
     const key = normalizeVfsPath(path);
     const prefix = key === '' ? '' : `${key}/`;
     const revision = await this.call('scandir', path, () => this.fs.revision(path));
-    let at: { epoch: string; rev: number } | null = null;
+    let at: FeedPosition | null = null;
     let after: string | null = key === '' ? null : prefix;
     pages: for (;;) {
       const page = await this.call('scandir', path, () => this.fs.list(after, SCAN_PAGE, { revisions: false, contentKeys: false, linkTargets: false }));
-      if (at === null) at = { epoch: page.epoch, rev: page.rev };
-      else if (revision === 0 && (page.epoch !== at.epoch || page.rev !== at.rev)) throw syscallError('EAGAIN', 'scandir', path);
+      if (at === null) at = page.position;
+      else if (revision === 0 && !samePosition(page.position, at)) throw syscallError('EAGAIN', 'scandir', path);
       for (const entry of page.entries) {
         const at = normalizeVfsPath(entry.path);
         if (at === key || beforeSubtree(at, key)) continue;

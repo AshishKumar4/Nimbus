@@ -55,6 +55,7 @@ import { parentKey } from '../vfs/path.js';
 import { DELEGATION_RECALL_TIMEOUT_MS } from '../runtime/delegations.js';
 import type { WaveMutation, WriteBatchStreamResult, WriteStreamReceipt } from '../runtime/wave-contracts.js';
 import { memoryJournal, type ProcessFsJournal, type ProcessFsJournalSource, type ProcessFsNumbering } from './process-fs-journal.js';
+import type { FeedCursor } from '../runtime/feed-position.js';
 
 export { journalSource, memoryJournal, sqlJournal, type JournalSql, type ProcessFsJournal, type ProcessFsJournalSource } from './process-fs-journal.js';
 /** The calls' answers (vfs-error.ts), as the write ledger spliced beside this client classifies what a program caught. */
@@ -319,15 +320,15 @@ export interface ProcessFsClient {
    * the grant, though a change beneath it elsewhere does not. Undefined:
    * nothing does. The process's own changes are its to overlay (vouch).
    */
-  certifies(key: string, cursor: { readonly epoch: string | null; readonly rev: number }): 'held' | 'above' | undefined;
+  certifies(key: string, root: FeedCursor): 'held' | 'above' | undefined;
   /**
-   * What vouches for `key` in a view whose applied cursor is `cursor`: what
+   * What vouches for `key` in a view whose applied root feed is `root` (rootOf its position): what
    * certifies it, and every change of the process's own in the view: none
    * logged and unanswered, each published, and the session's revision as it
    * answered it reached. Undefined: nothing does, and only the session can
    * answer.
    */
-  vouch(key: string, cursor: { readonly epoch: string | null; readonly rev: number }): 'held' | 'above' | undefined;
+  vouch(key: string, root: FeedCursor): 'held' | 'above' | undefined;
   /** Whether any op is logged and not yet answered. */
   pending(): boolean;
   /**
@@ -1456,16 +1457,16 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     holds(key) {
       return grants.some((grant) => !grant.ended && within(key, grant.root));
     },
-    vouch(key, cursor) {
-      if (client.pending() || ownHeld || cursor.rev < ownThrough) return undefined;
-      return client.certifies(key, cursor);
+    vouch(key, root) {
+      if (client.pending() || ownHeld || root.cursor < ownThrough) return undefined;
+      return client.certifies(key, root);
     },
-    certifies(key, cursor) {
+    certifies(key, root) {
       if (escaped !== null) return undefined;
       let found: 'held' | 'above' | undefined;
       for (const grant of grants) {
         const certificate = grant.certificate;
-        if (certificate === undefined || certificate.epoch !== cursor.epoch || cursor.rev < certificate.revision) continue;
+        if (certificate === undefined || certificate.epoch !== root.epoch || root.cursor < certificate.revision) continue;
         const standing = standingOf(grant, key);
         if (standing === 'held') return standing;
         found ??= standing;
