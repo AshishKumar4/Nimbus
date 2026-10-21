@@ -26,6 +26,7 @@ const PLAIN = "console.log('ready'); setInterval(() => {}, 1000)";
 const PROGRAM = `
 const { spawn } = require('child_process');
 const run = (label, code, signals) => new Promise((resolve) => {
+  console.log('begin ' + label);
   const child = spawn('node', ['-e', code]);
   let out = '';
   let sent = false;
@@ -59,7 +60,7 @@ const lines = (text) => text.split('\n').map((l) => l.trimEnd()).filter((l) => l
 const host = spawnSync('node', ['-e', PROGRAM], { encoding: 'utf8', timeout: 60_000 });
 assert.equal(host.status, 0, host.stderr);
 const expected = lines(host.stdout);
-assert.equal(expected.length, 4, host.stdout);
+assert.equal(expected.length, 8, host.stdout);
 
 console.log('node-signal-handlers-workerd: starting local workerd');
 const probe = await startLocalProbe({ runtimes: [] });
@@ -69,7 +70,7 @@ try {
     const b64 = Buffer.from(PROGRAM).toString('base64');
     const w = await terminal.run(`node -e "require('fs').writeFileSync('/home/user/handlers.js', Buffer.from('${b64}', 'base64'))"`);
     assert.equal(w.status, 0, w.stdout);
-    const r = await terminal.run('node /home/user/handlers.js', 120_000);
+    const r = await terminal.run('node /home/user/handlers.js', 120_000).catch((error) => ({ status: -1, stdout: String(error) }));
     assert.equal(r.status, 0, r.stdout);
     const got = lines(r.stdout);
     for (const line of got) console.log('  ' + line);
