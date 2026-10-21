@@ -34,7 +34,7 @@ export interface FSWatcher extends EventEmitter {
   unref(): this;
 }
 
-interface WatchOptions {
+export interface WatchOptions {
   persistent?: boolean;
   recursive?: boolean;
   encoding?: string;
@@ -44,7 +44,7 @@ type WatchListener = (eventType: string, filename: string | Buffer) => void;
 
 // ─── Dirent ───
 
-interface Dirent {
+export interface Dirent {
   name: string;
   path: string;
   isFile: () => boolean;
@@ -58,7 +58,7 @@ interface Dirent {
 
 // ─── Stat conversion ───
 
-interface NodeStat {
+export interface NodeStat {
   dev: number;
   ino: number;
   mode: number;
@@ -135,7 +135,7 @@ function codedError(error: unknown): error is Error {
 }
 
 /** What Node's ReadStream and WriteStream take; `fs` is the filesystem they open, read, write and close through. */
-interface StreamOptions {
+export interface StreamOptions {
   fs?: object;
   flags?: string;
   encoding?: string;
