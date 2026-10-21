@@ -382,6 +382,12 @@ export declare class IsolatePool {
      */
     submit<T, R>(fn: FacetTaskSource<T, R>, arg: T, opts?: IsolateCallOptions): Promise<Awaited<R>>;
     /**
+     * The worker `fn` is submitted to, loaded and left warm without running
+     * `fn`: its images read and compiled and its preamble evaluated, as the
+     * first submit of `fn` would, so that submit finds it warm.
+     */
+    warm<A, R>(fn: FacetTaskSource<A, R>, opts?: IsolateCallOptions): Promise<void>;
+    /**
      * Dispatch `fn` through the fetch transport — the pool's only
      * cancellable path: aborting `request.signal` cancels the inner
      * execution context at its next I/O suspension (a synchronous CPU

@@ -1467,12 +1467,13 @@ export declare class FacetManager {
     private _drainJournalAs;
     /**
      * What every loader-backed runtime builds its facet pools from: the env and
-     * ctx a pool is constructed over, and the workspace's network its facets go
-     * out through. One narrow accessor rather than every runtime reaching into
-     * the manager's private fields.
+     * ctx a pool is constructed over (the env verbatim: a pool takes its
+     * LOADER from it, and a one-shot's placement its peers' namespace), and the
+     * workspace's network its facets go out through. One narrow accessor
+     * rather than every runtime reaching into the manager's private fields.
      */
     loaderHost(): {
-        env: unknown;
+        env: object;
         ctx: DurableObjectState;
         network: WorkspaceNetwork;
     };

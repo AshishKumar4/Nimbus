@@ -167,7 +167,7 @@ function describeImageDelivery(delivery) {
  * How many sibling names to try before accepting one that co-located with a
  * process already running. Measured: 1 shared pair in 24 fresh peers.
  */
-const PEER_PLACEMENT_MAX_ATTEMPTS = 4;
+export const PEER_PLACEMENT_MAX_ATTEMPTS = 4;
 const PEER_OWNERS_KEY_PREFIX = 'process-peer:';
 /** The committed placement, without contacting or waking its hosting actor. */
 export async function peerPlacement(ctx, pid) {

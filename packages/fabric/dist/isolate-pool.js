@@ -90,7 +90,7 @@ export function assembleLoaderWorkerModuleSource(options) {
     const requestCallExpr = options.hasBindings
         ? '__fn__(request, this.env)'
         : '__fn__(request)';
-    lines.push(TASK_BODY_ERROR_SOURCE, 'export default class extends WorkerEntrypoint {', '  execute(...args) {', `    return ${callExpr};`, '  }', '', '  // Request/Response transport: the ONE dispatch path whose abort is', '  // real. workerd cancels the inner execution context when the request', '  // signal aborts while the fn is suspended on I/O; RPC execute() above', '  // has no equivalent (measured: Symbol.dispose on a pending RPC does', '  // not cancel). The fn is request-shaped — it encodes and decodes its', '  // own payload; nothing generic is serialized here.', '  async fetch(request) {', '    try {', `      const result = await ${requestCallExpr};`, '      if (result instanceof Response) return result;', '      return Response.json(result ?? null);', '    } catch (err) {', '      // Fail loud inside the response so an abort of the transport is', '      // not conflated with a guest exception: the caller sees 500 only', '      // for a real fn failure, and aborts arrive as fetch rejections.', '      const failure = __nimbusTaskBodyError(err, request);', '      const message = failure instanceof Error && failure.message ? failure.message : String(failure);', `      return Response.json({ ${JSON.stringify(FACET_ERROR_KEY)}: message }, { status: 500 });`, '    }', '  }', '}');
+    lines.push(TASK_BODY_ERROR_SOURCE, 'export default class extends WorkerEntrypoint {', '  execute(...args) {', `    return ${callExpr};`, '  }', '', '  // Loads the worker and runs nothing (IsolatePool.warm).', '  warm() {}', '', '  // Request/Response transport: the ONE dispatch path whose abort is', '  // real. workerd cancels the inner execution context when the request', '  // signal aborts while the fn is suspended on I/O; RPC execute() above', '  // has no equivalent (measured: Symbol.dispose on a pending RPC does', '  // not cancel). The fn is request-shaped — it encodes and decodes its', '  // own payload; nothing generic is serialized here.', '  async fetch(request) {', '    try {', `      const result = await ${requestCallExpr};`, '      if (result instanceof Response) return result;', '      return Response.json(result ?? null);', '    } catch (err) {', '      // Fail loud inside the response so an abort of the transport is', '      // not conflated with a guest exception: the caller sees 500 only', '      // for a real fn failure, and aborts arrive as fetch rejections.', '      const failure = __nimbusTaskBodyError(err, request);', '      const message = failure instanceof Error && failure.message ? failure.message : String(failure);', `      return Response.json({ ${JSON.stringify(FACET_ERROR_KEY)}: message }, { status: 500 });`, '    }', '  }', '}');
     return lines.join('\n');
 }
 /**
@@ -797,6 +797,15 @@ export class IsolatePool {
         catch (error) {
             throw this.#ended(error);
         }
+    }
+    /**
+     * The worker `fn` is submitted to, loaded and left warm without running
+     * `fn`: its images read and compiled and its preamble evaluated, as the
+     * first submit of `fn` would, so that submit finds it warm.
+     */
+    async warm(fn, opts) {
+        const { fnSource, fnHash } = this.#prepare(fn);
+        await this.#dispatchSlot(fnSource, fnHash, 0, (entrypoint) => entrypoint.warm(), this.#resolve(opts), opts?.wasmModules, opts?.signal);
     }
     /**
      * A run that failed (its facet died, was killed or timed out) of a process

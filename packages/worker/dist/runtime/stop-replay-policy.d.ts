@@ -353,6 +353,18 @@ export declare const REPLAY_OPERATION_POLICY: {
     hmrRelay: {
         readonly kind: "effect";
     };
+    oneShotSubmit: {
+        readonly kind: "effect";
+    };
+    oneShotWarm: {
+        readonly kind: "effect";
+    };
+    oneShotCancel: {
+        readonly kind: "effect";
+    };
+    oneShotDispose: {
+        readonly kind: "effect";
+    };
     hmrNextEvent: {
         readonly kind: "effect";
     };

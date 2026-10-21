@@ -15,6 +15,14 @@ import { type WorkspaceEgress } from '@nimbus-sh/core/_shared/workspace-network.
 import { z } from 'zod/v4';
 import type { ResidentBootSpec } from './process-fabric.js';
 export declare function isolateToken(): string;
+/** A coordinator's route (HostRoute), as a sibling receives it. */
+export declare const HostRouteSchema: z.ZodObject<{
+    supervisorEntrypoint: z.ZodString;
+    hostNamespace: z.ZodString;
+    hostDispatchMethod: z.ZodString;
+}, z.core.$strip>;
+/** A workspace's egress (a stub, crossed by RPC), as a sibling receives it. */
+export declare const WorkspaceEgressSchema: z.ZodCustom<WorkspaceEgress, WorkspaceEgress>;
 /**
  * Options the coordinator hands a hosting peer. Parsed on the peer, because a
  * sibling accepts them from whoever calls it.
@@ -101,6 +109,28 @@ export interface PeerHostOptions {
      */
     bootSpec: z.ZodType<ResidentBootSpec>;
 }
+/**
+ * Whole-file reads for a boot spec's by-path members, in ranges. This is the
+ * one thing a peer does differently from a coordinator, and it is a PARAMETER
+ * of `processes().spawn` rather than a branch inside it: the coordinator reads
+ * its own disk synchronously, a peer reads the same disk over the supervisor.
+ *
+ * Ranged because these are the session's largest files — a ruby
+ * interpreter+stdlib image is 34.3 MiB — and workerd's 32 MiB ceiling applies
+ * to each returned VALUE, not to the call. UNCACHED for the same reason the
+ * coordinator's own reader is: caching a 34 MiB blob in a 32 MiB LRU evicts
+ * everything the session was using and holds the blob for the session's life.
+ *
+ * The credential is the PROCESS's, not the kernel's, because that is what a
+ * supervisor RPC carries and no substrate should be able to read more than the
+ * process it hosts. Boot-spec members are reachable under it by construction:
+ * the image store is kernel-owned mode 0644 precisely so any process can read
+ * it, and the installed runtime images are world-readable too. The reads are
+ * this peer's, not the process's run's, so they go through a binding no run
+ * acts through: a run whose boot is stopped and replayed (stop/replay) is
+ * judged by what it received itself, and it received none of these.
+ */
+export declare const RESIDENT_READ_RANGE_BYTES: number;
 /**
  * The processes this Durable Object hosts for its siblings, and every leg a
  * coordinator's {@link PeerProcessHost} calls on it. One per object: its

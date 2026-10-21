@@ -531,5 +531,25 @@ export declare function _rpcAbandonHostedHttp(self: PeerHostRpcHost, workerKey: 
 export declare function _rpcCancelHostProcess(self: PeerHostRpcHost, workerKey: string): Promise<{
     cancelled: boolean;
 }>;
+interface OneShotRpcHost {
+    readonly ctx: DurableObjectState;
+    readonly env: object;
+}
+export declare function _rpcOneShotSubmit(self: OneShotRpcHost, spec: unknown, callId: unknown, fn: unknown, args: unknown, options: unknown, images: unknown): Promise<{
+    ok: false;
+    message: string;
+    code?: string;
+    unsettled: boolean;
+} | {
+    ok: true;
+    value: unknown;
+}>;
+export declare function _rpcOneShotWarm(self: OneShotRpcHost, spec: unknown, fn: unknown, images: unknown): Promise<{
+    warmed: true;
+}>;
+export declare function _rpcOneShotCancel(self: OneShotRpcHost, callId: unknown): {
+    cancelled: boolean;
+};
+export declare function _rpcOneShotDispose(self: OneShotRpcHost, key: unknown): void;
 export {};
 //# sourceMappingURL=rpc.d.ts.map

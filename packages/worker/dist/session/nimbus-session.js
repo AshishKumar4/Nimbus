@@ -907,6 +907,22 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcCancelHostProcess(workerKey) {
         return _rpc._rpcCancelHostProcess(this, workerKey);
     }
+    // One-shots: the peer leg, for a sibling session running a one-shot on THIS object (fabric one-shot-peer.ts).
+    oneShotLeg() {
+        return { ctx: this.ctx, env: this.env };
+    }
+    async _rpcOneShotSubmit(spec, callId, fn, args, options, images) {
+        return _rpc._rpcOneShotSubmit(this.oneShotLeg(), spec, callId, fn, args, options, images);
+    }
+    async _rpcOneShotWarm(spec, fn, images) {
+        return _rpc._rpcOneShotWarm(this.oneShotLeg(), spec, fn, images);
+    }
+    _rpcOneShotCancel(callId) {
+        return _rpc._rpcOneShotCancel(this.oneShotLeg(), callId);
+    }
+    _rpcOneShotDispose(key) {
+        _rpc._rpcOneShotDispose(this.oneShotLeg(), key);
+    }
     // W8 child_process RPC
     async _rpcCpSpawn(req, parentPid) { return _rpc._rpcCpSpawn(this, req, parentPid); }
     async _rpcCpStdinWrite(childPid, data, pid) { return _rpc._rpcCpStdinWrite(this, childPid, data, pid); }

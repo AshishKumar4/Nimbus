@@ -1,21 +1,25 @@
 /**
  * The workerd {@link FacetHost}: a facet is a dynamic worker.
  *
- * The whole adapter is the option renames below, because `IsolatePool`
- * already IS the port's shape — `submit` and `dispose`, with the same meanings.
- * The one thing it spells differently is the supervisor capability, which it
- * takes as a pid plus a separate flag saying whether to bind one at all; the
- * port collapses the pair, since a facet with the binding and no pid can read
- * the session and never write to it. `reuse` is the pool's `cacheScope` under
- * the name the port gives it: who a warm facet may answer for; `warm` is its
- * `scope`, with the capability handed per call. The one thing
- * the host binds rather than renames is the network: every facet it opens goes
- * out through the workspace's (its egress, when it has one), so no runtime
- * opening a facet can leave it out.
+ * The adapter is mostly the option renames of oneShotPoolOptions, because
+ * `IsolatePool` already IS the port's shape — `submit` and `dispose`, with
+ * the same meanings. The one thing it spells differently is the supervisor
+ * capability, which it takes as a pid plus a separate flag saying whether to
+ * bind one at all; the port collapses the pair, since a facet with the
+ * binding and no pid can read the session and never write to it. `reuse` is
+ * the pool's `cacheScope` under the name the port gives it: who a warm facet
+ * may answer for; `warm` is its `scope`, with the capability handed per call.
+ * The host binds two things rather than renames them. The network: every
+ * facet it opens goes out through the workspace's (its egress, when it has
+ * one), so no runtime opening a facet can leave it out. And where each call
+ * runs: on the session's warm peer when it has one for the call's worker
+ * (fabric one-shot-peer.ts), since a call here holds the session's thread
+ * for as long as it computes; a stateful facet stays here.
  */
 import { requireNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { warmFacetScope } from '@nimbus-sh/core/runtime/warm-facets.js';
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
+import { oneShotPlacement, oneShotPoolOptions } from '@nimbus-sh/fabric/one-shot-peer.js';
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 /**
  * The transforms and builds a host's own Durable Object runs outside the
@@ -37,19 +41,17 @@ export function loaderFacetHost(env, ctx, network) {
         // back to the session mid-instruction.
         parking: 'jspi',
         open(spec) {
-            return new IsolatePool(env, ctx, {
+            const pool = {
                 tag: spec.tag,
                 concurrency: spec.concurrency,
                 preamble: spec.preamble,
-                wasmModules: spec.wasmModules,
-                omitSupervisor: spec.syscalls === undefined,
-                supervisorPid: spec.syscalls?.pid,
-                processSupervisor: spec.syscalls ? supervisorBindingProps(ctx, spec.syscalls.pid, { writerId: crypto.randomUUID(), network }) : undefined,
-                cacheScope: spec.reuse,
+                supervisor: spec.syscalls ? supervisorBindingProps(ctx, spec.syscalls.pid, { writerId: crypto.randomUUID(), network }) : undefined,
+                reuse: spec.reuse,
                 scope: spec.warm === undefined ? undefined : warmFacetScope(spec.warm),
-                supervisorPerCall: spec.warm !== undefined,
-                network,
-            });
+            };
+            if (spec.stateful === true)
+                return new IsolatePool(env, ctx, oneShotPoolOptions(pool, network, spec.wasmModules));
+            return oneShotPlacement(ctx, env).facet(pool, spec.wasmModules ?? {}, network);
         },
     };
 }

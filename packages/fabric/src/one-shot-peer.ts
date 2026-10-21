@@ -30,6 +30,7 @@ import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { unsettledEnd } from '@nimbus-sh/core/_shared/process-fs-client.js';
 import { ISOLATE_NETWORK, networkRef, workspaceNetwork, type WorkspaceNetwork, type WorkspaceNetworkRef } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { Facet, FacetImage, FacetSubmitOptions } from '@nimbus-sh/core/runtime/facet-host.js';
+import type { SupervisorOpName } from '@nimbus-sh/core/workspace/supervisor-ops.js';
 import { facetTaskSource, type FacetTaskSource } from '@nimbus-sh/core/runtime/facet-task.js';
 import { acquireSupervisorLoad } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { classifyDoCall } from '@nimbus-sh/platform/oom-classify.js';
@@ -331,7 +332,7 @@ export class OneShotPlacement {
     }]));
   }
 
-  async #call(peer: string, op: string, args: unknown[]): Promise<unknown> {
+  async #call(peer: string, op: SupervisorOpName, args: unknown[]): Promise<unknown> {
     this.#namespace ??= hostNamespaceBinding(this.#env, 'one-shot placement');
     const stub = this.#namespace.get(this.#namespace.idFromName(peer));
     try {

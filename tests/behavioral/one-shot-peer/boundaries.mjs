@@ -1,0 +1,132 @@
+#!/usr/bin/env bun
+// one-shot-peer/boundaries — a one-shot on the session's peer is the session's
+// process, under the session's rules, and ends as one (fabric one-shot-peer.ts).
+//   1. Identity: it reads only what its caller may (a file of the user's that
+//      alice may not read, alice's run refused it on either host); what it
+//      writes is its caller's; its environment reaches it, and the peer stores
+//      none of it.
+//   2. Kill: Ctrl-C ends a sleeping run and a computing one on the peer, with
+//      the exit it has in the session; the time from Ctrl-C to the prompt on
+//      each host is recorded.
+//   3. Its host lost: a peer reset mid-run ends the run at once (not when the
+//      run would have ended), with an error naming the cause; the run is not
+//      run again, and the next one-shot runs.
+import { makeAsserter, mintSession, deleteSession, Terminal, sleep } from '../_driver.mjs';
+import { addAlice } from '../durable/_another-account.mjs';
+import { peer, warmFor, mark, hostsSince, median } from './_peer.mjs';
+
+if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
+const a = makeAsserter('one-shot-peer/boundaries');
+const PY = 'cpython-runner@3';
+const SECRET = `env-${crypto.randomUUID()}`;
+const out = (record) => console.log(JSON.stringify(record));
+
+const sid = await mintSession();
+console.log(`SID: ${sid}`);
+const t = new Terminal(sid);
+const run = async (line, timeoutMs = 120_000) => {
+  const r = await t.run(line, timeoutMs);
+  return { ...r, text: r.output };
+};
+/** `line` run on `host`: the peer forgotten for the session, waited warm for the peer; where it ran, from the session's record. */
+async function on(host, line) {
+  if (host === 'session') await peer(sid, 'forget');
+  else await warmFor(sid, PY);
+  const marked = await mark(sid);
+  const r = await run(line);
+  return { ...r, ranOn: await hostsSince(sid, marked) };
+}
+const ran = (r, host) => r.ranOn.length > 0 && r.ranOn.every((h) => h === host);
+/** What a run printed, a line each, without the command's own echo. */
+const lines = (r) => r.text.split('\n').slice(1).map((line) => line.trim());
+
+try {
+  await t.connect();
+  await t.waitForPrompt(60_000);
+  for (const line of ['nimbus install python', 'echo private > /home/user/private.txt && chmod 600 /home/user/private.txt']) {
+    const r = await run(line, 600_000);
+    if (r.exitCode !== 0) throw new Error(`setup failed: ${line}: ${r.output.slice(-300)}`);
+  }
+  const alice = await addAlice(run);
+  if (!alice.exists) throw new Error(`alice was not added: ${alice.text.slice(-300)}`);
+  await run('python3 -c "print(1)"');
+
+  // ── 1. Identity ───────────────────────────────────────────────────────────
+  const READ = `sudo -u alice python3 -c "print(open('/home/user/private.txt').read())"`;
+  for (const host of ['session', 'peer']) {
+    const refused = await on(host, READ);
+    a.check(`${host}: alice's run may not read the user's private file`, ran(refused, host) && refused.exitCode !== 0 && /PermissionError/.test(refused.text) && !lines(refused).includes('private'),
+      JSON.stringify({ ranOn: refused.ranOn, exit: refused.exitCode, text: refused.text.slice(-300) }));
+    const own = await on(host, `python3 -c "print(open('/home/user/private.txt').read().strip())"`);
+    a.check(`${host}: the user's own run may`, ran(own, host) && own.exitCode === 0 && lines(own).includes('private'), JSON.stringify({ ranOn: own.ranOn, text: own.text.slice(-300) }));
+    const wrote = await on(host, `sudo -u alice python3 -c "open('/tmp/by-alice-${host}', 'w').write('x')" && stat -c %u /tmp/by-alice-${host}`);
+    a.check(`${host}: what alice's run writes is alice's`, ran(wrote, host) && lines(wrote).includes('1001'), JSON.stringify({ ranOn: wrote.ranOn, text: wrote.text.slice(-200) }));
+  }
+  const env = await on('peer', `SECRET_ENV=${SECRET} python3 -c "import os; print(os.environ['SECRET_ENV'])"`);
+  a.check('its environment reaches it on the peer', ran(env, 'peer') && env.text.includes(SECRET), JSON.stringify({ ranOn: env.ranOn, text: env.text.slice(-200) }));
+  const stored = await peer(sid, 'stored', SECRET);
+  a.check('and the peer stores none of it', stored.stored === false, JSON.stringify(stored));
+
+  // ── 2. Kill ───────────────────────────────────────────────────────────────
+  // The computing run prints now and then: a run that never calls out hears
+  // no kill on either host, and in the session holds its thread meanwhile.
+  const KILLED = {
+    sleeping: 'python3 -c "import time; time.sleep(60)"',
+    computing: 'python3 -u -c "import itertools; [print(i) for i in itertools.count() if i % 2000000 == 0]"',
+  };
+  const kills = [];
+  for (let i = 1; i <= 3; i++) {
+    for (const [what, line] of Object.entries(KILLED)) {
+      for (const host of i % 2 ? ['session', 'peer'] : ['peer', 'session']) {
+        if (host === 'session') await peer(sid, 'forget');
+        else await warmFor(sid, PY);
+        const marked = await mark(sid);
+        t.reset();
+        t.cmd(line);
+        const submission = t.submission;
+        await sleep(3000);
+        const at = Date.now();
+        t.send('\x03');
+        await t.waitFor(() => submission.end !== null, 120_000, `${what} run's end after Ctrl-C`);
+        const ms = Date.now() - at;
+        const ranOn = await hostsSince(sid, marked);
+        kills.push({ what, host, ms, exit: submission.exitCode, ranOn });
+        out({ kill: what, round: i, host, ms, exit: submission.exitCode, ranOn });
+      }
+    }
+  }
+  for (const what of Object.keys(KILLED)) {
+    const of = (host) => kills.filter((k) => k.what === what && k.host === host);
+    a.check(`Ctrl-C ends a ${what} run on the peer, with the exit it has in the session (prompt after ${median(of('peer').map((k) => k.ms))} ms on the peer, ${median(of('session').map((k) => k.ms))} ms in the session)`,
+      of('peer').every((k) => ran(k, 'peer') && k.exit === of('session')[0].exit) && of('session').every((k) => ran(k, 'session')),
+      JSON.stringify(kills.filter((k) => k.what === what)));
+  }
+
+  // ── 3. Its host lost ──────────────────────────────────────────────────────
+  await warmFor(sid, PY);
+  const marked = await mark(sid);
+  t.reset();
+  t.cmd('python3 -c "import time; time.sleep(30); print(\'finished\')"');
+  const submission = t.submission;
+  await sleep(3000);
+  const at = Date.now();
+  const reset = await peer(sid, 'reset');
+  await t.waitFor(() => submission.end !== null, 60_000, 'the run\'s end after its host was lost');
+  const endedMs = Date.now() - at;
+  const text = t.stream.slice(submission.start, submission.end);
+  out({ lost: true, endedMs, exit: submission.exitCode, reset, text: text.slice(-400) });
+  a.check(`a run whose peer is lost ends at once (${endedMs} ms after the reset, against 27 s more of its sleep), naming the cause`,
+    endedMs < 27_000 && submission.exitCode !== 0 && /one-shot host was lost/.test(text), JSON.stringify({ endedMs, exit: submission.exitCode, text: text.slice(-400) }));
+  a.check('it ran on the peer', (await hostsSince(sid, marked)).every((h) => h === 'peer'));
+  await sleep(Math.max(0, 30_000 - (Date.now() - at)));
+  const next = await run('python3 -c "print(2)"');
+  a.check('it is not run again, and the next one-shot runs', next.exitCode === 0 && /\n2/.test(next.text) && !t.stream.slice(submission.start).includes('finished'),
+    JSON.stringify({ exit: next.exitCode, text: next.text.slice(-200) }));
+} catch (error) {
+  a.check('the probe ran to its end', false, String(error?.stack ?? error).slice(0, 2000));
+} finally {
+  await t.close().catch(() => {});
+  await deleteSession(sid).catch(() => {});
+}
+const { fail } = a.summary();
+process.exit(fail > 0 ? 1 : 0);

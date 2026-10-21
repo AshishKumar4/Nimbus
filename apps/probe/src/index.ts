@@ -31,6 +31,7 @@ import { nimbusDebugEnabled } from '../../../packages/worker/src/_shared/nimbus-
 import { disposeRpcResource } from '../../../packages/platform/src/rpc-dispose.js';
 import { peerPlacement } from '@nimbus-sh/fabric/process-host.js';
 import { abortFacet, heldFacetName } from '@nimbus-sh/fabric/workerd-facet-host.js';
+import { oneShotPlacement, oneShotPlacementDiagnostics } from '@nimbus-sh/fabric/one-shot-peer.js';
 import { z } from 'zod/v4';
 import type { EgressProcess, EgressStreams, EgressTlsTarget, WorkspaceEgress, WorkspaceEgressTls } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { CANARY_PROJECT, CANARY_WHEEL, canaryPypiJson, canaryWheel } from './egress-canary.js';
@@ -258,6 +259,22 @@ export class NimbusSession extends SdkNimbusSession {
     this.requireProbeDiagnostics();
     this.ctx.abort('probe: coordinator reset');
   }
+  /** The session's one-shot peer (fabric one-shot-peer.ts), or null; forgotten first with `forget`, so its next one-shot runs here and warms it again. */
+  _rpcProbeOneShotPeer(forget: boolean): string | null {
+    this.requireProbeDiagnostics();
+    const peer = oneShotPlacementDiagnostics(this.ctx)?.peer ?? null;
+    if (forget) oneShotPlacement(this.ctx, this.env).forgetPeer();
+    return peer;
+  }
+  /** Whether this object stores `needle` anywhere: in its key-value storage or a row of its SQLite. */
+  async _rpcProbeStores(needle: string): Promise<boolean> {
+    this.requireProbeDiagnostics();
+    if (JSON.stringify([...await this.ctx.storage.list()]).includes(needle)) return true;
+    const tables = this.ctx.storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table'").toArray();
+    const text = new TextDecoder();
+    return tables.some(({ name }) => this.ctx.storage.sql.exec(`SELECT * FROM "${name.replaceAll('"', '""')}"`).toArray()
+      .some((row) => Object.values(row).some((value) => (value instanceof ArrayBuffer ? text.decode(value) : String(value)).includes(needle))));
+  }
   async _rpcProbePeer(workerKey: string, action: 'inspect' | 'facet-reset' | 'host-reset', coordinator: string) {
     this.requireProbeDiagnostics();
     const current = await this.peerHost.inspect(workerKey);
@@ -312,7 +329,7 @@ const nimbus = createNimbusHandler({
   sdk: { remote: true },
 });
 
-const EMBEDDER_WORKER_RE = /^\/api\/embedder\/([A-Za-z0-9._-]+)\/(spawn-worker|host-loss|quiet-websocket|not-admitted)$/;
+const EMBEDDER_WORKER_RE = /^\/api\/embedder\/([A-Za-z0-9._-]+)\/(spawn-worker|host-loss|quiet-websocket|not-admitted|one-shot-peer)$/;
 type ProbeEnv = Omit<Parameters<typeof nimbus.fetch>[1], 'NIMBUS_SESSION'> & {
   NIMBUS_SESSION: DurableObjectNamespace<NimbusSession>;
   NIMBUS_DEBUG?: string;
@@ -330,7 +347,8 @@ export default {
     if (!match) return nimbus.fetch(request, env, ctx);
     return match[2] === 'host-loss' ? probeHostLoss(request, env, match[1])
       : match[2] === 'quiet-websocket' ? spawnQuietWebSocket(request, env, match[1])
-      : match[2] === 'not-admitted' ? embedderNotAdmitted(request, env, match[1]) : spawnEmbedderWorker(request, env, match[1]);
+      : match[2] === 'not-admitted' ? embedderNotAdmitted(request, env, match[1])
+      : match[2] === 'one-shot-peer' ? probeOneShotPeer(request, env, match[1]) : spawnEmbedderWorker(request, env, match[1]);
   },
 };
 
@@ -448,6 +466,41 @@ export class NimbusProcess extends DurableObject {
     if (error instanceof NimbusAuthError) return authErrorResponse(error);
     return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 });
   } finally { disposeRpcResource(stub); }
+}
+
+const OneShotPeerProbe = z.object({ action: z.enum(['forget', 'reset', 'stored']), needle: z.string().default('') });
+
+/**
+ * POST /api/embedder/<id>/one-shot-peer {action, needle?}: the session's
+ * one-shot peer (fabric one-shot-peer.ts) forgotten, so its next one-shot
+ * runs in the session and warms it again; reset, as the platform resets an
+ * object; or searched for `needle` in all it stores.
+ */
+async function probeOneShotPeer(request: Request, env: ProbeEnv, sessionId: string): Promise<Response> {
+  if (!nimbusDebugEnabled(env)) return new Response('Not found', { status: 404 });
+  const verified = await verifyRequestToken(request, env);
+  if (!verified) return authRequiredResponse();
+  requireScopes(verified, ['sandbox:use']);
+  requireSessionPin(verified, sessionId);
+  const parsed = OneShotPeerProbe.safeParse(await request.json());
+  if (!parsed.success) return new Response('Bad probe request', { status: 400 });
+  const { action, needle } = parsed.data;
+  const owner = env.NIMBUS_SESSION.get(env.NIMBUS_SESSION.idFromName(`${verified.claims.tn}:${verified.claims.sub ?? '_'}:${sessionId}`));
+  let peer: DurableObjectStub<NimbusSession> | undefined;
+  try {
+    const name = await owner._rpcProbeOneShotPeer(action === 'forget');
+    if (action === 'forget') return Response.json({ forgot: name });
+    if (name === null) return Response.json({ error: 'the session has no one-shot peer' }, { status: 404 });
+    peer = env.NIMBUS_SESSION.get(env.NIMBUS_SESSION.idFromName(name));
+    if (action === 'stored') return Response.json({ peer: name, stored: await peer._rpcProbeStores(needle) });
+    await peer._rpcProbeCoordinatorReset().catch(() => {});
+    return Response.json({ reset: name });
+  } catch (error) {
+    return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 500 });
+  } finally {
+    disposeRpcResource(owner);
+    if (peer !== undefined) disposeRpcResource(peer);
+  }
 }
 
 async function probeHostLoss(request: Request, env: ProbeEnv, sessionId: string): Promise<Response> {

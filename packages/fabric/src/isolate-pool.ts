@@ -63,7 +63,7 @@ import {
 } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import type { ResizableCreditLease } from '@nimbus-sh/platform/weighted-credit-pool.js';
 import { memberBuffer } from '@nimbus-sh/platform/worker-code.js';
-import type { ModuleContent, WorkerCode, WorkerLoader } from './vendor/types.js';
+import type { EntrypointStub, ModuleContent, WorkerCode, WorkerLoader } from './vendor/types.js';
 import { hostWasmIdentity } from './host-wasm.js';
 import { TASK_BODY_ERROR_SOURCE } from './task-body-error.js';
 
@@ -292,13 +292,6 @@ export interface IsolateMapOptions extends IsolateCallOptions {
 
 /** One item's outcome: its value, or what it failed with. */
 export type Settled<R> = { readonly ok: true; readonly value: R } | { readonly ok: false; readonly error: Error };
-
-/** What a pool calls on its worker's entrypoint (assembleLoaderWorkerModuleSource). */
-interface PoolEntrypoint {
-  execute(...args: unknown[]): Promise<unknown>;
-  fetch(input: RequestInfo, init?: RequestInit): Promise<Response>;
-  warm(): Promise<void>;
-}
 
 interface ResolvedResilience {
   timeoutMs: number;
@@ -839,7 +832,7 @@ export class IsolatePool {
     fnSource: string,
     fnHash: string,
     slotIndex: number,
-    invoke: (entrypoint: PoolEntrypoint, attempt: number) => Promise<T>,
+    invoke: (entrypoint: EntrypointStub, attempt: number) => Promise<T>,
     resilience: ResolvedResilience,
     perCallWasm?: Record<string, FacetImage>,
     signal?: AbortSignal,
@@ -877,7 +870,7 @@ export class IsolatePool {
     fnSource: string,
     fnHash: string,
     slotIndex: number,
-    invoke: (entrypoint: PoolEntrypoint, attempt: number) => Promise<T>,
+    invoke: (entrypoint: EntrypointStub, attempt: number) => Promise<T>,
     resilience: ResolvedResilience,
     perCallWasm: Record<string, FacetImage> | undefined,
     inFlight: Promise<unknown>[],
