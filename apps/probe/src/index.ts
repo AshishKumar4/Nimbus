@@ -237,8 +237,63 @@ export class TestTlsEgress extends TestEgress implements WorkspaceEgressTls {
   }
 }
 
+// Experiment (D1, not for landing): where a dynamic Worker's CPU runs. The
+// same synchronous work, n rounds of a hash, run four ways from the session:
+// inline in its own isolate, in a Loader worker it calls, in a Loader worker a
+// stateless invocation of this Worker calls, in a facet, in another session's
+// Loader worker, and in a Loader worker a request through the edge calls.
+const BURN_SOURCE = `import { DurableObject } from 'cloudflare:workers';
+function burn(n) { let h = 0x811c9dc5; for (let i = 0; i < n; i++) h = Math.imul(h ^ i, 16777619); return h >>> 0; }
+export default { fetch(request) { return new Response(String(burn(Number(new URL(request.url).searchParams.get('n'))))); } };
+export class Burn extends DurableObject { burn(n) { return burn(n); } }
+`;
+function burnInline(n: number): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < n; i++) h = Math.imul(h ^ i, 16777619);
+  return h >>> 0;
+}
+type BurnLoader = { get(name: string, code: () => Promise<{ compatibilityDate: string; mainModule: string; modules: Record<string, string> }>): {
+  getEntrypoint(): { fetch(url: string): Promise<Response> };
+  getDurableObjectClass(name: string): unknown;
+} };
+const burnCode = async () => ({ compatibilityDate: '2026-09-26', mainModule: 'burn.js', modules: { 'burn.js': BURN_SOURCE } });
+async function burnInLoader(loader: BurnLoader, n: number): Promise<number> {
+  return Number(await (await loader.get('d1-burn', burnCode).getEntrypoint().fetch(`https://burn.local/?n=${n}`)).text());
+}
+
+/** A stateless invocation of this Worker: what the session dispatches a Loader worker through, in the experiment. */
+export class D1Burn extends WorkerEntrypoint<Cloudflare.Env> {
+  async burn(n: number): Promise<number> {
+    return burnInLoader((this.env as unknown as { LOADER: BurnLoader }).LOADER, n);
+  }
+}
+
 /** The SDK's session under the embedder's per-session test egress. */
 export class NimbusSession extends SdkNimbusSession {
+  /** Experiment (D1): `n` rounds of the burn, `via` one of inline, do, stateless, facet, peer, edge; answers its result and the session's wall. */
+  async _rpcD1Burn(via: string, n: number, edge?: { url: string; authorization: string }): Promise<{ via: string; result: number; ms: number }> {
+    this.requireProbeDiagnostics();
+    const started = Date.now();
+    const loader = (this.env as unknown as { LOADER: BurnLoader }).LOADER;
+    let result: number;
+    if (via === 'inline') result = burnInline(n);
+    else if (via === 'do') result = await burnInLoader(loader, n);
+    else if (via === 'stateless') result = await (this.ctx as unknown as { exports: { D1Burn: { burn(n: number): Promise<number> } } }).exports.D1Burn.burn(n);
+    else if (via === 'facet') {
+      const facets = (this.ctx as unknown as { facets: { get(name: string, start: () => Promise<{ class: unknown }>): { burn(n: number): Promise<number> } } }).facets;
+      result = await facets.get('d1-burn', async () => ({ class: loader.get('d1-burn', burnCode).getDurableObjectClass('Burn') })).burn(n);
+    } else if (via === 'peer') {
+      const sessions = (this.env as unknown as { NIMBUS_SESSION: DurableObjectNamespace<NimbusSession> }).NIMBUS_SESSION;
+      const peer = sessions.get(sessions.idFromName(`d1-burn-peer:${this.ctx.id.toString()}`));
+      try { result = (await peer._rpcD1Burn('do', n)).result; } finally { disposeRpcResource(peer); }
+    } else if (via === 'edge' && edge) {
+      const r = await fetch(edge.url, { method: 'POST', headers: { authorization: edge.authorization, 'content-type': 'application/json' }, body: JSON.stringify({ n }) });
+      if (!r.ok) throw new Error(`edge burn: ${r.status} ${(await r.text()).slice(0, 200)}`);
+      result = Number(await r.text());
+    } else throw new Error(`no burn via ${via}`);
+    return { via, result, ms: Date.now() - started };
+  }
+
   private requireProbeDiagnostics(): void {
     if (!this.nimbusDebug) throw new Error('probe diagnostics are disabled');
   }
@@ -304,7 +359,7 @@ const nimbus = createNimbusHandler({
   sdk: { remote: true },
 });
 
-const EMBEDDER_WORKER_RE = /^\/api\/embedder\/([A-Za-z0-9._-]+)\/(spawn-worker|host-loss|quiet-websocket)$/;
+const EMBEDDER_WORKER_RE = /^\/api\/embedder\/([A-Za-z0-9._-]+)\/(spawn-worker|host-loss|quiet-websocket|d1-burn|d1-burn-edge)$/;
 type ProbeEnv = Omit<Parameters<typeof nimbus.fetch>[1], 'NIMBUS_SESSION'> & {
   NIMBUS_SESSION: DurableObjectNamespace<NimbusSession>;
   NIMBUS_DEBUG?: string;
@@ -321,7 +376,9 @@ export default {
     const match = request.method === 'POST' ? EMBEDDER_WORKER_RE.exec(new URL(request.url).pathname) : null;
     if (!match) return nimbus.fetch(request, env, ctx);
     return match[2] === 'host-loss' ? probeHostLoss(request, env, match[1])
-      : match[2] === 'quiet-websocket' ? spawnQuietWebSocket(request, env, match[1]) : spawnEmbedderWorker(request, env, match[1]);
+      : match[2] === 'quiet-websocket' ? spawnQuietWebSocket(request, env, match[1])
+        : match[2] === 'd1-burn' ? d1Burn(request, env, match[1])
+          : match[2] === 'd1-burn-edge' ? d1BurnEdge(request, env) : spawnEmbedderWorker(request, env, match[1]);
   },
 };
 
@@ -395,6 +452,30 @@ async function spawnEmbedderWorker(request: Request, env: any, sessionId: string
       { status: 500, headers: { 'Cache-Control': 'no-store' } },
     );
   }
+}
+
+/** POST /api/embedder/<id>/d1-burn {via, n} — experiment (D1): the burn, run in session `id` (NimbusSession._rpcD1Burn). */
+async function d1Burn(request: Request, env: ProbeEnv, sessionId: string): Promise<Response> {
+  if (!nimbusDebugEnabled(env)) return new Response('Not found', { status: 404 });
+  const verified = await verifyRequestToken(request, env);
+  if (!verified) return authRequiredResponse();
+  requireSessionPin(verified, sessionId);
+  const { via, n } = z.object({ via: z.string(), n: z.number().int().positive() }).parse(await request.json());
+  const stub = env.NIMBUS_SESSION.get(env.NIMBUS_SESSION.idFromName(`${verified.claims.tn}:${verified.claims.sub ?? '_'}:${sessionId}`));
+  const edge = { url: new URL(`/api/embedder/${sessionId}/d1-burn-edge`, request.url).toString(), authorization: request.headers.get('authorization') ?? '' };
+  try {
+    return Response.json(await stub._rpcD1Burn(via, n, edge));
+  } finally {
+    disposeRpcResource(stub);
+  }
+}
+
+/** POST /api/embedder/<id>/d1-burn-edge {n} — experiment (D1): the burn in a Loader worker this stateless request calls. */
+async function d1BurnEdge(request: Request, env: ProbeEnv): Promise<Response> {
+  if (!nimbusDebugEnabled(env)) return new Response('Not found', { status: 404 });
+  if (!await verifyRequestToken(request, env)) return authRequiredResponse();
+  const { n } = z.object({ n: z.number().int().positive() }).parse(await request.json());
+  return new Response(String(await burnInLoader((env as unknown as { LOADER: BurnLoader }).LOADER, n)));
 }
 
 async function probeHostLoss(request: Request, env: ProbeEnv, sessionId: string): Promise<Response> {
