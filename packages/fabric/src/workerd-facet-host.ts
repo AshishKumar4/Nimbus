@@ -701,14 +701,21 @@ function spawnResident(
     handleHttpRequest: async (request: Request, scope: ResponseScope, leg: { relayed?: AbortSignal; sending?: () => void } = {}) => {
       const cancel = leg.relayed === undefined ? new AbortController() : null;
       const signal = leg.relayed ?? cancel!.signal;
-      // A caller that leaves while the request waits for validation releases it.
+      // A caller that leaves while the request waits for validation ends the
+      // wait (the lease follows `signal`); the lease is let go once the
+      // request is sent and its answer is done with.
       const lease = observation.acquire(signal);
+      let sent = false;
+      let done = false;
       scope.settled((delivered) => {
-        lease.release();
+        done = true;
+        if (sent) lease.release();
         if (!delivered) cancel?.abort(new DOMException('The caller left the request', 'AbortError'));
       });
       try {
         if (!observation.validated()) await unsentUntilValidated(lease);
+        sent = true;
+        if (done) lease.release();
         leg.sending?.();
         // Unencoded: the registry decodes a coding once, as it did the bytes an RPC hop carried.
         const response = await facet.fetch(request, { signal, encodeResponseBody: 'manual' });

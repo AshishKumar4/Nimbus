@@ -16,24 +16,29 @@ export async function routeRuntimeLoopback(
   request: Request,
   ensure?: EnsurePortServer,
 ): Promise<Response | null> {
-  const route = async () => {
+  const route = async (sent: Request) => {
     if (!ports.has(port) && (ensure === undefined || await ensure(port) !== 'started')) return null;
-    return ports.routeRequest(port, request, new URL(request.url).pathname);
+    return ports.routeRequest(port, sent, new URL(sent.url).pathname);
   };
-  return rerunNotAdmitted(route, ensure === undefined ? undefined : route);
+  return rerunNotAdmitted(request, route, ensure === undefined ? undefined : route);
 }
 
 /**
- * `route`, and `again` once when the process refused the request unsent
- * (ProcessNotAdmitted): it ran nowhere, and its process has ended, so
- * `again` starts the server once more and sends it the request, whole.
- * With no `again`, or refused again, the caller is told, typed.
+ * `request` routed, and routed `again` once when the process refused it
+ * unsent (ProcessNotAdmitted): it ran nowhere, and its process has ended,
+ * so `again` starts the server once more and sends it the request as it was
+ * to be sent, its body unread. With no `again`, or refused again, or a
+ * refusal that names no request, the caller is told, typed.
  */
-export async function rerunNotAdmitted<T>(route: () => Promise<T>, again: (() => Promise<T>) | undefined): Promise<T> {
+export async function rerunNotAdmitted<T>(
+  request: Request,
+  route: (request: Request) => Promise<T>,
+  again: ((request: Request) => Promise<T>) | undefined,
+): Promise<T> {
   try {
-    return await route();
+    return await route(request);
   } catch (error) {
-    if (!(error instanceof ProcessNotAdmitted) || again === undefined) throw error;
-    return again();
+    if (!(error instanceof ProcessNotAdmitted) || again === undefined || error.request === undefined) throw error;
+    return again(error.request);
   }
 }

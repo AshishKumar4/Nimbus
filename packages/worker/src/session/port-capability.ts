@@ -520,17 +520,17 @@ export async function routeToSessionPort(
   if (port === self._viteShimPort && self.viteDevServer?.isRunning) {
     return self.viteDevServer.handleRequest(request, innerPath, mountBase);
   }
-  const route = () => capability === undefined
-    ? self.portRegistry.routeRequest(port, request, innerPath)
-    : self.portRegistry.routeCapabilityRequest(port, capability, request, innerPath);
+  const route = (sent: Request) => capability === undefined
+    ? self.portRegistry.routeRequest(port, sent, innerPath)
+    : self.portRegistry.routeCapabilityRequest(port, capability, sent, innerPath);
   // A request the process refused unsent ran nowhere: its server is started
   // again, and it goes there, once (rerunNotAdmitted).
   const ensure = self.ensureDurableAppOnPort?.bind(self);
   let proxied: Response | null;
   try {
-    proxied = await rerunNotAdmitted(route, ensure === undefined ? undefined : async () => {
+    proxied = await rerunNotAdmitted(request, route, ensure === undefined ? undefined : async (sent) => {
       if (await ensure(port) === 'failed') return portStartingResponse(port);
-      return route();
+      return route(sent);
     });
   } catch (error) {
     if (!(error instanceof ProcessNotAdmitted)) throw error;

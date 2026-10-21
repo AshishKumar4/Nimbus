@@ -856,7 +856,11 @@ export interface ResponseScope {
  * flight when a host is lost may have run; it fails with the loss instead.
  */
 export class ProcessNotAdmitted extends Error {
-  constructor(readonly pid: number, cause: unknown) {
+  /**
+   * `request`, when the refusal names it: the request as it was to be sent,
+   * its body unread, which is what a re-run sends (PortRegistry.routeRequest).
+   */
+  constructor(readonly pid: number, cause: unknown, readonly request?: Request) {
     super(`process ${pid} did not take the request: its host was replaced before the request was sent (${errorText(cause)})`, { cause });
     this.name = 'ProcessNotAdmitted';
   }
