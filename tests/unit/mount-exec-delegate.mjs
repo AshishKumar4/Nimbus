@@ -169,8 +169,9 @@ try {
   assert.deepEqual(r.starts, []);
 
   // hash finds the machine's program and remembers nothing of it.
-  r = await run('cd /m && hash tool; hash missing; echo "s=$?"; hash -l 2>/dev/null | grep -c tool');
-  assert.equal(r.out, 's=1\n0\n');
+  r = await run('cd /m && hash tool; hash missing; echo "s=$?"; hash -l');
+  assert.equal(r.out.split('\n')[0], 's=1');
+  assert.ok(!r.out.includes('tool'), r.out);
   assert.match(r.err, /^hash: missing: not found$/m);
   assert.deepEqual(r.starts, []);
 
