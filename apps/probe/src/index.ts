@@ -265,6 +265,13 @@ export class NimbusSession extends SdkNimbusSession {
     this.ctx.abort('probe: coordinator reset');
   }
   /** The session's one-shot peer (fabric one-shot-peer.ts), or null; forgotten first with `forget`, so its next one-shot runs here and warms it again. */
+  _rpcProbePin(pin: boolean): { pinned: boolean } {
+    const shared = globalThis as unknown as { __d1Pinned?: Set<string> };
+    shared.__d1Pinned ??= new Set();
+    if (pin) shared.__d1Pinned.add(this.ctx.id.toString());
+    else shared.__d1Pinned.delete(this.ctx.id.toString());
+    return { pinned: pin };
+  }
   _rpcProbeSent(): object[] {
     const sync = (globalThis as unknown as { __d1Sync?: number[] }).__d1Sync ?? [];
     return ((globalThis as unknown as { __d1Sent?: object[] }).__d1Sent ?? []).map((sent, i, all) => ({ ...sent, syncMs: sync[sync.length - all.length + i] }));
@@ -500,7 +507,7 @@ export class NimbusProcess extends DurableObject {
   } finally { disposeRpcResource(stub); }
 }
 
-const OneShotPeerProbe = z.object({ action: z.enum(['forget', 'reset', 'stored', 'burn', 'facet-calls']), needle: z.string().default(''), forget: z.boolean().default(false), preamble: z.enum(['none', 'wasi']).default('none'), n: z.number().int().positive().default(1) });
+const OneShotPeerProbe = z.object({ action: z.enum(['forget', 'reset', 'stored', 'burn', 'facet-calls', 'pin', 'unpin']), needle: z.string().default(''), forget: z.boolean().default(false), preamble: z.enum(['none', 'wasi']).default('none'), n: z.number().int().positive().default(1) });
 
 /**
  * POST /api/embedder/<id>/one-shot-peer {action, needle?}: the session's
@@ -521,6 +528,7 @@ async function probeOneShotPeer(request: Request, env: ProbeEnv, sessionId: stri
   let peer: DurableObjectStub<NimbusSession> | undefined;
   try {
     if (action === 'burn') return Response.json(await owner._rpcProbeOneShotBurn(parsed.data.forget, parsed.data.preamble, parsed.data.n));
+    if (action === 'pin' || action === 'unpin') return Response.json(await owner._rpcProbePin(action === 'pin'));
     const name = await owner._rpcProbeOneShotPeer(action === 'forget');
     if (action === 'forget') return Response.json({ forgot: name });
     if (name === null) return Response.json({ error: 'the session has no one-shot peer' }, { status: 404 });
