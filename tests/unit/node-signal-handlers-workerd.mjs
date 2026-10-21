@@ -59,7 +59,9 @@ const parked = () => new Promise((resolve) => {
   console.log('begin parked');
   const child = spawn('node', ['-e', ${JSON.stringify(PARKED)}]);
   let out = '';
+  let err = '';
   let sent = false;
+  child.stderr.on('data', (data) => { err += data; });
   child.stdout.on('data', (data) => {
     out += data;
     if (sent || !out.includes('waiting')) return;
@@ -70,7 +72,7 @@ const parked = () => new Promise((resolve) => {
     }, 1000);
   });
   child.on('close', (code, signal) => {
-    console.log('parked: code=' + code + ' signal=' + signal + ' out=' + JSON.stringify(out.split('\\n').filter(Boolean)));
+    console.log('parked: code=' + code + ' signal=' + signal + ' out=' + JSON.stringify(out.split('\\n').filter(Boolean)) + ' err=' + JSON.stringify(err));
     resolve();
   });
 });
