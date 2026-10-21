@@ -84,23 +84,41 @@ try {
     for (let i = 0; i < 200 && !holds(); i++) await new Promise((resolve) => setTimeout(resolve, 10));
     return holds();
   };
+  // Each of what follows is checked on its own, so a run shows every one's verdict.
+  const failures = [];
+  const check = async (name, body) => {
+    try {
+      await body();
+    } catch (error) {
+      failures.push(`${name}: ${error.message}`);
+    }
+  };
 
-  // Cancelled unread, after its program has started: the program is killed.
-  const unread = encodeProgramStream((cancel) => ws.startProgram(program(['sleep', '600']), cancel));
-  assert.ok(await until(sleeping), 'it runs before anyone reads');
-  await unread.cancel();
-  assert.ok(await until(() => !sleeping()), 'an unread stream cancelled kills what it started');
+  await check('cancelled unread, after its start', async () => {
+    const unread = encodeProgramStream((cancel) => ws.startProgram(program(['sleep', '600']), cancel));
+    // Its broker child is under the parent the start made; a local sleep is running well within the pause after.
+    const child = () => {
+      const parents = new Set(ws.processes.getAll().filter((entry) => entry.command === 'sleep 600').map((entry) => entry.pid));
+      return ws.processes.getAll().some((entry) => parents.has(entry.parentPid));
+    };
+    assert.ok(await until(child), 'it runs before anyone reads');
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await unread.cancel();
+    assert.ok(await until(() => !sleeping()), 'an unread stream cancelled kills what it started');
+  });
 
-  // Given up before the start's answer is read: ECANCELED, and what it started is killed.
-  const gaveUp = new AbortController();
-  gaveUp.abort();
-  await assert.rejects(decodeProgramStream(
-    encodeProgramStream((cancel) => ws.startProgram(program(['sleep', '600']), cancel)),
-    () => {},
-    gaveUp.signal,
-  ), { code: 'ECANCELED' });
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  assert.ok(await until(() => !sleeping()), 'nothing of it runs on');
+  await check('given up before the answer', async () => {
+    const gaveUp = new AbortController();
+    gaveUp.abort();
+    await assert.rejects(decodeProgramStream(
+      encodeProgramStream((cancel) => ws.startProgram(program(['sleep', '600']), cancel)),
+      () => {},
+      gaveUp.signal,
+    ), { code: 'ECANCELED' });
+    assert.ok(await until(() => !sleeping()), 'nothing of it runs on');
+  });
+
+  assert.deepEqual(failures, []);
 } finally {
   await ws.close();
 }

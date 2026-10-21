@@ -44,7 +44,6 @@ async function until(holds, message) {
   for (let i = 0; i < 200 && !holds(); i++) await sleep(10);
   assert.ok(holds(), message);
 }
-const running = (pid) => ws.children.isRunning(pid);
 
 try {
   let started = await ws.startProgram(program(['echo', 'hi']), never);
@@ -125,81 +124,105 @@ try {
   cancel.abort();
   await assert.rejects(pending, { code: 'ECANCELED' });
 
-  // Cancelled at once, while the broker is still placing it: ECANCELED all the same.
-  const early = new AbortController();
-  const placing = ws.startProgram(program(['hold'], { cwd: '/m' }), early.signal);
-  early.abort();
-  await assert.rejects(within(placing, 5000), { code: 'ECANCELED' });
+  // Each of what follows is checked on its own, so a run shows every one's verdict.
+  const failures = [];
+  const check = async (name, body) => {
+    try {
+      await body();
+    } catch (error) {
+      failures.push(`${name}: ${error.message}`);
+    }
+  };
 
-  // stderr is not starved by a stdout that never stops.
-  started = await ws.startProgram(program(['sh', '-c', 'echo err >&2; while true; do echo out; done']), never);
-  const order = [];
-  for await (const chunk of started.output) {
-    order.push(chunk.stream);
-    if (chunk.stream === 'stderr' || order.length >= 50) break;
-    await sleep(1);
-  }
-  started.kill('SIGKILL');
-  assert.ok(order.includes('stderr'), `stderr surfaces while stdout runs on: ${order.join(',')}`);
-  await started.exit;
+  await check('a cancel while the broker places it', async () => {
+    const early = new AbortController();
+    const placing = ws.startProgram(program(['hold'], { cwd: '/m' }), early.signal);
+    early.abort();
+    await assert.rejects(within(placing, 5000), { code: 'ECANCELED' });
+  });
 
-  // An input source still open when the program ends is let go.
-  let released = false;
-  const idle = new ReadableStream({ pull() { return new Promise(() => {}); }, cancel() { released = true; } });
-  ran = await finish(await ws.startProgram(program(['true'], { stdin: idle }), never));
-  assert.deepEqual(ran.exit, { code: 0, signal: null });
-  await until(() => released, 'its input source is cancelled once it has ended');
+  await check('stderr beside a stdout that never stops', async () => {
+    const endless = await ws.startProgram(program(['sh', '-c', 'echo err >&2; while true; do echo out; done']), never);
+    const order = [];
+    try {
+      for await (const chunk of endless.output) {
+        order.push(chunk.stream);
+        if (chunk.stream === 'stderr' || order.length >= 50) break;
+        await sleep(1);
+      }
+    } finally {
+      endless.kill('SIGKILL');
+      await endless.exit;
+    }
+    assert.ok(order.includes('stderr'), `stderr surfaces while stdout runs on: ${order.join(',')}`);
+  });
 
-  // A cancelled output stops reading: no poll after the ones already waiting.
-  started = await ws.startProgram(program(['sleep', '600']), never);
-  const readOutput = ws.children.readOutput;
-  let reads = 0;
-  ws.children.readOutput = (...args) => { reads++; return readOutput.apply(ws.children, args); };
-  try {
-    const output = started.output.getReader();
-    const first = output.read();
-    await sleep(20);
-    await output.cancel();
-    await first;
-    const after = reads;
-    await sleep(100);
-    assert.ok(reads <= after, `no poll after its cancel (${reads - after} more)`);
-  } finally {
-    ws.children.readOutput = readOutput;
-  }
-  started.kill('SIGKILL');
-  await started.exit;
+  await check('an input source open at exit', async () => {
+    let released = false;
+    const idle = new ReadableStream({ pull() { return new Promise(() => {}); }, cancel() { released = true; } });
+    const ended = await finish(await ws.startProgram(program(['true'], { stdin: idle }), never));
+    assert.deepEqual(ended.exit, { code: 0, signal: null });
+    await until(() => released, 'its input source is cancelled once it has ended');
+  });
 
-  // What it ran leaves the process table once it has ended and its output is read.
-  const pids = [];
-  for (let i = 0; i < 5; i++) {
-    started = await ws.startProgram(program(['true']), never);
-    const { pid } = started;
-    pids.push(pid, ws.processes.getAll().find((entry) => entry.pid === pid)?.parentPid);
-    await finish(started);
-  }
-  assert.ok(pids.every((pid) => typeof pid === 'number'), 'each ran under a parent of its own');
-  const left = ws.processes.getAll().filter((entry) => pids.includes(entry.pid));
-  assert.deepEqual(left.map((entry) => entry.command), [], 'no row of what it ran is left');
+  await check('a cancelled output', async () => {
+    const silent = await ws.startProgram(program(['sleep', '600']), never);
+    const readOutput = ws.children.readOutput;
+    let reads = 0;
+    ws.children.readOutput = (...args) => { reads++; return readOutput.apply(ws.children, args); };
+    try {
+      const output = silent.output.getReader();
+      const first = output.read();
+      await sleep(20);
+      await output.cancel();
+      await first;
+      const after = reads;
+      await sleep(100);
+      assert.ok(reads <= after, `no poll after its cancel (${reads - after} more)`);
+    } finally {
+      ws.children.readOutput = readOutput;
+      silent.kill('SIGKILL');
+      await silent.exit;
+    }
+  });
 
-  // Only a program started by its argv takes the broker's signals across the session; another child of the
-  // broker (a node child) is signalled through its input channel, where its handlers hear it.
+  await check('its rows once read', async () => {
+    const pids = [];
+    for (let i = 0; i < 5; i++) {
+      const done = await ws.startProgram(program(['true']), never);
+      const { pid } = done;
+      pids.push(pid, ws.processes.getAll().find((entry) => entry.pid === pid)?.parentPid);
+      await finish(done);
+    }
+    assert.ok(pids.every((pid) => typeof pid === 'number'), 'each ran under a parent of its own');
+    const left = ws.processes.getAll().filter((entry) => pids.includes(entry.pid));
+    assert.deepEqual(left.map((entry) => entry.command), [], 'no row of what it ran is left');
+  });
+
+  // Across the session a program started by its argv takes the broker's signals; another child of the broker
+  // (a node child) is signalled through its input channel, where its handlers hear it.
   const host = { async ensureRuntimeReady() {}, runtimeWorkspace: ws, processes: ws.processes };
-  started = await ws.startProgram(program(['sleep', '600']), never);
-  assert.equal(ws.isStartedProgram(started.pid), true);
-  assert.deepEqual(await rpcSignalProcess(host, started.pid, 'SIGTERM'), { ok: true, pid: started.pid });
-  assert.deepEqual(await started.exit, { code: null, signal: 'SIGTERM' });
-  await until(() => !ws.isStartedProgram(started.pid), 'it is forgotten once it has ended');
-  const parent = ws.processes.spawn('node', ['node'], '/home/user', {});
-  const { childPid } = await ws.children.spawn({ command: 'sleep', args: ['600'], env: {}, cwd: '/home/user', stdio: ['pipe', 'pipe', 'pipe'], parentPid: parent.pid });
-  try {
-    assert.equal(ws.isStartedProgram(childPid), false);
-    await rpcSignalProcess(host, childPid, 'SIGUSR1');
-    await sleep(50);
-    assert.equal(running(childPid), true, 'a signal its handler may take does not end it from outside');
-  } finally {
-    ws.children.kill(childPid, 'SIGKILL');
-  }
+  await check('a started program\'s signal', async () => {
+    const sleeper = await ws.startProgram(program(['sleep', '600']), never);
+    assert.equal(ws.isStartedProgram(sleeper.pid), true);
+    assert.deepEqual(await rpcSignalProcess(host, sleeper.pid, 'SIGTERM'), { ok: true, pid: sleeper.pid });
+    assert.deepEqual(await within(sleeper.exit, 5000), { code: null, signal: 'SIGTERM' });
+    await until(() => !ws.isStartedProgram(sleeper.pid), 'it is forgotten once it has ended');
+  });
+
+  await check('a node child\'s signal', async () => {
+    const parent = ws.processes.spawn('node', ['node'], '/home/user', {});
+    const { childPid } = await ws.children.spawn({ command: 'sleep', args: ['600'], env: {}, cwd: '/home/user', stdio: ['pipe', 'pipe', 'pipe'], parentPid: parent.pid });
+    try {
+      await rpcSignalProcess(host, childPid, 'SIGUSR1');
+      await sleep(50);
+      assert.equal(ws.children.isRunning(childPid), true, 'a signal its handler may take does not end it from outside');
+    } finally {
+      ws.children.kill(childPid, 'SIGKILL');
+    }
+  });
+
+  assert.deepEqual(failures, []);
 } finally {
   await ws.close();
 }
