@@ -513,9 +513,10 @@ exclusions in `_deferred.mjs`. It needs no secret, and its log and
 artifact are public, so it redacts every credential it prints. A red run
 fails the workflow, and GitHub notifies the user who created it. Nothing
 opens an issue. The run names each package whose version changed since
-the last green run, read from that run's artifact. It follows the packages
-each probe's project installs by name, and their dependencies. When none
-of them changed, look on our side first. Run it now with
+the last green run, read from that run's artifact. Each probe records its
+project's package.json (`a.record('manifest', …)`), and the canary resolves
+what it installs from the registry by Nimbus's npm rules. When none of
+those packages changed, look on our side first. Run it now with
 `gh workflow run upstream-canary.yml`.
 
 **Tiers.** A file's leading comment block may carry one marker:

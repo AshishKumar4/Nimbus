@@ -14,8 +14,8 @@
 //     The probes tests/behavioral/_deferred.mjs excludes do not run, and the
 //     rest are graded as the release matrix grades them (lib/matrix.mjs).
 // Every run keeps a record (--out): what each probe's install takes,
-// resolved from the registry (lib/upstream.mjs resolveInstalls), and the
-// demand's chains. A red run names each package whose versions differ from
+// resolved from the registry from the package.json the probe recorded
+// (lib/upstream.mjs resolveInstalls), and the demand's chains. A red run names each package whose versions differ from
 // the record of the last green run (--last-green). When none of them
 // changed, look on our side first.
 //
@@ -55,8 +55,8 @@ const say = (line) => {
 };
 const problems = [];
 
-const exceptions = DEFERRED.filter((entry) => entry.probe in UPSTREAM_PROBES);
-const probes = Object.keys(UPSTREAM_PROBES).filter((probe) => !exceptions.some((entry) => entry.excluded === true && entry.probe === probe));
+const exceptions = DEFERRED.filter((entry) => UPSTREAM_PROBES.includes(entry.probe));
+const probes = UPSTREAM_PROBES.filter((probe) => !exceptions.some((entry) => entry.excluded === true && entry.probe === probe));
 const packument = readOnce(npmPackument);
 
 let demand = null;
@@ -65,13 +65,6 @@ try {
 } catch (error) {
   problems.push(`the binding demand could not be judged: ${error.message}`);
 }
-let installs = null;
-try {
-  installs = await resolveInstalls(Object.fromEntries(probes.map((probe) => [probe, UPSTREAM_PROBES[probe]])), { packument });
-} catch (error) {
-  problems.push(`the probes' installs could not be resolved: ${error.message}`);
-}
-
 const scratch = mkdtempSync(join(tmpdir(), 'upstream-canary-'));
 let rows = null;
 try {
@@ -88,6 +81,18 @@ try {
 }
 // Graded with the deferrals of these probes alone: another probe's would be red here for not running.
 const graded = gradeMatrix([rows && { tasks: [{ task: 'upstream probes', rows }] }], exceptions);
+
+// Each probe's install, from the package.json it recorded (its asserter's `manifest`).
+const manifests = Object.fromEntries((rows ?? []).flatMap((row) => {
+  const manifest = row.assertions?.find((result) => result.records?.manifest)?.records.manifest;
+  return manifest ? [[probeOf(row.name), manifest]] : [];
+}));
+let installs = null;
+try {
+  installs = await resolveInstalls(manifests, { packument });
+} catch (error) {
+  problems.push(`the probes' installs could not be resolved: ${error.message}`);
+}
 
 for (const entry of graded.applied) say(describeReleaseException(entry));
 // A deferral that applied covers every red row of its probe.
@@ -116,7 +121,7 @@ const status = problems.length > 0 || graded.exitCode === 2 ? 2 : graded.exitCod
 
 // What changed upstream since the last green run, for each red install.
 if (status !== 0) {
-  const red = [...failed.map((row) => probeOf(row.name)), ...(demand?.missing.length > 0 ? [DEMAND] : [])].filter((name) => name in record.installs);
+  const red = [...failed.map((row) => probeOf(row.name)).filter((name) => UPSTREAM_PROBES.includes(name)), ...(demand?.missing.length > 0 ? [DEMAND] : [])];
   const last = flags['last-green'] && existsSync(flags['last-green']) ? JSON.parse(readFileSync(flags['last-green'], 'utf8')) : null;
   if (!last) say(`upstream: no record of a green run${flags['last-green'] ? ` at ${flags['last-green']}` : ''}, so nothing to compare with`);
   else {
@@ -124,9 +129,10 @@ if (status !== 0) {
     const changes = upstreamChanges(last.installs, record.installs);
     for (const name of red) {
       const changed = changes[name];
-      say(changed === null ? `  ${name}: the last green run has no record of its install`
-        : changed.length === 0 ? `  ${name}: no package its record follows changed upstream; look on our side first`
-          : `  ${name}: ${changed.map((change) => `${change.name} ${change.before.join(', ') || '(none)'} → ${change.after.join(', ') || '(none)'}`).join('; ')}`);
+      say(changed === undefined ? `  ${name}: it recorded no package.json, so this run has no install to compare`
+        : changed === null ? `  ${name}: the last green run has no record of its install`
+          : changed.length === 0 ? `  ${name}: no package its record follows changed upstream; look on our side first`
+            : `  ${name}: ${changed.map((change) => `${change.name} ${change.before.join(', ') || '(none)'} → ${change.after.join(', ') || '(none)'}`).join('; ')}`);
     }
   }
 }

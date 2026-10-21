@@ -3,34 +3,28 @@
 //
 // Each probe here installs real frameworks from npm at their latest
 // releases, so a new upstream release can break it with no change on our
-// side. The canary resolves each probe's install from the registry by the
-// rules Nimbus's npm installs by, keeps it with every run, and on a red run
-// names each package whose version differs from the last green run's.
+// side. Each records its project's package.json once it is written
+// (tests/behavioral/_driver.mjs projectManifest). The canary resolves what
+// that manifest installs from the registry, by the rules Nimbus's npm
+// installs by, keeps it with every run, and on a red run names each package
+// whose version differs from the last green run's.
 
 import { manifestEdges } from '../../../packages/core/src/_shared/npm-tree.ts';
 import { parseRegistryRequest } from '../../../packages/core/src/_shared/npm-spec.ts';
 import { SPECS } from '../../../packages/worker/scripts/napi-wasm/specs.mjs';
-import { applyStagedArtifact, isOptionalNativeBinding, lookupStagedArtifact, lookupSwap } from '../../../packages/worker/src/facets/wasm-swap-registry.ts';
+import { applyStagedArtifact, isOptionalNativeBinding, lookupStagedArtifact, lookupSwap, swapCoversVersion } from '../../../packages/worker/src/facets/wasm-swap-registry.ts';
 import { installedVersion, npmPackument, readOnce } from './binding-demand.mjs';
 
-/**
- * The probes the canary runs against production, each with the packages
- * its project installs by name: the roots of the install it resolves. The
- * record follows them and what they depend on, not the probe's own install:
- * a scaffold's dev tools that the probe never runs (typescript, oxlint,
- * @types) are not roots. vite-tailwind4-real pins Tailwind to the staged
- * oxide build, so its roots leave Tailwind out; the binding demand follows
- * Tailwind's latest release.
- */
-export const UPSTREAM_PROBES = {
-  'frameworks/vite8-real': ['create-vite', 'vite', '@vitejs/plugin-react', 'react', 'react-dom'],
-  'frameworks/astro-real': ['create-astro', 'astro'],
-  'frameworks/nextjs-real': ['create-next-app', 'next', 'react', 'react-dom', 'tailwindcss', '@tailwindcss/postcss'],
-  'frameworks/nuxt-real': ['nuxi', 'nuxt', 'vue', 'vue-router'],
-  'frameworks/remix-real': ['create-react-router', 'react-router', '@react-router/dev', '@react-router/node', '@react-router/serve', 'react', 'react-dom', 'vite'],
-  'frameworks/vinext-real': ['vinext', 'vite', 'react', 'react-dom', '@vitejs/plugin-rsc', '@vitejs/plugin-react', 'react-server-dom-webpack'],
-  'frameworks/vite-tailwind4-real': ['create-vite', 'vite', '@vitejs/plugin-react', 'react', 'react-dom'],
-};
+/** The probes the canary runs against production. Each records its project's package.json as `manifest`. */
+export const UPSTREAM_PROBES = [
+  'frameworks/vite8-real',
+  'frameworks/astro-real',
+  'frameworks/nextjs-real',
+  'frameworks/nuxt-real',
+  'frameworks/remix-real',
+  'frameworks/vinext-real',
+  'frameworks/vite-tailwind4-real',
+];
 
 const byVersion = (a, b) => a.localeCompare(b, 'en', { numeric: true });
 
@@ -38,52 +32,55 @@ const byVersion = (a, b) => a.localeCompare(b, 'en', { numeric: true });
  * The package and version Nimbus's npm installs for a registry request, or
  * null when no published version answers: installedVersion, with the
  * package ABI policy's swap applied as the resolver applies it. A swapped
- * package (lightningcss) installs as its target (lightningcss-wasm); a swap
- * with `since` only where the target has a version the range picks.
+ * package (lightningcss) installs as its target (lightningcss-wasm). A swap
+ * with `since` (rollup) stands in for the version the package's own range
+ * picks, where it covers that version and its target publishes it.
  */
 async function installedPackage(request, context) {
   const swap = lookupSwap(request.registryName);
-  if (swap) {
+  if (swap && !swap.since) {
     const version = await installedVersion({ ...request, registryName: swap.to }, context);
-    if (version !== null) return { name: swap.to, version };
-    if (!swap.since) return null;
+    return version === null ? null : { name: swap.to, version };
   }
   const version = await installedVersion(request, context);
-  return version === null ? null : { name: request.registryName, version };
+  if (version === null) return null;
+  if (swap && swapCoversVersion(swap, version) && (await context.read(swap.to)).versions?.[version] !== undefined) return { name: swap.to, version };
+  return { name: request.registryName, version };
 }
 
 /**
- * What a fresh install of each probe's roots takes: { probe: { name:
- * [version, …] } }, names and versions in order. Each root is at its latest
- * release. Each dependency, optional dependency and required peer is the
- * package and version Nimbus's npm installs (installedPackage); an optional
- * peer is not installed. The package ABI policy shapes the tree as the
- * installer does: an optional native shard is left out, and a staged
- * artifact installs without its optional dependencies. A spec no registry
- * answers (git, file, URL), and a range no published version admits, are
- * left out: the probe's own install says why. Every packument is read once
- * for all the probes.
+ * What a fresh install of each probe's manifest takes: { probe: { name:
+ * [version, …] } }, names and versions in order. Its dependencies and dev
+ * dependencies, and below them each dependency, optional dependency and
+ * required peer, are the package and version Nimbus's npm installs
+ * (installedPackage); an optional peer is not installed. The package ABI
+ * policy shapes the tree as the installer does: a staged artifact installs
+ * without its optional dependencies and platform fields, and then an
+ * optional native package is left out. A spec no registry answers (git,
+ * file, URL), and a range no published version admits, are left out: the
+ * probe's own install says why. Every packument is read once for all the
+ * probes.
  */
-export async function resolveInstalls(probes, { specs = SPECS, packument = npmPackument } = {}) {
+export async function resolveInstalls(manifests, { specs = SPECS, packument = npmPackument } = {}) {
   const context = { read: readOnce(packument), specs };
   const edgesOf = (manifest) => manifestEdges(manifest).filter((edge) => edge.type !== 'peerOptional')
     .map((edge) => ({ request: parseRegistryRequest(edge.name, edge.range), optional: edge.type === 'optional' }));
   const installs = {};
-  for (const [probe, roots] of Object.entries(probes)) {
+  for (const [probe, manifest] of Object.entries(manifests)) {
     const taken = new Map();
-    let wanted = roots.map((name) => ({ request: parseRegistryRequest(name, 'latest'), optional: false }));
+    let wanted = edgesOf({ ...manifest, dependencies: { ...manifest.devDependencies, ...manifest.dependencies } });
     while (wanted.length > 0) {
       const resolved = await Promise.all(wanted.filter(({ request }) => request.registry)
         .map(async ({ request, optional }) => ({ optional, picked: await installedPackage(request, context) })));
       wanted = [];
       for (const { optional, picked } of resolved) {
         if (picked === null || taken.get(picked.name)?.has(picked.version)) continue;
-        const manifest = { ...(await context.read(picked.name)).versions?.[picked.version], name: picked.name };
-        if (optional && isOptionalNativeBinding(manifest)) continue;
-        taken.set(picked.name, (taken.get(picked.name) ?? new Set()).add(picked.version));
+        const shaped = { ...(await context.read(picked.name)).versions?.[picked.version], name: picked.name };
         const staged = lookupStagedArtifact(picked.name);
-        if (staged) applyStagedArtifact(manifest, staged);
-        wanted.push(...edgesOf(manifest));
+        if (staged) applyStagedArtifact(shaped, staged);
+        if (optional && isOptionalNativeBinding(shaped)) continue;
+        taken.set(picked.name, (taken.get(picked.name) ?? new Set()).add(picked.version));
+        wanted.push(...edgesOf(shaped));
       }
     }
     installs[probe] = Object.fromEntries([...taken].sort(([a], [b]) => (a < b ? -1 : 1)).map(([name, versions]) => [name, [...versions].sort(byVersion)]));
