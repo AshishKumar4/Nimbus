@@ -26,8 +26,9 @@ export interface Step {
 
 /**
  * `error`, a failure of a call on `path` (and `dest`), naming them as its
- * caller gave them: a new error with its fields, the face's own (which it may
- * share or have frozen) its cause and left as it is.
+ * caller gave them. A face gives each failure its own error (NodeFiles), so
+ * it is named so where it stands; one the face froze, or whose fields cannot
+ * be written, is copied instead and left as it is.
  */
 function asGiven(error: unknown, path: Named | undefined, dest: Named | undefined): unknown {
   const renamed = [['path', path], ['dest', dest]] as const;
@@ -47,10 +48,18 @@ function asGiven(error: unknown, path: Named | undefined, dest: Named | undefine
 /** The fields Node's system errors carry, however a face defines them (enumerable or not, own or a getter's). */
 const ERRNO_FIELDS = ['code', 'errno', 'syscall', 'path', 'dest'] as const;
 
+/** Whether `error`'s `field` takes a new value where it stands: an own writable value, or none on an error that takes new ones. */
+function writable(error: Error, field: string): boolean {
+  const own = Object.getOwnPropertyDescriptor(error, field);
+  return own === undefined ? Object.isExtensible(error) : own.writable === true;
+}
+
 /**
- * A new error with `error`'s own fields and message as `change` makes them;
- * `error` is its cause, and its stack is `error`'s. No stack is captured
- * for it: a program probing paths (statSync in a try) meets one per probe.
+ * `error` with its fields and message as `change` makes them: changed where
+ * it stands when every changed one can be (a program probing paths, statSync
+ * in a try, meets one per probe, and a copy costs a probe its own error
+ * again), else a new error with `error`'s fields, `error` its cause and its
+ * stack `error`'s, and `error` left as it is.
  */
 export function withFields(error: Error, change: (fields: Record<string, unknown>, message: string) => string): Error {
   const fields: Record<string, unknown> = { ...error };
@@ -59,6 +68,12 @@ export function withFields(error: Error, change: (fields: Record<string, unknown
     if (value !== undefined) fields[field] = value;
   }
   const message = change(fields, error.message);
+  const changed = ERRNO_FIELDS.filter((field) => fields[field] !== Reflect.get(error, field));
+  if (!Object.isFrozen(error) && writable(error, 'message') && changed.every((field) => writable(error, field))) {
+    for (const field of changed) Reflect.set(error, field, fields[field]);
+    error.message = message;
+    return error;
+  }
   const limit: unknown = Reflect.get(Error, 'stackTraceLimit');
   Reflect.set(Error, 'stackTraceLimit', 0);
   let copy: Error;
