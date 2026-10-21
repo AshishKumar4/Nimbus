@@ -1,92 +1,21 @@
-import { EventEmitter } from 'node:events';
-import { Buffer } from 'node:buffer';
-import type { NodeFilesystem as VFS } from './filesystem.js';
-import { type FsError } from '../../../vfs/vfs-error.js';
-export interface FSWatcher extends EventEmitter {
-    close(): void;
-    ref(): this;
-    unref(): this;
-}
-interface WatchOptions {
-    persistent?: boolean;
-    recursive?: boolean;
-    encoding?: string;
-}
-type WatchListener = (eventType: string, filename: string | Buffer) => void;
-interface Dirent {
-    name: string;
-    path: string;
-    isFile: () => boolean;
-    isDirectory: () => boolean;
-    isSymbolicLink: () => boolean;
-    isBlockDevice: () => boolean;
-    isCharacterDevice: () => boolean;
-    isFIFO: () => boolean;
-    isSocket: () => boolean;
-}
-interface NodeStat {
-    dev: number;
-    ino: number;
-    mode: number;
-    nlink: number;
-    uid: number;
-    gid: number;
-    rdev: number;
-    size: number;
-    blksize: number;
-    blocks: number;
-    atimeMs: number;
-    mtimeMs: number;
-    ctimeMs: number;
-    birthtimeMs: number;
-    atime: Date;
-    mtime: Date;
-    ctime: Date;
-    birthtime: Date;
-    isFile: () => boolean;
-    isDirectory: () => boolean;
-    isSymbolicLink: () => boolean;
-    isBlockDevice: () => boolean;
-    isCharacterDevice: () => boolean;
-    isFIFO: () => boolean;
-    isSocket: () => boolean;
-}
-type NodeError = FsError;
-type Callback<T> = (err: NodeError | null, result?: T) => void;
-type ReadCallback = (err: NodeError | null, bytesRead?: number, buffer?: Uint8Array) => void;
-type WriteCallback = (err: NodeError | null, written?: number, data?: Uint8Array | string) => void;
-/** What Node's ReadStream and WriteStream take; `fs` is the filesystem they open, read, write and close through. */
-interface StreamOptions {
-    fs?: object;
-    flags?: string;
-    encoding?: string;
-    fd?: number;
-    mode?: number;
-    start?: number;
-    end?: number;
-    highWaterMark?: number;
-    autoClose?: boolean;
-    emitClose?: boolean;
-    /** A WriteStream's: fsync before it closes. */
-    flush?: boolean;
-}
+import type { NodeFilesystem } from './filesystem.js';
 /**
  * `stdin` reads fd 0 to its end, blocking until it ends, as a synchronous
  * read of it does in Node; what it returned is all fd 0 holds, so a second
  * read finds it at its end.
  */
-export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array, reachStreams?: () => void): {
+export declare function createFs(vfs: NodeFilesystem, cwd: string, stdin?: () => Uint8Array, reachStreams?: () => void): {
     readFileSync: (path: string | URL | number, options?: string | {
         encoding?: string;
         flag?: string;
-    }) => string | Uint8Array;
+    }) => string | Uint8Array<ArrayBufferLike>;
     writeFileSync: (path: string | URL, data: string | Uint8Array, _options?: string | {
         encoding?: string;
     }) => void;
     appendFileSync: (path: string | URL, data: string | Uint8Array) => void;
     existsSync: (path: string | URL) => boolean;
-    statSync: (path: string | URL) => NodeStat;
-    lstatSync: (path: string | URL) => NodeStat;
+    statSync: (path: string | URL) => import("../../../node-compat/fs.js").NodeStat;
+    lstatSync: (path: string | URL) => import("../../../node-compat/fs.js").NodeStat;
     mkdirSync: (path: string | URL, options?: {
         recursive?: boolean;
         mode?: number | string | null;
@@ -94,7 +23,7 @@ export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array
     readdirSync: (path: string | URL, options?: {
         encoding?: string;
         withFileTypes?: boolean;
-    }) => string[] | Dirent[];
+    }) => string[] | import("../../../node-compat/fs.js").Dirent[];
     unlinkSync: (path: string | URL) => void;
     rmSync: (path: string | URL, options?: {
         recursive?: boolean;
@@ -118,7 +47,7 @@ export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array
     closeSync: (fd: number) => void;
     readSync: (fd: number, buffer: Uint8Array, offset?: number, length?: number, position?: number | null) => number;
     writeSync: (fd: number, bufferOrString: Uint8Array | string, offsetOrPosition?: number | null, lengthOrEncoding?: number | string, position?: number | null) => number;
-    fstatSync: (fd: number) => NodeStat;
+    fstatSync: (fd: number) => import("../../../node-compat/fs.js").NodeStat;
     ftruncateSync: (fd: number, len?: number | null) => void;
     fsyncSync: (fd: number) => void;
     fdatasyncSync: (fd: number) => void;
@@ -126,51 +55,55 @@ export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array
     linkSync: (existingPath: string | URL | Uint8Array, newPath: string | URL | Uint8Array) => void;
     readlinkSync: (path: string | URL | Uint8Array, options?: string | {
         encoding?: string | null;
-    } | null) => string | Buffer;
+    } | null) => string | import("node:buffer").Buffer;
     readFile: (path: string | URL, optionsOrCb: string | {
         encoding?: string;
-    } | Callback<string | Uint8Array>, cb?: Callback<string | Uint8Array>) => void;
+    } | ((err: Error | null, result?: string | Uint8Array<ArrayBufferLike> | undefined) => void), cb?: (err: Error | null, result?: string | Uint8Array<ArrayBufferLike> | undefined) => void) => void;
     writeFile: (path: string | URL, data: string | Uint8Array, optionsOrCb: string | {
         encoding?: string;
-    } | Callback<void>, cb?: Callback<void>) => void;
-    stat: (path: string | URL, cb: Callback<NodeStat>) => void;
-    lstat: (path: string | URL, cb: Callback<NodeStat>) => void;
+    } | ((err: Error | null, result?: void | undefined) => void), cb?: (err: Error | null, result?: void | undefined) => void) => void;
+    stat: (path: string | URL, cb: (err: Error | null, result?: import("../../../node-compat/fs.js").NodeStat | undefined) => void) => void;
+    lstat: (path: string | URL, cb: (err: Error | null, result?: import("../../../node-compat/fs.js").NodeStat | undefined) => void) => void;
     mkdir: (path: string | URL, optionsOrCb: {
         recursive?: boolean;
-    } | Callback<void>, cb?: Callback<void>) => void;
+    } | ((err: Error | null, result?: void | undefined) => void), cb?: (err: Error | null, result?: void | undefined) => void) => void;
     readdir: (path: string | URL, optionsOrCb: {
         encoding?: string;
         withFileTypes?: boolean;
-    } | Callback<string[] | Dirent[]>, cb?: Callback<string[] | Dirent[]>) => void;
-    unlink: (path: string | URL, cb: Callback<void>) => void;
+    } | ((err: Error | null, result?: string[] | import("../../../node-compat/fs.js").Dirent[] | undefined) => void), cb?: (err: Error | null, result?: string[] | import("../../../node-compat/fs.js").Dirent[] | undefined) => void) => void;
+    unlink: (path: string | URL, cb: (err: Error | null, result?: void | undefined) => void) => void;
     rm: (path: string | URL, optionsOrCb: {
         recursive?: boolean;
         force?: boolean;
-    } | Callback<void>, cb?: Callback<void>) => void;
-    rename: (oldPath: string | URL, newPath: string | URL, cb: Callback<void>) => void;
-    access: (path: string | URL, modeOrCb: number | Callback<void>, cb?: Callback<void>) => void;
+    } | ((err: Error | null, result?: void | undefined) => void), cb?: (err: Error | null, result?: void | undefined) => void) => void;
+    rename: (oldPath: string | URL, newPath: string | URL, cb: (err: Error | null, result?: void | undefined) => void) => void;
+    access: (path: string | URL, modeOrCb: number | ((err: Error | null, result?: void | undefined) => void), cb?: (err: Error | null, result?: void | undefined) => void) => void;
     exists: (path: string | URL, cb: (exists: boolean) => void) => void;
-    symlink: (target: string | URL | Uint8Array, path: string | URL | Uint8Array, ...rest: Array<string | null | undefined | Callback<void>>) => void;
-    link: (existingPath: string | URL | Uint8Array, newPath: string | URL | Uint8Array, cb?: Callback<void>) => void;
+    symlink: (target: string | URL | Uint8Array, path: string | URL | Uint8Array, ...rest: Array<string | null | undefined | ((err: Error | null, result?: void | undefined) => void)>) => void;
+    link: (existingPath: string | URL | Uint8Array, newPath: string | URL | Uint8Array, cb?: (err: Error | null, result?: void | undefined) => void) => void;
     readlink: (path: string | URL | Uint8Array, optionsOrCb: string | {
         encoding?: string | null;
-    } | null | undefined | Callback<string | Buffer>, cb?: Callback<string | Buffer>) => void;
-    truncate: (path: string | URL | Uint8Array | number, lenOrCb?: number | null | Callback<void>, cb?: Callback<void>) => void;
-    ftruncate: (fd: number, lenOrCb?: number | null | Callback<void>, cb?: Callback<void>) => void;
-    open: (path: string | URL, flagsOrCb: string | number | Callback<number>, modeOrCb?: number | Callback<number>, cb?: Callback<number>) => void;
-    close: (fd: number, cb: Callback<void>) => void;
-    read: (fd: number, buffer: Uint8Array, offset: number, length: number, position: number | null, cb: ReadCallback) => void;
-    write: (fd: number, data: Uint8Array | string, ...rest: (number | string | null | undefined | WriteCallback)[]) => void;
-    fsync: (fd: number, cb: Callback<void>) => void;
-    fstat: (fd: number, cb: Callback<NodeStat>) => void;
-    chown: (path: string | URL, uid: number, gid: number, cb: Callback<void>) => void;
-    lchown: (path: string | URL, uid: number, gid: number, cb: Callback<void>) => void;
-    fchown: (fd: number, uid: number, gid: number, cb: Callback<void>) => void;
-    realpath: ((path: string | URL, optOrCb: unknown, cb?: Callback<string>) => void) & {
-        native: (path: string | URL, optOrCb: unknown, cb?: Callback<string>) => void;
+    } | null | undefined | ((err: Error | null, result?: string | import("node:buffer").Buffer | undefined) => void), cb?: (err: Error | null, result?: string | import("node:buffer").Buffer | undefined) => void) => void;
+    truncate: (path: string | URL | Uint8Array | number, lenOrCb?: number | null | ((err: Error | null, result?: void | undefined) => void), cb?: (err: Error | null, result?: void | undefined) => void) => void;
+    ftruncate: (fd: number, lenOrCb?: number | null | ((err: Error | null, result?: void | undefined) => void), cb?: (err: Error | null, result?: void | undefined) => void) => void;
+    open: (path: string | URL, flagsOrCb: string | number | ((err: Error | null, result?: number | undefined) => void), modeOrCb?: number | ((err: Error | null, result?: number | undefined) => void), cb?: (err: Error | null, result?: number | undefined) => void) => void;
+    close: (fd: number, cb: (err: Error | null, result?: void | undefined) => void) => void;
+    read: (fd: number, buffer: Uint8Array, offset: number, length: number, position: number | null, cb: (err: Error | null, bytesRead?: number, buffer?: Uint8Array) => void) => void;
+    write: (fd: number, data: Uint8Array | string, ...rest: (number | string | null | undefined | ((err: Error | null, written?: number, data?: Uint8Array | string) => void))[]) => void;
+    fsync: (fd: number, cb: (err: Error | null, result?: void | undefined) => void) => void;
+    fstat: (fd: number, cb: (err: Error | null, result?: import("../../../node-compat/fs.js").NodeStat | undefined) => void) => void;
+    chown: (path: string | URL, uid: number, gid: number, cb: (err: Error | null, result?: void | undefined) => void) => void;
+    lchown: (path: string | URL, uid: number, gid: number, cb: (err: Error | null, result?: void | undefined) => void) => void;
+    fchown: (fd: number, uid: number, gid: number, cb: (err: Error | null, result?: void | undefined) => void) => void;
+    realpath: ((path: string | URL, optOrCb: (string | {
+        encoding?: string | null;
+    } | null | undefined) | ((err: Error | null, result?: string | undefined) => void), cb?: (err: Error | null, result?: string | undefined) => void) => void) & {
+        native: (path: string | URL, optOrCb: (string | {
+            encoding?: string | null;
+        } | null | undefined) | ((err: Error | null, result?: string | undefined) => void), cb?: (err: Error | null, result?: string | undefined) => void) => void;
     };
     ReadStream: {
-        new (path: string | URL | null | undefined, options?: string | StreamOptions): {
+        new (path: string | URL | null | undefined, options?: string | import("../../../node-compat/fs.js").StreamOptions): {
             pipe(destination: import("node:stream").Writable, options?: import("node:stream").PipeOptions): import("node:stream").Writable;
             readonly readable: boolean;
             readonly readableEnded: boolean;
@@ -201,7 +134,7 @@ export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array
         };
     };
     WriteStream: {
-        new (path: string | URL | null | undefined, options?: string | StreamOptions): {
+        new (path: string | URL | null | undefined, options?: string | import("../../../node-compat/fs.js").StreamOptions): {
             readonly writable: boolean;
             write(chunk: Uint8Array | string, callback?: (error?: Error | null) => void): boolean;
             end(callback?: () => void): /*elided*/ any;
@@ -221,7 +154,7 @@ export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array
             getMaxListeners(): number;
         };
     };
-    createReadStream: (path: string | URL, options?: string | StreamOptions) => {
+    createReadStream: (path: string | URL, options?: string | import("../../../node-compat/fs.js").StreamOptions) => {
         pipe(destination: import("node:stream").Writable, options?: import("node:stream").PipeOptions): import("node:stream").Writable;
         readonly readable: boolean;
         readonly readableEnded: boolean;
@@ -250,7 +183,7 @@ export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array
         setMaxListeners(n: number): /*elided*/ any;
         getMaxListeners(): number;
     };
-    createWriteStream: (path: string | URL, options?: string | StreamOptions) => {
+    createWriteStream: (path: string | URL, options?: string | import("../../../node-compat/fs.js").StreamOptions) => {
         readonly writable: boolean;
         write(chunk: Uint8Array | string, callback?: (error?: Error | null) => void): boolean;
         end(callback?: () => void): /*elided*/ any;
@@ -269,36 +202,36 @@ export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array
         setMaxListeners(n: number): /*elided*/ any;
         getMaxListeners(): number;
     };
-    watch: (filename: string | URL, optionsOrListener?: WatchOptions | string | WatchListener, listener?: WatchListener) => FSWatcher;
+    watch: (filename: string | URL, optionsOrListener?: import("../../../node-compat/fs.js").WatchOptions | string | ((eventType: string, filename: string | import("node:buffer").Buffer) => void), listener?: (eventType: string, filename: string | import("node:buffer").Buffer) => void) => import("../../../node-compat/fs.js").FSWatcher;
     promises: {
         readFile: (path: string | URL, options?: string | {
             encoding?: string;
         }) => Promise<string | Uint8Array<ArrayBufferLike>>;
         writeFile: (path: string | URL, data: string | Uint8Array) => Promise<void>;
         appendFile: (path: string | URL, data: string | Uint8Array) => Promise<void>;
-        stat: (path: string | URL) => Promise<NodeStat>;
-        lstat: (path: string | URL) => Promise<NodeStat>;
+        stat: (path: string | URL) => Promise<import("../../../node-compat/fs.js").NodeStat>;
+        lstat: (path: string | URL) => Promise<import("../../../node-compat/fs.js").NodeStat>;
         mkdir: (path: string | URL, options?: {
             recursive?: boolean;
         }) => Promise<void>;
         readdir: (path: string | URL, options?: {
             encoding?: string;
             withFileTypes?: boolean;
-        }) => Promise<string[] | Dirent[]>;
+        }) => Promise<string[] | import("../../../node-compat/fs.js").Dirent[]>;
         unlink: (path: string | URL) => Promise<void>;
         rmdir: (path: string | URL, options?: {
             recursive?: boolean;
         }) => Promise<void>;
         rename: (oldPath: string | URL, newPath: string | URL) => Promise<void>;
         copyFile: (src: string | URL, dest: string | URL) => Promise<void>;
-        access: (path: string | URL, mode?: number) => Promise<void>;
+        access: (path: string | URL, _mode?: number) => Promise<void>;
         realpath: (path: string | URL) => Promise<string>;
         truncate: (path: string | URL | Uint8Array, len?: number | null) => Promise<void>;
-        symlink: (target: string | URL | Uint8Array, path: string | URL | Uint8Array, type?: string | null) => Promise<void>;
+        symlink: (target: string | URL | Uint8Array, path: string | URL | Uint8Array, _type?: string | null) => Promise<void>;
         link: (existingPath: string | URL | Uint8Array, newPath: string | URL | Uint8Array) => Promise<void>;
         readlink: (path: string | URL | Uint8Array, options?: string | {
             encoding?: string | null;
-        } | null) => Promise<string | Buffer>;
+        } | null) => Promise<string | import("node:buffer").Buffer>;
         chmod: (path: string | URL, mode: number | string) => Promise<void>;
         chown: (path: string | URL, uid: number, gid: number) => Promise<void>;
         lchown: (path: string | URL, uid: number, gid: number) => Promise<void>;
@@ -312,7 +245,7 @@ export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array
             write: (data: Uint8Array | string) => Promise<{
                 bytesWritten: number;
             }>;
-            stat: () => Promise<NodeStat>;
+            stat: () => Promise<import("../../../node-compat/fs.js").NodeStat>;
             chown: (uid: number, gid: number) => Promise<void>;
             truncate: (len?: number | null) => Promise<void>;
         }>;
@@ -341,5 +274,4 @@ export declare function createFs(vfs: VFS, cwd: string, stdin?: () => Uint8Array
         COPYFILE_FICLONE_FORCE: number;
     };
 };
-export {};
 //# sourceMappingURL=fs.d.ts.map
