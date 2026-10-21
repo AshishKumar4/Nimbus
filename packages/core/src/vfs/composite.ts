@@ -1826,6 +1826,18 @@ export class CompositeVFS implements VFS {
   }
 
   /** Whether the table declares an accepted mount point, even if its source is absent. */
+  /**
+   * Whether the mount at `point` states its change model (a feed:
+   * VFS.changes), as the root's SQLite does: false for one with none, or
+   * whose source is absent, which only a walk can list (CompositeFeed.walk).
+   */
+  fedMount(point: string): boolean {
+    const mount = this.table.mounts.get(point);
+    if (mount === undefined) return false;
+    const files = this.backend(mount);
+    return files !== null && files.changes !== undefined;
+  }
+
   someMountPoint(wants: (point: string) => boolean): boolean {
     for (const mount of this.table.mounts.values()) {
       if (wants(mount.point)) return true;
@@ -2947,8 +2959,9 @@ export class CompositeVFS implements VFS {
     if (mount.dev === null) return stat;
     let ino = stat.ino;
     if (ino === 0) {
-      ino = mount.inos.get(at);
-      if (ino === undefined) mount.inos.set(at, ino = mount.inos.size + 1);
+      const known = mount.inos.get(at);
+      ino = known ?? mount.inos.size + 1;
+      if (known === undefined) mount.inos.set(at, ino);
     }
     return { ...stat, dev: mount.dev, ino };
   }

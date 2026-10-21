@@ -58,7 +58,7 @@ export class MemoryVFS implements VFS {
   /** The newest pruned removal's revision: a cursor below it is a poison. */
   private floor = 0;
   private listed: { rev: number; entries: VfsListEntry[] } | null = null;
-  private readonly epoch = `memory:${globalThis.crypto.randomUUID()}`;
+  private readonly epoch = `memory:${crypto.randomUUID()}`;
   readonly sync: SyncVFS = this;
   readonly changes: VfsChanges;
 
@@ -85,7 +85,7 @@ export class MemoryVFS implements VFS {
   }
 
   /** What changed since `cursor` of `epoch`: each path's newest change after it, with its lstat now where `stats`. */
-  private since(epoch: string, cursor: number, stats: boolean): { epoch: string; rev: number; paths: VfsInvalidatedPath[]; poison: boolean } {
+  private since(epoch: string | null, cursor: number, stats: boolean): { epoch: string; rev: number; paths: VfsInvalidatedPath[]; poison: boolean } {
     const rev = this.clock;
     if (epoch !== this.epoch || cursor < this.floor || cursor > rev) return { epoch: this.epoch, rev, paths: [], poison: true };
     const paths: VfsInvalidatedPath[] = [];

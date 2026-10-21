@@ -401,19 +401,19 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
    * arguments, the literal paths its code names, the files its module map
    * was read from — which is where its listing (`list`) walks mounts without
    * a change feed (CompositeFeed.walk, MOUNT_LIST_NAME_LIMIT). `names` is
-   * asked only when the process's credential sees a mount beyond SQLite and
-   * the kernel's, so a launch computes nothing for a namespace that is
-   * SQLite alone. Adds to what was named.
+   * asked only when the process's credential sees a mount without one, so a
+   * launch computes nothing for a namespace every mount of which is fed.
+   * Adds to what was named.
    */
   nameLaunch({ pid, cred }: NimbusFilesystemBinding, names: () => Iterable<string>): void {
     if (this.retired.has(pid)) return;
     const view = this.vfs.as(immutableCredential(cred));
-    if (!mountsBeyondSqlite(view)) return;
+    if (!view.someMountPoint((point) => !view.fedMount(point))) return;
     const { named } = this.createListing(pid);
     for (const name of names()) {
       if (name === '') continue;
       const path = normalizePath(name.startsWith('/') ? name : `/${name}`);
-      if (isEmbedderMount(view.mountOf(path))) named.add(path);
+      if (!view.fedMount(view.mountOf(path))) named.add(path);
     }
   }
 
@@ -768,9 +768,6 @@ interface MountListing {
   held: { walk: MountWalk; next: string } | null;
 }
 
-/** The kernel's own filesystems: fed (their trees fixed: immutable-changes.ts), so never walked. */
-const KERNEL_MOUNT_POINTS: Record<string, true> = { [PROC_MOUNT_POINT]: true, '/dev': true };
-
 /**
  * Entries one page of ProcessView.scan reads in one slice of the thread.
  * Measured 2026-10-20 on armada (bun:sqlite, a 34,302-file tree): about
@@ -784,16 +781,6 @@ const SCAN_PAGE = 1024;
  * that shares the realm wraps the global one as a handle of its own.
  */
 const engineSetTimeout = globalThis.setTimeout;
-
-/** A mount an embedder made (a Drive, a container, a device). */
-function isEmbedderMount(point: string): boolean {
-  return point !== '/' && KERNEL_MOUNT_POINTS[point] !== true;
-}
-
-/** Whether the table declares an embedder mount, including one whose source is absent. */
-function mountsBeyondSqlite(view: CompositeVFS): boolean {
-  return view.someMountPoint(isEmbedderMount);
-}
 
 /**
  * A process's asynchronous face (ProcessView, supervisor ops, RPC,
