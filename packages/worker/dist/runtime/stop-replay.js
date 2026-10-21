@@ -326,6 +326,9 @@ const __nimbusStopReplay = (() => {
         () => {},
       ]);
     }
+    const waiters = run.boundaryWaiters;
+    run.boundaryWaiters = null;
+    if (waiters) for (let i = 0; i < waiters.length; i++) waiters[i](run.boundaryNotice);
   }
 
   return {
@@ -335,6 +338,15 @@ const __nimbusStopReplay = (() => {
     // Outbound fetch uses a separate binding, not ledger's supervisor
     // proxy; it joins the same gate before dispatching a post-read request.
     afterBoundary() { return run && run.boundaryNotice; },
+    // Settles once a replay has passed its boundary and the session has its
+    // notice: news from outside the process (a signal) waits for it, as the
+    // run before it had none there. Null when nothing is held back.
+    untilBoundary() {
+      if (!replaying()) return run && run.boundaryNotice;
+      const current = run;
+      if (!current.boundaryWaiters) current.boundaryWaiters = [];
+      return new PromiseCtor((resolve) => { current.boundaryWaiters[current.boundaryWaiters.length] = resolve; });
+    },
     observed,
     bodyStarted(what) { const id = run.bodies.length; run.bodies[id] = what; return id; },
     bodyFinished(id) { run.bodies[id] = null; },
@@ -367,6 +379,8 @@ const __nimbusStopReplay = (() => {
         changedWhy: null,
         boundaryPassed: replay === null,
         boundaryNotice: null,
+        // Who waits for a replay to pass its boundary (untilBoundary).
+        boundaryWaiters: null,
         prefix: replay && replay.prefix && !launch.captured
           ? { stdout: fromBase64(replay.prefix.stdout), stderr: fromBase64(replay.prefix.stderr) } : null,
         sent: { stdout: 0, stderr: 0 },

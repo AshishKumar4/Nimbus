@@ -11147,6 +11147,9 @@ function __nimbusTakeSignals() {
   __nimbusSignalTaker = (async () => {
     let failures = 0;
     while (__nimbusCaughtWanted !== "" && !__nimbusStdinPumping && !__nimbusProgramStopped) {
+      // A run after a stop takes no signal before the read the run before it stopped at: that run had none there.
+      const crossing = __nimbusReplay && typeof __nimbusReplay.untilBoundary === "function" ? __nimbusReplay.untilBoundary() : null;
+      if (crossing) await crossing;
       let sig = null;
       const asked = Date.now();
       try {
@@ -11165,6 +11168,7 @@ function __nimbusTakeSignals() {
       }
       // Whatever sent it may have written files first, as for a signal the stdin pump delivers.
       await __nimbusInboundBarrier(undefined, true);
+      if (__nimbusReplay) __nimbusReplay.unreplayable("took " + sig + ", sent from outside it, which a second run would not be sent again");
       __nimbusSignalSelf(String(sig));
     }
   })().catch((e) => {
