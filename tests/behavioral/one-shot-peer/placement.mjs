@@ -35,7 +35,8 @@ const KINDS = [
 /** What a run printed, a line each, without the command's echo and the next prompt. */
 const printed = (output) => output.split('\n').slice(1).map((line) => line.trim()).filter((line) => line !== '' && !line.endsWith('$'));
 const PORT = 4391;
-const SERVER = `require('http').createServer((req, res) => res.end('ok ' + req.url)).listen(${PORT});\n`;
+// It ends itself on a request to /exit: the probe's idle phase stops it so.
+const SERVER = `require('http').createServer((req, res) => { res.end('ok ' + req.url); if (req.url === '/exit') setTimeout(() => process.exit(0), 50); }).listen(${PORT});\n`;
 const TS_FILES = Array.from({ length: 12 }, (_, i) => [`src/m${i}.ts`,
   `export interface Shape${i} { id: number; name: string }\nexport const all${i}: Shape${i}[] = Array.from({ length: 50 }, (_, k) => ({ id: k, name: 'm${i}-' + k }));\n`]);
 const CSRC = '#include <stdio.h>\nint main(void) { printf("%d\\n", 6 * 7); return 0; }\n';
@@ -95,7 +96,7 @@ try {
   }
 
   // What the user waits for during a python one-shot importing ten stdlib modules.
-  await t.run('node srv.js & echo $! > srv.pid', 60_000);
+  await t.run('node srv.js &', 60_000);
   for (let ready = null, until = Date.now() + 30_000; ready?.status !== 200;) {
     if (Date.now() > until) throw new Error(`server never answered: ${ready?.status}`);
     ready = await fetchPort(sid, PORT, 'ready').catch(() => null);
@@ -172,12 +173,12 @@ try {
   }
 
   // Idle: the second terminal closed, the server stopped.
-  await t.run('kill "$(cat srv.pid)"; true', 60_000);
+  await fetchPort(sid, PORT, 'exit').catch(() => null);
   await t2.close();
   for (let until = Date.now() + 30_000; ;) {
     const status = await fetchPort(sid, PORT, 'gone').then((r) => r.status).catch(() => 0);
     if (status !== 200) break;
-    if (Date.now() > until) throw new Error(`the server never stopped: ${(await t.run('cat srv.pid; ps', 30_000)).output.slice(-600)}`);
+    if (Date.now() > until) throw new Error(`the server never stopped: ${(await t.run('ps', 30_000)).output.split('\n').filter((line) => /node/.test(line)).join('\n')}`);
     await sleep(500);
   }
   let marked = await mark(sid);
