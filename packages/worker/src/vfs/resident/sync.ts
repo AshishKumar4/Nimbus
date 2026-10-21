@@ -28,7 +28,7 @@ import type { Admission } from './admission.js';
 import type { Admitted, Cells } from './cells.js';
 import { residentCellCost, type ResidentCell } from './cell-cost.js';
 import type { Coherence, Cursor } from './coherence.js';
-import { feedFor, isFeedPosition, rootOf, sameClock } from '@nimbus-sh/core/runtime/feed-position.js';
+import { feedFor, isFeedPosition, rootEpochFor, sameClock } from '@nimbus-sh/core/runtime/feed-position.js';
 import { nsDescribes, nsKey, nsRowAt, type Namespace } from './namespace.js';
 import type { ResidentSupervisor } from './supervisor.js';
 import { NS_FILE, RK_OWN_WRITE, type NsRow } from './tables.js';
@@ -149,7 +149,7 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
     for (const path of applied.dropped) {
       const found = namespace.resolve(path, false);
       if (!found || found === 'ELOOP' || found.row.kind !== NS_FILE) continue;
-      refetch.push({ path, size: found.row.size, rev: found.row.rev, epoch: rootOf(applied.cursor).epoch, version: versionOf(found.row) });
+      refetch.push({ path, size: found.row.size, rev: found.row.rev, epoch: rootEpochFor(applied.cursor, path), version: versionOf(found.row) });
     }
     if (refetch.length > 0) await transport.fetchFiles(supervisor, refetch);
     return applied.cursor;
@@ -552,7 +552,7 @@ export function createSync(coherence: Coherence, admission: Admission, namespace
         if (cells.has(path)) continue;
         const row = nsRowAt(t, path);
         if (row === undefined || row.kind !== NS_FILE) continue;
-        fetch.push({ path, size: row.size, rev: row.rev, epoch: rootOf(cursor).epoch, ckey: null, version: versionOf(row) });
+        fetch.push({ path, size: row.size, rev: row.rev, epoch: rootEpochFor(cursor, path), ckey: null, version: versionOf(row) });
       }
       return transport.fetchFiles(supervisor, fetch);
     },

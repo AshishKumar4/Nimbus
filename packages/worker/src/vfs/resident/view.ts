@@ -19,7 +19,7 @@
  */
 
 import type { RuntimeVfsStat, VfsAcquireResult } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { floorFor, isFeedPosition, notAfter, rootOf, sameEpochs, type FeedPosition } from '@nimbus-sh/core/runtime/feed-position.js';
+import { type FeedPosition, floorFor, isFeedPosition, notAfter, rootEpochFor, sameEpochs } from '@nimbus-sh/core/runtime/feed-position.js';
 import type { ResidentBarrier, ResidentBarrierOptions, ResidentEntry, ResidentNamespace } from '@nimbus-sh/core/runtime/wasi/resident-filesystem.js';
 import type { Admission } from './admission.js';
 import type { Cells } from './cells.js';
@@ -371,7 +371,7 @@ export function createView(
         async fill(k, entry) {
           const cursor = coherence.cursor();
           if (cursor === null) return null;
-          await transport.fetchFiles(supervisor, [{ path: k, size: entry.size, rev: entry.revision, epoch: rootOf(cursor).epoch, ckey: null, version: entry }]);
+          await transport.fetchFiles(supervisor, [{ path: k, size: entry.size, rev: entry.revision, epoch: rootEpochFor(cursor, k), ckey: null, version: entry }]);
           const bytes = view.content(k, entry.revision);
           return bytes === undefined ? null : bytes;
         },
@@ -380,7 +380,7 @@ export function createView(
         async fillMany(files) {
           const cursor = coherence.cursor();
           if (cursor === null || files.length === 0) return;
-          await transport.fetchFiles(supervisor, files.map(([k, entry]) => ({ path: k, size: entry.size, rev: entry.revision, epoch: rootOf(cursor).epoch, ckey: null, version: entry })));
+          await transport.fetchFiles(supervisor, files.map(([k, entry]) => ({ path: k, size: entry.size, rev: entry.revision, epoch: rootEpochFor(cursor, k), ckey: null, version: entry })));
         },
         acquireArgs: () => argsNow(),
         repairOwed: () => repairOwed,

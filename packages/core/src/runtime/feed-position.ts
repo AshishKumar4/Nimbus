@@ -164,3 +164,8 @@ export function abovePoint(position: FeedPosition, key: string): boolean {
   }
   return false;
 }
+
+/** The root's epoch where `key` is the root feed's (a file there is dated by its revision on it), else null (a mount's: by its version). */
+export function rootEpochFor(position: FeedPosition, key: string): string | null {
+  return feedPointOf(position, key) === ROOT_FEED ? rootOf(position).epoch : null;
+}
