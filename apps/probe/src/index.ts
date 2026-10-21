@@ -262,6 +262,8 @@ type BurnLoader = { get(name: string, code: () => Promise<{ compatibilityDate: s
   getDurableObjectClass(name: string): unknown;
 } };
 const burnCode = async () => ({ compatibilityDate: '2026-09-26', mainModule: 'burn.js', modules: { 'burn.js': BURN_SOURCE } });
+// The same burn after its module replaced Math.random, as stop-replay's tape does in a node one-shot.
+const burnAfterRandomCode = async () => ({ compatibilityDate: '2026-09-26', mainModule: 'burn.js', modules: { 'burn.js': 'Math.random = function random() { return 0.5; };\n' + BURN_SOURCE } });
 async function burnInLoader(loader: BurnLoader, n: number): Promise<number> {
   return Number(await (await loader.get('d1-burn', burnCode).getEntrypoint().fetch(`https://burn.local/?n=${n}`)).text());
 }
@@ -345,6 +347,7 @@ export class NimbusSession extends SdkNimbusSession {
     const loader = (this.env as unknown as { LOADER: BurnLoader }).LOADER;
     let result: number;
     if (via === 'inline') result = burnInline(n);
+    else if (via === 'do-random') result = Number(await (await loader.get('d1-burn-random', burnAfterRandomCode).getEntrypoint().fetch(`https://burn.local/?n=${n}`)).text());
     else if (via === 'do') result = await burnInLoader(loader, n);
     else if (via === 'stateless') result = await (this.ctx as unknown as { exports: { D1Burn: { burn(n: number): Promise<number> } } }).exports.D1Burn.burn(n);
     else if (via === 'facet') {
