@@ -95,7 +95,7 @@ try {
   }
 
   // What the user waits for during a python one-shot importing ten stdlib modules.
-  await t.run('node srv.js &', 60_000);
+  await t.run('node srv.js & echo $! > srv.pid', 60_000);
   for (let ready = null, until = Date.now() + 30_000; ready?.status !== 200;) {
     if (Date.now() > until) throw new Error(`server never answered: ${ready?.status}`);
     ready = await fetchPort(sid, PORT, 'ready').catch(() => null);
@@ -172,12 +172,12 @@ try {
   }
 
   // Idle: the second terminal closed, the server stopped.
-  await t.run('kill %1 2>/dev/null; wait 2>/dev/null; true', 60_000);
+  await t.run('kill "$(cat srv.pid)"; true', 60_000);
   await t2.close();
   for (let until = Date.now() + 30_000; ;) {
-    const ports = await fetchPort(sid, PORT, 'gone').then((r) => r.status).catch(() => 0);
-    if (ports !== 200) break;
-    if (Date.now() > until) throw new Error('the server never stopped');
+    const status = await fetchPort(sid, PORT, 'gone').then((r) => r.status).catch(() => 0);
+    if (status !== 200) break;
+    if (Date.now() > until) throw new Error(`the server never stopped: ${(await t.run('cat srv.pid; ps', 30_000)).output.slice(-600)}`);
     await sleep(500);
   }
   let marked = await mark(sid);
