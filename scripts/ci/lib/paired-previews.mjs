@@ -81,7 +81,7 @@ export function pairedPreviews({ repo, runDir, log = (line) => console.error(lin
   };
   const throwaway = (args, arm) => ['tests/behavioral/_throwaway-target.mjs', ...args, '--name', arms[arm].name];
   /** The deployment `arm` serves now, read by this checkout's script (an older baseline's has no `version`). */
-  const version = async (arm) => (await run(repo, 'bun', throwaway(['version'], arm), piped)).trim();
+  const version = async (arm, until) => (await run(repo, 'bun', throwaway(['version', '--until', until], arm), piped)).trim();
   const receipts = {};
   /** Take down each of `which`, from its checkout; returns what could not be, each with the command that finishes it. */
   const takeDown = (which) => which.flatMap(({ name, checkout }) => {
@@ -143,8 +143,9 @@ export function pairedPreviews({ repo, runDir, log = (line) => console.error(lin
       return { ...receipts };
     },
     /** The deployment each arm serves now, by its id. */
-    async versions() {
-      return Object.fromEntries(await Promise.all(ARMS.map(async (arm) => [arm, await version(arm)])));
+    /** Each arm's deployment, a read the resolver could not make made again until `until` (epoch ms). */
+    async versions(until) {
+      return Object.fromEntries(await Promise.all(ARMS.map(async (arm) => [arm, await version(arm, until)])));
     },
     /**
      * Start nothing more, end every child still running (an upload, an

@@ -95,7 +95,17 @@ const TASK_TIMEOUT_S = 30 * 60;
  * starts again later (its container lost), runs once more with fresh
  * credentials (runTasks).
  */
-const PREPARE_S = Math.ceil(35 + 331.4 + 61);
+const JOB_START_S = 331.4 + 61;
+const PREPARE_S = Math.ceil(35 + JOB_START_S);
+/**
+ * How long a deployment read may wait out a resolver that cannot answer
+ * (TransientTransportError): the part of PREPARE_S before the job's creation,
+ * 35.6 s. The read before a job waits until its tokens' start-by less the
+ * job's measured start (JOB_START_S), which leaves the pack's upload none of
+ * that part; a task that then starts late runs once more with fresh
+ * credentials (runTasks). Any other read waits as long from its start.
+ */
+const READ_RETRY_MS = (PREPARE_S - JOB_START_S) * 1000;
 const TOKEN_TTL_MS = (PREPARE_S + TASK_TIMEOUT_S) * 1000;
 /** Workers Logs can trail a reset by minutes: how often, and how many times, a session no log names yet is looked up again. */
 const ATTRIBUTION_WAIT_MS = 45_000;
@@ -236,18 +246,19 @@ try {
 process.exit(status);
 
 /**
- * The deployments this run grades, by id: the throwaway target's and each
+ * The deployments this run grades, by id, each read waiting out a resolver
+ * that cannot answer until `until` (READ_RETRY_MS): the throwaway target's and each
  * paired arm's once stood up. Staging's are release.mjs's to bracket; a
  * hosted demo has none.
  */
-async function deployments() {
+async function deployments(until = Date.now() + READ_RETRY_MS) {
   const ids = {};
   if (throwaway !== undefined) {
-    const read = spawnSync('bun', ['tests/behavioral/_throwaway-target.mjs', 'version', '--name', throwaway], { cwd: repo, encoding: 'utf8' });
+    const read = spawnSync('bun', ['tests/behavioral/_throwaway-target.mjs', 'version', '--name', throwaway, '--until', String(until)], { cwd: repo, encoding: 'utf8' });
     if (read.status !== 0) throw new Error(`could not read ${throwaway}'s live deployment: ${causeOf(read)}\n${read.stderr ?? ''}`);
     ids[`target ${throwaway}`] = read.stdout.trim();
   }
-  if (arms) for (const [arm, id] of Object.entries(await arms.versions())) ids[`arm ${arm}`] = id;
+  if (arms) for (const [arm, id] of Object.entries(await arms.versions(String(until)))) ids[`arm ${arm}`] = id;
   return ids;
 }
 
@@ -282,7 +293,7 @@ async function probeRun({ baseline, releases }) {
     const { base, token, arms: armTargets, startBy } = await credentials();
     secrets.push(...[token, ...Object.values(armTargets ?? {}).map((arm) => arm.token)].filter(Boolean));
     const env = { ...(token ? { NIMBUS_PROBE_TOKEN: token } : {}), ...(armTargets ? { [PAIRED_ENV]: JSON.stringify(armTargets) } : {}) };
-    const before = await deployments();
+    const before = await deployments(startBy - JOB_START_S * 1000);
     console.error(`remote-probes: ${list.length} tasks against ${base}, probes of ${sha.slice(0, 12)}`);
     const mapped = await onArmada(() => mapOnArmada({
       repo, sha, files: ['scripts/ci/probes.mjs', 'scripts/ci/lib/probe-screenshots.mjs', 'tests/behavioral/run-all.mjs', 'tests/behavioral/_selection.mjs', 'tests/behavioral/_ledger.mjs'], setup: 'scripts/ci/recipe/chromium.sh',
