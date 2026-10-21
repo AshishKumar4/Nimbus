@@ -211,6 +211,30 @@ const FOUND = {
     park: 5119,
     schedule: [['sync', 'rename', 'x', 'z'], ['sync', 'mkdir', 'x'], ['sync', 'readdir', 'x']],
   },
+  'a directory the process made that a peer removed is gone after an input (5581)': {
+    park: 5581,
+    schedule: [['own', 'stat', 'd/f'], ['sync', 'readFile', 'd/e'], ['own', 'stat', 'z/g'], ['own', 'mkdir', 'z'], ['input'], ['own', 'readFile', 'z'], ['root', 'chown', 'd', 0],
+      ['own', 'mkdir', 'x/e'], ['peer', 'rmdir', 'x/e'], ['sync', 'stat', 'd'], ['release'], ['own', 'pread', 'mid', 0], ['input'], ['sync', 'stat', 'top'], ['sync', 'stat', 'x/e'],
+      ['own', 'write', 'z/g', 'c5581.3']],
+  },
+  'an awaited read of a file the session holds is answered, not refused (5479)': {
+    park: 5479,
+    schedule: [['own', 'opendir', 'x/f'], ['own', 'opendir', 'z/k'], ['own', 'readFile', 'x/f'], ['sync', 'chmod', 'top', 0o600], ['own', 'opendir', 'x'], ['input'], ['own', 'stat', 'd/e/g'],
+      ['sync', 'rename', 'd', 'x/e'], ['sync', 'stat', 'd/e/g'], ['peer', 'write', 'new', 'c5479.1'], ['sync', 'readFile', 'd/n'], ['release'], ['input'], ['input'], ['restart'], ['input'],
+      ['sync', 'stat', 'd/f'], ['own', 'readFile', 'mid'], ['own', 'readFile', 'z/k'], ['peer', 'write', 'x/f', 'c5479.2'], ['hold', 'acquire'], ['own', 'readdir', 'x/e'], ['own', 'readdir', 'd/n'],
+      ['peer', 'rename', 'x', 'd'], ['sync', 'readFile', 'd/e'], ['sync', 'write', 'd/n', 'c5479.3'], ['own', 'readFile', 'd/f'], ['release'], ['input'], ['release']],
+  },
+  'an awaited read of a file the session holds is answered, not refused (5652)': {
+    park: 5652,
+    schedule: [['own', 'opendir', 'z/g'], ['peer', 'write', 'top', 'c5652.2'], ['own', 'unlink', 'x/h'], ['own', 'stat', 'd/f'], ['own', 'rename', 'top', 'd/f'], ['input'], ['sync', 'readFile', 'z/k'],
+      ['release', 'wave'], ['own', 'stat', 'd'], ['own', 'readFile', 'mid'], ['own', 'write', 'd/e/g', 'c5652.3'], ['own', 'readdir', 'new'], ['hold', 'listing'], ['peer', 'write', 'new', 'c5652.4'],
+      ['root', 'chown', 'd', 1000], ['sync', 'readFile', 'mid'], ['hold', 'listing'], ['sync', 'stat', 'new'], ['restart'], ['root', 'chmod', 'd/e', 0o755], ['own', 'readFile', 'd/f'], ['stall'], ['input']],
+  },
+  'an awaited read of a file the session holds is answered, not refused (5425)': {
+    park: 5425,
+    schedule: [['release', 'listing'], ['peer', 'rename', 'top', 'new'], ['own', 'stat', 'top'], ['own', 'readFile', 'mid'], ['release', 'acquire'], ['hold', 'wave'], ['root', 'chown', 'x', 1000],
+      ['sync', 'readFile', 'x/e/g'], ['own', 'readFile', 'x/e/g'], ['own', 'unlink', 'd/n'], ['settle']],
+  },
   'a file fetched in batches that the process read stays resident past a repair (4033)': {
     park: 4033,
     schedule: [['poison'], ['own', 'stat', 'x'], ['sync', 'readdir', 'd/e'], ['own', 'readFile', 'mid'], ['sync', 'readFile', 'x/e/g'], ['release', 'listing'],
@@ -244,6 +268,23 @@ const GAPS = {
     lacks: 'S keeps a rename of a directory as its own effect over the rows the launch listed under the old name, and leaves those rows; once a peer makes the name again they show under it (closed by the cutover: RF decides own renames in the store); '
       + 'meanwhile, in a program that renames a directory away and another process then creates one of that name, statSync and readFileSync can answer files the old directory held',
     shows: 'sync stat d/e/g answered file 644 size 5',
+  },
+  'a directory the process made that a peer removed is gone after an input (5581) [node]': {
+    lacks: 'S answers a directory of its own making, which a peer removed, past the input after the removal (closed by the cutover: RF retires own state at a barrier); '
+      + 'meanwhile statSync can report a directory that is gone',
+    shows: 'sync stat x/e answered directory 755',
+  },
+  'an awaited read of a file the session holds is answered, not refused (5479) [node]': {
+    lacks: 'S refuses an awaited read EAGAIN where the session holds the file (closed by the cutover: RF waits for its fill); meanwhile fs.promises.readFile can reject EAGAIN',
+    shows: 'own readFile d/f answered EAGAIN',
+  },
+  'an awaited read of a file the session holds is answered, not refused (5652) [node]': {
+    lacks: 'S refuses an awaited read EAGAIN where the session holds the file (closed by the cutover: RF waits for its fill); meanwhile fs.promises.readFile can reject EAGAIN',
+    shows: 'own readFile d/f answered EAGAIN',
+  },
+  'an awaited read of a file the session holds is answered, not refused (5425) [node]': {
+    lacks: 'S refuses an awaited read EAGAIN where the session holds the file (closed by the cutover: RF waits for its fill); meanwhile fs.promises.readFile can reject EAGAIN',
+    shows: 'own readFile x/e/g answered EAGAIN',
   },
   'a file a peer made and the process then wrote is listed while its directory is relisted (4751) [node]': {
     lacks: 'B2: a directory whose relist is on its way answers its listing without the names the process wrote there since (the cutover\'s relist fence); '
