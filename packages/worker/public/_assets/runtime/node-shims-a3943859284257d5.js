@@ -1352,7 +1352,9 @@ const __nimbusOrigThen = Promise.prototype.then;
 if (typeof globalThis.__nimbusPendingOps !== "number") globalThis.__nimbusPendingOps = 0;
 function __nimbusTrackOp(promise) {
   if (!promise || typeof promise.then !== "function") return promise;
-  globalThis.__nimbusPendingOps++;
+  // Counted from the start: the facet's supervisor counts its calls before
+  // this module's own statements have run (the boot's fills and listings).
+  globalThis.__nimbusPendingOps = (globalThis.__nimbusPendingOps || 0) + 1;
   const settled = () => { globalThis.__nimbusPendingOps--; globalThis.__nimbusHandleReleased?.(); };
   try { __nimbusOrigThen.call(promise, settled, settled); }
   catch { settled(); }
