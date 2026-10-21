@@ -13,8 +13,10 @@
  * out through the workspace's (its egress, when it has one), so no runtime
  * opening a facet can leave it out.
  */
-import { requireNetwork, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
-import type { Facet, FacetHost, FacetSpec } from '@nimbus-sh/core/runtime/facet-host.js';
+import { networkRef, requireNetwork, type WorkspaceNetwork, type WorkspaceNetworkRef } from '@nimbus-sh/core/_shared/workspace-network.js';
+import type { Facet, FacetHost, FacetImage, FacetSpec, FacetSubmitOptions } from '@nimbus-sh/core/runtime/facet-host.js';
+import type { FacetTaskSource } from '@nimbus-sh/core/runtime/facet-task.js';
+import type { SupervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { warmFacetScope } from '@nimbus-sh/core/runtime/warm-facets.js';
 import type { FacetManager } from '../facets/manager.js';
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
@@ -30,6 +32,33 @@ import { holdThreadWatch } from '@nimbus-sh/fabric/thread-stalls.js';
  */
 export { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 
+// Experiment (D1, not for landing): a session's one-shots of these runtimes run
+// on another session Durable Object (by name, set per session from the probe
+// app), its own IsolatePool over the same spec, its syscalls routed back here.
+export const d1OneShotPeer = new Map<string, string>();
+const D1_MOVED = /^(tsrs|clang-runner|cpython-runner|ruby-runner|git-runner)/;
+export interface D1PeerImage { path: string; identity: string; size: number; peak: number; stream(): Promise<ReadableStream<Uint8Array>> }
+export interface D1PeerShape {
+  key: string; origin: string; tag: string; preamble?: string; concurrency?: number;
+  wasmModules?: Record<string, D1PeerImage>; supervisorPid?: number; processSupervisor?: SupervisorBindingProps;
+  reuse?: 'session' | 'global'; scope?: string; supervisorPerCall: boolean; network?: WorkspaceNetworkRef;
+}
+interface D1Peer {
+  _rpcD1PeerSubmit(shape: D1PeerShape, fn: FacetTaskSource<unknown, unknown>, args: unknown, options: { timeoutMs?: number; wasmModules?: Record<string, D1PeerImage> }): Promise<unknown>;
+  _rpcD1PeerDispose(key: string): Promise<void>;
+}
+function d1Images(images: Record<string, FacetImage> | undefined): Record<string, D1PeerImage> | undefined {
+  if (images === undefined) return undefined;
+  return Object.fromEntries(Object.entries(images).map(([name, image]) => [name, {
+    path: image.path, identity: image.identity, size: image.size, peak: image.peak,
+    stream: async () => new Blob([await image.read()]).stream(),
+  }]));
+}
+function d1Peer(env: unknown, name: string): D1Peer {
+  const sessions = (env as { NIMBUS_SESSION: DurableObjectNamespace }).NIMBUS_SESSION;
+  return sessions.get(sessions.idFromName(name)) as unknown as D1Peer;
+}
+
 /**
  * Facets as dynamic workers over `env` and `ctx`, each going out through
  * `network`: the workspace's (`workspace.network`, or `workspaceNetwork(egress)`
@@ -42,6 +71,7 @@ export function loaderFacetHost(env: unknown, ctx: DurableObjectState, network: 
     // back to the session mid-instruction.
     parking: 'jspi',
     open(spec: FacetSpec): Facet {
+      const processSupervisor = spec.syscalls ? supervisorBindingProps(ctx, spec.syscalls.pid, { writerId: crypto.randomUUID(), network }) : undefined;
       const pool = new IsolatePool(env, ctx, {
         tag: spec.tag,
         concurrency: spec.concurrency,
@@ -49,19 +79,34 @@ export function loaderFacetHost(env: unknown, ctx: DurableObjectState, network: 
         wasmModules: spec.wasmModules,
         omitSupervisor: spec.syscalls === undefined,
         supervisorPid: spec.syscalls?.pid,
-        processSupervisor: spec.syscalls ? supervisorBindingProps(ctx, spec.syscalls.pid, { writerId: crypto.randomUUID(), network }) : undefined,
+        processSupervisor,
         cacheScope: spec.reuse,
         scope: spec.warm === undefined ? undefined : warmFacetScope(spec.warm),
         supervisorPerCall: spec.warm !== undefined,
         network,
       });
-      // Experiment (D1, not for landing): the session's thread watched while a one-shot runs.
+      // Experiment (D1, not for landing): the session's thread watched while a
+      // one-shot runs; a moved runtime's call runs on the session's peer, when it names one.
+      const shape: D1PeerShape = {
+        key: crypto.randomUUID(), origin: ctx.id.toString(), tag: spec.tag, preamble: spec.preamble, concurrency: spec.concurrency,
+        wasmModules: d1Images(spec.wasmModules), supervisorPid: spec.syscalls?.pid, processSupervisor,
+        reuse: spec.reuse, scope: spec.warm === undefined ? undefined : warmFacetScope(spec.warm), supervisorPerCall: spec.warm !== undefined,
+        network: networkRef(network),
+      };
+      let peerUsed: string | undefined;
       return {
-        submit(fn, args, options) {
+        submit<A, R>(fn: FacetTaskSource<A, R>, args: A, options?: FacetSubmitOptions): Promise<Awaited<R>> {
           const watched = holdThreadWatch(ctx, `one-shot ${spec.tag}`);
-          return pool.submit(fn, args, options).finally(watched);
+          const peerName = D1_MOVED.test(spec.tag) ? d1OneShotPeer.get(ctx.id.toString()) : undefined;
+          if (peerName === undefined) return pool.submit(fn, args, options).finally(watched);
+          peerUsed = peerName;
+          return (d1Peer(env, peerName)._rpcD1PeerSubmit(shape, fn as FacetTaskSource<unknown, unknown>, args,
+            { timeoutMs: options?.timeoutMs, wasmModules: d1Images(options?.wasmModules) }) as Promise<Awaited<R>>).finally(watched);
         },
-        dispose: () => pool.dispose(),
+        dispose: () => {
+          pool.dispose();
+          if (peerUsed !== undefined) ctx.waitUntil(d1Peer(env, peerUsed)._rpcD1PeerDispose(shape.key).catch(() => {}));
+        },
       };
     },
   };

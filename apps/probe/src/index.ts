@@ -30,6 +30,11 @@ import { processHostMode } from '../../../packages/worker/src/loaders/process-ho
 import { nimbusDebugEnabled } from '../../../packages/worker/src/_shared/nimbus-debug.js';
 import { disposeRpcResource } from '../../../packages/platform/src/rpc-dispose.js';
 import { peerPlacement } from '@nimbus-sh/fabric/process-host.js';
+import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
+import { ISOLATE_NETWORK, workspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
+import type { FacetImage } from '@nimbus-sh/core/runtime/facet-host.js';
+import type { FacetTaskSource } from '@nimbus-sh/core/runtime/facet-task.js';
+import { d1OneShotPeer, type D1PeerImage, type D1PeerShape } from '../../../packages/worker/src/runtime/facet-loader-host.js';
 import { abortFacet } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { z } from 'zod/v4';
 import type { EgressProcess, EgressStreams, EgressTlsTarget, WorkspaceEgress, WorkspaceEgressTls } from '@nimbus-sh/core/_shared/workspace-network.js';
@@ -268,8 +273,67 @@ export class D1Burn extends WorkerEntrypoint<Cloudflare.Env> {
   }
 }
 
+function d1PeerImages(images: Record<string, D1PeerImage> | undefined): Record<string, FacetImage> | undefined {
+  if (images === undefined) return undefined;
+  return Object.fromEntries(Object.entries(images).map(([name, image]) => [name, {
+    path: image.path, identity: image.identity, size: image.size, peak: image.peak,
+    read: async () => new Uint8Array(await new Response(await image.stream()).arrayBuffer()),
+  }]));
+}
+
 /** The SDK's session under the embedder's per-session test egress. */
 export class NimbusSession extends SdkNimbusSession {
+  /** Experiment (D1): the pools this session runs for another session's one-shots (facet-loader-host d1OneShotPeer), by the opener's key. */
+  #d1Pools = new Map<string, IsolatePool>();
+  /**
+   * Experiment (D1): this session's one-shots of the moved runtimes run on the
+   * session named `peer`, or here when null; with `stats`, what that peer ran
+   * so far (a call that wakes it).
+   */
+  async _rpcD1Host(peer: string | null, stats: boolean): Promise<{ peer: string | null; peerSubmits: Record<string, number> | null }> {
+    this.requireProbeDiagnostics();
+    if (peer === null) {
+      d1OneShotPeer.delete(this.ctx.id.toString());
+      return { peer, peerSubmits: null };
+    }
+    const name = `d1-oneshot-peer:${this.ctx.id.toString()}:${peer}`;
+    d1OneShotPeer.set(this.ctx.id.toString(), name);
+    if (!stats) return { peer, peerSubmits: null };
+    const sessions = (this.env as unknown as { NIMBUS_SESSION: DurableObjectNamespace<NimbusSession> }).NIMBUS_SESSION;
+    const stub = sessions.get(sessions.idFromName(name));
+    try { return { peer, peerSubmits: await stub._rpcD1PeerSubmits() }; } finally { disposeRpcResource(stub); }
+  }
+  /** Experiment (D1): how many one-shots this session ran for others, by tag. */
+  #d1Submits: Record<string, number> = {};
+  _rpcD1PeerSubmits(): Record<string, number> {
+    return this.#d1Submits;
+  }
+  async _rpcD1PeerSubmit(shape: D1PeerShape, fn: FacetTaskSource<unknown, unknown>, args: unknown, options: { timeoutMs?: number; wasmModules?: Record<string, D1PeerImage> }): Promise<unknown> {
+    let pool = this.#d1Pools.get(shape.key);
+    if (pool === undefined) {
+      pool = new IsolatePool(this.env, this.ctx, {
+        tag: shape.tag,
+        concurrency: shape.concurrency,
+        preamble: shape.preamble,
+        wasmModules: d1PeerImages(shape.wasmModules),
+        omitSupervisor: shape.supervisorPid === undefined,
+        supervisorPid: shape.supervisorPid,
+        processSupervisor: shape.processSupervisor,
+        supervisorDoIdOverride: shape.origin,
+        cacheScope: shape.reuse,
+        scope: shape.scope,
+        supervisorPerCall: shape.supervisorPerCall,
+        network: shape.network === undefined ? ISOLATE_NETWORK : workspaceNetwork(shape.network.egress, shape.network.id),
+      });
+      this.#d1Pools.set(shape.key, pool);
+    }
+    this.#d1Submits[shape.tag] = (this.#d1Submits[shape.tag] ?? 0) + 1;
+    return pool.submit(fn, args, { timeoutMs: options.timeoutMs, wasmModules: d1PeerImages(options.wasmModules) });
+  }
+  async _rpcD1PeerDispose(key: string): Promise<void> {
+    this.#d1Pools.get(key)?.dispose();
+    this.#d1Pools.delete(key);
+  }
   /** Experiment (D1): `n` rounds of the burn, `via` one of inline, do, stateless, facet, peer, edge; answers its result and the session's wall. */
   async _rpcD1Burn(via: string, n: number, edge?: { url: string; authorization: string }): Promise<{ via: string; result: number; ms: number }> {
     this.requireProbeDiagnostics();
@@ -359,7 +423,7 @@ const nimbus = createNimbusHandler({
   sdk: { remote: true },
 });
 
-const EMBEDDER_WORKER_RE = /^\/api\/embedder\/([A-Za-z0-9._-]+)\/(spawn-worker|host-loss|quiet-websocket|d1-burn|d1-burn-edge)$/;
+const EMBEDDER_WORKER_RE = /^\/api\/embedder\/([A-Za-z0-9._-]+)\/(spawn-worker|host-loss|quiet-websocket|d1-burn|d1-burn-edge|d1-host)$/;
 type ProbeEnv = Omit<Parameters<typeof nimbus.fetch>[1], 'NIMBUS_SESSION'> & {
   NIMBUS_SESSION: DurableObjectNamespace<NimbusSession>;
   NIMBUS_DEBUG?: string;
@@ -378,7 +442,8 @@ export default {
     return match[2] === 'host-loss' ? probeHostLoss(request, env, match[1])
       : match[2] === 'quiet-websocket' ? spawnQuietWebSocket(request, env, match[1])
         : match[2] === 'd1-burn' ? d1Burn(request, env, match[1])
-          : match[2] === 'd1-burn-edge' ? d1BurnEdge(request, env) : spawnEmbedderWorker(request, env, match[1]);
+          : match[2] === 'd1-burn-edge' ? d1BurnEdge(request, env)
+            : match[2] === 'd1-host' ? d1Host(request, env, match[1]) : spawnEmbedderWorker(request, env, match[1]);
   },
 };
 
@@ -465,6 +530,21 @@ async function d1Burn(request: Request, env: ProbeEnv, sessionId: string): Promi
   const edge = { url: new URL(`/api/embedder/${sessionId}/d1-burn-edge`, request.url).toString(), authorization: request.headers.get('authorization') ?? '' };
   try {
     return Response.json(await stub._rpcD1Burn(via, n, edge));
+  } finally {
+    disposeRpcResource(stub);
+  }
+}
+
+/** POST /api/embedder/<id>/d1-host {peer} — experiment (D1): where session `id`'s moved one-shots run (NimbusSession._rpcD1Host). */
+async function d1Host(request: Request, env: ProbeEnv, sessionId: string): Promise<Response> {
+  if (!nimbusDebugEnabled(env)) return new Response('Not found', { status: 404 });
+  const verified = await verifyRequestToken(request, env);
+  if (!verified) return authRequiredResponse();
+  requireSessionPin(verified, sessionId);
+  const { peer, stats } = z.object({ peer: z.string().regex(/^[A-Za-z0-9._-]+$/).nullable(), stats: z.boolean().default(false) }).parse(await request.json());
+  const stub = env.NIMBUS_SESSION.get(env.NIMBUS_SESSION.idFromName(`${verified.claims.tn}:${verified.claims.sub ?? '_'}:${sessionId}`));
+  try {
+    return Response.json(await stub._rpcD1Host(peer, stats));
   } finally {
     disposeRpcResource(stub);
   }
