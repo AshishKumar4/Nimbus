@@ -22,7 +22,6 @@ import type { FacetManager } from '../facets/manager.js';
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { holdThreadWatch } from '@nimbus-sh/fabric/thread-stalls.js';
-import { hostNamespaceBinding } from '@nimbus-sh/fabric/host-dispatch.js';
 
 /**
  * The transforms and builds a host's own Durable Object runs outside the
@@ -36,9 +35,10 @@ export { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 // Experiment (D1, not for landing): a session's one-shots of these runtimes run
 // on another session Durable Object (by name, set per session from the probe
 // app), its own IsolatePool over the same spec, its syscalls routed back here.
-// On globalThis: the probe app's copy of this module is not the SDK's.
-export function d1OneShotPeer(): Map<string, string> {
-  const shared = globalThis as unknown as { __nimbusD1OneShotPeer?: Map<string, string> };
+// On globalThis: the probe app's copy of this module is not the SDK's. The
+// probe app hands the peer's stub over: this host's env names no namespace.
+export function d1OneShotPeer(): Map<string, () => D1Peer> {
+  const shared = globalThis as unknown as { __nimbusD1OneShotPeer?: Map<string, () => D1Peer> };
   return shared.__nimbusD1OneShotPeer ??= new Map();
 }
 const D1_MOVED = /^(tsrs|clang-runner|cpython-runner|ruby-runner|git-runner)/;
@@ -48,7 +48,7 @@ export interface D1PeerShape {
   wasmModules?: Record<string, D1PeerImage>; supervisorPid?: number; processSupervisor?: SupervisorBindingProps;
   reuse?: 'session' | 'global'; scope?: string; supervisorPerCall: boolean; network?: WorkspaceNetworkRef;
 }
-interface D1Peer {
+export interface D1Peer {
   _rpcD1PeerSubmit(shape: D1PeerShape, fn: FacetTaskSource<unknown, unknown>, args: unknown, options: { timeoutMs?: number; wasmModules?: Record<string, D1PeerImage> }): Promise<unknown>;
   _rpcD1PeerDispose(key: string): Promise<void>;
 }
@@ -58,10 +58,6 @@ function d1Images(images: Record<string, FacetImage> | undefined): Record<string
     path: image.path, identity: image.identity, size: image.size, peak: image.peak,
     stream: async () => new Blob([await image.read()]).stream(),
   }]));
-}
-function d1Peer(env: unknown, name: string): D1Peer {
-  const sessions = hostNamespaceBinding(env as object, 'd1 one-shot peer');
-  return sessions.get(sessions.idFromName(name)) as unknown as D1Peer;
 }
 
 /**
@@ -98,19 +94,19 @@ export function loaderFacetHost(env: unknown, ctx: DurableObjectState, network: 
         reuse: spec.reuse, scope: spec.warm === undefined ? undefined : warmFacetScope(spec.warm), supervisorPerCall: spec.warm !== undefined,
         network: networkRef(network),
       };
-      let peerUsed: string | undefined;
+      let peerUsed: (() => D1Peer) | undefined;
       return {
         submit<A, R>(fn: FacetTaskSource<A, R>, args: A, options?: FacetSubmitOptions): Promise<Awaited<R>> {
           const watched = holdThreadWatch(ctx, `one-shot ${spec.tag}`);
-          const peerName = D1_MOVED.test(spec.tag) ? d1OneShotPeer().get(ctx.id.toString()) : undefined;
-          if (peerName === undefined) return pool.submit(fn, args, options).finally(watched);
-          peerUsed = peerName;
-          return (d1Peer(env, peerName)._rpcD1PeerSubmit(shape, fn as FacetTaskSource<unknown, unknown>, args,
+          const peer = D1_MOVED.test(spec.tag) ? d1OneShotPeer().get(ctx.id.toString()) : undefined;
+          if (peer === undefined) return pool.submit(fn, args, options).finally(watched);
+          peerUsed = peer;
+          return (peer()._rpcD1PeerSubmit(shape, fn as FacetTaskSource<unknown, unknown>, args,
             { timeoutMs: options?.timeoutMs, wasmModules: d1Images(options?.wasmModules) }) as Promise<Awaited<R>>).finally(watched);
         },
         dispose: () => {
           pool.dispose();
-          if (peerUsed !== undefined) ctx.waitUntil(d1Peer(env, peerUsed)._rpcD1PeerDispose(shape.key).catch(() => {}));
+          if (peerUsed !== undefined) ctx.waitUntil(peerUsed()._rpcD1PeerDispose(shape.key).catch(() => {}));
         },
       };
     },

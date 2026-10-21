@@ -34,7 +34,7 @@ import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
 import { ISOLATE_NETWORK, workspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { FacetImage } from '@nimbus-sh/core/runtime/facet-host.js';
 import type { FacetTaskSource } from '@nimbus-sh/core/runtime/facet-task.js';
-import { d1OneShotPeer, type D1PeerImage, type D1PeerShape } from '../../../packages/worker/src/runtime/facet-loader-host.js';
+import { d1OneShotPeer, type D1Peer, type D1PeerImage, type D1PeerShape } from '../../../packages/worker/src/runtime/facet-loader-host.js';
 import { abortFacet } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { z } from 'zod/v4';
 import type { EgressProcess, EgressStreams, EgressTlsTarget, WorkspaceEgress, WorkspaceEgressTls } from '@nimbus-sh/core/_shared/workspace-network.js';
@@ -297,9 +297,9 @@ export class NimbusSession extends SdkNimbusSession {
       return { peer, peerSubmits: null };
     }
     const name = `d1-oneshot-peer:${this.ctx.id.toString()}:${peer}`;
-    d1OneShotPeer().set(this.ctx.id.toString(), name);
-    if (!stats) return { peer, peerSubmits: null };
     const sessions = (this.env as unknown as { NIMBUS_SESSION: DurableObjectNamespace<NimbusSession> }).NIMBUS_SESSION;
+    d1OneShotPeer().set(this.ctx.id.toString(), () => sessions.get(sessions.idFromName(name)) as unknown as D1Peer);
+    if (!stats) return { peer, peerSubmits: null };
     const stub = sessions.get(sessions.idFromName(name));
     try { return { peer, peerSubmits: await stub._rpcD1PeerSubmits() }; } finally { disposeRpcResource(stub); }
   }
