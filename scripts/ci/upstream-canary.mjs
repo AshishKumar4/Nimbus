@@ -16,8 +16,8 @@
 // Every run keeps a record (--out): what each probe's install takes,
 // resolved from the registry (lib/upstream.mjs resolveInstalls), and the
 // demand's chains. A red run names each package whose versions differ from
-// the record of the last green run (--last-green). When nothing upstream
-// changed, the cause is on our side.
+// the record of the last green run (--last-green). When none of them
+// changed, look on our side first.
 //
 //   bun scripts/ci/upstream-canary.mjs --base <origin> --out <file> [--last-green <file>]
 //
@@ -31,7 +31,7 @@ import { dirname, join } from 'node:path';
 import { DEFERRED } from '../../tests/behavioral/_deferred.mjs';
 import { redactCredentials } from '../../tests/behavioral/_session-transport.mjs';
 import { missingBindings, npmPackument, readOnce } from './lib/binding-demand.mjs';
-import { describeReleaseException, gradeMatrix } from './lib/matrix.mjs';
+import { describeReleaseException, gradeMatrix, probeOf } from './lib/matrix.mjs';
 import { UPSTREAM_PROBES, resolveInstalls, upstreamChanges } from './lib/upstream.mjs';
 
 const argv = process.argv.slice(2);
@@ -90,8 +90,10 @@ try {
 const graded = gradeMatrix([rows && { tasks: [{ task: 'upstream probes', rows }] }], exceptions);
 
 for (const entry of graded.applied) say(describeReleaseException(entry));
-for (const row of rows ?? []) {
-  if (row.exitCode === 0) continue;
+// A deferral that applied covers every red row of its probe.
+const covered = new Set(graded.applied.filter((entry) => entry.excluded !== true).map((entry) => entry.probe));
+const failed = (rows ?? []).filter((row) => row.exitCode !== 0 && !covered.has(probeOf(row.name)));
+for (const row of failed) {
   say(`FAIL ${row.name} (exit ${row.exitCode}, ${Math.round(row.seconds)} s)`);
   for (const line of row.output.trimEnd().split('\n').slice(-25)) say(`    ${line}`);
 }
@@ -114,8 +116,7 @@ const status = problems.length > 0 || graded.exitCode === 2 ? 2 : graded.exitCod
 
 // What changed upstream since the last green run, for each red install.
 if (status !== 0) {
-  const red = [...(rows ?? []).filter((row) => row.exitCode !== 0).map((row) => row.name.replace(/^tests\/behavioral\//, '').replace(/\.mjs$/, '')),
-    ...(demand?.missing.length > 0 ? [DEMAND] : [])].filter((name) => name in record.installs);
+  const red = [...failed.map((row) => probeOf(row.name)), ...(demand?.missing.length > 0 ? [DEMAND] : [])].filter((name) => name in record.installs);
   const last = flags['last-green'] && existsSync(flags['last-green']) ? JSON.parse(readFileSync(flags['last-green'], 'utf8')) : null;
   if (!last) say(`upstream: no record of a green run${flags['last-green'] ? ` at ${flags['last-green']}` : ''}, so nothing to compare with`);
   else {
@@ -124,7 +125,7 @@ if (status !== 0) {
     for (const name of red) {
       const changed = changes[name];
       say(changed === null ? `  ${name}: the last green run has no record of its install`
-        : changed.length === 0 ? `  ${name}: nothing it installs changed upstream; look on our side`
+        : changed.length === 0 ? `  ${name}: no package its record follows changed upstream; look on our side first`
           : `  ${name}: ${changed.map((change) => `${change.name} ${change.before.join(', ') || '(none)'} → ${change.after.join(', ') || '(none)'}`).join('; ')}`);
     }
   }
