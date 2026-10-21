@@ -64,7 +64,8 @@ await launchResident({
   startArgs: { storage: { facet: FACET, grant: 0 } },
 });
 
-const seen = () => `calls ${JSON.stringify(handle.log.calls)}, grants ${grants}, stdout ${JSON.stringify(handle.log.stdout)}, exit ${JSON.stringify(handle.log.exit)}`;
+const live = () => ['__nimbusPendingTimers', '__nimbusPendingOps', '__nimbusInputHandles', '__nimbusOpenSockets'].map((name) => `${name}=${typeof globalThis[name] === 'number' ? globalThis[name] : (globalThis[name]?.size ?? 'none')}`).join(' ');
+const seen = () => `calls ${JSON.stringify(handle.log.calls)}, grants ${grants}, live ${live()}, stdout ${JSON.stringify(handle.log.stdout)}, exit ${JSON.stringify(handle.log.exit)}`;
 await until(() => handle.log.exit !== null, 'the process ends', 10_000).catch((error) => { throw new Error(`${error.message}: ${seen()}`); });
 assert.ok(wrote && grants > 0, `the pushed bytes needed a grant after the read's session call, the case this pins: ${seen()}`);
 assert.match(handle.log.stdout, new RegExp(`^READ ${SIZE}$`, 'm'), `the read is answered before the process ends: ${seen()}`);
