@@ -108,8 +108,8 @@ try {
       assert.equal(fields(await failure(box.files.mkdir(`${dir}/private`, {}))).code, 'EEXIST');
       await box.files.mkdir(`${dir}/deep/er/still`);
       assert.equal((await box.files.stat(`${dir}/deep/er/still`)).type, 'directory', 'none is mkdir -p');
-      // A mode as stat gives it, its type bits and all, is Node's: the permission bits are kept.
-      const { mode } = await box.files.stat(`${dir}/private`);
+      // A mode as Node's Stats give it, its type bits and all (S_IFDIR here), is Node's: the permission bits are kept.
+      const mode = 0o40000 | (await box.files.stat(`${dir}/private`)).mode;
       await box.files.mkdir(`${dir}/copy`, { mode });
       assert.equal((await box.files.stat(`${dir}/copy`)).mode & 0o7777, mode & 0o7777);
       await failure(box.files.mkdir(`${dir}/bad`, { mode: -1 }));
