@@ -15728,6 +15728,20 @@ function __nimbusTakeSignals() {
     if (!__nimbusProgramStopped) __nimbusTakeSignals();
   });
 }
+// Signals the run before this one caught while it waited for stdin: taken once this run is past that read.
+if (__nimbusReplay && typeof __nimbusReplay.heldSignals === "function") {
+  const held = __nimbusReplay.heldSignals();
+  if (held.length > 0) {
+    Promise.resolve(__nimbusReplay.untilBoundary()).then(async () => {
+      await __nimbusInboundBarrier(undefined, true);
+      __nimbusReplay.unreplayable("took " + held.join(", ") + ", sent from outside it, which a second run would not be sent again");
+      for (const sig of held) __nimbusSignalSelf(sig);
+    }).catch((e) => {
+      if (e instanceof __ProcessExit) return;
+      try { queueMicrotask(() => { throw e; }); } catch {}
+    });
+  }
+}
 __processMod.on("newListener", (event) => { if (__nimbusCatchable.includes(event)) __nimbusCatchSignals(event); });
 __processMod.on("removeListener", (event) => { if (__nimbusCatchable.includes(event)) __nimbusCatchSignals(null); });
 // Node's process reads as one: Object.prototype.toString gives "[object

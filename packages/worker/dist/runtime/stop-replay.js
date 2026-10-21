@@ -358,6 +358,17 @@ const __nimbusStopReplay = (() => {
     effect,
     // The signals its program catches now, comma-joined (node-shims __nimbusCatchSignals).
     catches(names) { if (run) run.catches = "" + names; },
+    // The signals the run before it caught while it waited (ReplayLaunch.signals): its program takes them past the read.
+    heldSignals() {
+      const sent = run && run.replay && run.replay.signals;
+      const out = [];
+      if (!sent || typeof sent.length !== "number") return out;
+      for (let i = 0; i < sent.length && i < 64; i++) {
+        const name = sent[i];
+        if (typeof name === "string" && name.length <= 16 && ReflectApply(StringCharCodeAt, name, [0]) === 83) out[out.length] = name;
+      }
+      return out;
+    },
     begin(launch) {
       const replay = launch.replay || null;
       const ctxAbort = launch.abort || null;

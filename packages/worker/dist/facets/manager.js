@@ -7252,7 +7252,9 @@ export class FacetManager {
         const back = before.chunks.map((data) => ({ data, ended: false }));
         channel.unread(back.concat(input.packets));
         held.give(before.bytes + input.bytes);
-        return { next: { replay, stdinWhole: input.ended, stdinAtLeast: before.bytes + input.bytes } };
+        // What it caught while it waited, the next run takes past its read.
+        const next = input.caught.length > 0 ? { ...replay, signals: input.caught } : replay;
+        return { next: { replay: next, stdinWhole: input.ended, stdinAtLeast: before.bytes + input.bytes } };
     }
     /**
      * The input a stopped run's read waits for, taken off its channel: until
@@ -7267,10 +7269,8 @@ export class FacetManager {
         let resize;
         let ended = false;
         // A signal its program catches (its handler's, catchSignals) waits for it, as Node runs a handler once a
-        // synchronous read returns: the run that resumes takes it. Any other ends the wait.
+        // synchronous read returns: the run that resumes takes it past the read (ReplayLaunch.signals). Any other ends the wait.
         const caught = [];
-        const caughtBack = () => { for (const sent of caught.splice(0))
-            this.processes.deliverSignal(pid, sent); };
         const aborted = new Promise((resolve) => {
             if (signal.aborted)
                 resolve('aborted');
@@ -7314,8 +7314,7 @@ export class FacetManager {
         const packets = pieces.finish().map((data) => ({ data, ended: false }));
         if (resize)
             packets.push({ data: new Uint8Array(0), ended: false, resize });
-        caughtBack();
-        return { packets, bytes: pieces.bytes, ended };
+        return { packets, bytes: pieces.bytes, ended, caught };
     }
     /**
      * The signals a stopped run's program had said it catches (its stop
