@@ -64,7 +64,11 @@ export declare function oneShotPoolOptions(spec: OneShotPoolSpec, network: Works
 declare function answerSchema<R>(): z.ZodDiscriminatedUnion<[z.ZodObject<{
     ok: z.ZodLiteral<true>;
     value: z.ZodCustom<R, R>;
-    loadMs: z.ZodNullable<z.ZodNumber>;
+    call: z.ZodNullable<z.ZodObject<{
+        cold: z.ZodBoolean;
+        loadMs: z.ZodNumber;
+        callMs: z.ZodNumber;
+    }, z.core.$strip>>;
 }, z.core.$strip>, z.ZodObject<{
     ok: z.ZodLiteral<false>;
     message: z.ZodString;

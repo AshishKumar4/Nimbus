@@ -293,8 +293,8 @@ export interface FacetCallTime {
 }
 /** The last facet calls `ctx`'s pools made, oldest first: what a launch's phases cost (`/api/_diag/session`). */
 export declare function recentFacetCalls(ctx: object): FacetCallTime[];
-/** A facet call `ctx` made, which `began` then, cold when its worker's code took `loadMs` to read. */
-export declare function noteFacetCall(ctx: object, tag: string, loadMs: number | null, began: number): void;
+/** `call` in `ctx`'s record of facet calls: one a pool of its made, or one its session's peer ran for it, as the peer timed it. */
+export declare function recordFacetCall(ctx: object, call: FacetCallTime): void;
 /**
  * Nimbus-scoped parallel dispatch over `env.LOADER`. Tasks are pure
  * functions whose last argument is an `env` object containing the

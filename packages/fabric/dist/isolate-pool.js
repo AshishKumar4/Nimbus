@@ -148,8 +148,11 @@ export function recentFacetCalls(ctx) {
     }
     return calls;
 }
-/** A facet call `ctx` made, which `began` then, cold when its worker's code took `loadMs` to read. */
-export function noteFacetCall(ctx, tag, loadMs, began) {
+function noteFacetCall(ctx, tag, loadMs, began) {
+    recordFacetCall(ctx, { tag, cold: loadMs !== null, loadMs: loadMs ?? 0, callMs: Date.now() - began, at: began });
+}
+/** `call` in `ctx`'s record of facet calls: one a pool of its made, or one its session's peer ran for it, as the peer timed it. */
+export function recordFacetCall(ctx, call) {
     let ring = callsByCtx.get(ctx);
     if (ring === undefined) {
         ring = { slots: Array.from({ length: FACET_CALLS_KEPT }, () => ({ tag: '', cold: false, loadMs: 0, callMs: 0, at: 0 })), next: 0, count: 0 };
@@ -158,11 +161,11 @@ export function noteFacetCall(ctx, tag, loadMs, began) {
     const slot = ring.slots[ring.next];
     if (slot === undefined)
         return;
-    slot.tag = tag;
-    slot.cold = loadMs !== null;
-    slot.loadMs = loadMs ?? 0;
-    slot.callMs = Date.now() - began;
-    slot.at = began;
+    slot.tag = call.tag;
+    slot.cold = call.cold;
+    slot.loadMs = call.loadMs;
+    slot.callMs = call.callMs;
+    slot.at = call.at;
     ring.next = (ring.next + 1) % FACET_CALLS_KEPT;
     ring.count = Math.min(FACET_CALLS_KEPT, ring.count + 1);
 }
