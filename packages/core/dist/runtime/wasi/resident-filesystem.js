@@ -93,6 +93,15 @@ const DESCRIPTOR_CALLS = new Set(['read', 'write', 'close', 'fstat', 'dup', 'see
  * would begin waiting on the session, before anything it would have done.
  */
 const NOT_NOW = Symbol('not now');
+/** The calls the session refuses on a directory (EISDIR): those for a file's bytes, that write one, or remove one as a file. */
+const REFUSED_ON_A_DIRECTORY = new Set(['readFile', 'readRange', 'writeFile', 'writeRange', 'truncate', 'unlink', 'copyFile', 'contentKey']);
+/** Whether the session refuses `syscall` with `args` on a directory: an open is refused only where it makes, writes or empties the file. */
+function refusesADirectory(syscall, args) {
+    if (syscall !== 'open')
+        return REFUSED_ON_A_DIRECTORY.has(syscall);
+    const flags = args[1];
+    return flags !== undefined && flags.directory !== true && (flags.write === true || flags.create === true || flags.truncate === true || flags.append === true);
+}
 const notNow = () => { throw NOT_NOW; };
 /** A bridge's calls with no synchronous form (RuntimeSynchronousFs). */
 const NO_SYNCHRONOUS_FORM = new Set(['synchronous', 'subscribe', 'writeStream', 'writeBatch', 'writeFileFrom', 'acquire', 'copyTree', 'gateLaunch', 'awaitRecall']);
@@ -909,7 +918,7 @@ export function residentFilesystem(session, resident, delegation) {
             return entry;
         if (now)
             notNow();
-        throw notResident(syscall, handleId);
+        throw notResident(syscall, [handleId]);
     };
     const heldOpen = (handle) => ({ ...handle, stat: statOf(identified(handle.id, 'open')) });
     fs.access = (path, mode) => answer('access', () => after(resolve(path, true), (key) => {
@@ -1642,18 +1651,20 @@ export function residentFilesystem(session, resident, delegation) {
     /**
      * What a call that needed the session is told when it must answer now:
      * the name's own state where this view knows it, as the session would say
-     * it (a directory, a name the process may not read); else EAGAIN, naming
-     * what is not resident here.
+     * it to this call (a directory to a call for a file's bytes or that makes
+     * one, a name the process may not read); else EAGAIN, naming what is not
+     * resident here.
      */
-    const notResident = (syscall, target) => {
+    const notResident = (syscall, args) => {
         counts.notResident++;
+        const target = args[0];
         const path = typeof target === 'number'
             ? (holder?.owns(target) ? '/' + holder.keyOf(target) : String(target))
             : typeof target === 'string' || (typeof target === 'object' && target !== null && 'path' in target) ? pathOf(target) : '';
         if (typeof target === 'string' && !target.split('/').includes('..')) {
             const walked = walkOnce('', keyOf(target), true);
             const entry = typeof walked === 'string' ? entryAt(walked) : undefined;
-            if (entry?.type === 'directory')
+            if (entry?.type === 'directory' && refusesADirectory(syscall, args))
                 return fsError('EISDIR', syscall, target);
             if (entry && !modeAllows(entry, 4, store.cred))
                 return fsError('EACCES', syscall, target);
@@ -1679,7 +1690,7 @@ export function residentFilesystem(session, resident, delegation) {
             }
             catch (error) {
                 if (error === NOT_NOW)
-                    throw notResident(name, args[0]);
+                    throw notResident(name, args);
                 throw error;
             }
             finally {
