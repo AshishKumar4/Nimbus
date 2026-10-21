@@ -20,7 +20,7 @@ import { S_IFMT } from '../vfs/vfs.js';
 import { nameDec } from '../_shared/bytes.js';
 import { invalidArgType, invalidArgValue, nodeError, nodeSystemError } from '../_shared/node-error.js';
 import { O_ACCMODE, O_APPEND, O_CREAT, O_DIRECTORY, O_EXCL, O_NOFOLLOW, O_RDONLY, O_RDWR, O_SYNC, O_TRUNC, O_WRONLY, nodeOwnerId, parseFileMode, stringToFlags, validateInt32, } from '../_shared/node-arguments.js';
-import { lacks, runAsync, runSync, step } from './drive.js';
+import { lacks, runAsync, runSync, step, withFields } from './drive.js';
 /**
  * Node's Stats for a filesystem stat: its identity, links, owner, mode and
  * times as the filesystem has them (no birth time is kept: ctime stands in),
@@ -62,13 +62,21 @@ function toNodeStat(stat) {
 function codedError(error) {
     return isVfsError(error) || (error instanceof Error && Reflect.get(error, 'code') !== undefined);
 }
-/** A path argument as Node takes one: a string, a Buffer's text, or a file: URL's path (decoded; another scheme is ERR_INVALID_URL_SCHEME). */
+/**
+ * A path argument as Node takes one: a string, a Buffer's text, or a file:
+ * URL's path (decoded; another scheme is ERR_INVALID_URL_SCHEME). Anything
+ * else is ERR_INVALID_ARG_TYPE, as Node's argument check says it.
+ */
 function pathText(p) {
     if (typeof p === 'string')
         return p;
     // By shape, not by class: a program's URL or Buffer may be another realm's.
     if (ArrayBuffer.isView(p))
         return nameDec.decode(p);
+    const url = p;
+    if (typeof url !== 'object' || url === null || typeof Reflect.get(url, 'href') !== 'string' || typeof Reflect.get(url, 'protocol') !== 'string') {
+        throw invalidArgType('path', ['string', 'Buffer', 'URL'], url);
+    }
     if (p.protocol !== 'file:')
         throw nodeError(TypeError, 'ERR_INVALID_URL_SCHEME', 'The URL must be of scheme file');
     return fileURLToPath(p.href);
@@ -168,6 +176,21 @@ export function createNodeFs(faces, { cwd, stdin, reachStreams }) {
     // with fs/promises and anything else the process opens. Node's 0, 1 and 2
     // are its standard streams, so a descriptor numbers the process's 1 as 3.
     const STDIO = 3;
+    /** `stepping`'s failure as an open's: a path's truncate fails as the opening of its file would. */
+    function* asOpen(stepping) {
+        try {
+            return yield* stepping;
+        }
+        catch (error) {
+            if (!(error instanceof Error) || errnoCodeOf(error) === undefined || Reflect.get(error, 'syscall') === 'open')
+                throw error;
+            const syscall = Reflect.get(error, 'syscall');
+            throw withFields(error, (fields, message) => {
+                fields.syscall = 'open';
+                return typeof syscall === 'string' ? message.replace(`, ${syscall}`, ', open') : message;
+            });
+        }
+    }
     /** `fd`'s call `syscall` on the process's descriptor: EBADF as Node says it, for no descriptor or one without the right. */
     function* onDescriptor(fd, syscall, run) {
         if (!Number.isSafeInteger(fd) || fd < STDIO)
@@ -306,7 +329,7 @@ export function createNodeFs(faces, { cwd, stdin, reachStreams }) {
      */
     function* rmOp(path, options) {
         // With force, a name gone by the look or by the removal is no error, as in Node's rimraf.
-        const gone = (e) => options?.force === true && isVfsError(e) && e.code === 'ENOENT';
+        const gone = (e) => options?.force === true && errnoCodeOf(e) === 'ENOENT';
         let stat;
         try {
             stat = yield* lstatOp(path);
@@ -490,12 +513,16 @@ export function createNodeFs(faces, { cwd, stdin, reachStreams }) {
         const abs = at.abs;
         const pathTruncates = yield* step('open', at, (f) => f.truncate !== undefined);
         if (pathTruncates) {
+            // As the file's opening for writing would fail, first, and as open's: then its length is checked, then it is cut.
+            const stat = yield* asOpen(step('open', at, (f) => f.stat(abs)));
+            if (stat.type === 'directory')
+                throw fsError('EISDIR', 'open', at.given);
             const length = lengthOf(len);
-            yield* step('open', at, (f) => {
+            yield* asOpen(step('open', at, (f) => {
                 if (f.truncate === undefined)
                     throw lacks('open', at.given);
                 return f.truncate(abs, length);
-            });
+            }));
             return;
         }
         const fd = yield* step('open', at, (f) => {
@@ -519,15 +546,19 @@ export function createNodeFs(faces, { cwd, stdin, reachStreams }) {
             });
         }
     }
-    /** symlink(2): the link at `path` holds `target` as given (a relative target stays relative, read from the link's directory). */
+    /**
+     * symlink(2): the link at `path` holds `target` as given (a relative target
+     * stays relative, read from the link's directory). Its failure names the
+     * target, then the link, as Node's does.
+     */
     function* symlinkOp(target, path) {
         const text = pathText(target);
         const at = namedPath(cwd, path);
-        yield* step('symlink', at, (f) => {
+        yield* step('symlink', { abs: text, given: text }, (f) => {
             if (f.symlink === undefined)
-                throw lacks('symlink', at.given);
+                throw lacks('symlink', text, at.given);
             return f.symlink(text, at.abs);
-        });
+        }, at);
     }
     /** readlink(2): the link's text in `encoding` (UTF-8 by default), or its bytes with `encoding: 'buffer'`. */
     function* readlinkOp(path, options) {

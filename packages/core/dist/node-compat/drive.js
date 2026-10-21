@@ -9,17 +9,31 @@
  */
 import { fsError } from '../vfs/vfs-error.js';
 import { syncValue } from '../vfs/vfs.js';
-/** `error`, a failure of a call on `path` (and `dest`), naming them as its caller gave them. */
+/**
+ * `error`, a failure of a call on `path` (and `dest`), naming them as its
+ * caller gave them: a new error with its fields, the face's own (which it may
+ * share or have frozen) its cause and left as it is.
+ */
 function asGiven(error, path, dest) {
-    if (!(error instanceof Error))
+    const renamed = [['path', path], ['dest', dest]];
+    if (!(error instanceof Error) || !renamed.some(([field, named]) => named !== undefined && named.given !== named.abs && Reflect.get(error, field) === named.abs)) {
         return error;
-    for (const [field, named] of [['path', path], ['dest', dest]]) {
-        if (named === undefined || named.given === named.abs || Reflect.get(error, field) !== named.abs)
-            continue;
-        Reflect.set(error, field, named.given);
-        error.message = error.message.split(`'${named.abs}'`).join(`'${named.given}'`);
     }
-    return error;
+    return withFields(error, (fields, message) => {
+        for (const [field, named] of renamed) {
+            if (named === undefined || fields[field] !== named.abs)
+                continue;
+            fields[field] = named.given;
+            message = message.split(`'${named.abs}'`).join(`'${named.given}'`);
+        }
+        return message;
+    });
+}
+/** A new error with `error`'s own fields and message as `change` makes them; `error` is its cause. */
+export function withFields(error, change) {
+    const fields = { ...error };
+    const message = change(fields, error.message);
+    return Object.assign(new Error(message, { cause: error }), fields);
 }
 /**
  * The synchronous face while an operation is answered now: its steps call
@@ -75,8 +89,8 @@ function* waitFor(syscall, path, call, dest) {
     return slot.answer.value;
 }
 /** ENOSYS: the filesystem has no `syscall`. */
-export function lacks(syscall, path) {
-    return fsError('ENOSYS', syscall, path);
+export function lacks(syscall, path, dest) {
+    return fsError('ENOSYS', syscall, path, dest);
 }
 /** `op` answered now: each of its steps calls `files` where it stands. */
 function answerNow(op, files) {

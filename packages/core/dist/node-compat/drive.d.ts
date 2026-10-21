@@ -10,6 +10,8 @@ export interface Step {
     readonly path: Named | undefined;
     later(files: FilesFace<'async'>): Promise<void>;
 }
+/** A new error with `error`'s own fields and message as `change` makes them; `error` is its cause. */
+export declare function withFields(error: Error, change: (fields: Record<string, unknown>, message: string) => string): Error;
 /** An operation: the steps it makes, and what it answers. */
 export type Op<T> = Generator<Step, T, void>;
 /** What a body's `yield*` of a step takes: its answer, now, or the step it waits for. */
@@ -22,7 +24,7 @@ export type Stepping<T> = Iterable<Step, T, void>;
  */
 export declare function step<T>(syscall: string, path: Named | undefined, call: (files: FilesFace<'sync'> | FilesFace<'async'>) => T | Promise<T>, dest?: Named): Stepping<T>;
 /** ENOSYS: the filesystem has no `syscall`. */
-export declare function lacks(syscall: string, path?: string): Error;
+export declare function lacks(syscall: string, path?: string, dest?: string): Error;
 /**
  * `op` as its `*Sync` form runs it (`name`, Node's name of that form). With
  * no synchronous face its first step throws EAGAIN, naming the step's
