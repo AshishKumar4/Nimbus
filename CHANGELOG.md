@@ -12,17 +12,16 @@ published independently in the `@nimbus-sh` npm scope.
   the kernel's, mode 0644, so every account on the box could read it. Now
   each image belongs to the uid its process runs as, mode 0400, in a
   directory per uid (`/.nimbus/process-images/<uid>`), as are the wasm
-  images Nimbus stages from a program's code (`/.nimbus/inline-wasm/<uid>`)
-  and a durable application's image (`/.nimbus/images`). The first start
-  after the upgrade closes what earlier releases left open: their process
-  images go, a durable application's blobs become the kernel's alone, and
-  a staged wasm image becomes its durable application's uid's (one nothing
-  boots from goes). Two accounts that run the same program now keep a copy
-  each. Copies already taken in a snapshot, an export or a clone are not
-  changed.
-
-## 2026-10-21: platform 0.15.0, core 0.26.0, fabric 0.21.0, worker 0.24.0, sdk 0.20.0, react 0.4.2, cli 0.2.11, loom 0.3.4, create-nimbus-app 0.2.7 (config 0.3.2 and the runtimes unchanged)
-
+  images Nimbus stages from a program's code (`/.nimbus/inline-wasm/<uid>`).
+  A durable application's blobs (`/.nimbus/images`), which applications of
+  any uid share by content and only the kernel reads, are the kernel's
+  alone. The first start after the upgrade closes what earlier releases
+  left open: their process images go, durable blobs become the kernel's, and
+  a staged wasm image is copied for each uid whose durable application
+  boots from it (the application is written again to read its copy); one
+  nothing boots from goes. Two accounts that run the same program now keep
+  a copy each. Copies already taken in a snapshot, an export or a clone are
+  not changed.
 - Security: every session trusts the TLS roots this deployment serves, at `/proc/nimbus/ca-certificates.crt` (read-only, generated from the build as the rest of /proc is), and CPython's and Ruby's OpenSSL read them through `SSL_CERT_FILE` unless a program names its own. The bundle is Mozilla's roots as of 2026-10-20 (curl.se's extract, pinned by sha256), which no longer trusts emSign ECC Root CA - G3 and so nothing on a path to the eMudhra intermediates whose keys were found compromised that day. Before, CPython verified against a copy staged with its runtime (Mozilla's roots of 2026-07-16), which accepted certificates those intermediates issued for any name, and a session kept its copy until it reinstalled the runtime. Updating the roots is now `bun scripts/update-ca-certificates.mjs <date> <sha256>` and a deploy.
 - Fixed: listing a session's processes (`listProcesses`,
   `GET /api/processes`) waits until each dev server its previous

@@ -32,6 +32,7 @@ import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { base64, base64Decode, sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
 import { storeContentBlob, type ImageBlobStore } from '@nimbus-sh/fabric/image-store.js';
 import { readContentBlob, ResidentCodeSpecSchema } from '@nimbus-sh/fabric/process-fabric.js';
+import { ensureKernelStoreRoot } from './kernel-store-root.js';
 import { z } from 'zod/v4';
 import type { ResolvedWorkerLaunch, WorkerRecipe } from './manager.js';
 
@@ -55,13 +56,32 @@ const ApplicationImageSchema = z.object({
   startArgs: z.json().optional(),
 });
 
-/** The session's image disk as the kernel, for work no process does: an earlier release's images rewritten. */
-function kernelImageBlobs(vfs: SqliteVFS): ImageBlobStore {
+/** A durable blob's mode: the kernel's alone. */
+export const DURABLE_IMAGE_MODE = 0o400;
+
+/**
+ * The durable store's disk, as the kernel. Its blobs are shared by content
+ * across every durable application of the session, whichever uid it runs
+ * as, and only the kernel reads them (resolveDurableWorkerImage): each is
+ * the kernel's alone, and one not left so (an earlier release's, readable by
+ * every account) is written again, never written over. Only below the
+ * kernel's own store root (ensureKernelStoreRoot).
+ */
+export function kernelImageBlobs(vfs: SqliteVFS): ImageBlobStore {
   const kernel = vfs.as(CRED_KERNEL);
+  const stat = (path: string) => (kernel.exists(path) ? kernel.lstat(path) : null);
+  ensureKernelStoreRoot({ stat, mkdir: (path, mode) => kernel.mkdir(path, { mode }) });
+  const conforming = (path: string): number | null => {
+    const found = stat(path);
+    return found?.type === 'file' && found.uid === CRED_KERNEL.uid && (found.mode & 0o777) === DURABLE_IMAGE_MODE ? found.size : null;
+  };
   return {
-    mkdirp: (dir) => kernel.mkdir(dir, { recursive: true, mode: 0o755 }),
-    sizeOf: (path) => (kernel.exists(path) ? kernel.stat(path).size : null),
-    writeFile: (path, bytes) => kernel.writeFile(path, bytes),
+    mkdirp: (dir) => kernel.mkdir(dir, { recursive: true, mode: 0o700 }),
+    sizeOf: conforming,
+    writeFile: (path, bytes) => {
+      if (stat(path) !== null && conforming(path) === null) kernel.unlink(path);
+      kernel.writeFile(path, bytes, { mode: DURABLE_IMAGE_MODE });
+    },
     writeRange: (path, offset, bytes) => kernel.writeRange(path, offset, bytes),
     list: (dir) => kernel.readdir(dir).map((entry) => entry.name),
     unlink: (path) => kernel.unlink(path),
@@ -109,6 +129,28 @@ function jsonOrNull(text: string): unknown {
   catch { return null; }
 }
 
+type ApplicationImage = z.infer<typeof ApplicationImageSchema>;
+
+/** `application`, written again as `edit` changes it; answers the new application digest. */
+async function rewriteApplication(vfs: SqliteVFS, application: string, edit: (image: ApplicationImage) => ApplicationImage): Promise<string> {
+  const kernel = vfs.as(CRED_KERNEL);
+  const bytes = await readContentBlob({ readFile: (path: string) => kernel.readFile(path) }, imagePath(application), application);
+  const image = edit(ApplicationImageSchema.parse(JSON.parse(new TextDecoder().decode(bytes))));
+  // The members written as persistDurableWorkerImage writes them, so the
+  // digest is what a launch with these inputs writes today.
+  const payload = JSON.stringify({
+    modules: image.modules,
+    env: image.env,
+    vfsWasmModules: image.vfsWasmModules ?? null,
+    ...(image.vfsTextModules !== undefined ? { vfsTextModules: image.vfsTextModules } : {}),
+    ...(image.mainModule !== undefined ? { mainModule: image.mainModule } : {}),
+    ...(image.startArgs !== undefined ? { startArgs: image.startArgs } : {}),
+  });
+  const blobs = kernelImageBlobs(vfs);
+  blobs.mkdirp(DURABLE_IMAGE_DIR);
+  return (await storeContentBlob(blobs, payload, imagePath)).digest;
+}
+
 /**
  * `application`, written again without an environment: what every process
  * can read holds none (ask 62). It keeps no facts to build an interpreter's
@@ -116,29 +158,22 @@ function jsonOrNull(text: string): unknown {
  * relaunch runs with the host's answer as it is (the session's keeping holds
  * that whole environment). Answers the new application digest.
  */
-export async function rewriteWithoutEnvironment(vfs: SqliteVFS, application: string): Promise<string> {
-  const kernel = vfs.as(CRED_KERNEL);
-  const bytes = await readContentBlob({ readFile: (path: string) => kernel.readFile(path) }, imagePath(application), application);
-  const { env: _env, startArgs, ...rest } = ApplicationImageSchema.parse(JSON.parse(new TextDecoder().decode(bytes)));
-  const held = HeldUserEnvSchema.safeParse(startArgs);
-  let kept: unknown = startArgs;
-  if (held.success) {
+export function rewriteWithoutEnvironment(vfs: SqliteVFS, application: string): Promise<string> {
+  return rewriteApplication(vfs, application, ({ startArgs, ...rest }) => {
+    const held = HeldUserEnvSchema.safeParse(startArgs);
+    if (!held.success) return { ...rest, env: null, startArgs };
     const { userEnv: _userEnv, ...others } = held.data;
-    kept = others;
-  }
-  // The members written as persistDurableWorkerImage writes them, so the
-  // digest is what a launch with these inputs writes today.
-  const payload = JSON.stringify({
-    modules: rest.modules,
-    env: null,
-    vfsWasmModules: rest.vfsWasmModules ?? null,
-    ...(rest.vfsTextModules !== undefined ? { vfsTextModules: rest.vfsTextModules } : {}),
-    ...(rest.mainModule !== undefined ? { mainModule: rest.mainModule } : {}),
-    ...(kept !== undefined ? { startArgs: kept } : {}),
+    return { ...rest, env: null, startArgs: others };
   });
-  const blobs = kernelImageBlobs(vfs);
-  blobs.mkdirp(DURABLE_IMAGE_DIR);
-  return (await storeContentBlob(blobs, payload, imagePath)).digest;
+}
+
+/** `application`, written again with each wasm module path in `moved` read from where it moved. */
+export function rewriteWasmPaths(vfs: SqliteVFS, application: string, moved: ReadonlyMap<string, string>): Promise<string> {
+  return rewriteApplication(vfs, application, (image) => ({
+    ...image,
+    vfsWasmModules: image.vfsWasmModules === null || image.vfsWasmModules === undefined ? image.vfsWasmModules
+      : Object.fromEntries(Object.entries(image.vfsWasmModules).map(([name, path]) => [name, moved.get(path) ?? path])),
+  }));
 }
 
 /** Remove only the owner's blobs that no other retained recipe references. */

@@ -169,6 +169,7 @@ import {
 } from '../runtime/staged-bindings.js';
 import {
   encodeCodePack,
+  PROCESS_IMAGE_DIR,
   ProcessFabric,
   ProcessHostLost,
   ResidentProcessHandle,
@@ -196,10 +197,13 @@ import {
 } from './durable-slots.js';
 import {
   DURABLE_IMAGE_DIR,
+  DURABLE_IMAGE_MODE,
+  kernelImageBlobs,
   persistDurableWorkerImage,
   readStoredImages,
   resolveDurableWorkerImage,
   purgeDurableWorkerImages,
+  rewriteWasmPaths,
   rewriteWithoutEnvironment,
   unlinkDurableImages,
 } from './durable-images.js';
@@ -5904,6 +5908,80 @@ export class FacetManager {
   }
 
   /**
+   * The images earlier releases left readable by every account, each made
+   * one principal's, once per session, before anything of it is re-driven or
+   * read. An image holds what its process could read:
+   * - a process image at the top of PROCESS_IMAGE_DIR (each uid's are in a
+   *   directory of its own now): unlinked, as its launch writes it again;
+   * - a durable application's blob (DURABLE_IMAGE_DIR): the kernel's alone,
+   *   as kernelImageBlobs leaves the ones it writes;
+   * - a wasm image staged at the top of INLINE_WASM_DIR: copied into the
+   *   directory of each uid whose durable application boots from it, that
+   *   application written again to read it there (its rows and owner index
+   *   naming the new blob), then unlinked, as a launch stages it again.
+   * Each step is safe to repeat, until the last marks it done. A filesystem
+   * snapshot or export taken before keeps what it held.
+   */
+  private async _closeEarlierImages(): Promise<void> {
+    if (await this.ctx.storage.get(EARLIER_IMAGES_CLOSED_KEY) === true) return;
+    const vfs = this.vfs;
+    if (vfs !== null) {
+      const kernel = vfs.as(CRED_KERNEL);
+      const files = (dir: string): string[] => (kernel.exists(dir)
+        ? kernel.readdir(dir).filter(({ name }) => kernel.lstat(`${dir}/${name}`).type === 'file').map(({ name }) => `${dir}/${name}`)
+        : []);
+      for (const path of files(PROCESS_IMAGE_DIR)) kernel.unlink(path);
+      if (kernel.exists(DURABLE_IMAGE_DIR)) kernel.chmod(DURABLE_IMAGE_DIR, 0o700);
+      for (const path of files(DURABLE_IMAGE_DIR)) {
+        kernel.chown(path, CRED_KERNEL.uid, CRED_KERNEL.gid);
+        kernel.chmod(path, DURABLE_IMAGE_MODE);
+      }
+      const wasmDir = stripLeadingSlashes(INLINE_WASM_DIR);
+      const earlier = new Set(files(wasmDir));
+      if (earlier.size > 0) {
+        const indexes = await this.ctx.storage.list<Array<{ runner: string; application: string }>>({ prefix: DURABLE_IMAGES_KEY_PREFIX });
+        const replaced = new Set<string>();
+        for (const [key, row] of await this.launchJournal.rows()) {
+          // A row with no credential is not re-driven (ResidentLaunchRecord.cred).
+          if (row.recipe.kind !== 'worker' || row.cred === undefined) continue;
+          const resolved = await resolveDurableWorkerImage(vfs, row.recipe);
+          const moved = new Map<string, string>();
+          for (const path of Object.values(resolved?.vfsWasmModules ?? {})) {
+            const from = stripLeadingSlashes(path);
+            if (!earlier.has(from)) continue;
+            const dir = `${wasmDir}/${row.cred.uid}`;
+            const to = `${dir}/${from.slice(wasmDir.length + 1)}`;
+            kernel.mkdir(dir, { recursive: true, mode: IMAGE_DIR_MODE });
+            kernel.writeFile(to, kernel.readFile(from), { mode: IMAGE_MODE });
+            kernel.chown(to, row.cred.uid, row.cred.gid);
+            moved.set(path, `/${to}`);
+          }
+          if (moved.size === 0) continue;
+          const old = row.recipe.image.application;
+          const application = await rewriteWasmPaths(vfs, old, moved);
+          replaced.add(old);
+          const recipe = { ...row.recipe, image: { runner: row.recipe.image.runner, application } };
+          await this.ctx.storage.put(key, { ...row, recipe });
+          const owner = residentOwner({ ...row, recipe });
+          const indexKey = `${DURABLE_IMAGES_KEY_PREFIX}${owner}`;
+          const index = indexes.get(indexKey);
+          if (owner !== undefined && index !== undefined) {
+            const repointed = index.map((image) => (image.application === old ? { runner: image.runner, application } : image));
+            indexes.set(indexKey, repointed);
+            await this.ctx.storage.put(indexKey, repointed);
+          }
+        }
+        // A blob written again that no row or index names any longer goes, and every earlier wasm image.
+        const named = new Set([...indexes.values()].flat().flatMap((image) => [image.runner, image.application]));
+        for (const row of (await this.launchJournal.rows()).values()) if (row.recipe.kind === 'worker') named.add(row.recipe.image.application);
+        unlinkDurableImages(vfs, [...replaced].filter((digest) => !named.has(digest)));
+        for (const path of earlier) kernel.unlink(path);
+      }
+    }
+    await this.ctx.storage.put(EARLIER_IMAGES_CLOSED_KEY, true);
+  }
+
+  /**
    * What releases before ask 62 kept of their processes' environments, once
    * per session, before anything of it is re-driven or read. Each record
    * moves its environment to where this host keeps environments
@@ -5921,55 +5999,6 @@ export class FacetManager {
    *   session is told how many look generated (legacy-images.ts).
    * A filesystem snapshot or export taken before keeps what it held.
    */
-  /**
-   * The images earlier releases left readable by every account, each made
-   * one principal's, once per session. An image holds what its process could
-   * read, as _imageBlobs leaves the ones it writes:
-   * - a durable application's blobs (DURABLE_IMAGE_DIR): the kernel's alone,
-   *   0400, as only the kernel reads them (resolveDurableWorkerImage);
-   * - a wasm image staged at the top of INLINE_WASM_DIR: the uid of each
-   *   durable application that boots from it, 0400, as that process reads
-   *   it; unlinked when none does, as a launch stages it again.
-   * Process images at the top of PROCESS_IMAGE_DIR go with the image store's
-   * sweep (ImageStore.ensureDir). A filesystem snapshot or export taken
-   * before keeps what it held.
-   */
-  private async _closeEarlierImages(): Promise<void> {
-    if (await this.ctx.storage.get(EARLIER_IMAGES_CLOSED_KEY) === true) return;
-    const vfs = this.vfs;
-    if (vfs !== null) {
-      const kernel = vfs.as(CRED_KERNEL);
-      const open = (path: string): boolean => {
-        const stat = kernel.lstat(path);
-        return stat.type === 'file' && (stat.mode & 0o077) !== 0;
-      };
-      if (kernel.exists(DURABLE_IMAGE_DIR)) {
-        for (const { name } of kernel.readdir(DURABLE_IMAGE_DIR)) {
-          if (open(`${DURABLE_IMAGE_DIR}/${name}`)) kernel.chmod(`${DURABLE_IMAGE_DIR}/${name}`, IMAGE_MODE);
-        }
-      }
-      const wasmDir = stripLeadingSlashes(INLINE_WASM_DIR);
-      if (kernel.exists(wasmDir)) {
-        const bootedBy = new Map<string, VfsCred>();
-        for (const { recipe, cred } of (await this.launchJournal.rows()).values()) {
-          // A row with no credential is not re-driven (ResidentLaunchRecord.cred).
-          if (recipe.kind !== 'worker' || cred === undefined) continue;
-          const resolved = await resolveDurableWorkerImage(vfs, recipe);
-          for (const path of Object.values(resolved?.vfsWasmModules ?? {})) bootedBy.set(stripLeadingSlashes(path), cred);
-        }
-        for (const { name } of kernel.readdir(wasmDir)) {
-          const path = `${wasmDir}/${name}`;
-          if (!open(path)) continue;
-          const cred = bootedBy.get(path);
-          if (cred === undefined) { kernel.unlink(path); continue; }
-          kernel.chown(path, cred.uid, cred.gid);
-          kernel.chmod(path, IMAGE_MODE);
-        }
-      }
-    }
-    await this.ctx.storage.put(EARLIER_IMAGES_CLOSED_KEY, true);
-  }
-
   private async _dropEnvironmentsAtRest(): Promise<void> {
     if (await this.ctx.storage.get(PROCESS_ENV_DROPPED_KEY) === true) return;
     const keeping = this.hooks.keepProcessEnv;
@@ -6299,6 +6328,12 @@ export class FacetManager {
    * kernel's umask), as POSIX has it, is what makes the read succeed for any
    * process by construction; the store itself decides nothing about modes.
    */
+  /** The session's filesystem, which a durable application's image is kept in (kernelImageBlobs). */
+  private _durableImageVfs(): SqliteVFS {
+    if (this.vfs === null) throw new Error('Nimbus: a durable application needs a session filesystem to keep its image');
+    return this.vfs;
+  }
+
   private _imageBlobs(pid: number): ImageBlobStore {
     if (!this.filesystem) {
       throw new Error(
@@ -10104,7 +10139,7 @@ export class FacetManager {
         // No environment: neither a binding env (refused above) nor the
         // process's own (storedStartArgs), as every process can read it.
         const image = opts.durable.image
-          ?? await persistDurableWorkerImage(this._imageBlobs(entry.pid), workerCode, {
+          ?? await persistDurableWorkerImage(kernelImageBlobs(this._durableImageVfs()), workerCode, {
             modules: opts.modules ?? {},
             vfsWasmModules: opts.vfsWasmModules,
             vfsTextModules: opts.vfsTextModules,

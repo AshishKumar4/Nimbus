@@ -8,11 +8,13 @@
 //      its code pack, the staged wasm) are uid 1000's, 0400. Uid 1001,
 //      reading every file of the session, finds the module's secret in none;
 //      the process reads its own images, as a peer host's boot does;
-//   2. what an earlier release left readable by every account is closed once,
-//      at the next instance's start: a durable application's blob becomes the
-//      kernel's alone; a wasm image at the top of the inline store becomes
-//      the uid of the durable application that boots from it, and one nothing
-//      boots from is gone. The application still relaunches.
+//   2. a durable application's blobs, shared by content across uids, stay
+//      the kernel's alone whoever's spawn writes them; and what an earlier
+//      release left readable by every account is closed once, at the next
+//      instance's start: its blobs become the kernel's, a process image at
+//      the top of the store goes, and a wasm image at the top of the inline
+//      store is copied for each uid whose durable application boots from it,
+//      the application written again to read its own copy. Both relaunch.
 //
 // Red before: images were the kernel's, 0644, in directories every account
 // could read.
@@ -115,39 +117,51 @@ function userSession() {
 // ── 2. what an earlier release left open is closed once ─────────────────────
 {
   const { session, kernel } = userSession();
+  const outsider = { uid: 1002, gid: 1002, groups: [1002], umask: 0o022 };
   const gen2 = instance(session, 1);
-  // An earlier release's wasm image at the top of the inline store, booted by a durable app, and one nothing boots from.
+  // An earlier release's wasm image at the top of the inline store, booted by
+  // two durable apps of two uids, and one nothing boots from.
   kernel.mkdir('.nimbus/inline-wasm', { recursive: true, mode: 0o755 });
   const booted = '.nimbus/inline-wasm/sha256-booted.wasm';
   const orphan = '.nimbus/inline-wasm/sha256-orphan.wasm';
   kernel.writeFile(booted, WASM, { mode: 0o644 });
   kernel.writeFile(orphan, WASM, { mode: 0o644 });
-  await gen2.manager.spawnWorker('export class NimbusProcess {}', 'durable app', '/home/user/app', {
-    vfsWasmModules: { 'note.wasm': `/${booted}` },
-    startArgs: { userCode: `print("${SECRET}")` },
-    durable: { owner: 'app:one' },
-  });
-  await until(() => gen2.starts.length === 1, 'the durable app to start');
-  // Its blobs as an earlier release left them: the kernel's, readable by every account.
-  for (const { name } of kernel.readdir('.nimbus/images')) {
-    kernel.chown(`.nimbus/images/${name}`, 0, 0);
-    kernel.chmod(`.nimbus/images/${name}`, 0o644);
+  for (const [owner, cred] of [['app:one', USER], ['app:two', OTHER]]) {
+    await gen2.manager.spawnWorker('export class NimbusProcess {}', owner, '/home/user/app', {
+      vfsWasmModules: { 'note.wasm': `/${booted}` },
+      startArgs: { userCode: `print("${SECRET}")` },
+      identity: { argv: [owner], cred },
+      durable: { owner },
+    });
   }
-  assert.ok(readableHolding(session.vfs, OTHER, SECRET).length > 0, 'the earlier release\'s files are open to another account');
+  await until(() => gen2.starts.length === 2, 'the durable apps to start');
+  const blobs = () => kernel.readdir('.nimbus/images').map(({ name }) => `.nimbus/images/${name}`);
+  for (const path of blobs()) {
+    const stat = kernel.lstat(path);
+    assert.deepEqual([stat.uid, stat.mode & 0o777], [0, 0o400], `${path}, written for two uids, is the kernel's alone`);
+  }
+  // As an earlier release left them: the blobs and a process image at the top of the store, readable by every account.
+  for (const path of blobs()) kernel.chmod(path, 0o644);
+  const earlierImage = `.nimbus/process-images/${'e'.repeat(64)}.js`;
+  kernel.writeFile(earlierImage, `const token = "${SECRET}";`, { mode: 0o644 });
+  assert.ok(readableHolding(session.vfs, outsider, SECRET).length > 0, 'the earlier release\'s files are open to another account');
   session.storage.delete(EARLIER_IMAGES_CLOSED_KEY);
 
   const gen3 = instance(session, 2);
   await gen3.manager.pumpResidentLaunches();
-  await until(() => gen3.starts.length === 1, 'the durable app to relaunch');
-  assert.deepEqual(readableHolding(session.vfs, OTHER, SECRET), [], 'another account reads the secret in no file of the session');
-  for (const { name } of kernel.readdir('.nimbus/images')) {
-    const stat = kernel.lstat(`.nimbus/images/${name}`);
-    assert.deepEqual([stat.uid, stat.mode & 0o777], [0, 0o400], `the durable blob ${name} is the kernel's alone`);
+  await until(() => gen3.starts.length === 2, 'both durable apps to relaunch, each reading its wasm image');
+  assert.deepEqual(readableHolding(session.vfs, outsider, SECRET), [], 'an outsider reads the secret in no file of the session');
+  for (const path of blobs()) {
+    const stat = kernel.lstat(path);
+    assert.deepEqual([stat.uid, stat.mode & 0o777], [0, 0o400], `the durable blob ${path} is the kernel's alone`);
   }
-  const wasm = kernel.lstat(booted);
-  assert.deepEqual([wasm.uid, wasm.mode & 0o777], [USER.uid, 0o400], 'the wasm image a durable app boots from is its uid\'s');
-  assert.equal(kernel.exists(orphan), false, 'one nothing boots from is gone');
-  console.log('  [2] an earlier release\'s open images are closed once, and the durable app relaunches');
+  for (const cred of [USER, OTHER]) {
+    const copy = kernel.lstat(`.nimbus/inline-wasm/${cred.uid}/sha256-booted.wasm`);
+    assert.deepEqual([copy.uid, copy.mode & 0o777], [cred.uid, 0o400], `uid ${cred.uid} boots from a copy of its own`);
+  }
+  assert.deepEqual([kernel.exists(booted), kernel.exists(orphan), kernel.exists(earlierImage)], [false, false, false],
+    'the shared wasm image, one nothing boots from, and the earlier process image are gone');
+  console.log('  [2] an earlier release\'s open images are closed once, a shared one copied per uid, and the durable apps relaunch');
 }
 
 console.log('process-image-privacy: a process\'s images are its principal\'s alone');
