@@ -514,8 +514,8 @@ artifact are public, so it redacts every credential it prints. A red run
 fails the workflow, and GitHub notifies the user who created it. Nothing
 opens an issue. The run names each package whose version changed since
 the last green run, read from that run's artifact. Each probe records its
-project's package.json (`a.record('manifest', …)`), and the canary resolves
-what it installs from the registry by Nimbus's npm rules. When none of
+project's package.json (`a.record('package.json', …)`), and the canary
+resolves what it installs from the registry by Nimbus's npm rules. When none of
 those packages changed, look on our side first. Run it now with
 `gh workflow run upstream-canary.yml`.
 

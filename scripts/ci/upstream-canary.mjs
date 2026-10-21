@@ -28,6 +28,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { readPackageJson } from '../../packages/core/src/_shared/npm-tree.ts';
 import { DEFERRED } from '../../tests/behavioral/_deferred.mjs';
 import { redactCredentials } from '../../tests/behavioral/_session-transport.mjs';
 import { missingBindings, npmPackument, readOnce } from './lib/binding-demand.mjs';
@@ -82,11 +83,17 @@ try {
 // Graded with the deferrals of these probes alone: another probe's would be red here for not running.
 const graded = gradeMatrix([rows && { tasks: [{ task: 'upstream probes', rows }] }], exceptions);
 
-// Each probe's install, from the package.json it recorded (its asserter's `manifest`).
-const manifests = Object.fromEntries((rows ?? []).flatMap((row) => {
-  const manifest = row.assertions?.find((result) => result.records?.manifest)?.records.manifest;
-  return manifest ? [[probeOf(row.name), manifest]] : [];
-}));
+// Each probe's install, from the package.json it recorded, read as npm reads it; or why it has none.
+const manifests = {};
+const unrecorded = {};
+for (const row of rows ?? []) {
+  const probe = probeOf(row.name);
+  if (!UPSTREAM_PROBES.includes(probe)) continue;
+  const text = row.assertions?.find((result) => result.records?.['package.json'] !== undefined)?.records['package.json'];
+  const manifest = typeof text === 'string' ? readPackageJson(text)?.manifest : null;
+  if (manifest) manifests[probe] = manifest;
+  else unrecorded[probe] = typeof text === 'string' ? 'its package.json is not a JSON object' : 'it recorded no package.json';
+}
 let installs = null;
 try {
   installs = await resolveInstalls(manifests, { packument });
@@ -129,7 +136,7 @@ if (status !== 0) {
     const changes = upstreamChanges(last.installs, record.installs);
     for (const name of red) {
       const changed = changes[name];
-      say(changed === undefined ? `  ${name}: it recorded no package.json, so this run has no install to compare`
+      say(changed === undefined ? `  ${name}: ${unrecorded[name]}, so this run has no install to compare`
         : changed === null ? `  ${name}: the last green run has no record of its install`
           : changed.length === 0 ? `  ${name}: no package its record follows changed upstream; look on our side first`
             : `  ${name}: ${changed.map((change) => `${change.name} ${change.before.join(', ') || '(none)'} → ${change.after.join(', ') || '(none)'}`).join('; ')}`);

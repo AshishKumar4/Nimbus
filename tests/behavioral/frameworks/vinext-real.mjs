@@ -20,7 +20,7 @@ try{
   await t.connect();await t.waitForPrompt(60000);
   await t.run(`mkdir -p ${APP}/app`,10000);
   for(const [name,text]of Object.entries(FILES))await t.run(heredocCommand(APP+'/'+name,text),10000);
-  a.record('manifest',JSON.parse(FILES['package.json']));
+  a.record('package.json',FILES['package.json']);
   const installed=await t.run(`cd ${APP} && npm install 2>&1`,400000);
   const ok=installed.exitCode===0;
   a.check('the Vinext 1.0 app installs',ok,tail(installed.output));
