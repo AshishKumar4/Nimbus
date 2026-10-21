@@ -86,7 +86,8 @@ await check('a signal given back when data won is queued once', async () => {
   const packet = await within(1000, reading);
   assert.equal(packet.signal, undefined, `data won: ${JSON.stringify(packet)}`);
   processes.parkSignals(pid);
-  processes.takeSignalsBack(pid);
+  // Taken back as the next run's first take does (before the take-back op, a take alone did).
+  processes.takeSignalsBack?.(pid);
   assert.equal(await within(1000, processes.nextSignal(pid, 50)), 'SIGTERM');
   assert.equal(await within(1000, processes.nextSignal(pid, 50)), null, 'once');
 });
