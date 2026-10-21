@@ -46,6 +46,7 @@ import { provisional as provisionalDecisions, type Desc, type HeldCell, type Ino
 import { owned } from './inode-fold.js';
 import type { W7Attrs } from '@nimbus-sh/platform/w7-frame.js';
 import { LINGER_MS, processFsClient, type ProcessFsClient, type ProcessFsGrant, type ProcessFsJournal, type ProcessFsOp, type ProcessFsSession } from '../../_shared/process-fs-client.js';
+import type { WaveTimers } from '@nimbus-sh/platform/wave-writer.js';
 
 /** Descriptors this holder opens are numbered below every session descriptor. */
 const FIRST_LOCAL_HANDLE = -1;
@@ -73,8 +74,10 @@ export interface HolderOptions {
   readonly isHomeRoot?: (key: string) => boolean;
   /** Told when what the holder decided changed the namespace the store shows (the barrier is owed after a send). */
   readonly sent?: () => void;
-  /** The clock files are stamped with. */
+  /** The clock files are stamped with, and its client runs on. */
   readonly now?: () => number;
+  /** The timers its client lingers and retries on (ProcessFsClientOptions.timers). */
+  readonly timers?: WaveTimers;
   /** Mutations in a subtree before it is taken (the client's GRANT_AFTER). */
   readonly grantAfter?: number;
   /** Inode numbers a first grant reserves (the client's GRANT_INOS). */
@@ -87,7 +90,11 @@ export interface HolderOptions {
    * and a change is counted toward taking a subtree only once one makes it.
    */
   readonly cannotWait?: () => boolean;
-  /** The process's live umask, for what it makes provisionally (a held subtree's grant carries the session's). */
+  /**
+   * The process's live umask: for what it makes provisionally (a held
+   * subtree's grant carries the session's), and stamped by its client on
+   * each call logged that makes a name and does not name one.
+   */
   readonly umask?: () => number;
 }
 
@@ -429,6 +436,8 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
   const client = processFsClient({
     session: options.session,
     now,
+    ...(options.timers === undefined ? {} : { timers: options.timers }),
+    ...(options.umask === undefined ? {} : { umask: options.umask }),
     ...(options.isHomeRoot === undefined ? {} : { isHomeRoot: options.isHomeRoot }),
     ...(options.grantAfter === undefined ? {} : { grantAfter: options.grantAfter }),
     ...(options.grantInos === undefined ? {} : { grantInos: options.grantInos }),

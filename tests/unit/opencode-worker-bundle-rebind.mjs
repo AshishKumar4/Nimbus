@@ -69,7 +69,7 @@ try {
   const program = 'export async function nimbusMain() {}\n';
   const parserSource = readFileSync(path.join(assetDir, OPENCODE_TUI_PARSER_WORKER), 'utf8');
   ({ dir } = await importOpencodeRunner({
-    mode: 'attached', program, env: { NIMBUS_ATTACHED_TTY: '1' },
+    mode: 'attached', program, terminal: { NIMBUS_ATTACHED_TTY: '1' },
     members: { [OPENCODE_TUI_PARSER_WORKER]: { js: parserSource } },
   }));
   const Worker = globalThis.Worker;

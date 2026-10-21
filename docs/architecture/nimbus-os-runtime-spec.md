@@ -172,6 +172,13 @@ Nimbus already has a real base:
   capabilities, and agent tools.
 - A runtime package manager with catalog install, runtime rehydration,
   command aliases, and install hints for missing commands.
+- `tsc` with no project TypeScript: tsrs (`@tsrs/wasm` 0.18.0-ts7.1.0-dev.20260929,
+  staged and sha256-pinned in the Worker's assets) runs as a one-shot WASI
+  process on the session's warm workers. Its file import (`tsrs_host.fs`) is
+  answered from the process's resident filesystem through JSPI, so it reads
+  and writes as every WASI guest does. A project's `node_modules/.bin/tsc`
+  wins; a native-binary `typescript` 7 is answered by tsrs, with a notice.
+  No `--watch`: the wasm build has none.
 - WASI `snapshot_preview1` coverage for arguments, environment, clocks,
   random, stdio, file descriptors, directory traversal, path operations,
   symlinks, minimal `path_link` coverage, file timestamps, `fd_allocate`,

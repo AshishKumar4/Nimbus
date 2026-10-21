@@ -19,12 +19,13 @@ import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { SessionFilesystem } from './session-filesystem.js';
 import type { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import { type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { type SessionReadyOptions, type SessionExecOptions, type SessionRunCodeOptions, type SessionDestroyOptions, type SessionDestroyResult, type SessionStartResult, type SessionProcess, type SessionPort, type SessionExposedApp, type SessionApp, type SessionAppTarget, type SessionExposeOptions, type SessionDurableAppOptions, type SessionTerminalSize, type SessionRuntimeInstallOptions, type SessionResult } from '@nimbus-sh/core/runtime/session-protocol.js';
+import { type SessionReadyOptions, type SessionExecOptions, type SessionRunCodeOptions, type SessionDestroyOptions, type SessionDestroyResult, type SessionStartResult, type SessionProcess, type SessionTerminal, type SessionPort, type SessionExposedApp, type SessionApp, type SessionAppTarget, type SessionExposeOptions, type SessionDurableAppOptions, type SessionTerminalSize, type SessionRuntimeInstallOptions, type SessionResult } from '@nimbus-sh/core/runtime/session-protocol.js';
 import { type PortVisibility } from './port-capability.js';
 import type { LongRunningWorkerSpawnOptions, ResidentAppSummary, ResidentIdentity, SpawnedWorker } from '../facets/manager.js';
 import { type GenerationContext } from '@nimbus-sh/fabric/generation.js';
 import { type TimerHost } from '@nimbus-sh/fabric/timers.js';
 import { type NimbusWorkspace } from '@nimbus-sh/core/workspace';
+import { type NamedTerminals } from './named-terminals.js';
 import { type ExecOutput, type ExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 import type { RuntimeManager } from '@nimbus-sh/core/runtime/runtime-manager.js';
 export interface ProgrammaticShell {
@@ -47,6 +48,8 @@ interface ProgrammaticViteServer {
 export interface ProgrammaticHost extends TimerHost {
     readonly runtimeManager: RuntimeManager;
     ensureRuntimeReady(): Promise<void>;
+    /** This incarnation's restore of the dev servers its previous one ran, their processes spawned again (session/dev-servers.ts). */
+    devServersRespawned(): Promise<void>;
     /** The destroy running (rpcDestroy), until it is answered. */
     destroying?: Promise<SessionDestroyResult> | null;
     _w1SessionDestroyed: boolean;
@@ -88,6 +91,8 @@ export interface ProgrammaticHost extends TimerHost {
         write(text: string): void;
         close(): void;
     }) | null;
+    /** The session's named terminals (named-terminals.ts); a host with no terminals has none. */
+    readonly terminals?: NamedTerminals;
     kernel?: unknown;
     childProcessManager?: ChildProcessManager | null;
     esbuildService?: unknown;
@@ -145,6 +150,24 @@ export declare function rpcEnsureRuntimes(self: ProgrammaticHost, specs: string[
 }[]>;
 export declare function rpcListRuntimes(self: ProgrammaticHost): Promise<SessionResult<'listRuntimes'>>;
 export declare function rpcListProcesses(self: ProgrammaticHost): Promise<SessionProcess[]>;
+/** What listing and closing a session's terminals asks of it. */
+export interface TerminalsHost {
+    ensureRuntimeReady(): Promise<void>;
+    readonly shell: {
+        getCwd(): string;
+        readonly foreground: string | null;
+    } | null;
+    readonly terminal?: {
+        readonly ws: WebSocket | null;
+    } | null;
+    readonly terminals: NamedTerminals;
+}
+/** The session's terminals: its own first (`name: null`), then the named ones by name. */
+export declare function rpcListTerminals(self: TerminalsHost): Promise<SessionTerminal[]>;
+/** Close the named terminal `name` (NamedTerminals.close): whether there was one. The session's own is not closed. */
+export declare function rpcCloseTerminal(self: TerminalsHost, name: string): Promise<{
+    closed: boolean;
+}>;
 export declare function rpcKillProcess(self: ProgrammaticHost, pid: number): Promise<{
     ok: boolean;
     pid: number;

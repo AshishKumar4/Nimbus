@@ -274,7 +274,7 @@ export async function launchResident({
   const generated = await generateLongRunningNodeCode(
     program,
     vfsState,
-    { cred: CRED, cwd, filename: `${cwd}/main.js`, dirname: cwd, env: processEnv, wasmImports, ...(argv ? { argv } : {}), ...(node ? { node } : {}) },
+    { cred: CRED, cwd, filename: `${cwd}/main.js`, dirname: cwd, wasmImports, ...(argv ? { argv } : {}), ...(node ? { node } : {}) },
     false,
     nodeFacetSources(generateShimsCode()),
   );
@@ -288,8 +288,9 @@ export async function launchResident({
   // The plan a resident launch is handed: data-plan.ts over the authority,
   // as the manager computes it, unless the test names one.
   const plan = dataPlan ?? (authority ? await residentDataPlan(authority, cwd, Object.keys(bundle)) : undefined);
-  const started = await proc.startProcess(cursor ? { vfsCursor: cursor, ...(plan ? { dataPlan: plan } : {}), ...startArgs } : startArgs);
-  return { proc, sql, started };
+  // The env in the start payload, as the manager hands it over: never in the generated source.
+  const started = await proc.startProcess({ env: processEnv, ...(cursor ? { vfsCursor: cursor, ...(plan ? { dataPlan: plan } : {}) } : {}), ...startArgs });
+  return { proc, sql, started, generated };
 }
 
 /** data-plan.ts over `authority` as the process's credential sees it. */

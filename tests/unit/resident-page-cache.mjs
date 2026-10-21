@@ -78,8 +78,8 @@ for (const backing of ['heap', 'sqlite']) {
   const size = 20 * P + 123;
   const { s, bytes } = session(size);
   store.admission.setStorage(undefined, s);
-  assert.equal(await store.lazy.bootLazy(s), true);
-  const view = store.lazy.namespaceView(s, 1, USER);
+  assert.equal(await store.view.bootLazy(s), true);
+  const view = store.view.namespaceView(s, 1, USER);
 
   // A first read fetches, in one batch; a second asks nothing.
   const first = await view.pages('home/user/big', 5, size, 2, 5);
@@ -102,7 +102,7 @@ for (const backing of ['heap', 'sqlite']) {
 
   // A new lazy boot starts from nothing: no page is held.
   assert.ok(store.pageHeld() > 0);
-  assert.equal(await store.lazy.bootLazy(s), true);
+  assert.equal(await store.view.bootLazy(s), true);
   assert.equal(store.pageHeld(), 0, `${backing}: a fresh boot holds no page`);
   assert.equal((await view.pages('home/user/big', 6, size, 3, 3)).fetched, 1);
 }
@@ -115,8 +115,8 @@ for (const backing of ['heap', 'sqlite']) {
   const size = 40 * P;
   const { s } = session(size);
   store.admission.setStorage(undefined, s);
-  await store.lazy.bootLazy(s);
-  const view = store.lazy.namespaceView(s, 1, USER);
+  await store.view.bootLazy(s);
+  const view = store.view.namespaceView(s, 1, USER);
   for (let part = 0; part < 8; part++) await view.pages('home/user/big', 5, size, part, part);
   assert.equal((await view.pages('home/user/big', 5, size, 0, 0)).fetched, 0, 'page 0 is held, and now the most recently used');
   for (let part = 8; part < 12; part++) await view.pages('home/user/big', 5, size, part, part);
@@ -135,8 +135,8 @@ for (const backing of ['heap', 'sqlite']) {
   const free = 8 * P;
   s.fsStorageGrant = async (_facet, want) => ({ granted: want, available: free });
   store.admission.setStorage({ facet: 'wasi-git-0', grant: 0 }, s);
-  await store.lazy.bootLazy(s);
-  const view = store.lazy.namespaceView(s, 1, USER);
+  await store.view.bootLazy(s);
+  const view = store.view.namespaceView(s, 1, USER);
   for (let part = 0; part < 12; part++) await view.pages('home/user/big', 5, size, part, part);
   const held = store.pageHeld();
   assert.ok(held > 0, 'pages are held');

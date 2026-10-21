@@ -23,7 +23,6 @@
  * assembly runs under the isolate's whole transient budget, so two never
  * overlap (assembleOpencodeFacetConfig).
  */
-import { z } from 'zod/v4';
 import { fetchNodeFacetSources } from '../runtime/node-shims-artifact.js';
 import { fetchSqliteWasmBytes } from '../runtime/sqlite-wasm-bytes.js';
 import { memoizeUntilRejected } from '../runtime/staged-source.js';
@@ -35,32 +34,7 @@ import { generateOpencodeRunnerCode, opencodeBuiltinBridgeModules, OPENCODE_BUND
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
 import { withSupervisorLoadAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES } from '@nimbus-sh/platform/limits.js';
-/**
- * Everything a facet spawn needs beyond the artifact sources themselves.
- * Small enough to ride in NimbusLoadedEntrypoint props (the VFS snapshot is
- * the only variable-size member; it is bounded by the prefetch-bundle caps).
- */
-export const OpencodeStageSpecSchema = z.object({
-    mode: z.enum(['oneshot', 'attached', 'server']),
-    argv: z.array(z.string()),
-    env: z.record(z.string(), z.string()),
-    cred: z.object({
-        uid: z.number().int().nonnegative(),
-        gid: z.number().int().nonnegative(),
-        groups: z.array(z.number().int().nonnegative()),
-        umask: z.number().int().nonnegative(),
-    }),
-    cwd: z.string(),
-    stdin: z.string(),
-    /** Serialized VFS snapshot bundle (`_serializeBundleForFacet` output). */
-    vfsBundle: z.string(),
-    /**
-     * The coherence cursor the bundle above was read at, as a JSON literal
-     * (`null` when the stage carries no VFS). Without it the facet's first
-     * ACQUIRE poisons and drops the whole snapshot — see _shared/facet-vfs-cursor.
-     */
-    vfsCursor: z.string(),
-});
+import { OpencodeStageSpecSchema } from './opencode-stage-spec.js';
 function requireAssets(env, what) {
     if (!env.ASSETS) {
         throw new Error(`${what} requires an env.ASSETS binding; this Nimbus deployment is ` +
@@ -164,7 +138,7 @@ async function assemble(assets, spec) {
     ]);
     const runner = generateOpencodeRunnerCode({
         argv: spec.argv,
-        env: spec.env,
+        terminal: spec.terminal,
         cred: spec.cred,
         cwd: spec.cwd,
         stdin: spec.stdin,

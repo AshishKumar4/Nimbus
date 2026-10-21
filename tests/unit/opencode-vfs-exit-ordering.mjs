@@ -67,13 +67,13 @@ if (mode) {
 
     const { program, code } = DISPOSITIONS[mode];
     // What the manager stages an attached TUI with (_stageOpencodeSpec).
-    const env = mode === 'attached' ? { NIMBUS_ATTACHED_TTY: '1', NIMBUS_CP_CHILD_PID: String(pid) } : {};
+    const terminal = mode === 'attached' ? { NIMBUS_ATTACHED_TTY: '1', NIMBUS_CP_CHILD_PID: String(pid) } : {};
     const vfsCursor = JSON.stringify(authority.cursor());
-    const { runner } = await importOpencodeRunner({ mode, program, env, vfsCursor });
+    const { runner } = await importOpencodeRunner({ mode, program, terminal, vfsCursor });
     let answered = false;
     const run = mode === 'oneshot'
-      ? runner.default.fetch(new Request('http://facet/run', { method: 'POST' }), { SUPERVISOR: supervisor })
-      : new runner.NimbusProcess({ storage: { sql: facetSql() }, waitUntil() {}, id: { toString: () => 'exit-ordering' } }, { SUPERVISOR: supervisor }).startProcess();
+      ? runner.default.fetch(new Request('http://facet/run', { method: 'POST', body: JSON.stringify({ env: terminal }) }), { SUPERVISOR: supervisor })
+      : new runner.NimbusProcess({ storage: { sql: facetSql() }, waitUntil() {}, id: { toString: () => 'exit-ordering' } }, { SUPERVISOR: supervisor }).startProcess({ env: terminal });
     void run.then(() => { answered = true; }, () => { answered = true; });
 
     await until(() => events.includes('write'), 'the program\'s write to reach the session', 10_000);

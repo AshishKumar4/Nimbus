@@ -51,7 +51,7 @@ const portRegistry = new PortRegistry();
 const fm = new FacetManager(ctx, env, processes, portRegistry, processHostFor, {});
 
 const makeStageSpec = (portArg) => ({
-  mode: 'server', argv: ['serve', '--port', String(portArg)], env: {}, cwd: '/home/user',
+  mode: 'server', argv: ['serve', '--port', String(portArg)], terminal: {}, cwd: '/home/user',
   cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
   stdin: '', vfsBundle: '{}', vfsManifest: '{}', vfsMetadata: '{}',
 });
@@ -66,6 +66,7 @@ facetBehaviour.set(residentFacetName(0), wedgeThenServe);
 await fm._startStagedResident({
   pid,
   stageSpec: makeStageSpec(port),
+  env: {},
 }, port);
 
 // The gate must abandon the wedged first poll at its per-poll cap and pass on
@@ -84,6 +85,7 @@ facetBehaviour.set(
 await fm._startStagedResident({
   pid: entry2.pid,
   stageSpec: makeStageSpec(4097),
+  env: {},
 }, 4097);
 await assert.rejects(
   () => fm._awaitOpencodeServerReady(entry2.pid, 4097, 800, 150),

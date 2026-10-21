@@ -55,6 +55,21 @@ async function create(fs, path, text) {
   assert.equal(dec.decode(s.kernel.readFile('home/user/proj/out/f3.txt')), 'file 3\n');
 }
 
+// ── A write that makes its parents is decided here where its directory is ──
+{
+  const s = session();
+  await s.fs.mkdir('/home/user/proj/emit', { mode: 0o755 });
+  const before = s.fs.stats().local;
+  for (let index = 0; index < 5; index++) await s.fs.writeFile(`/home/user/proj/emit/f${index}.js`, enc.encode(`f${index}`), { createParents: true });
+  assert.equal(s.fs.stats().local - before, 5, 'each decided here, its directory being there: no round trip');
+  // Where a directory on the way is missing, the session makes them.
+  await s.fs.writeFile('/home/user/proj/emit/new/deep/g.js', enc.encode('g'), { createParents: true });
+  await s.fs.settle();
+  for (let index = 0; index < 5; index++) assert.equal(s.kernel.readFileString(`home/user/proj/emit/f${index}.js`), `f${index}`);
+  assert.equal(s.kernel.readFileString('home/user/proj/emit/new/deep/g.js'), 'g');
+  assert.equal(s.kernel.stat('home/user/proj/emit/f0.js').mode & 0o777, 0o644, 'made under the process\'s mask, as the session makes it');
+}
+
 // A changed umask is captured by each create, not by the subtree's grant.
 {
   const s = session();

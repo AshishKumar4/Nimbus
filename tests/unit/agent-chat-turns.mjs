@@ -52,6 +52,8 @@ function makeHost(initialStore = new Map()) {
       ensureSqliteFs() {},
       ensureFacetManager() {},
       async ensureRuntimeReady() {},
+      // No dev servers ran before this incarnation: none to restore.
+      async devServersRespawned() {},
       sqliteFs: null,
     },
     store,

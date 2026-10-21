@@ -8,6 +8,7 @@ import { SessionProcessSupervisor } from '../../../packages/core/src/runtime/ses
 import { ProcessFiles } from '../../../packages/core/src/runtime/process-files.ts';
 import { SqliteVFS } from '../../../packages/core/src/vfs/sqlite-vfs.ts';
 import { memoryStorage } from './do-storage.mjs';
+import { sessionProcessEnv } from '../../../packages/worker/src/session/process-env.ts';
 
 export const SID = 'nimble-otter-4271';
 export const BASE_PATH = `/s/${SID}`;
@@ -45,6 +46,7 @@ export function makeSession(storage, { vfs, routes, bundlePool = null, pidBase =
   const store = new Map(Object.entries(storage));
   const processes = new SessionProcessSupervisor();
   processes.setPidBase(pidBase);
+  const sessionStorage = memoryStorage({ rows: store });
   const self = {
     // The session's workspace, for what it hands a dev server: its network (no egress here).
     runtimeWorkspace: { network: ISOLATE_NETWORK },
@@ -63,9 +65,10 @@ export function makeSession(storage, { vfs, routes, bundlePool = null, pidBase =
     portRegistry: new PortRegistry(),
     processes,
     ctx: {
-      storage: memoryStorage({ rows: store }),
+      storage: sessionStorage,
       acceptWebSocket() {},
     },
+    processEnv: sessionProcessEnv(sessionStorage),
     get nimbusDebug() { return false; },
     get viteBasePath() { return (this.sessionBasePath || '') + '/preview'; },
     async hydrateSessionBasePath() {},

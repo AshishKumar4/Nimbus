@@ -17,7 +17,7 @@
  * visits that may have changed it, so the caller turns it off.
  */
 import { isVfsError, syscallError, VFS_STRERROR } from '../../../../../vfs/vfs-error.js';
-import { resolve } from '../../../utils/path.js';
+import { operandPath } from '../../../utils/path.js';
 import { quote } from './errors.js';
 import { baseName } from './format.js';
 async function settle(run) {
@@ -395,7 +395,7 @@ export class FindEntry {
         const trimmed = this.start.replace(/\/+$/, '');
         const slash = trimmed.lastIndexOf('/');
         const directory = trimmed === '' ? '/' : slash === -1 ? '.' : trimmed.slice(0, slash).replace(/\/+$/, '') || '/';
-        return { directory: resolve(this.walker.options.cwd, directory), argument };
+        return { directory: operandPath(this.walker.options.cwd, directory), argument };
     }
 }
 export class Walker {
@@ -485,7 +485,7 @@ export class Walker {
         for (let i = 0; i < starts.length && !this.quit; i++) {
             const start = starts[i];
             const trimmed = start.replace(/\/+$/, '');
-            const entry = new FindEntry(this, [i], start, resolve(this.options.cwd, start), trimmed === '' ? (start === '' ? '' : '/') : trimmed.slice(trimmed.lastIndexOf('/') + 1), 0, start, null, null);
+            const entry = new FindEntry(this, [i], start, operandPath(this.options.cwd, start), trimmed === '' ? (start === '' ? '' : '/') : trimmed.slice(trimmed.lastIndexOf('/') + 1), 0, start, null, null);
             this.newStart = true;
             // fts reports a start point that is not there before anything else; an empty name is never there.
             const stat = start === '' ? { ok: false, error: syscallError('ENOENT', 'stat', start) } : await entry.xstat();

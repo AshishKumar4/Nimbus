@@ -51,14 +51,18 @@ export function installNpmBinFallbackResolver(registry, deps) {
             const bin = await probe(() => resolveNpmBinPath(inspector, cwd, name));
             if (!bin)
                 return await upstreamResolve(name, context);
-            return binHandler(bin.name, async (vfs) => await resolveNpmBinPath(vfs, cwd, name), true);
+            return await ownInPlaceOf(inspector, bin) ?? binHandler(bin.name, async (vfs) => await resolveNpmBinPath(vfs, cwd, name), true);
         }
         // Registered commands, then PATH (searched upstream), then the bins of
-        // the node_modules directories from the cwd up.
+        // the node_modules directories from the cwd up, then Nimbus's own
+        // program for the name, if it has one.
         const upstream = await upstreamResolve(name, context);
         if (upstream)
             return upstream;
-        if (!context.search || !await probe(() => resolveNpmBin(inspector, cwd, name))) {
+        const bin = context.search ? await probe(() => resolveNpmBin(inspector, cwd, name)) : null;
+        if (bin === null && context.search && deps.ownPrograms?.names.has(name))
+            return deps.ownPrograms.absent(name);
+        if (bin === null) {
             let hint = null;
             try {
                 hint = await deps.runtimeCommandHint(name);
@@ -75,8 +79,15 @@ export function installNpmBinFallbackResolver(registry, deps) {
                 return 127;
             });
         }
-        return binHandler(name, async (vfs) => await resolveNpmBin(vfs, cwd, name), false);
+        return await ownInPlaceOf(inspector, bin) ?? binHandler(name, async (vfs) => await resolveNpmBin(vfs, cwd, name), false);
     };
+    /** Nimbus's own program in place of installed bin `bin`, by name or by path (an npm script's PATH), when its package cannot run here. */
+    async function ownInPlaceOf(inspector, bin) {
+        if (!deps.ownPrograms?.names.has(bin.name))
+            return undefined;
+        const installed = await readNpmBinPackageMetadata(inspector, bin.packagePath);
+        return installed === null ? undefined : deps.ownPrograms.inPlaceOf(bin.name, installed);
+    }
     /**
      * The command that runs an npm bin. `executesShim`: the shim file is what
      * was invoked (by its path, or found on PATH), so the caller must be

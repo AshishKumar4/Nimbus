@@ -16,6 +16,7 @@ import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { resolveContext, type ResolveContext } from '@nimbus-sh/core/substrate/lifo/commands/registry.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { runtimeInstallHint } from '@nimbus-sh/core/shell/exec-dispatch.js';
+import type { Command } from '@nimbus-sh/core/substrate/lifo/commands/types.js';
 import { z } from 'zod/v4';
 import { classifyOpenCodeInvocation, buildOpenCodeTransportPlan, type OpenCodeTransportPlan } from '../runtime/opencode-invocation.js';
 
@@ -56,7 +57,20 @@ const NpmBinPackageMetadataSchema = z.object({
   }).optional(),
 }).passthrough();
 
-type NpmBinPackageMetadata = z.infer<typeof NpmBinPackageMetadataSchema>;
+export type NpmBinPackageMetadata = z.infer<typeof NpmBinPackageMetadataSchema>;
+
+/**
+ * Programs Nimbus has for names a project may also install (`tsc`), asked
+ * only for `names`: `absent` answers a name no node_modules/.bin from the
+ * cwd up has; `inPlaceOf` answers an installed bin whose package (its
+ * package.json) cannot run here, however the bin was reached, or leaves it
+ * to the project (undefined).
+ */
+export interface OwnPrograms {
+  readonly names: ReadonlySet<string>;
+  absent(name: string): Command;
+  inPlaceOf(name: string, installed: NpmBinPackageMetadata): Command | undefined;
+}
 
 export function installNpmBinFallbackResolver(
   registry: RegistryLike,
@@ -71,6 +85,7 @@ export function installNpmBinFallbackResolver(
     notifyTerminalEvent(event: { type: 'spawn' | 'exit'; pid: number; command: string; longRunning?: boolean; attachedTty?: boolean; code?: number }): void;
     runtimeCommandHint(name: string): Promise<RuntimeCommandHint>;
     emitShellExecDone(pid: number, command: string, exitCode: number, durationMs: number): void;
+    ownPrograms?: OwnPrograms;
   },
 ): void {
   const upstreamResolve = registry.resolve.bind(registry);
@@ -96,15 +111,18 @@ export function installNpmBinFallbackResolver(
     if (name.startsWith('/') || name.startsWith('./') || name.startsWith('../')) {
       const bin = await probe(() => resolveNpmBinPath(inspector, cwd, name));
       if (!bin) return await upstreamResolve(name, context);
-      return binHandler(bin.name, async (vfs) => await resolveNpmBinPath(vfs, cwd, name), true);
+      return await ownInPlaceOf(inspector, bin) ?? binHandler(bin.name, async (vfs) => await resolveNpmBinPath(vfs, cwd, name), true);
     }
 
     // Registered commands, then PATH (searched upstream), then the bins of
-    // the node_modules directories from the cwd up.
+    // the node_modules directories from the cwd up, then Nimbus's own
+    // program for the name, if it has one.
     const upstream = await upstreamResolve(name, context);
     if (upstream) return upstream;
 
-    if (!context.search || !await probe(() => resolveNpmBin(inspector, cwd, name))) {
+    const bin = context.search ? await probe(() => resolveNpmBin(inspector, cwd, name)) : null;
+    if (bin === null && context.search && deps.ownPrograms?.names.has(name)) return deps.ownPrograms.absent(name);
+    if (bin === null) {
       let hint: RuntimeCommandHint = null;
       try { hint = await deps.runtimeCommandHint(name); } catch { hint = null; }
       if (!hint) return undefined;
@@ -116,8 +134,15 @@ export function installNpmBinFallbackResolver(
       });
     }
 
-    return binHandler(name, async (vfs) => await resolveNpmBin(vfs, cwd, name), false);
+    return await ownInPlaceOf(inspector, bin) ?? binHandler(name, async (vfs) => await resolveNpmBin(vfs, cwd, name), false);
   };
+
+  /** Nimbus's own program in place of installed bin `bin`, by name or by path (an npm script's PATH), when its package cannot run here. */
+  async function ownInPlaceOf(inspector: ProjectFs, bin: NpmBinResolution): Promise<Command | undefined> {
+    if (!deps.ownPrograms?.names.has(bin.name)) return undefined;
+    const installed = await readNpmBinPackageMetadata(inspector, bin.packagePath);
+    return installed === null ? undefined : deps.ownPrograms.inPlaceOf(bin.name, installed);
+  }
 
   /**
    * The command that runs an npm bin. `executesShim`: the shim file is what

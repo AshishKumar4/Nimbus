@@ -56,6 +56,7 @@ import { WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
 import { openRuntimeStdio, runtimeOutput } from './runtime-stdio.js';
 import { errorText } from '../_shared/error-text.js';
 import { warmFacetKeys } from './warm-facets.js';
+import { interpreterProcessEnv } from './interpreter-env.js';
 const PYTHON_VERSION_FLAGS = new Set(['--version', '-V']);
 const PYTHON_HELP_FLAGS = new Set(['--help', '-h']);
 /** Where `nimbus install python` stages the interpreter inside the session. */
@@ -70,7 +71,6 @@ const CPYTHON_WASM_REL = 'share/cpython/python.wasm';
 const CPYTHON_SCI_WASM_REL = 'share/cpython/python-sci.wasm';
 const CPYTHON_SCI_PACKAGES_REL = 'lib/sci-packages.zip';
 const CPYTHON_STDLIB_REL = 'lib/python313.zip';
-const CPYTHON_CACERT_REL = 'etc/ssl/cert.pem';
 /**
  * The environment markers of the CPython build `manifest` installs, as the
  * interpreter answers them (cpython-wasi-reactor.mjs runs it to check): its
@@ -188,13 +188,11 @@ async function buildPythonModulePipInvocation(argv, cwd, vfs, runtimeContext) {
         return { mode: 'none', code: '', exitCode: 0 };
     return await buildPipInvocation(argv.slice(2), 'pip', cwd, vfs, runtimeContext);
 }
-/** Idle warm CPython workers a session keeps, per interpreter: each holds its compiled python.wasm. */
-const WARM_CPYTHON_FACETS = 2;
 export function makeCPythonRunnerFactory(deps) {
     // One set per interpreter: a warm worker holds the one python.wasm it compiled.
     const warmKeys = {
-        plain: warmFacetKeys(deps.session, CPYTHON_RUNNER, WARM_CPYTHON_FACETS),
-        sci: warmFacetKeys(deps.session, `${CPYTHON_RUNNER}:sci`, WARM_CPYTHON_FACETS),
+        plain: warmFacetKeys(deps.session, CPYTHON_RUNNER),
+        sci: warmFacetKeys(deps.session, `${CPYTHON_RUNNER}:sci`),
     };
     return function cpythonRunnerFactory(manifest, installRoot, binName, _binKind) {
         const findFile = (rel) => installedPath(manifest, installRoot, rel);
@@ -311,18 +309,11 @@ export function makeCPythonRunnerFactory(deps) {
                 `sys.path.insert(0, ${JSON.stringify(cwd)})`,
                 enterWorkingDirectory(binName, cwd),
             ].join('\n');
-            const cacertVfs = findFile(CPYTHON_CACERT_REL);
-            const userEnv = { ...(ctx.env || {}) };
-            if (!userEnv.HOME)
-                userEnv.HOME = home;
-            if (!userEnv.PYTHONUNBUFFERED)
-                userEnv.PYTHONUNBUFFERED = '1';
-            // Without this OpenSSL has no trust anchors at all — there is no
-            // /etc/ssl on a Nimbus session — and every HTTPS request fails
-            // verification with a message about a missing local issuer rather than
-            // about a missing bundle.
-            if (!userEnv.SSL_CERT_FILE && cacertVfs)
-                userEnv.SSL_CERT_FILE = `/${cacertVfs.replace(/^\/+/, '')}`;
+            const interpreterEnv = {
+                base: { ...(ctx.env || {}) },
+                facts: { runtime: 'python', home },
+            };
+            const userEnv = interpreterProcessEnv(interpreterEnv.base, interpreterEnv.facts);
             const facetArgs = {
                 bootstrapCode: prelude,
                 userCode,
@@ -352,7 +343,7 @@ export function makeCPythonRunnerFactory(deps) {
                 const output = runtimeOutput(ctx);
                 let spawnResult;
                 try {
-                    spawnResult = await deps.startResident({ wasmVfsPath: wasmVfs, startArgs: facetArgs, cwd, command, argv: [binName, ...argv], invokerPid: ctx.pid, signal: ctx.signal, write: output.write });
+                    spawnResult = await deps.startResident({ wasmVfsPath: wasmVfs, startArgs: facetArgs, interpreterEnv, cwd, command, argv: [binName, ...argv], invokerPid: ctx.pid, signal: ctx.signal, write: output.write });
                 }
                 finally {
                     await output.end();

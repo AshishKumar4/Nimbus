@@ -1,7 +1,7 @@
 import { DEFAULT_HOME } from '../../../constants.js';
 import type { ProcessView } from '../../../runtime/process-files.js';
 import type { CommandRegistry } from '../commands/registry.js';
-import { resolve } from '../utils/path.js';
+import { operandPath } from '../utils/path.js';
 import { direntTypeIn } from '../../../vfs/dirent-type.js';
 
 export interface CompletionResult {
@@ -148,7 +148,7 @@ async function listEntries(word: string, ctx: CompletionContext, dirsOnly: boole
 
   if (expandedWord.includes('/')) {
     const lastSlash = expandedWord.lastIndexOf('/');
-    dir = resolve(ctx.cwd, expandedWord.slice(0, lastSlash + 1));
+    dir = operandPath(ctx.cwd, expandedWord.slice(0, lastSlash + 1));
     prefix = expandedWord.slice(lastSlash + 1);
   } else {
     dir = ctx.cwd;

@@ -99,14 +99,18 @@ export function session({ grantInos, journal, gate, refuse, view, acquired, gran
     fill: async (key) => (view ? admit(key, true).content : bridge.readFile('/' + key)),
     cursor: () => (view ? cursor : cursorNow()),
     barrier: async () => {
-      if (!view) return true;
+      if (!view) return { landed: true };
       if (view.forget?.() === true) {
         seen.clear();
         known = new Set(['']);
       } else for (const key of [...seen.keys()]) admit(key);
       cursor = cursorNow();
       await view.barrier?.();
-      return true;
+      return { landed: true };
+    },
+    acquireArgs: () => {
+      const at = view ? cursor : cursorNow();
+      return at === null ? null : { epoch: at.epoch, cursor: at.rev };
     },
     // `budget`: the bytes the process may hold outside the store, counted as they are taken and given back.
     reserve: (bytes) => {

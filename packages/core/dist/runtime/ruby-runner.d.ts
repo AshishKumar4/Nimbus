@@ -49,6 +49,7 @@ import type { Command } from '../substrate/lifo/commands/types.js';
 import type { FacetHost } from './facet-host.js';
 import { type NimbusFilesystemAuthority, type VfsCred } from './os-contracts.js';
 import type { SessionProcessSupervisor } from './session-process-supervisor.js';
+import { type InterpreterEnv } from './interpreter-env.js';
 export type RubyRunnerFactory = (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => Promise<Command>;
 /**
  * Build the ruby-runner factory. Called once at session init; the
@@ -109,6 +110,8 @@ export type RubyResidentStart = (spawn: {
     /** VFS path of the interpreter. By path, not by value: it is 34.3 MiB. */
     wasmVfsPath: string;
     startArgs: RubyFacetCallArgs;
+    /** What `startArgs.userEnv` was built from: never stored, the base asked for again at a relaunch (ask 62). */
+    interpreterEnv: InterpreterEnv;
     cwd: string;
     command: string;
     /** The launching command's process: the resident carries its exec id. */

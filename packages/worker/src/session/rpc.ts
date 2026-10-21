@@ -46,7 +46,7 @@ import type { StorageLedger } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 import { PeerHost, type HostedHttpRequest, type HostedHttpResponse, type HostedReply } from '@nimbus-sh/fabric/peer-host.js';
-import { OpencodeStageSpecSchema } from '../facets/opencode-staging.js';
+import { OpencodeStageSpecSchema } from '../facets/opencode-stage-spec.js';
 import {
   recordFailure, getLastRpcFrame, getLastFacetId,
 } from '@nimbus-sh/platform/oom-discriminator.js';
@@ -66,6 +66,7 @@ import {
   type VfsAcquireOptions,
   type VfsAcquireResult,
   type VfsCred,
+  type VfsListOptions,
   type VfsListPage,
   type VfsMutationReceipt,
   type VfsListTree,
@@ -520,6 +521,8 @@ const FsAcquireArgsSchema = z.object({
   cursor: z.number().int().min(0),
   /** The asking process's own count of when it built these (node-shims _acquireArgs): echoed with the answer, never read here. */
   begin: z.number().int().min(0).optional(),
+  /** Its own changes' debt then (ResidentFilesystem.acquireArgs): echoed with the answer, never read here. */
+  own: z.number().int().min(0).optional(),
   options: z.object({
     namespace: z.boolean().optional(),
     lease: z.boolean().optional(),
@@ -538,6 +541,7 @@ const FsAcquireArgsSchema = z.object({
 const FsListArgsSchema = z.object({
   after: z.string().max(4096).nullable(),
   limit: z.number().int().min(1).max(FS_LIST_PAGE_LIMIT).nullable(),
+  options: z.object({ revisions: z.boolean().optional(), contentKeys: z.boolean().optional(), linkTargets: z.boolean().optional() }).optional(),
 });
 
 const FsListTreeArgsSchema = z.object({
@@ -793,11 +797,12 @@ export async function _rpcFsList(
   self: RpcHost,
   after: string | null,
   limit: number | null,
+  options?: VfsListOptions,
   pid?: number,
 ): Promise<VfsListPage> {
-  const args = FsListArgsSchema.parse({ after: after ?? null, limit: limit ?? null });
+  const args = FsListArgsSchema.parse({ after: after ?? null, limit: limit ?? null, options });
   // A page that reaches another holder's delegation waits for its recall, and is read again.
-  return withRecall(() => self.supervisorBridge(pid).list(args.after, args.limit ?? undefined));
+  return withRecall(() => self.supervisorBridge(pid).list(args.after, args.limit ?? undefined, args.options));
 }
 
 /** Everything beneath directory `root` a process may see, in one answer (subtreeListing). */

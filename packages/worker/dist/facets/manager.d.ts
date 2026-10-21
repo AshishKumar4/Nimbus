@@ -20,6 +20,7 @@ import { type OpenCodeTransportPlan } from '../runtime/opencode-invocation.js';
 import { type RuntimeCodeEntry } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { ReadAheadBudget } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { type ProcessEntry, type ProcessRestart } from '@nimbus-sh/core/runtime/process-table.js';
+import { type InterpreterEnvFacts } from '@nimbus-sh/core/runtime/interpreter-env.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { type SignalAbortReason } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { type NodeFacetSources } from '../runtime/node-shims-artifact.js';
@@ -46,7 +47,7 @@ import { ReplaySessions } from '../runtime/replay-session.js';
 import type { ProcessInputPacket } from '@nimbus-sh/core/runtime/process-input.js';
 import { type ProcessHostFactory, type ResidentCodeSpec, type Supervise } from '@nimbus-sh/fabric/process-fabric.js';
 import { ProcessJournals } from '../session/process-journals.js';
-import { type OpencodeRunnerOptions } from '../runtime/opencode-facet-runner.js';
+import { type ProcessEnvKeeping, type ResolveProcessEnv } from './process-env.js';
 import { type FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
 import { type WasmImageRecord } from './wasm-image-digest.js';
 /**
@@ -275,7 +276,6 @@ export declare function generateLongRunningNodeCode(userCode: string, vfsState: 
     argv?: string[];
     /** A node program's command line: its options, conditions, preloads and `-e`/`-p` code (core runtime/node-cli.ts). */
     node?: NodeLaunch;
-    env?: Record<string, string>;
     cwd?: string;
     filename?: string;
     dirname?: string;
@@ -902,6 +902,21 @@ export interface FacetManagerHooks {
      * is refused unless the embedder hook exists.
      */
     resolveWorkerLaunchFallback?: (recipe: WorkerRecipe) => Promise<ResolvedWorkerLaunch | null>;
+    /**
+     * The environment a process was launched with, asked for again when it is
+     * relaunched: a re-drive after a reset, an on-failure restart, a durable
+     * application's relaunch on its port, a dev server's restore. Nimbus keeps
+     * no process's environment in any record, image or source (ask 62): a host
+     * that answers `null`, throws or composes none fails that relaunch, named.
+     */
+    resolveProcessEnv?: ResolveProcessEnv;
+    /**
+     * Where a host that answers resolveProcessEnv from its own keeping keeps
+     * each relaunchable launch's environment: a row beside its record, written
+     * and deleted with it (the session's, session/process-env.ts). An embedder
+     * that knows its processes' environments composes resolveProcessEnv alone.
+     */
+    keepProcessEnv?: ProcessEnvKeeping;
 }
 export interface ForegroundLaunch {
     signal: AbortSignal;
@@ -968,6 +983,14 @@ export interface LongRunningWorkerSpawnOptions {
     globalOutbound?: ResidentCodeSpec['globalOutbound'];
     /** Forwarded verbatim to the runner's startProcess. */
     startArgs?: unknown;
+    /**
+     * What an interpreter resident's `startArgs.userEnv` was built from: its
+     * command's environment (`base`) and its runtime's facts (core
+     * interpreter-env.ts). Never stored whole: its image keeps the facts
+     * (`envFacts`), and its relaunch asks the host for the base again
+     * (resolveProcessEnv) and builds the rest as the first launch did.
+     */
+    interpreterEnv?: InterpreterLaunchEnv;
     /**
      * Set for a worker a durable application owns: the launch is journalled and
      * re-driven after an instance reset through `hooks.resolveWorkerLaunch`.
@@ -1085,6 +1108,11 @@ export interface WorkerRecipe {
 export type ResidentRestartPolicy = 'never' | 'on-failure';
 /** The env var a launch reads its restart policy from — set by startProcess({ restart }) and `nimbus start --restart`. */
 export declare const RESTART_POLICY_ENV = "NIMBUS_RESTART";
+/** What an interpreter resident's environment is built from; no facts for a launch its runtime did not build (an embedder's own). */
+interface InterpreterLaunchEnv {
+    base: Record<string, string>;
+    facts: InterpreterEnvFacts | null;
+}
 /** One application as `apps.list` reports it — every stamped identity, live or not. */
 export interface ResidentAppSummary {
     owner: string;
@@ -1303,8 +1331,6 @@ export declare class FacetManager {
     private rowAmendments;
     /** A process whose host the platform reset (_endByHostLoss), until its terminal hook reads why it ended. */
     private hostLosses;
-    /** Residents whose host loss refused requests unsent: each is owed a run on a new process, at once (_onResidentTerminal). */
-    private owedRuns;
     /** Each running resident's uptime proof timer (_proveByUptime). */
     private uptimeProofs;
     /**
@@ -1315,6 +1341,25 @@ export declare class FacetManager {
     private ephemeralPids;
     private residentClaims;
     constructor(ctx: DurableObjectState, env: unknown, processes: SessionProcessSupervisor, portRegistry: PortRegistry, host: ProcessHostFactory, hooks?: FacetManagerHooks);
+    /**
+     * What releases before ask 62 kept of their processes' environments, once
+     * per session, before anything of it is re-driven or read. Each record
+     * moves its environment to where this host keeps environments
+     * (keepProcessEnv) in the same storage write that strips it:
+     * - a Node resident's journal row, and a dev server's record, held it;
+     * - every application blob that held an interpreter's environment, or a
+     *   binding env, where every process could read it (named by an index, a
+     *   row, or nothing): written again without it, its rows and owner
+     *   indexes naming the new blob, the old one unlinked. An application
+     *   whose binding env nothing can give back (no embedder
+     *   resolveWorkerLaunch) is not restarted, and the session is told. A
+     *   blob a reset cut short, which no reader can use, is unlinked too;
+     * - a Node resident's generated entry an earlier release left in an image
+     *   directory: not removed, as the directory is the embedder's; the
+     *   session is told how many look generated (legacy-images.ts).
+     * A filesystem snapshot or export taken before keeps what it held.
+     */
+    private _dropEnvironmentsAtRest;
     /**
      * A signal's default action: the process ends with 128+signo whether its
      * facet is still being built (the launch stops at its next ownership gate)
@@ -1343,12 +1388,6 @@ export declare class FacetManager {
      */
     private _endByHostLoss;
     /**
-     * `pid`'s route to its process (the fabric's), whose requests the process
-     * refused unsent (ProcessNotAdmitted) are answered only once the pid reads
-     * ended: a caller that starts it again never finds the lost one.
-     */
-    private _routeTarget;
-    /**
      * The process is over. Every end-of-life passes through here: a clean
      * exit, a kill, a timeout, a crash. Only one of them owes anything more
      * than the journal row's release — a crash under 'on-failure' is re-driven
@@ -1367,8 +1406,12 @@ export declare class FacetManager {
     /** Stop `pid`'s uptime proof: the process ended, or its proof restarts. */
     private _dropUptimeProof;
     private _onResidentTerminal;
-    private _afterResidentEnd;
-    /** Claim identity AND write its recovery row in one serializable storage transaction. */
+    /**
+     * Claim identity AND write its recovery row in one serializable storage
+     * transaction, with the environment its relaunch asks for (`env`, when it
+     * asks) kept beside the row where this host keeps environments. A claim
+     * again of a row already written leaves what is kept beside it.
+     */
     private _claimResident;
     private _releaseResidentClaim;
     /**
@@ -1911,7 +1954,11 @@ export declare class FacetManager {
      * buffered stdout/stderr/exit. node:sqlite is supplied as an override map
      * module so the static import links.
      */
-    execStagedArtifact(artifact: string, opts: Omit<OpencodeRunnerOptions, 'cred' | 'vfsBundle' | 'vfsCursor' | 'sources' | 'mode'> & {
+    execStagedArtifact(artifact: string, opts: {
+        argv: string[];
+        env: Record<string, string>;
+        cwd: string;
+        stdin: string;
         command?: string;
         attachedTty?: boolean;
         invokerPid?: number;
@@ -2083,9 +2130,9 @@ export declare class FacetManager {
     /**
      * Re-drive a journalled launch after an instance reset. What the journal
      * row carries is the recipe, and who the launch ran as (its credential and
-     * exec id); env and secrets are never written to storage, so a worker
-     * launch's are re-resolved by the embedder through
-     * `hooks.resolveWorkerLaunch`.
+     * exec id); never its environment, which the host gives again
+     * (`hooks.resolveProcessEnv`), and a worker launch's bindings are
+     * re-resolved by the embedder through `hooks.resolveWorkerLaunch`.
      */
     private _redrive;
     /**

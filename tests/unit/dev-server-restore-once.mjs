@@ -7,6 +7,11 @@
 // yet it never runs, and the session made again gets a restore of its own. Through a real workspace shell
 // and process table, with a command that serves as the dev servers do: its
 // process adopted or spawned (devServerProcess) and recorded (recordDevServer).
+//
+// Every server's process is spawned again before any command runs
+// (devServersRespawned), so a listing of what runs never waits on a command.
+// A process stopped while its command waits its turn is not run, and its end
+// releases its record at once: no later incarnation restores it.
 
 import assert from 'node:assert/strict';
 
@@ -15,7 +20,8 @@ import { createFacetCtx, createFacetWorld } from './lib/facet-host-harness.mjs';
 import { importWorkerBundle } from './lib/worker-bundle.mjs';
 
 const bundle = await importWorkerBundle({
-  'packages/worker/src/session/dev-servers.ts': ['devServerProcess', 'recordDevServer', 'restoreDevServers', 'spawnOf'],
+  'packages/worker/src/session/dev-servers.ts': ['devServerProcess', 'devServersRespawned', 'recordDevServer', 'restoreDevServers', 'spawnOf'],
+  'packages/worker/src/session/process-env.ts': ['sessionProcessEnv'],
   'packages/core/src/workspace/nimbus-workspace.ts': ['NimbusWorkspace'],
   'packages/core/src/runtime/session-process-supervisor.ts': ['SessionProcessSupervisor'],
   'packages/core/src/runtime/port-registry.ts': ['PortRegistry'],
@@ -34,8 +40,10 @@ async function incarnation(generation) {
   const processes = new bundle.SessionProcessSupervisor();
   processes.setPidBase(generation * bundle.PID_GEN_STRIDE);
   const workspace = await bundle.NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, vfs, processes, generation });
+  const ctx = createFacetCtx(world, 'dev-server-restore-once', rows);
   const host = {
-    ctx: createFacetCtx(world, 'dev-server-restore-once', rows),
+    ctx,
+    processEnv: bundle.sessionProcessEnv(ctx.storage),
     processes,
     portRegistry: new bundle.PortRegistry(),
     runtimeWorkspace: workspace,
@@ -123,4 +131,44 @@ assert.equal(runs, lateRuns + 1, 'only the start before the destroy ran the comm
 assert.deepEqual([...rows.keys()], [], 'and wrote nothing that outlived the wipe');
 await during.workspace.close();
 await destroyed.workspace.close();
+
+// Two servers. The next incarnation spawns both processes before the first's
+// command runs; the second's, stopped while the first's command holds the
+// restore, never runs, and its record goes at once.
+const keys = () => [...rows.keys()].filter((key) => key.startsWith('dev-server:'));
+const two = await incarnation(8);
+for (let i = 0; i < 2; i++) {
+  const serving2 = two.workspace.exec('serve');
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  release();
+  assert.equal((await serving2).exitCode, 0);
+}
+const [firstKey, secondKey] = keys().sort((a, b) => Number(a.slice(11)) - Number(b.slice(11)));
+assert.ok(firstKey !== undefined && secondKey !== undefined, 'both servers are recorded');
+await two.workspace.close();
+const queued = await incarnation(9);
+const runsBefore = runs;
+const restoringTwo = bundle.restoreDevServers(queued.host);
+await bundle.devServersRespawned(queued.host);
+const respawned = queued.host.processes.getAll().filter((entry) => entry.restartedFrom?.cause === 'session-restart');
+assert.deepEqual(respawned.map((entry) => `dev-server:${entry.restartedFrom.pid}`).sort(), [firstKey, secondKey].sort(),
+  'both processes are spawned again before any command runs');
+for (let i = 0; i < 50 && runs === runsBefore; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+assert.equal(runs, runsBefore + 1, 'the first command runs, and holds the restore');
+const stoppedOne = respawned.find((entry) => `dev-server:${entry.restartedFrom.pid}` === secondKey);
+queued.host.processes.kill(stoppedOne.pid);
+for (let i = 0; i < 50 && rows.has(secondKey); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+assert.equal(rows.has(secondKey), false, 'the stopped one\'s record goes at once');
+release();
+assert.deepEqual(await restoringTwo, [], 'the restore answers');
+assert.equal(runs, runsBefore + 1, 'and never ran the stopped one');
+await queued.workspace.close();
+const after = await incarnation(10);
+const runsAfter = runs;
+const restoringAfter = bundle.restoreDevServers(after.host);
+for (let i = 0; i < 50 && runs === runsAfter; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+release();
+await restoringAfter;
+assert.equal(runs, runsAfter + 1, 'a later incarnation restores only the one still running');
+await after.workspace.close();
 console.log('dev-server-restore-once: ok');

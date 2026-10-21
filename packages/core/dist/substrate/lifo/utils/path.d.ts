@@ -5,6 +5,8 @@ export declare function normalize(path: string): string;
 export declare function isAbsolute(path: string): boolean;
 export declare function join(...segments: string[]): string;
 export declare function resolve(cwd: string, ...segments: string[]): string;
+/** A filesystem operand: the walk, not a string reduction, interprets its components. */
+export declare function operandPath(cwd: string, operand: string): string;
 export declare function dirname(path: string): string;
 export declare function basename(path: string, ext?: string): string;
 export declare function extname(path: string): string;

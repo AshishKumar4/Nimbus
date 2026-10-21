@@ -50,8 +50,6 @@ const GIT_WASM = 'share/git/git.wasm';
 const GIT_SYSTEM_CONFIG = 'share/git/gitconfig';
 
 
-/** Warm facets kept idle between runs; past it, a facet a run leaves is let go. */
-const WARM_GIT_FACETS = 2;
 
 export function makeGitRunnerFactory(deps: {
   facets: FacetHost;
@@ -66,7 +64,7 @@ export function makeGitRunnerFactory(deps: {
   session: string;
 }): (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => Command {
   const fsmonitor = makeGitFsmonitor(deps.fsmonitorState);
-  const warmKeys = warmFacetKeys(deps.session, 'git', WARM_GIT_FACETS);
+  const warmKeys = warmFacetKeys(deps.session, 'git');
   return function gitRunnerFactory(manifest, installRoot, binName, binKind) {
     if (binKind === 'fsmonitor') return async (ctx) => {
       if (ctx.args.length !== 2 || ctx.args[0] !== '2') {

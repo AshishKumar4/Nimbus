@@ -72,12 +72,11 @@ import { openRuntimeStdio, runtimeOutput } from './runtime-stdio.js';
 import type { SessionProcessSupervisor } from './session-process-supervisor.js';
 import { unsettledNoteOf } from '../_shared/process-fs-client.js';
 import { warmFacetKeys, type WarmFacetKeys } from './warm-facets.js';
+import { interpreterProcessEnv, type InterpreterEnv } from './interpreter-env.js';
 
 const RUBY_RUNTIME_BIN_NAMES = new Set(['ruby', 'ruby3', 'gem', 'bundle', 'bundler']);
 const RUBY_VERSION_FLAGS = new Set(['--version', '-v']);
 
-/** Idle warm Ruby workers a session keeps: each holds the compiled ruby+stdlib.wasm (30 MB). */
-const WARM_RUBY_FACETS = 2;
 
 export type RubyRunnerFactory = (
   manifest: RuntimeManifest,
@@ -109,7 +108,7 @@ export function makeRubyRunnerFactory(deps: {
   session: string;
 }): RubyRunnerFactory {
   const { registry } = deps;
-  const warmKeys = warmFacetKeys(deps.session, 'ruby', WARM_RUBY_FACETS);
+  const warmKeys = warmFacetKeys(deps.session, 'ruby');
 
   return async function rubyRunnerFactory(manifest, installRoot, binName, binKind) {
     const wasmVfs = installedPath(manifest, installRoot, 'share/ruby/ruby+stdlib.wasm');
@@ -219,18 +218,12 @@ export function makeRubyRunnerFactory(deps: {
         rbArgv = [parsed.scriptPath, ...parsed.scriptArgs];
       }
 
-      const userEnv: Record<string, string> = { ...(ctx.env || {}) };
-      if (!userEnv.HOME) userEnv.HOME = home;
-      if (!userEnv.LANG) userEnv.LANG = 'C.UTF-8';
-      userEnv.GEM_HOME ||= '/' + gemHomeFor(home);
-      userEnv.GEM_PATH ||= userEnv.GEM_HOME;
       const gems = await installedGemLoadPath(vfs, gemHomeFor(home));
-      userEnv.NIMBUS_GEM_LIBS = gems.libs.join(':');
-      if (gems.activates) userEnv.NIMBUS_GEM_ACTIVATE = '1';
-      // Ruby looks for charset hints via these vars; set sensible
-      // defaults so puts of non-ASCII strings doesn't trip on the
-      // wasi default of "ASCII-8BIT".
-      if (!userEnv.LC_ALL) userEnv.LC_ALL = 'C.UTF-8';
+      const interpreterEnv: InterpreterEnv = {
+        base: { ...(ctx.env || {}) },
+        facts: { runtime: 'ruby', home, gemHome: '/' + gemHomeFor(home), gemLibs: gems.libs, gemActivates: gems.activates },
+      };
+      const userEnv = interpreterProcessEnv(interpreterEnv.base, interpreterEnv.facts);
 
       const facetArgs = {
         wasmVfsPath: wasmVfs,
@@ -258,6 +251,7 @@ export function makeRubyRunnerFactory(deps: {
           result = await deps.startResident({
             wasmVfsPath: facetArgs.wasmVfsPath,
             startArgs: toRubyCallArgs(facetArgs),
+            interpreterEnv,
             cwd,
             command: formatRubyCommand(binName, argv),
             argv: [binName, ...argv],
@@ -632,6 +626,8 @@ export type RubyResidentStart = (spawn: {
   /** VFS path of the interpreter. By path, not by value: it is 34.3 MiB. */
   wasmVfsPath: string;
   startArgs: RubyFacetCallArgs;
+  /** What `startArgs.userEnv` was built from: never stored, the base asked for again at a relaunch (ask 62). */
+  interpreterEnv: InterpreterEnv;
   cwd: string;
   command: string;
   /** The launching command's process: the resident carries its exec id. */

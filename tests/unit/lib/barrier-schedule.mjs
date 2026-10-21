@@ -15,9 +15,22 @@
  *   ['stall'], ['unstall'] the process's waves wait before they reach the
  *                          session (a parked reply has reached it), or go on;
  *   ['settle']             wait until nothing moves without a release;
- *   ['poison']             the next ACQUIRE is answered with a poison.
- * Reads are stat, readFile, readdir and (awaited) opendir, a directory read
- * through its descriptor; changes write, unlink, mkdir, rmdir,
+ *   ['poison']             the next ACQUIRE is answered with a poison;
+ *   ['restart']            the session's database starts a new incarnation
+ *                          (SqliteVFS rotateIncarnation): every cursor held
+ *                          against the last one poisons; its files, their
+ *                          revisions and the process's descriptors stay.
+ * A restart is only what the platform produces: one database's revisions
+ * never go back (vfs_state.gen is durable, and an answer is held until the
+ * write it names commits), so a new epoch never names a revision of the last
+ * one's with other bytes. A world where it would (a new database under a
+ * store that outlived it) is not drawn: the store keeps its invariants for
+ * it (pages keyed by epoch, a fill's own chunk rows) at no cost.
+ * Reads are stat, readFile, readdir, (awaited) opendir, a directory read
+ * through its descriptor, and (awaited) pread, a file's bytes at an offset
+ * read through its descriptor; a file past what a process holds whole
+ * (BULK: 'big') is paged that way, one past a fill's batch ('mid') fetched
+ * in more than one. Changes write, unlink, mkdir, rmdir,
  * rename, chmod and (root) chown, of names under the process's project
  * (UNIVERSE), judged with the process's credential: a name beneath a
  * directory it may not search is EACCES to it, as is a directory it may not
@@ -42,7 +55,8 @@
  *     answers as the session holds it, both ways, and the session holds what
  *     the model says (no write lost). Node's ledger of program misses holds
  *     exactly the files a call that cannot wait was refused the bytes of, no
- *     awaited read of which has answered since, that are still there.
+ *     awaited read of which has answered since, that are still there and
+ *     the process may still read.
  * What the store keeps against its budget is not judged here: neither
  * engine shows the store's own total, and its accounting is the budget's
  * own tests' (resident-fs-model).
@@ -59,6 +73,13 @@
  * decides a change of names a peer changed since its last input landed: it
  * cannot know of them, and the session may refuse what it decides.
  *
+ * The drawn schedules once missed a class a review found: every pair of
+ * overlapping changes ran one after the other, and nothing held a wave
+ * before it reached the session, so a chain of Node's own renames whose
+ * first landed alone could not arise. Node's own changes now fly together in
+ * program order, and ['stall'] holds its waves; barrier-oracle.mjs holds the
+ * model itself to refusing every answer no world gave.
+ *
  * Directory note: under tests/unit/lib/ so the suite does not run it as a test.
  */
 
@@ -67,12 +88,26 @@ import { scheduleTransport, KINDS } from './schedule-transport.mjs';
 import { sleep } from './resident-body.mjs';
 import { writeSync } from 'node:fs';
 import { CRED_KERNEL } from '../../../packages/core/src/runtime/os-contracts.ts';
+import { FS_READ_BATCH_REQUEST_BYTES, WASI_RESIDENT_FILE_CAP_BYTES } from '../../../packages/core/src/constants.ts';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
 /** The project a schedule starts from: '' is the project directory, a string a file's content, null a directory. */
 export const SEED_TREE = Object.freeze({ d: null, 'd/e': null, x: null, 'd/f': 'f0', 'd/e/g': 'g0000', 'x/h': 'h00', top: 't0000000' });
+
+/** Files a schedule that names them starts with too, of their sizes: one fetched in two batches, one paged. */
+const BULK = Object.freeze({ mid: FS_READ_BATCH_REQUEST_BYTES + 1_000_000, big: WASI_RESIDENT_FILE_CAP_BYTES + 1_000_000 });
+/** What a pread reads, and where. */
+const PREAD_BYTES = 4096;
+const PREAD_AT = Object.freeze([0, 70_000, 4_200_000, 8_400_000]);
+/** A file of `size` printable bytes, `tag` its pattern. */
+const bulk = (tag, size) => `${tag}:0123456789abcdefghijklmnopqrstuvwxyz `.repeat(Math.ceil(size / (tag.length + 38))).slice(0, size);
+/** The project `schedule` starts from: SEED_TREE, and the BULK files it names. */
+export function seedTreeFor(schedule) {
+  const named = new Set(schedule.flat().filter((part) => typeof part === 'string'));
+  return { ...SEED_TREE, ...Object.fromEntries(Object.entries(BULK).filter(([rel]) => named.has(rel)).map(([rel, size]) => [rel, bulk(rel, size)])) };
+}
 
 /** The names a schedule reads and changes. */
 export const UNIVERSE = Object.freeze({
@@ -94,13 +129,15 @@ const under = (rel, root) => rel === root || root === '' || rel.startsWith(`${ro
 const abs = (rel) => (rel === '' ? APP : `${APP}/${rel}`);
 const key = (rel) => abs(rel).slice(1);
 
-const dirState = (mode = DIR_MODE) => ({ type: 'dir', mode, uid: USER, gid: USER });
-const fileState = (content, mode = FILE_MODE) => ({ type: 'file', content, mode, uid: USER, gid: USER });
+/** Each file and directory made has an identity of its own, which a rename moves and a write or chmod keeps: what a descriptor follows. */
+let identities = 0;
+const dirState = (mode = DIR_MODE) => ({ type: 'dir', mode, uid: USER, gid: USER, id: ++identities });
+const fileState = (content, mode = FILE_MODE) => ({ type: 'file', content, size: content.length, mode, uid: USER, gid: USER, id: ++identities });
 
 /** The model: each name's state; '' (the project directory) always a directory. */
-function seedWorld() {
+function seedWorld(tree = SEED_TREE) {
   const world = new Map([['', dirState()]]);
-  for (const [rel, content] of Object.entries(SEED_TREE)) world.set(rel, content === null ? dirState() : fileState(content));
+  for (const [rel, content] of Object.entries(tree)) world.set(rel, content === null ? dirState() : fileState(content));
   return world;
 }
 
@@ -150,7 +187,7 @@ function applied(world, change) {
     case 'write':
       if (parent?.type !== 'dir' || at?.type === 'dir') return null;
       if (!root && (at === undefined ? !mayChangeIn(world, a) : (bits(at) & 2) === 0)) return null;
-      next.set(a, at === undefined ? fileState(b) : { ...at, content: b });
+      next.set(a, at === undefined ? fileState(b) : { ...at, content: b, size: b.length });
       return next;
     case 'unlink':
       if (at?.type !== 'file' || (!root && !mayChangeIn(world, a))) return null;
@@ -211,6 +248,7 @@ export function generate(seed, steps = 40) {
   let world = seedWorld();
   const schedule = [];
   let content = 0;
+  const bulkRead = () => (random() < 0.5 ? ['own', 'pread', pick(Object.keys(BULK)), pick(PREAD_AT)] : [pick(['own', 'sync']), 'readFile', 'mid']);
   const change = (way) => {
     for (let tries = 0; tries < 20; tries++) {
       if (way === 'root') {
@@ -234,7 +272,8 @@ export function generate(seed, steps = 40) {
   };
   while (schedule.length < steps) {
     const r = random();
-    if (r < 0.22) schedule.push(['own', pick(['stat', 'stat', 'readFile', 'readdir', 'opendir']), pick(NAMES)]);
+    if (r < 0.03) schedule.push(bulkRead());
+    else if (r < 0.22) schedule.push(['own', pick(['stat', 'stat', 'readFile', 'readdir', 'opendir']), pick(NAMES)]);
     else if (r < 0.40) schedule.push(['sync', pick(['stat', 'stat', 'readFile', 'readdir']), pick(NAMES)]);
     else if (r < 0.62) {
       const way = pick(['own', 'own', 'peer', 'peer', 'sync', 'root']);
@@ -244,8 +283,9 @@ export function generate(seed, steps = 40) {
     else if (r < 0.86) schedule.push(random() < 0.5 ? ['release'] : ['release', pick(Object.values(KINDS))]);
     else if (r < 0.91) schedule.push(['hold', pick(Object.values(KINDS))]);
     else if (r < 0.94) schedule.push([random() < 0.5 ? 'stall' : 'unstall']);
-    else if (r < 0.985) schedule.push(['settle']);
-    else schedule.push(['poison']);
+    else if (r < 0.98) schedule.push(['settle']);
+    else if (r < 0.99) schedule.push(['poison']);
+    else schedule.push(['restart']);
   }
   return schedule;
 }
@@ -259,11 +299,14 @@ export function generate(seed, steps = 40) {
  *   - refusedAsDirectory: a call that cannot wait, on a directory the view
  *     cannot answer it for, is refused EISDIR, whatever it asked;
  *   - absentWhileRelisted: a directory being relisted answers a name under
- *     it as absent (B2).
+ *     it as absent (B2);
+ *   - refusedWhileRelisted: an awaited read under a directory being relisted
+ *     is refused (EAGAIN) where it should wait (B2, seed 2209).
  */
 export const KNOWN_GAPS = Object.freeze({
-  node: Object.freeze({ absentWhileRelisted: true }),
+  node: Object.freeze({ absentWhileRelisted: true, refusedWhileRelisted: true }),
   holder: Object.freeze({ unshownAwaitedChange: true, refusedAsDirectory: true }),
+  eager: Object.freeze({ unshownAwaitedChange: true, refusedAsDirectory: true }),
 });
 
 /** A finding: the schedule, the step, and what was wrong there. */
@@ -273,8 +316,9 @@ class Finding extends Error {
   }
 }
 
+const shownText = (text) => (text.length > 40 ? `${JSON.stringify(text.slice(0, 24))}… (${text.length} bytes)` : JSON.stringify(text));
 const describe = (state) => (state === undefined ? 'absent'
-  : `${state.type === 'file' ? `file ${JSON.stringify(state.content)}` : 'dir'} ${state.mode.toString(8)}${state.uid === USER ? '' : ` uid ${state.uid}`}`);
+  : `${state.type === 'file' ? `file ${shownText(state.content)}` : 'dir'} ${state.mode.toString(8)}${state.uid === USER ? '' : ` uid ${state.uid}`}`);
 
 /** `world` with `effect` (a world a change leaves) laid over the names under `domain`. */
 function laid(world, domain, effect) {
@@ -288,12 +332,17 @@ function laid(world, domain, effect) {
 function statIs(answer, state) {
   if (state === undefined) return answer === null;
   if (answer === null || answer.type !== (state.type === 'dir' ? 'directory' : 'file') || (answer.mode & 0o777) !== state.mode || answer.uid !== state.uid) return false;
-  return state.type !== 'file' || answer.size === enc.encode(state.content).byteLength;
+  return state.type !== 'file' || answer.size === state.size;
 }
 
-/** Whether `answer` (of read `op` of `rel`) is what `world` says to the process. */
-function answers(op, rel, answer, world) {
+/** Whether `answer` (of read `op` of `rel`; a pread's at `offset`) is what `world` says to the process. */
+function answers(op, rel, answer, world, offset = 0) {
   if (op === 'opendir') return answers('readdir', rel, answer, world);
+  if (op === 'pread') {
+    const state = world.get(rel);
+    if (state?.type === 'file' && unreachable(world, rel) === null && (bits(state) & 4) !== 0) return answer === state.content.slice(offset, offset + PREAD_BYTES);
+    return answers('readFile', rel, answer, world);
+  }
   const blocked = unreachable(world, rel);
   if (blocked !== null) return op === 'stat' && blocked === 'ENOENT' ? answer === null : answer?.code === blocked;
   const state = world.get(rel);
@@ -314,13 +363,18 @@ function answers(op, rel, answer, world) {
  * they have had (state i: after i changes returned), and every change begun.
  * runSchedule drives it; a test drives it with no engine (barrier-oracle.mjs).
  */
-export function createModel() {
-  let world = seedWorld();
+export function createModel(tree = SEED_TREE) {
+  let world = seedWorld(tree);
   const history = [world];
   /** Every change begun, in program order: its names, whether it is the process's own, the world it leaves (and, a write of the process's, the one it passes through), the states it began and landed at. */
   const changes = [];
   const seq = () => history.length - 1;
-  /** Whether `later` (the process's own) must land after `earlier`: an own change before it whose names it overlaps. */
+  /**
+   * Whether `later` (the process's own) must land after `earlier`: an own
+   * change before it whose names it overlaps. A process logs each change as
+   * it is called, awaited or not (node-shims' _logParked, a guest's one call
+   * at a time), and the session applies its log in order.
+   */
   const after = (earlier, later) => earlier !== later && earlier.own && later.own && changes.indexOf(earlier) < changes.indexOf(later) && overlaps(earlier.domain, later.domain);
   /**
    * Every world `rel` may have been seen in between states `from` and `to`:
@@ -330,24 +384,48 @@ export function createModel() {
    * overlap, so any of them may have landed first; only four are laid, a
    * schedule rarely having more.
    */
+  /** The changes of `among` in flight at state `i` (begun by it, not yet returned): `cap` at most, a schedule rarely having more. */
+  const flyingAt = (among, i, cap = 4) => among.filter((c) => c.begun <= i && (c.done === null || c.done > i)).slice(0, cap);
+  /**
+   * The worlds state `i` may be seen as with `flying` in flight: each not
+   * landed, landed, or (a write) passing through; one of the process's own
+   * only once every earlier one it overlaps has landed. Changes in flight
+   * together never overlap but for the process's own, so any may land first.
+   */
+  const alternativesOf = (flying, i, decided) => {
+    let choices = [[]];
+    for (const change of flying) {
+      const effects = decided && change.decides ? [change.post] : [null, change.post, ...(change.partial === null ? [] : [change.partial])];
+      choices = choices.flatMap((chosen) => effects.map((effect) => [...chosen, effect]));
+    }
+    const alternatives = [];
+    for (const chosen of choices) {
+      if (flying.some((later, j) => chosen[j] !== null && flying.some((earlier, k) => k < j && after(earlier, later) && chosen[k] !== earlier.post))) continue;
+      alternatives.push({ flying, chosen, world: flying.reduce((world, change, j) => (chosen[j] === null ? world : laid(world, change.domain, chosen[j])), history[i]) });
+    }
+    return alternatives;
+  };
+  const worldsOf = (flying, i, decided) => alternativesOf(flying, i, decided).map((alternative) => alternative.world);
+  /** Every world `rel` may have been seen in between states `from` and `to`, with the changes in flight that touch it. */
   const worldsSeen = (rel, from, to, decided = false) => {
     const touching = changes.filter((change) => change.domain.some((root) => under(rel, root) || under(root, rel)));
     const worlds = [];
-    for (let i = from; i <= to; i++) {
-      const flying = touching.filter((c) => c.begun <= i && (c.done === null || c.done > i)).slice(0, 4);
-      // Each change in flight: not landed (null), landed, or (a write) passing through; one of the process's own only once every earlier one it overlaps has landed.
-      let choices = [[]];
-      for (const change of flying) {
-        const effects = decided && change.decides ? [change.post] : [null, change.post, ...(change.partial === null ? [] : [change.partial])];
-        choices = choices.flatMap((chosen) => effects.map((effect) => [...chosen, effect]));
-      }
-      for (const chosen of choices) {
-        if (flying.some((later, j) => chosen[j] !== null && flying.some((earlier, k) => k < j && after(earlier, later) && chosen[k] !== earlier.post))) continue;
-        worlds.push(flying.reduce((world, change, j) => (chosen[j] === null ? world : laid(world, change.domain, chosen[j])), history[i]));
-      }
-    }
+    for (let i = from; i <= to; i++) worlds.push(...worldsOf(flyingAt(touching, i), i, decided));
     return worlds;
   };
+  /** How far along `change` is in an alternative: not landed, passing through (a write), landed. */
+  const stage = (change, effect) => (effect === null ? 0 : effect === change.post ? 2 : 1);
+  /**
+   * Whether alternative `later`, at state `j`, can follow alternative
+   * `earlier` on one execution: nothing `earlier` had landed (or begun to)
+   * goes back, unless it has returned by `j`.
+   */
+  const forward = (earlier, j, later) => earlier.flying.every((change, n) => {
+    const was = stage(change, earlier.chosen[n]);
+    if (was === 0 || (change.done !== null && change.done <= j)) return true;
+    const m = later.flying.indexOf(change);
+    return m !== -1 && stage(change, later.chosen[m]) >= was;
+  });
   return {
     get world() { return world; },
     seq,
@@ -362,7 +440,7 @@ export function createModel() {
       const post = applied(base, step);
       if (post === null) return null;
       // A write the process makes is an open that truncates, then the bytes: while it is in flight, the file may be empty.
-      const partial = way === 'own' && op === 'write' ? new Map([...post, [a, { ...post.get(a), content: '' }]]) : null;
+      const partial = way === 'own' && op === 'write' ? new Map([...post, [a, { ...post.get(a), content: '', size: 0 }]]) : null;
       const decides = own && DECIDED.includes(op);
       const record = { domain: domainOf(step), own, decides, post, partial, begun: seq(), done: null, landing: null };
       changes.push(record);
@@ -387,8 +465,39 @@ export function createModel() {
     },
     /** `record` was refused: it changed nothing. */
     drop(record) { changes.splice(changes.indexOf(record), 1); },
-    /** Whether `answer` (of read `op` of `rel`) is one the session's files gave between states `from` and `to` (`decided`: with every structural change of the process's own in flight shown). */
-    admits: (op, rel, answer, from, to, decided = false) => worldsSeen(rel, from, to, decided).some((w) => answers(op, rel, answer, w)),
+    /** Whether `answer` (of read `op` of `rel`, a pread's at `offset`) is one the session's files gave between states `from` and `to` (`decided`: with every structural change of the process's own in flight shown). */
+    admits: (op, rel, answer, from, to, decided = false, offset = 0) => worldsSeen(rel, from, to, decided).some((w) => answers(op, rel, answer, w, offset)),
+    /**
+     * Whether `answer` (a descriptor read, `op` opendir or pread, of `rel`)
+     * is what the file or directory it opened gave, wherever that was by the
+     * time it was read: opened at `rel` at a state between `from` and `to`,
+     * with the access the open needed, then read at that state or a later one.
+     */
+    followed: (op, rel, answer, from, to, offset = 0) => {
+      const kind = op === 'opendir' ? 'dir' : 'file';
+      const at = (i) => alternativesOf(flyingAt(changes, i, 6), i, false);
+      // Opened at `rel` in one alternative, then read wherever its identity is in one forward of it, on the same execution.
+      for (let i = from; i <= to; i++) {
+        for (const opened of at(i)) {
+          const state = opened.world.get(rel);
+          if (state === undefined || state.type !== kind || unreachable(opened.world, rel) !== null || (bits(state) & 4) === 0) continue;
+          for (let j = i; j <= to; j++) {
+            for (const read of at(j)) {
+              if (!forward(opened, j, read)) continue;
+              for (const [k, now] of read.world) {
+                if (now.id !== state.id) continue;
+                if (op === 'opendir' ? Array.isArray(answer) && answer.join('/') === childrenOf(read.world, k).join('/') : answer === now.content.slice(offset, offset + PREAD_BYTES)) return true;
+              }
+            }
+          }
+        }
+      }
+      return false;
+    },
+    /** Whether any change is in flight. */
+    moving: () => changes.some((change) => change.done === null),
+    /** The state the latest change of `rel` (or above it) landed at; Infinity while one is in flight. */
+    touched: (rel) => Math.max(0, ...changes.filter((c) => c.domain.some((root) => under(rel, root))).map((c) => (c.done === null ? Infinity : c.done))),
     /** The state the latest structural change of the process's own in flight at or about `rel` began at, or 0. */
     decidedSince: (rel) => Math.max(0, ...changes.filter((c) => c.done === null && c.decides && c.domain.some((root) => under(rel, root) || under(root, rel))).map((c) => c.begun)),
     /** Whether a world between `from` and `to` holds, at `rel`, a file the process may read: what a refusal of its bytes (EAGAIN) can be about. */
@@ -409,7 +518,16 @@ export function createModel() {
 export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = {}, deadlineMs = 40_000 } = {}) {
   const note = (line) => { writeSync(2, `  | ${line}\n`); };
   note(`boot ${kind}`);
-  const lazy = kind === 'holder';
+  // A store listed on demand refuses a name it does not know; the resident
+  // filesystem over an enumerated one is let refuse it too (its completeness
+  // is the view's own tests', resident-view-eager).
+  const lazy = kind !== 'node';
+  /** Whether a barrier refetches the files it drops that the process held (B5): the resident filesystem's over an enumerated store. */
+  const refetches = kind === 'eager';
+  /** Inputs whose barrier has not landed. */
+  let inputsInFlight = 0;
+  /** Files whose bytes an awaited read of the process's answered, and no change of its own touched since. */
+  const resident = new Set();
   /** A poison the session answered, and no input landed since: a namespace that is not answering may refuse. */
   let poisoned = false;
   // Replies park at random once the process is up: its boot waits on replies no step releases.
@@ -420,9 +538,10 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
     note: (line) => { if (booted) note(line); },
     poisoned: () => { poisoned = true; },
   });
+  const tree = seedTreeFor(schedule);
   const engine = await bootEngine(kind, {
     seed: (authority) => {
-      for (const [rel, content] of Object.entries(SEED_TREE)) {
+      for (const [rel, content] of Object.entries(tree)) {
         if (content === null) authority.kfs.mkdir(key(rel), { mode: DIR_MODE });
         else authority.kfs.writeFile(key(rel), content);
       }
@@ -433,8 +552,10 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
   booted = true;
   const deadline = Date.now() + deadlineMs;
 
-  const model = createModel();
+  const model = createModel(tree);
   const seq = model.seq;
+  /** Every name a schedule may read: the universe's, and its bulk files. */
+  const readable = ['', ...NAMES, ...Object.keys(tree).filter((rel) => rel in BULK)];
   /** Calls in flight: settled when their promise does. */
   const inflight = new Set();
   let completions = 0;
@@ -453,24 +574,42 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
   let unpublished = [];
   /** Each peer change that returned, and as the model stood then: what the process may not know of before its next input lands. */
   const peerAt = [];
+  /** Each awaited change of the process's own that returned, and as the model stood then: unshown to its calls that cannot wait until a barrier lands, where that is a known gap. */
+  const awaitedAt = [];
 
   /** Whether a call that cannot wait may be refused (EAGAIN): a view listed on demand, a namespace a poison stopped or a listing is moving, or bytes it does not hold of a file it may read. */
-  const refusable = (op, rel, from, to) => lazy || poisoned || transport.inFlight('listing') > 0 || (op === 'readFile' && model.readable(rel, from, to));
-  const judge = (at, way, op, rel, answer, from, to) => {
+  /**
+   * Whether a refusal of `rel`'s bytes is a miss the store owes: a file the
+   * process held, still there, every barrier since its last change landed
+   * (each refetches what it drops) and none in flight.
+   */
+  const owedBytes = (rel) => refetches && resident.has(rel) && inputsInFlight === 0 && !poisoned && transport.inFlight('listing') === 0
+    && model.world.get(rel)?.type === 'file' && model.touched(rel) <= landed;
+  const refusable = (op, rel, from, to) => (op === 'readFile' && owedBytes(rel) ? false
+    : lazy || poisoned || transport.inFlight('listing') > 0 || (op === 'readFile' && model.readable(rel, from, to)));
+  const judge = (at, way, op, rel, answer, from, to, offset = 0) => {
     if (answer?.code === 'EAGAIN' && way === 'sync' && refusable(op, rel, from, to)) return;
     if (gaps.refusedAsDirectory && way === 'sync' && answer?.code === 'EISDIR' && model.worldsSeen(rel, from, to).some((world) => world.get(rel)?.type === 'dir')) return;
     if (gaps.absentWhileRelisted && way === 'sync' && answer === null && transport.inFlight('listing') > 0) return;
+    if (gaps.refusedWhileRelisted && way === 'own' && answer?.code === 'EAGAIN' && transport.inFlight('listing') > 0) return;
     const decided = kind === 'node' && way === 'sync';
-    if (model.admits(op, rel, answer, from, to, decided)) return;
-    const shown = answer?.code ?? (answer && typeof answer === 'object' && !Array.isArray(answer) ? `${answer.type} ${(answer.mode & 0o777).toString(8)} size ${answer.size}` : JSON.stringify(answer));
-    const held = [...new Set(model.worldsSeen(rel, from, to, decided).map((world) => (op === 'readdir' && world.get(rel)?.type === 'dir' ? `[${childrenOf(world, rel)}]` : describe(world.get(rel)))))];
-    throw new Finding(`${way} ${op} ${rel || '.'} answered ${shown}; the session held ${held.join(' | ')} (states ${from}..${to})`, at);
+    if (model.admits(op, rel, answer, from, to, decided, offset)) return;
+    // A descriptor follows what it opened: a directory or file a rename moved after the open is read where it went.
+    if ((op === 'opendir' || op === 'pread') && model.followed(op, rel, answer, from, to, offset)) return;
+    const shown = answer?.code ?? (answer && typeof answer === 'object' && !Array.isArray(answer) ? `${answer.type} ${(answer.mode & 0o777).toString(8)} size ${answer.size}`
+      : typeof answer === 'string' ? shownText(answer) : JSON.stringify(answer));
+    const held = [...new Set(model.worldsSeen(rel, from, to, decided).map((world) => ((op === 'readdir' || op === 'opendir') && world.get(rel)?.type === 'dir' ? `[${childrenOf(world, rel)}]` : describe(world.get(rel)))))];
+    throw new Finding(`${way} ${op} ${rel || '.'}${op === 'pread' ? ` at ${offset}` : ''} answered ${shown}; the session held ${held.join(' | ')} (states ${from}..${to})`, at);
   };
 
-  const read = async (way, op, rel) => {
+  const read = async (way, op, rel, offset = 0) => {
     const path = abs(rel);
     const call = way === 'sync' ? engine.sync : engine.fs;
     try {
+      if (op === 'pread') {
+        const opened = await engine.fs.open(path, { read: true });
+        try { return dec.decode(await engine.fs.read(opened.id, offset, PREAD_BYTES)); } finally { await engine.fs.close(opened.id); }
+      }
       if (op === 'stat') return normalized(await (way === 'sync' ? engine.sync.stat(path) : engine.stat(path)));
       if (op === 'readFile') {
         const bytes = await call.readFile(path);
@@ -511,12 +650,18 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
       note(`  (step ${at} skipped: a peer changed its names since the process's last input)`);
       return null;
     }
+    if (way === 'sync' && gaps.unshownAwaitedChange && awaitedAt.some(({ done, domain: its }) => done > landed && overlaps(its, [...domain, ...domain.map(parentOf)]))) {
+      note(`  (step ${at} skipped: it would decide on an awaited change of the process's own its view does not show yet, a known gap)`);
+      return null;
+    }
     const record = model.begin(step);
     if (record === null) { note(`  (step ${at} skipped: ${JSON.stringify(step)} is not valid now)`); return null; }
     const publishes = outside(way) && overlaps(unpublished, domain) ? unpublished : null;
     const finish = () => model.finish(record, () => {
       if (outside(way)) peerAt.push({ done: seq(), domain });
       else {
+        if (way === 'own') awaitedAt.push({ done: seq(), domain });
+        for (const rel of [...resident]) if (domain.some((root) => under(rel, root) || under(root, rel))) resident.delete(rel);
         if (way === 'sync' || !gaps.unshownAwaitedChange) for (const root of domain) ownAt.set(root, seq());
         unpublished = [...unpublished, ...domain];
       }
@@ -566,6 +711,22 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
     if (failures.length > 0) throw failures[0];
   };
 
+  /** The states the session's database started a new incarnation at. */
+  const restarts = [];
+  /**
+   * The session's database starts a new incarnation (rotateIncarnation):
+   * its files and their revisions stay; every cursor held against the last
+   * epoch poisons, and the process learns of it with its next barrier.
+   * Node's own engine (node-shims) is not run across one: it goes with the
+   * cutover.
+   */
+  const restart = (at) => {
+    if (kind === 'node') { note(`  (step ${at}: a restart is the resident filesystem's to meet)`); return; }
+    engine.authority.rawVfs.rotateIncarnation();
+    restarts.push(seq());
+    note(`  (step ${at}: the session's database started a new incarnation, epoch ${engine.authority.cursor().epoch})`);
+  };
+
   const step = async (at, s) => {
     const [what] = s;
     if (what === 'hold') return transport.hold(s[1], s[2]);
@@ -574,12 +735,14 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
     if (what === 'poison') return transport.poison();
     if (what === 'stall') { stalled = true; return engine.stall(); }
     if (what === 'unstall') { stalled = false; return engine.release(); }
+    if (what === 'restart') return restart(at);
     if (what === 'input') {
       const arrived = seq();
-      return void track(engine.input().then(() => { landed = Math.max(landed, arrived); poisoned = false; }));
+      inputsInFlight++;
+      return void track(engine.input().then(() => { landed = Math.max(landed, arrived); poisoned = false; }).finally(() => { inputsInFlight--; }));
     }
-    const [way, op, rel] = s;
-    if (op === 'stat' || op === 'readFile' || op === 'readdir' || op === 'opendir') {
+    const [way, op, rel, offset = 0] = s;
+    if (op === 'stat' || op === 'readFile' || op === 'readdir' || op === 'opendir' || op === 'pread') {
       const bound = Math.max(landed, kind === 'node' && way === 'sync' ? model.decidedSince(rel) : 0,
         ...[...ownAt].filter(([root]) => under(rel, root) || under(root, rel)).map(([, i]) => i));
       if (way === 'sync') {
@@ -588,9 +751,13 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
         return judge(at, way, op, rel, answer, bound, seq());
       }
       const from = kind === 'node' ? seq() : bound;
-      return void track(read(way, op, rel).then((answer) => {
-        judge(at, way, op, rel, answer, from, seq());
-        if (op === 'readFile' && typeof answer === 'string') missed.delete(rel);
+      return void track(read(way, op, rel, offset).then((answer) => {
+        judge(at, way, op, rel, answer, from, seq(), offset);
+        // A file past what the process holds whole is never held: its refusals are no miss.
+        if (op === 'readFile' && typeof answer === 'string' && answer.length <= WASI_RESIDENT_FILE_CAP_BYTES) {
+          missed.delete(rel);
+          if (model.touched(rel) !== Infinity) resident.add(rel);
+        }
       }).catch((error) => { failures.push(error); }));
     }
     if (begin(at, way, s) === 'wait') deferred.push([at, s]);
@@ -631,18 +798,18 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
     if (kind === 'node') {
       await globalThis.__nimbusVfsResidencySettle?.();
       const ledger = [...(globalThis.__nimbusVfsResidencyMisses ?? [])].sort();
-      const owed = [...missed].filter((rel) => world.get(rel)?.type === 'file').map(key).sort();
+      const owed = [...missed].filter((rel) => world.get(rel)?.type === 'file' && unreachable(world, rel) === null && (bits(world.get(rel)) & 4) !== 0).map(key).sort();
       if (ledger.join() !== owed.join()) throw new Finding(`at rest, the program's misses are [${ledger}]; unanswered are [${owed}]`, end);
     }
-    for (const rel of ['', ...NAMES]) {
+    for (const rel of readable) {
       const state = world.get(rel);
       for (const way of ['own', 'sync']) {
         for (const op of ['stat', state?.type === 'dir' ? 'readdir' : 'readFile']) {
           const answer = await read(way, op, rel);
-          if (answer?.code === 'EAGAIN' && way === 'sync' && (lazy || (op === 'readFile' && model.readable(rel, seq(), seq())))) continue;
+          if (answer?.code === 'EAGAIN' && way === 'sync' && (op === 'readFile' ? !owedBytes(rel) && (lazy || model.readable(rel, seq(), seq())) : lazy)) continue;
           if (answer?.code === 'EISDIR' && way === 'sync' && gaps.refusedAsDirectory && state?.type === 'dir') continue;
           if (!answers(op, rel, answer, world)) {
-            throw new Finding(`at rest, ${way} ${op} ${rel || '.'} answered ${JSON.stringify(answer)}; the model holds ${describe(state)}`, end);
+            throw new Finding(`at rest, ${way} ${op} ${rel || '.'} answered ${JSON.stringify(answer)}; the model holds ${op === 'readdir' && state?.type === 'dir' ? `[${childrenOf(world, rel)}]` : describe(state)}`, end);
           }
         }
       }

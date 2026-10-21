@@ -7,7 +7,7 @@ import { concatBytes as concatParts, enc } from '../../../_shared/bytes.js';
 import { readToEnd, type ProcessView } from '../../../runtime/process-files.js';
 import { isVfsError, syscallError } from '../../../vfs/vfs-error.js';
 import type { CommandInputStream, CommandOutputStream } from '../commands/types.js';
-import { resolve } from './path.js';
+import { operandPath } from './path.js';
 import { direntTypeOfStat } from '../../../vfs/dirent-type.js';
 import { fitsWholeRead } from '../../../runtime/sqlite-runtime-fs-bridge.js';
 import { LosslessDecoder, decodeLossless, encodeLossless, firstLosslessByte } from './lossless-text.js';
@@ -69,7 +69,7 @@ export async function* inputChunks(
     for (let text = await stdin.read(); text !== null; text = await stdin.read()) yield encodeLossless(text);
     return;
   }
-  const path = resolve(ctx.cwd, operand);
+  const path = operandPath(ctx.cwd, operand);
   // A file one read holds is read whole, in one call, as the one file the
   // name leads to; a larger one, or a device, through one description from
   // its first byte to a read that answers none (its end), closed however the

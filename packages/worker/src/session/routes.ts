@@ -24,6 +24,7 @@
  * (~30 sites). RoutesHost = any pragmatic deviation, like InitHost in S6.
  */
 
+import { legacyGeneratedImages } from '../facets/legacy-images.js';
 import { handleReplicaPreflight as _w12HandleReplicaPreflight } from '../replica/routing.js';
 import { FANOUT_BENCH_TASK, SERIAL_BENCH_TASK } from '../loaders/compiled-bodies.generated.js';
 import { sanitizeUntrustedRequest } from '@nimbus-sh/core/_shared/untrusted-request.js';
@@ -47,7 +48,9 @@ import { estimateSupervisorHeap, WORKERD_EVICTION_LABELS } from '@nimbus-sh/plat
 import { loadShellState, getScrollbackStats, clearSessionState, loadScrollback } from './state-store.js';
 import { classifyWsUpgrade, joinExistingSession } from './init-phases.js';
 import { shellTerminalTee } from './ws.js';
-import { closeStaleShellSockets, tagShellSocket } from './shell-socket.js';
+import { closeStaleShellSockets, hasLiveShellOwner, tagShellSocket } from './shell-socket.js';
+import type { NamedTerminals } from './named-terminals.js';
+import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import { ViteDevServer } from '../facets/vite-dev-server.js';
 import { notifyTerminalEvent, wireProcessLogSocketBroadcast } from '../runtime/process-logs-api.js';
@@ -77,7 +80,7 @@ import { devServerRestoreFailedResponse, renderNoDevServerHtml } from './helpers
 import { handleAgentRequest } from './agent.js';
 import { captureSessionAiCredential } from './ai.js';
 import { CRED_KERNEL, CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
-import { seedBaseFilesystem } from '@nimbus-sh/core/workspace';
+import { seedBaseFilesystem, TerminalNameSchema } from '@nimbus-sh/core/workspace';
 // The L2 key builders are imported rather than re-derived so the bench
 // endpoints below can never drift from the key shape the cache actually
 // uses (they did: the packument purge used a stale `/p/` segment).
@@ -378,6 +381,11 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
         try { (server as any).serializeAttachment?.({ kind: 'fs-watch' }); } catch {}
         return new Response(null, { status: 101, webSocket: client });
       }
+      // A named terminal (`?terminal=<name>`): one live socket per name, as the
+      // session's own has; names never conflict with each other or with it.
+      const named = url.searchParams.get('terminal');
+      if (named) return namedTerminalUpgrade(self, named);
+
       // [B'.5] Three-way decision on a /ws upgrade — see
       // classifyWsUpgrade. Decide before accepting/tagging the incoming
       // server socket so it cannot be mistaken for the incumbent.
@@ -443,6 +451,8 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
       });
     }
     if (url.pathname === '/api/processes') {
+      // What runs, the restored dev servers' processes among it (programmatic.ts rpcListProcesses).
+      await self.devServersRespawned();
       return handleProcessesListRequest(self.processes);
     }
 
@@ -715,7 +725,10 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
       const sbStats = getScrollbackStats(self.ctx);
       return Response.json({
         cwd: snap.cwd,
-        env: snap.env,
+        // Names, never values: an environment is its owner's alone (ask 62).
+        env: snap.env === null ? null : Object.keys(snap.env).sort(),
+        // What earlier releases left in the image directories, with environments in them (facets/legacy-images.ts).
+        legacyGeneratedImages: self.sqliteFs === null ? [] : legacyGeneratedImages(self.sqliteFs),
         hydratedAt: snap.hydratedAt,
         hasPersistedState: snap.hasPersistedState,
         // The namespace's mount points, as /proc/mounts lists them.
@@ -1729,4 +1742,41 @@ async function handleFanoutTestEndpoint(
   }
 
   return new Response('unknown fanout _test endpoint', { status: 404 });
+}
+
+interface NamedTerminalUpgradeHost {
+  readonly ctx: DurableObjectState;
+  readonly terminals: NamedTerminals;
+  ensureRuntimeReady(): Promise<void>;
+}
+
+/**
+ * The `/ws?terminal=<name>` upgrade: refused (409) while another live socket
+ * holds that name; else
+ * the session built, the socket accepted as the name's, and given its
+ * terminal (started if it is not live), its stored screen replayed.
+ */
+async function namedTerminalUpgrade(self: NamedTerminalUpgradeHost, name: string): Promise<Response> {
+  if (!TerminalNameSchema.safeParse(name).success) {
+    return Response.json({ error: 'invalid terminal name', hint: 'a name is 1 to 64 of A-Z a-z 0-9 . _ -' }, { status: 400 });
+  }
+  await self.ensureRuntimeReady();
+  // From here to the socket's tag, nothing awaits: two upgrades cannot both find the name free.
+  const priorSockets: WebSocket[] = self.ctx.getWebSockets();
+  if (hasLiveShellOwner(self.ctx, priorSockets, Date.now(), name)) {
+    return Response.json({ error: `terminal ${name} already has an active socket` }, { status: 409 });
+  }
+  closeStaleShellSockets(self.ctx, priorSockets, Date.now(), name);
+  const pair = new WebSocketPair();
+  const [client, server] = Object.values(pair);
+  self.ctx.acceptWebSocket(server);
+  tagShellSocket(server, Date.now(), name);
+  try {
+    await self.terminals.attach(name, server, 'reconnect');
+  } catch (error) {
+    console.error(`terminal ${name} attach failed:`, errorText(error));
+    try { server.close(1011, 'terminal attach failed'); } catch { /* already closing */ }
+    return new Response(`Terminal attach failed: ${errorText(error)}`, { status: 500 });
+  }
+  return new Response(null, { status: 101, webSocket: client });
 }

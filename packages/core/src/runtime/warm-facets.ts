@@ -11,6 +11,21 @@
  * stays with the process that had it.
  */
 
+import { DO_DYNAMIC_WORKER_LIMIT } from '@nimbus-sh/platform/limits.js';
+
+/**
+ * The most idle keys a runtime keeps in a session. A key is made only when a
+ * run finds none idle, so the idle ones are as many as the runtime's runs
+ * that were in flight at once, and never more than this: the platform lets
+ * a Durable Object have DO_DYNAMIC_WORKER_LIMIT Dynamic Workers in flight at
+ * once, so no more of one runtime's workers can ever run together. The
+ * session's other work in flight (its residents, the build facets, git's
+ * network steps) only lowers how many do at a time, by an amount that changes
+ * from moment to moment; subtracting a fixed share of it would only make a
+ * burst that found the slots free load its image again.
+ */
+export const WARM_FACETS_KEPT = DO_DYNAMIC_WORKER_LIMIT;
+
 /** A warm facet's key: one session's, one runtime's (FacetSpec.warm). */
 export interface WarmFacetKey {
   readonly session: string;
@@ -37,17 +52,17 @@ export interface WarmFacetKeys {
    * `key` back among the idle ones when every call made on it (`ends`)
    * left it fit for another process: the facet said so, the call ended
    * without error, and its process was not killed. A key not given back is
-   * never used again, nor one past `kept` idle.
+   * never used again, nor one past WARM_FACETS_KEPT idle.
    */
   give(key: WarmFacetKey, ...ends: readonly WarmCallEnd[]): void;
 }
 
 /**
- * The warm facet keys `runtime` uses in `session`, at most `kept` idle. A
- * key is never named twice, nor by another incarnation of the session: a
- * facet one left running is not this one's to enter.
+ * The warm facet keys `runtime` uses in `session`, at most WARM_FACETS_KEPT
+ * idle. A key is never named twice, nor by another incarnation of the
+ * session: a facet one left running is not this one's to enter.
  */
-export function warmFacetKeys(session: string, runtime: string, kept: number): WarmFacetKeys {
+export function warmFacetKeys(session: string, runtime: string): WarmFacetKeys {
   if (!session) throw new Error(`warm ${runtime} facets: a warm facet belongs to a session, and none was named`);
   const idle: WarmFacetKey[] = [];
   const incarnation = crypto.randomUUID();
@@ -57,7 +72,7 @@ export function warmFacetKeys(session: string, runtime: string, kept: number): W
     give(key, ...ends) {
       if (key.session !== session) throw new Error(`warm ${runtime} facets: a key of another session was given back`);
       if (!ends.every((end) => end.reusable === true && end.error === undefined && !end.killed)) return;
-      if (idle.length < kept && !idle.includes(key)) idle.push(key);
+      if (idle.length < WARM_FACETS_KEPT && !idle.includes(key)) idle.push(key);
     },
   };
 }

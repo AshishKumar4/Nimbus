@@ -1,4 +1,4 @@
-import { resolve, dirname } from '../../utils/path.js';
+import { operandPath, dirname } from '../../utils/path.js';
 import { parseZip } from '../../utils/archive.js';
 import { parseArgs } from '../../utils/args.js';
 import { isVfsError } from '../../../../vfs/vfs-error.js';
@@ -41,8 +41,8 @@ const command = async (ctx) => {
     const junkPaths = flags.junk === true;
     const neverOverwrite = flags['never-overwrite'] === true;
     const destDir = typeof flags.dir === 'string' ? flags.dir : '';
-    const archivePath = resolve(ctx.cwd, archiveFile);
-    const targetDir = destDir ? resolve(ctx.cwd, destDir) : ctx.cwd;
+    const archivePath = operandPath(ctx.cwd, archiveFile);
+    const targetDir = destDir ? operandPath(ctx.cwd, destDir) : ctx.cwd;
     try {
         const data = (await ctx.vfs.readFile(archivePath));
         const entries = parseZip(data);
@@ -71,7 +71,7 @@ const command = async (ctx) => {
             if (entry.isDirectory) {
                 if (junkPaths)
                     continue;
-                const entryPath = resolve(targetDir, name);
+                const entryPath = operandPath(targetDir, name);
                 try {
                     (await ctx.vfs.mkdir(entryPath, { recursive: true }));
                 }
@@ -84,10 +84,10 @@ const command = async (ctx) => {
                 (await writeBytes(ctx.stdout, entry.data));
                 continue;
             }
-            const entryPath = resolve(targetDir, name);
+            const entryPath = operandPath(targetDir, name);
             if (neverOverwrite && (await ctx.vfs.exists(entryPath)))
                 continue;
-            const parent = dirname(entryPath);
+            const parent = operandPath(targetDir, dirname(name));
             try {
                 (await ctx.vfs.mkdir(parent, { recursive: true }));
             }

@@ -25,7 +25,7 @@ import type { D1QueryResponse, D1QuerySql, KvCall, R2Call } from '@nimbus-sh/fab
 import type { RuntimeVfsStat } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type FanoutShardOptions } from '@nimbus-sh/fabric/fanout.js';
 import { PeerHost, type HostedHttpRequest, type HostedHttpResponse, type HostedReply } from '@nimbus-sh/fabric/peer-host.js';
-import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListPage, type VfsMutationReceipt, type VfsListTree } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListOptions, type VfsListPage, type VfsMutationReceipt, type VfsListTree } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type LoaderStoreRequest } from '../wrangler/loader-code-store.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/runtime/wave-contracts.js';
 import { z } from 'zod/v4';
@@ -196,6 +196,7 @@ declare const FsAcquireArgsSchema: z.ZodObject<{
     epoch: z.ZodNullable<z.ZodString>;
     cursor: z.ZodNumber;
     begin: z.ZodOptional<z.ZodNumber>;
+    own: z.ZodOptional<z.ZodNumber>;
     options: z.ZodOptional<z.ZodObject<{
         namespace: z.ZodOptional<z.ZodBoolean>;
         lease: z.ZodOptional<z.ZodBoolean>;
@@ -300,7 +301,7 @@ export declare function _acquireForRoutedRequest(self: RpcHost, pid: number): Pr
  * is filtered by the calling process's own credential rather than the kernel's
  * — a process must not learn of a path it could not stat.
  */
-export declare function _rpcFsList(self: RpcHost, after: string | null, limit: number | null, pid?: number): Promise<VfsListPage>;
+export declare function _rpcFsList(self: RpcHost, after: string | null, limit: number | null, options?: VfsListOptions, pid?: number): Promise<VfsListPage>;
 /** Everything beneath directory `root` a process may see, in one answer (subtreeListing). */
 export declare function _rpcFsListTree(self: RpcHost, root: string, maxEntries: number, pid?: number): Promise<VfsListTree>;
 export declare function _rpcFsReadRange(self: RpcHost, path: string, offset: number, length: number, pid?: number, cred?: VfsCred): Promise<Uint8Array | null>;

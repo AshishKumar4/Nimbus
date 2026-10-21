@@ -132,6 +132,10 @@ export class Excludes {
         this.fileLists = fileLists;
         this.ignoreCase = ignoreCase;
     }
+    /** The `.gitignore` files read so far forgotten: the next question reads them again (a walk begun over). */
+    forget() {
+        this.stack.length = 0;
+    }
     /** is_excluded: whether git ignores `path` (repo-relative), a directory when `isDir`. */
     async isExcluded(path, isDir) {
         const cut = path.lastIndexOf('/');

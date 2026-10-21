@@ -9,7 +9,7 @@ import { DiscardSignal } from './discard.js';
 import { compileRegcomp, execLongest, PosixRegexSyntax, type CompiledRegex } from '../utils/posix-regex.js';
 import { BINARY_OPERATORS, UNARY_OPERATORS } from './conditional-operators.js';
 import { shellMatch } from '../utils/glob.js';
-import { resolve } from '../utils/path.js';
+import { operandPath } from '../utils/path.js';
 import { S_IFCHR, S_IFMT } from '../../../vfs/vfs.js';
 import { lstatOrThrow, statOrThrow } from '../../../vfs/vfs.js';
 
@@ -401,7 +401,7 @@ function literalArg(value: string): TestArg {
  * sitting right there — silently taking the wrong branch rather than failing.
  */
 async function evaluateFileTest(flag: string, operand: string, vfs: ProcessView, cwd?: string): Promise<boolean> {
-  const path = cwd === undefined ? operand : resolve(cwd, operand);
+  const path = cwd === undefined ? operand : operandPath(cwd, operand);
   if (flag === 'h' || flag === 'L') {
     return (await statOf(vfs, path, false))?.type === 'symlink';
   }

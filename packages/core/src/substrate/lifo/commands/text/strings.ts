@@ -1,5 +1,5 @@
 import type { Command } from '../types.js';
-import { resolve } from '../../utils/path.js';
+import { operandPath } from '../../utils/path.js';
 import { isVfsError } from '../../../../vfs/vfs-error.js';
 
 function extractStrings(data: Uint8Array, minLen: number): string[] {
@@ -51,7 +51,7 @@ const command: Command = async (ctx) => {
   }
 
   for (const file of files) {
-    const path = resolve(ctx.cwd, file);
+    const path = operandPath(ctx.cwd, file);
     try {
       const data = (await ctx.vfs.readFile(path));
       for (const s of extractStrings(data, minLen)) {

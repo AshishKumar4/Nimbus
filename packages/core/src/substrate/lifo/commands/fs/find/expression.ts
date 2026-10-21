@@ -14,7 +14,7 @@ import type { ProcessStat, ProcessView } from '../../../../../runtime/process-fi
 import { isVfsError, VFS_STRERROR } from '../../../../../vfs/vfs-error.js';
 import { findUnixGroup, findUnixUser } from '../../../../../shell/unix-accounts.js';
 import { globMatch } from '../../../utils/glob.js';
-import { resolve } from '../../../utils/path.js';
+import { operandPath } from '../../../utils/path.js';
 import { adjustMode, compileMode } from '../../../utils/mode-change.js';
 import { parseDateTime } from '../../../utils/parse-datetime.js';
 import { compileFormat, type CompiledFormat, type FileTypeLetter } from './format.js';
@@ -241,7 +241,7 @@ class Parser {
    * directory a link leads to, and nothing else, as path resolution does.
    */
   async statReference(path: string): Promise<ProcessStat> {
-    const absolute = resolve(this.environment.cwd, path);
+    const absolute = operandPath(this.environment.cwd, path);
     const vfs = this.environment.vfs;
     const directoryOnly = path.length > 1 && path.endsWith('/');
     try {
@@ -877,7 +877,7 @@ export async function parseFindCommand(args: readonly string[], environment: Par
   while (parser.position < args.length) {
     const arg = args[parser.position];
     if (!looksLikeExpression(arg, false)) {
-      const exists = await environment.vfs.exists(resolve(environment.cwd, arg)).catch((error: unknown) => {
+      const exists = await environment.vfs.exists(operandPath(environment.cwd, arg)).catch((error) => {
         if (isVfsError(error)) return false;
         throw error;
       });

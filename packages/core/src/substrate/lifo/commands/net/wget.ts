@@ -1,5 +1,5 @@
 import type { Command } from '../types.js';
-import { resolve } from '../../utils/path.js';
+import { operandPath } from '../../utils/path.js';
 import type { Kernel } from '../../kernel/index.js';
 import { hopInit, sendHop, walkRedirects } from './kernel-fetch.js';
 
@@ -96,7 +96,7 @@ function createWgetImpl(kernel?: Kernel): Command {
         await ctx.stderr.write(`HTTP request sent, awaiting response... ${response.status} ${response.statusText}\n`);
       }
 
-      const path = resolve(ctx.cwd, outputFile);
+      const path = operandPath(ctx.cwd, outputFile);
       (await ctx.vfs.writeFile(path, response.body));
 
       if (!options.quiet) {

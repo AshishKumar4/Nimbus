@@ -31,6 +31,7 @@
 import assert from 'node:assert/strict';
 
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
+import { sessionProcessEnv } from '../../packages/worker/src/session/process-env.ts';
 import { FENCED_WORK_MAX_ATTEMPT } from '../../packages/fabric/src/fenced-work.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
@@ -102,7 +103,8 @@ function fakeDirectory() {
 function setup({ hooks = {}, storage = new Map(), world, disk, directory = fakeDirectory(), notices = [] } = {}) {
   if (!world) {
     world = createFacetWorld(() => ({
-      async startProcess() { return { ok: true }; },
+      // What its start was handed: the process's env travels there, never in its module (ask 62).
+      async startProcess(args) { this.started = args; return { ok: true }; },
       async handleHttpRequest(request) { return Response.json({ ok: true, path: new URL(request.url).pathname }); },
     }));
   }
@@ -119,6 +121,7 @@ function setup({ hooks = {}, storage = new Map(), world, disk, directory = fakeD
   if (!disk) disk = createSqliteVfsTestHarness();
   const vfs = new SqliteVFS(disk.sql, disk.ctx);
   const fm = new FacetManager(ctx, env, processes, portRegistry, processHostFor, {
+    ...sessionProcessEnv(ctx.storage),
     notify: (line) => notices.push(line),
     resolveWorkerLaunchFallback: (recipe) => resolveDurableWorkerImage(vfs, recipe),
     ...hooks,
@@ -489,8 +492,8 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
 
   await reservePort(ctx, { owner: 'worker-A', preferredPort: 20802, occupiedPorts: NONE });
   await reservePort(ctx, { owner: 'worker-B', preferredPort: 20803, occupiedPorts: NONE });
-  const wa = await fm.spawnWorker('export default {}', 'worker-A', '/home/user', { port: 20802, durable: { owner: 'worker-A' }, env: { label: 'A' } });
-  const wb = await fm.spawnWorker('export default {}', 'worker-B', '/home/user', { port: 20803, durable: { owner: 'worker-B' }, env: { label: 'B' } });
+  const wa = await fm.spawnWorker('export default {}', 'worker-A', '/home/user', { port: 20802, durable: { owner: 'worker-A' }, modules: { 'label.js': 'export const label = "A";' } });
+  const wb = await fm.spawnWorker('export default {}', 'worker-B', '/home/user', { port: 20803, durable: { owner: 'worker-B' }, modules: { 'label.js': 'export const label = "B";' } });
   const ia = (await rowFor(ctx, wa.pid)).recipe.image;
   const ib = (await rowFor(ctx, wb.pid)).recipe.image;
   assert.equal(ia.runner, ib.runner, 'shared content-addressed runner');
@@ -606,7 +609,8 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
 
 // ── 9. $PORT / $NIMBUS_APP injection, and the mismatch diagnostic ───────────
 {
-  const { fm, ctx, world, self } = setup();
+  // A binding env is the embedder's to give back (resolveWorkerLaunch).
+  const { fm, ctx, world, self } = setup({ hooks: { resolveWorkerLaunch: async () => null } });
   await reservePort(ctx, { owner: 'worker-env', preferredPort: 20830, occupiedPorts: NONE, name: 'worker-web' });
   const started = await fm.spawnWorker('export default {}', 'worker-env', '/home/user', {
     durable: { owner: 'worker-env' }, env: { PORT: '9', NIMBUS_APP: 'wrong', KEEP: 'yes' },
@@ -618,7 +622,7 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
   assert.equal(app.status, 'failed');
   assert.equal(app.diagnostic, 'listened on 20831, owns 20830');
   const resolved = await resolveDurableWorkerImage(self.facetManager.vfs, (await rowFor(ctx, started.pid)).recipe);
-  assert.equal(resolved.env.PORT, '9', 'launch overlay was not persisted into the image');
+  assert.equal(resolved.env, null, 'no env, its own or the launch overlay, was persisted into the image');
 }
 {
   const { fm, ctx, self, vfs, notices, world } = setup();
@@ -634,9 +638,10 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
   const row = await rowFor(ctx, a.pid);
   assert.equal(row.injectedPort, 20730, 'the row records the injected port');
   assert.equal(row.port, 20730, 'the reserved port is the row\'s port from the start');
-  const booted = world.boots.at(-1).config.modules['worker.js'];
-  assert.ok(booted.includes('"NIMBUS_APP":"web"'), 'the executed module has $NIMBUS_APP set to the reservation name');
-  assert.ok(booted.includes('"PORT":"20730"'), 'the recipe\'s PORT=3000 was overridden by the reserved port');
+  const { env: startEnv } = world.boots.at(-1).instance.started;
+  assert.equal(startEnv.NIMBUS_APP, 'web', 'the process starts with $NIMBUS_APP set to the reservation name');
+  assert.equal(startEnv.PORT, '20730', 'the recipe\'s PORT=3000 was overridden by the reserved port');
+  assert.equal(world.boots.at(-1).config.modules['worker.js'].includes('"PORT":'), false, 'and no env is written into its module');
   assert.ok(!(await journalRows(ctx)).some((r) => JSON.stringify(r).includes('20730"') && JSON.stringify(r.recipe).includes('"PORT":"20730"')),
     'the injected env is never journalled into the recipe');
   const slot = await ctx.storage.get(`durable-slot:${owner}`);

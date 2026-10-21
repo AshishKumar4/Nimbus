@@ -117,7 +117,7 @@ export function joinExistingSession(self, shell, terminal, ws, tee, loadScrollba
         }
         catch { }
     }
-    shell.announcePrompt();
+    shell.resumePrompt();
     // Phase O is SKIPPED on warm rejoin (just like warm path of
     // initSession). The original cold-start banner is in the replay.
     // Settle to 'hydrated' as the terminal phase via setPhase so the

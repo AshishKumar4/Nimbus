@@ -39,6 +39,7 @@ import type { Awaitable, RuntimeFileHandle, RuntimeFsBridge, RuntimeOpenedFile, 
 import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 import { fsError, walkBeneath } from '../beneath-walk.js';
 import { modeAllows } from '../../vfs/posix-access.js';
+import { errnoCodeOf } from '../../vfs/vfs-error.js';
 import { openIdentified } from './filesystem.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES, DIRECTORY_BATCH_LIMIT, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES } from '../../constants.js';
 import { RESIDENT_PAGE_BYTES } from '@nimbus-sh/platform/limits.js';
@@ -48,6 +49,7 @@ import { readDirectoryPool, type ReadDirectoryPool } from './read-directory-pool
 import type { ReadDirectorySupervisor } from '../read-directory-batch.js';
 import type { VfsAcquireResult } from '../os-contracts.js';
 import type { ProcessFsJournal, ProcessFsOp, ProcessFsSession, ProcessFsStats } from '../../_shared/process-fs-client.js';
+import type { WaveTimers } from '@nimbus-sh/platform/wave-writer.js';
 
 /** A name as the store holds it: its lstat, and a symlink's text. */
 export interface ResidentEntry {
@@ -105,11 +107,14 @@ export interface ResidentNamespace {
   pages(key: string, revision: number, size: number, first: number, last: number): Promise<{ pages: Uint8Array[]; fetched: number } | null>;
   /** Fetch these files' bytes (each at its entry's revision) into the store in batched round trips. */
   fillMany(files: ReadonlyArray<readonly [string, ResidentEntry]>): Promise<void>;
-  /** The ACQUIRE barrier. */
-  barrier(): Promise<boolean>;
-  /** The same provenance cursor and ACQUIRE admission used by the normal barrier. */
+  /** The ACQUIRE barrier: landed when the store answers at the session's state as of it. */
+  barrier(options?: ResidentBarrierOptions): Promise<ResidentBarrier>;
+  /** What a barrier asks the session with (its cursor and options), for a delivery to answer from; null with no cursor. */
+  acquireArgs(): ResidentAcquireArgs | null;
+  /** Whether the store holds rows a repair could not vouch for: every barrier repairs until one does. */
+  repairOwed?(): boolean;
+  /** The store's provenance cursor. */
   cursor(): { epoch: string; rev: number } | null;
-  admit(answer: VfsAcquireResult): Promise<boolean>;
   /** Charge `bytes` of heap held outside the store to its budget: false when they do not fit. */
   reserve(bytes: number): boolean;
   /** Return what `reserve` charged. */
@@ -124,6 +129,46 @@ export interface ResidentNamespace {
    * holds.
    */
   onAdmitted?(listener: (key: string, dev: number, ino: number) => void): void;
+}
+
+/**
+ * What a barrier asks the session with: the store's cursor, and its ACQUIRE
+ * options. A process's own also carry `begin`, the watermark of its own
+ * changes when they were built, and `own`, its own debt then (acquireArgs).
+ */
+export interface ResidentAcquireArgs {
+  readonly epoch: string;
+  readonly cursor: number;
+  readonly options?: object;
+  readonly begin?: number;
+  readonly own?: number;
+}
+
+/** A read lease's terms, as an ACQUIRE answer carries them. */
+export type ResidentReadLease = NonNullable<VfsAcquireResult['readLease']>;
+
+export interface ResidentBarrierOptions {
+  /** An answer the caller took itself (a directory batch's), applied as the barrier applies one. */
+  readonly answer?: VfsAcquireResult;
+  /**
+   * An answer a delivery carried, with the arguments it was asked with: it
+   * stands in for asking when it answers from a cursor the store has reached,
+   * in its epoch.
+   */
+  readonly delivered?: { readonly args: ResidentAcquireArgs; readonly answer: VfsAcquireResult } | null;
+  /** A read lease asked with the barrier: `answered` once the session grants it, whatever the barrier does next. */
+  readonly lease?: { answered(terms: ResidentReadLease): void } | undefined;
+}
+
+export interface ResidentBarrier {
+  /** The store answers at the session's state as of this barrier. */
+  readonly landed: boolean;
+  /** The answer (asked, delivered or given) was applied as it was: not started again from, nor repaired past. */
+  readonly applied?: boolean;
+  /** The lease the answer granted, applied with it (vouched from now). */
+  readonly readLease?: ResidentReadLease;
+  /** The answer a delivery carried stood in for asking. */
+  readonly fromDelivery?: boolean;
 }
 
 /** A file's bytes, kept for a descriptor's lifetime: `release` when it closes. */
@@ -152,6 +197,19 @@ export interface ResidentFilesystem extends RuntimeFsBridge {
   pinContent(path: RuntimeFsPath, stat: RuntimeVfsStat): PinnedContent | null | Promise<PinnedContent | null>;
   /** Input from outside the process arrived: the barrier is owed before the next answer. */
   inbound(): void;
+  /**
+   * Input arrived and the program is about to run on it (a timer, a
+   * response, a relayed frame, a delivered answer): the barrier taken now,
+   * so a synchronous call in what runs next reads the session's state as of
+   * the input. `viaIo`: taken where I/O just arrived, which a trusted read
+   * lease answers without asking (nothing the process holds has changed: a
+   * change waits for the lease's recall). `delivered`: an answer the
+   * delivery carried, which stands in for asking when it can. Resolves once
+   * the barrier landed or failed (a failure is owed still).
+   */
+  catchUp(options?: { viaIo?: boolean; delivered?: ResidentBarrierOptions['delivered'] }): Promise<void>;
+  /** What a barrier asks the session with, for a delivery to answer from (ResidentNamespace.acquireArgs), with the process's watermark and own debt then. */
+  acquireArgs(): (ResidentAcquireArgs & { readonly begin: number; readonly own: number }) | null;
   /** A park's deadline elapsed; never install an abandoned directory open's late answer. */
   cancelPendingDirectories(): void;
   /** Whether writes are held that the session does not have yet. */
@@ -210,6 +268,8 @@ export interface ResidentFilesystemStats {
   pagesFetched: number;
   /** ACQUIRE barriers taken. */
   barriers: number;
+  /** Barriers owed by input a trusted read lease answered without asking. */
+  leasedBarriers: number;
   /** Wall time the process spent waiting on the session for any of the above, in ms. */
   waitMs: number;
   /** Session interactions begun: calls, listings, lookups, fills, pages and barriers. */
@@ -363,6 +423,15 @@ export interface ResidentDelegation {
   readonly isHomeRoot?: (key: string) => boolean;
   /** The process's live umask, for what a caller that cannot wait makes outside a held subtree (HolderOptions.umask). */
   readonly umask?: () => number;
+  /** The timers and clock the process's filesystem runs on (HolderOptions.timers, now): the runtime's own, not a program's. */
+  readonly timers?: WaveTimers;
+  readonly now?: () => number;
+  /**
+   * Whether this run asks a read lease with each barrier (ProcessFsClient.
+   * readLeaseAsk). A run that can stop and run again takes none: when it
+   * asks, and what it is answered, are the run before's.
+   */
+  readonly readLeases?: () => boolean;
   /** The process's own store's write log (HolderOptions.journal). */
   readonly journal?: ProcessFsJournal;
   readonly readDirectories?: ReadDirectorySupervisor['fsReadDirectories'];
@@ -377,7 +446,7 @@ export interface ResidentDelegation {
 
 export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentNamespace, delegation?: ResidentDelegation): ResidentFilesystem {
   let directoryPool: ReadDirectoryPool | null = null;
-  const counts: ResidentFilesystemStats = { local: 0, delegated: {}, lookups: 0, listings: 0, treeListings: 0, fills: 0, filledBytes: 0, readAhead: 0, barriers: 0, waitMs: 0, sessionCalls: 0, notResident: 0, pinnedBytes: 0, pins: 0, provisionalBytes: 0, pagedReads: 0, pagesFetched: 0 };
+  const counts: ResidentFilesystemStats = { local: 0, delegated: {}, lookups: 0, listings: 0, treeListings: 0, fills: 0, filledBytes: 0, readAhead: 0, barriers: 0, leasedBarriers: 0, waitMs: 0, sessionCalls: 0, notResident: 0, pinnedBytes: 0, pins: 0, provisionalBytes: 0, pagedReads: 0, pagesFetched: 0 };
   /** A call of `synchronous` is running: it answers now or not at all (NOT_NOW). */
   let now = false;
   // Every session interaction begins here, given as what would begin it: the
@@ -434,35 +503,56 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     fill: (key, entry) => begin(() => resident.fill(key, entry)),
     pages: (key, revision, size, first, last) => begin(() => resident.pages(key, revision, size, first, last)),
     fillMany: (files) => begin(() => resident.fillMany(files)),
-    // A barrier that lands retires what this process changed and the session answered before it began.
-    barrier: () => {
+    // A barrier that lands retires what this process changed and the session answered before it began:
+    // a delivered answer's, when its arguments were built (acquireArgs); one this process did not build vouches for nothing.
+    barrier: (options) => {
       const begun = holder?.barrierBegun();
-      return begin(() => resident.barrier()).then((ok) => {
-        if (ok && begun !== undefined) holder!.retire(begun);
-        return ok;
+      return begin(() => resident.barrier(options)).then((result) => {
+        // A given answer was asked when its caller asked, not now: it retires nothing.
+        const from = options?.answer ? undefined : result.fromDelivery ? options?.delivered?.args.begin : begun;
+        if (result.landed && typeof from === 'number') holder?.retire(from);
+        return result;
       });
     },
+    acquireArgs: () => resident.acquireArgs(),
+    ...(resident.repairOwed === undefined ? {} : { repairOwed: () => resident.repairOwed!() }),
     cursor: () => resident.cursor(),
-    admit: (answer) => resident.admit(answer),
     reserve: (bytes) => resident.reserve(bytes),
     release: (bytes) => resident.release(bytes),
   };
   const delegated = (name: string): void => { counts.delegated[name] = (counts.delegated[name] ?? 0) + 1; };
   /**
-   * What the barrier is owed: one more for each change, input, or send of
-   * this process's (a grant given back with it); `caughtUp` is as much of it
-   * as a barrier that landed covered, which is what was owed when it began.
+   * What the barrier is owed, of two kinds: input from outside the process
+   * (`inbound`), and the process's own changes the store has not seen (a
+   * wave its client sent, a call it made to the session after `changing`, a
+   * client call's answer). `caught` is as much of each as a barrier that
+   * landed covered: what was owed when it began, or (an answer a delivery
+   * carried) its own debt as of the delivery's arguments.
    */
-  let owed = 0;
-  let caughtUp = 0;
-  const owes = (): boolean => owed > caughtUp;
-  /** The barrier, for what is owed now: true once it lands (a debt made while it ran is owed still). */
-  const catchUp = (): Promise<boolean> => {
-    const at = owed;
+  const owed = { input: 0, own: 0 };
+  const caught = { input: 0, own: 0 };
+  const owes = (): boolean => owed.input > caught.input || owed.own > caught.own;
+  /**
+   * The barrier, for what is owed now: true once it lands (a debt made while
+   * it ran is owed still). An answer a delivery carried stands in only if no
+   * own debt arose since its arguments were built: an own change the session
+   * answered meanwhile is not in it. It asks a read lease with it where this
+   * run takes them, held from the moment it is granted and vouched once
+   * applied.
+   */
+  const catchUp = (given?: ResidentBarrierOptions['delivered']): Promise<boolean> => {
+    const at = { input: owed.input, own: owed.own };
+    const own = given?.args.own;
+    const delivered = given && typeof own === 'number' && owed.own <= own ? given : undefined;
     counts.barriers++;
-    return store.barrier().then((ok) => {
-      if (!ok || !store.ready()) return false;
-      caughtUp = Math.max(caughtUp, at);
+    const client = holder?.client;
+    const ask = client !== undefined && delegation?.readLeases?.() === true ? client.readLeaseAsk() : null;
+    const lease = ask === null ? undefined : { answered: (terms: ResidentReadLease) => client!.readLeaseAnswered(terms) };
+    return store.barrier({ ...(delivered ? { delivered } : {}), ...(lease ? { lease } : {}) }).then((result) => {
+      if (!result.landed || !store.ready()) return false;
+      if (ask !== null && result.readLease && !result.fromDelivery) client!.readLeased(result.readLease, ask);
+      caught.input = Math.max(caught.input, at.input);
+      caught.own = Math.max(caught.own, result.fromDelivery && typeof own === 'number' ? own : at.own);
       return true;
     });
   };
@@ -484,10 +574,12 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       ...(delegation.grantInos === undefined ? {} : { grantInos: delegation.grantInos }),
       ...(delegation.journal === undefined ? {} : { journal: delegation.journal }),
       ...(delegation.umask === undefined ? {} : { umask: delegation.umask }),
+      ...(delegation.timers === undefined ? {} : { timers: delegation.timers }),
+      ...(delegation.now === undefined ? {} : { now: delegation.now }),
       // A call of the synchronous view decides what no held subtree does, provisionally.
       cannotWait: () => now,
       // What it sent changed the session: the store catches up before it answers next.
-      sent: () => { owed++; directoryPool?.invalidate(); },
+      sent: () => { owed.own++; directoryPool?.invalidate(); },
     });
     // Each row the view takes in reaches the file the process holds by that number, in the same turn.
     const decisions = holder.provisional;
@@ -851,9 +943,9 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     directoryPool?.invalidate();
     delegated(name);
     try {
-      return after(call(), (value) => { owed++; return value; });
+      return after(call(), (value) => { owed.own++; return value; });
     } catch (error) {
-      owed++;
+      owed.own++;
       throw error;
     }
   };
@@ -880,8 +972,27 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       });
   }
 
-  fs.inbound = () => { owed++; directoryPool?.invalidate(); };
-  fs.cancelPendingDirectories = () => { owed++; directoryPool?.cancelPending(); };
+  fs.inbound = () => { owed.input++; directoryPool?.invalidate(); };
+  fs.catchUp = async (options = {}) => {
+    fs.inbound();
+    // Under a trusted read lease, I/O just arrived changes nothing this
+    // process holds: the input stays owed, and what runs next reads the
+    // standing view. Not past its own changes the store has not seen: the
+    // lease trusts only what its client logged, and a change it made at the
+    // session by name is not there. A delivery's answer, or a store owed a
+    // repair, asks.
+    if (options.viaIo === true && !options.delivered && owed.own <= caught.own && holder?.client.readTrusted() === true
+      && store.ready() && store.repairOwed?.() !== true) {
+      counts.leasedBarriers++;
+      return;
+    }
+    await catchUp(options.delivered);
+  };
+  fs.acquireArgs = () => {
+    const args = store.acquireArgs();
+    return args === null ? null : { ...args, begin: holder?.barrierBegun() ?? 0, own: owed.own };
+  };
+  fs.cancelPendingDirectories = () => { owed.input++; directoryPool?.cancelPending(); };
   fs.holding = () => holder?.pending() ?? false;
   fs.logHeld = () => holder?.logHeld();
   // What leaves the process is preceded by everything it logged.
@@ -1439,7 +1550,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
         try {
           await answered;
         } finally {
-          owed++;
+          owed.own++;
         }
         // The session's answer supersedes the held names it changed, even
         // while their grant remains held. Its rename moves the one registry's
@@ -1458,18 +1569,34 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
 
   // Changes by name a held subtree holds are decided here; any other is the session's, through the client.
   // A whole file written by name: made or emptied, written and closed here
-  // where the holder decides that open, as the three calls are.
+  // where the holder decides that open, as the three calls are. One that
+  // makes its parents is decided here too where its directory is (making
+  // none); where a directory on the way is missing, the session makes them.
   const bySessionWriteFile = fs.writeFile;
+  /** The walk to a file a write names; one that makes its parents and meets a directory missing on the way is the session's. */
+  const walkToWrite = (path: RuntimeFsPath, makesParents: boolean): Walk | Delegate | Promise<Walk | Delegate> => {
+    if (!makesParents) return walkFor(path, true);
+    const missing = (error: unknown): Delegate => {
+      if (errnoCodeOf(error) === 'ENOENT') return DELEGATE;
+      throw error;
+    };
+    try {
+      const walk = walkFor(path, true);
+      return walk instanceof Promise ? walk.catch(missing) : walk;
+    } catch (error) {
+      return missing(error);
+    }
+  };
   fs.writeFile = (path, bytes, options) => {
-    if (holder === null || options?.createParents === true || options?.expectedRevision !== undefined) return bySessionWriteFile(path, bytes, options);
+    if (holder === null || options?.expectedRevision !== undefined) return bySessionWriteFile(path, bytes, options);
     const data = typeof bytes === 'string' ? new TextEncoder().encode(bytes) : bytes;
     const flags: RuntimeOpenFlags = { write: true, create: true, truncate: true, mode: 0o666, ...(options?.umask === undefined ? {} : { umask: options.umask }) };
-    const local = decide<number>(() => after(walkFor(path, true), (walk) => {
+    const local = decide<number>(() => after(walkToWrite(path, options?.createParents === true), (walk) => {
       if (walk === DELEGATE || !decidable(walk.key, walk)) return DELEGATE;
       return holder!.writeFile(walk.key, pathOf(path), data, flags) ?? DELEGATE;
     }));
     return after(local, (done) => (done !== DELEGATE ? done
-      : now ? provisionally(path, true, (key, row) => holder!.provisional.writeFile(key, pathOf(path), data, row, options?.umask) && (holder!.entry(key)?.revision ?? 0))
+      : now && options?.createParents !== true ? provisionally(path, true, (key, row) => holder!.provisional.writeFile(key, pathOf(path), data, row, options?.umask) && (holder!.entry(key)?.revision ?? 0))
       : bySessionWriteFile(path, bytes, options)));
   };
   const bySessionMkdir = fs.mkdir;

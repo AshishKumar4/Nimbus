@@ -62,6 +62,7 @@ A behavioral probe suite in `tests/behavioral/` covers this table. Run it agains
 | python / python3 — CPython 3.13 on wasm32-wasi (script + -c + -m + stdlib) | ✅ |
 | ruby / ruby3 — ruby.wasm-based Ruby 3.3 (script + -e + -r + stdlib) | ✅ |
 | clang — LLVM 8 → wasm32-wasi-nimbus, modern wasi-libc sysroot default, multi-TU + user headers + fopen | ✅ |
+| tsc — tsrs 0.18.0, the experimental Rust port of TypeScript 7.1 built to wasm, when the project installs no typescript (check + emit, no --watch); a project's own typescript runs as installed | Alpha |
 | Interactive REPLs — python, ruby, node, bun (see REPL for state semantics) | ✅ |
 | npm install against the live registry, with cross-session L2 cache | ✅ |
 | npm alias dependencies such as alias: "npm:&lt;pkg&gt;@&lt;version&gt;" | ✅ |

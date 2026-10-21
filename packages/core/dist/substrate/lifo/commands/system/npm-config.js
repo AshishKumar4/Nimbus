@@ -16,7 +16,7 @@
  * config above the local prefix is not looked for.
  */
 import { npmDefinitions, envReplace, parseField, typeDefs, typeDescription, ini, nopt } from '../../../../_shared/npm-libs.js';
-import { dirname, resolve } from '../../utils/path.js';
+import { dirname, operandPath, resolve } from '../../utils/path.js';
 const { definitions, shorthands } = npmDefinitions;
 // npm's definitions in nopt's terms (@npmcli/config's constructor).
 const TYPES = {};
@@ -116,15 +116,15 @@ export async function loadNpmConfig(vfs, cwd, env, argv) {
         }
         localPrefix ||= cwd;
     }
-    const userconfig = () => String(get('userconfig') ?? resolve(home, '.npmrc'));
-    const projectFile = resolve(localPrefix, '.npmrc');
+    const userconfig = () => String(get('userconfig') ?? operandPath(home, '.npmrc'));
+    const projectFile = operandPath(localPrefix, '.npmrc');
     const global = get('global') === true || get('location') === 'global';
-    if (!global && projectFile !== userconfig())
+    if (!global && resolve('/', projectFile) !== resolve('/', userconfig()))
         layer('project', projectFile, await readRc(projectFile));
     const userFile = userconfig();
     layer('user', userFile, await readRc(userFile));
     const prefix = String(get('prefix') ?? globalPrefix);
-    const globalFile = String(get('globalconfig') || resolve(prefix, 'etc/npmrc'));
+    const globalFile = String(get('globalconfig') || operandPath(prefix, 'etc/npmrc'));
     layer('global', globalFile, await readRc(globalFile));
     layer('default', 'default values', { ...defaults, prefix: globalPrefix });
     // npm's validation of every layer but the command line's (already) and
