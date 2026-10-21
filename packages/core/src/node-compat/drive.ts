@@ -31,22 +31,32 @@ export interface Step {
  * be written, is copied instead and left as it is.
  */
 function asGiven(error: unknown, path: Named | undefined, dest: Named | undefined): unknown {
-  const renamed = [['path', path], ['dest', dest]] as const;
-  if (!(error instanceof Error) || !renamed.some(([field, named]) => named !== undefined && named.given !== named.abs && Reflect.get(error, field) === named.abs)) {
+  if (!(error instanceof Error)) return error;
+  const renamesPath = path !== undefined && path.given !== path.abs && Reflect.get(error, 'path') === path.abs;
+  const renamesDest = dest !== undefined && dest.given !== dest.abs && Reflect.get(error, 'dest') === dest.abs;
+  if (!renamesPath && !renamesDest) return error;
+  const rename = (fields: Record<string, unknown>, message: string): string => {
+    let named = message;
+    if (renamesPath) {
+      fields.path = path.given;
+      named = named.replace(`'${path.abs}'`, `'${path.given}'`);
+    }
+    if (renamesDest) {
+      fields.dest = dest.given;
+      named = named.replace(`'${dest.abs}'`, `'${dest.given}'`);
+    }
+    return named;
+  };
+  // A program probing paths (statSync in a try) meets one per probe: where the error can be written, it is.
+  if (!Object.isFrozen(error) && writable(error, 'message') && (!renamesPath || writable(error, 'path')) && (!renamesDest || writable(error, 'dest'))) {
+    const fields: Record<string, unknown> = {};
+    error.message = rename(fields, error.message);
+    if (renamesPath) Reflect.set(error, 'path', fields.path);
+    if (renamesDest) Reflect.set(error, 'dest', fields.dest);
     return error;
   }
-  return withFields(error, (fields, message) => {
-    for (const [field, named] of renamed) {
-      if (named === undefined || fields[field] !== named.abs) continue;
-      fields[field] = named.given;
-      message = message.split(`'${named.abs}'`).join(`'${named.given}'`);
-    }
-    return message;
-  });
+  return withFields(error, rename);
 }
-
-/** The fields Node's system errors carry, however a face defines them (enumerable or not, own or a getter's). */
-const ERRNO_FIELDS = ['code', 'errno', 'syscall', 'path', 'dest'] as const;
 
 /** Whether `error`'s `field` takes a new value where it stands: an own writable value, or none on an error that takes new ones. */
 function writable(error: Error, field: string): boolean {
@@ -54,12 +64,13 @@ function writable(error: Error, field: string): boolean {
   return own === undefined ? Object.isExtensible(error) : own.writable === true;
 }
 
+/** The fields Node's system errors carry, however a face defines them (enumerable or not, own or a getter's). */
+const ERRNO_FIELDS = ['code', 'errno', 'syscall', 'path', 'dest'] as const;
+
 /**
- * `error` with its fields and message as `change` makes them: changed where
- * it stands when every changed one can be (a program probing paths, statSync
- * in a try, meets one per probe, and a copy costs a probe its own error
- * again), else a new error with `error`'s fields, `error` its cause and its
- * stack `error`'s, and `error` left as it is.
+ * A new error with `error`'s fields and message as `change` makes them;
+ * `error` is its cause and its stack `error`'s, and `error` is left as it
+ * is. No stack is captured for it.
  */
 export function withFields(error: Error, change: (fields: Record<string, unknown>, message: string) => string): Error {
   const fields: Record<string, unknown> = { ...error };
@@ -68,12 +79,6 @@ export function withFields(error: Error, change: (fields: Record<string, unknown
     if (value !== undefined) fields[field] = value;
   }
   const message = change(fields, error.message);
-  const changed = ERRNO_FIELDS.filter((field) => fields[field] !== Reflect.get(error, field));
-  if (!Object.isFrozen(error) && writable(error, 'message') && changed.every((field) => writable(error, field))) {
-    for (const field of changed) Reflect.set(error, field, fields[field]);
-    error.message = message;
-    return error;
-  }
   const limit: unknown = Reflect.get(Error, 'stackTraceLimit');
   Reflect.set(Error, 'stackTraceLimit', 0);
   let copy: Error;
