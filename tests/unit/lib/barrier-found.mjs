@@ -235,6 +235,21 @@ const FOUND = {
     schedule: [['release', 'listing'], ['peer', 'rename', 'top', 'new'], ['own', 'stat', 'top'], ['own', 'readFile', 'mid'], ['release', 'acquire'], ['hold', 'wave'], ['root', 'chown', 'x', 1000],
       ['sync', 'readFile', 'x/e/g'], ['own', 'readFile', 'x/e/g'], ['own', 'unlink', 'd/n'], ['settle']],
   },
+  'an awaited read of a directory a peer moved is answered, not refused (5786)': {
+    park: 5786,
+    schedule: [['own', 'opendir', 'x'], ['release'], ['own', 'stat', 'd/e/g'], ['hold', 'listing'], ['input'], ['sync', 'stat', 'd/e'], ['peer', 'unlink', 'top'], ['sync', 'stat', 'x'],
+      ['settle'], ['peer', 'chmod', 'd/e/g', 0o640], ['release', 'listing'], ['release'], ['own', 'pread', 'mid', 4200000], ['peer', 'chmod', 'd/e/g', 0o600], ['peer', 'write', 'd/f', 'c5786.1'],
+      ['own', 'pread', 'mid', 0], ['input'], ['settle'], ['input'], ['own', 'readFile', 'mid'], ['sync', 'stat', 'x/e'], ['unstall'], ['own', 'opendir', 'z'], ['own', 'stat', 'd/f'],
+      ['own', 'stat', 'd/n'], ['hold', 'delivery'], ['own', 'readFile', 'x/h'], ['sync', 'readFile', 'mid'], ['peer', 'rename', 'd', 'z'], ['sync', 'readdir', 'd/f'], ['release'],
+      ['own', 'readFile', 'd/e'], ['own', 'readFile', 'x']],
+  },
+  'a directory the process removed and made again lists only what it made there since (5891)': {
+    park: 5891,
+    schedule: [['sync', 'readdir', 'x/e'], ['own', 'pread', 'mid', 8400000], ['sync', 'chmod', 'd/f', 0o600], ['own', 'unlink', 'top'], ['input'], ['input'], ['own', 'rename', 'x/h', 'd/e/g'],
+      ['sync', 'write', 'd/e/g', 'c5891.3'], ['own', 'opendir', 'top'], ['own', 'pread', 'big', 8400000], ['own', 'readFile', 'mid'], ['sync', 'readFile', 'x/h'], ['sync', 'rename', 'd/e', 'z'],
+      ['sync', 'write', 'top', 'c5891.5'], ['own', 'unlink', 'd/f'], ['own', 'rmdir', 'x'], ['own', 'mkdir', 'd/e'], ['own', 'write', 'd/e/g', 'c5891.7'], ['release', 'delivery'],
+      ['hold', 'listing'], ['own', 'readdir', 'x/h'], ['release', 'delivery'], ['sync', 'readdir', 'd/e'], ['sync', 'write', 'top', 'c5891.8'], ['release', 'listing']],
+  },
   'a file fetched in batches that the process read stays resident past a repair (4033)': {
     park: 4033,
     schedule: [['poison'], ['own', 'stat', 'x'], ['sync', 'readdir', 'd/e'], ['own', 'readFile', 'mid'], ['sync', 'readFile', 'x/e/g'], ['release', 'listing'],
@@ -285,6 +300,15 @@ const GAPS = {
   'an awaited read of a file the session holds is answered, not refused (5425) [node]': {
     lacks: 'S refuses an awaited read EAGAIN where the session holds the file (closed by the cutover: RF waits for its fill); meanwhile fs.promises.readFile can reject EAGAIN',
     shows: 'own readFile x/e/g answered EAGAIN',
+  },
+  'an awaited read of a directory a peer moved is answered, not refused (5786) [node]': {
+    lacks: 'S refuses an awaited read EAGAIN where the session answers it (closed by the cutover: RF waits for the session); meanwhile fs.promises.readFile can reject EAGAIN',
+    shows: 'own readFile d/e answered EAGAIN',
+  },
+  'a directory the process removed and made again lists only what it made there since (5891) [node]': {
+    lacks: 'S lists, in a directory the process made, a name its own earlier write left under the directory that was there before (closed by the cutover: one own state, RF\'s); '
+      + 'meanwhile readdirSync can list a file that is not there',
+    shows: 'sync readdir d/e answered ["g"]',
   },
   'a file a peer made and the process then wrote is listed while its directory is relisted (4751) [node]': {
     lacks: 'B2: a directory whose relist is on its way answers its listing without the names the process wrote there since (the cutover\'s relist fence); '
