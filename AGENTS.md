@@ -459,6 +459,14 @@ again.
   run slower than another of the same code for a whole run. A red set is
   confirmed on four fresh throwaways, and the probe is red only when that
   set is red too. Run by hand without them, a paired probe exits 2.
+  When the baseline's release and the candidate's deploy the same bytes
+  (`deployedDigest` in `scripts/ci/lib/release.mjs`: the module, the app's
+  config and `packages/worker/public`), the timing measures nothing. The
+  suite then skips these probes and stands up no throwaways. It prints
+  `paired perf: skipped, deployed bytes equal to <baseline> (digest …)`, and
+  the verdict records it as `pairedSkipped`. A run that names a paired probe
+  (`--only`, `--repeat`) runs it on equal bytes too: an A/A run, or a change
+  to the probe or its grader.
 - A red row whose session socket closed 1006 (the session ledger records
   it) or that shows `E_NIMBUS_DO_OVERLOADED` is attributed from Workers Logs
   and traces by the exact error on each session's object

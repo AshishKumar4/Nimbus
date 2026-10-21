@@ -46,6 +46,11 @@
 // of the candidate), runs those probes in a task of their own beside the
 // parts, and deletes the throwaways when the run ends. A paired probe red
 // there is run again on a fresh set of four, and is red only if red on both.
+// When the baseline's release and the candidate's deploy the same bytes
+// (lib/release.mjs deployedDigest), the timing would measure nothing: a
+// selection that took the paired probes by default skips them, and the
+// verdict says so (`pairedSkipped`). A run that names one (--only, --repeat)
+// runs it whatever the bytes, as a check of the probe or of the grader does.
 //
 // A red row whose session socket closed 1006 (the run's session ledger) or
 // that shows E_NIMBUS_DO_OVERLOADED is attributed from the platform's own
@@ -146,11 +151,13 @@ try {
 const skip = flags.skip ?? (hosted ? '' : PROBE_TARGET_SKIPS.join(','));
 const throwaway = flags.deploy ?? target[2];
 const repeats = (flags.repeat ?? '').split(',').filter(Boolean);
+const repeated = (probe) => repeats.some((name) => namesProbe(selectionNames(name), `${probe}.mjs`));
 // The paired probes the suite selects, and those it repeats, need the arms;
 // a hosted demo's checks are named, and none is paired.
 const pairedInSuite = hosted ? [] : PAIRED_PROBES.filter((probe) => selects({ only: flags.only, skip }, `${probe}.mjs`));
-const paired = hosted ? [] : PAIRED_PROBES.filter((probe) => pairedInSuite.includes(probe)
-  || repeats.some((name) => namesProbe(selectionNames(name), `${probe}.mjs`)));
+const paired = hosted ? [] : PAIRED_PROBES.filter((probe) => pairedInSuite.includes(probe) || repeated(probe));
+// A paired probe this run names runs even on equal bytes; only the suite's default selection skips them.
+const pairedNamed = paired.some((probe) => repeated(probe) || namesProbe(selectionNames(flags.only), `${probe}.mjs`));
 // An --only that names nothing but paired probes needs no parts.
 const suite = !flags.only || selectionNames(flags.only).some((name) => !PAIRED_PROBES.some((probe) => namesProbe([name], `${probe}.mjs`)));
 
@@ -178,6 +185,8 @@ const onArmada = async (job) => {
 let arms = null;
 /** This run's own directory (lib/run-dir.mjs), opened when it fetches a release. */
 let runDir = null;
+/** { baseline, digest } when the paired probes are skipped: the baseline deploys the candidate's bytes. */
+let pairedSkipped = null;
 /** The deployment each throwaway this run grades must serve throughout: its upload's, or the target's when this run did not upload it. */
 const expected = {};
 let status = 0;
@@ -203,12 +212,19 @@ try {
       for (const line of [...left, ...(left.length > 0 ? runDir.keep() : runDir.close())]) console.error(`remote-probes: LEFT BEHIND ${line}`);
     });
   }
-  const { fetchRelease } = await import('./lib/release.mjs');
+  const { deployedDigest, fetchRelease } = await import('./lib/release.mjs');
   const built = await Promise.allSettled(commits.map((commit) => fetchRelease({ repo, sha: commit, targets: ['apps/probe'], into: join(runDir.dir, 'releases') })));
   const releases = {};
   for (const [i, outcome] of built.entries()) {
     if (outcome.status === 'rejected') throw outcome.reason;
     releases[commits[i]] = outcome.value.dir;
+  }
+  if (baseline && !pairedNamed) {
+    const digest = deployedDigest(repo, releases[sha], 'apps/probe');
+    if (deployedDigest(repo, releases[baseline], 'apps/probe') === digest) {
+      pairedSkipped = { baseline, digest };
+      console.log(`paired perf: skipped, deployed bytes equal to ${baseline.slice(0, 12)} (digest ${digest})`);
+    }
   }
   signals(true);
   if (flags.deploy) {
@@ -221,7 +237,7 @@ try {
     const { readState, throwawayStatePath } = await import('../../tests/behavioral/_deploy-target.mjs');
     expected[`target ${throwaway}`] = flags.deploy ? readState(throwawayStatePath(repo, throwaway))?.versionId : (await deployments())[`target ${throwaway}`];
   }
-  if (baseline) {
+  if (baseline && !pairedSkipped) {
     console.error(`remote-probes: ${paired.join(', ')} graded against ${baseline.slice(0, 12)}${baseline === sha ? ' (the candidate itself)' : ''}`);
     arms = pairedPreviews({ repo, runDir });
     await arms.standUp({ baseline, candidate: sha, releases });
@@ -323,7 +339,7 @@ async function probeRun({ baseline, releases }) {
   const partSkip = [skip, ...PAIRED_PROBES].filter(Boolean).join(',');
   const items = [
     ...(suite ? Array.from({ length: parts }, (_, i) => ({ task: `part ${i + 1}/${parts}`, part: `${i + 1}/${parts}`, only: flags.only ?? '', skip: partSkip, jobs })) : []),
-    ...(pairedInSuite.length > 0 ? [{ task: 'paired perf', part: '1/1', only: pairedInSuite.join(','), skip, jobs: 1 }] : []),
+    ...(pairedInSuite.length > 0 && !pairedSkipped ? [{ task: 'paired perf', part: '1/1', only: pairedInSuite.join(','), skip, jobs: 1 }] : []),
     ...repeats.flatMap((probe) => Array.from({ length: times }, (_, i) => ({ task: `${probe} #${i + 1}`, part: '1/1', only: probe, skip, jobs: 1 }))),
   ];
   let run;
@@ -425,7 +441,7 @@ async function probeRun({ baseline, releases }) {
     mkdirSync(state, { recursive: true });
     const report = join(state, `${new Date().toISOString().replace(/[-:]/g, '').slice(0, 15)}-${sha.slice(0, 12)}-${jobId}.json`);
     writeFileSync(report, `${scrub(JSON.stringify({ commit: sha, target: throwaway ? `throwaway:${throwaway}` : hosted ? `hosted:${hosted}` : 'staging', base, job: jobId,
-      ...(paired.length > 0 ? { paired } : {}), problems, tasks }, null, 2))}\n`);
+      ...(paired.length > 0 ? { paired } : {}), ...(pairedSkipped ? { pairedSkipped: { why: 'deployed bytes equal', ...pairedSkipped } } : {}), problems, tasks }, null, 2))}\n`);
     console.log(`remote-probes: ${status === 0 ? 'every row green' : status === 1 ? 'red rows above' : 'not every task was graded'}; verdict ${report} (job ${jobId})`);
     return status;
   } catch (error) {
