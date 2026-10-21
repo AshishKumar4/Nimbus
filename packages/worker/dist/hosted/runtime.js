@@ -24,6 +24,8 @@ import { adoptCtxExports, supervisorEntrypoint } from '@nimbus-sh/fabric/composi
 import { onColdStart } from '@nimbus-sh/fabric/generation.js';
 import { removeLegacyGeneratedImages } from '../facets/legacy-images.js';
 import { hostNamespaceBinding } from '@nimbus-sh/fabric/host-dispatch.js';
+import { oneShotPlacement } from '@nimbus-sh/fabric/one-shot-peer.js';
+import { openTerminals } from '../session/shell-socket.js';
 import { devServersRespawned, restoreDevServers } from '../session/dev-servers.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 const HostedTask = z.enum(['resident-launch', 'resident-keepalive', 'log-flush', 'log-janitor', 'hosting-watch']);
@@ -78,6 +80,11 @@ class RuntimeOwner {
         this.processEnv = options.resolveProcessEnv === undefined ? {} : { resolveProcessEnv: options.resolveProcessEnv };
         hostNamespaceBinding(options.env, 'HostedRuntime');
         this.supervisorDeliveries = openSupervisorDeliveries(options.ctx);
+        // What may want this session's thread besides a one-shot (one-shot-peer.ts #threadWanted).
+        oneShotPlacement(options.ctx, options.env).wantedBy({
+            terminals: () => openTerminals(options.ctx.getWebSockets()),
+            ports: () => options.ports.getAll().length,
+        });
         const exports = Reflect.get(options.ctx, 'exports');
         if (!supervisorEntrypoint(exports)) {
             throw new Error('Export the configured supervisor entrypoint and call composeFabric before composing a hosted runtime');

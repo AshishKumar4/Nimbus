@@ -10,12 +10,15 @@
  * 0.04-0.12 s with the same run on another Durable Object, whose worker runs
  * on that object's thread (verdict 20261021T111038-40692a3b802a).
  *
- * So a session keeps one sibling, its peer, and runs a one-shot there when
- * the peer is warm for it: when the peer answered a call of the same worker
- * within ONE_SHOT_WARM_MS. When it is not, the call runs in the session as
- * before, and the peer is warmed for the next one beside it. A cold peer's
- * first call cost 2.4-3.1 s against 0.5-0.7 s warm, more than most runs
- * hold the session, so it is never paid on a call.
+ * So a session keeps one sibling, its peer, and runs a one-shot there while
+ * something besides the run wants the session's thread (#threadWanted) and
+ * the peer is warm for it: when the
+ * peer answered a call of the same worker within ONE_SHOT_WARM_MS. A wanted
+ * thread and a cold peer run the call in the session as before, and warm the
+ * peer for the next one beside it: a cold peer's first call cost 2.4-3.1 s
+ * against 0.5-0.7 s warm, more than most runs hold the session, so it is
+ * never paid on a call. An unwanted thread runs the call in the session and
+ * warms nothing: there, a run is no faster on the peer (design-d1-placement-b.md).
  *
  * The run is the session's wherever it runs. Its SUPERVISOR binding is the
  * one the session minted for it (its pid, and so its credential; its
@@ -77,14 +80,25 @@ declare function answerSchema<R>(): z.ZodDiscriminatedUnion<[z.ZodObject<{
 }, z.core.$strip>, z.ZodObject<{
     ok: z.ZodLiteral<"preamble missing">;
 }, z.core.$strip>], "ok">;
+/** What may want a session's thread besides a run, as the session reads it (OneShotPlacement.wantedBy). */
+export interface SessionDemand {
+    /** Terminals with an open socket: the session's own and each named one. */
+    terminals(): number;
+    /** Ports a process of the session listens on. */
+    ports(): number;
+}
 /** What /api/_diag/session shows of a session's one-shots: where each of the last ran, and its peer. */
 export interface OneShotPlacementCall {
     tag: string;
     /** Its worker, as warmth knows it (workerOf): '' for one only the peer object's warmth decides. */
     worker: string;
     host: 'session' | 'peer';
+    /** What wanted the session's thread as it started (#threadWanted): none, and it ran in the session. */
+    wants: ThreadWant[];
     at: number;
 }
+/** What may want a session's thread while a one-shot computes there (OneShotPlacement #threadWanted). */
+export type ThreadWant = 'terminal' | 'port' | 'run';
 /** The placement of the one-shots of the Durable Object whose state is `ctx`, its peers in `env`'s host namespace. */
 export declare function oneShotPlacement(ctx: DurableObjectState, env: object): OneShotPlacement;
 /** What /api/_diag/session shows of a session's one-shot placement. */
@@ -110,6 +124,8 @@ export declare function oneShotPlacementDiagnostics(ctx: object): OneShotPlaceme
 export declare class OneShotPlacement {
     #private;
     constructor(ctx: DurableObjectState, env: object);
+    /** What may want the session's thread besides a run, as its session reads it. */
+    wantedBy(demand: SessionDemand): void;
     /**
      * A one-shot's facet: each call runs on the peer when the peer is warm for
      * its worker, else in this session. A local pool is opened either way: a

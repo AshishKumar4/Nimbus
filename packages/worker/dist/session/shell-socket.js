@@ -121,6 +121,18 @@ function openShellSockets(sockets, now, terminal) {
 function shellAttachment(seenAt, terminal) {
     return { kind: SHELL_KIND, ...(seenAt === undefined ? {} : { seenAt }), ...(terminal === undefined ? {} : { terminal }) };
 }
+/** How many terminals, the session's own and each named one, have an open shell socket among `sockets`. */
+export function openTerminals(sockets, now = Date.now()) {
+    const terminals = new Set();
+    for (const ws of sockets) {
+        if (ws.readyState !== WebSocket.OPEN)
+            continue;
+        const stamp = readShellStamp(ws, now);
+        if (stamp)
+            terminals.add(stamp.terminal);
+    }
+    return terminals.size;
+}
 /** The named terminal a shell socket is (`/ws?terminal=`): undefined for the session's own, or another socket. */
 export function shellSocketTerminal(ws) {
     return readShellStamp(ws, Date.now())?.terminal;
