@@ -50,7 +50,7 @@ try {
     const refused = await ws.exec(line);
     assert.notEqual(refused.exitCode, 0, `${line}: refused`);
     // A user's write to a 0444 file of root's is refused before the read-only /proc would be asked, as on Linux.
-    assert.match(refused.stderr, /Permission denied|Read-only file system/, `${line}: ${refused.stderr}`);
+    assert.match(refused.stderr, /Permission denied|[Rr]ead-only/, `${line}: ${refused.stderr}`);
   }
   assert.equal(createHash('sha256').update(await ws.fs.readFile(FILE)).digest('hex'), PINNED_SHA256, 'unchanged by them');
 } finally {
