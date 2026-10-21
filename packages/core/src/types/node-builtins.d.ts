@@ -50,6 +50,7 @@ declare module 'node:stream' {
     decodeStrings?: boolean;
     write?(this: Writable, chunk: Uint8Array | string, encoding: string, callback: Callback): void;
     final?(this: Writable, callback: Callback): void;
+    destroy?(this: Writable, error: Error | null, callback: Callback): void;
   }
   export class Stream extends EventEmitter {}
   export interface PipeOptions {
@@ -80,7 +81,11 @@ declare module 'node:stream' {
     end(callback?: () => void): this;
     destroy(error?: Error): this;
   }
-  export class Duplex extends Readable {}
+  export class Duplex extends Readable {
+    readonly writable: boolean;
+    write(chunk: Uint8Array | string, callback?: Callback): boolean;
+    end(callback?: () => void): this;
+  }
   export class PassThrough extends Duplex {}
   const stream: typeof Stream & { Readable: typeof Readable; Writable: typeof Writable; Duplex: typeof Duplex; PassThrough: typeof PassThrough };
   export default stream;
