@@ -582,6 +582,55 @@ return globalThis.Go;
     }
   }
 
+  var FILESYSTEM_METHODS = {
+    stat: { rpc: "stat", answer: "value" },
+    readFile: { rpc: "readFileBytes", answer: "bytes" },
+    writeFile: { rpc: "writeFile", answer: "value" },
+    readRange: { rpc: "fsReadRange", answer: "bytes" },
+    writeRange: { rpc: "fsWriteRange", answer: "value" },
+    truncate: { rpc: "fsTruncate", answer: "value" },
+    utimes: { rpc: "utimes", answer: "value" },
+    chmod: { rpc: "chmod", answer: "value" },
+    access: { rpc: "access", answer: "value" },
+    chown: { rpc: "chown", answer: "value" },
+    open: { rpc: "fsOpen", answer: "value" },
+    reopen: { rpc: "fsReopen", answer: "value" },
+    read: { rpc: "fsRead", answer: "bytes" },
+    write: { rpc: "fsWrite", answer: "value" },
+    close: { rpc: "fsClose", answer: "value" },
+    readdir: { rpc: "readdir", answer: "value" },
+    mkdir: { rpc: "mkdir", answer: "value" },
+    unlink: { rpc: "unlink", answer: "value" },
+    rmdir: { rpc: "rmdir", answer: "value" },
+    rename: { rpc: "rename", answer: "value" },
+    readlink: { rpc: "readlink", answer: "value" },
+    linkLeadsTo: { rpc: "fsLinkLeadsTo", answer: "value" },
+    symlink: { rpc: "symlink", answer: "value" },
+    fsync: { rpc: "fsSync", answer: "value" },
+    revision: { rpc: "fsRevision", answer: "value" },
+    acquire: { rpc: "fsAcquire", answer: "value" },
+    list: { rpc: "fsList", answer: "value" },
+    realpath: { rpc: "fsRealpath", answer: "value" },
+    remove: { rpc: "fsRemove", answer: "removal" },
+    copyFile: { rpc: "fsCopyFile", answer: "value" },
+    copyTree: { rpc: "fsCopyTree", answer: "value" },
+    fstat: { rpc: "fsFstat", answer: "value" },
+    dup: { rpc: "fsDup", answer: "value" },
+    seek: { rpc: "fsSeek", answer: "value" },
+    setStatus: { rpc: "fsSetStatus", answer: "value" },
+    readdirHandle: { rpc: "fsReaddirHandle", answer: "value" },
+    ftruncate: { rpc: "fsFtruncate", answer: "value" },
+    fchmod: { rpc: "fsFchmod", answer: "value" },
+    fchown: { rpc: "fsFchown", answer: "value" },
+    futimes: { rpc: "fsFutimes", answer: "value" },
+    writeBatch: { rpc: "writeBatch", answer: "value" },
+    writeStream: { rpc: "writeBatchStream", answer: "stream" },
+    acquireExclusiveMutation: { rpc: "fsAcquireExclusiveMutation", answer: "value" },
+    releaseExclusiveMutation: { rpc: "fsReleaseExclusiveMutation", answer: "value" },
+    awaitRecall: { rpc: "fsAwaitRecall", answer: "value", waits: true },
+    recalled: { rpc: "fsRecalled", answer: "value" },
+    published: { rpc: "fsPublished", answer: "value" }
+  };
   function pending(result) {
     return (typeof result === "object" || typeof result === "function") && result !== null && typeof result.then === "function";
   }
@@ -753,20 +802,25 @@ return globalThis.Go;
   var ANSWERED = {};
   Reflect.setPrototypeOf(ANSWERED, null);
   for (const name of SUPERVISOR_ANSWERED_METHODS) ANSWERED[name] = true;
+  var WAITS = {};
+  Reflect.setPrototypeOf(WAITS, null);
+  for (const method of Object.values(FILESYSTEM_METHODS)) if ("waits" in method) WAITS[method.rpc] = true;
   function isSupervisorAnsweredMethod(name) {
     return typeof name === "string" && ANSWERED[name] === true;
   }
   function isAnsweringStub(supervisor) {
     return typeof Reflect.get(supervisor, "answer") === "function";
   }
-  function answeringSupervisor(supervisor) {
+  function answeringSupervisor(supervisor, live) {
     if (!isAnsweringStub(supervisor)) return supervisor;
     const stub = supervisor;
     return new Proxy(supervisor, {
       get(target, name) {
         if (!isSupervisorAnsweredMethod(name)) return Reflect.get(target, name);
         return async (...args) => {
-          const answer = await stub.answer(name, args);
+          const asked = stub.answer(name, args);
+          if (live !== void 0 && WAITS[name] !== true) live(asked);
+          const answer = await asked;
           try {
             if ("refusal" in answer) throw supervisorRefusalError(answer.refusal);
             return answer.value;
