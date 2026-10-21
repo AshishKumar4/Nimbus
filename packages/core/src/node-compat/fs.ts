@@ -284,10 +284,10 @@ export function createNodeFs(faces: NodeFaces, { cwd, stdin, reachStreams }: Nod
 
   const STDIO = 3;
 
-  /** `stepping`'s failure as an open's: a path's truncate fails as the opening of its file would. */
-  function* asOpen<T>(stepping: Stepping<T>): Op<T> {
+  /** The failure of `stepping`'s step as an open's: a path's truncate fails as the opening of its file would. */
+  function* asOpen<T>(stepping: () => Stepping<T>): Op<T> {
     try {
-      return yield* stepping;
+      return yield* stepping();
     } catch (error) {
       if (!(error instanceof Error) || errnoCodeOf(error) === undefined || Reflect.get(error, 'syscall') === 'open') throw error;
       const syscall = Reflect.get(error, 'syscall');
@@ -618,11 +618,13 @@ export function createNodeFs(faces: NodeFaces, { cwd, stdin, reachStreams }: Nod
     const abs = at.abs;
     const pathTruncates = yield* step('open', at, (f) => f.truncate !== undefined);
     if (pathTruncates) {
-      // As the file's opening for writing would fail, first, and as open's: then its length is checked, then it is cut.
-      const stat = yield* asOpen(step('open', at, (f) => f.stat(abs)));
+      // As the file's opening would fail, first, and as open's: then its length is checked, then it is cut.
+      // A face with no descriptors cannot open for writing, so what it can say before the length is that
+      // the file is there and no directory; a refusal to write it (EACCES) comes with the cut, after.
+      const stat = yield* asOpen(() => step('open', at, (f) => f.stat(abs)));
       if (stat.type === 'directory') throw fsError('EISDIR', 'open', at.given);
       const length = lengthOf(len);
-      yield* asOpen(step('open', at, (f) => {
+      yield* asOpen(() => step('open', at, (f) => {
         if (f.truncate === undefined) throw lacks('open', at.given);
         return f.truncate(abs, length);
       }));

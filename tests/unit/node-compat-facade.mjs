@@ -29,7 +29,7 @@ const bundle = await importWorkerBundle({
   'packages/core/src/vfs/sqlite-vfs.ts': ['SqliteVFS'],
   'packages/core/src/runtime/process-table.ts': ['PID_GEN_STRIDE'],
   'packages/fabric/src/composition.ts': ['composeFabric'],
-  'packages/core/src/node-compat/index.ts': ['createNodeCompat', 'nodeFacesOf'],
+  'packages/core/src/node-compat/index.ts': ['createNodeCompat', 'nodeFacesOf', 'createNodeFs'],
 });
 
 bundle.composeFabric({ supervisorEntrypoint: 'SupervisorRPC', hostNamespace: 'WORKSPACES', hostDispatchMethod: 'supervisorOp' });
@@ -151,6 +151,26 @@ try {
     assert.equal((await failure(() => own.stat('/c/x'))).path, '/c/x', 'and the face\'s error is left as it was for the next call');
     assert.equal(shared.path, '/c/x');
     await own.rm('x', { force: true });
+    // Fields a face keeps out of sight (not enumerable) are an errno's all the same.
+    const hidden = new Error("ENOENT: no such file or directory, stat '/c/y'");
+    for (const [field, value] of Object.entries({ code: 'ENOENT', errno: -2, syscall: 'stat', path: '/c/y' })) {
+      Object.defineProperty(hidden, field, { value, enumerable: false });
+    }
+    const quiet = bundle.createNodeCompat({ files: { ...files, stat: async () => { throw hidden; } } }, { cwd: '/c' }).fsPromises;
+    const unseen = await failure(() => quiet.stat('y'));
+    assert.deepEqual([unseen.code, unseen.errno, unseen.syscall, unseen.path], ['ENOENT', -2, 'stat', 'y']);
+  });
+
+  await check('a synchronous face\'s path truncate', async () => {
+    const missing = (syscall, path) => Object.assign(new Error(`ENOENT: no such file or directory, ${syscall} '${path}'`), { code: 'ENOENT', errno: -2, syscall, path });
+    const face = {
+      readFile() { throw missing('open', '/s/x'); }, readFileString() { throw missing('open', '/s/x'); }, writeFile() {},
+      exists: () => false, isFile: () => false, isDirectory: () => false, readdir: () => [],
+      stat(path) { throw missing('stat', path); }, lstat(path) { throw missing('lstat', path); }, truncate(path) { throw missing('truncate', path); },
+    };
+    const own = bundle.createNodeFs({ sync: face }, { cwd: '/s' });
+    const sync = await failure(async () => own.truncateSync('x', 0));
+    assert.deepEqual([sync.code, sync.syscall, sync.path], ['ENOENT', 'open', 'x'], 'as its opening would fail, answered now');
   });
 
   await check('no descriptors, no streams', async () => {
