@@ -1067,6 +1067,8 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
   }
 
   async _rpcCpNextSignal(pid: number, waitMs: number): Promise<string | null> { return _rpc._rpcCpNextSignal(this as any, pid, waitMs); }
+  async _rpcCpCatchSignals(pid: number, catches: unknown): Promise<void> { return _rpc._rpcCpCatchSignals(this, pid, catches); }
+  async _rpcCpTakeSignal(pid: number, waitMs: unknown): Promise<string | null> { return _rpc._rpcCpTakeSignal(this, pid, waitMs); }
 
   // Programmatic sandbox SDK RPC
   async _rpcReady(options?: SessionReadyOptions) { return _programmatic.ensureProgrammaticReady(this as any, options); }

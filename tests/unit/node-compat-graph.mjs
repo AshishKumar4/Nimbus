@@ -21,7 +21,9 @@ try {
     external: ['node:*'],
   });
   const inputs = Object.keys(result.metafile.inputs);
-  const reached = inputs.filter((input) => /kernel|sqlite|wasi|wasm|substrate\/lifo\/(shell|commands|kernel)|workspace\//i.test(input));
+  // lifo's signal table is a leaf (names and numbers), not its shell.
+  const reached = inputs.filter((input) => /kernel|sqlite|wasi|wasm|substrate\/lifo\/(shell|commands|kernel)|workspace\//i.test(input)
+    && !input.endsWith('substrate/lifo/shell/signals.ts'));
   assert.deepEqual(reached, [], `node-compat reaches no kernel, SQLite, shell or wasm module: ${reached.join(', ')}`);
   assert.ok(inputs.some((input) => input.endsWith('node-compat/fs.ts')), 'and it is the shared fs');
   console.log(`  ok  ${inputs.length} modules, none of the kernel, SQLite, the shell or wasm`);

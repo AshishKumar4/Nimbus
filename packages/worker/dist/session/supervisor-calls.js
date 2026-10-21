@@ -125,7 +125,7 @@ export function supervisorCalls(base) {
             if (props?.bindingKind === 'infrastructure') {
                 if (run !== undefined)
                     throw new Error('infrastructure supervisor cannot carry a process run');
-                if (['stdout', 'stderr', 'reportExit', 'reportRuntimeCode', 'cpSpawn', 'cpStdinWrite', 'cpStdinEnd', 'cpReadStdin', 'cpReadOutput', 'cpDrainOutput', 'cpCloseOutput', 'cpKill', 'cpWait', 'cpNextSignal', 'cpBlocked', 'replayBoundary', 'stdinFileRead', 'stdinPrepared', 'netTls', 'outbound'].includes(envelope.op)) {
+                if (['stdout', 'stderr', 'reportExit', 'reportRuntimeCode', 'cpSpawn', 'cpStdinWrite', 'cpStdinEnd', 'cpReadStdin', 'cpReadOutput', 'cpDrainOutput', 'cpCloseOutput', 'cpKill', 'cpWait', 'cpNextSignal', 'cpCatchSignals', 'cpTakeSignal', 'cpBlocked', 'replayBoundary', 'stdinFileRead', 'stdinPrepared', 'netTls', 'outbound'].includes(envelope.op)) {
                     throw new Error('infrastructure supervisor refuses guest-originated operations');
                 }
             }
@@ -908,6 +908,14 @@ export function supervisorCalls(base) {
          */
         async cpNextSignal(waitMs) {
             return this[CALL](this[OP]('cpNextSignal', [waitMs], { pid: this[REPORTING_PID]() }));
+        }
+        /** The next signal sent to this Node process, its box taken back from a stop: cpNextSignal's, asked only past a replay's boundary. */
+        async cpTakeSignal(waitMs) {
+            return this[CALL](this[OP]('cpTakeSignal', [waitMs], { pid: this[REPORTING_PID]() }));
+        }
+        /** The signals this process's program catches now: each one sent to it is its own to take (cpNextSignal), any other its default. */
+        async cpCatchSignals(catches) {
+            return this[CALL](this[OP]('cpCatchSignals', [catches], { pid: this[REPORTING_PID]() }));
         }
         /**
          * This process says whether its only remaining work is waiting on its own

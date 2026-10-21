@@ -294,10 +294,6 @@ export function generate(seed, steps = 40) {
  * What an engine is known to answer wrong, each kept red by its scenario in
  * lib/barrier-found.mjs (listed there as a gap), and let pass here so a
  * drawn schedule finds something new. A gap closed is removed from both.
- *   - unshownAwaitedChange: an awaited change outside a grant is not shown
- *     to a call that cannot wait until a barrier lands (O9);
- *   - refusedAsDirectory: a call that cannot wait, on a directory the view
- *     cannot answer it for, is refused EISDIR, whatever it asked;
  *   - absentWhileRelisted: a directory being relisted answers a name under
  *     it as absent (B2);
  *   - refusedWhileRelisted: an awaited read under a directory being relisted
@@ -305,8 +301,8 @@ export function generate(seed, steps = 40) {
  */
 export const KNOWN_GAPS = Object.freeze({
   node: Object.freeze({ absentWhileRelisted: true, refusedWhileRelisted: true }),
-  holder: Object.freeze({ unshownAwaitedChange: true, refusedAsDirectory: true }),
-  eager: Object.freeze({ unshownAwaitedChange: true, refusedAsDirectory: true }),
+  holder: Object.freeze({}),
+  eager: Object.freeze({}),
 });
 
 /** A finding: the schedule, the step, and what was wrong there. */
@@ -432,6 +428,8 @@ export function createModel(tree = SEED_TREE) {
     worldsSeen,
     /** Whether `step` must wait: a change in flight overlaps it, other than its own earlier ones for a process that orders its own (`ordered`). */
     busy: (step, ordered = false) => changes.some((change) => change.done === null && overlaps(change.domain, domainOf(step)) && (!ordered || outside(step[0]) || !change.own)),
+    /** The names of a peer's changes in flight. */
+    peersInFlight: () => changes.filter((change) => change.done === null && !change.own).map((change) => change.domain),
     /** `step` begun now, as the process's own changes in flight leave the model for one of its own: its record, or null where it would fail. */
     begin(step) {
       const [way, op, a] = step;
@@ -574,8 +572,6 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
   let unpublished = [];
   /** Each peer change that returned, and as the model stood then: what the process may not know of before its next input lands. */
   const peerAt = [];
-  /** Each awaited change of the process's own that returned, and as the model stood then: unshown to its calls that cannot wait until a barrier lands, where that is a known gap. */
-  const awaitedAt = [];
 
   /** Whether a call that cannot wait may be refused (EAGAIN): a view listed on demand, a namespace a poison stopped or a listing is moving, or bytes it does not hold of a file it may read. */
   /**
@@ -589,7 +585,6 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
     : lazy || poisoned || transport.inFlight('listing') > 0 || (op === 'readFile' && model.readable(rel, from, to)));
   const judge = (at, way, op, rel, answer, from, to, offset = 0) => {
     if (answer?.code === 'EAGAIN' && way === 'sync' && refusable(op, rel, from, to)) return;
-    if (gaps.refusedAsDirectory && way === 'sync' && answer?.code === 'EISDIR' && model.worldsSeen(rel, from, to).some((world) => world.get(rel)?.type === 'dir')) return;
     if (gaps.absentWhileRelisted && way === 'sync' && answer === null && transport.inFlight('listing') > 0) return;
     if (gaps.refusedWhileRelisted && way === 'own' && answer?.code === 'EAGAIN' && transport.inFlight('listing') > 0) return;
     const decided = kind === 'node' && way === 'sync';
@@ -646,12 +641,11 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
   const begin = (at, way, step) => {
     const domain = domainOf(step);
     if (model.busy(step, kind === 'node')) return 'wait';
-    if (!outside(way) && peerAt.some(({ done, domain: theirs }) => done > landed && overlaps(theirs, [...domain, ...domain.map(parentOf)]))) {
+    // The resident filesystem decides an awaited change over its view as it stands, and shows it at once: begun beside a
+    // peer's change in flight, it ends after it, as if made after it, on what the process cannot know of yet.
+    const unlanded = [...peerAt.filter(({ done }) => done > landed).map(({ domain: theirs }) => theirs), ...(way === 'own' && kind !== 'node' ? model.peersInFlight() : [])];
+    if (!outside(way) && unlanded.some((theirs) => overlaps(theirs, [...domain, ...domain.map(parentOf)]))) {
       note(`  (step ${at} skipped: a peer changed its names since the process's last input)`);
-      return null;
-    }
-    if (way === 'sync' && gaps.unshownAwaitedChange && awaitedAt.some(({ done, domain: its }) => done > landed && overlaps(its, [...domain, ...domain.map(parentOf)]))) {
-      note(`  (step ${at} skipped: it would decide on an awaited change of the process's own its view does not show yet, a known gap)`);
       return null;
     }
     const record = model.begin(step);
@@ -660,9 +654,8 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
     const finish = () => model.finish(record, () => {
       if (outside(way)) peerAt.push({ done: seq(), domain });
       else {
-        if (way === 'own') awaitedAt.push({ done: seq(), domain });
         for (const rel of [...resident]) if (domain.some((root) => under(rel, root) || under(root, rel))) resident.delete(rel);
-        if (way === 'sync' || !gaps.unshownAwaitedChange) for (const root of domain) ownAt.set(root, seq());
+        for (const root of domain) ownAt.set(root, seq());
         unpublished = [...unpublished, ...domain];
       }
     });
@@ -672,7 +665,6 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
       } catch (error) {
         model.drop(record);
         if (error?.code === 'EAGAIN' && (lazy || poisoned)) return null;
-        if (error?.code === 'EISDIR' && gaps.refusedAsDirectory && domain.some((rel) => model.world.get(rel)?.type === 'dir')) return null;
         throw new Finding(`sync ${step[1]} ${step.slice(2).join(' ')} failed: ${error?.code ?? error?.message ?? error}`, at);
       }
       finish();
@@ -807,7 +799,6 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
         for (const op of ['stat', state?.type === 'dir' ? 'readdir' : 'readFile']) {
           const answer = await read(way, op, rel);
           if (answer?.code === 'EAGAIN' && way === 'sync' && (op === 'readFile' ? !owedBytes(rel) && (lazy || model.readable(rel, seq(), seq())) : lazy)) continue;
-          if (answer?.code === 'EISDIR' && way === 'sync' && gaps.refusedAsDirectory && state?.type === 'dir') continue;
           if (!answers(op, rel, answer, world)) {
             throw new Finding(`at rest, ${way} ${op} ${rel || '.'} answered ${JSON.stringify(answer)}; the model holds ${op === 'readdir' && state?.type === 'dir' ? `[${childrenOf(world, rel)}]` : describe(state)}`, end);
           }

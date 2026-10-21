@@ -17,6 +17,7 @@
  * One barrier for both: it asks (or takes the answer a delivery carried),
  * applies, and differs only in how it repairs what it could not apply.
  */
+import type { RuntimeVfsStat } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { ResidentNamespace } from '@nimbus-sh/core/runtime/wasi/resident-filesystem.js';
 import type { Admission } from './admission.js';
 import type { Cells } from './cells.js';
@@ -29,7 +30,7 @@ import type { Sync } from './sync.js';
 import type { Transport } from './transport.js';
 export interface View {
     bootLazy(supervisor: ResidentSupervisor | null | undefined): Promise<boolean>;
-    namespaceView(supervisor: ResidentSupervisor, device: number, cred: ResidentCred): ResidentNamespace;
+    namespaceView(supervisor: ResidentSupervisor, root: RuntimeVfsStat, cred: ResidentCred): ResidentNamespace;
 }
 export declare function createView(coherence: Coherence, admission: Admission, namespace: Namespace, cells: Cells, transport: Transport, sync: Sync, pages: Pages): View;
 //# sourceMappingURL=view.d.ts.map

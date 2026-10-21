@@ -37,7 +37,7 @@
 import type { RuntimeFsBridge, RuntimeFsPath, RuntimeSynchronousFs, RuntimeVfsDirEntry, RuntimeVfsStat } from '../os-contracts.js';
 import type { ReadDirectorySupervisor } from '../read-directory-batch.js';
 import type { VfsAcquireResult } from '../os-contracts.js';
-import type { ProcessFsJournal, ProcessFsSession, ProcessFsStats } from '../../_shared/process-fs-client.js';
+import type { ProcessFsClient, ProcessFsJournal, ProcessFsSession, ProcessFsStats } from '../../_shared/process-fs-client.js';
 import type { WaveTimers } from '@nimbus-sh/platform/wave-writer.js';
 /** A name as the store holds it: its lstat, and a symlink's text. */
 export interface ResidentEntry {
@@ -216,7 +216,14 @@ export interface ResidentFilesystem extends RuntimeFsBridge {
     cancelPendingDirectories(): void;
     /** Whether writes are held that the session does not have yet. */
     holding(): boolean;
-    /** What the process decided and has not logged, logged now into its own log, with no round trip (DelegationHolder.logHeld). */
+    /**
+     * The process's filesystem client, its holder's and the only one it has:
+     * its effect is the output gate (what the holder decided logged and sent
+     * first, the client left live), its published and rawSocket the escapes.
+     * Null where the process holds nothing (no delegation).
+     */
+    readonly client: ProcessFsClient | null;
+    /** What the process decided and has not logged, logged now into its own log, with no round trip, and the client sealed: the run's end (DelegationHolder.logHeld). */
     logHeld(): void;
     /**
      * Send every held write to the session, before something leaves the

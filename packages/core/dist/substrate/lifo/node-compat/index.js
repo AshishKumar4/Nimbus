@@ -6,7 +6,7 @@ import { createOs } from './os.js';
 import { createProcess } from './process.js';
 import { EventEmitter } from 'node:events';
 import { createHttp } from './http.js';
-import { createChildProcess } from './child_process.js';
+import { createNodeChildProcess } from '../../../node-compat/child_process.js';
 import * as zlibModule from './zlib.js';
 import { ttyOf } from './tty-streams.js';
 import { createDns } from './dns.js';
@@ -78,7 +78,8 @@ export function createModuleMap(ctx) {
         util: () => realm.getBuiltinModule('node:util'),
         http: () => createHttp(ctx.portRegistry, 'http:', ctx.routeLoopback),
         https: () => createHttp(ctx.portRegistry, 'https:', ctx.routeLoopback),
-        child_process: () => createChildProcess(ctx.executeCapture),
+        // No start face until the realm can wait for one (Phase B): every start is refused ENOSYS.
+        child_process: () => createNodeChildProcess(undefined, { cwd: ctx.cwd }),
         stream: () => (ctx.reachStreams?.(), realm.getBuiltinModule('node:stream')),
         'stream/promises': () => (ctx.reachStreams?.(), realm.getBuiltinModule('node:stream/promises')),
         'stream/consumers': () => (ctx.reachStreams?.(), realm.getBuiltinModule('node:stream/consumers')),

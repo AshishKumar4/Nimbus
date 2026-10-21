@@ -196,6 +196,70 @@ const FOUND = {
       ['own', 'write', 'x/f', 'a4'], ['settle'], ['own', 'write', 'x/f', 'a5'], ['settle'], ['own', 'write', 'x/f', 'a6'], ['settle'],
       ['own', 'write', 'x/f', 'saved'], ['settle'], ['own', 'rename', 'x/f', 'x/h'], ['settle'], ['sync', 'readFile', 'x/h'], ['sync', 'stat', 'x/h']],
   },
+  'a file the process read whole stays resident across an input after a read of a file fetched in batches (4225)': {
+    park: 4225,
+    schedule: [['input'], ['own', 'mkdir', 'x/e'], ['release', 'listing'], ['own', 'readFile', 'd/e/g'], ['own', 'readFile', 'mid'], ['sync', 'stat', 'x'],
+      ['own', 'unlink', 'top'], ['input'], ['sync', 'readFile', 'z'], ['release'], ['unstall'], ['sync', 'readFile', 'd/e/g'], ['peer', 'write', 'top', 'c4225.6']],
+  },
+  'a file a peer made and the process then wrote is listed while its directory is relisted (4751)': {
+    park: 4751,
+    schedule: [['own', 'stat', 'x/h'], ['own', 'readFile', 'top'], ['input'], ['poison'], ['sync', 'rename', 'x', 'z'], ['input'], ['own', 'readdir', 'z/g'],
+      ['sync', 'stat', 'x/e/g'], ['peer', 'write', 'd/n', 'c4751.3'], ['sync', 'readFile', 'mid'], ['unstall'], ['hold', 'listing'], ['own', 'write', 'd/e/g', 'c4751.4'],
+      ['unstall'], ['stall'], ['root', 'chmod', 'd', 0o700], ['own', 'write', 'd/n', 'c4751.5'], ['hold', 'delivery'], ['sync', 'readdir', 'd']],
+  },
+  'a directory the process made where it had moved one away lists nothing of the one it moved (5119)': {
+    park: 5119,
+    schedule: [['sync', 'rename', 'x', 'z'], ['sync', 'mkdir', 'x'], ['sync', 'readdir', 'x']],
+  },
+  'a directory the process made that a peer removed is gone after an input (5581)': {
+    park: 5581,
+    schedule: [['own', 'stat', 'd/f'], ['sync', 'readFile', 'd/e'], ['own', 'stat', 'z/g'], ['own', 'mkdir', 'z'], ['input'], ['own', 'readFile', 'z'], ['root', 'chown', 'd', 0],
+      ['own', 'mkdir', 'x/e'], ['peer', 'rmdir', 'x/e'], ['sync', 'stat', 'd'], ['release'], ['own', 'pread', 'mid', 0], ['input'], ['sync', 'stat', 'top'], ['sync', 'stat', 'x/e'],
+      ['own', 'write', 'z/g', 'c5581.3']],
+  },
+  'an awaited read of a file the session holds is answered, not refused (5479)': {
+    park: 5479,
+    schedule: [['own', 'opendir', 'x/f'], ['own', 'opendir', 'z/k'], ['own', 'readFile', 'x/f'], ['sync', 'chmod', 'top', 0o600], ['own', 'opendir', 'x'], ['input'], ['own', 'stat', 'd/e/g'],
+      ['sync', 'rename', 'd', 'x/e'], ['sync', 'stat', 'd/e/g'], ['peer', 'write', 'new', 'c5479.1'], ['sync', 'readFile', 'd/n'], ['release'], ['input'], ['input'], ['restart'], ['input'],
+      ['sync', 'stat', 'd/f'], ['own', 'readFile', 'mid'], ['own', 'readFile', 'z/k'], ['peer', 'write', 'x/f', 'c5479.2'], ['hold', 'acquire'], ['own', 'readdir', 'x/e'], ['own', 'readdir', 'd/n'],
+      ['peer', 'rename', 'x', 'd'], ['sync', 'readFile', 'd/e'], ['sync', 'write', 'd/n', 'c5479.3'], ['own', 'readFile', 'd/f'], ['release'], ['input'], ['release']],
+  },
+  'an awaited read of a file the session holds is answered, not refused (5652)': {
+    park: 5652,
+    schedule: [['own', 'opendir', 'z/g'], ['peer', 'write', 'top', 'c5652.2'], ['own', 'unlink', 'x/h'], ['own', 'stat', 'd/f'], ['own', 'rename', 'top', 'd/f'], ['input'], ['sync', 'readFile', 'z/k'],
+      ['release', 'wave'], ['own', 'stat', 'd'], ['own', 'readFile', 'mid'], ['own', 'write', 'd/e/g', 'c5652.3'], ['own', 'readdir', 'new'], ['hold', 'listing'], ['peer', 'write', 'new', 'c5652.4'],
+      ['root', 'chown', 'd', 1000], ['sync', 'readFile', 'mid'], ['hold', 'listing'], ['sync', 'stat', 'new'], ['restart'], ['root', 'chmod', 'd/e', 0o755], ['own', 'readFile', 'd/f'], ['stall'], ['input']],
+  },
+  'an awaited read of a file the session holds is answered, not refused (5425)': {
+    park: 5425,
+    schedule: [['release', 'listing'], ['peer', 'rename', 'top', 'new'], ['own', 'stat', 'top'], ['own', 'readFile', 'mid'], ['release', 'acquire'], ['hold', 'wave'], ['root', 'chown', 'x', 1000],
+      ['sync', 'readFile', 'x/e/g'], ['own', 'readFile', 'x/e/g'], ['own', 'unlink', 'd/n'], ['settle']],
+  },
+  'an awaited read of a directory a peer moved is answered, not refused (5786)': {
+    park: 5786,
+    schedule: [['own', 'opendir', 'x'], ['release'], ['own', 'stat', 'd/e/g'], ['hold', 'listing'], ['input'], ['sync', 'stat', 'd/e'], ['peer', 'unlink', 'top'], ['sync', 'stat', 'x'],
+      ['settle'], ['peer', 'chmod', 'd/e/g', 0o640], ['release', 'listing'], ['release'], ['own', 'pread', 'mid', 4200000], ['peer', 'chmod', 'd/e/g', 0o600], ['peer', 'write', 'd/f', 'c5786.1'],
+      ['own', 'pread', 'mid', 0], ['input'], ['settle'], ['input'], ['own', 'readFile', 'mid'], ['sync', 'stat', 'x/e'], ['unstall'], ['own', 'opendir', 'z'], ['own', 'stat', 'd/f'],
+      ['own', 'stat', 'd/n'], ['hold', 'delivery'], ['own', 'readFile', 'x/h'], ['sync', 'readFile', 'mid'], ['peer', 'rename', 'd', 'z'], ['sync', 'readdir', 'd/f'], ['release'],
+      ['own', 'readFile', 'd/e'], ['own', 'readFile', 'x']],
+  },
+  'a directory the process removed and made again lists no name before its write is made (5891)': {
+    park: 5891,
+    schedule: [['sync', 'readdir', 'x/e'], ['own', 'pread', 'mid', 8400000], ['sync', 'chmod', 'd/f', 0o600], ['own', 'unlink', 'top'], ['input'], ['input'], ['own', 'rename', 'x/h', 'd/e/g'],
+      ['sync', 'write', 'd/e/g', 'c5891.3'], ['own', 'opendir', 'top'], ['own', 'pread', 'big', 8400000], ['own', 'readFile', 'mid'], ['sync', 'readFile', 'x/h'], ['sync', 'rename', 'd/e', 'z'],
+      ['sync', 'write', 'top', 'c5891.5'], ['own', 'unlink', 'd/f'], ['own', 'rmdir', 'x'], ['own', 'mkdir', 'd/e'], ['own', 'write', 'd/e/g', 'c5891.7'], ['release', 'delivery'],
+      ['hold', 'listing'], ['own', 'readdir', 'x/h'], ['release', 'delivery'], ['sync', 'readdir', 'd/e'], ['sync', 'write', 'top', 'c5891.8'], ['release', 'listing']],
+  },
+  'a file the process renamed away keeps its size while a new file is written at its old name (6113)': {
+    park: 6113,
+    schedule: [['sync', 'rename', 'x/h', 'd/n'], ['own', 'write', 'x/h', 'c6113.1'], ['sync', 'stat', 'd/n']],
+  },
+  'a file fetched in batches that the process read stays resident past a repair (4033)': {
+    park: 4033,
+    schedule: [['poison'], ['own', 'stat', 'x'], ['sync', 'readdir', 'd/e'], ['own', 'readFile', 'mid'], ['sync', 'readFile', 'x/e/g'], ['release', 'listing'],
+      ['peer', 'write', 'top', 'c4033.2'], ['release', 'wave'], ['input'], ['release'], ['sync', 'readFile', 'z'], ['sync', 'write', 'x/f', 'c4033.3'],
+      ['sync', 'readFile', 'mid'], ['sync', 'rename', 'd/f', 'x/e/g'], ['release', 'acquire'], ['sync', 'readdir', 'd/e']],
+  },
   'a file a call that cannot wait missed stays a miss until an awaited read answers it': {
     engines: ['node'],
     schedule: [['peer', 'write', 'new', 'not resident'], ['settle'], ['input'], ['settle'], ['sync', 'readFile', 'new'], ['own', 'stat', 'new'], ['settle']],
@@ -208,26 +272,6 @@ const GAPS = {
     lacks: 'S dates a moved file\'s bytes only by a write parked under its old name: bytes held otherwise (read, or written and already sent) stay its own at the new name past every barrier, as no rename has a receipt to date them by (closed by the cutover: RF retires own state by identity); '
       + 'meanwhile, in a program that renames a file it had read (or written and already sent), then another process overwrites it, readFileSync keeps serving the program\'s own bytes',
     shows: 'at rest, sync readFile top answered "c3219.3"',
-  },
-  'an awaited chmod outside a grant is what the next call that cannot wait reads [holder]': {
-    lacks: 'O9: an awaited mutation outside a grant is decided by the provisional decisions (the cutover)',
-    shows: 'sync stat top answered file 644',
-  },
-  'a directory a call that cannot wait has not listed is not refused as a directory [holder]': {
-    lacks: 'its synchronous refusal names the call: a directory is EISDIR only to a call for bytes (notResident, the cutover)',
-    shows: 'answered EISDIR',
-  },
-  'an awaited chmod outside a grant is what the next call that cannot wait reads [eager]': {
-    lacks: 'O9: an awaited mutation outside a grant is decided by the provisional decisions (the cutover)',
-    shows: 'sync stat top answered file 644',
-  },
-  'a name the process renamed into place can be renamed again at once [eager]': {
-    lacks: 'O9: an awaited rename outside a grant is decided by the provisional decisions (the cutover)',
-    shows: 'sync stat d/e/g answered file 644 size 5',
-  },
-  'a name the process renamed into place stays once the session acknowledges it after a barrier reported it [eager]': {
-    lacks: 'O9: an awaited rename outside a grant is decided by the provisional decisions (the cutover)',
-    shows: 'sync stat d/f answered file 644 size 2',
   },
   'an awaited read of a file a relist is on its way to is answered, not refused [node]': {
     lacks: 'B2: node-shims refuses an awaited read under a directory its relist is on its way to (EAGAIN), where it should wait (the cutover\'s relist fence); '
@@ -243,6 +287,42 @@ const GAPS = {
     lacks: 'S keeps a rename of a directory as its own effect over the rows the launch listed under the old name, and leaves those rows; once a peer makes the name again they show under it (closed by the cutover: RF decides own renames in the store); '
       + 'meanwhile, in a program that renames a directory away and another process then creates one of that name, statSync and readFileSync can answer files the old directory held',
     shows: 'sync stat d/e/g answered file 644 size 5',
+  },
+  'a directory the process made that a peer removed is gone after an input (5581) [node]': {
+    lacks: 'S answers a directory of its own making, which a peer removed, past the input after the removal (closed by the cutover: RF retires own state at a barrier); '
+      + 'meanwhile statSync can report a directory that is gone',
+    shows: 'sync stat x/e answered directory 755',
+  },
+  'an awaited read of a file the session holds is answered, not refused (5479) [node]': {
+    lacks: 'S refuses an awaited read EAGAIN where the session holds the file (closed by the cutover: RF waits for its fill); meanwhile fs.promises.readFile can reject EAGAIN',
+    shows: 'own readFile d/f answered EAGAIN',
+  },
+  'an awaited read of a file the session holds is answered, not refused (5652) [node]': {
+    lacks: 'S refuses an awaited read EAGAIN where the session holds the file (closed by the cutover: RF waits for its fill); meanwhile fs.promises.readFile can reject EAGAIN',
+    shows: 'own readFile d/f answered EAGAIN',
+  },
+  'an awaited read of a file the session holds is answered, not refused (5425) [node]': {
+    lacks: 'S refuses an awaited read EAGAIN where the session holds the file (closed by the cutover: RF waits for its fill); meanwhile fs.promises.readFile can reject EAGAIN',
+    shows: 'own readFile x/e/g answered EAGAIN',
+  },
+  'a file the process renamed away keeps its size while a new file is written at its old name (6113) [node]': {
+    lacks: 'S gives a write in flight at a name the size of the file it renamed away from that name (closed by the cutover: RF keeps own state by identity); '
+      + 'meanwhile statSync of the renamed file can report the size of the file being written at its old name',
+    shows: 'sync stat d/n answered file 644 size 7',
+  },
+  'an awaited read of a directory a peer moved is answered, not refused (5786) [node]': {
+    lacks: 'S refuses an awaited read EAGAIN where the session answers it (closed by the cutover: RF waits for the session); meanwhile fs.promises.readFile can reject EAGAIN',
+    shows: 'own readFile d/e answered EAGAIN',
+  },
+  'a directory the process removed and made again lists no name before its write is made (5891) [node]': {
+    lacks: 'S lists, in a directory the process removed and made again, a name the session does not hold there while the process\'s own write of it is in flight (closed by the cutover: one own state, RF\'s); '
+      + 'meanwhile readdirSync can list a file before its write is made',
+    shows: 'sync readdir d/e answered ["g"]',
+  },
+  'a file a peer made and the process then wrote is listed while its directory is relisted (4751) [node]': {
+    lacks: 'B2: a directory whose relist is on its way answers its listing without the names the process wrote there since (the cutover\'s relist fence); '
+      + 'meanwhile a Node program\'s readdirSync can miss a file it has just written, while the directory is relisted',
+    shows: 'sync readdir d answered ["e","f"]',
   },
   'a directory the process may search again shows nothing stale while it is relisted [node]': {
     lacks: 'B2: a relist answers what is under its directory as unknown until it lands (the cutover\'s relist fence); '

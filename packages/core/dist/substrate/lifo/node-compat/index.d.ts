@@ -16,7 +16,6 @@ export interface NodeContext {
     filename: string;
     dirname: string;
     signal: AbortSignal;
-    executeCapture?: (input: string) => Promise<string>;
     /** fd 0 to its end, blocking until stdin ends (readFileSync(0)); absent, fd 0 reads as empty. */
     stdin?: () => Uint8Array;
     /** Its standard descriptors, as its process and its tty module see them (one object per program). */

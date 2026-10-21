@@ -72,7 +72,7 @@ async function processWith(files, { holding = false, session: direct = false } =
   };
   storeSource.admission.setStorage(undefined, supervisor);
   assert.equal(await storeSource.view.bootLazy(supervisor), true);
-  const view = storeSource.view.namespaceView(supervisor, (await authority.stat('/')).dev, USER);
+  const view = storeSource.view.namespaceView(supervisor, await authority.stat('/'), USER);
   let charged = 0;
   const counted = {
     get device() { return view.device; },

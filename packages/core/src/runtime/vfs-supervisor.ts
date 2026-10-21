@@ -1,5 +1,7 @@
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import type { RuntimeFsBridge, RuntimeSynchronousFs } from './os-contracts.js';
+import type { WaveFence } from '@nimbus-sh/platform/wave-writer.js';
+import type { ProcessFsSession } from '../_shared/process-fs-client.js';
 import type { WasiSupervisorStub } from './wasi/types.js';
 import { FILESYSTEM_ANSWERED_RPC_METHODS, bridgeOverSupervisor } from './filesystem-mirrors.generated.js';
 import { FILESYSTEM_METHODS, refusalData, supervisorRefusalError, type SupervisorRefusal } from './filesystem-methods.js';
@@ -114,9 +116,7 @@ export function answeringSupervisor<T extends object>(supervisor: T, live?: (cal
     get(target, name) {
       if (!isSupervisorAnsweredMethod(name)) return Reflect.get(target, name);
       return async (...args: unknown[]) => {
-        const asked = stub.answer(name, args);
-        // A promise of this realm's own: an RPC stub's answer is a thenable of its own class.
-        if (live !== undefined && WAITS[name] !== true) live(Promise.resolve(asked));
+        const asked = WAITS[name] === true ? stub.answer(name, args) : toldLive(stub.answer(name, args), live);
         const answer = await asked;
         try {
           if ('refusal' in answer) throw supervisorRefusalError(answer.refusal);
@@ -143,10 +143,11 @@ export function installAnsweringSupervisor(): void {
  * is a same-isolate capability: an RPC stub answers every property with a
  * callable, so it is never read from the stub, only carried by a local
  * supervisor whose view really is in this isolate. A remote supervisor's
- * refusals arrive as answers (answeringSupervisor).
+ * refusals arrive as answers (answeringSupervisor), each call told to
+ * `live` as it is made.
  */
-export function supervisorFilesystem(remote: WasiSupervisorStub, local?: RuntimeSynchronousFs): RuntimeFsBridge {
-  return bridgeOverSupervisor(answeringSupervisor(remote), {
+export function supervisorFilesystem(remote: WasiSupervisorStub, local?: RuntimeSynchronousFs, live?: (call: Promise<unknown>) => unknown): RuntimeFsBridge {
+  return bridgeOverSupervisor(answeringSupervisor(remote, live), {
     synchronous: local,
     // An iterable does not cross RPC. A program with a large file to write
     // sends it as a W7 stream (writeStream), which does.
@@ -155,4 +156,44 @@ export function supervisorFilesystem(remote: WasiSupervisorStub, local?: Runtime
       throw Object.assign(new Error(`ENOTSUP: a streamed whole-file write is a host operation, write '${name}' as a W7 stream`), { code: 'ENOTSUP' });
     },
   });
+}
+
+/**
+ * `call`, told to `live` as work in flight, as a promise of this realm: an
+ * RPC stub's answer is a thenable of its own class, which a tracker that
+ * follows promises (node's __nimbusTrackOp) cannot follow.
+ */
+function toldLive<T>(call: PromiseLike<T>, live: ((call: Promise<unknown>) => unknown) | undefined): Promise<T> {
+  const native = Promise.resolve(call);
+  live?.(native);
+  return native;
+}
+
+/** The stub's wave calls (SupervisorRPC.openWaveWriter, writeBatchStream, retireWaveWriter). */
+interface WaveSender {
+  openWaveWriter(first: boolean): Promise<string | null>;
+  writeBatchStream(stream: ReadableStream<Uint8Array>, fence?: WaveFence, owner?: string): Promise<unknown>;
+  retireWaveWriter(writer: string): Promise<void>;
+}
+
+/**
+ * The session a process's filesystem client sends its waves to and takes its
+ * grants from, over `stub`: waves on the stub, grants through `authority`
+ * (supervisorFilesystem over the same stub). Each wave call is told to `live`
+ * as it is made, as the authority tells its own.
+ */
+export function supervisorSession(stub: WasiSupervisorStub, authority: RuntimeFsBridge, live?: (call: Promise<unknown>) => unknown): ProcessFsSession {
+  const waves = stub as unknown as WaveSender;
+  return {
+    // Called as methods of the stub, never through .call/.apply: on an RPC stub those are remote method names too.
+    openWriter: (first) => toldLive(waves.openWaveWriter(first), live),
+    writeBatchStream: (stream, fence, owner) => toldLive(owner === undefined ? waves.writeBatchStream(stream, fence) : waves.writeBatchStream(stream, fence, owner), live),
+    retireWriter: async (writer) => { await toldLive(waves.retireWaveWriter(writer), live); },
+    grants: {
+      acquire: async (path, delegate) => await authority.acquireExclusiveMutation(path, { delegate }),
+      release: async (owner) => { await authority.releaseExclusiveMutation(owner); },
+      awaitRecall: async (owner, waitMs) => await authority.awaitRecall(owner, waitMs),
+      recalled: async (owner, kind) => { await authority.recalled(owner, kind); },
+    },
+  };
 }

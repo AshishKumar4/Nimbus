@@ -129,6 +129,8 @@ export class HostedSession extends RpcTarget {
     _rpcListTerminals() { return operations.rpcListTerminals(this.#client()); }
     _rpcCloseTerminal(name) { return operations.rpcCloseTerminal(this.#client(), name); }
     _rpcWriteProcessInput(pid, data) { return operations.rpcWriteProcessInput(this.#client(), pid, data); }
+    // The remote API's byte write, for an embedder's router in front of its hosted runtime.
+    _rpcWriteProcessInputStream(pid, data) { return operations.rpcWriteProcessInputStream(this.#client(), pid, data); }
     _rpcStartProgram(argv, options) {
         // A start names no shell and no identity: it would run as the workspace, from its shell's environment.
         if (this.scope !== null)

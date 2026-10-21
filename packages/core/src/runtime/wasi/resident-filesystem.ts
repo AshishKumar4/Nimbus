@@ -39,6 +39,7 @@ import type { Awaitable, RuntimeFileHandle, RuntimeFsBridge, RuntimeOpenedFile, 
 import type { FsTime } from '@nimbus-sh/platform/w7-frame.js';
 import { fsError, walkBeneath } from '../beneath-walk.js';
 import { modeAllows } from '../../vfs/posix-access.js';
+import { refusesDirectory } from '../../vfs/open-rules.js';
 import { errnoCodeOf } from '../../vfs/vfs-error.js';
 import { openIdentified } from './filesystem.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES, DIRECTORY_BATCH_LIMIT, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES } from '../../constants.js';
@@ -48,7 +49,7 @@ import { delegationHolder, type DelegationHolder } from './delegation-holder.js'
 import { readDirectoryPool, type ReadDirectoryPool } from './read-directory-pool.js';
 import type { ReadDirectorySupervisor } from '../read-directory-batch.js';
 import type { VfsAcquireResult } from '../os-contracts.js';
-import type { ProcessFsJournal, ProcessFsOp, ProcessFsSession, ProcessFsStats } from '../../_shared/process-fs-client.js';
+import type { ProcessFsClient, ProcessFsJournal, ProcessFsOp, ProcessFsSession, ProcessFsStats } from '../../_shared/process-fs-client.js';
 import type { WaveTimers } from '@nimbus-sh/platform/wave-writer.js';
 
 /** A name as the store holds it: its lstat, and a symlink's text. */
@@ -214,7 +215,14 @@ export interface ResidentFilesystem extends RuntimeFsBridge {
   cancelPendingDirectories(): void;
   /** Whether writes are held that the session does not have yet. */
   holding(): boolean;
-  /** What the process decided and has not logged, logged now into its own log, with no round trip (DelegationHolder.logHeld). */
+  /**
+   * The process's filesystem client, its holder's and the only one it has:
+   * its effect is the output gate (what the holder decided logged and sent
+   * first, the client left live), its published and rawSocket the escapes.
+   * Null where the process holds nothing (no delegation).
+   */
+  readonly client: ProcessFsClient | null;
+  /** What the process decided and has not logged, logged now into its own log, with no round trip, and the client sealed: the run's end (DelegationHolder.logHeld). */
   logHeld(): void;
   /**
    * Send every held write to the session, before something leaves the
@@ -368,6 +376,16 @@ const DESCRIPTOR_CALLS = new Set<string>(['read', 'write', 'close', 'fstat', 'du
  * would begin waiting on the session, before anything it would have done.
  */
 const NOT_NOW: unique symbol = Symbol('not now');
+
+/** The calls the session refuses on a directory (EISDIR): those for a file's bytes, that write one, or remove one as a file. */
+const REFUSED_ON_A_DIRECTORY: ReadonlySet<string> = new Set(['readFile', 'readRange', 'writeFile', 'writeRange', 'truncate', 'unlink', 'copyFile', 'contentKey']);
+
+/** Whether the session refuses `syscall` with `args` on a directory: an open as the session's open judges one (refusesDirectory). */
+function refusesADirectory(syscall: string, args: readonly unknown[]): boolean {
+  if (syscall !== 'open') return REFUSED_ON_A_DIRECTORY.has(syscall);
+  const flags = args[1] as RuntimeOpenFlags | undefined;
+  return flags !== undefined && refusesDirectory(flags);
+}
 const notNow = (): never => { throw NOT_NOW; };
 
 /** A bridge's calls with no synchronous form (RuntimeSynchronousFs). */
@@ -950,6 +968,15 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     }
   };
 
+  /**
+   * A change the session made by name, for a caller that may wait in a
+   * process whose view shows its own changes (a holder's): answered once a
+   * barrier begun after it lands, so the view shows it before the caller
+   * goes on (a call that cannot wait reads it next).
+   */
+  const shown = <T>(change: T | Promise<T>): T | Promise<T> => (holder === null ? change
+    : after(change, (value) => (store.ready() ? catchUp().then(() => value, () => value) : value)));
+
   const fs: ResidentFilesystem = Object.create(null);
   // Every call this adapter does not answer goes to the authority as it came,
   // whether the bridge carries its calls itself or on its class.
@@ -964,7 +991,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     // The authority has what this process logged before it (its proxy flushes first).
     const mutates = MUTATIONS.has(name as keyof RuntimeFsBridge);
     Reflect.set(fs, name, mutates
-      ? (...args: unknown[]) => changing(name, () => call(...args))
+      ? DESCRIPTOR_CALLS.has(name) ? (...args: unknown[]) => changing(name, () => call(...args)) : (...args: unknown[]) => shown(changing(name, () => call(...args)))
       : (...args: unknown[]) => {
         if (now) throw NOT_NOW;
         delegated(name);
@@ -994,6 +1021,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   };
   fs.cancelPendingDirectories = () => { owed.input++; directoryPool?.cancelPending(); };
   fs.holding = () => holder?.pending() ?? false;
+  Object.defineProperty(fs, 'client', { value: holder?.client ?? null, enumerable: true });
   fs.logHeld = () => holder?.logHeld();
   // What leaves the process is preceded by everything it logged.
   fs.flush = async () => { await holder?.flush(); };
@@ -1022,7 +1050,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   fs.stat = (path, options = {}) => answer<RuntimeVfsStat | null>('stat', () => {
     const follow = options.followSymlinks !== false;
     const finish = (key: Resolution): RuntimeVfsStat | null | Delegate => {
-      if (key === DELEGATE || key === '') return DELEGATE;
+      if (key === DELEGATE) return DELEGATE;
       if (key === null) throw fsError('ELOOP', follow ? 'stat' : 'lstat', path);
       const entry = entryAt(key);
       if (entry === undefined) return DELEGATE;
@@ -1076,7 +1104,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   }), () => null);
 
   fs.readFile = (path, options = {}) => answer<Uint8Array | null>('readFile', () => after(resolve(path, options.followSymlinks !== false, true), (key) => {
-    if (key === DELEGATE || key === '') return DELEGATE;
+    if (key === DELEGATE) return DELEGATE;
     if (key === null) return null;
     const entry = entryAt(key);
     if (entry === undefined) return DELEGATE;
@@ -1118,7 +1146,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   const byCodeUnit = (entries: RuntimeVfsDirEntry[]): RuntimeVfsDirEntry[] => [...entries].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 
   fs.readlink = (path) => answer<string | null>('readlink', () => after(resolve(path, false), (key) => {
-    if (key === DELEGATE || key === '') return DELEGATE;
+    if (key === DELEGATE) return DELEGATE;
     if (key === null) return null;
     const entry = entryAt(key);
     if (entry === undefined) return DELEGATE;
@@ -1126,7 +1154,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   }), () => authority.readlink(path));
 
   fs.realpath = (path) => answer<string>('realpath', () => after(resolve(path, true), (key) => {
-    if (key === DELEGATE || key === '') return DELEGATE;
+    if (key === DELEGATE) return DELEGATE;
     if (key === null) throw fsError('ELOOP', 'realpath', path);
     const entry = entryAt(key);
     if (entry === undefined) return DELEGATE;
@@ -1140,12 +1168,12 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     const entry = holder!.fstat(handleId);
     if (entry !== undefined) return entry;
     if (now) notNow();
-    throw notResident(syscall, handleId);
+    throw notResident(syscall, [handleId]);
   };
   const heldOpen = (handle: RuntimeFileHandle): RuntimeOpenedFile => ({ ...handle, stat: statOf(identified(handle.id, 'open')) });
 
   fs.access = (path, mode) => answer<void>('access', () => after(resolve(path, true), (key) => {
-    if (key === DELEGATE || key === '') return DELEGATE;
+    if (key === DELEGATE) return DELEGATE;
     if (key === null) throw fsError('ELOOP', 'access', path);
     const entry = entryAt(key);
     if (entry === undefined) return DELEGATE;
@@ -1218,6 +1246,36 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     if (done === false || done === undefined) throw NOT_NOW;
     counts.local++;
     return done;
+  };
+
+  /**
+   * A change by name no held subtree decided, at `keys` (where each name's
+   * walk led; undefined where it led nowhere the view places): the
+   * provisional decisions' (`decided`, given the row the view has at each
+   * and whether its caller waits), for either caller, else the session's
+   * (`session`). A caller that cannot wait is answered now, or refused as
+   * one that cannot answer now. One that may wait is answered, where no
+   * grant decides the name (outside one, or one the decisions touch: the
+   * holder declines it), once the session answers what was decided (its
+   * refusal the call's error, undone by then); where the decisions decline,
+   * a grant decides a name or the view cannot place one, by the session.
+   */
+  const ownChange = <T>(keys: readonly (string | undefined)[], decided: (rows: (ResidentEntry | null)[], awaited: boolean) => boolean | Promise<unknown>, session: () => Awaitable<T>): Awaitable<T | undefined> => {
+    const rows = keys.map((key) => (key === undefined || !store.ready() ? undefined : entryAt(key)));
+    const placed = rows.every((row) => row !== undefined) ? rows as (ResidentEntry | null)[] : undefined;
+    if (now) {
+      if (placed === undefined || decided(placed, false) === false) throw NOT_NOW;
+      counts.local++;
+      return undefined;
+    }
+    if (placed !== undefined && keys.every((key) => !holder!.holds(key!) || holder!.provisional.touches(key!))) {
+      const answer = decided(placed, true);
+      if (answer !== false) {
+        counts.local++;
+        return after(answer, () => undefined);
+      }
+    }
+    return session();
   };
 
   /**
@@ -1319,7 +1377,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       };
       return after(through(), (handle) => {
         if (handle !== DELEGATE) return handle;
-        if (flags.create || flags.truncate) return changing('open', () => authority.open(path, flags));
+        if (flags.create || flags.truncate) return shown(changing('open', () => authority.open(path, flags)));
         // An open that makes and empties nothing changes nothing: its writes will, each a call of its own.
         delegated('open');
         return after(authority.open(path, flags), (opened) => { unwritten.add(opened.id); return opened; });
@@ -1530,17 +1588,17 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   };
 
   /**
-   * A change by name no held subtree decides: an op of the process's client
-   * when the store places the name (ordered with everything it logged,
-   * answered before the call returns), else the session's call (its proxy
-   * sends what the process logged first).
+   * A change by name neither a held subtree nor the provisional decisions
+   * decide, where the store places the name: an op of the process's client
+   * (ordered with everything it logged), answered once the session answers
+   * it and the view shows it.
    */
-  const byClient = (name: string, op: ProcessFsOp): Promise<void> => {
+  const byClient = (name: string, op: ProcessFsOp): Awaitable<void> => {
     if (now) throw NOT_NOW;
     // What the names of the files it moves grow by, admitted before anything is done: pending until the session
     // answers, and given back unless it made it.
     const files = op.type === 'rename' ? holder!.provisional.planMove(op.from, op.to, '/' + op.from) : undefined;
-    return (async () => {
+    return shown((async () => {
       try {
         delegated(name);
         // A name it changes: the files the process holds open at or under it write through first.
@@ -1563,11 +1621,11 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       } finally {
         files?.cancel();
       }
-    })();
+    })());
   };
   const pathOf = (path: RuntimeFsPath): string => (typeof path === 'string' ? path : path.path);
 
-  // Changes by name a held subtree holds are decided here; any other is the session's, through the client.
+  // Changes by name a held subtree holds are decided here; any other by the provisional decisions (ownChange), else the session's.
   // A whole file written by name: made or emptied, written and closed here
   // where the holder decides that open, as the three calls are. One that
   // makes its parents is decided here too where its directory is (making
@@ -1614,8 +1672,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       return after(holder!.mkdir(walk.key, pathOf(path), mode, options?.umask), (done) => (done ? undefined : DELEGATE));
     }));
     return after(local, (done) => (done !== DELEGATE ? undefined
-      : now ? void provisionally(path, false, (key, row) => holder!.provisional.mkdir(key, pathOf(path), mode, row, options?.umask))
-      : named !== undefined ? byClient('mkdir', { type: 'call', call: { call: 'mkdir', path: named, mode, ...(options?.umask === undefined ? {} : { umask: options.umask }) } }) : bySessionMkdir(path, options)));
+      : ownChange([named], ([row], awaited) => holder!.provisional.mkdir(named!, pathOf(path), mode, row, options?.umask, awaited),
+        () => (named !== undefined ? byClient('mkdir', { type: 'call', call: { call: 'mkdir', path: named, mode, ...(options?.umask === undefined ? {} : { umask: options.umask }) } }) : bySessionMkdir(path, options)))));
   };
   /**
    * mkdir -p for a caller that cannot wait: planned whole against the view
@@ -1676,8 +1734,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       return after(holder!.unlink(walk.key, pathOf(path)), (done) => (done ? undefined : DELEGATE));
     }));
     return after(local, (done) => (done !== DELEGATE ? undefined
-      : now ? void provisionally(path, false, (key, row) => holder!.provisional.unlink(key, pathOf(path), row))
-      : named !== undefined ? byClient('unlink', { type: 'call', call: { call: 'unlink', path: named } }) : bySessionUnlink(path)));
+      : ownChange([named], ([row], awaited) => holder!.provisional.unlink(named!, pathOf(path), row, awaited),
+        () => (named !== undefined ? byClient('unlink', { type: 'call', call: { call: 'unlink', path: named } }) : bySessionUnlink(path)))));
   };
   /**
    * The store's bytes of the file `walk` reaches (a decidable walk), where
@@ -1722,14 +1780,15 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
         return after(holder!.rename(source.key, target.key, pathOf(from)), (done) => (done ? undefined : DELEGATE));
       }))));
     return after(local, (done) => (done !== DELEGATE ? undefined
-      : now ? void provisionally(from, false, (source, row) => provisionally(to, false, (target, there) => holder!.provisional.rename(source, target, pathOf(from), row, there)))
-      : names !== undefined ? byClient('rename', { type: 'rename', from: names[0], to: names[1] }) : bySessionRename(from, to)));
+      : ownChange(names ?? [undefined], ([source, target], awaited) => holder!.provisional.rename(names![0], names![1], pathOf(from), source, target, awaited),
+        () => (names !== undefined ? byClient('rename', { type: 'rename', from: names[0], to: names[1] }) : bySessionRename(from, to)))));
   };
   // An attribute change by name: decided here where a held subtree holds the
-  // name (counted toward taking it either way), else the session's, after
-  // what the holder has; one it holds but did not decide (another's file, a
-  // grant the session judges) is the session's in its view after. Not a
-  // link's own (lchown, lutimes), nor times now: the session's alone.
+  // name (counted toward taking it either way), else by the provisional
+  // decisions (ownChange), else the session's, after what the holder has;
+  // one it holds but did not decide (another's file, a grant the session
+  // judges) is the session's in its view after. Not a link's own (lchown,
+  // lutimes), nor times now: the session's alone.
   for (const name of ['chmod', 'chown', 'utimes'] as const) {
     const passed = Reflect.get(fs, name) as (...args: unknown[]) => unknown;
     Reflect.set(fs, name, (path: RuntimeFsPath, ...rest: unknown[]) => {
@@ -1744,53 +1803,52 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
         if (walk === DELEGATE) return DELEGATE;
         named = walk.key;
         if (!decidable(walk.key, walk)) return DELEGATE;
-        if (holder!.setattr(walk.key, attrs)) return undefined;
-        // A held name its provisional decisions touch is theirs (the grant does not decide it): its times or owner are
-        // decided there, judged as the holder judges them. A mode stays the session's, which judges a confined principal's.
-        if ('mode' in attrs || !holder!.holds(walk.key) || !holder!.provisional.touches(walk.key)) return DELEGATE;
-        const row = entryAt(walk.key);
-        return row !== undefined && holder!.provisional.setattr(walk.key, pathOf(path), attrs, row) ? undefined : DELEGATE;
+        return holder!.setattr(walk.key, attrs) ? undefined : DELEGATE;
       }));
       return after(local, (done) => {
         if (done !== DELEGATE) return undefined;
-        if (now) return void provisionally(path, true, (key, row) => holder!.provisional.setattr(key, pathOf(path), attrs, row));
         const key = named;
-        if (key === undefined || !holder!.holds(key)) return passed.call(fs, path, ...rest);
-        return after(passed.call(fs, path, ...rest), (receipt) => { holder!.undecided(key); return receipt; });
+        return ownChange([key], ([row], awaited) => holder!.provisional.setattr(key!, pathOf(path), attrs, row, awaited), () => (key === undefined || !holder!.holds(key)
+          ? passed.call(fs, path, ...rest)
+          : after(passed.call(fs, path, ...rest), (receipt) => { holder!.undecided(key); return receipt; })));
       });
     });
   }
-  // Nothing of these is decided here: by the client when the store places
-  // the name; for a caller that cannot wait, by its provisional decisions.
-  const byName = <A extends unknown[]>(name: 'rmdir' | 'symlink', passed: (...args: A) => Awaitable<void>, pathAt: number, op: (key: string, args: A) => ProcessFsOp, decided: (key: string, row: ResidentEntry | null, args: A) => boolean) =>
+  // Nothing of these is decided by a held subtree: by the provisional
+  // decisions, else by the client when the store places the name.
+  const byName = <A extends unknown[]>(name: 'rmdir' | 'symlink', passed: (...args: A) => Awaitable<void>, pathAt: number, op: (key: string, args: A) => ProcessFsOp,
+    decided: (key: string, row: ResidentEntry | null, args: A, awaited: boolean) => boolean | Promise<unknown>) =>
     (...args: A): Awaitable<void> => {
       if (holder === null) return passed(...args);
-      if (now) return void provisionally(args[pathAt] as RuntimeFsPath, false, (key, row) => decided(key, row, args));
-      const placed = walkFor(args[pathAt] as RuntimeFsPath, false);
-      return after(placed, (walk) => (walk === DELEGATE ? passed(...args) : byClient(name, op(walk.key, args))));
+      return after(walkFor(args[pathAt] as RuntimeFsPath, false), (walk) => {
+        const key = walk === DELEGATE ? undefined : walk.key;
+        return ownChange([key], ([row], awaited) => decided(key!, row, args, awaited), () => (key === undefined ? passed(...args) : byClient(name, op(key, args))));
+      });
     };
   const bySessionRmdir = fs.rmdir;
   fs.rmdir = byName('rmdir', (path: RuntimeFsPath) => bySessionRmdir(path), 0, (key) => ({ type: 'call', call: { call: 'rmdir', path: key } }),
-    (key, row, [path]) => holder!.provisional.rmdir(key, pathOf(path), row));
+    (key, row, [path], awaited) => holder!.provisional.rmdir(key, pathOf(path), row, awaited));
   const bySessionSymlink = fs.symlink;
   fs.symlink = byName('symlink', (target: string, path: RuntimeFsPath) => bySessionSymlink(target, path), 1, (key, [target]) => ({ type: 'call', call: { call: 'symlink', path: key, target } }),
-    (key, row, [target, path]) => holder!.provisional.symlink(key, pathOf(path), target, row));
+    (key, row, [target, path], awaited) => holder!.provisional.symlink(key, pathOf(path), target, row, awaited));
 
   /**
    * What a call that needed the session is told when it must answer now:
    * the name's own state where this view knows it, as the session would say
-   * it (a directory, a name the process may not read); else EAGAIN, naming
-   * what is not resident here.
+   * it to this call (a directory to a call for a file's bytes or that makes
+   * one, a name the process may not read); else EAGAIN, naming what is not
+   * resident here.
    */
-  const notResident = (syscall: string, target: unknown): Error => {
+  const notResident = (syscall: string, args: readonly unknown[]): Error => {
     counts.notResident++;
+    const target = args[0];
     const path = typeof target === 'number'
       ? (holder?.owns(target) ? '/' + holder.keyOf(target) : String(target))
       : typeof target === 'string' || (typeof target === 'object' && target !== null && 'path' in target) ? pathOf(target as RuntimeFsPath) : '';
     if (typeof target === 'string' && !target.split('/').includes('..')) {
       const walked = walkOnce('', keyOf(target), true);
       const entry = typeof walked === 'string' ? entryAt(walked) : undefined;
-      if (entry?.type === 'directory') return fsError('EISDIR', syscall, target);
+      if (entry?.type === 'directory' && refusesADirectory(syscall, args)) return fsError('EISDIR', syscall, target);
       if (entry && !modeAllows(entry, 4, store.cred)) return fsError('EACCES', syscall, target);
     }
     return fsError('EAGAIN', syscall, path, undefined, {
@@ -1812,7 +1870,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
         }
         return value;
       } catch (error) {
-        if (error === NOT_NOW) throw notResident(name, args[0]);
+        if (error === NOT_NOW) throw notResident(name, args);
         throw error;
       } finally {
         now = was;

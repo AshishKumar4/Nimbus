@@ -77,8 +77,8 @@ const supervisor = {
 };
 store.admission.setStorage(undefined, supervisor);
 assert.equal(await store.view.bootLazy(supervisor), true);
-const device = (await authority.stat('/')).dev;
-const fs = residentFilesystem(authority, store.view.namespaceView(supervisor, device, USER));
+const root = await authority.stat('/');
+const fs = residentFilesystem(authority, store.view.namespaceView(supervisor, root, USER));
 
 // ── one file of a directory: that file, and nothing more ──
 {

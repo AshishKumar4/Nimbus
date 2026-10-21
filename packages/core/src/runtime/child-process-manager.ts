@@ -9,7 +9,7 @@ import { enc } from '../_shared/bytes.js';
 import { exitCodeForSignal, parseSignalName, signalDisposition, signalOfStatus } from '../substrate/lifo/shell/signals.js';
 import { pulledStdinReader } from '../shell/stdin-adapter.js';
 import type { CommandInputStream } from '../substrate/lifo/commands/types.js';
-import { parseProcessSignalName } from './process-io-protocol.js';
+import { parseProcessSignalName, type ProcessSignalName } from './process-io-protocol.js';
 
 /**
  * Output chunk in a child's per-fd ring. Sequence numbers let parents
@@ -554,6 +554,22 @@ export class ChildProcessManager {
     return { ...packet, data: typeof packet.data === 'string' ? textBytes(packet.data) : packet.data };
   }
 
+  /** The next signal sent to `pid`'s Node program, its box taken back from a stop (SessionProcessSupervisor.takeSignalsBack). */
+  takeSignal(pid: number, waitMs: number): Promise<string | null> {
+    this.deps.processes.takeSignalsBack(pid);
+    return this.deps.processes.nextSignal(pid, waitMs);
+  }
+
+  /** The signals `pid`'s program catches now (SessionProcessSupervisor.catchSignals). */
+  catchSignals(pid: number, catches: readonly string[]): void {
+    const names: ProcessSignalName[] = [];
+    for (const catching of catches) {
+      const name = parseProcessSignalName(catching);
+      if (name !== null) names.push(name);
+    }
+    this.deps.processes.catchSignals(pid, names);
+  }
+
   /** The next signal sent to `pid`, whose program takes its own (SessionProcessSupervisor.nextSignal). */
   nextSignal(pid: number, waitMs: number): Promise<string | null> {
     return this.deps.processes.nextSignal(pid, waitMs);
@@ -934,5 +950,7 @@ export function createChildProcessSupervisor(manager: ChildProcessManager, pid: 
     cpCloseOutput: (child: number, fd: 1 | 2) => manager.closeOutput(child, fd),
     cpDrainOutput: (child: number) => manager.drainOutput(child),
     cpNextSignal: (waitMs: number) => manager.nextSignal(pid, waitMs),
+    cpCatchSignals: (catches: readonly string[]) => manager.catchSignals(pid, catches),
+    cpTakeSignal: (waitMs: number) => manager.takeSignal(pid, waitMs),
   };
 }

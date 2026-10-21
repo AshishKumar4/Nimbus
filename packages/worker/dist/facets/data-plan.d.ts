@@ -93,11 +93,29 @@ export declare function carriesOxide(closure: Iterable<string>): boolean;
  */
 export declare const STYLESHEET_SOURCE_MAX_FILES = 5000;
 /**
+ * Where an `@source` path can reach, without expanding it: the part before
+ * its first glob character, up to its last `/` (the path itself when it has
+ * none), then a directory up for each `..` its brace alternatives could
+ * spell. Linear in the path, however it nests or whatever range it names: an
+ * agent writes the stylesheets, and a line of CSS must not cost an isolate.
+ * A superset of every path it matches: what it misses Tailwind's scanner
+ * learns by its misses.
+ */
+export declare function sourceReach(path: string): string;
+/**
+ * The directory names a source spells below its reach, each with how many
+ * times it does: a directory its pattern names is one it selects, though a
+ * walk leaves such names out (`../{shared/node_modules/ui,kit}`). Only what
+ * a `/` follows is a directory's: `*.{node_modules,tsx}` names files. Linear
+ * in the path.
+ */
+export declare function sourceNames(path: string): ReadonlyMap<string, number>;
+/**
  * The stylesheet-source rule, for a resident's plan and a one-shot's alike:
  * from `sheets`, through the `@import`s Tailwind inlines (a path's, not a
  * package's), each sheet where its links lead and read once, every `@source`
- * outside the working tree `cwd`, each brace alternative's directory prefix
- * taken whole, through its links; and the files under those roots, walked a
+ * outside the working tree `cwd`, where it can reach (sourceReach, its
+ * braces never expanded), through its links; and the files under those roots, walked a
  * directory at a time with the project rule's exclusions, which are of a path
  * as it is named below its root, whatever a link makes of it. The roots it
  * returns are what the facet's barriers push: those, and wherever a link
