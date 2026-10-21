@@ -79,7 +79,8 @@ export type NodeFilesystem = Required<Omit<FilesFace<'sync'>, 'truncate'>>;
  * with promises. stat, lstat, readFile, writeFile and readdir are needed;
  * readFileString, exists, isFile and isDirectory are made from them when
  * absent; any other absent call is ENOSYS. A failure is an Error with
- * `code`, `syscall` and `path`.
+ * `code`, `syscall` and `path`, its own: `fs` names the path in it as its
+ * caller gave it (one frozen is copied instead).
  */
 export type NodeFiles = Pick<FilesFace<'async'>, 'stat' | 'lstat' | 'readFile' | 'writeFile' | 'readdir'> & Partial<FilesFace<'async'>>;
 /** The faces one `fs` runs over: a synchronous one, an asynchronous one, or both. */

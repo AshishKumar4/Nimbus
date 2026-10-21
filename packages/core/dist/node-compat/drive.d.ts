@@ -10,7 +10,11 @@ export interface Step {
     readonly path: Named | undefined;
     later(files: FilesFace<'async'>): Promise<void>;
 }
-/** A new error with `error`'s own fields and message as `change` makes them; `error` is its cause. */
+/**
+ * A new error with `error`'s fields and message as `change` makes them;
+ * `error` is its cause and its stack `error`'s, and `error` is left as it
+ * is. No stack is captured for it.
+ */
 export declare function withFields(error: Error, change: (fields: Record<string, unknown>, message: string) => string): Error;
 /** An operation: the steps it makes, and what it answers. */
 export type Op<T> = Generator<Step, T, void>;

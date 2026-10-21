@@ -11,27 +11,53 @@ import { fsError } from '../vfs/vfs-error.js';
 import { syncValue } from '../vfs/vfs.js';
 /**
  * `error`, a failure of a call on `path` (and `dest`), naming them as its
- * caller gave them: a new error with its fields, the face's own (which it may
- * share or have frozen) its cause and left as it is.
+ * caller gave them. A face gives each failure its own error (NodeFiles), so
+ * it is named so where it stands; one the face froze, or whose fields cannot
+ * be written, is copied instead and left as it is.
  */
 function asGiven(error, path, dest) {
-    const renamed = [['path', path], ['dest', dest]];
-    if (!(error instanceof Error) || !renamed.some(([field, named]) => named !== undefined && named.given !== named.abs && Reflect.get(error, field) === named.abs)) {
+    if (!(error instanceof Error))
+        return error;
+    const renamesPath = path !== undefined && path.given !== path.abs && Reflect.get(error, 'path') === path.abs;
+    const renamesDest = dest !== undefined && dest.given !== dest.abs && Reflect.get(error, 'dest') === dest.abs;
+    if (!renamesPath && !renamesDest)
+        return error;
+    const rename = (fields, message) => {
+        let named = message;
+        if (renamesPath) {
+            fields.path = path.given;
+            named = named.replace(`'${path.abs}'`, `'${path.given}'`);
+        }
+        if (renamesDest) {
+            fields.dest = dest.given;
+            named = named.replace(`'${dest.abs}'`, `'${dest.given}'`);
+        }
+        return named;
+    };
+    // A program probing paths (statSync in a try) meets one per probe: where the error can be written, it is.
+    if (!Object.isFrozen(error) && writable(error, 'message') && (!renamesPath || writable(error, 'path')) && (!renamesDest || writable(error, 'dest'))) {
+        const fields = {};
+        error.message = rename(fields, error.message);
+        if (renamesPath)
+            Reflect.set(error, 'path', fields.path);
+        if (renamesDest)
+            Reflect.set(error, 'dest', fields.dest);
         return error;
     }
-    return withFields(error, (fields, message) => {
-        for (const [field, named] of renamed) {
-            if (named === undefined || fields[field] !== named.abs)
-                continue;
-            fields[field] = named.given;
-            message = message.split(`'${named.abs}'`).join(`'${named.given}'`);
-        }
-        return message;
-    });
+    return withFields(error, rename);
+}
+/** Whether `error`'s `field` takes a new value where it stands: an own writable value, or none on an error that takes new ones. */
+function writable(error, field) {
+    const own = Object.getOwnPropertyDescriptor(error, field);
+    return own === undefined ? Object.isExtensible(error) : own.writable === true;
 }
 /** The fields Node's system errors carry, however a face defines them (enumerable or not, own or a getter's). */
 const ERRNO_FIELDS = ['code', 'errno', 'syscall', 'path', 'dest'];
-/** A new error with `error`'s own fields and message as `change` makes them; `error` is its cause. */
+/**
+ * A new error with `error`'s fields and message as `change` makes them;
+ * `error` is its cause and its stack `error`'s, and `error` is left as it
+ * is. No stack is captured for it.
+ */
 export function withFields(error, change) {
     const fields = { ...error };
     for (const field of ERRNO_FIELDS) {
@@ -40,7 +66,21 @@ export function withFields(error, change) {
             fields[field] = value;
     }
     const message = change(fields, error.message);
-    return Object.assign(new Error(message, { cause: error }), fields);
+    const limit = Reflect.get(Error, 'stackTraceLimit');
+    Reflect.set(Error, 'stackTraceLimit', 0);
+    let copy;
+    try {
+        copy = new Error(message, { cause: error });
+    }
+    finally {
+        Reflect.set(Error, 'stackTraceLimit', limit);
+    }
+    // Read only when asked: an error's stack is formatted the first time it is read, at a cost a probe should not pay.
+    Object.defineProperty(copy, 'stack', {
+        configurable: true,
+        get: () => (typeof error.stack === 'string' ? error.stack.replace(error.message, message) : undefined),
+    });
+    return Object.assign(copy, fields);
 }
 /**
  * The synchronous face while an operation is answered now: its steps call
@@ -70,12 +110,19 @@ class Answered {
 export function step(syscall, path, call, dest) {
     if (answering === null)
         return waitFor(syscall, path, call, dest);
+    // A failure is caught only to be renamed: one thrown again costs the throw again, so paths given whole are not caught.
+    if (!renames(path) && !renames(dest))
+        return new Answered(syncValue(call(answering)));
     try {
         return new Answered(syncValue(call(answering)));
     }
     catch (error) {
         throw asGiven(error, path, dest);
     }
+}
+/** Whether a failure naming `named` names it otherwise than its caller gave it. */
+function renames(named) {
+    return named !== undefined && named.given !== named.abs;
 }
 function* waitFor(syscall, path, call, dest) {
     const slot = { answer: null };
