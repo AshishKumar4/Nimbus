@@ -1839,15 +1839,15 @@ export class CompositeVFS implements VFS {
   }
 
   /**
-   * Whether the mount at `point` states its change model (a feed:
-   * VFS.changes), as the root's SQLite does: false for one with none, or
-   * whose source is absent, which only a walk can list (CompositeFeed.walk).
+   * Whether the mount at `point` states a fixed change model (VfsChanges.fixed:
+   * its tree never changes, as the kernel's /dev and /proc): false for any
+   * other, or one whose source is absent.
    */
-  fedMount(point: string): boolean {
+  fixedMount(point: string): boolean {
     const mount = this.table.mounts.get(point);
     if (mount === undefined) return false;
     const files = this.backend(mount);
-    return files !== null && files.changes !== undefined;
+    return files !== null && files.changes?.fixed === true;
   }
 
   someMountPoint(wants: (point: string) => boolean): boolean {

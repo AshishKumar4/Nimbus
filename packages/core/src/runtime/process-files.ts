@@ -402,20 +402,23 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
    * What a process's launch names — its working directory, program and
    * arguments, the literal paths its code names, the files its module map
    * was read from — which is where its listing (`list`) walks mounts without
-   * a change feed (CompositeFeed.walk, MOUNT_LIST_NAME_LIMIT). `names` is
-   * asked only when the process's credential sees a mount without one, so a
-   * launch computes nothing for a namespace every mount of which is fed.
+   * a change feed (CompositeFeed.walk, MOUNT_LIST_NAME_LIMIT), there or once
+   * a mount above them goes. Kept for the names on a mount an embedder made
+   * (any but the root and those whose trees are fixed: the kernel's /dev and
+   * /proc), and `names` asked only when the process's credential sees one,
+   * so a launch computes nothing for a namespace of SQLite and the kernel's.
    * Adds to what was named.
    */
   nameLaunch({ pid, cred }: NimbusFilesystemBinding, names: () => Iterable<string>): void {
     if (this.retired.has(pid)) return;
     const view = this.vfs.as(immutableCredential(cred));
-    if (!view.someMountPoint((point) => !view.fedMount(point))) return;
+    const embedders = (point: string): boolean => point !== '/' && !view.fixedMount(point);
+    if (!view.someMountPoint(embedders)) return;
     const { named } = this.createListing(pid);
     for (const name of names()) {
       if (name === '') continue;
       const path = normalizePath(name.startsWith('/') ? name : `/${name}`);
-      if (!view.fedMount(view.mountOf(path))) named.add(path);
+      if (embedders(view.mountOf(path))) named.add(path);
     }
   }
 

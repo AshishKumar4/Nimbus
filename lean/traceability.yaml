@@ -809,8 +809,7 @@ requirements:
       - Nimbus.Vfs.CompositeFeed.feed_exact
       - Nimbus.Vfs.CompositeFeed.feed_values
       - Nimbus.Vfs.CompositeFeed.step_exact
-      - Nimbus.Vfs.CompositeFeed.sqlite_generation_change_poisons
-      - Nimbus.Vfs.CompositeFeed.sqlite_only_aba_relists
+      - Nimbus.Vfs.CompositeFeed.a_listing_across_an_aba_window_needs_no_poison
       - Nimbus.Vfs.CompositeFeed.no_changes_no_incremental
       - Nimbus.Vfs.CompositeFeed.unfed_view_is_walk
       - Nimbus.Vfs.CompositeFeed.unlisted_does_not_mean_absent
