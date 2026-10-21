@@ -168,6 +168,9 @@ export class OneShotPlacement {
         const local = new IsolatePool(this.#env, this.#ctx, oneShotPoolOptions(spec, network, images));
         if (network.forProcess(spec.supervisor?.pid ?? 0).egress !== undefined)
             return local;
+        // Experiment (not for landing): a session pinned to run every one-shot here.
+        if (globalThis.__d1Pinned?.has(this.#ctx.id.toString()))
+            return local;
         return {
             submit: async (fn, args, options) => {
                 const began = Date.now();
@@ -233,7 +236,10 @@ export class OneShotPlacement {
                 const carries = !this.#carried.has(hash);
                 let raw;
                 try {
+                    const sent = Date.now();
                     raw = await dispatch({ op: 'oneShotSubmit', args: [this.#wire(spec, carries), callId, fn, args, { timeoutMs: options?.timeoutMs }, this.#images(spec, images, options?.signal)] });
+                    const shared = globalThis;
+                    shared.__d1Sent = [...(shared.__d1Sent ?? []).slice(-63), { tag: spec.tag, sent, rt: Date.now() - sent }];
                 }
                 catch (error) {
                     this.forgetPeer();
@@ -492,10 +498,12 @@ export class OneShotHost {
     }
     /** One call of a session's facet: its answer, whatever the task did. */
     async submit(spec, callId, fn, args, options, images) {
+        const t0 = Date.now();
         const id = z.string().uuid().parse(callId);
         // The call's own record of its facet call: whether its worker was cold, for the session's record.
         const calls = {};
         const pool = this.#pool(spec, calls);
+        const t1 = Date.now();
         if (pool === null)
             return { ok: 'preamble missing' };
         const controller = new AbortController();
@@ -505,6 +513,8 @@ export class OneShotHost {
                 ...CallOptionsSchema.parse(options), wasmModules: facetImages(images), signal: controller.signal,
             });
             const [call] = recentFacetCalls(calls);
+            const shared = globalThis;
+            shared.__d1Spans = [...(shared.__d1Spans ?? []).slice(-63), { pool: t1 - t0, submit: Date.now() - t1, callMs: call?.callMs, cold: call?.cold }];
             return { ok: true, value, loadMs: call?.cold === true ? call.loadMs : null };
         }
         catch (error) {
