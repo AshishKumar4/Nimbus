@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "12fb21ef548137904d36ada90e54012ca96290a148943b8413395f199c6cbb04",
+  "fingerprint": "623f1cc75409385f804fefe38c205b38fd6e1ca1a57175382bc268b31697cb4b",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2764,7 +2764,7 @@
     "packages/worker/dist/runtime/esbuild-wasm-bytes.js": "0361235628a73c673eb0c0a4ce4241b78ce464ea86b239d70a926ba73c605598",
     "packages/worker/dist/runtime/facet-loader-host.d.ts": "98d4c247740230a6e690c27325a37458769af44df9edae9b852d1a506589351a",
     "packages/worker/dist/runtime/facet-loader-host.d.ts.map": "209fa19d17934b66dfda88b8426180929ea578d4fba7751bf5d3f1dd5be8790b",
-    "packages/worker/dist/runtime/facet-loader-host.js": "82279cf2bccbd8c851326968af4f5c99d5fd058cdbf08e27ea6b1039fcd2df3d",
+    "packages/worker/dist/runtime/facet-loader-host.js": "699194e686c1ef6270909d25a6b3856a5c007543d1a85c1ff8bd944284299cff",
     "packages/worker/dist/runtime/fetch-http-client.d.ts": "007a6a5c6d0dc44950b7773d03150083475318360c0eab1f14d366dd9c107540",
     "packages/worker/dist/runtime/fetch-http-client.d.ts.map": "465038a41ca161e61db314b7e036f419e63b86fafbfd647a57f952e04524c8ea",
     "packages/worker/dist/runtime/fetch-http-client.js": "37c970520b8c5eefa059be917aee152664c7312d9db7df82b0668ff08624da6c",
@@ -3427,7 +3427,7 @@
     "packages/worker/src/runtime/cpython-resident.ts": "a440728c12be8d2b008afae9e5e0dd709a11fdd2218fdfc6bda1f5b9bdaa5940",
     "packages/worker/src/runtime/egress-tls-client.ts": "31ad20f715be279e1de23c4957d67d977d9240775c0b79804bf90b156f13ce8c",
     "packages/worker/src/runtime/esbuild-wasm-bytes.ts": "8157f7b59cc7558695ff78f0bf0cedcfa2a9e4e6efda1367426f438860e2e3c5",
-    "packages/worker/src/runtime/facet-loader-host.ts": "02dee42e4d0ea492ec0d8d7acb9318a73753c39aeb9ba6161560c90ef21cf109",
+    "packages/worker/src/runtime/facet-loader-host.ts": "751d40b527643b69bf30f8adbdd4f9d8d6674f80c38d4960aed734c27f37f0fc",
     "packages/worker/src/runtime/fetch-http-client.ts": "0949599edbfe92598e9d30c1e943a6cee4528a3d88ae701d1f83fdf020f96026",
     "packages/worker/src/runtime/git-bundle-artifact.ts": "6c3ea8f56dd23999f68f86ee57d82993d2957d8ecec231b1c12507f349249c59",
     "packages/worker/src/runtime/html-entrypoint.ts": "a601f3fe0bbec416f945a7f6d7ca029f819ab1c610530d438df384337682fc74",
