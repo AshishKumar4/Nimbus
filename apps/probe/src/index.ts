@@ -265,6 +265,10 @@ export class NimbusSession extends SdkNimbusSession {
     this.ctx.abort('probe: coordinator reset');
   }
   /** The session's one-shot peer (fabric one-shot-peer.ts), or null; forgotten first with `forget`, so its next one-shot runs here and warms it again. */
+  _rpcProbePresync(on: boolean): { presync: boolean } {
+    (globalThis as unknown as { __d1Presync?: boolean }).__d1Presync = on;
+    return { presync: on };
+  }
   _rpcProbePin(pin: boolean): { pinned: boolean } {
     const shared = globalThis as unknown as { __d1Pinned?: Set<string> };
     shared.__d1Pinned ??= new Set();
@@ -507,7 +511,7 @@ export class NimbusProcess extends DurableObject {
   } finally { disposeRpcResource(stub); }
 }
 
-const OneShotPeerProbe = z.object({ action: z.enum(['forget', 'reset', 'stored', 'burn', 'facet-calls', 'pin', 'unpin']), needle: z.string().default(''), forget: z.boolean().default(false), preamble: z.enum(['none', 'wasi']).default('none'), n: z.number().int().positive().default(1) });
+const OneShotPeerProbe = z.object({ action: z.enum(['forget', 'reset', 'stored', 'burn', 'facet-calls', 'pin', 'unpin', 'presync', 'nosync']), needle: z.string().default(''), forget: z.boolean().default(false), preamble: z.enum(['none', 'wasi']).default('none'), n: z.number().int().positive().default(1) });
 
 /**
  * POST /api/embedder/<id>/one-shot-peer {action, needle?}: the session's
@@ -529,6 +533,7 @@ async function probeOneShotPeer(request: Request, env: ProbeEnv, sessionId: stri
   try {
     if (action === 'burn') return Response.json(await owner._rpcProbeOneShotBurn(parsed.data.forget, parsed.data.preamble, parsed.data.n));
     if (action === 'pin' || action === 'unpin') return Response.json(await owner._rpcProbePin(action === 'pin'));
+    if (action === 'presync' || action === 'nosync') return Response.json(await owner._rpcProbePresync(action === 'presync'));
     const name = await owner._rpcProbeOneShotPeer(action === 'forget');
     if (action === 'forget') return Response.json({ forgot: name });
     if (name === null) return Response.json({ error: 'the session has no one-shot peer' }, { status: 404 });

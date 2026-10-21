@@ -233,8 +233,16 @@ export class OneShotPlacement {
    * goes out through an egress always runs here (the module's header says why).
    */
   facet(spec: OneShotPoolSpec, images: Record<string, FacetImage>, network: WorkspaceNetwork): Facet {
-    const local = new IsolatePool(this.#env, this.#ctx, oneShotPoolOptions(spec, network, images));
+    const pool = new IsolatePool(this.#env, this.#ctx, oneShotPoolOptions(spec, network, images));
+    // Experiment (not for landing): with __d1Presync, the session's pending writes made durable before a call leaves.
+    const presync = async () => { if ((globalThis as unknown as { __d1Presync?: boolean }).__d1Presync) await this.#ctx.storage.sync(); };
+    const local: Facet = {
+      submit: async <A, R>(fn: FacetTaskSource<A, R>, args: A, options?: FacetSubmitOptions): Promise<Awaited<R>> => { await presync(); return pool.submit(fn, args, options); },
+      dispose: () => pool.dispose(),
+    };
     if (network.forProcess(spec.supervisor?.pid ?? 0).egress !== undefined) return local;
+    // Experiment (not for landing): a session pinned to run every one-shot here.
+    if ((globalThis as unknown as { __d1Pinned?: Set<string> }).__d1Pinned?.has(this.#ctx.id.toString())) return local;
     return {
       submit: async <A, R>(fn: FacetTaskSource<A, R>, args: A, options?: FacetSubmitOptions): Promise<Awaited<R>> => {
         const began = Date.now();
@@ -247,6 +255,7 @@ export class OneShotPlacement {
         }
         let answer: { ok: true; value: Awaited<R>; call: z.infer<typeof FacetCallSchema> | null } | OneShotFailure | null;
         try {
+          await presync();
           answer = await this.#submit<A, R>(peer, spec, callImages, worker, fn, args, options);
         } catch (error) {
           // Lost on the peer: it ran there.
