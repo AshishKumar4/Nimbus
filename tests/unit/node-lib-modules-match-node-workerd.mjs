@@ -1,6 +1,6 @@
 // @tier slow — drives a local workerd for the Node module/runtime differential.
 // @serial
-// assert, assert/strict, util, querystring and punycode are Node v22.22.3's own
+// assert, assert/strict, util, querystring and punycode are Node v22.23.4's own
 // modules (node-lib-source.ts, run over node-lib-host.ts): each program here
 // prints what host Node prints, byte for byte, and exits as it does.
 //
