@@ -9,9 +9,9 @@
 //     and a message naming the form that can. existsSync throws too: false
 //     would say a file is absent when nothing was asked.
 //   - Without the session's descriptors there are no streams: ENOSYS.
-//   - Over the same session, lifo's node and the facade answer one program
-//     value for value (tests/unit/lib/node-fs-differential.mjs); the probe
-//     sdk/new/node-compat-differential compares the hosted node's.
+//   - lifo's node and the facade answer one program value for value
+//     (node-compat-differential.mjs); the probe sdk/new/node-compat-differential
+//     compares the hosted node's.
 
 import assert from 'node:assert/strict';
 
@@ -19,7 +19,6 @@ import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './lib/facet-host-harness.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
 import { importWorkerBundle } from './lib/worker-bundle.mjs';
-import { differential, fixtureFiles, fixtureLink, programSource } from './lib/node-fs-differential.mjs';
 
 const bundle = await importWorkerBundle({
   'packages/worker/src/workspace-host.ts': ['composeHostedRuntime'],
@@ -31,7 +30,6 @@ const bundle = await importWorkerBundle({
   'packages/core/src/runtime/process-table.ts': ['PID_GEN_STRIDE'],
   'packages/fabric/src/composition.ts': ['composeFabric'],
   'packages/core/src/node-compat/index.ts': ['createNodeCompat', 'nodeFacesOf'],
-  'packages/core/src/substrate/lifo/commands/system/node.ts': ['createNodeCommand'],
 });
 
 bundle.composeFabric({ supervisorEntrypoint: 'SupervisorRPC', hostNamespace: 'WORKSPACES', hostDispatchMethod: 'supervisorOp' });
@@ -58,8 +56,6 @@ const runtime = await bundle.composeHostedRuntime({
   workspace, ctx, env, ports: new bundle.PortRegistry(),
   lifecycle: { waitUntil: (task) => { facetCtx.waitUntil(task); }, async schedule() {}, async cancel() {} },
 });
-// The hosted runtime's `node` is its facet's; lifo's own runs here under another name, over the same workspace.
-workspace.registry.register('lifo-node', bundle.createNodeCommand(workspace.kernel));
 
 const box = bundle.Nimbus.fromSession(() => runtime.session({})).sandbox('workspace');
 
@@ -126,19 +122,6 @@ try {
     assert.equal((await failure(async () => fs.watch('a.txt'))).code, 'ENOSYS');
   });
 
-  await check('lifo\'s node and the facade, one program', async () => {
-    const root = '/tmp/differential';
-    for (const [path, content] of Object.entries(fixtureFiles)) {
-      await box.files.mkdir(`${root}/${path.slice(0, path.lastIndexOf('/'))}`);
-      await box.files.write(`${root}/${path}`, content);
-    }
-    await box.files.symlink(fixtureLink.target, `${root}/${fixtureLink.path}`);
-    await box.files.write(`${root}/program.js`, programSource('lifo'));
-    const lifo = await workspace.exec(`cd ${root} && lifo-node program.js`);
-    assert.equal(lifo.exitCode, 0, lifo.stderr);
-    const facade = await differential(bundle.createNodeCompat(bundle.nodeFacesOf(box), { cwd: root }).fs, 'facade');
-    assert.deepEqual(facade, JSON.parse(lifo.stdout), 'value for value');
-  });
 } finally {
   await runtime.close();
 }
