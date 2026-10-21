@@ -15336,10 +15336,7 @@ function __nimbusWriteLiveOutput(streamName, data, encoding, callback, send) {
   stream.writableLength += bytes.byteLength;
   const ready = stream.writableLength < stream.writableHighWaterMark;
   if (!ready) stream.writableNeedDrain = true;
-  // Held, in order, behind what must reach the session first (what its signal handlers catch).
-  const hold = __nimbusOutputHold;
-  const sent = hold === null ? Promise.resolve(send(streamName, bytes)) : hold.then(() => send(streamName, bytes));
-  if (hold !== null) __nimbusHoldOutput(sent);
+  const sent = Promise.resolve(send(streamName, bytes));
   stream.__nimbusOutputPending = sent;
   sent.then(() => {
     stream.writableLength -= bytes.byteLength;
@@ -15356,11 +15353,27 @@ function __nimbusWriteLiveOutput(streamName, data, encoding, callback, send) {
   return ready;
 }
 
+// What output must wait for besides the filesystem's gate: what this process
+// says it catches (__nimbusSayCaught), so a "ready" it prints after
+// process.on() leaves only once a signal sent then finds it caught. Null when
+// nothing is held.
+let __nimbusOutputHold = null;
+function __nimbusHoldOutput(promise) {
+  const held = Promise.all([__nimbusOutputHold, promise]).then(() => {}, () => {});
+  __nimbusOutputHold = held;
+  held.then(() => { if (__nimbusOutputHold === held) __nimbusOutputHold = null; });
+}
+
 // The gate an output or exit leaving the process is released at, taken when
 // it is made (ProcessFsClient.effect): null when nothing it logged waits.
+// What is held (__nimbusOutputHold) is waited for too; the output is written
+// meanwhile, so a run that stops carries it (runtime/stop-replay.ts).
 function __nimbusOutputGate() {
   const client = globalThis.__nimbusProcessFs;
-  return client ? client.effect() : null;
+  const gate = client ? client.effect() : null;
+  const hold = __nimbusOutputHold;
+  if (hold === null) return gate;
+  return gate === null ? hold : Promise.all([gate, hold]);
 }
 
 // Send a line to the session's stderr for this process, at its gate: every
@@ -15641,13 +15654,6 @@ let __nimbusCaughtSaid = "";
 let __nimbusCaughtSaying = null;
 let __nimbusSignalTaker = null;
 let __nimbusStdinPumping = false;
-// Output held behind what must reach the session first, in order; null when nothing is.
-let __nimbusOutputHold = null;
-function __nimbusHoldOutput(promise) {
-  const held = (__nimbusOutputHold || Promise.resolve()).then(() => promise).then(() => {}, () => {});
-  __nimbusOutputHold = held;
-  held.then(() => { if (__nimbusOutputHold === held) __nimbusOutputHold = null; });
-}
 // A pause no program waits on: the facet's own timer, not the program's.
 function __nimbusPause(ms) {
   const schedule = globalThis.__nimbusRawSetTimeout || setTimeout;
