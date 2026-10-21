@@ -29,9 +29,16 @@ function asGiven(error, path, dest) {
         return message;
     });
 }
+/** The fields Node's system errors carry, however a face defines them (enumerable or not, own or a getter's). */
+const ERRNO_FIELDS = ['code', 'errno', 'syscall', 'path', 'dest'];
 /** A new error with `error`'s own fields and message as `change` makes them; `error` is its cause. */
 export function withFields(error, change) {
     const fields = { ...error };
+    for (const field of ERRNO_FIELDS) {
+        const value = Reflect.get(error, field);
+        if (value !== undefined)
+            fields[field] = value;
+    }
     const message = change(fields, error.message);
     return Object.assign(new Error(message, { cause: error }), fields);
 }
