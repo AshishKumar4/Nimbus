@@ -328,7 +328,11 @@ export class NimbusSession extends SdkNimbusSession {
       this.#d1Pools.set(shape.key, pool);
     }
     this.#d1Submits[shape.tag] = (this.#d1Submits[shape.tag] ?? 0) + 1;
-    return pool.submit(fn, args, { timeoutMs: options.timeoutMs, wasmModules: d1PeerImages(options.wasmModules) });
+    try {
+      return await pool.submit(fn, args, { timeoutMs: options.timeoutMs, wasmModules: d1PeerImages(options.wasmModules) });
+    } catch (error) {
+      throw new Error(`d1 peer: ${error instanceof Error ? error.stack ?? error.message : String(error)}`);
+    }
   }
   async _rpcD1PeerDispose(key: string): Promise<void> {
     this.#d1Pools.get(key)?.dispose();

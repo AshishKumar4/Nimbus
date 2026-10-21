@@ -22,6 +22,7 @@ import type { FacetManager } from '../facets/manager.js';
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { holdThreadWatch } from '@nimbus-sh/fabric/thread-stalls.js';
+import { hostNamespaceBinding } from '@nimbus-sh/fabric/host-dispatch.js';
 
 /**
  * The transforms and builds a host's own Durable Object runs outside the
@@ -59,7 +60,7 @@ function d1Images(images: Record<string, FacetImage> | undefined): Record<string
   }]));
 }
 function d1Peer(env: unknown, name: string): D1Peer {
-  const sessions = (env as { NIMBUS_SESSION: DurableObjectNamespace }).NIMBUS_SESSION;
+  const sessions = hostNamespaceBinding(env as object, 'd1 one-shot peer');
   return sessions.get(sessions.idFromName(name)) as unknown as D1Peer;
 }
 

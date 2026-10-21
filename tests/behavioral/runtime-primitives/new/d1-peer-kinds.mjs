@@ -10,7 +10,8 @@ const ROUNDS = 6;
 const NEXT_ROUNDS = 3;
 const KINDS = {
   'node print': 'node -e "console.log(1)"',
-  'node burn': 'node -e "let h=0;for(let i=0;i<2e8;i++)h=Math.imul(h^i,16777619);console.log(h)"',
+  // 2e8 rounds took 21-36 s and once reset the session (verdict 20261021T104436-fce5ef9081af): a tenth.
+  'node burn': 'node -e "let h=0;for(let i=0;i<2e7;i++)h=Math.imul(h^i,16777619);console.log(h)"',
   'tsc noEmit': 'cd ~/tsp && tsc -p . --noEmit; cd ~',
   'git status mid': 'cd ~/repo && git status --short | wc -l; cd ~',
   'clang': 'clang x.c -o x',

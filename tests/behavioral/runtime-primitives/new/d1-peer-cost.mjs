@@ -18,7 +18,8 @@ const SERVER = `require('http').createServer((req, res) => res.end('ok ' + req.u
 
 const sid = await mintSession();
 const t = new Terminal(sid);
-const t2 = new Terminal(sid);
+// A second terminal is a named one: the session's own refuses a second socket (verdict 20261021T104436-fce5ef9081af).
+const t2 = new Terminal(sid, { terminal: 'observer' });
 // A fresh throwaway refused the first terminal once (verdict 20261021T102902-2d0334103516).
 async function connect(terminal) {
   for (let attempt = 1; ; attempt++) {
