@@ -457,7 +457,7 @@ class FindRun {
         catch (error) {
             if (!isVfsError(error) || error.syscall !== 'execvp')
                 throw error;
-            await this.diagnose(`${quote(argv[0] ?? '')}: ${VFS_STRERROR[error.code]}`);
+            await this.diagnose(`${quote(argv[0] ?? '')}: ${error.detail ?? VFS_STRERROR[error.code]}`);
             return { status: 1, signal: null };
         }
         if (ended.signal !== null)

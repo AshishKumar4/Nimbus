@@ -9,6 +9,12 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## 2026-10-21: platform 0.15.0, core 0.26.0, fabric 0.21.0, worker 0.24.0, sdk 0.20.0, react 0.4.2, cli 0.2.11, loom 0.3.4, create-nimbus-app 0.2.7 (config 0.3.2 and the runtimes unchanged)
 
+- Added: a mount can run programs on the machine its files live on. `filesystem.vfs.mount(point, source, { exec })` takes an `ExecDelegate` (`start(program, cancel)`, `locate(name, cwd, env)`). Every program started with its cwd under that mount is placed there: the shell's, an execvp from find, xargs, env or sudo, and a node child's. Each start is one call, `{ argv, env, cwd, stdin }`, made as execvp makes it, never as shell text; its exit is waitpid's code or signal.
+  - What the shell does itself stays in the session: builtins, functions, pipes and expansions. So `cd /computer/app && npm test | tail -5` starts two programs on the computer, joined by the session's pipe.
+  - Refusals follow bash: a start the machine refuses `ENOENT` is `name: command not found` (127); any other refusal, or an absent mount, is `name: <reason>` (126); Ctrl-C reaches the program as SIGINT (130).
+  - `type` and `command -v` report the machine's program.
+  - Node's `spawn`/`execFile` with such a cwd start Node's own argv there (`/bin/sh -c line` for `shell`), and a refused start is the `error` event with the machine's code.
+  - A namespace with no delegating mount places nothing and runs as before.
 - Security: every session trusts the TLS roots this deployment serves, at `/proc/nimbus/ca-certificates.crt` (read-only, generated from the build as the rest of /proc is), and CPython's and Ruby's OpenSSL read them through `SSL_CERT_FILE` unless a program names its own. The bundle is Mozilla's roots as of 2026-10-20 (curl.se's extract, pinned by sha256), which no longer trusts emSign ECC Root CA - G3 and so nothing on a path to the eMudhra intermediates whose keys were found compromised that day. Before, CPython verified against a copy staged with its runtime (Mozilla's roots of 2026-07-16), which accepted certificates those intermediates issued for any name, and a session kept its copy until it reinstalled the runtime. Updating the roots is now `bun scripts/update-ca-certificates.mjs <date> <sha256>` and a deploy.
 - Fixed: listing a session's processes (`listProcesses`,
   `GET /api/processes`) waits until each dev server its previous

@@ -91,8 +91,9 @@ const command: Command = async (ctx) => {
     ended = await ctx.runAs(ctx.cred, operands, { parent: { ...ctx, env: Object.fromEntries(env) } });
   } catch (error) {
     if (!isVfsError(error) || error.syscall !== 'execvp') throw error;
-    await ctx.stderr.write(`env: '${operands[0]}': ${VFS_STRERROR[error.code]}\n`);
-    return error.code === 'EACCES' ? 126 : 127;
+    await ctx.stderr.write(`env: '${operands[0]}': ${error.detail ?? VFS_STRERROR[error.code]}\n`);
+    // GNU's: 127 for a program not found, 126 for one found that could not be run.
+    return error.code === 'ENOENT' ? 127 : 126;
   }
   return ended.status;
 };
