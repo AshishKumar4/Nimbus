@@ -111,7 +111,9 @@ try {
     assert.equal(late.status, 2);
     assert.deepEqual(rows(late), [['probes', 2]]);
     assert.match(late.rows[0].output, /the token could expire before its limit/);
-    console.log('  ok  no token, a target that does not answer, or a task that starts too late for its token is not graded (2), with a row saying why');
+    assert.equal(late.lateStart, true, 'and says it started late, which a run with fresh credentials can grade');
+    assert.equal(verdict.lateStart, undefined, 'which no other refusal says');
+    console.log('  ok  no token, a target that does not answer, or a task that starts too late for its token is not graded (2), with a row saying why, a late start said so');
   }
   {
     mkdirSync(join(behavioral, 'frameworks'));

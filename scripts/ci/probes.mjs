@@ -50,8 +50,10 @@ const paired = process.env.NIMBUS_PAIRED_TARGETS ? Object.values(JSON.parse(proc
 const secrets = [token, ...paired].filter(Boolean);
 const scrub = (text) => secrets.reduce((scrubbed, secret) => scrubbed.replaceAll(secret, '[NIMBUS_PROBE_TOKEN]'), text);
 const rows = [];
-const notGraded = (why) => {
-  writeFileSync(flags.out, `${JSON.stringify({ base: flags.base ?? null, part: flags.part ?? null, rows: [...rows, { name: 'probes', exitCode: 2, seconds: 0, output: scrub(why) }] })}\n`);
+/** Not graded, and why; `lateStart` when the task started too late for its token, which a run with fresh credentials can grade. */
+const notGraded = (why, { lateStart = false } = {}) => {
+  writeFileSync(flags.out, `${JSON.stringify({ base: flags.base ?? null, part: flags.part ?? null, ...(lateStart ? { lateStart: true } : {}),
+    rows: [...rows, { name: 'probes', exitCode: 2, seconds: 0, output: scrub(why) }] })}\n`);
   console.error(`probes: NOT GRADED — ${scrub(why)}`);
   process.exit(2);
 };
@@ -98,7 +100,7 @@ function run(command, args, env) {
 }
 
 if (flags['start-by'] !== undefined && Date.now() > Number(flags['start-by'])) {
-  notGraded(`this task started at ${new Date().toISOString()}, after ${new Date(Number(flags['start-by'])).toISOString()}: the token could expire before its limit`);
+  notGraded(`this task started at ${new Date().toISOString()}, after ${new Date(Number(flags['start-by'])).toISOString()}: the token could expire before its limit`, { lateStart: true });
 }
 if (!token && !anonymous) notGraded('NIMBUS_PROBE_TOKEN is not set: mint one for the target and this run');
 try {

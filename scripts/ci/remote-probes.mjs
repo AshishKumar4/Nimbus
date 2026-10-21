@@ -76,8 +76,16 @@ import { writeScreenshots } from './lib/probe-screenshots.mjs';
 
 /** A task's limit on armada, and so the job's: every part runs at once. */
 const TASK_TIMEOUT_S = 30 * 60;
-/** How long a task may wait to start (a new environment preparing, a queue): past it, not graded. */
-const PREPARE_S = 15 * 60;
+/**
+ * How long a task may wait to start its first attempt and still be graded:
+ * the longest wait measured. Over armada's records of 1,623 jobs (2026-10-19
+ * to 10-21), creation to the job's start was at most 0.9 s on a ready
+ * environment and at most 331 s when the job prepared one (preparation
+ * 152-319 s); the slowest vessel booted in at most 61 s (p99 31 s). The
+ * longest wait, both together, was 392 s. A task armada starts again later
+ * (its container lost) is run again with fresh credentials (lateStart).
+ */
+const PREPARE_S = 392;
 const TOKEN_TTL_MS = (PREPARE_S + TASK_TIMEOUT_S) * 1000;
 /** Workers Logs can trail a reset by minutes: how often, and how many times, a session no log names yet is looked up again. */
 const ATTRIBUTION_WAIT_MS = 45_000;
@@ -294,6 +302,24 @@ async function probeRun({ baseline, releases }) {
   const problems = [...run.moved];
   const tasks = readTasks(items, mapped, scrub);
 
+  // A task armada started again after its token's start-by (its first
+  // attempt's container lost) refused to run: it runs once more, in a job of
+  // its own, with credentials minted for it, so no token outlives one task.
+  const late = tasks.flatMap((task, i) => (task.lateStart ? [i] : []));
+  if (late.length > 0) {
+    const again = late.map((i) => {
+      const { task, part, only, skip: skipped, jobs: parallel } = tasks[i];
+      return { task: `${task} (started late, run again)`, part, only, skip: skipped, jobs: parallel };
+    });
+    try {
+      const rerun = await mapItems(again, `remote-probes ${sha.slice(0, 12)} late start`);
+      problems.push(...rerun.moved);
+      readTasks(again, rerun.mapped, scrub).forEach((task, j) => { tasks[late[j]] = task; });
+    } catch (error) {
+      problems.push(`the late-started tasks could not run again: ${scrub(error.message)}`);
+    }
+  }
+
   // Red rows a reset or an overload left, attributed from the platform's record.
   const reader = telemetry({ account: process.env.CLOUDFLARE_ACCOUNT_ID });
   const symptomatic = tasks.flatMap((task) => (task.rows ?? []).filter((row) => row.exitCode !== 0 && row.sessions && showsResetSymptom(row)).map((row) => ({ task, row })));
@@ -401,6 +427,10 @@ function readTasks(items, mapped, scrub) {
     if (outcome.kind !== 'exited' || verdict === null) {
       console.log(`NOT GRADED ${item.task}: ${outcome.kind === 'exited' ? `exit ${outcome.exitCode}, no verdict` : 'armada could not run it'}\n${scrub(outcome.tail ?? '')}`);
       return { ...item, outcome, rows: null };
+    }
+    if (verdict.lateStart === true) {
+      console.log(`NOT GRADED ${item.task}: it started after its token's start-by (attempt ${outcome.attempt ?? 1})\n${scrub(outcome.tail ?? '')}`);
+      return { ...item, outcome, rows: null, lateStart: true };
     }
     const red = verdict.rows.filter((row) => row.exitCode !== 0);
     console.log(`${red.length === 0 ? 'ok  ' : 'FAIL'} ${item.task}: ${verdict.rows.length - red.length} of ${verdict.rows.length} rows green in ${Math.round(outcome.seconds)} s`);
