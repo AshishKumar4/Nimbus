@@ -94,7 +94,7 @@ import { drainProcessFsJournal, UNSETTLED_END_NOTE } from '@nimbus-sh/core/_shar
 import { journalDrainSession } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import { ProcessJournals } from '../session/process-journals.js';
 import { acquireDurableFacetSlot, freeDurableFacetSlot, } from './durable-slots.js';
-import { DURABLE_IMAGE_DIR, DURABLE_IMAGE_MODE, kernelImageBlobs, persistDurableWorkerImage, readStoredImages, resolveDurableWorkerImage, purgeDurableWorkerImages, rewriteWasmPaths, rewriteWithoutEnvironment, unlinkDurableImages, } from './durable-images.js';
+import { DURABLE_IMAGE_DIR, DURABLE_IMAGE_MODE, kernelImageBlobs, persistDurableWorkerImage, readStoredImages, resolveDurableWorkerImage, purgeDurableWorkerImages, rewriteWasmPaths, rewriteWithoutEnvironment, applicationsNaming, unlinkDurableImages, } from './durable-images.js';
 import { legacyGeneratedImages } from './legacy-images.js';
 import { deleteRecord, putRecord, relaunchEnv } from './process-env.js';
 import { SQLITE_WASM_MODULE_NAME, } from '../runtime/opencode-facet-runner.js';
@@ -4852,7 +4852,6 @@ export class FacetManager {
             const earlier = new Set(files(wasmDir));
             if (earlier.size > 0) {
                 const indexes = await this.ctx.storage.list({ prefix: DURABLE_IMAGES_KEY_PREFIX });
-                const replaced = new Set();
                 for (const [key, row] of await this.launchJournal.rows()) {
                     // A row with no credential is not re-driven (ResidentLaunchRecord.cred).
                     if (row.recipe.kind !== 'worker' || row.cred === undefined)
@@ -4874,24 +4873,29 @@ export class FacetManager {
                         continue;
                     const old = row.recipe.image.application;
                     const application = await rewriteWasmPaths(vfs, old, moved);
-                    replaced.add(old);
                     const recipe = { ...row.recipe, image: { runner: row.recipe.image.runner, application } };
-                    await this.ctx.storage.put(key, { ...row, recipe });
                     const owner = residentOwner({ ...row, recipe });
                     const indexKey = `${DURABLE_IMAGES_KEY_PREFIX}${owner}`;
-                    const index = indexes.get(indexKey);
-                    if (owner !== undefined && index !== undefined) {
-                        const repointed = index.map((image) => (image.application === old ? { runner: image.runner, application } : image));
+                    const index = owner === undefined ? undefined : indexes.get(indexKey);
+                    const repointed = index?.map((image) => (image.application === old ? { runner: image.runner, application } : image));
+                    // The row and its owner's index name the new blob together.
+                    await this.ctx.storage.transaction(async (txn) => {
+                        await txn.put(key, { ...row, recipe });
+                        if (repointed !== undefined)
+                            await txn.put(indexKey, repointed);
+                    });
+                    if (repointed !== undefined)
                         indexes.set(indexKey, repointed);
-                        await this.ctx.storage.put(indexKey, repointed);
-                    }
                 }
-                // A blob written again that no row or index names any longer goes, and every earlier wasm image.
+                // An application blob that still reads an earlier wasm image and that
+                // no row or index names (one this step, or an interrupted run of it,
+                // wrote again) goes, and then every earlier wasm image.
                 const named = new Set([...indexes.values()].flat().flatMap((image) => [image.runner, image.application]));
                 for (const row of (await this.launchJournal.rows()).values())
                     if (row.recipe.kind === 'worker')
                         named.add(row.recipe.image.application);
-                unlinkDurableImages(vfs, [...replaced].filter((digest) => !named.has(digest)));
+                const readsEarlier = (path) => earlier.has(stripLeadingSlashes(path));
+                unlinkDurableImages(vfs, (await applicationsNaming(vfs, readsEarlier)).filter((digest) => !named.has(digest)));
                 for (const path of earlier)
                     kernel.unlink(path);
             }

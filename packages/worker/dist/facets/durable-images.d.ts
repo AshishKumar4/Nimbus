@@ -73,6 +73,8 @@ export declare function readStoredImages(vfs: SqliteVFS): Promise<{
  * that whole environment). Answers the new application digest.
  */
 export declare function rewriteWithoutEnvironment(vfs: SqliteVFS, application: string): Promise<string>;
+/** Every application blob in the store whose wasm modules read a path `reads` holds. */
+export declare function applicationsNaming(vfs: SqliteVFS, reads: (path: string) => boolean): Promise<string[]>;
 /** `application`, written again with each wasm module path in `moved` read from where it moved. */
 export declare function rewriteWasmPaths(vfs: SqliteVFS, application: string, moved: ReadonlyMap<string, string>): Promise<string>;
 /** Remove only the owner's blobs that no other retained recipe references. */
