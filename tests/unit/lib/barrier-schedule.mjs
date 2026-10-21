@@ -9,6 +9,18 @@
  *   ['peer', op, ...args]  a change from outside the process, left in flight;
  *   ['root', op, ...args]  the same, as root (chown and chmod: a directory
  *                          the process may no longer search, or now may);
+ *   ['peer', 'mount', rel, kind, tree]
+ *                          the session mounts at `rel` a MemoryVFS holding
+ *                          `tree` (names relative to it, as SEED_TREE's),
+ *                          with a change feed ('fed', the process's own) or
+ *                          none ('unfed', root's: a directory root changes
+ *                          the mode of may shut the process out of a fed
+ *                          one beneath): it covers what the session held there. Drawn over
+ *                          names the process may hold, and a fed mount
+ *                          beneath one with none. A mount point is not
+ *                          removed, moved or chowned; a rename never crosses
+ *                          a mount (EXDEV); a mounted name is not chowned
+ *                          (a MemoryVFS has one owner);
  *   ['input']              input arrives: the process's barrier, left in flight;
  *   ['hold', kind, skip?]  the next reply of `kind` (after `skip` more) waits (KINDS);
  *   ['release', kind?]     the oldest parked reply (of `kind`) is delivered;
@@ -84,6 +96,7 @@
  */
 
 import { APP, bootEngine, stat as normalized } from './guest-engines.mjs';
+import { MemoryVFS } from '../../../packages/core/src/vfs/memory.ts';
 import { scheduleTransport, KINDS } from './schedule-transport.mjs';
 import { sleep } from './resident-body.mjs';
 import { writeSync } from 'node:fs';
@@ -157,6 +170,23 @@ function unreachable(world, rel) {
   return null;
 }
 
+/** The mount `rel` is on: the nearest mount point at or above it, with its kind; null for the session's own files. */
+function mountOf(world, rel) {
+  for (let at = rel; ; at = parentOf(at)) {
+    const state = world.get(at);
+    if (state?.mount !== undefined) return { point: at, kind: state.mount };
+    if (at === '') return null;
+  }
+}
+
+/** Whether a mount with no feed is at or above `rel`: what the session alone answers for (a fed one beneath it included). */
+function underUnfed(world, rel) {
+  for (let at = rel; ; at = parentOf(at)) {
+    if (world.get(at)?.mount === 'unfed') return true;
+    if (at === '') return false;
+  }
+}
+
 /** Whether the process may make or remove a name in `dir`'s directory: it reaches it, and may write and search it. */
 const mayChangeIn = (world, rel) => unreachable(world, rel) === null && world.get(parentOf(rel))?.type === 'dir' && (bits(world.get(parentOf(rel))) & 3) === 3;
 
@@ -177,13 +207,32 @@ const outside = (way) => way === 'peer' || way === 'root';
  * @param {any[]} change
  */
 function applied(world, change) {
-  const [way, op, a, b] = change;
+  const [way, op, a, b, tree] = change;
   const root = way === 'root';
   const at = world.get(a);
   const parent = world.get(parentOf(a));
   const next = new Map(world);
   if (!root && unreachable(world, a) !== null) return null;
+  if (op !== 'mount') {
+    // A mount point stays where it is; a rename never crosses a mount; a MemoryVFS has one owner.
+    if (at?.mount !== undefined && op !== 'write' && op !== 'chmod') return null;
+    if (op === 'chown' && mountOf(world, a) !== null) return null;
+    if (op === 'rename' && (world.get(b)?.mount !== undefined || mountOf(world, a)?.point !== mountOf(world, b)?.point
+      || [...world].some(([rel, state]) => state.mount !== undefined && rel !== a && under(rel, a)))) return null;
+  }
   switch (op) {
+    case 'mount': {
+      const enclosing = mountOf(world, a);
+      if (at?.type !== 'dir' || (a === '' && b !== 'unfed') || [...world].some(([rel, state]) => state.mount !== undefined && under(rel, a))) return null;
+      if (enclosing !== null && !(b === 'fed' && enclosing.kind === 'unfed')) return null;
+      // A MemoryVFS has one owner: the process's for a fed one, root's for one with none.
+      const owner = b === 'fed' ? USER : 0;
+      const owned = (state) => ({ ...state, uid: owner, gid: owner });
+      for (const rel of world.keys()) if (rel !== a && under(rel, a)) next.delete(rel);
+      next.set(a, { ...owned(dirState()), mount: b });
+      for (const [rel, content] of Object.entries(tree)) next.set(a === '' ? rel : `${a}/${rel}`, owned(content === null ? dirState() : fileState(content)));
+      return next;
+    }
     case 'write':
       if (parent?.type !== 'dir' || at?.type === 'dir') return null;
       if (!root && (at === undefined ? !mayChangeIn(world, a) : (bits(at) & 2) === 0)) return null;
@@ -249,7 +298,31 @@ export function generate(seed, steps = 40) {
   const schedule = [];
   let content = 0;
   const bulkRead = () => (random() < 0.5 ? ['own', 'pread', pick(Object.keys(BULK)), pick(PREAD_AT)] : [pick(['own', 'sync']), 'readFile', 'mid']);
+  /** What a mount at `point` holds: the universe's names beneath it, more often those the session holds there now. */
+  const mountTree = (point) => {
+    const inside = (rel) => rel !== point && under(rel, point);
+    const relative = (rel) => (point === '' ? rel : rel.slice(point.length + 1));
+    const kept = new Set([point]);
+    const tree = {};
+    for (const dir of UNIVERSE.dirs.filter(inside).sort((x, y) => x.length - y.length)) {
+      if (kept.has(parentOf(dir)) && random() < (world.has(dir) ? 0.8 : 0.4)) { kept.add(dir); tree[relative(dir)] = null; }
+    }
+    for (const file of UNIVERSE.files.filter(inside)) {
+      if (kept.has(parentOf(file)) && random() < (world.has(file) ? 0.8 : 0.4)) tree[relative(file)] = `m${seed}.${++content}`;
+    }
+    return tree;
+  };
   const change = (way) => {
+    if (way === 'peer' && random() < 0.15) {
+      const unfed = [...world].find(([, state]) => state.mount === 'unfed')?.[0];
+      const points = unfed === undefined ? ['', ...UNIVERSE.dirs] : UNIVERSE.dirs.filter((rel) => rel !== unfed && under(rel, unfed));
+      if (points.length > 0) {
+        const point = pick(points);
+        const candidate = ['mount', point, unfed !== undefined ? 'fed' : point === '' ? 'unfed' : pick(['fed', 'fed', 'unfed']), mountTree(point)];
+        const next = applied(world, ['peer', ...candidate]);
+        if (next !== null) { world = next; return candidate; }
+      }
+    }
     for (let tries = 0; tries < 20; tries++) {
       if (way === 'root') {
         const dir = pick(UNIVERSE.dirs);
@@ -297,10 +370,14 @@ export function generate(seed, steps = 40) {
  *   - absentWhileRelisted: a directory being relisted answers a name under
  *     it as absent (B2);
  *   - refusedWhileRelisted: an awaited read under a directory being relisted
- *     is refused (EAGAIN) where it should wait (B2, seed 2209).
+ *     is refused (EAGAIN) where it should wait (B2, seed 2209);
+ *   - unfedMountSnapshot: a name on a mount with no change feed answers
+ *     as its launch's listing walked it (node-shims), where the session's
+ *     is what it holds now (closed by the cutover: such a mount is the
+ *     session's to answer).
  */
 export const KNOWN_GAPS = Object.freeze({
-  node: Object.freeze({ absentWhileRelisted: true, refusedWhileRelisted: true }),
+  node: Object.freeze({ absentWhileRelisted: true, refusedWhileRelisted: true, unfedMountSnapshot: true }),
   holder: Object.freeze({}),
   eager: Object.freeze({}),
 });
@@ -583,7 +660,10 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
     && model.world.get(rel)?.type === 'file' && model.touched(rel) <= landed;
   const refusable = (op, rel, from, to) => (op === 'readFile' && owedBytes(rel) ? false
     : lazy || poisoned || transport.inFlight('listing') > 0 || (op === 'readFile' && model.readable(rel, from, to)));
+  /** Whether `rel` was beneath a mount with no feed in a world between `from` and `to`. */
+  const unfedAt = (rel, from, to) => model.worldsSeen(rel, from, to).some((world) => underUnfed(world, rel));
   const judge = (at, way, op, rel, answer, from, to, offset = 0) => {
+    if (gaps.unfedMountSnapshot && unfedAt(rel, from, to)) return;
     if (answer?.code === 'EAGAIN' && way === 'sync' && refusable(op, rel, from, to)) return;
     if (gaps.absentWhileRelisted && way === 'sync' && answer === null && transport.inFlight('listing') > 0) return;
     if (gaps.refusedWhileRelisted && way === 'own' && answer?.code === 'EAGAIN' && transport.inFlight('listing') > 0) return;
@@ -619,8 +699,18 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
   };
 
   /** The change as `way` makes it: a promise, but for a call that cannot wait, which answers or throws now. */
-  const change = (way, [, op, a, b]) => {
+  const change = (way, [, op, a, b, tree]) => {
     const fs = way === 'sync' ? engine.sync : engine.fs;
+    if (op === 'mount') {
+      const owner = b === 'fed' ? USER : 0;
+      const backend = new MemoryVFS({ uid: owner, gid: owner });
+      for (const [rel, made] of Object.entries(tree).sort(([x], [y]) => x.length - y.length)) {
+        if (made === null) backend.mkdir(`/${rel}`, { mode: DIR_MODE });
+        else backend.writeFile(`/${rel}`, enc.encode(made));
+      }
+      engine.authority.files.vfs.mount(abs(a), b === 'fed' ? backend : new Proxy(backend, { get: (target, name) => (name === 'changes' ? undefined : Reflect.get(target, name, target)) }));
+      return Promise.resolve();
+    }
     if (outside(way)) {
       const peer = way === 'root' ? engine.authority.peerAs(CRED_KERNEL) : engine.authority.peer;
       if (op === 'chown') return peer.chown(key(a), b, b);
@@ -795,6 +885,7 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
     }
     for (const rel of readable) {
       const state = world.get(rel);
+      if (gaps.unfedMountSnapshot && underUnfed(world, rel)) continue;
       for (const way of ['own', 'sync']) {
         for (const op of ['stat', state?.type === 'dir' ? 'readdir' : 'readFile']) {
           const answer = await read(way, op, rel);

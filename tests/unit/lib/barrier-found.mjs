@@ -254,6 +254,18 @@ const FOUND = {
     park: 6113,
     schedule: [['sync', 'rename', 'x/h', 'd/n'], ['own', 'write', 'x/h', 'c6113.1'], ['sync', 'stat', 'd/n']],
   },
+  'a fed mount made over a file the process held shows the mount\'s bytes': {
+    schedule: [['own', 'readFile', 'x/h'], ['settle'], ['peer', 'mount', 'x', 'fed', { h: 'm00' }], ['input'], ['settle'], ['sync', 'readFile', 'x/h'],
+      ['own', 'readFile', 'x/h'], ['settle']],
+  },
+  'a fed mount beneath one with no feed is reached as that one lets the process reach it': {
+    schedule: [['peer', 'mount', '', 'unfed', { d: null, 'd/e': null, x: null }], ['peer', 'mount', 'd/e', 'fed', { g: 'g1111' }], ['input'], ['settle'],
+      ['own', 'readFile', 'd/e/g'], ['settle'], ['root', 'chmod', 'd', 0o700], ['settle'], ['sync', 'readFile', 'd/e/g'], ['own', 'readFile', 'd/e/g'], ['settle']],
+  },
+  'a name on a mount with no feed answers as the session holds it now': {
+    schedule: [['peer', 'mount', 'x', 'unfed', { h: 'u00' }], ['input'], ['settle'], ['own', 'readFile', 'x/h'], ['settle'], ['root', 'write', 'x/h', 'u11'],
+      ['settle'], ['input'], ['settle'], ['sync', 'readFile', 'x/h'], ['settle']],
+  },
   'a file fetched in batches that the process read stays resident past a repair (4033)': {
     park: 4033,
     schedule: [['poison'], ['own', 'stat', 'x'], ['sync', 'readdir', 'd/e'], ['own', 'readFile', 'mid'], ['sync', 'readFile', 'x/e/g'], ['release', 'listing'],
