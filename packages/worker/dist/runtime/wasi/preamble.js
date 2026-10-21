@@ -1,6 +1,6 @@
 import { NIMBUS_ERESTART } from '@nimbus-sh/core/runtime/wasi/types.js';
 import { installAuthorityFilesystem, processGoneMessage, WASI_ACCEPTED_PATH_PREFIX, WASI_LISTEN_PATH_PREFIX, WASI_TCP_PATH_PREFIX, } from '@nimbus-sh/core/runtime/wasi/filesystem.js';
-import { answeringSupervisor, supervisorFilesystem } from '@nimbus-sh/core/runtime/vfs-supervisor.js';
+import { answeringSupervisor, supervisorFilesystem, supervisorSession } from '@nimbus-sh/core/runtime/vfs-supervisor.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '@nimbus-sh/core/constants.js';
 import { residentFilesystem, } from '@nimbus-sh/core/runtime/wasi/resident-filesystem.js';
 import { CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
@@ -248,19 +248,7 @@ function __wasiStartResident(sup, cred) {
     // The process holds the subtrees it writes (delegation-holder.ts): its
     // creates, writes, mkdirs, unlinks and renames there are decided here and
     // logged into its filesystem client, which sends them as numbered waves.
-    const waves = sup;
-    const session = {
-        // Called as methods of the stub, never through .call/.apply: on an RPC stub those are remote method names too.
-        openWriter: (first) => waves.openWaveWriter(first),
-        writeBatchStream: (stream, fence, owner) => (owner === undefined ? waves.writeBatchStream(stream, fence) : waves.writeBatchStream(stream, fence, owner)),
-        retireWriter: async (writer) => { await waves.retireWaveWriter(writer); },
-        grants: {
-            acquire: async (path, delegate) => await authority.acquireExclusiveMutation(path, { delegate }),
-            release: async (owner) => { await authority.releaseExclusiveMutation(owner); },
-            awaitRecall: async (owner, waitMs) => await authority.awaitRecall(owner, waitMs),
-            recalled: async (owner, kind) => { await authority.recalled(owner, kind); },
-        },
-    };
+    const session = supervisorSession(sup, authority);
     // A resident's facet keeps the log of what it sends in its own store
     // (process-fs-journal.ts), drained by the session once the process is gone.
     const journalSql = Reflect.get(globalThis, '__nimbusFsJournalSql');

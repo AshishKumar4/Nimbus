@@ -831,8 +831,8 @@ return globalThis.Go;
       }
     });
   }
-  function supervisorFilesystem(remote, local) {
-    return bridgeOverSupervisor(answeringSupervisor(remote), {
+  function supervisorFilesystem(remote, local, live) {
+    return bridgeOverSupervisor(answeringSupervisor(remote, live), {
       synchronous: local,
       writeFileFrom: async (path) => {
         const name = typeof path === "string" ? path : path.path;
