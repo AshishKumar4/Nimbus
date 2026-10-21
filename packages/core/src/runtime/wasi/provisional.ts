@@ -357,12 +357,17 @@ export interface Provisional {
   /** What a descriptor's read needs fetched: the name its file is at and its row; undefined where no name leads to it. */
   inodeOf(handleId: number): { key: string; entry: ResidentEntry } | undefined;
   keyOf(handleId: number): string;
-  mkdir(key: string, path: string, mode: number, row: ResidentEntry | null | undefined, umask: number | undefined): boolean;
-  unlink(key: string, path: string, row: ResidentEntry | null | undefined): boolean;
-  rmdir(key: string, path: string, row: ResidentEntry | null | undefined): boolean;
-  symlink(key: string, path: string, target: string, row: ResidentEntry | null | undefined): boolean;
-  rename(from: string, to: string, path: string, source: ResidentEntry | null | undefined, target: ResidentEntry | null | undefined): boolean;
-  setattr(key: string, path: string, attrs: W7Attrs, row: ResidentEntry | null | undefined): boolean;
+  /**
+   * A change by name: false where it is not made here. `awaited`: its
+   * caller waits for the session's answer, which it is given (rejected with
+   * the session's refusal, the change undone by then), as an awaited open's.
+   */
+  mkdir(key: string, path: string, mode: number, row: ResidentEntry | null | undefined, umask: number | undefined, awaited?: boolean): boolean | Promise<unknown>;
+  unlink(key: string, path: string, row: ResidentEntry | null | undefined, awaited?: boolean): boolean | Promise<unknown>;
+  rmdir(key: string, path: string, row: ResidentEntry | null | undefined, awaited?: boolean): boolean | Promise<unknown>;
+  symlink(key: string, path: string, target: string, row: ResidentEntry | null | undefined, awaited?: boolean): boolean | Promise<unknown>;
+  rename(from: string, to: string, path: string, source: ResidentEntry | null | undefined, target: ResidentEntry | null | undefined, awaited?: boolean): boolean | Promise<unknown>;
+  setattr(key: string, path: string, attrs: W7Attrs, row: ResidentEntry | null | undefined, awaited?: boolean): boolean | Promise<unknown>;
   /**
    * Copy the file `source` names at `from` to `to`, its bytes read only as
    * these decisions read any (bytesOf for a file they hold, else the store's
@@ -823,9 +828,8 @@ export function provisional(host: ProvisionalHost): Provisional {
   const nameCost = (keys: readonly string[], target = ''): number => RECORD_COST + keys.reduce((sum, key) => sum + stringCost(key), 0) + stringCost(target);
 
   /** Log the op that made `records`, their fate its. */
-  const loggedOn = (records: readonly InodeRecord[], op: ProcessFsOp): void => {
-    logged(op, (refused) => settleRecords(records, refused));
-  };
+  const loggedOn = (records: readonly InodeRecord[], op: ProcessFsOp, awaited = false): Promise<unknown> | undefined =>
+    logged(op, (refused) => settleRecords(records, refused), awaited);
 
   /** `record`, a write or append `data` continues (continued), extended by it at time `at`: its room grown by doubling. */
   const extended = (record: InodeRecord, data: Uint8Array, at: number): void => {
@@ -1653,7 +1657,7 @@ export function provisional(host: ProvisionalHost): Provisional {
 
     keyOf: (handleId) => descOf(handleId).inode.key,
 
-    mkdir: (key, path, mode, row, mask) => {
+    mkdir: (key, path, mode, row, mask, awaited) => {
       if (row === undefined || (mode & 0o7000) !== 0) return false;
       if (row !== null) throw fsError('EEXIST', 'mkdir', path);
       const parent = writableParent(key, path, 'mkdir');
@@ -1663,14 +1667,13 @@ export function provisional(host: ProvisionalHost): Provisional {
       host.drain();
       admit(madeCost(key) + nameCost([key]), 'mkdir', path);
       const inode = made(key, 'directory', 0o40000 | perm, parent);
-      loggedName({ type: 'call', call: { call: 'mkdir', path: key, mode: mode & 0o777, umask } }, [key], nameCost([key]), () => {
+      return loggedName({ type: 'call', call: { call: 'mkdir', path: key, mode: mode & 0o777, umask } }, [key], nameCost([key]), () => {
         place(key, inode);
         added.set(key, added.get(key) ?? new Map());
-      });
-      return true;
+      }, undefined, undefined, awaited) ?? true;
     },
 
-    unlink: (key, path, row) => {
+    unlink: (key, path, row, awaited) => {
       if (row === undefined) return false;
       if (row === null) throw fsError('ENOENT', 'unlink', path);
       if (row.type === 'directory') return false;
@@ -1678,11 +1681,10 @@ export function provisional(host: ProvisionalHost): Provisional {
       // Its descriptors keep what it holds: its bytes, where only the view has them, admitted for their lifetime first.
       host.drain();
       keepForDescriptors(inodeAtNumber(row.dev, row.ino), nameCost([key]), 'unlink', path);
-      loggedName({ type: 'call', call: { call: 'unlink', path: key, ...expecting(row) } }, [key], nameCost([key]), () => place(key, null));
-      return true;
+      return loggedName({ type: 'call', call: { call: 'unlink', path: key, ...expecting(row) } }, [key], nameCost([key]), () => place(key, null), undefined, undefined, awaited) ?? true;
     },
 
-    rmdir: (key, path, row) => {
+    rmdir: (key, path, row, awaited) => {
       if (row === undefined) return false;
       if (row === null) throw fsError('ENOENT', 'rmdir', path);
       if (row.type !== 'directory') throw fsError('ENOTDIR', 'rmdir', path);
@@ -1692,15 +1694,14 @@ export function provisional(host: ProvisionalHost): Provisional {
       if (writableParent(key, path, 'rmdir') === undefined) return false;
       host.drain();
       admit(nameCost([key]), 'rmdir', path);
-      loggedName({ type: 'call', call: { call: 'rmdir', path: key, ...expecting(row) } }, [key], nameCost([key]), () => {
+      return loggedName({ type: 'call', call: { call: 'rmdir', path: key, ...expecting(row) } }, [key], nameCost([key]), () => {
         place(key, null);
         added.delete(key);
         removed.delete(key);
-      });
-      return true;
+      }, undefined, undefined, awaited) ?? true;
     },
 
-    symlink: (key, path, target, row) => {
+    symlink: (key, path, target, row, awaited) => {
       if (row === undefined) return false;
       if (row !== null) throw fsError('EEXIST', 'symlink', path);
       const parent = writableParent(key, path, 'symlink');
@@ -1708,11 +1709,10 @@ export function provisional(host: ProvisionalHost): Provisional {
       host.drain();
       admit(madeCost(key, target) + nameCost([key]), 'symlink', path);
       const inode = made(key, 'symlink', 0o120777, parent, target);
-      loggedName({ type: 'call', call: { call: 'symlink', path: key, target } }, [key], nameCost([key]), () => place(key, inode));
-      return true;
+      return loggedName({ type: 'call', call: { call: 'symlink', path: key, target } }, [key], nameCost([key]), () => place(key, inode), undefined, undefined, awaited) ?? true;
     },
 
-    rename: (from, to, path, source, target) => {
+    rename: (from, to, path, source, target, awaited) => {
       if (source === undefined || target === undefined) return false;
       if (source === null) throw fsError('ENOENT', 'rename', path);
       if (source.type === 'directory' && (target !== null || within(to, from))) return false;
@@ -1734,7 +1734,7 @@ export function provisional(host: ProvisionalHost): Provisional {
       moving.reserved += moves;
       for (const [inode, grows] of beneath) inode.reserved += grows;
       const { expect: expectTo } = expecting(target);
-      loggedName({ type: 'rename', from, to, ...expecting(source), ...(expectTo === undefined ? {} : { expectTo }) }, [from, to], names, () => {
+      const answer = loggedName({ type: 'rename', from, to, ...expecting(source), ...(expectTo === undefined ? {} : { expectTo }) }, [from, to], names, () => {
         // What is beneath the source moves with it: names, never records.
         for (const [key, value] of [...layer]) {
           if (key === from || !within(key, from)) continue;
@@ -1753,13 +1753,13 @@ export function provisional(host: ProvisionalHost): Provisional {
         for (const inode of everyInode()) {
           if (within(inode.origin, from)) renamed(inode, inode.key, to + inode.origin.slice(from.length));
         }
-      });
+      }, awaited);
       fit(moving);
       for (const inode of beneath.keys()) fit(inode);
-      return true;
+      return answer ?? true;
     },
 
-    setattr: (key, path, attrs, row) => {
+    setattr: (key, path, attrs, row, awaited) => {
       if (row === undefined) return false;
       const syscall = 'mode' in attrs ? 'chmod' : 'uid' in attrs ? 'chown' : 'utime';
       if (row === null) throw fsError('ENOENT', syscall, path);
@@ -1774,9 +1774,9 @@ export function provisional(host: ProvisionalHost): Provisional {
         throw error;
       }
       host.count(key);
-      loggedOn([fold(inode, op)], { type: 'setattr', path: key, attrs, ...expecting(row) });
+      const answer = loggedOn([fold(inode, op)], { type: 'setattr', path: key, attrs, ...expecting(row) }, awaited);
       fit(inode);
-      return true;
+      return answer ?? true;
     },
 
     copyFile: (from, to, path, source, target, keepMode) => {
