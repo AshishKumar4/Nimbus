@@ -1,9 +1,6 @@
 import type { CommandContext, CommandInputStream } from '../substrate/lifo/commands/types.js';
 import type { NimbusFilesystemAuthority, VfsCred } from './os-contracts.js';
 import type { SessionProcessSupervisor } from './session-process-supervisor.js';
-import { type ProcessSignalName } from './process-io-protocol.js';
-/** The signals a WASI image that takes its own is sent (NIMBUS_SIGNAL_ERRNOS). */
-export declare const DELIVERED_SIGNALS: readonly ProcessSignalName[];
 /** What one run of a runtime is: its process, and what its fd0/1/2 read and write. */
 export interface InvocationStdioSpec {
     /** Its process, when one was made for it (a broker's); absent, the run makes its own, a child of `parentPid`. */

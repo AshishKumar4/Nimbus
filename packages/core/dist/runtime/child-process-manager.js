@@ -558,12 +558,14 @@ export class ChildProcessManager {
         // does not end a process (SIGCHLD, SIGSTOP), the probe 0, or a name no
         // signal has ends nothing here.
         const name = parseSignalName(String(signal));
-        if (name === null || name === '0' || signalDisposition(name) !== 'terminate')
+        if (name === null || name === '0')
             return false;
-        // One its program takes is its program's: the child runs on.
+        // One its program takes is its program's, whatever its default action: the child runs on.
         const sent = parseProcessSignalName(`SIG${name}`);
         if (sent !== null && this.deps.processes.deliverSignal(child.pid, sent))
             return true;
+        if (signalDisposition(name) !== 'terminate')
+            return false;
         child.killed = true;
         this.deps.terminate(child.pid, name);
         this._stampExit(child, exitCodeForSignal(name), `SIG${name}`); // 128+signo, as the shell reports it

@@ -636,22 +636,23 @@ export class CompositeVFS {
      * Where a program started with its cwd at `cwd` runs (MountOptions.exec),
      * for this view's principal: by the mount the cwd is on, links into it
      * followed, as every lookup finds it (route). A cwd the namespace cannot
-     * look up runs where its name says (its longest mount point): under a
-     * delegating mount it is refused with the lookup's failure, never run
-     * here in its place; elsewhere it runs here, to fail as it would.
+     * look up, in a namespace where a mount delegates, is refused with the
+     * lookup's failure (an absent mount's in its own words): where the walk
+     * stopped says nothing of where the cwd is, and a program is never run
+     * here in a machine's place.
      */
     async placeProgram(cwd) {
         if (this.table.delegates === 0)
             return LOCAL_PLACEMENT;
+        const trace = { links: [], at: normalizePath(cwd) };
         let route;
         try {
-            route = await this.route(cwd, { follow: true });
+            route = await this.routeWith(cwd, { follow: true }, trace);
         }
         catch (error) {
-            if (!isVfsError(error))
-                throw error;
-            const named = this.table.mounts.get(this.mountOf(cwd));
-            return named?.options.exec === undefined ? LOCAL_PLACEMENT : { kind: 'absent', reason: error.message };
+            const reached = this.table.mounts.get(this.mountOf(trace.at));
+            const absent = reached !== undefined && this.backend(reached) === null ? this.absentReason(reached) : undefined;
+            return { kind: 'absent', reason: absent ?? (error instanceof Error ? error.message : String(error)) };
         }
         const exec = this.table.mounts.get(route.point)?.options.exec;
         if (exec === undefined)
@@ -1461,7 +1462,12 @@ export class CompositeVFS {
     }
     async route(path, options) {
         const trace = options?.report === true ? { links: [], at: normalizePath(path) } : undefined;
-        const run = () => awaited({ syscall: 'route', path }, () => {
+        const run = () => this.routeWith(path, options, trace);
+        return trace === undefined ? run() : lookupReport(trace, run);
+    }
+    /** route's lookup, recording in `trace` (when given) where it has reached, links followed. */
+    routeWith(path, options, trace) {
+        return awaited({ syscall: 'route', path }, () => {
             // A recalled lookup starts over: keep only the traversal that answers.
             if (trace !== undefined) {
                 trace.links.length = 0;
@@ -1495,7 +1501,6 @@ export class CompositeVFS {
                 });
             });
         });
-        return trace === undefined ? run() : lookupReport(trace, run);
     }
     /**
      * The name `path` leads to now, for an open (PinnedName): links on the

@@ -455,9 +455,10 @@ export declare class CompositeVFS implements VFS {
      * Where a program started with its cwd at `cwd` runs (MountOptions.exec),
      * for this view's principal: by the mount the cwd is on, links into it
      * followed, as every lookup finds it (route). A cwd the namespace cannot
-     * look up runs where its name says (its longest mount point): under a
-     * delegating mount it is refused with the lookup's failure, never run
-     * here in its place; elsewhere it runs here, to fail as it would.
+     * look up, in a namespace where a mount delegates, is refused with the
+     * lookup's failure (an absent mount's in its own words): where the walk
+     * stopped says nothing of where the cwd is, and a program is never run
+     * here in a machine's place.
      */
     placeProgram(cwd: string): Promise<ProgramPlacement>;
     unmount(point: string): void;
@@ -665,6 +666,8 @@ export declare class CompositeVFS implements VFS {
         report?: false;
     }): Promise<VfsRoute>;
     route(path: string, options?: VfsRouteOptions): Promise<VfsRoute | VfsRouteReport>;
+    /** route's lookup, recording in `trace` (when given) where it has reached, links followed. */
+    private routeWith;
     /**
      * The name `path` leads to now, for an open (PinnedName): links on the
      * way followed, the last only with `follow`. The open's decisions, and the

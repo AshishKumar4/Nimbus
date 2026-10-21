@@ -372,7 +372,7 @@ async function builtinTrap({ args, stdout, stderr, state }) {
     }
     return 0;
 }
-async function builtinHash({ args, stdout, stderr, state, host }) {
+async function builtinHash({ args, stdout, stderr, state, host, context }) {
     if (args.length === 0 || (args.length === 1 && args[0] === '-r'))
         return 0;
     let exitCode = 0;
@@ -383,7 +383,8 @@ async function builtinHash({ args, stdout, stderr, state, host }) {
             continue;
         }
         // A start from a cwd whose mount runs programs on its machine is found there, and nothing is remembered of it.
-        const located = await host.locateProgram(arg, state.getCwd(), state.env);
+        // The shell's own names are not programs: bash's hash passes over them.
+        const located = host.isShellBuiltin(arg) || context.isFunction(arg) ? undefined : await host.locateProgram(arg, state.getCwd(), state.env);
         if (located !== undefined) {
             if (located === null) {
                 (await stderr.write(`hash: ${arg}: not found\n`));

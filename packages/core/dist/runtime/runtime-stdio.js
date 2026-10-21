@@ -4,7 +4,7 @@ import { signalAbortReasonOf } from '../substrate/lifo/shell/signals.js';
 import { NIMBUS_SIGNAL_ERRNOS } from './wasi/types.js';
 import { parseProcessSignalName } from './process-io-protocol.js';
 /** The signals a WASI image that takes its own is sent (NIMBUS_SIGNAL_ERRNOS). */
-export const DELIVERED_SIGNALS = Object.keys(NIMBUS_SIGNAL_ERRNOS)
+const DELIVERED_SIGNALS = Object.keys(NIMBUS_SIGNAL_ERRNOS)
     .map(parseProcessSignalName)
     .filter((signal) => signal !== null);
 /**
