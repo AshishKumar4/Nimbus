@@ -31,6 +31,8 @@ export interface BuiltinHost {
   /** The interactive shell's view of the filesystem, as its identity has it now. */
   vfs(): ProcessView;
   readonly registry: CommandRegistry;
+  /** Where a program a start from `cwd` would run is found on its mount's machine (locatePlacedProgram). */
+  locateProgram(name: string, cwd: string, env: Readonly<Record<string, string>>): Promise<string | null | undefined>;
   /** The host's processes, which `kill` reaches by pid (Shell.setHostProcessSignals). */
   hostProcessSignals(): HostProcessSignals | undefined;
   clearTerminal(): void;
@@ -407,6 +409,15 @@ async function builtinHash({ args, stdout, stderr, state, host }: BuiltinCall): 
     if (arg.startsWith('-')) {
       (await stderr.write(`hash: ${arg}: invalid option\n`));
       exitCode = 2;
+      continue;
+    }
+    // A start from a cwd whose mount runs programs on its machine is found there, and nothing is remembered of it.
+    const located = await host.locateProgram(arg, state.getCwd(), state.env);
+    if (located !== undefined) {
+      if (located === null) {
+        (await stderr.write(`hash: ${arg}: not found\n`));
+        exitCode = 1;
+      }
       continue;
     }
     const command = await host.registry.resolve(arg, resolveContext(state.getCwd(), state.env, host.vfs()));

@@ -13,6 +13,7 @@ import assert from 'node:assert/strict';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { signalAbortReason } from '../../packages/core/src/substrate/lifo/shell/signals.ts';
+import { syscallError } from '../../packages/core/src/vfs/vfs-error.ts';
 import { hostSqlite } from './lib/host-sqlite.mjs';
 
 const starts = [];
@@ -46,7 +47,20 @@ function program(run) {
 const delegate = {
   async start(spec, cancel) {
     starts.push({ argv: [...spec.argv], cwd: spec.cwd, FOO: spec.env.FOO ?? null, stdin: spec.stdin === null ? 'closed' : 'stream' });
-    const [name] = spec.argv;
+    const name = spec.argv[0].replace(/^\/usr\/bin\//, '');
+    if (name === 'race') {
+      // Stopped while pending, it starts anyway: the contract's other settlement, killed at once.
+      await new Promise((resolve) => cancel.addEventListener('abort', resolve, { once: true }));
+      return program(async ({ untilKilled }) => ({ code: null, signal: await untilKilled() }));
+    }
+    if (name === 'yes') {
+      return program(async ({ out, untilKilled }) => {
+        let ended = null;
+        untilKilled().then((signal) => { ended = signal; });
+        while (ended === null) { out('y\n'); await new Promise((resolve) => setTimeout(resolve, 1)); }
+        return { code: null, signal: ended };
+      });
+    }
     if (name === 'hold') {
       await new Promise((resolve) => cancel.addEventListener('abort', resolve, { once: true }));
       throw refusal('ECANCELED', 'operation canceled');
@@ -75,6 +89,9 @@ ws.filesystem.vfs.mount('/m', files, { exec: delegate });
 let present = true;
 const flaky = new MemoryVFS({ uid: 1000, gid: 1000 });
 ws.filesystem.vfs.mount('/flaky', () => (present ? flaky : null), { exec: delegate, absentReason: () => 'the computer is offline' });
+// A mount whose lookups fail: what starts under it is refused, never run here instead.
+const failing = () => { throw syscallError('EIO', 'stat', '/x'); };
+ws.filesystem.vfs.mount('/sick', { stat: failing, readFile: failing, writeFile: failing, readdir: failing, mkdir: failing, unlink: failing }, { exec: delegate });
 
 const run = async (line, options = {}) => {
   starts.length = 0;
@@ -151,6 +168,17 @@ try {
   assert.match(r.err, /^type: missing: not found$/m);
   assert.deepEqual(r.starts, []);
 
+  // hash finds the machine's program and remembers nothing of it.
+  r = await run('cd /m && hash tool; hash missing; echo "s=$?"; hash -l 2>/dev/null | grep -c tool');
+  assert.equal(r.out, 's=1\n0\n');
+  assert.match(r.err, /^hash: missing: not found$/m);
+  assert.deepEqual(r.starts, []);
+
+  // A write that fails (not a closed pipe) ends the program before the shell goes on.
+  r = await run('cd /m && yes > /dev/full; echo "s=$?"');
+  assert.deepEqual(r.kills, ['SIGKILL']);
+  assert.equal(r.out, 's=1\n');
+
   // Ctrl-C reaches a running program as SIGINT; its status is 130.
   const stop = new AbortController();
   const sleeping = run('cd /m && sleep 600', { signal: stop.signal });
@@ -170,6 +198,15 @@ try {
   assert.deepEqual(r.kills, []);
   assert.equal(r.code, 130);
   assert.equal(r.err, '');
+
+  // Or settled by starting it and sending SIGKILL: the status is still the stop's.
+  const raced = new AbortController();
+  const racing = run('cd /m && race', { signal: raced.signal });
+  for (let i = 0; i < 100 && starts.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+  raced.abort(signalAbortReason('INT'));
+  r = await racing;
+  assert.deepEqual(r.kills, ['SIGKILL']);
+  assert.equal(r.code, 130);
   // Node's child_process, through the workspace's child broker as a node program's spawn reaches it.
   const child = async (request, input) => {
     starts.length = 0;
@@ -199,6 +236,32 @@ try {
   assert.deepEqual([c.exit.spawnError, c.exit.exitCode], ['ENOENT', -2], 'a refused start is the error event, ENOENT');
   c = await child({ command: 'offline', cwd: '/m' });
   assert.equal(c.exit.spawnError, 'EHOSTDOWN');
+  // Node's file as the program named it.
+  c = await child({ command: '/usr/bin/tool', cwd: '/m' });
+  assert.deepEqual(c.starts.map((x) => x.argv), [['/usr/bin/tool']]);
+  assert.equal(c.out, 'one\ntwo\nthree\n');
+
+  // child.kill('SIGINT') is the program's SIGINT; it ends with that signal.
+  {
+    starts.length = 0;
+    kills.length = 0;
+    const parent = ws.processes.spawn('node', ['node'], '/home/user', { parentPid: ws.shellProcessPid });
+    const { childPid } = await ws.children.spawn({ command: 'sleep', args: ['600'], env: {}, cwd: '/m', stdio: ['pipe', 'pipe', 'pipe'], parentPid: parent.pid });
+    for (let i = 0; i < 100 && starts.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(ws.children.kill(childPid, 'SIGINT'), true);
+    let exit = await ws.children.wait(childPid);
+    while (!exit.done) exit = await ws.children.wait(childPid);
+    assert.deepEqual(kills, ['SIGINT']);
+    assert.deepEqual([exit.exitCode, exit.signal], [130, 'SIGINT']);
+    ws.processes.exit(parent.pid, 0);
+  }
+
+  // A cwd under a delegating mount whose lookup fails: refused, the delegate not asked, nothing run here.
+  c = await child({ command: 'tool', cwd: '/sick/x' });
+  assert.equal(c.exit.spawnError, 'EHOSTDOWN');
+  assert.deepEqual(c.starts, []);
+
   // A local cwd: found here, where there is no tool, and the delegate not asked.
   starts.length = 0;
   await assert.rejects(child({ command: 'tool', cwd: '/home/user' }), { code: 'ENOENT' });

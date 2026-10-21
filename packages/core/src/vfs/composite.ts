@@ -1106,7 +1106,9 @@ export class CompositeVFS implements VFS {
    * Where a program started with its cwd at `cwd` runs (MountOptions.exec),
    * for this view's principal: by the mount the cwd is on, links into it
    * followed, as every lookup finds it (route). A cwd the namespace cannot
-   * look up is no mount's: the program is placed here, to fail as it would.
+   * look up runs where its name says (its longest mount point): under a
+   * delegating mount it is refused with the lookup's failure, never run
+   * here in its place; elsewhere it runs here, to fail as it would.
    */
   async placeProgram(cwd: string): Promise<ProgramPlacement> {
     if (this.table.delegates === 0) return LOCAL_PLACEMENT;
@@ -1114,8 +1116,9 @@ export class CompositeVFS implements VFS {
     try {
       route = await this.route(cwd, { follow: true });
     } catch (error) {
-      if (isVfsError(error)) return LOCAL_PLACEMENT;
-      throw error;
+      if (!isVfsError(error)) throw error;
+      const named = this.table.mounts.get(this.mountOf(cwd));
+      return named?.options.exec === undefined ? LOCAL_PLACEMENT : { kind: 'absent', reason: error.message };
     }
     const exec = this.table.mounts.get(route.point)?.options.exec;
     if (exec === undefined) return LOCAL_PLACEMENT;

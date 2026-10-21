@@ -21,7 +21,7 @@ import type {
 import { TokenKind } from './types.js';
 import { ProcessView, bindProcessView } from '../../../runtime/process-files.js';
 import { LOCAL_PLACEMENT, type ProgramPlacement } from '../../../runtime/program-start.js';
-import { ProgramRefusal, runDelegatedProgram, shellStatusOf } from '../../../runtime/delegated-program.js';
+import { locatePlacedProgram, ProgramRefusal, runDelegatedProgram, shellStatusOf } from '../../../runtime/delegated-program.js';
 import { outputHooks } from '../../../_shared/byte-stream.js';
 import type { NimbusFilesystemAuthority } from '../../../runtime/os-contracts.js';
 import { resolveContext, type CommandRegistry } from '../commands/registry.js';
@@ -49,7 +49,7 @@ import {
   arrayFor, arrayIndex, assignArray, assignVariable, exportedEnvironment, lastIndex, restoreVariable, saveVariable, type ArrayLiteral, type SavedVariable,
 } from './variables.js';
 import { forkShellState, type ShellState } from './state.js';
-import { exitCodeForAbortSignal, KILLED_BY_SIGPIPE } from './signals.js';
+import { exitCodeForAbortSignal, KILLED_BY_SIGPIPE, signalAbortReasonOf } from './signals.js';
 import { isBrokenPipe, isRefusedWrite, textCapture } from '../utils/bytes-io.js';
 import { operandPath } from '../utils/path.js';
 import { encode } from '../utils/encoding.js';
@@ -1234,11 +1234,10 @@ export class Interpreter {
       }
 
 
-      // A program start is placed by its cwd before anything here (Kinu ask 66).
-      const placing = this.placeCommand(name, replacesShell, viaCommand, io);
-      const placement = placing instanceof Promise ? await placing : placing;
-
       try {
+        // A program start is placed by its cwd before anything here (Kinu ask 66).
+        const placing = this.placeCommand(name, replacesShell, viaCommand, io);
+        const placement = placing instanceof Promise ? await placing : placing;
         // Check for break/continue/return builtins
         if (name === 'break' && placement.kind === 'local') {
           const levels = args[0] ? parseInt(args[0], 10) : 1;
@@ -1502,14 +1501,6 @@ export class Interpreter {
     });
   }
 
-  /** CommandContext.locateProgram: the delegate's answer for a cwd its mount places, undefined for one placed here. */
-  private async locateProgram(name: string, cwd: string, env: Record<string, string>, cred: VfsCred): Promise<string | null | undefined> {
-    const placement = await (this.config.filesystem.placeProgram?.(cred, cwd) ?? LOCAL_PLACEMENT);
-    if (placement.kind === 'local') return undefined;
-    if (placement.kind === 'absent') return null;
-    return await placement.delegate.locate(name, placement.cwd, env);
-  }
-
   /**
    * execvp of a program placed on its mount's machine (runProgram): run with
    * the child's streams, environment and stop; a start its machine refuses
@@ -1533,6 +1524,9 @@ export class Interpreter {
       return { status: shellStatusOf(exit), signal: exit.signal === null ? null : exit.signal.replace(/^SIG/, '') };
     } catch (error) {
       if (!(error instanceof ProgramRefusal)) throw error;
+      // Stopped while pending: it ends as its stop says, as a child stopped before it ran does.
+      const stopped = spec.signal.aborted ? signalAbortReasonOf(spec.signal) : null;
+      if (stopped !== null) return { status: stopped.exitCode, signal: stopped.signal };
       throw error.code === 'ENOENT' ? syscallError('ENOENT', 'execvp', name) : syscallError('EIO', 'execvp', name, { detail: error.message });
     } finally {
       await output.end();
@@ -1567,7 +1561,7 @@ export class Interpreter {
       cwd: spec.cwd,
       vfs: spec.vfs,
       vfsUntilExit: () => bindProcessView(this.config.filesystem, { pid: identity.pid, cred: identity.cred }),
-      locateProgram: (program) => this.locateProgram(program, spec.cwd, spec.env, identity.cred),
+      locateProgram: (program) => locatePlacedProgram(this.config.filesystem, identity.cred, program, spec.cwd, spec.env),
       stdout: spec.stdout,
       stderr,
       get signal() { return signalOf(); },

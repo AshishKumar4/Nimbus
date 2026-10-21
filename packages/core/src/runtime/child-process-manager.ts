@@ -433,7 +433,8 @@ export class ChildProcessManager {
     const dispatchReq = shellPlanFor(req) ? req : { ...req, command: normalizeChildCommand(req.command) };
     let runner: ChildRunner | null;
     try {
-      runner = await this.deps.resolve(dispatchReq, { pid, cwd: req.cwd, env: childEnv });
+      // As the program named it: a host normalizes for its own lookup, a delegate's machine is handed the file.
+      runner = await this.deps.resolve(req, { pid, cwd: req.cwd, env: childEnv });
       if (!runner) throw Object.assign(new Error(`spawn ${req.command} ENOENT`), { code: 'ENOENT', errno: -2, path: req.command });
     } catch (error) {
       this.deps.processes.closeInput(pid);

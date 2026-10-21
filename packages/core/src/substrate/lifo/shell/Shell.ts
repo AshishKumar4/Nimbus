@@ -1,3 +1,4 @@
+import { locatePlacedProgram } from '../../../runtime/delegated-program.js';
 import type { ITerminal } from '../terminal/ITerminal.js';
 import { ProcessView, bindProcessView } from '../../../runtime/process-files.js';
 import type { CommandRegistry } from '../commands/registry.js';
@@ -210,6 +211,7 @@ export class Shell {
     this.builtins = shellBuiltins({
       vfs: () => this.vfs,
       registry,
+      locateProgram: (name, cwd, env) => locatePlacedProgram(filesystem, this.commandIdentity.cred, name, cwd, env),
       hostProcessSignals: () => this.hostProcessSignals,
       clearTerminal: () => this.terminal.clear(),
       history: () => this.historyManager.getAll(),
