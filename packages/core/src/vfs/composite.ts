@@ -1117,11 +1117,14 @@ export class CompositeVFS implements VFS {
     try {
       route = await this.routeWith(cwd, { follow: true }, trace);
     } catch (error) {
-      if (this.table.mounts.get(this.mountOf(trace.at))?.options.exec === undefined) {
+      const reached = this.table.mounts.get(this.mountOf(trace.at));
+      if (reached?.options.exec === undefined) {
         if (isVfsError(error)) return LOCAL_PLACEMENT;
         throw error;
       }
-      return { kind: 'absent', reason: error instanceof Error ? error.message : String(error) };
+      // An absent mount in its own words; any other failure in the lookup's.
+      const absent = this.backend(reached) === null ? this.absentReason(reached) : undefined;
+      return { kind: 'absent', reason: absent ?? (error instanceof Error ? error.message : String(error)) };
     }
     const exec = this.table.mounts.get(route.point)?.options.exec;
     if (exec === undefined) return LOCAL_PLACEMENT;
