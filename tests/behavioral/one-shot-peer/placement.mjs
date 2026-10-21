@@ -237,15 +237,17 @@ try {
   // The marker is spelled in two pieces, so the command's own echo never matches it.
   t.cmd(`python3 -c "print('STAR' + 'TED', flush=True); ${PY_IMPORTS}"`);
   const submission = t.submission;
-  await t.waitFor(() => printed(t.stream.slice(submission.start)).includes('STARTED'), 60_000, 'the run to start');
+  // The terminal's view since reset, its escapes stripped (waitFor's argument): the raw stream carries them.
+  await t.waitFor((view) => printed(view).includes('STARTED'), 60_000, 'the run to start');
   const attachedDuringRun = submission.end === null;
   const attachStarted = Date.now();
   await late.connect();
   await late.waitForPrompt(60_000);
   const echo = await late.run('echo late', 60_000);
   const lateWait = Date.now() - attachStarted;
-  await t.waitFor(() => submission.end !== null, 600_000, 'the run to end');
-  const midOutput = printed(t.stream.slice(submission.start, submission.end));
+  let ended = '';
+  await t.waitFor((view) => { ended = view; return submission.end !== null; }, 600_000, 'the run to end');
+  const midOutput = printed(ended);
   const midOn = ((await placement(sid))?.calls ?? []).filter((call) => call.at > marked);
   out({ midRun: true, lateWaitMs: lateWait, attachedDuringRun, exit: submission.exitCode, placed: midOn.map((call) => ({ host: call.host, wants: call.wants })) });
   a.check(`a terminal that attaches mid-run waits for the run (${lateWait} ms to attach and echo): the run stays where it started`,
