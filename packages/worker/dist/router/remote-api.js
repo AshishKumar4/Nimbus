@@ -317,7 +317,8 @@ async function dispatchRemoteRpc(ctx) {
         case 'signalProcess':
             return ctx.stub._rpcSignalProcess(numberArg(args[0], 'pid'), stringArg(args[1], 'signal'));
         case 'waitProgram':
-            return ctx.stub._rpcWaitProgram(numberArg(args[0], 'pid'), args[1] === undefined ? undefined : numberArg(args[1], 'waitMs'));
+            // JSON has no undefined: an absent wait is null too.
+            return ctx.stub._rpcWaitProgram(numberArg(args[0], 'pid'), args[1] === undefined || args[1] === null ? undefined : numberArg(args[1], 'waitMs'));
         case 'processLogs':
             return ctx.stub._rpcProcessLogs(numberArg(args[0], 'pid'), processLogOptions(args[1]));
         case 'listPorts':

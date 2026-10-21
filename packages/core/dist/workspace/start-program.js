@@ -12,10 +12,16 @@ const EXIT_KEPT_MS = 60_000;
 export class StartedPrograms {
     programs = new Map();
     add(pid, exit) {
-        const record = { exit, endedAt: null };
+        const record = { outcome: null, endedAt: null, waiters: new Set() };
         this.programs.set(pid, record);
-        const ended = () => { record.endedAt = Date.now(); };
-        exit.then(ended, ended);
+        const ended = (outcome) => {
+            record.outcome = outcome;
+            record.endedAt = Date.now();
+            for (const waiter of record.waiters)
+                waiter(outcome);
+            record.waiters.clear();
+        };
+        exit.then((status) => ended({ status }), (error) => ended({ error }));
     }
     /** Whether `pid` is one of them that has not ended. */
     running(pid) {
@@ -26,14 +32,22 @@ export class StartedPrograms {
         const record = this.programs.get(pid);
         if (record === undefined)
             throw Object.assign(new Error(`waitProgram: no started program ${pid}`), { code: 'ESRCH', errno: -3 });
-        let timer = null;
-        const late = new Promise((resolve) => { timer = setTimeout(() => resolve(null), waitMs); });
-        try {
-            return await Promise.race([record.exit, late]);
-        }
-        finally {
-            clearTimeout(timer);
-        }
+        const outcome = record.outcome ?? await new Promise((resolve) => {
+            const waiter = (ended) => {
+                clearTimeout(timer);
+                resolve(ended);
+            };
+            const timer = setTimeout(() => {
+                record.waiters.delete(waiter);
+                resolve(null);
+            }, waitMs);
+            record.waiters.add(waiter);
+        });
+        if (outcome === null)
+            return null;
+        if ('error' in outcome)
+            throw outcome.error;
+        return outcome.status;
     }
     /** Forget those that ended more than EXIT_KEPT_MS ago. */
     prune() {

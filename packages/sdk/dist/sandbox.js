@@ -200,7 +200,7 @@ export class NimbusSandbox {
             _rpcListTerminals: () => this.remoteRpc('listTerminals', []),
             _rpcCloseTerminal: (name) => this.remoteRpc('closeTerminal', [name]),
             _rpcWriteProcessInput: (pid, data) => this.remoteRpc('writeProcessInput', [pid, data]),
-            _rpcWaitProgram: (pid, waitMs) => this.remoteRpc('waitProgram', [pid, waitMs]),
+            _rpcWaitProgram: (pid, waitMs) => this.remoteRpc('waitProgram', waitMs === undefined ? [pid] : [pid, waitMs]),
             _rpcEndProcessInput: (pid) => this.remoteRpc('endProcessInput', [pid]),
             _rpcResizeProcess: (pid, size) => this.remoteRpc('resizeProcess', [pid, size]),
             _rpcSignalProcess: (pid, signal) => this.remoteRpc('signalProcess', [pid, signal]),
