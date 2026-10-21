@@ -19,20 +19,20 @@ function fsOf({
   'substrate/lifo/node-compat/fs.ts': { createFs },
   'substrate/lifo/node-compat/filesystem.ts': { synchronousFilesystem },
   'vfs/sqlite-vfs.ts': { SqliteVFS },
-  'runtime/os-contracts.ts': { CRED_SESSION_USER },
+  'runtime/os-contracts.ts': { CRED_KERNEL },
   'tests/unit/lib/sqlite-vfs-test-harness.mjs': { createSqliteVfsTestHarness },
   'tests/unit/lib/process-bridge.mjs': { processBridge },
 }) {
   const harness = createSqliteVfsTestHarness();
   const raw = new SqliteVFS(harness.sql, harness.ctx);
-  const user = raw.as(CRED_SESSION_USER);
+  const user = raw.as(CRED_KERNEL);
   user.mkdir('home/user/app/node_modules', { recursive: true });
   for (let i = 0; i < PACKAGES; i++) {
     user.mkdir(`home/user/app/node_modules/pkg${i}/lib`, { recursive: true });
     user.writeFile(`home/user/app/node_modules/pkg${i}/package.json`, JSON.stringify({ name: `pkg${i}`, main: 'lib/index.js' }));
     user.writeFile(`home/user/app/node_modules/pkg${i}/lib/index.js`, `module.exports = ${i};`);
   }
-  const filesystem = synchronousFilesystem({ process: processBridge(raw, CRED_SESSION_USER) }, () => CRED_SESSION_USER.umask)();
+  const filesystem = synchronousFilesystem({ process: processBridge(raw, CRED_KERNEL) }, () => CRED_KERNEL.umask)();
   return createFs(filesystem, '/home/user/app');
 }
 
