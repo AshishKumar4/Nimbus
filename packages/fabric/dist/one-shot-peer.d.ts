@@ -11,7 +11,7 @@
  * on that object's thread (verdict 20261021T111038-40692a3b802a).
  *
  * So a session keeps one sibling, its peer, and runs a one-shot there while
- * something besides the run wants the session's thread (#threadWanted) and
+ * something besides the run wants the session's thread (SessionDemand) and
  * the peer is warm for it: when the
  * peer answered a call of the same worker within ONE_SHOT_WARM_MS. A wanted
  * thread and a cold peer run the call in the session as before, and warm the
@@ -80,12 +80,13 @@ declare function answerSchema<R>(): z.ZodDiscriminatedUnion<[z.ZodObject<{
 }, z.core.$strip>, z.ZodObject<{
     ok: z.ZodLiteral<"preamble missing">;
 }, z.core.$strip>], "ok">;
-/** What may want a session's thread besides a run, as the session reads it (OneShotPlacement.wantedBy). */
+/**
+ * What may want a session's thread while the run `pid` computes there, as the
+ * session reads it at the run's start (OneShotPlacement.wantedBy; the
+ * worker's session/thread-demand.ts says what each source is and why).
+ */
 export interface SessionDemand {
-    /** Terminals with an open socket: the session's own and each named one. */
-    terminals(): number;
-    /** Ports a process of the session listens on. */
-    ports(): number;
+    wants(pid: number | undefined): ThreadWant[];
 }
 /** What /api/_diag/session shows of a session's one-shots: where each of the last ran, and its peer. */
 export interface OneShotPlacementCall {
@@ -93,12 +94,12 @@ export interface OneShotPlacementCall {
     /** Its worker, as warmth knows it (workerOf): '' for one only the peer object's warmth decides. */
     worker: string;
     host: 'session' | 'peer';
-    /** What wanted the session's thread as it started (#threadWanted): none, and it ran in the session. */
+    /** What wanted the session's thread as it started (SessionDemand): none, and it ran in the session. */
     wants: ThreadWant[];
     at: number;
 }
-/** What may want a session's thread while a one-shot computes there (OneShotPlacement #threadWanted). */
-export type ThreadWant = 'terminal' | 'port' | 'run';
+/** What may want a session's thread while a one-shot computes there (SessionDemand). */
+export type ThreadWant = 'terminal' | 'process' | 'request';
 /** The placement of the one-shots of the Durable Object whose state is `ctx`, its peers in `env`'s host namespace. */
 export declare function oneShotPlacement(ctx: DurableObjectState, env: object): OneShotPlacement;
 /** What /api/_diag/session shows of a session's one-shot placement. */

@@ -36,13 +36,14 @@ import { afterDevServerRestore, devServerProcess, recordDevServer, spawnOf } fro
 import { HeadlessTerminal } from '@nimbus-sh/core/substrate/lifo/index.js';
 import { makeNimbusVerbHandler } from '@nimbus-sh/core/runtime/nimbus-command.js';
 import { oneShotPlacement } from '@nimbus-sh/fabric/one-shot-peer.js';
-import { openTerminals } from '../session/shell-socket.js';
+import { threadDemand } from '../session/thread-demand.js';
 export async function registerHostedCommands(self, workspace) {
-    // What may want this session's thread besides a one-shot (one-shot-peer.ts #threadWanted).
-    oneShotPlacement(self.ctx, self.env).wantedBy({
-        terminals: () => openTerminals(self.ctx.getWebSockets()),
-        ports: () => self.portRegistry.getAll().length,
-    });
+    // What may want this session's thread besides a one-shot (session/thread-demand.ts).
+    oneShotPlacement(self.ctx, self.env).wantedBy(threadDemand({
+        ctx: self.ctx,
+        processes: self.processes,
+        isShell: (pid) => pid === workspace.shellProcessPid || self.terminals.isShell(pid),
+    }));
     const sqliteFs = workspace.vfs;
     // The nimbus verb's runtime installs are Nimbus's own system state.
     const kernelFs = sqliteFs.as(CRED_KERNEL);

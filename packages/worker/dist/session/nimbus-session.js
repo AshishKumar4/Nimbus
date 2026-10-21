@@ -47,6 +47,7 @@ import { appendScrollback } from './state-store.js';
 import { wireProcessLogSocketBroadcast } from '../runtime/process-logs-api.js';
 import { wireReplicasOnConstruct as _w12WireReplicasOnConstruct, getReplicaState as _w12GetReplicaState } from './replica-routes.js';
 import { wireHibernationOnConstruct as _w9WireHibernationOnConstruct, wireProcessLogPersist as _w9DoWireProcessLogPersist, ensureHibSchema as _w9DoEnsureHibSchema, scheduleHibFlush as _w9DoScheduleHibFlush, clearDestroyedTombstone as _w1ClearDestroyedTombstone, ensureResidentKeepalive as _w1EnsureResidentKeepalive, dispatchAlarm as _w9DoDispatchAlarm, flushOnClose as _w9DoFlushOnClose, noteClientActivity } from './hibernation.js';
+import { requestBegan } from './thread-demand.js';
 import { timers } from '@nimbus-sh/fabric/timers.js';
 import { holdThreadWatch } from '@nimbus-sh/fabric/thread-stalls.js';
 import { generation } from '@nimbus-sh/fabric/generation.js';
@@ -1044,12 +1045,17 @@ export class NimbusSession extends CloudflareDurableObject {
         // Every client reaches the session through here; facets reach it
         // through RPC, which is deliberately not counted.
         noteClientActivity(this, this.ctx);
+        // A request in flight wants the thread a one-shot would take (thread-demand.ts).
+        const answered = requestBegan(this.ctx);
         try {
             return await this._handleFetch(request);
         }
         catch (e) {
             console.error('[nimbus] Unhandled fetch error:', e?.message, e?.stack);
             return new Response(`Internal Error: ${e?.message}`, { status: 500 });
+        }
+        finally {
+            answered();
         }
     }
     // ── HTTP fetch routing extracted to ./routes.ts (S9).
