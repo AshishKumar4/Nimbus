@@ -37,10 +37,9 @@ export { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 // app), its own IsolatePool over the same spec, its syscalls routed back here.
 // On globalThis: the probe app's copy of this module is not the SDK's.
 export function d1OneShotPeer(): Map<string, string> {
-  const shared = globalThis as unknown as { [D1_PEERS]?: Map<string, string> };
-  return shared[D1_PEERS] ??= new Map();
+  const shared = globalThis as unknown as { __nimbusD1OneShotPeer?: Map<string, string> };
+  return shared.__nimbusD1OneShotPeer ??= new Map();
 }
-const D1_PEERS = Symbol.for('nimbus.d1.oneShotPeer');
 const D1_MOVED = /^(tsrs|clang-runner|cpython-runner|ruby-runner|git-runner)/;
 export interface D1PeerImage { path: string; identity: string; size: number; peak: number; stream(): Promise<ReadableStream<Uint8Array>> }
 export interface D1PeerShape {
