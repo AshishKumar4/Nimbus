@@ -9,19 +9,21 @@ import assert from 'node:assert/strict';
 import { answeringSupervisor } from '../../packages/core/src/runtime/vfs-supervisor.ts';
 
 const pending = [];
+// An RPC stub's answer is a thenable of its own class, not a Promise.
 const stub = {
   answer(name, args) {
     const { promise, resolve } = Promise.withResolvers();
     pending.push({ name, args, resolve });
-    return promise;
+    return { then: (onValue, onError) => promise.then(onValue, onError) };
   },
   cpReadStdin: () => new Promise(() => {}),
 };
 const told = [];
 const supervisor = answeringSupervisor(stub, (call) => {
+  assert.ok(call instanceof Promise, 'live is told of a promise of this realm, which node\'s tracker can follow');
   const entry = { settled: false };
   told.push(entry);
-  call.then(() => { entry.settled = true; }, () => { entry.settled = true; });
+  Promise.prototype.then.call(call, () => { entry.settled = true; }, () => { entry.settled = true; });
 });
 
 const read = supervisor.fsReadBatch([{ path: '/home/user/a', offset: 0, length: 1 }]);

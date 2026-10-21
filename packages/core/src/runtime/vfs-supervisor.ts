@@ -88,6 +88,10 @@ interface AnsweringStub {
   answer(method: SupervisorAnsweredMethod, args: unknown[]): Promise<SupervisorAnswer>;
 }
 
+async function answerOf(stub: AnsweringStub, name: SupervisorAnsweredMethod, args: unknown[]): Promise<SupervisorAnswer> {
+  return await stub.answer(name, args);
+}
+
 /** Only an RPC stub has `answer` (it has every name); a same-isolate supervisor (vfsSupervisor) has none of it. */
 function isAnsweringStub(supervisor: object): supervisor is AnsweringStub {
   return typeof Reflect.get(supervisor, 'answer') === 'function';
@@ -114,7 +118,8 @@ export function answeringSupervisor<T extends object>(supervisor: T, live?: (cal
     get(target, name) {
       if (!isSupervisorAnsweredMethod(name)) return Reflect.get(target, name);
       return async (...args: unknown[]) => {
-        const asked = stub.answer(name, args);
+        // A promise of this realm's own: an RPC stub's answer is a thenable of its own class.
+        const asked = answerOf(stub, name, args);
         if (live !== undefined && WAITS[name] !== true) live(asked);
         const answer = await asked;
         try {
