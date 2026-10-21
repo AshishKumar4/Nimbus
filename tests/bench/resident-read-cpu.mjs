@@ -8,7 +8,6 @@
 // arm is the store bundled on its own from its tree (main, main's null arm,
 // head), over a pnpm-like tree held in a heap store.
 import assert from 'node:assert/strict';
-import { positionOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -41,7 +40,7 @@ async function arm(name, from) {
   }, join(scratch, `${name}.mjs`));
 }
 
-const CURSOR = { poison: false, paths: [], position: positionOf('', { '/': { epoch: 'e1', cursor: 7 } }) };
+const CURSOR = { poison: false, paths: [], position: { table: '', feeds: { '/': { epoch: 'e1', cursor: 7 } } } };
 const STAT = (type, size = 0) => ({ type, size, mode: type === 'directory' ? 0o40755 : type === 'symlink' ? 0o120777 : 0o100644, uid: 1000, gid: 1000, atime: 0, mtime: 0, ctime: 0, ino: 1 });
 const FILE = (i) => `home/user/app/node_modules/.pnpm/p${i}/node_modules/p${i}/lib/index.js`;
 const TEXT = Array.from({ length: 96 }, (_, i) => `module.exports = ${i};\n`);

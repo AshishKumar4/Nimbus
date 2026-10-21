@@ -1,7 +1,6 @@
 #!/usr/bin/env bun
 // Independent module copies and databases for main, main's null arm, and head.
 import assert from 'node:assert/strict';
-import { rootOf } from '../../packages/core/src/runtime/feed-position.ts';
 import { hostSqlite } from '../unit/lib/host-sqlite.mjs';
 import { cpuMs } from './lib/paired-cpu.mjs';
 import { CORE_CPU_SOURCES } from './lib/cpu-sources.mjs';
@@ -46,7 +45,7 @@ async function cpu(arm, kind, iterations) {
         const answer = arm.bridge.acquire(cursor, { namespace: true });
         assert.equal(answer.poison, false);
         assert.equal(answer.paths.length > 0, kind === 'acquire-one');
-        checksum += rootOf(answer.position).cursor + answer.paths.length;
+        checksum += answer.position.feeds['/'].cursor + answer.paths.length;
       }
     }
   });
