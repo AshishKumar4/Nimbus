@@ -380,9 +380,9 @@ function world({ colocated = false } = {}) {
   const peer = w.peerOf();
   w.demand.wants = [];
   assert.equal((await w.oneShot('idle, peer warm')).ranOn, 'session-0123456789', 'idle, even with the peer warm, the call runs in the session');
-  w.demand.wants = ['request'];
-  assert.equal((await w.oneShot('a request')).ranOn, peer.name, 'demand sends the call to the warm peer');
-  assert.deepEqual(oneShotPlacementDiagnostics(w.session.ctx).calls.at(-1).wants, ['request'], 'and says why');
+  w.demand.wants = ['terminal'];
+  assert.equal((await w.oneShot('a terminal')).ranOn, peer.name, 'demand sends the call to the warm peer');
+  assert.deepEqual(oneShotPlacementDiagnostics(w.session.ctx).calls.at(-1).wants, ['terminal'], 'and says why');
   console.log('  ok  only what wants the session\'s thread sends a call to the peer');
 }
 

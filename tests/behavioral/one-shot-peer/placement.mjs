@@ -197,6 +197,14 @@ try {
     terminal: { start: async () => { const other = new Terminal(sid, { terminal: 'source' }); await other.connect(); await other.waitForPrompt(60_000); return () => other.close(); } },
     process: { start: async () => { await t.run('sleep 600 & echo $! > sleeper.pid', 60_000); return () => t.run('kill "$(cat sleeper.pid)"; true', 60_000); } },
   };
+  // A save that comes during an idle session's run waits for it: the cost this placement accepts, recorded.
+  const idleSaves = await watched(() => runAndPlace(heavy.line), OBSERVERS.save);
+  const idleSaved = printed((await t.run('cat /home/user/saved.txt', 30_000)).output);
+  out({ idleSave: true, worstMs: idleSaves.worst, samples: idleSaves.samples, placed: idleSaves.value.calls.map((call) => ({ host: call.host, wants: call.wants })) });
+  a.check(`a save during an idle session's run waits for it (worst ${idleSaves.worst} ms): the run stays in the session, the save lands`,
+    idleSaves.value.r.exitCode === 0 && idleSaves.value.calls.length > 0 && idleSaves.value.calls.every((call) => call.host === 'session' && call.wants.length === 0)
+      && lastSaved !== null && idleSaved.includes(lastSaved),
+    JSON.stringify({ worst: idleSaves.worst, calls: idleSaves.value.calls, lastSaved, idleSaved }));
   for (const [source, { start }] of Object.entries(SOURCES)) {
     const stop = await start();
     await t.run(PY_PRINT, 600_000);
@@ -215,9 +223,10 @@ try {
   const marked = await mark(sid);
   const late = new Terminal(sid, { terminal: 'late' });
   t.reset();
-  t.cmd(`python3 -c "print('STARTED', flush=True); ${PY_IMPORTS}"`);
+  // The marker is spelled in two pieces, so the command's own echo never matches it.
+  t.cmd(`python3 -c "print('STAR' + 'TED', flush=True); ${PY_IMPORTS}"`);
   const submission = t.submission;
-  await t.waitFor(() => t.stream.slice(submission.start).includes('STARTED'), 60_000, 'the run to start');
+  await t.waitFor(() => printed(t.stream.slice(submission.start)).includes('STARTED'), 60_000, 'the run to start');
   const attachedDuringRun = submission.end === null;
   const attachStarted = Date.now();
   await late.connect();
@@ -230,7 +239,7 @@ try {
   out({ midRun: true, lateWaitMs: lateWait, attachedDuringRun, exit: submission.exitCode, placed: midOn.map((call) => ({ host: call.host, wants: call.wants })) });
   a.check(`a terminal that attaches mid-run waits for the run (${lateWait} ms to attach and echo): the run stays where it started`,
     attachedDuringRun && submission.exitCode === 0 && midOutput.includes('1') && echo.exitCode === 0 && printed(echo.output).includes('late')
-      && midOn.length > 0 && midOn.every((call) => call.host === 'session'),
+      && midOn.length > 0 && midOn.every((call) => call.host === 'session' && call.wants.length === 0),
     JSON.stringify({ lateWait, attachedDuringRun, exit: submission.exitCode, midOutput, midOn }));
   await late.close();
 } catch (error) {

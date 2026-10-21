@@ -116,7 +116,8 @@ on throwaways, an outside request to the session every 100 ms:
   each waited 3.1-3.4 s, against 0.04-0.12 s with the same run on a peer.
 
 So while something else wants the session's thread (another terminal
-attached, a process listening on a port, another one-shot running), a
+attached, another process running: a server, another one-shot, a resident
+starting; `session/thread-demand.ts`), a
 one-shot of a facet host (python, ruby, clang, tsc, git.wasm, a WASI
 program) runs on the session's peer, a sibling DO named from the session's
 id, if the peer answered a call of the same worker within

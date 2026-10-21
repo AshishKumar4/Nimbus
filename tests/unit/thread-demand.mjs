@@ -1,10 +1,10 @@
 #!/usr/bin/env bun
 // thread-demand — what may want a session's thread while a one-shot computes
 // there (packages/worker/src/session/thread-demand.ts), read from the
-// session's own state: its terminal sockets as the session stamps them, its
-// process table, and its HTTP requests in flight.
+// session's own state: its terminal sockets as the session stamps them, and
+// its process table and port registry.
 import assert from 'node:assert/strict';
-import { requestBegan, threadDemand } from '../../packages/worker/src/session/thread-demand.ts';
+import { threadDemand } from '../../packages/worker/src/session/thread-demand.ts';
 import { noteShellSocketActivity, tagShellSocket } from '../../packages/worker/src/session/shell-socket.ts';
 
 /** A socket as workerd accepts one: open, its attachment kept. */
@@ -20,12 +20,13 @@ const terminal = (name, seenAt = now) => {
   return ws;
 };
 
-function session({ sockets = [], processes = [], shells = [1] } = {}) {
+function session({ sockets = [], processes = [], shells = [1], listening = [] } = {}) {
   const ctx = { getWebSockets: () => sockets, getWebSocketAutoResponseTimestamp: () => null };
   const table = new Map(processes.map((entry) => [entry.pid, entry]));
   const demand = threadDemand({
     ctx,
     processes: { getRunning: () => processes.filter((entry) => entry.state === 'running'), get: (pid) => table.get(pid) },
+    listens: (pid) => listening.includes(pid),
     isShell: (pid) => shells.includes(pid),
   });
   return { ctx, demand };
@@ -49,11 +50,8 @@ assert.deepEqual(session({ processes: [shell, sh, child] }).demand.wants(12), []
 const server = { pid: 30, parentPid: 1, state: 'running', terminal: '' };
 assert.deepEqual(session({ processes: [shell, run, server] }).demand.wants(10), ['process'], 'a server running beside it');
 assert.deepEqual(session({ processes: [shell, run, { ...server, state: 'exited' }] }).demand.wants(10), [], 'one that ended: nothing');
-// A request in flight, until it is answered.
-const s = session({ processes: [shell, run] });
-const answered = requestBegan(s.ctx);
-assert.deepEqual(s.demand.wants(10), ['request'], 'a request in flight');
-answered();
-answered();
-assert.deepEqual(s.demand.wants(10), [], 'answered (once, however often it says so): nothing');
+// A server that starts the run still answers requests: a listening ancestor is demand.
+const spawned = { pid: 31, parentPid: 30, state: 'running', terminal: '' };
+assert.deepEqual(session({ processes: [shell, server, spawned], listening: [30] }).demand.wants(31), ['process'], 'its listening parent');
+assert.deepEqual(session({ processes: [shell, server, spawned] }).demand.wants(31), [], 'a parent that does not listen waits for it: nothing');
 console.log('thread-demand OK');

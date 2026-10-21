@@ -108,7 +108,6 @@ import { type TryEnableReplicasResult as _W12EnableResult } from '../replica/rou
 import { wireReplicasOnConstruct as _w12WireReplicasOnConstruct, getReplicaState as _w12GetReplicaState } from './replica-routes.js';
 import type { HostActivityLease } from '@nimbus-sh/fabric/host-activity.js';
 import { wireHibernationOnConstruct as _w9WireHibernationOnConstruct, wireProcessLogPersist as _w9DoWireProcessLogPersist, ensureHibSchema as _w9DoEnsureHibSchema, scheduleHibFlush as _w9DoScheduleHibFlush, clearDestroyedTombstone as _w1ClearDestroyedTombstone, ensureResidentKeepalive as _w1EnsureResidentKeepalive, dispatchAlarm as _w9DoDispatchAlarm, flushOnClose as _w9DoFlushOnClose, noteClientActivity } from './hibernation.js';
-import { requestBegan } from './thread-demand.js';
 import { timers } from '@nimbus-sh/fabric/timers.js';
 import { holdThreadWatch } from '@nimbus-sh/fabric/thread-stalls.js';
 import { generation } from '@nimbus-sh/fabric/generation.js';
@@ -1188,15 +1187,11 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
     // Every client reaches the session through here; facets reach it
     // through RPC, which is deliberately not counted.
     noteClientActivity(this, this.ctx);
-    // A request in flight wants the thread a one-shot would take (thread-demand.ts).
-    const answered = requestBegan(this.ctx);
     try {
       return await this._handleFetch(request);
     } catch (e: any) {
       console.error('[nimbus] Unhandled fetch error:', e?.message, e?.stack);
       return new Response(`Internal Error: ${e?.message}`, { status: 500 });
-    } finally {
-      answered();
     }
   }
 

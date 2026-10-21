@@ -184,7 +184,7 @@ export interface OneShotPlacementCall {
 }
 
 /** What may want a session's thread while a one-shot computes there (SessionDemand). */
-export type ThreadWant = 'terminal' | 'process' | 'request';
+export type ThreadWant = 'terminal' | 'process';
 const PLACEMENT_CALLS_KEPT = 16;
 
 const placements = new WeakMap<object, OneShotPlacement>();
