@@ -731,8 +731,21 @@ export async function rpcStartProgram(
   return encodeProgramStream((cancel) => workspace.startProgram(program, cancel));
 }
 
+/**
+ * Started program `pid`'s exit once it comes, or null after `waitMs` (at
+ * most a minute): its end, which its stream says only after the output it
+ * holds is read.
+ */
+export async function rpcWaitProgram(self: Pick<ProgrammaticHost, 'ensureRuntimeReady' | 'runtimeWorkspace'>, pid: number, waitMs = 25_000) {
+  await self.ensureRuntimeReady();
+  const workspace = self.runtimeWorkspace;
+  if (!workspace) throw new Error('waitProgram: the session has no workspace');
+  const bound = Math.min(Math.max(0, Number(waitMs) || 0), 60_000);
+  return { exit: await workspace.waitProgram(Number(pid), bound) };
+}
+
 /** Whether `pid` is a program started by its argv: its input and signals are the broker's. */
-function startedProgram(self: ProgrammaticHost, pid: number): boolean {
+function startedProgram(self: Pick<ProgrammaticHost, 'runtimeWorkspace'>, pid: number): boolean {
   return self.runtimeWorkspace?.isStartedProgram(pid) === true;
 }
 
@@ -743,8 +756,11 @@ export async function rpcWriteProcessInput(self: ProgrammaticHost, pid: number, 
   return writeProcessBytes(self, n, data);
 }
 
+/** What a byte write reaches: the session's process table, and its workspace's started programs. */
+type ProcessBytesHost = Pick<ProgrammaticHost, 'ensureRuntimeReady' | 'runtimeWorkspace' | 'processes'>;
+
 /** Bytes are a pipe's: in order, the call waiting for room; `gone`, its caller left, withdraws what still waits. */
-async function writeProcessBytes(self: ProgrammaticHost, pid: number, data: Uint8Array, gone?: AbortSignal) {
+async function writeProcessBytes(self: ProcessBytesHost, pid: number, data: Uint8Array, gone?: AbortSignal) {
   const children = self.runtimeWorkspace?.children;
   const written = children !== undefined && startedProgram(self, pid)
     ? await children.stdinWrite(pid, data, undefined, gone)
@@ -757,8 +773,8 @@ async function writeProcessBytes(self: ProgrammaticHost, pid: number, data: Uint
  * remote call answers with, is the body of a stream, so a client that leaves
  * while the write waits for room (its body cancelled) withdraws it.
  */
-export async function rpcWriteProcessInputStream(self: ProgrammaticHost, pid: number, data: Uint8Array): Promise<ReadableStream<Uint8Array>> {
-  await ensureProgrammaticReady(self);
+export async function rpcWriteProcessInputStream(self: ProcessBytesHost, pid: number, data: Uint8Array): Promise<ReadableStream<Uint8Array>> {
+  await self.ensureRuntimeReady();
   const gone = new AbortController();
   const writing = writeProcessBytes(self, Number(pid), data, gone.signal);
   return new ReadableStream<Uint8Array>({

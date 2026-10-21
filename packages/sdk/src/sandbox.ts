@@ -379,6 +379,7 @@ export class NimbusSandbox {
       _rpcListTerminals: () => this.remoteRpc('listTerminals', []),
       _rpcCloseTerminal: (name) => this.remoteRpc('closeTerminal', [name]),
       _rpcWriteProcessInput: (pid, data) => this.remoteRpc('writeProcessInput', [pid, data]),
+      _rpcWaitProgram: (pid, waitMs) => this.remoteRpc('waitProgram', [pid, waitMs]),
       _rpcEndProcessInput: (pid) => this.remoteRpc('endProcessInput', [pid]),
       _rpcResizeProcess: (pid, size) => this.remoteRpc('resizeProcess', [pid, size]),
       _rpcSignalProcess: (pid, signal) => this.remoteRpc('signalProcess', [pid, signal]),
@@ -475,28 +476,31 @@ export class NimbusSandbox {
     const { signal: cancel, ...start } = options;
     await this.ready();
     const stub = this.stub();
-    const signal = (pid: number, sent: string): void => {
-      this.rpc(stub._rpcSignalProcess(pid, sent)).catch((error: unknown) => console.error(`Nimbus: could not send ${sent} to ${pid}`, error));
+    const control = {
+      signal: (pid: number, sent: string): void => {
+        this.rpc(stub._rpcSignalProcess(pid, sent)).catch((error: unknown) => console.error(`Nimbus: could not send ${sent} to ${pid}`, error));
+      },
+      wait: async (pid: number) => (await this.rpc(stub._rpcWaitProgram(pid))).exit,
     };
     // Across HTTP no stream rides the request: the bytes follow the start, written with the program's input calls.
     const remote = this.target.kind === 'remote';
-    const started = await decodeProgramStream(await this.rpc(stub._rpcStartProgram(argv, start)), signal, cancel);
+    const started = await decodeProgramStream(await this.rpc(stub._rpcStartProgram(argv, start)), control, cancel);
     if (remote && start.stdin !== undefined) void this.feed(started, start.stdin);
     return started;
   }
 
-  /** `stdin` into `program`'s input with the program's input calls (feedProgramInput). */
+  /**
+   * `stdin` into `program`'s input with the program's input calls
+   * (feedProgramInput). A write that fails cancels `stdin` with its error and
+   * ends the input; a program whose input cannot be ended either is killed.
+   */
   private async feed(program: StartedSessionProgram, stdin: ReadableStream<Uint8Array>): Promise<void> {
     const stub = this.stub();
     const sink = {
       write: async (bytes: Uint8Array) => (await this.rpc(stub._rpcWriteProcessInput(program.pid, bytes))).ok,
       end: async () => { await this.rpc(stub._rpcEndProcessInput(program.pid)); },
     };
-    try {
-      await feedProgramInput(stdin, sink, program.exit);
-    } catch (error) {
-      console.error(`Nimbus: the input of program ${program.pid} could not be written`, error);
-    }
+    await feedProgramInput(stdin, sink, program.exit).catch(() => program.kill('SIGKILL'));
   }
 
   /** Run a command to completion and return its output as strings. Built on {@link execStream}. */

@@ -5,12 +5,16 @@
 // reader takes it, and its exit (waitpid's code or signal); cancelling the
 // stream before the start cancels the start, after it kills the program,
 // read or not. A caller that gives up on the start (its AbortSignal) cancels
-// the stream. Output is read ahead a pipe's worth, so a quiet program's exit
-// is seen with its output unread. Round-tripped here over a workspace's
-// startProgram, the frames split at every byte boundary on the way.
+// the stream. Its exit is waited for apart from the stream (waitProgram),
+// so it is seen with any of its output unread, a killed program's too. Its
+// input is fed by one feeder on every transport: a source that fails ends
+// the input, and a write that fails ends it too, or says it could not.
+// Round-tripped here over a workspace's startProgram, the frames split at
+// every byte boundary on the way.
 import assert from 'node:assert/strict';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { decodeProgramStream, encodeProgramStream } from '../../packages/core/src/runtime/program-stream.ts';
+import * as programStart from '../../packages/core/src/runtime/program-start.ts';
 import { hostSqlite } from './lib/host-sqlite.mjs';
 
 const { sql, transactions } = await hostSqlite();
@@ -35,10 +39,21 @@ function byteByByte(wire) {
   });
 }
 const signals = [];
-const across = (argv, extra) => decodeProgramStream(
-  byteByByte(encodeProgramStream((cancel) => ws.startProgram(program(argv, extra), cancel))),
-  (pid, signal) => { signals.push(signal); ws.children.kill(pid, signal); },
-);
+const control = {
+  signal: (pid, signal) => { signals.push(signal); ws.children.kill(pid, signal); },
+  wait: (pid) => ws.waitProgram(pid, 1000),
+};
+const across = (argv, extra) => decodeProgramStream(byteByByte(encodeProgramStream((cancel) => ws.startProgram(program(argv, extra), cancel))), control);
+/** `promise`, or a rejection once `ms` have passed. */
+async function within(promise, ms) {
+  let timer;
+  const late = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`not settled within ${ms} ms`)), ms); });
+  try {
+    return await Promise.race([promise, late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 async function finish(started) {
   const out = [];
   for await (const chunk of started.output) out.push(...chunk.data);
@@ -113,7 +128,7 @@ try {
     gaveUp.abort();
     await assert.rejects(decodeProgramStream(
       encodeProgramStream((cancel) => ws.startProgram(program(['sleep', '600']), cancel)),
-      () => {},
+      control,
       gaveUp.signal,
     ), { code: 'ECANCELED' });
     assert.ok(await until(() => !sleeping()), 'nothing of it runs on');
@@ -121,13 +136,30 @@ try {
 
   await check('an exit with its output unread', async () => {
     const quiet = await across(['true']);
-    let timer;
-    const late = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('no exit within 5 s')), 5000); });
-    try {
-      assert.deepEqual(await Promise.race([quiet.exit, late]), { code: 0, signal: null });
-    } finally {
-      clearTimeout(timer);
-    }
+    assert.deepEqual(await within(quiet.exit, 5000), { code: 0, signal: null });
+  });
+
+  await check('an exit after exactly a pipe\'s worth, unread', async () => {
+    // One chunk that fills what is read ahead, then the exit.
+    const ended = Promise.resolve({ code: 0, signal: null });
+    const full = encodeProgramStream(async () => ({
+      pid: 9,
+      output: new ReadableStream({ start(c) { c.enqueue({ stream: 'stdout', data: new Uint8Array(64 * 1024) }); c.close(); } }),
+      exit: ended,
+      kill() {},
+    }));
+    const started = await decodeProgramStream(full, { signal() {}, wait: () => ended });
+    assert.deepEqual(await within(started.exit, 5000), { code: 0, signal: null });
+  });
+
+  await check('a killed program, its output unread', async () => {
+    // More output than any read-ahead holds, then a wait: only the kill ends it.
+    await ws.filesystem.vfs.writeFile('/home/user/big.bin', new Uint8Array(1024 * 1024).fill(0x61));
+    const loud = await across(['sh', '-c', 'cat /home/user/big.bin; sleep 600']);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    loud.kill('SIGKILL');
+    assert.deepEqual(await within(loud.exit, 5000), { code: null, signal: 'SIGKILL' });
+    await loud.output.cancel();
   });
 
   await check('a cancel as the start is answered', async () => {
@@ -153,6 +185,17 @@ try {
       process.off('unhandledRejection', note);
     }
     assert.deepEqual([kills, outputCancelled, unhandled.map(String)], [['SIGKILL'], true, []]);
+  });
+
+  await check('a write that fails', async () => {
+    const calls = [];
+    let cancelledWith = null;
+    const source = () => new ReadableStream({ start(c) { c.enqueue(new Uint8Array([1])); }, cancel(reason) { cancelledWith = reason; } });
+    const refusing = { write: async () => { throw new Error('write failed'); }, end: async () => { calls.push('end'); } };
+    await programStart.feedProgramInput(source(), refusing, new Promise(() => {}));
+    assert.deepEqual([calls, cancelledWith?.message], [['end'], 'write failed'], 'its source hears why; the input is ended');
+    const dead = { write: async () => { throw new Error('write failed'); }, end: async () => { throw new Error('end failed'); } };
+    await assert.rejects(programStart.feedProgramInput(source(), dead, new Promise(() => {})), /end failed/, 'and when that fails too, its caller hears it');
   });
 
   assert.deepEqual(failures, []);

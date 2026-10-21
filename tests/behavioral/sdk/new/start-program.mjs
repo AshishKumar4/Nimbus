@@ -45,6 +45,13 @@ try {
   const quietExit = await Promise.race([quiet.exit, timeout]);
   a.check('its exit, its output unread', quietExit?.code === 0, JSON.stringify(quietExit));
 
+  const loud = await box.startProgram(['sh', '-c', 'i=0; while [ $i -lt 4000 ]; do echo 0123456789012345678901234567890123456789; i=$((i+1)); done; sleep 600']);
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+  loud.kill('SIGKILL');
+  const loudExit = await Promise.race([loud.exit, new Promise((resolve) => setTimeout(() => resolve('timed out'), 30_000))]);
+  a.check('a killed program\'s exit, its output unread', loudExit?.code === null && loudExit?.signal === 'SIGKILL', JSON.stringify(loudExit));
+  await loud.output.cancel().catch(() => {});
+
   const failing = new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('so far')); }, pull(c) { c.error(new Error('source failed')); } });
   ran = await finish(await box.startProgram(['cat'], { stdin: failing }));
   a.check('a source that fails ends its input there', new TextDecoder().decode(ran.out) === 'so far' && ran.exit.code === 0, JSON.stringify({ out: new TextDecoder().decode(ran.out), exit: ran.exit }));

@@ -20,8 +20,8 @@
  * routed through it would silently acquire all of that.
  */
 
-import { startProgram, type ProgramInput } from './start-program.js';
-import type { Program, StartedSessionProgram } from '../runtime/program-start.js';
+import { startProgram, StartedPrograms, type ProgramInput } from './start-program.js';
+import type { ExitStatus, Program, StartedSessionProgram } from '../runtime/program-start.js';
 import { createKillCommand, type HostProcessSignals } from '../substrate/lifo/commands/system/kill.js';
 import { Kernel } from '../substrate/lifo/kernel/index.js';
 import { Shell } from '../substrate/lifo/shell/Shell.js';
@@ -327,8 +327,8 @@ export class NimbusWorkspace {
   readonly shellProcessPid: number;
 
   private readonly namedShells: NamedShells;
-  /** Programs startProgram started, until each ends. */
-  private readonly startedPrograms = new Set<number>();
+  /** Programs startProgram started, and their exits. */
+  private readonly startedPrograms = new StartedPrograms();
 
   private constructor(
     vfs: SqliteVFS,
@@ -648,7 +648,16 @@ export class NimbusWorkspace {
 
   /** Whether `pid` is a program startProgram started that has not ended: its input and signals are the broker's. */
   isStartedProgram(pid: number): boolean {
-    return this.startedPrograms.has(pid);
+    return this.startedPrograms.running(pid);
+  }
+
+  /**
+   * Started program `pid`'s exit once it comes, or null once `waitMs` pass
+   * first: its end, apart from its output, which may lie unread. ESRCH for
+   * a pid it did not start, or one that ended over a minute before.
+   */
+  waitProgram(pid: number, waitMs: number): Promise<ExitStatus | null> {
+    return this.startedPrograms.wait(pid, waitMs);
   }
 
   /**

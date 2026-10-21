@@ -180,6 +180,11 @@ export const SessionDestroyResultSchema = z.object({
 export type SessionDestroyResult = z.infer<typeof SessionDestroyResultSchema>;
 
 const ProcessControlResultSchema = z.object({ ok: z.boolean(), pid: z.number() });
+/** waitpid(2)'s answer: an exit code, or the signal that ended it. */
+export const ExitStatusSchema = z.union([
+  z.object({ code: z.number(), signal: z.null() }),
+  z.object({ code: z.null(), signal: z.string() }),
+]);
 const RemovedAppSchema = z.object({ owner: z.string(), removed: z.boolean(), port: z.number().nullable() });
 const FileBytesSchema: z.ZodType<Uint8Array> = z.instanceof(Uint8Array);
 
@@ -215,6 +220,7 @@ const SessionResultSchemas = {
   endProcessInput: ProcessControlResultSchema,
   resizeProcess: ProcessControlResultSchema,
   signalProcess: ProcessControlResultSchema,
+  waitProgram: z.object({ exit: ExitStatusSchema.nullable() }),
   processLogs: SessionProcessLogsSchema,
   listPorts: z.array(SessionPortSchema),
   exposePort: SessionExposedPortSchema,
@@ -328,6 +334,8 @@ export interface SessionRpc {
   _rpcEndProcessInput(pid: number): Promise<SessionResult<'endProcessInput'>>;
   _rpcResizeProcess(pid: number, size: SessionTerminalSize): Promise<SessionResult<'resizeProcess'>>;
   _rpcSignalProcess(pid: number, signal: string): Promise<SessionResult<'signalProcess'>>;
+  /** A started program's exit once it comes, or null once `waitMs` pass: its end apart from its output. */
+  _rpcWaitProgram(pid: number, waitMs?: number): Promise<SessionResult<'waitProgram'>>;
   _rpcProcessLogs(pid: number, options?: SessionProcessLogsOptions): Promise<SessionProcessLogs>;
   _rpcListPorts(): Promise<SessionPort[]>;
   _rpcExposePort(port: number, options?: SessionExposeOptions): Promise<SessionResult<'exposePort'>>;

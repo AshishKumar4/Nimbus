@@ -139,6 +139,10 @@ export class HostedSession extends RpcTarget implements SessionRpc {
     return operations.rpcStartProgram(this.#client(), argv, options);
   }
   _rpcEndProcessInput(pid: number) { return operations.rpcEndProcessInput(this.#client(), pid); }
+  _rpcWaitProgram(pid: number, waitMs?: number) {
+    if (this.scope !== null) throw new Error('EPERM: a scoped session starts no program by its argv');
+    return operations.rpcWaitProgram(this.#client(), pid, waitMs);
+  }
   _rpcResizeProcess(pid: number, size: SessionTerminalSize) { return operations.rpcResizeProcess(this.#client(), pid, size); }
   _rpcSignalProcess(pid: number, signal: string) { return operations.rpcSignalProcess(this.#client(), pid, signal); }
   _rpcProcessLogs(pid: number, options?: SessionProcessLogsOptions) {

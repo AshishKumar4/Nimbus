@@ -12,7 +12,8 @@
 // early it comes; stdout and stderr are merged fairly; an input source is let
 // go when the program ends; what it ran leaves the process table once read;
 // and only such a program's signals are the broker's (a node child's still
-// reach its handlers through its input).
+// reach its handlers through its input). Its exit is waited for apart from
+// its output (waitProgram).
 import assert from 'node:assert/strict';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
@@ -194,6 +195,17 @@ try {
       silent.kill('SIGKILL');
       await silent.exit;
     }
+  });
+
+  await check('its exit, waited for apart from its output', async () => {
+    const host = { async ensureRuntimeReady() {}, runtimeWorkspace: ws, processes: ws.processes };
+    const sleeper = await ws.startProgram(program(['sleep', '600']), never);
+    assert.deepEqual(await programmatic.rpcWaitProgram(host, sleeper.pid, 50), { exit: null }, 'running: no exit within the wait');
+    sleeper.kill('SIGTERM');
+    assert.deepEqual(await programmatic.rpcWaitProgram(host, sleeper.pid, 5000), { exit: { code: null, signal: 'SIGTERM' } });
+    assert.deepEqual(await ws.waitProgram(sleeper.pid, 0), { code: null, signal: 'SIGTERM' }, 'and kept after its end');
+    await assert.rejects(ws.waitProgram(sleeper.pid + 100000, 0), { code: 'ESRCH' }, 'a pid it did not start');
+    await sleeper.output.cancel();
   });
 
   await check('its rows once read', async () => {

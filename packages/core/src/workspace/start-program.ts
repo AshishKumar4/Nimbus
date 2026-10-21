@@ -21,8 +21,51 @@ export interface ProgramHost {
   readonly children: ChildProcessManager;
   readonly processes: SessionProcessSupervisor;
   readonly cred: Readonly<VfsCred>;
-  /** The programs it started that have not ended. */
-  readonly started: Set<number>;
+  readonly started: StartedPrograms;
+}
+
+/** How long an ended program's exit is kept for a wait that comes late. */
+const EXIT_KEPT_MS = 60_000;
+
+/**
+ * The programs startProgram started: each one's exit, waited for apart from
+ * its output (waitProgram), kept a minute past its end.
+ */
+export class StartedPrograms {
+  private readonly programs = new Map<number, { readonly exit: Promise<ExitStatus>; endedAt: number | null }>();
+
+  add(pid: number, exit: Promise<ExitStatus>): void {
+    const record: { readonly exit: Promise<ExitStatus>; endedAt: number | null } = { exit, endedAt: null };
+    this.programs.set(pid, record);
+    const ended = (): void => { record.endedAt = Date.now(); };
+    exit.then(ended, ended);
+  }
+
+  /** Whether `pid` is one of them that has not ended. */
+  running(pid: number): boolean {
+    return this.programs.get(pid)?.endedAt === null;
+  }
+
+  /** `pid`'s exit once it comes, or null once `waitMs` pass first; ESRCH for none of them. */
+  async wait(pid: number, waitMs: number): Promise<ExitStatus | null> {
+    const record = this.programs.get(pid);
+    if (record === undefined) throw Object.assign(new Error(`waitProgram: no started program ${pid}`), { code: 'ESRCH', errno: -3 });
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const late = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), waitMs); });
+    try {
+      return await Promise.race([record.exit, late]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** Forget those that ended more than EXIT_KEPT_MS ago. */
+  prune(): void {
+    const now = Date.now();
+    for (const [pid, record] of this.programs) {
+      if (record.endedAt !== null && now - record.endedAt > EXIT_KEPT_MS) this.programs.delete(pid);
+    }
+  }
 }
 
 /**
@@ -49,6 +92,7 @@ export async function startProgram(
   const { children, processes } = host;
   // What ended a minute ago goes as a launch begins (NimbusWorkspace.runProcess's rule).
   await processes.reap();
+  host.started.prune();
   // Its parent: a process of its own, as an exec's, which ends with it.
   const parent = processes.spawn(program.argv.join(' '), [...program.argv], program.cwd, { cred: host.cred });
   let childPid: number | null = null;
@@ -88,9 +132,7 @@ export async function startProgram(
     await release();
     throw spawnError(program.argv, { code: cancel.aborted ? 'ECANCELED' : heard.spawnError });
   }
-  host.started.add(pid);
-  const unlist = (): void => { host.started.delete(pid); };
-  ended.then(unlist, unlist);
+  host.started.add(pid, ended);
   if (program.stdin !== 'written') void pumpInput(children, pid, program.stdin, ended);
   const output = outputOf(children, pid, release, () => { ended.then(forget, forget); });
   return { pid, output, exit: ended, kill: (signal) => { children.kill(pid, signal); } };
@@ -113,11 +155,11 @@ async function settleExit(
   return exit;
 }
 
-/** `stdin` into the child's input (feedProgramInput); none: ended at once. A write that fails ends it there. */
+/** `stdin` into the child's input (feedProgramInput); none: ended at once. One whose input cannot be ended is killed. */
 function pumpInput(children: ChildProcessManager, childPid: number, stdin: ReadableStream<Uint8Array> | null, ended: Promise<ExitStatus>): Promise<void> {
   if (stdin === null) return children.stdinEnd(childPid);
   const sink = { write: async (bytes: Uint8Array) => (await children.stdinWrite(childPid, bytes)).ok, end: () => children.stdinEnd(childPid) };
-  return feedProgramInput(stdin, sink, ended).catch(() => children.stdinEnd(childPid));
+  return feedProgramInput(stdin, sink, ended).catch(() => { children.kill(childPid, 'SIGKILL'); });
 }
 
 /** One read of fd 1 or 2 as it came back. */
