@@ -11,7 +11,7 @@ import { nsDescribes, nsKey } from './namespace.js';
 import { nsName, nsParent } from './namespace-lookup.js';
 import { RESIDENT_CHUNK_BYTES } from '../facet-resident-limits.js';
 import { RK_BINARY } from './tables.js';
-import { isFeedPosition, rootOf, sameEpochs } from '@nimbus-sh/core/runtime/feed-position.js';
+import { feedPointOf, isFeedPosition, ROOT_FEED, rootOf, sameEpochs } from '@nimbus-sh/core/runtime/feed-position.js';
 /**
  * The `fsReadBatch` bounds, as the filler must respect them.
  *
@@ -231,10 +231,14 @@ export function createTransport(coherence, admission, namespace, cells) {
         // One flat list of ranges across all files, so packing is a single pass and
         // a 25 MiB file and a 40-byte one are the same shape.
         const ranges = new SafeList();
+        // A file on the root's feed is dated by its revision there, which the session's reads check; any other (a
+        // mount's, its revision its own feed's, or none) by its version, as its listing's stat named it.
+        const at = coherence.cursor();
         for (let i = 0; i < files.length; i++) {
             const file = files[i];
             const parts = mathMax(1, mathCeil(file.size / RESIDENT_CHUNK_BYTES));
-            const version = file.rev === 0 ? ownValue(file, 'version') ?? ownValue(file, 'stat') ?? null : null;
+            const dated = file.rev !== 0 && (at === null || feedPointOf(at, file.path) === ROOT_FEED);
+            const version = dated ? null : ownValue(file, 'version') ?? ownValue(file, 'stat') ?? null;
             const ckey = ownValue(file, 'ckey') ?? null;
             for (let part = 0; part < parts; part++) {
                 const offset = part * RESIDENT_CHUNK_BYTES;

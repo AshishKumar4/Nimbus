@@ -2799,10 +2799,12 @@ var __nimbusResidentModule = (() => {
         files[files.length] = file;
       }
       const ranges = new SafeList();
+      const at = coherence.cursor();
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         const parts = mathMax(1, mathCeil(file.size / RESIDENT_CHUNK_BYTES));
-        const version = file.rev === 0 ? ownValue3(file, "version") ?? ownValue3(file, "stat") ?? null : null;
+        const dated = file.rev !== 0 && (at === null || feedPointOf(at, file.path) === ROOT_FEED);
+        const version = dated ? null : ownValue3(file, "version") ?? ownValue3(file, "stat") ?? null;
         const ckey = ownValue3(file, "ckey") ?? null;
         for (let part = 0; part < parts; part++) {
           const offset = part * RESIDENT_CHUNK_BYTES;
@@ -2826,14 +2828,14 @@ var __nimbusResidentModule = (() => {
       const paths = new SafeList();
       for (let i = 0; i < files.length; i++) paths[paths.length] = files[i].path;
       const fill = cells.beginFill(paths);
-      for (let at = 0; at < ranges.length; ) {
+      for (let at2 = 0; at2 < ranges.length; ) {
         const batch = new SafeList();
         let bytes = 0;
-        while (at < ranges.length && batch.length < BATCH_PATHS && (batch.length === 0 || bytes + ranges[at].length <= BATCH_BYTES)) {
-          const range = ranges[at];
+        while (at2 < ranges.length && batch.length < BATCH_PATHS && (batch.length === 0 || bytes + ranges[at2].length <= BATCH_BYTES)) {
+          const range = ranges[at2];
           bytes += range.length;
           batch[batch.length] = range;
-          at++;
+          at2++;
         }
         if (!await admission.ensureRoom(bytes + batch.length * RESIDENT_ROW_BYTES)) {
           for (let i = 0; i < batch.length; i++) failedPaths.add(batch[i].path);

@@ -1207,7 +1207,7 @@ export function residentFilesystem(session, resident, delegation) {
                 return after(walkFor(path, flags.followSymlinks !== false), (walk) => {
                     if (walk === DELEGATE)
                         return DELEGATE;
-                    const there = entryAt(walk.key);
+                    const there = ownEntryAt(walk.key);
                     if (there === undefined || there?.type === 'directory')
                         return DELEGATE;
                     const opened = holder.provisional.open(walk.key, pathOf(path), flags, there, true);
@@ -1599,11 +1599,11 @@ export function residentFilesystem(session, resident, delegation) {
             const walked = walkOnce('', next, true);
             if (walked === null)
                 throw fsError('ELOOP', 'mkdir', path);
-            const entry = typeof walked === 'string' ? entryAt(walked) : undefined;
+            const entry = typeof walked === 'string' ? ownEntryAt(walked) : undefined;
             if (entry === undefined)
                 throw NOT_NOW;
             if (entry === null) {
-                const parent = entryAt(parentKey(walked));
+                const parent = ownEntryAt(parentKey(walked));
                 // Made where the view cannot say it may be made (another filesystem, a mode it would have to judge): the session's.
                 if (!parent || parent.type !== 'directory' || parent.dev !== store.device)
                     throw NOT_NOW;

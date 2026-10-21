@@ -174,7 +174,8 @@ export function makeGitFsmonitor(state) {
                     if (entry.stat?.type === 'directory' && !entry.structural && !entry.subtree)
                         continue;
                     const name = entry.structural || entry.subtree || entry.stat?.type === 'directory' ? `${relative}/` : relative;
-                    if (paths.has(name))
+                    // A dirty mount (reported whole) covers what its own feed names under it.
+                    if (paths.has(name) || dirtyMounts.some((point) => `${prefix}${name}`.startsWith(`${point}/`)))
                         continue;
                     size += utf8Length(name) + 1;
                     if (size > MAX_REPLY_BYTES)

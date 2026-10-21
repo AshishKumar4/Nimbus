@@ -62,7 +62,8 @@ const calls = [];
  */
 const remote = (vfs, { dirStats = true } = {}) => new Proxy(vfs, {
   get(target, key) {
-    if (key === 'sync') return undefined;
+    // A remote backend has no synchronous face, its change feed (VfsChanges) among them.
+    if (key === 'sync' || key === 'changes') return undefined;
     const value = target[key];
     if (typeof value !== 'function') return value;
     return async (...args) => {

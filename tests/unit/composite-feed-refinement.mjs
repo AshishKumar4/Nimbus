@@ -29,7 +29,9 @@ function backend(changes, entries) {
     const harness = createSqliteVfsTestHarness();
     files = sqliteFiles(new SqliteVFS(harness.sql, harness.ctx), CRED_KERNEL);
   } else {
-    files = new MemoryVFS();
+    // The model's unfed backend: a tree stating no change model (VFS.changes), which a listing walks.
+    const memory = new MemoryVFS();
+    files = new Proxy(memory, { get: (target, key) => (key === 'changes' ? undefined : Reflect.get(target, key, target)) });
   }
   for (const [path, value] of Object.entries(entries).sort(([a], [b]) => (a < b ? -1 : 1))) write(files, path, value);
   return files;
