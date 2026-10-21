@@ -148,7 +148,8 @@ export function recentFacetCalls(ctx) {
     }
     return calls;
 }
-function noteFacetCall(ctx, tag, loadMs, began) {
+/** A facet call `ctx` made, which `began` then, cold when its worker's code took `loadMs` to read. */
+export function noteFacetCall(ctx, tag, loadMs, began) {
     let ring = callsByCtx.get(ctx);
     if (ring === undefined) {
         ring = { slots: Array.from({ length: FACET_CALLS_KEPT }, () => ({ tag: '', cold: false, loadMs: 0, callMs: 0, at: 0 })), next: 0, count: 0 };
@@ -233,6 +234,7 @@ export class IsolatePool {
     facetKind;
     defaultRetries;
     tag;
+    callsOf;
     slotGenerations = new Map();
     /**
      * Per-slot execution ownership: the tail of each slot's in-flight
@@ -308,6 +310,7 @@ export class IsolatePool {
         this.defaultTimeoutMs = opts.timeoutMs ?? facetCallDeadlineMs(this.facetKind) ?? 0;
         this.defaultRetries = Math.max(0, opts.retries ?? 0);
         this.tag = opts.tag ?? 'facet';
+        this.callsOf = opts.callsOf ?? ctx;
         this.writerPid = opts.omitSupervisor || opts.supervisorPid === undefined ? undefined : opts.supervisorPid;
         this.watchName = `facet ${this.tag}${this.writerPid === undefined ? '' : ` pid ${this.writerPid}`}`;
         this.preamble = opts.preamble;
@@ -619,7 +622,7 @@ export class IsolatePool {
                     // Direct property call, awaited by this frame — bracketed, never
                     // wrapped. See beginLoaderFetch for the measured DO-poisoning hazard.
                     const answer = await invoke(entrypoint, attempt);
-                    noteFacetCall(this.ctx, this.tag, loadMs, began);
+                    noteFacetCall(this.callsOf, this.tag, loadMs, began);
                     return answer;
                 }
                 catch (err) {

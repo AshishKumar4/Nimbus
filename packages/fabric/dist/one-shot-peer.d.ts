@@ -64,6 +64,7 @@ export declare function oneShotPoolOptions(spec: OneShotPoolSpec, network: Works
 declare function answerSchema<R>(): z.ZodDiscriminatedUnion<[z.ZodObject<{
     ok: z.ZodLiteral<true>;
     value: z.ZodCustom<R, R>;
+    loadMs: z.ZodNullable<z.ZodNumber>;
 }, z.core.$strip>, z.ZodObject<{
     ok: z.ZodLiteral<false>;
     message: z.ZodString;
@@ -75,10 +76,9 @@ declare function answerSchema<R>(): z.ZodDiscriminatedUnion<[z.ZodObject<{
 /** What /api/_diag/session shows of a session's one-shots: where each of the last ran, and its peer. */
 export interface OneShotPlacementCall {
     tag: string;
-    /** Its worker, as warmth knows it (warmthOf): '' for one only the peer object's warmth decides. */
+    /** Its worker, as warmth knows it (workerOf): '' for one only the peer object's warmth decides. */
     worker: string;
     host: 'session' | 'peer';
-    ms: number;
     at: number;
 }
 /** The placement of the one-shots of the Durable Object whose state is `ctx`, its peers in `env`'s host namespace. */

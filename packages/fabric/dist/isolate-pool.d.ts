@@ -98,6 +98,12 @@ export interface IsolatePoolOptions {
      */
     network: WorkspaceNetwork;
     /**
+     * Whose record of facet calls (recentFacetCalls) this pool's calls are
+     * noted in: its Durable Object's by default. A session's peer notes a call
+     * it runs for the session apart, and the session notes it in its own.
+     */
+    callsOf?: object;
+    /**
      * Baked into the loader id. Two pools sharing tag, preamble, wasm and
      * supervisor but differing in `scope` never reuse each other's warm
      * workers: an interpreter scope that ENDS (REPL close, Ctrl-C reset)
@@ -287,6 +293,8 @@ export interface FacetCallTime {
 }
 /** The last facet calls `ctx`'s pools made, oldest first: what a launch's phases cost (`/api/_diag/session`). */
 export declare function recentFacetCalls(ctx: object): FacetCallTime[];
+/** A facet call `ctx` made, which `began` then, cold when its worker's code took `loadMs` to read. */
+export declare function noteFacetCall(ctx: object, tag: string, loadMs: number | null, began: number): void;
 /**
  * Nimbus-scoped parallel dispatch over `env.LOADER`. Tasks are pure
  * functions whose last argument is an `env` object containing the
@@ -316,6 +324,7 @@ export declare class IsolatePool {
     private readonly facetKind;
     private readonly defaultRetries;
     private readonly tag;
+    private readonly callsOf;
     private readonly slotGenerations;
     /**
      * Per-slot execution ownership: the tail of each slot's in-flight
