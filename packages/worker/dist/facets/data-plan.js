@@ -49,7 +49,6 @@ import { packageJsonText, parseResolvablePackageJson, resolvePackageEntry } from
 import { resolveFile } from '@nimbus-sh/core/runtime/require-resolution.js';
 import { resolveDeferredImport } from '@nimbus-sh/core/runtime/require-resolver.js';
 import { parseSheet, sheetSources, sheetStringImports } from '@nimbus-sh/core/runtime/css-syntax.js';
-import braces from 'braces';
 import { rootClampedSegments } from '@nimbus-sh/platform/lexical-path.js';
 /** The package whose scanner reads a stylesheet's sources synchronously (Tailwind v4). */
 const OXIDE_PACKAGE = 'node_modules/@tailwindcss/oxide';
@@ -720,6 +719,73 @@ export function carriesOxide(closure) {
  * misses, as any file a launch did not plan.
  */
 export const STYLESHEET_SOURCE_MAX_FILES = 5_000;
+/** A range in a brace group (`{1..9}`, `{a..z}`, with a step): it spells digits, signs or letters, never a dot. */
+const BRACE_RANGE = /\{(?:[+-]?\d+\.\.[+-]?\d+|[A-Za-z]\.\.[A-Za-z])(?:\.\.[+-]?\d+)?\}/y;
+/**
+ * Where an `@source` path can reach, without expanding it: the part before
+ * its first glob character, up to its last `/` (the path itself when it has
+ * none), then a directory up for each `..` its brace alternatives could
+ * spell. Linear in the path, however it nests or whatever range it names: an
+ * agent writes the stylesheets, and a line of CSS must not cost an isolate.
+ * A superset of every path it matches: what it misses Tailwind's scanner
+ * learns by its misses.
+ */
+export function sourceReach(path) {
+    const first = path.search(GLOB_SPECIAL);
+    if (first < 0)
+        return path;
+    const slash = path.lastIndexOf('/', first);
+    const prefix = slash < 0 ? '.' : slash === 0 ? '/' : path.slice(0, slash);
+    const climbs = dotDotBound(path, slash + 1);
+    return climbs === 0 ? prefix : `${prefix}${'/..'.repeat(climbs)}`;
+}
+/**
+ * How many `..` segments any expansion of `path` from `from` on could spell:
+ * each needs two dots, and a character outside every brace group is in every
+ * expansion, so it parts the dots before it from those after. Dots inside a
+ * group may meet whatever its alternatives drop; a range spells none.
+ */
+function dotDotBound(path, from) {
+    let depth = 0;
+    let dots = 0;
+    let climbs = 0;
+    const part = () => {
+        climbs += dots >> 1;
+        dots = 0;
+    };
+    for (let i = from; i < path.length; i++) {
+        const c = path[i];
+        if (c === '\\') {
+            i++;
+            if (path[i] === '.')
+                dots++;
+            else if (depth === 0)
+                part();
+            continue;
+        }
+        if (c === '{') {
+            BRACE_RANGE.lastIndex = i;
+            if (BRACE_RANGE.test(path)) {
+                i = BRACE_RANGE.lastIndex - 1;
+                if (depth === 0)
+                    part();
+                continue;
+            }
+            depth++;
+            continue;
+        }
+        if (c === '}' && depth > 0) {
+            depth--;
+            continue;
+        }
+        if (c === '.')
+            dots++;
+        else if (depth === 0)
+            part();
+    }
+    part();
+    return climbs;
+}
 /** Whether `at` is where `dir` or a directory it is below is. */
 function below(dir, at) {
     for (let d = dir; d !== null; d = d.up)
@@ -731,8 +797,8 @@ function below(dir, at) {
  * The stylesheet-source rule, for a resident's plan and a one-shot's alike:
  * from `sheets`, through the `@import`s Tailwind inlines (a path's, not a
  * package's), each sheet where its links lead and read once, every `@source`
- * outside the working tree `cwd`, each brace alternative's directory prefix
- * taken whole, through its links; and the files under those roots, walked a
+ * outside the working tree `cwd`, where it can reach (sourceReach, its
+ * braces never expanded), through its links; and the files under those roots, walked a
  * directory at a time with the project rule's exclusions, which are of a path
  * as it is named below its root, whatever a link makes of it. The roots it
  * returns are what the facet's barriers push: those, and wherever a link
@@ -769,16 +835,11 @@ export async function planStylesheetSources(source, input) {
         for (const { path, negated } of sheetSources(parsed)) {
             if (negated)
                 continue;
-            // Quotes are filename characters to oxide, and a range of any length is a set of paths.
-            for (const alternative of braces(path, { expand: true, keepQuotes: true, rangeLimit: Infinity })) {
-                const names = alternative.split('/');
-                const glob = names.findIndex((name) => GLOB_SPECIAL.test(name));
-                const named = resolve(glob < 0 ? alternative : names.slice(0, glob).join('/') || (alternative.startsWith('/') ? '/' : '.'));
-                const root = (await throughLinks(source, named)) ?? named;
-                if (cwd === '' || root === cwd || root.startsWith(cwd + '/') || roots.includes(root))
-                    continue;
-                roots.push(root);
-            }
+            const named = resolve(sourceReach(path));
+            const root = (await throughLinks(source, named)) ?? named;
+            if (cwd === '' || root === cwd || root.startsWith(cwd + '/') || roots.includes(root))
+                continue;
+            roots.push(root);
         }
     }
     const files = new Map();
