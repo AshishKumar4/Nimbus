@@ -18,6 +18,7 @@ import { warmFacetScope } from '@nimbus-sh/core/runtime/warm-facets.js';
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { holdThreadWatch } from '@nimbus-sh/fabric/thread-stalls.js';
+import { hostNamespaceBinding } from '@nimbus-sh/fabric/host-dispatch.js';
 /**
  * The transforms and builds a host's own Durable Object runs outside the
  * session, composed the way the supervisor's are: transforms in the object's
@@ -44,7 +45,7 @@ function d1Images(images) {
         }]));
 }
 function d1Peer(env, name) {
-    const sessions = env.NIMBUS_SESSION;
+    const sessions = hostNamespaceBinding(env, 'd1 one-shot peer');
     return sessions.get(sessions.idFromName(name));
 }
 /**
