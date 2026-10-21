@@ -800,7 +800,7 @@ export class SessionProcessSupervisor {
         box.handed = null;
         const queued = box.queued.shift();
         if (queued !== undefined) {
-            box.handed = queued;
+            box.handed = { signal: queued };
             return { data: '', ended: false, signal: queued };
         }
         const withdraw = new AbortController();
@@ -811,10 +811,10 @@ export class SessionProcessSupervisor {
             // A signal that came with it is the next wait's.
             wait.cancel();
             const late = await wait.signal;
-            if (late !== null) {
-                // Back to the queue, the queue's alone: not also the one it was given.
-                if (box.handed === late)
-                    box.handed = null;
+            // Back to the queue, unless a park has given it back already.
+            const given = wait.given();
+            if (late !== null && given !== null && box.handed === given) {
+                box.handed = null;
                 box.queued.unshift(late);
             }
             return first.packet;
@@ -902,7 +902,7 @@ export class SessionProcessSupervisor {
             return;
         box.parked = true;
         if (box.handed !== null) {
-            box.queued.unshift(box.handed);
+            box.queued.unshift(box.handed.signal);
             box.handed = null;
         }
         box.taker?.(null);
@@ -928,25 +928,29 @@ export class SessionProcessSupervisor {
     waitSignal(box, waitMs) {
         const queued = box.queued.shift();
         if (queued !== undefined) {
-            box.handed = queued;
-            return { signal: Promise.resolve(queued), cancel: () => { } };
+            const handed = { signal: queued };
+            box.handed = handed;
+            return { signal: Promise.resolve(queued), cancel: () => { }, given: () => handed };
         }
         box.taker?.(null);
         let take = () => { };
+        let handed = null;
         const signal = new Promise((resolve) => {
             const timer = setTimeout(() => take(null), Math.max(0, Math.min(waitMs, 5000)));
             take = (sent) => {
                 clearTimeout(timer);
                 if (box.taker === take)
                     box.taker = null;
-                if (sent !== null)
-                    box.handed = sent;
+                if (sent !== null) {
+                    handed = { signal: sent };
+                    box.handed = handed;
+                }
                 resolve(sent);
             };
             box.taker = take;
         });
         return { signal, cancel: () => { if (box.taker === take)
-                take(null); } };
+                take(null); }, given: () => handed };
     }
     /**
      * `signal` queued for `pid`'s program if it takes its own and catches it

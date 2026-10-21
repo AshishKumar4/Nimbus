@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "482da9721d927f38baececb8d8f85795a35c8a6caa5cab423947818ec37f5a40",
+  "fingerprint": "954f76eb7abf78c89e6ec47bcbe24ac3326a944a9fd64d97c5892b0d70b8561b",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -734,8 +734,8 @@
     "packages/core/dist/runtime/server-launch.d.ts.map": "6675002aa11b8edecddbf293b1948c134c513bb964ad62c544ff29313efc1309",
     "packages/core/dist/runtime/server-launch.js": "2ddb08cd839f8a82fde07b918dcb8292d985cdd72f43abe703f6a3498eda68da",
     "packages/core/dist/runtime/session-process-supervisor.d.ts": "bc70b6e40572fc1c3feec44a84bc28613080a737e459612b292788d8fd938b6d",
-    "packages/core/dist/runtime/session-process-supervisor.d.ts.map": "2daf778950cbb05796cbfee668d4dca52e8915dc9149d37557c4aa42c0d64d61",
-    "packages/core/dist/runtime/session-process-supervisor.js": "2cb1aaef1deec4e810a3141821bfbba71ce076fc0e43b636a8055ca6990c0a96",
+    "packages/core/dist/runtime/session-process-supervisor.d.ts.map": "aac1df70479cb4a1df76781b15827e105985e414c360c2167e907b5f0b581bb3",
+    "packages/core/dist/runtime/session-process-supervisor.js": "6c372a10358a2927c06c4adea3669e693ebda15ba17c3e420f45499ac9852f61",
     "packages/core/dist/runtime/session-protocol.d.ts": "50814dcd18070ba22041612e77c1b5f93dcc986ce90a4f5fd07008b96297a31f",
     "packages/core/dist/runtime/session-protocol.d.ts.map": "bb1cb1b544909e2232aa8d78acf298aeb4158846e60ec59c1ff755ae998edbc2",
     "packages/core/dist/runtime/session-protocol.js": "80c29eb30d29a4a532c6180b61a04308de8747e1dff714c91f7cfa27970bef2b",
@@ -1688,7 +1688,7 @@
     "packages/core/src/runtime/runtime-store.ts": "1b1c366158a3e1c7d925502999e509e5d1cacf6ee5354e36240bc667d4630a2d",
     "packages/core/src/runtime/script-path.ts": "1fcec0ff75188880025c6822f9325b82521dd3c204228b26872630a33599115c",
     "packages/core/src/runtime/server-launch.ts": "31edd6192c133c1cbdf21f5570f9e9ffe40ee5e38e35f9e892998495e0375017",
-    "packages/core/src/runtime/session-process-supervisor.ts": "8639df2fa4322fe6d7ee85caef2bdce1dae1e8baa2591e04babd2922579a1863",
+    "packages/core/src/runtime/session-process-supervisor.ts": "5f233e30cece02c7704fb4f83c3f2bab318242afaf8160f77175a989cbfb9bba",
     "packages/core/src/runtime/session-protocol.ts": "597579c9064d146f1371f8f9e85d2b48a5e0edd32a08e7f1beea64c517bfea15",
     "packages/core/src/runtime/sqlite-runtime-fs-bridge.ts": "9a3cde310f270cce11c657b8961880427566b74a40afc3faf028e53c3a4a51e7",
     "packages/core/src/runtime/static-fs-refs.ts": "d9b74d64474a71156e71bf301a955e2666c04102abb73d18ba01ebcd25f77e1a",
