@@ -27,18 +27,33 @@ export interface ProgramHost {
 /** How long an ended program's exit is kept for a wait that comes late. */
 const EXIT_KEPT_MS = 60_000;
 
+/** How a started program ended: its exit, or the failure to learn it. */
+type ProgramOutcome = { readonly status: ExitStatus } | { readonly error: unknown };
+
+interface StartedRecord {
+  outcome: ProgramOutcome | null;
+  endedAt: number | null;
+  /** Waits for its end; one whose time runs out leaves at once. */
+  readonly waiters: Set<(outcome: ProgramOutcome) => void>;
+}
+
 /**
  * The programs startProgram started: each one's exit, waited for apart from
  * its output (waitProgram), kept a minute past its end.
  */
 export class StartedPrograms {
-  private readonly programs = new Map<number, { readonly exit: Promise<ExitStatus>; endedAt: number | null }>();
+  private readonly programs = new Map<number, StartedRecord>();
 
   add(pid: number, exit: Promise<ExitStatus>): void {
-    const record: { readonly exit: Promise<ExitStatus>; endedAt: number | null } = { exit, endedAt: null };
+    const record: StartedRecord = { outcome: null, endedAt: null, waiters: new Set() };
     this.programs.set(pid, record);
-    const ended = (): void => { record.endedAt = Date.now(); };
-    exit.then(ended, ended);
+    const ended = (outcome: ProgramOutcome): void => {
+      record.outcome = outcome;
+      record.endedAt = Date.now();
+      for (const waiter of record.waiters) waiter(outcome);
+      record.waiters.clear();
+    };
+    exit.then((status) => ended({ status }), (error: unknown) => ended({ error }));
   }
 
   /** Whether `pid` is one of them that has not ended. */
@@ -50,13 +65,20 @@ export class StartedPrograms {
   async wait(pid: number, waitMs: number): Promise<ExitStatus | null> {
     const record = this.programs.get(pid);
     if (record === undefined) throw Object.assign(new Error(`waitProgram: no started program ${pid}`), { code: 'ESRCH', errno: -3 });
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const late = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), waitMs); });
-    try {
-      return await Promise.race([record.exit, late]);
-    } finally {
-      clearTimeout(timer);
-    }
+    const outcome = record.outcome ?? await new Promise<ProgramOutcome | null>((resolve) => {
+      const waiter = (ended: ProgramOutcome): void => {
+        clearTimeout(timer);
+        resolve(ended);
+      };
+      const timer = setTimeout(() => {
+        record.waiters.delete(waiter);
+        resolve(null);
+      }, waitMs);
+      record.waiters.add(waiter);
+    });
+    if (outcome === null) return null;
+    if ('error' in outcome) throw outcome.error;
+    return outcome.status;
   }
 
   /** Forget those that ended more than EXIT_KEPT_MS ago. */

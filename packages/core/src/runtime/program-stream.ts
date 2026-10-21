@@ -172,7 +172,11 @@ export async function decodeProgramStream(
       if (status !== null) settle.resolve(status);
     }
   };
-  waiting().catch((error: unknown) => settle.reject(error));
+  // A wait that fails leaves its end unheard: the program is killed rather than left running unseen.
+  waiting().catch((error: unknown) => {
+    if (!settled) control.signal(pid, 'SIGKILL');
+    settle.reject(error);
+  });
   // Read ahead of its reader up to a pipe's worth, as a pipe holds what a program wrote.
   const output = new ReadableStream<ExecChunk>({
     async pull(controller) {

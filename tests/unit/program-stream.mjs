@@ -9,12 +9,16 @@
 // so it is seen with any of its output unread, a killed program's too. Its
 // input is fed by one feeder on every transport: a source that fails ends
 // the input, and a write that fails ends it too, or says it could not.
+// A wait that fails kills the program rather than leave it running unseen.
 // Round-tripped here over a workspace's startProgram, the frames split at
-// every byte boundary on the way.
+// every byte boundary on the way, and through the SDK over the remote API.
 import assert from 'node:assert/strict';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { decodeProgramStream, encodeProgramStream } from '../../packages/core/src/runtime/program-stream.ts';
 import * as programStart from '../../packages/core/src/runtime/program-start.ts';
+import * as programmatic from '../../packages/worker/src/session/programmatic.ts';
+import { handleNimbusRemoteApi } from '../../packages/worker/src/router/remote-api.ts';
+import { Nimbus } from '../../packages/sdk/src/index.ts';
 import { hostSqlite } from './lib/host-sqlite.mjs';
 
 const { sql, transactions } = await hostSqlite();
@@ -185,6 +189,51 @@ try {
       process.off('unhandledRejection', note);
     }
     assert.deepEqual([kills, outputCancelled, unhandled.map(String)], [['SIGKILL'], true, []]);
+  });
+
+  await check('a wait that fails', async () => {
+    const sent = [];
+    const running = encodeProgramStream(async () => ({ pid: 5, output: new ReadableStream({ pull() { return new Promise(() => {}); } }), exit: new Promise(() => {}), kill() {} }));
+    const started = await decodeProgramStream(running, { signal: (pid, signal) => sent.push([pid, signal]), wait: async () => { throw new Error('wait failed'); } });
+    await assert.rejects(within(started.exit, 5000), /wait failed/);
+    assert.deepEqual(sent, [[5, 'SIGKILL']], 'its program is killed, not left running unseen');
+    await started.output.cancel();
+  });
+
+  await check('the SDK across the remote API', async () => {
+    const host = { async ensureRuntimeReady() {}, runtimeWorkspace: ws, processes: ws.processes };
+    const waits = [];
+    const session = {
+      _rpcReady: async () => ({ ok: true, preinstalled: [] }),
+      _rpcStartProgram: (argv, options) => programmatic.rpcStartProgram(host, argv, options),
+      _rpcWaitProgram: (pid, waitMs) => { waits.push(waitMs); return programmatic.rpcWaitProgram(host, pid, waitMs); },
+      _rpcSignalProcess: (pid, signal) => programmatic.rpcSignalProcess(host, pid, signal),
+      _rpcWriteProcessInput: (pid, data) => programmatic.rpcWriteProcessInput(host, pid, data),
+      _rpcWriteProcessInputStream: (pid, data) => programmatic.rpcWriteProcessInputStream(host, pid, data),
+      _rpcEndProcessInput: (pid) => programmatic.rpcEndProcessInput(host, pid),
+    };
+    const env = { NIMBUS_SESSION: { idFromName: (name) => ({ name }), get: () => session } };
+    const box = Nimbus.connect({
+      endpoint: 'https://nimbus.test',
+      fetch: async (url, init) => (await handleNimbusRemoteApi(new Request(url, init), env, { remote: { enabled: true, allowLegacy: true } }))
+        ?? new Response('not found', { status: 404 }),
+    }).sandbox('remote-start');
+    // Bytes in through writeProcessInput, every value, then its end.
+    const input = new Uint8Array(256).map((_, i) => i);
+    const cat = await box.startProgram(['cat'], { stdin: new ReadableStream({ start(c) { c.enqueue(input); c.close(); } }) });
+    const echoed = [];
+    for await (const chunk of cat.output) echoed.push(...chunk.data);
+    assert.deepEqual(echoed, [...input], 'its input, byte for byte');
+    assert.deepEqual(await within(cat.exit, 5000), { code: 0, signal: null });
+    // Its exit is a long wait, not a stream of quick ones.
+    waits.length = 0;
+    const sleeper = await box.startProgram(['sleep', '600']);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const polls = waits.length;
+    sleeper.kill('SIGKILL');
+    assert.deepEqual(await within(sleeper.exit, 5000), { code: null, signal: 'SIGKILL' });
+    await sleeper.output.cancel();
+    assert.ok(polls <= 2 && waits.every((ms) => ms === undefined), `one long wait at a time, its bound the session's: ${polls} waits, ${JSON.stringify(waits.slice(0, 5))}`);
   });
 
   await check('a write that fails', async () => {
