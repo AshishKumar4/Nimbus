@@ -5,6 +5,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Changed: a one-shot (python, ruby, clang, tsc, git.wasm, a WASI program) runs on the session's peer, another Durable Object, when the peer is warm for it. A one-shot's worker used to run on the session's own thread, so while it computed the session answered nothing: during a python run importing ten stdlib modules, a second terminal's `echo`, a request to a running server and a file save each waited 3.1-3.4 s. With the run on the peer they waited 0.04-0.12 s.
+  - The peer is warm for a worker when it answered a call of it within 135 s, the longest idle gap after which every measured peer was still warm. A call that finds it cold runs in the session as before, and the peer is warmed beside it for the next one.
+  - The run is the session's process wherever it runs: the same pid, credential, filesystem rules, environment and output. The peer stores nothing of it.
+  - A peer lost after it took a call ends the run with `the session's one-shot host was lost while it ran: <cause>`, and the run is not repeated, since it may have done things. A call the peer refused before taking it runs in the session.
+  - `/api/_diag/session` lists, under `launch.oneShots`, the session's peer, the workers it is warm for, and where each of the last 16 one-shots ran.
+  - Bash's facet, which keeps the shell's state between calls, stays in the session. Node one-shots are not moved yet.
+
 - Added: a mount can run programs on the machine its files live on. `filesystem.vfs.mount(point, source, { exec })` takes an `ExecDelegate` (`start(program, cancel)`, `locate(name, cwd, env)`). Every program started with its cwd under that mount is placed there: the shell's, an execvp from find, xargs, env or sudo, and a node child's. Each start is one call, `{ argv, env, cwd, stdin }`, made as execvp makes it, never as shell text; its exit is waitpid's code or signal.
   - What the shell does itself stays in the session: builtins, functions, pipes and expansions. So `cd /computer/app && npm test | tail -5` starts two programs on the computer, joined by the session's pipe.
   - Refusals follow bash: a start the machine refuses `ENOENT` is `name: command not found` (127); any other refusal, or an absent mount, is `name: <reason>` (126); Ctrl-C reaches the program as SIGINT (130).
