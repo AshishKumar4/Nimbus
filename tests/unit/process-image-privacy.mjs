@@ -127,10 +127,12 @@ function userSession() {
   kernel.writeFile(booted, WASM, { mode: 0o644 });
   kernel.writeFile(orphan, WASM, { mode: 0o644 });
   for (const [owner, cred] of [['app:one', USER], ['app:two', OTHER]]) {
+    // Started by a process of its uid, whose credential it takes.
+    const invoker = gen2.processes.spawn('sh', ['sh'], '/home/user/app', { cred });
     await gen2.manager.spawnWorker('export class NimbusProcess {}', owner, '/home/user/app', {
       vfsWasmModules: { 'note.wasm': `/${booted}` },
       startArgs: { userCode: `print("${SECRET}")` },
-      identity: { argv: [owner], cred },
+      invokerPid: invoker.pid,
       durable: { owner },
     });
   }

@@ -130,9 +130,11 @@ function jsonOrNull(text: string): unknown {
 }
 
 type ApplicationImage = z.infer<typeof ApplicationImageSchema>;
+/** An application as a rewrite leaves it: its start payload any JSON it read back. */
+type RewrittenApplication = Omit<ApplicationImage, 'startArgs'> & { startArgs?: unknown };
 
 /** `application`, written again as `edit` changes it; answers the new application digest. */
-async function rewriteApplication(vfs: SqliteVFS, application: string, edit: (image: ApplicationImage) => ApplicationImage): Promise<string> {
+async function rewriteApplication(vfs: SqliteVFS, application: string, edit: (image: ApplicationImage) => RewrittenApplication): Promise<string> {
   const kernel = vfs.as(CRED_KERNEL);
   const bytes = await readContentBlob({ readFile: (path: string) => kernel.readFile(path) }, imagePath(application), application);
   const image = edit(ApplicationImageSchema.parse(JSON.parse(new TextDecoder().decode(bytes))));
