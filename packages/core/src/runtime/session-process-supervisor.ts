@@ -88,7 +88,7 @@ const NOTHING_REAPED: Promise<number> = Promise.resolve(0);
 
 /** A process whose program takes its own signals: those it catches, those sent and not taken, and its one wait for the next. */
 interface SignalBox {
-  readonly catches: ReadonlySet<ProcessSignalName>;
+  catches: ReadonlySet<ProcessSignalName>;
   readonly queued: ProcessSignalName[];
   taker: ((signal: ProcessSignalName | null) => void) | null;
 }
@@ -910,6 +910,21 @@ export class SessionProcessSupervisor implements ProcessOutput {
       unsubscribe();
       release();
     };
+  }
+
+  /**
+   * `pid`'s program says which signals it catches now, as a Node process's
+   * listeners come and go: the offer takeSignals makes, made, or its
+   * catches changed (none: each signal takes its default action again).
+   * Until it ends, each it catches is queued for it (nextSignal).
+   */
+  catchSignals(pid: number, catches: readonly ProcessSignalName[]): void {
+    const box = this.signalBoxes.get(pid);
+    if (box === undefined) {
+      if (catches.length > 0) this.takeSignals(pid, catches);
+      return;
+    }
+    box.catches = new Set(catches.filter((signal) => signal !== 'SIGKILL'));
   }
 
   /**
