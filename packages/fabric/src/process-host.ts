@@ -93,6 +93,7 @@ import {
   HOSTED_WATCH_HEADER,
   HOSTED_RESIDENCY_HEADER,
   HOSTED_FAILURE_HEADER,
+  HOSTED_NOT_ADMITTED_HEADER,
   headerPairs,
   isolateToken,
   type HostedHttpRequest,
@@ -457,7 +458,9 @@ class PeerProcessHost implements ProcessHost {
         // Sent to the peer at once: a loss its coordinator sees first fails the
         // request by the loss's name, though the peer may have refused it
         // unsent. Only the peer's own answer says that (ProcessNotAdmitted,
-        // typed across its reply), when it comes first.
+        // typed across its reply), when it comes first, and only for a request
+        // whose body did not go to the peer with it: one that did cannot be
+        // sent again, so its refusal is the loss.
         handleHttpRequest: (request: Request, scope: ResponseScope) => loss.request(async (sendingToPeer) => {
           const lease = observation.acquire();
           sendingToPeer();
@@ -474,7 +477,7 @@ class PeerProcessHost implements ProcessHost {
             if (!leafReceived(error)) sent.unsent(sending);
             else if (sending.abandoned) sent.received(sending);
             lease.release();
-            throw error;
+            throw error instanceof ProcessNotAdmitted && request.body !== null ? new ProcessHostLost(error.cause) : error;
           }
         }),
         // An upgrade hands its socket to the caller at the handshake.
@@ -771,6 +774,7 @@ async function routeWebSocketThroughPeer(
 }
 
 async function peerFetchAnswer(response: Response, capability: string): Promise<Response> {
-  if (response.headers.get(HOSTED_FAILURE_HEADER) === capability) throw new ProcessHostLost(await response.text());
-  return response;
+  if (response.headers.get(HOSTED_FAILURE_HEADER) !== capability) return response;
+  const notAdmitted = response.headers.get(HOSTED_NOT_ADMITTED_HEADER);
+  throw notAdmitted === null ? new ProcessHostLost(await response.text()) : new ProcessNotAdmitted(Number(notAdmitted), await response.text());
 }

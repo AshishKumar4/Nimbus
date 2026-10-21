@@ -17,7 +17,8 @@ published independently in the `@nimbus-sh` npm scope.
   reads ended, so the embedder can run it once more. A request already in
   flight when a host is lost still fails with the loss, since it may have
   run. On the peer process host, a request its coordinator's watch finds
-  lost first fails the same way, though the peer may have refused it unsent.
+  lost first fails the same way, though the peer may have refused it
+  unsent, and so does one whose body went to the peer before it was refused.
   The first request after a process sits idle pays one round trip to its
   host before it is sent.
 

@@ -525,7 +525,7 @@ export async function routeToSessionPort(
     : self.portRegistry.routeCapabilityRequest(port, capability, request, innerPath);
   // A request the process refused unsent ran nowhere: its server is started
   // again, and it goes there, once (rerunNotAdmitted).
-  const ensure = self.ensureDurableAppOnPort;
+  const ensure = self.ensureDurableAppOnPort?.bind(self);
   let proxied: Response | null;
   try {
     proxied = await rerunNotAdmitted(route, ensure === undefined ? undefined : async () => {

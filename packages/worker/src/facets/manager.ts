@@ -6126,7 +6126,7 @@ export class FacetManager {
     }
     if (owed) {
       this.hooks.notify?.(`\x1b[2m[nimbus: the platform replaced the host of "${row.command}" — starting it again for the requests it was sent]\x1b[0m\r\n`);
-      await this.launchJournal.drive(key, row, { kind: 'host-reset' });
+      await this.launchJournal.driveOwed(key, row, { kind: 'host-reset' });
       return;
     }
     const delayMs = RESTART_BACKOFF_BASE_MS * 2 ** row.attempt;

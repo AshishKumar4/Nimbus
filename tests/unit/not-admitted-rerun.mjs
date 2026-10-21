@@ -8,9 +8,11 @@
 // ProcessNotAdmitted, only once the pid reads exited. Through the session's
 // manager and its port route:
 //
-//   1. a request to the process's port runs again, once, on a new process
-//      the session starts for it at once (its restart policy 'never'), and
-//      answers; the replacement never ran it as the lost process;
+//   1. a request to the process's port, a POST with its body, runs again,
+//      once, on a new process the session starts for it at once (its restart
+//      policy 'never'), and answers; the replacement never ran it as the lost
+//      process. The new process's own idle host replaced in turn, the next
+//      request runs again too: an owed run is not the recovery budget's;
 //   2. a request the embedder makes through the process's own facet is
 //      refused typed (ProcessNotAdmitted), its pid already exited, for the
 //      embedder to run again.
@@ -35,12 +37,13 @@ const evaluate = () => {
   return {
     async startProcess() { instance.starts++; return { ok: true }; },
     async handleHttpRequest(request) {
-      instance.answered.push({ path: new URL(request.url).pathname, starts: instance.starts });
+      const body = request.body === null ? '' : await request.text();
+      instance.answered.push({ path: new URL(request.url).pathname, starts: instance.starts, body });
       return new Response(`instance ${instances.indexOf(instance)} started ${instance.starts}`);
     },
   };
 };
-const answered = (path) => instances.flatMap((instance, index) => instance.answered.filter((at) => at.path === path).map((at) => ({ index, starts: at.starts })));
+const answered = (path) => instances.flatMap((instance, index) => instance.answered.filter((at) => at.path === path).map((at) => ({ index, starts: at.starts, body: at.body })));
 
 const launched = launchManager('not-admitted-rerun', {
   evaluate,
@@ -50,15 +53,17 @@ const launched = launchManager('not-admitted-rerun', {
   },
 });
 const { manager, processes, world, ctx, ports } = launched;
+// The session, as its port route meets it: a method that reads its own receiver.
 const self = {
   ctx,
+  manager,
   portRegistry: ports,
-  ensureDurableAppOnPort: (port) => manager.ensureDurableAppOnPort(port),
+  ensureDurableAppOnPort(port) { return this.manager.ensureDurableAppOnPort(port); },
   cirrusReal: null,
   viteDevServer: null,
   _viteShimPort: null,
 };
-const viaPort = (path) => routeToSessionPort(self, PORT, new Request(`https://session.test/port/${PORT}${path}`), path, '');
+const viaPort = (path, init) => routeToSessionPort(self, PORT, new Request(`https://session.test/port/${PORT}${path}`, init), path, '');
 const turns = async () => { for (let i = 0; i < 200; i++) await new Promise((resolve) => setTimeout(resolve, 0)); };
 
 // ── 1. through the port ─────────────────────────────────────────────────────
@@ -75,7 +80,7 @@ const turns = async () => { for (let i = 0; i < 200; i++) await new Promise((res
   world.replace(name);
   const replacement = instances.length - 1;
 
-  const again = await viaPort('/after-idle');
+  const again = await viaPort('/after-idle', { method: 'POST', body: 'the payload' });
   const body = await again.text();
   assert.equal(again.status, 200, `the request is answered: ${body}`);
   assert.equal(processes.get(pid)?.state, 'exited', 'the lost process ended');
@@ -85,8 +90,16 @@ const turns = async () => { for (let i = 0; i < 200; i++) await new Promise((res
   const [ran, ...again2] = answered('/after-idle');
   assert.deepEqual(again2, [], 'it ran once');
   assert.ok(ran.index >= replacement && ran.starts === 1, 'on an instance a new process started: never as the lost process');
+  assert.equal(ran.body, 'the payload', 'with its body whole');
   assert.equal(body, `instance ${ran.index} started 1`);
-  console.log('  [1] a request to the port of a process whose idle host was replaced runs once on a new process');
+
+  // The new process's idle host replaced in turn: its row is a re-drive's, past the recovery budget.
+  await turns();
+  world.replace(world.liveFacets()[0]);
+  const third = await viaPort('/after-idle-again');
+  assert.equal(third.status, 200, `the next request is answered too: ${await third.text()}`);
+  assert.notEqual(ports.get(PORT)?.pid, served, 'by another new process');
+  console.log('  [1] a request to the port of a process whose idle host was replaced runs once on a new process, body and all, and again after the next');
 }
 
 // ── 2. through the process's own facet ──────────────────────────────────────
