@@ -6,12 +6,15 @@
 //     stateless invocation calls, in a facet, in another session's Loader
 //     worker, and in one a request through the edge calls; at n=1 (the
 //     dispatch's own cost) and at n=N (about a second of work).
-//   - kinds: today's one-shots of every runtime, run in the terminal.
+//   - kinds: today's one-shots of every runtime, run in the terminal (first,
+//     on a fresh terminal: a long quiet burn phase closed it once).
 // Each call is watched from outside by a request to the session every 100 ms
 // while it runs; a held thread answers late.
 import { mintSession, deleteSession, Terminal, sleep, requestHeaders, BASE } from '../../_driver.mjs';
 
 const ROUNDS = Number(process.env.D1_ROUNDS ?? 8);
+// The burns' first run (verdict 20261021T100359-d0667321262c) answered them; these repeat it briefly after the kinds.
+const BURN_ROUNDS = 2;
 const out = (record) => console.log(JSON.stringify(record));
 const heredoc = (path, body) => `cat > ${path} <<'NIMBUS_EOF'\n${body}NIMBUS_EOF`;
 const VIAS = ['inline', 'do', 'stateless', 'facet', 'peer', 'edge'];
@@ -78,22 +81,6 @@ const t = new Terminal(sid);
 try {
   await t.connect();
   await t.waitForPrompt(60_000);
-  for (const via of VIAS) out({ kind: 'burn-warmup', via, ...(await burn(sid, via, 1).catch((e) => ({ error: String(e.message ?? e) }))) });
-  // N from the inline burn's own wall (a clock in the isolate stands still while it computes).
-  const base = (await watched(sid, () => burn(sid, 'inline', 1))).ms;
-  const probe = (await watched(sid, () => burn(sid, 'inline', 2e8))).ms;
-  const N = Math.round(2e8 * 1000 / Math.max(1, probe - base));
-  out({ kind: 'calibrate', base, probe, N });
-  for (let i = 1; i <= ROUNDS; i++) {
-    for (let k = 0; k < VIAS.length; k++) {
-      const via = VIAS[(k + i) % VIAS.length];
-      for (const n of [1, N]) {
-        const w = await watched(sid, () => burn(sid, via, n).catch((e) => ({ error: String(e.message ?? e).slice(0, 300) })));
-        out({ kind: 'burn', via, n, i, startedAt: w.startedAt, ms: w.ms, sessionMs: w.value.ms ?? null, error: w.value.error, ...pollStats(w.polls) });
-      }
-    }
-  }
-
   const setup = [
     'nimbus install python', 'nimbus install ruby', 'nimbus install clang',
     heredoc('x.c', CSRC),
@@ -118,6 +105,22 @@ try {
       out({ kind: 'warm', arm: kind, i, startedAt: w.startedAt, ms: w.ms, exit: w.value.exitCode, ...pollStats(w.polls) });
     }
   }
+  for (const via of VIAS) out({ kind: 'burn-warmup', via, ...(await burn(sid, via, 1).catch((e) => ({ error: String(e.message ?? e) }))) });
+  // N from the inline burn's own wall (a clock in the isolate stands still while it computes).
+  const base = (await watched(sid, () => burn(sid, 'inline', 1))).ms;
+  const probe = (await watched(sid, () => burn(sid, 'inline', 2e8))).ms;
+  const N = Math.round(2e8 * 1000 / Math.max(1, probe - base));
+  out({ kind: 'calibrate', base, probe, N });
+  for (let i = 1; i <= BURN_ROUNDS; i++) {
+    for (let k = 0; k < VIAS.length; k++) {
+      const via = VIAS[(k + i) % VIAS.length];
+      for (const n of [1, N]) {
+        const w = await watched(sid, () => burn(sid, via, n).catch((e) => ({ error: String(e.message ?? e).slice(0, 300) })));
+        out({ kind: 'burn', via, n, i, startedAt: w.startedAt, ms: w.ms, sessionMs: w.value.ms ?? null, error: w.value.error, ...pollStats(w.polls) });
+      }
+    }
+  }
+
 } catch (error) {
   out({ kind: 'error', error: String(error?.message ?? error).slice(0, 2000) });
   process.exitCode = 1;
