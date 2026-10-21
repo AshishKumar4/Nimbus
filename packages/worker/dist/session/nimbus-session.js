@@ -16,6 +16,8 @@ import * as runtimeServices from '../hosted/services.js';
 import { selectProcessEgress, workspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { DurableObject as CloudflareDurableObject } from 'cloudflare:workers';
 import { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import { NamedTerminals } from './named-terminals.js';
+import { exitCodeForSignal, signalAbortReason } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { CRED_KERNEL, CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 // S10: oom-discriminator helpers (recordFailure, getFailures,
@@ -55,7 +57,7 @@ import { initSession as _w11InitSession } from './init.js';
 // _w5SafePersistRing) extracted.
 // S7: webSocket lifecycle (message, close, error, F1 discriminator,
 // _w5SafePersistRing) extracted.
-import { wsMessage as _wsDoMessage, wsClose as _wsDoClose, wsError as _wsDoError, safePersistRing as _wsDoSafePersistRing, wsKind, terminalInput } from './ws.js';
+import { wsMessage as _wsDoMessage, wsClose as _wsDoClose, wsError as _wsDoError, safePersistRing as _wsDoSafePersistRing, wsKind, terminalInput, TerminalMessageSchema } from './ws.js';
 import { hostNamespaceBinding } from '@nimbus-sh/fabric/host-dispatch.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 // S8: Supervisor RPC + W8 cp* + legacy VFS impls extracted.
@@ -67,7 +69,7 @@ import { openSupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-d
 // S9: HTTP fetch routing extracted (combined S9a + S9b).
 // S9: HTTP fetch routing extracted (combined S9a + S9b).
 import * as _routes from './routes.js';
-import { restoreDevServers } from './dev-servers.js';
+import { devServersRespawned, restoreDevServers } from './dev-servers.js';
 import { sessionProcessEnv } from './process-env.js';
 import * as _portCapability from './port-capability.js';
 // Programmatic SDK RPC surface.
@@ -261,6 +263,8 @@ export class NimbusSession extends CloudflareDurableObject {
     shell = null;
     shellProcessPid = null;
     terminal = null;
+    /** The session's named terminals (`/ws?terminal=`): each a shell of its own over this workspace. */
+    terminals;
     /** The composed manager is the one field; `.manager` is derived. */
     facetManagerComposed = null;
     get facetManager() {
@@ -436,6 +440,18 @@ export class NimbusSession extends CloudflareDurableObject {
     wranglerAliasBannerShown = false;
     constructor(ctx, env) {
         super(ctx, env);
+        this.terminals = new NamedTerminals({
+            ctx,
+            workspace: () => {
+                if (this.runtimeWorkspace === null)
+                    throw new Error('the session is not built');
+                return this.runtimeWorkspace;
+            },
+            hangUp: (pid) => {
+                if (!this.facetManager?.kill(pid, 'HUP', signalAbortReason('HUP')))
+                    this.processes.kill(pid, exitCodeForSignal('HUP'), signalAbortReason('HUP'));
+            },
+        });
         this.supervisorDeliveries = openSupervisorDeliveries(ctx);
         this.processEnv = sessionProcessEnv(ctx.storage);
         this.#runtimeServices = runtimeServices.bindRuntimeServices(this, {
@@ -795,8 +811,8 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcFsStorageGrant(facet, bytes, databaseSize, pid) {
         return _rpc._rpcFsStorageGrant(this, facet, bytes, databaseSize, pid);
     }
-    async _rpcFsList(after, limit, pid) {
-        return _rpc._rpcFsList(this, after, limit, pid);
+    async _rpcFsList(after, limit, options, pid) {
+        return _rpc._rpcFsList(this, after, limit, options, pid);
     }
     async _rpcFsListTree(root, maxEntries, pid) {
         return _rpc._rpcFsListTree(this, root, maxEntries, pid);
@@ -916,6 +932,8 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcListRuntimes() { return (await _programmatic.rpcListRuntimes(this)); }
     async _rpcListProcesses() { return _programmatic.rpcListProcesses(this); }
     async _rpcKillProcess(pid) { return _programmatic.rpcKillProcess(this, pid); }
+    _rpcListTerminals() { return _programmatic.rpcListTerminals(this); }
+    _rpcCloseTerminal(name) { return _programmatic.rpcCloseTerminal(this, name); }
     async _rpcWriteProcessInput(pid, data) { return _programmatic.rpcWriteProcessInput(this, pid, data); }
     async _rpcEndProcessInput(pid) { return _programmatic.rpcEndProcessInput(this, pid); }
     async _rpcResizeProcess(pid, size) { return _programmatic.rpcResizeProcess(this, pid, size); }
@@ -946,8 +964,7 @@ export class NimbusSession extends CloudflareDurableObject {
     }
     /** What restoring the dev servers reads of this session, one view per instance (its restore is the view's). */
     devServerHost = null;
-    /** The dev servers a previous incarnation ran, started again once (dev-servers.ts): what every route to one waits on. */
-    restoreDevServers() {
+    get devServers() {
         const session = this;
         this.devServerHost ??= {
             ctx: this.ctx,
@@ -957,7 +974,15 @@ export class NimbusSession extends CloudflareDurableObject {
             processEnv: this.processEnv,
             ensureRuntimeReady: () => this.ensureRuntimeReady(),
         };
-        return restoreDevServers(this.devServerHost);
+        return this.devServerHost;
+    }
+    /** The dev servers a previous incarnation ran, started again once (dev-servers.ts): what every route to one waits on. */
+    restoreDevServers() {
+        return restoreDevServers(this.devServers);
+    }
+    /** Their processes spawned again (dev-servers.ts): what a listing of what runs waits on. */
+    devServersRespawned() {
+        return devServersRespawned(this.devServers);
     }
     /** The port route's in-DO HMR accept, delegated — same reason. */
     acceptCirrusHmrWs(request) {
@@ -1225,9 +1250,10 @@ export class NimbusSession extends CloudflareDurableObject {
     // relaxed for the methods (default-public; was async/private).
     terminalInputDispatcher = null;
     terminalInputPending = 0;
-    dispatchTerminalInput(frame) {
+    dispatchTerminalInput(frame, named) {
         const terminal = this.terminal;
-        if (!terminal || terminal.signal.aborted)
+        const terminalId = named === undefined ? (terminal && !terminal.signal.aborted ? terminal.id : undefined) : this.terminals.idOf(named);
+        if (terminalId === undefined)
             return;
         if (!this.terminalInputDispatcher) {
             const stub = hostNamespaceBinding(this.env, 'terminal input').get(this.ctx.id);
@@ -1241,10 +1267,12 @@ export class NimbusSession extends CloudflareDurableObject {
         this.terminalInputPending++;
         void (async () => {
             try {
-                await stub._rpcTerminalInput(frame, terminal.id);
+                await stub._rpcTerminalInput(frame, terminalId, named);
             }
             catch (error) {
-                if (!terminal.signal.aborted) {
+                if (named !== undefined)
+                    console.error(`[nimbus] terminal ${named} input request failed:`, error);
+                else if (terminal && !terminal.signal.aborted) {
                     console.error('[nimbus] terminal input request failed:', error);
                     terminal.writeln(`terminal input failed: ${error instanceof Error ? error.message : String(error)}`);
                 }
@@ -1258,9 +1286,12 @@ export class NimbusSession extends CloudflareDurableObject {
         })();
     }
     // Watched while the command it submits runs here (thread-stalls.ts): a built-in command on a large tree is the session's own slice.
-    _rpcTerminalInput(frame, terminalId) {
+    _rpcTerminalInput(frame, terminalId, terminal) {
         const watched = holdThreadWatch(this.ctx, 'terminal input');
-        return terminalInput(this, frame, terminalId).finally(watched);
+        const handled = terminal === undefined
+            ? terminalInput(this, frame, terminalId)
+            : this.terminals.handle(terminal, TerminalMessageSchema.parse(JSON.parse(frame)), terminalId);
+        return handled.finally(watched);
     }
     async webSocketMessage(ws, message) {
         const { kind } = wsKind(ws);

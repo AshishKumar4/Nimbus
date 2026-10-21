@@ -3,6 +3,14 @@ import type { VfsCred } from './os-contracts.js';
 import type { ProcessTerminalSize } from './process-io-protocol.js';
 import { ExecOutputSchema } from './exec-stream.js';
 
+/** The process a process starts again, and why (ProcessEntry.restartedFrom). */
+export const ProcessRestartSchema = z.discriminatedUnion('cause', [
+  z.object({ pid: z.number(), cause: z.literal('session-restart') }),
+  z.object({ pid: z.number(), cause: z.literal('exited'), exitCode: z.number() }),
+  z.object({ pid: z.number(), cause: z.literal('host-reset') }),
+]);
+export type ProcessRestart = z.infer<typeof ProcessRestartSchema>;
+
 export const SessionProcessSchema = z.object({
   pid: z.number(),
   command: z.string(),
@@ -15,8 +23,23 @@ export const SessionProcessSchema = z.object({
   longRunning: z.boolean(),
   attachedTty: z.boolean().optional().default(false),
   execId: z.string().optional(),
+  /** The process it starts again, when it is a restart. */
+  restartedFrom: ProcessRestartSchema.optional(),
 });
 export type SessionProcess = z.infer<typeof SessionProcessSchema>;
+
+/** A session's terminal as a list shows it: its own is `name: null`; a named one's is `/ws?terminal=<name>`. */
+export const SessionTerminalSchema = z.object({
+  name: z.string().nullable(),
+  /** Its shell runs in this incarnation of the session. */
+  live: z.boolean(),
+  /** A socket has it now. */
+  attached: z.boolean(),
+  /** The line its shell is running, if it is running one. */
+  running: z.string().nullable(),
+  cwd: z.string(),
+});
+export type SessionTerminal = z.infer<typeof SessionTerminalSchema>;
 
 export const SessionPortSchema = z.object({
   port: z.number(),
@@ -186,6 +209,8 @@ const SessionResultSchemas = {
   listRuntimes: z.object({ installed: z.array(SessionRuntimeSummarySchema), available: z.array(SessionAvailableRuntimeSchema) }),
   listProcesses: z.array(SessionProcessSchema),
   killProcess: ProcessControlResultSchema,
+  listTerminals: z.array(SessionTerminalSchema),
+  closeTerminal: z.object({ closed: z.boolean() }),
   writeProcessInput: ProcessControlResultSchema,
   endProcessInput: ProcessControlResultSchema,
   resizeProcess: ProcessControlResultSchema,
@@ -283,6 +308,8 @@ export interface SessionRpc {
   _rpcListRuntimes(): Promise<SessionResult<'listRuntimes'>>;
   _rpcListProcesses(): Promise<SessionProcess[]>;
   _rpcKillProcess(pid: number): Promise<SessionResult<'killProcess'>>;
+  _rpcListTerminals(): Promise<SessionTerminal[]>;
+  _rpcCloseTerminal(name: string): Promise<SessionResult<'closeTerminal'>>;
   _rpcWriteProcessInput(pid: number, data: string): Promise<SessionResult<'writeProcessInput'>>;
   _rpcEndProcessInput(pid: number): Promise<SessionResult<'endProcessInput'>>;
   _rpcResizeProcess(pid: number, size: SessionTerminalSize): Promise<SessionResult<'resizeProcess'>>;

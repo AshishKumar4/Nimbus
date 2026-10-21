@@ -61,8 +61,6 @@ import { warmFacetKeys } from './warm-facets.js';
 import { interpreterProcessEnv } from './interpreter-env.js';
 const RUBY_RUNTIME_BIN_NAMES = new Set(['ruby', 'ruby3', 'gem', 'bundle', 'bundler']);
 const RUBY_VERSION_FLAGS = new Set(['--version', '-v']);
-/** Idle warm Ruby workers a session keeps: each holds the compiled ruby+stdlib.wasm (30 MB). */
-const WARM_RUBY_FACETS = 2;
 /**
  * Build the ruby-runner factory. Called once at session init; the
  * returned factory binds the manifest + install root for each
@@ -70,7 +68,7 @@ const WARM_RUBY_FACETS = 2;
  */
 export function makeRubyRunnerFactory(deps) {
     const { registry } = deps;
-    const warmKeys = warmFacetKeys(deps.session, 'ruby', WARM_RUBY_FACETS);
+    const warmKeys = warmFacetKeys(deps.session, 'ruby');
     return async function rubyRunnerFactory(manifest, installRoot, binName, binKind) {
         const wasmVfs = installedPath(manifest, installRoot, 'share/ruby/ruby+stdlib.wasm');
         const registerGemBins = async (vfs, home) => {

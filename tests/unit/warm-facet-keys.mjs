@@ -6,14 +6,15 @@
 // counts are the same.
 
 import assert from 'node:assert/strict';
-import { warmFacetKeys, warmFacetScope } from '../../packages/core/src/runtime/warm-facets.ts';
+import { WARM_FACETS_KEPT, warmFacetKeys, warmFacetScope } from '../../packages/core/src/runtime/warm-facets.ts';
+import { DO_DYNAMIC_WORKER_LIMIT } from '../../packages/platform/src/limits.ts';
 import { loaderFacetHost } from '../../packages/worker/src/runtime/facet-loader-host.ts';
 import { facetTaskSource } from '../../packages/core/src/runtime/facet-task.ts';
 import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 
 // ── the keys ─────────────────────────────────────────────────────────────
 {
-  const keys = warmFacetKeys('session-a', 'git', 2);
+  const keys = warmFacetKeys('session-a', 'git');
   const first = keys.take();
   const second = keys.take();
   assert.equal(first.session, 'session-a');
@@ -34,16 +35,15 @@ import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-netwo
   assert.notEqual(keys.take(), first, 'nor when any one of its calls left it unfit');
   keys.give(first);
   assert.equal(keys.take(), first, 'a key no call ran on is given back');
-  const third = keys.take();
-  keys.give(first, fit);
-  keys.give(second, fit);
-  keys.give(third, fit);
-  const again = [keys.take(), keys.take(), keys.take()];
-  assert.equal(again.filter((key) => [first, second, third].includes(key)).length, 2, 'no more than `kept` are kept idle: the third taken is new');
-  assert.equal(new Set(again.map((k) => k.name)).size, 3);
+  assert.equal(WARM_FACETS_KEPT, DO_DYNAMIC_WORKER_LIMIT, 'as many idle as can be in flight at once');
+  const burst = [first, second, ...Array.from({ length: WARM_FACETS_KEPT - 1 }, () => keys.take())];
+  for (const key of burst) keys.give(key, fit);
+  const again = Array.from({ length: WARM_FACETS_KEPT + 1 }, () => keys.take());
+  assert.equal(again.filter((key) => burst.includes(key)).length, WARM_FACETS_KEPT, 'no more than WARM_FACETS_KEPT are kept idle: the next taken is new');
+  assert.equal(new Set(again.map((k) => k.name)).size, WARM_FACETS_KEPT + 1);
   assert.throws(() => keys.give({ session: 'session-b', name: first.name }, fit), /another session/, 'a key of another session is refused');
-  assert.throws(() => warmFacetKeys('', 'git', 2), /belongs to a session/, 'a warm facet without a session is refused');
-  assert.notEqual(warmFacetKeys('session-a', 'git', 2).take().name, first.name, 'another incarnation never names a key twice');
+  assert.throws(() => warmFacetKeys('', 'git'), /belongs to a session/, 'a warm facet without a session is refused');
+  assert.notEqual(warmFacetKeys('session-a', 'git').take().name, first.name, 'another incarnation never names a key twice');
   assert.ok(warmFacetScope(first).startsWith('session-a:'), 'the scope names the session first');
   console.log('  ✓ warm keys: taken, given back, bounded, a session\'s own');
 }

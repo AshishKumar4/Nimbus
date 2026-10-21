@@ -29,17 +29,12 @@
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { afterTurn } from '@nimbus-sh/core/_shared/after-turn.js';
+import { DO_DYNAMIC_WORKER_LIMIT } from '@nimbus-sh/platform/limits.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { hostWasmIdentity } from './host-wasm.js';
 import { withResolvers } from './turn-budget.js';
-/**
- * Distinct Dynamic Workers one Durable Object may have with in-flight
- * requests at once, shared across all concurrent requests to that object;
- * multiple in-flight requests to one Dynamic Worker count once.
- * https://developers.cloudflare.com/changelog/post/2026-08-28-durable-objects-dynamic-workers-limit/
- */
-export const DO_DYNAMIC_WORKER_LIMIT = 10;
+export { DO_DYNAMIC_WORKER_LIMIT };
 /**
  * The refusal of a wait for a Dynamic Worker that no release can ever
  * satisfy: every worker this Durable Object has in flight is held by a

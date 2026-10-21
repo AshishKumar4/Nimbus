@@ -277,3 +277,6 @@ export class SupervisorRPC extends supervisorCalls(WorkerEntrypoint) {
         ]);
     }
 }
+// Every supervisor call carries each parameter its bridge method declares; one that does not is named here, at compile time.
+const everyParameterCarried = true;
+void everyParameterCarried;

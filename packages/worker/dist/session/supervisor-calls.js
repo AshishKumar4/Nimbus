@@ -53,12 +53,17 @@ import { setLastRpcFrame } from '@nimbus-sh/platform/oom-discriminator.js';
 import { recordFailure } from '../runtime/stop-replay-body.js';
 // Phase 2 A'.2 — supervisor in-flight RPC payload byte tracking.
 import { rpcPayloadStart, rpcPayloadEnd } from '@nimbus-sh/platform/diag-counters.js';
-import { R2CacheClient, MAX_R2_TARBALL_BYTES } from '../npm/r2-cache.js';
 import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { isSupervisorAnsweredMethod, supervisorAnswer, } from '@nimbus-sh/core/runtime/vfs-supervisor.js';
 import { fsReadBatchRequestBytes } from './rpc.js';
 import { W7_MAX_RECORD_BYTES } from '@nimbus-sh/platform/w7-frame.js';
 import { LOST_CALL_HEDGE_AFTER_MS, WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
+/**
+ * The npm cache client, loaded at its first use: it links the npm engine,
+ * which no other call needs, and a host Worker's isolates all evaluate what
+ * its re-exported SupervisorRPC links statically, at startup (ask 56).
+ */
+const npmCache = () => import('../npm/r2-cache.js');
 /**
  * W5 Lever 5: estimate the byte-cost of a writeBatch payload so the
  * /api/_diag/memory.rpc.lastFrame.payloadBytes field is meaningful.
@@ -219,10 +224,12 @@ export function supervisorCalls(base) {
             return value;
         }
         async [CACHE_READ](plan, produce) {
-            const client = new R2CacheClient(this[TRANSPORT]().env?.NPM_TARBALL_CACHE ?? null, this[TRANSPORT]().env?.NPM_PACKUMENT_CACHE ?? null, plan.readOnly);
             let value;
+            // The client's module loads inside the read: a run's ticket is answered however it fails.
             try {
-                value = await produce(client);
+                const cache = await npmCache();
+                const client = new cache.R2CacheClient(this[TRANSPORT]().env?.NPM_TARBALL_CACHE ?? null, this[TRANSPORT]().env?.NPM_PACKUMENT_CACHE ?? null, plan.readOnly);
+                value = await produce(client, cache);
             }
             catch (error) {
                 if (plan.ticket)
@@ -281,16 +288,16 @@ export function supervisorCalls(base) {
          * Read a file as raw bytes. Used by the git network facet for binary
          * object/pack files where the text readFile would corrupt content.
          */
-        async readFileBytes(path) {
-            return this[CALL](this[FS_READ]('readFileBytes', [path]));
+        async readFileBytes(path, options) {
+            return this[CALL](this[FS_READ]('readFileBytes', options === undefined ? [path] : [path, options]));
         }
-        async writeFile(path, content) {
+        async writeFile(path, content, options) {
             // binary-fs wave: accept Uint8Array natively. Pre-fix this RPC was
             // string-only, which forced node-shims.ts:writeFileSync to UTF-8-
             // decode every Uint8Array write — mangling bytes ≥ 0x80 to U+FFFD
             // and corrupting binary content. RPC structured-clone handles
             // Uint8Array transparently; downstream _rpcWriteFile also accepts
-            return this[CALL](this[FS_MUTATION]('writeFile', [path, content]));
+            return this[CALL](this[FS_MUTATION]('writeFile', options === undefined ? [path, content] : [path, content, options]));
         }
         /** writeFile, answering the revision and the path's stat after it (supervisor-op.ts writeFileStat). */
         async writeFileStat(path, content) {
@@ -317,8 +324,8 @@ export function supervisorCalls(base) {
         async setUmask(mask) {
             return this[CALL](this[FS_OP]('setUmask', [mask]));
         }
-        async readdir(path) {
-            return this[CALL](this[FS_READ]('readdir', [path]));
+        async readdir(path, options) {
+            return this[CALL](this[FS_READ]('readdir', options === undefined ? [path] : [path, options]));
         }
         async exists(path) {
             return this[CALL](this[FS_READ]('exists', [path]));
@@ -384,8 +391,8 @@ export function supervisorCalls(base) {
         async fsStorageGrant(facet, bytes, databaseSize) {
             return this[CALL](this[FS_OP]('fsStorageGrant', [facet, bytes, databaseSize]));
         }
-        async fsList(after, limit) {
-            return this[CALL](this[FS_READ]('fsList', [after ?? null, limit ?? null]));
+        async fsList(after, limit, options) {
+            return this[CALL](this[FS_READ]('fsList', options === undefined ? [after ?? null, limit ?? null] : [after ?? null, limit ?? null, options]));
         }
         /** Everything beneath directory `root`, in one page and one revision; E2BIG past `maxEntries` (session/rpc.ts _rpcFsListTree). */
         async fsListTree(root, maxEntries) {
@@ -498,8 +505,8 @@ export function supervisorCalls(base) {
          * server-side handle state, so they stay correct across supervisor
          * hibernation and never rewrite whole files for partial updates.
          */
-        async fsReadRange(path, offset, length) {
-            return this[CALL](this[FS_READ]('fsReadRange', [path, offset, length]));
+        async fsReadRange(path, offset, length, options) {
+            return this[CALL](this[FS_READ]('fsReadRange', options === undefined ? [path, offset, length] : [path, offset, length, options]));
         }
         /**
          * The same read with the session's content cache bypassed, for a boot spec's
@@ -541,11 +548,11 @@ export function supervisorCalls(base) {
                 rpcPayloadEnd(payloadBytes);
             }
         }
-        async fsWriteRange(path, offset, bytes) {
-            return this[CALL](this[FS_MUTATION]('fsWriteRange', [path, offset, bytes]));
+        async fsWriteRange(path, offset, bytes, options) {
+            return this[CALL](this[FS_MUTATION]('fsWriteRange', options === undefined ? [path, offset, bytes] : [path, offset, bytes, options]));
         }
-        async fsTruncate(path, size) {
-            return this[CALL](this[FS_MUTATION]('fsTruncate', [path, size]));
+        async fsTruncate(path, size, options) {
+            return this[CALL](this[FS_MUTATION]('fsTruncate', options === undefined ? [path, size] : [path, size, options]));
         }
         /**
          * Bulk-write all inodes + chunks in ONE transactionSync on the supervisor.
@@ -692,7 +699,7 @@ export function supervisorCalls(base) {
         async getCachedTarball(integrity) {
             const plan = this[INFRASTRUCTURE_CACHE]('getCachedTarball', [integrity]) ? { readOnly: false }
                 : await this[CALL](this[OP]('getCachedTarball', [integrity]));
-            return this[CACHE_READ](plan, async (client) => {
+            return this[CACHE_READ](plan, async (client, { MAX_R2_TARBALL_BYTES }) => {
                 const bytes = await client.getTarball(integrity);
                 return { bytes: bytes?.length && bytes.length <= MAX_R2_TARBALL_BYTES ? bytes : null, events: client._cacheEvents };
             });
@@ -711,6 +718,7 @@ export function supervisorCalls(base) {
             // does NOT flow through this return path.
             if (!this[INFRASTRUCTURE_CACHE]('putCachedTarball', [integrity, bytes]))
                 await this[CALL](this[OP]('putCachedTarball', [integrity, bytes]));
+            const { R2CacheClient } = await npmCache();
             return new R2CacheClient(this[TRANSPORT]().env?.NPM_TARBALL_CACHE ?? null, null).putTarball(integrity, bytes);
         }
         /**

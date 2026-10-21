@@ -139,23 +139,14 @@ export declare class WorktreeRepo {
     /** core.protectHFS and core.protectNTFS as the command's config reads them (-c, the repository's, the global), else git's defaults (verify-path.ts). */
     pathProtection(): Promise<PathProtection>;
     /**
-     * The worktree as one ordered scan of its tree reads it (ProjectFs.scan):
-     * its listings and lstats answered from the scan, what the scan marks
-     * `byName` (a directory on an unlisted mount, or one the caller may not
-     * read) asked by name, its contents read as {@link worktree} reads them.
-     * Measured on next.js's 34,302 files (throwaway Previews, the spans'
-     * session CPU): status took 3.8–4.2 s of the session's CPU walking by
-     * name and 1.0–1.6 s from the scan. The walk by name stands where the
-     * scan cannot: a top it does not list as a readdir of the top does (a
-     * top on a mount it does not name, one the caller may not read), a tree
-     * that changed under it SCAN_ATTEMPTS times, or a scan that failed,
-     * whose errors the walk reports entry by entry. The scan is held whole (not `.git`'s
-     * contents, which no walk reads), so a command that walks a tree too
-     * large to hold (add -A, under its memory bound) keeps {@link worktree}.
+     * The worktree as one ordered scan of its tree reads it (ProjectFs.scan),
+     * merged with the index as it goes (scanWorktree): no table of it is held,
+     * only the scan's page and the directories the walk is in. Measured on
+     * next.js's 34,302 files (throwaway Previews, the spans' session CPU):
+     * status took 3.8–4.2 s of the session's CPU walking by name and 1.0–1.6 s
+     * from the scan. Where the scan cannot answer, the walk asks by name.
      */
     scannedWorktree(): Promise<Worktree>;
-    /** One scan of the worktree into the tables scannedWorktree answers from. */
-    private scanTree;
     /** The worktree with the settings its comparisons take. */
     worktree(): Promise<Worktree>;
     /** The index, as git's repo_read_index leaves it: see clearPresentSkips. */

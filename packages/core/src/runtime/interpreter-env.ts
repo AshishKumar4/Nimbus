@@ -6,9 +6,10 @@
 // paths, and the gems found installed when it launched.
 
 import { z } from 'zod/v4';
+import { CA_CERTIFICATES_FILE } from '../vfs/proc-vfs.js';
 
 export const InterpreterEnvFactsSchema = z.discriminatedUnion('runtime', [
-  z.object({ runtime: z.literal('python'), home: z.string(), cacert: z.string().nullable() }),
+  z.object({ runtime: z.literal('python'), home: z.string() }),
   z.object({ runtime: z.literal('ruby'), home: z.string(), gemHome: z.string(), gemLibs: z.array(z.string()), gemActivates: z.boolean() }),
 ]);
 export type InterpreterEnvFacts = z.infer<typeof InterpreterEnvFactsSchema>;
@@ -26,14 +27,13 @@ export function interpreterProcessEnv(base: Readonly<Record<string, string>>, fa
   switch (facts.runtime) {
     case 'python':
       if (!env.PYTHONUNBUFFERED) env.PYTHONUNBUFFERED = '1';
-      // Without this OpenSSL has no trust anchors at all — there is no
-      // /etc/ssl on a Nimbus session — and every HTTPS request fails
-      // verification with a message about a missing local issuer rather than
-      // about a missing bundle.
-      if (!env.SSL_CERT_FILE && facts.cacert !== null) env.SSL_CERT_FILE = facts.cacert;
+      // Its OpenSSL's default paths are its build machine's: the session's trust store, unless the program names its own.
+      if (!env.SSL_CERT_FILE) env.SSL_CERT_FILE = CA_CERTIFICATES_FILE;
       return env;
     case 'ruby':
       if (!env.LANG) env.LANG = 'C.UTF-8';
+      // As CPython's: ruby.wasm's OpenSSL looks in /usr/local/ssl, which no session has.
+      if (!env.SSL_CERT_FILE) env.SSL_CERT_FILE = CA_CERTIFICATES_FILE;
       env.GEM_HOME ||= facts.gemHome;
       env.GEM_PATH ||= env.GEM_HOME;
       env.NIMBUS_GEM_LIBS = facts.gemLibs.join(':');

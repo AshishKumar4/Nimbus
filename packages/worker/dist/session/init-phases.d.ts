@@ -85,7 +85,7 @@ export declare function joinExistingSession(self: {
     _b4Phase: SessionState | null;
     _b4WarmJoinCount: number;
 }, shell: {
-    announcePrompt(): void;
+    resumePrompt(): void;
 }, terminal: {
     attach(ws: WebSocket, onFlush?: (data: string) => void): void;
     replay(s: string): void;

@@ -10,15 +10,18 @@ export class HistoryManager {
   private entries: string[] = [];
   private loaded: Promise<void> | undefined;
 
-  constructor(private readonly filesystem: () => ProcessView, private readonly home: () => string) {}
+  /** `file`: where the history is kept (bash's HISTFILE); empty, nowhere. */
+  constructor(private readonly filesystem: () => ProcessView, private readonly file: () => string) {}
 
   async load(): Promise<void> {
     return this.loaded ??= this.readHistory();
   }
 
   private async readHistory(): Promise<void> {
+    const file = this.file();
+    if (file === '') return;
     try {
-      const content = await this.filesystem().readFileString(`${this.home()}/.bash_history`);
+      const content = await this.filesystem().readFileString(file);
       this.entries = content.split('\n').filter(Boolean);
     } catch (error) {
       if (!(error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')) throw error;
@@ -27,7 +30,8 @@ export class HistoryManager {
   }
 
   async save(): Promise<void> {
-    await this.filesystem().writeFile(`${this.home()}/.bash_history`, this.entries.join('\n') + '\n');
+    const file = this.file();
+    if (file !== '') await this.filesystem().writeFile(file, this.entries.join('\n') + '\n');
   }
 
   async add(line: string): Promise<void> {

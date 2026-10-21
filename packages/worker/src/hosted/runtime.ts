@@ -19,6 +19,8 @@ import { isHostedWatch, isHostedWebSocket, isHostedResidency, type PeerHost } fr
 import { hostActivity, type HostActivityLease } from '@nimbus-sh/fabric/host-activity.js';
 import type { WebSocketRelay } from '../session/ws-relay.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
+import { NamedTerminals } from '../session/named-terminals.js';
+import { exitCodeForSignal, signalAbortReason } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { nimbusDebugEnabled } from '../_shared/nimbus-debug.js';
 import { answerSupervisorOp, buildSessionSupervisorOps, type SessionSupervisorOps } from '../session/supervisor-op.js';
 import { armLogJanitor, armResidentKeepalive, endResidentKeepalive, installLogPersistence, logJanitorFired, noteResidentClient, residentKeepaliveFired, type ResidentKeepaliveCycle } from '../session/hibernation.js';
@@ -37,7 +39,7 @@ import { onColdStart } from '@nimbus-sh/fabric/generation.js';
 import { removeLegacyGeneratedImages } from '../facets/legacy-images.js';
 import { hostNamespaceBinding } from '@nimbus-sh/fabric/host-dispatch.js';
 import type { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
-import { restoreDevServers, type DevServerRestoreHost } from '../session/dev-servers.js';
+import { devServersRespawned, restoreDevServers, type DevServerRestoreHost } from '../session/dev-servers.js';
 import type { ProcessEnvHooks } from '../session/process-env.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 
@@ -76,8 +78,14 @@ const InputFrame = z.discriminatedUnion('type', [
   z.object({ type: z.literal('resize'), cols: z.number().int().positive(), rows: z.number().int().positive() }),
 ]);
 
+/** Which terminal an embedder's call is about: a name, or none for the session's own. */
+export interface TerminalSelection {
+  readonly terminal?: string;
+}
+
 class RuntimeOwner {
   readonly terminal: WebSocketTerminal;
+  readonly terminals: NamedTerminals;
   /** The embedder's answer, and no keeping of its own: Nimbus keeps no process's environment (session/process-env.ts). */
   readonly processEnv: ProcessEnvHooks;
   readonly _cpRegistry: CommandRegistry;
@@ -156,6 +164,9 @@ class RuntimeOwner {
       supervisorOp: (envelope) => this.supervisorOp(envelope),
     });
     options.workspace.shell.bindTerminal(this.terminal);
+    // The session's own shell, and everything it starts, are its terminal's.
+    options.workspace.processes.setControllingTerminal(options.workspace.shellProcessPid, '');
+    this.terminals = new NamedTerminals({ ctx: options.ctx, workspace: () => options.workspace, hangUp: (pid) => this.hangUp(pid) });
     installLogPersistence(this, options.ctx, () => this.scheduleLogs(), () => armLogJanitor(this, (at) => this.scheduleJanitor(at)));
     wireProcessLogSocketBroadcast(this.processes, options.ctx);
   }
@@ -218,8 +229,7 @@ class RuntimeOwner {
   ensureSqliteFs() { return this.sqliteFs; }
   /** What restoring the dev servers reads of this runtime: its readiness short of the login files, which may wait on the restore. */
   private devServerHost: DevServerRestoreHost | null = null;
-  /** The dev servers the previous incarnation ran, started again once (dev-servers.ts). */
-  restoreDevServers() {
+  private get devServers(): DevServerRestoreHost {
     const owner = this;
     this.devServerHost ??= {
       ctx: this.ctx,
@@ -229,7 +239,15 @@ class RuntimeOwner {
       processEnv: this.processEnv,
       ensureRuntimeReady: () => this.ensureUsable(),
     };
-    return restoreDevServers(this.devServerHost);
+    return this.devServerHost;
+  }
+  /** The dev servers the previous incarnation ran, started again once (dev-servers.ts). */
+  restoreDevServers() {
+    return restoreDevServers(this.devServers);
+  }
+  /** Their processes spawned again (dev-servers.ts): what a listing of what runs waits on. */
+  devServersRespawned() {
+    return devServersRespawned(this.devServers);
   }
   routeLoopback(port: number, request: Request) {
     return routeRuntimeLoopback(this.portRegistry, port, request, (dark) => this.ensureFacetManager().manager.ensureDurableAppOnPort(dark));
@@ -358,28 +376,36 @@ class RuntimeOwner {
     }
   }
 
-  async attachTerminal(ws: WebSocket, resume: 'reconnect' | 'wake' = 'reconnect'): Promise<void> {
+  async attachTerminal(ws: WebSocket, resume: 'reconnect' | 'wake' = 'reconnect', selection: TerminalSelection = {}): Promise<void> {
     await this.ensureRuntimeReady();
+    if (selection.terminal) return this.terminals.attach(selection.terminal, ws, resume);
     if (this.terminal.ws === ws) return;
     this.terminal.attach(ws);
     if (resume === 'reconnect') this.terminal.replay(loadScrollback(this.ctx));
+    // Said once, above the prompt, which is painted again below them.
     if (this.recoveryNotice) {
-      this.terminal.write('\r\n[Runtime resumed; files and shell settings restored. Previous interpreter state was not retained.]\r\n');
+      this.shell.writeNotice('[Runtime resumed; files and shell settings restored. Previous interpreter state was not retained.]\r\n');
       this.recoveryNotice = false;
     }
     if (this.legacyNotice) {
-      this.terminal.write(`\r\n[${this.legacyNotice}]\r\n`);
+      this.shell.writeNotice(`[${this.legacyNotice}]\r\n`);
       this.legacyNotice = null;
     }
-    if (!this.shell.running) this.shell.printPrompt();
+    this.shell.resumePrompt();
     this.terminal.flushNow();
     ws.send(JSON.stringify({ type: 'ready' }));
   }
 
-  async terminalFrame(ws: WebSocket, frame: string | ArrayBuffer): Promise<void> {
-    await this.attachTerminal(ws, 'wake');
+  async terminalFrame(ws: WebSocket, frame: string | ArrayBuffer, selection: TerminalSelection = {}): Promise<void> {
     const text = typeof frame === 'string' ? frame : new TextDecoder().decode(frame);
     const input = InputFrame.parse(JSON.parse(text));
+    if (selection.terminal) {
+      await this.ensureRuntimeReady();
+      const { running } = await this.terminals.input(selection.terminal, ws, input);
+      if (running) this.options.lifecycle.waitUntil(running.catch((error: unknown) => console.error('[nimbus] terminal input failed:', errorText(error))));
+      return;
+    }
+    await this.attachTerminal(ws, 'wake');
     const completion = this.terminal.handleMessage(input);
     if (completion) {
       this.options.lifecycle.waitUntil(completion.catch((error: unknown) => {
@@ -393,12 +419,18 @@ class RuntimeOwner {
     persistShellState(this.ctx, { cwd: this.shell.getCwd(), env: this.shell.getEnv(), vars: this.shell.getVariableAttributes() });
   }
 
-  terminalClose(ws: WebSocket): void {
+  terminalClose(ws: WebSocket, selection: TerminalSelection = {}): void {
+    if (selection.terminal) return this.terminals.detach(selection.terminal, ws);
     if (this.terminal.ws !== ws) return;
     this.terminal.flushNow();
     persistShellState(this.ctx, { cwd: this.shell.getCwd(), env: this.shell.getEnv(), vars: this.shell.getVariableAttributes() });
     this.terminal.detach();
     this.processes.flushLogs();
+  }
+
+  /** `pid` ended as a hang-up ends it: by its runtime when it has one, else here. */
+  private hangUp(pid: number): void {
+    if (!this.facetManager?.kill(pid, 'HUP', signalAbortReason('HUP'))) this.processes.kill(pid, exitCodeForSignal('HUP'), signalAbortReason('HUP'));
   }
 
   files(cred: VfsCred): RuntimeFiles {
@@ -426,6 +458,7 @@ class RuntimeOwner {
         try { await action(); }
         catch (error) { failures.push(error instanceof Error ? error : new Error(String(error))); }
       };
+      await clean(() => this.terminals.dispose());
       await clean(() => this.terminal.disposeRepl());
       await clean(() => this.terminal.sendData('\x03'));
       for (const process of this.processes.getAll()) {
@@ -502,8 +535,10 @@ export async function composeHostedRuntime(options: HostedRuntimeOptions) {
       await operations.ensureProgrammaticReady(owner);
       return owner.ensureFacetManager().apps.routeCapabilityPort(...args);
     },
-    attachTerminal: (ws: WebSocket) => owner.attachTerminal(ws),
-    terminalFrame: (ws: WebSocket, message: string | ArrayBuffer) => owner.terminalFrame(ws, message),
+    attachTerminal: (ws: WebSocket, selection?: TerminalSelection) => owner.attachTerminal(ws, 'reconnect', selection),
+    terminalFrame: (ws: WebSocket, message: string | ArrayBuffer, selection?: TerminalSelection) => owner.terminalFrame(ws, message, selection),
+    listTerminals: operations.rpcListTerminals.bind(null, owner),
+    closeTerminal: operations.rpcCloseTerminal.bind(null, owner),
   });
   return {
     workspace: options.workspace,
@@ -525,7 +560,7 @@ export async function composeHostedRuntime(options: HostedRuntimeOptions) {
       return new HostedSession(owner, scope);
     },
     onScheduled: (task: HostedRuntimeTask) => owner.onScheduled(task),
-    terminalClose: (ws: WebSocket) => owner.terminalClose(ws),
+    terminalClose: (ws: WebSocket, selection?: TerminalSelection) => owner.terminalClose(ws, selection),
     close: () => owner.close(),
   };
 }

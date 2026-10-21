@@ -1,4 +1,5 @@
 import { type VfsCred } from './os-contracts.js';
+import type { ProcessRestart } from './session-protocol.js';
 /**
  * ProcessTable — PID allocation and process lifecycle state.
  *
@@ -28,6 +29,13 @@ export interface ProcessEntry {
      * had. Absent when no exec named one.
      */
     execId?: string;
+    /**
+     * Its controlling terminal: `''` the session's own, a name a named
+     * terminal's. Taken at spawn from the parent, as `execId` is, so it
+     * outlives the reaping of a parent between them; absent for a process
+     * with none (an exec's, a dev server restored after a restart).
+     */
+    terminal?: string;
     /** Explicit long-running flag set when a command is handed to a
      *  long-lived Worker Loader or shell execution path. */
     longRunning?: boolean;
@@ -43,18 +51,8 @@ export interface ProcessEntry {
      */
     restartedFrom?: ProcessRestart;
 }
-/** Which process a restart replaced, and why it was restarted. */
-export type ProcessRestart = {
-    pid: number;
-    cause: 'session-restart';
-} | {
-    pid: number;
-    cause: 'exited';
-    exitCode: number;
-} | {
-    pid: number;
-    cause: 'host-reset';
-};
+/** Which process a restart replaced, and why it was restarted (session-protocol.ts ProcessRestartSchema). */
+export type { ProcessRestart };
 export interface ProcessTableSpawnOptions {
     cred?: VfsCred;
     parentPid?: number;
@@ -64,6 +62,8 @@ export interface ProcessTableSpawnOptions {
      * inherited.
      */
     execId?: string;
+    /** The controlling terminal of a process that does not take its parent's: a terminal's own shell. */
+    terminal?: string;
     /** The process this one restarts (ProcessEntry.restartedFrom). */
     restartedFrom?: ProcessRestart;
 }
@@ -146,6 +146,10 @@ export declare class ProcessTable {
      * several commands run concurrently in one session.
      */
     descendantsOf(pid: number): ProcessEntry[];
+    /** `pid`, a shell made before its terminal (the workspace's own), takes `terminal` as its controlling terminal: once. */
+    setTerminal(pid: number, terminal: string): void;
+    /** The running processes whose controlling terminal is `terminal`, oldest first. */
+    onTerminal(terminal: string): ProcessEntry[];
     /** Remove `pid`'s entry, now: its owner has seen it end. */
     forget(pid: number): void;
     /** The processes that ended more than maxAge ms ago, which a reap may forget. */

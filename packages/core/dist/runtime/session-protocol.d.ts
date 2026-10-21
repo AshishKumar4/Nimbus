@@ -1,6 +1,19 @@
 import { z } from 'zod/v4';
 import type { VfsCred } from './os-contracts.js';
 import type { ProcessTerminalSize } from './process-io-protocol.js';
+/** The process a process starts again, and why (ProcessEntry.restartedFrom). */
+export declare const ProcessRestartSchema: z.ZodDiscriminatedUnion<[z.ZodObject<{
+    pid: z.ZodNumber;
+    cause: z.ZodLiteral<"session-restart">;
+}, z.core.$strip>, z.ZodObject<{
+    pid: z.ZodNumber;
+    cause: z.ZodLiteral<"exited">;
+    exitCode: z.ZodNumber;
+}, z.core.$strip>, z.ZodObject<{
+    pid: z.ZodNumber;
+    cause: z.ZodLiteral<"host-reset">;
+}, z.core.$strip>], "cause">;
+export type ProcessRestart = z.infer<typeof ProcessRestartSchema>;
 export declare const SessionProcessSchema: z.ZodObject<{
     pid: z.ZodNumber;
     command: z.ZodString;
@@ -13,8 +26,28 @@ export declare const SessionProcessSchema: z.ZodObject<{
     longRunning: z.ZodBoolean;
     attachedTty: z.ZodDefault<z.ZodOptional<z.ZodBoolean>>;
     execId: z.ZodOptional<z.ZodString>;
+    restartedFrom: z.ZodOptional<z.ZodDiscriminatedUnion<[z.ZodObject<{
+        pid: z.ZodNumber;
+        cause: z.ZodLiteral<"session-restart">;
+    }, z.core.$strip>, z.ZodObject<{
+        pid: z.ZodNumber;
+        cause: z.ZodLiteral<"exited">;
+        exitCode: z.ZodNumber;
+    }, z.core.$strip>, z.ZodObject<{
+        pid: z.ZodNumber;
+        cause: z.ZodLiteral<"host-reset">;
+    }, z.core.$strip>], "cause">>;
 }, z.core.$strip>;
 export type SessionProcess = z.infer<typeof SessionProcessSchema>;
+/** A session's terminal as a list shows it: its own is `name: null`; a named one's is `/ws?terminal=<name>`. */
+export declare const SessionTerminalSchema: z.ZodObject<{
+    name: z.ZodNullable<z.ZodString>;
+    live: z.ZodBoolean;
+    attached: z.ZodBoolean;
+    running: z.ZodNullable<z.ZodString>;
+    cwd: z.ZodString;
+}, z.core.$strip>;
+export type SessionTerminal = z.infer<typeof SessionTerminalSchema>;
 export declare const SessionPortSchema: z.ZodObject<{
     port: z.ZodNumber;
     pid: z.ZodNumber;
@@ -38,6 +71,17 @@ export declare const SessionStartResultSchema: z.ZodObject<{
         longRunning: z.ZodBoolean;
         attachedTty: z.ZodDefault<z.ZodOptional<z.ZodBoolean>>;
         execId: z.ZodOptional<z.ZodString>;
+        restartedFrom: z.ZodOptional<z.ZodDiscriminatedUnion<[z.ZodObject<{
+            pid: z.ZodNumber;
+            cause: z.ZodLiteral<"session-restart">;
+        }, z.core.$strip>, z.ZodObject<{
+            pid: z.ZodNumber;
+            cause: z.ZodLiteral<"exited">;
+            exitCode: z.ZodNumber;
+        }, z.core.$strip>, z.ZodObject<{
+            pid: z.ZodNumber;
+            cause: z.ZodLiteral<"host-reset">;
+        }, z.core.$strip>], "cause">>;
     }, z.core.$strip>;
     ports: z.ZodArray<z.ZodObject<{
         port: z.ZodNumber;
@@ -243,6 +287,17 @@ declare const SessionResultSchemas: {
             longRunning: z.ZodBoolean;
             attachedTty: z.ZodDefault<z.ZodOptional<z.ZodBoolean>>;
             execId: z.ZodOptional<z.ZodString>;
+            restartedFrom: z.ZodOptional<z.ZodDiscriminatedUnion<[z.ZodObject<{
+                pid: z.ZodNumber;
+                cause: z.ZodLiteral<"session-restart">;
+            }, z.core.$strip>, z.ZodObject<{
+                pid: z.ZodNumber;
+                cause: z.ZodLiteral<"exited">;
+                exitCode: z.ZodNumber;
+            }, z.core.$strip>, z.ZodObject<{
+                pid: z.ZodNumber;
+                cause: z.ZodLiteral<"host-reset">;
+            }, z.core.$strip>], "cause">>;
         }, z.core.$strip>;
         ports: z.ZodArray<z.ZodObject<{
             port: z.ZodNumber;
@@ -342,10 +397,31 @@ declare const SessionResultSchemas: {
         longRunning: z.ZodBoolean;
         attachedTty: z.ZodDefault<z.ZodOptional<z.ZodBoolean>>;
         execId: z.ZodOptional<z.ZodString>;
+        restartedFrom: z.ZodOptional<z.ZodDiscriminatedUnion<[z.ZodObject<{
+            pid: z.ZodNumber;
+            cause: z.ZodLiteral<"session-restart">;
+        }, z.core.$strip>, z.ZodObject<{
+            pid: z.ZodNumber;
+            cause: z.ZodLiteral<"exited">;
+            exitCode: z.ZodNumber;
+        }, z.core.$strip>, z.ZodObject<{
+            pid: z.ZodNumber;
+            cause: z.ZodLiteral<"host-reset">;
+        }, z.core.$strip>], "cause">>;
     }, z.core.$strip>>;
     killProcess: z.ZodObject<{
         ok: z.ZodBoolean;
         pid: z.ZodNumber;
+    }, z.core.$strip>;
+    listTerminals: z.ZodArray<z.ZodObject<{
+        name: z.ZodNullable<z.ZodString>;
+        live: z.ZodBoolean;
+        attached: z.ZodBoolean;
+        running: z.ZodNullable<z.ZodString>;
+        cwd: z.ZodString;
+    }, z.core.$strip>>;
+    closeTerminal: z.ZodObject<{
+        closed: z.ZodBoolean;
     }, z.core.$strip>;
     writeProcessInput: z.ZodObject<{
         ok: z.ZodBoolean;
@@ -589,6 +665,8 @@ export interface SessionRpc {
     _rpcListRuntimes(): Promise<SessionResult<'listRuntimes'>>;
     _rpcListProcesses(): Promise<SessionProcess[]>;
     _rpcKillProcess(pid: number): Promise<SessionResult<'killProcess'>>;
+    _rpcListTerminals(): Promise<SessionTerminal[]>;
+    _rpcCloseTerminal(name: string): Promise<SessionResult<'closeTerminal'>>;
     _rpcWriteProcessInput(pid: number, data: string): Promise<SessionResult<'writeProcessInput'>>;
     _rpcEndProcessInput(pid: number): Promise<SessionResult<'endProcessInput'>>;
     _rpcResizeProcess(pid: number, size: SessionTerminalSize): Promise<SessionResult<'resizeProcess'>>;

@@ -14,6 +14,7 @@
  * call runs in is built by the workspace for the call's own process
  * (`NimbusWorkspace.shellFor`), from the state this module keeps.
  */
+import { z } from 'zod/v4';
 import type { Shell } from '../substrate/lifo/shell/Shell.js';
 import { type VariableAttributes } from '../substrate/lifo/shell/variables.js';
 import type { SqlDatabase } from '../runtime/os-contracts.js';
@@ -55,6 +56,8 @@ export interface NamedShellOptions {
     /** Release this call's ownership, without stopping it or saving its later state. */
     readonly detach?: AbortSignal;
 }
+/** A terminal's name (`/ws?terminal=`): 1 to 64 of `A-Z a-z 0-9 . _ -`. */
+export declare const TerminalNameSchema: z.ZodString;
 /** Saved variable attributes (a hosted terminal's JSON), or an error naming what is wrong with them. */
 export declare function parseVariableAttributes(json: string): VariableAttributes;
 /** A saved shell state, or an error naming what is wrong with it. */
@@ -88,7 +91,22 @@ export declare class NamedShells {
     hold<T>(id: string, options: NamedShellOptions, body: (shell: NamedShell) => Promise<T>): Promise<T>;
     /** The last saved state, after earlier calls on this name have settled. */
     read(id: string): Promise<ShellState | null>;
+    /**
+     * Where the named terminal `name`'s shell last was, or null. A terminal's
+     * shell lives as long as the terminal, not as a call: it is read when the
+     * terminal starts and saved as its shell changes, with no queue.
+     */
+    terminalState(name: string): ShellState | null;
+    saveTerminalState(name: string, state: ShellState): void;
+    /** The terminal `name`'s saved state forgotten (its close). */
+    forgetTerminal(name: string): void;
+    /** The named terminals with saved state, by name. */
+    terminalNames(): string[];
     private run;
+    /** Every call, so a workspace whose tables were dropped makes it again. */
+    private ensureTable;
+    /** Row `id`'s state, or null when it has none. */
+    private load;
     private save;
     /** The `vars` column, on a table made before it: added once, its rows' `vars` null (read as today's). */
     private addVarsColumn;

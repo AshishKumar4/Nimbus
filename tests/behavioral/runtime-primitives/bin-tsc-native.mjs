@@ -1,39 +1,22 @@
 #!/usr/bin/env bun
 // runtime-primitives/bin-tsc-native — `npm i typescript` gets a native
-// binary. Nimbus must say so, fast.
+// binary; `tsc` still compiles, and says which compiler did.
 //
-// TypeScript 7 ships the compiler as a platform-specific ELF executable.
-// The `typescript` package's `bin/tsc` is a JS shim whose only job is to
-// find that executable and hand the process over to it:
-//
-//   lib/tsc.js       → getExePath() → @typescript/typescript-<os>-<arch>
-//                    → process.execve(exe) / execFileSync(exe)
-//
-// The executable is a statically linked Go binary. There is no version of
-// Nimbus that runs it: the sandbox executes JavaScript and WebAssembly,
-// and an x86-64 ELF image is neither. So `npm i typescript && tsc` cannot
-// succeed, and the only question is whether the user is TOLD that or left
-// waiting.
-//
-// This probe pins the answer to "told, and quickly". It is the companion
-// to bin-tsc, which pins 5.7.3 — the last line that is a JavaScript
-// compiler — and asserts that it actually compiles.
+// TypeScript 7 ships the compiler as a platform-specific executable: the
+// `typescript` package's `bin/tsc` only finds @typescript/typescript-<os>-<arch>
+// and hands the process to it. Nothing in the sandbox runs an ELF image, so
+// Nimbus answers that `tsc` with tsrs, the Rust port of TypeScript 7 built to
+// wasm (runtime/tsrs.ts), and a line naming the installed package and why.
 //
 // What must hold:
 //
 //   1. `npm i typescript` (unpinned, whatever `latest` is) installs.
-//   2. `tsc` COMES BACK. A bounded wait that expires is the failure this
-//      probe exists to catch — an unrunnable binary must never present as
-//      a hung terminal.
-//   3. It comes back NON-ZERO. Reporting success for a compiler that
-//      never ran is the silent-truncation failure.
-//   4. The output names the cause. The user has to be able to act on it
-//      without reading Nimbus's source.
+//   2. `tsc` COMES BACK: an unrunnable binary never presents as a hang.
+//   3. It says what ran instead of the installed compiler, and why.
+//   4. It compiles: a type error is reported as tsc reports it, exit 2.
+//   5. An npm script's `tsc`, found on its PATH, is answered the same way.
 //
-// Check 4 deliberately does not pin an exact sentence — TypeScript owns
-// part of this text and will reword it. It pins the two facts a user
-// needs: which package could not be run, and that a platform/native
-// constraint is why.
+// bin-tsc pins 5.7.3, a JavaScript compiler, which runs as installed.
 
 import { mintSession, Terminal, stripAnsi, deleteSession, makeAsserter, BASE } from '../_driver.mjs';
 import { run } from './_run.mjs';
@@ -86,7 +69,7 @@ try {
   );
   const installed = /INSTALLED-(\d+\.\d+\.\d+[^\s]*)/.exec(ver.output)?.[1] ?? '(unknown)';
 
-  // ── the invocation must come back, non-zero, with a reason ───────────
+  // ── the invocation must come back, saying what runs ───────────────────
   const invoke = await run(t, 'tsc --version', BIN_TIMEOUT_MS);
   check(`\`tsc\` returns within ${BIN_TIMEOUT_MS / 1000}s instead of hanging`, invoke.ok,
     invoke.ok ? `${invoke.elapsed}ms (typescript@${installed})`
@@ -94,23 +77,24 @@ try {
         `output=${JSON.stringify(invoke.output.slice(-400))}`);
 
   // A major other than 7 means npm's `latest` moved back to a JS
-  // compiler. Then `tsc` should WORK, and bin-tsc is the probe that says
-  // so; this one has nothing left to assert.
+  // compiler, which runs as installed (bin-tsc); nothing here to assert.
   const major = Number.parseInt(installed, 10);
   if (Number.isFinite(major) && major < 7) {
     console.log(`  note: npm latest is typescript@${installed}, a JavaScript compiler; bin-tsc covers it`);
   } else if (invoke.ok) {
     const out = invoke.output;
-    const nonZero = /exited with code [1-9]/.test(out) || /code=[1-9]/.test(out);
-    check('the failure is reported as a non-zero exit, not a success', nonZero,
-      nonZero ? '' : `output=${JSON.stringify(out.slice(-500))}`);
-
-    const namesPackage = /@typescript\/typescript-\w+-\w+/.test(out);
-    const namesCause = /platform|native|executable|unsupported/i.test(out);
-    check('the output names the platform package and why it cannot run',
-      namesPackage && namesCause,
-      namesPackage && namesCause ? ''
-        : `namesPackage=${namesPackage} namesCause=${namesCause} output=${JSON.stringify(out.slice(-500))}`);
+    const says = new RegExp(`typescript ${installed.replace(/\./g, '\\.')} here is a native compiler.*running tsrs`).test(out);
+    check('it says the installed compiler is native and tsrs runs instead', says && /\(tsrs /.test(out),
+      says ? '' : `output=${JSON.stringify(out.slice(-500))}`);
+    await run(t, `mkdir -p src && echo 'export const n: number = "seven";' > src/bad.ts && echo '{"compilerOptions":{"strict":true,"noEmit":true},"include":["src"]}' > tsconfig.json`, 20_000);
+    const checked = await run(t, 'tsc; echo "exit=$?"', BIN_TIMEOUT_MS);
+    const reported = /src\/bad\.ts\(1,14\): error TS2322/.test(checked.output) && /exit=2/.test(checked.output);
+    check('and it compiles: the type error, exit 2', reported, reported ? '' : `output=${JSON.stringify(checked.output.slice(-500))}`);
+    // An npm script finds the installed bin on its PATH, by path: the same answer.
+    await run(t, `node -e "const f='${DIR}/package.json',p=JSON.parse(require('fs').readFileSync(f));p.scripts={check:'tsc'};require('fs').writeFileSync(f,JSON.stringify(p))"`, 30_000);
+    const script = await run(t, 'npm run check; echo "exit=$?"', BIN_TIMEOUT_MS);
+    const scripted = says && /here is a native compiler/.test(script.output) && /error TS2322/.test(script.output) && !/exit=0/.test(script.output);
+    check('and an npm script\'s `tsc` is answered the same way', scripted, scripted ? '' : `output=${JSON.stringify(script.output.slice(-500))}`);
   }
 } catch (e) {
   if (a.pass + a.fail === 0) check('probe ran', false, e.message);

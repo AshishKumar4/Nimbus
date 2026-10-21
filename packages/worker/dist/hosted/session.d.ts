@@ -27,9 +27,9 @@ export interface HostedSessionScope {
     /** The identity every command and file operation runs as. */
     readonly cred?: VfsCred;
 }
-export interface HostedSessionOwner extends operations.ProgrammaticHost {
+export type HostedSessionOwner = operations.ProgrammaticHost & operations.TerminalsHost & {
     noteClientActivity(): void;
-}
+};
 export declare class HostedSession extends RpcTarget implements SessionRpc {
     #private;
     private readonly owner;
@@ -55,6 +55,17 @@ export declare class HostedSession extends RpcTarget implements SessionRpc {
             longRunning: boolean;
             attachedTty: boolean;
             execId?: string | undefined;
+            restartedFrom?: {
+                pid: number;
+                cause: "session-restart";
+            } | {
+                pid: number;
+                cause: "exited";
+                exitCode: number;
+            } | {
+                pid: number;
+                cause: "host-reset";
+            } | undefined;
         };
         ports: {
             port: number;
@@ -156,10 +167,31 @@ export declare class HostedSession extends RpcTarget implements SessionRpc {
         longRunning: boolean;
         attachedTty: boolean;
         execId?: string | undefined;
+        restartedFrom?: {
+            pid: number;
+            cause: "session-restart";
+        } | {
+            pid: number;
+            cause: "exited";
+            exitCode: number;
+        } | {
+            pid: number;
+            cause: "host-reset";
+        } | undefined;
     }[]>;
     _rpcKillProcess(pid: number): Promise<{
         ok: boolean;
         pid: number;
+    }>;
+    _rpcListTerminals(): Promise<{
+        name: string | null;
+        live: boolean;
+        attached: boolean;
+        running: string | null;
+        cwd: string;
+    }[]>;
+    _rpcCloseTerminal(name: string): Promise<{
+        closed: boolean;
     }>;
     _rpcWriteProcessInput(pid: number, data: string): Promise<{
         ok: boolean;

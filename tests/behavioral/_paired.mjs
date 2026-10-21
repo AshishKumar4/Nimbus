@@ -129,9 +129,11 @@ export function assertCandidateRounds(a, what, result) {
 /**
  * Check `metric` of `result` (measurePaired's) on the asserter `a`. Returns
  * false when too few rounds measured to grade it; the probe then exits 2
- * unless something else failed.
+ * unless something else failed. `found`, when the probe measured it, says
+ * which injected slowdowns its grading found: a green says nothing about
+ * smaller ones.
  */
-export function assertPaired(a, metric, result) {
+export function assertPaired(a, metric, result, { found } = {}) {
   if (result.measured.length < Math.ceil(MIN_ROUND_SHARE * result.planned)) {
     console.log(`  ${metric}: NOT GRADED — ${result.measured.length} of ${result.planned} rounds measured on every arm`);
     return false;
@@ -139,7 +141,8 @@ export function assertPaired(a, metric, result) {
   const grade = gradePaired(result.measured.map((round) => Object.fromEntries(ARMS.map((arm) => [arm, round[arm][metric]]))));
   const range = ([low, high]) => `${low.toFixed(3)}-${high.toFixed(3)}`;
   const detail = `candidate/baseline ${grade.ratio.toFixed(3)} (95% CI ${range(grade.interval)}); weaker candidate ${grade.weakest.arm} ${range(grade.weakest.interval)}; `
-    + `A/A ${range(grade.aa)}; B/B ${range(grade.bb)}; medians ${ARMS.map((arm) => `${arm} ${grade.medians[arm].toFixed(0)}`).join(' ')} ms over ${grade.rounds} rounds`;
+    + `A/A ${range(grade.aa)}; B/B ${range(grade.bb)}; medians ${ARMS.map((arm) => `${arm} ${grade.medians[arm].toFixed(0)}`).join(' ')} ms over ${grade.rounds} rounds`
+    + (found === undefined ? '' : `; its grading found ${found}, and a green says nothing about less`);
   console.log(`  ${metric}: ${detail}`);
   a.check(`${metric}: the candidate is not slower than the baseline on each of its Previews`, !grade.slower, detail);
   return true;

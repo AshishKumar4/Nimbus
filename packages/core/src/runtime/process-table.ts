@@ -1,4 +1,5 @@
 import { CRED_SESSION_USER, type VfsCred } from './os-contracts.js';
+import type { ProcessRestart } from './session-protocol.js';
 
 /**
  * ProcessTable — PID allocation and process lifecycle state.
@@ -31,6 +32,13 @@ export interface ProcessEntry {
    * had. Absent when no exec named one.
    */
   execId?: string;
+  /**
+   * Its controlling terminal: `''` the session's own, a name a named
+   * terminal's. Taken at spawn from the parent, as `execId` is, so it
+   * outlives the reaping of a parent between them; absent for a process
+   * with none (an exec's, a dev server restored after a restart).
+   */
+  terminal?: string;
   /** Explicit long-running flag set when a command is handed to a
    *  long-lived Worker Loader or shell execution path. */
   longRunning?: boolean;
@@ -50,11 +58,8 @@ export interface ProcessEntry {
 /** An entry as the table holds it: its cred the table's own to replace (setUmask). */
 type TableEntry = Omit<ProcessEntry, 'cred'> & { cred: VfsCred };
 
-/** Which process a restart replaced, and why it was restarted. */
-export type ProcessRestart =
-  | { pid: number; cause: 'session-restart' }
-  | { pid: number; cause: 'exited'; exitCode: number }
-  | { pid: number; cause: 'host-reset' };
+/** Which process a restart replaced, and why it was restarted (session-protocol.ts ProcessRestartSchema). */
+export type { ProcessRestart };
 
 export interface ProcessTableSpawnOptions {
   cred?: VfsCred;
@@ -65,6 +70,8 @@ export interface ProcessTableSpawnOptions {
    * inherited.
    */
   execId?: string;
+  /** The controlling terminal of a process that does not take its parent's: a terminal's own shell. */
+  terminal?: string;
   /** The process this one restarts (ProcessEntry.restartedFrom). */
   restartedFrom?: ProcessRestart;
 }
@@ -165,8 +172,9 @@ export class ProcessTable {
     const inheritedCred = options.parentPid === undefined
       ? CRED_SESSION_USER
       : this.credOf(options.parentPid);
-    const execId = options.execId
-      ?? (options.parentPid === undefined ? undefined : this.processes.get(options.parentPid)?.execId);
+    const parent = options.parentPid === undefined ? undefined : this.processes.get(options.parentPid);
+    const execId = options.execId ?? parent?.execId;
+    const terminal = options.terminal ?? parent?.terminal;
     const pid = this.nextPid++;
     if (pid % PID_GEN_STRIDE === 0) this.onStride?.(pid / PID_GEN_STRIDE);
     const entry: TableEntry = {
@@ -183,6 +191,7 @@ export class ProcessTable {
       parentPid: options.parentPid,
     };
     if (execId !== undefined) entry.execId = execId;
+    if (terminal !== undefined) entry.terminal = terminal;
     if (options.restartedFrom !== undefined) entry.restartedFrom = { ...options.restartedFrom };
     this.processes.set(pid, entry);
     return entry;
@@ -296,6 +305,19 @@ export class ProcessTable {
       }
     }
     return found;
+  }
+
+  /** `pid`, a shell made before its terminal (the workspace's own), takes `terminal` as its controlling terminal: once. */
+  setTerminal(pid: number, terminal: string): void {
+    const entry = this.processes.get(pid);
+    if (!entry) throw noSuchProcess(pid);
+    if (entry.terminal !== undefined && entry.terminal !== terminal) throw new Error(`process ${pid} already has terminal ${JSON.stringify(entry.terminal)}`);
+    entry.terminal = terminal;
+  }
+
+  /** The running processes whose controlling terminal is `terminal`, oldest first. */
+  onTerminal(terminal: string): ProcessEntry[] {
+    return [...this.processes.values()].filter((entry) => entry.state === 'running' && entry.terminal === terminal);
   }
 
   /** Remove `pid`'s entry, now: its owner has seen it end. */

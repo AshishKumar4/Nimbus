@@ -35,6 +35,8 @@ export declare class Excludes {
     private readonly ignoreCase;
     private readonly stack;
     constructor(readGitignore: (dir: string) => Promise<Uint8Array | null>, fileLists: readonly PatternList[], ignoreCase?: boolean);
+    /** The `.gitignore` files read so far forgotten: the next question reads them again (a walk begun over). */
+    forget(): void;
     /** is_excluded: whether git ignores `path` (repo-relative), a directory when `isDir`. */
     isExcluded(path: string, isDir: boolean): Promise<boolean>;
     private lastMatchingInLists;
