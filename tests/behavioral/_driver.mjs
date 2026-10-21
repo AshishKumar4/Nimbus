@@ -308,11 +308,18 @@ export function attachPathFor(sid) {
   return targetOf(sid).session(sid).attachPath;
 }
 
+/**
+ * DELETE the session; `ok` once nothing is left for the probe to delete. An
+ * anonymous demo session (`reap: 'ttl'`) whose DELETE answers 401, as it
+ * does by design, is left to the demo's TTL, as the ledger counts it.
+ */
 export async function deleteSession(sid, reason = 'behavioral-probe-cleanup') {
-  const result = await targetOf(sid).delete(sid, { reason });
+  const target = targetOf(sid);
+  const result = await target.delete(sid, { reason });
   ledger('delete', sid, result.status, { confirmed: result.ok });
-  if (result.ok) undeleted.delete(sid);
-  return result;
+  const released = result.ok || (target.session(sid).reap === 'ttl' && result.status === 401);
+  if (released) undeleted.delete(sid);
+  return { ...result, ok: released };
 }
 
 /** GET /s/<sid>/preview/ — returns {status, html}. */

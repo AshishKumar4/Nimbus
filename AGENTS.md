@@ -409,7 +409,8 @@ probe's to delete in
 `finally`. An anonymous demo session (the `mintSession` fallback on
 `nimbus-os.dev`, below) is the one exception: its DELETE answers 401 by
 design and the demo's TTL reaps it, so the ledger marks it `reap: 'ttl'` and
-`run-all` reports it as TTL-reaped rather than leaked.
+`run-all` reports it as TTL-reaped rather than leaked. `deleteSession`
+answers `ok` for that 401, so a probe's own cleanup check passes there.
 `NIMBUS_PROBE_KEEP_SESSIONS=1` keeps sessions for forensics.
 
 ### CI
