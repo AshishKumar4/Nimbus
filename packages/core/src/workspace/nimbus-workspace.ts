@@ -20,8 +20,8 @@
  * routed through it would silently acquire all of that.
  */
 
-import { startProgram, type StartedSessionProgram } from './start-program.js';
-import type { Program } from '../runtime/program-start.js';
+import { startProgram } from './start-program.js';
+import type { Program, StartedSessionProgram } from '../runtime/program-start.js';
 import { createKillCommand, type HostProcessSignals } from '../substrate/lifo/commands/system/kill.js';
 import { Kernel } from '../substrate/lifo/kernel/index.js';
 import { Shell } from '../substrate/lifo/shell/Shell.js';

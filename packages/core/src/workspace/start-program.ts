@@ -8,11 +8,11 @@
  */
 import type { ChildProcessManager, ChildExitStatus } from '../runtime/child-process-manager.js';
 import type { ExecChunk } from '../runtime/exec-stream.js';
-import type { ExitStatus, Program, StartedProgram } from '../runtime/program-start.js';
+import type { ExitStatus, Program, StartedSessionProgram } from '../runtime/program-start.js';
 import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import type { VfsCred } from '../runtime/os-contracts.js';
 import { exitCodeForSignal } from '../substrate/lifo/shell/signals.js';
-import { errnoOf, fsError } from '../vfs/vfs-error.js';
+import { errnoOf } from '../vfs/vfs-error.js';
 
 /** How long one wait on the broker lasts before it is made again. */
 const WAIT_MS = 5000;
@@ -21,11 +21,6 @@ export interface ProgramHost {
   readonly children: ChildProcessManager;
   readonly processes: SessionProcessSupervisor;
   readonly cred: Readonly<VfsCred>;
-}
-
-/** A started program, and its pid in the session's process table. */
-export interface StartedSessionProgram extends StartedProgram {
-  readonly pid: number;
 }
 
 /**
@@ -37,7 +32,7 @@ export interface StartedSessionProgram extends StartedProgram {
 export async function startProgram(host: ProgramHost, program: Program, cancel: AbortSignal): Promise<StartedSessionProgram> {
   const [file, ...args] = program.argv;
   if (file === undefined || file === '') throw new TypeError('startProgram: argv[0] must name a program');
-  if (cancel.aborted) throw canceled(file);
+  if (cancel.aborted) throw spawnError(program.argv, { code: 'ECANCELED' });
   const { children, processes } = host;
   // Its parent: a process of its own, as an exec's, which ends with it.
   const parent = processes.spawn(program.argv.join(' '), [...program.argv], program.cwd, { cred: host.cred });
@@ -63,7 +58,7 @@ export async function startProgram(host: ProgramHost, program: Program, cancel: 
   if (cancel.aborted) {
     stopPending();
     await ended;
-    throw canceled(file);
+    throw spawnError(program.argv, { code: 'ECANCELED' });
   }
   if (heard.done && heard.spawnError !== undefined) {
     await ended;
@@ -137,10 +132,6 @@ function outputOf(children: ChildProcessManager, childPid: number): ReadableStre
       children.closeOutput(childPid, 2);
     },
   }, { highWaterMark: 0 });
-}
-
-function canceled(file: string): Error {
-  return fsError('ECANCELED', `spawn ${file}`, file);
 }
 
 /** Node's spawn error for `argv`: its code and errno, `syscall: 'spawn <file>'`, `path`, `spawnargs`. */

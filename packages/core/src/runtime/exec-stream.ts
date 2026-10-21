@@ -169,7 +169,8 @@ const HEADER_BYTES = 5;
 
 const ErrorFrameSchema = z.object({ message: z.string() });
 
-function frame(kind: number, payload: Uint8Array): Uint8Array {
+/** One frame of a byte stream of frames: `[kind u8][length u32 BE][payload]` (program-stream.ts frames this way too). */
+export function frame(kind: number, payload: Uint8Array): Uint8Array {
   const out = new Uint8Array(HEADER_BYTES + payload.byteLength);
   out[0] = kind;
   new DataView(out.buffer).setUint32(1, payload.byteLength);

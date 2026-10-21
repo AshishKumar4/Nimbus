@@ -30,7 +30,7 @@ import {
   SessionResults, SessionSuccessSchema, SessionFailureSchema,
   type SessionJsonOperation, type SessionOperation, type SessionResult,
   type SessionRpc as NimbusSessionSurface,
-  type SessionExecOptions, type SessionRunCodeOptions,
+  type SessionExecOptions, type SessionRunCodeOptions, type SessionStartProgramOptions,
   type SessionRestartPolicy as NimbusRestartPolicy,
   type SessionAppVisibility as NimbusAppVisibility,
   type SessionAppTarget as NimbusAppTarget,
@@ -51,6 +51,8 @@ import {
   type SessionRuntimeSummary as NimbusRuntimeSummary,
   type SessionAvailableRuntime as NimbusAvailableRuntime,
 } from '@nimbus-sh/core/runtime/session-protocol.js';
+import { decodeProgramStream, PROGRAM_STREAM_CONTENT_TYPE } from '@nimbus-sh/core/runtime/program-stream.js';
+import type { StartedSessionProgram } from '@nimbus-sh/core/runtime/program-start.js';
 export type {
   NimbusSessionSurface, NimbusRestartPolicy, NimbusAppVisibility, NimbusAppTarget, NimbusDurableAppOptions,
   NimbusTerminalSize, NimbusDestroyOptions, NimbusDestroyResult, NimbusStartResult,
@@ -345,6 +347,7 @@ export class NimbusSandbox {
     return {
       _rpcReady: (options) => this.remoteRpc('ready', [options]),
       _rpcExecStream: (command, options) => this.remoteExecStream([command, options]),
+      _rpcStartProgram: (argv, options) => this.remoteProgramStream([argv, options === undefined ? undefined : { cwd: options.cwd, env: options.env }]),
       _rpcStartProcess: (command, options) => this.remoteRpc('startProcess', [command, options]),
       _rpcDetachExec: (detachId) => this.remoteRpc('detachExec', [detachId]),
       _rpcRunCode: (code, options) => this.remoteRpc('runCode', [code, options]),
@@ -399,6 +402,14 @@ export class NimbusSandbox {
     return SessionResults[op].parse(WireDecoder.parse(success.data.result));
   }
 
+  /** The `startProgram` op answers with the encoded program stream as its body, or a JSON error. */
+  private async remoteProgramStream(args: unknown[]): Promise<ReadableStream<Uint8Array>> {
+    const response = await this.remoteFetch('startProgram', args, PROGRAM_STREAM_CONTENT_TYPE);
+    const type = response.headers.get('Content-Type') ?? '';
+    if (response.ok && response.body && type.startsWith(PROGRAM_STREAM_CONTENT_TYPE)) return response.body;
+    throw remoteFailure(response, await remotePayload(response));
+  }
+
   /** The `execStream` op answers with the encoded stream as its body, or a JSON error. */
   private async remoteExecStream(args: unknown[]): Promise<ReadableStream<Uint8Array>> {
     const response = await this.remoteFetch('execStream', args, EXEC_STREAM_CONTENT_TYPE);
@@ -443,6 +454,49 @@ export class NimbusSandbox {
       this.readyPromise = this.rpc(this.stub()._rpcReady({ preinstall })).then(() => undefined);
     }
     return this.readyPromise;
+  }
+
+  /**
+   * Start a program by its argv, as execvp starts one (never a shell line):
+   * resolved once it runs, rejected with Node's spawn error (`code`,
+   * `errno`, `syscall: 'spawn <file>'`, `path`) when it cannot. Its output
+   * is read as you read it; its exit is waitpid's code or signal; `kill`
+   * sends it a signal. A cwd under a mount that runs programs on its own
+   * machine starts it there. `stdin`'s bytes are its input, to their end;
+   * none: its input ends at once.
+   */
+  async startProgram(argv: string[], options: SessionStartProgramOptions = {}): Promise<StartedSessionProgram> {
+    await this.ready();
+    const stub = this.stub();
+    const signal = (pid: number, sent: string): void => {
+      this.rpc(stub._rpcSignalProcess(pid, sent)).catch((error: unknown) => console.error(`Nimbus: could not send ${sent} to ${pid}`, error));
+    };
+    // Across HTTP no stream rides the request: the bytes follow the start, written with the program's input calls.
+    const remote = this.target.kind === 'remote';
+    const started = await decodeProgramStream(await this.rpc(stub._rpcStartProgram(argv, remote ? { cwd: options.cwd, env: options.env } : options)), signal);
+    if (remote) void this.feed(started.pid, options.stdin ?? null);
+    return started;
+  }
+
+  /** `stdin`'s bytes into program `pid`'s input, each write waiting for room, then its end. */
+  private async feed(pid: number, stdin: ReadableStream<Uint8Array> | null): Promise<void> {
+    const stub = this.stub();
+    try {
+      if (stdin !== null) {
+        const reader = stdin.getReader();
+        for (;;) {
+          const next = await reader.read();
+          if (next.done) break;
+          if (!(await this.rpc(stub._rpcWriteProcessInput(pid, next.value))).ok) {
+            await reader.cancel();
+            return;
+          }
+        }
+      }
+      await this.rpc(stub._rpcEndProcessInput(pid));
+    } catch (error) {
+      console.error(`Nimbus: the input of program ${pid} could not be written`, error);
+    }
   }
 
   /** Run a command to completion and return its output as strings. Built on {@link execStream}. */

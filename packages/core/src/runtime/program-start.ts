@@ -57,3 +57,8 @@ export type ProgramPlacement =
   | { readonly kind: 'absent'; readonly reason: string };
 
 export const LOCAL_PLACEMENT: ProgramPlacement = Object.freeze({ kind: 'local' });
+
+/** A program a session started (NimbusWorkspace.startProgram), and its pid in the session's process table. */
+export interface StartedSessionProgram extends StartedProgram {
+  readonly pid: number;
+}
