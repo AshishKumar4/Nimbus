@@ -18,7 +18,7 @@
  * applies, and differs only in how it repairs what it could not apply.
  */
 
-import type { VfsAcquireResult } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { RuntimeVfsStat, VfsAcquireResult } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { ResidentBarrier, ResidentBarrierOptions, ResidentEntry, ResidentNamespace } from '@nimbus-sh/core/runtime/wasi/resident-filesystem.js';
 import type { Admission } from './admission.js';
 import type { Cells } from './cells.js';
@@ -44,7 +44,7 @@ const REPAIR_JOINS_MAX = 4;
 
 export interface View {
   bootLazy(supervisor: ResidentSupervisor | null | undefined): Promise<boolean>;
-  namespaceView(supervisor: ResidentSupervisor, device: number, cred: ResidentCred): ResidentNamespace;
+  namespaceView(supervisor: ResidentSupervisor, root: RuntimeVfsStat, cred: ResidentCred): ResidentNamespace;
 }
 
 export function createView(
@@ -119,10 +119,14 @@ export function createView(
     bootLazy,
     /**
      * The store as a process's filesystem adapter reads it: names as lstats,
-     * file bytes held or fetched, and the barrier. `device` is the session's
-     * SQLite device, the only one the adapter answers for.
+     * file bytes held or fetched, and the barrier. `root` is the session's
+     * root as of the store's cursor or after it (a delta that names it moves
+     * it): its device is the session's SQLite device, the only one the
+     * adapter answers for.
      */
-    namespaceView(supervisor, device, cred) {
+    namespaceView(supervisor, root, cred) {
+      const device = root.dev;
+      namespace.setRoot(root, root.revision);
       namespace.setCred(cred);
       const encoder = new TextEncoder();
       const typeOf = (kind: number): ResidentEntry['type'] => (kind === NS_DIR ? 'directory' : kind === NS_LINK ? 'symlink' : 'file');
@@ -337,8 +341,8 @@ export function createView(
         entry(k) {
           // Under a directory whose relist is on its way, no row is answered, nor any absence.
           if (namespace.fenced(k)) return undefined;
-          const row = nsRowAt(coherence.require(), k);
-          if (row === undefined) return namespace.listedAt(k) ? null : undefined;
+          const row = k === '' ? namespace.root() : nsRowAt(coherence.require(), k);
+          if (row === undefined) return k !== '' && namespace.listedAt(k) ? null : undefined;
           return {
             type: typeOf(row.kind), dev: row.dev || 0, ino: row.ino, nlink: row.nlink || 1,
             size: row.size, atime: row.atime, mtime: row.mtime, ctime: row.ctime,

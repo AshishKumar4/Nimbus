@@ -1049,7 +1049,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   fs.stat = (path, options = {}) => answer<RuntimeVfsStat | null>('stat', () => {
     const follow = options.followSymlinks !== false;
     const finish = (key: Resolution): RuntimeVfsStat | null | Delegate => {
-      if (key === DELEGATE || key === '') return DELEGATE;
+      if (key === DELEGATE) return DELEGATE;
       if (key === null) throw fsError('ELOOP', follow ? 'stat' : 'lstat', path);
       const entry = entryAt(key);
       if (entry === undefined) return DELEGATE;
@@ -1103,7 +1103,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   }), () => null);
 
   fs.readFile = (path, options = {}) => answer<Uint8Array | null>('readFile', () => after(resolve(path, options.followSymlinks !== false, true), (key) => {
-    if (key === DELEGATE || key === '') return DELEGATE;
+    if (key === DELEGATE) return DELEGATE;
     if (key === null) return null;
     const entry = entryAt(key);
     if (entry === undefined) return DELEGATE;
@@ -1145,7 +1145,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   const byCodeUnit = (entries: RuntimeVfsDirEntry[]): RuntimeVfsDirEntry[] => [...entries].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 
   fs.readlink = (path) => answer<string | null>('readlink', () => after(resolve(path, false), (key) => {
-    if (key === DELEGATE || key === '') return DELEGATE;
+    if (key === DELEGATE) return DELEGATE;
     if (key === null) return null;
     const entry = entryAt(key);
     if (entry === undefined) return DELEGATE;
@@ -1153,7 +1153,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   }), () => authority.readlink(path));
 
   fs.realpath = (path) => answer<string>('realpath', () => after(resolve(path, true), (key) => {
-    if (key === DELEGATE || key === '') return DELEGATE;
+    if (key === DELEGATE) return DELEGATE;
     if (key === null) throw fsError('ELOOP', 'realpath', path);
     const entry = entryAt(key);
     if (entry === undefined) return DELEGATE;
@@ -1172,7 +1172,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   const heldOpen = (handle: RuntimeFileHandle): RuntimeOpenedFile => ({ ...handle, stat: statOf(identified(handle.id, 'open')) });
 
   fs.access = (path, mode) => answer<void>('access', () => after(resolve(path, true), (key) => {
-    if (key === DELEGATE || key === '') return DELEGATE;
+    if (key === DELEGATE) return DELEGATE;
     if (key === null) throw fsError('ELOOP', 'access', path);
     const entry = entryAt(key);
     if (entry === undefined) return DELEGATE;

@@ -62,7 +62,7 @@ import {
   type ResidentFilesystemStats,
   type ResidentNamespace,
 } from '@nimbus-sh/core/runtime/wasi/resident-filesystem.js';
-import { CRED_SESSION_USER, type RuntimeFsBridge, type RuntimeVfsDirEntry } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_SESSION_USER, type RuntimeFsBridge, type RuntimeVfsDirEntry, type RuntimeVfsStat } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { ProcessFsSession } from '@nimbus-sh/core/_shared/process-fs-client.js';
 import { sqlJournal, type JournalSql } from '@nimbus-sh/core/_shared/process-fs-journal.js';
 import type { WaveFence } from '@nimbus-sh/platform/wave-writer.js';
@@ -231,7 +231,7 @@ let __wasiResident: { sup: WasiSupervisorStub; who: string; store: ResidentStore
  * filesystem reports, and the directories it opened. The next process of the
  * same credential continues it.
  */
-let __wasiKept: { who: string; store: ResidentStore; device: number; walked: readonly string[] } | null = null;
+let __wasiKept: { who: string; store: ResidentStore; root: RuntimeVfsStat; walked: readonly string[] } | null = null;
 
 /**
  * Syscalls this facet's watchdog gave up on (withParkDeadline): each may
@@ -276,16 +276,18 @@ function __wasiStartResident(sup: WasiSupervisorStub, cred: WasiCred): { store: 
   // A kept store answers as it stood at its cursor: the process's first
   // answer takes the barrier from there (inbound, below), so it reads
   // everything that happened since, as a barrier inside one process does.
-  let view: ResidentNamespace | null = kept === null ? null : store.view.namespaceView(supervisor, kept.device, cred);
+  let view: ResidentNamespace | null = kept === null ? null : store.view.namespaceView(supervisor, kept.root, cred);
   if (view !== null && !view.ready()) view = null;
   /** The process's admission listener, given to the view once there is one (ResidentNamespace.onAdmitted). */
   let admitted: ((key: string, dev: number, ino: number) => void) | null = null;
   if (view === null) store.bindInMemory(WASI_RESIDENT_STORE_BYTES);
   const ready = view !== null ? Promise.resolve(view) : (async () => {
-    // The session's own filesystem is the one the store answers for: its root reports its device.
+    // The session's own filesystem is the one the store answers for: its root reports its device. Asked once the
+    // store has its cursor, so the root is as of it or after (a delta that names it after moves it again).
+    if (!(await store.view.bootLazy(supervisor))) return null;
     const root = await authority.stat('/');
-    if (root === null || !(await store.view.bootLazy(supervisor))) return null;
-    view = store.view.namespaceView(supervisor, root.dev, cred);
+    if (root === null) return null;
+    view = store.view.namespaceView(supervisor, root, cred);
     if (admitted !== null) view.onAdmitted?.(admitted);
     return view;
   })().catch(() => { view = null; return null; });
@@ -409,8 +411,9 @@ export async function __wasiSettleWrites(): Promise<string | null> {
       // A run that ended with its store answering, and everything it wrote
       // answered, leaves the store to the next process in this facet.
       const view = await resident.ready;
-      if (failed === null && __wasiAbandoned === 0 && view !== null && view.ready()) {
-        __wasiKept = { who: resident.who, store: resident.store, device: view.device, walked: resident.fs.walked() };
+      const root = view?.entry('');
+      if (failed === null && __wasiAbandoned === 0 && view !== null && view.ready() && root) {
+        __wasiKept = { who: resident.who, store: resident.store, root, walked: resident.fs.walked() };
       }
     }
   } catch (error) {

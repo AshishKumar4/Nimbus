@@ -210,7 +210,7 @@ async function eagerBridge(stub, sql) {
   const cursor = await supervisor.fsAcquire(null, 0, { namespace: true });
   const boot = await store.sync.boot(() => ({}), { epoch: cursor.epoch, rev: cursor.rev }, supervisor, 0);
   if (boot.failure) throw new Error(`the store did not enumerate: ${boot.failure}`);
-  const view = store.view.namespaceView(supervisor, (await bridge.stat('/')).dev, CRED);
+  const view = store.view.namespaceView(supervisor, await bridge.stat('/'), CRED);
   const fs = residentFilesystem(bridge, view, {
     session: {
       openWriter: (first) => stub.openWaveWriter(first),

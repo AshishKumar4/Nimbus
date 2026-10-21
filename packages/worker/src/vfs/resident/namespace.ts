@@ -75,6 +75,14 @@ export interface Namespace {
   overlayDelta(bytes: number): void;
   /** The row at exactly `k` (no symlink resolution), or undefined; refused while sealed. */
   rowAt(k: string): NsRow | undefined;
+  /**
+   * The root's own row, as the session last said it: given as a view starts
+   * (the stat it was started with) and moved by each delta that names the
+   * root. Undefined from a reset until one does: the table holds no row for
+   * the root, which has no parent.
+   */
+  root(): NsRow | undefined;
+  setRoot(stat: NsStat, rev: unknown): void;
   /** Why the namespace is not answering (meaningful only while ready() is false). */
   notReadyCause(): string;
   put(t: ResidentTables, k: string, stat: NsStat, rev: unknown, target?: string | null, unlisted?: string | null): void;
@@ -221,6 +229,8 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
   const listed = new SafeSet<string>();
   /** Moved whenever the table is replaced or stops answering: a learning asked before installs nothing. */
   let generation = 0;
+  /** The root's row (Namespace.root). */
+  let root: NsRow | undefined;
   /**
    * Each learning in flight, with every path an admitted delta named since it
    * was asked, and whether what is beneath it moved too (`beneath`): not when
@@ -313,6 +323,14 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
    * on when it did not name its entries, null when it did. Undefined (a delta,
    * a note) keeps what the row says.
    */
+  const setRoot = (stat: NsStat, rev: unknown): void => {
+    root = {
+      kind: NS_DIR, size: NumberOf(stat.size) || 0, mode: NumberOf(stat.mode) || 0, uid: NumberOf(stat.uid) || 0, gid: NumberOf(stat.gid) || 0,
+      atime: NumberOf(stat.atime) || 0, mtime: NumberOf(stat.mtime) || 0, ctime: NumberOf(stat.ctime) || 0, ino: NumberOf(stat.ino) || 0,
+      rev: NumberOf(rev) || 0, target: null, dev: NumberOf(ownValue(stat, 'dev')) || 0, nlink: NumberOf(ownValue(stat, 'nlink')) || 1,
+    };
+  };
+
   const put = (t: ResidentTables, k: string, stat: NsStat, rev: unknown, target?: string | null, unlistedAt?: string | null): void => {
     const parent = nsParent(k);
     const name = nsName(k);
@@ -447,6 +465,8 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
       admission.addOverlay(bytes);
     },
     rowAt: (k) => nsRowAt(coherence.require(), k),
+    root: () => root,
+    setRoot,
     notReadyCause() {
       if (!coherence.bound()) return "the process's store is not bound";
       const sealed = coherence.sealed();
@@ -498,7 +518,12 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
     applyEntry(t, entry) {
       const k = nsKey(entry.path);
       const moved = (beneath: boolean): void => { learnings.forEach((asked) => { asked.reported[asked.reported.length] = { at: k, beneath }; }); };
-      if (k === '') { moved(true); return null; }
+      if (k === '') {
+        moved(true);
+        const stat = ownValue(entry, 'stat');
+        if (stat) setRoot(stat, entry.rev);
+        return null;
+      }
       const stat = ownValue(entry, 'stat');
       if (stat === null) { moved(true); deleteTree(t, k, true); return null; }
       const before = nsRowAt(t, k);
@@ -638,6 +663,7 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
     },
     clear() {
       generation++;
+      root = undefined;
       relisting = new SafeMap();
       links = new SafeSet();
       unlisted = new SafeMap();
@@ -646,6 +672,7 @@ export function createNamespace(coherence: Coherence, admission: Admission): Nam
     get lazy() { return lazy; },
     beginLazy() {
       generation++;
+      root = undefined;
       relisting = new SafeMap();
       lazy = true;
       listed.clear();
