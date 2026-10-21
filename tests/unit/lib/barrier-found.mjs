@@ -220,22 +220,6 @@ const GAPS = {
       + 'meanwhile, in a program that renames a file it had read (or written and already sent), then another process overwrites it, readFileSync keeps serving the program\'s own bytes',
     shows: 'at rest, sync readFile top answered "c3219.3"',
   },
-  'an awaited chmod outside a grant is what the next call that cannot wait reads [holder]': {
-    lacks: 'O9: an awaited mutation outside a grant is decided by the provisional decisions (the cutover)',
-    shows: 'sync stat top answered file 644',
-  },
-  'an awaited chmod outside a grant is what the next call that cannot wait reads [eager]': {
-    lacks: 'O9: an awaited mutation outside a grant is decided by the provisional decisions (the cutover)',
-    shows: 'sync stat top answered file 644',
-  },
-  'a name the process renamed into place can be renamed again at once [eager]': {
-    lacks: 'O9: an awaited rename outside a grant is decided by the provisional decisions (the cutover)',
-    shows: 'sync stat d/e/g answered file 644 size 5',
-  },
-  'a name the process renamed into place stays once the session acknowledges it after a barrier reported it [eager]': {
-    lacks: 'O9: an awaited rename outside a grant is decided by the provisional decisions (the cutover)',
-    shows: 'sync stat d/f answered file 644 size 2',
-  },
   'an awaited read of a file a relist is on its way to is answered, not refused [node]': {
     lacks: 'B2: node-shims refuses an awaited read under a directory its relist is on its way to (EAGAIN), where it should wait (the cutover\'s relist fence); '
       + 'meanwhile fs.promises.readFile of such a file can reject EAGAIN',

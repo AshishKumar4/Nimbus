@@ -294,8 +294,6 @@ export function generate(seed, steps = 40) {
  * What an engine is known to answer wrong, each kept red by its scenario in
  * lib/barrier-found.mjs (listed there as a gap), and let pass here so a
  * drawn schedule finds something new. A gap closed is removed from both.
- *   - unshownAwaitedChange: an awaited change outside a grant is not shown
- *     to a call that cannot wait until a barrier lands (O9);
  *   - absentWhileRelisted: a directory being relisted answers a name under
  *     it as absent (B2);
  *   - refusedWhileRelisted: an awaited read under a directory being relisted
@@ -303,8 +301,8 @@ export function generate(seed, steps = 40) {
  */
 export const KNOWN_GAPS = Object.freeze({
   node: Object.freeze({ absentWhileRelisted: true, refusedWhileRelisted: true }),
-  holder: Object.freeze({ unshownAwaitedChange: true }),
-  eager: Object.freeze({ unshownAwaitedChange: true }),
+  holder: Object.freeze({}),
+  eager: Object.freeze({}),
 });
 
 /** A finding: the schedule, the step, and what was wrong there. */
@@ -572,8 +570,6 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
   let unpublished = [];
   /** Each peer change that returned, and as the model stood then: what the process may not know of before its next input lands. */
   const peerAt = [];
-  /** Each awaited change of the process's own that returned, and as the model stood then: unshown to its calls that cannot wait until a barrier lands, where that is a known gap. */
-  const awaitedAt = [];
 
   /** Whether a call that cannot wait may be refused (EAGAIN): a view listed on demand, a namespace a poison stopped or a listing is moving, or bytes it does not hold of a file it may read. */
   /**
@@ -647,19 +643,14 @@ export async function runSchedule(kind, schedule, { parkSeed, knownGaps: gaps = 
       note(`  (step ${at} skipped: a peer changed its names since the process's last input)`);
       return null;
     }
-    if (way === 'sync' && gaps.unshownAwaitedChange && awaitedAt.some(({ done, domain: its }) => done > landed && overlaps(its, [...domain, ...domain.map(parentOf)]))) {
-      note(`  (step ${at} skipped: it would decide on an awaited change of the process's own its view does not show yet, a known gap)`);
-      return null;
-    }
     const record = model.begin(step);
     if (record === null) { note(`  (step ${at} skipped: ${JSON.stringify(step)} is not valid now)`); return null; }
     const publishes = outside(way) && overlaps(unpublished, domain) ? unpublished : null;
     const finish = () => model.finish(record, () => {
       if (outside(way)) peerAt.push({ done: seq(), domain });
       else {
-        if (way === 'own') awaitedAt.push({ done: seq(), domain });
         for (const rel of [...resident]) if (domain.some((root) => under(rel, root) || under(root, rel))) resident.delete(rel);
-        if (way === 'sync' || !gaps.unshownAwaitedChange) for (const root of domain) ownAt.set(root, seq());
+        for (const root of domain) ownAt.set(root, seq());
         unpublished = [...unpublished, ...domain];
       }
     });
