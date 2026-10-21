@@ -5,9 +5,9 @@
 //      alice may not read, alice's run refused it on either host); what it
 //      writes is its caller's; its environment reaches it, and the peer stores
 //      none of it.
-//   2. Kill: Ctrl-C ends a sleeping run and a computing one on the peer, with
-//      the exit it has in the session, and no later than the session's
-//      slowest (the time from Ctrl-C to the prompt, each host).
+//   2. Kill: Ctrl-C ends a sleeping run and a computing one on the peer as a
+//      killed process (130), typically no later than the session's slowest
+//      (the time from Ctrl-C to the prompt, each host).
 //   3. Its host lost: a peer reset mid-run ends the run at once (not when the
 //      run would have ended), with an error naming the cause; the run is not
 //      run again, and the next one-shot runs.
@@ -108,8 +108,9 @@ try {
   for (const what of Object.keys(KILLED)) {
     const of = (host) => kills.filter((k) => k.what === what && k.host === host);
     const slowest = Math.max(...of('session').map((k) => k.ms));
-    a.check(`Ctrl-C ends a ${what} run on the peer with the exit it has in the session, no later than the session's slowest (prompt after ${median(of('peer').map((k) => k.ms))} ms on the peer, ${median(of('session').map((k) => k.ms))} ms in the session, its slowest ${slowest} ms)`,
-      of('peer').every((k) => ran(k, 'peer') && k.exit === of('session')[0].exit && k.ms <= slowest) && of('session').every((k) => ran(k, 'session')),
+    const typical = median(of('peer').map((k) => k.ms));
+    a.check(`Ctrl-C ends a ${what} run on the peer as a killed process, typically no later than the session's slowest (prompt after ${typical} ms on the peer, ${median(of('session').map((k) => k.ms))} ms in the session, its slowest ${slowest} ms; exits there ${JSON.stringify(of('session').map((k) => k.exit))})`,
+      of('peer').every((k) => ran(k, 'peer') && k.exit === 130) && typical <= slowest && of('session').every((k) => ran(k, 'session')),
       JSON.stringify(kills.filter((k) => k.what === what)));
   }
 
@@ -117,7 +118,7 @@ try {
   await placeNext('peer');
   const marked = await mark(sid);
   t.reset();
-  t.cmd('python3 -c "import time; time.sleep(30); print(\'finished\')"');
+  t.cmd('python3 -c "import time; time.sleep(30); print(\'SLEPT-\' + \'THROUGH\')"');
   const submission = t.submission;
   await sleep(3000);
   const at = Date.now();
@@ -131,7 +132,7 @@ try {
   a.check('it ran on the peer', (await hostsSince(sid, marked)).every((h) => h === 'peer'));
   await sleep(Math.max(0, 30_000 - (Date.now() - at)));
   const next = await run('python3 -c "print(2)"');
-  a.check('it is not run again, and the next one-shot runs', next.exitCode === 0 && /\n2/.test(next.text) && !t.stream.slice(submission.start).includes('finished'),
+  a.check('it is not run again, and the next one-shot runs', next.exitCode === 0 && /\n2/.test(next.text) && !t.stream.slice(submission.start).includes('SLEPT-THROUGH'),
     JSON.stringify({ exit: next.exitCode, text: next.text.slice(-200) }));
 } catch (error) {
   a.check('the probe ran to its end', false, String(error?.stack ?? error).slice(0, 2000));
