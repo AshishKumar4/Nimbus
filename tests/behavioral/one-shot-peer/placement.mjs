@@ -158,8 +158,10 @@ try {
       const w = await watched(() => t.run(three, 600_000), () => diagLatency(sid));
       const ranOn = await hostsSince(sid, marked);
       out({ three: true, round: i, host, ms: w.ms, worst: w.worst, exit: w.value.exitCode, ranOn });
+      // Three processes' output interleaves on one terminal ("111", "1" then "11"): count the 1s.
+      const ones = printed(w.value.output).filter((line) => /^1+$/.test(line)).join('').length;
       a.check(`three at once, round ${i}: all three ran where placed (${host}) and each printed its 1`,
-        ranOn.length === 3 && ranOn.every((h) => h === host) && printed(w.value.output).filter((line) => line === '1').length === 3, JSON.stringify({ ranOn, printed: printed(w.value.output) }));
+        ranOn.length === 3 && ranOn.every((h) => h === host) && ones === 3 && w.value.exitCode === 0, JSON.stringify({ ranOn, printed: printed(w.value.output) }));
     }
   }
 } catch (error) {
