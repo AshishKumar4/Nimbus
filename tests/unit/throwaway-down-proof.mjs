@@ -44,6 +44,7 @@ const server = createServer((request, response) => {
     request.socket.destroy();
     return;
   }
+  if (answer.stall) return;
   response.writeHead(answer.status, { 'Content-Type': 'application/json' }).end(JSON.stringify(answer.body));
 }).listen(0, '127.0.0.1');
 await new Promise((resolve) => server.once('listening', resolve));
@@ -165,6 +166,15 @@ await import('./tests/behavioral/_throwaway-target.mjs');
   events = [];
   const dropped = await run('version', { args: ['--until', String(Date.now() + 30_000)] });
   assert.notEqual(dropped.status, 0, 'a connection dropped after it reached the API is not read again');
+  assert.equal(events.filter((e) => e === 'GET').length, 1, 'a dropped connection is asked once');
+  // The deadline bounds each attempt too: an answer that never comes ends with it.
+  answer = { stall: true };
+  const began = Date.now();
+  const stalled = await run('version', { args: ['--until', String(Date.now() + 3_000)] });
+  assert.notEqual(stalled.status, 0, 'a read that does not answer by the deadline fails');
+  assert.ok(Date.now() - began < 20_000, `it ends at its deadline, not later (${Date.now() - began} ms)`);
+  const malformed = await run('version', { args: ['--until', 'Infinity'], unresolved: 1 });
+  assert.match(malformed.stderr.trimEnd().split('\n').at(-1), /^version failed: --until takes a time in epoch ms/, malformed.output);
   console.log('  ok  only a read the resolver could not make is made again, until its deadline');
 
   // A failed command leaves a usable receipt: its next down can finish.

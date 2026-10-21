@@ -275,17 +275,19 @@ async function token() {
 async function version() {
   const name = resolveName();
   const account = requireAccountPin();
-  const until = flags.until === undefined ? 0 : Number(flags.until);
+  const until = flags.until === undefined ? null : Number(flags.until);
+  if (until !== null && !Number.isFinite(until)) throw new Error(`--until takes a time in epoch ms, not ${JSON.stringify(flags.until)}`);
   const token = await apiToken({ cwd: PROBE_APP, account });
   const preview = readState(statePath(name))?.preview ?? previewName(name);
   let latest;
   for (;;) {
     try {
-      latest = await latestDeployment({ account, token, preview });
+      // Each attempt ends by the deadline, as the wait between them does.
+      latest = await latestDeployment({ account, token, preview, signal: until === null ? undefined : AbortSignal.timeout(Math.max(0, until - Date.now())) });
       break;
     } catch (error) {
       // A resolver that could not answer is asked again after its own wait between attempts.
-      if (!(error instanceof TransientTransportError) || Date.now() + RESOLVER_RETRY_MS > until) throw error;
+      if (!(error instanceof TransientTransportError) || until === null || Date.now() + RESOLVER_RETRY_MS > until) throw error;
       log(`the read of ${preview}'s deployment did not resolve (${error.message}); reading it again`);
       await delay(RESOLVER_RETRY_MS);
     }
