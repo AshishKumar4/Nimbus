@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "934cb6b28f8429d098b179b22f78844958026e1ab324145016fa2477086f861d",
+  "fingerprint": "defd1130e01ffd03aec8c5f68fd766848357df5c05bd053bd30c8c4e4988adbe",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -590,8 +590,8 @@
     "packages/core/dist/runtime/oxc-transform.d.ts.map": "78e0a0236b75291a5a4fc84e784c7c4a6b85d049a3e2d95c24eeae65e4bc9d1a",
     "packages/core/dist/runtime/oxc-transform.js": "3c860bcece25e1256202fd3f16f7cb5dca5bf91416b7a867670b8b482f4ff33e",
     "packages/core/dist/runtime/port-registry.d.ts": "c3e992427e72e4e87da9dfe4116f303344fabf2fabd32e59d4e2e2fe4888dbe7",
-    "packages/core/dist/runtime/port-registry.d.ts.map": "9108e21ba907c0a16854a65d353d740917b4bb7cd9dc39d9717dfb1bededdc79",
-    "packages/core/dist/runtime/port-registry.js": "d734440650922b22159646bbbe4769105208763a3bf4b9cc1bcd6e32424d76e7",
+    "packages/core/dist/runtime/port-registry.d.ts.map": "efe97d98c6c804dd170020effed735aba0367cc473ee6ab96f4fbc6e9b383be0",
+    "packages/core/dist/runtime/port-registry.js": "ae0b3f131295cfd9aa17332d7e6259a745a37b465440c7a1b7aa42957acc2024",
     "packages/core/dist/runtime/prebundle-slice.d.ts": "362790781ed56d230750f64c02232b4f07149de872eb2b7afd6f43ae5afd4c29",
     "packages/core/dist/runtime/prebundle-slice.d.ts.map": "f4bbf4a81fc127f8b09699e950ae885b84ea95d2ad80b51786947da4f666bbe5",
     "packages/core/dist/runtime/prebundle-slice.js": "7ebe6e2e519e16557745f9f084c24b075b0ae7e431f116fa68783ae576c0161a",
@@ -1616,7 +1616,7 @@
     "packages/core/src/runtime/output-gate.ts": "1a71cdfde86871c75d718b1ff0c53f1c51c117048810d8b4fe7a37672571a469",
     "packages/core/src/runtime/oxc-facet/preamble.ts": "9bfec3fb3608f4b589e25028438bcc5df343ce80720099bdc90f52518fd38c05",
     "packages/core/src/runtime/oxc-transform.ts": "21d5551e273f09e0318516f1d7c893e56f6b32248ddb6451395a6ce5e841f82c",
-    "packages/core/src/runtime/port-registry.ts": "eb9fb5c5ffdbf97d28b0b2e0ac5d7973762931cb7a11c46053f6e1ee058f4887",
+    "packages/core/src/runtime/port-registry.ts": "4982539824c6029022dc0a16e76f68156d79ee09e5bbd07116d1046ac2dbab4d",
     "packages/core/src/runtime/prebundle-slice.ts": "df598e7430becc5dbf1037b37bb572102bba256fd98fdb33a47e565ded9aa936",
     "packages/core/src/runtime/process-exit-notices.ts": "40d1f7fdfbeace126f7f394c873386186af4c05f3fd69f8d52f3f91af3e364af",
     "packages/core/src/runtime/process-files.ts": "21f73d690db225296067792e406375bf9226708a7a289d1b672909520e8349b7",
