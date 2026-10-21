@@ -103,7 +103,14 @@ export function createNamespace(coherence, admission) {
     const listed = new SafeSet();
     /** Moved whenever the table is replaced or stops answering: a learning asked before installs nothing. */
     let generation = 0;
-    /** Each learning in flight, with every path an admitted delta named since it was asked. */
+    /** The root's row (Namespace.root). */
+    let root;
+    /**
+     * Each learning in flight, with every path an admitted delta named since it
+     * was asked, and whether what is beneath it moved too (`beneath`): not when
+     * the entry left the name the same directory, as traversable, with only its
+     * own attributes changed (a name added or removed in it, its times).
+     */
     const learnings = new SafeSet();
     const ready = () => ok && coherence.serving();
     /** Directories whose relists are on their way, with how many (fence): nothing at or under one is answered. */
@@ -196,6 +203,13 @@ export function createNamespace(coherence, admission) {
      * on when it did not name its entries, null when it did. Undefined (a delta,
      * a note) keeps what the row says.
      */
+    const setRoot = (stat, rev) => {
+        root = {
+            kind: NS_DIR, size: NumberOf(stat.size) || 0, mode: NumberOf(stat.mode) || 0, uid: NumberOf(stat.uid) || 0, gid: NumberOf(stat.gid) || 0,
+            atime: NumberOf(stat.atime) || 0, mtime: NumberOf(stat.mtime) || 0, ctime: NumberOf(stat.ctime) || 0, ino: NumberOf(stat.ino) || 0,
+            rev: NumberOf(rev) || 0, target: null, dev: NumberOf(ownValue(stat, 'dev')) || 0, nlink: NumberOf(ownValue(stat, 'nlink')) || 1,
+        };
+    };
     const put = (t, k, stat, rev, target, unlistedAt) => {
         const parent = nsParent(k);
         const name = nsName(k);
@@ -326,6 +340,8 @@ export function createNamespace(coherence, admission) {
             admission.addOverlay(bytes);
         },
         rowAt: (k) => nsRowAt(coherence.require(), k),
+        root: () => root,
+        setRoot,
         notReadyCause() {
             if (!coherence.bound())
                 return "the process's store is not bound";
@@ -383,24 +399,35 @@ export function createNamespace(coherence, admission) {
          */
         applyEntry(t, entry) {
             const k = nsKey(entry.path);
-            learnings.forEach((asked) => { asked.reported[asked.reported.length] = k; });
-            if (k === '')
+            const moved = (beneath) => { learnings.forEach((asked) => { asked.reported[asked.reported.length] = { at: k, beneath }; }); };
+            if (k === '') {
+                moved(true);
+                const stat = ownValue(entry, 'stat');
+                if (stat)
+                    setRoot(stat, entry.rev);
                 return null;
+            }
             const stat = ownValue(entry, 'stat');
             if (stat === null) {
+                moved(true);
                 deleteTree(t, k, true);
                 return null;
             }
             const before = nsRowAt(t, k);
-            if (stat === undefined || !tryPut(t, k, stat, entry.rev, ownValue(entry, 'linkTarget')))
+            if (stat === undefined || !tryPut(t, k, stat, entry.rev, ownValue(entry, 'linkTarget'))) {
+                moved(true);
                 return null;
+            }
             const after = nsRowAt(t, k);
             if (after === undefined || after.kind !== NS_DIR) {
+                moved(true);
                 deleteTree(t, k, false);
                 return null;
             }
             const was = before !== undefined && traversable(before);
             const now = traversable(after);
+            moved(!(before !== undefined && before.kind === NS_DIR && before.ino === after.ino && before.dev === after.dev && was === now
+                && !ownValue(entry, 'structural') && !ownValue(entry, 'subtree')));
             // Listed on demand, a directory whose names moved without being named
             // (replaced, renamed, its mode or owner changed) is unknown beneath:
             // its names are looked up again.
@@ -546,6 +573,7 @@ export function createNamespace(coherence, admission) {
         },
         clear() {
             generation++;
+            root = undefined;
             relisting = new SafeMap();
             links = new SafeSet();
             unlisted = new SafeMap();
@@ -554,6 +582,7 @@ export function createNamespace(coherence, admission) {
         get lazy() { return lazy; },
         beginLazy() {
             generation++;
+            root = undefined;
             relisting = new SafeMap();
             lazy = true;
             listed.clear();
@@ -588,8 +617,8 @@ export function createNamespace(coherence, admission) {
             learnings.add(asked);
             const named = (k, beneath) => {
                 for (let i = 0; i < asked.reported.length; i++) {
-                    const at = asked.reported[i];
-                    if (at === '' || at === k || stringStartsWith(k, at + '/') || (beneath && (k === '' || stringStartsWith(at, k + '/'))))
+                    const { at, beneath: under } = asked.reported[i];
+                    if (at === k || (under && (at === '' || stringStartsWith(k, at + '/'))) || (beneath && (k === '' || stringStartsWith(at, k + '/'))))
                         return true;
                 }
                 return false;

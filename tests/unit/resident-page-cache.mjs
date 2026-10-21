@@ -53,6 +53,8 @@ function session(size) {
 }
 
 const USER = { uid: 1000, gid: 1000, groups: [1000] };
+/** The fake session's root, as its stat of / would say it: device 1. */
+const ROOT = { type: 'directory', dev: 1, ino: 1, nlink: 2, size: 0, mode: 0o40755, uid: 0, gid: 0, atime: 0, mtime: 0, ctime: 0, revision: 0 };
 const joined = (pages) => {
   const out = new Uint8Array(pages.reduce((n, p) => n + p.byteLength, 0));
   let at = 0;
@@ -68,7 +70,7 @@ for (const backing of ['heap', 'sqlite']) {
   const { s, bytes } = session(size);
   store.admission.setStorage(undefined, s);
   assert.equal(await store.view.bootLazy(s), true);
-  const view = store.view.namespaceView(s, 1, USER);
+  const view = store.view.namespaceView(s, ROOT, USER);
 
   // A first read fetches, in one batch; a second asks nothing.
   const first = await view.pages('home/user/big', 5, size, 2, 5);
@@ -105,7 +107,7 @@ for (const backing of ['heap', 'sqlite']) {
   const { s } = session(size);
   store.admission.setStorage(undefined, s);
   await store.view.bootLazy(s);
-  const view = store.view.namespaceView(s, 1, USER);
+  const view = store.view.namespaceView(s, ROOT, USER);
   for (let part = 0; part < 8; part++) await view.pages('home/user/big', 5, size, part, part);
   assert.equal((await view.pages('home/user/big', 5, size, 0, 0)).fetched, 0, 'page 0 is held, and now the most recently used');
   for (let part = 8; part < 12; part++) await view.pages('home/user/big', 5, size, part, part);
@@ -125,7 +127,7 @@ for (const backing of ['heap', 'sqlite']) {
   s.fsStorageGrant = async (_facet, want) => ({ granted: want, available: free });
   store.admission.setStorage({ facet: 'wasi-git-0', grant: 0 }, s);
   await store.view.bootLazy(s);
-  const view = store.view.namespaceView(s, 1, USER);
+  const view = store.view.namespaceView(s, ROOT, USER);
   for (let part = 0; part < 12; part++) await view.pages('home/user/big', 5, size, part, part);
   const held = store.pageHeld();
   assert.ok(held > 0, 'pages are held');

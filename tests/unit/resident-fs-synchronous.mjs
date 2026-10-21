@@ -12,7 +12,8 @@
 
 import assert from 'node:assert/strict';
 import { runScenarios } from './lib/resident-body.mjs';
-import { APP, bootEngine } from './lib/guest-engines.mjs';
+import { APP, bootEngine, stat as engineStat } from './lib/guest-engines.mjs';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -92,6 +93,17 @@ await runScenarios(import.meta.path, {
     // A directory is the name's own state where the view knows it.
     assert.equal((await e.fs.stat(`${APP}/dir`)).type, 'directory');
     await answersNow(e, 'readFile of a directory', () => sync.readFile(`${APP}/dir`), 'EISDIR');
+    // An open of a directory is refused as the session's open refuses it: one that would make or change its
+    // content (O_CREAT, O_TRUNC, O_APPEND), O_DIRECTORY or not; any other is the session's to answer.
+    for (const [label, flags, code] of [
+      ['O_TRUNC', { read: true, truncate: true }, 'EISDIR'],
+      ['O_DIRECTORY|O_TRUNC', { read: true, directory: true, truncate: true }, 'EISDIR'],
+      ['O_APPEND', { write: true, append: true }, 'EISDIR'],
+      ['O_DIRECTORY|O_APPEND', { write: true, directory: true, append: true }, 'EISDIR'],
+      ['O_CREAT', { write: true, create: true, mode: 0o644 }, 'EISDIR'],
+      ['O_WRONLY', { write: true }, 'EAGAIN'],
+      ['O_DIRECTORY|O_WRONLY', { write: true, directory: true }, 'EAGAIN'],
+    ]) await answersNow(e, `an open of a directory, ${label}`, () => sync.open(dir, flags), code);
   },
 
   async 'mkdir -p is planned whole: one that reaches a name the view cannot place makes nothing'(e = undefined) {
@@ -115,13 +127,72 @@ await runScenarios(import.meta.path, {
     await e.fs.readdir(`${APP}/dir`);
     assert.equal(dec.decode(await answersNow(e, 'readFile of resident bytes', () => sync.readFile(seed))), 'SEED');
     assert.deepEqual((await answersNow(e, 'readdir of a listed directory', () => sync.readdir(`${APP}/dir`))).map((entry) => entry.name), ['inner.txt']);
-    // A change the session made it owe a barrier: a call that answers now
-    // answers from the view as it stands, and the next awaited one takes it.
-    await e.fs.writeFile(`${APP}/other.txt`, enc.encode('O'));
+    // Input arrived, so a barrier is owed: a call that answers now answers
+    // from the view as it stands, and the next awaited one takes it.
+    e.fs.inbound();
     assert.equal(stat(await answersNow(e, 'stat with a barrier owed', () => sync.stat(seed))), 4);
     const { barriers } = await e.fs.stats();
     await e.fs.stat(seed);
     assert.equal((await e.fs.stats()).barriers, barriers + 1, 'the awaited call did not take the barrier owed');
+  },
+
+  async 'an awaited change outside a grant is what the next call that cannot wait reads'() {
+    const OLD = Date.UTC(2001, 1, 3, 4, 5, 6);
+    const seed = `${APP}/seed.txt`;
+    const changes = {
+      chmod: [(fs) => fs.chmod(seed, 0o600), (sync) => engineStat(sync.stat(seed)).mode, 0o600],
+      utimes: [(fs) => fs.utimes(seed, OLD, OLD), (sync) => engineStat(sync.stat(seed)).mtimeMs, OLD],
+      mkdir: [(fs) => fs.mkdir(`${APP}/made`, { mode: 0o755 }), (sync) => engineStat(sync.stat(`${APP}/made`))?.type, 'directory'],
+      unlink: [(fs) => fs.unlink(seed), (sync) => sync.stat(seed), null],
+      rename: [(fs) => fs.rename(seed, `${APP}/moved.txt`), (sync) => [sync.stat(seed), stat(sync.stat(`${APP}/moved.txt`))], [null, 4]],
+      rmdir: [(fs) => fs.rmdir(`${APP}/empty`), (sync) => sync.stat(`${APP}/empty`), null],
+      symlink: [(fs) => fs.symlink('seed.txt', `${APP}/link`), (sync) => sync.readlink(`${APP}/link`), 'seed.txt'],
+    };
+    for (const [name, [change, read, expected]] of Object.entries(changes)) {
+      // Each on an engine of its own, so no change counts toward taking the subtree another is made in.
+      const e = await bootEngine('holder', {
+        seed(authority) {
+          authority.kfs.writeFile('home/user/app/seed.txt', 'SEED');
+          authority.kfs.mkdir('home/user/app/empty', { mode: 0o755 });
+        },
+      });
+      await e.fs.readdir(APP);
+      await e.fs.readdir(`${APP}/empty`);
+      await change(e.fs);
+      assert.ok(!e.held(`${APP}/x`), `${name}: decided under a grant`);
+      assert.deepEqual(read(e.sync), expected, name);
+    }
+  },
+
+  async 'an awaited change the session refuses rejects, and leaves nothing shown'(e = undefined) {
+    e = await boot();
+    await e.fs.readdir(`${APP}/dir`);
+    // Behind the process's back: its view has the directory writable still.
+    await e.authority.peer.chmod('home/user/app/dir', 0o555);
+    await assert.rejects(Promise.resolve().then(() => e.fs.mkdir(`${APP}/dir/sub`, { mode: 0o755 })), (error) => error?.code === 'EACCES');
+    assert.equal(e.sync.stat(`${APP}/dir/sub`), null);
+    assert.deepEqual(e.sync.readdir(`${APP}/dir`).map((entry) => entry.name), ['inner.txt']);
+  },
+
+  async 'the root is answered now, as the session holds it'(e = undefined) {
+    e = await boot();
+    // What the session's own filesystem says of / (its SQLite root's stat).
+    const facts = (raw) => { const { type, mode, uid, gid, ino } = engineStat(raw); return { type, mode, uid, gid, ino, dev: Number(raw.dev) }; };
+    const sessionRoot = async () => facts(await e.authority.files.vfs.stat('/'));
+    assert.deepEqual(facts(await answersNow(e, 'stat of /', () => e.sync.stat('/'))), await sessionRoot());
+    assert.equal(await answersNow(e, 'realpath of /', () => e.sync.realpath('/')), '/');
+    // A name made at the top: the root's own row moves with it, once the input's barrier lands.
+    await e.authority.peerAs(CRED_KERNEL).mkdir('newtop', { mode: 0o755 });
+    await e.input();
+    assert.deepEqual(facts(e.sync.stat('/')), await sessionRoot());
+  },
+
+  async 'an awaited change only the session decides is shown once it returns'(e = undefined) {
+    e = await boot();
+    await e.fs.readdir(APP);
+    // A set-group-id directory: the session's to make.
+    await e.fs.mkdir(`${APP}/shared`, { mode: 0o2775 });
+    assert.equal(engineStat(e.sync.stat(`${APP}/shared`))?.type, 'directory');
   },
 });
 

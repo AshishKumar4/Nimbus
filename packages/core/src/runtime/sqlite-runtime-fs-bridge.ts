@@ -1,5 +1,6 @@
 import { ROOT_DIRECTORY_MODE, ROOT_INODE, type CredentialedVfs, type DelegationTerms, type SqliteVFS, type VfsNameResolution, type VfsOpenDescription } from '../vfs/sqlite-vfs.js';
-import { BUFFERED_WRITE_BYTES, describeMounted, flagsRefusal, openAccess, openFollows, openMounted, reopenMounted } from '../vfs/mounted-description.js';
+import { BUFFERED_WRITE_BYTES, describeMounted, openMounted, reopenMounted } from '../vfs/mounted-description.js';
+import { flagsRefusal, openAccess, openFollows, refusesDirectory } from '../vfs/open-rules.js';
 import { closeDescriptions, closeScopeSignal, createDescriptorScope, Descriptors, openFlags, processView, reportLost, scopeAccess, settleHeldAt, type Authority, type Description } from './descriptors.js';
 import type { WaveDescriptions, WriteStreamOptions } from './wave-contracts.js';
 import { WaveIngest } from './wave-ingest.js';
@@ -415,13 +416,12 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       const exists = this.vfs.exists(p);
       if (!exists && !normalizedFlags.create) throw fsError('ENOENT', 'open', path);
       const directory = exists && this.vfs.isDirectory(p);
-      if (directory && normalizedFlags.create) throw fsError('EISDIR', 'open', path);
       if (normalizedFlags.directory && !directory) throw fsError('ENOTDIR', 'open', path);
       // A directory opens whatever rights were asked for: a WASI guest
       // requests a capability set, not an access mode, and a directory simply
       // never grants fd_write (the write itself answers EISDIR). What refuses
-      // here is content the open would change.
-      if (directory && (normalizedFlags.truncate || normalizedFlags.append)) throw fsError('EISDIR', 'open', path);
+      // here is a directory the open would make or whose content it would change.
+      if (directory && refusesDirectory(normalizedFlags)) throw fsError('EISDIR', 'open', path);
       if (exists) this.vfs.access(p, openAccess(normalizedFlags, directory));
       if (!exists) {
         this.owned(owner).writeFile(p, new Uint8Array(0), { mode: flags.mode, umask: flags.umask });

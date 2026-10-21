@@ -152,8 +152,8 @@ export async function storeSession(tree, { eager = false, unlisted = [], delegat
   } else {
     assert.equal(await store.view.bootLazy(supervisor), true);
   }
-  const device = (await authority.stat('/')).dev;
-  const view = store.view.namespaceView(supervisor, device, USER);
+  const root = await authority.stat('/');
+  const view = store.view.namespaceView(supervisor, root, USER);
   const fs = residentFilesystem(authority, view, delegated ? /** @type {any} */ ({
     session: {
       openWriter: async () => null,

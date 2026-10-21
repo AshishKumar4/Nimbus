@@ -258,7 +258,7 @@ for (const [change, refusal] of [['open', null], ['rename', null], ['unlink', nu
   const budget = { used: 0, limit: 1 << 30 };
   let gated = false;
   const opened = Promise.withResolvers();
-  // No grant comes: the rename is the session's, awaited; its answer waits for the gate.
+  // No grant comes, and the rename replaces a directory: the session's, awaited; its answer waits for the gate.
   const s = session({
     budget, view: {}, acquired: new Promise(() => {}),
     gate: { then: (resolve, reject) => (gated ? opened.promise : Promise.resolve()).then(resolve, reject) },
@@ -271,13 +271,15 @@ for (const [change, refusal] of [['open', null], ['rename', null], ['unlink', nu
     s.kernel.chown(`home/user/other/d/${name}`, 1000, 1000);
   }
   for (const name of ['f0', 'f1']) await s.fs.readFile(`/home/user/other/d/${name}`);
+  const longer = '/home/user/other/d-renamed-to-a-much-longer-name';
+  s.kernel.mkdir(longer.slice(1));
+  s.kernel.chown(longer.slice(1), 1000, 1000);
   const kept = () => {
     const stats = s.fs.stats();
     return stats.provisionalBytes + stats.pinnedBytes;
   };
   const first = sync.open('/home/user/other/d/f0', { read: true });
   gated = true;
-  const longer = '/home/user/other/d-renamed-to-a-much-longer-name';
   const renaming = s.fs.rename('/home/user/other/d', longer);
   await new Promise((resolve) => setTimeout(resolve, 20));
   const second = sync.open('/home/user/other/d/f1', { read: true });

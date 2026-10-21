@@ -53,7 +53,7 @@ const supervisor = {
 };
 store.admission.setStorage(undefined, supervisor);
 assert.equal(await store.view.bootLazy(supervisor), true);
-const view = store.view.namespaceView(supervisor, (await authority.stat('/')).dev, USER);
+const view = store.view.namespaceView(supervisor, await authority.stat('/'), USER);
 try {
   assert.equal(await view.lookup(['home', 'home/user', 'home/user/index'], false), true);
   const before = view.entry('home/user/index');
