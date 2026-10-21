@@ -55,7 +55,7 @@ try {
   for (const file of ['_throwaway-target.mjs', '_deploy-target.mjs']) copyFileSync(join(REPO, 'tests/behavioral', file), join(root, 'tests/behavioral', file));
   for (const file of ['_driver.mjs', '_mint-probe-token.mjs', '_ledger.mjs', '_session-transport.mjs']) symlinkSync(join(REPO, 'tests/behavioral', file), join(root, 'tests/behavioral', file));
   for (const dir of ['scripts', 'packages', 'node_modules', 'apps/probe/node_modules', 'apps/hosted-demo/node_modules']) symlinkSync(join(REPO, dir), join(root, dir));
-  copyFileSync(join(REPO, 'apps/probe/wrangler.jsonc'), join(root, 'apps/probe/wrangler.jsonc'));
+  for (const file of ['wrangler.jsonc', 'probe-target-vars.json']) copyFileSync(join(REPO, 'apps/probe', file), join(root, 'apps/probe', file));
   writeFileSync(join(root, 'drive.mjs'), `
 const realFetch = globalThis.fetch;
 const origin = ${JSON.stringify(origin)};
