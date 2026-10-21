@@ -764,11 +764,25 @@ export function sourceReach(path: string): string {
   return climbs === 0 ? prefix : `${prefix}${'/..'.repeat(climbs)}`;
 }
 
+/** A range of single characters (`{!..~}`), which spells each between its ends. */
+const CHAR_RANGE = /\{([^{},\\])\.\.([^{},\\])(?:\.\.[+-]?\d+)?\}/y;
+
+/** Whether the range at `at` in `path` may spell `/`: null where none is there. */
+function rangeSpellsSlash(path: string, at: number): { spells: boolean; end: number } | null {
+  BRACE_RANGE.lastIndex = at;
+  if (BRACE_RANGE.test(path)) return { spells: false, end: BRACE_RANGE.lastIndex };
+  CHAR_RANGE.lastIndex = at;
+  const range = CHAR_RANGE.exec(path);
+  if (range === null) return null;
+  const [low, high] = [range[1].charCodeAt(0), range[2].charCodeAt(0)].sort((a, b) => a - b);
+  return { spells: low <= 0x2f && 0x2f <= high, end: CHAR_RANGE.lastIndex };
+}
+
 /**
  * Whether an expansion of `path`, which starts with a brace group, could
- * start with `/`: one of its leading groups holds a `/`, or a range other
- * than BRACE_RANGE's (which may spell any character), or they may all be
- * empty (an empty alternative) before a `/`. Linear, and true when unsure.
+ * start with `/`: one of its leading groups holds a `/` (or a range that may
+ * spell one), or they may all be empty (an empty alternative) before a `/`.
+ * Linear, and true when unsure.
  */
 function mayLeadWithSlash(path: string): boolean {
   let depth = 0;
@@ -776,13 +790,18 @@ function mayLeadWithSlash(path: string): boolean {
   let groupEmpty = false;
   for (let i = 0; i < path.length; i++) {
     const c = path[i];
+    if (c === '{') {
+      const range = rangeSpellsSlash(path, i);
+      if (range !== null) {
+        if (range.spells) return true;
+        // At the start it spells its one character, which is not a `/`.
+        if (depth === 0) return false;
+        i = range.end - 1;
+        continue;
+      }
+    }
     if (depth === 0) {
       if (c !== '{') return c === '/' && mayBeEmpty;
-      BRACE_RANGE.lastIndex = i;
-      if (BRACE_RANGE.test(path)) {
-        // A range spells at least one digit or letter: what follows is not first.
-        return false;
-      }
       depth = 1;
       groupEmpty = path[i + 1] === ',' || path[i + 1] === '}';
       continue;
@@ -792,8 +811,7 @@ function mayLeadWithSlash(path: string): boolean {
       if (path[i] === '/') return true;
       continue;
     }
-    // A `..` here may be a range BRACE_RANGE does not know, which may spell a `/`.
-    if (c === '/' || (c === '.' && path[i + 1] === '.')) return true;
+    if (c === '/') return true;
     if (c === '{') {
       depth++;
       if (path[i + 1] === ',' || path[i + 1] === '}') groupEmpty = true;

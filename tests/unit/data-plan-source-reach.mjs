@@ -65,6 +65,8 @@ check('leading braces that may spell a `/`', () => {
   assert.equal(sourceReach('{{,x}/srv,y}/z'), '/', 'nested');
   assert.equal(sourceReach('{a,b}/x'), '.');
   assert.equal(sourceReach('{1..9}/x'), '.', 'a range spells a character');
+  assert.equal(sourceReach('{-..0}x/y'), '/', 'one that may spell a `/`');
+  assert.equal(sourceReach('{..,x}/a'), '.', 'a `..` is no `/`');
 });
 
 check('escapes in the static part', () => {
@@ -86,9 +88,10 @@ function namespace(files, links = {}) {
     for (const [from, to] of Object.entries(links)) if (path === from || path.startsWith(`${from}/`)) return to + path.slice(from.length);
     return path;
   };
+  const inside = (path) => (path === '' ? '' : `${path}/`);
   const kindOf = (path) => {
     if (Object.hasOwn(files, path)) return 'file';
-    return Object.keys(files).some((name) => name.startsWith(`${path}/`)) ? 'directory' : null;
+    return Object.keys(files).some((name) => name.startsWith(inside(path))) ? 'directory' : null;
   };
   return {
     readText: async (path) => files[real(path)] ?? null,
@@ -104,13 +107,13 @@ function namespace(files, links = {}) {
       const at = real(dir);
       const below = new Map();
       for (const name of [...Object.keys(files), ...Object.keys(links)]) {
-        if (!name.startsWith(`${at}/`)) continue;
-        const rest = name.slice(at.length + 1);
+        if (!name.startsWith(inside(at))) continue;
+        const rest = name.slice(inside(at).length);
         const slash = rest.indexOf('/');
         const child = rest.slice(0, slash < 0 ? undefined : slash);
-        below.set(child, Object.hasOwn(links, `${at}/${child}`) ? 'symlink' : slash < 0 ? 'file' : 'directory');
+        below.set(child, Object.hasOwn(links, inside(at) + child) ? 'symlink' : slash < 0 ? 'file' : 'directory');
       }
-      return [...below].map(([name, kind]) => ({ path: `${dir}/${name}`, kind, size: kind === 'file' ? files[`${at}/${name}`].length : 0 }));
+      return [...below].map(([name, kind]) => ({ path: inside(dir) + name, kind, size: kind === 'file' ? files[inside(at) + name].length : 0 }));
     },
   };
 }
