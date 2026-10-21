@@ -270,7 +270,8 @@ export class NimbusSession extends SdkNimbusSession {
   async _rpcProbeStores(needle: string): Promise<boolean> {
     this.requireProbeDiagnostics();
     if (JSON.stringify([...await this.ctx.storage.list()]).includes(needle)) return true;
-    const tables = this.ctx.storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table'").toArray();
+    // The platform's own tables (_cf_*) are not the object's to read.
+    const tables = this.ctx.storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE '\\_cf\\_%' ESCAPE '\\'").toArray();
     const text = new TextDecoder();
     return tables.some(({ name }) => this.ctx.storage.sql.exec(`SELECT * FROM "${name.replaceAll('"', '""')}"`).toArray()
       .some((row) => Object.values(row).some((value) => (value instanceof ArrayBuffer ? text.decode(value) : String(value)).includes(needle))));

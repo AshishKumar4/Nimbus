@@ -18,11 +18,13 @@
 //   7. a stateful facet stays in the session;
 //   8. past ONE_SHOT_WARM_MS the peer is cold again;
 //   9. peers that share the session's isolate are no peer;
-//  10. a facet with no warm worker runs on the peer once its object is up.
+//  10. a facet with no warm worker runs on the peer once its object is up;
+//  11. a warming in flight when the peer is forgotten marks nothing warm, and
+//      the next cold call warms the peer again.
 
 import assert from 'node:assert/strict';
 import { adoptCtxExports, composeFabric } from '../../packages/fabric/src/composition.ts';
-import { ONE_SHOT_WARM_MS, oneShotPlacementDiagnostics } from '../../packages/fabric/src/one-shot-peer.ts';
+import { ONE_SHOT_WARM_MS, oneShotPlacement, oneShotPlacementDiagnostics } from '../../packages/fabric/src/one-shot-peer.ts';
 import { isolateToken } from '../../packages/fabric/src/peer-host.ts';
 import { loaderFacetHost } from '../../packages/worker/src/runtime/facet-loader-host.ts';
 import * as rpc from '../../packages/worker/src/session/rpc.ts';
@@ -62,7 +64,7 @@ function object(name, objects) {
               record.ran.push({ arg, supervisor: (bindings ?? loaded.env)?.SUPERVISOR?.supervisorProps, modules: loaded.modules });
               return record.run(arg);
             },
-            async warm() { await code; record.warmed++; },
+            async warm() { await code; await record.warmGate; record.warmed++; },
           }),
         };
       },
@@ -260,6 +262,28 @@ function world({ colocated = false } = {}) {
   assert.equal(peer.warmed, 0, 'its worker is its own, cold on either host: nothing is warmed');
   assert.equal((await w.oneShot('second', { warm: null })).ranOn, peer.name, 'it runs on the peer once the peer\'s object is up');
   console.log('  ok  a facet with no warm worker runs on the peer once its object answered');
+}
+
+// ── 11: forgotten while warming ─────────────────────────────────────────────
+{
+  const w = world();
+  // The first peer's warming waits until released.
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const firstPeer = w.objects.ns.get('session-0123456789:one-shot:0');
+  firstPeer[Symbol.dispose]();
+  w.objects.byName.get('session-0123456789:one-shot:0').warmGate = gate;
+  await w.oneShot('first');
+  while (w.objects.sent.filter((s) => s.op === 'oneShotWarm').length === 0) await new Promise((r) => setTimeout(r, 1));
+  oneShotPlacement(w.session.ctx, w.session.env).forgetPeer();
+  w.objects.byName.get('session-0123456789:one-shot:0').warmGate = undefined;
+  assert.equal((await w.oneShot('second')).ranOn, 'session-0123456789', 'forgotten: the next call runs in the session');
+  release();
+  await w.settled();
+  const sentWarm = w.objects.sent.filter((s) => s.op === 'oneShotWarm').length;
+  assert.equal(sentWarm, 2, 'and warms the peer again, though the first warming was still in flight');
+  assert.equal((await w.oneShot('third')).ranOn, 'session-0123456789:one-shot:0', 'the peer, warmed since it was forgotten, takes the next call');
+  console.log('  ok  a warming in flight across a forget marks nothing; the next cold call warms the peer again');
 }
 
 console.log('one-shot-placement: ok');

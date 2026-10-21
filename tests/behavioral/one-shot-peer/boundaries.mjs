@@ -43,7 +43,8 @@ const lines = (r) => r.text.split('\n').slice(1).map((line) => line.trim());
 try {
   await t.connect();
   await t.waitForPrompt(60_000);
-  for (const line of ['nimbus install python', 'echo private > /home/user/private.txt && chmod 600 /home/user/private.txt']) {
+  for (const line of ['nimbus install python', 'echo private > /home/user/private.txt && chmod 600 /home/user/private.txt',
+    'sudo mkdir -p /srv/shared && sudo chmod 1777 /srv/shared']) {
     const r = await run(line, 600_000);
     if (r.exitCode !== 0) throw new Error(`setup failed: ${line}: ${r.output.slice(-300)}`);
   }
@@ -59,7 +60,7 @@ try {
       JSON.stringify({ ranOn: refused.ranOn, exit: refused.exitCode, text: refused.text.slice(-300) }));
     const own = await on(host, `python3 -c "print(open('/home/user/private.txt').read().strip())"`);
     a.check(`${host}: the user's own run may`, ran(own, host) && own.exitCode === 0 && lines(own).includes('private'), JSON.stringify({ ranOn: own.ranOn, text: own.text.slice(-300) }));
-    const wrote = await on(host, `sudo -u alice python3 -c "open('/tmp/by-alice-${host}', 'w').write('x')" && stat -c %u /tmp/by-alice-${host}`);
+    const wrote = await on(host, `sudo -u alice python3 -c "open('/srv/shared/by-alice-${host}', 'w').write('x')" && stat -c %u /srv/shared/by-alice-${host}`);
     a.check(`${host}: what alice's run writes is alice's`, ran(wrote, host) && lines(wrote).includes('1001'), JSON.stringify({ ranOn: wrote.ranOn, text: wrote.text.slice(-200) }));
   }
   const env = await on('peer', `SECRET_ENV=${SECRET} python3 -c "import os; print(os.environ['SECRET_ENV'])"`);
