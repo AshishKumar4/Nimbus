@@ -31,7 +31,7 @@ export async function warmFor(sid, tag) {
   for (;;) {
     const record = await placement(sid);
     if (record?.peer && Object.keys(record.warm ?? {}).some((key) => key.startsWith(`${tag}\n`))) return;
-    if (Date.now() > until) throw new Error(`the peer was not warm for ${tag} within 35 s: ${JSON.stringify(record)}`);
+    if (Date.now() > until) throw new Error(`the peer was not warm for ${tag} within 35 s; its last failed warming: ${JSON.stringify(record?.warmFailure)}; peer ${record?.peer}`);
     await sleep(250);
   }
 }
@@ -47,7 +47,7 @@ export async function warmForWorker(sid, worker) {
   for (;;) {
     const record = await placement(sid);
     if (record?.peer && Object.hasOwn(record.warm ?? {}, worker)) return;
-    if (Date.now() > until) throw new Error(`the peer was not warm for ${JSON.stringify(worker)} within 35 s: ${JSON.stringify(record)}`);
+    if (Date.now() > until) throw new Error(`the peer was not warm for ${JSON.stringify(worker)} within 35 s; its last failed warming: ${JSON.stringify(record?.warmFailure)}; peer ${record?.peer}`);
     await sleep(250);
   }
 }

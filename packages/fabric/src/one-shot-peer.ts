@@ -243,7 +243,14 @@ export class OneShotPlacement {
           if (peer === null) this.#warm(spec, images, fn, worker);
           try { return await local.submit(fn, args, options); } finally { this.#note(spec.tag, worker, 'session', began); }
         }
-        const answer = await this.#submit<A, R>(peer, spec, callImages, worker, fn, args, options);
+        let answer: { ok: true; value: Awaited<R> } | OneShotFailure | null;
+        try {
+          answer = await this.#submit<A, R>(peer, spec, callImages, worker, fn, args, options);
+        } catch (error) {
+          // Lost on the peer: it ran there.
+          this.#note(spec.tag, worker, 'peer', began);
+          throw error;
+        }
         if (answer === null) {
           try { return await local.submit(fn, args, options); } finally { this.#note(spec.tag, worker, 'session', began); }
         }
