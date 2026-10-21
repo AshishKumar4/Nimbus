@@ -782,7 +782,7 @@ export function residentFilesystem(session, resident, delegation) {
     fs.stat = (path, options = {}) => answer('stat', () => {
         const follow = options.followSymlinks !== false;
         const finish = (key) => {
-            if (key === DELEGATE || key === '')
+            if (key === DELEGATE)
                 return DELEGATE;
             if (key === null)
                 throw fsError('ELOOP', follow ? 'stat' : 'lstat', path);
@@ -847,7 +847,7 @@ export function residentFilesystem(session, resident, delegation) {
         });
     }), () => null);
     fs.readFile = (path, options = {}) => answer('readFile', () => after(resolve(path, options.followSymlinks !== false, true), (key) => {
-        if (key === DELEGATE || key === '')
+        if (key === DELEGATE)
             return DELEGATE;
         if (key === null)
             return null;
@@ -898,7 +898,7 @@ export function residentFilesystem(session, resident, delegation) {
     const byLocale = (entries) => [...entries].sort((a, b) => a.name.localeCompare(b.name));
     const byCodeUnit = (entries) => [...entries].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
     fs.readlink = (path) => answer('readlink', () => after(resolve(path, false), (key) => {
-        if (key === DELEGATE || key === '')
+        if (key === DELEGATE)
             return DELEGATE;
         if (key === null)
             return null;
@@ -908,7 +908,7 @@ export function residentFilesystem(session, resident, delegation) {
         return entry !== null && entry.type === 'symlink' && entry.target !== null ? entry.target : null;
     }), () => authority.readlink(path));
     fs.realpath = (path) => answer('realpath', () => after(resolve(path, true), (key) => {
-        if (key === DELEGATE || key === '')
+        if (key === DELEGATE)
             return DELEGATE;
         if (key === null)
             throw fsError('ELOOP', 'realpath', path);
@@ -931,7 +931,7 @@ export function residentFilesystem(session, resident, delegation) {
     };
     const heldOpen = (handle) => ({ ...handle, stat: statOf(identified(handle.id, 'open')) });
     fs.access = (path, mode) => answer('access', () => after(resolve(path, true), (key) => {
-        if (key === DELEGATE || key === '')
+        if (key === DELEGATE)
             return DELEGATE;
         if (key === null)
             throw fsError('ELOOP', 'access', path);

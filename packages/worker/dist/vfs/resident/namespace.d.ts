@@ -66,6 +66,14 @@ export interface Namespace {
     overlayDelta(bytes: number): void;
     /** The row at exactly `k` (no symlink resolution), or undefined; refused while sealed. */
     rowAt(k: string): NsRow | undefined;
+    /**
+     * The root's own row, as the session last said it: given as a view starts
+     * (the stat it was started with) and moved by each delta that names the
+     * root. Undefined from a reset until one does: the table holds no row for
+     * the root, which has no parent.
+     */
+    root(): NsRow | undefined;
+    setRoot(stat: NsStat, rev: unknown): void;
     /** Why the namespace is not answering (meaningful only while ready() is false). */
     notReadyCause(): string;
     put(t: ResidentTables, k: string, stat: NsStat, rev: unknown, target?: string | null, unlisted?: string | null): void;
