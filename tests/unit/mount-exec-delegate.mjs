@@ -126,10 +126,16 @@ try {
   assert.equal(r.out, 's=126\n');
   assert.match(r.err, /^offline: the computer is offline$/m);
 
-  r = await run('cd /m && env tool >/dev/null; env offline; echo "s=$?"');
-  assert.deepEqual(r.starts.map((s) => s.argv), [['tool'], ['offline']]);
-  assert.equal(r.out, 's=126\n');
-  assert.match(r.err, /env: 'offline': the computer is offline/);
+  // env is a program, the machine's: it is started, with what it runs as its arguments.
+  r = await run('cd /m && env FOO=3 tool; echo "s=$?"');
+  assert.deepEqual(r.starts.map((s) => s.argv), [['env', 'FOO=3', 'tool']]);
+  assert.equal(r.out, 's=127\n');
+
+  // A local find's -execdir under the mount: a refused start is find's to report, in the machine's words.
+  r = await run('cd / && find /m/x/item -maxdepth 0 -execdir offline \\; ; echo "s=$?"');
+  assert.deepEqual(r.starts.map((s) => [s.argv, s.cwd]), [[['offline'], '/x']]);
+  assert.match(r.err, /find: 'offline': the computer is offline/);
+  assert.equal(r.out, 's=1\n');
 
   // A mount gone absent under the cwd: the start is refused with its reason, and the delegate not asked.
   await ws.exec('cd /flaky', { shellId: 'flaky' });
@@ -159,6 +165,37 @@ try {
   assert.deepEqual(r.kills, []);
   assert.equal(r.code, 130);
   assert.equal(r.err, '');
+  // Node's child_process, through the workspace's child broker as a node program's spawn reaches it.
+  const child = async (request, input) => {
+    starts.length = 0;
+    kills.length = 0;
+    const parent = ws.processes.spawn('node', ['node'], '/home/user', { parentPid: ws.shellProcessPid });
+    const { childPid } = await ws.children.spawn({ args: [], env: { PATH: '/usr/bin' }, stdio: ['pipe', 'pipe', 'pipe'], parentPid: parent.pid, ...request });
+    if (input !== undefined) {
+      for (const bytes of input) await ws.children.stdinWrite(childPid, bytes);
+      await ws.children.stdinEnd(childPid);
+    }
+    let exit = await ws.children.wait(childPid);
+    while (!exit.done) exit = await ws.children.wait(childPid);
+    const drained = await ws.children.drainOutput(childPid);
+    ws.processes.exit(parent.pid, 0);
+    return { exit, bytes: [...drained.stdout], out: new TextDecoder().decode(drained.stdout), starts: starts.map((x) => ({ ...x })) };
+  };
+  let c = await child({ command: 'tool', cwd: '/m/x' });
+  assert.deepEqual(c.starts.map((x) => [x.argv, x.cwd, x.stdin]), [[['tool'], '/x', 'stream']], 'execFile: one start, a stdin it may leave unread');
+  assert.deepEqual([c.exit.exitCode, c.exit.signal, c.out], [0, null, 'one\ntwo\nthree\n']);
+  c = await child({ command: 'sh', args: ['-c', 'echo'], cwd: '/m' });
+  assert.deepEqual(c.starts.map((x) => x.argv), [['sh', '-c', 'echo']], 'sh -c is the machine\'s, not a local shell');
+  c = await child({ command: 'ls -l', cwd: '/m', shell: true });
+  assert.deepEqual(c.starts.map((x) => x.argv), [['/bin/sh', '-c', 'ls -l']], 'shell: Node\'s own argv');
+  c = await child({ command: 'cat', cwd: '/m' }, [new Uint8Array([0, 0xff, 0x80]), new TextEncoder().encode('tail')]);
+  assert.deepEqual(c.bytes, [0, 0xff, 0x80, ...new TextEncoder().encode('tail')], 'spawn: its input, byte for byte, written after the start');
+  c = await child({ command: 'missing', cwd: '/m' });
+  assert.deepEqual([c.exit.spawnError, c.exit.exitCode], ['ENOENT', -2], 'a refused start is the error event, ENOENT');
+  c = await child({ command: 'offline', cwd: '/m' });
+  assert.equal(c.exit.spawnError, 'EHOSTDOWN');
+  c = await child({ command: 'tool', cwd: '/home/user' });
+  assert.deepEqual(c.starts, [], 'a local cwd: not the delegate\'s');
 } finally {
   await ws.close();
 }
