@@ -67,5 +67,16 @@ await check('parked, a signal waits in the box: not in the input', async () => {
   assert.equal(await within(1000, processes.nextSignal(pid, 50)), 'SIGINT', 'the next run, once it says what it catches, takes it');
 });
 
+await check('parked with its stopped run\'s word of what it catches, it stays parked', async () => {
+  const processes = new SessionProcessSupervisor();
+  const { pid } = processes.spawn('node', ['node', 'main.js'], '/home/user', {});
+  processes.parkSignals(pid, ['SIGTERM']);
+  assert.deepEqual(processes.signal(pid, 'SIGTERM'), { ok: true }, 'caught: queued, not its end');
+  processes.writeInput(pid, 'x');
+  const packet = await within(1000, processes.readInput(pid, 100));
+  assert.equal(packet.signal, undefined, `still parked: ${JSON.stringify(packet)}`);
+  assert.equal(await within(1000, processes.nextSignal(pid, 50)), 'SIGTERM');
+});
+
 assert.deepEqual(failures, []);
 console.log('process-signal-parking: a stopped run\'s signals wait for the run that comes next');
