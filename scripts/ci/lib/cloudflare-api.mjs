@@ -24,8 +24,22 @@ export async function cloudflareApiToken({ cwd, account, signal }) {
 }
 
 /**
+ * A call that never reached the API because this host's resolver could not
+ * answer for now (getaddrinfo EAI_AGAIN): nothing was asked, so asking again
+ * is safe. Any answer the API gave, a refusal among them, is never one. Seen
+ * 2026-10-21 failing two lanes' reads in the same seconds (16:23:45 UTC), and
+ * again at 18:40.
+ */
+export class TransientTransportError extends Error {
+  constructor(error) {
+    super(error.message, { cause: error });
+    this.name = 'TransientTransportError';
+  }
+}
+
+/**
  * One API call under the account. Answers `{ ok, status, result, errors }`;
- * a transport failure throws.
+ * a transport failure throws, a TransientTransportError when it may pass.
  *
  * @param {string} path
  * @param {{ account: string, token: string, method?: string, body?: object, contentType?: string, signal?: AbortSignal, fetch?: typeof fetch }} options
@@ -39,6 +53,8 @@ export async function cfApi(path, { account, token, method = 'GET', body, conten
     },
     body: body === undefined ? undefined : JSON.stringify(body),
     signal,
+  }).catch((error) => {
+    throw error?.code === 'EAI_AGAIN' ? new TransientTransportError(error) : error;
   });
   const json = await response.json().catch((error) => {
     if (signal?.aborted) throw signal.reason ?? error;

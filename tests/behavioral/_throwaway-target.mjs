@@ -53,7 +53,8 @@
 //           (_deploy-target.mjs PROBE_TARGET_VARS), as staging is
 //   token   [--name <n>] [--ttl-ms <ms>] [--json]   → the token, or JSON {base, token}
 //   session [--name <n>] [--ttl-ms <ms>]   → JSON {base, sessionId, token}
-//   version [--name <n>]                   → the id of the deployment the Preview serves
+//   version [--name <n>] [--until <ms>]   → the id of the deployment the Preview serves; a read the
+//                                           resolver could not make is made again until then (epoch ms)
 //   down    [--name <n>] | --all
 //   list    every Preview under the parent, and which ones this checkout holds
 //
@@ -78,6 +79,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 import { mintProbeToken } from './_mint-probe-token.mjs';
 import { assertInstalled } from '../../scripts/ci/lib/installed.mjs';
+import { printFailure } from '../../scripts/ci/lib/cli-failure.mjs';
 
 const ROOT = join(import.meta.dirname, '..', '..');
 
@@ -97,6 +99,7 @@ const {
   readState,
   requireAccountPin,
   TargetNotReadyError,
+  TransientTransportError,
   throwawayName,
   throwawayStateDir,
   throwawayStatePath,
@@ -109,6 +112,8 @@ const { assertDeployIsolated } = await import('../../scripts/deploy-isolation.mj
 const { uploadConfig } = await import('../../scripts/ci/lib/release.mjs');
 
 const PROBE_APP = join(ROOT, 'apps', 'probe');
+/** glibc's RES_TIMEOUT: the resolver's wait between its attempts, this host's resolv.conf setting no `timeout`. */
+const RESOLVER_RETRY_MS = 5_000;
 /** Machine state: every Preview this machine deleted, until its hostname stops answering. */
 const DELETED_PATH = join(MACHINE_STATE_DIR, 'deleted-previews.json');
 const STATE_DIR = throwawayStateDir(ROOT);
@@ -146,9 +151,13 @@ if (!run) {
 try {
   await run();
 } catch (error) {
-  if (!(error instanceof TargetNotReadyError)) throw error;
-  console.error(`readiness: NOT GRADED — ${error.message}`);
-  process.exitCode = error.exitCode;
+  if (error instanceof TargetNotReadyError) {
+    console.error(`readiness: NOT GRADED — ${error.message}`);
+    process.exitCode = error.exitCode;
+  } else {
+    printFailure(command, error);
+    process.exitCode = 1;
+  }
 }
 
 // ── Commands ─────────────────────────────────────────────────────────
@@ -266,7 +275,23 @@ async function token() {
 async function version() {
   const name = resolveName();
   const account = requireAccountPin();
-  const latest = await latestDeployment({ account, token: await apiToken({ cwd: PROBE_APP, account }), preview: readState(statePath(name))?.preview ?? previewName(name) });
+  const until = flags.until === undefined ? null : Number(flags.until);
+  if (until !== null && !Number.isFinite(until)) throw new Error(`--until takes a time in epoch ms, not ${JSON.stringify(flags.until)}`);
+  const token = await apiToken({ cwd: PROBE_APP, account });
+  const preview = readState(statePath(name))?.preview ?? previewName(name);
+  let latest;
+  for (;;) {
+    try {
+      // Each attempt ends by the deadline, as the wait between them does.
+      latest = await latestDeployment({ account, token, preview, signal: until === null ? undefined : AbortSignal.timeout(Math.max(0, until - Date.now())) });
+      break;
+    } catch (error) {
+      // A resolver that could not answer is asked again after its own wait between attempts.
+      if (!(error instanceof TransientTransportError) || until === null || Date.now() + RESOLVER_RETRY_MS > until) throw error;
+      log(`the read of ${preview}'s deployment did not resolve (${error.message}); reading it again`);
+      await delay(RESOLVER_RETRY_MS);
+    }
+  }
   if (!latest?.id) throw new Error(`${name} serves no deployment`);
   process.stdout.write(`${latest.id}\n`);
 }

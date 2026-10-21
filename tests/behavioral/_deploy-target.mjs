@@ -183,7 +183,7 @@ export function withSecretsFile(secrets, fn) {
 // deployment back, and provisioning a Preview parent Worker.
 
 /** The REST API: its token, and one call under the account (cloudflare-api.mjs). */
-export { cfApi, cloudflareApiToken as apiToken } from '../../scripts/ci/lib/cloudflare-api.mjs';
+export { cfApi, cloudflareApiToken as apiToken, TransientTransportError } from '../../scripts/ci/lib/cloudflare-api.mjs';
 
 // ── Sessions ─────────────────────────────────────────────────────────
 
