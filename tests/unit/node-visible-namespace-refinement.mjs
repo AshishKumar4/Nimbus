@@ -10,13 +10,16 @@
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { Database } from 'bun:sqlite';
 
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { _rpcFsAcquire, _rpcFsList, _rpcFsReadBatch } from '../../packages/worker/src/session/rpc.ts';
 import { createResidentStore } from '../../packages/worker/src/vfs/resident/index.ts';
+import { kvTables } from '../../packages/worker/src/vfs/resident/kv-tables.ts';
+import { NS_DIR } from '../../packages/worker/src/vfs/resident/tables.ts';
+import { facetSql } from './lib/resident-body.mjs';
+import { facetStorage } from './lib/fake-do-kv.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { attachSupervisorOps } from './lib/session-supervisor-ops.mjs';
 
@@ -37,27 +40,17 @@ function apply(vfs, step, where) {
 }
 
 function residentStore() {
-  const db = new Database(':memory:');
+  const storage = facetStorage(facetSql());
   const store = createResidentStore();
-  store.bind({
-    storage: {
-      sql: {
-        exec(query, ...params) {
-          if (/^\s*(CREATE|INSERT|UPDATE|DELETE|REPLACE|DROP)/i.test(query)) {
-            db.query(query).run(...params);
-            return [];
-          }
-          return db.query(query).all(...params);
-        },
-        get databaseSize() { return 0; },
-      },
-    },
-  });
+  store.bind({ storage });
+  // The rows the store left, read by a second binding over the same storage.
+  const rows = kvTables(storage);
   /** The namespace as the fixture states it: path → "dir" | "file". */
   const namespace = () => {
     const out = {};
-    for (const row of db.query('SELECT parent, name, kind FROM ns').all()) {
-      out[row.parent ? `${row.parent}/${row.name}` : row.name] = row.kind === 1 ? 'dir' : 'file';
+    for (const key of rows.nsKeys()) {
+      const row = rows.nsGet(key.parent, key.name);
+      out[key.parent ? `${key.parent}/${key.name}` : key.name] = row.kind === NS_DIR ? 'dir' : 'file';
     }
     return out;
   };

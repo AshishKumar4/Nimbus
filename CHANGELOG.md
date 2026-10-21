@@ -11,14 +11,13 @@ published independently in the `@nimbus-sh` npm scope.
   - A peer lost after it took a call ends the run with `the session's one-shot host was lost while it ran: <cause>`, and the run is not repeated, since it may have done things. A call the peer refused before taking it runs in the session.
   - `/api/_diag/session` lists, under `launch.oneShots`, the session's peer, the workers it is warm for, and where each of the last 16 one-shots ran.
   - Bash's facet, which keeps the shell's state between calls, stays in the session. Node one-shots are not moved yet.
-
+- Changed: a long-running node process (a dev server, an agent's turn) keeps the files it has read in its facet's key-value storage instead of its SQL tables. Its writes there no longer hold the process's next message to the session until they are confirmed, a wait measured at 23–36 ms on every turn that read new files. A store kept from an earlier version is dropped when the process starts, and refilled as it reads.
 - Added: a mount can run programs on the machine its files live on. `filesystem.vfs.mount(point, source, { exec })` takes an `ExecDelegate` (`start(program, cancel)`, `locate(name, cwd, env)`). Every program started with its cwd under that mount is placed there: the shell's, an execvp from find, xargs, env or sudo, and a node child's. Each start is one call, `{ argv, env, cwd, stdin }`, made as execvp makes it, never as shell text; its exit is waitpid's code or signal.
   - What the shell does itself stays in the session: builtins, functions, pipes and expansions. So `cd /computer/app && npm test | tail -5` starts two programs on the computer, joined by the session's pipe.
   - Refusals follow bash: a start the machine refuses `ENOENT` is `name: command not found` (127); any other refusal, or an absent mount, is `name: <reason>` (126); Ctrl-C reaches the program as SIGINT (130).
   - `type` and `command -v` report the machine's program.
   - Node's `spawn`/`execFile` with such a cwd start Node's own argv there (`/bin/sh -c line` for `shell`), and a refused start is the `error` event with the machine's code.
   - A namespace with no delegating mount places nothing and runs as before.
-
 - Fixed: a request to a resident process whose idle host the platform
   replaced is no longer failed with "its host was reset by the platform".
   Such a request now waits for its host's watch to confirm the process's
@@ -35,7 +34,6 @@ published independently in the `@nimbus-sh` npm scope.
   unsent, and so does one whose body went to the peer before it was refused.
   The first request after a process sits idle pays one round trip to its
   host before it is sent.
-
 - Fixed (security): another account can no longer read a file of yours
   through a process's image. A resident process's generated program image
   holds its program and the files it read at start, a 0600 one among them
@@ -53,7 +51,6 @@ published independently in the `@nimbus-sh` npm scope.
   nothing boots from goes. Two accounts that run the same program now keep
   a copy each. Copies already taken in a snapshot, an export or a clone are
   not changed.
-
 - Fixed (CI): a probe task armada starts again after losing its container
   is graded. Its token, minted when the job was submitted, could expire
   before the second attempt's limit, so that attempt refused to run and the
@@ -68,9 +65,7 @@ published independently in the `@nimbus-sh` npm scope.
   Each task's verdict now says when it started, and each run says how long
   its tasks waited, which measures the part not yet measured: many vessels
   waiting at once for fleet capacity.
-
 - Fixed: a long-running node process (a server, an agent's turn) could end mid-read with exit 0 and its read never answered. This happened when its filesystem had to ask the session for something on the program's behalf: more storage room for a file another process had just written, a listing, or a fill. That work was not counted as something the program was waiting on, so the process looked idle and ended. Every filesystem call a node process makes on the session now counts as live work until it is answered, whichever part of the process made it.
-
 - Added: a session starts a program by its argv. In the SDK it is `sandbox.startProgram(argv, { cwd, env, stdin, signal })`; in a workspace it is `workspace.startProgram(program, cancel)`. This is the start contract a mount's exec delegate meets, now met by a session.
   - It resolves once the program runs. If the program cannot start, it rejects with Node's spawn error (`code`, `errno`, `syscall: 'spawn <file>'`, `path`). `signal` aborted while it is pending rejects `ECANCELED`, and kills anything that had started.
   - Its output streams as you read it. Its exit is waitpid's code or signal, seen whether or not you read the output, and `kill(signal)` sends that signal to the program.
@@ -79,7 +74,6 @@ published independently in the `@nimbus-sh` npm scope.
   - Its env defaults to the session shell's exported environment.
   - `signalProcess`, `writeProcessInput` and `endProcessInput` reach a started program as the child broker's. Every other process keeps its own routes.
   - A scoped session (one named shell or identity) refuses it with EPERM: a start names neither.
-
 - Added: a session's files answer as Node's `fs` needs them, over Workers RPC and the remote API alike.
   - `files.stat` and `files.lstat` carry all of stat(2): `dev`, `ino`, `nlink`, `uid`, `gid`, `mode`, `size`, `atime`, `mtime` and `ctime`.
   - `files.mkdir(path, { recursive, mode })` is mkdir(2). With no options it stays `mkdir -p`.

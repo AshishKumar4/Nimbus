@@ -192,7 +192,7 @@ export function createTransport(coherence: Coherence, admission: Admission, name
    *
    *   paths per call      BATCH_PATHS            (FS_READ_BATCH_PATH_LIMIT)
    *   requested bytes     BATCH_BYTES            (FS_READ_BATCH_REQUEST_BYTES)
-   *   bytes per range     RESIDENT_CHUNK_BYTES   (the single-value ceiling)
+   *   bytes per range     RESIDENT_CHUNK_BYTES   (one stored value)
    *
    * Every file is split into RESIDENT_CHUNK_BYTES ranges — most files are one
    * short range — and the ranges are packed into calls. That makes the large

@@ -1,15 +1,16 @@
 /**
  * A process's resident store: the resident set held in the process facet's
- * own SQLite, or a one-shot's heap, instead of being fetched as it is read.
+ * own storage (its key-value API over its SQLite database, kv-tables.ts), or
+ * a one-shot's heap, instead of being fetched as it is read.
  *
  * A Nimbus process is a DO Facet whose class comes from the Worker Loader, and
- * a facet has its own SQLite (`loaders/process-fabric.ts`). That storage is
- * reachable SYNCHRONOUSLY — `ctx.storage.sql.exec` returns a Cursor, not a
+ * a facet has its own storage (`loaders/process-fabric.ts`). That storage is
+ * reachable SYNCHRONOUSLY — `ctx.storage.kv.get` returns the value, not a
  * Promise — which is the one property that matters here, because a synchronous
  * `fs.readFileSync` cannot block to fetch anything and no JS stack in workerd
  * can be suspended to let it.
  *
- * So the resident set moves off the heap and into that SQLite, and a sync read
+ * So the resident set moves off the heap and into that storage, and a sync read
  * becomes a point query rather than an admission decision. What that buys is
  * not a faster read — it is a read that cannot MISS: the store holds the whole
  * filesystem rather than a capped prefetch of it, so the first synchronous read
@@ -31,6 +32,12 @@
  *   max bytes in one value               2,199,981 with a 12-char key;
  *                                        over it, a clean catchable
  *                                        SQLITE_TOOBIG - not a reset
+ *                                        (8 MiB a row since: re-measured
+ *                                        2026-10-21, production and local)
+ *
+ * Those are sql.exec's. The store has since moved to the key-value API over
+ * the same database (no output gate: file-engine-d4-measurements.md), whose
+ * synchronous reads cost 8.9 us a head row and 173 us a 64 KiB chunk.
  *
  * WHAT IT ACTUALLY FREES, re-measured — smaller than first claimed
  * ────────────────────────────────────────────────────────────────
@@ -63,7 +70,7 @@
  *      That is the constraint this exists to satisfy.
  *   2. Data cells need not enter the module map AT ALL. Only cells that must be
  *      `new Function`-compiled have to travel as module text; everything else
- *      can be filled straight into SQLite from the supervisor. That is what can
+ *      can be filled straight into the store from the supervisor. That is what can
  *      take the 12.50 MiB main module down toward the size of the require
  *      closure alone — a far larger win than releasing the parsed object, and
  *      the one the filler exists for.
@@ -152,11 +159,30 @@ import { createPages } from './pages.js';
 import { createNamespace } from './namespace.js';
 import { createSync } from './sync.js';
 import { createTransport } from './transport.js';
-import { heapTables, sqlTables } from './tables.js';
+import { heapTables } from './tables.js';
+import { kvTables } from './kv-tables.js';
+import { SafeList, stringOf } from '@nimbus-sh/core/_shared/primordials.js';
 export { chmodRefusal, chownedMode, chownRefusal, confinedModeRefusal, posixAccess, utimesRefusal } from '@nimbus-sh/core/vfs/posix-access.js';
 export { ANONYMOUS_DEV } from '@nimbus-sh/core/vfs/composite.js';
 export { namespaceRowBytes, residentFileCost } from './cell-cost.js';
 export { NS_DIR, NS_FILE, NS_LINK } from './tables.js';
+/**
+ * Drop what an earlier Nimbus kept of the store in the facet's SQL: its rows
+ * are not this store's, and their bytes would count against the process's
+ * room. Read first, so a facet that has none writes nothing.
+ */
+function dropSqlStore(storage) {
+    const exec = storage.sql?.exec;
+    if (typeof exec !== 'function')
+        return;
+    const sql = storage.sql;
+    const held = new SafeList();
+    for (const row of exec.call(sql, "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('file', 'chunk', 'ns', 'meta', 'page')")) {
+        held[held.length] = stringOf(row.name);
+    }
+    for (let i = 0; i < held.length; i++)
+        exec.call(sql, 'DROP TABLE IF EXISTS ' + held[i]);
+}
 export function createResidentStore(options = {}) {
     const coherence = createCoherence();
     const admission = createAdmission(coherence);
@@ -179,12 +205,13 @@ export function createResidentStore(options = {}) {
     return {
         bundle: cells.bundle,
         bind(ctx) {
-            const sql = ctx?.storage?.sql;
-            if (!sql || typeof sql.exec !== 'function') {
-                throw new Error('Nimbus: this facet has no synchronous SQLite (ctx.storage.sql); '
+            const storage = ctx?.storage;
+            if (!storage || typeof storage.kv?.get !== 'function' || typeof storage.put !== 'function') {
+                throw new Error('Nimbus: this facet has no synchronous key-value storage (ctx.storage.kv); '
                     + 'the resident set cannot be served and every sync read would raise EAGAIN');
             }
-            bindTables(sqlTables(sql, cells.rowsChanged), null);
+            dropSqlStore(storage);
+            bindTables(kvTables(storage, cells.rowsChanged), null);
         },
         bindInMemory(budget) {
             const t = heapTables(cells.rowsChanged);

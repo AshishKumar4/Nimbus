@@ -44,6 +44,7 @@ import { facetSql } from './lib/resident-body.mjs';
 import { opSender, supervisorDouble } from './lib/supervisor-double.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
 import { runnerLoader } from './lib/one-shot-runner.mjs';
+import { facetStorage } from './lib/fake-do-kv.mjs';
 
 const dec = new TextDecoder();
 const enc = new TextEncoder();
@@ -265,7 +266,7 @@ console.log(JSON.stringify({
   const { pid } = ws.processes.spawn('node main.js', [], '/m/kept', { longRunning: true });
   ws.filesystem.nameLaunch({ pid, cred: ws.processes.cred(pid) }, () => ['/m/kept']);
   const store = createResidentStore();
-  store.bind({ storage: { sql: facetSql() } });
+  store.bind({ storage: facetStorage(facetSql()) });
   store.sync.setPlan(['m/kept/data.txt']);
   store.sync.adoptModuleBundle({}, { epoch: ws.vfs.epoch, rev: ws.vfs.revision() });
   const supervisor = supervisorFor(pid);

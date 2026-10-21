@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { createResidentStore, NS_DIR } from '../../packages/worker/src/vfs/resident/index.ts';
 import { createAuthority, facetSql, facetSupervisor } from './lib/resident-body.mjs';
+import { facetStorage } from './lib/fake-do-kv.mjs';
 
 async function check(kind) {
   const sourceWasAbsent = kind === 'source';
@@ -14,7 +15,7 @@ async function check(kind) {
   const binding = { pid: log.pid, cred: authority.host.processes.cred(log.pid) };
   const bridge = authority.files.bind(binding);
   const store = createResidentStore();
-  store.bind({ storage: { sql: facetSql() } });
+  store.bind({ storage: facetStorage(facetSql()) });
   store.sync.setPlan([]);
   store.sync.adoptModuleBundle({}, authority.cursor());
   try {

@@ -21,7 +21,7 @@ export function createPages(coherence, admission, namespace) {
     };
     const bound = () => {
         // A one-shot's heap has a fixed budget, which the pages may have half of.
-        // A facet's SQLite grows by grants as it needs, and its pages are held to
+        // A facet's storage grows by grants as it needs, and its pages are held to
         // a share of what the ledger has left instead.
         const half = admission.inHeap && admission.cap !== null ? Math.floor(admission.cap / 2) : Infinity;
         const share = admission.available === null ? Infinity : Math.floor(RESIDENT_PAGE_CACHE_FREE_SHARE * (held() + admission.available));

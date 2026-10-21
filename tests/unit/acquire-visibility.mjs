@@ -21,7 +21,6 @@
 // what it holds.
 
 import assert from 'node:assert/strict';
-import { Database } from 'bun:sqlite';
 
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
@@ -30,6 +29,8 @@ import { _rpcFsAcquire, _rpcFsList, _rpcFsReadBatch } from '../../packages/worke
 import { createResidentStore } from '../../packages/worker/src/vfs/resident/index.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { attachSupervisorOps } from './lib/session-supervisor-ops.mjs';
+import { facetSql } from './lib/resident-body.mjs';
+import { facetStorage } from './lib/fake-do-kv.mjs';
 
 const A = Object.freeze({ uid: 5001, gid: 5001, groups: Object.freeze([5001]), umask: 0o022 });
 const B = Object.freeze({ uid: 5002, gid: 5002, groups: Object.freeze([5002]), umask: 0o022 });
@@ -80,23 +81,7 @@ const at = (paths, path) => paths.filter((entry) => entry.path === path);
 
 // A resident store for A, over the real RPC handlers.
 const store = createResidentStore();
-store.bind({
-  storage: {
-    sql: (() => {
-      const db = new Database(':memory:');
-      return {
-        exec(query, ...params) {
-          if (/^\s*(CREATE|INSERT|UPDATE|DELETE|REPLACE)/i.test(query)) {
-            db.query(query).run(...params);
-            return [];
-          }
-          return db.query(query).all(...params);
-        },
-        get databaseSize() { return 0; },
-      };
-    })(),
-  },
-});
+store.bind({ storage: facetStorage(facetSql()) });
 const processes = new SessionProcessSupervisor();
 const host = attachSupervisorOps({ sqliteFs: raw, processes, ensureSqliteFs() {} });
 const { pid } = processes.spawn('node', ['node'], '/', { cred: A });

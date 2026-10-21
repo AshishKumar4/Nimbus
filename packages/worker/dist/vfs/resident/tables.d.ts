@@ -6,11 +6,11 @@
  * visible name, keyed (parent, name)) and 'page' (pages of files too big to
  * hold whole, each at the revision it was read at: pages.ts).
  *
- * - sqlTables: the process facet's own SQLite (ctx.storage.sql), durable
- *   across the facet's incarnations. Every statement the store has ever
- *   issued lives here, unchanged.
+ * - kvTables (kv-tables.ts): a long-running process's store, in its facet's
+ *   key-value storage, durable across the facet's incarnations, written so
+ *   the output gate never holds what the process says next.
  * - heapTables: a one-shot process's store, in its heap, for the life of the
- *   run (runOnce hosts no SQLite). Same rows, same answers, and a byte count
+ *   run (runOnce hosts no storage). Same rows, same answers, and a byte count
  *   that plays the database's size for the store's budget.
  *
  * Rows come back as plain objects with the column names as keys: file heads
@@ -176,11 +176,6 @@ export interface HeapTables extends ResidentTables {
     /** What putting a row at (parent, name) with `target` would add to bytes() (negative: free). */
     nsGrowth(parent: string, name: string, target: string | null): number;
 }
-/** workerd's ctx.storage.sql, as far as the store uses it. */
-export interface ResidentSql {
-    exec(query: string, ...bindings: unknown[]): Iterable<Record<string, unknown>>;
-    readonly databaseSize?: number;
-}
 /**
  * Told before any change to a path's rows (`path`; every path when it is
  * undefined) that can end what was decided over them: a head row written or
@@ -190,11 +185,10 @@ export interface ResidentSql {
  * disowned, and what it wrote with no head over it goes with it).
  */
 export type RowsChanged = (path?: string) => void;
-export declare function sqlTables(sql: ResidentSql, rowsChanged?: RowsChanged): ResidentTables;
 /**
  * The one-shot backing: the same tables, in the process's heap, for the life
- * of one run. A one-shot is hosted by runOnce, which gives it no SQLite, and
- * it keeps nothing after it exits. Its answers are the SQLite backing's:
+ * of one run. A one-shot is hosted by runOnce, which gives it no storage, and
+ * it keeps nothing after it exits. Its answers are the key-value backing's:
  * scans come back in key order (a b-tree's), reads hand back copies (a
  * program that writes into a Buffer it read must not change the store), and
  * `bytes()` counts what it holds in the units residentCellCost charges (a
