@@ -26,7 +26,7 @@ import type { FacetManager } from '../facets/manager.js';
 import { type ComposedFacetManager } from '../facets/compose.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { ChildProcessManager } from '@nimbus-sh/core/runtime/child-process-manager.js';
-import type { SessionRouterRpc, SessionReadyOptions, SessionExecOptions, SessionRunCodeOptions, SessionDestroyOptions, SessionDestroyResult, SessionFileStat, SessionDirectoryEntry, SessionRuntimeInstallOptions, SessionTerminalSize, SessionProcessLogsOptions, SessionExposeOptions, SessionDurableAppOptions, SessionAppTarget, SessionStartProgramOptions } from '@nimbus-sh/core/runtime/session-protocol.js';
+import type { SessionRouterRpc, SessionReadyOptions, SessionExecOptions, SessionRunCodeOptions, SessionDestroyOptions, SessionDestroyResult, SessionFileStat, SessionDirectoryEntry, SessionRuntimeInstallOptions, SessionTerminalSize, SessionProcessLogsOptions, SessionExposeOptions, SessionDurableAppOptions, SessionAppTarget, SessionStartProgramOptions, SessionFollowOptions, SessionMkdirOptions } from '@nimbus-sh/core/runtime/session-protocol.js';
 import type { RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import { CRED_KERNEL, CRED_SESSION_USER, type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListOptions, type VfsListPage, type VfsMutationReceipt, type VfsListTree } from '@nimbus-sh/core/runtime/os-contracts.js';
@@ -914,8 +914,20 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
   async _rpcWriteProtectedRootFile(rootPath: string, path: string, content: string | Uint8Array) {
     return _rpc._rpcWriteProtectedRootFile(this as any, rootPath, path, content);
   }
-  async _rpcStat(path: string, pid?: number, cred?: VfsCred): Promise<SessionFileStat | null> { return _rpc._rpcStat(this as any, path, pid, cred); }
-  async _rpcLstat(path: string, pid?: number, cred?: VfsCred): Promise<SessionFileStat | null> { return _rpc._rpcLstat(this as any, path, pid, cred); }
+  async _rpcStat(path: string, pid?: number, cred?: VfsCred): Promise<SessionFileStat | null> { return _rpc._rpcStat(this, path, pid, cred); }
+  async _rpcLstat(path: string, pid?: number, cred?: VfsCred): Promise<SessionFileStat | null> { return _rpc._rpcLstat(this, path, pid, cred); }
+  async _rpcUnlink(path: string, pid?: number, cred?: VfsCred): Promise<void> { return _rpc._rpcUnlink(this, path, pid, cred); }
+  async _rpcRmdir(path: string, pid?: number, cred?: VfsCred): Promise<void> { return _rpc._rpcRmdir(this, path, pid, cred); }
+  async _rpcAppendFile(path: string, content: string | Uint8Array, pid?: number, cred?: VfsCred): Promise<void> { return _rpc._rpcAppendFile(this, path, content, pid, cred); }
+  async _rpcSymlink(target: string, path: string, pid?: number, cred?: VfsCred): Promise<void> { return _rpc._rpcSymlink(this, target, path, pid, cred); }
+  async _rpcRealpath(path: string, pid?: number, cred?: VfsCred): Promise<string> { return _rpc._rpcRealpath(this, path, pid, cred); }
+  async _rpcTruncate(path: string, size: number, pid?: number, cred?: VfsCred): Promise<void> { return _rpc._rpcTruncate(this, path, size, pid, cred); }
+  async _rpcUtimes(path: string, atime: number, mtime: number, pid?: number, cred?: VfsCred, options?: SessionFollowOptions): Promise<void> {
+    return _rpc._rpcUtimes(this, path, atime, mtime, pid, cred, options);
+  }
+  async _rpcChown(path: string, uid: number | null, gid: number | null, pid?: number, cred?: VfsCred, options?: SessionFollowOptions): Promise<void> {
+    return _rpc._rpcChown(this, path, uid, gid, pid, cred, options);
+  }
   async _rpcReadlink(path: string, pid?: number, cred?: VfsCred): Promise<string | null> { return _rpc._rpcReadlink(this as any, path, pid, cred); }
   async _rpcChmod(path: string, mode: number, pid?: number, cred?: VfsCred): Promise<void> {
     return _rpc._rpcChmod(this as any, path, mode, pid, cred);
@@ -925,7 +937,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
   }
   async _rpcReaddir(path: string, pid?: number, cred?: VfsCred): Promise<SessionDirectoryEntry[]> { return _rpc._rpcReaddir(this as any, path, pid, cred); }
   async _rpcExists(path: string, pid?: number, cred?: VfsCred): Promise<boolean> { return _rpc._rpcExists(this as any, path, pid, cred); }
-  async _rpcMkdir(path: string, pid?: number, cred?: VfsCred): Promise<void> { return _rpc._rpcMkdir(this as any, path, pid, cred); }
+  async _rpcMkdir(path: string, pid?: number, cred?: VfsCred, options?: SessionMkdirOptions): Promise<void> { return _rpc._rpcMkdir(this, path, pid, cred, options); }
   async _rpcRename(from: string, to: string, pid?: number, cred?: VfsCred): Promise<void> { return _rpc._rpcRename(this as any, from, to, pid, cred); }
   async _rpcFsAcquire(epoch: string | null, cursor: number, options?: VfsAcquireOptions | null, pid?: number): Promise<VfsAcquireResult> {
     return _rpc._rpcFsAcquire(this as any, epoch, cursor, options, pid);

@@ -22,7 +22,7 @@
  */
 
 import { enc, dec, StreamTextDecoders } from '@nimbus-sh/core/_shared/bytes.js';
-import { sessionFileStatOf, type SessionFileStat } from '@nimbus-sh/core/runtime/session-protocol.js';
+import { RuntimeStatSchema, sessionFileStatOf, type SessionFileStat, type SessionFollowOptions, type SessionMkdirOptions } from '@nimbus-sh/core/runtime/session-protocol.js';
 import { isBrokenPipe } from '@nimbus-sh/core/substrate/lifo/utils/bytes-io.js';
 import { STDIN_FILE_READ_PIECE_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { normalizeTerminalNewlines } from '@nimbus-sh/core/_shared/terminal.js';
@@ -41,7 +41,7 @@ import { setProcessBlocked } from '@nimbus-sh/fabric/budgets.js';
 import { executeFanoutShard, type FanoutShardOptions } from '@nimbus-sh/fabric/fanout.js';
 import { residentFacetOf } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { residentBootSpecSchema } from '@nimbus-sh/fabric/process-fabric.js';
-import { readHydrating } from '@nimbus-sh/core/workspace/supervisor-op.js';
+import { readHydrating, type SupervisorOpEnvelope } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import type { StorageLedger } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
@@ -412,12 +412,62 @@ export async function _rpcWriteProtectedRootFile(
   fs.chown(protectedPath, CRED_KERNEL.uid, CRED_KERNEL.gid);
   fs.chmod(protectedPath, 0o444);
 }
-export async function _rpcStat(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<SessionFileStat | null> {
-  return sessionFileStatOf(await self.supervisorOp({ op: 'stat', args: [path], pid, cred }) as SessionFileStat | null);
+/** What a session's file calls reach: its supervisor's file ops, as the caller (a pid, or a credential). */
+export interface FilesHost {
+  supervisorOp(envelope: SupervisorOpEnvelope): Promise<unknown>;
 }
 
-export async function _rpcLstat(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<SessionFileStat | null> {
-  return sessionFileStatOf(await self.supervisorOp({ op: 'lstat', args: [path], pid, cred }) as SessionFileStat | null);
+const NullableStat = RuntimeStatSchema.nullable();
+const Descriptor = z.number().int().nonnegative();
+const Written = z.number().int().nonnegative();
+
+export async function _rpcStat(self: FilesHost, path: string, pid?: number, cred?: VfsCred): Promise<SessionFileStat | null> {
+  return sessionFileStatOf(NullableStat.parse(await self.supervisorOp({ op: 'stat', args: [path], pid, cred })));
+}
+
+export async function _rpcLstat(self: FilesHost, path: string, pid?: number, cred?: VfsCred): Promise<SessionFileStat | null> {
+  return sessionFileStatOf(NullableStat.parse(await self.supervisorOp({ op: 'lstat', args: [path], pid, cred })));
+}
+
+export async function _rpcUnlink(self: FilesHost, path: string, pid?: number, cred?: VfsCred): Promise<void> {
+  await self.supervisorOp({ op: 'unlink', args: [path], pid, cred });
+}
+
+export async function _rpcRmdir(self: FilesHost, path: string, pid?: number, cred?: VfsCred): Promise<void> {
+  await self.supervisorOp({ op: 'rmdir', args: [path], pid, cred });
+}
+
+/** Opened O_APPEND (made when absent), written to its end, closed: every byte at the file's end however it grows meanwhile. */
+export async function _rpcAppendFile(self: FilesHost, path: string, content: string | Uint8Array, pid?: number, cred?: VfsCred): Promise<void> {
+  const bytes = typeof content === 'string' ? new TextEncoder().encode(content) : content;
+  const fd = Descriptor.parse(await self.supervisorOp({ op: 'fsOpen', args: [path, { write: true, append: true, create: true }], pid, cred }));
+  try {
+    for (let at = 0; at < bytes.byteLength;) {
+      at += Written.parse(await self.supervisorOp({ op: 'fsWrite', args: [fd, null, bytes.subarray(at)], pid, cred }));
+    }
+  } finally {
+    await self.supervisorOp({ op: 'fsClose', args: [fd], pid, cred });
+  }
+}
+
+export async function _rpcSymlink(self: FilesHost, target: string, path: string, pid?: number, cred?: VfsCred): Promise<void> {
+  await self.supervisorOp({ op: 'symlink', args: [target, path], pid, cred });
+}
+
+export async function _rpcRealpath(self: FilesHost, path: string, pid?: number, cred?: VfsCred): Promise<string> {
+  return z.string().parse(await self.supervisorOp({ op: 'fsRealpath', args: [path], pid, cred }));
+}
+
+export async function _rpcTruncate(self: FilesHost, path: string, size: number, pid?: number, cred?: VfsCred): Promise<void> {
+  await self.supervisorOp({ op: 'fsTruncate', args: [path, size], pid, cred });
+}
+
+export async function _rpcUtimes(self: FilesHost, path: string, atime: number, mtime: number, pid?: number, cred?: VfsCred, options?: SessionFollowOptions): Promise<void> {
+  await self.supervisorOp({ op: 'utimes', args: [path, atime, mtime, options], pid, cred });
+}
+
+export async function _rpcChown(self: FilesHost, path: string, uid: number | null, gid: number | null, pid?: number, cred?: VfsCred, options?: SessionFollowOptions): Promise<void> {
+  await self.supervisorOp({ op: 'chown', args: [path, uid, gid, options], pid, cred });
 }
 
 export async function _rpcReadlink(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<string | null> {
@@ -444,8 +494,8 @@ export async function _rpcExists(self: RpcHost, path: string, pid?: number, cred
   return self.supervisorOp({ op: 'exists', args: [path], pid, cred }) as Promise<boolean>;
 }
 
-export async function _rpcMkdir(self: RpcHost, path: string, pid?: number, cred?: VfsCred): Promise<void> {
-  await self.supervisorOp({ op: 'mkdir', args: [path], pid, cred });
+export async function _rpcMkdir(self: FilesHost, path: string, pid?: number, cred?: VfsCred, options?: SessionMkdirOptions): Promise<void> {
+  await self.supervisorOp({ op: 'mkdir', args: options === undefined ? [path] : [path, options], pid, cred });
 }
 
 export async function _rpcRename(self: RpcHost, from: string, to: string, pid?: number, cred?: VfsCred): Promise<void> {

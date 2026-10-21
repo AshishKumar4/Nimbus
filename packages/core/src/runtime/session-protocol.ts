@@ -69,14 +69,33 @@ export const SessionFileStatSchema = z.object({
   /** Optional when the filesystem backend does not report a stable inode or revision. */
   ino: z.number().optional(),
   revision: z.number().optional(),
+  /** The rest of stat(2)'s (times in milliseconds); a session older than these sends none of them. */
+  dev: z.number().optional(),
+  nlink: z.number().optional(),
+  uid: z.number().optional(),
+  gid: z.number().optional(),
+  atime: z.number().optional(),
 });
 export type SessionFileStat = z.infer<typeof SessionFileStatSchema>;
-/** Runtime stat uses zero for unknown metadata; the session wire exposes that as absent. */
-export function sessionFileStatOf(stat: SessionFileStat | null): SessionFileStat | null {
+/** A filesystem's stat (RuntimeVfsStat), as a session's file calls answer with it. */
+export const RuntimeStatSchema = z.object({
+  dev: z.number(), ino: z.number(), nlink: z.number(), type: z.enum(['file', 'directory', 'symlink']), size: z.number(),
+  ctime: z.number(), atime: z.number(), mtime: z.number(), mode: z.number(), uid: z.number(), gid: z.number(), revision: z.number(),
+});
+/** Runtime stat uses zero for an unknown inode or revision; the session wire exposes that as absent. */
+export function sessionFileStatOf(stat: z.infer<typeof RuntimeStatSchema> | null): SessionFileStat | null {
   if (stat === null) return null;
-  const { ino, revision, ...fields } = stat;
-  return { ...fields, ...(ino === undefined || ino === 0 ? {} : { ino }), ...(revision === undefined || revision === 0 ? {} : { revision }) };
+  const { dev, ino, nlink, type, size, ctime, atime, mtime, mode, uid, gid, revision } = stat;
+  return {
+    type, size, ctime, mtime, mode, dev, nlink, uid, gid, atime,
+    ...(ino === 0 ? {} : { ino }),
+    ...(revision === 0 ? {} : { revision }),
+  };
 }
+/** mkdir(2)'s options as a session takes them: none is `mkdir -p`, as files.mkdir has always been. */
+export interface SessionMkdirOptions { recursive?: boolean; mode?: number }
+/** Whether a link's own times or owner change (lutimes, lchown), not its target's. */
+export interface SessionFollowOptions { followSymlinks?: boolean }
 export const SessionDirectoryEntrySchema = z.object({ name: z.string(), type: z.string() });
 export type SessionDirectoryEntry = z.infer<typeof SessionDirectoryEntrySchema>;
 
@@ -205,6 +224,14 @@ const SessionResultSchemas = {
   readdir: z.array(SessionDirectoryEntrySchema),
   rename: z.undefined(),
   chmod: z.undefined(),
+  unlink: z.undefined(),
+  rmdir: z.undefined(),
+  appendFile: z.undefined(),
+  symlink: z.undefined(),
+  realpath: z.string(),
+  truncate: z.undefined(),
+  utimes: z.undefined(),
+  chown: z.undefined(),
   readRange: FileBytesSchema.nullable(),
   exists: z.boolean(),
   mkdir: z.undefined(),
@@ -253,6 +280,11 @@ export const SessionFailureSchema = z.object({
   error: z.string().optional(),
   message: z.string().optional(),
   code: z.string().optional(),
+  /** A failed system call's, as Node's error carries them: its errno, the call, and the path(s) it named. */
+  errno: z.number().optional(),
+  syscall: z.string().optional(),
+  path: z.string().optional(),
+  dest: z.string().optional(),
 }).passthrough();
 
 export interface SessionReadyOptions { preinstall?: string[] }
@@ -320,8 +352,24 @@ export interface SessionRpc {
   _rpcChmod(path: string, mode: number, pid?: undefined, cred?: VfsCred): Promise<void>;
   _rpcFsReadRange(path: string, offset: number, length: number, pid?: undefined, cred?: VfsCred): Promise<SessionResult<'readRange'>>;
   _rpcExists(path: string, pid?: undefined, cred?: VfsCred): Promise<boolean>;
-  _rpcMkdir(path: string, pid?: undefined, cred?: VfsCred): Promise<void>;
+  _rpcMkdir(path: string, pid?: undefined, cred?: VfsCred, options?: SessionMkdirOptions): Promise<void>;
   _rpcDeleteFile(path: string, options?: { recursive?: boolean }, cred?: VfsCred): Promise<void>;
+  /** unlink(2): EISDIR for a directory. */
+  _rpcUnlink(path: string, pid?: undefined, cred?: VfsCred): Promise<void>;
+  /** rmdir(2): ENOTDIR for a non-directory, ENOTEMPTY for one with entries. */
+  _rpcRmdir(path: string, pid?: undefined, cred?: VfsCred): Promise<void>;
+  /** Written at the file's end, as O_APPEND writes; the file is made when absent. */
+  _rpcAppendFile(path: string, content: string | Uint8Array, pid?: undefined, cred?: VfsCred): Promise<void>;
+  /** symlink(2): a link at `path` whose text is `target`, as given. */
+  _rpcSymlink(target: string, path: string, pid?: undefined, cred?: VfsCred): Promise<void>;
+  /** realpath(3): the path with every link followed. */
+  _rpcRealpath(path: string, pid?: undefined, cred?: VfsCred): Promise<string>;
+  /** truncate(2): cut to `size`, or extended with zeros. */
+  _rpcTruncate(path: string, size: number, pid?: undefined, cred?: VfsCred): Promise<void>;
+  /** utimensat(2), times in milliseconds. */
+  _rpcUtimes(path: string, atime: number, mtime: number, pid?: undefined, cred?: VfsCred, options?: SessionFollowOptions): Promise<void>;
+  /** chown(2): a null side keeps the file's. */
+  _rpcChown(path: string, uid: number | null, gid: number | null, pid?: undefined, cred?: VfsCred, options?: SessionFollowOptions): Promise<void>;
   _rpcInstallRuntime(spec: string, options?: SessionRuntimeInstallOptions): Promise<SessionResult<'installRuntime'>>;
   _rpcEnsureRuntimes(specs: string[], options?: SessionRuntimeInstallOptions): Promise<SessionResult<'ensureRuntimes'>>;
   _rpcListRuntimes(): Promise<SessionResult<'listRuntimes'>>;
