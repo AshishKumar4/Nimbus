@@ -9955,8 +9955,16 @@ export class FacetManager {
       ...(opts.identity.execId === undefined ? {} : { execId: parseExecId(opts.identity.execId) }),
       ...(opts.identity.restartedFrom === undefined ? {} : { restart: { from: opts.identity.restartedFrom, doing: 'serving' } }),
     };
-    if (opts.resident && !opts.durable) {
+    // Experiment (D1 measurement, not for landing): NIMBUS_MEASURE_D1 in the
+    // command's environment launches a resident script light, with no durable
+    // owner, image, journal row or slot: 'light' keeps its write journal in its
+    // facet's SQLite, 'light-heap' keeps none, as a one-shot keeps none.
+    const measureD1 = opts.interpreterEnv?.base.NIMBUS_MEASURE_D1;
+    const steps: Array<[string, number]> = [['begin', Date.now()]];
+    const step = (name: string) => { steps.push([name, Date.now()]); };
+    if (opts.resident && !opts.durable && measureD1 === undefined) {
       opts = { ...opts, durable: { owner: await deriveResidentOwner(cwd, opts.resident.argv) } };
+      step('owner');
     }
     if (opts.durable && (!opts.resident || await readPortReservationByOwner(this.ctx, opts.durable.owner))) {
       this.processHost.assertDurableStorage();
@@ -10033,6 +10041,7 @@ export class FacetManager {
             ...(opts.mainModule !== undefined ? { mainModule: opts.mainModule } : {}),
             startArgs: opts.resident === undefined ? opts.startArgs : storedStartArgs(opts.startArgs, opts.interpreterEnv),
           });
+        step('image');
         await this.ctx.storage.transaction(async (txn) => {
           const key = `${DURABLE_IMAGES_KEY_PREFIX}${opts.durable!.owner}`;
           const images = await txn.get<Array<{ runner: string; application: string }>>(key) ?? [];
@@ -10040,6 +10049,7 @@ export class FacetManager {
             await txn.put(key, [...images, image]);
           }
         });
+        step('owner-index');
         // Journalled before the launch's first byte of work, so a row a
         // later instance reads proves this process never ended.
         record = {
@@ -10074,6 +10084,7 @@ export class FacetManager {
         // the retained SQLite bound to this application.
         // An interpreter resident's relaunch asks for its environment, an empty one included.
         const duplicate = await this._claimResident(record, opts.resident === undefined ? undefined : opts.interpreterEnv?.base ?? {});
+        step('claim');
         if (duplicate !== null) {
           this.ephemeralPids.set(entry.pid, opts.durable.owner);
           this.hooks.notify?.(`\x1b[2m[nimbus: second instance of "${command}" is not the durable one — pid ${duplicate} keeps the identity]\x1b[0m\r\n`);
@@ -10087,6 +10098,7 @@ export class FacetManager {
             await this._amendRow(entry.pid, (row) => ({ ...row, port: held.port, injectedPort: held.port }));
           }
         }
+        step('slot');
       }
       handle = await this._startResidentProcess(entry.pid, {
         // These runners answer startProcess with a boot payload (listening
@@ -10094,7 +10106,7 @@ export class FacetManager {
         startContract: 'boot',
         // A python or ruby resident logs its changes in its store; an
         // application's own class keeps its store to itself.
-        journaled: opts.resident !== undefined,
+        journaled: opts.resident !== undefined && measureD1 !== 'light-heap',
         startArgs: opts.resident && opts.startArgs && typeof opts.startArgs === 'object'
           ? { ...opts.startArgs, supervisorPid: entry.pid,
               ...(launchEnv ? { userEnv: { ...z.record(z.string(), z.unknown()).parse(Reflect.get(opts.startArgs, 'userEnv') ?? {}), ...launchEnv } } : {}) }
@@ -10117,15 +10129,20 @@ export class FacetManager {
           },
         },
       });
+      step('start');
       this.trackProcessRpcResources(entry.pid, [handle]);
       resourcesTracked = true;
       this.portRegistry.bindFacetStub(entry.pid, handle.routeTarget);
       const boot = foreground ? await Promise.race([handle.booted(), foreground.interrupted]) : await handle.booted();
+      step('booted');
       if (record && this.launchJournal.has(entry.pid)) {
         // Booted and running: its budget is whole again once it has run RESIDENT_PROVEN_MS here (_proveByUptime).
         await this._amendRow(entry.pid, (row) => ({ ...row, phase: 'running' }));
         this._proveByUptime(entry.pid);
+        step('amend');
       }
+      // I/O wait per awaited step (Date.now() moves across awaits only, so a step's CPU is not in it).
+      if (opts.resident) console.log(`[d1-measure] ${JSON.stringify({ pid: entry.pid, mode: measureD1 ?? 'resident', runtime: opts.resident.runtime, steps: steps.slice(1).map(([name, at], i) => [name, at - steps[i][1]]) })}`);
       if (opts.port && opts.port > 0 && opts.port < 65536) {
         if (opts.durable && !opts.resident) {
           // Re-read after the boot: a release or reassignment during it wins.
