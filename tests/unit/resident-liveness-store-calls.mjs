@@ -38,22 +38,22 @@ raw.ledger = new StorageLedger(raw.sql, { limit: raw.databaseBytes() + 64_000_00
 const FACET = 'proc-slot-0';
 raw.ledger.fill(FACET, 0);
 
-// After boot: the read's session call lets another process write first, and grants come slowly.
-let slow = false;
+// The program's read of big.bin asks the session; while it does, another
+// process writes, and from then on the session grants slowly.
 let wrote = false;
 let grants = 0;
 /** @type {(name: string, args: unknown[]) => Promise<unknown>} */
 let forward = async () => { throw new Error('forward is not ready'); };
 const handle = facetSupervisor(authority, {
   fsAcquired: async (...args) => {
-    if (slow && !wrote) {
+    if (!wrote && JSON.stringify(args).includes('data/big.bin')) {
       wrote = true;
       await authority.peer.writeFile('home/user/app/pushed.txt', 'y'.repeat(PUSHED));
     }
     return forward('fsAcquired', args);
   },
   fsStorageGrant: async (...args) => {
-    if (slow) { grants++; await sleep(300); }
+    if (wrote) { grants++; await sleep(300); }
     return forward('fsStorageGrant', args);
   },
 });
@@ -63,12 +63,9 @@ await launchResident({
   authority, sql: facetSql(), program: PROGRAM, env: { SUPERVISOR: handle.supervisor }, cursor: authority.cursor(),
   startArgs: { storage: { facet: FACET, grant: 0 } },
 });
-slow = true;
-const bootCalls = { ...handle.log.calls };
 
 await until(() => handle.log.exit !== null, 'the process ends', 10_000);
-const after = Object.fromEntries(Object.entries(handle.log.calls).map(([name, n]) => [name, n - (bootCalls[name] ?? 0)]).filter(([, n]) => n > 0));
-const seen = `calls at boot ${JSON.stringify(bootCalls)}, after boot ${JSON.stringify(after)}, stdout ${JSON.stringify(handle.log.stdout)}, exit ${JSON.stringify(handle.log.exit)}`;
+const seen = `calls ${JSON.stringify(handle.log.calls)}, stdout ${JSON.stringify(handle.log.stdout)}, exit ${JSON.stringify(handle.log.exit)}`;
 assert.ok(wrote && grants > 0, `the pushed bytes needed a grant after the read's session call, the case this pins: ${seen}`);
 assert.match(handle.log.stdout, new RegExp(`^READ ${SIZE}$`, 'm'), `the read is answered before the process ends: ${seen}`);
 assert.equal(handle.log.exit.code, 0);
