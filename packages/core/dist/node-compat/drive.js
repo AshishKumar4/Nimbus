@@ -35,7 +35,7 @@ function asGiven(error, path, dest) {
         return named;
     };
     // A program probing paths (statSync in a try) meets one per probe: where the error can be written, it is.
-    if (!Object.isFrozen(error) && writable(error, 'message') && (!renamesPath || writable(error, 'path')) && (!renamesDest || writable(error, 'dest'))) {
+    if (!Object.isFrozen(error) && plainField(error, 'message') && (!renamesPath || plainField(error, 'path')) && (!renamesDest || plainField(error, 'dest'))) {
         const fields = {};
         error.message = rename(fields, error.message);
         if (renamesPath)
@@ -46,10 +46,22 @@ function asGiven(error, path, dest) {
     }
     return withFields(error, rename);
 }
-/** Whether `error`'s `field` takes a new value where it stands: an own writable value, or none on an error that takes new ones. */
-function writable(error, field) {
-    const own = Object.getOwnPropertyDescriptor(error, field);
-    return own === undefined ? Object.isExtensible(error) : own.writable === true;
+/**
+ * Whether `error`'s `field` is a plain value an assignment replaces: its
+ * own writable one, or, where it has none, one it may be given (its nearest
+ * definition is a writable value, or there is none, on an error that takes
+ * new properties). An accessor's setter may do anything: not plain.
+ */
+function plainField(error, field) {
+    for (let at = error; at !== null; at = Reflect.getPrototypeOf(at)) {
+        const found = Reflect.getOwnPropertyDescriptor(at, field);
+        if (found === undefined)
+            continue;
+        if (found.writable !== true)
+            return false;
+        return at === error || Object.isExtensible(error);
+    }
+    return Object.isExtensible(error);
 }
 /** The fields Node's system errors carry, however a face defines them (enumerable or not, own or a getter's). */
 const ERRNO_FIELDS = ['code', 'errno', 'syscall', 'path', 'dest'];
@@ -59,7 +71,8 @@ const ERRNO_FIELDS = ['code', 'errno', 'syscall', 'path', 'dest'];
  * is. No stack is captured for it.
  */
 export function withFields(error, change) {
-    const fields = { ...error };
+    // Its message, stack and cause are the copy's own: an enumerable one of `error`'s is not copied over them.
+    const { message: _message, stack: _stack, cause: _cause, ...fields } = { ...error };
     for (const field of ERRNO_FIELDS) {
         const value = Reflect.get(error, field);
         if (value !== undefined)

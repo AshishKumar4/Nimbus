@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "a3b81e30568566fd2af9a073d85354b06caa203c603da692701a7d20b25a1612",
+  "fingerprint": "d9cf40a1e3f676f6f52a9a2c754d21ff5f013056235e3d87fcbcb2f91f129db7",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -344,8 +344,8 @@
     "packages/core/dist/interpreter/unsupported.d.ts.map": "bf5c54ec37b1a14c738b7a7879a36b2e25f4fbdc4ba18ca63478715c24090fff",
     "packages/core/dist/interpreter/unsupported.js": "62095e9348bfb7275372630cb12e59f316bf38ecd3c88138d89320cfbbe9522f",
     "packages/core/dist/node-compat/drive.d.ts": "cebd7c17739ae81270916ea01a83d7487e0b22ea687b581c4ca8d9373d606b00",
-    "packages/core/dist/node-compat/drive.d.ts.map": "cd47295abc05b55e000401c4f6363a94b4fda98fa7213f4a45c3a984e502d657",
-    "packages/core/dist/node-compat/drive.js": "176630efbfbc176c809ee6f225730ad719940b030a756758de917941805e4483",
+    "packages/core/dist/node-compat/drive.d.ts.map": "96a3f58124e9cca341fd976c3f9888680cf71be72d74e7c09e0d4c811385de36",
+    "packages/core/dist/node-compat/drive.js": "ed992c09477e14df13355cdd660ad6e89adc1c6d6dcb4f4e3bcf196130b963ac",
     "packages/core/dist/node-compat/faces.d.ts": "b2e8a793af2a7dbd44a18ca1454938c6d8a80786bddc58ba9ca6628b85d67578",
     "packages/core/dist/node-compat/faces.d.ts.map": "58551644578428a7892567a695884c77a3d7869e09f2c9bb1eb6fb03dd7c3d38",
     "packages/core/dist/node-compat/faces.js": "8e609bb71c20b858c77f0e9f90bb1319db8477b13f9f965f1a1e18524bf50881",
@@ -1558,7 +1558,7 @@
     "packages/core/src/interpreter/tree.ts": "2980e8321b70e53337f4446dfefce4b9ce328d7bcb40d3b00f9795cda0823d67",
     "packages/core/src/interpreter/unsupported-code.ts": "6c555435bbf3977d10136ebb4f824d9704c00c086e7e5c96ee2d610061f72969",
     "packages/core/src/interpreter/unsupported.ts": "f4ad979f165a7e2a44729d4ffc7d33245141a51e5fbb80a661b0984d94bfe2b4",
-    "packages/core/src/node-compat/drive.ts": "45d4e580630098c7916f3e25e561cc129462937aa2f64979ae4320b7836cd436",
+    "packages/core/src/node-compat/drive.ts": "e2899881d2537f76c73beba64f920230fed5243a5ae64533c3c39606208010f5",
     "packages/core/src/node-compat/faces.ts": "2e5cdfcc9bb04b0865750e71c1255c348df9fa05ba2f8d743ed1607be5bbe4e5",
     "packages/core/src/node-compat/fs.ts": "59bac14f7da17343292fe79d0f5becb3b4c49245a4f53b22a34133cecc0f6901",
     "packages/core/src/node-compat/index.ts": "1c5a2bde6bd81ce8a5f1d26d899bee56cefe8a80839f1c2605ac94527007d4c0",
