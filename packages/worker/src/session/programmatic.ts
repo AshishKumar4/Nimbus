@@ -740,10 +740,36 @@ export async function rpcWriteProcessInput(self: ProgrammaticHost, pid: number, 
   await ensureProgrammaticReady(self);
   const n = Number(pid);
   if (typeof data === 'string') return writeProcessInput(self.processes, n, data);
-  // Bytes are a pipe's: in order, the call waiting for room.
+  return writeProcessBytes(self, n, data);
+}
+
+/** Bytes are a pipe's: in order, the call waiting for room; `gone`, its caller left, withdraws what still waits. */
+async function writeProcessBytes(self: ProgrammaticHost, pid: number, data: Uint8Array, gone?: AbortSignal) {
   const children = self.runtimeWorkspace?.children;
-  const written = children !== undefined && startedProgram(self, n) ? await children.stdinWrite(n, data) : await self.processes.writeInputBytesWait(n, data);
-  return { ok: written.ok, pid: n };
+  const written = children !== undefined && startedProgram(self, pid)
+    ? await children.stdinWrite(pid, data, undefined, gone)
+    : await self.processes.writeInputBytesWait(pid, data, undefined, gone);
+  return { ok: written.ok, pid };
+}
+
+/**
+ * A byte write as the remote API makes it: its answer, the JSON envelope a
+ * remote call answers with, is the body of a stream, so a client that leaves
+ * while the write waits for room (its body cancelled) withdraws it.
+ */
+export async function rpcWriteProcessInputStream(self: ProgrammaticHost, pid: number, data: Uint8Array): Promise<ReadableStream<Uint8Array>> {
+  await ensureProgrammaticReady(self);
+  const gone = new AbortController();
+  const writing = writeProcessBytes(self, Number(pid), data, gone.signal);
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      const result = await writing;
+      if (gone.signal.aborted) return;
+      controller.enqueue(new TextEncoder().encode(JSON.stringify({ ok: true, result })));
+      controller.close();
+    },
+    cancel() { gone.abort(); },
+  }, { highWaterMark: 0 });
 }
 
 export async function rpcEndProcessInput(self: ProgrammaticHost, pid: number) {

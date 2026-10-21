@@ -1067,6 +1067,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
   _rpcListTerminals() { return _programmatic.rpcListTerminals(this); }
   _rpcCloseTerminal(name: string) { return _programmatic.rpcCloseTerminal(this, name); }
   async _rpcWriteProcessInput(pid: number, data: string | Uint8Array) { return _programmatic.rpcWriteProcessInput(this as any, pid, data); }
+  async _rpcWriteProcessInputStream(pid: number, data: Uint8Array) { return _programmatic.rpcWriteProcessInputStream(this as any, pid, data); }
   async _rpcStartProgram(argv: string[], options?: SessionStartProgramOptions) { return _programmatic.rpcStartProgram(this, argv, options); }
   async _rpcEndProcessInput(pid: number) { return _programmatic.rpcEndProcessInput(this as any, pid); }
   async _rpcResizeProcess(pid: number, size: SessionTerminalSize) { return _programmatic.rpcResizeProcess(this as any, pid, size); }

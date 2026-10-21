@@ -52,7 +52,7 @@ import {
   type SessionAvailableRuntime as NimbusAvailableRuntime,
 } from '@nimbus-sh/core/runtime/session-protocol.js';
 import { decodeProgramStream, PROGRAM_STREAM_CONTENT_TYPE } from '@nimbus-sh/core/runtime/program-stream.js';
-import type { StartedSessionProgram } from '@nimbus-sh/core/runtime/program-start.js';
+import { feedProgramInput, type StartedSessionProgram } from '@nimbus-sh/core/runtime/program-start.js';
 export type {
   NimbusSessionSurface, NimbusRestartPolicy, NimbusAppVisibility, NimbusAppTarget, NimbusDurableAppOptions,
   NimbusTerminalSize, NimbusDestroyOptions, NimbusDestroyResult, NimbusStartResult,
@@ -485,29 +485,17 @@ export class NimbusSandbox {
     return started;
   }
 
-  /** `stdin`'s bytes into `program`'s input, each write waiting for room, then its end; let go once it has ended. */
+  /** `stdin` into `program`'s input with the program's input calls (feedProgramInput). */
   private async feed(program: StartedSessionProgram, stdin: ReadableStream<Uint8Array>): Promise<void> {
     const stub = this.stub();
-    const reader = stdin.getReader();
-    const gone = program.exit.then(() => null, () => null);
+    const sink = {
+      write: async (bytes: Uint8Array) => (await this.rpc(stub._rpcWriteProcessInput(program.pid, bytes))).ok,
+      end: async () => { await this.rpc(stub._rpcEndProcessInput(program.pid)); },
+    };
     try {
-      for (;;) {
-        const next = await Promise.race([reader.read(), gone]);
-        if (next === null) {
-          await reader.cancel();
-          return;
-        }
-        if (next.done) break;
-        if (!(await this.rpc(stub._rpcWriteProcessInput(program.pid, next.value))).ok) {
-          await reader.cancel();
-          return;
-        }
-      }
-      await this.rpc(stub._rpcEndProcessInput(program.pid));
+      await feedProgramInput(stdin, sink, program.exit);
     } catch (error) {
       console.error(`Nimbus: the input of program ${program.pid} could not be written`, error);
-    } finally {
-      reader.releaseLock();
     }
   }
 

@@ -16,7 +16,7 @@
 import assert from 'node:assert/strict';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
-import { rpcSignalProcess } from '../../packages/worker/src/session/programmatic.ts';
+import * as programmatic from '../../packages/worker/src/session/programmatic.ts';
 import { hostSqlite } from './lib/host-sqlite.mjs';
 
 const { sql, transactions } = await hostSqlite();
@@ -207,6 +207,43 @@ try {
     assert.ok(pids.every((pid) => typeof pid === 'number'), 'each ran under a parent of its own');
     const left = ws.processes.getAll().filter((entry) => pids.includes(entry.pid));
     assert.deepEqual(left.map((entry) => entry.command), [], 'no row of what it ran is left');
+    assert.deepEqual(pids.filter((pid) => ws.children.isChild(pid)), [], 'nor the broker\'s entry');
+  });
+
+  await check('another child\'s unread end, past a minute', async () => {
+    // A start forgets only what it started: another broker child that ended long ago keeps its output for its holder.
+    const parent = ws.processes.spawn('node', ['node'], '/home/user', {});
+    const { childPid } = await ws.children.spawn({ command: 'echo', args: ['kept'], env: {}, cwd: '/home/user', stdio: ['pipe', 'pipe', 'pipe'], parentPid: parent.pid });
+    let status;
+    do status = await ws.children.wait(childPid, 5000);
+    while (!status.done);
+    const now = Date.now;
+    Date.now = () => now() + 120_000;
+    try {
+      await finish(await ws.startProgram(program(['true']), never));
+    } finally {
+      Date.now = now;
+    }
+    const kept = await ws.children.readOutput(childPid, 1, 0, 0);
+    assert.equal(text(new Uint8Array(kept.chunks.flatMap((chunk) => [...chunk.data]))), 'kept\n');
+  });
+
+  await check('a remote write withdrawn when its caller leaves', async () => {
+    // More than the input queue holds, to a program that does not read: the write waits, then its caller goes.
+    const host = { async ensureRuntimeReady() {}, runtimeWorkspace: ws, processes: ws.processes };
+    const idle = await ws.startProgram(program(['sleep', '600'], { stdin: 'written' }), never);
+    try {
+      const answer = (await programmatic.rpcWriteProcessInputStream(host, idle.pid, new Uint8Array(512 * 1024))).getReader();
+      const reading = answer.read();
+      await sleep(20);
+      await answer.cancel();
+      await reading.catch(() => {});
+      // Its end is no longer behind the write that waited.
+      assert.deepEqual(await within(programmatic.rpcEndProcessInput(host, idle.pid), 2000), { ok: true, pid: idle.pid });
+    } finally {
+      idle.kill('SIGKILL');
+      await idle.exit;
+    }
   });
 
   // Across the session a program started by its argv takes the broker's signals; another child of the broker
@@ -215,7 +252,7 @@ try {
   await check('a started program\'s signal', async () => {
     const sleeper = await ws.startProgram(program(['sleep', '600']), never);
     assert.equal(ws.isStartedProgram(sleeper.pid), true);
-    assert.deepEqual(await rpcSignalProcess(host, sleeper.pid, 'SIGTERM'), { ok: true, pid: sleeper.pid });
+    assert.deepEqual(await programmatic.rpcSignalProcess(host, sleeper.pid, 'SIGTERM'), { ok: true, pid: sleeper.pid });
     assert.deepEqual(await within(sleeper.exit, 5000), { code: null, signal: 'SIGTERM' });
     await until(() => !ws.isStartedProgram(sleeper.pid), 'it is forgotten once it has ended');
   });
@@ -224,7 +261,7 @@ try {
     const parent = ws.processes.spawn('node', ['node'], '/home/user', {});
     const { childPid } = await ws.children.spawn({ command: 'sleep', args: ['600'], env: {}, cwd: '/home/user', stdio: ['pipe', 'pipe', 'pipe'], parentPid: parent.pid });
     try {
-      await rpcSignalProcess(host, childPid, 'SIGUSR1');
+      await programmatic.rpcSignalProcess(host, childPid, 'SIGUSR1');
       await sleep(50);
       assert.equal(ws.children.isRunning(childPid), true, 'a signal its handler may take does not end it from outside');
     } finally {

@@ -344,4 +344,6 @@ export interface SessionRpc {
 /** Placement diagnostics belong only to the remotely addressable session. */
 export interface SessionRouterRpc extends SessionRpc {
   _rpcBootProbe(): Promise<SessionResult<'bootProbe'>>;
+  /** A byte write whose answer (the remote API's JSON envelope) is a stream's body: cancelling it withdraws what still waits for room. */
+  _rpcWriteProcessInputStream(pid: number, data: Uint8Array): Promise<ReadableStream<Uint8Array>>;
 }

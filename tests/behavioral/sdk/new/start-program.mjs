@@ -2,8 +2,9 @@
 // sdk/start-program — a session starts a program by its argv over the remote
 // API (Kinu ask 67): startProgram resolves once the program runs, rejects
 // with Node's spawn error when it cannot; its output streams as it is read;
-// its exit is waitpid's; kill sends its signal; its input is bytes written
-// with writeProcessInput, every value, more than a pipe holds, in order.
+// its exit is waitpid's, seen whether or not its output is read; kill sends
+// its signal; its input is bytes written with writeProcessInput, every
+// value, more than a pipe holds, in order, ended where its source fails.
 import { BASE, AUTH_TOKEN, makeAsserter } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
@@ -38,6 +39,15 @@ try {
   for (const p of echoed) { back.set(p, at); at += p.length; }
   a.check('its input: every byte, in order, to a slow reader', back.length === bytes.length && back.every((b, i) => b === bytes[i]), `${back.length} of ${bytes.length}`);
   a.check('and it ends with its input', (await cat.exit).code === 0, '');
+
+  const quiet = await box.startProgram(['true']);
+  const timeout = new Promise((resolve) => setTimeout(() => resolve('timed out'), 30_000));
+  const quietExit = await Promise.race([quiet.exit, timeout]);
+  a.check('its exit, its output unread', quietExit?.code === 0, JSON.stringify(quietExit));
+
+  const failing = new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('so far')); }, pull(c) { c.error(new Error('source failed')); } });
+  ran = await finish(await box.startProgram(['cat'], { stdin: failing }));
+  a.check('a source that fails ends its input there', new TextDecoder().decode(ran.out) === 'so far' && ran.exit.code === 0, JSON.stringify({ out: new TextDecoder().decode(ran.out), exit: ran.exit }));
 
   const sleeper = await box.startProgram(['sleep', '600']);
   sleeper.kill('SIGTERM');

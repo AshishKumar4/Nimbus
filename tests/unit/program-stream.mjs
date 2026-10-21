@@ -5,8 +5,9 @@
 // reader takes it, and its exit (waitpid's code or signal); cancelling the
 // stream before the start cancels the start, after it kills the program,
 // read or not. A caller that gives up on the start (its AbortSignal) cancels
-// the stream. Round-tripped here over a workspace's startProgram, the frames
-// split at every byte boundary on the way.
+// the stream. Output is read ahead a pipe's worth, so a quiet program's exit
+// is seen with its output unread. Round-tripped here over a workspace's
+// startProgram, the frames split at every byte boundary on the way.
 import assert from 'node:assert/strict';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { decodeProgramStream, encodeProgramStream } from '../../packages/core/src/runtime/program-stream.ts';
@@ -116,6 +117,40 @@ try {
       gaveUp.signal,
     ), { code: 'ECANCELED' });
     assert.ok(await until(() => !sleeping()), 'nothing of it runs on');
+  });
+
+  await check('an exit with its output unread', async () => {
+    const quiet = await across(['true']);
+    let timer;
+    const late = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('no exit within 5 s')), 5000); });
+    try {
+      assert.deepEqual(await Promise.race([quiet.exit, late]), { code: 0, signal: null });
+    } finally {
+      clearTimeout(timer);
+    }
+  });
+
+  await check('a cancel as the start is answered', async () => {
+    // The start answers just after the reader has gone, while a read of the stream waits on it.
+    let answer;
+    const kills = [];
+    let outputCancelled = false;
+    const unhandled = [];
+    const note = (reason) => unhandled.push(reason);
+    process.on('unhandledRejection', note);
+    try {
+      const wire = encodeProgramStream(() => new Promise((resolve) => { answer = resolve; }));
+      const reader = wire.getReader();
+      const reading = reader.read();
+      const cancelled = reader.cancel();
+      answer({ pid: 1, output: new ReadableStream({ cancel() { outputCancelled = true; } }), exit: new Promise(() => {}), kill: (signal) => kills.push(signal) });
+      await cancelled;
+      await reading;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    } finally {
+      process.off('unhandledRejection', note);
+    }
+    assert.deepEqual([kills, outputCancelled, unhandled.map(String)], [['SIGKILL'], true, []]);
   });
 
   assert.deepEqual(failures, []);

@@ -5,7 +5,9 @@
  * Its first frame is the start's answer (started, with its pid, or refused,
  * with Node's spawn error); then its output, as its reader takes it; then
  * its exit, waitpid's. Cancelling the stream before the start cancels the
- * start; after it, the program is sent SIGKILL.
+ * start; after it, the program is sent SIGKILL. Decoded, its output is read
+ * ahead a pipe's worth, so a program whose output fits is seen to exit with
+ * that output unread.
  */
 import { z } from 'zod/v4';
 import { enc } from '../_shared/bytes.js';
@@ -22,6 +24,9 @@ const FRAME_STDOUT = 3;
 const FRAME_STDERR = 4;
 const FRAME_EXIT = 5;
 const FRAME_FAILED = 6;
+
+/** What a decoded program's output holds unread before the wire waits for its reader: Linux's pipe capacity. */
+const PIPE_BYTES = 64 * 1024;
 
 const StartedFrameSchema = z.object({ pid: z.number().int() });
 /** Node's spawn error, as its own properties. */
@@ -50,15 +55,19 @@ export function encodeProgramStream(start: (cancel: AbortSignal) => Promise<Star
   const starting = start(cancel.signal);
   // A reader gone before the start's answer is read need not see its rejection.
   starting.catch(() => {});
-  let started: StartedSessionProgram | null = null;
-  let output: ReadableStreamDefaultReader<ExecChunk> | null = null;
+  // Once its answer is sent: the program and the one reader of its output, taken by the pull that sent it.
+  let running: { program: StartedSessionProgram; output: ReadableStreamDefaultReader<ExecChunk> } | null = null;
+  // Its reader has gone: a pull that resumes after it sends nothing more.
+  let gone = false;
   return new ReadableStream<Uint8Array>({
     async pull(controller) {
       try {
-        if (started === null) {
+        if (running === null) {
+          let program: StartedSessionProgram;
           try {
-            started = await starting;
+            program = await starting;
           } catch (error) {
+            if (gone) return;
             const refused = refusalOf(error);
             controller.enqueue(refused === null
               ? json(FRAME_FAILED, { message: error instanceof Error ? error.message : String(error) })
@@ -66,33 +75,40 @@ export function encodeProgramStream(start: (cancel: AbortSignal) => Promise<Star
             controller.close();
             return;
           }
-          output = started.output.getReader();
-          controller.enqueue(json(FRAME_STARTED, { pid: started.pid }));
+          // Gone as the answer came: the cancel ends what it started.
+          if (gone) return;
+          running = { program, output: program.output.getReader() };
+          controller.enqueue(json(FRAME_STARTED, { pid: program.pid }));
           return;
         }
-        const next = await (output ?? started.output.getReader()).read();
+        const next = await running.output.read();
+        if (gone) return;
         if (!next.done) {
           controller.enqueue(frame(next.value.stream === 'stdout' ? FRAME_STDOUT : FRAME_STDERR, next.value.data));
           return;
         }
-        controller.enqueue(json(FRAME_EXIT, await started.exit));
+        const exit = await running.program.exit;
+        if (gone) return;
+        controller.enqueue(json(FRAME_EXIT, exit));
         controller.close();
       } catch (error) {
+        if (gone) return;
         controller.enqueue(json(FRAME_FAILED, { message: error instanceof Error ? error.message : String(error) }));
         controller.close();
       }
     },
     async cancel(reason) {
-      if (started !== null) {
-        started.kill('SIGKILL');
-        await output?.cancel(reason);
+      gone = true;
+      if (running !== null) {
+        running.program.kill('SIGKILL');
+        await running.output.cancel(reason);
         return;
       }
-      // Not yet read: a start still pending is cancelled; one that has run is killed.
+      // Its answer not yet sent: a start still pending is cancelled; one that ran all the same is killed.
       cancel.abort(reason);
-      starting.then((program) => {
+      await starting.then((program) => {
         program.kill('SIGKILL');
-        void program.output.cancel(reason);
+        return program.output.cancel(reason);
       }, () => {});
     },
   }, { highWaterMark: 0 });
@@ -135,9 +151,11 @@ export async function decodeProgramStream(
   }
   if (first.kind !== FRAME_STARTED) throw new Error(first.kind === FRAME_FAILED ? parse(FailedFrameSchema, first.payload).message : `program stream: frame ${first.kind} before the start's answer`);
   const { pid } = parse(StartedFrameSchema, first.payload);
-  let settle!: { resolve: (exit: ExitStatus) => void; reject: (reason: unknown) => void };
+  let settle: { resolve: (exit: ExitStatus) => void; reject: (reason: unknown) => void } = { resolve: () => {}, reject: () => {} };
   const exit = new Promise<ExitStatus>((resolve, reject) => { settle = { resolve, reject }; });
   exit.catch(() => {});
+  // Read ahead of its reader up to a pipe's worth, as a pipe holds what a program wrote: a program whose
+  // output fits is seen to exit whether or not that output is read; one that writes more waits for its reader.
   const output = new ReadableStream<ExecChunk>({
     async pull(controller) {
       try {
@@ -162,6 +180,6 @@ export async function decodeProgramStream(
       settle.reject(reason ?? new Error('program output cancelled'));
       await reading.cancel(reason);
     },
-  }, { highWaterMark: 0 });
+  }, { highWaterMark: PIPE_BYTES, size: (chunk) => chunk.data.byteLength });
   return { pid, output, exit, kill: (sent) => signal(pid, sent) };
 }
