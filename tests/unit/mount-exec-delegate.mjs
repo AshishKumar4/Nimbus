@@ -199,8 +199,10 @@ try {
   assert.deepEqual([c.exit.spawnError, c.exit.exitCode], ['ENOENT', -2], 'a refused start is the error event, ENOENT');
   c = await child({ command: 'offline', cwd: '/m' });
   assert.equal(c.exit.spawnError, 'EHOSTDOWN');
-  c = await child({ command: 'tool', cwd: '/home/user' });
-  assert.deepEqual(c.starts, [], 'a local cwd: not the delegate\'s');
+  // A local cwd: found here, where there is no tool, and the delegate not asked.
+  starts.length = 0;
+  await assert.rejects(child({ command: 'tool', cwd: '/home/user' }), { code: 'ENOENT' });
+  assert.deepEqual(starts, []);
 } finally {
   await ws.close();
 }
