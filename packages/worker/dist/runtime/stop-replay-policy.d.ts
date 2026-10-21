@@ -362,9 +362,6 @@ export declare const REPLAY_OPERATION_POLICY: {
     oneShotCancel: {
         readonly kind: "effect";
     };
-    oneShotDispose: {
-        readonly kind: "effect";
-    };
     hmrNextEvent: {
         readonly kind: "effect";
     };

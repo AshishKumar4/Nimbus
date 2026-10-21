@@ -490,7 +490,6 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> i
     _rpcOneShotCancel(callId: unknown): {
         cancelled: boolean;
     };
-    _rpcOneShotDispose(key: unknown): void;
     _rpcCpSpawn(req: any, parentPid?: number): Promise<{
         childPid: number;
     }>;

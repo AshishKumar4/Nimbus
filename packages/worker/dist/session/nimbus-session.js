@@ -920,9 +920,6 @@ export class NimbusSession extends CloudflareDurableObject {
     _rpcOneShotCancel(callId) {
         return _rpc._rpcOneShotCancel(this.oneShotLeg(), callId);
     }
-    _rpcOneShotDispose(key) {
-        _rpc._rpcOneShotDispose(this.oneShotLeg(), key);
-    }
     // W8 child_process RPC
     async _rpcCpSpawn(req, parentPid) { return _rpc._rpcCpSpawn(this, req, parentPid); }
     async _rpcCpStdinWrite(childPid, data, pid) { return _rpc._rpcCpStdinWrite(this, childPid, data, pid); }

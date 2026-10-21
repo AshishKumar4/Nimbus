@@ -19,11 +19,15 @@
  *
  * The run is the session's wherever it runs. Its SUPERVISOR binding is the
  * one the session minted for it (its pid, and so its credential; its
- * delivery incarnation, way back and egress), so every syscall, stdio byte
- * and write reaches the session as that process, under the session's own
- * filesystem rules. The peer keeps nothing of a run but in memory, for as
- * long as the run's facet is open.
+ * delivery incarnation and way back), so every syscall, stdio byte and write
+ * reaches the session as that process, under the session's own filesystem
+ * rules. The peer keeps nothing of a call past it: each call builds its pool
+ * there from what it carries, and what a call receives ends with it. That is
+ * also why a one-shot whose network goes out through an egress stays in the
+ * session: a warm worker keeps the outbound it was loaded with, and on the
+ * peer that would be one call's capability, ended with that call.
  */
+import { z } from 'zod/v4';
 import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { Facet, FacetImage } from '@nimbus-sh/core/runtime/facet-host.js';
 import { type IsolatePoolOptions } from './isolate-pool.js';
@@ -51,16 +55,23 @@ export interface OneShotPoolSpec {
 }
 /** `spec`'s pool on `network`, its images the constructor's (`images`) or each call's. */
 export declare function oneShotPoolOptions(spec: OneShotPoolSpec, network: WorkspaceNetwork, images?: Record<string, FacetImage>): IsolatePoolOptions;
-/** A call's answer: the task's value, or what it failed with, which the peer caught. */
-type OneShotAnswer<R> = {
-    ok: true;
-    value: R;
-} | {
-    ok: false;
-    message: string;
-    code?: string;
-    unsettled: boolean;
-};
+/**
+ * A call's answer: the task's value, or what it failed with, which the peer
+ * caught. The value is the task's own, what its source returns
+ * (FacetTaskSource), which no RPC can check, as the session's own pool
+ * cannot.
+ */
+declare function answerSchema<R>(): z.ZodDiscriminatedUnion<[z.ZodObject<{
+    ok: z.ZodLiteral<true>;
+    value: z.ZodCustom<R, R>;
+}, z.core.$strip>, z.ZodObject<{
+    ok: z.ZodLiteral<false>;
+    message: z.ZodString;
+    code: z.ZodOptional<z.ZodString>;
+    unsettled: z.ZodBoolean;
+}, z.core.$strip>, z.ZodObject<{
+    ok: z.ZodLiteral<"preamble missing">;
+}, z.core.$strip>], "ok">;
 /** What /api/_diag/session shows of a session's one-shots: where each of the last ran, and its peer. */
 export interface OneShotPlacementCall {
     tag: string;
@@ -98,7 +109,8 @@ export declare class OneShotPlacement {
     /**
      * A one-shot's facet: each call runs on the peer when the peer is warm for
      * its worker, else in this session. A local pool is opened either way: a
-     * call the peer refused before it took it runs there.
+     * call the peer refused before it took it runs there. One whose network
+     * goes out through an egress always runs here (the module's header says why).
      */
     facet(spec: OneShotPoolSpec, images: Record<string, FacetImage>, network: WorkspaceNetwork): Facet;
     /** The peer is cold for every worker, and found again by the next warming: a call to it failed. */
@@ -109,8 +121,9 @@ export declare class OneShotPlacement {
 export declare function oneShotHost(ctx: DurableObjectState, env: object): OneShotHost;
 /**
  * The one-shots this Durable Object runs for its session, as that session's
- * peer: one pool per open facet of the session's, its calls, and nothing
- * stored.
+ * peer: each call on a pool of its own, built from what the call carries
+ * and gone with it, so nothing a call received outlives it. Only the
+ * loader's warm workers stay, as they do for the session's own pools.
  */
 export declare class OneShotHost {
     #private;
@@ -118,7 +131,7 @@ export declare class OneShotHost {
     private readonly env;
     constructor(ctx: DurableObjectState, env: object);
     /** One call of a session's facet: its answer, whatever the task did. */
-    submit(spec: unknown, callId: unknown, fn: unknown, args: unknown, options: unknown, images: unknown): Promise<OneShotAnswer<unknown>>;
+    submit(spec: unknown, callId: unknown, fn: unknown, args: unknown, options: unknown, images: unknown): Promise<z.infer<ReturnType<typeof answerSchema<unknown>>>>;
     /** A facet's worker loaded here and left warm (IsolatePool.warm), running nothing. */
     warm(spec: unknown, fn: unknown, images: unknown): Promise<{
         warmed: true;
@@ -127,8 +140,6 @@ export declare class OneShotHost {
     cancel(callId: unknown): {
         cancelled: boolean;
     };
-    /** A session's facet closed: its pool goes. */
-    dispose(key: unknown): void;
 }
 export {};
 //# sourceMappingURL=one-shot-peer.d.ts.map
