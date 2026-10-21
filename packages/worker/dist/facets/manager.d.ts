@@ -1923,13 +1923,6 @@ export declare class FacetManager {
      * signal, the shell's abort or a kill ends the wait.
      */
     private _awaitStoppedInput;
-    /**
-     * The signals a stopped run's program had said it catches (its stop
-     * record's): taken before its output is shown, as a "ready" it printed
-     * after process.on() is seen only once a signal sent then finds it caught,
-     * and its word of them may not have reached the session before the stop.
-     */
-    private _stopCatches;
     /** `pid`'s stdin channel: the host's, else the session's input store when the pid has one. */
     private _stdinChannel;
     /** A process's output, delivered as its own supervisor RPC delivers it. */

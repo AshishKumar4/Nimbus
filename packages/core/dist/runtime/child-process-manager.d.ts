@@ -237,6 +237,8 @@ export declare class ChildProcessManager {
         data: Uint8Array;
         ended: boolean;
     }>;
+    /** The next signal sent to `pid`'s Node program, its box taken back from a stop (SessionProcessSupervisor.takeSignalsBack). */
+    takeSignal(pid: number, waitMs: number): Promise<string | null>;
     /** The signals `pid`'s program catches now (SessionProcessSupervisor.catchSignals). */
     catchSignals(pid: number, catches: readonly string[]): void;
     /** The next signal sent to `pid`, whose program takes its own (SessionProcessSupervisor.nextSignal). */
@@ -348,6 +350,7 @@ export declare function createChildProcessSupervisor(manager: ChildProcessManage
     cpDrainOutput: (child: number) => Promise<DrainResult>;
     cpNextSignal: (waitMs: number) => Promise<string | null>;
     cpCatchSignals: (catches: readonly string[]) => void;
+    cpTakeSignal: (waitMs: number) => Promise<string | null>;
 };
 export {};
 //# sourceMappingURL=child-process-manager.d.ts.map

@@ -504,6 +504,8 @@ export declare function supervisorCalls<Base extends Class>(base: Base): (abstra
      * null if none came.
      */
     cpNextSignal(waitMs: number): Promise<string | null>;
+    /** The next signal sent to this Node process, its box taken back from a stop: cpNextSignal's, asked only past a replay's boundary. */
+    cpTakeSignal(waitMs: number): Promise<string | null>;
     /** The signals this process's program catches now: each one sent to it is its own to take (cpNextSignal), any other its default. */
     cpCatchSignals(catches: readonly string[]): Promise<void>;
     /**

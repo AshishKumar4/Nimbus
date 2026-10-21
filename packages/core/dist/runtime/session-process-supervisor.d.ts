@@ -420,6 +420,12 @@ export declare class SessionProcessSupervisor implements ProcessOutput {
      */
     catchSignals(pid: number, catches: readonly ProcessSignalName[]): void;
     /**
+     * `pid`'s program's run, past a replay's boundary, takes back its parked
+     * box (parkSignals): what waits there is its to take, by its waits or with
+     * its input.
+     */
+    takeSignalsBack(pid: number): void;
+    /**
      * `pid`'s program's run has stopped (a read it waits for, a listen), and
      * the next will take over: until then what it catches waits in its box,
      * not given to the stopped run's wait (answered none) nor to the next

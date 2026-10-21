@@ -174,6 +174,7 @@ declare const ProcessSupervisor_base: (abstract new (...args: any[]) => {
         acquired?: import("./rpc.js").VfsDeliveredAcquire;
     }>;
     cpNextSignal(waitMs: number): Promise<string | null>;
+    cpTakeSignal(waitMs: number): Promise<string | null>;
     cpCatchSignals(catches: readonly string[]): Promise<void>;
     cpBlocked(report: {
         blocked: boolean;

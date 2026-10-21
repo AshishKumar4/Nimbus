@@ -11103,7 +11103,7 @@ if (__nimbusWarnings.installs) __processMod.on("warning", __nimbusWarnings.onWar
 // session queues each one sent to it (a parent's kill, the shell's, a
 // client's) for it to take, where it would otherwise take the signal's
 // default action (cpCatchSignals), and this process takes them
-// (cpNextSignal), its handlers deciding what it does, as Node's do. While its
+// (cpTakeSignal), its handlers deciding what it does, as Node's do. While its
 // stdin pump runs, the pump takes them with its input (one waits at a time).
 // What it catches is said again until the session has it, and its output
 // waits for that: a "ready" it prints after process.on() is seen only once a
@@ -11155,19 +11155,25 @@ function __nimbusSayCaught() {
   __nimbusCaughtSaying = saying;
   __nimbusHoldOutput(saying);
 }
+// Whether this run has taken back what a stop parked (cpTakeSignal): once, past a replay's boundary, whether its
+// signals then come by its own waits or with its stdin.
+let __nimbusSignalsTakenBack = false;
 function __nimbusTakeSignals() {
-  if (__nimbusSignalTaker !== null || __nimbusCaughtWanted === "" || __nimbusStdinPumping || typeof __supervisor.cpNextSignal !== "function") return;
+  if (__nimbusSignalTaker !== null || __nimbusCaughtWanted === "" || typeof __supervisor.cpTakeSignal !== "function") return;
+  if (__nimbusStdinPumping && __nimbusSignalsTakenBack) return;
   __nimbusSignalTaker = (async () => {
     let failures = 0;
-    while (__nimbusCaughtWanted !== "" && !__nimbusStdinPumping && !__nimbusProgramStopped) {
+    while (__nimbusCaughtWanted !== "" && !__nimbusProgramStopped && !(__nimbusStdinPumping && __nimbusSignalsTakenBack)) {
       // A run after a stop takes no signal before the read the run before it stopped at: that run had none there.
       const crossing = __nimbusReplay && typeof __nimbusReplay.untilBoundary === "function" ? __nimbusReplay.untilBoundary() : null;
       if (crossing) await crossing;
       let sig = null;
       const asked = Date.now();
       try {
-        // Unref'd, as the stdin pump's poll: waiting for a signal is no reason to keep the program alive.
-        sig = await __nimbusUseRpcResultUnref(__supervisor.cpNextSignal(5000), (result) => result);
+        // Unref'd, as the stdin pump's poll: waiting for a signal is no reason to keep the program alive. While the
+        // pump reads, it takes them with its input: this asks once, to take back what a stop parked, and is done.
+        sig = await __nimbusUseRpcResultUnref(__supervisor.cpTakeSignal(__nimbusStdinPumping ? 0 : 5000), (result) => result);
+        __nimbusSignalsTakenBack = true;
         failures = 0;
       } catch {
         if (++failures > 10) return;
@@ -11175,6 +11181,7 @@ function __nimbusTakeSignals() {
       }
       if (__nimbusProgramStopped) return;
       if (sig === null) {
+        if (__nimbusStdinPumping) continue;
         // An answer of none that came at once (the session holds no catches for it, or failed) is asked again a second later, not at once.
         if (Date.now() - asked < 1000) await __nimbusPause(1000);
         continue;

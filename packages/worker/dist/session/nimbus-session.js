@@ -923,6 +923,7 @@ export class NimbusSession extends CloudflareDurableObject {
     }
     async _rpcCpNextSignal(pid, waitMs) { return _rpc._rpcCpNextSignal(this, pid, waitMs); }
     async _rpcCpCatchSignals(pid, catches) { return _rpc._rpcCpCatchSignals(this, pid, catches); }
+    async _rpcCpTakeSignal(pid, waitMs) { return _rpc._rpcCpTakeSignal(this, pid, waitMs); }
     // Programmatic sandbox SDK RPC
     async _rpcReady(options) { return _programmatic.ensureProgrammaticReady(this, options); }
     /** perf(boot): cold placement + constructor probe. First access runs the
