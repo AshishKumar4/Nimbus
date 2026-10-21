@@ -640,9 +640,10 @@ export function termBody(raw) {
  * its install from it (scripts/ci/lib/upstream.mjs).
  */
 export async function projectManifest(t, dir) {
-  const lines = termBody((await t.run(`cat ${dir}/package.json`, 15_000)).output).split('\n');
+  // `echo` ends the file's last line, which a scaffold may leave open: else the prompt would follow its `}`.
+  const lines = termBody((await t.run(`cat ${dir}/package.json; echo`, 15_000)).output).split('\n');
   const start = lines.findIndex((line) => line.startsWith('{'));
-  const end = lines.findLastIndex((line) => line === '}');
+  const end = lines.findLastIndex((line) => line.trimEnd().endsWith('}'));
   return start === -1 || end < start ? null : JSON.parse(lines.slice(start, end + 1).join('\n'));
 }
 
