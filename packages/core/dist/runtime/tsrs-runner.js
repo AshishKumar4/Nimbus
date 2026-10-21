@@ -56,6 +56,8 @@ export function makeTsrsCommand(deps) {
             end = { reusable: result.reusable, error: result.error, killed: stdio.signal.aborted };
             if (result.error)
                 ctx.stderr.write(`${binName}: ${result.error}\n`);
+            if (ctx.env?.NIMBUS_WASI_FS_STATS === '1')
+                ctx.stderr.write(`[wasi-fs] tsrs ${JSON.stringify(result.fsStats ?? null)}\n`);
             outcome = result.exitCode;
         }
         catch (error) {

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "28c973d3149d16c62132a7baca49330d79fb8ca5f39aece268afe1d0525b2093",
+  "fingerprint": "8bfdd816aa564b6a56ede090030e621ce0cb3e2ba7146c8585939a07e725031a",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -761,8 +761,8 @@
     "packages/core/dist/runtime/tsconfig-raw.d.ts.map": "9701650bc4fbe1aef5d6928589dde439739bc49fec71fe69286a68d6bf7cd94d",
     "packages/core/dist/runtime/tsconfig-raw.js": "c1f40da7f6226b4d2624d3d6426b36986ef0af0d101223e53bde6a83f2ca2ffd",
     "packages/core/dist/runtime/tsrs-runner.d.ts": "8a62aee3ab84abe38f81b20ab6520062531fea9ed5afa59b4f8f9999cff8ba60",
-    "packages/core/dist/runtime/tsrs-runner.d.ts.map": "f9872f677bb9bdcc7381ba84f44e2ecb324c90869a1a891aca1b8e2e4cc34a12",
-    "packages/core/dist/runtime/tsrs-runner.js": "26c20eb531f5914fc20fb04c0fa3a935e8298db93a2d634edbd14ecb572cfd15",
+    "packages/core/dist/runtime/tsrs-runner.d.ts.map": "58d881bf48749d19f5f8bc523e7db6273bfc679a031c082048498f7e902b59d8",
+    "packages/core/dist/runtime/tsrs-runner.js": "7be32c377a18f59f9abab88e70ac8815bd494e66d8a6a19076d1bb8dd187e510",
     "packages/core/dist/runtime/typescript-refusal.d.ts": "e4cef35dbb5637f855ce401074865665f578aec3cfd6c43fb5929301135e1736",
     "packages/core/dist/runtime/typescript-refusal.d.ts.map": "04dbef17402c347faafc0f5aef89f656932f24a655a62fadb08703b0b6340d1c",
     "packages/core/dist/runtime/typescript-refusal.js": "796245b5865fe6f1afee752ee535fd1e9a12b11da189023c071007c43242386a",
@@ -1697,7 +1697,7 @@
     "packages/core/src/runtime/transform-pipeline.generated.ts": "751aea9ab4a4ac63a95b7f46a739f8f7edfe4cdad5454c3e550969648002f40f",
     "packages/core/src/runtime/tsconfck.ts": "586ba3ee3be41b441cac81cf316613e706c57d68cf11387061b56a7f9fbef280",
     "packages/core/src/runtime/tsconfig-raw.ts": "257de6a0268ecb6c4c38368c9c14f8984377eea95f833ec366db8a6428ebf50d",
-    "packages/core/src/runtime/tsrs-runner.ts": "679287b8e23f286d2ab892116f919535c879526ac8a05a6121e2bfdc35675f5a",
+    "packages/core/src/runtime/tsrs-runner.ts": "6d5e59012effa8f6fbc070440d849848dffbfcdaa648104cb0ed02600766beb1",
     "packages/core/src/runtime/typescript-refusal.ts": "7b82ec0eb8c246abfa4142843247e0fa9226e6fba98775ca373eb991cb00c2ce",
     "packages/core/src/runtime/typescript-strip.ts": "4068a9a963cc9513d39df81d2961088f01c5fd5f5d826839144090eae5f3219b",
     "packages/core/src/runtime/undici-shim.ts": "0323138f7a32da8a7a8a91100b8089ec58e0dc168df19149a2d01f40e0940136",
