@@ -11131,22 +11131,27 @@ function __nimbusSayCaught() {
   if (__nimbusCaughtSaying !== null || __nimbusCaughtWanted === __nimbusCaughtSaid) return;
   const saying = (async () => {
     let failures = 0;
-    while (__nimbusCaughtWanted !== __nimbusCaughtSaid && !__nimbusProgramStopped) {
-      const wanted = __nimbusCaughtWanted;
-      try {
-        await __nimbusUseRpcResultUnref(__supervisor.cpCatchSignals(wanted === "" ? [] : wanted.split(",")), () => undefined);
-        __nimbusCaughtSaid = wanted;
-        failures = 0;
-      } catch (error) {
-        if (++failures >= 5) {
-          __nimbusReleaseStderr("[nimbus] the session did not take this process's signal handlers (" + ((error && error.message) || String(error))
-            + "): a signal sent to it takes its default action\\n");
-          return;
+    try {
+      while (__nimbusCaughtWanted !== __nimbusCaughtSaid && !__nimbusProgramStopped) {
+        const wanted = __nimbusCaughtWanted;
+        try {
+          await __nimbusUseRpcResultUnref(__supervisor.cpCatchSignals(wanted === "" ? [] : wanted.split(",")), () => undefined);
+          __nimbusCaughtSaid = wanted;
+          failures = 0;
+        } catch (error) {
+          if (++failures >= 5) {
+            __nimbusReleaseStderr("[nimbus] the session did not take this process's signal handlers (" + ((error && error.message) || String(error))
+              + "): a signal sent to it takes its default action\\n");
+            return;
+          }
+          await __nimbusPause(200 * failures);
         }
-        await __nimbusPause(200 * failures);
       }
+    } finally {
+      // Let go in the same turn as the last look at what is wanted: a listener added after says it afresh.
+      __nimbusCaughtSaying = null;
     }
-  })().finally(() => { if (__nimbusCaughtSaying === saying) __nimbusCaughtSaying = null; });
+  })();
   __nimbusCaughtSaying = saying;
   __nimbusHoldOutput(saying);
 }
@@ -11187,20 +11192,6 @@ function __nimbusTakeSignals() {
     // Listeners added while it ended are taken by the next.
     if (!__nimbusProgramStopped) __nimbusTakeSignals();
   });
-}
-// Signals the run before this one caught while it waited for stdin: taken once this run is past that read.
-if (__nimbusReplay && typeof __nimbusReplay.heldSignals === "function") {
-  const held = __nimbusReplay.heldSignals();
-  if (held.length > 0) {
-    Promise.resolve(__nimbusReplay.untilBoundary()).then(async () => {
-      await __nimbusInboundBarrier(undefined, true);
-      __nimbusReplay.unreplayable("took " + held.join(", ") + ", sent from outside it, which a second run would not be sent again");
-      for (const sig of held) __nimbusSignalSelf(sig);
-    }).catch((e) => {
-      if (e instanceof __ProcessExit) return;
-      try { queueMicrotask(() => { throw e; }); } catch {}
-    });
-  }
 }
 __processMod.on("newListener", (event) => { if (__nimbusCatchable.includes(event)) __nimbusCatchSignals(event); });
 __processMod.on("removeListener", (event) => { if (__nimbusCatchable.includes(event)) __nimbusCatchSignals(null); });
