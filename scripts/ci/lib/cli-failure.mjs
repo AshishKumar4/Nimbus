@@ -16,6 +16,8 @@ export function printFailure(command, error) {
  * Why a child script failed, as its caller quotes it: the error that kept it
  * from starting, else its printFailure line, else nothing (one that ended
  * otherwise, an older checkout's among them, is read from its stderr whole).
+ *
+ * @param {{ error?: Error, stderr?: string | null }} child
  */
 export function causeOf({ error, stderr }) {
   if (error) return error.message;
