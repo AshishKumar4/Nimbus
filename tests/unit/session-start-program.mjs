@@ -141,18 +141,28 @@ try {
     await assert.rejects(within(placing, 5000), { code: 'ECANCELED' });
   });
 
-  await check('stderr beside a stdout that never stops', async () => {
-    const endless = await ws.startProgram(program(['sh', '-c', 'echo err >&2; while true; do echo out; done']), never);
+  await check('stderr beside a stdout always ready', async () => {
+    // The broker's reads answered at once: stdout always has more; stderr has one line, then nothing.
+    const readOutput = ws.children.readOutput;
+    let stderrRead = false;
+    ws.children.readOutput = async (_pid, fd, since) => {
+      if (fd === 1) return { chunks: [{ data: new TextEncoder().encode('out\n') }], closed: false, maxSeq: since + 1 };
+      if (stderrRead) return new Promise(() => {});
+      stderrRead = true;
+      return { chunks: [{ data: new TextEncoder().encode('err\n') }], closed: false, maxSeq: 1 };
+    };
+    const sleeper = await ws.startProgram(program(['sleep', '600']), never);
     const order = [];
     try {
-      for await (const chunk of endless.output) {
+      for await (const chunk of sleeper.output) {
         order.push(chunk.stream);
         if (chunk.stream === 'stderr' || order.length >= 50) break;
         await sleep(1);
       }
     } finally {
-      endless.kill('SIGKILL');
-      await endless.exit;
+      ws.children.readOutput = readOutput;
+      sleeper.kill('SIGKILL');
+      await sleeper.exit;
     }
     assert.ok(order.includes('stderr'), `stderr surfaces while stdout runs on: ${order.join(',')}`);
   });
