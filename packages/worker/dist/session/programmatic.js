@@ -15,7 +15,7 @@ import { endResidentKeepalive } from './hibernation.js';
 import { PortRegistry, createPortCapability } from '@nimbus-sh/core/runtime/port-registry.js';
 import { CRED_KERNEL, CRED_SESSION_USER, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { endProcessInput, resizeProcess, signalProcess, writeProcessInput } from '@nimbus-sh/core/runtime/process-input-routing.js';
-import { SessionProcessLogsOptionsSchema, } from '@nimbus-sh/core/runtime/session-protocol.js';
+import { SessionProcessLogsOptionsSchema } from '@nimbus-sh/core/runtime/session-protocol.js';
 import { SESSION_DESTROYED_KEY, SHELL_STATE_KEY_PREFIX } from './keys.js';
 import { clearPortCapability, persistPortCapability, portRecordKey, readPortReservation, readPortReservationByName, readPortReservationByOwner, reservePort, rotatePortCapability } from './port-capability.js';
 import { bindPublicPortCapability, unbindPublicPortCapability } from '../router/public-directory.js';
@@ -28,6 +28,7 @@ import { socketOpen } from './named-terminals.js';
 import { enc } from '@nimbus-sh/core/_shared/bytes.js';
 import { singleQuote } from '@nimbus-sh/core/_shared/shell-quote.js';
 import { collectExecStream, createExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
+import { encodeProgramStream } from '@nimbus-sh/core/runtime/program-stream.js';
 import { _acquireForRoutedRequest } from './rpc.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 /**
@@ -507,14 +508,53 @@ export async function rpcKillProcess(self, pid) {
     }
     return { ok, pid: n };
 }
+/**
+ * A program started by its argv (NimbusWorkspace.startProgram), as one byte
+ * stream of frames: its start's answer, its output, its exit. Its cwd is the
+ * caller's (absolute) else the session shell's; its environment the
+ * caller's else the session shell's exported one, as a child's is its
+ * parent's.
+ */
+export async function rpcStartProgram(self, argv, options = {}) {
+    if (!Array.isArray(argv) || argv.length === 0 || argv.some((word) => typeof word !== 'string')) {
+        throw new TypeError('startProgram: argv must be a non-empty array of strings');
+    }
+    if (options.cwd !== undefined && !options.cwd.startsWith('/'))
+        throw new TypeError(`startProgram: cwd must be absolute, got ${JSON.stringify(options.cwd)}`);
+    await ensureProgrammaticReady(self);
+    const workspace = self.runtimeWorkspace;
+    if (!workspace)
+        throw new Error('startProgram: the session has no workspace');
+    const program = {
+        argv: [...argv],
+        env: options.env ?? workspace.shell.getExportedEnv(),
+        cwd: options.cwd ?? workspace.shell.getCwd(),
+        stdin: options.stdin ?? null,
+    };
+    return encodeProgramStream((cancel) => workspace.startProgram(program, cancel));
+}
+/** Whether `pid` is a child of the session's child broker (a started program, a node child): its input and signals are the broker's. */
+function brokerChild(self, pid) {
+    return self.runtimeWorkspace?.children.isRunning(pid) === true;
+}
 export async function rpcWriteProcessInput(self, pid, data) {
     await ensureProgrammaticReady(self);
     const n = Number(pid);
-    return writeProcessInput(self.processes, n, String(data ?? ''));
+    if (typeof data === 'string')
+        return writeProcessInput(self.processes, n, data);
+    // Bytes are a pipe's: in order, the call waiting for room.
+    const children = self.runtimeWorkspace?.children;
+    const written = children !== undefined && brokerChild(self, n) ? await children.stdinWrite(n, data) : await self.processes.writeInputBytesWait(n, data);
+    return { ok: written.ok, pid: n };
 }
 export async function rpcEndProcessInput(self, pid) {
     await ensureProgrammaticReady(self);
     const n = Number(pid);
+    const children = self.runtimeWorkspace?.children;
+    if (children !== undefined && brokerChild(self, n)) {
+        await children.stdinEnd(n);
+        return { ok: true, pid: n };
+    }
     return endProcessInput(self.processes, n);
 }
 export async function rpcResizeProcess(self, pid, size) {
@@ -523,7 +563,12 @@ export async function rpcResizeProcess(self, pid, size) {
 }
 export async function rpcSignalProcess(self, pid, signal) {
     await ensureProgrammaticReady(self);
-    return signalProcess(self.processes, Number(pid), String(signal));
+    const n = Number(pid);
+    // A started program is the broker's child: its signal is the broker's to deliver (ChildProcessManager.kill).
+    const children = self.runtimeWorkspace?.children;
+    if (children !== undefined && brokerChild(self, n))
+        return { ok: children.kill(n, String(signal)), pid: n };
+    return signalProcess(self.processes, n, String(signal));
 }
 export async function rpcProcessLogs(self, pid, options = {}) {
     await ensureProgrammaticReady(self);

@@ -115,6 +115,7 @@ export class HostedSession extends RpcTarget {
     _rpcListTerminals() { return operations.rpcListTerminals(this.#client()); }
     _rpcCloseTerminal(name) { return operations.rpcCloseTerminal(this.#client(), name); }
     _rpcWriteProcessInput(pid, data) { return operations.rpcWriteProcessInput(this.#client(), pid, data); }
+    _rpcStartProgram(argv, options) { return operations.rpcStartProgram(this.#client(), argv, options); }
     _rpcEndProcessInput(pid) { return operations.rpcEndProcessInput(this.#client(), pid); }
     _rpcResizeProcess(pid, size) { return operations.rpcResizeProcess(this.#client(), pid, size); }
     _rpcSignalProcess(pid, signal) { return operations.rpcSignalProcess(this.#client(), pid, signal); }

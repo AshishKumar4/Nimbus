@@ -19,6 +19,7 @@
  * the shell before the host can register a command of its own. A session
  * routed through it would silently acquire all of that.
  */
+import { startProgram } from './start-program.js';
 import { createKillCommand } from '../substrate/lifo/commands/system/kill.js';
 import { Kernel } from '../substrate/lifo/kernel/index.js';
 import { Shell } from '../substrate/lifo/shell/Shell.js';
@@ -428,6 +429,15 @@ export class NimbusWorkspace {
      * ended, leave the process table when the result is returned; one that ends
      * later (a background job) leaves at the first call to start a minute after.
      */
+    /**
+     * `program` started by its argv (Kinu ask 67): the start contract a
+     * mount's exec delegate meets (ExecDelegate.start), placed by its cwd as
+     * every start is. Its stdin, output, exit and signals are the child
+     * broker's (workspace/start-program.ts).
+     */
+    startProgram(program, cancel) {
+        return startProgram({ children: this.children, processes: this.processes, cred: this.identity.cred }, program, cancel);
+    }
     exec(command, options = {}) {
         const { shellId, detach, ...call } = options;
         if (shellId === undefined)

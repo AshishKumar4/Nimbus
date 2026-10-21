@@ -10,6 +10,7 @@ import { authorizeRequest } from '../auth/middleware.js';
 import { hasJwtSecret } from '../auth/token.js';
 import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { EXEC_STREAM_CONTENT_TYPE, collectExecStream, decodeExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
+import { PROGRAM_STREAM_CONTENT_TYPE } from '@nimbus-sh/core/runtime/program-stream.js';
 import { parseExecId } from '@nimbus-sh/core/runtime/process-table.js';
 import { doUnavailableError } from './do-errors.js';
 import { idempotent } from '@nimbus-sh/fabric/do-calls.js';
@@ -101,6 +102,12 @@ export async function handleNimbusRemoteApi(request, env, sdk, outbox) {
             const args = body.args ?? [];
             const wire = await ctx.stub._rpcExecStream(stringArg(args[0], 'command'), execOptions(ctx, args[1]));
             return corsResponse(wire, 200, { 'Content-Type': EXEC_STREAM_CONTENT_TYPE });
+        }
+        // A started program is a stream too; its input comes in writeProcessInput calls (no stream rides a request).
+        if (body.op === 'startProgram') {
+            const args = body.args ?? [];
+            const wire = await ctx.stub._rpcStartProgram(argvArg(args[0]), startProgramOptions(args[1]));
+            return corsResponse(wire, 200, { 'Content-Type': PROGRAM_STREAM_CONTENT_TYPE });
         }
         const t0 = Date.now();
         return await useRpcResource(dispatchRemoteRpc(ctx), (result) => remoteJson(wantDiag ? { ok: true, result, rpcMs: Date.now() - t0 } : { ok: true, result }));
@@ -288,7 +295,7 @@ async function dispatchRemoteRpc(ctx) {
         case 'closeTerminal':
             return ctx.stub._rpcCloseTerminal(stringArg(args[0], 'name'));
         case 'writeProcessInput':
-            return ctx.stub._rpcWriteProcessInput(numberArg(args[0], 'pid'), stringArg(args[1], 'data'));
+            return ctx.stub._rpcWriteProcessInput(numberArg(args[0], 'pid'), fileContentArg(args[1]));
         case 'endProcessInput':
             return ctx.stub._rpcEndProcessInput(numberArg(args[0], 'pid'));
         case 'resizeProcess': {
@@ -480,6 +487,29 @@ function numberArg(value, name) {
     if (!Number.isFinite(number))
         throw apiError(`${name} must be a number`, 'E_ARG_SHAPE', 400);
     return number;
+}
+function argvArg(value) {
+    if (!Array.isArray(value) || value.length === 0)
+        throw apiError('argv must be a non-empty array of strings', 'E_ARG_SHAPE', 400);
+    return value.map((word, index) => stringArg(word, `argv[${index}]`));
+}
+/** startProgram's options as a remote caller may give them: its cwd and environment, no stream. */
+function startProgramOptions(value) {
+    if (value === undefined || value === null)
+        return {};
+    if (typeof value !== 'object')
+        throw apiError('options must be an object', 'E_ARG_SHAPE', 400);
+    const cwd = Reflect.get(value, 'cwd');
+    const env = Reflect.get(value, 'env');
+    const options = {};
+    if (cwd !== undefined)
+        options.cwd = stringArg(cwd, 'cwd');
+    if (env !== undefined) {
+        if (typeof env !== 'object' || env === null)
+            throw apiError('env must be an object of strings', 'E_ARG_SHAPE', 400);
+        options.env = Object.fromEntries(Object.entries(env).map(([name, word]) => [name, stringArg(word, `env.${name}`)]));
+    }
+    return options;
 }
 function fileContentArg(value) {
     if (typeof value === 'string' || value instanceof Uint8Array)

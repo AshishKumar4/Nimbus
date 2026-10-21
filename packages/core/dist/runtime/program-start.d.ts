@@ -63,4 +63,8 @@ export type ProgramPlacement = {
     readonly reason: string;
 };
 export declare const LOCAL_PLACEMENT: ProgramPlacement;
+/** A program a session started (NimbusWorkspace.startProgram), and its pid in the session's process table. */
+export interface StartedSessionProgram extends StartedProgram {
+    readonly pid: number;
+}
 //# sourceMappingURL=program-start.d.ts.map

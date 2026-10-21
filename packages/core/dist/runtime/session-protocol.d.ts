@@ -561,7 +561,7 @@ declare const SessionResultSchemas: {
     }, z.core.$strip>;
 };
 export type SessionJsonOperation = keyof typeof SessionResultSchemas;
-export type SessionOperation = SessionJsonOperation | 'execStream';
+export type SessionOperation = SessionJsonOperation | 'execStream' | 'startProgram';
 export type SessionResult<Op extends SessionJsonOperation> = z.infer<(typeof SessionResultSchemas)[Op]>;
 export declare const SessionResults: {
     [Op in SessionJsonOperation]: z.ZodType<SessionResult<Op>>;
@@ -608,6 +608,13 @@ export interface SessionExecOptions extends SessionReadyOptions {
     /** startProcess only; spontaneous failures follow this restart policy. */
     restart?: SessionRestartPolicy;
 }
+/** startProgram's: its cwd (absolute), its environment (else the session's exported one), and its stdin's bytes. */
+export interface SessionStartProgramOptions {
+    cwd?: string;
+    env?: Record<string, string>;
+    /** Colocated callers only: across HTTP, write the started program's input with writeProcessInput. */
+    stdin?: ReadableStream<Uint8Array>;
+}
 export interface SessionRunCodeOptions extends SessionExecOptions {
     language?: string;
     install?: 'never' | 'ifMissing';
@@ -643,6 +650,8 @@ export interface SessionRpc {
     _rpcReady(options?: SessionReadyOptions): Promise<SessionResult<'ready'>>;
     _rpcExecStream(command: string, options?: SessionExecOptions): Promise<ReadableStream<Uint8Array>>;
     _rpcStartProcess(command: string, options?: SessionExecOptions): Promise<SessionStartResult>;
+    /** A program started by its argv (NimbusWorkspace.startProgram), as an encoded program stream (program-stream.ts). */
+    _rpcStartProgram(argv: string[], options?: SessionStartProgramOptions): Promise<ReadableStream<Uint8Array>>;
     _rpcDetachExec(detachId: string): Promise<SessionResult<'detachExec'>>;
     _rpcRunCode(code: string, options?: SessionRunCodeOptions): Promise<SessionResult<'runCode'>>;
     _rpcReadFile(path: string, pid?: undefined, cred?: VfsCred): Promise<SessionResult<'readFile'>>;
@@ -667,7 +676,8 @@ export interface SessionRpc {
     _rpcKillProcess(pid: number): Promise<SessionResult<'killProcess'>>;
     _rpcListTerminals(): Promise<SessionTerminal[]>;
     _rpcCloseTerminal(name: string): Promise<SessionResult<'closeTerminal'>>;
-    _rpcWriteProcessInput(pid: number, data: string): Promise<SessionResult<'writeProcessInput'>>;
+    /** Text is queued as a terminal's keys; bytes are a pipe's, the call waiting for room. */
+    _rpcWriteProcessInput(pid: number, data: string | Uint8Array): Promise<SessionResult<'writeProcessInput'>>;
     _rpcEndProcessInput(pid: number): Promise<SessionResult<'endProcessInput'>>;
     _rpcResizeProcess(pid: number, size: SessionTerminalSize): Promise<SessionResult<'resizeProcess'>>;
     _rpcSignalProcess(pid: number, signal: string): Promise<SessionResult<'signalProcess'>>;

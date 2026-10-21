@@ -54,6 +54,8 @@ export interface ExecStreamWriter {
 export declare function createExecStream(onCancel: (reason: unknown) => void): ExecStreamWriter;
 /** Read the whole stream into strings: the buffered exec result. */
 export declare function collectExecStream(stream: ExecStream): Promise<ExecOutput>;
+/** One frame of a byte stream of frames: `[kind u8][length u32 BE][payload]` (program-stream.ts frames this way too). */
+export declare function frame(kind: number, payload: Uint8Array): Uint8Array;
 /** One byte stream carrying `stream`'s chunks, then its exit or failure. */
 export declare function encodeExecStream(stream: ExecStream): ReadableStream<Uint8Array>;
 /** The inverse of `encodeExecStream`; frames may arrive split or joined in any way. */
