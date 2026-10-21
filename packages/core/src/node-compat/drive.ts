@@ -11,11 +11,10 @@ import { fsError } from '../vfs/vfs-error.js';
 import { syncValue } from '../vfs/vfs.js';
 import type { FilesFace, NodeFaces } from './faces.js';
 
-/** One file call an operation makes: answered now, or later; its syscall and path name it in an EAGAIN. */
+/** One file call an operation waits for; its syscall and path name it in an EAGAIN. */
 export interface Step {
   readonly syscall: string;
   readonly path: string | undefined;
-  now(files: FilesFace<'sync'>): void;
   later(files: FilesFace<'async'>): Promise<void>;
 }
 
@@ -23,16 +22,23 @@ export interface Step {
 export type Op<T> = Generator<Step, T, void>;
 
 /**
+ * The synchronous face while an operation is answered now: its steps call
+ * it where they stand, so a failure is thrown once, where the body can
+ * catch it, and nothing is yielded.
+ */
+let answering: FilesFace<'sync'> | null = null;
+
+/**
  * `call`, made on whichever face the driver has: the face's methods take
  * the same arguments and differ only in answering now or with a promise.
- * Its answer is kept here and read back after the step.
+ * Answered later, its answer is kept here and read back after the step.
  */
 export function* step<T>(syscall: string, path: string | undefined, call: (files: FilesFace<'sync'> | FilesFace<'async'>) => T | Promise<T>): Op<T> {
+  if (answering !== null) return syncValue(call(answering));
   const slot: { answer: { value: T } | null } = { answer: null };
   yield {
     syscall,
     path,
-    now(files) { slot.answer = { value: syncValue(call(files)) }; },
     async later(files) { slot.answer = { value: await call(files) }; },
   };
   if (slot.answer === null) throw new Error(`node-compat: ${syscall} resumed unanswered`);
@@ -44,19 +50,17 @@ export function lacks(syscall: string, path?: string): Error {
   return fsError('ENOSYS', syscall, path);
 }
 
-/** `op` answered now, its failures thrown into it as each step's are. */
+/** `op` answered now: each of its steps calls `files` where it stands. */
 function answerNow<T>(op: Op<T>, files: FilesFace<'sync'>): T {
-  let next = op.next();
-  while (!next.done) {
-    try {
-      next.value.now(files);
-    } catch (error) {
-      next = op.throw(error);
-      continue;
-    }
-    next = op.next();
+  const outer = answering;
+  answering = files;
+  try {
+    const next = op.next();
+    if (!next.done) throw new Error(`node-compat: ${next.value.syscall} waited where it is answered now`);
+    return next.value;
+  } finally {
+    answering = outer;
   }
-  return next.value;
 }
 
 /**
@@ -66,7 +70,7 @@ function answerNow<T>(op: Op<T>, files: FilesFace<'sync'>): T {
  */
 export function runSync<T>(faces: NodeFaces, name: string, op: Op<T>): T {
   if (faces.sync !== undefined) return answerNow(op, faces.sync);
-  const next = op.next();
+  const next = resumed(() => op.next());
   if (next.done) return next.value;
   const base = name.replace(/Sync$/, '');
   throw fsError('EAGAIN', next.value.syscall, next.value.path, undefined, {
@@ -83,15 +87,27 @@ export async function runAsync<T>(faces: NodeFaces, op: Op<T>): Promise<T> {
 
 /** `op` over `files`, each step awaited, its failures thrown into it. */
 async function answerLater<T>(op: Op<T>, files: FilesFace<'async'>): Promise<T> {
-  let next = op.next();
+  let next = resumed(() => op.next());
   while (!next.done) {
+    const step = next.value;
     try {
-      await next.value.later(files);
+      await step.later(files);
     } catch (error) {
-      next = op.throw(error);
+      next = resumed(() => op.throw(error));
       continue;
     }
-    next = op.next();
+    next = resumed(() => op.next());
   }
   return next.value;
+}
+
+/** `resume` run with no synchronous face answering: its steps wait. */
+function resumed<T>(resume: () => IteratorResult<Step, T>): IteratorResult<Step, T> {
+  const outer = answering;
+  answering = null;
+  try {
+    return resume();
+  } finally {
+    answering = outer;
+  }
 }
