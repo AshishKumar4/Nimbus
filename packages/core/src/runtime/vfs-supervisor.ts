@@ -2,7 +2,7 @@ import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import type { RuntimeFsBridge, RuntimeSynchronousFs } from './os-contracts.js';
 import type { WasiSupervisorStub } from './wasi/types.js';
 import { FILESYSTEM_ANSWERED_RPC_METHODS, bridgeOverSupervisor } from './filesystem-mirrors.generated.js';
-import { refusalData, supervisorRefusalError, type SupervisorRefusal } from './filesystem-methods.js';
+import { FILESYSTEM_METHODS, refusalData, supervisorRefusalError, type SupervisorRefusal } from './filesystem-methods.js';
 
 // The method table (filesystem-methods.ts) and the typed mirrors core's
 // build writes from it (filesystem-mirrors.generated.ts).
@@ -51,6 +51,11 @@ const ANSWERED: Partial<Record<string, true>> = {};
 Reflect.setPrototypeOf(ANSWERED, null);
 for (const name of SUPERVISOR_ANSWERED_METHODS) ANSWERED[name] = true;
 
+// The answered calls that wait on the session for as long as it likes (FILESYSTEM_METHODS `waits`).
+const WAITS: Partial<Record<string, true>> = {};
+Reflect.setPrototypeOf(WAITS, null);
+for (const method of Object.values(FILESYSTEM_METHODS)) if ('waits' in method) WAITS[method.rpc] = true;
+
 export function isSupervisorAnsweredMethod(name: unknown): name is SupervisorAnsweredMethod {
   return typeof name === 'string' && ANSWERED[name] === true;
 }
@@ -94,15 +99,24 @@ function isAnsweringStub(supervisor: object): supervisor is AnsweringStub {
  * A same-isolate supervisor is handed back as is: its refusals are thrown in
  * this isolate and cross nothing. The call's value is handed on and its
  * envelope released.
+ *
+ * `live` is told of each filesystem call as it is made, with the call in
+ * flight: a program's liveness counts it as work it waits on, whoever made
+ * it, its own fs or the filesystem that answers for it (a store's fills,
+ * listings and grants), until the session answers. A call that waits on the
+ * session for as long as it likes is not told: a grant's recall poll (the
+ * table's `waits`); stdin and a socket's poll are not filesystem calls.
  */
-export function answeringSupervisor<T extends object>(supervisor: T): T {
+export function answeringSupervisor<T extends object>(supervisor: T, live?: (call: Promise<unknown>) => unknown): T {
   if (!isAnsweringStub(supervisor)) return supervisor;
   const stub = supervisor;
   return new Proxy(supervisor, {
     get(target, name) {
       if (!isSupervisorAnsweredMethod(name)) return Reflect.get(target, name);
       return async (...args: unknown[]) => {
-        const answer = await stub.answer(name, args);
+        const asked = stub.answer(name, args);
+        if (live !== undefined && WAITS[name] !== true) live(asked);
+        const answer = await asked;
         try {
           if ('refusal' in answer) throw supervisorRefusalError(answer.refusal);
           return answer.value;
