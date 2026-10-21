@@ -120,7 +120,6 @@ export const SUPERVISOR_OP_TABLE = {
   oneShotSubmit: null,
   oneShotWarm: null,
   oneShotCancel: null,
-  oneShotDispose: null,
   hmrRelay: null,
   hmrNextEvent: null,
   replayBoundary: null,

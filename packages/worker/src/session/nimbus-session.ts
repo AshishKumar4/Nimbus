@@ -1050,9 +1050,6 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> implement
   _rpcOneShotCancel(callId: unknown): { cancelled: boolean } {
     return _rpc._rpcOneShotCancel(this.oneShotLeg(), callId);
   }
-  _rpcOneShotDispose(key: unknown): void {
-    _rpc._rpcOneShotDispose(this.oneShotLeg(), key);
-  }
 
   // W8 child_process RPC
   async _rpcCpSpawn(req: any, parentPid?: number): Promise<{ childPid: number }> { return _rpc._rpcCpSpawn(this as any, req, parentPid); }

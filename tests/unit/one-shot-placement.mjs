@@ -20,7 +20,10 @@
 //   9. peers that share the session's isolate are no peer;
 //  10. a facet with no warm worker runs on the peer once its object is up;
 //  11. a warming in flight when the peer is forgotten marks nothing warm, and
-//      the next cold call warms the peer again.
+//      the next cold call warms the peer again;
+//  12. a facet whose network goes out through an egress stays in the session;
+//  13. a call carries its preamble only until the peer holds it, and again
+//      when the peer no longer does.
 
 import assert from 'node:assert/strict';
 import { adoptCtxExports, composeFabric } from '../../packages/fabric/src/composition.ts';
@@ -30,7 +33,7 @@ import { loaderFacetHost } from '../../packages/worker/src/runtime/facet-loader-
 import * as rpc from '../../packages/worker/src/session/rpc.ts';
 import { SUPERVISOR_OP_ROUTES } from '../../packages/core/src/workspace/supervisor-op.ts';
 import { facetTaskSource } from '../../packages/core/src/runtime/facet-task.ts';
-import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
+import { ISOLATE_NETWORK, workspaceNetwork } from '../../packages/core/src/_shared/workspace-network.ts';
 
 composeFabric({ supervisorEntrypoint: 'SupervisorRPC' });
 adoptCtxExports({ SupervisorRPC: (options) => ({ supervisorProps: options.props }) });
@@ -236,7 +239,8 @@ function world({ colocated = false } = {}) {
   try {
     const at = now();
     Date.now = () => at + ONE_SHOT_WARM_MS;
-    assert.equal((await w.oneShot('later')).ranOn, 'session-0123456789', `${ONE_SHOT_WARM_MS} ms after its last answer the peer is cold`);
+    assert.deepEqual(oneShotPlacementDiagnostics(w.session.ctx).warm, {}, `${ONE_SHOT_WARM_MS} ms after its last answer the peer is warm for nothing`);
+    assert.equal((await w.oneShot('later')).ranOn, 'session-0123456789', 'and a call runs in the session');
   } finally {
     Date.now = now;
   }
@@ -284,6 +288,42 @@ function world({ colocated = false } = {}) {
   assert.equal(sentWarm, 2, 'and warms the peer again, though the first warming was still in flight');
   assert.equal((await w.oneShot('third')).ranOn, 'session-0123456789:one-shot:0', 'the peer, warmed since it was forgotten, takes the next call');
   console.log('  ok  a warming in flight across a forget marks nothing; the next cold call warms the peer again');
+}
+
+// ── 12: an egress ───────────────────────────────────────────────────────────
+{
+  const w = world();
+  await w.oneShot('warm it');
+  await w.settled();
+  const egress = { fetch: async () => new Response('egress'), connect() { throw new Error('no TCP'); } };
+  const facet = loaderFacetHost(w.session.env, w.session.ctx, workspaceNetwork(egress)).open({
+    tag: 'probe-runner', concurrency: 1, syscalls: { vfs: {}, pid: 4242 }, preamble: 'const p = 1;',
+    warm: { session: 'session-0123456789', name: 'probe-1' },
+  });
+  try {
+    assert.equal((await facet.submit(TASK, 'egress')).ranOn, 'session-0123456789',
+      'a warm worker keeps the outbound it loaded with, which on the peer would be one call\'s: it runs in the session');
+  } finally { facet.dispose(); }
+  console.log('  ok  a facet that goes out through an egress stays in the session');
+}
+
+// ── 13: the preamble ────────────────────────────────────────────────────────
+{
+  const w = world();
+  await w.oneShot('warm it');
+  await w.settled();
+  const peer = w.peerOf();
+  const carried = () => w.objects.sent.filter((s) => s.op === 'oneShotSubmit').map((s) => s.args[0].preamble !== undefined);
+  await w.oneShot('first');
+  await w.oneShot('second');
+  assert.deepEqual(carried(), [false, false], 'the warming carried it: no call carries it again');
+  // The peer reset: a new instance, holding nothing.
+  peer.ctx = { ...peer.ctx };
+  assert.equal((await w.oneShot('after reset')).ranOn, peer.name, 'a call to a peer that no longer holds it still runs there');
+  assert.deepEqual(carried(), [false, false, false, true], 'sent again, carrying it');
+  await w.oneShot('then');
+  assert.deepEqual(carried().at(-1), false, 'and not after');
+  console.log('  ok  a preamble crosses once per peer, and again when the peer lost it');
 }
 
 console.log('one-shot-placement: ok');

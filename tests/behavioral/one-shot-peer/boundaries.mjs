@@ -65,7 +65,7 @@ try {
     a.check(`${host}: what alice's run writes is alice's`, ran(wrote, host) && lines(wrote).includes('1001'), JSON.stringify({ ranOn: wrote.ranOn, text: wrote.text.slice(-200) }));
   }
   const env = await on('peer', `SECRET_ENV=${SECRET} python3 -c "import os; print(os.environ['SECRET_ENV'])"`);
-  a.check('its environment reaches it on the peer', ran(env, 'peer') && env.text.includes(SECRET), JSON.stringify({ ranOn: env.ranOn, text: env.text.slice(-200) }));
+  a.check('its environment reaches it on the peer', ran(env, 'peer') && lines(env).includes(SECRET), JSON.stringify({ ranOn: env.ranOn, text: env.text.slice(-200) }));
   const stored = await peer(sid, 'stored', SECRET);
   a.check('and the peer stores none of it', stored.stored === false, JSON.stringify(stored));
 
@@ -123,7 +123,8 @@ try {
   out({ lost: true, endedMs, exit: submission.exitCode, reset, text: text.slice(-400) });
   a.check(`a run whose peer is lost ends at once (${endedMs} ms after the reset, against 27 s more of its sleep), naming the cause`,
     endedMs < 27_000 && submission.exitCode !== 0 && /one-shot host was lost/.test(text), JSON.stringify({ endedMs, exit: submission.exitCode, text: text.slice(-400) }));
-  a.check('it ran on the peer', (await hostsSince(sid, marked)).every((h) => h === 'peer'));
+  const lostOn = await hostsSince(sid, marked);
+  a.check('it ran on the peer', lostOn.length > 0 && lostOn.every((h) => h === 'peer'), JSON.stringify(lostOn));
   await sleep(Math.max(0, 30_000 - (Date.now() - at)));
   const next = await run('python3 -c "print(2)"');
   a.check('it is not run again, and the next one-shot runs', next.exitCode === 0 && /\n2/.test(next.text) && !t.stream.slice(submission.start).includes('SLEPT-THROUGH'),

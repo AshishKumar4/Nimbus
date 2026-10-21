@@ -70,7 +70,11 @@ export async function diagLatency(sid) {
   return Date.now() - started;
 }
 
-/** `call`, while `observe` repeats beside it every 100 ms; its value, wall, and the observer's worst latency. */
+/**
+ * `call`, while `observe` repeats beside it every 100 ms; its value, wall,
+ * and the observer's worst latency, counted once the observation in flight
+ * when the call ended has ended too: that one waited longest.
+ */
 export async function watched(call, observe) {
   let running = true;
   const samples = [];
@@ -81,13 +85,16 @@ export async function watched(call, observe) {
     }
   })();
   const started = Date.now();
+  let value, ms;
   try {
-    const value = await call();
-    return { value, ms: Date.now() - started, worst: Math.max(0, ...samples), samples: samples.length };
+    value = await call();
+    ms = Date.now() - started;
   } finally {
     running = false;
     await observer;
   }
+  if (samples.length === 0) throw new Error('the session was never observed during the call');
+  return { value, ms, worst: Math.max(...samples), samples: samples.length };
 }
 
 export const median = (values) => {
