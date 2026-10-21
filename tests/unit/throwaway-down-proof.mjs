@@ -76,7 +76,7 @@ await import('./tests/behavioral/_throwaway-target.mjs');
   const receipt = join(root, '.wrangler/throwaway-targets', NAME + '.json');
   const deleted = join(root, 'state/nimbus/deleted-previews.json');
   const recorded = JSON.stringify({ name: NAME, preview: PREVIEW, base: origin + '/preview-hostname', secret: 'the-held-signing-secret', secretPushed: true, createdAt: '2026-10-07T00:00:00.000Z' });
-  const run = (command = 'down', { args = [], unresolved = 0 } = {}) => new Promise((resolve, reject) => {
+  const run = (command = 'down', { args = [], unresolved = 0, timeoutMs = 120_000 } = {}) => new Promise((resolve, reject) => {
     const child = spawn(process.execPath, ['drive.mjs', command, '--name', NAME, ...args], {
       cwd: root,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -86,8 +86,14 @@ await import('./tests/behavioral/_throwaway-target.mjs');
     let stderr = '';
     child.stdout.on('data', (chunk) => { output += chunk; });
     child.stderr.on('data', (chunk) => { output += chunk; stderr += chunk; });
+    // A hang fails here, not in the runner: the child is killed and the run rejected.
+    const deadline = setTimeout(() => { child.kill('SIGKILL'); reject(new Error(`drive.mjs ${command} did not end within ${timeoutMs} ms:\n${output}`)); }, timeoutMs);
     child.on('error', reject);
-    child.on('close', (status) => resolve({ status, output, stderr }));
+    child.on('close', (status, signal) => {
+      clearTimeout(deadline);
+      if (signal) reject(new Error(`drive.mjs ${command} ended by ${signal}:\n${output}`));
+      else resolve({ status, output, stderr });
+    });
   });
 
   const unknown = [
@@ -169,11 +175,10 @@ await import('./tests/behavioral/_throwaway-target.mjs');
   assert.equal(events.filter((e) => e === 'GET').length, 1, 'a dropped connection is asked once');
   // The deadline bounds each attempt too: an answer that never comes ends with it.
   answer = { stall: true };
-  const began = Date.now();
-  const stalled = await run('version', { args: ['--until', String(Date.now() + 3_000)] });
-  assert.notEqual(stalled.status, 0, 'a read that does not answer by the deadline fails');
-  assert.ok(Date.now() - began < 20_000, `it ends at its deadline, not later (${Date.now() - began} ms)`);
-  const malformed = await run('version', { args: ['--until', 'Infinity'], unresolved: 1 });
+  const stalled = await run('version', { args: ['--until', String(Date.now() + 3_000)], timeoutMs: 20_000 });
+  assert.notEqual(stalled.status, 0, 'a read that does not answer by the deadline fails, at its deadline');
+  answer = latest;
+  const malformed = await run('version', { args: ['--until', 'Infinity'], unresolved: 1, timeoutMs: 20_000 });
   assert.match(malformed.stderr.trimEnd().split('\n').at(-1), /^version failed: --until takes a time in epoch ms/, malformed.output);
   console.log('  ok  only a read the resolver could not make is made again, until its deadline');
 
