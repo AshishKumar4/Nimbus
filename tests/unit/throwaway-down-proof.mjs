@@ -69,17 +69,18 @@ await import('./tests/behavioral/_throwaway-target.mjs');
   const receipt = join(root, '.wrangler/throwaway-targets', NAME + '.json');
   const deleted = join(root, 'state/nimbus/deleted-previews.json');
   const recorded = JSON.stringify({ name: NAME, preview: PREVIEW, base: origin + '/preview-hostname', secret: 'the-held-signing-secret', secretPushed: true, createdAt: '2026-10-07T00:00:00.000Z' });
-  const run = () => new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ['drive.mjs', 'down', '--name', NAME], {
+  const run = (command = 'down') => new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['drive.mjs', command, '--name', NAME], {
       cwd: root,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: ACCOUNT, CLOUDFLARE_API_TOKEN: TOKEN, CLOUDFLARE_API_BASE_URL: origin + '/client/v4', XDG_STATE_HOME: join(root, 'state'), TMPDIR: join(root, 'tmp'), WRANGLER_SEND_METRICS: 'false' },
     });
     let output = '';
+    let stderr = '';
     child.stdout.on('data', (chunk) => { output += chunk; });
-    child.stderr.on('data', (chunk) => { output += chunk; });
+    child.stderr.on('data', (chunk) => { output += chunk; stderr += chunk; });
     child.on('error', reject);
-    child.on('close', (status) => resolve({ status, output }));
+    child.on('close', (status) => resolve({ status, output, stderr }));
   });
 
   const unknown = [
@@ -132,6 +133,14 @@ await import('./tests/behavioral/_throwaway-target.mjs');
       failures.push(`${test.name}: ${error.message}\n${result.output}`);
     }
   }
+  // A command that fails says why on its last line: what a caller that keeps only the tail quotes.
+  answer = transport;
+  const unread = await run('version');
+  const lastLine = unread.stderr.trimEnd().split('\n').at(-1);
+  assert.notEqual(unread.status, 0, unread.output);
+  assert.match(lastLine, /^version failed: \S/, `the cause is the last line, not ${JSON.stringify(lastLine)}`);
+  console.log('  ok  a failed read ends with its cause: ' + lastLine);
+
   // A failed command leaves a usable receipt: its next down can finish.
   answer = present;
   afterDelete = absent;
