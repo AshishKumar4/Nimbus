@@ -124,9 +124,13 @@ const __nimbusStopReplay = (() => {
     return ",\\"tape\\":{\\"seed\\":" + list(t.seed, num) + ",\\"now\\":" + pairs(t.now) + ",\\"perf\\":" + pairs(t.perf)
       + ",\\"random\\":" + str(b64(t.drawn)) + ",\\"reads\\":" + list(t.reads, num) + "}";
   }
+  // What its program catches (its signal handlers), which a stop carries: the session may not have it yet.
+  function catchesOut() {
+    return run.catches === null ? "" : ",\\"catches\\":" + str(run.catches);
+  }
   // The stop: never returns when it stops.
   function stop(body) {
-    run.abort(PREFIX + run.nonce + " " + "{\\"v\\":3,\\"run\\":" + num(run.number) + ",\\"out\\":" + pendingOut() + capturedOut() + body + "}");
+    run.abort(PREFIX + run.nonce + " " + "{\\"v\\":3,\\"run\\":" + num(run.number) + ",\\"out\\":" + pendingOut() + capturedOut() + catchesOut() + body + "}");
   }
 
   let run = null;
@@ -356,6 +360,8 @@ const __nimbusStopReplay = (() => {
     bodyFinished(id) { run.bodies[id] = null; },
     unreplayable,
     effect,
+    // The signals its program catches now, comma-joined (node-shims __nimbusCatchSignals).
+    catches(names) { if (run) run.catches = "" + names; },
     begin(launch) {
       const replay = launch.replay || null;
       const ctxAbort = launch.abort || null;
@@ -383,6 +389,7 @@ const __nimbusStopReplay = (() => {
         changedWhy: null,
         boundaryPassed: replay === null,
         boundaryNotice: null,
+        catches: null,
         // Who waits for a replay to pass its boundary (untilBoundary).
         boundaryWaiters: null,
         prefix: replay && replay.prefix && !launch.captured
