@@ -13,7 +13,7 @@
  * out through the workspace's (its egress, when it has one), so no runtime
  * opening a facet can leave it out.
  */
-import { requireNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
+import { networkRef, requireNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { warmFacetScope } from '@nimbus-sh/core/runtime/warm-facets.js';
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
@@ -26,6 +26,23 @@ import { holdThreadWatch } from '@nimbus-sh/fabric/thread-stalls.js';
  * grow.
  */
 export { supervisorEsbuildService } from '../facets/esbuild-transform.js';
+// Experiment (D1, not for landing): a session's one-shots of these runtimes run
+// on another session Durable Object (by name, set per session from the probe
+// app), its own IsolatePool over the same spec, its syscalls routed back here.
+export const d1OneShotPeer = new Map();
+const D1_MOVED = /^(tsrs|clang-runner|cpython-runner|ruby-runner|git-runner)/;
+function d1Images(images) {
+    if (images === undefined)
+        return undefined;
+    return Object.fromEntries(Object.entries(images).map(([name, image]) => [name, {
+            path: image.path, identity: image.identity, size: image.size, peak: image.peak,
+            stream: async () => new Blob([await image.read()]).stream(),
+        }]));
+}
+function d1Peer(env, name) {
+    const sessions = env.NIMBUS_SESSION;
+    return sessions.get(sessions.idFromName(name));
+}
 /**
  * Facets as dynamic workers over `env` and `ctx`, each going out through
  * `network`: the workspace's (`workspace.network`, or `workspaceNetwork(egress)`
@@ -38,6 +55,7 @@ export function loaderFacetHost(env, ctx, network) {
         // back to the session mid-instruction.
         parking: 'jspi',
         open(spec) {
+            const processSupervisor = spec.syscalls ? supervisorBindingProps(ctx, spec.syscalls.pid, { writerId: crypto.randomUUID(), network }) : undefined;
             const pool = new IsolatePool(env, ctx, {
                 tag: spec.tag,
                 concurrency: spec.concurrency,
@@ -45,19 +63,35 @@ export function loaderFacetHost(env, ctx, network) {
                 wasmModules: spec.wasmModules,
                 omitSupervisor: spec.syscalls === undefined,
                 supervisorPid: spec.syscalls?.pid,
-                processSupervisor: spec.syscalls ? supervisorBindingProps(ctx, spec.syscalls.pid, { writerId: crypto.randomUUID(), network }) : undefined,
+                processSupervisor,
                 cacheScope: spec.reuse,
                 scope: spec.warm === undefined ? undefined : warmFacetScope(spec.warm),
                 supervisorPerCall: spec.warm !== undefined,
                 network,
             });
-            // Experiment (D1, not for landing): the session's thread watched while a one-shot runs.
+            // Experiment (D1, not for landing): the session's thread watched while a
+            // one-shot runs; a moved runtime's call runs on the session's peer, when it names one.
+            const shape = {
+                key: crypto.randomUUID(), origin: ctx.id.toString(), tag: spec.tag, preamble: spec.preamble, concurrency: spec.concurrency,
+                wasmModules: d1Images(spec.wasmModules), supervisorPid: spec.syscalls?.pid, processSupervisor,
+                reuse: spec.reuse, scope: spec.warm === undefined ? undefined : warmFacetScope(spec.warm), supervisorPerCall: spec.warm !== undefined,
+                network: networkRef(network),
+            };
+            let peerUsed;
             return {
                 submit(fn, args, options) {
                     const watched = holdThreadWatch(ctx, `one-shot ${spec.tag}`);
-                    return pool.submit(fn, args, options).finally(watched);
+                    const peerName = D1_MOVED.test(spec.tag) ? d1OneShotPeer.get(ctx.id.toString()) : undefined;
+                    if (peerName === undefined)
+                        return pool.submit(fn, args, options).finally(watched);
+                    peerUsed = peerName;
+                    return d1Peer(env, peerName)._rpcD1PeerSubmit(shape, fn, args, { timeoutMs: options?.timeoutMs, wasmModules: d1Images(options?.wasmModules) }).finally(watched);
                 },
-                dispose: () => pool.dispose(),
+                dispose: () => {
+                    pool.dispose();
+                    if (peerUsed !== undefined)
+                        ctx.waitUntil(d1Peer(env, peerUsed)._rpcD1PeerDispose(shape.key).catch(() => { }));
+                },
             };
         },
     };

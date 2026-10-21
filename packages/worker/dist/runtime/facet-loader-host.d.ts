@@ -13,8 +13,9 @@
  * out through the workspace's (its egress, when it has one), so no runtime
  * opening a facet can leave it out.
  */
-import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
+import { type WorkspaceNetwork, type WorkspaceNetworkRef } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { FacetHost } from '@nimbus-sh/core/runtime/facet-host.js';
+import type { SupervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import type { FacetManager } from '../facets/manager.js';
 /**
  * The transforms and builds a host's own Durable Object runs outside the
@@ -24,6 +25,28 @@ import type { FacetManager } from '../facets/manager.js';
  * grow.
  */
 export { supervisorEsbuildService } from '../facets/esbuild-transform.js';
+export declare const d1OneShotPeer: Map<string, string>;
+export interface D1PeerImage {
+    path: string;
+    identity: string;
+    size: number;
+    peak: number;
+    stream(): Promise<ReadableStream<Uint8Array>>;
+}
+export interface D1PeerShape {
+    key: string;
+    origin: string;
+    tag: string;
+    preamble?: string;
+    concurrency?: number;
+    wasmModules?: Record<string, D1PeerImage>;
+    supervisorPid?: number;
+    processSupervisor?: SupervisorBindingProps;
+    reuse?: 'session' | 'global';
+    scope?: string;
+    supervisorPerCall: boolean;
+    network?: WorkspaceNetworkRef;
+}
 /**
  * Facets as dynamic workers over `env` and `ctx`, each going out through
  * `network`: the workspace's (`workspace.network`, or `workspaceNetwork(egress)`
