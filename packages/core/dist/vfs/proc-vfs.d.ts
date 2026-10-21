@@ -1,11 +1,12 @@
 import { type ProcGenerator } from './proc-files.js';
 import type { SyncVFS, VFS, VfsChanges, VfsCred, VfsDirent, VfsStat } from './vfs.js';
-/** What every view of one /proc shares: its files, which of them are volatile, and its tree's version and time. */
+/** What every view of one /proc shares: its files, which of them are volatile, its tree's version and time, and its feed. */
 interface ProcTree {
     readonly files: Map<string, ProcGenerator>;
     readonly volatile: Set<string>;
     version: number;
     mtimeMs: number;
+    changes?: VfsChanges;
 }
 export declare class ProcVFS implements VFS {
     private readonly tree;

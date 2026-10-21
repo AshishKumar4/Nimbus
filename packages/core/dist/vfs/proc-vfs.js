@@ -35,7 +35,8 @@ export class ProcVFS {
         this.tree = tree;
         this.cred = cred;
         this.sync = this;
-        this.changes = immutableChanges(this, () => tree.version);
+        // One feed for every principal's view: its tree is theirs alike (a file's content is what differs, made when read).
+        this.changes = tree.changes ??= immutableChanges(this, () => tree.version);
     }
     get files() { return this.tree.files; }
     /** Add or replace `/proc/<name>`; `volatile`: its content is made at each read (size 0). */

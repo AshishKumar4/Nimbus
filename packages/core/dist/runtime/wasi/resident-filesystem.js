@@ -43,7 +43,7 @@ import { WASI_RESIDENT_FILE_CAP_BYTES, DIRECTORY_BATCH_LIMIT, FS_READ_BATCH_PATH
 import { RESIDENT_PAGE_BYTES } from '@nimbus-sh/platform/limits.js';
 import { delegationHolder } from './delegation-holder.js';
 import { readDirectoryPool } from './read-directory-pool.js';
-import { feedPointOf, rootOf } from '../feed-position.js';
+import { feedPointOf, ROOT_FEED, rootOf } from '../feed-position.js';
 import { PROC_MOUNT_POINT, volatileProcFile } from '../../vfs/proc-files.js';
 import { isCharacterDevice } from '../../vfs/vfs.js';
 /** Listings one call may take before it gives the question to the authority. */
@@ -595,6 +595,23 @@ export function residentFilesystem(session, resident, delegation) {
         const root = point === key ? entry : store.entry(point);
         return root !== undefined && root !== null && root.dev === entry.dev;
     };
+    /** Whether `key` is on a mount (its deepest fed mount point is not the root): the session's to change, never this process's to decide. */
+    const onMount = (key) => {
+        const cursor = store.cursor();
+        return cursor !== null && feedPointOf(cursor, key) !== ROOT_FEED;
+    };
+    /**
+     * The row at `key` where this process may decide a change on it: the
+     * session's own filesystem's (absent there too). A mount's row, or a name
+     * absent on a mount, is the session's: a wave deciding on it is refused
+     * (the name leads to a mount, not the file the process decided on).
+     */
+    const ownEntryAt = (key) => {
+        const entry = entryAt(key);
+        if (entry === undefined)
+            return undefined;
+        return (entry === null ? onMount(key) : entry.dev !== store.device) ? undefined : entry;
+    };
     /** Whether `entry` at `key` is a volatile /proc file: made at each read, its row size 0 (as procfs says), no bytes to hold. */
     const volatileProc = (key, entry) => {
         if (entry.type !== 'file' || entry.size !== 0)
@@ -614,8 +631,6 @@ export function residentFilesystem(session, resident, delegation) {
         const content = generate({ ...store.cred, umask: 0 });
         return typeof content === 'string' ? new TextEncoder().encode(content) : content.slice();
     };
-    /** A file whose bytes the view never holds: a device's (read by a descriptor of the session's), or a volatile /proc file's. */
-    const unheld = (key, entry) => isCharacterDevice(entry.mode) || volatileProc(key, entry);
     /**
      * A file's bytes: what this process decided for it, else the store's,
      * fetched into it. Undefined when only the authority can read them (a file
@@ -725,6 +740,8 @@ export function residentFilesystem(session, resident, delegation) {
      * anyway, counting it toward taking the subtree.
      */
     const decidable = (key, ...walks) => {
+        if (onMount(key))
+            return false;
         if (holder.client.held(key) === undefined)
             return true;
         const cursor = store.cursor();
@@ -1057,7 +1074,7 @@ export function residentFilesystem(session, resident, delegation) {
         const walk = walkFor(path, follow);
         if (walk === DELEGATE || walk instanceof Promise)
             throw NOT_NOW;
-        const row = entryAt(walk.key);
+        const row = ownEntryAt(walk.key);
         if (row === undefined)
             throw NOT_NOW;
         const done = decided(walk.key, row);
@@ -1079,7 +1096,7 @@ export function residentFilesystem(session, resident, delegation) {
      * a grant decides a name or the view cannot place one, by the session.
      */
     const ownChange = (keys, decided, session) => {
-        const rows = keys.map((key) => (key === undefined || !store.ready() ? undefined : entryAt(key)));
+        const rows = keys.map((key) => (key === undefined || !store.ready() ? undefined : ownEntryAt(key)));
         const placed = rows.every((row) => row !== undefined) ? rows : undefined;
         if (now) {
             if (placed === undefined || decided(placed, false) === false)
@@ -1104,8 +1121,7 @@ export function residentFilesystem(session, resident, delegation) {
     const openByNumber = (path, flags) => {
         if (flags.directory)
             throw NOT_NOW;
-        return heldOpen(provisionally(path, flags.followSymlinks !== false, (key, row) => (row !== null && unheld(key, row) ? undefined
-            : holder.provisional.open(key, pathOf(path), flags, row))));
+        return heldOpen(provisionally(path, flags.followSymlinks !== false, (key, row) => holder.provisional.open(key, pathOf(path), flags, row)));
     };
     /**
      * A read by a descriptor of the holder's: its file's bytes here (a grant's
