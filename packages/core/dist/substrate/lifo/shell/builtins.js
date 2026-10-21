@@ -382,6 +382,15 @@ async function builtinHash({ args, stdout, stderr, state, host }) {
             exitCode = 2;
             continue;
         }
+        // A start from a cwd whose mount runs programs on its machine is found there, and nothing is remembered of it.
+        const located = await host.locateProgram(arg, state.getCwd(), state.env);
+        if (located !== undefined) {
+            if (located === null) {
+                (await stderr.write(`hash: ${arg}: not found\n`));
+                exitCode = 1;
+            }
+            continue;
+        }
         const command = await host.registry.resolve(arg, resolveContext(state.getCwd(), state.env, host.vfs()));
         if (!command) {
             (await stderr.write(`hash: ${arg}: not found\n`));

@@ -1182,7 +1182,8 @@ var __nimbusProcessFsModule = (() => {
     EOVERFLOW: "value too large for defined data type",
     ETIMEDOUT: "connection timed out",
     ECANCELED: "operation canceled",
-    EFAULT: "bad address in system call argument"
+    EFAULT: "bad address in system call argument",
+    EHOSTDOWN: "host is down"
   };
 
   function parentKey(key) {

@@ -299,6 +299,21 @@ export declare class Interpreter {
     private executeCompoundList;
     private executeSimpleCommand;
     /**
+     * Where the simple command `name` starts a program (Kinu ask 66): nowhere
+     * for what bash runs without execve (a function, a builtin, `command` of
+     * a builtin), so here; otherwise by its cwd's mount (placeProgram). `exec
+     * name` always starts one, as bash's does.
+     */
+    private placeCommand;
+    /**
+     * A program placed on its mount's machine (placeCommand), run with the
+     * command's streams and its exported environment. Its status is bash's:
+     * the program's exit code, 128+n for the signal that ended it, 127 for a
+     * program its machine cannot find, 126 for any other refusal or an absent
+     * mount, 1 for a stream that failed once it ran.
+     */
+    private runPlacedProgram;
+    /**
      * execvp(3) of `argv`: argv[0] is found as a program is found (the
      * registry, then a path from `spec.cwd`), never as a function, an alias or
      * a builtin, and runs as a process on the streams it is handed. A program
@@ -307,6 +322,13 @@ export declare class Interpreter {
      * caller goes on, as the parent of a process SIGPIPE kills does.
      */
     runProgram(argv: readonly string[], spec: ProgramSpec): Promise<ChildExit>;
+    /**
+     * execvp of a program placed on its mount's machine (runProgram): run with
+     * the child's streams, environment and stop; a start its machine refuses
+     * is execvp failing, ENOENT for a program it cannot find, EIO with its
+     * words otherwise.
+     */
+    private runDelegatedChild;
     /**
      * A resolved command, run as the process `spec.identity` names: aborted
      * with `spec.signal`, and its failure (a closed pipe, an abort, a throw)

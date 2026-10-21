@@ -176,6 +176,7 @@ export const ERRNO_DESCRIPTION = {
     EMLINK: 'too many links', ENODEV: 'no such device', ESPIPE: 'invalid seek', EPIPE: 'broken pipe',
     EINTR: 'interrupted system call', ERANGE: 'result too large', EOVERFLOW: 'value too large for defined data type',
     ETIMEDOUT: 'connection timed out', ECANCELED: 'operation canceled', EFAULT: 'bad address in system call argument',
+    EHOSTDOWN: 'host is down',
 };
 /** {@link ERRNO_DESCRIPTION} of `code`, undefined for a code libuv does not name. */
 export function errnoDescription(code) {
@@ -185,7 +186,7 @@ export function errnoDescription(code) {
 const OTHER_ERRNO = {
     ENODATA: -61, ENOSYS: -38, EMFILE: -24, ENFILE: -23, ENOMEM: -12, ETXTBSY: -26, EMLINK: -31,
     ENODEV: -19, ESPIPE: -29, EPIPE: -32, EINTR: -4, ERANGE: -34, EOVERFLOW: -75, ETIMEDOUT: -110, ECANCELED: -125,
-    EFAULT: -14,
+    EFAULT: -14, EHOSTDOWN: -112,
 };
 /** `code`'s errno, negative as libuv reports it; undefined for a code this table does not name. */
 export function errnoOf(code) {

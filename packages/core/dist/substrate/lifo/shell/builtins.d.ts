@@ -14,6 +14,8 @@ export interface BuiltinHost {
     /** The interactive shell's view of the filesystem, as its identity has it now. */
     vfs(): ProcessView;
     readonly registry: CommandRegistry;
+    /** Where a program a start from `cwd` would run is found on its mount's machine (locatePlacedProgram). */
+    locateProgram(name: string, cwd: string, env: Readonly<Record<string, string>>): Promise<string | null | undefined>;
     /** The host's processes, which `kill` reaches by pid (Shell.setHostProcessSignals). */
     hostProcessSignals(): HostProcessSignals | undefined;
     clearTerminal(): void;

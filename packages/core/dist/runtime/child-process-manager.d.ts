@@ -1,3 +1,4 @@
+import type { ExitStatus } from './program-start.js';
 import type { SessionProcessSupervisor } from './session-process-supervisor.js';
 import type { ProcessView } from './process-files.js';
 import type { CommandInputStream } from '../substrate/lifo/commands/types.js';
@@ -161,8 +162,9 @@ export interface SpawnRefusal {
     readonly code: string;
     readonly errno: number;
 }
+/** A run's end: an exit status, a start refused, or (a program another machine ran) waitpid's answer. */
 export interface ChildRunner {
-    run(context: ChildRunnerContext): Promise<number | SpawnRefusal>;
+    run(context: ChildRunnerContext): Promise<number | SpawnRefusal | ExitStatus>;
 }
 export interface ChildProcessHost {
     resolve(request: SpawnReq, origin: ChildOrigin): Promise<ChildRunner | null>;

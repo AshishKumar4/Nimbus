@@ -1,3 +1,4 @@
+import { locatePlacedProgram } from '../../../runtime/delegated-program.js';
 import { bindProcessView } from '../../../runtime/process-files.js';
 import { isVfsCred } from '../../../runtime/os-contracts.js';
 import { DEFAULT_HOME } from '../../../constants.js';
@@ -132,6 +133,7 @@ export class Shell {
         this.builtins = shellBuiltins({
             vfs: () => this.vfs,
             registry,
+            locateProgram: (name, cwd, env) => locatePlacedProgram(filesystem, this.commandIdentity.cred, name, cwd, env),
             hostProcessSignals: () => this.hostProcessSignals,
             clearTerminal: () => this.terminal.clear(),
             history: () => this.historyManager.getAll(),
