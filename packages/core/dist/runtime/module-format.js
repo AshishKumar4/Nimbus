@@ -39,7 +39,7 @@ export function isEsModuleFile(path, source, packageType) {
     const type = ext === '.js' || ext === '' ? packageType() : null;
     return type === null ? containsModuleSyntax(source) : type === 'module';
 }
-/** Node 22.22.3's get_format.js for TypeScript; `stripped` is read only for a typeless `.ts`. */
+/** Node 22.23.4's get_format.js for TypeScript; `stripped` is read only for a typeless `.ts`. */
 export function typeScriptFormat(path, packageType, stripped) {
     if (!stripsTypeScript(path))
         return null;

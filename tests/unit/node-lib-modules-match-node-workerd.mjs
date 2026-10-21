@@ -1,6 +1,6 @@
 // @tier slow — drives a local workerd for the Node module/runtime differential.
 // @serial
-// assert, assert/strict, util, querystring and punycode are Node v22.22.3's own
+// assert, assert/strict, util, querystring and punycode are Node v22.23.4's own
 // modules (node-lib-source.ts, run over node-lib-host.ts): each program here
 // prints what host Node prints, byte for byte, and exits as it does.
 //
@@ -675,6 +675,23 @@ await show('v-setorder-bad', () => { dns.setDefaultResultOrder('xx'); return 'no
 await show('v-reverse-nonip', () => P.reverse('not-an-ip'));
 await show('v-reverse-zone', () => P.reverse('fe80::1%lo'));
 await show('v-resolve-undefcb', () => new Promise((res) => { try { dns.resolve4('example.com', 'cb'); res('no-throw'); } catch (e) { res('threw ' + e.code); } }));
+// a name with a null byte is refused before any query (Node 22.23.4, CVE-2026-105482)
+const refused = (label, fn) => {
+  try { Promise.resolve(fn()).catch(() => {}); console.log(label + ' not refused'); }
+  catch (e) { console.log(label + ' ' + e.name + ' ' + e.code + ' ' + JSON.stringify(e.message)); }
+};
+const nul = 'example.com\u0000.trusted.corp';
+for (const [label, resolver] of [['dns', dns], ['dns.Resolver', new dns.Resolver()], ['promises', P], ['promises.Resolver', new P.Resolver()]]) {
+  for (const method of ['resolve', 'resolve4', 'resolve6', 'resolveAny', 'resolveCaa', 'resolveCname', 'resolveMx', 'resolveNaptr', 'resolveNs', 'resolvePtr', 'resolveSoa', 'resolveSrv', 'resolveTlsa', 'resolveTxt']) refused('nul ' + label + '.' + method, () => resolver[method](nul, () => {}));
+  for (const rrtype of ['A', 'AAAA', 'ANY', 'CAA', 'CNAME', 'MX', 'NAPTR', 'NS', 'PTR', 'SOA', 'SRV', 'TLSA', 'TXT']) refused('nul ' + label + '.resolve ' + rrtype, () => resolver.resolve(nul, rrtype, () => {}));
+  refused('nul ' + label + '.reverse', () => resolver.reverse('127.0.0.1\u0000.trusted.corp', () => {}));
+}
+refused('nul lookup', () => dns.lookup('127.0.0.1\u0000.allowed.example', {}, () => {}));
+refused('nul promises.lookup', () => P.lookup('127.0.0.1\u0000.allowed.example', {}));
+for (const resolver of [new dns.Resolver(), new P.Resolver()]) {
+  refused('nul setLocalAddress ipv4', () => resolver.setLocalAddress('127.0.0.1\u0000junk'));
+  refused('nul setLocalAddress ipv6', () => resolver.setLocalAddress('127.0.0.1', '::1\u0000junk'));
+}
 // shape: classes, prototypes, constants parity
 console.log('shape-resolver-proto ' + JSON.stringify(Object.getOwnPropertyNames(Object.getPrototypeOf(new dns.Resolver())).sort()));
 console.log('shape-resolverbase-proto ' + JSON.stringify(Object.getOwnPropertyNames(Object.getPrototypeOf(Object.getPrototypeOf(new dns.Resolver()))).sort()));
@@ -757,6 +774,94 @@ const show = async (name, work) => { try { console.log(name + ' value ' + JSON.s
   await show('unavailable local', () => { const r = new p.Resolver(); r.setLocalAddress('192.0.2.1'); return r.resolve4('example.com'); });
   await show('cancel', () => { const r = new p.Resolver(); const result = r.resolve4('example.com'); r.cancel(); return result; });
 })();
+`,
+  // tls.checkServerIdentity, the check a program runs on a peer's
+  // certificate (Node 22.23.4's lib/tls.js): a host that is an IP address only
+  // once IDNA maps it is refused (CVE-2026-106069, CVE-2026-106072), a DNS
+  // name is matched in its ASCII form, IPv6 hosts and IP SANs are matched
+  // canonically. The cases are upstream's
+  // (test/parallel/test-tls-check-server-identity.js) and libuv's address
+  // forms.
+  'tls.cjs': String.raw`
+const tls = require('tls');
+const cases = [
+  [false, { subject: { CN: 'a.com' } }],
+  [null, { subject: { CN: 'a.com' } }],
+  [undefined, { subject: { CN: 'a.com' } }],
+  ['a.com', { subject: { CN: 'A.COM' } }],
+  ['a.com', { subject: { CN: 'a.com.' } }],
+  ['a.com.', { subject: { CN: 'a.com' } }],
+  ['a.com', { subject: { CN: '.a.com' } }],
+  ['bad.x.example.com', { subject: { CN: 'bad..example.com' } }],
+  ['a.com', { subject: { CN: ['b.com', 'a.com'] } }],
+  ['a.com', { subject: {} }],
+  ['8.8.8.8', { subject: { CN: '8.8.8.8' } }],
+  ['8.8.8.8', { subject: { CN: '8.8.8.8' }, subjectaltname: 'DNS:8.8.8.8' }],
+  ['8.8.8.8', { subject: { CN: '8.8.8.8' }, subjectaltname: 'URI:http://8.8.8.8/' }],
+  ['8.8.8.8', { subject: { CN: '8.8.8.8' }, subjectaltname: 'IP Address:8.8.8.8' }],
+  ['8.8.8.8', { subject: { CN: '8.8.8.8' }, subjectaltname: 'IP Address:8.8.8.0/24' }],
+  ['1.2.3.4', { subject: {}, subjectaltname: 'IP Address:1.2.3.04, IP Address:1.2.3.4' }],
+  ['::1', { subject: {}, subjectaltname: 'IP Address:::1' }],
+  ['::1', { subject: {}, subjectaltname: 'IP Address:::2' }],
+  ['2001:db8::1', { subject: {}, subjectaltname: 'IP Address:2001:DB8:0:0:0:0:0:1' }],
+  ['2001:db8::1', { subject: {}, subjectaltname: 'IP Address:2001:DB8:0:0:1:0:0:1, IP Address:2001:0:0:1:0:0:0:1' }],
+  ['fe80::1%eth0', { subject: {}, subjectaltname: 'IP Address:FE80:0:0:0:0:0:0:1' }],
+  ['::ffff:127.0.0.1', { subject: {}, subjectaltname: 'IP Address:0:0:0:0:0:FFFF:7F00:1' }],
+  ['::ffff:127.0.0.2', { subject: {}, subjectaltname: 'IP Address:0:0:0:0:0:FFFF:7F00:1, IP Address:0:0:0:0:0:0:7F00:1, IP Address:0:0:0:0:0:0:0:1' }],
+  ['b.a.com', { subject: { CN: '*.a.com' } }],
+  ['ba.com', { subject: { CN: '*.a.com' } }],
+  ['\n.b.com', { subject: { CN: '*n.b.com' } }],
+  ['b.a.com', { subject: { CN: 'b*b.a.com' }, subjectaltname: 'DNS:omg.com' }],
+  ['b.a.com', { subject: {}, subjectaltname: 'DNS:*b.a.com' }],
+  ['bxa.a.com', { subject: {}, subjectaltname: 'DNS:*b*.a.com' }],
+  ['a.com', { subject: {}, subjectaltname: 'DNS:*.com' }],
+  ['b.a.com', { subject: {}, subjectaltname: 'DNS:a.com, DNS:*.a.com' }],
+  ['c.b.a.com', { subject: {}, subjectaltname: 'DNS:*.a.com' }],
+  ['xn--bcher-kva.example.com', { subject: { CN: '*.example.com' } }],
+  ['xn--bcher-kva.example.com', { subject: { CN: 'xn--*.example.com' } }],
+  ['b\u00fccher.example.com', { subject: {}, subjectaltname: 'DNS:xn--bcher-kva.example.com' }],
+  ['B\u00dcCHER.example.com.', { subject: { CN: 'xn--bcher-kva.example.com' } }],
+  ['foo\u3002bar.example.com', { subject: {}, subjectaltname: 'DNS:*.example.com' }],
+  ['foo\uff0ebar.example.com', { subject: {}, subjectaltname: 'DNS:foo.bar.example.com' }],
+  ['localhost', { subject: {}, subjectaltname: 'DNS:a.com' }],
+  ['0127.0.0.1', { subject: {}, subjectaltname: 'DNS:87.0.0.1' }],
+  ['0177.0.0.1', { subject: {}, subjectaltname: 'DNS:127.0.0.1' }],
+  ['0x7f.0.0.1', { subject: {}, subjectaltname: 'DNS:127.0.0.1' }],
+  ['2130706433', { subject: {}, subjectaltname: 'DNS:127.0.0.1' }],
+  ['127.1', { subject: {}, subjectaltname: 'DNS:127.0.0.1' }],
+  ['127.1', { subject: {}, subjectaltname: 'DNS:127.1' }],
+  ['127.1.', { subject: {}, subjectaltname: 'IP Address:127.0.0.1' }],
+  ['0127.0.0.1', { subject: { CN: '87.0.0.1' }, subjectaltname: 'IP Address:87.0.0.1' }],
+  ['0127.0.0.1', { subject: { CN: 'Example Operator' }, subjectaltname: 'IP Address:87.0.0.1' }],
+  ['1.2.3.example', { subject: {}, subjectaltname: 'DNS:1.2.3.example' }],
+  ['a.example.com', { subject: {}, subjectaltname: 'DNS:"a.example.com", DNS:b.example.com' }],
+  ['b.example.com', { subject: {}, subjectaltname: 'DNS:"evil.com\u002c DNS:b.example.com"' }],
+  ['a.example.com', { subject: {}, subjectaltname: 'DNS:"a.example.com' }],
+  ['a.com', { subjectaltname: 'DNS:b.com' }],
+];
+const check = (host, cert) => {
+  try {
+    const e = tls.checkServerIdentity(host, cert);
+    return e === undefined ? 'valid' : [e.name, e.code, e.message, e.reason, e.host, e.cert === cert, Object.keys(e), e.stack.split('\n')[0]];
+  } catch (e) {
+    return ['threw', e.name, e.code, e.message, Object.keys(e)];
+  }
+};
+for (const [host, cert] of cases) console.log(JSON.stringify([host, cert.subjectaltname ?? null, check(host, cert)]));
+// What lib/tls.js takes from its primordials, and what its binding does in
+// C, a program cannot replace.
+const RealString = String;
+const fromCharCode = RealString.fromCharCode;
+RealString.fromCharCode = () => 'z';
+globalThis.String = () => '127.0.0.1';
+const replaced = [
+  tls.checkServerIdentity('127.0.0.1', { subject: {}, subjectaltname: 'IP Address:8.8.8.8' }),
+  tls.checkServerIdentity('::1', { subject: {}, subjectaltname: 'IP Address:0:0:0:0:0:0:0:1' }),
+  tls.checkServerIdentity('a.com', { subject: { CN: 'A.COM' } }),
+];
+globalThis.String = RealString;
+RealString.fromCharCode = fromCharCode;
+console.log('replaced built-ins ' + JSON.stringify(replaced.map((e) => (e === undefined ? 'valid' : [e.code, e.reason]))));
 `,
   // The builtins workerd provides behind Node's argument checks
   // (node-builtin-fronts.ts): what they take still works as Node's does, and
@@ -948,10 +1053,14 @@ attempt('deprecate code', () => util.deprecate(() => {}, 'm', 5));
   // Before, workerd's 172 constants were each an enumerable, writable export,
   // with `default` and two zstd names of workerd's own (ZSTD_ENCODE,
   // ZSTD_DECODE). Two values are the engine's own: the zlib it builds and its
-  // chunk ceiling.
+  // chunk ceiling. One name is the engine's too: Brotli's decoder defines
+  // BROTLI_DECODER_ERROR_FORMAT_BLOCK_SWITCH only with the fix Node 22.23.4
+  // cherry-picks (google/brotli 0ed4268a, CVE-2026-111497), and the decoder
+  // is workerd's native code, which Nimbus does not replace.
   'zlib.cjs': String.raw`
 const zlib = require('zlib');
 const ENGINE = new Set(['ZLIB_VERNUM', 'Z_MAX_CHUNK']);
+const DECODER = new Set(['BROTLI_DECODER_ERROR_FORMAT_BLOCK_SWITCH']);
 const flags = (o, k) => { const d = Object.getOwnPropertyDescriptor(o, k); return 'value' in d ? [d.enumerable, d.writable, d.configurable].map(Number).join('') : 'accessor'; };
 const value = (v, k) => (ENGINE.has(k) ? 'engine' : typeof v === 'number' ? v : typeof v);
 const strictly = (f) => { try { f(); return 'no error'; } catch (e) { return e.name + ': ' + e.message; } };
@@ -959,7 +1068,7 @@ const names = Object.getOwnPropertyNames(zlib).sort();
 console.log('enumerable: ' + JSON.stringify(Object.keys(zlib).sort()));
 console.log('own names: ' + names.length + ' ' + JSON.stringify(names));
 console.log('flags: ' + JSON.stringify(names.map((k) => k + ' ' + flags(zlib, k) + ' ' + value(zlib[k], k))));
-const constants = Object.keys(zlib.constants).sort();
+const constants = Object.keys(zlib.constants).filter((k) => !DECODER.has(k)).sort();
 console.log('constants: ' + constants.length + ' ' + JSON.stringify(constants.map((k) => k + ' ' + flags(zlib.constants, k) + ' ' + value(zlib.constants[k], k))));
 console.log('constants object: ' + [Object.getPrototypeOf(zlib.constants), Object.isExtensible(zlib.constants), flags(zlib, 'constants'), flags(zlib, 'codes'), Object.isFrozen(zlib.codes)].join(' '));
 console.log('codes: ' + JSON.stringify(zlib.codes));
@@ -981,7 +1090,7 @@ import('zlib').then((ns) => {
 `,
 };
 // Each program's command line, after \`node\`.
-const PROGRAMS = ['assert.cjs', 'util.cjs --from-argv', 'identity.cjs', 'mods/main.cjs', '-r ./mods/pre.cjs mods/plain.cjs', '- < mods/stdin.cjs', 'mods/throws.cjs', 'mods/esm/cache.cjs', 'sites.cjs', 'querystring.cjs', 'punycode.cjs', 'punycode-package.cjs', 'deprecate.cjs', 'os.cjs', 'perf.cjs', 'streamweb.cjs', 'timers.cjs', 'unref.cjs', 'process.cjs', 'capture.cjs', 'fsstats.cjs', 'dnsconst.cjs', 'dns.cjs', 'dns-unavailable.cjs', 'fronts.cjs', 'fronts-more.cjs', 'random.cjs', 'zlib.cjs'];
+const PROGRAMS = ['assert.cjs', 'util.cjs --from-argv', 'identity.cjs', 'mods/main.cjs', '-r ./mods/pre.cjs mods/plain.cjs', '- < mods/stdin.cjs', 'mods/throws.cjs', 'mods/esm/cache.cjs', 'sites.cjs', 'querystring.cjs', 'punycode.cjs', 'punycode-package.cjs', 'deprecate.cjs', 'os.cjs', 'perf.cjs', 'streamweb.cjs', 'timers.cjs', 'unref.cjs', 'process.cjs', 'capture.cjs', 'fsstats.cjs', 'dnsconst.cjs', 'dns.cjs', 'dns-unavailable.cjs', 'tls.cjs', 'fronts.cjs', 'fronts-more.cjs', 'random.cjs', 'zlib.cjs'];
 
 PROGRAMS.unshift('resolution/main.cjs');
 const host = mkdtempSync(join(tmpdir(), 'node-lib-'));

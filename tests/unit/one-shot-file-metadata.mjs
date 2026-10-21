@@ -8,7 +8,7 @@
 // - copyFile: the source's mode exactly, over a file already there too, and
 //   while it is made another principal can read no more of it than the
 //   source lets it: a file there is narrowed before the bytes go in;
-// - cpSync and fs.promises.cp, as Node 22.22.3 copies a tree (its oracle run
+// - cpSync and fs.promises.cp, as Node 22.23.4 copies a tree (its oracle run
 //   over these trees, verify/consolidation/copy-authority-shim/
 //   oracle-metadata): each file the source's mode; each directory cpSync
 //   makes 0777 less the umask, and one fs.promises.cp makes the source's

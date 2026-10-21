@@ -24,7 +24,7 @@ import { NODE_MINIMATCH_SHA256, NODE_MINIMATCH_SOURCE } from '../../packages/wor
 import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
 
 // ── the vendored matcher is upstream's, unedited ──
-// Node v22.22.3's deps/minimatch/index.js.
+// Node v22.23.4's deps/minimatch/index.js.
 const UPSTREAM_SHA256 = 'bbb2e2de15fd760c8ae208fff3160681820f175a3fc02df66464ca0c04852884';
 assert.equal(NODE_MINIMATCH_SHA256, UPSTREAM_SHA256);
 assert.equal(createHash('sha256').update(NODE_MINIMATCH_SOURCE).digest('hex'), UPSTREAM_SHA256);

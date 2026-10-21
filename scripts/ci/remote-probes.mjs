@@ -40,8 +40,10 @@
 //
 // The paired perf probes (tests/behavioral/_paired.mjs PAIRED_PROBES) are
 // graded against a baseline measured in the same run, not a fixed bound.
-// When the selection has one, this builds the baseline (--baseline, default
-// the commit's merge-base with origin/main) beside the candidate, stands up
+// When the selection has one, this takes the baseline (--baseline, default
+// the commit's merge-base with origin/main) as staging sealed it here, or
+// builds it beside the candidate when no sealed release of it is here; the
+// verdict says which (`baseline`). Then it stands up
 // four fresh throwaways (lib/paired-previews.mjs: two of the baseline, two
 // of the candidate), runs those probes in a task of their own beside the
 // parts, and deletes the throwaways when the run ends. A paired probe red
@@ -178,6 +180,8 @@ const onArmada = async (job) => {
 let arms = null;
 /** This run's own directory (lib/run-dir.mjs), opened when it fetches a release. */
 let runDir = null;
+/** Where the paired baseline's release came from: { commit, release, digest } when staging sealed it, { commit, built: job } when built now. */
+let baselineSource = null;
 /** The deployment each throwaway this run grades must serve throughout: its upload's, or the target's when this run did not upload it. */
 const expected = {};
 let status = 0;
@@ -203,13 +207,23 @@ try {
       for (const line of [...left, ...(left.length > 0 ? runDir.keep() : runDir.close())]) console.error(`remote-probes: LEFT BEHIND ${line}`);
     });
   }
-  const { fetchRelease } = await import('./lib/release.mjs');
-  const built = await Promise.allSettled(commits.map((commit) => fetchRelease({ repo, sha: commit, targets: ['apps/probe'], into: join(runDir.dir, 'releases') })));
+  const { fetchRelease, recordedRelease } = await import('./lib/release.mjs');
+  // A baseline staging sealed here is uploaded as staging verified it, not
+  // built again (lib/release.mjs recordedRelease); any other is built.
+  const recorded = baseline && baseline !== sha ? recordedRelease({ sha: baseline, target: 'apps/probe', into: join(runDir.dir, 'releases') }) : null;
+  const toBuild = commits.filter((commit) => !(recorded && commit === baseline));
+  const built = await Promise.allSettled(toBuild.map((commit) => fetchRelease({ repo, sha: commit, targets: ['apps/probe'], into: join(runDir.dir, 'releases') })));
   const releases = {};
+  const jobs = {};
   for (const [i, outcome] of built.entries()) {
     if (outcome.status === 'rejected') throw outcome.reason;
-    releases[commits[i]] = outcome.value.dir;
+    releases[toBuild[i]] = outcome.value.dir;
+    jobs[toBuild[i]] = outcome.value.release.job;
   }
+  if (recorded) releases[baseline] = recorded.dir;
+  // What the a-arms run, kept in the verdict: the sealed release (its directory and digest), or the job that built it now.
+  baselineSource = !baseline ? null : recorded ? { commit: baseline, release: recorded.sealed, digest: recorded.digest }
+    : { commit: baseline, built: jobs[baseline] };
   signals(true);
   if (flags.deploy) {
     // Its exports (a token among them) are not wanted: probes get their own, below.
@@ -222,7 +236,8 @@ try {
     expected[`target ${throwaway}`] = flags.deploy ? readState(throwawayStatePath(repo, throwaway))?.versionId : (await deployments())[`target ${throwaway}`];
   }
   if (baseline) {
-    console.error(`remote-probes: ${paired.join(', ')} graded against ${baseline.slice(0, 12)}${baseline === sha ? ' (the candidate itself)' : ''}`);
+    console.error(`remote-probes: ${paired.join(', ')} graded against ${baseline.slice(0, 12)}${baseline === sha ? ' (the candidate itself)' : ''}, ${baselineSource.release
+      ? `the release staging sealed (${baselineSource.release}, digest ${baselineSource.digest})` : `built now (job ${baselineSource.built})`}`);
     arms = pairedPreviews({ repo, runDir });
     await arms.standUp({ baseline, candidate: sha, releases });
     for (const [arm, id] of Object.entries(arms.receipts())) expected[`arm ${arm}`] = id;
@@ -425,7 +440,7 @@ async function probeRun({ baseline, releases }) {
     mkdirSync(state, { recursive: true });
     const report = join(state, `${new Date().toISOString().replace(/[-:]/g, '').slice(0, 15)}-${sha.slice(0, 12)}-${jobId}.json`);
     writeFileSync(report, `${scrub(JSON.stringify({ commit: sha, target: throwaway ? `throwaway:${throwaway}` : hosted ? `hosted:${hosted}` : 'staging', base, job: jobId,
-      ...(paired.length > 0 ? { paired } : {}), problems, tasks }, null, 2))}\n`);
+      ...(paired.length > 0 ? { paired } : {}), ...(baselineSource ? { baseline: baselineSource } : {}), problems, tasks }, null, 2))}\n`);
     console.log(`remote-probes: ${status === 0 ? 'every row green' : status === 1 ? 'red rows above' : 'not every task was graded'}; verdict ${report} (job ${jobId})`);
     return status;
   } catch (error) {

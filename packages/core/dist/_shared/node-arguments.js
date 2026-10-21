@@ -1,6 +1,6 @@
 /**
  * node-arguments.ts — Node's argument validators (lib/internal/validators.js
- * and lib/internal/fs/utils.js, v22.22.3) that both Node fronts take: the
+ * and lib/internal/fs/utils.js, v22.23.4) that both Node fronts take: the
  * shell's node imports them, and scripts/bundle-facet-workers.mjs compiles
  * them into the guest's shims (NODE_ARGUMENTS_PREAMBLE), beside node-error.ts,
  * whose errors they throw.

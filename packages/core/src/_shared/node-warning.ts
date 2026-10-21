@@ -1,6 +1,6 @@
 /**
  * Node's process warnings (lib/internal/process/warning.js and
- * pre_execution.js setupWarningHandler, v22.22.3), for a process Nimbus
+ * pre_execution.js setupWarningHandler, v22.23.4), for a process Nimbus
  * makes: the worker's node shims (as a preamble) and lifo's node
  * (substrate/lifo/node-compat/process.ts). process.emitWarning makes the
  * warning an Error named for its type and tells the process's 'warning'

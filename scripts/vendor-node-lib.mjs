@@ -6,25 +6,28 @@
 //   bun scripts/vendor-node-lib.mjs           write the file
 //   bun scripts/vendor-node-lib.mjs --check   exit 1 unless the file is what it would write
 //
-// Every input is pinned: each upstream file by URL and sha256 (a download
-// that does not match stops the script), and the one measured input,
-// NODE_BUILTIN_OBJECTS, by the real node it was measured on (its version must
-// be NODE_VERSION; the measurement is printed with the file). The output is a
-// pure function of the inputs.
+// Every input is pinned: each upstream file by URL, at the release Nimbus's
+// node reports (core/constants.ts NODE_VERSION), and sha256 (a download that
+// does not match stops the script), and the measured inputs,
+// NODE_BUILTIN_OBJECTS and NODE_UV_ERRORS, by the real node they were
+// measured on (its version must be NODE_VERSION; the measurement is printed
+// with the file). The output is a pure function of the inputs. Run it where
+// that node is on PATH: the CI image (scripts/ci/recipe/setup.sh).
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const NODE_VERSION = 'v22.22.3';
+import { NODE_VERSION } from '../packages/core/src/constants.ts';
+
 const UNICODE_VERSION = '17.0.0';
 const libUrl = (id) => `https://raw.githubusercontent.com/nodejs/node/${NODE_VERSION}/lib/${id}.js`;
 // Node's modules the shims run, by their id under lib/, each pinned by digest.
 const LIB = {
   'internal/util/inspect': '2f2f01d7077800f8565d1be2bd1e6800f8ac02759482dc080eb6bc6005d67dd1',
   'internal/source_map/source_map': '8a5b739a9c886ccbeb73932ad9d37d666469e7b643039ba53482116a93859e91',
-  'internal/validators': '77c43165d42bff6f539305bfaeb8d324639ae3e8d0f21e9f97b2e51f198f10ee',
+  'internal/validators': '46bda12755d127cdefd237cfa25aa14d037216ca0a44a3de693fcd23b446401b',
   'internal/util/colors': '3dc1104394555b39db424624389096a9f55b21dfb10118201a493bacae94b1b3',
   'internal/util/comparisons': '41a2c9547c4560197542ff97f3f9a9b36bd3804ba114c100435a2d7ad95a89c6',
   'internal/errors/error_source': 'ba84ebd73ab2ff0460036cf86591773c5fb05f86abce8396be0399694a77236f',
@@ -44,12 +47,12 @@ const LIB = {
   'internal/util/parse_args/parse_args': 'a20438c20034305bdf1ef0053a938d9b5ae12865caca964dac79e897d38052a6',
   'internal/util/trace_sigint': 'a40ab7d0652fac3691cb83d1084a94e1559f9a7773c17c8a6bdb51381530dc8c',
   'internal/process/per_thread': '9fb576a173cf42cfde6a73798c538ff8ad470b03fa8c4d132083774aee0e2266',
-  util: '0499a613f2263f431151eb41380814a851b8cfecbf45044cfdd245e0f02e6dc6',
-  dns: 'c6f13326d594400b1879f3d56852d98e785f2bab92048592bce5b748b58549b2',
+  util: '51b7311c67d79ba630450afd19686ec0b38cff0de6df3a85801188496ba11d9c',
+  dns: 'e11c4df597d62025f86d2b0a50a5c01e15fee2c52817c068fb6cfb285d60655c',
   'dns/promises': 'd95ebe014ed0ef8fd9004935545903944589345bb13e0e52d849bd50e15fc4a8',
-  'internal/dns/utils': '551792e7d334ab57d7be038458753365bf089f0c550f27c4bc1a16575f2f64ff',
-  'internal/dns/callback_resolver': 'c409809e7df56cf2c820b7272714b60e3c31ac9b2f9e4b127d238352003573b7',
-  'internal/dns/promises': 'f724175f7c423dcff27eb5c89e2ddee4edd0cb9818d90a68adb2b5291dd7c7d0',
+  'internal/dns/utils': '9a6f5fb96eb66913185b351949c3b9f167046a4e4ad1262bb3762de9b2c85f3e',
+  'internal/dns/callback_resolver': 'b43fe11d5b2e770f7f57ce3a49ad235fc706a7b33ad0de9e6ed66f4170395a72',
+  'internal/dns/promises': 'bd702eb2320d7dc888271df13de3bd4303de5a80de80e188d29e411134fe5769',
   'internal/net': 'edbf1a195b68a7840be4fb11f8967cc4c4ca52ac2e1b1d368fd887491ba7918e',
   'internal/fs/cp/cp': '3954e823e339181dd1ca3c8ca27ea4207681daf40ec2b752e5dff2a0ce281510',
   'internal/fs/cp/cp-sync': '7ed29fe024143277a0458edc0dcecc698ac750bfa4677d059cf3e9b8ad99a0c8',

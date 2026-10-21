@@ -1,5 +1,5 @@
 /**
- * node-error.ts — Node's internal errors, as lib/internal/errors.js (v22.22.3)
+ * node-error.ts — Node's internal errors, as lib/internal/errors.js (v22.23.4)
  * makes them, for every error the runtime gives a code: the guest's shims and
  * module resolver, the shell's own Node compatibility, and the host code that
  * shares them. A NodeError reads `Name [CODE]: message` in its stack and its
@@ -48,6 +48,10 @@ export declare function determineSpecificType(value: unknown): string;
 export declare function invalidArgType(name: string, expected: string | readonly string[], actual: unknown): Error;
 /** Node's ERR_INVALID_ARG_VALUE: `name` was `value`, refused for `reason` (`is invalid`, or what it must be). */
 export declare function invalidArgValue(name: string, value: unknown, reason?: string): Error;
+/** Node's ERR_TLS_CERT_ALTNAME_INVALID: `cert` does not name `host`, for `reason`. */
+export declare function tlsCertAltnameInvalid(reason: string, host: string, cert: object): Error;
+/** Node's ERR_TLS_CERT_ALTNAME_FORMAT: a quoted subject alternative name is not a JSON string. */
+export declare function tlsCertAltnameFormat(): Error;
 /** Node's ERR_OUT_OF_RANGE: `name` must be `range` (`an integer`, `>= 0 && <= 4294967295`), and was `input`. */
 export declare function outOfRange(name: string, range: string, input: unknown): Error;
 /** `new codes.ERR_X(...args)`: Node's error for the code, its stack from where it was made. */

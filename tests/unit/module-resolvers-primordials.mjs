@@ -45,7 +45,7 @@ const BUILTINS = [
     .map((key) => [key, globalThis, key]),
 ];
 // Not URL.prototype's accessors: Node's resolver reads a URL's members live,
-// and fails as the program's replacement does (host Node 22.22.3), as the
+// and fails as the program's replacement does (host Node 22.23.4), as the
 // resolver here does (package-map.ts urlPathname).
 
 // The tree: an application with `imports`, packages with conditional,

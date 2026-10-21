@@ -876,6 +876,17 @@ async function main() {
     throw new Error('[bundle-facet-workers/node-warning] the bundle no longer declares function createProcessWarnings');
   }
 
+  // 3e. tls.checkServerIdentity (core _shared/tls-identity.ts, Node's
+  //     lib/tls.js over its IP canonicalization), the shims' node:tls's.
+  const tlsIdentity = await bundleAsPreamble(
+    join(coreRoot, 'src', '_shared', 'tls-identity.ts'),
+    'tls-identity',
+    { shared: ['node-error'], bound: { primordials: '__nimbusPrimordials' } },
+  );
+  if (!/^function createCheckServerIdentity\(/m.test(tlsIdentity)) {
+    throw new Error('[bundle-facet-workers/tls-identity] the bundle no longer declares function createCheckServerIdentity');
+  }
+
   // 4. Node's ESM resolver, which the node shims embed as source (their
   //    process's import() loader). One compile of it, here, so the shims'
   //    copy is the same text whatever toolchain later evaluates the shims.
@@ -1021,6 +1032,9 @@ async function main() {
     '',
     '/** Declares `function createProcessWarnings(process, write)`; the node shims call it. */',
     `export const NODE_WARNING_PREAMBLE: string = ${JSON.stringify(nodeWarnings)};`,
+    '',
+    '/** Declares `function createCheckServerIdentity(host)`; the node shims call it. */',
+    `export const TLS_IDENTITY_PREAMBLE: string = ${JSON.stringify(tlsIdentity)};`,
     '',
     '/** Declares `function createEsmResolver(host)`; the node shims call it. */',
     `export const ESM_RESOLVER_PREAMBLE: string = ${JSON.stringify(esmResolver)};`,

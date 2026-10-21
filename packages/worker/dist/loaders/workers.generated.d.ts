@@ -56,6 +56,8 @@ export declare const POSIX_PATH_PREAMBLE: string;
 export declare const NODE_ARGUMENTS_PREAMBLE: string;
 /** Declares `function createProcessWarnings(process, write)`; the node shims call it. */
 export declare const NODE_WARNING_PREAMBLE: string;
+/** Declares `function createCheckServerIdentity(host)`; the node shims call it. */
+export declare const TLS_IDENTITY_PREAMBLE: string;
 /** Declares `function createEsmResolver(host)`; the node shims call it. */
 export declare const ESM_RESOLVER_PREAMBLE: string;
 /** Declares `function createHttp2Module(host)`; the node shims call it. */
