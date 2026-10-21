@@ -101,6 +101,22 @@ const work = {
       if (i % 8 === 0) checksum += fs.readdirSync('node_modules', { withFileTypes: true }).length;
     }
   },
+  // The same probes named whole: no failure is renamed.
+  absolute(fs) {
+    for (let i = 0; i < N; i++) {
+      const pkg = `/app/node_modules/pkg${i % PACKAGES}`;
+      if (!fs.existsSync(`${pkg}/package.json`)) throw new Error('missing package');
+      checksum += JSON.parse(fs.readFileSync(`${pkg}/package.json`, 'utf8')).name.length;
+      for (const candidate of ['lib/index.js.ts', 'lib/index.js.mjs', 'lib/index.js']) {
+        try {
+          if (fs.statSync(`${pkg}/${candidate}`).isFile()) break;
+        } catch (error) {
+          if (error.code !== 'ENOENT') throw error;
+        }
+      }
+      if (i % 8 === 0) checksum += fs.readdirSync('/app/node_modules', { withFileTypes: true }).length;
+    }
+  },
   async promises(fs) {
     for (let i = 0; i < N; i++) {
       const pkg = `node_modules/pkg${i % PACKAGES}`;

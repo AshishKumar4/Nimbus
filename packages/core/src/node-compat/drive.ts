@@ -135,11 +135,18 @@ export function step<T>(
   dest?: Named,
 ): Stepping<T> {
   if (answering === null) return waitFor(syscall, path, call, dest);
+  // A failure is caught only to be renamed: one thrown again costs the throw again, so paths given whole are not caught.
+  if (!renames(path) && !renames(dest)) return new Answered(syncValue(call(answering)));
   try {
     return new Answered(syncValue(call(answering)));
   } catch (error) {
     throw asGiven(error, path, dest);
   }
+}
+
+/** Whether a failure naming `named` names it otherwise than its caller gave it. */
+function renames(named: Named | undefined): boolean {
+  return named !== undefined && named.given !== named.abs;
 }
 
 function* waitFor<T>(
