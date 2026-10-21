@@ -68,14 +68,17 @@ async function create(fs, path, text) {
   assert.ok(client, 'the resident filesystem exposes no client');
   for (const [name, text] of [['first', 'ONE'], ['second', 'TWO']]) {
     await create(s.fs, `/home/user/proj/gate/${name}.txt`, text);
-    assert.equal(s.kernel.exists(`home/user/proj/gate/${name}.txt`), false, `${name}: not decided under the grant`);
+    assert.equal(s.fs.holding(), true, `${name}: not decided under the grant`);
+    const waves = s.waves.length;
     const gate = client.effect();
     assert.ok(gate instanceof Promise, `${name}: the gate had nothing to wait for`);
     await gate;
-    assert.equal(dec.decode(s.kernel.readFile(`home/user/proj/gate/${name}.txt`)), text, `${name}: not in the session once the gate opened`);
+    assert.equal(s.fs.holding(), false, `${name}: held still once the gate opened`);
+    assert.ok(s.waves.length > waves && s.waves.every((wave) => wave.ok), `${name}: no wave sent, or one refused`);
   }
   assert.equal(client.effect(), null, 'a gate with nothing decided since still waits');
   await s.fs.settle();
+  for (const [name, text] of [['first', 'ONE'], ['second', 'TWO']]) assert.equal(dec.decode(s.kernel.readFile(`home/user/proj/gate/${name}.txt`)), text);
 }
 
 // ── A write that makes its parents is decided here where its directory is ──
