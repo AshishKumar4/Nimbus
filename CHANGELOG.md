@@ -5,12 +5,14 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
-- Changed: a one-shot (python, ruby, clang, tsc, git.wasm, a WASI program) runs on the session's peer, another Durable Object, when the peer is warm for it. A one-shot's worker used to run on the session's own thread, so while it computed the session answered nothing. Measured during a python run importing ten stdlib modules, session against peer: a second terminal's `echo` waited 4.5 s against 0.15 s, a request to a running server 5.2 s against 0.08 s, and a file save 4.1 s against 0.22 s.
-  - The peer is warm for a worker when it answered a call of it within 135 s, the longest idle gap after which every measured peer was still warm. A call that finds it cold runs in the session as before, and the peer is warmed beside it for the next one.
+- Changed: while something else wants a session, a one-shot (python, ruby, clang, tsc, git.wasm, a WASI program) runs on the session's peer, another Durable Object, so the session keeps answering. A one-shot's worker used to run on the session's own thread, so while it computed the session answered nothing. Measured during a python run importing ten stdlib modules, session against peer: a second terminal's `echo` waited 3.4-4.5 s against 0.07-0.15 s, a request to a running server 3.2-5.2 s against 0.08-0.14 s, and a file save 3.2-4.1 s against 0.22-0.30 s.
+  - Something else wants the session while another terminal is attached, a process listens on a port, or another one-shot is running. Otherwise the run stays in the session: there, idle, it is no faster on the peer (python 4253 ms in the session against 4197 on the peer, ruby 455 against 453, clang 619 against 680).
+  - The run goes to the peer only when the peer answered a call of the same worker within 135 s, the longest idle gap after which every measured peer was still warm. A run that finds it cold stays in the session, and the peer is warmed beside it for the next one.
   - The run is the session's process wherever it runs: the same pid, credential, filesystem rules, environment and output. The peer keeps nothing of a call once it ends.
   - A peer lost after it took a call ends the run with `the session's one-shot host was lost while it ran: <cause>`, and the run is not repeated, since it may have done things. A call the peer refused before taking it runs in the session.
-  - `/api/_diag/session` lists, under `launch.oneShots`, the session's peer, the workers it is warm for, where each of the last 16 one-shots ran, and the last warming that failed.
+  - `/api/_diag/session` lists, under `launch.oneShots`, the session's peer, the workers it is warm for, where each of the last 16 one-shots ran and what wanted the session then, and the last warming that failed. Its `facetCalls` hold a peer's calls too, as the peer timed them.
   - These stay in the session: bash's facet, which keeps the shell's state between calls; a one-shot whose network goes out through the workspace's egress; and node one-shots.
+- Fixed: a python, ruby or clang one-shot's image is read at each load through a view of its own, not the run's. A warm worker loaded after a short run ended used to fail with `EBADF: filesystem scope closed`.
 - Fixed: a WASI program's filesystem answers as the session holds it where it did not:
   - a file read through a descriptor after the program rewrote it and removed its name read the bytes from before the rewrite;
   - a directory made where the program had just moved another away listed the moved one's names;

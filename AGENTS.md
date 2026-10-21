@@ -115,11 +115,15 @@ on throwaways, an outside request to the session every 100 ms:
   terminal's `echo`, a request to a running server and a `POST /api/write-file`
   each waited 3.1-3.4 s, against 0.04-0.12 s with the same run on a peer.
 
-So a one-shot of a facet host (python, ruby, clang, tsc, git.wasm, a WASI
+So while something else wants the session's thread (another terminal
+attached, a process listening on a port, another one-shot running), a
+one-shot of a facet host (python, ruby, clang, tsc, git.wasm, a WASI
 program) runs on the session's peer, a sibling DO named from the session's
-id, when the peer answered a call of the same worker within
-`ONE_SHOT_WARM_MS`; otherwise it runs in the session and the peer is warmed
-beside it (`@nimbus-sh/fabric/one-shot-peer.js`). The run keeps the SUPERVISOR
+id, if the peer answered a call of the same worker within
+`ONE_SHOT_WARM_MS`. Otherwise it runs in the session, and a wanted thread
+warms the peer beside it (`@nimbus-sh/fabric/one-shot-peer.js`). Idle, a run
+is no faster on the peer: python 4253 ms in the session against 4197, ruby
+455 against 453, clang 619 against 680. The run keeps the SUPERVISOR
 binding its session minted, so it is the session's process under the
 session's rules. A stateful facet (`FacetSpec.stateful`: bash's) stays in the
 session. A node one-shot is not a facet: it is an unkeyed Loader worker
