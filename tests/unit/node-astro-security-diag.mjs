@@ -40,6 +40,8 @@ try{
   console.log('ASTRO_MINIMUM',JSON.stringify(next));
   assert.equal(next.version,'v22.23.4');
   assert.ok(next.tlsNonCanonical.every(c=>c.result==='ERR_TLS_CERT_ALTNAME_INVALID'));
+  assert.deepEqual(current.tlsNonCanonical,next.tlsNonCanonical,
+    'the current oracle must match Astro security minimum before adopting its fingerprint');
 }finally{
   rmSync(root,{recursive:true,force:true});
 }
