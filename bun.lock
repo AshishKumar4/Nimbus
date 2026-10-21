@@ -130,7 +130,7 @@
     },
     "packages/create-nimbus-app": {
       "name": "create-nimbus-app",
-      "version": "0.2.7",
+      "version": "0.2.8",
       "bin": {
         "create-nimbus-app": "bin.js",
       },

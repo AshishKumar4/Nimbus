@@ -5,7 +5,7 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
-## 2026-10-21 (second release): core 0.27.0, fabric 0.22.0, worker 0.25.0, sdk 0.21.0, react 0.4.3, cli 0.2.12, loom 0.3.5 (platform 0.15.0, config 0.3.2, create-nimbus-app 0.2.7 and the runtimes unchanged)
+## 2026-10-21 (second release): core 0.27.0, fabric 0.22.0, worker 0.25.0, sdk 0.21.0, react 0.4.3, cli 0.2.12, loom 0.3.5, create-nimbus-app 0.2.8 (platform 0.15.0, config 0.3.2 and the runtimes unchanged)
 
 - Fixed: `astro dev` runs with Astro 7.4.2. Astro 7.4.2 requires Node
   22.23.4 or later, and its CLI stopped before its dev server loaded,
