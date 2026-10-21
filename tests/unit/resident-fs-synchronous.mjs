@@ -13,6 +13,7 @@
 import assert from 'node:assert/strict';
 import { runScenarios } from './lib/resident-body.mjs';
 import { APP, bootEngine, stat as engineStat } from './lib/guest-engines.mjs';
+import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -160,6 +161,18 @@ await runScenarios(import.meta.path, {
     await assert.rejects(Promise.resolve().then(() => e.fs.mkdir(`${APP}/dir/sub`, { mode: 0o755 })), (error) => error?.code === 'EACCES');
     assert.equal(e.sync.stat(`${APP}/dir/sub`), null);
     assert.deepEqual(e.sync.readdir(`${APP}/dir`).map((entry) => entry.name), ['inner.txt']);
+  },
+
+  async 'the root is answered now, as the session holds it'(e = undefined) {
+    e = await boot();
+    const sessionRoot = () => engineStat(e.authority.kfs.stat(''));
+    const root = engineStat(await answersNow(e, 'stat of /', () => e.sync.stat('/')));
+    assert.deepEqual(root, sessionRoot());
+    assert.equal(await answersNow(e, 'realpath of /', () => e.sync.realpath('/')), '/');
+    // A name made at the top: the root's own row moves with it, once the input's barrier lands.
+    await e.authority.peerAs(CRED_KERNEL).mkdir('newtop', { mode: 0o755 });
+    await e.input();
+    assert.deepEqual(engineStat(e.sync.stat('/')), sessionRoot());
   },
 
   async 'an awaited change only the session decides is shown once it returns'(e = undefined) {
