@@ -192,6 +192,16 @@ function invalidArgValueMessage(name: string, value: unknown, reason = 'is inval
   return `The ${stringIncludes(name, '.') ? 'property' : 'argument'} '${name}' ${reason}. Received ${inspected}`;
 }
 
+/** Node's ERR_TLS_CERT_ALTNAME_INVALID: `cert` does not name `host`, for `reason`. */
+export function tlsCertAltnameInvalid(reason: string, host: string, cert: object): Error {
+  return made(Error, 'ERR_TLS_CERT_ALTNAME_INVALID', `Hostname/IP does not match certificate's altnames: ${reason}`, { reason, host, cert }, tlsCertAltnameInvalid);
+}
+
+/** Node's ERR_TLS_CERT_ALTNAME_FORMAT: a quoted subject alternative name is not a JSON string. */
+export function tlsCertAltnameFormat(): Error {
+  return made(SyntaxError, 'ERR_TLS_CERT_ALTNAME_FORMAT', 'Invalid subject alternative name string', undefined, tlsCertAltnameFormat);
+}
+
 /** Node's ERR_OUT_OF_RANGE: `name` must be `range` (`an integer`, `>= 0 && <= 4294967295`), and was `input`. */
 export function outOfRange(name: string, range: string, input: unknown): Error {
   return made(RangeError, 'ERR_OUT_OF_RANGE', outOfRangeMessage(name, range, input), undefined, outOfRange);
@@ -329,13 +339,6 @@ const nodeErrorMessages: Record<string, { readonly message: Message; readonly ba
   ERR_OUT_OF_RANGE: { message: outOfRangeMessage, bases: [RangeError] },
   ERR_SOCKET_BAD_PORT: { message: (name: string, port: unknown, allowZero = true) =>
     `${name} should be ${allowZero ? '>=' : '>'} 0 and < 65536. Received ${determineSpecificType(port)}.`, bases: [RangeError] },
-  ERR_TLS_CERT_ALTNAME_FORMAT: { message: 'Invalid subject alternative name string', bases: [SyntaxError] },
-  ERR_TLS_CERT_ALTNAME_INVALID: { message: function (this: Record<string, unknown>, reason: string, host: string, cert: object) {
-    this.reason = reason;
-    this.host = host;
-    this.cert = cert;
-    return `Hostname/IP does not match certificate's altnames: ${reason}`;
-  }, bases: [Error] },
   ERR_UNAVAILABLE_DURING_EXIT: { message: 'Cannot call function in process exit handler', bases: [Error] },
   ERR_UNCAUGHT_EXCEPTION_CAPTURE_ALREADY_SET: { message: '`process.setupUncaughtExceptionCapture()` was called while a capture callback was already active', bases: [Error] },
   ERR_UNKNOWN_SIGNAL: { message: 'Unknown signal: %s', bases: [TypeError] },

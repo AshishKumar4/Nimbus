@@ -839,17 +839,29 @@ const cases = [
   ['a.example.com', { subject: {}, subjectaltname: 'DNS:"a.example.com' }],
   ['a.com', { subjectaltname: 'DNS:b.com' }],
 ];
-for (const [host, cert] of cases) {
-  let result;
+const check = (host, cert) => {
   try {
     const e = tls.checkServerIdentity(host, cert);
-    result = e === undefined ? 'valid'
-      : [e.name, e.code, e.message, e.reason, e.host, e.cert === cert, Object.keys(e), String(e.stack).split('\n')[0]];
+    return e === undefined ? 'valid' : [e.name, e.code, e.message, e.reason, e.host, e.cert === cert, Object.keys(e), e.stack.split('\n')[0]];
   } catch (e) {
-    result = ['threw', e.name, e.code, e.message, Object.keys(e)];
+    return ['threw', e.name, e.code, e.message, Object.keys(e)];
   }
-  console.log(JSON.stringify([host, cert.subjectaltname ?? null, result]));
-}
+};
+for (const [host, cert] of cases) console.log(JSON.stringify([host, cert.subjectaltname ?? null, check(host, cert)]));
+// What lib/tls.js takes from its primordials, and what its binding does in
+// C, a program cannot replace.
+const RealString = String;
+const fromCharCode = RealString.fromCharCode;
+RealString.fromCharCode = () => 'z';
+globalThis.String = () => '127.0.0.1';
+const replaced = [
+  tls.checkServerIdentity('127.0.0.1', { subject: {}, subjectaltname: 'IP Address:8.8.8.8' }),
+  tls.checkServerIdentity('::1', { subject: {}, subjectaltname: 'IP Address:0:0:0:0:0:0:0:1' }),
+  tls.checkServerIdentity('a.com', { subject: { CN: 'A.COM' } }),
+];
+globalThis.String = RealString;
+RealString.fromCharCode = fromCharCode;
+console.log('replaced built-ins ' + JSON.stringify(replaced.map((e) => (e === undefined ? 'valid' : [e.code, e.reason]))));
 `,
   // The builtins workerd provides behind Node's argument checks
   // (node-builtin-fronts.ts): what they take still works as Node's does, and
