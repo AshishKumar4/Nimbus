@@ -1,4 +1,5 @@
 import { type VfsCred } from './os-contracts.js';
+import type { ProcessRestart } from './session-protocol.js';
 /**
  * ProcessTable — PID allocation and process lifecycle state.
  *
@@ -50,18 +51,8 @@ export interface ProcessEntry {
      */
     restartedFrom?: ProcessRestart;
 }
-/** Which process a restart replaced, and why it was restarted. */
-export type ProcessRestart = {
-    pid: number;
-    cause: 'session-restart';
-} | {
-    pid: number;
-    cause: 'exited';
-    exitCode: number;
-} | {
-    pid: number;
-    cause: 'host-reset';
-};
+/** Which process a restart replaced, and why it was restarted (session-protocol.ts ProcessRestartSchema). */
+export type { ProcessRestart };
 export interface ProcessTableSpawnOptions {
     cred?: VfsCred;
     parentPid?: number;

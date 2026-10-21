@@ -6,6 +6,18 @@ published independently in the `@nimbus-sh` npm scope.
 ## Unreleased
 
 - Security: every session trusts the TLS roots this deployment serves, at `/proc/nimbus/ca-certificates.crt` (read-only, generated from the build as the rest of /proc is), and CPython's and Ruby's OpenSSL read them through `SSL_CERT_FILE` unless a program names its own. The bundle is Mozilla's roots as of 2026-10-20 (curl.se's extract, pinned by sha256), which no longer trusts emSign ECC Root CA - G3 and so nothing on a path to the eMudhra intermediates whose keys were found compromised that day. Before, CPython verified against a copy staged with its runtime (Mozilla's roots of 2026-07-16), which accepted certificates those intermediates issued for any name, and a session kept its copy until it reinstalled the runtime. Updating the roots is now `bun scripts/update-ca-certificates.mjs <date> <sha256>` and a deploy.
+- Fixed: listing a session's processes (`listProcesses`,
+  `GET /api/processes`) waits until each dev server its previous
+  incarnation ran has its process again. Before, a listing right after a
+  restart could come before the restore, so a host could not tell "none
+  coming" from "not yet": Kinu failed a job whose server Nimbus then started
+  again, and the job's second start found its port taken. The listing waits
+  for the processes, not for their commands, so a command that never ends,
+  or one that lists what runs itself, does not hold it. A restored server's
+  ports and apps are listed as it starts, as at any start. Stopping a
+  restored process before its command has run ends the restore of it for
+  good. A listed process now also says which process it restarts
+  (`restartedFrom`), as `/api/processes` did.
 - Fixed: a WebAssembly program's or a worker's filesystem calls that cross to the session keep their options. Before, the hop dropped them, so:
   - a write that makes its parent directories failed with ENOENT in a new directory;
   - a write ignored the program's own umask;

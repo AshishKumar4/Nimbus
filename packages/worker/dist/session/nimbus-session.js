@@ -69,7 +69,7 @@ import { openSupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-d
 // S9: HTTP fetch routing extracted (combined S9a + S9b).
 // S9: HTTP fetch routing extracted (combined S9a + S9b).
 import * as _routes from './routes.js';
-import { restoreDevServers } from './dev-servers.js';
+import { devServersRespawned, restoreDevServers } from './dev-servers.js';
 import { sessionProcessEnv } from './process-env.js';
 import * as _portCapability from './port-capability.js';
 // Programmatic SDK RPC surface.
@@ -964,8 +964,7 @@ export class NimbusSession extends CloudflareDurableObject {
     }
     /** What restoring the dev servers reads of this session, one view per instance (its restore is the view's). */
     devServerHost = null;
-    /** The dev servers a previous incarnation ran, started again once (dev-servers.ts): what every route to one waits on. */
-    restoreDevServers() {
+    get devServers() {
         const session = this;
         this.devServerHost ??= {
             ctx: this.ctx,
@@ -975,7 +974,15 @@ export class NimbusSession extends CloudflareDurableObject {
             processEnv: this.processEnv,
             ensureRuntimeReady: () => this.ensureRuntimeReady(),
         };
-        return restoreDevServers(this.devServerHost);
+        return this.devServerHost;
+    }
+    /** The dev servers a previous incarnation ran, started again once (dev-servers.ts): what every route to one waits on. */
+    restoreDevServers() {
+        return restoreDevServers(this.devServers);
+    }
+    /** Their processes spawned again (dev-servers.ts): what a listing of what runs waits on. */
+    devServersRespawned() {
+        return devServersRespawned(this.devServers);
     }
     /** The port route's in-DO HMR accept, delegated — same reason. */
     acceptCirrusHmrWs(request) {
