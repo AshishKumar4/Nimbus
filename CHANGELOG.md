@@ -88,7 +88,9 @@ published independently in the `@nimbus-sh` npm scope.
   - an error names a path as its caller gave it (`'missing.txt'`, no longer the absolute path);
   - Stats' `blocks` count 512-byte blocks allocated 4096 bytes at a time;
   - a callback form called without a callback throws ERR_INVALID_ARG_TYPE at once;
-  - `fs.exists` of a path it cannot take answers `false`.
+  - `fs.exists` of a path it cannot take answers `false`;
+  - a symlink's failure names the target, then the link, as given (`path` and `dest`);
+  - a path argument that is no path (`{}`, `null`) is ERR_INVALID_ARG_TYPE.
   - Its cost under V8, measured against main's over an in-memory filesystem, per 800 rounds of a require-heavy probe:
     - absolute paths: 10.47 → 11.62 ms, about 0.3 µs per fs call (an operation generator and its steps);
     - relative paths: 11.25 → 13.60 ms. A failure there is caught and its error named as given, which costs another throw, about 1 µs per failing call;
