@@ -32,6 +32,10 @@ import { disposeRpcResource } from '../../../packages/platform/src/rpc-dispose.j
 import { peerPlacement } from '@nimbus-sh/fabric/process-host.js';
 import { abortFacet, heldFacetName } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { oneShotPlacement, oneShotPlacementDiagnostics } from '@nimbus-sh/fabric/one-shot-peer.js';
+import { WASI_INSTANCE_PREAMBLE_SRC } from '@nimbus-sh/core/runtime/wasi-instance.generated.js';
+import { warmFacetScope } from '@nimbus-sh/core/runtime/warm-facets.js';
+import { facetTaskSource } from '@nimbus-sh/core/runtime/facet-task.js';
+import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { z } from 'zod/v4';
 import type { EgressProcess, EgressStreams, EgressTlsTarget, WorkspaceEgress, WorkspaceEgressTls } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { CANARY_PROJECT, CANARY_WHEEL, canaryPypiJson, canaryWheel } from './egress-canary.js';
@@ -266,6 +270,23 @@ export class NimbusSession extends SdkNimbusSession {
     if (forget) oneShotPlacement(this.ctx, this.env).forgetPeer();
     return peer;
   }
+  /** Experiment: a pure burn as a one-shot facet, placed in the session (`forget` first) or wherever placement puts it. */
+  async _rpcProbeOneShotBurn(forget: boolean, preamble: 'none' | 'wasi', n: number): Promise<{ result: number; ms: number }> {
+    this.requireProbeDiagnostics();
+    const placement = oneShotPlacement(this.ctx, this.env);
+    if (forget) placement.forgetPeer();
+    const facet = placement.facet({
+      tag: `burn-probe-${preamble}`, concurrency: 1, preamble: preamble === 'wasi' ? WASI_INSTANCE_PREAMBLE_SRC : undefined,
+      scope: warmFacetScope({ session: this.ctx.id.toString(), name: `burn-${preamble}` }),
+    }, {}, ISOLATE_NETWORK);
+    const started = Date.now();
+    try {
+      const result = await facet.submit(facetTaskSource<number, number>('async (n) => { let h = 0x811c9dc5; for (let i = 0; i < n; i++) h = Math.imul(h ^ i, 16777619); return h >>> 0; }'), n);
+      return { result, ms: Date.now() - started };
+    } finally {
+      facet.dispose();
+    }
+  }
   /** Whether this object stores `needle` anywhere: in its key-value storage or a row of its SQLite. */
   async _rpcProbeStores(needle: string): Promise<boolean> {
     this.requireProbeDiagnostics();
@@ -469,7 +490,7 @@ export class NimbusProcess extends DurableObject {
   } finally { disposeRpcResource(stub); }
 }
 
-const OneShotPeerProbe = z.object({ action: z.enum(['forget', 'reset', 'stored']), needle: z.string().default('') });
+const OneShotPeerProbe = z.object({ action: z.enum(['forget', 'reset', 'stored', 'burn']), needle: z.string().default(''), forget: z.boolean().default(false), preamble: z.enum(['none', 'wasi']).default('none'), n: z.number().int().positive().default(1) });
 
 /**
  * POST /api/embedder/<id>/one-shot-peer {action, needle?}: the session's
@@ -489,6 +510,7 @@ async function probeOneShotPeer(request: Request, env: ProbeEnv, sessionId: stri
   const owner = env.NIMBUS_SESSION.get(env.NIMBUS_SESSION.idFromName(`${verified.claims.tn}:${verified.claims.sub ?? '_'}:${sessionId}`));
   let peer: DurableObjectStub<NimbusSession> | undefined;
   try {
+    if (action === 'burn') return Response.json(await owner._rpcProbeOneShotBurn(parsed.data.forget, parsed.data.preamble, parsed.data.n));
     const name = await owner._rpcProbeOneShotPeer(action === 'forget');
     if (action === 'forget') return Response.json({ forgot: name });
     if (name === null) return Response.json({ error: 'the session has no one-shot peer' }, { status: 404 });
