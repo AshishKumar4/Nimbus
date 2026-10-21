@@ -57,9 +57,9 @@ export function loaderFacetHost(env: unknown, ctx: DurableObjectState, network: 
       });
       // Experiment (D1, not for landing): the session's thread watched while a one-shot runs.
       return {
-        submit: async (fn, args, options) => {
+        submit(fn, args, options) {
           const watched = holdThreadWatch(ctx, `one-shot ${spec.tag}`);
-          try { return await pool.submit(fn, args, options); } finally { watched(); }
+          return pool.submit(fn, args, options).finally(watched);
         },
         dispose: () => pool.dispose(),
       };

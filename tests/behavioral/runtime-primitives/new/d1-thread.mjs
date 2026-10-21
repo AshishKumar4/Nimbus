@@ -13,10 +13,14 @@ const out = (record) => console.log(JSON.stringify(record));
 const heredoc = (path, body) => `cat > ${path} <<'NIMBUS_EOF'\n${body}NIMBUS_EOF`;
 const PY = 'import email.parser, http.client, json, decimal, asyncio, unittest, xml.dom.minidom, sqlite3, argparse, logging; print(1)';
 const RB = "require 'json'; require 'set'; require 'time'; require 'fileutils'; require 'optparse'; puts 1";
+// Which of a python run's cost is its stdlib's: the same run with no imports,
+// and a ruby one-shot (which holds no thread) reading the stdlib zip whole.
 const ARMS = {
   'python oneshot': `python3 -c "${PY}"`,
+  'python print': 'python3 -c "print(1)"',
   'python resident': 'python3 imports.py',
   'ruby oneshot': `ruby -e "${RB}"`,
+  'ruby read zip': `ruby -e "puts File.binread(ENV['ZIP']).bytesize"`,
   'ruby resident': 'ruby requires.rb',
 };
 
@@ -36,6 +40,8 @@ try {
     const r = await t.run(line, 600_000);
     if (r.exitCode !== 0) throw new Error(`setup failed: ${line.slice(0, 40)}: ${r.output.slice(-300)}`);
   }
+  const zip = (await t.run("find / -name 'python313.zip' 2>/dev/null | head -1", 60_000)).output.split(/\r?\n/).find((l) => l.endsWith('python313.zip'));
+  await t.run(`export ZIP=${zip}; ls -l ${zip}`, 30_000).then((r) => out({ kind: 'zip', path: zip, ls: r.output.slice(-200) }));
   const seen = new Set((await diag(sid)).stalls.map((s) => `${s.at}:${s.ms}`));
   const runOnce = async (arm, line, kind, i) => {
     let running = true;
@@ -65,12 +71,7 @@ try {
       await runOnce(arm, line, 'warm', i);
     }
   }
-  // Three at once, in each host.
-  for (let i = 1; i <= 3; i++) {
-    for (const [arm, one] of Object.entries(ARMS)) {
-      await runOnce(arm, `${one} > /dev/null & ${one} > /dev/null & ${one} > /dev/null & wait`, 'trio', i);
-    }
-  }
+
 } catch (error) {
   out({ kind: 'error', error: String(error?.message ?? error).slice(0, 2000) });
   process.exitCode = 1;
