@@ -184,7 +184,15 @@ export class OneShotPlacement {
                         this.#note(spec.tag, worker, 'session', began);
                     }
                 }
-                const answer = await this.#submit(peer, spec, callImages, worker, fn, args, options);
+                let answer;
+                try {
+                    answer = await this.#submit(peer, spec, callImages, worker, fn, args, options);
+                }
+                catch (error) {
+                    // Lost on the peer: it ran there.
+                    this.#note(spec.tag, worker, 'peer', began);
+                    throw error;
+                }
                 if (answer === null) {
                     try {
                         return await local.submit(fn, args, options);
