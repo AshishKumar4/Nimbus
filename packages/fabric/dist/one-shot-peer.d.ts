@@ -64,18 +64,29 @@ type OneShotAnswer<R> = {
 /** What /api/_diag/session shows of a session's one-shots: where each of the last ran, and its peer. */
 export interface OneShotPlacementCall {
     tag: string;
+    /** Its worker, as warmth knows it (warmthOf): '' for one only the peer object's warmth decides. */
+    worker: string;
     host: 'session' | 'peer';
     ms: number;
     at: number;
 }
 /** The placement of the one-shots of the Durable Object whose state is `ctx`, its peers in `env`'s host namespace. */
 export declare function oneShotPlacement(ctx: DurableObjectState, env: object): OneShotPlacement;
-/** Its peer and the last calls it placed, for /api/_diag/session; null before its first one-shot. */
-export declare function oneShotPlacementDiagnostics(ctx: object): {
+/** What /api/_diag/session shows of a session's one-shot placement. */
+export interface OneShotPlacementDiagnostics {
     peer: string | null;
+    /** Each worker the peer is warm for, and how long since it answered a call of it (ms). */
     warm: Record<string, number>;
     calls: OneShotPlacementCall[];
-} | null;
+    /** The last warming that failed, and why. */
+    warmFailure: {
+        worker: string;
+        message: string;
+        at: number;
+    } | null;
+}
+/** Its peer and the last calls it placed, for /api/_diag/session; null before its first one-shot. */
+export declare function oneShotPlacementDiagnostics(ctx: object): OneShotPlacementDiagnostics | null;
 /**
  * Where each one-shot of one session runs. One per session object: what it
  * knows (which peer, and when it last answered a call of each worker) is
@@ -92,11 +103,7 @@ export declare class OneShotPlacement {
     facet(spec: OneShotPoolSpec, images: Record<string, FacetImage>, network: WorkspaceNetwork): Facet;
     /** The peer is cold for every worker, and found again by the next warming: a call to it failed. */
     forgetPeer(): void;
-    diagnostics(): {
-        peer: string | null;
-        warm: Record<string, number>;
-        calls: OneShotPlacementCall[];
-    };
+    diagnostics(): OneShotPlacementDiagnostics;
 }
 /** The one-shots the Durable Object whose state is `ctx` runs as a session's peer. */
 export declare function oneShotHost(ctx: DurableObjectState, env: object): OneShotHost;
