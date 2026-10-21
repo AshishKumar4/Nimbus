@@ -284,7 +284,10 @@ export class OneShotPlacement {
         const carries = !this.#carried.has(hash);
         let raw: unknown;
         try {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          const sent = Date.now();
           raw = await dispatch({ op: 'oneShotSubmit', args: [this.#wire(spec, carries), callId, fn, args, { timeoutMs: options?.timeoutMs }, this.#images(spec, images, options?.signal)] });
+          (globalThis as unknown as { __d1Sent?: object[] }).__d1Sent = [...((globalThis as unknown as { __d1Sent?: object[] }).__d1Sent ?? []).slice(-31), { sent, answered: Date.now() }];
         } catch (error) {
           this.forgetPeer();
           if (classifyDoCall(error) === 'overloaded') return null;
@@ -532,20 +535,24 @@ export class OneShotHost {
 
   /** One call of a session's facet: its answer, whatever the task did. */
   async submit(spec: unknown, callId: unknown, fn: unknown, args: unknown, options: unknown, images: unknown): Promise<z.infer<ReturnType<typeof answerSchema<unknown>>>> {
-    const t0 = performance.now();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const t0 = Date.now();
     const id = z.string().uuid().parse(callId);
     const pool = this.#pool(spec);
     if (pool === null) return { ok: 'preamble missing' };
-    const t1 = performance.now();
+    const t1 = Date.now();
     const controller = new AbortController();
     this.#calls.set(id, controller);
     try {
       const task = facetTaskSource(FacetTaskSchema.parse(fn).source);
       const parsed = { ...CallOptionsSchema.parse(options), wasmModules: facetImages(images), signal: controller.signal };
-      const t2 = performance.now();
+      const t2 = Date.now();
       const value = await pool.submit(task, args, parsed);
-      const t3 = performance.now();
-      (globalThis as unknown as { __d1Spans?: object[] }).__d1Spans = [...((globalThis as unknown as { __d1Spans?: object[] }).__d1Spans ?? []).slice(-31), { pool: t1 - t0, parse: t2 - t1, submit: t3 - t2, at: Date.now() }];
+      const t3 = Date.now();
+      pool.dispose();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const t4 = Date.now();
+      (globalThis as unknown as { __d1Spans?: object[] }).__d1Spans = [...((globalThis as unknown as { __d1Spans?: object[] }).__d1Spans ?? []).slice(-31), { entry: t0, pool: t1 - t0, parse: t2 - t1, submit: t3 - t2, after: t4 - t3 }];
       return { ok: true, value };
     } catch (error) {
       const code = typeof error === 'object' && error !== null ? Reflect.get(error, 'code') : undefined;

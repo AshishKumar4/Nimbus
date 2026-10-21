@@ -265,6 +265,9 @@ export class NimbusSession extends SdkNimbusSession {
     this.ctx.abort('probe: coordinator reset');
   }
   /** The session's one-shot peer (fabric one-shot-peer.ts), or null; forgotten first with `forget`, so its next one-shot runs here and warms it again. */
+  _rpcProbeSent(): object[] {
+    return (globalThis as unknown as { __d1Sent?: object[] }).__d1Sent ?? [];
+  }
   _rpcProbeOneShotPeer(forget: boolean): string | null {
     this.requireProbeDiagnostics();
     const peer = oneShotPlacementDiagnostics(this.ctx)?.peer ?? null;
@@ -522,7 +525,7 @@ async function probeOneShotPeer(request: Request, env: ProbeEnv, sessionId: stri
     if (name === null) return Response.json({ error: 'the session has no one-shot peer' }, { status: 404 });
     peer = env.NIMBUS_SESSION.get(env.NIMBUS_SESSION.idFromName(name));
     if (action === 'stored') return Response.json({ peer: name, stored: await peer._rpcProbeStores(needle) });
-    if (action === 'facet-calls') return Response.json({ peer: name, ...(await peer._rpcProbeFacetCalls()) });
+    if (action === 'facet-calls') return Response.json({ peer: name, ...(await peer._rpcProbeFacetCalls()), sent: await owner._rpcProbeSent() });
     await peer._rpcProbeCoordinatorReset().catch(() => {});
     return Response.json({ reset: name });
   } catch (error) {
