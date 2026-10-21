@@ -50,6 +50,7 @@ import { buildSessionSupervisorOps } from '../../../packages/worker/src/session/
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { attachSupervisorOps } from './session-supervisor-ops.mjs';
 import { opSender, supervisorDouble } from './supervisor-double.mjs';
+import { facetStorage } from './fake-do-kv.mjs';
 
 plugin({
   name: 'resident-body-cloudflare-workers',
@@ -283,7 +284,7 @@ export async function launchResident({
   testProcess.on('exit', () => rmSync(dir, { recursive: true, force: true }));
   const mod = await import(pathToFileURL(writeModuleSet(dir, { ...generatedModuleSet(generated, 'worker.mjs'), ...wasmModules }, 'worker.mjs', undefined, { onWasmEvaluate })).href);
   onImported();
-  const ctx = { storage: { sql }, waitUntil() {}, id: { toString: () => 'resident-body-test' } };
+  const ctx = { storage: facetStorage(sql), waitUntil() {}, id: { toString: () => 'resident-body-test' } };
   const proc = new mod.NimbusProcess(ctx, env);
   // The plan a resident launch is handed: data-plan.ts over the authority,
   // as the manager computes it, unless the test names one.

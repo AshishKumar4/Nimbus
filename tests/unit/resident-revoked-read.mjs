@@ -27,6 +27,7 @@ import {
   runScenarios,
   until,
 } from './lib/resident-body.mjs';
+import { facetStorage } from './lib/fake-do-kv.mjs';
 
 const APP = '/home/user/app';
 const SECRET = `${APP}/secret.txt`;
@@ -109,7 +110,7 @@ async function kept(revoke) {
   const authority = session();
   const sql = facetSql();
   const previous = createResidentStore();
-  previous.bind({ storage: { sql } });
+  previous.bind({ storage: facetStorage(sql) });
   previous.namespace.setCred({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 });
   previous.sync.setPlan(await residentDataPlan(authority, APP));
   previous.sync.adoptModuleBundle({}, authority.cursor());
@@ -187,7 +188,7 @@ async function cpDenied() {
   authority.kfs.chmod(KEY, 0o000);
   const sql = facetSql();
   const previous = createResidentStore();
-  previous.bind({ storage: { sql } });
+  previous.bind({ storage: facetStorage(sql) });
   previous.namespace.setCred({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 });
   previous.sync.setPlan(await residentDataPlan(authority, APP));
   previous.sync.adoptModuleBundle({}, authority.cursor());
