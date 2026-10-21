@@ -1,4 +1,4 @@
-// process.exitCode as Node 22.22.3 keeps it (lib/internal/bootstrap/node.js:
+// process.exitCode as Node 22.23.4 keeps it (lib/internal/bootstrap/node.js:
 // a non-empty string is its Number() unless that is NaN, then
 // validateInteger: a number, an integer, a safe one; stored as int32; null
 // and undefined unset it), against host Node for every kind of value: the

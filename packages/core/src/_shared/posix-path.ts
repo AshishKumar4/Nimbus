@@ -1,5 +1,5 @@
 /**
- * posix-path.ts — node:path's posix half, as Node v22.22.3's lib/path.js
+ * posix-path.ts — node:path's posix half, as Node v22.23.4's lib/path.js
  * computes it, on built-ins captured before any program code runs
  * (primordials.ts): the guest's node:path, which its module loading calls
  * too, answers as Node's does after a program replaced

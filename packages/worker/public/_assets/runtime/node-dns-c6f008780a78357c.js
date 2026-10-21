@@ -278,7 +278,7 @@ const {
   validateNumber,
   validateOneOf,
   validatePort,
-  validateString,
+  validateStringWithoutNullBytes,
 } = require('internal/validators');
 
 const {
@@ -342,7 +342,7 @@ function lookup(hostname, options, callback) {
 
   // Parse arguments
   if (hostname) {
-    validateString(hostname, 'hostname');
+    validateStringWithoutNullBytes(hostname, 'hostname');
   }
 
   if (typeof options === 'function') {
@@ -603,6 +603,7 @@ const {
   validateInt32,
   validateOneOf,
   validateString,
+  validateStringWithoutNullBytes,
   validateUint32,
 } = require('internal/validators');
 let binding;
@@ -750,10 +751,10 @@ class ResolverBase {
 
 
   setLocalAddress(ipv4, ipv6) {
-    validateString(ipv4, 'ipv4');
+    validateStringWithoutNullBytes(ipv4, 'ipv4');
 
     if (ipv6 !== undefined) {
-      validateString(ipv6, 'ipv6');
+      validateStringWithoutNullBytes(ipv6, 'ipv6');
     }
 
     this._handle.setLocalAddress(ipv4, ipv6);
@@ -973,7 +974,7 @@ const {
 
 const {
   validateFunction,
-  validateString,
+  validateStringWithoutNullBytes,
 } = require('internal/validators');
 
 const {
@@ -1011,7 +1012,7 @@ function resolver(bindingName) {
       callback = arguments[2];
     }
 
-    validateString(name, 'name');
+    validateStringWithoutNullBytes(name, 'name');
     validateFunction(callback, 'callback');
 
     const req = new QueryReqWrap();
@@ -1140,6 +1141,7 @@ const {
   validateOneOf,
   validatePort,
   validateString,
+  validateStringWithoutNullBytes,
 } = require('internal/validators');
 
 const kPerfHooksDnsLookupContext = Symbol('kPerfHooksDnsLookupContext');
@@ -1270,7 +1272,7 @@ function lookup(hostname, options) {
 
   // Parse arguments
   if (hostname) {
-    validateString(hostname, 'hostname');
+    validateStringWithoutNullBytes(hostname, 'hostname');
   }
 
   if (typeof options === 'number') {
@@ -1404,7 +1406,7 @@ function createResolverPromise(resolver, bindingName, hostname, ttl) {
 
 function resolver(bindingName) {
   function query(name, options) {
-    validateString(name, 'name');
+    validateStringWithoutNullBytes(name, 'name');
 
     const ttl = !!(options?.ttl);
     return createResolverPromise(this, bindingName, name, ttl);

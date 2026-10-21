@@ -46,14 +46,15 @@ export const NIMBUS_VERSION = '2.0.0';
 // (NODE_MODULE_VERSION) is 127 for the v22 line.
 //
 // One release, and the one the tests run as the oracle: the CI image's
-// pinned node (v22.22.3, 2026-05-13), whose process.versions these are
+// pinned node (v22.23.4, 2026-10-20), whose process.versions these are
 // verbatim (tests/unit/node-version-floor.mjs compares them). Node's CLI
-// option table is generated from the same release. The patch level matters:
-// React Router 8.4 declares `engines.node: ">=22.22.0"` and `react-router
-// dev` exits 1 below it.
-const NODE_RELEASE = '22.22.3';
+// option table and the vendored Node library are taken from the same
+// release. The patch level matters: React Router 8.4 declares
+// `engines.node: ">=22.22.0"`, Astro 7.4.2 `">=22.23.4"` (a security
+// release), and each CLI exits 1 below its floor.
+const NODE_RELEASE = '22.23.4';
 export const NODE_VERSION = `v${NODE_RELEASE}`;
-export const NODE_VERSIONS = { node: NODE_RELEASE, v8: '12.4.254.21-node.56', modules: '127' };
+export const NODE_VERSIONS = { node: NODE_RELEASE, v8: '12.4.254.21-node.57', modules: '127' };
 /** The npm this runtime's npm answers as (`npm --version`, npm's engine check). */
 export const NPM_VERSION = '10.0.0';
 export const ESBUILD_VERSION = '0.24.2';

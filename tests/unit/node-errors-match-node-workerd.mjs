@@ -1,7 +1,7 @@
 // @serial
 // @tier slow — drives a local workerd
 // The errors the runtime gives a code have Node's own shape (core
-// _shared/node-error.ts, lib/internal/errors.js v22.22.3), in a session as in
+// _shared/node-error.ts, lib/internal/errors.js v22.23.4), in a session as in
 // Node (host Node the oracle, on the same files): a NodeError's String(),
 // its stack's first line and util.inspect read `Name [CODE]: message`, its
 // `code` its one own enumerable key, its name and constructor its base's; a

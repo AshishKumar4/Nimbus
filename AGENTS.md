@@ -451,9 +451,13 @@ again.
 - The perf probes in `PAIRED_PROBES` (`tests/behavioral/_paired.mjs`:
   cold-start, first-paint, install-warm, clone-fast) grade the candidate
   against a baseline measured in the same run. When the selection has one,
-  `remote-probes` builds the baseline (`--baseline <commit>`, default the
+  `remote-probes` takes the baseline (`--baseline <commit>`, default the
   merge-base with origin/main; `release.mjs staging` passes the commit
-  production serves) beside the candidate, stands up four fresh
+  production serves) as staging sealed it on this machine, or builds it
+  beside the candidate when no sealed release of it is here: a build of an
+  old commit under today's recipe can fail the dist gate (its
+  dist-fixpoint.json records another node). The verdict's `baseline` says
+  which. It stands up four fresh
   throwaways (two of the baseline, two of the candidate), runs those probes
   in a task of their own and deletes the throwaways at the end. Each
   candidate throwaway is graded against the mean of the two baseline ones,
@@ -464,8 +468,8 @@ again.
   When the baseline's release and the candidate's deploy the same bytes
   (`deployedDigest` in `scripts/ci/lib/release.mjs`: the module, the app's
   config, its probe target vars and `packages/worker/public`), the timing
-  measures nothing. The
-  suite then skips these probes and stands up no throwaways. It prints
+  measures nothing. The suite then skips these probes and stands up no
+  throwaways. It prints
   `paired perf: skipped, deployed bytes equal to <baseline> (digest …)`, and
   the verdict records it as `pairedSkipped`. A run that names a paired probe
   (`--only`, `--repeat`) runs it on equal bytes too: an A/A run, or a change

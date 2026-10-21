@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// The shims' util.inspect is Node v22.22.3's own: lib/internal/util/inspect.js
+// The shims' util.inspect is Node v22.23.4's own: lib/internal/util/inspect.js
 // over the primordials lib/internal/per_context/primordials.js builds, byte
 // for byte (every vendored module's digest is pinned), given ports of the Node
 // internals they import (node-lib-host.ts).
@@ -25,10 +25,10 @@ import { NODE_LIB_HOST_SOURCE } from '../../packages/worker/src/runtime/node-lib
 import { NODE_ERROR_PREAMBLE, PRIMORDIALS_PREAMBLE } from '../../packages/worker/src/loaders/workers.generated.ts';
 
 const sha256 = (text) => createHash('sha256').update(text).digest('hex');
-assert.equal(NODE_LIB_SHA256['internal/util/inspect'], '2f2f01d7077800f8565d1be2bd1e6800f8ac02759482dc080eb6bc6005d67dd1', 'inspect.js is v22.22.3\'s, byte for byte');
+assert.equal(NODE_LIB_SHA256['internal/util/inspect'], '2f2f01d7077800f8565d1be2bd1e6800f8ac02759482dc080eb6bc6005d67dd1', 'inspect.js is v22.23.4\'s, byte for byte');
 assert.deepEqual(Object.keys(NODE_LIB_SOURCES), Object.keys(NODE_LIB_SHA256));
-for (const [id, text] of Object.entries(NODE_LIB_SOURCES)) assert.equal(sha256(text), NODE_LIB_SHA256[id], `lib/${id}.js is v22.22.3's, byte for byte`);
-assert.equal(sha256(NODE_PRIMORDIALS_SOURCE), '9e3fe2fe051667172d6ed9d997eee99b3454a7e4ec779dd63c1f19d44b25b1ca', 'primordials.js is v22.22.3\'s, byte for byte');
+for (const [id, text] of Object.entries(NODE_LIB_SOURCES)) assert.equal(sha256(text), NODE_LIB_SHA256[id], `lib/${id}.js is v22.23.4's, byte for byte`);
+assert.equal(sha256(NODE_PRIMORDIALS_SOURCE), '9e3fe2fe051667172d6ed9d997eee99b3454a7e4ec779dd63c1f19d44b25b1ca', 'primordials.js is v22.23.4\'s, byte for byte');
 assert.equal(sha256(NODE_PRIMORDIALS_SOURCE), NODE_PRIMORDIALS_SHA256);
 
 const PROGRAM = String.raw`

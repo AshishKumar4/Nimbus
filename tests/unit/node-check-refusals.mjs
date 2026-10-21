@@ -20,6 +20,7 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { NODE_VERSION } from '../../packages/core/src/constants.ts';
 import { buildRuntimeHandler } from '../../packages/core/src/runtime/runtime-registry.ts';
 
 const files = {
@@ -42,7 +43,7 @@ async function node(args, input, nodeOptions) {
     },
   };
   const handler = buildRuntimeHandler({
-    name: 'node', version: 'v22.22.3', helpText: 'help', supportsBinSpawn: true, nodeCommandLine: true, repl: 'repl',
+    name: 'node', version: NODE_VERSION, helpText: 'help', supportsBinSpawn: true, nodeCommandLine: true, repl: 'repl',
     async run(code, opts) {
       runs.push({ code, opts });
       return { exitCode: 0, stdout: '', stderr: '' };

@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // cjs-module-lexer.ts vendors cjs-module-lexer's JavaScript build in a
 // factory. It must name what the pinned package names, and the pin must be
-// exact and Node 22.22.3's: then a copy that drifts from the package fails
+// exact and Node 22.23.4's: then a copy that drifts from the package fails
 // here, and so does a pin Node does not run. Checked by behavior: both
 // lexers over a corpus of CommonJS sources (the export forms Node's loader
 // relies on, and the installed packages' own files), with the same answers.
@@ -16,7 +16,7 @@ import { createCjsLexer } from '../../packages/core/src/runtime/cjs-module-lexer
 const corePackage = new URL('../../packages/core/package.json', import.meta.url);
 const pinned = JSON.parse(await readFile(corePackage, 'utf8')).dependencies?.['cjs-module-lexer'];
 assert.match(pinned, /^\d+\.\d+\.\d+$/, `cjs-module-lexer is pinned to one version, not ${pinned}`);
-assert.equal(pinned, '2.2.0', "the pin is Node 22.22.3's own (process.versions.cjs_module_lexer)");
+assert.equal(pinned, '2.2.0', "the pin is Node 22.23.4's own (process.versions.cjs_module_lexer)");
 
 const fromCore = createRequire(corePackage);
 const upstreamPath = fromCore.resolve('cjs-module-lexer');
