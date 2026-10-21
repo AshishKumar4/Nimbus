@@ -6,16 +6,15 @@
 // it is left to RubyGems' activation, so the load path answers every require.
 //
 // What is graded is what the user waits for: each command's wall at the
-// client, net of its terminal's own round trip in the same round (the least
-// of REPEATS runs of the shell builtin `true`), the least of REPEATS commands
-// a round. The round trip carries the Preview's placement: in an A/A of one
-// commit (2026-10-20, 20 rounds, 5 calls each; /mnt/local/nimbus/verify/
-// paired-grader/k-wall.py) one Preview's walls were +57% over its set's
-// others, and graded on the wall alone that A/A was red at every k. The
-// session's own record of a call is no stand-in: a Durable Object's clock does
-// not move while its thread computes, so a call run on its thread reads short
-// and one run elsewhere does not (2026-10-21, ruby one-shots on a session's
-// peer). Spikes only add time, so a round grades the least of its calls.
+// client, the least of REPEATS a round. The session's own record of a call is
+// no stand-in: a Durable Object's clock does not move while its thread
+// computes, so a call run on its thread reads short and one run elsewhere does
+// not (2026-10-21, ruby one-shots on a session's peer). Spikes only add time,
+// so a round grades the least of its calls. Where a Preview lands moves its
+// walls: one A/A set ran its candidates 1.47-1.51 over its baselines
+// (FOUND). Taking the terminal's own round trip off the wall did not change
+// that: it is in the command's compute, not the round trip
+// (/mnt/local/nimbus/verify/paired-grader/paired-net.py, the same two A/As).
 
 import { mintSession, Terminal, makeAsserter, deleteSession, heredocCommand, hasOutputLine } from '../_driver.mjs';
 import { assertCandidateRounds, assertPaired, measurePaired, requirePairedTargets } from '../_paired.mjs';
@@ -26,12 +25,12 @@ console.log(`perf-regression/ruby-gem-require — baseline ${arms.a1.base}, ${ar
 
 const ROUNDS = 20;
 /**
- * The share of net walls over 1.5 times their round's least, the most
- * measured: 0.152-0.221 over two A/As of one commit on fresh Preview sets,
- * 20 rounds of 7 each (2026-10-21, verdicts 20261021T184843-188b2be4dde5 and
- * 20261021T195005-188b2be4dde5; /mnt/local/nimbus/verify/paired-grader/k-net.py).
+ * The share of walls over 1.5 times their round's least, the most measured:
+ * 0.056-0.113 over two A/As of one commit on fresh Preview sets, 20 rounds of
+ * 2 each (2026-10-21, verdicts 20261021T223208-693027a9a703 and
+ * 20261021T230418-9551e3ee6213; /mnt/local/nimbus/verify/paired-grader/paired-net.py).
  */
-const SPIKE_SHARE = 0.221;
+const SPIKE_SHARE = 0.113;
 /**
  * Calls a round: were calls spikes independently with chance SPIKE_SHARE,
  * the least of this many would be one under 5% of the time. A model, not a
@@ -40,12 +39,13 @@ const SPIKE_SHARE = 0.221;
  */
 const REPEATS = Math.ceil(Math.log(0.05) / Math.log(SPIKE_SHARE));
 /**
- * What the grading was shown to find, and not to find. Both A/As passed at
- * every k from 1 to 7 (0.97-1.08). Replaying them at REPEATS calls with each
- * candidate arm slowed (2 Preview sets, 2 commands, either side as the
- * candidate) found +50% and +60% in 8 of 8, and +30% in 6 of 8.
+ * What the grading was shown to find, and not to find, replaying the same two
+ * A/As at REPEATS calls with each candidate arm slowed (2 Preview sets, 2
+ * commands, either side as the candidate): +30%, +50% and +60% each in 6 of
+ * 8. Both A/As passed: one at 1.15-1.17, the other at 1.47-1.51, its CI
+ * wide, and it found each slowing in 1 of 2 per command.
  */
-const FOUND = '+50% in 8 of 8 replays of two A/As at 2 calls a round, +30% in 6 of 8';
+const FOUND = '+30% to +60% in 6 of 8 replays of two A/As at 2 calls a round';
 const GEMS = 30;
 const HEADER = '# Gem::Specification written by Nimbus RubyGems, its runtime dependencies recorded.';
 const spec = (name, deps) => [
@@ -100,28 +100,20 @@ async function ready(target, arm) {
 const LAUNCH = 'ruby -e \'puts "LAUN" + "CHED"\'';
 const REQUIRE = `ruby -e 'require "top"; puts "TOP=#{defined?(Top)}"'`;
 
-/** `command`'s wall time, once it exits 0 having printed `line` as a line of its own (when it names one). */
+/** `command`'s wall time, once it exits 0 having printed `line` as a line of its own. */
 async function timed(t, command, line) {
   const t0 = performance.now();
   const { output, exitCode } = await t.run(command, 60_000);
   const ms = performance.now() - t0;
-  if (exitCode !== 0 || (line !== null && !hasOutputLine(output, line))) throw new Error(`${command}: exit ${exitCode}: ${output.slice(-300)}`);
+  if (exitCode !== 0 || !hasOutputLine(output, line)) throw new Error(`${command}: exit ${exitCode}: ${output.slice(-300)}`);
   return ms;
 }
 
-/**
- * `command`, REPEATS times, each after its terminal's round trip (`true`):
- * the least of its walls net of the least round trip, and every wall, as
- * said.
- */
-async function leastNet(t, command, line) {
+/** `command`, REPEATS times: the least of its walls, and every one, as said. */
+async function leastWall(t, command, line) {
   const walls = [];
-  const trips = [];
-  for (let i = 0; i < REPEATS; i++) {
-    trips.push(Math.round(await timed(t, 'true', null)));
-    walls.push(Math.round(await timed(t, command, line)));
-  }
-  return { least: Math.max(1, Math.min(...walls) - Math.min(...trips)), walls, trips };
+  for (let i = 0; i < REPEATS; i++) walls.push(Math.round(await timed(t, command, line)));
+  return { least: Math.min(...walls), walls };
 }
 
 let round = 0;
@@ -129,9 +121,9 @@ const result = await measurePaired(arms, ROUNDS, async (target, arm) => {
   // The arms of a round start together, a1 first: its round is theirs.
   const at = arm === 'a1' ? ++round : round;
   const { t } = await ready(target, arm);
-  const launch = await leastNet(t, LAUNCH, 'LAUNCHED');
-  const require = await leastNet(t, REQUIRE, 'TOP=constant');
-  console.log(`  round ${at} ${arm}: samples ${JSON.stringify({ launch: launch.walls, launchTrip: launch.trips, require: require.walls, requireTrip: require.trips })}`);
+  const launch = await leastWall(t, LAUNCH, 'LAUNCHED');
+  const require = await leastWall(t, REQUIRE, 'TOP=constant');
+  console.log(`  round ${at} ${arm}: samples ${JSON.stringify({ launch: launch.walls, require: require.walls })}`);
   return { 'ruby launch': launch.least, 'single-version gem require': require.least };
 });
 
