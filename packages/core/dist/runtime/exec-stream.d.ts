@@ -58,6 +58,21 @@ export declare function collectExecStream(stream: ExecStream): Promise<ExecOutpu
 export declare function frame(kind: number, payload: Uint8Array): Uint8Array;
 /** One byte stream carrying `stream`'s chunks, then its exit or failure. */
 export declare function encodeExecStream(stream: ExecStream): ReadableStream<Uint8Array>;
+/** One frame of a frame stream: its kind and its payload. */
+export interface StreamFrame {
+    kind: number;
+    payload: Uint8Array;
+}
+/**
+ * The frames of `wire`, one at a time, as its bytes arrive split or joined in
+ * any way: each chunk is queued as it came and a frame copied out of the queue
+ * once whole. `next` answers null at the wire's end (any partial frame left is
+ * dropped: the decoder says what was missing).
+ */
+export declare function createFrameReader(wire: ReadableStream<Uint8Array>): {
+    next(): Promise<StreamFrame | null>;
+    cancel(reason?: unknown): Promise<void>;
+};
 /** The inverse of `encodeExecStream`; frames may arrive split or joined in any way. */
 export declare function decodeExecStream(wire: ReadableStream<Uint8Array>): ExecStream;
 //# sourceMappingURL=exec-stream.d.ts.map

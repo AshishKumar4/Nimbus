@@ -14,6 +14,8 @@ export interface ProgramHost {
     readonly children: ChildProcessManager;
     readonly processes: SessionProcessSupervisor;
     readonly cred: Readonly<VfsCred>;
+    /** The programs it started that have not ended. */
+    readonly started: Set<number>;
 }
 /**
  * A program's input: the contract's (a stream to its end, or none: ended at

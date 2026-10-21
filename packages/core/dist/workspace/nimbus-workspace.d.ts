@@ -294,9 +294,22 @@ export declare class NimbusWorkspace {
      *  supplied one, else the `sh` this workspace spawned. */
     readonly shellProcessPid: number;
     private readonly namedShells;
+    /** Programs startProgram started, until each ends. */
+    private readonly startedPrograms;
     private constructor();
     static create(options: NimbusWorkspaceOptions): Promise<NimbusWorkspace>;
     close(): Promise<void>;
+    /**
+     * `program` started by its argv (Kinu ask 67): the start contract a
+     * mount's exec delegate meets (ExecDelegate.start), placed by its cwd as
+     * every start is. Its stdin, output, exit and signals are the child
+     * broker's (workspace/start-program.ts).
+     */
+    startProgram(program: Omit<Program, 'stdin'> & {
+        readonly stdin: ProgramInput;
+    }, cancel: AbortSignal): Promise<StartedSessionProgram>;
+    /** Whether `pid` is a program startProgram started that has not ended: its input and signals are the broker's. */
+    isStartedProgram(pid: number): boolean;
     /**
      * Run `command` as a process of its own and collect what it printed.
      *
@@ -312,15 +325,6 @@ export declare class NimbusWorkspace {
      * ended, leave the process table when the result is returned; one that ends
      * later (a background job) leaves at the first call to start a minute after.
      */
-    /**
-     * `program` started by its argv (Kinu ask 67): the start contract a
-     * mount's exec delegate meets (ExecDelegate.start), placed by its cwd as
-     * every start is. Its stdin, output, exit and signals are the child
-     * broker's (workspace/start-program.ts).
-     */
-    startProgram(program: Omit<Program, 'stdin'> & {
-        readonly stdin: ProgramInput;
-    }, cancel: AbortSignal): Promise<StartedSessionProgram>;
     exec(command: string, options?: WorkspaceExecOptions): Promise<CommandResult>;
     private runProcess;
     /**

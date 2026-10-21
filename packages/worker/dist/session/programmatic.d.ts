@@ -179,7 +179,7 @@ export declare function rpcKillProcess(self: ProgrammaticHost, pid: number): Pro
  * caller's else the session shell's exported one, as a child's is its
  * parent's.
  */
-export declare function rpcStartProgram(self: ProgrammaticHost, argv: string[], options?: SessionStartProgramOptions): Promise<ReadableStream<Uint8Array>>;
+export declare function rpcStartProgram(self: Pick<ProgrammaticHost, 'ensureRuntimeReady' | 'runtimeWorkspace'>, argv: string[], options?: SessionStartProgramOptions): Promise<ReadableStream<Uint8Array>>;
 export declare function rpcWriteProcessInput(self: ProgrammaticHost, pid: number, data: string | Uint8Array): Promise<{
     ok: boolean;
     pid: number;

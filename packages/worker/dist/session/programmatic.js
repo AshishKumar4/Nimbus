@@ -521,7 +521,7 @@ export async function rpcStartProgram(self, argv, options = {}) {
     }
     if (options.cwd !== undefined && !options.cwd.startsWith('/'))
         throw new TypeError(`startProgram: cwd must be absolute, got ${JSON.stringify(options.cwd)}`);
-    await ensureProgrammaticReady(self);
+    await self.ensureRuntimeReady();
     const workspace = self.runtimeWorkspace;
     if (!workspace)
         throw new Error('startProgram: the session has no workspace');
@@ -533,9 +533,9 @@ export async function rpcStartProgram(self, argv, options = {}) {
     };
     return encodeProgramStream((cancel) => workspace.startProgram(program, cancel));
 }
-/** Whether `pid` is a child of the session's child broker (a started program, a node child): its input and signals are the broker's. */
-function brokerChild(self, pid) {
-    return self.runtimeWorkspace?.children.isRunning(pid) === true;
+/** Whether `pid` is a program started by its argv: its input and signals are the broker's. */
+function startedProgram(self, pid) {
+    return self.runtimeWorkspace?.isStartedProgram(pid) === true;
 }
 export async function rpcWriteProcessInput(self, pid, data) {
     await ensureProgrammaticReady(self);
@@ -544,14 +544,14 @@ export async function rpcWriteProcessInput(self, pid, data) {
         return writeProcessInput(self.processes, n, data);
     // Bytes are a pipe's: in order, the call waiting for room.
     const children = self.runtimeWorkspace?.children;
-    const written = children !== undefined && brokerChild(self, n) ? await children.stdinWrite(n, data) : await self.processes.writeInputBytesWait(n, data);
+    const written = children !== undefined && startedProgram(self, n) ? await children.stdinWrite(n, data) : await self.processes.writeInputBytesWait(n, data);
     return { ok: written.ok, pid: n };
 }
 export async function rpcEndProcessInput(self, pid) {
     await ensureProgrammaticReady(self);
     const n = Number(pid);
     const children = self.runtimeWorkspace?.children;
-    if (children !== undefined && brokerChild(self, n)) {
+    if (children !== undefined && startedProgram(self, n)) {
         await children.stdinEnd(n);
         return { ok: true, pid: n };
     }
@@ -566,7 +566,7 @@ export async function rpcSignalProcess(self, pid, signal) {
     const n = Number(pid);
     // A started program is the broker's child: its signal is the broker's to deliver (ChildProcessManager.kill).
     const children = self.runtimeWorkspace?.children;
-    if (children !== undefined && brokerChild(self, n))
+    if (children !== undefined && startedProgram(self, n))
         return { ok: children.kill(n, String(signal)), pid: n };
     return signalProcess(self.processes, n, String(signal));
 }

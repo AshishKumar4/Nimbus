@@ -8,5 +8,5 @@ export declare function encodeProgramStream(start: (cancel: AbortSignal) => Prom
  * (its kill sent through `signal`), or rejected with the start's error, Node's
  * spawn error with its own properties.
  */
-export declare function decodeProgramStream(wire: ReadableStream<Uint8Array>, signal: (pid: number, signal: string) => void): Promise<StartedSessionProgram>;
+export declare function decodeProgramStream(wire: ReadableStream<Uint8Array>, signal: (pid: number, signal: string) => void, cancel?: AbortSignal): Promise<StartedSessionProgram>;
 //# sourceMappingURL=program-stream.d.ts.map

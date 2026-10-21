@@ -166,14 +166,16 @@ export declare class NimbusSandbox {
      * is read as you read it; its exit is waitpid's code or signal; `kill`
      * sends it a signal. A cwd under a mount that runs programs on its own
      * machine starts it there. `stdin`'s bytes are its input, to their end;
-     * none: its input ends at once.
+     * none: its input ends at once. `signal` aborted before it runs cancels
+     * the start (ECANCELED), killing what had started.
      */
     startProgram(argv: string[], options?: {
         cwd?: string;
         env?: Record<string, string>;
         stdin?: ReadableStream<Uint8Array>;
+        signal?: AbortSignal;
     }): Promise<StartedSessionProgram>;
-    /** `stdin`'s bytes into program `pid`'s input, each write waiting for room, then its end. */
+    /** `stdin`'s bytes into `program`'s input, each write waiting for room, then its end; let go once it has ended. */
     private feed;
     /** Run a command to completion and return its output as strings. Built on {@link execStream}. */
     exec(command: string, options?: NimbusExecOptions): Promise<NimbusExecResult>;
