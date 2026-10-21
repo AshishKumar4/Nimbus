@@ -446,12 +446,12 @@ var __nimbusResidentModule = (() => {
     return true;
   }
   function feedPointOf(position, key) {
-    const path = key.length > 0 && key.charCodeAt(0) === 47 ? key : "/" + key;
+    const path = key.length > 0 && stringCharCodeAt(key, 0) === 47 ? key : "/" + key;
     const points = objectKeys(feedsOf(position));
     let found = ROOT_FEED;
     for (let i = 0; i < points.length; i++) {
       const point = points[i];
-      if (point.length > found.length && (path === point || path.length > point.length && stringStartsWith(path, point) && path.charCodeAt(point.length) === 47))
+      if (point.length > found.length && (path === point || path.length > point.length && stringStartsWith(path, point) && stringCharCodeAt(path, point.length) === 47))
         found = point;
     }
     return found;

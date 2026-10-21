@@ -10,7 +10,7 @@
  * feedOf, and only the composite reads them whole (feedsOf). So nothing that
  * compares the root reads anything but the root's feed.
  */
-import { objectHasOwn, objectKeys, stringStartsWith, TypeError } from '../_shared/primordials.js';
+import { objectHasOwn, objectKeys, stringCharCodeAt, stringStartsWith, TypeError } from '../_shared/primordials.js';
 /** The root's mount point: its feed is the SQLite namespace's. */
 export const ROOT_FEED = '/';
 export function positionOf(table, feeds) {
@@ -65,12 +65,12 @@ export function samePosition(a, b) {
 }
 /** The point of the feed `key` (a path, with or without its leading slash) is under in `position`: its deepest fed mount at or above it. */
 export function feedPointOf(position, key) {
-    const path = key.length > 0 && key.charCodeAt(0) === 0x2f ? key : '/' + key;
+    const path = key.length > 0 && stringCharCodeAt(key, 0) === 0x2f ? key : '/' + key;
     const points = objectKeys(feedsOf(position));
     let found = ROOT_FEED;
     for (let i = 0; i < points.length; i++) {
         const point = points[i];
-        if (point.length > found.length && (path === point || (path.length > point.length && stringStartsWith(path, point) && path.charCodeAt(point.length) === 0x2f)))
+        if (point.length > found.length && (path === point || (path.length > point.length && stringStartsWith(path, point) && stringCharCodeAt(path, point.length) === 0x2f)))
             found = point;
     }
     return found;
@@ -135,7 +135,7 @@ export function sameClock(a, b, key) {
 }
 /** Whether a fed mount's point lies strictly beneath `key` (a path, with or without its leading slash) in `position`: a directory the namespace makes above it. */
 export function abovePoint(position, key) {
-    const path = key.length > 0 && key.charCodeAt(0) === 0x2f ? key : '/' + key;
+    const path = key.length > 0 && stringCharCodeAt(key, 0) === 0x2f ? key : '/' + key;
     const under = path === '/' ? '/' : path + '/';
     const points = objectKeys(feedsOf(position));
     for (let i = 0; i < points.length; i++) {
