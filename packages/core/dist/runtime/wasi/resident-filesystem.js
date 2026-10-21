@@ -1023,10 +1023,11 @@ export function residentFilesystem(session, resident, delegation) {
      * provisional decisions' (`decided`, given the row the view has at each
      * and whether its caller waits), for either caller, else the session's
      * (`session`). A caller that cannot wait is answered now, or refused as
-     * one that cannot answer now. One that may wait is answered, outside a
-     * grant, once the session answers what was decided (its refusal the
-     * call's error, undone by then); where the decisions decline, a name is
-     * held or the view cannot place one, by the session.
+     * one that cannot answer now. One that may wait is answered, where no
+     * grant decides the name (outside one, or one the decisions touch: the
+     * holder declines it), once the session answers what was decided (its
+     * refusal the call's error, undone by then); where the decisions decline,
+     * a grant decides a name or the view cannot place one, by the session.
      */
     const ownChange = (keys, decided, session) => {
         const rows = keys.map((key) => (key === undefined || !store.ready() ? undefined : entryAt(key)));
@@ -1037,7 +1038,7 @@ export function residentFilesystem(session, resident, delegation) {
             counts.local++;
             return undefined;
         }
-        if (placed !== undefined && keys.every((key) => !holder.holds(key))) {
+        if (placed !== undefined && keys.every((key) => !holder.holds(key) || holder.provisional.touches(key))) {
             const answer = decided(placed, true);
             if (answer !== false) {
                 counts.local++;
@@ -1648,14 +1649,7 @@ export function residentFilesystem(session, resident, delegation) {
                 named = walk.key;
                 if (!decidable(walk.key, walk))
                     return DELEGATE;
-                if (holder.setattr(walk.key, attrs))
-                    return undefined;
-                // A held name its provisional decisions touch is theirs (the grant does not decide it): its times or owner are
-                // decided there, judged as the holder judges them. A mode stays the session's, which judges a confined principal's.
-                if ('mode' in attrs || !holder.holds(walk.key) || !holder.provisional.touches(walk.key))
-                    return DELEGATE;
-                const row = entryAt(walk.key);
-                return row !== undefined && holder.provisional.setattr(walk.key, pathOf(path), attrs, row) ? undefined : DELEGATE;
+                return holder.setattr(walk.key, attrs) ? undefined : DELEGATE;
             }));
             return after(local, (done) => {
                 if (done !== DELEGATE)
