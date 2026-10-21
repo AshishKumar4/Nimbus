@@ -362,7 +362,7 @@ for (const pathRevisionBytes of [undefined, 0]) {
   // Repaired from a listing; an unrelated write later, what it listed is still what each file is.
   const listed = new Map();
   for (let after = null; ;) {
-    const page = other.list(after);
+    const page = await other.list(after);
     for (const entry of page.entries) listed.set(entry.path.replace(/^\/+/, ''), entry.rev);
     if (page.next === null) break;
     after = page.next;
@@ -826,7 +826,7 @@ for (const end of ['exit', 'kill']) {
   await withRecall(() => writer.writeFile('/home/user/d/made.txt', 'made'), undefined, held);
   const refused = (call, what) => assert.throws(call, (error) => error.code === 'EAGAIN', `${what} saw what is held for publication`);
   refused(() => other.readdir('/home/user/d'), 'the parent\'s names');
-  refused(() => other.list(null), 'a listing');
+  await assert.rejects(async () => other.list(null), (error) => error.code === 'EAGAIN', 'a listing saw what is held for publication');
   // Its writer sees its own.
   assert.ok(writer.readdir('/home/user/d').some((entry) => entry.name === 'made.txt'));
   // Beside the held name, the reader's own changes (they recall nothing) wait for no publication.
@@ -836,7 +836,7 @@ for (const end of ['exit', 'kill']) {
   reader.recalled(readLease.owner, 'revoke');
   await Promise.all(held);
   assert.deepEqual(other.readdir('/home/user/d').map((entry) => entry.name).sort(), ['a.txt', 'made.txt', 'sub']);
-  assert.ok(other.list(null).entries.some((entry) => entry.path.replace(/^\/+/, '') === 'home/user/d/made.txt'));
+  assert.ok((await other.list(null)).entries.some((entry) => entry.path.replace(/^\/+/, '') === 'home/user/d/made.txt'));
 }
 
 // ── A retry whose commit is past an await is made again after the recall, not pipelined again ──

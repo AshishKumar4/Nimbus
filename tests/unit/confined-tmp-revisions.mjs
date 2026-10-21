@@ -58,10 +58,10 @@ const privateRev = raw.revision('/tmp/x', A);
 assert.ok(privateRev > sharedRev);
 assert.equal(raw.revision(`${PRIVATE_ROOT}/x`), privateRev);
 
-function listed(bridge, name) {
+async function listed(bridge, name) {
   let after = null;
   do {
-    const page = bridge.list(after, 64);
+    const page = await bridge.list(after, 64);
     for (const entry of page.entries) if (entry.path === name) return entry;
     after = page.next;
   } while (after !== null);
@@ -69,7 +69,7 @@ function listed(bridge, name) {
 }
 
 // ── Everything the bridge reports is the private file's revision ──────────
-assert.equal(listed(fs, 'tmp/x')?.rev, privateRev, 'list() reports the private file');
+assert.equal((await listed(fs, 'tmp/x'))?.rev, privateRev, 'list() reports the private file');
 assert.equal(fs.revision('/tmp/x'), privateRev, 'revision() reported the shared tmp/x');
 assert.equal(fs.stat('/tmp/x').revision, privateRev, 'stat() reported the shared tmp/x');
 assert.equal(fs.stat('/tmp/x', { followSymlinks: false }).revision, privateRev);

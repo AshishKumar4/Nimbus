@@ -24,8 +24,7 @@ async function make({ 'vfs/sqlite-vfs.ts': { SqliteVFS }, 'runtime/process-files
   root.writeFile('tree/mutated', 'initial');
   const files = new ProcessFiles(engine);
   const bridge = files.bind({ pid: 71, cred: CRED_KERNEL });
-  const page = bridge.list(null, 256);
-  assert.equal(page instanceof Promise, false);
+  const page = await bridge.list(null, 256);
   return { engine, root, files, bridge, kernel: CRED_KERNEL, writes: 0, nextPid: 72 };
 }
 
@@ -37,13 +36,11 @@ async function cpu(arm, kind, iterations) {
       if (kind === 'cold-first-list') {
         const pid = arm.nextPid++;
         const bridge = arm.files.bind({ pid, cred: arm.kernel });
-        const page = bridge.list(null, 256);
-        assert.equal(page instanceof Promise, false);
+        const page = await bridge.list(null, 256);
         checksum += page.entries.length;
         await arm.files.releaseProcess(pid);
       } else if (kind === 'first-list') {
-        const page = arm.bridge.list(null, 256);
-        assert.equal(page instanceof Promise, false);
+        const page = await arm.bridge.list(null, 256);
         checksum += page.entries.length;
       } else {
         const answer = arm.bridge.acquire(cursor, { namespace: true });

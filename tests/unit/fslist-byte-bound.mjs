@@ -39,7 +39,8 @@ try {
   files.vfs.mount('/m', new Proxy(memory, { get: (t, k) => (k === 'sync' ? undefined : typeof t[k] === 'function' ? t[k].bind(t) : t[k]) }));
   const bridge = files.bind({ pid: 7, cred: CRED_KERNEL });
   const mounted = await listAll((after) => bridge.list(after,FS_LIST_PAGE_LIMIT));
-  assert.deepEqual(mounted.seen,new Set([...expected,'m']),'the mounted listing loses no names either');
+  for(const name of [...expected,'m']) assert.ok(mounted.seen.has(name),`the mounted listing loses ${name}`);
+  assert.deepEqual([...mounted.seen].filter((name)=>!expected.has(name)&&name!=='m'&&name!=='dev'&&!name.startsWith('dev/')&&name!=='proc'&&!name.startsWith('proc/')),[],'the mounted listing names only the tree, the mount and the kernel mounts');
   assert.ok(mounted.pages>1,'and splits its pages the same way');
   console.log('fslist-byte-bound: escaped path/target bytes paginate without omissions, with and without a mount');
 }finally{h.db.close();}

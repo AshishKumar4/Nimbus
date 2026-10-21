@@ -297,12 +297,11 @@ function launched(named = []) {
   return { pid, fs: ws.filesystem.bind(binding) };
 }
 
-// ── A namespace that is SQLite alone lists at once, as it always has ────────
+// ── A namespace that is SQLite alone lists through the same walk as any ─────
 {
   const fresh = createSqliteVfsTestHarness();
   const alone = await NimbusWorkspace.create({ sql: fresh.sql, transactions: fresh.ctx });
-  const page = alone.filesystem.bind({ pid: 9001, cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 } }).list(null);
-  assert.equal(typeof page.then, 'undefined', 'no mount an embedder made: the page is SQLite\'s, answered synchronously');
+  const page = await alone.filesystem.bind({ pid: 9001, cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 } }).list(null);
   assert.ok(page.entries.some((entry) => entry.path === 'home/user'));
   await alone.close();
 }
