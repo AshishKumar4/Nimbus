@@ -229,7 +229,7 @@ import { LEDGER_ROW_BYTES } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { ONE_SHOT_STORE_MEMORY_BYTES, RESIDENT_CHUNK_BYTES } from '../vfs/facet-resident-limits.js';
 import { residentCellCost } from '../vfs/resident/cell-cost.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES, SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES } from '@nimbus-sh/platform/limits.js';
-import { CRED_KERNEL, isNativeBinPath, launchNamedPaths, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_KERNEL, isNativeBinPath, launchNamedPaths, ProcessNotAdmitted, requireVfsCred, type RouteableFacetTarget } from '@nimbus-sh/core/runtime/os-contracts.js';
 import {
   acquireSupervisorAllocation, acquireSupervisorCopyAllocation, readSupervisorAllocationBudget, tryAcquireSupervisorAllocation, tryAcquireSupervisorCopyAllocation,
   reclaimableSupervisorAllocation,
@@ -5741,6 +5741,8 @@ export class FacetManager {
   private rowAmendments = new Map<number, Promise<void>>();
   /** A process whose host the platform reset (_endByHostLoss), until its terminal hook reads why it ended. */
   private hostLosses = new Map<number, ProcessHostLost>();
+  /** Residents whose host loss refused requests unsent: each is owed a run on a new process, at once (_onResidentTerminal). */
+  private owedRuns = new Set<number>();
   /** Each running resident's uptime proof timer (_proveByUptime). */
   private uptimeProofs = new Map<number, ReturnType<typeof setTimeout>>();
   /**
@@ -6042,7 +6044,24 @@ export class FacetManager {
     console.warn(`[facet-manager] pid ${pid} ("${entry.command}") ended: ${lost.message}`);
     this.processes.appendOutput(pid, 'stderr', `[nimbus] process ${pid} ended: ${lost.message}\n`);
     this.hostLosses.set(pid, lost);
+    if (lost.refusedRequests) this.owedRuns.add(pid);
     this._end(pid, { code: HOST_LOST_EXIT_CODE, cause: lost.message, portEnding: `"${entry.command}" (pid ${pid}) ended: ${lost.message}` });
+  }
+
+  /**
+   * `pid`'s route to its process (the fabric's), whose requests the process
+   * refused unsent (ProcessNotAdmitted) are answered only once the pid reads
+   * ended: a caller that starts it again never finds the lost one.
+   */
+  private _routeTarget(pid: number, handle: ResidentProcessHandle): Required<RouteableFacetTarget> {
+    const target = handle.routeTarget;
+    const endedFirst = (error: unknown): Promise<never> => (error instanceof ProcessNotAdmitted
+      ? this.processes.whenEnded(pid).then(() => { throw error; })
+      : Promise.reject(error));
+    return {
+      handleHttpRequest: (request, scope) => target.handleHttpRequest(request, scope).catch(endedFirst),
+      handleWebSocketRequest: (request) => target.handleWebSocketRequest(request).catch(endedFirst),
+    };
   }
 
   /**
@@ -6081,6 +6100,14 @@ export class FacetManager {
     this._dropUptimeProof(pid);
     const hostLost = this.hostLosses.get(pid);
     this.hostLosses.delete(pid);
+    try {
+      await this._afterResidentEnd(pid, hostLost);
+    } finally {
+      this.owedRuns.delete(pid);
+    }
+  }
+
+  private async _afterResidentEnd(pid: number, hostLost: ProcessHostLost | undefined): Promise<void> {
     await this.rowAmendments.get(pid);
     this.ephemeralPids.delete(pid);
     await this._releaseResidentClaim(pid);
@@ -6088,14 +6115,23 @@ export class FacetManager {
     const entry = this.processes.get(pid);
     const key = `${FENCED_WORK_KEY_PREFIX}${pid}`;
     const row = (await this.launchJournal.rows()).get(key);
-    const crashed = entry?.state === 'exited' && (entry.exitCode ?? 0) !== 0;
-    if (this.launchesClosed || row === undefined || row.restart !== 'on-failure' || !crashed) {
+    const code = entry?.exitCode ?? 0;
+    const crashed = entry?.state === 'exited' && code !== 0;
+    // A loss that refused requests unsent owes them a run, whatever the
+    // restart policy, now: their callers wait on it (routeToSessionPort).
+    const owed = this.owedRuns.has(pid);
+    if (this.launchesClosed || row === undefined || (!owed && (row.restart !== 'on-failure' || !crashed))) {
       await this.launchJournal.release(pid);
+      return;
+    }
+    if (owed) {
+      this.hooks.notify?.(`\x1b[2m[nimbus: the platform replaced the host of "${row.command}" — starting it again for the requests it was sent]\x1b[0m\r\n`);
+      await this.launchJournal.driveOwed(key, row, { kind: 'host-reset' });
       return;
     }
     const delayMs = RESTART_BACKOFF_BASE_MS * 2 ** row.attempt;
     const ended = hostLost === undefined
-      ? `"${row.command}" exited with code ${entry.exitCode}`
+      ? `"${row.command}" exited with code ${code}`
       : `the platform reset the host of "${row.command}"`;
     this.hooks.notify?.(
       `\x1b[2m[nimbus: ${ended} — restarting in ${delayMs / 1000}s (FencedWork attempt ${row.attempt + 1})]\x1b[0m\r\n`,
@@ -6105,7 +6141,7 @@ export class FacetManager {
     // backoff; a row that is gone is owed nothing.
     if (!(await this.launchJournal.rows()).has(key)) return;
     await this.launchJournal.drive(key, row, hostLost === undefined
-      ? { kind: 'exited', code: entry.exitCode ?? 1 }
+      ? { kind: 'exited', code }
       : { kind: 'host-reset' });
   }
 
@@ -8805,7 +8841,7 @@ export class FacetManager {
       // Bound before the port is announced, so the shim's
       // listen()→SUPERVISOR.registerPort back-fills it. The opencode runner
       // dispatches through node-shims' __nimbusServeHttp, which strips the ACQUIRE.
-      if (port !== undefined) this.portRegistry.bindFacetStub(pid, handle.routeTarget, { deliversAcquire: true });
+      if (port !== undefined) this.portRegistry.bindFacetStub(pid, this._routeTarget(pid, handle), { deliversAcquire: true });
       this.trackProcessRpcResources(pid, [handle], { releaseOnReportExit: false });
       resourcesTracked = true;
       this._watchLifetime(pid, handle, `${what} process`);
@@ -9818,7 +9854,7 @@ export class FacetManager {
       );
       resourcesTracked = true;
       // A node-shims resident: its __nimbusServeHttp takes the delivered ACQUIRE off each request.
-      this.portRegistry.bindFacetStub(entry.pid, handle.routeTarget, { deliversAcquire: true });
+      this.portRegistry.bindFacetStub(entry.pid, this._routeTarget(entry.pid, handle), { deliversAcquire: true });
 
       if (opts.attachedTty) {
         this._watchLifetime(entry.pid, handle, 'long-running node process');
@@ -10119,7 +10155,7 @@ export class FacetManager {
       });
       this.trackProcessRpcResources(entry.pid, [handle]);
       resourcesTracked = true;
-      this.portRegistry.bindFacetStub(entry.pid, handle.routeTarget);
+      this.portRegistry.bindFacetStub(entry.pid, this._routeTarget(entry.pid, handle));
       const boot = foreground ? await Promise.race([handle.booted(), foreground.interrupted]) : await handle.booted();
       if (record && this.launchJournal.has(entry.pid)) {
         // Booted and running: its budget is whole again once it has run RESIDENT_PROVEN_MS here (_proveByUptime).
@@ -10142,7 +10178,9 @@ export class FacetManager {
         }
         await this._registerResidentPort(entry.pid, opts.port);
       }
-      const target = handle.routeTarget;
+      // A request the process refused unsent is the caller's to run again
+      // (ProcessNotAdmitted), once the pid reads ended.
+      const target = this._routeTarget(entry.pid, handle);
       return {
         pid: entry.pid,
         boot,
@@ -10153,12 +10191,7 @@ export class FacetManager {
             try { return relayRpcBody(await target.handleHttpRequest(request, scope), request.method, owner); }
             catch (error) { owner.fail(); throw error; }
           },
-          connect: async (request) => {
-            if (typeof target.handleWebSocketRequest !== 'function') {
-              throw new Error(`Nimbus: worker pid ${entry.pid} accepts no WebSocket upgrades`);
-            }
-            return target.handleWebSocketRequest(request);
-          },
+          connect: (request) => target.handleWebSocketRequest(request),
         },
       };
     } catch (e: unknown) {
@@ -10574,7 +10607,7 @@ export class FacetManager {
       // driving the row again would boot a second copy. One that has ended
       // is owed the port only if its restart policy runs it again; otherwise
       // its row is being released (_onResidentTerminal), and nothing will.
-      if (this.processes.get(record.pid)?.state === 'exited' && record.restart !== 'on-failure') return 'absent';
+      if (this.processes.get(record.pid)?.state === 'exited' && record.restart !== 'on-failure' && !this.owedRuns.has(record.pid)) return 'absent';
       return (await this._waitForPort(port, DURABLE_ENSURE_BOOT_BUDGET_MS))
         ? 'started' : 'failed';
     }

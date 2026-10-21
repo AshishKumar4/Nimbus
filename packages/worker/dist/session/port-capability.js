@@ -27,6 +27,9 @@ import { PUBLIC_BEARER_HEADER, renderSessionStatusPage } from '../_shared/sessio
 import { isPreviewHostName } from '../_shared/preview-host.js';
 import { PORT_CAPABILITY_KEY_PREFIX } from './keys.js';
 import { devServerRestoreFailedResponse } from './helpers.js';
+import { rerunNotAdmitted } from './loopback.js';
+import { ProcessNotAdmitted } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 /** The shape `createPortCapability` mints: 12 random bytes, hex. */
 const PortCapabilitySchema = z.string().regex(/^[a-f0-9]{24}$/);
 /** 'scoped' is the default: capability-checked but never the public bearer. */
@@ -364,16 +367,8 @@ export async function routeToSessionPort(self, port, request, innerPath, mountBa
     // or a lost boot, so the page re-asks on its own timer.
     if (self.ensureDurableAppOnPort !== undefined) {
         const durable = await self.ensureDurableAppOnPort(port);
-        if (durable === 'failed') {
-            return new Response(renderPortStartingHtml(port), {
-                status: 503,
-                headers: {
-                    'Content-Type': 'text/html; charset=utf-8',
-                    'Cache-Control': 'no-store',
-                    'Retry-After': '3',
-                },
-            });
-        }
+        if (durable === 'failed')
+            return portStartingResponse(port);
     }
     if (capability !== undefined && restoreFailures.length > 0 && !self.portRegistry.has(port)) {
         return devServerRestoreFailedResponse(restoreFailures);
@@ -408,15 +403,42 @@ export async function routeToSessionPort(self, port, request, innerPath, mountBa
     if (port === self._viteShimPort && self.viteDevServer?.isRunning) {
         return self.viteDevServer.handleRequest(request, innerPath, mountBase);
     }
-    const proxied = capability === undefined
-        ? await self.portRegistry.routeRequest(port, request, innerPath)
-        : await self.portRegistry.routeCapabilityRequest(port, capability, request, innerPath);
+    const route = (sent) => capability === undefined
+        ? self.portRegistry.routeRequest(port, sent, innerPath)
+        : self.portRegistry.routeCapabilityRequest(port, capability, sent, innerPath);
+    // A request the process refused unsent ran nowhere: its server is started
+    // again, and it goes there, once (rerunNotAdmitted).
+    const ensure = self.ensureDurableAppOnPort?.bind(self);
+    let proxied;
+    try {
+        proxied = await rerunNotAdmitted(request, route, ensure === undefined ? undefined : async (sent) => {
+            if (await ensure(port) === 'failed')
+                return portStartingResponse(port);
+            return route(sent);
+        });
+    }
+    catch (error) {
+        if (!(error instanceof ProcessNotAdmitted))
+            throw error;
+        return new Response(`The process listening on port ${port} could not take the request: ${errorText(error)}`, { status: 503, headers: { 'Retry-After': '3' } });
+    }
     if (proxied)
         return proxied;
     if (restoreFailures.length > 0)
         return devServerRestoreFailedResponse(restoreFailures);
     const ended = self.portRegistry.ended(port);
     return new Response(`No process listening on port ${port}${ended === undefined ? '' : `: ${ended}`}`, { status: 502 });
+}
+/** A port whose server is mid-launch or lost its boot: the page asks again on its own timer. */
+function portStartingResponse(port) {
+    return new Response(renderPortStartingHtml(port), {
+        status: 503,
+        headers: {
+            'Content-Type': 'text/html; charset=utf-8',
+            'Cache-Control': 'no-store',
+            'Retry-After': '3',
+        },
+    });
 }
 /** Route a capability-authenticated embedder request to a guest HTTP server. */
 export function routeCapabilityPort(self, port, capability, request, innerPath) {

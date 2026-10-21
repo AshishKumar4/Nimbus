@@ -12,6 +12,22 @@ published independently in the `@nimbus-sh` npm scope.
   - Node's `spawn`/`execFile` with such a cwd start Node's own argv there (`/bin/sh -c line` for `shell`), and a refused start is the `error` event with the machine's code.
   - A namespace with no delegating mount places nothing and runs as before.
 
+- Fixed: a request to a resident process whose idle host the platform
+  replaced is no longer failed with "its host was reset by the platform".
+  Such a request now waits for its host's watch to confirm the process's
+  own instance before it is sent. When the watch finds a fresh instance in
+  its place, the request was never sent, so it ran nowhere. A request to
+  the process's port then runs once on a new process, which the session
+  starts at once whatever the restart policy, and its answer is returned.
+  A call an embedder makes through the process's own facet is refused as
+  `ProcessNotAdmitted` (core `os-contracts`), only once the process's pid
+  reads ended, so the embedder can run it once more. A request already in
+  flight when a host is lost still fails with the loss, since it may have
+  run. On the peer process host, a request its coordinator's watch finds
+  lost first fails the same way, though the peer may have refused it
+  unsent, and so does one whose body went to the peer before it was refused.
+  The first request after a process sits idle pays one round trip to its
+  host before it is sent.
 - Fixed: a long-running node process (a server, an agent's turn) could end mid-read with exit 0 and its read never answered. This happened when its filesystem had to ask the session for something on the program's behalf: more storage room for a file another process had just written, a listing, or a fill. That work was not counted as something the program was waiting on, so the process looked idle and ended. Every filesystem call a node process makes on the session now counts as live work until it is answered, whichever part of the process made it.
 
 ## 2026-10-21 (patch): worker 0.24.1 (every other package unchanged from the 2026-10-21 release)

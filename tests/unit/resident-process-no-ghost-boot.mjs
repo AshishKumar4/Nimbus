@@ -16,8 +16,10 @@
 //   2. any number of routed requests evaluate it ZERO further times;
 //   3. a request that finds the facet gone FAILS LOUD — it never boots a
 //      replacement and answers from it — and the process is over: it is
-//      listed as ended, and its restart policy decides whether a new process
-//      (a new pid, booted as any process is) takes its place.
+//      listed as ended. The request was never sent, so it is refused so
+//      (ProcessNotAdmitted), naming the real cause, and its caller is owed a
+//      run: a new process (a new pid, booted as any process is) takes the
+//      lost one's place at once, whatever its restart policy.
 // A "boot" here is one module evaluation, exactly as it is on the real loader.
 
 import assert from 'node:assert/strict';
@@ -80,13 +82,19 @@ assert.equal(firstBoot.served, 25, 'every request landed on the one running prog
 
 // ── 3. a lost facet fails LOUD instead of booting a replacement ────────────
 world.lose(facetName);
-const afterLoss = await portRegistry.routeRequest(3000, new Request('http://s/port/3000/ping'), '/ping');
-assert.equal(afterLoss.status, 502, 'a lost facet surfaces an error to the caller');
-assert.match((await afterLoss.json()).error, /no longer loaded/, 'the error names the real cause');
-assert.equal(world.boots.length, 1, 'the loss booted NO replacement — the ghost never happens');
-for (let i = 0; i < 100 && processes.get(spawned.pid)?.state === 'running'; i++) await new Promise((r) => setTimeout(r, 10));
-assert.equal(processes.get(spawned.pid)?.state, 'exited', 'the process whose facet was lost is listed as ended');
+const afterLoss = await portRegistry.routeRequest(3000, new Request('http://s/port/3000/ping'), '/ping').catch((error) => error);
+assert.equal(afterLoss.name, 'ProcessNotAdmitted', 'a lost facet refuses the request, which was never sent');
+assert.match(afterLoss.message, /no longer loaded/, 'the error names the real cause');
+assert.equal(processes.get(spawned.pid)?.state, 'exited', 'the process whose facet was lost is listed as ended, before its caller hears');
 assert.equal(processes.get(spawned.pid)?.exitCode, 137);
+const lostCommand = processes.get(spawned.pid).command;
+let successor;
+for (let i = 0; i < 300 && !successor; i++) {
+  successor = processes.getRunning().find((p) => p.command === lostCommand && p.pid !== spawned.pid);
+  if (!successor) await new Promise((r) => setTimeout(r, 20));
+}
+assert.ok(successor, 'the caller is owed a run: a new process takes the lost one\'s place');
+assert.equal(world.boots.length, 2, 'booted once, as the new process: no ghost of the lost one');
 
 // ── 3b. under restart on-failure, a lost facet's process is restarted ──────
 {
@@ -95,9 +103,9 @@ assert.equal(processes.get(spawned.pid)?.exitCode, 137);
     env: { NIMBUS_RESTART: 'on-failure' },
   });
   const boots = world.boots.length;
-  world.lose(residentFacetName(1));
-  const lost = await portRegistry.routeRequest(3001, new Request('http://s/port/3001/ping'), '/ping');
-  assert.equal(lost.status, 502);
+  world.lose(residentFacetName(2));
+  const lost = await portRegistry.routeRequest(3001, new Request('http://s/port/3001/ping'), '/ping').catch((error) => error);
+  assert.equal(lost.name, 'ProcessNotAdmitted');
   let restarted;
   for (let i = 0; i < 300 && !restarted; i++) {
     restarted = processes.getRunning().find((p) => p.command === 'node crashy.js' && p.pid !== crashy.pid);

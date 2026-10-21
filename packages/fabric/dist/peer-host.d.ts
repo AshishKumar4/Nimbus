@@ -13,7 +13,7 @@
  */
 import { type WorkspaceEgress } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { z } from 'zod/v4';
-import { type ResidentBootSpec } from './process-fabric.js';
+import type { ResidentBootSpec } from './process-fabric.js';
 export declare function isolateToken(): string;
 /**
  * Options the coordinator hands a hosting peer. Parsed on the peer, because a
@@ -62,12 +62,16 @@ export interface HostedHttpResponse {
     headers: [string, string][];
     body: ReadableStream | null;
 }
+/** A reply, or this host's loss: with the pid whose request it refused unsent (`notAdmitted`), when it did. */
 export type HostedReply<T> = T | {
     hostLost: string;
+    notAdmitted?: number;
 };
 export declare const HOSTED_WATCH_HEADER = "x-nimbus-hosted-watch";
 export declare const HOSTED_RESIDENCY_HEADER = "x-nimbus-hosted-residency";
 export declare const HOSTED_FAILURE_HEADER = "x-nimbus-hosted-failure";
+/** On a peer's failure response: the pid whose request its leaf refused unsent (ProcessNotAdmitted). */
+export declare const HOSTED_NOT_ADMITTED_HEADER = "x-nimbus-hosted-not-admitted";
 /**
  * Which hosted process a fetched upgrade is for. An upgrade cannot travel as
  * RPC arguments, so the two values `_rpcRouteHostedHttp` would have taken ride

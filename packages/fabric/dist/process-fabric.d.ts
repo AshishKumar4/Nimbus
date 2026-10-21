@@ -374,7 +374,13 @@ export interface ProcessHostParams {
  * name a cause that did not happen ("its code was updated"), are the cause.
  */
 export declare class ProcessHostLost extends Error {
-    constructor(cause: unknown);
+    readonly refusedRequests: boolean;
+    /**
+     * `refusedRequests`: the loss showed while requests to the process waited
+     * to be sent, and they were refused unsent (ProcessNotAdmitted): they ran
+     * nowhere, and are owed a run on a new process.
+     */
+    constructor(cause: unknown, refusedRequests?: boolean);
 }
 /**
  * One resident process, as its coordinator sees it. Identical in meaning on
@@ -638,11 +644,11 @@ export declare class ResidentProcessHandle {
      * after the one that created it — which is the whole reason a resident
      * process can serve a port at all.
      */
-    readonly routeTarget: RouteableFacetTarget;
+    readonly routeTarget: Required<RouteableFacetTarget>;
     constructor(init: {
         done: Promise<void>;
         booted: () => Promise<unknown>;
-        routeTarget: RouteableFacetTarget;
+        routeTarget: Required<RouteableFacetTarget>;
         kill: () => void;
         describe: () => string;
     });

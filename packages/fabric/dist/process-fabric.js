@@ -400,8 +400,15 @@ export async function readContentBlob(disk, path, digest) {
  * name a cause that did not happen ("its code was updated"), are the cause.
  */
 export class ProcessHostLost extends Error {
-    constructor(cause) {
+    refusedRequests;
+    /**
+     * `refusedRequests`: the loss showed while requests to the process waited
+     * to be sent, and they were refused unsent (ProcessNotAdmitted): they ran
+     * nowhere, and are owed a run on a new process.
+     */
+    constructor(cause, refusedRequests = false) {
         super(`its host was reset by the platform (${errorText(cause)})`, { cause });
+        this.refusedRequests = refusedRequests;
         this.name = 'ProcessHostLost';
     }
 }

@@ -28,7 +28,7 @@
  *   so a compressed body is decoded here. See `decodeContentCoding`.
  */
 import { type DocumentPolicy } from './document-policy.js';
-import type { ResponseScope, RouteableFacetTarget } from './os-contracts.js';
+import { type ResponseScope, type RouteableFacetTarget } from './os-contracts.js';
 import type { ProcessOutput } from './output-gate.js';
 export interface PortEntry {
     port: number;
@@ -227,6 +227,10 @@ export declare class PortRegistry {
      * round-trip occurs anywhere.
      * A user-facet serving a PNG will return the exact same bytes the
      * client receives.
+     *
+     * A request the process refused unsent rejects with ProcessNotAdmitted,
+     * never a 502: it ran nowhere, and its caller may run it again, its body
+     * untouched.
      */
     routeRequest(port: number, request: Request, pathname: string): Promise<Response | null>;
     /**
