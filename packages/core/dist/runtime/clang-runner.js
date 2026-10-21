@@ -28,7 +28,7 @@
  */
 import { installedPath } from './runtime-manifest.js';
 import { CLANG_CALL_TASK } from './compiled-bodies.generated.js';
-import { withHostView } from './process-files.js';
+import { hostImage, withHostView } from './process-files.js';
 import { CRED_KERNEL, gateSyncLaunch, requireVfsCred, WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
 import { normalizeVfsPath, resolveVfsPath } from '../vfs/path.js';
 import { hasLeadingCliFlag } from './cli-flags.js';
@@ -160,7 +160,9 @@ export function makeClangRunnerFactory(deps) {
             const openTarget = async (primaryName) => {
                 let image;
                 try {
-                    image = await runtimeVfs.image(primaryName === 'clang' ? clangVfsPath : lldVfsPath);
+                    // Through a lease of its own at each load, not this invocation's: a warm facet's load may come after it
+                    // (its warming on the session's peer).
+                    image = await hostImage(deps.filesystem, CRED_KERNEL, primaryName === 'clang' ? clangVfsPath : lldVfsPath);
                 }
                 catch (e) {
                     ctx.stderr.write(`${binName}: ${primaryName} runtime warm-up failed: ${errorText(e)}\n`);
