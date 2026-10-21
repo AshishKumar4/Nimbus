@@ -2,7 +2,6 @@ import { z } from 'zod/v4';
 export declare const InterpreterEnvFactsSchema: z.ZodDiscriminatedUnion<[z.ZodObject<{
     runtime: z.ZodLiteral<"python">;
     home: z.ZodString;
-    cacert: z.ZodNullable<z.ZodString>;
 }, z.core.$strip>, z.ZodObject<{
     runtime: z.ZodLiteral<"ruby">;
     home: z.ZodString;
