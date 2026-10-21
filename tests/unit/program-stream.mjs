@@ -142,6 +142,8 @@ try {
       const wire = encodeProgramStream(() => new Promise((resolve) => { answer = resolve; }));
       const reader = wire.getReader();
       const reading = reader.read();
+      // Its read waiting on the start.
+      await new Promise((resolve) => setTimeout(resolve, 0));
       const cancelled = reader.cancel();
       answer({ pid: 1, output: new ReadableStream({ cancel() { outputCancelled = true; } }), exit: new Promise(() => {}), kill: (signal) => kills.push(signal) });
       await cancelled;
