@@ -295,7 +295,7 @@ export class NimbusSession extends SdkNimbusSession {
   /** Experiment: this object's last facet calls (fabric isolate-pool recentFacetCalls): a peer's own times for the calls it ran. */
   _rpcProbeFacetCalls() {
     this.requireProbeDiagnostics();
-    return { calls: recentFacetCalls(this.ctx), spans: (globalThis as unknown as { __d1Spans?: object[] }).__d1Spans ?? [] };
+    return { calls: recentFacetCalls(this.ctx), spans: (globalThis as unknown as { __d1Spans?: object[] }).__d1Spans ?? [], edges: (globalThis as unknown as { __d1Edges?: object[] }).__d1Edges ?? [] };
   }
   async _rpcProbeStores(needle: string): Promise<boolean> {
     this.requireProbeDiagnostics();

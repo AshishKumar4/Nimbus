@@ -37,7 +37,7 @@ try {
       const steps = [...r.output.matchAll(/\[wasi-fs\] (\S+) wallMs=(\d+) (\{.*\}|null)/g)].map((m) => ({ step: m[1], wallMs: Number(m[2]), waitMs: JSON.parse(m[3])?.waitMs, sessionCalls: JSON.parse(m[3])?.sessionCalls }));
       const peerRecord = host === 'peer' ? await peer(sid, 'facet-calls') : null;
       const facetCalls = host === 'peer' ? peerRecord.calls.slice(-2) : (await sessionFacetCalls()).filter((c) => c.tag.startsWith('clang-runner')).slice(-2);
-      out({ round: i, host, ms, exit: r.exitCode, calls, steps, facetCalls, spans: peerRecord?.spans.slice(-2) ?? null, sent: peerRecord?.sent.slice(-2) ?? null });
+      out({ round: i, host, ms, exit: r.exitCode, calls, steps, facetCalls, spans: peerRecord?.spans.slice(-2) ?? null, edges: peerRecord?.edges.slice(-2) ?? null, sent: peerRecord?.sent.slice(-2) ?? null });
     }
   }
 } catch (error) {
