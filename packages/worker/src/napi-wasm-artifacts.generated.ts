@@ -62,6 +62,20 @@ export const STAGED_BINDING_ARTIFACTS: readonly StagedBindingArtifact[] = [
     }
   },
   {
+    "name": "rolldown",
+    "version": "1.2.14",
+    "owner": "rolldown",
+    "requiredAs": [
+      "@rolldown/binding-wasm32-wasi"
+    ],
+    "memoryPages": 87,
+    "wasm": {
+      "path": "/_assets/napi-wasm/rolldown/1.2.14/rolldown.wasm",
+      "sha256": "4184294b9412277e6cc3471410165f7e788a5ca19d54c91785ea38e7771c6ae2",
+      "bytes": 13935141
+    }
+  },
+  {
     "name": "satteri",
     "version": "0.10.5",
     "owner": "satteri",

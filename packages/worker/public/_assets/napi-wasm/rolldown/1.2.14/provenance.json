@@ -1,0 +1,85 @@
+{
+  "artifact": "rolldown",
+  "version": "1.2.14",
+  "target": "wasm32-wasip1",
+  "source": {
+    "url": "https://github.com/rolldown/rolldown/archive/refs/tags/v1.2.14.tar.gz",
+    "sha256": "5ecdd5edca9721052cf6250d7ba18b4985c318582cdacafbcf3d336a011d043d",
+    "inputs": {
+      "packages/core/src/runtime/wasm-binary.ts": "4d24b153aef3861cceaa39b6991b36fcdb98eaa849950f5beb1bb67bfb80a2c5",
+      "packages/worker/scripts/artifact-inputs.mjs": "b0c9307e6f6f13bae05ccf99ab22cf7a715553b8c6f46dbbddfef0181a2f7115",
+      "packages/worker/scripts/napi-wasm/build.mjs": "5f1d124e26a906bfef4ba0faccf0a0d9e36164f1ae370b6c4f2d40f873c0b645",
+      "packages/worker/scripts/napi-wasm/inputs.mjs": "a06c519ffee5e2637688e25ca527bf885f99d2f2fa4b5fe34a81ba5afda94dc4",
+      "packages/worker/scripts/napi-wasm/link-wasm.sh": "3ead1668bb4b234f95892a7da9698a2f901d6fa460ed204594dfe9a6d8fa46f5",
+      "packages/worker/scripts/napi-wasm/rolldown/Cargo.toml": "0e892672b585cf1afd0bb2ec5a8b4d7d4814530ff2aea6a7f14a2dc4da9702f6",
+      "packages/worker/scripts/napi-wasm/rolldown/binding/Cargo.toml": "7a8c025ffc5e73ec6c8e62af76475fb208235f296afa4b9013c65005092fbaa6",
+      "packages/worker/scripts/napi-wasm/rolldown/binding/build.rs": "7a3642d370470ba2f8801fa6a4f39f25fceb16a23df6eca1339fcd1ca401d3c9",
+      "packages/worker/scripts/napi-wasm/rolldown/binding/src/lib.rs": "aaca3b726e2e150581c604cc545fb2db5496370fe8427a7a1cfd8ea8a2270037",
+      "packages/worker/scripts/napi-wasm/rustc-remap.sh": "c0ad0342c9fa9832c80a780f0828f49f759d9d50274aef1ded89216bfb3dd07b",
+      "packages/worker/scripts/rust-build-env.mjs": "bee2b7ee81ac5975df573df583b6b67dc176e4491fadcb43c4f3bbc2e81f73d4",
+      "packages/worker/scripts/stage-asset.mjs": "2187cb40e0491884adea0ae5deb543205f431e995a4e1e3a726d93d4e1173929",
+      "packages/worker/scripts/napi-wasm/specs.mjs#rolldown@1.2.14": "481f5106547597fda578dabd11220b81e2e9a4d0f4ead269f32f1f9b472d98aa",
+      "packages/worker/scripts/napi-wasm/specs.mjs#emnapi-link": "08bdc8cef180f63a612f6d138d9dc271fd4ce9bf7dd8a32d096a6f640a8bb2be"
+    }
+  },
+  "toolchain": "rustc 1.99.0 (b940084d7 2026-09-28)\nbinary: rustc\ncommit-hash: b940084d7eb6a299eb4bfeb8e34901bc051e7ac4\ncommit-date: 2026-09-28\nhost: x86_64-unknown-linux-gnu\nrelease: 1.99.0\nLLVM version: 23.1.1",
+  "cargo": {
+    "command": "cargo build --release --locked --target wasm32-wasip1",
+    "mode": "wrapper",
+    "rustflags": [
+      "--cfg",
+      "tokio_unstable",
+      "-C",
+      "target-feature=+simd128"
+    ],
+    "rustcWrapper": "napi-wasm/rustc-remap.sh (--remap-path-prefix <work>=/build <CARGO_HOME>=/cargo)",
+    "linker": "napi-wasm/link-wasm.sh (rust-lld; -zstack-size=64000000 -> 4194304)",
+    "lockfile": {
+      "origin": "upstream's Cargo.lock (rolldown-1.2.14), pruned to this build by cargo 1.99.0 (5f94df478 2026-08-27)",
+      "sha256": "ba8a030d05f385d6d06509d03cb3c8b75c05d4f8240dff313cb95d86e1384f4a",
+      "packages": 319,
+      "upstreamPackages": 409
+    }
+  },
+  "seams": [],
+  "npm": {
+    "owner": "rolldown",
+    "requiredAs": [
+      "@rolldown/binding-wasm32-wasi"
+    ]
+  },
+  "wasm": {
+    "memoryMinPages": 87,
+    "sharedMemory": false,
+    "pumped": true,
+    "wasiImports": [
+      "random_get",
+      "environ_get",
+      "environ_sizes_get",
+      "clock_time_get",
+      "fd_close",
+      "fd_fdstat_get",
+      "fd_filestat_get",
+      "fd_prestat_get",
+      "fd_prestat_dir_name",
+      "fd_read",
+      "fd_readdir",
+      "fd_write",
+      "path_create_directory",
+      "path_filestat_get",
+      "path_open",
+      "path_readlink",
+      "path_remove_directory",
+      "path_unlink_file",
+      "poll_oneoff",
+      "proc_exit",
+      "sched_yield"
+    ]
+  },
+  "outputs": {
+    "rolldown.wasm": {
+      "bytes": 13935141,
+      "sha256": "4184294b9412277e6cc3471410165f7e788a5ca19d54c91785ea38e7771c6ae2"
+    }
+  }
+}
